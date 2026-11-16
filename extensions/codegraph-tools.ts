@@ -279,7 +279,7 @@ function gitTopLevel(cwd: string, gitRun: GitRun = defaultGitRun): string | unde
 }
 
 /** A full re-index from bash is blocked when an index already exists; this is the reason it gets. */
-const CODEGRAPH_INDEX_BLOCK_REASON = "CodeGraph: an index already exists for this workspace. Re-indexing kills the shared daemon and rebuilds it; the runtime refreshes with sync (before the first search of each prompt). If you really need a full rebuild, set GENTLE_CODEGRAPH_ALLOW_INDEX=1 in the launch environment or as a leading assignment in the command.";
+const CODEGRAPH_INDEX_BLOCK_REASON = "CodeGraph: an index already exists for this workspace. Re-indexing kills the shared daemon and rebuilds it; the runtime refreshes with sync (before every search). If you really need a full rebuild, set GENTLE_CODEGRAPH_ALLOW_INDEX=1 in the launch environment or as a leading assignment in the command.";
 
 /**
  * The command past its leading whitespace and `FOO=1 BAR=2` assignments — shell syntax, not the
@@ -613,18 +613,14 @@ async function queryViaDaemon(cwd: string, parameters: CodeGraphToolParameters, 
 	}
 }
 
-/** The cwds whose index this prompt's first search already refreshed in the background. */
-const searchSynced = new Set<string>();
-
 /** The cwds whose daemon was wedged this prompt (the post-warm attempt timed out): the CLI answers directly until the next prompt. */
 const daemonSkipUntil = new Map<string, number>();
 
 /** How long a wedged daemon is bypassed after its post-warm attempt times out. */
 const DAEMON_SKIP_MS = 60_000;
 
-/** A new user prompt starts a new search window: its first search refreshes the index and re-asks git and the daemon once. */
-export function clearSearchSync(): void {
-	searchSynced.clear();
+/** A new user prompt starts a new search window: git, the local exclusion, and the daemon are re-asked once. The index itself refreshes before every search. */
+export function clearSearchWindow(): void {
 	workspaceVerified.clear();
 	excludeApplied.clear();
 	excludePresent.clear();
@@ -658,17 +654,17 @@ export function codegraphSyncFailureNotice(
 }
 
 /**
- * Fires the per-prompt background sync for `cwd` and returns whether a job was started: a subagent
- * child or a cwd already refreshed this prompt never starts one, so the first search of a prompt
- * is neither blocked nor duplicated.
+ * Awaits the index refresh for `cwd` and returns whether one covered this search: a subagent
+ * child or an unindexed workspace never refreshes, and every other search waits for its refresh
+ * to settle — a call that arrives while one is in flight awaits that same job — so the query
+ * reads fresh data.
  */
-export function triggerSearchSync(cwd: string, ctx: ExtensionContext, run: SearchSyncInput["run"] = runCodegraph, opts?: { indexed?: boolean; registryDir?: string; sleep?: (ms: number) => Promise<void> }): boolean {
-	if (process.env[CHILD_ENV] === "1" || searchSynced.has(cwd)) return false;
+export async function awaitSearchSync(cwd: string, ctx: ExtensionContext, run: SearchSyncInput["run"] = runCodegraph, opts?: { indexed?: boolean; registryDir?: string; sleep?: (ms: number) => Promise<void> }): Promise<boolean> {
+	if (process.env[CHILD_ENV] === "1") return false;
 	// Nothing to refresh without an index: an unindexed workspace must not spawn a doomed
-	// sync CLI call (plus failure notices) every turn — init owns the first index.
+	// sync CLI call (plus failure notices) every query — init owns the first index.
 	if (!(opts?.indexed ?? indexExists(cwd))) return false;
-	searchSynced.add(cwd);
-	syncBeforeSearch({
+	await syncBeforeSearch({
 		cwd,
 		registryDir: opts?.registryDir,
 		sleep: opts?.sleep,
@@ -703,7 +699,7 @@ export function createCodeGraphTool(
 		warm?: (cwd: string, timeoutMs: number) => Promise<boolean>;
 		/** Lazily re-warms a daemon that died mid-session before each search; the default keeps the real behavior, tests inject a no-op so their fakes never spawn anything real. */
 		rewarm?: (cwd: string) => void;
-		/** Runs the per-prompt unlock+sync fired before the first search; injected in tests. */
+		/** Runs the refresh awaited before every search; injected in tests. */
 		syncRun?: SearchSyncInput["run"];
 		/** Runs every git interrogation (workspace guard, exclude detection); injected in tests. */
 		gitRun?: GitRun;
@@ -773,13 +769,12 @@ export function createCodeGraphTool(
 				// next query is fast again. Never blocks this call. Routed through the injected adapter so
 				// tests supplying the other query seams never reach the real daemon spawn.
 				rewarm(cwd);
-				// One background sync per prompt before the first search keeps the index fresh;
-				// the search never waits for it.
-				// This indexExists serves the sync gate only; the success paths below recheck presence
-				// when they shape their result, so an index published while the search waited on the
-				// daemon or the CLI is still excluded locally.
+				// Every search awaits its index refresh first — the freshest data, then the query —
+				// bounded by the sync timeout, skipped only for children and unindexed workspaces.
+				// One indexExists per query serves the sync gate and the result paths below; a daemon
+				// that answers ok confirms the same fact.
 				const indexed = indexExists(cwd);
-				const syncTriggered = triggerSearchSync(cwd, ctx, syncRun, { indexed });
+				const syncTriggered = (await raceWithAbort(signal, awaitSearchSync(cwd, ctx, syncRun, { indexed }))) ?? false;
 				const attempt = () => daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, DAEMON_ATTEMPT_TIMEOUT_MS));
 				let viaDaemon: DaemonCallResult | undefined;
 				if (Date.now() >= (daemonSkipUntil.get(cwd) ?? 0)) {
@@ -920,18 +915,18 @@ function ensureExposureOnce(): void {
 
 export default function codeGraphTools(pi: ExtensionAPI): void {
 	registerCodeGraphTool(pi);
-	// One background sync per user prompt: the first search of every prompt fires it.
-	// The reset binds to before_agent_start — the user-prompt boundary — not turn_start, which
-	// fires for every assistant response (including each response between tool calls) and would
-	// clear the 60-second daemon bypass and re-arm the background sync mid-prompt. Verified in
+	// The search-window reset binds to before_agent_start — the user-prompt boundary — not
+	// turn_start, which fires for every assistant response (including each response between
+	// tool calls) and would clear the 60-second daemon bypass mid-prompt. Verified in
 	// the resolved @earendil-works/pi-coding-agent package: before_agent_start is emitted once
 	// per run start (a submitted prompt, RPC prompt, or sendUserMessage — plus an idle custom
 	// message with triggerTurn), while retries, queued continuations, and compaction inside
-	// that run continue through agent.continue() without re-emitting it.
-	pi.on?.("before_agent_start", () => clearSearchSync());
+	// that run continue through agent.continue() without re-emitting it. The index refresh no
+	// longer resets here: every search awaits its own refresh now.
+	pi.on?.("before_agent_start", () => clearSearchWindow());
 	// `codegraph index`/`codegraph init` from bash rebuilds the index from scratch and kills the
 	// daemon every session shares (a full rebuild once took the daemon down), while the runtime
-	// already refreshes the index with sync before the first search of each prompt. When an index
+	// already refreshes the index with sync before every search. When an index
 	// already exists the rebuild is blocked — "if an index exists, do not re-index — only sync" —
 	// and GENTLE_CODEGRAPH_ALLOW_INDEX=1 is the explicit override. The guard is total: any
 	// internal error allows the call, so a broken guard can never break bash.

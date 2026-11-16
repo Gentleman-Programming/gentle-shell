@@ -10,14 +10,14 @@ import type { InitLockOutcome } from "../lib/codegraph-lease.ts";
 import type { EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
 import codeGraphTools, {
 	armExposureEnsureForTest,
-	clearSearchSync,
+	clearSearchWindow,
 	createCodeGraphTool,
 	codeGraphNodeScript,
 	codegraphSyncFailureNotice,
 	findCodeGraphNodeScriptOnPath,
 	isSameDirectory,
 	isWorkspaceProjectRoot,
-	triggerSearchSync,
+	awaitSearchSync,
 	type CodeGraphRunner,
 	type DaemonExplore,
 } from "../extensions/codegraph-tools.ts";
@@ -472,7 +472,7 @@ test("CodeGraph tool asks git once per cwd per turn, not once per search", async
 	await tool.execute("test", { operation: "query", query: "second" }, undefined, undefined, ctx);
 	assert.equal(gitCalls.length, firstSearch, "a later search in the same turn asks git nothing");
 
-	clearSearchSync();
+	clearSearchWindow();
 	await tool.execute("test", { operation: "query", query: "third" }, undefined, undefined, ctx);
 	assert.equal(gitCalls.length, firstSearch * 2, "a new turn asks git again, exactly once");
 });
@@ -615,7 +615,7 @@ test("CodeGraph tool registration exposes a single constrained custom tool", () 
 	});
 });
 
-test("the per-prompt sync reset binds to before_agent_start, never to a prompt's tool-call turns", async (t) => {
+test("every search awaits its own refresh; only the search-window caches reset per prompt", async (t) => {
 	withoutChildEnv(t);
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
 	const pi = {
@@ -629,7 +629,7 @@ test("the per-prompt sync reset binds to before_agent_start, never to a prompt's
 
 	codeGraphTools(pi);
 
-	assert.ok(handlers.has("before_agent_start"), "the reset lives at the user-prompt boundary");
+	assert.ok(handlers.has("before_agent_start"), "the search-window reset lives at the user-prompt boundary");
 	assert.ok(handlers.has("session_start"), "session_start still prepares readiness");
 
 	const cwd = workspace(t);
@@ -640,19 +640,8 @@ test("the per-prompt sync reset binds to before_agent_start, never to a prompt's
 		return true;
 	};
 	const ctx = { cwd } as ExtensionContext;
-	assert.equal(triggerSearchSync(cwd, ctx, syncRun), true);
-	await settled();
-	assert.equal(triggerSearchSync(cwd, ctx, syncRun), false, "one background sync per user prompt");
-	await settled();
-	// A turn boundary inside the same user prompt — every assistant response between tool calls
-	// fires turn_start — must not re-arm the background sync or drop the daemon bypass.
-	const turnStart = handlers.get("turn_start") as ((event: unknown) => void) | undefined;
-	turnStart?.({});
-	assert.equal(triggerSearchSync(cwd, ctx, syncRun), false, "a tool-call turn never re-arms the per-prompt sync");
-	// The next user prompt is the boundary that resets.
-	(handlers.get("before_agent_start") as () => void)();
-	assert.equal(triggerSearchSync(cwd, ctx, syncRun), true, "a new user prompt re-arms the sync");
-	await settled();
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun), true);
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun), true, "every search refreshes, not only the first of a prompt");
 	assert.deepEqual(calls, [["sync", "-q"], ["sync", "-q"]]);
 });
 
@@ -711,7 +700,30 @@ test("session_start ensures direct mcp exposure once per process, and a child se
 	assert.equal(parent.writes.length, 2, "each agent-home mcp.json is written exactly once");
 });
 
-test("triggerSearchSync: an unindexed workspace starts no doomed sync", async (t) => {
+test("a refresh already in flight is awaited, never duplicated", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	let runs = 0;
+	let release: (() => void) | undefined;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const syncRun = async (): Promise<boolean> => {
+		runs += 1;
+		await gate;
+		return true;
+	};
+	const ctx = { cwd } as ExtensionContext;
+	const first = awaitSearchSync(cwd, ctx, syncRun);
+	const second = awaitSearchSync(cwd, ctx, syncRun);
+	release?.();
+	assert.equal(await first, true);
+	assert.equal(await second, true, "the second caller awaits the same in-flight refresh");
+	assert.equal(runs, 1, "one refresh covers both callers");
+});
+
+test("awaitSearchSync: an unindexed workspace starts no doomed sync", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
 	const calls: string[][] = [];
@@ -720,13 +732,13 @@ test("triggerSearchSync: an unindexed workspace starts no doomed sync", async (t
 		return true;
 	};
 	const ctx = { cwd } as ExtensionContext;
-	assert.equal(triggerSearchSync(cwd, ctx, syncRun), false, "nothing to refresh without an index");
-	assert.equal(triggerSearchSync(cwd, ctx, syncRun), false, "still nothing on a second call");
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun), false, "nothing to refresh without an index");
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun), false, "still nothing on a second call");
 	await settled();
 	assert.deepEqual(calls, [], "no sync, no doomed CLI processes per turn");
 });
 
-test("triggerSearchSync: an unexpected exception notifies instead of vanishing", async (t) => {
+test("awaitSearchSync: an unexpected exception notifies instead of vanishing", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
 	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
@@ -736,10 +748,9 @@ test("triggerSearchSync: an unexpected exception notifies instead of vanishing",
 		hasUI: true,
 		ui: { notify: (text: string, level: string) => notices.push({ text, level }) },
 	} as unknown as ExtensionContext;
-	triggerSearchSync(cwd, ctx, async () => {
+	await awaitSearchSync(cwd, ctx, async () => {
 		throw new Error("boom: refresh exploded");
 	});
-	await settled();
 	assert.equal(notices.length, 1, "one warning for one unexpected failure");
 	assert.match(notices[0].text, /boom: refresh exploded/);
 	assert.equal(notices[0].level, "warning");
@@ -1270,7 +1281,7 @@ test("a daemon that never answers tries twice, warms once, then answers through 
 
 	const second = await tool.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, ctx);
 
-	assert.equal((second.details as { syncTriggered?: boolean }).syncTriggered, undefined, "one background sync per turn");
+	assert.equal((second.details as { syncTriggered?: boolean }).syncTriggered, true, "every search refreshes; only the daemon bypass persists per turn");
 	assert.equal(daemonCalls, 2, "an unavailable daemon is skipped for the rest of the turn, not re-paid per query");
 	assert.equal(warmCalls, 1);
 	assert.equal(runnerCalls, 2);
@@ -1335,8 +1346,8 @@ test("a failed daemon chain skips the daemon for the rest of the turn", async (t
 	assert.equal(daemonCalls, 2, "the failed chain is not repeated this turn");
 	assert.equal(runnerCalls, 2);
 
-	// q3, a new user prompt: clearSearchSync (what before_agent_start fires) re-asks the daemon once more.
-	clearSearchSync();
+	// q3, a new user prompt: clearSearchWindow (what before_agent_start fires) re-asks the daemon once more.
+	clearSearchWindow();
 	const third = await tool.execute("test", { operation: "query", query: "q3" }, undefined, undefined, ctx);
 	assert.deepEqual(third.content, [{ type: "text", text: "cli answer" }]);
 	assert.equal((third.details as { viaDaemon?: boolean }).viaDaemon, false);
@@ -1578,38 +1589,48 @@ test("init after an acquired lock runs only for an absent index: unknown stands 
 	assert.equal(releases, 2, "the lock is released however init ends");
 });
 
-test("the first search of a turn triggers one background sync, later searches none", async (t) => {
+test("every search awaits its refresh before the query runs", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
 	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
-	const calls: string[][] = [];
+	const events: string[] = [];
+	const gates: Array<() => void> = [];
 	const tool = createCodeGraphTool(
 		async () => ({ stdout: "cli", stderr: "" }),
 		{
-			daemonExplore: daemonOk,
+			daemonExplore: async () => {
+				events.push("query");
+				return { status: "ok", text: "daemon answer" };
+			},
 			rewarm: noRewarm,
 			syncRun: async (args) => {
-				calls.push([...args]);
+				events.push("sync-start");
+				await new Promise<void>((resolve) => gates.push(resolve));
+				events.push("sync-end");
 				return true;
 			},
 		},
 	);
 	const ctx = { cwd } as ExtensionContext;
 
-	const first = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx);
-
-	assert.equal((first.details as { syncTriggered?: boolean }).syncTriggered, true);
+	const first = tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx);
 	await settled();
-	assert.deepEqual(calls, [["sync", "-q"]]);
+	assert.deepEqual(events, ["sync-start"], "the query waits behind its refresh");
 
-	await tool.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, ctx);
-	await settled();
-	assert.deepEqual(calls, [["sync", "-q"]], "one background sync per turn");
+	gates[0]?.();
+	const settledFirst = await first;
+	assert.equal((settledFirst.details as { syncTriggered?: boolean }).syncTriggered, true);
+	assert.deepEqual(events, ["sync-start", "sync-end", "query"], "the query runs only after the refresh settled");
 
-	clearSearchSync();
-	await tool.execute("test", { operation: "query", query: "again" }, undefined, undefined, ctx);
+	const second = tool.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, ctx);
 	await settled();
-	assert.deepEqual(calls, [["sync", "-q"], ["sync", "-q"]], "a new turn syncs again");
+	gates[1]?.();
+	await second;
+	assert.deepEqual(
+		events,
+		["sync-start", "sync-end", "query", "sync-start", "sync-end", "query"],
+		"every search refreshes again, with no per-prompt gate",
+	);
 });
 
 test("a subagent child never triggers the background sync", async (t) => {
@@ -1740,7 +1761,7 @@ test("codegraphSyncFailureNotice: beside a live daemon the note is info with the
 	});
 });
 
-test("triggerSearchSync: a failing sync beside a live daemon notifies info, a daemon-less one keeps the warning", async (t) => {
+test("awaitSearchSync: a failing sync beside a live daemon notifies info, a daemon-less one keeps the warning", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
 	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
@@ -1758,8 +1779,7 @@ test("triggerSearchSync: a failing sync beside a live daemon notifies info, a da
 	const alwaysFails = async (): Promise<boolean> => false;
 	const instant = async (): Promise<void> => {};
 
-	triggerSearchSync(cwd, ctx, alwaysFails, { registryDir: registry, sleep: instant });
-	await settled();
+	await awaitSearchSync(cwd, ctx, alwaysFails, { registryDir: registry, sleep: instant });
 	assert.equal(notices.length, 1, "one notify for one failed refresh");
 	assert.equal(notices[0].level, "info", "a live daemon self-heals the index: no warning");
 	assert.match(notices[0].text, /\(daemon alive/);
@@ -1768,8 +1788,7 @@ test("triggerSearchSync: a failing sync beside a live daemon notifies info, a da
 	await writeIndex(["init", deadCwd], { cwd: deadCwd, maxBuffer: 1 });
 	const deadCtx = { cwd: deadCwd, hasUI: true, ui: { notify: (text: string, level: "info" | "warning") => notices.push({ text, level }) } } as unknown as ExtensionContext;
 	const deadRun = async (): Promise<boolean> => false;
-	triggerSearchSync(deadCwd, deadCtx, deadRun, { registryDir: join(deadCwd, "no-registry"), sleep: instant });
-	await settled();
+	await awaitSearchSync(deadCwd, deadCtx, deadRun, { registryDir: join(deadCwd, "no-registry"), sleep: instant });
 	assert.equal(notices.length, 2);
 	assert.equal(notices[1].level, "warning", "without a daemon the failure stays a warning");
 	assert.equal(notices[1].text, `codegraph sync failed in ${deadCwd}`);

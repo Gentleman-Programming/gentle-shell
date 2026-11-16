@@ -1,8 +1,49 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { registerHooks } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import type { Project, TowerSnapshot } from "../web/tower/src/types.ts";
+
+test("hover test typechecks and skips cleanly with only root dependencies", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "gentle-tower-hover-ci-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	mkdirSync(join(root, "tests"), { recursive: true });
+	mkdirSync(join(root, "web", "tower", "src"), { recursive: true });
+	for (const file of ["package.json", "tsconfig.json", "tests/tower-web-hover.test.ts", ...["types.ts", "model.ts", "art.ts", "scene.ts"].map((name) => `web/tower/src/${name}`)]) {
+		copyFileSync(new URL(`../${file}`, import.meta.url), join(root, file));
+	}
+	// Link only the root installation. No nested web dependency directory exists.
+	symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), join(root, "node_modules"), "junction");
+	assert.equal(existsSync(join(root, "web", "tower", "node_modules")), false);
+	const configFile = join(root, "tsconfig.json");
+	const config = ts.readConfigFile(configFile, ts.sys.readFile);
+	assert.equal(config.error, undefined);
+	const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root, undefined, configFile);
+	assert.deepEqual(parsed.errors, []);
+	assert.deepEqual(parsed.fileNames, [join(root, "tests", "tower-web-hover.test.ts")]);
+	const diagnostics = ts.getPreEmitDiagnostics(ts.createProgram(parsed.fileNames, parsed.options));
+	const formatted = ts.formatDiagnostics(diagnostics, { getCurrentDirectory: () => root, getCanonicalFileName: (file) => file, getNewLine: () => "\n" });
+	assert.equal(diagnostics.length, 0, formatted);
+	// A nested test runner must not inherit the outer runner's child-test protocol.
+	const env = { ...process.env };
+	delete env.NODE_TEST_CONTEXT;
+	const args = ["--experimental-strip-types", "--test", "--test-reporter=tap", "--test-name-pattern=^Tower Pixi hover$", join(root, "tests", "tower-web-hover.test.ts")];
+	const run = () => spawnSync(process.execPath, args, { encoding: "utf8", timeout: 10_000, env });
+	const skipped = run();
+	assert.equal(skipped.status, 0, `${skipped.stdout}\n${skipped.stderr}`);
+	assert.match(skipped.stdout, /Tower Pixi hover/);
+	assert.match(skipped.stdout, /install web\/tower dependencies to exercise Pixi hover/);
+	// A present but broken install is an error, not a misleading dependency skip.
+	mkdirSync(join(root, "web", "tower", "node_modules", "pixi.js"), { recursive: true });
+	const broken = run();
+	assert.notEqual(broken.status, 0);
+	assert.match(`${broken.stdout}\n${broken.stderr}`, /ERR_MODULE_NOT_FOUND/);
+});
 
 // Load the same extensionless local imports Vite resolves, without starting a
 // browser or replacing Pixi's event boundary with a synthetic hit test.
@@ -55,15 +96,18 @@ Object.defineProperty(globalThis, "document", { value: {
 }, configurable: true });
 
 // Root-only installs need not have the separately installed web project's dependencies.
-if (!existsSync(new URL("../web/tower/node_modules/pixi.js/lib/events/index.mjs", import.meta.url))) {
+// URL imports follow the runtime-only test convention: root tsc must not pull the
+// Pixi scene into its graph, while the web project's own tsc still checks it.
+const pixi = new URL("../web/tower/node_modules/pixi.js/", import.meta.url);
+if (!existsSync(pixi)) {
 	test("Tower Pixi hover", { skip: "install web/tower dependencies to exercise Pixi hover" }, () => {});
 } else {
-const { EventBoundary, FederatedPointerEvent } = await import("../web/tower/node_modules/pixi.js/lib/events/index.mjs");
-const { updateRenderGroupTransforms } = await import("../web/tower/node_modules/pixi.js/lib/scene/container/utils/updateRenderGroupTransforms.mjs");
+const { EventBoundary, FederatedPointerEvent } = await import(new URL("lib/events/index.mjs", pixi).href);
+const { updateRenderGroupTransforms } = await import(new URL("lib/scene/container/utils/updateRenderGroupTransforms.mjs", pixi).href);
 // The real renderer installs this mixin during initialization, which the canvas stub skips.
-await import("../web/tower/node_modules/pixi.js/lib/events/init.mjs");
-const { TowerScene } = await import("../web/tower/src/scene.ts");
-const { room, floorLine, BX, BW } = await import("../web/tower/src/art.ts");
+await import(new URL("lib/events/init.mjs", pixi).href);
+const { TowerScene } = await import(new URL("../web/tower/src/scene.ts", import.meta.url).href);
+const { room, floorLine, BX, BW } = await import(new URL("../web/tower/src/art.ts", import.meta.url).href);
 
 async function setup() {
 	const scene = new TowerScene();

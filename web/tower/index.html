@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gentle Tower</title>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><svg width="28" height="12" viewBox="-56 -12 112 24" aria-hidden="true"><path fill="#ff76c3" d="M0,2 C-6,-6 -20,-9 -32,-3 C-41,2 -46,-2 -47,-8 C-52,-1 -48,9 -36,9 C-24,9 -10,6 0,7 Z M0,2 C6,-6 20,-9 32,-3 C41,2 46,-2 47,-8 C52,-1 48,9 36,9 C24,9 10,6 0,7 Z"/></svg>Gentle Tower</div>
+  <nav class="projects px" id="projects" aria-label="Projects: one building each"></nav>
+  <nav id="lobby" class="lobby" aria-label="The club"><button id="newfloor-btn" class="btn primary">+ New floor <kbd>N</kbd></button><button id="lib-btn" class="btn">Engram library</button><button id="tab-btn" class="btn">Your tab</button><button id="review-btn" class="btn" aria-pressed="false">Review: —</button></nav>
+</header>
+<main id="stage" class="stage" hidden>
+  <div id="canvas" class="canvas"></div>
+  <nav id="floors" class="floors" aria-label="Floors (sessions)"></nav>
+  <section id="todo" class="todo px" aria-live="polite" aria-label="Floor tasks" hidden></section>
+</main>
+<section id="sel" class="sel px" aria-live="polite" hidden></section>
+<aside id="intercom" class="intercom px" aria-label="Floor intercom" hidden></aside>
+<div id="dim" class="dim" hidden></div>
+<section id="empty" class="empty-state" hidden>
+  <h1>No floors yet</h1>
+  <p>Open Gentle Shell in a project. Every session shows up here as a floor of that project's building.</p>
+</section>
+<div id="offline" class="offline px" role="status" hidden>Lost the connection to Gentle Shell. Retrying…</div>
+<script type="module" src="./src/main.ts"></script>
+</body>
+</html>

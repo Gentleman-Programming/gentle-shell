@@ -47,6 +47,7 @@ import {
 	otherPackageInjections,
 	parseLauncherArgs,
 	parseLauncherConfig,
+	parseTowerArgs,
 	parseRawLauncherConfig,
 	planSpawn,
 	POST_INSTALL_REMOVAL_SOURCES,
@@ -2101,6 +2102,16 @@ async function main() {
 	if (args.command === "home") {
 		if (args.commandArgs[0] === "import-pi") await handleImportPiCommand(args);
 		else handleHomeCommand(args.commandArgs);
+		return;
+	}
+	// `gentle-shell tower`: the same local web view as /gentle:tower, without a
+	// session or a Pi runtime; serves until SIGINT/SIGTERM.
+	if (args.command === "tower") {
+		const tower = parseTowerArgs(args.commandArgs);
+		if (tower.error !== undefined) fail(`gentle-shell tower: ${tower.error}\nRun 'gentle-shell --help' for usage.`, 2);
+		const { runTower } = await import("../runtime/tower-open.mjs");
+		process.exitCode = await runTower({ env: process.env, open: tower.open, port: tower.port,
+			stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text) });
 		return;
 	}
 	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).

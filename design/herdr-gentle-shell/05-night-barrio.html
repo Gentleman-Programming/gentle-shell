@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gentle Shell — Night barrio</title>
+<style>
+:root{
+  --bg:#1a1218;--bg-deep:#000000;--surface:#20161e;--surface-1:#241822;--surface-2:#342230;
+  --border:#342230;--border-soft:#ffffff17;--text:#f6eff3;--text-muted:#a78e9b;--text-faint:#76616b;
+  --accent:#f095c8;--accent-soft:#ffb1dd;--success:#b4e7c7;--warning:#e0c27a;--error:#ff718f;--info:#a9c7ee;
+  --font-sans:Inter,"SF Pro Text",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:"IosevkaTerm NF","Iosevka Term","JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  --radius-sm:8px;--radius-md:12px;--radius-pill:999px;--glow:0 10px 30px #f095c84d;--ease:cubic-bezier(.4,0,.2,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark}
+body{background:var(--bg-deep);color:var(--text);font:15px/1.5 var(--font-sans);height:100vh;overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+svg{display:block;width:100vw;height:100vh;cursor:grab;touch-action:none}
+svg.drag{cursor:grabbing}
+svg .agent,svg .bld{cursor:pointer}
+svg .agent:focus{outline:none}
+svg .agent:focus-visible .ring{stroke:var(--accent);stroke-width:2}
+
+/* HUD: one quiet line */
+.top{position:fixed;top:0;left:0;right:0;height:44px;display:flex;align-items:center;gap:14px;padding:0 16px 0 88px;
+  background:linear-gradient(180deg,#000000b3,transparent);pointer-events:none}
+.top > *{pointer-events:auto}
+.brand{display:flex;align-items:center;gap:8px;font-weight:800}
+.mark{width:20px;height:20px;border-radius:6px;background:var(--accent);color:var(--bg);display:grid;place-items:center;font:800 11px var(--font-mono)}
+.seg{display:flex;padding:3px;border-radius:var(--radius-sm);background:#20161ecc;border:1px solid var(--border-soft)}
+.seg button{padding:3px 12px;border-radius:6px;font-size:13px;color:var(--text-muted)}
+.seg button[aria-pressed="true"]{background:var(--surface-2);color:var(--text)}
+.sum{font-size:13.5px;color:var(--text-muted)}
+.sum button{color:var(--warning);font-weight:600}
+.sum button:hover{text-decoration:underline}
+.spacer{flex:1}
+.clock{font:12.5px var(--font-mono);color:var(--text-muted)}
+
+/* guide line (default) and selection card (on demand) */
+.hint{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:8px 16px;
+  border-radius:var(--radius-pill);background:#20161ee6;border:1px solid var(--border);font-size:13.5px;color:var(--text-muted)}
+.hint b{color:var(--text);font-weight:600}
+.q{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;background:var(--warning);color:var(--bg);font:800 11px var(--font-sans)}
+.c{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;background:var(--success);color:var(--bg);font:800 11px var(--font-sans)}
+
+.card{position:fixed;left:50%;bottom:24px;transform:translate(-50%,12px);width:min(560px,calc(100vw - 32px));opacity:0;pointer-events:none;
+  background:#20161ef2;border:1px solid var(--border);border-radius:16px;box-shadow:0 24px 60px #00000073,0 0 40px #f095c81a;
+  padding:16px 18px;transition:.22s var(--ease)}
+.card.open{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+.card-h{display:flex;align-items:center;gap:12px}
+.avatar{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;font:800 13px var(--font-mono);color:var(--bg)}
+.card h2{font-size:16px;font-weight:700;line-height:1.2}
+.card .sub{font-size:13px;color:var(--text-muted)}
+.x{margin-left:auto;width:30px;height:30px;border-radius:8px;color:var(--text-muted)}
+.x:hover{background:var(--surface-2);color:var(--text)}
+.card p.say{margin-top:12px;font-size:15px}
+.acts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:7px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);font-weight:600;font-size:14px}
+.btn:hover{border-color:var(--accent);color:var(--accent-soft)}
+.btn.primary{background:var(--accent);color:var(--bg);border-color:var(--accent);box-shadow:var(--glow)}
+.btn.primary:hover{color:var(--bg)}
+details{margin-top:12px;border-top:1px solid var(--border-soft);padding-top:8px}
+summary{list-style:none;cursor:pointer;font-size:13.5px;color:var(--text-muted);display:flex;gap:8px;align-items:center}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸";font-size:11px;transition:transform .2s var(--ease)}
+details[open] summary::before{transform:rotate(90deg)}
+summary:hover{color:var(--text)}
+.kv{display:grid;grid-template-columns:1fr auto;gap:3px 16px;font-size:13px;margin:8px 0 0 19px}
+.kv span:nth-child(odd){color:var(--text-muted)}
+.kv span:nth-child(even){font-family:var(--font-mono);font-size:12.5px}
+
+.zoom{position:fixed;right:16px;bottom:24px;display:grid;gap:4px}
+.zoom button{width:36px;height:36px;border-radius:var(--radius-sm);background:#20161ee6;border:1px solid var(--border);color:var(--text-muted);font-size:16px}
+.zoom button:hover{color:var(--text);border-color:var(--accent)}
+.credit{position:fixed;left:16px;bottom:10px;font-size:11px;color:var(--text-faint)}
+@keyframes bob{50%{transform:translateY(-3px)}}
+.bubble{animation:bob 1.6s var(--ease) infinite}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<svg id="w" role="application" aria-label="Your barrio: each building is a project, each person an agent. Drag to look around, scroll to zoom."></svg>
+
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true">g</span>gentle shell</div>
+  <div class="seg" role="group" aria-label="View"><button aria-pressed="true">Barrio</button><button aria-pressed="false">List</button></div>
+  <div class="sum">4 agents working · <button id="go-need">1 needs you</button></div>
+  <div class="spacer"></div>
+  <span class="clock">23:14</span>
+  <button class="btn" style="min-height:30px;padding:3px 12px;font-size:13px">+ New agent</button>
+</header>
+
+<div class="hint" id="hint"><span><b>Click someone</b> to talk to them.</span><span class="q">?</span> needs you <span class="c">✓</span> finished</div>
+
+<section class="card" id="card" aria-live="polite" aria-label="Selection">
+  <div class="card-h">
+    <span class="avatar" id="c-av">π</span>
+    <div><h2 id="c-name"></h2><div class="sub" id="c-sub"></div></div>
+    <button class="x" id="c-x" aria-label="Close">✕</button>
+  </div>
+  <p class="say" id="c-say"></p>
+  <div class="acts" id="c-acts"></div>
+  <details id="c-more"><summary>Details</summary><div class="kv" id="c-kv"></div></details>
+</section>
+
+<div class="zoom"><button id="zi" aria-label="Zoom in">+</button><button id="zo" aria-label="Zoom out">−</button><button id="zc" aria-label="Center the barrio">◎</button></div>
+<div class="credit">Original art · drawn in code</div>
+
+<script>
+const NS='http://www.w3.org/2000/svg', svg=document.getElementById('w');
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const T={bg:'#1a1218',deep:'#000000',s:'#20161e',s1:'#241822',s2:'#342230',text:'#f6eff3',muted:'#a78e9b',faint:'#76616b',
+  acc:'#f095c8',accS:'#ffb1dd',ok:'#b4e7c7',warn:'#e0c27a',err:'#ff718f',info:'#a9c7ee'};
+// mix two token colours (art shading is derived from tokens only)
+const hx=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16));
+const mix=(a,b,t)=>'#'+hx(a).map((v,i)=>Math.round(v+(hx(b)[i]-v)*t).toString(16).padStart(2,'0')).join('');
+const el=(n,a={},p)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);(p||world).appendChild(e);return e};
+const TW=64,TH=32, P=(x,y,z=0)=>[(x-y)*TW/2,(x+y)*TH/2-z];
+const pts=a=>a.map(p=>p.join(',')).join(' ');
+
+// defs: glows
+const defs=document.createElementNS(NS,'defs');svg.appendChild(defs);
+defs.innerHTML=`<radialGradient id="lamp"><stop offset="0" stop-color="${T.acc}" stop-opacity=".55"/><stop offset="1" stop-color="${T.acc}" stop-opacity="0"/></radialGradient>
+<radialGradient id="warm"><stop offset="0" stop-color="${T.warn}" stop-opacity=".35"/><stop offset="1" stop-color="${T.warn}" stop-opacity="0"/></radialGradient>
+<radialGradient id="sea" cx=".5" cy=".45" r=".7"><stop offset="0" stop-color="${mix(T.s,T.info,.08)}"/><stop offset="1" stop-color="${T.deep}"/></radialGradient>`;
+el('rect',{x:-4000,y:-4000,width:8000,height:8000,fill:'url(#sea)'},svg);
+const world=document.createElementNS(NS,'g');svg.appendChild(world);
+
+// ---------- terrain: an island barrio ----------
+const R=11, rnd=(x,y)=>{const s=Math.sin(x*12.9898+y*78.233)*43758.5453;return s-Math.floor(s)};
+const land=(x,y)=>Math.hypot(x*1.05,y*.95)+rnd(x,y)*1.6<R;
+const road=(x,y)=>x===0||y===0||(y===-5&&x>-7&&x<1)||(x===5&&y>0&&y<7);
+const tiles=[];
+for(let y=-R-2;y<=R+2;y++)for(let x=-R-2;x<=R+2;x++)if(land(x,y))tiles.push([x,y]);
+tiles.sort((a,b)=>(a[0]+a[1])-(b[0]+b[1]));
+for(const [x,y] of tiles){
+  const edgeS=!land(x,y+1), edgeE=!land(x+1,y);
+  if(edgeS) el('polygon',{points:pts([P(x,y+1),P(x+1,y+1),P(x+1,y+1,-14),P(x,y+1,-14)]),fill:mix(T.s1,T.deep,.45)});
+  if(edgeE) el('polygon',{points:pts([P(x+1,y),P(x+1,y+1),P(x+1,y+1,-14),P(x+1,y,-14)]),fill:mix(T.s1,T.deep,.25)});
+  const r=road(x,y), g=rnd(x,y);
+  el('polygon',{points:pts([P(x,y),P(x+1,y),P(x+1,y+1),P(x,y+1)]),
+    fill:r?mix(T.s2,T.muted,.12+g*.04):mix(T.s1,T.ok,.05+g*.05),stroke:mix(T.bg,T.deep,.3),'stroke-width':.6});
+  if(r&&((x+y)%4===0)&&g>.3){ // lamps along roads
+    const [lx,ly]=P(x+.5,y+.5);el('ellipse',{cx:lx,cy:ly,rx:46,ry:23,fill:'url(#lamp)'});
+  }
+}
+
+// ---------- drawables (depth sorted) ----------
+const items=[];
+const box=(x,y,w,d,h,col,opt={})=>items.push({k:x+w+y+d,draw:()=>{
+  const g=el('g',opt.id?{class:'bld','data-id':opt.id}:{});
+  const top=col, left=mix(col,T.deep,.38), right=mix(col,T.deep,.18);
+  el('polygon',{points:pts([P(x,y+d),P(x+w,y+d),P(x+w,y+d,h),P(x,y+d,h)]),fill:left},g);
+  el('polygon',{points:pts([P(x+w,y),P(x+w,y+d),P(x+w,y+d,h),P(x+w,y,h)]),fill:right},g);
+  el('polygon',{points:pts([P(x,y,h),P(x+w,y,h),P(x+w,y+d,h),P(x,y+d,h)]),fill:top},g);
+  // windows: lit at night, some pink (an agent is inside), some warm
+  const rows=Math.floor((h-14)/18);
+  for(let j=0;j<rows;j++){const z=12+j*18;
+    for(let u=.2;u<w-.2;u+=.5){const lit=rnd(u*7+x,j+y)>.45, c=rnd(u+j,x)>.7?T.acc:T.warn;
+      el('polygon',{points:pts([P(x+u,y+d,z),P(x+u+.25,y+d,z),P(x+u+.25,y+d,z+9),P(x+u,y+d,z+9)]),fill:lit?c:mix(left,T.deep,.3),opacity:lit?.85:1},g);}
+    for(let u=.2;u<d-.2;u+=.5){const lit=rnd(u*3+y,j+x)>.5;
+      el('polygon',{points:pts([P(x+w,y+u,z),P(x+w,y+u+.25,z),P(x+w,y+u+.25,z+9),P(x+w,y+u,z+9)]),fill:lit?T.warn:mix(right,T.deep,.3),opacity:lit?.75:1},g);}
+  }
+  if(opt.roof==='dome'){const [cx,cy]=P(x+w/2,y+d/2,h);el('ellipse',{cx,cy,rx:w*TW/3.2,ry:w*TH/3.2,fill:mix(col,T.info,.25)},g);
+    el('path',{d:`M${cx-w*TW/3.2},${cy} A${w*TW/3.2},${w*TW/3.6} 0 0 1 ${cx+w*TW/3.2},${cy}`,fill:mix(col,T.info,.35)},g);}
+  if(opt.antenna){const [ax,ay]=P(x+w/2,y+d/2,h);el('line',{x1:ax,y1:ay,x2:ax,y2:ay-38,stroke:T.muted,'stroke-width':2},g);
+    el('circle',{cx:ax,cy:ay-40,r:4,fill:T.acc},g);el('circle',{cx:ax,cy:ay-40,r:16,fill:'url(#lamp)'},g);}
+  if(opt.sign){const [sx,sy]=P(x+w/2,y+d/2,h+(opt.antenna?54:opt.roof==='dome'?40:18));
+    const lab=el('g',{transform:`translate(${sx},${sy})`},g), t=opt.sign;
+    el('rect',{x:-t.length*3.7-10,y:-12,width:t.length*7.4+20,height:22,rx:6,fill:'#20161ee6',stroke:opt.need?T.warn:T.s2},lab);
+    const tx=el('text',{y:4,'text-anchor':'middle','font-size':12,'font-family':'var(--font-mono)',fill:T.text},lab);tx.textContent=t;}
+}});
+const tree=(x,y)=>items.push({k:x+y+.5,draw:()=>{const [tx,ty]=P(x+.5,y+.5);const c=mix(T.s1,T.ok,.22);
+  el('ellipse',{cx:tx,cy:ty,rx:10,ry:5,fill:T.deep,opacity:.35});
+  el('polygon',{points:`${tx-11},${ty-4} ${tx},${ty-34} ${tx+11},${ty-4}`,fill:c});
+  el('polygon',{points:`${tx},${ty-34} ${tx+11},${ty-4} ${tx},${ty-6}`,fill:mix(c,T.deep,.3)});}});
+
+// projects = buildings that grow with commits
+const projects=[
+  {id:'gentle-ai',x:-5,y:-4,w:3,d:3,h:150,col:mix(T.s2,T.acc,.12),antenna:1,commits:6058},
+  {id:'engram',x:2,y:-6,w:3,d:3,h:70,col:mix(T.s2,T.info,.14),roof:'dome',commits:1240},
+  {id:'gentle-pi',x:2,y:2,w:2,d:3,h:110,col:mix(T.s2,T.acc,.06),commits:3253},
+  {id:'gentleman-landing',x:-6,y:2,w:2,d:2,h:52,col:mix(T.s2,T.ok,.08),commits:214},
+];
+for(const p of projects)box(p.x,p.y,p.w,p.d,p.h,p.col,{id:p.id,sign:`${p.id} · ${p.commits}`,antenna:p.antenna,roof:p.roof,need:p.id==='gentle-ai'});
+// small houses = idle sessions / terminals
+[[-8,-1],[7,-2],[-3,6],[7,4],[-9,4]].forEach(([x,y],i)=>box(x,y,1,1,26+(i%2)*10,mix(T.s1,T.muted,.12)));
+// park with trees
+[[-2,-9],[-1,-9],[-3,-8],[7,-7],[8,-6],[-8,-6],[-9,-5],[9,1],[3,8],[4,9],[-5,8],[-6,9],[1,-9],[-10,0],[9,-4]].forEach(([x,y])=>{if(land(x,y))tree(x,y)});
+items.sort((a,b)=>a.k-b.k).forEach(i=>i.draw());
+
+// ---------- agents ----------
+const agents=[
+  {id:'a1',name:'Token refresh fix',proj:'gentle-ai',state:'need',x:-1.4,y:-2.2,col:T.acc,
+   say:'One question: if the refresh request fails, should I retry once and sign the user out with a message?',
+   acts:[['Yes, retry once','primary'],['Answer differently'],['Open session']],
+   kv:[['Step','3 of 5 · building'],['Changed','1 file · +22 −6'],['Tests','42 passed'],['Cost','$0.42 · 14 min'],['Helpers','explorer, builder']]},
+  {id:'a2',name:'Release notes 4.5.1',proj:'gentle-ai',state:'work',x:-1.3,y:-5.3,to:[-1.3,-.6],col:T.acc,
+   say:'Checking the draft against the merged pull requests.',acts:[['Open session','primary'],['Stop']],
+   kv:[['Step','4 of 5 · checking'],['Cost','$0.18 · 6 min'],['Context','21%']]},
+  {id:'a3',name:'Sync conflict UI',proj:'engram',state:'work',x:1.4,y:-3.4,to:[3.9,-3.4],col:T.info,
+   say:'Reading how sync stores conflicts. Found 3 cases so far.',acts:[['Open session','primary'],['Stop']],
+   kv:[['Step','1 of 5 · exploring'],['Cost','$0.09 · 3 min']]},
+  {id:'a4',name:'Herdr status v2',proj:'gentle-pi',state:'done',x:1.3,y:5.4,col:T.accS,
+   say:'Done. 3 files changed and all tests pass. Want to see the changes?',acts:[['Review changes','primary'],['Save as commit']],
+   kv:[['Changed','3 files · +48 −2'],['Tests','18 passed'],['Cost','$0.31 · 11 min']]},
+  {id:'a5',name:'Hero copy',proj:'gentleman-landing',state:'work',x:-3.4,y:3.6,to:[-3.4,1.2],col:T.ok,
+   say:'Writing two options for the headline.',acts:[['Open session','primary'],['Stop']],kv:[['Step','3 of 5 · building'],['Cost','$0.05']]},
+];
+const alayer=document.createElementNS(NS,'g');world.appendChild(alayer);
+for(const a of agents){
+  a.g=el('g',{class:'agent',tabindex:0,role:'button','aria-label':`${a.name}, ${a.proj}: ${{need:'needs you',work:'working',done:'finished'}[a.state]}`},alayer);
+  el('ellipse',{class:'ring',cx:0,cy:0,rx:11,ry:5.5,fill:T.deep,opacity:.45,stroke:'transparent'},a.g);
+  el('rect',{x:-5,y:-20,width:10,height:16,rx:4,fill:a.col},a.g);
+  el('circle',{cx:0,cy:-25,r:5.5,fill:mix(T.text,T.warn,.25)},a.g);
+  if(a.state!=='work'){
+    const b=el('g',{class:'bubble'},a.g);
+    const c=a.state==='need'?T.warn:T.ok;
+    el('circle',{cx:0,cy:-46,r:10,fill:c},b);el('polygon',{points:'-4,-38 4,-38 0,-32',fill:c},b);
+    const t=el('text',{x:0,y:-42,'text-anchor':'middle','font-size':13,'font-weight':800,fill:T.bg,'font-family':'var(--font-sans)'},b);
+    t.textContent=a.state==='need'?'?':'✓';
+    if(a.state==='need')el('circle',{cx:0,cy:-46,r:16,fill:'none',stroke:T.warn,'stroke-opacity':.5},b);
+  }else{ // working: a small tool spark
+    a.spark=el('circle',{cx:8,cy:-14,r:2.5,fill:T.accS},a.g);
+  }
+  a.t=Math.random()*6;a.place=()=>{let x=a.x,y=a.y;if(a.to&&!reduce){const k=(Math.sin(a.t)+1)/2;x=a.x+(a.to[0]-a.x)*k;y=a.y+(a.to[1]-a.y)*k}
+    const [px,py]=P(x,y);a.g.setAttribute('transform',`translate(${px},${py})`);if(a.spark)a.spark.setAttribute('opacity',.4+.6*Math.abs(Math.sin(a.t*4)))};
+  a.place();
+  a.g.addEventListener('click',e=>{e.stopPropagation();select(a)});
+  a.g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();select(a)}});
+}
+if(!reduce){let last=performance.now();const tick=n=>{const dt=(n-last)/1000;last=n;for(const a of agents){a.t+=dt*.35;a.place()}requestAnimationFrame(tick)};requestAnimationFrame(tick)}
+
+// ---------- selection card: details only on demand ----------
+const $=id=>document.getElementById(id), card=$('card'), hint=$('hint');
+function select(a){
+  $('c-av').textContent='π';$('c-av').style.background=a.col;
+  $('c-name').textContent=a.name;
+  $('c-sub').textContent=`${a.proj} · ${{need:'needs you',work:'working',done:'finished'}[a.state]}`;
+  $('c-say').textContent=a.say;
+  $('c-acts').innerHTML='';a.acts.forEach(([l,k])=>{const b=document.createElement('button');b.className='btn'+(k?' '+k:'');b.textContent=l;$('c-acts').appendChild(b)});
+  $('c-kv').innerHTML=a.kv.map(([k,v])=>`<span>${k}</span><span>${v}</span>`).join('');$('c-more').open=false;
+  card.classList.add('open');hint.style.display='none';
+  focusOn(a.x,a.y);
+}
+function closeCard(){card.classList.remove('open');hint.style.display=''}
+$('c-x').onclick=closeCard;addEventListener('keydown',e=>{if(e.key==='Escape')closeCard()});
+svg.addEventListener('click',()=>{if(!moved)closeCard()});
+document.querySelectorAll('.bld').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();const p=projects.find(p=>p.id===b.dataset.id);
+  const n=agents.filter(a=>a.proj===p.id);
+  select({name:p.id,proj:`${p.commits} commits`,state:n.some(a=>a.state==='need')?'need':'work',col:p.col,
+    say:`${n.length} agent${n.length===1?'':'s'} here. The building grows as the project gets commits.`,
+    acts:[['+ New agent here','primary'],['Changes'],['Memory']],x:p.x+p.w/2,y:p.y+p.d/2,
+    kv:[['Commits',String(p.commits)],['Agents',String(n.length)],['Spent this week','$3.12']]})}));
+$('go-need').onclick=()=>select(agents[0]);
+
+// ---------- camera: drag + wheel zoom ----------
+let vb={x:-720,y:-470,w:1440,h:900},moved=false;
+const apply=()=>svg.setAttribute('viewBox',`${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+const fit=()=>{const r=innerWidth/innerHeight;vb.h=900;vb.w=900*r;vb.x=-vb.w/2;vb.y=-vb.h/2+20;apply()};
+function focusOn(x,y){const [px,py]=P(x,y);vb.x=px-vb.w/2;vb.y=py-vb.h/2+90;apply()}
+function zoom(f,cx=vb.x+vb.w/2,cy=vb.y+vb.h/2){const nw=Math.min(2600,Math.max(500,vb.w*f)),k=nw/vb.w;vb.x=cx-(cx-vb.x)*k;vb.y=cy-(cy-vb.y)*k;vb.w=nw;vb.h*=k;apply()}
+let down=null;
+svg.addEventListener('pointerdown',e=>{down={x:e.clientX,y:e.clientY,vx:vb.x,vy:vb.y};moved=false;svg.classList.add('drag')});
+addEventListener('pointermove',e=>{if(!down)return;const s=vb.w/innerWidth,dx=e.clientX-down.x,dy=e.clientY-down.y;if(Math.abs(dx)+Math.abs(dy)>4)moved=true;vb.x=down.vx-dx*s;vb.y=down.vy-dy*s;apply()});
+addEventListener('pointerup',()=>{down=null;svg.classList.remove('drag')});
+svg.addEventListener('wheel',e=>{e.preventDefault();const s=vb.w/innerWidth;zoom(e.deltaY>0?1.1:.9,vb.x+e.clientX*s,vb.y+e.clientY*(vb.h/innerHeight))},{passive:false});
+$('zi').onclick=()=>zoom(.85);$('zo').onclick=()=>zoom(1.15);$('zc').onclick=fit;
+addEventListener('resize',fit);fit();
+if(location.hash==='#select')select(agents[0]);
+</script>
+</body>
+</html>

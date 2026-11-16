@@ -43,7 +43,7 @@ function isPiSubcommand(token        )                        {
 // untouched as commandArgs — T2 owns interpreting `home link|isolated|<path>`.
 // `self-uninstall` is not `uninstall`, which stays pi's own alias for `remove`.
 export function parseLauncherArgs(argv          )                     {
-	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall" || argv[0] === "memory") {
+	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall" || argv[0] === "memory" || argv[0] === "tower") {
 		return {
 			link: false,
 			isolated: false,
@@ -177,6 +177,38 @@ export function parseLauncherArgs(argv          )                     {
 	}
 
 	return { link, isolated, home, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, error };
+}
+
+// --- tower ------------------------------------------------------------------
+
+
+
+
+
+
+
+// `gentle-shell tower [--no-open] [--port <n>]`: the server always binds
+// 127.0.0.1; --port only fixes which local port.
+export function parseTowerArgs(args          )            {
+	let open = true;
+	let port                    ;
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		if (arg === "--no-open") {
+			open = false;
+			continue;
+		}
+		if (arg === "--port" || arg.startsWith("--port=")) {
+			const value = arg === "--port" ? args[(i += 1)] : arg.slice("--port=".length);
+			if (value === undefined) return { open, error: "--port needs a whole number from 1 to 65535" };
+			const n = /^\d+$/.test(value) ? Number(value) : NaN;
+			if (!(n >= 1 && n <= 65535)) return { open, error: `--port needs a whole number from 1 to 65535 (got "${value}")` };
+			port = n;
+			continue;
+		}
+		return { open, error: `unknown tower argument "${arg}"` };
+	}
+	return port === undefined ? { open } : { open, port };
 }
 
 // --- home resolution -------------------------------------------------------
@@ -1340,6 +1372,7 @@ export function helpText()         {
 		"       gentle-shell upgrade --rollback",
 		"       gentle-shell memory migrate --confirm-quiescent",
 		"       gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]",
+		"       gentle-shell tower [--no-open] [--port <n>]",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",
@@ -1383,6 +1416,9 @@ export function helpText()         {
 		"                   ~/.pi/gentle-ai configuration is kept unless",
 		"                   you accept or pass --include-shared; --dry-run only shows the plan.",
 		"                   Never touches your pi home or custom --home homes.",
+		"  tower            Open the Gentle Tower outside any session: every open Gentle Shell session",
+		"                   as a floor, in your browser. Prints the local URL and serves until Ctrl+C.",
+		"                   --no-open only prints the URL; --port <n> fixes the port (127.0.0.1 only).",
 		"",
 		"Managing packages:",
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",

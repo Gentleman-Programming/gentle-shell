@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gentle Shell — The club is the harness</title>
+<style>
+:root{
+  --text:#f6eff3;--text-muted:#a78e9b;--text-faint:#76616b;
+  --accent:#f095c8;--accent-strong:#ff76c3;--accent-soft:#ffb1dd;--success:#b4e7c7;--warning:#e0c27a;--info:#a9c7ee;
+  --brand-violet:#9146ff;--teal:#5ee6e6;
+  --font-mono:"IosevkaTerm NF","Iosevka Term","JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  --font-sans:Inter,"SF Pro Text",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark}
+body{background:#0c0714;color:var(--text);font:14px/1.5 var(--font-mono);height:100vh;overflow:hidden;display:grid;place-items:center}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.stage{position:relative}
+canvas{display:block;image-rendering:pixelated}
+.stage::after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(180deg,#00000018 0 2px,transparent 2px 4px),radial-gradient(ellipse at center,transparent 62%,#00000080 100%)}
+.px{background:#0c0714e8;border:2px solid #4a2a5e;box-shadow:inset 0 0 0 2px #0c0714,0 0 0 2px #00000080}
+.plan{position:absolute;top:14px;left:14px;padding:7px 11px;display:grid;gap:4px;z-index:2}
+.lab{font-size:11.5px;color:var(--text-muted);letter-spacing:.12em}
+.pips{display:flex;gap:3px}.pips i{width:11px;height:15px;background:#2a1640;border:1px solid #4a2a5e}
+.pips i.on{background:var(--teal);border-color:#9ff5f5;box-shadow:0 0 6px #5ee6e680}
+.val{font-size:12.5px}
+.legend{position:absolute;top:14px;left:50%;transform:translateX(-50%);display:flex;gap:4px;padding:5px;z-index:2}
+.legend button{display:flex;align-items:center;gap:6px;padding:3px 9px;font-size:12.5px;color:var(--text-muted)}
+.legend button[aria-pressed="true"]{color:var(--text);background:#ffffff0d}
+.legend i{width:9px;height:9px;display:inline-block}
+.pause{position:absolute;top:14px;right:14px;padding:7px 13px;font-weight:700;letter-spacing:.12em;z-index:2}
+.pause[aria-pressed="true"]{color:var(--warning);border-color:var(--warning)}
+.crew{position:absolute;left:14px;top:100px;display:grid;gap:5px;z-index:2}
+.mate{display:grid;grid-template-columns:12px 1fr auto;align-items:center;gap:8px;padding:4px 10px 4px 6px;font-size:12px;color:var(--text-muted);width:210px;text-align:left}
+.mate small{grid-column:2;color:var(--text-faint);font-size:11px;margin-top:-3px}
+.mate:hover,.mate[aria-pressed="true"]{color:var(--text);border-color:var(--accent)}
+.mate .sw{width:12px;height:16px;border:1px solid #000;grid-row:span 2}
+.mate .st{font-weight:800;grid-row:span 2}
+.st.need{color:var(--warning)}.st.done{color:var(--success)}.st.work{color:var(--teal)}
+.tip{position:absolute;pointer-events:none;padding:4px 8px;font-size:12.5px;white-space:nowrap;transform:translate(-50%,-135%);z-index:3;display:none}
+.sel{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:none;align-items:center;gap:16px;padding:10px 14px;z-index:2;max-width:calc(100% - 28px)}
+.sel.open{display:flex}.sel .nm{font-weight:700}.sel .meta{color:var(--text-muted);font-size:12.5px}
+.btn{padding:5px 12px;border:2px solid #4a2a5e;background:#1a0f26;font-weight:700;font-size:13px;white-space:nowrap}
+.btn:hover{border-color:var(--accent);color:var(--accent-soft)}
+.btn.primary{background:var(--accent);color:#1a0f26;border-color:var(--accent-soft)}
+.event{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(560px,calc(100% - 48px));padding:18px 20px;z-index:4;display:none}
+.event.open{display:block}
+.event .from{color:var(--warning);font-weight:700;font-size:13px;letter-spacing:.08em}
+.event p{margin:10px 0 12px;font-size:15px;line-height:1.6}
+.event ol{list-style:none;display:grid;gap:2px}
+.event ol button{width:100%;text-align:left;padding:4px 6px;color:var(--teal);font-size:14.5px}
+.event ol button:hover,.event ol button:focus-visible{color:var(--accent-strong);background:#ffffff08;outline:none}
+.event .n{color:var(--text-faint);margin-right:8px}.event .rec{color:var(--text-muted);font-size:12px;margin-left:8px}
+.event .ans{margin-top:10px;padding-top:10px;border-top:1px dashed #4a2a5e;color:var(--accent-soft);display:none}.event .ans.show{display:block}
+.dim{position:absolute;inset:0;background:#0c071480;z-index:3;display:none}.dim.open{display:block}
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+  <canvas id="c" width="384" height="216" aria-label="The Gentleman Club in cutaway. Each room is a part of Gentle Shell; each agent stands in the room of what it is doing."></canvas>
+  <div class="plan px" aria-label="Plan: 64% left this week"><span class="lab">PLAN</span><span class="pips" id="plan"></span><span class="val">64% left · resets Monday</span></div>
+  <div class="legend px" role="group" aria-label="Projects (shirt colour)" id="legend"></div>
+  <button class="pause px" id="pause" aria-pressed="false" title="Pause every agent (Space)">❚❚ PAUSE ALL</button>
+  <nav class="crew" id="crew" aria-label="Your agents"></nav>
+  <div class="tip px" id="tip"></div>
+  <div class="sel px" id="sel" aria-live="polite"></div>
+  <div class="dim" id="dim"></div>
+  <section class="event px" id="event" role="dialog" aria-modal="true" aria-labelledby="ev-from"><div class="from" id="ev-from"></div><p id="ev-text"></p><ol id="ev-ch"></ol><div class="ans" id="ev-ans" aria-live="polite"></div></section>
+</div>
+<script>
+const W=384,H=216,cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const C={neon:'#ff76c3',acc:'#f095c8',accS:'#ffb1dd',ok:'#b4e7c7',warn:'#e0c27a',info:'#a9c7ee',vio:'#9146ff',teal:'#5ee6e6',red:'#ff718f',
+  ink:'#0c0714',hull:'#1a0f26',hull2:'#2a1640',edge:'#4a2a5e',metal:'#6a5a7e',skin:'#e8b89a',skinD:'#c8957a',hair:'#2a1b27'};
+const BY=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]].map(r=>r.map(v=>(v+.5)/16));
+const hx=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16));
+const mix=(a,b,t)=>'#'+hx(a).map((v,i)=>Math.round(v+(hx(b)[i]-v)*t).toString(16).padStart(2,'0')).join('');
+const rnd=s=>{const v=Math.sin(s*12.9898)*43758.5453;return v-Math.floor(v)};
+const px=(g,x,y,c)=>{g.fillStyle=c;g.fillRect(x|0,y|0,1,1)},rect=(g,x,y,w,h,c)=>{g.fillStyle=c;g.fillRect(x|0,y|0,w|0,h|0)};
+function dgrad(g,x0,y0,x1,y1,pal){for(let y=y0;y<y1;y++){const t=(y-y0)/Math.max(1,y1-y0)*(pal.length-1),i=Math.min(pal.length-2,t|0),f=t-i;for(let x=x0;x<x1;x++)px(g,x,y,f>BY[y&3][x&3]?pal[i+1]:pal[i])}}
+// shaded box: light top-left edges, dark bottom-right edges
+function box(g,x,y,w,h,c){rect(g,x,y,w,h,c);rect(g,x,y,w,1,mix(c,'#ffffff',.22));rect(g,x,y,1,h,mix(c,'#ffffff',.1));rect(g,x,y+h-1,w,1,mix(c,'#000000',.35));rect(g,x+w-1,y,1,h,mix(c,'#000000',.25))}
+function glow(g,cx,cy,rx,ry,c,s=1){g.save();g.globalAlpha=.5;for(let y=cy-ry;y<cy+ry;y++)for(let x=cx-rx;x<cx+rx;x++){const d=Math.hypot((x-cx)/rx,(y-cy)/ry);if(d<1&&(1-d)*(1-d)*s>BY[(y|0)&3][(x|0)&3])px(g,x,y,c)}g.restore()}
+// sprites drawn once, with an automatic 1px dark outline
+function sprite(w,h,fn,outline=C.ink){const c=document.createElement('canvas');c.width=w+2;c.height=h+2;const g=c.getContext('2d');g.translate(1,1);fn(g);
+  const d=g.getImageData(0,0,w+2,h+2),a=(x,y)=>x>=0&&y>=0&&x<w+2&&y<h+2&&d.data[(y*(w+2)+x)*4+3]>0,out=[];
+  for(let y=0;y<h+2;y++)for(let x=0;x<w+2;x++)if(!a(x,y)&&(a(x-1,y)||a(x+1,y)||a(x,y-1)||a(x,y+1)))out.push([x,y]);
+  g.setTransform(1,0,0,1,0,0);g.fillStyle=outline;out.forEach(([x,y])=>g.fillRect(x,y,1,1));return c}
+const F={A:['010','101','111','101','101'],B:['110','101','110','101','110'],E:['111','100','110','100','111'],G:['011','100','101','101','011'],H:['101','101','111','101','101'],I:['111','010','010','010','111'],
+  K:['101','110','100','110','101'],L:['100','100','100','100','111'],M:['10001','11011','10101','10001','10001'],N:['1001','1101','1011','1001','1001'],O:['010','101','101','101','010'],P:['110','101','110','100','100'],
+  R:['110','101','110','101','101'],S:['011','100','010','001','110'],T:['111','010','010','010','010'],U:['101','101','101','101','111'],V:['101','101','101','101','010'],W:['10001','10001','10101','11011','10001'],' ':['00','00','00','00','00'],'0':['111','101','101','101','111'],'1':['010','110','010','010','111'],'2':['111','001','111','100','111'],'3':['111','001','111','001','111'],'4':['101','101','111','001','001'],'5':['111','100','111','001','111'],'6':['111','100','111','101','111'],'7':['111','001','001','001','001'],'8':['111','101','111','101','111'],'9':['111','101','111','001','111'],'$':['011','110','010','011','110'],'.':['0','0','0','0','1'],'k':['100','101','110','101','101']};
+function plain(g,s,x,y,c){let cx=x;for(const ch of s){const f=F[ch];f.forEach((r,j)=>[...r].forEach((b,i)=>{if(b==='1')rect(g,cx+i,y+j,1,1,c)}));cx+=f[0].length+1}}
+function word(g,s,x,y,c,lit=1){let cx=x;g.save();for(const ch of s){const f=F[ch];f.forEach((r,j)=>[...r].forEach((b,i)=>{if(b==='1'){if(lit){g.globalAlpha=.25;rect(g,cx+i-1,y+j-1,3,3,c);g.globalAlpha=1}rect(g,cx+i,y+j,1,1,lit?c:mix(c,'#000',.55))}}));cx+=f[0].length+1}g.restore();return cx}
+const MUST=['..#.........#..','.#.##.....##.#.','.#..#######..#.','..##.......##..'];
+
+// ---------- layout ----------
+const HULL={x:22,y:34,w:340,h:164};
+const F1={y:42,h:72},F2={y:120,h:72};
+const rooms=[
+  {id:'map',sign:'MAP',x:26,y:F1.y,w:78,h:F1.h,col:C.teal,tint:'#132036',role:'Explorer',tier:1,what:'Exploring and planning'},
+  {id:'workshop',sign:'WORKSHOP',x:108,y:F1.y,w:104,h:F1.h,col:C.neon,tint:'#2a1530',role:'Builder',tier:3,what:'Building'},
+  {id:'lab',sign:'LAB',x:216,y:F1.y,w:68,h:F1.h,col:C.ok,tint:'#13281f',role:'Verifier',tier:2,what:'Checking with tests'},
+  {id:'review',sign:'REVIEW',x:288,y:F1.y,w:70,h:F1.h,col:C.warn,tint:'#221a14',role:'Reviewers',tier:3,what:'Review',dim:1},
+  {id:'engine',sign:'GENTLE AI',x:26,y:F2.y,w:112,h:F2.h,col:C.neon,tint:'#24112a',what:'Engine room'},
+  {id:'library',sign:'ENGRAM',x:142,y:F2.y,w:118,h:F2.h,col:C.vio,tint:'#1a1438',what:'Memory'},
+  {id:'lounge',sign:'LOUNGE',x:264,y:F2.y,w:94,h:F2.h,col:C.accS,tint:'#2a1626',what:'Lounge'},
+];
+const R=id=>rooms.find(r=>r.id===id);
+const TIER=['','fast · Haiku 5.5','balanced · Sonnet 5.5','strongest · Opus 5.5'];
+const PROJ={'gentle-ai':C.acc,'engram':C.vio,'gentle-pi':C.teal,'landing':C.warn};
+
+// ---------- static scene ----------
+const bg=document.createElement('canvas');bg.width=W;bg.height=H;const g=bg.getContext('2d');
+// sky, stars, striped sun, neon grid
+dgrad(g,0,0,W,H,['#0a0612','#170c30','#2e1158','#5a1872','#8e2480','#c83a7e','#f2708e']);
+for(let i=0;i<90;i++){const x=rnd(i)*W|0,y=rnd(i+40)*110|0;px(g,x,y,rnd(i+7)>.75?C.teal:'#ffffffa0')}
+for(let y=150;y<205;y++)for(let x=330;x<384;x++){const d=Math.hypot(x-366,y-188);if(d>30)continue;if(y>172&&(y%4)<Math.min(3,(y-172)/5))continue;px(g,x,y,y<166?'#ffe08a':y<180?'#ff9e8a':'#ff6fa8')}
+g.save();g.globalAlpha=.55;for(let i=0;i<5;i++)rect(g,0,200+i*i*.9,W,1,i%2?C.teal:C.neon);for(let i=-14;i<=14;i++)for(let y=200;y<H;y++){const k=(y-200)/16;px(g,192+i*15+i*15*k*2.4,y,C.teal)}g.restore();
+// hull shell with rivets and a neon trim
+box(g,HULL.x-4,HULL.y-4,HULL.w+8,HULL.h+8,'#24163a');rect(g,HULL.x,HULL.y,HULL.w,HULL.h,C.ink);
+for(let x=HULL.x;x<HULL.x+HULL.w;x+=8){px(g,x,HULL.y-2,C.metal);px(g,x,HULL.y+HULL.h+1,C.metal)}
+g.save();g.globalAlpha=.35;rect(g,HULL.x-5,HULL.y-5,HULL.w+10,1,C.neon);rect(g,HULL.x-5,HULL.y+HULL.h+4,HULL.w+10,1,C.neon);g.restore();
+// roof: the mustache sign and an antenna
+box(g,160,18,64,14,'#24163a');rect(g,162,20,60,10,C.ink);
+g.save();g.globalAlpha=.3;MUST.forEach((r,j)=>[...r].forEach((b,i)=>{if(b==='#')rect(g,169+i*2-1,21+j*2-1,4,4,C.neon)}));g.restore();
+MUST.forEach((r,j)=>[...r].forEach((b,i)=>{if(b==='#')rect(g,169+i*2,21+j*2,2,2,C.neon)}));
+rect(g,300,12,1,22,C.metal);px(g,300,11,C.red);glow(g,300,11,5,5,C.red,.9);
+// rooms: back wall with panels, floor, ceiling light
+for(const r of rooms){
+  dgrad(g,r.x,r.y,r.x+r.w,r.y+r.h-6,[mix(r.tint,'#000',.45),r.tint,mix(r.tint,'#000',.15)]);
+  for(let x=r.x+12;x<r.x+r.w;x+=14)rect(g,x,r.y+8,1,r.h-14,mix(r.tint,'#000',.35));
+  rect(g,r.x,r.y+r.h-26,r.w,1,mix(r.tint,'#fff',.08));
+  box(g,r.x,r.y+r.h-6,r.w,6,mix(r.tint,'#3a2a4a',.6));for(let x=r.x+3;x<r.x+r.w;x+=6)rect(g,x,r.y+r.h-5,1,4,mix(r.tint,'#000',.4));
+  rect(g,r.x,r.y,r.w,3,'#24163a');
+  if(!r.dim){rect(g,r.x+r.w/2-5,r.y+3,10,1,'#fff6e0');glow(g,r.x+r.w/2,r.y+16,r.w*.45,22,mix(r.col,'#fff',.5),.55)}
+  word(g,r.sign,r.x+5,r.y+7,r.col,!r.dim);
+}
+// walls between rooms with doors, the floor slab, conduits from the engine room
+for(const x of [104,212,284])rect(g,x,F1.y,4,F1.h,'#24163a');for(const x of [138,260])rect(g,x,F2.y,4,F2.h,'#24163a');
+box(g,HULL.x,F1.y+F1.h,HULL.w,6,'#24163a');
+for(const [x,y] of [[104,F1.y+F1.h-26],[212,F1.y+F1.h-26],[284,F1.y+F1.h-26],[138,F2.y+F2.h-26],[260,F2.y+F2.h-26]]){rect(g,x,y,4,20,mix(C.ink,'#24163a',.4));rect(g,x+1,y,2,1,C.metal)}
+const pipe=(x0,y0,x1,y1)=>{for(let x=Math.min(x0,x1);x<=Math.max(x0,x1);x++){px(g,x,y0,'#4a3a5e');px(g,x,y0+1,'#2a2040')}for(let y=Math.min(y0,y1);y<=Math.max(y0,y1);y++){px(g,x1,y,'#4a3a5e');px(g,x1+1,y,'#2a2040')}};
+pipe(70,F2.y+1,70,F1.y+F1.h+2);pipe(70,F1.y+F1.h+3,350,F1.y+F1.h+3);
+for(let x=78;x<350;x+=22){rect(g,x,F1.y+F1.h+2,2,4,C.neon);glow(g,x+1,F1.y+F1.h+4,4,3,C.neon,.7)}
+
+// MAP: corkboard with notes and string, drafting table with a blueprint
+box(g,32,58,44,30,'#7a5236');for(let y=59;y<87;y++)for(let x=33;x<75;x++)if(rnd(x*y)>.7)px(g,x,y,'#8e6444');
+[[36,62,C.accS],[50,60,'#f6eff3'],[62,64,C.teal],[40,74,'#f6eff3'],[56,76,C.warn],[66,74,'#f6eff3']].forEach(([x,y,c])=>{box(g,x,y,7,6,c);px(g,x+3,y,C.red)});
+g.save();g.strokeStyle=C.red;g.globalAlpha=.8;g.lineWidth=1;g.beginPath();[[40,62],[53,60],[65,64],[59,76],[43,74],[40,62]].forEach(([x,y],i)=>i?g.lineTo(x+.5,y+.5):g.moveTo(x+.5,y+.5));g.stroke();g.restore();
+box(g,78,96,22,3,'#4a3a5e');rect(g,80,99,2,9,'#2a2040');rect(g,96,99,2,9,'#2a2040');box(g,79,91,20,5,'#3a6ab0');for(let i=0;i<4;i++)rect(g,81+i*4,92,2,1,'#a9c7ee');
+rect(g,94,78,1,13,C.metal);rect(g,92,77,5,2,C.metal);glow(g,94,86,10,8,'#fff6e0',.6);
+// WORKSHOP: pegboard with tools, two benches with screens, crates
+box(g,114,56,40,24,'#3a2a3e');for(let y=58;y<78;y+=3)for(let x=116;x<152;x+=3)px(g,x,y,'#24182a');
+rect(g,118,60,2,12,C.metal);rect(g,116,60,6,3,C.metal);rect(g,126,60,2,14,'#8e6444');rect(g,124,60,6,4,C.metal);rect(g,134,62,8,2,C.metal);rect(g,136,64,2,8,C.metal);rect(g,146,60,2,13,C.warn);
+const bench=(x,w)=>{box(g,x,96,w,4,'#5a3a4a');rect(g,x+2,100,2,8,'#2a2040');rect(g,x+w-4,100,2,8,'#2a2040')};
+bench(118,30);bench(160,34);
+box(g,124,82,16,13,'#2a2040');rect(g,126,84,12,9,'#000');box(g,168,82,16,13,'#2a2040');rect(g,170,84,12,9,'#000');
+box(g,196,100,12,8,'#6a4a36');rect(g,196,103,12,1,'#4a3226');
+// LAB: test tubes, beakers, the red-amber-green tower
+bench(220,40);for(let i=0;i<6;i++){const x=224+i*5,c=i<2?C.red:C.ok;rect(g,x,88,3,8,'#cfe8f0');rect(g,x,92,3,4,c);glow(g,x+1,93,4,4,c,.6)}
+box(g,252,86,8,10,'#cfe8f0');rect(g,253,90,6,5,C.ok);
+rect(g,272,62,6,34,'#2a2040');box(g,271,60,8,8,'#3a2a2a');box(g,271,68,8,8,'#3a3420');box(g,271,76,8,8,'#204030');
+// REVIEW: four lens podiums, dim until a high-risk change
+[[C.red,'R'],[C.warn,'S'],[C.teal,'D'],[C.ok,'L']].forEach(([c],i)=>{const x=294+i*16;box(g,x,92,12,16,mix('#3a2a2a',c,.12));rect(g,x+3,86,6,6,mix(c,'#000',.55));rect(g,x+4,87,4,4,mix(c,'#000',.35))});
+// ENGINE (Gentle AI): the rose reactor, conduits, integrations panel, profile lever
+const rx=50,ry=134;box(g,rx-4,ry-4,32,6,C.metal);box(g,rx-4,ry+44,32,8,C.metal);
+for(let y=ry+2;y<ry+44;y++)for(let x=rx;x<rx+24;x++){const e=Math.abs(x-rx-12)/12;px(g,x,y,e>.85?'#3a2a4a':BY[y&3][x&3]<.55-.45*e?mix(C.neon,'#2a0f2a',.55):'#1a0a20')}
+glow(g,rx+12,ry+22,26,30,C.neon,.85);
+const ROSE=['..###..','.##.##.','##.#.##','#.###.#','.#####.','..###..','...#...','..##...','...#.#.','...##..','...#...'];
+ROSE.forEach((r,j)=>[...r].forEach((b,i)=>{if(b==='#'){rect(g,rx+5+i*2,ry+6+j*3,2,3,j<6?C.neon:'#4f9a7a')}}));
+rect(g,rx+1,ry+2,1,42,'#ffffff40');
+box(g,86,138,30,26,'#2a2040');[[C.ok,1],[C.ok,1],[C.teal,1],[C.ok,1],[C.warn,1],[C.ok,1]].forEach(([c],i)=>{const x=90+(i%3)*8,y=142+(i/3|0)*8;rect(g,x,y,5,4,'#000');rect(g,x+1,y+1,3,2,c)});
+rect(g,90,158,22,2,'#000');rect(g,90,158,14,2,C.teal);
+box(g,122,150,8,20,'#3a2a4a');rect(g,125,140,2,11,C.metal);box(g,123,137,6,4,C.neon);
+// LIBRARY (Engram): tall shelves, ladder, card catalogue, reading desk with lamp
+for(let s=0;s<2;s++){const x=150+s*42;box(g,x,130,36,56,'#3a2a3e');for(let y=0;y<4;y++){rect(g,x+2,142+y*12,32,2,'#24182a');
+  for(let bx=x+3;bx<x+33;bx+=2+(rnd(bx+y*s)*2|0)){const h=7+(rnd(bx*3+y+s)*4|0);rect(g,bx,142+y*12-h,2,h,[C.vio,C.info,C.accS,C.ok,C.teal,'#6a4a9a'][(rnd(bx+y*7+s)*6)|0])}}}
+for(let y=130;y<186;y+=1){px(g,188,y,'#8e6444');px(g,192,y,'#8e6444');if(y%5===0)rect(g,188,y,5,1,'#8e6444')}
+box(g,234,166,22,20,'#5a3a4a');for(let i=0;i<3;i++)rect(g,236,169+i*6,18,1,'#3a2230');
+box(g,230,162,30,4,'#6a4a3a');rect(g,252,152,1,10,C.metal);rect(g,249,150,7,3,C.warn);glow(g,252,160,14,10,C.warn,.8);
+// LOUNGE: window to the dusk, bar with backlit bottles, stools, jukebox, the marble bust
+box(g,296,128,40,26,'#24163a');dgrad(g,298,130,334,152,['#2e1158','#8e2480','#ff6fa8','#ff9e8a']);
+for(let y=142;y<152;y++)for(let x=306;x<326;x++){const d=Math.hypot(x-316,y-152);if(d<9&&!(y>146&&(y%3)===0))px(g,x,y,'#ffd08a')}
+rect(g,315,130,2,22,'#24163a');
+box(g,272,158,58,3,'#7a5a4a');box(g,272,161,58,25,'#3a2230');rect(g,272,161,58,1,C.warn);
+[[278,C.ok],[284,C.warn],[290,C.info],[310,C.accS],[318,C.teal]].forEach(([x,c])=>{rect(g,x,150,3,8,c);rect(g,x+1,147,1,3,c);glow(g,x+1,154,4,5,c,.5)});
+for(const x of [282,300,318]){box(g,x,176,8,2,'#5a3a4a');rect(g,x+3,178,2,8,'#2a2040')}
+box(g,264,152,8,30,'#5a2a4a');for(let y=156;y<168;y+=3)rect(g,265,y,6,1,C.accS);glow(g,268,162,8,14,C.neon,.6);
+box(g,342,170,12,16,'#d9d2e6');rect(g,343,162,10,8,'#d9d2e6');rect(g,344,152,8,10,'#eee8f6');rect(g,343,149,10,4,'#d9d2e6');rect(g,345,159,6,1,C.neon);px(g,344,158,C.neon);px(g,351,158,C.neon);glow(g,348,159,6,3,C.neon,.7);
+// the entrance: a door in the hull and a stoop outside
+rect(g,356,160,6,26,C.ink);box(g,355,158,8,2,C.metal);rect(g,357,162,4,24,'#2a1640');px(g,360,174,C.warn);
+box(g,362,186,22,4,'#4a3a5e');box(g,362,190,22,8,'#2a2040');
+// the electricity meter: what this session costs
+box(g,90,125,30,12,'#d9d2e6');rect(g,91,126,28,10,'#efeaf6');rect(g,90,137,30,1,C.ink);
+// review power switch
+box(g,290,66,4,12,'#3a2a2a');
+// faint baked grain
+g.save();g.globalAlpha=.03;for(let i=0;i<3000;i++)px(g,rnd(i*1.7)*W,rnd(i*3.1)*H,rnd(i)>.5?'#fff':C.teal);g.restore();
+
+// ---------- sprites ----------
+function personSprite(shirt,frame,kind){return sprite(11,22,g=>{
+  const sd=mix(shirt,'#000',.32),sl=mix(shirt,'#fff',.28),pants='#2a2040',pd='#1a1430';
+  rect(g,2,0,6,1,C.hair);rect(g,1,1,8,2,C.hair);rect(g,2,3,6,4,C.skin);rect(g,7,3,1,4,C.skinD);rect(g,1,3,1,2,C.hair);
+  rect(g,6,2,2,1,C.hair);px(g,6,4,C.ink);
+  rect(g,3,6,5,1,'#1a0f14');px(g,2,5,'#1a0f14');px(g,8,5,'#1a0f14');rect(g,4,7,3,1,C.skin);
+  rect(g,1,8,9,7,shirt);rect(g,8,8,2,7,sd);rect(g,2,8,6,1,sl);px(g,5,9,sl);
+  rect(g,0,9,1,5,sd);px(g,0,14,C.skin);
+  if(frame){rect(g,10,8,1,4,sd);px(g,10,7,C.skin)}else{rect(g,10,9,1,5,sd);px(g,10,14,C.skin)}
+  rect(g,2,15,3,5,pants);rect(g,6,15,3,5,pants);rect(g,4,15,1,5,pd);rect(g,8,15,1,5,pd);
+  rect(g,1,20,4,2,C.ink);rect(g,6,20,4,2,C.ink);
+  if(kind==='builder'){rect(g,1,0,9,2,C.warn);rect(g,0,2,11,1,mix(C.warn,'#000',.3))}
+  if(kind==='explorer'){rect(g,1,0,8,2,C.teal);px(g,9,3,'#cfe8f0');px(g,10,4,'#cfe8f0')}
+})}
+const ELE=sprite(24,18,g=>{ // Engram's elephant, the librarian
+  const v=C.vio,vl=mix(C.vio,'#fff',.3),vd=mix(C.vio,'#000',.35);
+  for(let y=0;y<14;y++)for(let x=0;x<16;x++){const d=Math.hypot((x-8)/8,(y-8)/6);if(d<1)px(g,x,y+2,y<5?vl:d>.8?vd:v)}
+  for(let y=0;y<12;y++)for(let x=0;x<11;x++){const d=Math.hypot((x-5)/5.5,(y-5.5)/5.5);if(d<1)px(g,x+12,y,y<3?vl:v)}
+  for(let y=0;y<9;y++)for(let x=0;x<6;x++){const d=Math.hypot((x-3)/3,(y-4.5)/4.5);if(d<1)px(g,x+11,y+2,d<.6?C.teal:mix(C.teal,'#000',.3))}
+  rect(g,21,7,2,4,v);rect(g,22,11,2,3,v);rect(g,21,13,2,2,v);px(g,20,10,'#f6eff3');px(g,17,4,C.ink);
+  rect(g,16,3,4,2,'#2a2040');rect(g,18,4,3,1,'#cfe8f0'); // reading glasses
+  rect(g,3,14,3,4,vd);rect(g,10,14,3,4,vd)});
+const BOUNCER=sprite(13,25,g=>{const s='#15111c',sl='#2c2638';
+  rect(g,3,0,7,2,C.hair);rect(g,2,2,9,5,C.skin);rect(g,10,2,1,5,C.skinD);rect(g,3,3,7,2,'#0c0714');px(g,8,3,C.teal);
+  rect(g,4,6,5,1,'#1a0f14');px(g,3,5,'#1a0f14');px(g,9,5,'#1a0f14');px(g,1,3,'#cfe8f0');
+  rect(g,0,8,13,9,s);rect(g,1,8,11,1,sl);rect(g,5,8,3,4,'#f6eff3');px(g,6,8,C.neon);rect(g,1,11,11,3,sl);
+  rect(g,2,17,4,6,'#0f0c14');rect(g,7,17,4,6,'#0f0c14');rect(g,1,23,5,2,C.ink);rect(g,7,23,5,2,C.ink)});
+const bubble=(st)=>sprite(11,11,g=>{const c=st==='need'?C.warn:C.ok;rect(g,1,0,9,1,c);rect(g,0,1,11,7,c);rect(g,1,8,9,1,c);rect(g,4,9,3,1,c);px(g,5,10,c);
+  (st==='need'?['.###.','...#.','..##.','.....','..#..']:['....#','...#.','#.#..','.#...','.....']).forEach((r,j)=>[...r].forEach((b,i)=>{if(b==='#')px(g,3+i,2+j,C.ink)}))});
+const BUB={need:bubble('need'),done:bubble('done')};
+
+// ---------- agents (shirt = project, room = what they are doing) ----------
+const agents=[
+  {id:'a',name:'Token refresh fix',proj:'gentle-ai',room:'workshop',x:150,state:'need',phase:'building',effort:'high'},
+  {id:'b',name:'Release notes 4.5.1',proj:'gentle-ai',room:'lab',x:244,state:'work',phase:'checking'},
+  {id:'c',name:'Sync conflict UI',proj:'engram',room:'map',x:64,state:'work',phase:'exploring'},
+  {id:'d',name:'Herdr status v2',proj:'gentle-pi',room:'lounge',x:296,state:'done',phase:'finished'},
+  {id:'e',name:'Hero copy',proj:'landing',room:'workshop',x:192,state:'work',phase:'building'},
+];
+const helpers=[{name:'builder helper',of:'a',kind:'builder',room:'workshop',x:134},{name:'explorer helper',of:'c',kind:'explorer',room:'map',x:84}];
+const floorY=r=>R(r).y+R(r).h-6;
+for(const a of [...agents,...helpers]){const col=a.proj?PROJ[a.proj]:PROJ[agents.find(x=>x.id===a.of).proj];a.col=col;a.spr=[personSprite(col,0,a.kind),personSprite(col,1,a.kind)];a.fy=floorY(a.room)}
+
+// ---------- UI ----------
+let paused=false,selected=null,hover=null,t=0,filter=null,mode='normal',review=true,persona=true;
+const MODES={normal:'Normal: the bouncer asks you before anything risky.',auto:'Auto: routine work goes in; anything destructive still waits for you.',yolo:'YOLO: no questions for ordinary work. The bouncer is on a break.','super-yolo':'Super YOLO: no permission questions at all. Private files and secrets stay locked.'};
+const $=id=>document.getElementById(id);
+$('plan').innerHTML=Array.from({length:10},(_,i)=>`<i class="${i<6.4?'on':''}"></i>`).join('');
+$('legend').innerHTML=`<button aria-pressed="true" data-p="">All projects</button>`+Object.entries(PROJ).map(([p,c])=>`<button aria-pressed="false" data-p="${p}"><i style="background:${c}"></i>${p}</button>`).join('');
+$('legend').onclick=e=>{const b=e.target.closest('button');if(!b)return;filter=b.dataset.p||null;[...$('legend').children].forEach(x=>x.setAttribute('aria-pressed',x===b));renderCrew();draw()};
+const STL={need:'needs you',done:'finished',work:'working'},GL={need:'?',done:'✓',work:'…'};
+function renderCrew(){$('crew').innerHTML='';for(const a of agents){if(filter&&a.proj!==filter)continue;const b=document.createElement('button');b.className='mate px';b.setAttribute('aria-pressed',selected===a);
+  b.innerHTML=`<span class="sw" style="background:${a.col}"></span><span>${a.name}</span><span class="st ${a.state}">${GL[a.state]}</span><small>${a.proj} · ${a.state==='need'?'waiting for you':a.phase}</small>`;
+  b.onclick=()=>choose(a);$('crew').appendChild(b)}}
+function strip(html){const s=$('sel');s.innerHTML=html;s.classList.add('open')}
+function select(a){selected=a;renderCrew();if(!a){$('sel').classList.remove('open');draw();return}
+  strip(`<div><div class="nm">${a.name}</div><div class="meta">${a.proj} · ${STL[a.state]} · in the ${a.room} (${a.phase}) · ${{a:'$0.42 · context 38%',b:'$0.18 · context 21%',c:'$0.09 · context 12%',d:'$0.31 · done',e:'$0.05 · context 9%'}[a.id]}</div></div><button class="btn primary">Open session</button>${a.state==='work'?'<button class="btn">Stop</button>':''}${a.state==='done'?'<button class="btn">Review changes</button>':''}`);draw()}
+function choose(a){a.state==='need'?openEvent(a):select(a)}
+function roomInfo(r){selected=null;renderCrew();const n=agents.filter(a=>a.room===r.id).length;
+  const info={
+    map:`Explorers read code and plan before anything changes · ${n} here`,
+    workshop:`Builders change code, one task at a time · ${n} here`,
+    lab:`Verifiers run tests: red first, then green · 42 passing now`,
+    review:`Four lenses (risk, resilience, readability, reliability) · only lights up for a high-risk change`,
+    engine:`Gentle AI powers everything: profile Balanced · 14 skills · 6 integrations connected`,
+    library:`Engram remembers: 3 new memories this week · 4 waiting for your review`,
+    lounge:`Finished agents rest here · your tab: $3.12 this week, 31 sessions`}[r.id];
+  const acts={map:'<button class="btn primary">+ Ask to explore</button>',workshop:'<button class="btn primary">+ New agent</button><button class="btn">Changes</button>',lab:'<button class="btn primary">Test results</button>',
+    review:'<button class="btn primary">Review settings</button>',engine:'<button class="btn primary">Profiles & models</button><button class="btn">Skills</button><button class="btn">Integrations</button>',
+    library:'<button class="btn primary">Browse memories</button><button class="btn">Search</button>',lounge:'<button class="btn primary">Full usage</button><button class="btn">Weekly limit</button><button class="btn">Jukebox</button>'}[r.id];
+  strip(`<div><div class="nm">${r.sign==='GENTLE AI'?'Gentle AI · engine room':r.sign==='ENGRAM'?'Engram · library':r.sign[0]+r.sign.slice(1).toLowerCase()}</div><div class="meta">${info}${r.role?` · ${r.role.toLowerCase()} model: ${TIER[r.tier]}`:''}</div></div>${acts}`);draw()}
+const EV={a:{text:'“If the refresh request fails, what should the user see?”',choices:[
+  ['Retry once, then sign them out with a message.','Doing it now.',1,'recommended'],['Keep retrying quietly.','Fine. I’ll log each retry so a broken server can’t hide.',1],
+  ['What have you changed so far?','One file, session.go: +22 −6. All 42 tests pass.'],['How much has this cost?','$0.42 in fourteen minutes, with one helper.'],['Later.',null]]}};
+let ev=null;
+function openPanel(from,text,choices){ev={id:'_',state:''};EV._={text,choices};$('ev-from').textContent=from;$('ev-text').textContent=text;$('ev-ch').innerHTML='';
+  choices.forEach(([t,,,tag],i)=>{const li=document.createElement('li'),b=document.createElement('button');b.innerHTML=`<span class="n">${i+1}.</span>${t}${tag?`<span class="rec">${tag}</span>`:''}`;b.onclick=()=>answer(i);li.appendChild(b);$('ev-ch').appendChild(li)});
+  $('ev-ans').className='ans';$('event').classList.add('open');$('dim').classList.add('open');$('ev-ch').querySelector('button').focus()}
+function openDoor(){openPanel('THE DOOR · permissions','Who gets in without asking you?',Object.entries(MODES).map(([k,v])=>[v,`Done. ${k==='normal'?'The bouncer is back at the rope.':k==='auto'?'The rope is half open.':k==='yolo'?'The bouncer went on a break.':'The door is wide open. Secrets stay locked.'}`,()=>{mode=k;draw()},k===mode?'current':'']))}
+function openEvent(a){ev=a;$('ev-from').textContent=`? ${a.name.toUpperCase()} · ${a.proj} · in the workshop`;$('ev-text').textContent=EV[a.id].text;$('ev-ch').innerHTML='';
+  EV[a.id].choices.forEach(([t,,,tag],i)=>{const li=document.createElement('li'),b=document.createElement('button');b.innerHTML=`<span class="n">${i+1}.</span>${t}${tag?`<span class="rec">${tag}</span>`:''}`;b.onclick=()=>answer(i);li.appendChild(b);$('ev-ch').appendChild(li)});
+  $('ev-ans').className='ans';$('event').classList.add('open');$('dim').classList.add('open');$('ev-ch').querySelector('button').focus()}
+function answer(i){const [,ans,res]=EV[ev.id].choices[i];if(ans===null){closeEvent();return}$('ev-ans').textContent=ans;$('ev-ans').className='ans show';
+  if(typeof res==='function'){res();setTimeout(closeEvent,900);return}
+  if(res){ev.state='work';renderCrew();draw();setTimeout(()=>{closeEvent();select(ev)},900)}}
+function closeEvent(){$('event').classList.remove('open');$('dim').classList.remove('open')}
+$('dim').onclick=closeEvent;
+addEventListener('keydown',e=>{if($('event').classList.contains('open')){if(/^[1-9]$/.test(e.key))answer(+e.key-1);if(e.key==='Escape')closeEvent();return}
+  if(e.code==='Space'){e.preventDefault();togglePause()}if(e.key==='Escape')select(null)});
+function togglePause(){paused=!paused;$('pause').setAttribute('aria-pressed',paused);$('pause').textContent=paused?'▶ RESUME ALL':'❚❚ PAUSE ALL';draw()}
+$('pause').onclick=togglePause;
+
+// power pips = which model each role uses
+const pip=(r,i)=>[r.x+r.w-22+i*6,r.y+7,5,4];
+const toC=e=>{const r=cv.getBoundingClientRect();return[(e.clientX-r.left)/r.width*W,(e.clientY-r.top)/r.height*H]};
+function hitTest(x,y){
+  if(x>=362&&x<=384&&y>=150&&y<=190)return{t:'door'};if(x>=355&&x<=362&&y>=158&&y<=186)return{t:'door'};
+  if(x>=89&&x<=121&&y>=124&&y<=138)return{t:'meter'};if(x>=288&&x<=296&&y>=64&&y<=80)return{t:'switch'};
+  if(x>=341&&x<=356&&y>=147&&y<=186)return{t:'bust'};for(const a of agents)if(Math.abs(x-a.x)<7&&y>a.fy-36&&y<a.fy+1)return{t:'agent',a};
+  for(const h of helpers)if(Math.abs(x-h.x)<6&&y>h.fy-24&&y<h.fy+1)return{t:'helper',h};
+  for(const r of rooms){if(r.role)for(let i=0;i<3;i++){const [px_,py,w,hh]=pip(r,i);if(x>=px_-1&&x<=px_+w&&y>=py-1&&y<=py+hh)return{t:'pip',r,i}}
+    if(x>=r.x&&x<=r.x+r.w&&y>=r.y&&y<=r.y+r.h)return{t:'room',r}}return null}
+function label(h){if(h.t==='door')return`The door · permissions: ${mode}`;if(h.t==='meter')return'This session: $0.42 · 184k tokens · context 38%';
+  if(h.t==='switch')return`Review mode: ${review?'on':'off'}`;if(h.t==='bust')return`Persona: ${persona?'gentleman':'neutral'}`;if(h.t==='agent')return`${h.a.name} · ${h.a.proj} · ${STL[h.a.state]}`;if(h.t==='helper')return`${h.h.name} for ${agents.find(a=>a.id===h.h.of).name}`;
+  if(h.t==='pip')return`${h.r.role} model → ${TIER[h.i+1]}`;return{map:'Map · explore & plan',workshop:'Workshop · build',lab:'Lab · check with tests',review:'Review · idle',engine:'Gentle AI · engine room',library:'Engram · library',lounge:'Lounge · your tab'}[h.r.id]}
+cv.addEventListener('mousemove',e=>{const [x,y]=toC(e);const h=hitTest(x,y);hover=h;const tip=$('tip');
+  if(h){tip.textContent=label(h);tip.style.display='block';const r=cv.getBoundingClientRect();tip.style.left=(e.clientX-r.left)+'px';tip.style.top=(e.clientY-r.top)+'px'}else tip.style.display='none';cv.style.cursor=h?'pointer':'default';draw()});
+cv.addEventListener('mouseleave',()=>{$('tip').style.display='none';hover=null;draw()});
+cv.addEventListener('click',e=>{const [x,y]=toC(e);const h=hitTest(x,y);if(!h)return select(null);
+  if(h.t==='door')return openDoor();if(h.t==='meter'){selected=null;renderCrew();return strip(`<div><div class="nm">This session</div><div class="meta">$0.42 · 184k tokens · context 38% of 200k · 2 helpers ran ($0.11)</div></div><button class="btn primary">Breakdown</button><button class="btn">All sessions</button>`)}
+  if(h.t==='switch'){review=!review;draw();return strip(`<div><div class="nm">Review mode ${review?'on':'off'}</div><div class="meta">${review?'An outside review runs only for high-risk changes.':'No outside reviews. You can turn it back on anytime.'}</div></div>`)}
+  if(h.t==='bust'){persona=!persona;draw();return strip(`<div><div class="nm">Persona: ${persona?'gentleman':'neutral'}</div><div class="meta">${persona?'Warm, direct, teaches as it goes.':'Plain and to the point.'}</div></div>`)}
+  if(h.t==='agent')choose(h.a);else if(h.t==='helper')select(agents.find(a=>a.id===h.h.of));
+  else if(h.t==='pip'){h.r.tier=h.i+1;roomInfo(h.r)}else roomInfo(h.r)});
+
+// ---------- draw (2 fps ambient) ----------
+function fit(){const s=Math.min(innerWidth/W,innerHeight/H);cv.style.width=W*s+'px';cv.style.height=H*s+'px'}
+addEventListener('resize',fit);fit();
+function draw(){ctx.drawImage(bg,0,0);
+  // screens on benches show work
+  for(const [sx,a] of [[126,agents[0]],[170,agents[4]]]){for(let y=0;y<4;y++){const w=a.state==='work'&&!paused?3+((t+y*2+sx)|0)%8:a.state==='need'?5:2;rect(ctx,sx+1,85+y*2,Math.min(10,w),1,a.state==='need'?C.warn:C.neon)}}
+  // reactor pulse
+  if(!reduce&&!paused&&t%2){ctx.save();ctx.globalAlpha=.12;rect(ctx,50,136,24,42,C.neon);ctx.restore()}
+  // the meter: digits + a turning disc
+  plain(ctx,'$0.42',93,128,C.ink);plain(ctx,'184k',93+0,128+0,'transparent');rect(ctx,113,130,4,1,C.ink);if(!paused&&!reduce&&t%2)rect(ctx,115,129,1,3,C.ink);else rect(ctx,113,130,4,1,C.neon);
+  // review switch
+  rect(ctx,291,review?67:72,2,5,review?C.warn:'#5a4a4a');if(review){ctx.save();ctx.globalAlpha=.4;rect(ctx,289,66,6,8,C.warn);ctx.restore()}
+  // persona: the bust's mustache
+  if(!persona){rect(ctx,344,158,8,2,'#eee8f6')}
+  // the door and the bouncer
+  const fy=186;
+  if(mode==='normal'||mode==='auto'){for(const x of [366,381]){rect(ctx,x,fy-12,2,12,C.warn);rect(ctx,x-1,fy-13,4,2,C.warn);rect(ctx,x-1,fy-1,4,1,C.warn)}
+    if(mode==='normal'){for(let x=368;x<381;x++)px(ctx,x,fy-10+Math.round(Math.sin((x-368)/13*Math.PI)*3),C.red)}else for(let y=0;y<9;y++)px(ctx,382,fy-10+y,C.red);
+    ctx.drawImage(BOUNCER,368,fy-26)}
+  if(mode==='yolo'){box(ctx,366,fy-14,14,9,'#d9d2e6');plain(ctx,'B',368,fy-12,C.ink);plain(ctx,'R',372,fy-12,C.ink);plain(ctx,'B',376,fy-12,C.ink);rect(ctx,372,fy-5,1,5,C.metal);for(let x=366;x<382;x++)px(ctx,x,fy-1,C.red)}
+  if(mode==='super-yolo'){rect(ctx,357,162,4,24,C.ink);ctx.save();ctx.globalAlpha=.35;rect(ctx,357,166,16,20,C.warn);ctx.restore();word(ctx,'OPEN',364,150,C.red)}
+  // pips
+  for(const r of rooms)if(r.role)for(let i=0;i<3;i++){const [x,y,w,h]=pip(r,i),on=i<r.tier;rect(ctx,x,y,w,h,on?C.teal:'#2a1640');if(on){ctx.save();ctx.globalAlpha=.3;rect(ctx,x-1,y-1,w+2,h+2,C.teal);ctx.restore()}}
+  // elephant librarian at the reading desk
+  ctx.drawImage(ELE,206,F2.y+F2.h-6-20);
+  // people
+  const list=[...helpers,...agents];
+  for(const a of list){const faded=filter&&(a.proj||agents.find(x=>x.id===a.of).proj)!==filter;ctx.save();if(faded)ctx.globalAlpha=.25;
+    const sel=a===selected||(hover&&hover.a===a);if(sel){ctx.save();ctx.globalAlpha=.6;rect(ctx,a.x-6,a.fy,13,1,C.teal);ctx.restore()}
+    const working=(a.state==='work'||a.kind)&&!paused&&!reduce;const spr=a.spr[working?t%2:0];
+    if(a.kind)ctx.drawImage(spr,a.x-6,a.fy-23);else ctx.drawImage(spr,a.x-6,a.fy-23);
+    if(a.state==='need'||a.state==='done')ctx.drawImage(BUB[a.state],a.x-6,a.fy-37);
+    if(paused&&(a.state==='work'||a.kind)){rect(ctx,a.x-3,a.fy-30,2,5,C.warn);rect(ctx,a.x+1,a.fy-30,2,5,C.warn)}
+    ctx.restore()}
+  if(hover&&hover.t==='room'){ctx.save();ctx.globalAlpha=.5;const r=hover.r;rect(ctx,r.x,r.y+r.h-1,r.w,1,C.teal);ctx.restore()}
+}
+renderCrew();draw();
+if(!reduce)setInterval(()=>{t+=1;draw()},500);
+if(location.hash==='#ask')openEvent(agents[0]);
+if(location.hash==='#engine')roomInfo(R('engine'));
+</script>
+</body>
+</html>

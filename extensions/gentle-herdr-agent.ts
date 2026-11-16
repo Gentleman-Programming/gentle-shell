@@ -10,6 +10,13 @@ import { herdrAgentLabel, herdrDetected } from "../lib/herdr-activity.ts";
 // same lifecycle under Herdr's documented custom-agent contract: its own
 // stable source (never `herdr:`) and its own agent name. One reporter per pane.
 const SOURCE = "gentle-shell";
+// Herdr restores a custom agent by running its reported resume command in the
+// pane (gentle-shell#1725). The reporter only runs for the default isolated
+// home, so `gentle-shell --session <file>` reopens the same home and session.
+const RESUME_COMMAND = "gentle-shell";
+// Herdr rejects the whole report (invalid_resume_argv) for an argument with an
+// apostrophe or a control character, so such a path drops only the command.
+const UNSAFE_RESUME_ARG = /['\u0000-\u001f\u007f-\u009f]/u;
 
 type AgentState = "working" | "blocked" | "idle";
 type HerdrRequest = { id: string; method: string; params: Record<string, unknown> };
@@ -54,6 +61,7 @@ export function createHerdrAgentExtension(options: HerdrAgentOptions = {}) {
 		const send = options.send ?? socketTransport(env);
 		let seq = Date.now() * 1000;
 		let sessionRef: Record<string, string> | undefined;
+		let resumeArgv: string[] | undefined;
 		let rootSession = false;
 		let agentActive = false;
 		let blockedCount = 0;
@@ -76,6 +84,8 @@ export function createHerdrAgentExtension(options: HerdrAgentOptions = {}) {
 			sessionRef = typeof file === "string" && (posix.isAbsolute(file) || win32.isAbsolute(file))
 				? { agent_session_path: file }
 				: typeof id === "string" && id.length > 0 ? { agent_session_id: id } : undefined;
+			const path = sessionRef?.agent_session_path;
+			resumeArgv = path !== undefined && !UNSAFE_RESUME_ARG.test(path) ? [RESUME_COMMAND, "--session", path] : undefined;
 		};
 		const reportSession = (sessionStartSource?: string) => sessionRef
 			? send(request("pane.report_agent_session", { seq: ++seq, session_start_source: sessionStartSource })).catch(() => {})
@@ -88,7 +98,10 @@ export function createHerdrAgentExtension(options: HerdrAgentOptions = {}) {
 				while (queued) {
 					const next = queued;
 					queued = undefined;
-					await send(request("pane.report_agent", { state: next.state, message: next.message, seq: next.seq })).catch(() => {});
+					// Only a state report holds the pane, which Herdr requires before it
+					// accepts a resume command (resume_not_accepted otherwise).
+					const resume = resumeArgv ? { resume_argv: resumeArgv } : {};
+					await send(request("pane.report_agent", { state: next.state, message: next.message, seq: next.seq, ...resume })).catch(() => {});
 				}
 			} finally {
 				inFlight = false;

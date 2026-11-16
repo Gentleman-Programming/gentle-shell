@@ -47,7 +47,8 @@ test("Gentle Shell reports its own Herdr agent identity, session and lifecycle s
 			session_start_source: "startup", agent_session_path: "/sessions/root.jsonl" },
 	});
 	assert.deepEqual(h.requests[1].params, { pane_id: "pane-1", source: "gentle-shell", agent: "gentle-shell",
-		state: "idle", message: undefined, seq: h.requests[1].params.seq, agent_session_path: "/sessions/root.jsonl" });
+		state: "idle", message: undefined, seq: h.requests[1].params.seq, agent_session_path: "/sessions/root.jsonl",
+		resume_argv: ["gentle-shell", "--session", "/sessions/root.jsonl"] });
 	assert.ok((h.requests[1].params.seq as number) > (h.requests[0].params.seq as number));
 	h.setIdle(false);
 	await h.fire("agent_start");
@@ -66,6 +67,37 @@ test("Gentle Shell reports its own Herdr agent identity, session and lifecycle s
 	}
 	const seqs = h.requests.map((request) => request.params.seq as number);
 	assert.deepEqual([...seqs].sort((a, b) => a - b), seqs);
+});
+
+test("Gentle Shell Herdr reporter attaches its resume command only to state reports for a reportable session file", async () => {
+	const reports = async (file: unknown, id: unknown = "root") => {
+		const h = harness();
+		const context = { mode: "tui", isIdle: () => true,
+			sessionManager: { getSessionFile: () => file, getSessionId: () => id } } as unknown as ExtensionContext;
+		await h.fire("session_start", { reason: "startup" }, context);
+		await settle();
+		const state = h.requests.find((request) => request.method === "pane.report_agent");
+		assert.ok(state, `no state report for ${JSON.stringify(file)}`);
+		return { requests: h.requests, state };
+	};
+	// Herdr accepts resume_argv only from the source holding the pane, so the
+	// session report sent before the first state report never carries it.
+	const valid = await reports("/sessions/root.jsonl");
+	assert.equal(valid.requests[0].method, "pane.report_agent_session");
+	assert.equal("resume_argv" in valid.requests[0].params, false);
+	assert.deepEqual(valid.state.params.resume_argv, ["gentle-shell", "--session", "/sessions/root.jsonl"]);
+	// Herdr rejects the whole report for apostrophes or control characters, so
+	// such a path keeps the state report and drops only the resume command.
+	for (const file of ["/sessions/o'brien.jsonl", "/sessions/a\nb.jsonl", "/sessions/a\u007fb.jsonl"]) {
+		const { state } = await reports(file);
+		assert.equal(state.params.state, "idle", JSON.stringify(file));
+		assert.equal(state.params.agent_session_path, file);
+		assert.equal("resume_argv" in state.params, false, JSON.stringify(file));
+	}
+	// An id-only session has no path that `gentle-shell --session` can reopen.
+	const idOnly = await reports(undefined, "id-1");
+	assert.equal(idOnly.state.params.agent_session_id, "id-1");
+	assert.equal("resume_argv" in idOnly.state.params, false);
 });
 
 test("Gentle Shell Herdr reporter stays silent without the launcher handoff, outside Herdr, in children and headless modes", async () => {

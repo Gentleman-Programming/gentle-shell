@@ -107,6 +107,9 @@ export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | 
 export interface CustomizeRow {
 	category?: CustomizeCategory;
 	label: string | (() => string);
+	children?: CustomizeRow[];
+	inert?: boolean;
+	indent?: number;
 	/** Read-only representation of the highlighted choice, never an application; `sample` may span lines. */
 	preview?: () => { title: string; sample: string };
 	/**
@@ -168,6 +171,8 @@ export class VisualCustomizeView {
 	private pointerFrame?: PointerFrame;
 	private hovered?: HoveredHit;
 	private error?: string;
+	private childRows?: CustomizeRow[];
+	private childReturnIndex = 0;
 	private profileOpen = false;
 	private profileIndex = 0;
 	private profileInput?: string;
@@ -389,7 +394,7 @@ export class VisualCustomizeView {
 	}
 
 	private categoryRows(): CustomizeRow[] {
-		return this.options.rows.filter(row => (row.category ?? "Settings") === this.categories[this.categoryIndex] && rowVisible(row));
+		return (this.childRows ?? this.options.rows.filter(row => (row.category ?? "Settings") === this.categories[this.categoryIndex])).filter(rowVisible);
 	}
 
 	/** The category's lines: a plain row, or every consecutive choice of one setting. */
@@ -522,6 +527,7 @@ export class VisualCustomizeView {
 		if (this.inlineConfirm) { this.handleInlineConfirm(data); return; }
 		if (this.inlineCapture) { this.handleInlineCapture(data); return; }
 		if (this.profileOpen && this.options.profiles) { this.handleProfiles(data); return; }
+		if (matchesKey(data, Key.escape) && this.childRows) { this.childRows = undefined; this.controls.set(this.categories[this.categoryIndex]!, this.childReturnIndex); this.pane = "controls"; this.options.requestRender(); return; }
 		if (matchesKey(data, Key.escape)) { this.dispose(); this.options.onClose(); return; }
 		const rows = this.categoryRows();
 		const length = this.pane === "categories" ? this.categories.length : rows.length;
@@ -547,7 +553,8 @@ export class VisualCustomizeView {
 		// Notifications rows own `p` for a per-event preview. When no event row is
 		// selected the panel must consume it instead of opening visual profiles.
 		if (matchesKey(data, "p") && this.pane === "controls" && (this.categories[this.categoryIndex] ?? "Settings") === "Notifications") { this.options.requestRender(); return; }
-		if (this.options.profiles && matchesKey(data, "p")) { this.openProfiles(); return; }
+		if (!this.childRows && this.options.profiles && matchesKey(data, "p")) { this.openProfiles(); return; }
+		if (this.childRows && matchesKey(data, Key.tab)) return;
 		if (!length) return;
 		const entries = this.lineEntries(rows);
 		const line = this.lineOf(entries, this.selected);
@@ -556,7 +563,7 @@ export class VisualCustomizeView {
 		// Walk inline values; live choices apply immediately, deferred choices wait for Enter.
 		// Moving left past the first value returns to the categories.
 		const step = this.pane === "controls" && entry?.setting ? matchesKey(data, Key.left) ? -1 : matchesKey(data, Key.right) ? 1 : 0 : 0;
-		if (step === -1 && this.selected === entry!.first) this.pane = "categories";
+		if (step === -1 && this.selected === entry!.first) { if (!this.childRows) this.pane = "categories"; }
 		else if (step) {
 			const next = this.selected + step;
 			// Same guard as Enter: never apply a value the card is too small to show.
@@ -564,8 +571,8 @@ export class VisualCustomizeView {
 				this.controls.set(category, next);
 				if (rows[next]!.choice?.applyOnMove !== false) this.withBusy(() => rows[next]!.action(this.inline));
 			}
-		} else if (matchesKey(data, Key.left) || matchesKey(data, Key.tab) && this.pane === "controls") this.pane = "categories";
-		else if (matchesKey(data, Key.right) || matchesKey(data, Key.tab) && this.pane === "categories") this.enterControls();
+		} else if (!this.childRows && (matchesKey(data, Key.left) || matchesKey(data, Key.tab) && this.pane === "controls")) this.pane = "categories";
+		else if (!this.childRows && (matchesKey(data, Key.right) || matchesKey(data, Key.tab) && this.pane === "categories")) this.enterControls();
 		else if (matchesKey(data, Key.up) || matchesKey(data, "k")) {
 			if (this.pane === "categories") this.categoryIndex = (this.categoryIndex + length - 1) % length;
 			else this.controls.set(category, this.landOn(rows, entries[(line + entries.length - 1) % entries.length]));
@@ -574,9 +581,15 @@ export class VisualCustomizeView {
 			else this.controls.set(category, this.landOn(rows, entries[(line + 1) % entries.length]));
 		} else if ((matchesKey(data, Key.enter) || matchesKey(data, Key.space)) && this.pane === "categories") this.enterControls();
 		else if ((matchesKey(data, Key.enter) || matchesKey(data, Key.space)) && !this.busy && this.controlsShown() && rows[this.selected]) {
-			this.withBusy(() => rows[this.selected]!.action(this.inline));
+			this.activateRow(rows[this.selected]!);
 		}
 		this.options.requestRender();
+	}
+
+	private activateRow(row: CustomizeRow): void {
+		if (row.inert) return;
+		if (row.children) { this.childReturnIndex = this.controls.get(this.categories[this.categoryIndex]!) ?? 0; this.childRows = row.children; this.pane = "controls"; this.controls.set(this.categories[this.categoryIndex]!, 0); this.clearPointer(); return; }
+		this.withBusy(() => row.action(this.inline));
 	}
 
 	/** One setting with its values inline (● current, ○ other); too wide, only the selected value with arrows. */
@@ -664,13 +677,13 @@ export class VisualCustomizeView {
 			return this.options.theme.fg(role, clipped + " ".repeat(Math.max(0, size - visibleWidth(clipped))));
 		};
 		const join = (left: string, right: string) => leftWidth ? `${left}${" ".repeat(Math.max(0, leftWidth - visibleWidth(stripAnsi(left))))} ${paint("│", 1, "border")} ${right}` : right;
-		const heading = navOnly ? "Categories · choose a category →" : `${category} · ${rows.length ? `${line + 1}/${entries.length}` : "empty"}`;
+		const heading = this.childRows ? "Tabs · Esc back" : navOnly ? "Categories · choose a category →" : `${category} · ${rows.length ? `${line + 1}/${entries.length}` : "empty"}`;
 		const lines: string[] = [paint(this.title(), inner, "accent")];
 		const hits: PointerHit[] = [];
 		const modal = Boolean(this.inlineInput || this.inlineConfirm || this.inlineCapture);
 		const categoryHit = (name: string, index: number, x: number, y: number, size: number) => {
 			const end = x + Math.min(visibleWidth(name), Math.max(0, size));
-			if (!modal && end > x) hits.push({ id: `category:${index}`, x, end, y, activate: () => {
+			if (!modal && !this.childRows && end > x) hits.push({ id: `category:${index}`, x, end, y, activate: () => {
 				if (this.busy) return;
 				this.categoryIndex = index;
 				this.pane = "categories";
@@ -681,7 +694,7 @@ export class VisualCustomizeView {
 			if (this.busy) return;
 			this.pane = "controls";
 			this.controls.set(category, index);
-			if (apply) this.withBusy(() => rows[index]!.action(this.inline));
+			if (apply) this.activateRow(rows[index]!);
 		};
 		// Commands uses a header, grouped section labels, whitespace and a footer.
 		if (showHeading) lines.push(join(leftWidth ? paint("CATEGORIES", leftWidth, "accent") : "", paint(heading, rightWidth, "accent")));
@@ -694,7 +707,9 @@ export class VisualCustomizeView {
 			const item = navOnly ? this.categories[start + i] : row ? typeof row.label === "function" ? row.label() : row.label : undefined;
 			const rowTheme = navOnly || this.pane === "controls" ? this.options.theme : { fg: this.options.theme.fg.bind(this.options.theme) };
 			const setting = entry?.setting ? this.renderSettingLine(rows, entry, rightWidth, nameWidth, start + i === position, rowTheme) : undefined;
-			const right = setting?.text ?? (item ? renderPaletteSelection(item, rightWidth, start + i === position, rowTheme) : rows.length ? "" : paint("No settings available", rightWidth, "muted"));
+			const focused = start + i === position;
+			const nestedTheme = row?.indent ? { ...rowTheme, fg: (role: string, text: string) => rowTheme.fg(role === "text" ? (focused ? "text" : "muted") : role, text) } : rowTheme;
+			const right = setting?.text ?? (item ? renderPaletteSelection(`${" ".repeat(Math.min(8, Math.max(0, row?.indent ?? 0)))}${item}`, rightWidth, focused, nestedTheme) : rows.length ? "" : paint("No settings available", rightWidth, "muted"));
 			const y = lines.length + 1; // card adds its top border
 			const rightX = 2 + (leftWidth ? leftWidth + 3 : 0);
 			if (leftWidth && nav) categoryHit(nav, navStart + i, 4, y, leftWidth - 2);
@@ -707,7 +722,7 @@ export class VisualCustomizeView {
 						select(entry.first + span.index, span.step === undefined);
 						if (span.step) this.handleInput(span.step < 0 ? "\x1b[D" : "\x1b[C");
 					} });
-				} else {
+				} else if (!row.inert) {
 					const end = rightX + visibleWidth(stripAnsi(right).trimEnd());
 					if (end > rightX + 2) hits.push({ id: `row:${entry.first}`, x: rightX + 2, end, y, activate: () => select(entry.first, true) });
 				}
@@ -748,7 +763,7 @@ export class VisualCustomizeView {
 			for (let i = 0; i < previewLines - 2; i++) lines.push(paint(sample[i] ?? "", inner, "muted"));
 		} else if (previewLines === 1) lines.push(paint(navOnly ? "→ controls · Esc close" : "Preview omitted · enlarge terminal", inner, "muted"));
 		if (showBottomGap) lines.push("");
-		if (showHeading) lines.push(paint(`Click · ${footerHint(category, navOnly, previewLines, rows[this.selected]?.keyhint, focusedSetting !== undefined, focusedSetting?.applyOnMove !== false)}`, inner, "muted"));
+		if (showHeading) lines.push(paint(this.childRows ? "↑/↓ move · ←/→ change · Esc back" : `Click · ${footerHint(category, navOnly, previewLines, rows[this.selected]?.keyhint, focusedSetting !== undefined, focusedSetting?.applyOnMove !== false)}`, inner, "muted"));
 		// The top-right close hint mirrors Commands without consuming another row.
 		const title = this.title();
 		lines[0] = paint(title + " ".repeat(Math.max(1, inner - visibleWidth(title) - 3)) + "esc", inner, "accent");

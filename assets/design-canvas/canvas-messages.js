@@ -2,7 +2,7 @@
 // iframes sandboxed with scripts only, so each one has an opaque origin; messages
 // are trusted only by matching event.source to a known artboard's frame or, in All
 // sizes, one of its size frames (canvas-sizes.js). The canvas's own messages to
-// artboards (gd:mode, gd:focus, gd:size, gd:pins, gd:pick-at, gd:hover-at, gd:highlight,
+// artboards (gd:mode, gd:colors, gd:focus, gd:size, gd:pins, gd:pick-at, gd:hover-at, gd:highlight,
 // gd:clear, gd:run-checks) are posted by the module that owns each state. gd:inspect (the element under the
 // pointer, measured) belongs to the token inspector (canvas-tokens.js), and gd:checks (the page's
 // accessibility checks) and gd:located (where the element of a check's ring is now) to canvas-checks.js.

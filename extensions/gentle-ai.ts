@@ -152,7 +152,7 @@ import { createSessionProfileIntegration, hasPendingSessionProfileSelection, rea
 import { publishSessionProfileOutcome, readSessionProfileAuthority, requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
 import type { SessionProfileAppendOutcome } from "../lib/session-profile-append-controller.ts";
-import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, sessionProfileRoutingAt, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
+import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readFrozenDefaultOrchestrator, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, sessionProfileRoutingAt, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
 	readOrchestratorSettings,
@@ -1716,21 +1716,19 @@ ${personaPrompt}
 
 ## Authorized work continuity
 
-An authorized outcome includes its necessary in-scope implementation, documentation and verification steps. Continue those steps without asking the human to approve each transition. Never end a turn merely announcing an immediately executable authorized next step; execute it instead. A progress update is not a request for permission.
+An authorized outcome includes its necessary in-scope implementation, documentation and verification steps. Continue those steps without asking the human to approve each transition. Never end a turn merely announcing an immediately executable authorized next step; execute it instead. A progress update is not a request for permission. An explicit user stop applies only to the work it names.
 
 Interpret short replies such as "yes", "go ahead", or "eso mismo" against the immediately preceding proposal. When the human unambiguously accepts a concrete implementation action they already understand, execute that action within its agreed scope without asking again. Confirming a preference alone does not authorize implementation; genuinely unclear change intent still requires one focused question. Contextual approval never substitutes for provider-owned consent, exact-token authorization, or separate publishing and destructive-action permission.
 
-Resolving an incident or subdecision does not complete or cancel the original authorized objective; resume safe, necessary in-scope steps automatically, using judgment for proportionate recovery and respecting explicit user dispositions. Investigate pending technical uncertainty rather than treating it alone as a new human decision.
+Resolving an incident or subdecision does not complete or cancel the original authorized objective; resume safe, necessary in-scope steps automatically, using judgment for proportionate recovery and respecting explicit user dispositions. Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule.
 
-Stop for an unresolved consequential scope/product decision, required explicit consent, a denied action, or the human's explicit stop. Unavailable required proof blocks completion and delivery; it does not alone prohibit specifically authorized in-scope implementation where actual native authority and other limits permit it. Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule. Report a concrete blocker and the exact decision needed rather than requesting a generic "continue".
+Honor explicit one-run, no-retry, or diagnostic-only limits. Correct a failing check only within the existing correction budget; never reset budgets, add retry allowances, weaken checks, or override final outcomes.
 
-Before a terminal bounded-stop outcome, distinguish a recoverable technical or harness failure from genuinely inaccessible required proof. A failed test or harness check may be corrected and rerun without another authorization only within the authorized scope and existing correction budget, subject to every applicable limit. Honor explicit one run, no retries, or diagnostic-only limits; stop for permission denial, required new consent, or exhausted budget. Do not propose diagnostic-only or single-attempt authorization unless the human requested it. Respect terminal review and verification outcomes and existing bounded-stop rules: never reset budgets, add retry allowances, weaken checks, or override final outcomes.
-
-An exhausted worker-local correction limit ends that automatic cycle, not necessarily the feature. Partial worker execution is not by itself exhausted proof or a terminal native review outcome. Stop and report the remaining work, failed checks and missing proof, and offer an explicit human-controlled bounded continuation. Name its scope, executor, correction limit and checks, or let the human stop. Before any worker continuation, confirm no child is active or has an uncertain status. The Close stop ends the cycle; later explicit requests stay subject to native authority. Quota recovery: \`orchestrator-quota-recovery.md\`. A new session does not reset any limit. When specifically authorized and not prohibited by actual native authority, continue ordinary in-scope compilation or implementation; unavailable proof still blocks completion and delivery.
+An exhausted worker-local correction limit ends that automatic cycle, not necessarily the feature. Partial worker execution is not by itself exhausted proof or a terminal native review outcome. Stop and report the remaining work, failed checks and missing proof, and offer an explicit human-controlled bounded continuation. Name its scope, executor, correction limit and checks, or let the human stop. Before any worker continuation, confirm no child is active or has an uncertain status. The Close stop ends the cycle; later explicit requests stay subject to native authority. Quota recovery: \`orchestrator-quota-recovery.md\`. A new session does not reset any limit. When specifically authorized and not prohibited by actual native authority, continue ordinary in-scope compilation or implementation.
 
 For worker-prohibited maintenance or rollback, worker prohibitions remain unchanged. The parent only may perform the operation when the human explicitly authorized the operation itself, exact scope, ownership, and preservation are established, and available permitted tools can perform it; fresh runtime/native consent and guards remain binding. A broad feature authorization is not destructive authority; never substitute another worker or tool to bypass a denial. For an upgrade require a validated backup, artifact and migration validation where applicable, and a recovery path. For rollback preserve unrelated edits even in the same file, remove only proven task-created helpers, and never blanket restore, reset, or clean. Stop when ambiguous ownership or denial stops the operation, or any prerequisite is missing. This route is guidance, not authorization.
 
-For background work, launch the bounded action and end the turn when no independent in-scope work remains. Retain its identity and resume the already-authorized continuation automatically on its completion event; do not ask the human to say "continue", poll, or claim completion while checks remain pending.
+For background work, launch the bounded action and end the turn when no independent in-scope work remains. Retain its identity and resume the already-authorized continuation automatically on its completion event; do not ask the human to say "continue" or poll.
 
 Default workflow: Organic Driven Development (MANDATORY)
 Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it, without the user asking for a workflow, a plan, or task tracking. Never describe this workflow only when asked about it: run it. Run these steps in this order on every request:
@@ -3360,13 +3358,16 @@ function readReviewerRouting(cwd: string, sessionId: string | undefined, session
 		: resolution.kind === "inherited" && resolution.profile !== undefined ? "frozen session profile"
 		: resolution.kind === "follow" ? "followed session profile"
 		: "repository profile pin";
-	// Only a profile chosen with Use in this session, or recorded as the session's
-	// startup profile, carries its orchestrator to the provider review roles; an
-	// in-memory freeze, pinned and global routing leave them on Pi's persisted
-	// default (gentle-shell#2716 A1, gentle-shell#2742 section 8).
+	// Provider review roles inherit the explicit binding's orchestrator, the
+	// startup record's, or the in-memory frozen profile's, before Pi's persisted
+	// default. Pins and global routing never supply this fallback; a session
+	// frozen without a profile has no orchestrator to carry to a foreign target.
 	if (resolution.kind !== "explicit") delete config.orchestrator;
-	const recorded = resolution.kind === "inherited" ? readSessionProfileBinding(sessionId)?.modelProfiles.orchestrator : undefined;
-	if (recorded !== undefined) config.orchestrator = { ...recorded };
+	const orchestrator = resolution.kind === "inherited"
+		? readSessionProfileBinding(sessionId)?.modelProfiles.orchestrator
+			?? (resolution.profile === undefined ? undefined : readFrozenDefaultOrchestrator(sessionId))
+		: undefined;
+	if (orchestrator !== undefined) config.orchestrator = { ...orchestrator };
 	return { config, source };
 }
 
@@ -9765,8 +9766,8 @@ function reviewHostRelayFailureReport(error: ReviewHostRelayError): Record<strin
 // gentle-pi#2271: review-refuter and review-validator are provider review
 // roles, not installable agents, so nothing seeds their entries and profiles
 // never carry them. For those two keys only, a snapshot with no model falls
-// back to Pi's persisted default model and effort, the default the routing
-// panel already labels them with. Lens keys keep the fail-closed rule.
+// back to the session profile's orchestrator, then Pi's persisted default model
+// and effort. Lens keys keep the fail-closed rule.
 //
 // gentle-shell#2163: a caller that knows where the snapshot came from passes
 // it, so the relay's refusal names the routing source and whether the entry
@@ -12888,10 +12889,40 @@ function createGentleAiExtensionForTesting(
 		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
 		// gentle-shell#2742: only a session's own start tells this process its
 		// startup state; anything else leaves it unknown.
+		let startupProfile: SessionProfileStartupState | undefined;
 		try {
-			if (profileSessionId && isSessionOwnStart(event, ctx.sessionManager))
+			if (profileSessionId && isSessionOwnStart(event, ctx.sessionManager)) {
 				freezeSessionProfileAtOwnStart({ sessionId: profileSessionId, cwd: ctx.sessionManager.getCwd(), configHome: gentleAiConfigHome() });
+				startupProfile = readSessionProfileOwnStartup(profileSessionId);
+			}
 		} catch { /* The startup state stays unknown. */ }
+		// A3: only this session's own start applies its frozen full definition.
+		// The workflow mode remains live; launches still receive role routing only.
+		if (startupProfile && startupProfile !== "none" && permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1" && !profileFollowEnabled(permissionEnvironment)) {
+			const orchestrator = readProfileOrchestrator(startupProfile.modelProfiles);
+			const current = () => startupEpoch === reminderEpoch && sessionProfiles.isCurrent(ctx.sessionManager);
+			// The switch is best-effort and contained: a reload or session
+			// replacement racing the awaited switch must neither abort the rest
+			// of session_start (Pi's runner throws on any access to a stale ctx)
+			// nor leave the outcome unreported. Checked before and after the await.
+			try {
+				if (!current()) return;
+				const note = orchestrator?.model
+					? await switchLiveOrchestrator(ctx, pi, orchestrator, current)
+						|| "\nThe profile's orchestrator model is invalid; this session keeps its current model."
+					: `\nprofile "${startupProfile.name}" has no orchestrator model; this session keeps its current model.`;
+				if (!current()) return;
+				// A headless session (pi -p) has no notify surface: the startup note
+				// falls back to stderr, the same channel Pi's own startup notifications
+				// use headlessly, so a failed switch is observable instead of silent.
+				const startedWith = `el Gentleman started with profile "${startupProfile.name}".${note}`;
+				if (ctx.hasUI) ctx.ui.notify(startedWith, "info");
+				else console.error(startedWith);
+			} catch {
+				// The startup switch stays best-effort: a staled context or a
+				// reporting failure never aborts the remaining startup work.
+			}
+		}
 		readSessionProfileAuthority(ctx.sessionManager);
 		if (ctx.hasUI) notifySessionProfileProblem(ctx);
 		auto.reset();

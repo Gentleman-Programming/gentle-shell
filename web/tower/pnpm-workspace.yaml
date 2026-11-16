@@ -1,0 +1,8 @@
+# Standalone project: its own node_modules, never the repo's (see ../../pnpm-workspace.yaml).
+# Same supply-chain defenses as the repo root.
+minimumReleaseAge: 4320
+trustPolicy: no-downgrade
+blockExoticSubdeps: true
+verifyDepsBeforeRun: false
+allowBuilds:
+  esbuild: true

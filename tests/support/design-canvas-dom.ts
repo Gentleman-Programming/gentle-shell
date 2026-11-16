@@ -210,6 +210,23 @@ export function addMarkup(document: FakeDocument) {
 	}
 }
 
+/**
+ * window.getComputedStyle for the canvas page, reading its --gd-* tokens from canvas.css itself: :root's, then
+ * :root[data-theme="<theme>"]'s when <html> carries that theme. A value keeps the leading space a browser may give it;
+ * a token canvas.css does not define is "", as in a browser.
+ */
+export function cssTokens(element: FakeElement) {
+	const css = read("canvas.css");
+	const block = (selector: string) => {
+		const start = css.indexOf(`${selector} {`);
+		return start < 0 ? "" : css.slice(start, css.indexOf("}", start));
+	};
+	const tokens = (text: string) => Object.fromEntries([...text.matchAll(/(--gd-[\w-]+):\s*([^;]+);/g)].map((match) => [match[1], match[2].trim()]));
+	const theme = element.doc.documentElement.getAttribute("data-theme");
+	const values: Record<string, string> = { ...tokens(block(":root")), ...(theme ? tokens(block(`:root[data-theme="${theme}"]`)) : {}) };
+	return { getPropertyValue: (name: string) => (Object.hasOwn(values, name) ? ` ${values[name]}` : "") };
+}
+
 export const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /**

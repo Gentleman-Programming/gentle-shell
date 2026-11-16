@@ -4,7 +4,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { captureQuestionnaireAnswers } from "../lib/auto-permission-answers.ts";
 import { publishQuestionnaireAnswerHandle } from "../lib/desktop-feed-answers.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
-import { type QuestionData, type QuestionParams, QuestionParamsSchema } from "../lib/questionnaire/schema.ts";
+import { CUSTOM_ROW_LABEL, type QuestionData, type QuestionParams, QuestionParamsSchema } from "../lib/questionnaire/schema.ts";
 import {
 	QuestionnaireView,
 	type AnswerRow,
@@ -65,12 +65,38 @@ function cancelledResult(): QuestionnaireToolResult {
 /** Label for the trailing "finish this question" entry in a multiSelect round. */
 const MULTI_SELECT_DONE_LABEL = "Done";
 
-/** One toggle round's select prompt: `[x] label` / `[ ] label` plus Done. */
+/** Placeholder of the RPC-dialog free-text input behind the CUSTOM_ROW_LABEL entry. */
+const CUSTOM_INPUT_PLACEHOLDER = "Type your answer";
+
+/** One toggle round's select prompt: `[x] label` / `[ ] label` plus Done and the free-text row. */
 function multiSelectRoundOptions(question: QuestionData, toggled: readonly boolean[]): string[] {
 	return [
 		...question.options.map((choiceOption, index) => `${toggled[index] ? "[x]" : "[ ]"} ${choiceOption.label}`),
 		MULTI_SELECT_DONE_LABEL,
+		CUSTOM_ROW_LABEL,
 	];
+}
+
+/**
+ * RPC-dialog equivalent of the TUI's always-available free-text row. A
+ * cancelled or whitespace-only input cancels (the TUI discards it), so no
+ * partial answer commits. A multiSelect custom answer keeps its toggles, as
+ * in the TUI. Validation reserves CUSTOM_ROW_LABEL, so no option collides.
+ */
+async function askCustomAnswer(
+	ctx: Pick<ExtensionContext, "ui">,
+	question: QuestionData,
+	selected: readonly string[] = [],
+): Promise<AnswerRow | undefined> {
+	const text = await ctx.ui.input(`${question.header}: ${question.question}`, CUSTOM_INPUT_PLACEHOLDER);
+	if (text === undefined || text.trim().length === 0) return undefined;
+	return {
+		questionIndex: -1, // overwritten by the caller with the question's position
+		question: question.question,
+		kind: "custom",
+		answer: text,
+		...(question.multiSelect && selected.length > 0 ? { selected: [...selected] } : {}),
+	};
 }
 
 /**
@@ -121,6 +147,9 @@ export async function askMultiSelect(
 		if (picked === undefined) return undefined;
 		const pickedIndex = roundOptions.indexOf(picked);
 		if (pickedIndex === question.options.length) return finishMultiSelect(question, toggled); // explicit Done
+		if (pickedIndex === question.options.length + 1) {
+			return askCustomAnswer(ctx, question, question.options.filter((_choiceOption, index) => toggled[index]).map((choiceOption) => choiceOption.label));
+		}
 		if (pickedIndex === -1) return undefined; // unrecognised answer: never commit a partial state
 		toggled[pickedIndex] = !toggled[pickedIndex];
 		if (toggled.every(Boolean)) return finishMultiSelect(question, toggled);
@@ -136,8 +165,9 @@ async function askSingleSelect(
 	question: QuestionData,
 ): Promise<AnswerRow | undefined> {
 	const labels = question.options.map((choiceOption) => choiceOption.label);
-	const picked = await ctx.ui.select(`${question.header}: ${question.question}`, labels);
+	const picked = await ctx.ui.select(`${question.header}: ${question.question}`, [...labels, CUSTOM_ROW_LABEL]);
 	if (picked === undefined) return undefined;
+	if (picked === CUSTOM_ROW_LABEL) return askCustomAnswer(ctx, question);
 	const chosen = question.options.find((choiceOption) => choiceOption.label === picked);
 	return {
 		questionIndex: -1, // overwritten by the caller with the question's position
@@ -152,9 +182,9 @@ async function askSingleSelect(
  * Interactive-RPC-host fallback for the TUI questionnaire: one
  * `ctx.ui.select` dialog per question (looped for multiSelect), keeping the
  * exact TUI result shapes. A cancel on any question cancels the whole
- * questionnaire, matching the TUI Escape key. There is no schema-declared
- * free-text option (`lib/questionnaire/schema.ts` has none), so the
- * always-available "Type something." row has no RPC-dialog equivalent here.
+ * questionnaire, matching the TUI Escape key. Every question also offers
+ * the TUI's always-available free-text row (CUSTOM_ROW_LABEL) through
+ * `ctx.ui.input`.
  */
 async function askThroughDialogs(
 	ctx: Pick<ExtensionContext, "ui">,
@@ -247,8 +277,12 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 		renderShell: "self",
 		label: "Ask User Question",
 		description: "Ask one to four structured questions in a single call, each with two to four ordered options, and read the user's answers back in one result.",
+		promptSnippet: "Ask one to four structured questions in one call (2-4 ordered options each)",
 		promptGuidelines: [
-			"Use ask_user_question to collect decisions in one batch.",
+			"Use ask_user_question only when a genuine human decision remains and one to four structured questions represent it exactly; when no genuine human decision remains, execute the authorized work without asking, and a technical decision the agent owns never becomes an ask_user_question call.",
+			"When ask_user_question is available for a genuine human decision it represents, use it instead of asking in text.",
+			"Batch independent ordinary decisions as separate questions in one ask_user_question call, never one ask per decision.",
+			"Ordinary contextual approval of an action the human already understands needs no ask_user_question call and stays valid as text, never as a provider-owned consent answer.",
 			"Keep each header a short chip of at most 16 characters and each option label at most 60 characters.",
 			"Add a preview to an option when the user needs to compare rich detail side-by-side with the options.",
 			"Set multiSelect when the choices are not mutually exclusive.",

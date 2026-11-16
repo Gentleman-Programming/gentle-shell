@@ -17,7 +17,7 @@ Before delegating, declare a subject via `orchestrator_session_id` (reference).
 
 These boundaries do not authorize children to orchestrate. Each trigger holds only when its condition truly holds; none holds by default. Inline stays within the evidence budget. When one fires, stop and delegate through the runtime's subagent mechanism before continuing; executing past a fired trigger inline is a routing defect even if the work succeeds.
 
-1. **Ask:** an open product or design decision gets one focused user question; stop and wait.
+1. **Ask:** open product or design decision, routed by ODD step 3; stop and wait.
 2. **Mapping trigger (Evidence-budget rule):** read inline only when the evidence fits one parallel batch of at most 3 calls totaling ~10k tokens. Reassess cumulative discovery after each batch; never reset it. When understanding needs more or over 3 lookups, delegate one explorer returning a handoff of at most ~2k tokens with `path:line` evidence; the trigger overrides initial size, including for read-only work. Re-evaluate size after. Preparation for an already understood inline write stays inline, not further discovery.
 3. **Verification rule** (gentle-pi#661/#662, RDD-aware): only a change whose Risk line names a high-risk item (Task Size, assess `escalate` when RDD is on or unknown) gets an independent `gentle-ai-verify` run after the change's own checks, as rarely as possible; otherwise whoever made the change runs its focused test and suite inline, small tasks included. Routing: `orchestrator-verification.md`.
 4. **Track:** a large task gets the feature document, Engram mirror, `todo`, and work-unit commits (`orchestrator-memory.md`).
@@ -44,7 +44,3 @@ For a large task's bounded writes, prefer the installed package-owned `gentle-ai
 - A child must be able to do the task it is given. Check the agent's declared `tools` in `subagent_list_agents` before launching: never give a read-only explorer shell work, and never assume your own tools transfer to the child. With no qualified agent, report the capability gap; a fired trigger is never replaced by inline work.
 - Background (policy on, `subagent_run` present): omit `mode`; it returns a task id at once. End the turn and resume on its `gentle-agents.result` completion message; never sleep or poll `subagent_status`. Otherwise run in the foreground. Detail: reference.
 - Do not pass `model` to generic subagents unless the user asks.
-
-#### Key Learnings closing block
-
-Generic Explore/general worker prompts (`gentle-ai-explore`, `gentle-ai-worker`, `gentle-ai-verify`, or their native `Agent` fallback) end with: after the normal result, close the final response text with a `## Key Learnings` block of 1–5 numbered items, each a standalone factual sentence of at least 20 characters and at least 4 words; omit it when there is genuinely no reusable learning. It layers on after the Return contract without changing its fields and applies to final response text only. Engram automatically extracts and persists the items; the worker does not parse the block or call passive-capture tools; this is separate from explicit `mem_save`. Agents that must return strict JSON never receive it.

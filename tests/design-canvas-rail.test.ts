@@ -43,7 +43,7 @@ function press(canvas: Rail, key: string, init: Record<string, unknown> = {}, ta
 const pressed = (canvas: Rail, id: string) => $(canvas, id).getAttribute("aria-pressed");
 const keyOn = (target: FakeElement, key: string, init: Record<string, unknown> = {}) => target.dispatch("keydown", { key, shiftKey: false, ...init });
 const menuEl = (canvas: Rail) => $(canvas, "gd-menu");
-// Settings' items: actions (menuitem), the Technical details checkbox (menuitemcheckbox) and the language radios (menuitemradio).
+// Settings' items: actions (menuitem), the Technical details checkbox (menuitemcheckbox) and the theme and language radios (menuitemradio).
 const menuItems = (canvas: Rail) => findAll(menuEl(canvas), (element) => ["menuitem", "menuitemcheckbox", "menuitemradio"].includes(element.getAttribute("role") ?? ""));
 const itemLabels = (canvas: Rail) => menuItems(canvas).map((item) => texts(item, "gd-menu-label")[0]);
 const settingsButton = (canvas: Rail) => $(canvas, "gd-rail-settings");
@@ -259,9 +259,9 @@ test("Settings opens the shared menu with Design system board, Keyboard shortcut
 	assert.equal(menuEl(canvas).hidden, false);
 	assert.equal(settings.getAttribute("aria-expanded"), "true");
 	assert.equal(menuEl(canvas).getAttribute("aria-label"), "Settings");
-	assert.deepEqual(itemLabels(canvas), ["Design system board", "Keyboard shortcuts", "Technical details", "Español", "English", "Match the browser"]);
-	assert.deepEqual(items.map((item) => [item.localName, item.getAttribute("tabindex")]), Array(6).fill(["button", "-1"]));
-	const last = items[5];
+	assert.deepEqual(itemLabels(canvas), ["Design system board", "Keyboard shortcuts", "Technical details", "Gentleman", "Neutral", "Español", "English", "Match the browser"]);
+	assert.deepEqual(items.map((item) => [item.localName, item.getAttribute("tabindex")]), Array(8).fill(["button", "-1"]));
+	const last = items[7];
 	// Each item leads with a sprite icon built in the SVG namespace of the page's sprite.
 	for (const [item, name] of [[items[0], "#i-palette"], [items[1], "#i-keys"], [items[2], "#i-code"]] as const) {
 		const [svg] = findAll(item, (element) => element.localName === "svg");
@@ -282,7 +282,7 @@ test("Settings opens the shared menu with Design system board, Keyboard shortcut
 	keyOn(items[1], "ArrowDown");
 	assert.equal(canvas.document.activeElement, items[2]);
 	keyOn(items[2], "ArrowDown");
-	assert.equal(canvas.document.activeElement, items[3], "on to the language radios");
+	assert.equal(canvas.document.activeElement, items[3], "on to the theme radios");
 	keyOn(items[3], "End");
 	assert.equal(canvas.document.activeElement, last);
 	keyOn(last, "ArrowDown");
@@ -730,11 +730,11 @@ test("index.html: a labeled rail with Move, Comment, Overview and Settings, one 
 	// One sprite, with each used icon in it, and only icons something uses.
 	const sprite = /<svg id="gd-sprite" class="gd-sprite" width="0" height="0" aria-hidden="true" focusable="false">([^]*?)<\/svg>/.exec(html);
 	assert.ok(sprite, "a hidden sprite");
-	const symbols = [...sprite![1].matchAll(/<symbol id="([^"]+)" viewBox="0 0 24 24">/g)].map((match) => match[1]);
+	const symbols = [...sprite![1].matchAll(/<symbol id="([^"]+)" viewBox="[\d ]+">/g)].map((match) => match[1]);
 	assert.equal(new Set(symbols).size, symbols.length, "sprite ids are unique");
 	// The screen sizes' icons are used by canvas-sizes.js (tests/design-canvas-sizes.test.ts), the ⋯ menu's
 	// by canvas-export.js (tests/design-canvas-export.test.ts), Technical details' by canvas-rail.js (tests/design-canvas-tokens.test.ts).
-	assert.deepEqual(symbols.sort(), ["i-check", "i-code", "i-column", "i-comment", "i-devices", "i-download", "i-file", "i-fit", "i-gear", "i-grid", "i-hand", "i-image", "i-keys", "i-monitor", "i-more", "i-palette", "i-phone", "i-row", "i-tablet", "i-target", "i-width"]);
+	assert.deepEqual(symbols.sort(), ["i-check", "i-code", "i-column", "i-comment", "i-contrast", "i-devices", "i-download", "i-file", "i-fit", "i-gear", "i-grid", "i-hand", "i-image", "i-keys", "i-monitor", "i-more", "i-mustache", "i-palette", "i-phone", "i-row", "i-tablet", "i-target", "i-width"]);
 	for (const match of html.matchAll(/<use href="#([^"]+)"/g)) assert.ok(symbols.includes(match[1]), `${match[1]} exists in the sprite`);
 
 	assert.match(html, /<div id="gd-menu" class="gd-menu" role="menu" hidden><\/div>/);
@@ -752,10 +752,10 @@ test("index.html: a labeled rail with Move, Comment, Overview and Settings, one 
 	assert.ok(!/[\u{1F300}-\u{1FAFF}☀-➿]/u.test(html), "no emoji icons");
 });
 
-test("canvas-rail.js and canvas-menu.js keep their English strings grouped at the top, with no theme or help", () => {
+test("canvas-rail.js and canvas-menu.js keep their English strings grouped at the top, with no appearance dialog or help", () => {
 	for (const name of ["canvas-rail.js", "canvas-menu.js"]) {
 		const source = read(name);
-		assert.ok(!/theme|appearance|renderGuide|guideBlocked|variant/i.test(source), `${name}: no cut feature`);
+		assert.ok(!/appearance|renderGuide|guideBlocked|variant/i.test(source), `${name}: no cut feature`);
 	}
 	const rail = read("canvas-rail.js");
 	assert.ok(rail.indexOf("const TEXT = Object.freeze({") >= 0 && rail.indexOf("const TEXT = Object.freeze({") < rail.indexOf("export function init"), "the rail's strings sit in one TEXT block before init");
@@ -795,5 +795,5 @@ test("the docs describe the rail, the Settings menu and the changeable keys save
 	for (const part of ["**Move** (`V`", "**Comment** (`C`)", "**Overview**", "(`F`)", "**Settings**", "**Design system board**", "**Keyboard shortcuts** (`?`)", "**Change**", "**Reset**", "**Restore defaults**", "`gentle-design:shortcuts`", "saved in this browser", "a new port", "`Tab` moves on and ends it", "holds for this page only", "AltGr", "Compare covers the rail", "`]`", "`Esc`, `Shift+Esc`, the arrows, `Space`, `Enter`, `Tab`"]) {
 		assert.ok(rail.includes(part), `the rail entry mentions ${part}`);
 	}
-	assert.ok(!/Appearance|theme|Step-by-step/i.test(rail), "nothing that does not ship here");
+	assert.ok(!/Appearance|Step-by-step/i.test(rail), "nothing that does not ship here");
 });

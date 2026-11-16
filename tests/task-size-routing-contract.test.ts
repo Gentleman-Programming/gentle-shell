@@ -162,7 +162,9 @@ const MODULE_BUDGETS: Record<string, number> = {
 	"orchestrator-delegation.md": 7_326,
 	// P5b (C14, X4, X5): no restated worker definition, no nonexistent agents or options (14,800 -> 13,969 B).
 	"orchestrator-delegation-reference.md": 13_969,
-	// gentle-shell#1731 T23: Close gate accepts one Needs your decision result as a stop (12,500 -> 12,600 B).
+	// harness-continuity S3 F1/F2: the canonical Close owns authorized-work boundaries; the local gate keeps a
+	// launched child, already-decided denial/missing consent/exhausted limit on affected work, a partial stop
+	// scoped to that work, or an open human decision, while unrelated runnable work continues.
 	// S14: close the open slice before a high-risk commit; outcomes per commit (12,600 -> 12,850 B).
 	// P5b (C3, C5, X2): contradictions and step 3 / Phase reporting restatements removed; 1.4.0 commit-boundary rules kept (12,850 -> 10,324 B).
 	// cost-speed P6 (X9): Task Size is named as the always-on section, not `orchestrator.md`, so full delegation can load
@@ -237,7 +239,6 @@ test("S11: the default delegation pointer resolves to the lean card and the refe
 		"Spec: odd/tasks/<feature>.md (read until \"## Log\"). Do T#; S#.",
 		"`## Skills to load before work`",
 		"`orchestrator-verification.md`",
-		"#### Key Learnings closing block",
 		"disjoint Allowed edit surfaces",
 		"Subagent-facing prompts should be written in English by default",
 		"technical artifacts default to English",
@@ -246,6 +247,7 @@ test("S11: the default delegation pointer resolves to the lean card and the refe
 	]) {
 		assert.ok(card.includes(clause), `the delegation card is missing: ${clause}`);
 	}
+	assert.ok(!card.includes("Key Learnings"), "S8: the retired Key Learnings ritual stays out of the card");
 	// Reference material lives once, in the reference.
 	for (const heading of ["### Work Routing Ladder", "#### Background Subagent Policy", "### Canonical Lightweight Workflows", "#### Pi Subagent Model Routing"]) {
 		assert.ok(reference.includes(heading), `the reference is missing: ${heading}`);
@@ -294,7 +296,9 @@ test("T4: tracking updates edit in place and mirror without re-emitting the docu
 	for (const clause of [
 		"Update the feature document with targeted edits; never rewrite the whole file to change a task line or append a log entry.",
 		"When a code-execution tool such as `codemode` is available, refresh the Engram mirror inside one script that reads the file and saves its content, so the document is never re-emitted as output tokens.",
-		"projection for large ODD,",
+		// harness-continuity S7: the projection rule lives in the one canonical-state statement.
+		"the Engram mirror and `todo` are projections refreshed at task transitions",
+		"The visible `todo` list is required for large ODD, not a third authority.",
 	]) {
 		assert.ok(memory.includes(clause), `orchestrator-memory.md is missing: ${clause}`);
 	}

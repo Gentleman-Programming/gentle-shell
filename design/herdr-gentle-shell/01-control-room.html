@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gentle Shell on Herdr — Control room</title>
+<style>
+:root{
+  --bg:#1a1218;--bg-deep:#000000;--surface:#20161e;--surface-1:#241822;--surface-2:#342230;
+  --border:#342230;--border-soft:#ffffff17;--text:#f6eff3;--text-muted:#a78e9b;--text-faint:#76616b;
+  --accent:#f095c8;--accent-strong:#ff76c3;--accent-soft:#ffb1dd;
+  --success:#b4e7c7;--warning:#e0c27a;--error:#ff718f;--info:#a9c7ee;
+  --font-sans:Inter,"SF Pro Text",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:"IosevkaTerm NF","Iosevka Term","JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,"DejaVu Sans Mono",monospace;
+  --radius-sm:8px;--radius-md:12px;--radius-lg:16px;--radius-pill:999px;
+  --glow:0 10px 30px #f095c84d;--glow-hover:0 14px 36px #f095c86b;
+  --ease:cubic-bezier(.4,0,.2,1);
+}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font:15px/1.5 var(--font-sans);overflow:hidden}
+::selection{background:#f095c84d}
+html{color-scheme:dark;scrollbar-color:var(--surface-2) transparent}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+.mono{font-family:var(--font-mono)}
+.muted{color:var(--text-muted)}
+.eyebrow{font:600 12px var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+.app{display:grid;grid-template-rows:48px 1fr 32px;height:100vh}
+
+/* top bar: Herdr window drag region */
+.top{display:flex;align-items:center;gap:16px;padding:0 16px 0 88px;border-bottom:1px solid var(--border);background:var(--surface)}
+.word{display:flex;align-items:center;gap:8px;font-weight:800}
+.mark{width:22px;height:22px;border-radius:6px;background:var(--accent);color:var(--bg);display:grid;place-items:center;font:800 12px var(--font-mono)}
+.crumb{display:flex;align-items:center;gap:8px;padding:5px 10px;border:1px solid var(--border-soft);border-radius:var(--radius-sm);background:transparent}
+.crumb b{font-weight:600}
+.counters{display:flex;gap:6px;margin-left:8px}
+.count{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:var(--radius-pill);border:1px solid var(--border-soft);font-size:13px;background:transparent}
+.count .n{font:700 13px var(--font-mono)}
+.count.need{border-color:#e0c27a80;color:var(--warning)}
+.spacer{flex:1}
+.presence{display:flex;align-items:center}
+.av{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font:700 11px var(--font-sans);border:2px solid var(--surface);margin-left:-6px;position:relative}
+.av i{position:absolute;right:-2px;bottom:-2px;width:10px;height:10px;border-radius:50%;border:2px solid var(--surface);background:var(--success)}
+.me{display:flex;align-items:center;gap:8px;padding:3px 10px 3px 3px;border:1px solid var(--border-soft);border-radius:var(--radius-pill);background:transparent}
+.lvl{font:600 12px var(--font-mono);color:var(--accent-soft)}
+
+/* body columns */
+.cols{display:grid;grid-template-columns:272px 1fr 360px;min-height:0}
+aside,main,section{min-height:0}
+
+/* left rail */
+.rail{border-right:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface)}
+.rail-head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px 8px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:36px;padding:7px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);background:transparent;font-weight:600;font-size:14px;transition:.2s var(--ease)}
+.btn:hover{border-color:var(--accent);color:var(--accent-soft)}
+.btn.primary{background:var(--accent);color:var(--bg);border-color:var(--accent);box-shadow:var(--glow)}
+.btn.primary:hover{box-shadow:var(--glow-hover);color:var(--bg)}
+.btn.ghost{border-color:var(--border-soft);color:var(--text-muted)}
+.btn.sm{min-height:30px;padding:4px 10px;font-size:13px}
+.search{margin:0 12px 8px;display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--border-soft);border-radius:var(--radius-sm);color:var(--text-muted);font-size:13px}
+.search kbd{margin-left:auto}
+kbd{font:600 11px var(--font-mono);padding:1px 6px;border:1px solid var(--border-soft);border-radius:5px;color:var(--text-muted)}
+.spaces{overflow:auto;padding:4px 8px 12px;flex:1}
+.space{margin-top:10px}
+.space-h{display:flex;align-items:center;gap:8px;padding:6px 8px;font-size:13px;color:var(--text-muted)}
+.chip{width:10px;height:10px;border-radius:3px}
+.space-h b{color:var(--text);font-weight:700}
+.space-h .br{font:12px var(--font-mono);margin-left:auto}
+.agent{display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:center;width:100%;padding:8px;border-radius:var(--radius-sm);border:1px solid transparent;background:transparent;text-align:left}
+.agent:hover{background:var(--surface-1)}
+.agent[aria-current="true"]{background:var(--surface-1);border-color:var(--border)}
+.portrait{width:28px;height:28px;border-radius:8px;background:var(--surface-2);display:grid;place-items:center;font:700 12px var(--font-mono);color:var(--accent-soft)}
+.agent .t{font-weight:600;font-size:14px;line-height:1.3}
+.agent .s{font-size:12px;color:var(--text-muted)}
+.state{display:inline-flex;align-items:center;gap:5px;font:600 11px var(--font-mono);letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:var(--radius-pill);border:1px solid var(--border-soft);white-space:nowrap}
+.state.work{color:var(--info)}
+.state.need{color:var(--bg);background:var(--warning);border-color:var(--warning)}
+.state.done{color:var(--success)}
+.state.idle{color:var(--text-muted)}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.state.work .dot{animation:pulse 1.6s var(--ease) infinite}
+@keyframes pulse{50%{opacity:.35}}
+.subs{margin:2px 0 4px 46px;display:flex;flex-wrap:wrap;gap:4px}
+.sub{font:12px var(--font-mono);color:var(--text-muted);padding:1px 7px;border:1px dashed var(--border-soft);border-radius:var(--radius-pill)}
+.rail-foot{border-top:1px solid var(--border);padding:12px}
+
+/* conversation */
+.conv{display:grid;grid-template-rows:auto 1fr auto;min-height:0;background:var(--bg)}
+.conv-h{display:flex;align-items:center;gap:12px;padding:14px 24px;border-bottom:1px solid var(--border)}
+.conv-h h1{font-size:18px;font-weight:700}
+.phase{display:flex;gap:4px;margin-left:auto;list-style:none;padding:0}
+.phase span{white-space:nowrap;font:600 11px var(--font-mono);text-transform:uppercase;letter-spacing:.08em;padding:3px 8px;border-radius:var(--radius-pill);color:var(--text-faint);border:1px solid transparent}
+.phase .done{color:var(--success)}
+.phase .now{color:var(--accent);border-color:#f095c84d;background:#f095c81f}
+.feed{overflow:auto;padding:20px 24px 8px;display:flex;flex-direction:column;gap:16px}
+.msg{max-width:720px}
+.msg.you{align-self:flex-end;background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius-md) var(--radius-md) 4px var(--radius-md);padding:10px 14px}
+.who{font-size:12px;color:var(--text-muted);margin-bottom:4px}
+.plan{border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);padding:14px 16px;max-width:720px}
+.plan ol{list-style:none;padding:0;margin-top:8px;display:grid;gap:6px}
+.plan li{display:grid;grid-template-columns:20px 1fr auto;gap:8px;align-items:center;font-size:14px}
+.tick{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--text-faint);display:grid;place-items:center;font-size:10px}
+.plan .ok .tick{border-color:var(--success);background:#b4e7c726;color:var(--success)}
+.plan .ok span:nth-child(2){color:var(--text-muted)}
+.plan .cur .tick{border-color:var(--accent)}
+.plan .cur span:nth-child(2){font-weight:600}
+.steps{display:grid;gap:4px;max-width:720px}
+.step{display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:var(--radius-sm);background:var(--surface);border:1px solid var(--border);font-size:13.5px}
+.step .k{font:600 11px var(--font-mono);text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);width:56px}
+.step .r{margin-left:auto;font:12px var(--font-mono);color:var(--text-muted)}
+.step .pass{color:var(--success)}
+.step a{color:var(--accent);font-size:12px;text-decoration:none}
+.step a:hover{text-decoration:underline}
+.inline-ask{max-width:720px;border:1px solid #e0c27a80;border-left:3px solid var(--warning);border-radius:var(--radius-md);background:var(--surface);padding:14px 16px}
+.inline-ask h3{font-size:15px;color:var(--warning);margin-bottom:4px}
+.opts{display:grid;gap:8px;margin-top:10px}
+.opt{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;text-align:left;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-1);transition:.2s var(--ease)}
+.opt:hover{border-color:var(--accent)}
+.opt .num{font:700 12px var(--font-mono);color:var(--accent);grid-row:span 2;padding-top:2px}
+.opt b{font-weight:600;font-size:14px}
+.opt small{color:var(--text-muted);font-size:13px}
+.opt.rec{border-color:#f095c84d}
+.opt.rec b::after{content:" · recommended";font:600 11px var(--font-mono);color:var(--accent-soft)}
+
+.composer{padding:12px 24px 18px}
+.box{border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);padding:10px 12px}
+.box textarea{width:100%;resize:none;background:transparent;border:0;color:var(--text);font:15px/1.5 var(--font-sans);min-height:44px}
+.box textarea:focus{outline:none}
+.box:focus-within{border-color:var(--accent)}
+.tools{display:flex;align-items:center;gap:6px}
+.pill{font:600 12px var(--font-mono);padding:3px 10px;border:1px solid var(--border-soft);border-radius:var(--radius-pill);color:var(--text-muted);background:transparent}
+.pill.acc{border-color:#f095c84d;background:#f095c81f;color:var(--accent-soft)}
+.hint{font-size:12px;color:var(--text-muted);margin-top:6px;display:flex;gap:14px}
+
+/* right column */
+.side{border-left:1px solid var(--border);overflow:auto;padding:16px;display:flex;flex-direction:column;gap:18px;background:var(--surface)}
+.side h2{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700;margin-bottom:10px}
+.badge{font:700 11px var(--font-mono);background:var(--warning);color:var(--bg);border-radius:var(--radius-pill);padding:1px 7px}
+.card{border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-1);padding:12px 14px;display:grid;gap:8px}
+.card + .card{margin-top:8px}
+.card.need{border-left:3px solid var(--warning)}
+.card.done{border-left:3px solid var(--success)}
+.card .from{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted)}
+.card .from b{color:var(--text);font-weight:600}
+.card .from time{margin-left:auto;font-family:var(--font-mono)}
+.card p{font-size:14px}
+.row{display:flex;gap:6px;flex-wrap:wrap}
+.diff{font:12px var(--font-mono)}
+.diff .a{color:var(--success)}.diff .d{color:var(--error)}
+.team .mate{display:grid;grid-template-columns:28px 1fr auto;gap:10px;align-items:center;padding:6px 0}
+.team .mate + .mate{border-top:1px solid var(--border-soft)}
+.team .mate .t{font-size:13.5px;font-weight:600}
+.team .mate .s{font-size:12px;color:var(--text-muted)}
+.react{display:flex;gap:4px}
+.react button{border:1px solid var(--border-soft);background:transparent;border-radius:var(--radius-pill);padding:1px 8px;font-size:12px;min-height:24px}
+.react button:hover{border-color:var(--accent)}
+.toast{border:1px solid #f095c84d;background:linear-gradient(180deg,#f095c81f,transparent);border-radius:var(--radius-md);padding:12px 14px;display:grid;grid-template-columns:40px 1fr;gap:10px;align-items:center}
+.medal{width:40px;height:40px;border-radius:12px;background:var(--surface-2);display:grid;place-items:center;border:1px solid #f095c84d}
+
+/* status strip */
+.status{display:flex;align-items:center;gap:16px;padding:0 16px;border-top:1px solid var(--border);background:var(--surface);font:12px var(--font-mono);color:var(--text-muted)}
+.status button{background:transparent;border:0;color:var(--text-muted);font:12px var(--font-mono);display:flex;align-items:center;gap:6px}
+.status button:hover{color:var(--accent-soft)}
+.meter{width:70px;height:5px;border-radius:var(--radius-pill);background:var(--surface-2);overflow:hidden}
+.meter i{display:block;height:100%;width:38%;background:var(--info)}
+.ok{color:var(--success)}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<a class="sr" href="#composer">Skip to message box</a>
+<div class="app">
+  <header class="top" aria-label="Window bar">
+    <div class="word"><span class="mark" aria-hidden="true">g</span>gentle shell</div>
+    <button class="crumb" aria-label="Switch space: gentle-ai, branch feat/token-refresh"><span class="chip" style="background:var(--accent)"></span><b>gentle-ai</b><span class="mono muted">feat/token-refresh</span> ▾</button>
+    <div class="counters" role="group" aria-label="Agent counts across spaces">
+      <button class="count" title="Show working agents"><span class="state work" style="border:0;padding:0"><span class="dot"></span></span><span class="n">3</span> working</button>
+      <button class="count need" title="Show agents waiting for you">? <span class="n">2</span> need you</button>
+      <button class="count" title="Show finished tasks"><span class="ok">✓</span> <span class="n">5</span> done today</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="presence" aria-label="4 teammates online in Gentleman Programming">
+      <span class="av" style="background:#a9c7ee;color:#1a1218" title="Lu · online">LU<i></i></span>
+      <span class="av" style="background:#b4e7c7;color:#1a1218" title="Marcos · online">MA<i></i></span>
+      <span class="av" style="background:#e0c27a;color:#1a1218" title="Sofi · online">SO<i></i></span>
+      <span class="av" style="background:#342230;color:#f6eff3" title="and 1 more">+1</span>
+    </div>
+    <button class="me" aria-label="Your profile: Alan, level 14, 9 day streak"><span class="av" style="background:var(--accent);color:var(--bg);margin:0;border:0">AB</span><span class="lvl">Lv 14 · 9d 🔥</span></button>
+  </header>
+
+  <div class="cols">
+    <aside class="rail" aria-label="Spaces and agents">
+      <div class="rail-head"><span class="eyebrow">Spaces</span><button class="btn sm primary">+ New agent</button></div>
+      <div class="search" role="search"><span aria-hidden="true">⌕</span>Find agent, file or task<kbd>⌘K</kbd></div>
+      <nav class="spaces">
+        <div class="space">
+          <div class="space-h"><span class="chip" style="background:var(--accent)"></span><b>gentle-ai</b><span class="br">3 agents</span></div>
+          <button class="agent" aria-current="true"><span class="portrait">π</span><span><span class="t">Token refresh fix</span><br><span class="s">Gentle Shell · implementing</span></span><span class="state need">? you</span></button>
+          <div class="subs" aria-label="Subagents"><span class="sub">⚒ worker · tests</span><span class="sub">⌕ explore</span></div>
+          <button class="agent"><span class="portrait">π</span><span><span class="t">Release notes 4.5.1</span><br><span class="s">Gentle Shell · checking</span></span><span class="state work"><span class="dot"></span>work</span></button>
+          <button class="agent"><span class="portrait">π</span><span><span class="t">Triage #6102</span><br><span class="s">Gentle Shell · 2 min ago</span></span><span class="state done">✓ done</span></button>
+        </div>
+        <div class="space">
+          <div class="space-h"><span class="chip" style="background:var(--info)"></span><b>engram</b><span class="br">1 agent</span></div>
+          <button class="agent"><span class="portrait">π</span><span><span class="t">Sync conflict UI</span><br><span class="s">Gentle Shell · exploring</span></span><span class="state work"><span class="dot"></span>work</span></button>
+        </div>
+        <div class="space">
+          <div class="space-h"><span class="chip" style="background:var(--success)"></span><b>gentleman-landing</b><span class="br">1 agent</span></div>
+          <button class="agent"><span class="portrait">π</span><span><span class="t">Hero copy in Spanish</span><br><span class="s">Gentle Shell · waiting 6 min</span></span><span class="state need">? you</span></button>
+          <button class="agent"><span class="portrait mono">$</span><span><span class="t">dev server</span><br><span class="s">terminal · :5173</span></span><span class="state idle">idle</span></button>
+        </div>
+      </nav>
+      <div class="rail-foot"><button class="btn ghost sm" style="width:100%">+ Open a folder as a space</button></div>
+    </aside>
+
+    <main class="conv" aria-label="Conversation with Token refresh fix">
+      <div class="conv-h">
+        <span class="portrait" aria-hidden="true">π</span>
+        <div><h1>Token refresh fix</h1><div class="muted" style="font-size:13px">gentle-ai · <span class="mono">feat/token-refresh</span> · started 14 min ago</div></div>
+        <ol class="phase" aria-label="Workflow phase: implementing">
+          <li><span class="done">✓ explore</span></li><li><span class="done">✓ plan</span></li><li><span class="now" aria-current="step">implement</span></li><li><span>check</span></li><li><span>close</span></li>
+        </ol>
+      </div>
+
+      <div class="feed" role="log" aria-live="polite">
+        <div class="msg you"><div class="who">You · 14:02</div>Users get logged out after an hour even when they're active. Fix the refresh so it renews before expiry, with a test.</div>
+
+        <div class="msg"><div class="who">Gentle Shell · 14:03</div>I found the cause: the refresh timer is created once at login and never rescheduled after a renewal, so the second expiry is missed. Here's the plan.</div>
+
+        <div class="plan" aria-label="Task plan">
+          <span class="eyebrow">Plan · 2 of 4</span>
+          <ol>
+            <li class="ok"><span class="tick">✓</span><span>Reproduce: test that fails after the first renewal</span><span class="mono muted" style="font-size:12px">a1f3c9e</span></li>
+            <li class="ok"><span class="tick">✓</span><span>Reschedule the timer on every renewal</span><span class="mono muted" style="font-size:12px">a1f3c9e</span></li>
+            <li class="cur"><span class="tick"></span><span>Retry once when the refresh request fails</span><span class="mono muted" style="font-size:12px">in progress</span></li>
+            <li><span class="tick"></span><span>Update the session docs</span><span></span></li>
+          </ol>
+        </div>
+
+        <div class="steps" aria-label="What the agent did">
+          <div class="step"><span class="k">read</span>4 files in <span class="mono">internal/auth/</span><span class="r">0.8s</span></div>
+          <div class="step"><span class="k">edit</span><span class="mono">session.go</span> <span class="diff"><span class="a">+22</span> <span class="d">−6</span></span><span class="r"><a href="#">View diff</a></span></div>
+          <div class="step"><span class="k">test</span>go test ./internal/auth<span class="r pass">42 passed</span></div>
+        </div>
+
+        <div class="inline-ask" role="group" aria-labelledby="ask1">
+          <h3 id="ask1">? Gentle Shell needs your decision</h3>
+          <p>If the refresh request fails, what should the user see?</p>
+          <div class="opts">
+            <button class="opt rec"><span class="num">1</span><b>Retry once, then sign out with a message</b><small>Clear outcome; the user knows they must sign in again.</small></button>
+            <button class="opt"><span class="num">2</span><b>Keep retrying in the background</b><small>Fewer interruptions; can hide a broken server for minutes.</small></button>
+            <button class="opt"><span class="num">3</span><b>Something else…</b><small>Write your own answer.</small></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer" id="composer">
+        <label class="sr" for="msg">Message Token refresh fix</label>
+        <div class="box">
+          <textarea id="msg" rows="2" placeholder="Answer, ask, or give a new instruction…"></textarea>
+          <div class="tools">
+            <button class="pill" aria-label="Attach file or image">＋ Attach</button>
+            <button class="pill acc">skill: go-testing</button>
+            <button class="pill">/ commands</button>
+            <span class="spacer"></span>
+            <button class="pill" aria-label="Model: Opus 5.5, change">Opus 5.5 ▾</button>
+            <button class="btn primary sm">Send ↵</button>
+          </div>
+        </div>
+        <div class="hint"><span><kbd>⌘J</kbd> show terminal</span><span><kbd>Esc</kbd> stop agent</span><span><kbd>⌘1–9</kbd> switch agent</span></div>
+      </div>
+    </main>
+
+    <section class="side" aria-label="Inbox and team">
+      <div>
+        <h2>Needs you <span class="badge">2</span></h2>
+        <article class="card need">
+          <div class="from"><span class="chip" style="background:var(--success)"></span><b>Hero copy in Spanish</b><time>6 min</time></div>
+          <p>Review before I write the second tagline?</p>
+          <div class="row"><button class="btn sm primary">Allow review</button><button class="btn sm">Skip this time</button></div>
+        </article>
+        <article class="card need">
+          <div class="from"><span class="chip" style="background:var(--accent)"></span><b>Token refresh fix</b><time>now</time></div>
+          <p>What should the user see when refresh fails?</p>
+          <div class="row"><button class="btn sm">Open question</button></div>
+        </article>
+      </div>
+
+      <div>
+        <h2>Ready to ship</h2>
+        <article class="card done">
+          <div class="from"><span class="chip" style="background:var(--accent)"></span><b>Triage #6102</b><time>2 min</time></div>
+          <p>Labeled, linked to #6058 and wrote a reply draft.</p>
+          <div class="diff">3 files <span class="a">+48</span> <span class="d">−2</span> · 18 tests passed</div>
+          <div class="row"><button class="btn sm primary">Review changes</button><button class="btn sm">Commit</button></div>
+        </article>
+      </div>
+
+      <div class="team">
+        <h2>Team live <span class="muted" style="font-weight:400;font-size:12px">Gentleman Programming</span></h2>
+        <div class="mate"><span class="av" style="background:#a9c7ee;color:#1a1218;margin:0">LU</span><span><span class="t">Lu · engram</span><br><span class="s">2 agents · 1 checking</span></span><div class="react"><button aria-label="Cheer Lu">👏</button><button aria-label="Offer help to Lu">🫡</button></div></div>
+        <div class="mate"><span class="av" style="background:#b4e7c7;color:#1a1218;margin:0">MA</span><span><span class="t">Marcos · gentle-pi</span><br><span class="s">just shipped “herdr status v2” ✓</span></span><div class="react"><button aria-label="Cheer Marcos">👏 4</button></div></div>
+        <div class="mate"><span class="av" style="background:#e0c27a;color:#1a1218;margin:0">SO</span><span><span class="t">Sofi · gentleman-landing</span><br><span class="s">waiting on review · 12 min</span></span><div class="react"><button aria-label="Review Sofi's change">Review</button></div></div>
+      </div>
+
+      <div class="toast" role="status">
+        <span class="medal" aria-hidden="true">🧪</span>
+        <div><b>Achievement · Red before green</b><div class="muted" style="font-size:13px">10 fixes that started with a failing test. 3 more for <i>Test Whisperer</i>.</div></div>
+      </div>
+    </section>
+  </div>
+
+  <footer class="status" aria-label="Session status">
+    <button>▸ Terminal <kbd>⌘J</kbd></button>
+    <span>context <span class="meter" style="display:inline-block;vertical-align:middle"><i></i></span> 38%</span>
+    <span>memory: Engram <span class="ok">on</span></span>
+    <span>review: on</span>
+    <span class="spacer"></span>
+    <span>session 01:42 · 184k tokens</span>
+    <span>herdr <span class="ok">connected</span></span>
+  </footer>
+</div>
+</body>
+</html>

@@ -63,7 +63,8 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys, staleRoutingKeys, removeRoutingKeys, removeRoutingKeysFromProfilesFile } from "../lib/agents-config.ts";
+import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys, staleRoutingKeys, removeRoutingKeys } from "../lib/agents-config.ts";
+import { snapshotRoutingCleanup, commitRoutingCleanup } from "../lib/routing-cleanup-transaction.ts";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -113,6 +114,7 @@ import {
 	formatRoutingRow,
 	isProfileOrchestratorKey,
 	parseProfileExportTextWithDrops,
+	normalizeProfilesFile,
 	PROFILE_ORCHESTRATOR_KEY,
 	profileExportPath,
 	profileRoutingRows,
@@ -7173,27 +7175,83 @@ async function openProfilesPanelLoop(
 					const roots = { cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd, home: homedir(), agentHome: resolveGentlePiAgentHome() };
 					const discovered = discoverAgents(roots).agents;
 					const known = [...PROVIDER_REVIEW_ROLES.map((name) => ({ name })), ...discovered];
-					const subagents = loadAgentsConfig(roots).modelProfiles;
-					const saved = readSavedModelConfig(ctx.cwd);
-					if (saved.status === "invalid") throw new Error(`Invalid routing file: ${saved.path}`);
-					const models = saved.status === "valid" ? saved.config : {};
-					const subKeys = staleRoutingKeys(subagents, known);
-					const modelKeys = staleRoutingKeys(models, known);
-					const profileKeys = Object.values(file.profiles).flatMap((profile) => staleRoutingKeys(profile, known));
-					const keys = [...new Set([...subKeys, ...modelKeys, ...profileKeys])].filter((key) => !isProfileOrchestratorKey(key)).sort();
+					const subPaths = ["project", "user"].map((source) => agentModelProfileConfigPath(roots.cwd, source as AgentSource));
+					const modelPath = modelConfigPath(ctx.cwd);
+					const legacyPath = legacyProjectModelConfigPath(ctx.cwd);
+					const paths = [...subPaths, modelPath, path, legacyPath];
+					// Candidates and replacements share these exact physical originals.
+					const snapshot = snapshotRoutingCleanup(paths);
+					const readObject = (input: string): Record<string, unknown> | undefined => {
+						const bytes = snapshot.read(input);
+						if (bytes === undefined) return undefined;
+						const value: unknown = JSON.parse(bytes.toString("utf8"));
+						if (!isRecord(value)) throw new Error(`Invalid routing file: ${input}`);
+						return value;
+					};
+					const subFiles = subPaths.map((input) => ({ path: input, raw: readObject(input) }));
+					for (const sub of subFiles) {
+						if (sub.raw?.model_profiles !== undefined && !isRecord(sub.raw.model_profiles)) {
+							throw new Error(`Invalid routing file: ${sub.path}`);
+						}
+					}
+					const models = readObject(modelPath) ?? readObject(legacyPath) ?? {};
+					const rawProfiles = readObject(path);
+					const parsedProfiles = normalizeProfilesFile(rawProfiles);
+					if (!rawProfiles || !parsedProfiles || !isRecord(rawProfiles.profiles)) {
+						throw new Error(`Invalid routing file: ${path}`);
+					}
+					// Normalization is only a candidate/shape validator, never the write payload.
+					const candidates = (raw: Record<string, unknown>) => staleRoutingKeys(normalizeModelConfig(raw) ?? {}, known);
+					const subStores = subFiles.map((sub) => {
+						const routes = isRecord(sub.raw?.model_profiles) ? sub.raw.model_profiles : {};
+						return { ...sub, routes, keys: candidates(routes) };
+					});
+					const modelKeys = candidates(models);
+					const profileStores = Object.entries(rawProfiles.profiles).map(([name, routes]) => {
+						if (!isRecord(routes)) throw new Error(`Invalid routing file: ${path}`);
+						return { name, routes, keys: candidates(routes) };
+					});
+					const keys = [...new Set([...subStores.flatMap((sub) => sub.keys), ...modelKeys,
+						...profileStores.flatMap((profile) => profile.keys)])].sort();
 					return { keys, apply: (selected) => {
-						// Stop at the first write failure; earlier stores are not rolled back.
-						const remaining = removeRoutingKeys(subagents, selected.filter((key) => subKeys.includes(key)));
-						for (const source of ["project", "user"] as const) {
-							const subPath = agentModelProfileConfigPath(roots.cwd, source);
-							for (const key of subKeys) {
-								if (!(key in remaining)) updateSubagentModelProfileAtPath(subPath, key, undefined);
+						const replacements = new Map<string, Uint8Array>();
+						const add = (input: string, raw: Record<string, unknown>) => {
+							replacements.set(input, Buffer.from(`${JSON.stringify(raw, null, 2)}\n`));
+						};
+						const remove = (raw: Record<string, unknown>, eligible: string[]) =>
+							removeRoutingKeys(raw, selected.filter((key) => eligible.includes(key)));
+						for (const sub of subStores) {
+							const routes = remove(sub.routes, sub.keys);
+							if (routes !== sub.routes) add(sub.path, { ...sub.raw, model_profiles: routes });
+						}
+						const nextModels = remove(models, modelKeys);
+						if (nextModels !== models) add(modelPath, nextModels);
+						let profiles = rawProfiles.profiles as Record<string, unknown>;
+						for (const profile of profileStores) {
+							const routes = remove(profile.routes, profile.keys);
+							if (routes !== profile.routes) profiles = { ...profiles, [profile.name]: routes };
+						}
+						const nextRaw = { ...rawProfiles, profiles };
+						const next = normalizeProfilesFile(nextRaw)!.file;
+						if (profiles !== rawProfiles.profiles) add(path, nextRaw);
+						// Also detect edits to read-only inputs (including the legacy source).
+						const current = snapshotRoutingCleanup(paths);
+						for (const input of paths) {
+							const before = snapshot.read(input), after = current.read(input);
+							if (before === undefined ? after !== undefined : after === undefined || !before.equals(after)) {
+								throw new Error(`Routing cleanup input changed: ${input}`);
 							}
 						}
-						const nextModels = removeRoutingKeys(models, selected.filter((key) => modelKeys.includes(key)));
-						if (nextModels !== models) writeModelConfig(ctx.cwd, nextModels);
-						const next = removeRoutingKeysFromProfilesFile(file, selected);
-						if (next !== file) writeProfilesFileSync(path, next);
+						// Prepared runtime compensation only: no crash/power-loss guarantee.
+						try {
+							commitRoutingCleanup(snapshot, replacements);
+						} catch (error) {
+							const message = profilesErrorMessage(error);
+							// Panel feedback is capped at two lines; retain every restoration
+							// error and recovery path in the notification visible on close.
+							ctx.ui.notify(`Cleanup failed: ${message}`, "warning");
+							throw new Error(`${message.split("\n")[0]}. Full details are in notifications.`, { cause: error });
+						}
 						file = next;
 						return file;
 					} };

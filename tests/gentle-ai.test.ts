@@ -3638,6 +3638,179 @@ test("models screen stale cleanup only removes a key from the store that actuall
 	assert.deepEqual(stored.profiles, { team: known });
 });
 
+// Public-command transaction contract. Patches are installed only inside the
+// panel callback, after startup reads, and restored even if an assertion fails.
+function cleanupTransactionFixture(t: test.TestContext) {
+	const setup = profilesStoreFixture(t);
+	const { fixture, writeStore, storePath } = setup;
+	const entry = { model: "openai/alpha" };
+	writeStore({ team: { worker: entry, abandoned: entry }, sibling: { abandoned: entry } }, "team");
+	const subPath = join(fixture.root, ".pi", "subagents.json");
+	const userPath = join(fixture.agentHome, "subagents.json");
+	for (const path of [subPath, userPath]) {
+		writeFileSync(path, JSON.stringify({ extra: { keep: true }, model_profiles: { worker: entry, abandoned: entry } }));
+	}
+	writeFileSync(fixture.globalPath, JSON.stringify({ worker: entry, abandoned: entry }));
+	const paths = [subPath, userPath, fixture.globalPath, storePath, fixture.projectPath];
+	const bytes = () => paths.map((path) => existsSync(path) ? readFileSync(path) : undefined);
+	fixture.tui.terminal.rows = 40;
+	return { ...setup, subPath, userPath, paths, bytes };
+}
+
+for (const boundary of ["prepare", "replace", "replace-then-throw", "absent-then-throw", "restore-error"] as const) {
+	test(`models screen cleanup transaction: ${boundary}`, async (t) => {
+		const { fixture, storePath, paths, bytes } = cleanupTransactionFixture(t);
+		if (boundary === "absent-then-throw") {
+			fs.renameSync(fixture.globalPath, fixture.projectPath);
+		}
+		const before = bytes();
+		const original = { writeFileSync: fs.writeFileSync, renameSync: fs.renameSync, openSync: fs.openSync };
+		let injected = false;
+		let restoreInjected = false;
+		// Fail models after earlier stores were changed. The legacy writer uses
+		// writeFileSync; the prepared transaction uses renameSync. Both hooks
+		// perform the actual replacement first for the partial-mutation cases.
+		const target = fixture.globalPath;
+		fixture.onInput((panel) => {
+			panel.handleInput("x");
+			try {
+				fs.openSync = ((path: any, ...args: any[]) => {
+					if (boundary === "prepare" && String(path).includes(".cleanup-next-")) {
+						injected = true;
+						throw new Error("injected preparation failure");
+					}
+					return (original.openSync as any)(path, ...args);
+				}) as typeof fs.openSync;
+				fs.writeFileSync = ((path: any, ...args: any[]) => {
+					if (!injected && path === target) {
+						injected = true;
+						if (boundary !== "prepare" && boundary !== "replace") (original.writeFileSync as any)(path, ...args);
+						throw new Error(boundary === "prepare" ? "injected preparation failure" : "injected replacement failure");
+					}
+					return (original.writeFileSync as any)(path, ...args);
+				}) as typeof fs.writeFileSync;
+				fs.renameSync = ((from: any, to: any) => {
+					if (boundary === "restore-error" && String(from).includes(".cleanup-restore-")) {
+						restoreInjected = true;
+						throw new Error("injected restoration failure");
+					}
+					if (!injected && to === target) {
+						injected = true;
+						if (boundary !== "replace") original.renameSync(from, to);
+						throw new Error("injected replacement failure");
+					}
+					return original.renameSync(from, to);
+				}) as typeof fs.renameSync;
+				syncBuiltinESMExports();
+				panel.handleInput("\r");
+			} finally {
+				Object.assign(fs, original);
+				syncBuiltinESMExports();
+			}
+			const text = stripAnsi(renderComponent(panel));
+			assert.ok(injected, "the public command reached the injected filesystem boundary");
+			assert.match(text, /Cleanup failed:.*injected (preparation|replacement) failure/s);
+			assert.doesNotMatch(text, /Removed \d+ stale routing/);
+			assert.match(text, /abandoned/, "failed cleanup keeps the displayed profile draft");
+			if (boundary === "restore-error") {
+				assert.ok(restoreInjected);
+				assert.match(text, /Full details are in notifications\./);
+				const notice = fixture.notifications.find((entry) => entry.severity === "warning" && /Unresolved restore:/.test(entry.message));
+				assert.ok(notice, "full rollback failure must remain human-visible after closing the panel");
+				assert.match(notice.message, /injected replacement failure/);
+				assert.match(notice.message, /injected restoration failure/);
+				for (const path of paths.slice(0, 3)) {
+					const recovery = fs.readdirSync(dirname(path)).find((name) => join(dirname(path), name).startsWith(`${path}.cleanup-restore-`));
+					assert.ok(recovery, `recovery copy retained for ${path}`);
+					const recoveryPath = join(dirname(path), recovery);
+					assert.ok(notice.message.includes(`recovery: ${recoveryPath};`));
+					assert.deepEqual(readFileSync(recoveryPath), before[paths.indexOf(path)]);
+				}
+			} else {
+				assert.deepEqual(bytes(), before, `restore all bytes and existence: ${paths.join(", ")}`);
+			}
+			panel.handleInput("\x1b");
+		});
+		await fixture.run("gentle:profiles");
+		assert.deepEqual(readFileSync(storePath), before[3], "no successful profile-store update");
+	});
+}
+
+for (const invalid of ["malformed", "unreadable", "linked", "changed"] as const) {
+	test(`models screen cleanup transaction: ${invalid} input`, async (t) => {
+		const { fixture, userPath, bytes } = cleanupTransactionFixture(t);
+		if (invalid === "malformed") writeFileSync(userPath, "{broken JSON");
+		if (invalid === "linked") fs.linkSync(userPath, join(fixture.agentHome, "linked-subagents.json"));
+		let expected = bytes();
+		fixture.onInput((panel) => {
+			const originalRead = fs.readFileSync;
+			try {
+				if (invalid === "unreadable") {
+					fs.readFileSync = ((path: any, ...args: any[]) => {
+						if (path === userPath) throw Object.assign(new Error("injected unreadable input"), { code: "EACCES" });
+						return (originalRead as any)(path, ...args);
+					}) as typeof fs.readFileSync;
+					syncBuiltinESMExports();
+				}
+				panel.handleInput("x");
+			} finally { fs.readFileSync = originalRead; syncBuiltinESMExports(); }
+			if (invalid === "changed") {
+				writeFileSync(userPath, `${readFileSync(userPath, "utf8")}\n`);
+				expected = bytes();
+				panel.handleInput("\r");
+			}
+			assert.match(stripAnsi(renderComponent(panel)), /Cleanup failed:/);
+			assert.doesNotMatch(stripAnsi(renderComponent(panel)), /Removed \d+ stale routing/);
+			assert.deepEqual(bytes(), expected, "rejection preserves all inputs, including external edits");
+			panel.handleInput("\x1b");
+		});
+		await fixture.run("gentle:profiles");
+		assert.deepEqual(bytes(), expected);
+	});
+}
+
+test("models screen cleanup transaction: materializes absent global from legacy models", async (t) => {
+	const { fixture, bytes } = cleanupTransactionFixture(t);
+	fs.renameSync(fixture.globalPath, fixture.projectPath);
+	const legacy = readFileSync(fixture.projectPath);
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		panel.handleInput("\r");
+		assert.match(stripAnsi(renderComponent(panel)), /Removed 1 stale routing key\./);
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } });
+	assert.deepEqual(readFileSync(fixture.projectPath), legacy, "legacy source stays untouched");
+	assert.ok(bytes()[2], "global target is materialized");
+});
+
+test("models screen cleanup transaction: preserves raw metadata and per-store selection", async (t) => {
+	const { fixture, subPath, userPath, storePath } = cleanupTransactionFixture(t);
+	const profile = JSON.parse(readFileSync(storePath, "utf8"));
+	profile.extra = { untouched: true };
+	profile.profiles.team.worker.custom = "keep";
+	writeFileSync(storePath, JSON.stringify(profile));
+	const model = JSON.parse(readFileSync(fixture.globalPath, "utf8"));
+	model.metadata = { custom: "keep" }; // Not a routing entry; must not be normalized away.
+	writeFileSync(fixture.globalPath, JSON.stringify(model));
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		panel.handleInput("\r");
+		assert.match(stripAnsi(renderComponent(panel)), /Removed 1 stale routing key\./);
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	for (const path of [subPath, userPath]) {
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { extra: { keep: true }, model_profiles: { worker: { model: "openai/alpha" } } });
+	}
+	delete model.abandoned;
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), model);
+	delete profile.profiles.team.abandoned;
+	delete profile.profiles.sibling.abandoned;
+	assert.deepEqual(JSON.parse(readFileSync(storePath, "utf8")), profile);
+});
+
 // Issue #2196: a profile key that names no discovered agent was silently
 // ignored at launch. gentle-pi#2271: provider review roles are routed by key
 // and never have an agent file, so they are never flagged.

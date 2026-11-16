@@ -8266,7 +8266,12 @@ test("a job notice survives session switching and is delivered only to its owner
 
 		await fire("session_start", owner, { reason: "resume" });
 		await fire("turn_end", owner);
-		await eventually(() => notices().length === 1, "resuming the owner delivers its retained notice");
+		// The retained notice lands when the job log closes, which can outlast the resume boundary
+		// under load (the busy-parent test below allows the same); give it a wider bounded window.
+		for (let attempt = 0; attempt < 400 && notices().length === 0; attempt++) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		assert.equal(notices().length, 1, "resuming the owner delivers its retained notice");
 		assert.match(String(notices()[0]!.message.content), /job-1 \(\"owner job\"\) exited with code 0/);
 		await fire("turn_end", owner);
 		assert.equal(notices().length, 1, "the retained notice is delivered exactly once");

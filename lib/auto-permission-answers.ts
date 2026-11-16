@@ -82,7 +82,8 @@ interface ChoicePrompt {
 }
 export function captureChoiceAnswer(ctx: AnswerContext, toolCallId: string, params: ChoicePrompt, signal?: AbortSignal) {
 	const options = params.options.map((option) => ({ ...option }));
-	const allowCustom = params.allowCustomResponse === true;
+	// Effective value: ask_user_choice offers free text unless the call passes false.
+	const allowCustom = params.allowCustomResponse !== false;
 	const prompt = JSON.stringify({ question: params.question,
 		options: options.map(({ label, description }) => ({ label, description })), allowCustomResponse: allowCustom });
 	const publish = beginCapture(ctx, "ask_user_choice", toolCallId, [{ question: params.question, prompt }], signal);

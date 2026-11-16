@@ -646,7 +646,7 @@ gentle-pi's postinstall only writes the global `tuiMode: fullscreen` setting whe
 
 ### Interactive RPC hosts
 
-Setting `GENTLE_SHELL_INTERACTIVE_HOST=1` on a `pi --mode rpc` process turns on two things a plain headless RPC host does not get: dialogs for `ask_user_question` and `ask_user_choice` (one `ctx.ui.select` prompt per question, looped for multiSelect), and Gentle Agents' helper activity pushed live through `setWidget`. A subagent child spawned by such a host never inherits the variable, so nested children stay headless regardless of their parent. See the [activity payload reference](gentle-agents-activity.md) for the exact schema, field bounds, and shrink order.
+Setting `GENTLE_SHELL_INTERACTIVE_HOST=1` on a `pi --mode rpc` process turns on two things a plain headless RPC host does not get: dialogs for `ask_user_question` and `ask_user_choice` (one `ctx.ui.select` prompt per question, looped for multiSelect, plus a free-text entry answered through `ctx.ui.input`: `ask_user_question`'s "Type something." row, and `ask_user_choice`'s "Type your answer" unless the call passes `allowCustomResponse: false`), and Gentle Agents' helper activity pushed live through `setWidget`. A subagent child spawned by such a host never inherits the variable, so nested children stay headless regardless of their parent. See the [activity payload reference](gentle-agents-activity.md) for the exact schema, field bounds, and shrink order.
 
 ### Herdr lifecycle bridge
 
@@ -1354,6 +1354,8 @@ Every parent session uses one profile for its subagent launches, the footer and 
 3. Otherwise, only in `follow` mode, the current defaults.
 
 A session that never selected a profile resolves the shared defaults once, at startup: the local pin (`p`), then the repository declaration (`P`), then the globally active profile in `profiles.json`. It keeps that profile's name, routing, and origin (`local`, `repo`, or `global`). Changing a pin, the repository declaration, the active profile, or the profile's content afterwards affects new sessions only, the same way Pi's "set as default" for the orchestrator model leaves open sessions alone. Outside a Git worktree the repository declaration is still read, as non-Git writer admission does.
+
+**Live orchestrator at own start.** A new parent session that starts on a profile also switches its live orchestrator to that profile's `orchestrator` entry, resolved through the `p → P → G` layers of its own directory. Pi's persisted default remains only when no profile resolves or the entry is missing or unavailable (model not found or credentials missing); a failed switch keeps the current model and notifies you. This never writes `settings.json`. Follow mode and subagent children do not switch.
 
 **Behavior change for unpinned sessions.** Without a pin or declaration, launches now use the globally active profile from `profiles.json`, replacing the materialized `subagents.json` routing wholesale like a pin does. Before, an unpinned launch read the materialized stores. When nothing is pinned and no profile is active, the session freezes "no profile" and keeps routing through the materialized stores, as before; a pin added later does not change it.
 

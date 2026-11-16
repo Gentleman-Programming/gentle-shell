@@ -35,6 +35,7 @@ test("the store starts with the canvas defaults and no system field", () => {
 		parts: { slug: null, parts: [] },
 		tokens: [],
 		technical: false,
+		theme: "neutral",
 		tab: "comments",
 		compare: null,
 		toastTimer: 0,
@@ -167,6 +168,14 @@ test("the language changes only through setLanguage: the choice and the language
 	store.setLanguage("en", "en");
 	assert.deepEqual([store.state.languageChoice, store.state.language], ["en", "en"]);
 	assert.throws(() => { (store.state as any).language = "es"; }, TypeError);
+});
+
+test("the theme changes only through setTheme", () => {
+	const store = createStore();
+	assert.equal(store.state.theme, "neutral", "Neutral until the canvas reads the saved theme");
+	store.setTheme("gentleman");
+	assert.equal(store.state.theme, "gentleman");
+	assert.throws(() => { (store.state as any).theme = "neutral"; }, TypeError);
 });
 
 test("the panel's tab is one of two names, set through setTab", () => {

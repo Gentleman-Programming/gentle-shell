@@ -80,6 +80,8 @@ export function createStore(initial = {}) {
 		// The canvas language (canvas-i18n.js): the one it shows, "es" or "en", and the choice in Settings, "es", "en" or "auto" (the browser's).
 		language: "en",
 		languageChoice: "auto",
+		// The canvas theme (canvas-theme.js): "neutral" (:root's palette) or "gentleman".
+		theme: "neutral",
 	};
 	const read = Object.freeze(Object.defineProperties({}, Object.fromEntries(Object.keys(state).map((key) => [key, { enumerable: true, get: () => state[key] }]))));
 
@@ -126,6 +128,7 @@ export function createStore(initial = {}) {
 			state.languageChoice = choice;
 			state.language = language;
 		},
+		setTheme(theme) { state.theme = theme; },
 	});
 }
 

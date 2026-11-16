@@ -150,8 +150,19 @@ function quoteForCmd(part: string): string {
 
 /** The full Windows command line for the fixed-argument vector: the npm `.cmd` shim needs
  * cmd.exe, so the arguments become one cmd.exe-quoted string. Pure on purpose — the win32 spawn
- * cannot run on a POSIX host, but the string it would build is fully checkable in a unit test. */
+ * cannot run on a POSIX host, but the string it would build is fully checkable in a unit test.
+ * cmd.exe expands %VAR% even inside double quotes and offers no command-line escape for a
+ * literal percent, so an argument carrying one has no faithful transport through the shell and
+ * the `.cmd` shim — with USERNAME=alice, C:\repos\%USERNAME% would target C:\repos\alice, a
+ * different project than the lease protects. Such arguments are rejected here, before any
+ * spawn: the callers' existing spawn-failure paths then report the warm-up or command as
+ * failed instead of silently running for the wrong project. */
 export function buildWindowsCommand(args: readonly string[]): string {
+	for (const part of args) {
+		if (part.includes("%")) {
+			throw new Error(`cmd.exe would expand the percent in "${part}" into a different project: refusing to build the Windows command line`);
+		}
+	}
 	return ["codegraph", ...args.map(quoteForCmd)].join(" ");
 }
 
@@ -190,11 +201,13 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 	return new Promise((resolve) => {
 		let settled = false;
 		let child: ReturnType<typeof spawn> | undefined;
+		let escalate: ReturnType<typeof setTimeout> | undefined;
 		const project = projectSpelling(daemon, cwd);
 		const finish = (ok: boolean) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
+			if (escalate !== undefined) clearTimeout(escalate);
 			// Destroy, not end: an ended pipe still holds the event loop until the server exits.
 			try { child?.stdin?.destroy(); } catch { /* already closed */ }
 			try { child?.stdout?.destroy(); } catch { /* already gone */ }
@@ -203,9 +216,18 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 		};
 		// A warm-up that never handshakes is not a daemon: kill it instead of leaking a process
 		// that can hold the daemon lock (the success path above still never kills a live daemon).
+		// A child that handles or ignores SIGTERM is escalated to the unignorable SIGKILL after
+		// the same short grace the command runner grants, and the failure is reported only once
+		// the tree is gone — KILL_WAIT_MS stays the cap for a close that never comes — so a
+		// stubborn warm-up can never stay alive holding the daemon lock past its result.
 		const timer = setTimeout(() => {
 			killProcessTree(child, true);
-			finish(false);
+			escalate = setTimeout(() => {
+				killProcessTree(child, true, "SIGKILL");
+				escalate = setTimeout(() => finish(false), KILL_WAIT_MS);
+				if (background) escalate.unref?.();
+			}, KILL_ESCALATE_MS);
+			if (background) escalate.unref?.();
 		}, timeoutMs);
 		if (background) timer.unref?.();
 		try {
@@ -540,26 +562,39 @@ function killProcessTree(child: { pid?: number } | undefined, group = false, sig
 	}
 }
 
+/** One codegraph command run's captured result: the ok verdict, the exit code, the bounded
+ * stderr tail, and the captured stdout — whole when the caller asked for an unbounded capture
+ * (the seed's tracked-file listing parses JSON a 2,000-character tail could truncate). */
+interface CommandRun {
+	ok: boolean;
+	exitCode?: number | null;
+	stderrTail?: string;
+	stdout: string;
+}
+
 /**
  * Runs the codegraph CLI with fixed arguments for the project in `cwd`, from the temp directory with the
  * project as the last argument spelled as its daemon registered it (another spelling starts another
  * daemon). On Windows the npm `.cmd` shim needs a shell. A timeout kills the child and only reports the
- * failure once that process is gone: its pid must not outlive the result.
+ * failure once that process is gone: its pid must not outlive the result — and the timeout is recorded
+ * when it fires, so a command that handles the kill signal and still exits 0 is reported as failed.
  */
-export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: number, onSpawn?: (pid: number, proxy: boolean) => void, onInfo?: (info: CodegraphCommandInfo) => void): Promise<boolean> {
+function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: number, opts: { stdoutChars?: number; onSpawn?: (pid: number, proxy: boolean) => void; onInfo?: (info: CodegraphCommandInfo) => void }): Promise<CommandRun> {
 	return new Promise((resolve) => {
 		let settled = false;
+		let timedOut = false;
 		let grace: ReturnType<typeof setTimeout> | undefined;
 		let exitCode: number | null | undefined;
 		let stderrTail = "";
-		let stdoutTail = "";
+		let stdoutKept = "";
+		const stdoutChars = opts.stdoutChars;
 		const finish = (ok: boolean) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
 			if (grace !== undefined) clearTimeout(grace);
-			onInfo?.({ ok, exitCode, stderrTail: stderrTail.length > 0 ? stderrTail : undefined, stdoutTail: stdoutTail.length > 0 ? stdoutTail : undefined });
-			resolve(ok);
+			opts.onInfo?.({ ok, exitCode, stderrTail: stderrTail.length > 0 ? stderrTail : undefined, stdoutTail: stdoutKept.length > 0 ? stdoutKept.slice(-2_000) : undefined });
+			resolve({ ok, exitCode, stderrTail: stderrTail.length > 0 ? stderrTail : undefined, stdout: stdoutKept });
 		};
 		let child: ReturnType<typeof spawn> | undefined;
 		try {
@@ -571,23 +606,30 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 				project = realpathSync(cwd);
 			}
 			child = spawnCodegraph([...args, project], ["ignore", "pipe", "pipe"]);
-		} catch {
-			resolve(false);
+		} catch (error) {
+			// A refused spawn — cmd.exe cannot carry a literal percent through the .cmd shim — is
+			// a diagnosable failure, not a silent one: the sink sees why no command ran.
+			opts.onInfo?.({ ok: false, stderrTail: firstLineOf(error, 200) });
+			resolve({ ok: false, stdout: "" });
 			return;
 		}
 		if (child !== undefined && child.pid !== undefined) {
-			try { onSpawn?.(child.pid, process.platform === "win32"); } catch { /* bookkeeping is best effort */ }
+			try { opts.onSpawn?.(child.pid, process.platform === "win32"); } catch { /* bookkeeping is best effort */ }
 		}
 		child?.stderr?.on("data", (chunk: Buffer) => {
 			// Only the tail is ever shown: keep the last slice, never the whole stream.
 			stderrTail = (stderrTail + chunk.toString("utf8")).slice(-2_000);
 		});
 		child?.stdout?.on("data", (chunk: Buffer) => {
-			// The same bounded tail as stderr: the pipe is always drained (a full one would block the
-			// child), and `status` output parsed by the seed runner never needs more than the end.
-			stdoutTail = (stdoutTail + chunk.toString("utf8")).slice(-2_000);
+			// The pipe is always drained (a full one would block the child). Diagnostics only ever
+			// need the bounded tail; the seed's tracked-file listing is the one caller that parses
+			// structured output, so its capture runs unbounded — a tail could truncate the JSON.
+			const text = chunk.toString("utf8");
+			stdoutKept = stdoutChars === undefined ? stdoutKept + text : (stdoutKept + text).slice(-stdoutChars);
 		});
 		const timer = setTimeout(() => {
+			// The deadline expired: whatever exit code follows, the run is failed.
+			timedOut = true;
 			killProcessTree(child, true);
 			// A killed command may still be closing; report the failure only once the process is
 			// gone — and one that ignored SIGTERM is escalated to the unignorable SIGKILL after a
@@ -603,9 +645,16 @@ export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: nu
 		child?.on("error", () => finish(false));
 		child?.on("close", (code: number | null) => {
 			exitCode = code;
-			finish(code === 0);
+			// A zero exit code counts only when the deadline did not expire first: a command that
+			// handles the timeout's SIGTERM and exits 0 was still interrupted by the timeout.
+			finish(!timedOut && code === 0);
 		});
 	});
+}
+
+/** The public boolean contract every injected CodegraphRun speaks: one bounded-tail command run. */
+export function runCodegraph(args: readonly string[], cwd: string, timeoutMs: number, onSpawn?: (pid: number, proxy: boolean) => void, onInfo?: (info: CodegraphCommandInfo) => void): Promise<boolean> {
+	return runCodegraphCommand(args, cwd, timeoutMs, { stdoutChars: 2_000, onSpawn, onInfo }).then((run) => run.ok);
 }
 
 /** The tracked-file count a `codegraph status <project>` run reports, or undefined when the
@@ -642,24 +691,35 @@ function materializeStagingSources(worktree: string, stagingRoot: string): void 
 	}
 }
 
-/** One `codegraph status <project>` read of the staged index's tracked-file count. */
-async function stagedFileCount(cwd: string, onSpawn?: (pid: number, proxy: boolean) => void, onInfo?: (info: CodegraphCommandInfo) => void): Promise<number | undefined> {
-	let stdoutTail = "";
-	const ok = await runCodegraph(["status"], cwd, SYNC_TIMEOUT_MS, onSpawn, (info) => {
-		stdoutTail = info.stdoutTail ?? "";
-		onInfo?.(info);
-	});
-	return ok ? indexedFileCount(stdoutTail) : undefined;
+/** One `codegraph files --format flat -j -p <project>` read of the staged index's tracked-file
+ * identities — the CLI prints one {path} record per tracked entry as a JSON array. The capture
+ * is unbounded: a 2,000-character tail could truncate the listing's JSON. Undefined when the
+ * listing cannot be read: a torn or corrupt database cannot prove anything. */
+async function stagedTrackedPaths(cwd: string, onSpawn?: (pid: number, proxy: boolean) => void, onInfo?: (info: CodegraphCommandInfo) => void): Promise<Set<string> | undefined> {
+	const run = await runCodegraphCommand(["files", "--format", "flat", "-j", "-p"], cwd, SYNC_TIMEOUT_MS, { onSpawn, onInfo });
+	if (!run.ok) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(run.stdout);
+		if (!Array.isArray(parsed)) return undefined;
+		const paths = new Set<string>();
+		for (const entry of parsed) {
+			if (typeof (entry as { path?: unknown }).path !== "string") return undefined;
+			paths.add((entry as { path: string }).path);
+		}
+		return paths;
+	} catch {
+		return undefined;
+	}
 }
 
 /**
  * The seed's validating-sync runner: `codegraph sync -q` for the staging project, run against the
  * target worktree's real sources, reporting the SeedSyncReport object form. `sync -q` prints
  * nothing (probed: it is quiet even while dropping every entry), so removal is detected by a
- * before/after tracked-file-count probe through `codegraph status` — the same CLI: an exit-0
+ * before/after tracked-file-identity probe through `codegraph files --format flat -j` — the same CLI: an exit-0
  * sync that still dropped entries copied an index that does not match the worktree's files, and
  * the seed must fail instead of publishing it. Any step that cannot prove the copy — a staging
- * whose sources cannot be linked, a count that cannot be read — fails closed with ok=false, and
+ * whose sources cannot be linked, a listing that cannot be read — fails closed with ok=false, and
  * every other call shape keeps runCodegraph's plain boolean contract.
  */
 export function runCodegraphSeedSync(args: readonly string[], cwd: string, timeoutMs: number, onSpawn?: (pid: number, proxy: boolean) => void, onInfo?: (info: CodegraphCommandInfo) => void): Promise<SeedSyncReport> {
@@ -672,12 +732,14 @@ export function runCodegraphSeedSync(args: readonly string[], cwd: string, timeo
 		} catch {
 			return { ok: false, removedEntries: false };
 		}
-		const before = await stagedFileCount(cwd, onSpawn, onInfo);
+		const before = await stagedTrackedPaths(cwd, onSpawn, onInfo);
 		if (before === undefined) return { ok: false, removedEntries: false };
 		if (!(await runCodegraph(args, cwd, timeoutMs, onSpawn, onInfo))) return { ok: false, removedEntries: false };
-		const after = await stagedFileCount(cwd, onSpawn, onInfo);
-		// An after-count that cannot be read cannot prove the entries survived: fail closed.
-		return { ok: true, removedEntries: after === undefined || after < before };
+		const after = await stagedTrackedPaths(cwd, onSpawn, onInfo);
+		// An after-listing that cannot be read cannot prove the entries survived: fail closed.
+		// Identities, never the net count: a sync that swaps one entry for another keeps the
+		// count but still dropped a tracked entry, and the report must say so.
+		return { ok: true, removedEntries: after === undefined || [...before].some((path) => !after.has(path)) };
 	})();
 }
 

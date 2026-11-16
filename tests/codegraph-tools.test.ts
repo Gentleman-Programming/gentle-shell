@@ -702,7 +702,7 @@ test("session_start ensures direct mcp exposure once per process, and a child se
 	armExposureEnsureForTest(parent.io);
 	sessionStart({ reason: "startup" }, ctx);
 	sessionStart({ reason: "startup" }, ctx);
-	assert.equal(parent.reads.length, 2, "each agent-home mcp.json is read exactly once");
+	assert.equal(parent.reads.length, 4, "each agent-home mcp.json is read once per update attempt (initial read plus the pre-publish re-verify)");
 	assert.equal(parent.writes.length, 2, "each agent-home mcp.json is written exactly once");
 });
 

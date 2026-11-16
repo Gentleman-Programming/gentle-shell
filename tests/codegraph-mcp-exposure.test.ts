@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { chmodSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
+	atomicWriteFile,
 	codegraphMcpPaths,
 	ensureDirectExposure,
 	ensureDirectExposureInAgentHomes,
+	type AtomicFileIo,
 	type EnsureExposureIo,
 } from "../lib/codegraph-mcp-exposure.ts";
 
@@ -19,6 +24,37 @@ function harness(files: Record<string, string>): { io: EnsureExposureIo; files: 
 				writes.set(path, text);
 				files[path] = text;
 			},
+		},
+	};
+}
+
+/** In-memory AtomicFileIo over file and mode maps, with optional failure injection at one step. */
+function atomicHarness(
+	files: Record<string, string>,
+	modes: Record<string, number> = {},
+	fail: { step: "write" | "rename" } | undefined = undefined,
+): AtomicFileIo {
+	return {
+		resolve: (path) => path,
+		modeOf: (path) => modes[path],
+		writeExclusive: (path, text, mode) => {
+			if (fail?.step === "write") {
+				files[path] = text.slice(0, 8); // the temporary file is left partially written
+				throw new Error("ENOSPC: no space left on device");
+			}
+			files[path] = text;
+			modes[path] = mode;
+		},
+		rename: (from, to) => {
+			if (fail?.step === "rename") throw new Error("EPERM: operation not permitted");
+			files[to] = files[from]!;
+			modes[to] = modes[from] ?? 0o644;
+			delete files[from];
+			delete modes[from];
+		},
+		remove: (path) => {
+			delete files[path];
+			delete modes[path];
 		},
 	};
 }
@@ -82,13 +118,16 @@ test("ensureDirectExposure: without a codegraph entry nothing is created", () =>
 });
 
 test("codegraphMcpPaths: exactly the pi and gentle-shell agent mcp.json paths", () => {
-	assert.deepEqual(codegraphMcpPaths("/h"), ["/h/.pi/agent/mcp.json", "/h/.gentle-shell/agent/mcp.json"]);
+	assert.deepEqual(codegraphMcpPaths("/h"), [
+		join("/h", ".pi", "agent", "mcp.json"),
+		join("/h", ".gentle-shell", "agent", "mcp.json"),
+	]);
 });
 
 test("ensureDirectExposureInAgentHomes: patches each agent home independently", () => {
 	const files: Record<string, string> = {
-		"/h/.pi/agent/mcp.json": WITH_CODEGRAPH,
-		"/h/.gentle-shell/agent/mcp.json": WITH_CODEGRAPH,
+		[join("/h", ".pi", "agent", "mcp.json")]: WITH_CODEGRAPH,
+		[join("/h", ".gentle-shell", "agent", "mcp.json")]: WITH_CODEGRAPH,
 	};
 	const { io, writes } = harness(files);
 	const results = ensureDirectExposureInAgentHomes("/h", io);
@@ -97,5 +136,76 @@ test("ensureDirectExposureInAgentHomes: patches each agent home independently", 
 	for (const path of codegraphMcpPaths("/h")) {
 		const written = JSON.parse(files[path]!) as { mcpServers: { codegraph: { exposure: string } } };
 		assert.equal(written.mcpServers.codegraph.exposure, "direct", path);
+	}
+});
+
+test("ensureDirectExposureInAgentHomes: an I/O failure on the first home does not stop the second home's update", () => {
+	const piPath = join("/h", ".pi", "agent", "mcp.json");
+	const shellPath = join("/h", ".gentle-shell", "agent", "mcp.json");
+	const files: Record<string, string> = { [piPath]: WITH_CODEGRAPH, [shellPath]: WITH_CODEGRAPH };
+	const io: EnsureExposureIo = {
+		read: (path) => (path in files ? files[path] : undefined),
+		write: (path, text) => {
+			if (path === piPath) throw new Error("EACCES: permission denied, read-only config");
+			files[path] = text;
+		},
+	};
+	const results = ensureDirectExposureInAgentHomes("/h", io);
+	assert.deepEqual(
+		results.map((result) => result.outcome),
+		["error", "added"],
+		"the failed home is reported and the map continues",
+	);
+	assert.equal(files[piPath], WITH_CODEGRAPH, "the failed home's file is left exactly as it was");
+	const written = JSON.parse(files[shellPath]!) as { mcpServers: { codegraph: { exposure: string } } };
+	assert.equal(written.mcpServers.codegraph.exposure, "direct", "the second home still receives its update");
+});
+
+test("atomicWriteFile: a replacement that fails part-way leaves the original file intact", () => {
+	const dest = "/home/.pi/agent/mcp.json";
+	for (const step of ["write", "rename"] as const) {
+		const files: Record<string, string> = { [dest]: WITH_CODEGRAPH };
+		assert.throws(() => atomicWriteFile(dest, "{}\n", atomicHarness(files, {}, { step })), /ENOSPC|EPERM/, `failure at ${step}`);
+		assert.equal(files[dest], WITH_CODEGRAPH, `the original survives a failed ${step}`);
+		assert.deepEqual(Object.keys(files), [dest], `no temporary file is left behind after a failed ${step}`);
+	}
+});
+
+test("atomicWriteFile: the default io lands the whole text, preserves permissions, and leaves no temporary file", () => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-"));
+	try {
+		const dest = join(dir, "mcp.json");
+		writeFileSync(dest, WITH_CODEGRAPH, "utf8");
+		chmodSync(dest, 0o600);
+		atomicWriteFile(dest, "{}\n");
+		assert.equal(readFileSync(dest, "utf8"), "{}\n", "the new text replaces the old");
+		if (process.platform !== "win32") assert.equal(statSync(dest).mode & 0o777, 0o600, "the original permission bits are preserved");
+		const fresh = join(dir, "fresh.json");
+		atomicWriteFile(fresh, "{}\n");
+		assert.equal(readFileSync(fresh, "utf8"), "{}\n", "a destination that does not exist yet is created");
+		assert.deepEqual(readdirSync(dir).sort(), ["fresh.json", "mcp.json"], "no temporary file survives a successful replacement");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("atomicWriteFile: a symlinked config keeps receiving updates through the file it points at", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-"));
+	try {
+		const real = join(dir, "real-mcp.json");
+		writeFileSync(real, WITH_CODEGRAPH, "utf8");
+		const link = join(dir, "linked-mcp.json");
+		try {
+			symlinkSync(real, link);
+		} catch {
+			t.skip("symlinks are unavailable on this platform");
+			return;
+		}
+		atomicWriteFile(link, "{}\n");
+		assert.equal(readFileSync(real, "utf8"), "{}\n", "the update lands on the link's target");
+		assert.ok(lstatSync(link).isSymbolicLink(), "the link itself is preserved");
+		assert.deepEqual(readdirSync(dir).sort(), ["linked-mcp.json", "real-mcp.json"], "no temporary file is left behind");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
 	}
 });

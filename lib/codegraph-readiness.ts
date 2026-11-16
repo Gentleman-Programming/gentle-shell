@@ -501,13 +501,15 @@ export interface SearchSyncInput {
 const searchSyncInFlight = new Map<string, Promise<void>>();
 
 /**
- * Refreshes the index before a search, in the background: sync -q only. A live daemon holds the
- * writer lock and is never stale, and a CLI sync coexists with it (daemon.log auto-syncs); without
- * one, the sync lease decides who refreshes. Each run is within the sync timeout. Never blocks and
- * never rejects; failures surface only through onFailed.
+ * Refreshes the index before a search and resolves once that refresh has settled: sync -q only.
+ * A live daemon holds the writer lock and is never stale, and a CLI sync coexists with it
+ * (daemon.log auto-syncs); without one, the sync lease decides who refreshes. A call that arrives
+ * while a refresh is in flight resolves with that same job instead of starting another. Each run
+ * is within the sync timeout. Never rejects; failures surface only through onFailed.
  */
-export function syncBeforeSearch(input: SearchSyncInput): void {
-	if (searchSyncInFlight.has(input.cwd)) return;
+export function syncBeforeSearch(input: SearchSyncInput): Promise<void> {
+	const running = searchSyncInFlight.get(input.cwd);
+	if (running) return running;
 	const job = (async (): Promise<void> => {
 		const sleep = input.sleep ?? defaultSyncSleep;
 		const info = lastInfoSink();
@@ -539,6 +541,7 @@ export function syncBeforeSearch(input: SearchSyncInput): void {
 		}
 	})();
 	searchSyncInFlight.set(input.cwd, job);
+	return job;
 }
 
 /** The process view the kill and settlement decisions need: the platform, and the Windows

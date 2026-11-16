@@ -1068,17 +1068,16 @@ test("syncBeforeSearch: concurrent calls for one cwd coalesce into a single sync
 		return true;
 	};
 
-	syncBeforeSearch({ cwd, run });
-	syncBeforeSearch({ cwd, run });
+	const first = syncBeforeSearch({ cwd, run });
+	const second = syncBeforeSearch({ cwd, run });
 	assert.deepEqual(calls, ["sync -q"], "the second call starts no second job while one is in flight");
 
 	release?.();
-	await settled();
-	assert.deepEqual(calls, ["sync -q"], "exactly one sync serves both callers");
+	await Promise.all([first, second]);
+	assert.deepEqual(calls, ["sync -q"], "exactly one sync serves both awaiting callers");
 
-	syncBeforeSearch({ cwd, run });
-	await settled();
-	assert.deepEqual(calls, ["sync -q", "sync -q"], "a settled job frees the cwd for the next turn");
+	await syncBeforeSearch({ cwd, run });
+	assert.deepEqual(calls, ["sync -q", "sync -q"], "a settled job frees the cwd for the next search");
 });
 
 test("syncBeforeSearch: a rejecting run never surfaces an unhandled rejection", async (t) => {

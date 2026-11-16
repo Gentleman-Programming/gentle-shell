@@ -26,8 +26,20 @@ function gateWorkspace(t: test.TestContext, indexed: boolean): string {
 /** The ctx the gate's handlers fire with: seeded by installGate, retargetable per test. */
 let fireCtx: { cwd: string } | undefined;
 
+/** The GENTLE_CODEGRAPH_MEMORY_GATE value the invoking shell inherited, captured before any test
+ * mutates it: the default per-test setup unsets the override and restores this afterwards. */
+const INHERITED_GATE_ENV = process.env.GENTLE_CODEGRAPH_MEMORY_GATE;
+
 /** A fake pi that records the handler each pi.on registration leaves behind, per event name. */
 function installGate(t: test.TestContext, indexed = true): Map<string, Handler> {
+	// Every default test runs with the override unset, whatever the invoking shell inherited:
+	// test (o) is the only one that sets explicit values, and the inherited value is restored
+	// once the test is over, so the suite passes under either user configuration.
+	delete process.env.GENTLE_CODEGRAPH_MEMORY_GATE;
+	t.after(() => {
+		if (INHERITED_GATE_ENV === undefined) delete process.env.GENTLE_CODEGRAPH_MEMORY_GATE;
+		else process.env.GENTLE_CODEGRAPH_MEMORY_GATE = INHERITED_GATE_ENV;
+	});
 	const handlers = new Map<string, Handler>();
 	const pi = {
 		on(event: string, handler: Handler) {
@@ -125,6 +137,46 @@ test("(k) every before_agent_start resets the credit, user or custom run", (t) =
 	});
 });
 
+test("(q) a steering user message delivered inside the running loop resets the credit without before_agent_start", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
+	// Pi (1.2.0+) consumes steering inside the current agent loop with no second
+	// before_agent_start: the delivered user message must re-open the window itself.
+	fire(handlers, "message_end", { message: { role: "user", content: "also check the lease path" } });
+	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
+		block: true,
+		reason: BLOCK_REASON,
+	}, "a delivered steering message starts the codegraph-first window over");
+	// The steered window credits again after its own query, and only a user role resets:
+	// assistant, tool-result, and custom deliveries never expire re-earned credit.
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t2", args: { operation: "query", query: "lease" } });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t2" });
+	for (const role of ["assistant", "toolResult", "custom"]) {
+		fire(handlers, "message_end", { message: { role, content: "not a user prompt" } });
+	}
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "only a delivered user message resets the window");
+});
+
+test("(r) a queued follow-up user message consumed after agent_end resets the credit without before_agent_start", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_query", toolCallId: "t1", args: { query: "flow" } });
+	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_query", toolCallId: "t1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_get_observation" }), undefined);
+	// The run ends and queued follow-ups continue the loop: agent_start may fire again, but
+	// before_agent_start does not - the delivered follow-up must reset the window on delivery.
+	handlers.get("agent_end")?.({ messages: [] });
+	handlers.get("agent_start")?.({});
+	fire(handlers, "message_end", { message: { role: "user", content: "now summarize what changed" } });
+	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_get_observation" }), {
+		block: true,
+		reason: BLOCK_REASON,
+	}, "a delivered follow-up message starts the codegraph-first window over");
+});
+
 test("(f) memory writes are never blocked, even before any codegraph call", (t) => {
 	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
@@ -169,6 +221,19 @@ test("(i) a hostile event payload never throws: the guards return undefined", (t
 	assert.equal(fire(handlers, "tool_call", undefined), undefined);
 	// The credit path is equally guarded: a hostile end event neither throws nor credits.
 	assert.doesNotThrow(() => fire(handlers, "tool_execution_end", explosive));
+	// The message-delivery reset is equally guarded: a hostile payload neither throws nor resets.
+	const explosiveDelivery = {} as { message?: unknown };
+	Object.defineProperty(explosiveDelivery, "message", {
+		get() {
+			throw new Error("message must be read inside the guard's try/catch");
+		},
+	});
+	assert.doesNotThrow(() => fire(handlers, "message_end", explosiveDelivery));
+	for (const message of [null, 42, {}, []]) {
+		assert.doesNotThrow(() => fire(handlers, "message_end", { message }), `malformed message ${String(message)} must not throw`);
+	}
+	assert.doesNotThrow(() => fire(handlers, "message_end", null));
+	assert.doesNotThrow(() => fire(handlers, "message_end", undefined));
 	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
 		block: true,
 		reason: BLOCK_REASON,
@@ -292,4 +357,23 @@ test("(p) a host ctx without a workspace cwd fails open: the gate never breaks t
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_get_observation" }), undefined);
+});
+
+test("(s) the default per-test setup unsets an inherited GENTLE_CODEGRAPH_MEMORY_GATE and restores it afterwards", async (t) => {
+	// The invoking shell may export either override; every default test must still see the
+	// index-driven behavior, and the inherited value must be back once the test is over.
+	await t.test("default tests run with the override unset", (inner) => {
+		process.env.GENTLE_CODEGRAPH_MEMORY_GATE = "0";
+		const disabled = installGate(inner);
+		fire(disabled, "before_agent_start", { messageType: "user" });
+		assert.deepEqual(fire(disabled, "tool_call", { toolName: "mem_search" }), {
+			block: true,
+			reason: BLOCK_REASON,
+		}, "an inherited =0 must not disable the gate for a default test");
+		process.env.GENTLE_CODEGRAPH_MEMORY_GATE = "1";
+		const forced = installGate(inner, false);
+		fire(forced, "before_agent_start", { messageType: "user" });
+		assert.equal(fire(forced, "tool_call", { toolName: "mem_search" }), undefined, "an inherited =1 must not force the gate on for a default test");
+	});
+	assert.equal(process.env.GENTLE_CODEGRAPH_MEMORY_GATE, INHERITED_GATE_ENV, "the inherited override is restored after the test");
 });

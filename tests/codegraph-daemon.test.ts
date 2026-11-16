@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { daemonFor, exploreViaDaemon, liveDaemons, mcpLineReader, mcpReplyKind, parseMcpReply, registeredDaemons, resetDaemonRegistryMemo } from "../lib/codegraph-daemon.ts";
+import type { McpReply } from "../lib/codegraph-daemon.ts";
 
 function dir(t: test.TestContext, name: string): string {
 	const cwd = mkdtempSync(join(tmpdir(), `gentle-codegraph-daemon-${name}-`));
@@ -212,4 +213,22 @@ test("mcpLineReader buffers chunks, skips empty and unparseable lines, stops on 
 	const bounded = mcpLineReader(() => true, 9);
 	assert.equal(bounded('{"id":1}\n'), false, "under the cap lines are read");
 	assert.equal(bounded("0123456789"), true, "past the cap the reader answers overflow before reading a line");
+});
+
+test("mcpLineReader keeps a multibyte character split across Buffer chunks intact", () => {
+	const lines: Array<McpReply | undefined> = [];
+	const read = mcpLineReader((message) => {
+		lines.push(message);
+		return false;
+	});
+	// é is the two UTF-8 bytes C3 A9; the split lands between them, so a per-chunk toString turns
+	// each half into a replacement character and the reply text is silently corrupted.
+	const reply = JSON.stringify({ id: 2, result: { content: [{ type: "text", text: "café" }] } }) + "\n";
+	const bytes = Buffer.from(reply, "utf8");
+	const splitAt = bytes.indexOf(Buffer.from("é", "utf8")) + 1;
+	assert.ok(splitAt > 0, "the split must land inside é's bytes");
+	read(bytes.subarray(0, splitAt));
+	assert.equal(lines.length, 0, "the half-finished line is buffered, not delivered");
+	read(bytes.subarray(splitAt));
+	assert.deepEqual(lines, [{ id: 2, result: { content: [{ type: "text", text: "café" }] } }], "é survives the chunk boundary");
 });

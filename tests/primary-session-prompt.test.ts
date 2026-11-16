@@ -127,3 +127,13 @@ test("Safety clause allows the task's exact resolved skill reads in every mode w
 		"registered same-clone worktrees",
 	]) assert.ok(line.includes(clause), `missing delivered clause: ${clause}`);
 });
+
+// fix/temp-dir-exemption (user decision): the OS temp directory needs no outside-root question, deletion there
+// is limited to what the session or its tools created, and every other outside-root access still asks first.
+test("Safety clause exempts the OS temp directory and keeps the ask-first rule for every other outside path", () => {
+	const line = renderPrimaryPrompt().split("\n").find(candidate => candidate.startsWith("- Keep session work inside the project root"));
+	assert.ok(line, "confinement clause is delivered");
+	assert.ok(line.includes("Reading or writing the OS temp directory (session `TMPDIR`, `/tmp`, `/var/tmp`) needs none either; without asking, delete there only what this session or its tools created."), "missing the temp-directory exemption");
+	assert.ok(!line.includes("session scratch"), "the temp exemption must not name session scratch, which also covers clones and worktrees outside the temp directory");
+	assert.ok(line.startsWith("- Keep session work inside the project root and registered same-clone worktrees; ask before any read or write outside it, naming the absolute path. Exception: reading the task's exact resolved skill files needs no per-file question in any mode."), "the ask-first outside-root rule changed");
+});

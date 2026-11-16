@@ -408,6 +408,25 @@ test("gd:colors, a change of theme, recolors the outlines and leaves the mode an
 	assert.equal(inspector.hoverBox.style.border, "2px solid #f095c8", "an invalid color is ignored");
 });
 
+test("outline colors reject CSS-injection strings and non-strings, keep colors across a colorless gd:mode, and Neutral is main's", () => {
+	const inspector = loadInspector();
+	const look = () => [inspector.hoverBox.style.border, inspector.hoverBox.style.background, inspector.selectedBox.style.border, inspector.selectedBox.style.background].join("|");
+	assert.equal(look(), "2px solid #8ab4ff|rgba(138, 180, 255, 0.12)|2px solid #ffd479|rgba(138, 180, 255, 0.12)");
+	inspector.fromParent({ type: "gd:colors", colors: { accent: "#f095c8", wash: "rgba(240, 149, 200, 0.12)", focus: "#e0c27a" } });
+	const gentleman = look();
+	for (const bad of ["#fff;x", "#fff\n", " #fff", "rgb(1,2,3)\u0000", "rgb(1,2,3)}*{x:y", "rgb(1,2,3)/**/", "hsl(1, 2%, 3%)", "currentColor", "\\23 fff", `rgb(1.${"0".repeat(60)}, 2, 3)`, 1, null, ["#fff"], new String("#fff")]) {
+		inspector.fromParent({ type: "gd:colors", colors: { accent: bad, wash: bad, focus: bad } });
+		assert.equal(look(), gentleman, String(bad));
+	}
+	inspector.fromParent({ type: "gd:colors", colors: structuredClone(JSON.parse('{"__proto__":{"accent":"#000"},"constructor":"#000","border":"#000"}')) });
+	assert.equal(look(), gentleman, "foreign and prototype keys are ignored");
+	inspector.fire("message", { source: null, data: { type: "gd:colors", colors: { accent: "#123" } } });
+	assert.equal(look(), gentleman, "only the parent counts");
+	// canvas-export.js posts gd:mode without colors around an export.
+	inspector.fromParent({ type: "gd:mode", enabled: false });
+	assert.equal(look(), gentleman, "an export's gd:mode keeps the theme's colors");
+});
+
 test("in focus mode the inspector leaves the wheel to the artboard and never pans the canvas", () => {
 	const inspector = loadInspector();
 	const wheel = { deltaX: 0, deltaY: 50, deltaMode: 0, shiftKey: false, clientX: 1, clientY: 1, target: null };

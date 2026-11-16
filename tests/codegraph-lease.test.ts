@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -329,6 +329,40 @@ test("acquireInitLock adopts the spawned writer pid onto its own token", async (
 	outcome.release();
 });
 
+test("adoption replaces the token under the per-path mutex: never a truncating rewrite", async (t) => {
+	const dir = locksDir(t);
+	const cwd = project(t);
+	const path = lockPathFor(cwd, "init", dir);
+	const outcome = await acquireInitLock(cwd, { locksDir: dir, waitMs: 50, pollMs: 5 });
+	assert.equal(outcome.outcome, "acquired");
+	if (outcome.outcome !== "acquired") return;
+
+	// A live foreign mutex holder owns the critical section on this path (the same per-path mutex
+	// stale recovery and release serialize on): adoption must fail closed beside it and leave the
+	// token byte-for-byte untouched.
+	const now = Date.now();
+	writeToken(path + ".mutex", { pid: process.pid, startedAt: now, expiresAt: now + 60_000 });
+	const before = readFileSync(path, "utf8");
+	outcome.adopt(4242, false);
+	assert.equal(readFileSync(path, "utf8"), before, "beside the mutex holder the token is left untouched");
+
+	// The critical section freed: the updated metadata is written whole to a temp file beside the
+	// token and renamed over it, so a crash mid-write can never leave the empty or partial token
+	// whose verdict is "unknown" forever (fail-closed expiry cannot restore a damaged file).
+	rmSync(path + ".mutex", { force: true });
+	const beforeStat = statSync(path);
+	outcome.adopt(4242, false);
+	const token = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+	assert.equal(token.writerPid, 4242);
+	assert.equal(token.writerProxy, false);
+	const afterStat = statSync(path);
+	if (beforeStat.ino !== 0 && afterStat.ino !== 0) {
+		assert.notEqual(afterStat.ino, beforeStat.ino, "the token is replaced by rename, not rewritten in place");
+	}
+	assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".tmp") || name.endsWith(".mutex")), [], "adoption leaves no temp or mutex litter behind");
+	outcome.release();
+});
+
 test("two real sessions reclaiming one stale token: exactly one acquisition, the winner's token survives", async (t) => {
 	const dir = locksDir(t);
 	const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-lease-race-")));
@@ -340,10 +374,12 @@ test("two real sessions reclaiming one stale token: exactly one acquisition, the
 	const log = join(sandbox, "race.log");
 	const script = join(sandbox, "child.mjs");
 	// Both children wait for each other's marker before reclaiming, so both verdicts read the same
-	// stale token instead of one seeing the other's fresh one.
+	// stale token instead of one seeing the other's fresh one. Each child records its attempt result
+	// before anything else, and the winner holds the lease until the other result exists: a fixed hold
+	// duration would hand an early release to a late second attempt, letting both acquire.
 	writeFileSync(script, [
 		'import { appendFileSync, existsSync, writeFileSync } from "node:fs";',
-		"const [libHref, tokenPath, logPath, mine, theirs] = process.argv.slice(2);",
+		"const [libHref, tokenPath, logPath, mine, theirs, doneMine, doneTheirs] = process.argv.slice(2);",
 		"writeFileSync(mine, String(process.pid));",
 		"const deadline = Date.now() + 10_000;",
 		"while (!existsSync(theirs)) {",
@@ -351,12 +387,16 @@ test("two real sessions reclaiming one stale token: exactly one acquisition, the
 		"}",
 		"const { tryAcquireLease } = await import(libHref);",
 		"const lease = tryAcquireLease(tokenPath, \"sync\", 60_000);",
+		"writeFileSync(doneMine, lease ? \"acquired\" : \"lost\");",
 		"if (!lease) {",
 		'	appendFileSync(logPath, `lost ${process.pid}\\n`);',
 		"	process.exit(0);",
 		"}",
 		'	appendFileSync(logPath, `acquired ${process.pid}\\n`);',
-		"	await new Promise((resolve) => setTimeout(resolve, 200));",
+		"const holdDeadline = Date.now() + 10_000;",
+		"while (!existsSync(doneTheirs)) {",
+		"	if (Date.now() >= holdDeadline) process.exit(3);",
+		"}",
 		"	lease.release();",
 	].join("\n") + "\n");
 	const libHref = new URL("../lib/codegraph-lease.ts", import.meta.url).href;
@@ -364,8 +404,8 @@ test("two real sessions reclaiming one stale token: exactly one acquisition, the
 		child.on("close", (code: number | null) => resolve(code ?? -1));
 	});
 	const children = [
-		spawn(process.execPath, ["--experimental-strip-types", script, libHref, path, log, join(sandbox, "ready-a"), join(sandbox, "ready-b")], { stdio: "ignore" }),
-		spawn(process.execPath, ["--experimental-strip-types", script, libHref, path, log, join(sandbox, "ready-b"), join(sandbox, "ready-a")], { stdio: "ignore" }),
+		spawn(process.execPath, ["--experimental-strip-types", script, libHref, path, log, join(sandbox, "ready-a"), join(sandbox, "ready-b"), join(sandbox, "done-a"), join(sandbox, "done-b")], { stdio: "ignore" }),
+		spawn(process.execPath, ["--experimental-strip-types", script, libHref, path, log, join(sandbox, "ready-b"), join(sandbox, "ready-a"), join(sandbox, "done-b"), join(sandbox, "done-a")], { stdio: "ignore" }),
 	];
 	const codes = await Promise.all(children.map(closed));
 	assert.deepEqual(codes, [0, 0]);

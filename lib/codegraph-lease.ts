@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { canonicalRoot } from "./codegraph-canonical.ts";
@@ -101,23 +101,42 @@ function writeTokenExclusively(path: string, kind: LeaseKind, ttlMs: number, now
 	}
 }
 
-/** Records the spawned writer pid on this holder's token, best effort: only our own token is ever touched. */
+/**
+ * Records the spawned writer pid on this holder's token, best effort: only our own token is ever
+ * touched. The updated metadata is written whole to a temp file beside the token and renamed over
+ * it inside the per-path mutex (the ownership protocol stale recovery and release already
+ * serialize on): a process dying mid-write can leave only a complete token behind, never a
+ * truncated one, because an "unknown" verdict is fail-closed forever and TTL expiry cannot
+ * restore a damaged file.
+ */
 function adoptWriterPid(path: string, pid: number, proxy: boolean, now: number = Date.now()): void {
-	try {
-		const token = JSON.parse(readFileSync(path, "utf8")) as LeaseToken;
-		if (token.pid !== process.pid) return; // lost or stolen since: never touch another holder's token
-		token.writerPid = pid;
-		token.writerProxy = proxy;
-		token.writerPidAt = now;
-		writeFileSync(path, `${JSON.stringify(token)}\n`);
-	} catch {
-		/* best effort: the trust window only narrows the stale window */
-	}
+	withPathMutex(path, MUTEX_WAIT_MS, () => {
+		try {
+			const token = JSON.parse(readFileSync(path, "utf8")) as LeaseToken;
+			if (token.pid !== process.pid) return undefined; // lost or stolen since: never touch another holder's token
+			token.writerPid = pid;
+			token.writerProxy = proxy;
+			token.writerPidAt = now;
+			const temp = `${path}.${randomUUID()}.tmp`;
+			try {
+				writeFileSync(temp, `${JSON.stringify(token)}\n`);
+				renameSync(temp, path); // same filesystem: the swap is atomic, the token is never half-written
+			} finally {
+				rmSync(temp, { force: true }); // best effort: an unrenamed temp is litter, never state
+			}
+		} catch {
+			/* best effort: the trust window only narrows the stale window */
+		}
+		return undefined;
+	});
 }
 
 export interface AcquiredLease {
 	/** Best-effort: a released lease nobody cleans up still expires by TTL. */
 	release(): void;
+	/** Best-effort: records this holder's spawned writer onto the token, so a dead launcher's lease
+	 * still holds while its detached child keeps writing the index. */
+	adopt(pid: number, proxy: boolean): void;
 }
 
 /** The per-path mutex's own holder record: liveness rules mirror the lease tokens themselves. */
@@ -204,7 +223,10 @@ function withPathMutex<T>(path: string, waitMs: number, section: () => T | undef
 			continue;
 		}
 		// Vanished (the holder released between our create and read), or stale/damaged past its
-		// TTL: clear it and race the exclusive create again.
+		// TTL: clear it and race the exclusive create again — bounded by the same wait budget, so a
+		// mutex that can never be created (an unwritable or vanished locks dir) fail-closes the
+		// attempt instead of spinning past its deadline.
+		if (now >= deadline) return undefined;
 		rmSync(mutex, { force: true });
 	}
 }
@@ -228,7 +250,10 @@ function createLease(path: string, kind: LeaseKind, ttlMs: number, now: number):
 	const nonce = randomUUID();
 	if (!writeTokenExclusively(path, kind, ttlMs, now, nonce)) return undefined;
 	if (readNonce(path) !== nonce) return undefined;
-	return { release: () => releaseOwnToken(path, nonce) };
+	return {
+		release: () => releaseOwnToken(path, nonce),
+		adopt: (pid: number, proxy: boolean) => adoptWriterPid(path, pid, proxy),
+	};
 }
 
 /**
@@ -293,7 +318,9 @@ const INIT_LOCK_TTL_MS = 600_000;
 const INIT_LOCK_WAIT_MS = 120_000;
 const POLL_MS = 500;
 
-/** One call for the daemon-less sync path: acquire the project's sync lease or skip. */
+/** One call for the daemon-less sync path: acquire the project's sync lease or skip. The returned
+ * lease's adopt hook records the spawned unlock/sync children (readiness hands it to runCodegraph),
+ * so a dead launcher's lease still holds while its detached child writes. */
 export function tryAcquireSyncLease(cwd: string, locksDir?: string, ttlMs: number = SYNC_LEASE_TTL_MS): AcquiredLease | undefined {
 	return tryAcquireLease(lockPathFor(cwd, "sync", locksDir ?? defaultLocksDir()), "sync", ttlMs, Date.now(), cwd);
 }

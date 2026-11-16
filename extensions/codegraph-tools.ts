@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
+import { acquireInitLock, type InitLockOutcome } from "../lib/codegraph-lease.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
 import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 
@@ -111,6 +112,12 @@ const GIT_DIAGNOSTIC_MAX_CHARS = 1_000;
  * own — only the wait is abandoned; its socket result, if any, is discarded. */
 function raceWithAbort<T>(signal: AbortSignal | undefined, promise: Promise<T>): Promise<T | undefined> {
 	if (!signal) return promise;
+	// An already-aborted signal never fires its abort event again: a listener registered now would
+	// never run, and the wait would hold until the attempt exhausted its own budget.
+	if (signal.aborted) {
+		promise.catch(() => { /* the losing attempt settles on its own; its rejection is expected */ });
+		return Promise.resolve(undefined);
+	}
 	let onAbort: () => void = () => {};
 	const aborted = new Promise<undefined>((resolve) => {
 		onAbort = () => resolve(undefined);
@@ -213,6 +220,23 @@ function resolveWorkspaceCwd(cwd: string, gitRun: GitRun = defaultGitRun): strin
 	}
 }
 
+/**
+ * Whether a workspace validates as the project root readiness may initialize: validation has
+ * already compared directories by identity, so a different spelling of a valid Git root — a
+ * symlink to it — counts too. Exported as a test seam: the production caller is the
+ * session-start readiness wiring only.
+ */
+export function isWorkspaceProjectRoot(workspace: string): boolean {
+	try {
+		// resolveWorkspaceCwd already proved the Git root and the workspace name the same
+		// directory, so a validated root counts whatever spelling it was reached through.
+		resolveWorkspaceCwd(workspace);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function assertSafeIndexDirectory(cwd: string): void {
 	try {
 		const index = lstatSync(join(cwd, ".codegraph"));
@@ -257,29 +281,72 @@ const CODEGRAPH_INDEX_BLOCK_REASON = "CodeGraph: an index already exists for thi
  * The command past its leading whitespace and `FOO=1 BAR=2` assignments — shell syntax, not the
  * command itself — plus whether one of those assignments is a literal
  * `GENTLE_CODEGRAPH_ALLOW_INDEX=1`, the in-command form of the launch-environment override.
- * Only the exact `=1` value overrides: any other value is an ordinary assignment and the
- * launch environment stays authoritative.
+ * A quoted value (`FOO="a b"`) is consumed whole, spaces included, so the command after it is
+ * still located. Only the exact value `1` — quoted or not — overrides: any other value is an
+ * ordinary assignment and the launch environment stays authoritative.
  */
 function leadingAssignments(command: string): { rest: string; allowIndexOverride: boolean } {
 	let rest = command.trimStart();
 	let allowIndexOverride = false;
-	// An assignment token ends at the whitespace that separates it from the next word.
-	const assignment = /^([A-Za-z_][A-Za-z0-9_]*=\S*)\s+/;
+	// An assignment token ends at the whitespace that separates it from the next word; a quoted
+	// value may contain that whitespace, so the token spans it as one quoted stretch.
+	const assignment = /^([A-Za-z_][A-Za-z0-9_]*=(?:[^\s"']|"[^"]*"|'[^']*')*)\s+/;
 	for (let match = assignment.exec(rest); match !== null; match = assignment.exec(rest)) {
-		if (match[1] === "GENTLE_CODEGRAPH_ALLOW_INDEX=1") allowIndexOverride = true;
+		if (unquoteAssignment(match[1]) === "GENTLE_CODEGRAPH_ALLOW_INDEX=1") allowIndexOverride = true;
 		rest = rest.slice(match[0].length);
 	}
 	return { rest, allowIndexOverride };
 }
 
+/** The token with its quoted stretches unquoted, so `FOO="1"` and `FOO=1` compare equal. */
+function unquoteAssignment(token: string): string {
+	return token.replace(/(["'][^"']*["'])/g, (quoted) => quoted.slice(1, -1));
+}
+
 /**
- * Whether a shell command, past its leading whitespace and env-var assignments, starts with
- * `codegraph index` or `codegraph init` — a full re-index that kills the shared daemon and
- * rebuilds the index. The word boundary keeps every other subcommand (`codegraph indexer`,
- * `sync`, `query`, `unlock`, `status`) allowed.
+ * The executable commands of a shell command list: an unquoted `&&`, `||`, `|`, `;`, `&`, or
+ * newline ends one command and starts the next, while quotes keep a separator as content — an
+ * `echo "codegraph index ."` argument is not a second command.
  */
-function isCodegraphIndexCommand(command: string): boolean {
-	return /^codegraph\s+(index|init)\b/.test(leadingAssignments(command).rest);
+function shellCommandList(command: string): string[] {
+	const commands: string[] = [];
+	let current = "";
+	let quote: "'" | '"' | undefined;
+	for (const char of command) {
+		if (quote !== undefined) {
+			current += char;
+			if (char === quote) quote = undefined;
+			continue;
+		}
+		if (char === '"' || char === "'") {
+			quote = char;
+			current += char;
+			continue;
+		}
+		if (char === "\n" || char === ";" || char === "&" || char === "|") {
+			commands.push(current);
+			current = "";
+			continue;
+		}
+		current += char;
+	}
+	commands.push(current);
+	return commands.filter((part) => part.trim().length > 0);
+}
+
+/**
+ * The `codegraph index`/`codegraph init` commands of a shell command list — full re-indexes that
+ * kill the shared daemon and rebuild the index — each carrying the leading-assignments parse of
+ * its own command, so the in-command override is recognized on the rebuild command itself and
+ * not on an unrelated earlier command. Every executable command is inspected, not only the
+ * first: `cd . && codegraph index .` rebuilds as surely as a bare `codegraph index .`. The word
+ * boundary keeps every other subcommand (`codegraph indexer`, `sync`, `query`, `unlock`,
+ * `status`) out.
+ */
+function codegraphIndexCommands(command: string): { allowIndexOverride: boolean }[] {
+	return shellCommandList(command)
+		.map((part) => leadingAssignments(part))
+		.filter((parsed) => /^codegraph\s+(index|init)\b/.test(parsed.rest));
 }
 
 // CodeGraph writes .codegraph/.gitignore with `*` and `!.gitignore`, so that file
@@ -577,6 +644,7 @@ export function createCodeGraphTool(
 		rewarm = (project: string) => maybeRewarm(project),
 		syncRun = runCodegraph,
 		gitRun = defaultGitRun,
+		initLock = acquireInitLock,
 	}: {
 		queryTimeoutMs?: number;
 		daemonExplore?: DaemonExplore;
@@ -588,6 +656,8 @@ export function createCodeGraphTool(
 		syncRun?: SearchSyncInput["run"];
 		/** Runs every git interrogation (workspace guard, exclude detection); injected in tests. */
 		gitRun?: GitRun;
+		/** Acquires the cross-session init lock around the explicit init operation; injected in tests. */
+		initLock?: (cwd: string) => Promise<InitLockOutcome>;
 	} = {},
 ) {
 	return {
@@ -616,8 +686,8 @@ export function createCodeGraphTool(
 			// One shaped success result: every success path truncates its output, applies the same
 			// local-exclude handling, and shares the no-output line (excludeAlways: init just built
 			// the index, so its exclude is not gated on indexExists).
-			const finish = (output: string, extra: { viaDaemon?: boolean; excludeAlways?: boolean; indexed?: boolean; syncTriggered?: boolean } = {}): CodeGraphToolResult => {
-				const localExclude = extra.excludeAlways || (extra.indexed ?? indexExists(cwd)) ? excludeIndexLocally(cwd, gitRun) : undefined;
+			const finish = (output: string, extra: { viaDaemon?: boolean; excludeAlways?: boolean; syncTriggered?: boolean } = {}): CodeGraphToolResult => {
+				const localExclude = extra.excludeAlways || indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
 				return {
 					content: [{ type: "text" as const, text: withLocalExcludeNote(output || "CodeGraph completed without output.", localExclude) }],
 					details: {
@@ -631,12 +701,12 @@ export function createCodeGraphTool(
 				};
 			};
 			// One shaped failure result: fallback details plus the same local-exclude handling.
-			const fail = (error: unknown, extra: { syncTriggered?: boolean } = {}): CodeGraphToolResult => {
+			const fail = (error: unknown, extra: { syncTriggered?: boolean; reason?: string } = {}): CodeGraphToolResult => {
 				const details = codeGraphFailureDetails(error, parameters.operation, cwd);
 				const localExclude = indexExists(cwd) ? excludeIndexLocally(cwd, gitRun) : undefined;
 				if (localExclude) details.localExclude = localExclude;
 				return {
-					content: [{ type: "text" as const, text: withLocalExcludeNote(codeGraphFailureMessage(details.status), localExclude) }],
+					content: [{ type: "text" as const, text: withLocalExcludeNote(extra.reason ?? codeGraphFailureMessage(details.status), localExclude) }],
 					details: { ...details, ...(extra.syncTriggered ? { syncTriggered: true } : {}) },
 				};
 			};
@@ -644,14 +714,19 @@ export function createCodeGraphTool(
 			// local against ~590 ms, 0.5-2 s on a network share against 2.5-6 s for a CLI process),
 			// so a search never spawns a CLI process of its own.
 			if (parameters.operation !== CODEGRAPH_OPERATION.INIT) {
+				// A caller that already cancelled returns before any search stage runs: the re-warm, the
+				// background sync, and the first daemon attempt would all be work for an answer nobody
+				// waits for, and raceWithAbort cannot observe an abort that already happened.
+				if (signal?.aborted) return fail(signal.reason ?? new Error("The operation was aborted"));
 				// Lazy re-warm: if the project's daemon died mid-session, warm it in the background so the
 				// next query is fast again. Never blocks this call. Routed through the injected adapter so
 				// tests supplying the other query seams never reach the real daemon spawn.
 				rewarm(cwd);
 				// One background sync per prompt before the first search keeps the index fresh;
 				// the search never waits for it.
-				// One indexExists per query serves the sync gate and the result paths below; a daemon
-				// that answers ok confirms the same fact.
+				// This indexExists serves the sync gate only; the success paths below recheck presence
+				// when they shape their result, so an index published while the search waited on the
+				// daemon or the CLI is still excluded locally.
 				const indexed = indexExists(cwd);
 				const syncTriggered = triggerSearchSync(cwd, ctx, syncRun, { indexed });
 				const attempt = () => daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, DAEMON_ATTEMPT_TIMEOUT_MS));
@@ -673,7 +748,7 @@ export function createCodeGraphTool(
 						daemonSkipUntil.set(cwd, Date.now() + DAEMON_SKIP_MS);
 					}
 				}
-				if (viaDaemon?.status === "ok") return finish(truncateOutput(viaDaemon.text), { viaDaemon: true, indexed, syncTriggered });
+				if (viaDaemon?.status === "ok") return finish(truncateOutput(viaDaemon.text), { viaDaemon: true, syncTriggered });
 				// Still no daemon: the search still runs — one CLI process as the last resort. The daemon
 				// stays the only path while it answers; when it cannot serve (never started, died, hung, or
 				// has no project loaded), a slower correct answer beats the read/grep/find dead end.
@@ -706,18 +781,37 @@ export function createCodeGraphTool(
 							signal?.removeEventListener("abort", onCallerAbort);
 						}
 					})();
-					return finish(truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n")), { viaDaemon: false, indexed, syncTriggered });
+					return finish(truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n")), { viaDaemon: false, syncTriggered });
 				} catch (error: unknown) {
 					return fail(error, { syncTriggered });
 				}
 			}
 			// init keeps its CLI path: it is the legitimately slow first index, bounded only by the user's signal.
+			// The same guard the bash path enforces: an existing index is refreshed with sync, never
+			// rebuilt from the tool without the explicit override — a rebuild kills the daemon every
+			// session shares.
+			if (indexExists(cwd) && process.env.GENTLE_CODEGRAPH_ALLOW_INDEX !== "1") {
+				return fail(new Error(CODEGRAPH_INDEX_BLOCK_REASON), { reason: CODEGRAPH_INDEX_BLOCK_REASON });
+			}
+			// The same cross-session init lock session-start readiness and worktree seeding hold: an
+			// explicit init never writes the same .codegraph target while another session's init or
+			// seed is still publishing into it. A lock that stays held, or an index that appeared
+			// while the lock was waited on, is reported to the caller instead of bypassing the lock.
+			const lock = await initLock(cwd);
+			if (lock.outcome !== "acquired") {
+				const reason = lock.outcome === "present"
+					? CODEGRAPH_INDEX_BLOCK_REASON
+					: "CodeGraph: the init lock for this workspace is held by another session, so this init cannot run concurrently with it.";
+				return fail(new Error(reason), { reason });
+			}
 			try {
 				const result = await runner(args, { cwd, signal, maxBuffer: PROCESS_MAX_BUFFER });
 				return finish(truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n")), { excludeAlways: true });
 			} catch (error: unknown) {
 				// A failed init can still leave a partial index behind.
 				return fail(error);
+			} finally {
+				lock.release();
 			}
 		},
 	};
@@ -748,10 +842,11 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 		try {
 			if (event.toolName !== "bash" && event.toolName !== "bash_background") return undefined;
 			const command = (event.input as { command?: unknown }).command;
-			if (typeof command !== "string" || !isCodegraphIndexCommand(command)) return undefined;
-			const { allowIndexOverride } = leadingAssignments(command);
+			if (typeof command !== "string") return undefined;
+			const rebuild = codegraphIndexCommands(command)[0];
+			if (rebuild === undefined) return undefined;
 			const repoRoot = gitTopLevel(ctx.cwd);
-			if (repoRoot === undefined || !indexExists(repoRoot) || process.env.GENTLE_CODEGRAPH_ALLOW_INDEX === "1" || allowIndexOverride) return undefined;
+			if (repoRoot === undefined || !indexExists(repoRoot) || process.env.GENTLE_CODEGRAPH_ALLOW_INDEX === "1" || rebuild.allowIndexOverride) return undefined;
 			return { block: true, reason: CODEGRAPH_INDEX_BLOCK_REASON };
 		} catch {
 			return undefined;
@@ -769,13 +864,7 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			cwd: ctx.cwd,
 			env: process.env,
 			reason: reason as SessionStartReason,
-			isProjectRoot: (workspace) => {
-				try {
-					return resolveWorkspaceCwd(workspace) === workspace;
-				} catch {
-					return false;
-				}
-			},
+			isProjectRoot: isWorkspaceProjectRoot,
 			run: runCodegraph,
 			seed: (workspace) => seedWorktreeIndex({ cwd: workspace, run: runCodegraphSeedSync }),
 			warm: (workspace) => warmUpDaemon(workspace),

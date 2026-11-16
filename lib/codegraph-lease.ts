@@ -302,12 +302,12 @@ export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, no
 }
 
 /**
- * The sync lease outlives daemonlessRefresh's whole unlock+sync sequence (readiness.ts): each
- * command runs up to SYNC_TIMEOUT_MS (120s) and may then spend KILL_WAIT_MS (10s) dying, so the
- * real worst case is 2 × 130s = 260s and the TTL carries margin above it. The constants are
- * mirrored by value on purpose — readiness value-imports this module, so importing them back
- * would open a readiness -> lease -> readiness cycle. The TTL stays the crash backstop: a live
- * holder is never displaced, it only expires when its session is truly gone.
+ * The sync lease outlives daemonlessRefresh's whole sync sequence (readiness.ts): the command
+ * runs up to SYNC_TIMEOUT_MS (120s) and may then spend KILL_WAIT_MS (10s) dying, so the real
+ * worst case is 130s plus margin for retries. The constants are mirrored by value on purpose —
+ * readiness value-imports this module, so importing them back would open a
+ * readiness -> lease -> readiness cycle. The TTL stays the crash backstop: a live holder is
+ * never displaced, it only expires when its session is truly gone.
  */
 const SYNC_LEASE_TTL_MS = 300_000;
 /** A freshly reported proxy pid (a cmd.exe wrapper) is trusted this long once its holder is gone. */
@@ -319,7 +319,7 @@ const INIT_LOCK_WAIT_MS = 120_000;
 const POLL_MS = 500;
 
 /** One call for the daemon-less sync path: acquire the project's sync lease or skip. The returned
- * lease's adopt hook records the spawned unlock/sync children (readiness hands it to runCodegraph),
+ * lease's adopt hook records the spawned sync child (readiness hands it to runCodegraph),
  * so a dead launcher's lease still holds while its detached child writes. */
 export function tryAcquireSyncLease(cwd: string, locksDir?: string, ttlMs: number = SYNC_LEASE_TTL_MS): AcquiredLease | undefined {
 	return tryAcquireLease(lockPathFor(cwd, "sync", locksDir ?? defaultLocksDir()), "sync", ttlMs, Date.now(), cwd);

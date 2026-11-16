@@ -89,6 +89,29 @@ test("in Spanish the heading is Tema and Neutral is Neutro; Gentleman keeps its 
 	assert.equal(withClass(menuEl(canvas), "gd-menu-heading")[0].textContent, "Tema");
 });
 
+test("the ⋯ export menu has no group, heading, note or aria-describedby", async () => {
+	const canvas = await loadTheme();
+	withClass(canvas.boards[0].wrapper, "gd-menu-button")[0].dispatch("click");
+	const menu = menuEl(canvas);
+	assert.equal(menu.hidden, false, "the ⋯ menu opened");
+	assert.equal(findAll(menu, (element) => element.getAttribute("role") === "group").length, 0);
+	assert.equal(withClass(menu, "gd-menu-heading").length, 0);
+	assert.equal(findAll(menu, (element) => element.getAttribute("aria-describedby") !== null).length, 0);
+});
+
+test("a saved theme must match exactly: case, spaces or other keys make it Neutral", async () => {
+	for (const stored of ["Gentleman", " gentleman", "", "__proto__"]) assert.equal(theme(await loadTheme({ stored })), null, JSON.stringify(stored));
+});
+
+test("from a saved Gentleman, Neutral removes data-theme and saves neutral", async () => {
+	const canvas = await loadTheme({ stored: "gentleman" });
+	assert.deepEqual(openSettings(canvas).slice(3, 5).map((item) => item.getAttribute("aria-checked")), ["true", "false"]);
+	canvas.document.activeElement!.dispatch("keydown", { key: "Escape", shiftKey: false });
+	choose(canvas, "Neutral");
+	assert.equal(theme(canvas), null);
+	assert.deepEqual(canvas.themeWrites(), ["neutral"]);
+});
+
 test("canvas.css: Gentleman sets every color token of :root on --gd-* names, and no rule hard-codes main's accent", () => {
 	const css = read("canvas.css");
 	const block = (selector: string) => {

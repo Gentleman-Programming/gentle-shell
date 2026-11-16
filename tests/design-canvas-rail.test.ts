@@ -795,5 +795,5 @@ test("the docs describe the rail, the Settings menu and the changeable keys save
 	for (const part of ["**Move** (`V`", "**Comment** (`C`)", "**Overview**", "(`F`)", "**Settings**", "**Design system board**", "**Keyboard shortcuts** (`?`)", "**Change**", "**Reset**", "**Restore defaults**", "`gentle-design:shortcuts`", "saved in this browser", "a new port", "`Tab` moves on and ends it", "holds for this page only", "AltGr", "Compare covers the rail", "`]`", "`Esc`, `Shift+Esc`, the arrows, `Space`, `Enter`, `Tab`"]) {
 		assert.ok(rail.includes(part), `the rail entry mentions ${part}`);
 	}
-	assert.ok(!/Appearance|Step-by-step/.test(rail), "nothing that does not ship here");
+	assert.ok(!/Appearance|Step-by-step/i.test(rail), "nothing that does not ship here");
 });

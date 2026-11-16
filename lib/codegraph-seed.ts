@@ -167,7 +167,13 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 			// appears only after the copy is already validated.
 			staged.sort(([, a], [, b]) => Number(a === targetDb) - Number(b === targetDb));
 			try {
-				for (const [stagedPath, finalPath] of staged) await retryTransient(() => renameSync(stagedPath, finalPath), sleep);
+				for (const [stagedPath, finalPath] of staged) {
+					// A sidecar the validating sync checkpointed and removed holds no pending state:
+					// its frames were folded into the staged database, so the loop skips it. The
+					// database rename stays required — a missing database still fails the seed.
+					if (finalPath !== targetDb && !isFile(stagedPath)) continue;
+					await retryTransient(() => renameSync(stagedPath, finalPath), sleep);
+				}
 			} catch {
 				// A torn placement leaves no index: every placed file goes, so the worktree is
 				// exactly as absent as before and init stays possible. (A placement failure is

@@ -1,0 +1,28 @@
+{
+	"title": "Gentle Shell Desktop: layout directions",
+	"brief": "Gentle Shell Desktop: a modern native replica of the Gentle Shell TUI on the Herdr app window (about 1600x1000). Each artboard is one full window: projects/sessions (Herdr spaces) and agents; the session chat (markdown, collapsed thinking, expandable tool cards, a diff card, a subagent card, a pending ask_user_choice question with clickable numbered options) with the Chat | Terminal switch; every TUI fact from odd/tasks/herdr-desktop-parity.md as a native panel (project, branch, dirty, model/effort/profile, persona, context, cost, plan usage 5h/7d, permission mode incl. YOLO and super-yolo, Changes, Todo, Agents, Jobs, Review/RDD, Stats, Integrations, ODD phase, TPS, jobs). Calm Gentle Shell identity: Gentleman-Cute theme surfaces, design/system.md tokens, neon rose accent, mustache mark only as brand; progressive disclosure. Buildable with Herdr mods only (flex boxes, text, SVG icons, PNGs, native markdown; no blur or web-only effects); each artboard has a 'Show Herdr blocks' toggle and a build map naming the layout node and mod of every region, plus a parity list. Session data is demonstration data.",
+	"feature": "odd/tasks/herdr-desktop.md",
+	"artboards": [
+		{
+			"file": "01-inspector.html",
+			"title": "A · Inspector",
+			"tradeoff": "Closest to Herdr's own layout (spaces, agents, session tabs, right panel): every section one click away in a tabbed inspector; costs 372 px of chat width and shows one section at a time",
+			"width": 1600,
+			"height": 2041
+		},
+		{
+			"file": "02-rail.html",
+			"title": "B · Rail",
+			"tradeoff": "The TUI sidebar made native: sessions and all live sections in one left rail with one-line summaries, slim header, widest chat; the rail gets long and scrolls, and session state sits next to navigation",
+			"width": 1600,
+			"height": 1835
+		},
+		{
+			"file": "03-chat-first.html",
+			"title": "C · Chat-first",
+			"tradeoff": "Calmest and most reading space: drawers on demand, session controls in the composer, ⌘K for every command; less glanceable, state needs a click or a shortcut",
+			"width": 1600,
+			"height": 1833
+		}
+	]
+}

@@ -325,6 +325,45 @@ The Status panel has a **Jobs** section with each running job's description. Whe
 
 **[Docs →](docs/gentle-shell.md#background-jobs)**
 
+---
+
+### Gentle Shell Desktop — The same session, in a native window
+
+<img width="100%" src="docs/images/desktop/chat.png" alt="Gentle Shell Desktop running a real session: projects and agents in the left sidebar with plan usage below, sessions as tabs, the chat in the centre with an edit diff card, tool calls and the agent's summary, the Changes inspector on the right with per-file line counts, and a status bar with the ODD todo progress and jobs">
+
+<p align="center"><sub>A real session: the agent edits <code>src/text.js</code>, runs the tests and reports, while Changes tracks the files.</sub></p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/desktop/todo.png" alt="The Todo tab of the inspector showing the session's task list completed, 3 of 3"></td>
+    <td width="50%"><img src="docs/images/desktop/palette.png" alt="The ⌘K Gentle palette open over the chat, listing session commands such as /new, /resume, /fork, /compact and /export"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>The session's todo, live in the inspector.</sub></td>
+    <td align="center"><sub><code>⌘K</code> opens every Gentle Shell command.</sub></td>
+  </tr>
+</table>
+
+Gentle Shell Desktop shows your Gentle Shell sessions in [Herdr app](https://herdr.dev): the conversation as a native chat, with Changes, Todo, Agents, Jobs, Review and Session stats beside it, and the real TUI one switch away (`⌘J`). It is Herdr, unchanged, plus Gentle Shell's own mods and layout; the desktop acts with exactly the authority you have in the terminal, and consent is always answered in the terminal.
+
+- **Every session on your machine**, in two sidebar sections: **Herdr** (running in this window, with the Chat | Terminal switch) and **TUI** (running in any other terminal, such as Herdr TUI or Ghostty; you can still write to it from the chat).
+- **Needs you** pinned at the top of the sidebar, with a notification, whenever a session waits for an answer.
+- **A minimal chat** like the TUI's: every tool, diff or subagent is one line that expands (`⌘O` expands or collapses all).
+- **Plan usage and model profiles**: every usage window the TUI shows, and switching profiles from the header.
+- **Remote machines** from Herdr (**Add machine**), and **light and dark** themes that follow Herdr and the system.
+
+```bash
+gentle-shell desktop              # install what is missing (asks first), then open the window
+gentle-shell desktop --status     # versions and what is installed
+gentle-shell desktop --uninstall  # remove our mods, layout and shortcuts; Herdr stays
+```
+
+To try it before it reaches a release, switch to the main channel first with `gentle-shell upgrade --channel main`, then run `gentle-shell desktop`. Sessions that were already open show up after you restart them.
+
+Requires macOS on Apple silicon or Linux (x86_64, arm64); Gentle Shell installs Herdr app 0.1.16 for you, checked against a pinned SHA-256. On Windows, install Herdr app with its official installer first.
+
+**[Docs →](docs/gentle-shell-desktop.md)**
+
 <p align="center">
   <img src="docs/assets/brand/terminal-divider.svg" width="480" alt="">
 </p>
@@ -675,6 +714,7 @@ Start with the product-facing destination, then move into the operational refere
 | Destination | Purpose |
 | --- | --- |
 | [gentle-shell reference](docs/gentle-shell.md) | Workspace layout, changes, usage, agents, and todo interactions. |
+| [Gentle Shell Desktop](docs/gentle-shell-desktop.md) | Install, controls, shortcuts, safety and troubleshooting for the Herdr app window. |
 | [ODD workflow](docs/readme-reference.md#organic-driven-development) · [Technical reference](docs/readme-reference.md) | Everyday work and recovery, installation, configuration, commands, and contributor detail. |
 | [Installation wizard (preview)](docs/install-wizard.md) | How the browser installer checks your computer, what it installs on the release and main channels, its security model, and what is still being verified. |
 | [Removing Gentle Shell](docs/gentle-shell-uninstall.md) | What `gentle-shell self-uninstall` removes, keeps and never touches. |

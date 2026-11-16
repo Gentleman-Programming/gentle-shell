@@ -6,7 +6,7 @@ import { GENTLE_SHELL_CONFIG_HOME_ENV } from "./gentle-shell-bundled.ts";
 // env/fs/exec. `bin/gentle-shell.mjs` (T2) wires these into the real process,
 // filesystem and child process so this module stays fully unit-testable.
 
-export type LauncherCommand = "home" | "setup" | "upgrade" | "self-uninstall" | "memory" | "tower";
+export type LauncherCommand = "home" | "setup" | "upgrade" | "self-uninstall" | "memory" | "desktop" | "tower";
 
 // pi's own package-management subcommands (see pi's cli/args.ts printHelp
 // "Commands" list): each is dispatched by pi itself, before pi's own flag
@@ -37,12 +37,12 @@ export interface ParsedLauncherArgs {
 	error?: string;
 }
 
-// Home-, upgrade- and self-uninstall-subcommand parsing is deliberately shallow:
+// Home-, upgrade-, self-uninstall-, memory- and desktop-subcommand parsing is deliberately shallow:
 // each only counts as the subcommand when it is argv[0], and everything after it is handed over
 // untouched as commandArgs — T2 owns interpreting `home link|isolated|<path>`.
 // `self-uninstall` is not `uninstall`, which stays pi's own alias for `remove`.
 export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
-	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall" || argv[0] === "memory" || argv[0] === "tower") {
+	if (argv[0] === "home" || argv[0] === "upgrade" || argv[0] === "self-uninstall" || argv[0] === "memory" || argv[0] === "desktop" || argv[0] === "tower") {
 		return {
 			link: false,
 			isolated: false,
@@ -1371,6 +1371,7 @@ export function helpText(): string {
 		"       gentle-shell upgrade --rollback",
 		"       gentle-shell memory migrate --confirm-quiescent",
 		"       gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]",
+		"       gentle-shell desktop [--yes] [--no-open] | --status | --uninstall",
 		"       gentle-shell tower [--no-open] [--port <n>]",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
@@ -1415,6 +1416,11 @@ export function helpText(): string {
 		"                   ~/.pi/gentle-ai configuration is kept unless",
 		"                   you accept or pass --include-shared; --dry-run only shows the plan.",
 		"                   Never touches your pi home or custom --home homes.",
+		"  desktop          Install and open Gentle Shell Desktop: Herdr app (pinned minimum",
+		"                   version, downloaded from releases.herdr.dev and checked against its pinned",
+		"                   SHA-256 when missing or older) with Gentle Shell's gentle-* mods and",
+		"                   gentle-shell layout. Shows the plan and asks first (--yes skips the",
+		"                   question); --status and --uninstall; 'gentle-shell desktop --help'.",
 		"  tower            Open the Gentle Tower outside any session: every open Gentle Shell session",
 		"                   as a floor, in your browser. Prints the local URL and serves until Ctrl+C.",
 		"                   --no-open only prints the URL; --port <n> fixes the port (127.0.0.1 only).",

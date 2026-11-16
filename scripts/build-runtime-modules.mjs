@@ -23,6 +23,7 @@ const sources = [
 	"gentle-shell-resume-hint",
 	"gentle-shell-uninstall",
 	"gentle-shell-import-pi",
+	"gentle-shell-desktop",
 	"design-canvas-assets",
 	// `gentle-shell tower` runs the Gentle Tower server without Pi.
 	"tower-snapshot",

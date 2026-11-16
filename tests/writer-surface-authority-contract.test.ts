@@ -129,3 +129,30 @@ test("S5: the retired human-only surface wording is gone and no confinement is c
 	}
 	assert.doesNotMatch(worker, /sandbox|confine/i, "the worker claims filesystem confinement");
 });
+
+// fix/temp-dir-exemption (user decision: temp folders are exempt; read, write and delete only what the
+// session or its tools created): an in-surface atomic replace and a tool's own temp cleanup are not stops.
+const workerToolSafety = sectionOf(worker, "## Tool safety");
+
+test("temp exemption: replacing a file inside the surfaces, atomic write-temp-then-rename included, is an ordinary write", () => {
+	containsAll(workerToolSafety, [
+		"Replacing a file inside your allowed edit surfaces, including a tool's atomic write-temp-then-rename, is an ordinary write of that surface, not the prohibited filesystem replacement.",
+	], "worker Tool safety");
+});
+
+test("temp exemption: a task tool may create and remove its own temp files without a stop or question", () => {
+	containsAll(workerToolSafety, [
+		"A tool you run for the task may create and remove its own files in the system temp directory (resolved `TMPDIR`/`os.tmpdir()`, `/tmp`, `/var/tmp`), such as test scratch, caches, or a browser's temporary profile; do not stop or ask for that.",
+	], "worker Tool safety");
+});
+
+test("temp exemption preserves the outside-surface write, replacement and deletion prohibitions", () => {
+	containsAll(workerToolSafety, [
+		"- Never write outside the exact allowed edit surfaces, including through generated output, shell redirection, temporary copies, formatters, or scripts.",
+		"- Never run destructive commands or deletion operations. This includes `rm`, filesystem replacement, destructive migrations, and destructive Git commands",
+		"Replacing or deleting anything else stays prohibited, and you never run `rm` or delete scratch yourself.",
+	], "worker Tool safety");
+	containsAll(worker, ["name any that remains in `risks` instead of deleting it"], "worker scratch reporting");
+	const tempBullet = workerToolSafety.split("\n").find((line) => line.startsWith("- Replacing a file inside your allowed edit surfaces")) ?? "";
+	assert.ok(tempBullet.includes("never run `rm`"), "the worker temp bullet must keep the worker itself from running rm");
+});

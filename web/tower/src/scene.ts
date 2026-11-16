@@ -1,5 +1,5 @@
 // The Pixi scene: one painted building per project, animated people on top.
-import { AnimatedSprite, Application, Container, Graphics, Sprite, Text, Texture, TextureSource } from "pixi.js";
+import { AnimatedSprite, Application, Container, Graphics, Sprite, Text, Texture, TextureSource, UPDATE_PRIORITY } from "pixi.js";
 import { ANIMS, BX, BW, bubble, elephant, figure, floorLine, floorTop, FPS, LOBBY_H, paintBackground, room, type Anim, type Layout, type Look } from "./art";
 import { floorState, helperRoom, orchestratorRoom, type RoomId } from "./model";
 import type { Project, TowerArtifact, TowerSnapshot, TowerSubagent } from "./types";
@@ -69,9 +69,11 @@ export class TowerScene {
 	/** Hover feedback: an outline over what a click would act on, and a label naming the action. */
 	private glow = new Graphics();
 	private hovered: Hover | undefined;
+	private hotTargets = new WeakMap<Container, Hover>();
 	private tip = document.createElement("div");
 	private tipText = "";
 	private pointer = { x: 0, y: 0 };
+	private pointerInside = false;
 
 	/** The room under a scene point, with its floor. */
 	private roomAt(x: number, y: number): { id: RoomId; floor: number } | undefined {
@@ -102,15 +104,27 @@ export class TowerScene {
 		const c = this.app.canvas, b = c.getBoundingClientRect(), k = b.width / (c.width || 1);
 		return { x: b.left + r.x * k, y: b.top + r.y * k, w: r.w * k, h: r.h * k };
 	}
-	/** Makes a scene object announce its click: pointer cursor, outline and label while hovered. */
+	/** Registers the same object for clicks and for the frame's single hover owner. */
 	private hot(c: Container, label: () => string) {
 		c.eventMode = "static"; c.cursor = "pointer";
-		const h: Hover = { label, rect: () => boundsOf(c) };
-		c.on("pointerover", () => this.setHover(h));
-		c.on("pointerout", () => { if (this.hovered === h) this.setHover(undefined); });
+		this.hotTargets.set(c, { label, rect: () => boundsOf(c) });
 	}
-	private setHover(h: Hover | undefined) {
+	private updateHover() {
+		const events = this.app.renderer.events;
+		let h: Hover | undefined;
+		let r: { id: RoomId; floor: number } | undefined;
+		if (this.pointerInside) {
+			const p = { x: 0, y: 0 };
+			events.mapPositionToPoint(p, this.pointer.x, this.pointer.y);
+			// Use Pixi's own topmost click target, after movement and snapshot redraws.
+			const target = events.rootBoundary.hitTest(p.x, p.y);
+			if (target === this.bg) r = this.roomAt(p.x, p.y);
+			else if (target) h = this.hotTargets.get(target);
+		}
+		this.bg.cursor = r ? "pointer" : "default";
+		if (r) h = { room: true, label: () => roomAction(r!.id, r!.floor), rect: () => this.roomRect(r!.id, r!.floor) };
 		this.hovered = h;
+		events.setCursor(h ? "pointer" : "default");
 		this.drawHover();
 	}
 	private drawHover() {
@@ -133,30 +147,28 @@ export class TowerScene {
 		await this.app.init({ width: 720, height: 450, background: "#07040d", antialias: false, resolution: 1, autoDensity: false, preference: "webgl" });
 		host.appendChild(this.app.canvas);
 		this.app.stage.addChild(this.bg, this.notes, this.props, this.world, this.door, this.people, this.glow);
-		this.app.stage.eventMode = "static";
+		// A static stage makes passive decoration inherit interactivity, intercepting
+		// the very target whose hover drew it. Only actual click targets are active.
+		this.app.stage.eventMode = "passive";
+		this.notes.eventMode = this.props.eventMode = this.glow.eventMode = "none";
 		this.bg.eventMode = "static";
 		this.bg.on("pointertap", (e) => {
 			const p = e.getLocalPosition(this.bg), r = this.roomAt(p.x, p.y);
 			if (r) this.onRoom(r.id, r.floor); else this.onPick(undefined);
 		});
-		// Every room is clickable: outline the one under the pointer and name what a click does.
-		let roomKey = "";
-		this.bg.on("pointermove", (e) => {
-			const p = e.getLocalPosition(this.bg), r = this.roomAt(p.x, p.y), key = r ? `${r.id}:${r.floor}` : "";
-			this.bg.cursor = r ? "pointer" : "default";
-			if (key === roomKey && (this.hovered?.room || !r)) return;
-			roomKey = key;
-			this.setHover(r ? { room: true, label: () => roomAction(r.id, r.floor), rect: () => this.roomRect(r.id, r.floor) } : undefined);
-		});
-		this.bg.on("pointerout", () => { roomKey = ""; if (this.hovered?.room) this.setHover(undefined); });
 		this.tip.className = "tip px"; this.tip.setAttribute("role", "tooltip"); this.tip.hidden = true;
 		document.body.appendChild(this.tip);
 		const canvas = this.app.canvas;
-		canvas.addEventListener("pointermove", (e) => { this.pointer = { x: e.clientX, y: e.clientY }; if (!this.tip.hidden) this.placeTip(); });
-		canvas.addEventListener("pointerleave", () => { roomKey = ""; this.setHover(undefined); });
+		const track = (e: PointerEvent) => { this.pointerInside = true; this.pointer = { x: e.clientX, y: e.clientY }; if (!this.tip.hidden) this.placeTip(); };
+		canvas.addEventListener("pointerenter", track);
+		canvas.addEventListener("pointermove", track);
+		canvas.addEventListener("pointerleave", () => { this.pointerInside = false; this.updateHover(); });
 		bubbleTex = { need: BUBBLES.need(), done: BUBBLES.done() };
 		elephantTex = Texture.from(elephant());
 		this.app.ticker.add((t) => this.tick(t.deltaMS / 1000));
+		// Pixi updates world transforms during its LOW-priority render. Resolve
+		// hover afterwards, against the same positions that were just painted.
+		this.app.ticker.add(() => this.updateHover(), undefined, UPDATE_PRIORITY.UTILITY);
 	}
 
 	show(project: Project, colors: string[], reviewOn = true, minHeight = 450): void {
@@ -205,7 +217,7 @@ export class TowerScene {
 			const y0 = floorTop(L, i);
 			if (!s.basic) {
 				const meter = new Text({ text: `$${s.cost.total.toFixed(2)}`, style: { fontFamily: "Iosevka Term, JetBrains Mono, monospace", fontSize: 10, fontWeight: "800", fill: 0x1a1028 } });
-				meter.resolution = 4; meter.x = engine.x + 44; meter.y = y0 + 30;
+				meter.eventMode = "none"; meter.resolution = 4; meter.x = engine.x + 44; meter.y = y0 + 30;
 				this.world.addChild(meter);
 			}
 			const newest = (kind: TowerArtifact["kind"]) => s.artifacts?.find((a) => a.kind === kind);
@@ -256,8 +268,8 @@ export class TowerScene {
 		const sign = mode === "yolo" ? "BRB" : mode === "super-yolo" ? "OPEN" : "";
 		if (sign) {
 			const t = new Text({ text: sign, style: { fontFamily: "Iosevka Term, JetBrains Mono, monospace", fontSize: mode === "yolo" ? 8 : 11, fontWeight: "800", fill: mode === "yolo" ? 0x1a1028 : 0xff718f, dropShadow: mode === "yolo" ? undefined : { color: 0xff718f, blur: 6, distance: 0, alpha: 1, angle: 0 } } });
-			t.resolution = 4;
-			if (mode === "yolo") { const plate = new Graphics().rect(dx + 4, dy - 22, 22, 10).fill(0xe4dcee); this.door.addChild(plate); t.x = dx + 7; t.y = dy - 21; }
+			t.eventMode = "none"; t.resolution = 4;
+			if (mode === "yolo") { const plate = new Graphics().rect(dx + 4, dy - 22, 22, 10).fill(0xe4dcee); plate.eventMode = "none"; this.door.addChild(plate); t.x = dx + 7; t.y = dy - 21; }
 			else { t.x = dx - 4; t.y = L.lobby - 6; }
 			this.door.addChild(t);
 		}
@@ -298,14 +310,12 @@ export class TowerScene {
 		p.pick = pick; p.tx = Math.max(BX + 8, Math.min(BX + BW - 8, tx)); p.floor = floor; p.sprite.y = floorLine(L, floor) + 3;
 		const st = pick.kind === "orchestrator" ? floorState(pick.session) : undefined;
 		if (st === "need" || st === "done") {
-			if (!p.badge) { p.badge = new Sprite(bubbleTex![st]); p.badge.anchor.set(.5, 1); this.people.addChild(p.badge); }
+			if (!p.badge) { p.badge = new Sprite(bubbleTex![st]); p.badge.eventMode = "none"; p.badge.anchor.set(.5, 1); this.people.addChild(p.badge); }
 			p.badge.texture = bubbleTex![st];
 		} else if (p.badge) { p.badge.destroy(); p.badge = undefined; }
 	}
 
 	private tick(dt: number) {
-		// People walk and objects are rebuilt on updates: keep the outline on what is hovered.
-		if (this.hovered) this.drawHover();
 		for (const p of this.byKey.values()) {
 			const walking = Math.abs(p.tx - p.x) > .5 && !this.reduce;
 			if (walking) { p.x += Math.sign(p.tx - p.x) * Math.min(Math.abs(p.tx - p.x), 24 * dt); p.sprite.scale.x = p.tx < p.x ? -1 : 1; }

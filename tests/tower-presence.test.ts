@@ -5,7 +5,7 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { readPresenceFloors } from "../lib/tower-presence.ts";
+import { PRESENCE_MAX_AGE_MS, readPresenceFloors } from "../lib/tower-presence.ts";
 import { writeTowerSnapshot } from "../lib/tower-hub.ts";
 import { buildTowerSnapshot } from "../lib/tower-snapshot.ts";
 import { startTowerServer, type TowerServer } from "../lib/tower-server.ts";
@@ -121,6 +121,25 @@ test("a snapshot whose process is gone is dropped; the live session shows from p
 	assert.deepEqual(list.map((x) => [x.name, x.basic ?? false]), [["Alive", false], ["Live via presence", true]]);
 	assert.ok(!list.some((x) => x.said === "old words"));
 	assert.equal(await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "message", sessionId: "sess-a", text: "hi" })), 404);
+});
+
+test("an abrupt death can leave a basic lookalike only until its presence heartbeat expires", async () => {
+	const { root, dir, hub } = setup();
+	const dead = 2 ** 22 + 12345;
+	writeTowerSnapshot(hub, { ...buildTowerSnapshot({ sessionId: "dead", sessionName: "Same name", cwd: "/w/a", stats: { cost: 1, input: 0, output: 0 }, todos: [], agents: [], now: NOW - 6000 }), pid: dead });
+	writeTowerSnapshot(hub, { ...buildTowerSnapshot({ sessionId: "live", sessionName: "Same name", cwd: "/w/a", stats: { cost: 2, input: 0, output: 0 }, todos: [], agents: [], now: NOW }), pid: process.pid });
+	presence(dir, "dead", { label: "Same name", workspace: "/w/a" });
+	presence(dir, "live", { label: "Same name", workspace: "/w/a" });
+	const web = join(root, "web"); mkdirSync(web); writeFileSync(join(web, "index.html"), "<title>t</title>");
+	let now = NOW;
+	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", presenceDirs: [dir], now: () => now });
+	servers.push(s);
+	const floors = async () => JSON.parse((await get(s.port, "/tok-123/api/sessions")).body).sessions as Array<{ sessionId: string; name: string; basic?: boolean }>;
+	const before = await floors();
+	assert.deepEqual(before.map((f) => [f.name, f.basic ?? false]), [["Same name", false], ["Same name", true]]);
+	assert.equal(await post(s.port, "/tok-123/api/action", JSON.stringify({ type: "message", sessionId: before[1].sessionId, text: "hi" })), 404);
+	now += PRESENCE_MAX_AGE_MS;
+	assert.deepEqual((await floors()).map((f) => [f.name, f.basic ?? false]), [["Same name", false]]);
 });
 
 test("a Windows workspace path is a floor; null or malformed tasks are skipped", () => {

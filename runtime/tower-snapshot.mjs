@@ -38,17 +38,25 @@ function visibleText(content         )         {
 }
 
 /** The latest visible turns of the branch, oldest first: what the person typed and what the agent said
- * (no thinking, tool calls, tool output, custom or system-generated messages). */
+ * (no thinking, tool calls, tool output, custom or system-generated messages). When many assistant
+ * tool turns fill the window, keep the latest human question with the newest replies. */
 export function chatFromBranch(entries                    )                  {
 	const out                  = [];
-	for (let i = entries.length - 1; i >= 0 && out.length < TOWER_CHAT_TURNS; i--) {
+	let hasUser = false;
+	for (let i = entries.length - 1; i >= 0; i--) {
 		const e = entries[i]                                                                                                               ;
 		const m = e?.message;
 		if (e?.type !== "message" || (m?.role !== "user" && m?.role !== "assistant")) continue;
 		const text = visibleText(m.content);
 		if (!text || (m.role === "user" && text.startsWith(AUTOMATED_USER_PREFIX))) continue;
+		if (out.length === TOWER_CHAT_TURNS) {
+			if (hasUser) break;
+			if (m.role !== "user") continue;
+			out.pop(); // make room for the question; retain the newest assistant turns
+		}
 		const at = typeof m.timestamp === "number" ? m.timestamp : typeof e.timestamp === "string" ? Date.parse(e.timestamp) || 0 : 0;
 		out.push({ role: m.role === "user" ? "you" : "agent", text: clip(text, TOWER_CHAT_TEXT_MAX), at });
+		if (m.role === "user") hasUser = true;
 	}
 	return out.reverse();
 }

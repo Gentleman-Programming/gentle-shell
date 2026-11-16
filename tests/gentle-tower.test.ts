@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -7,6 +7,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { createTowerPublisher } from "../extensions/gentle-tower.ts";
 import { readTowerSnapshots } from "../lib/tower-hub.ts";
 import { TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
+import { startTowerServer } from "../lib/tower-server.ts";
+import { TOWER_CHAT_TURNS } from "../lib/tower-snapshot.ts";
+import { sentMessage, settleOutbox, type Outgoing } from "../web/tower/src/model.ts";
 
 const roots: string[] = [];
 after(() => roots.forEach((r) => rmSync(r, { recursive: true, force: true })));
@@ -199,6 +202,53 @@ test("a web message reaches the floor: a new turn when idle, a follow-up when bu
 	// The message shows up in the conversation itself; no standalone "delivered" notice.
 	assert.equal(readTowerSnapshots(dir)[0].notice, undefined);
 	await fire("session_shutdown", ctx);
+});
+
+test("a Tower follow-up survives the publisher and outbox after many tool turns", async () => {
+	const dir = hub(), web = join(dir, "..", "web");
+	mkdirSync(web, { recursive: true }); writeFileSync(join(web, "index.html"), "<title>test</title>");
+	const T = 1_700_000_000_000;
+	const branch: unknown[] = [
+		{ type: "message", message: { role: "user", content: "terminal question", timestamp: T - 1000 } },
+		{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "previous reply" }], timestamp: T - 500 } },
+	];
+	const action = actionPi("normal");
+	const send = action.pi.sendUserMessage;
+	(action.pi as unknown as { sendUserMessage: (text: string, opts?: unknown) => void }).sendUserMessage = (text, opts) => {
+		send(text, opts as never);
+		// Pi persists an extension-sent user message as a normal branch entry.
+		branch.push({ type: "message", message: { role: "user", content: [{ type: "text", text }], timestamp: T + 10 } });
+	};
+	const ctx = { ...fakeCtx(branch), isIdle: () => false } as unknown as ExtensionContext;
+	createTowerPublisher(action.pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, inboxMs: 20, reviewCli: async () => "{}", now: () => T + 1000 });
+	await action.fire("session_start", ctx);
+	await wait(150);
+	const server = await startTowerServer({ hubDir: dir, webDir: web, token: "tok-123" });
+	const sessions = async () => (await (await fetch(`${server.url}api/sessions`)).json() as { sessions: Array<{ chat: Array<{ role: "you" | "agent"; text: string; at: number }> }> }).sessions;
+	try {
+		const before = (await sessions())[0].chat;
+		const outgoing: Outgoing = { ...sentMessage("tower question", T, before), state: "sent" };
+		const accepted = await fetch(`${server.url}api/action`, { method: "POST", headers: { Origin: `http://127.0.0.1:${server.port}`, "Content-Type": "application/json" }, body: JSON.stringify({ type: "message", sessionId: "sess-1", text: "tower question" }) });
+		assert.equal(accepted.status, 202);
+		await wait(100);
+		assert.deepEqual(action.sent, [{ text: "tower question", opts: { deliverAs: "followUp" } }]);
+		await action.fire("turn_end", ctx); await wait(80);
+		const echo = (await sessions())[0].chat;
+		assert.deepEqual(echo.map((t) => t.text), ["terminal question", "previous reply", "tower question"]);
+		const consumed = new Set<string>();
+		assert.deepEqual(settleOutbox([outgoing], echo, consumed).keep, []);
+		for (let i = 0; i < TOWER_CHAT_TURNS; i++) branch.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: `working ${i}` }, { type: "toolCall", id: `t${i}`, name: "read", arguments: {} }], timestamp: T + 20 + i } });
+		branch.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "final answer" }], timestamp: T + 200 } });
+		await action.fire("turn_end", ctx); await wait(80);
+		const chat = (await sessions())[0].chat;
+		assert.equal(chat.length, TOWER_CHAT_TURNS);
+		assert.deepEqual(chat[0], { role: "you", text: "tower question", at: T + 10 });
+		assert.deepEqual(chat.at(-1), { role: "agent", text: "final answer", at: T + 200 });
+		assert.deepEqual(settleOutbox([], chat, consumed).show, []);
+	} finally {
+		await action.fire("session_shutdown", ctx);
+		await server.close();
+	}
 });
 
 test("stop helper cancels exactly that subagent", async () => {

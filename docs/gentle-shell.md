@@ -530,7 +530,15 @@ Gentle Tower is a web view of every open Gentle Shell session, for people who pr
 
 **How it works**
 
-Every session with the tower extension writes a small snapshot of itself to `~/.gentle-shell/tower/sessions/` (folder `0700`, files `0600`), with its tasks, live helpers, cost, context, model, phase, permission and review state, latest words and artifacts. The project folder and artifact paths are never shortened; an artifact whose path is longer than 4096 characters is left out. Sessions without the extension still appear as **basic floors** (name, project and live helpers, from the peer presence registry Gentle Agents already keeps), with no tasks, cost or controls. A snapshot whose process has ended is ignored, so a session closed without shutdown never leaves a frozen floor behind.
+Every session with the tower extension writes a small snapshot of itself to `~/.gentle-shell/tower/sessions/` (folder `0700`, files `0600`), with its tasks, live helpers, cost, context, model, phase, permission and review state, latest words and artifacts. The project folder and artifact paths are never shortened; an artifact whose path is longer than 4096 characters is left out. Sessions without the extension still appear as **basic floors** (name, project and live helpers, from the peer presence registry Gentle Agents already keeps), with no tasks, cost or controls. A snapshot whose process has ended is ignored; after an abrupt exit the independent presence heartbeat can still show a basic floor for up to two minutes since its last heartbeat.
+
+To test a checkout's Tower with your existing Pi home, run this from the checkout root (after building its web app and runtime modules):
+
+```sh
+node bin/gentle-shell.mjs --link --package-root "$PWD"
+```
+
+`--link` alone may use the `gentle-pi` already installed in that home, rather than the checkout; `--package-root` explicitly selects the checkout for this linked launch.
 
 The server listens on `127.0.0.1` only, on a random port unless you pick one, with a fresh token as the first path segment on every launch; it refuses other origins. A request from the page is checked and queued to that session's private inbox, and the session runs it itself with its own rules; the web never has more power than the terminal. Set `GENTLE_TOWER=off` to stop a session from publishing.
 

@@ -7,7 +7,9 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import type { InitLockOutcome } from "../lib/codegraph-lease.ts";
+import type { EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
 import codeGraphTools, {
+	armExposureEnsureForTest,
 	clearSearchSync,
 	createCodeGraphTool,
 	codeGraphNodeScript,
@@ -647,6 +649,61 @@ test("the per-prompt sync reset binds to before_agent_start, never to a prompt's
 	assert.equal(triggerSearchSync(cwd, ctx, syncRun), true, "a new user prompt re-arms the sync");
 	await settled();
 	assert.deepEqual(calls, [["sync", "-q"], ["sync", "-q"]]);
+});
+
+test("session_start ensures direct mcp exposure once per process, and a child session never does", (t) => {
+	withoutChildEnv(t);
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+	const pi = {
+		registerTool() {
+			/* the registered tool's shape is covered above */
+		},
+		on(event: string, handler: (event: unknown, ctx: unknown) => void) {
+			handlers.set(event, handler);
+		},
+	} as unknown as ExtensionAPI;
+
+	codeGraphTools(pi);
+
+	const sessionStart = handlers.get("session_start") as (event: unknown, ctx: unknown) => void;
+	// A fresh git repo with no index and no marker: readiness plans nothing, so firing the
+	// handler never spawns a real CodeGraph command.
+	const ctx = { cwd: workspace(t) } as ExtensionContext;
+	const exposureIo = (): { reads: string[]; writes: string[]; io: EnsureExposureIo } => {
+		const reads: string[] = [];
+		const writes: string[] = [];
+		return {
+			reads,
+			writes,
+			io: {
+				read: (path) => {
+					reads.push(path);
+					return JSON.stringify({ mcpServers: { codegraph: { command: "codegraph", args: ["serve", "--mcp"] } } });
+				},
+				write: (path) => {
+					writes.push(path);
+				},
+			},
+		};
+	};
+	t.after(() => armExposureEnsureForTest(undefined));
+
+	// A child session never patches the user's config — checked first, from a pristine flag.
+	const child = exposureIo();
+	armExposureEnsureForTest(child.io);
+	process.env.GENTLE_PI_AGENTS_CHILD = "1";
+	sessionStart({ reason: "startup" }, ctx);
+	sessionStart({ reason: "startup" }, ctx);
+	assert.equal(child.reads.length, 0, "a child session never reads an agent mcp.json");
+	delete process.env.GENTLE_PI_AGENTS_CHILD;
+
+	// A parent session ensures exactly once: the second session start is a per-process no-op.
+	const parent = exposureIo();
+	armExposureEnsureForTest(parent.io);
+	sessionStart({ reason: "startup" }, ctx);
+	sessionStart({ reason: "startup" }, ctx);
+	assert.equal(parent.reads.length, 2, "each agent-home mcp.json is read exactly once");
+	assert.equal(parent.writes.length, 2, "each agent-home mcp.json is written exactly once");
 });
 
 test("triggerSearchSync: an unindexed workspace starts no doomed sync", async (t) => {

@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
+import type { InitLockOutcome } from "../lib/codegraph-lease.ts";
 import codeGraphTools, {
 	clearSearchSync,
 	createCodeGraphTool,
@@ -13,6 +14,7 @@ import codeGraphTools, {
 	codegraphSyncFailureNotice,
 	findCodeGraphNodeScriptOnPath,
 	isSameDirectory,
+	isWorkspaceProjectRoot,
 	triggerSearchSync,
 	type CodeGraphRunner,
 	type DaemonExplore,
@@ -38,6 +40,9 @@ const noRewarm = (): void => {};
 
 /** A syncRun that starts nothing real; tests count its calls when they care. */
 const syncNothing = async (): Promise<boolean> => true;
+
+/** An init lock that is always acquired: init tests never touch the real cross-session lease. */
+const lockAcquired = async (): Promise<InitLockOutcome> => ({ outcome: "acquired", release: () => {}, adopt: () => {} });
 
 /**
  * The test runner may itself be flagged as a subagent child (GENTLE_PI_AGENTS_CHILD=1), which
@@ -87,6 +92,25 @@ test("CodeGraph workspace guard compares directories by identity, not path spell
 	assert.equal(isSameDirectory(root, nested), false);
 	assert.equal(isSameDirectory(root, join(root, "missing")), false);
 });
+test("readiness treats a workspace symlinked to a valid Git root as that project root", (t) => {
+	const root = workspace(t);
+	const holder = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-root-alias-")));
+	t.after(() => rmSync(holder, { recursive: true, force: true }));
+	const alias = join(holder, "root");
+	symlinkSync(root, alias, "junction");
+	t.after(() => rmSync(alias, { force: true }));
+	const nested = join(root, "nested");
+	mkdirSync(nested);
+	const nonProject = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-non-project-")));
+	t.after(() => rmSync(nonProject, { recursive: true, force: true }));
+
+	assert.equal(isWorkspaceProjectRoot(root), true, "the root itself validates");
+	assert.equal(isWorkspaceProjectRoot(alias), true, "a different spelling of the same directory validates too");
+	assert.equal(isWorkspaceProjectRoot(nested), false, "a subdirectory of the root is not the project root");
+	assert.equal(isWorkspaceProjectRoot(nonProject), false, "a directory outside any repository is not a project root");
+	assert.equal(isWorkspaceProjectRoot(homedir()), false, "HOME is never a project root");
+});
+
 
 test("CodeGraph tool accepts the Git root reached through a different spelling of the same directory (#2558)", async (t) => {
 	// A mapped drive is one such spelling; on a case-insensitive filesystem a different letter case is another.
@@ -158,7 +182,7 @@ test("CodeGraph init is never bounded by the query timeout; only the user's sign
 	// A user cancellation is a failure, not a timeout.
 	const user = new AbortController();
 	setTimeout(() => user.abort(), 5);
-	const cancelled = await createCodeGraphTool(hanging, { queryTimeoutMs: 60_000 }).execute("test", { operation: "init" }, user.signal, undefined, ctx);
+	const cancelled = await createCodeGraphTool(hanging, { queryTimeoutMs: 60_000, initLock: lockAcquired }).execute("test", { operation: "init" }, user.signal, undefined, ctx);
 	assert.doesNotMatch(cancelled.content[0].text, /timed out/);
 	assert.match(cancelled.content[0].text, /CodeGraph failed to run/);
 
@@ -168,7 +192,7 @@ test("CodeGraph init is never bounded by the query timeout; only the user's sign
 		initSignal = options.signal;
 		await new Promise((resolve) => setTimeout(resolve, 60));
 		return { stdout: "indexed", stderr: "" };
-	}, { queryTimeoutMs: 20 });
+	}, { queryTimeoutMs: 20, initLock: lockAcquired });
 	const init = await slowInit.execute("test", { operation: "init" }, undefined, undefined, ctx);
 	assert.deepEqual(init.content, [{ type: "text", text: "indexed" }]);
 	assert.equal(initSignal, undefined);
@@ -249,6 +273,58 @@ test("an already-aborted caller exits before the daemon warm-up and the CLI fall
 	assert.match(result.content[0].text, /CodeGraph failed to run/);
 	assert.equal((result.details as { status?: string }).status, "failed");
 });
+test("an already-aborted caller returns the abort failure before the re-warm, background sync, and first daemon attempt", async (t) => {
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	const ctx = { cwd } as ExtensionContext;
+	let attempts = 0;
+	let rewarms = 0;
+	let syncs = 0;
+	// A wedged daemon socket: the attempt never settles, so any wait for it shows up as elapsed time.
+	const never: DaemonExplore = async () => {
+		attempts += 1;
+		return await new Promise<DaemonCallResult>(() => {
+			/* never settles: a wedged daemon socket */
+		});
+	};
+	const caller = new AbortController();
+	caller.abort(); // the caller cancelled before the search even started
+	const started = Date.now();
+	const result = await Promise.race([
+		createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+			daemonExplore: never,
+			warm: async () => true,
+			rewarm: () => {
+				rewarms += 1;
+			},
+			syncRun: async () => {
+				syncs += 1;
+				return true;
+			},
+		}).execute("test", { operation: "query", query: "symbol" }, caller.signal, undefined, ctx),
+		new Promise<never>((_, reject) => setTimeout(() => reject(new Error("execute did not return after an already-aborted caller")), 3_000)),
+	]);
+	const elapsed = Date.now() - started;
+	assert.ok(result, "execute returned for an already-aborted caller");
+	assert.ok(elapsed < 2_500, `the cancelled call must not wait on the daemon, took ${elapsed} ms`);
+	assert.equal(rewarms, 0, "prior cancellation must not re-warm");
+	assert.equal(syncs, 0, "prior cancellation must not trigger the background sync");
+	assert.equal(attempts, 0, "prior cancellation must not start the first daemon attempt");
+	assert.match(result.content[0].text, /CodeGraph failed to run/);
+	assert.equal((result.details as { status?: string }).status, "failed");
+
+	// A daemon that would answer ok cannot turn a cancelled call into a success either.
+	const leaked = await createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+		daemonExplore: async () => ({ status: "ok", text: "daemon answer" }),
+		rewarm: () => {
+			rewarms += 1;
+		},
+		syncRun: syncNothing,
+	}).execute("test", { operation: "query", query: "symbol" }, caller.signal, undefined, ctx);
+	assert.match(leaked.content[0].text, /CodeGraph failed to run/);
+	assert.equal((leaked.details as { status?: string }).status, "failed");
+});
+
 
 test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore commands", async (t) => {
 	const cwd = workspace(t);
@@ -266,6 +342,7 @@ test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore command
 			},
 			rewarm: noRewarm,
 			syncRun: syncNothing,
+			initLock: lockAcquired,
 		},
 	);
 	const ctx = { cwd } as ExtensionContext;
@@ -401,7 +478,7 @@ test("CodeGraph init reports the missing binary distinctly", async (t) => {
 	const unavailable = Object.assign(new Error("spawn codegraph ENOENT"), { code: "ENOENT" });
 	const tool = createCodeGraphTool(async () => {
 		throw unavailable;
-	});
+	}, { initLock: lockAcquired });
 	const ctx = { cwd } as ExtensionContext;
 
 	const result = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
@@ -424,7 +501,7 @@ test("CodeGraph tool configures a process buffer above the returned-output trunc
 	const tool = createCodeGraphTool(async (_args, options) => {
 		maxBuffer = options.maxBuffer;
 		return { stdout: "x".repeat(100_001), stderr: "" };
-	});
+	}, { initLock: lockAcquired });
 	const ctx = { cwd } as ExtensionContext;
 
 	const result = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
@@ -440,7 +517,7 @@ test("the CLI process buffer is a byte budget covering the character cap at maxi
 	const tool = createCodeGraphTool(async (_args, options) => {
 		maxBuffer = options.maxBuffer;
 		return { stdout: "x", stderr: "" };
-	});
+	}, { initLock: lockAcquired });
 	const ctx = { cwd } as ExtensionContext;
 
 	await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
@@ -637,6 +714,10 @@ test("the tool_call guard blocks bash codegraph index/init when an index exists 
 		["codegraph init", "bash"],
 		["  FOO=1 codegraph index", "bash"],
 		["FOO=1 codegraph init", "bash_background"],
+		["FOO=\"a b\" codegraph index .", "bash"],
+		["cd . && codegraph index .", "bash"],
+		["cd .; codegraph init", "bash"],
+		["cd .\ncodegraph index .", "bash"],
 	] as const) {
 		const blocked = verdict(command, toolName) as { block?: boolean; reason?: string } | undefined;
 		assert.equal(blocked?.block, true, `${toolName}: ${command} is blocked`);
@@ -644,7 +725,7 @@ test("the tool_call guard blocks bash codegraph index/init when an index exists 
 		assert.match(blocked?.reason ?? "", /GENTLE_CODEGRAPH_ALLOW_INDEX=1/);
 	}
 
-	for (const command of ["codegraph sync", "codegraph unlock", "codegraph status", "codegraph indexer .", "rg foo"]) {
+	for (const command of ["codegraph sync", "codegraph unlock", "codegraph status", "codegraph indexer .", "rg foo", "FOO=\"a b\" codegraph sync", "echo \"codegraph index .\"", "cd . && codegraph status"]) {
 		assert.equal(verdict(command), undefined, `${command} is allowed`);
 	}
 	assert.equal(verdict("codegraph index .", "read"), undefined, "only bash tools are guarded");
@@ -662,6 +743,12 @@ test("the tool_call guard blocks bash codegraph index/init when an index exists 
 	assert.equal(verdict("FOO=1 GENTLE_CODEGRAPH_ALLOW_INDEX=1 codegraph init"), undefined, "the override counts anywhere in the leading assignment run");
 	const refused = verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=0 codegraph index .") as { block?: boolean } | undefined;
 	assert.equal(refused?.block, true, "only the exact =1 value overrides");
+	assert.equal(verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=\"1\" codegraph index ."), undefined, "a quoted =1 is the same override value");
+	const refusedQuoted = verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=\"0\" codegraph index .") as { block?: boolean } | undefined;
+	assert.equal(refusedQuoted?.block, true, "only the exact quoted value 1 overrides");
+	assert.equal(verdict("cd . && GENTLE_CODEGRAPH_ALLOW_INDEX=1 codegraph index ."), undefined, "the override on the rebuild command itself counts after a separator");
+	const siblingOverride = verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=1 cd . && codegraph index .") as { block?: boolean } | undefined;
+	assert.equal(siblingOverride?.block, true, "an override on an earlier command never leaks onto the rebuild after a separator");
 	process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = "1";
 	assert.equal(verdict("codegraph index ."), undefined, "the explicit override allows a deliberate rebuild");
 });
@@ -799,7 +886,7 @@ test("Windows launcher passes command metacharacters as one literal argv value",
 	Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
 	t.after(() => Object.defineProperty(process, "platform", { configurable: true, value: previousPlatform }));
 
-	const result = await createCodeGraphTool().execute(
+	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute(
 		"test",
 		{ operation: "init" },
 		undefined,
@@ -839,7 +926,7 @@ test("CodeGraph init keeps the whole .codegraph index out of git through the loc
 	const cwd = workspace(t);
 	writeFileSync(join(cwd, "tracked.txt"), "tracked\n");
 	execFileSync("git", ["add", "tracked.txt"], { cwd });
-	const tool = createCodeGraphTool(writeIndex);
+	const tool = createCodeGraphTool(writeIndex, { initLock: lockAcquired });
 	const ctx = { cwd } as ExtensionContext;
 
 	const first = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
@@ -856,12 +943,12 @@ test("CodeGraph init keeps the whole .codegraph index out of git through the loc
 test("CodeGraph exclusion appends on a new line and recognizes an equivalent existing pattern", async (t) => {
 	const appended = workspace(t);
 	writeFileSync(excludeFile(appended), "# local\n*.log");
-	await createCodeGraphTool(writeIndex).execute("test", { operation: "init" }, undefined, undefined, { cwd: appended } as ExtensionContext);
+	await createCodeGraphTool(writeIndex, { initLock: lockAcquired }).execute("test", { operation: "init" }, undefined, undefined, { cwd: appended } as ExtensionContext);
 	assert.equal(readFileSync(excludeFile(appended), "utf8"), "# local\n*.log\n.codegraph/\n");
 
 	const equivalent = workspace(t);
 	writeFileSync(excludeFile(equivalent), "/.codegraph\n");
-	const result = await createCodeGraphTool(writeIndex).execute("test", { operation: "init" }, undefined, undefined, { cwd: equivalent } as ExtensionContext);
+	const result = await createCodeGraphTool(writeIndex, { initLock: lockAcquired }).execute("test", { operation: "init" }, undefined, undefined, { cwd: equivalent } as ExtensionContext);
 	assert.equal(readFileSync(excludeFile(equivalent), "utf8"), "/.codegraph\n");
 	assert.equal((result.details as { localExclude?: { status: string } }).localExclude?.status, "present");
 	assert.equal(gitOutput(equivalent, "status", "--porcelain", "--untracked-files=all"), "");
@@ -877,7 +964,7 @@ test("CodeGraph exclusion uses the exclude file git resolves for a linked worktr
 	execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "fixture"], { cwd: primary, stdio: "ignore" });
 	execFileSync("git", ["worktree", "add", "-b", "feature", linked], { cwd: primary, stdio: "ignore" });
 
-	const result = await createCodeGraphTool(writeIndex).execute("test", { operation: "init" }, undefined, undefined, { cwd: linked } as ExtensionContext);
+	const result = await createCodeGraphTool(writeIndex, { initLock: lockAcquired }).execute("test", { operation: "init" }, undefined, undefined, { cwd: linked } as ExtensionContext);
 
 	assert.deepEqual(result.content, [{ type: "text", text: "indexed" }]);
 	assert.equal(gitOutput(linked, "status", "--porcelain", "--untracked-files=all"), "");
@@ -930,6 +1017,37 @@ test("CodeGraph query does not treat a .codegraph directory without codegraph.db
 	assert.deepEqual(excludeLines(partial), [], "a directory without the database file is not an index");
 	assert.equal((result.details as { localExclude?: unknown }).localExclude, undefined);
 });
+test("a search that waited on the daemon or the CLI still excludes an index published meanwhile", async (t) => {
+	// The daemon path: session readiness publishes the index while the search awaits the daemon's answer.
+	const daemonCwd = workspace(t);
+	const viaDaemon = await createCodeGraphTool(async () => ({ stdout: "found", stderr: "" }), {
+		daemonExplore: async () => {
+			await writeIndex(["init", daemonCwd], { cwd: daemonCwd, maxBuffer: 1 });
+			return { status: "ok" as const, text: "found" };
+		},
+		rewarm: noRewarm,
+		syncRun: syncNothing,
+	}).execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd: daemonCwd } as ExtensionContext);
+	assert.match(viaDaemon.content[0].text, /found/);
+	assert.equal(((viaDaemon.details as { localExclude?: { status: string } }).localExclude)?.status, "added", "the daemon path excludes an index published during its wait");
+	assert.equal(gitOutput(daemonCwd, "status", "--porcelain", "--untracked-files=all"), "");
+
+	// The CLI fallback path: the index appears while the search runs its one CLI process.
+	const cliCwd = workspace(t);
+	const viaCli = await createCodeGraphTool(async () => {
+		await writeIndex(["init", cliCwd], { cwd: cliCwd, maxBuffer: 1 });
+		return { stdout: "found", stderr: "" };
+	}, {
+		daemonExplore: async () => ({ status: "unavailable" as const }),
+		warm: async () => true,
+		rewarm: noRewarm,
+		syncRun: syncNothing,
+	}).execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd: cliCwd } as ExtensionContext);
+	assert.match(viaCli.content[0].text, /found/);
+	assert.equal(((viaCli.details as { localExclude?: { status: string } }).localExclude)?.status, "added", "the CLI path excludes an index published during its wait");
+	assert.equal(gitOutput(cliCwd, "status", "--porcelain", "--untracked-files=all"), "");
+});
+
 
 test("CodeGraph query prefers the daemon socket and never spawns the CLI", async (t) => {
 	const cwd = workspace(t);
@@ -1136,6 +1254,7 @@ test("init runs the CLI with the workspace, never the daemon, and never triggers
 				syncCalls += 1;
 				return true;
 			},
+			initLock: lockAcquired,
 		},
 	);
 
@@ -1147,6 +1266,75 @@ test("init runs the CLI with the workspace, never the daemon, and never triggers
 	await settled();
 	assert.equal(syncCalls, 0, "init never triggers the background sync");
 });
+test("explicit init runs under the cross-session init lock: a held lock fails closed, and the lock is always released", async (t) => {
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	let runnerCalls = 0;
+	let releases = 0;
+	const acquired: InitLockOutcome = { outcome: "acquired", release: () => { releases += 1; }, adopt: () => {} };
+	const outcomes: InitLockOutcome[] = [{ outcome: "skipped" }, { outcome: "present" }, acquired, acquired];
+	let failNextInit = false;
+	const tool = createCodeGraphTool(async () => {
+		runnerCalls += 1;
+		if (failNextInit) throw new Error("CodeGraph exited with status 1");
+		return { stdout: "indexed", stderr: "" };
+	}, { initLock: async () => outcomes.shift() ?? acquired });
+
+	const skipped = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.equal(runnerCalls, 0, "a lock that stays held never runs a second concurrent init");
+	assert.match(skipped.content[0].text, /held by another session/);
+	assert.equal((skipped.details as { status?: string }).status, "failed");
+
+	const present = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.equal(runnerCalls, 0, "an index that appeared while the lock was waited on is not rebuilt");
+	assert.match(present.content[0].text, /an index already exists/);
+	assert.equal((present.details as { status?: string }).status, "failed");
+
+	const ok = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.deepEqual(ok.content, [{ type: "text", text: "indexed" }]);
+	failNextInit = true;
+	const failed = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.match(failed.content[0].text, /CodeGraph failed to run/);
+	assert.equal(runnerCalls, 2);
+	assert.equal(releases, 2, "the lock is released however init ends");
+});
+
+test("operation init refuses to rebuild an existing index without the explicit override, like the bash guard", async (t) => {
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	const ctx = { cwd } as ExtensionContext;
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	let runnerCalls = 0;
+	let lockAcquisitions = 0;
+	const tool = createCodeGraphTool(async () => {
+		runnerCalls += 1;
+		return { stdout: "rebuilt", stderr: "" };
+	}, {
+		initLock: async () => {
+			lockAcquisitions += 1;
+			return { outcome: "acquired" as const, release: () => {}, adopt: () => {} };
+		},
+	});
+
+	const refused = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.equal(runnerCalls, 0, "an indexed workspace is never rebuilt from the tool");
+	assert.equal(lockAcquisitions, 0, "the guard refuses before touching the init lock");
+	assert.match(refused.content[0].text, /an index already exists/);
+	assert.match(refused.content[0].text, /GENTLE_CODEGRAPH_ALLOW_INDEX=1/);
+	assert.equal((refused.details as { status?: string }).status, "failed");
+
+	process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = "1";
+	const rebuilt = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.equal(runnerCalls, 1, "the explicit override allows the deliberate rebuild");
+	assert.equal(lockAcquisitions, 1, "the override still runs under the init lock");
+	assert.match(rebuilt.content[0].text, /rebuilt/);
+});
+
 
 test("the first search of a turn triggers one background sync, later searches none", async (t) => {
 	withoutChildEnv(t);
@@ -1223,7 +1411,7 @@ test("CodeGraph init still succeeds and reports when git is unavailable for the 
 		const output = await writeIndex(args, options);
 		process.env.PATH = empty; // git disappears after the workspace check
 		return output;
-	}).execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
+	}, { initLock: lockAcquired }).execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
 	process.env.PATH = originalPath;
 
 	assert.match(result.content[0].text, /^indexed\n\n/);
@@ -1238,7 +1426,7 @@ test("CodeGraph excludes a partial index left behind by a failed init without ch
 	const result = await createCodeGraphTool(async (args, options) => {
 		await writeIndex(args, options);
 		throw new Error("CodeGraph exited with status 1");
-	}).execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
+	}, { initLock: lockAcquired }).execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
 
 	assert.deepEqual(result.content, [{ type: "text", text: "CodeGraph failed to run. Use read, grep, and find for this exploration." }]);
 	assert.equal((result.details as { status: string }).status, "failed");

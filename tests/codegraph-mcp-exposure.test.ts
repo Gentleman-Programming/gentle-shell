@@ -117,8 +117,83 @@ test("ensureDirectExposure: without a codegraph entry nothing is created", () =>
 	}
 });
 
+test("ensureDirectExposure: a concurrent writer between the read and the publish loses no update", () => {
+	// The update re-reads the file before publishing, so a concurrent save wired into that re-read
+	// is exactly a writer that modified mcp.json after the update read it and before it publishes.
+	{
+		// A sibling server saved concurrently survives the publish.
+		const concurrent = JSON.stringify(
+			{ mcpServers: { codegraph: { command: "codegraph", args: ["serve", "--mcp"] }, context7: { command: "npx" }, serena: { command: "uvx" } } },
+			null,
+			2,
+		);
+		const files: Record<string, string> = { "/f": WITH_CODEGRAPH };
+		let reads = 0;
+		const io: EnsureExposureIo = {
+			read: (path) => {
+				reads += 1;
+				if (reads === 2) files["/f"] = concurrent; // the concurrent save lands mid-update
+				return files[path];
+			},
+			write: (path, text) => {
+				files[path] = text;
+			},
+		};
+		assert.equal(ensureDirectExposure("/f", io).outcome, "added");
+		const written = JSON.parse(files["/f"]!) as { mcpServers: { codegraph: { exposure: string }; serena: { command: string } } };
+		assert.equal(written.mcpServers.serena.command, "uvx", "the concurrent sibling-server change is not discarded");
+		assert.equal(written.mcpServers.codegraph.exposure, "direct", "the exposure update still lands on the newer content");
+	}
+	{
+		// A concurrently set exposure value is never reverted to direct.
+		const concurrent = JSON.stringify({ mcpServers: { codegraph: { command: "codegraph", exposure: "hidden" } } }, null, 2);
+		const files: Record<string, string> = { "/f": WITH_CODEGRAPH };
+		let reads = 0;
+		let writes = 0;
+		const io: EnsureExposureIo = {
+			read: (path) => {
+				reads += 1;
+				if (reads === 2) files["/f"] = concurrent;
+				return files[path];
+			},
+			write: (path, text) => {
+				writes += 1;
+				files[path] = text;
+			},
+		};
+		assert.equal(ensureDirectExposure("/f", io).outcome, "present", "the restarted update sees the concurrently set field");
+		assert.equal(writes, 0, "a newly set exposure value is never overwritten");
+		const written = JSON.parse(files["/f"]!) as { mcpServers: { codegraph: { exposure: string } } };
+		assert.equal(written.mcpServers.codegraph.exposure, "hidden", "the concurrent writer's value stays");
+	}
+	{
+		// A writer that saves on every re-verify exhausts the bounded retries: nothing is written.
+		const files: Record<string, string> = {};
+		let version = 0;
+		const latest = () => JSON.stringify({ mcpServers: { codegraph: { command: "codegraph" }, concurrentSave: version } });
+		files["/f"] = latest();
+		let writes = 0;
+		const io: EnsureExposureIo = {
+			read: (path) => {
+				version += 1;
+				files["/f"] = latest();
+				return files[path];
+			},
+			write: (path, text) => {
+				writes += 1;
+				files[path] = text;
+			},
+		};
+		assert.equal(ensureDirectExposure("/f", io).outcome, "conflict", "a file that keeps changing is left unwritten");
+		assert.equal(writes, 0, "no publish ever clobbers the concurrent writer");
+		const written = JSON.parse(files["/f"]!) as { mcpServers: { codegraph: { command: string }; concurrentSave: number } };
+		assert.equal(written.mcpServers.concurrentSave, version, "the concurrent writer's last content stays");
+		assert.equal("exposure" in written.mcpServers.codegraph, false, "a failed update invents no exposure field");
+	}
+});
+
 test("codegraphMcpPaths: exactly the pi and gentle-shell agent mcp.json paths", () => {
-	assert.deepEqual(codegraphMcpPaths("/h"), [
+	assert.deepEqual(codegraphMcpPaths("/h", {}), [
 		join("/h", ".pi", "agent", "mcp.json"),
 		join("/h", ".gentle-shell", "agent", "mcp.json"),
 	]);
@@ -130,10 +205,10 @@ test("ensureDirectExposureInAgentHomes: patches each agent home independently", 
 		[join("/h", ".gentle-shell", "agent", "mcp.json")]: WITH_CODEGRAPH,
 	};
 	const { io, writes } = harness(files);
-	const results = ensureDirectExposureInAgentHomes("/h", io);
+	const results = ensureDirectExposureInAgentHomes("/h", io, {});
 	assert.deepEqual(results.map((result) => result.outcome), ["added", "added"]);
 	assert.equal(writes.size, 2);
-	for (const path of codegraphMcpPaths("/h")) {
+	for (const path of codegraphMcpPaths("/h", {})) {
 		const written = JSON.parse(files[path]!) as { mcpServers: { codegraph: { exposure: string } } };
 		assert.equal(written.mcpServers.codegraph.exposure, "direct", path);
 	}
@@ -150,7 +225,7 @@ test("ensureDirectExposureInAgentHomes: an I/O failure on the first home does no
 			files[path] = text;
 		},
 	};
-	const results = ensureDirectExposureInAgentHomes("/h", io);
+	const results = ensureDirectExposureInAgentHomes("/h", io, {});
 	assert.deepEqual(
 		results.map((result) => result.outcome),
 		["error", "added"],
@@ -159,6 +234,47 @@ test("ensureDirectExposureInAgentHomes: an I/O failure on the first home does no
 	assert.equal(files[piPath], WITH_CODEGRAPH, "the failed home's file is left exactly as it was");
 	const written = JSON.parse(files[shellPath]!) as { mcpServers: { codegraph: { exposure: string } } };
 	assert.equal(written.mcpServers.codegraph.exposure, "direct", "the second home still receives its update");
+});
+
+test("ensureDirectExposureInAgentHomes: a session with home overrides patches its active homes, never the default-home files", () => {
+	// The overrides that move the directories a session loads mcp.json from — the same resolution
+	// as resolveGentlePiAgentHome (lib/agent-home.ts) and isolatedDir (lib/gentle-shell-launcher.ts).
+	const env = { GENTLE_PI_AGENT_HOME: "/custom/pi", GENTLE_SHELL_HOME: "/custom/shell" };
+	assert.deepEqual(
+		codegraphMcpPaths("/h", env),
+		[join("/custom/pi", "mcp.json"), join("/custom/shell", "mcp.json")],
+		"the targets follow the session's home overrides",
+	);
+	assert.deepEqual(
+		codegraphMcpPaths("/h", { PI_CODING_AGENT_DIR: "/via/agent-dir" }),
+		[join("/via/agent-dir", "mcp.json"), join("/h", ".gentle-shell", "agent", "mcp.json")],
+		"PI_CODING_AGENT_DIR moves the pi home when GENTLE_PI_AGENT_HOME is unset",
+	);
+	assert.deepEqual(
+		codegraphMcpPaths("/h", { GENTLE_PI_AGENT_HOME: "", PI_CODING_AGENT_DIR: "/via/agent-dir" }),
+		[join("/via/agent-dir", "mcp.json"), join("/h", ".gentle-shell", "agent", "mcp.json")],
+		"an empty GENTLE_PI_AGENT_HOME falls through like an unset one",
+	);
+	assert.deepEqual(
+		codegraphMcpPaths("/h", {}),
+		[join("/h", ".pi", "agent", "mcp.json"), join("/h", ".gentle-shell", "agent", "mcp.json")],
+		"no override: the default homes stay the targets",
+	);
+	const overridden = [join("/custom/pi", "mcp.json"), join("/custom/shell", "mcp.json")];
+	const defaults = [join("/h", ".pi", "agent", "mcp.json"), join("/h", ".gentle-shell", "agent", "mcp.json")];
+	const files: Record<string, string> = {};
+	for (const path of [...overridden, ...defaults]) files[path] = WITH_CODEGRAPH;
+	const { io, writes } = harness(files);
+	const results = ensureDirectExposureInAgentHomes("/h", io, env);
+	assert.deepEqual(results.map((result) => result.outcome), ["added", "added"]);
+	assert.deepEqual([...writes.keys()].sort(), [...overridden].sort(), "only the overridden homes are written");
+	for (const path of overridden) {
+		const patched = JSON.parse(files[path]!) as { mcpServers: { codegraph: { exposure: string } } };
+		assert.equal(patched.mcpServers.codegraph.exposure, "direct", `the session's active file is patched: ${path}`);
+	}
+	for (const path of defaults) {
+		assert.equal(files[path], WITH_CODEGRAPH, `an inactive default-home file is never touched: ${path}`);
+	}
 });
 
 test("atomicWriteFile: a replacement that fails part-way leaves the original file intact", () => {

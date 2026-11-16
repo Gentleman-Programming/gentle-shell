@@ -10,9 +10,19 @@ import { basename, dirname, join } from "node:path";
  * overwriting a field that is already there, and never touching sibling servers.
  */
 
-/** The agent mcp.json files that may carry a `codegraph` entry: the pi home and the Gentle Shell home. */
-export function codegraphMcpPaths(home: string = homedir()): string[] {
-	return [join(home, ".pi", "agent", "mcp.json"), join(home, ".gentle-shell", "agent", "mcp.json")];
+/**
+ * The agent mcp.json files that may carry a `codegraph` entry: the Pi agent home and the Gentle
+ * Shell isolated home. Each honors the override that also moves the directory the session loads
+ * mcp.json from — GENTLE_PI_AGENT_HOME, then PI_CODING_AGENT_DIR, for the Pi home (mirroring
+ * resolveGentlePiAgentHome in lib/agent-home.ts) and GENTLE_SHELL_HOME for the isolated home
+ * (mirroring isolatedDir in lib/gentle-shell-launcher.ts), an empty value falling through like
+ * an unset one — so the targets are the session's active homes, with `home` supplying the
+ * default paths only when no override is set.
+ */
+export function codegraphMcpPaths(home: string = homedir(), env: NodeJS.ProcessEnv = process.env): string[] {
+	const piAgent = env.GENTLE_PI_AGENT_HOME || env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent");
+	const isolated = env.GENTLE_SHELL_HOME || join(home, ".gentle-shell", "agent");
+	return [join(piAgent, "mcp.json"), join(isolated, "mcp.json")];
 }
 
 export type ExposureOutcome =
@@ -27,7 +37,9 @@ export type ExposureOutcome =
 	/** No `mcpServers.codegraph` object entry exists; nothing is created. */
 	| "no-server"
 	/** The update itself failed (an unreadable or unwritable file); that path is left as it was. */
-	| "error";
+	| "error"
+	/** The file changed under the update on every bounded retry; nothing was written. */
+	| "conflict";
 
 export interface EnsureExposureResult {
 	path: string;
@@ -43,6 +55,9 @@ export interface EnsureExposureIo {
 
 /** Mode used when the update creates a config file because none existed yet. */
 const NEW_CONFIG_MODE = 0o644;
+
+/** How many times the whole read-modify-write restarts when a concurrent writer changes the file mid-update. */
+const MAX_UPDATE_ATTEMPTS = 3;
 
 /**
  * The single-file replacement steps behind {@link defaultIo}'s write. The whole update is
@@ -124,34 +139,47 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * field is absent. Every other key, server, and value in the document is preserved; the file
  * is rewritten only on the `"added"` outcome, as two-space-indented JSON with a trailing
  * newline. Best effort by contract: a missing or unparseable file is reported and never
- * written, and an entry the caller did not configure is never invented.
+ * written, and an entry the caller did not configure is never invented. The publish also
+ * refuses to clobber a concurrent writer: the file is re-read and compared with the text the
+ * update was computed from immediately before the write, and any change discards that write
+ * and restarts the whole read-modify-write from the file's current content — an atomic rename
+ * prevents partial writes, not lost updates. The restart is bounded; a file that keeps
+ * changing across every attempt is reported as `"conflict"` and left unwritten.
  */
 export function ensureDirectExposure(path: string, io: EnsureExposureIo = defaultIo): EnsureExposureResult {
-	const raw = io.read(path);
-	if (raw === undefined) return { path, outcome: "missing" };
-	let doc: unknown;
-	try {
-		doc = JSON.parse(raw);
-	} catch {
-		return { path, outcome: "unparseable" };
+	for (let attempt = 1; ; attempt++) {
+		const raw = io.read(path);
+		if (raw === undefined) return { path, outcome: "missing" };
+		let doc: unknown;
+		try {
+			doc = JSON.parse(raw);
+		} catch {
+			return { path, outcome: "unparseable" };
+		}
+		if (!isPlainObject(doc)) return { path, outcome: "unparseable" };
+		const servers = doc.mcpServers;
+		const entry = isPlainObject(servers) ? servers.codegraph : undefined;
+		if (!isPlainObject(entry)) return { path, outcome: "no-server" };
+		if ("exposure" in entry) return { path, outcome: "present" };
+		if (io.read(path) !== raw) {
+			if (attempt >= MAX_UPDATE_ATTEMPTS) return { path, outcome: "conflict" };
+			continue; // a concurrent writer changed the file: restart from its current content
+		}
+		entry.exposure = "direct";
+		io.write(path, `${JSON.stringify(doc, null, 2)}\n`);
+		return { path, outcome: "added" };
 	}
-	if (!isPlainObject(doc)) return { path, outcome: "unparseable" };
-	const servers = doc.mcpServers;
-	const entry = isPlainObject(servers) ? servers.codegraph : undefined;
-	if (!isPlainObject(entry)) return { path, outcome: "no-server" };
-	if ("exposure" in entry) return { path, outcome: "present" };
-	entry.exposure = "direct";
-	io.write(path, `${JSON.stringify(doc, null, 2)}\n`);
-	return { path, outcome: "added" };
 }
 
 /**
- * Ensures the field in every agent home mcp.json: the pi home first, then the Gentle Shell home.
- * An I/O failure on one home is isolated: that path is reported as `"error"` and every
- * remaining home is still attempted, so one unwritable config never blocks the other homes.
+ * Ensures the field in every agent home mcp.json: the Pi agent home first, then the Gentle Shell
+ * isolated home, each resolved from the session's own overrides exactly as the runtime loads it
+ * (see {@link codegraphMcpPaths}). An I/O failure on one home is isolated: that path is reported
+ * as `"error"` and every remaining home is still attempted, so one unwritable config never
+ * blocks the other homes.
  */
-export function ensureDirectExposureInAgentHomes(home: string = homedir(), io: EnsureExposureIo = defaultIo): EnsureExposureResult[] {
-	return [...new Set(codegraphMcpPaths(home))].map((path) => {
+export function ensureDirectExposureInAgentHomes(home: string = homedir(), io: EnsureExposureIo = defaultIo, env: NodeJS.ProcessEnv = process.env): EnsureExposureResult[] {
+	return [...new Set(codegraphMcpPaths(home, env))].map((path) => {
 		try {
 			return ensureDirectExposure(path, io);
 		} catch {

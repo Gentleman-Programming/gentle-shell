@@ -198,12 +198,15 @@ test("S3: organic and full delegation keep the authorized-work boundary under RD
 // cost-speed P14: the duplicate gentleman Language line (-80 B, PD-57) and the core's evidence-budget number aligned
 // to the runtime (-12 B in both modes, PD-81); measured organic 24,164/24,416 B and full delegation 22,131/22,383 B.
 const PRIMARY_PROMPT_BUDGETS: Record<(typeof MODES)[number], Record<(typeof PERSONAS)[number], number>> = {
-	organic: { gentleman: 24_164, neutral: 24_416 },
+	// fix/temp-dir-exemption (user decision 2026-11-16, approved up to +175 B): the confinement clause exempts the OS temp
+	// directory in every mode and persona; measured organic 24,164/24,416 -> 24,251/24,503 B and full delegation
+	// 22,128/22,380 -> 22,210/22,462 B.
+	organic: { gentleman: 24_251, neutral: 24_503 },
 	// cost-speed P6 (X9): launch form, continue-one-worker rule and the tracking pointer, paid by the motivation
 	// sentence and a duplicate of step 6's verbatim-request rule (22,253/22,425 -> 22,223/22,395 B).
 	// cost-speed P6b: the launch sentence names the same assistant message, the `codemode` route and the sequential
 	// tools (+126 B), paid by tightening five sentences of the same asset (22,131/22,383 -> 22,128/22,380 B).
-	"full-delegation": { gentleman: 22_128, neutral: 22_380 },
+	"full-delegation": { gentleman: 22_210, neutral: 22_462 },
 };
 
 test("S5: the rendered primary prompt fits the lowered per-mode budgets", (t) => {

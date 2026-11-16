@@ -13,6 +13,7 @@ import { ASSET_DIR, boardsOf, click, FakeDocument, findAll, flush, loadCanvas, m
 
 const LANGUAGE_KEY = "gentle-design:language";
 const LANGUAGE_ITEMS = ["Español", "English", "Match the browser"];
+const THEME_ITEMS = ["Gentleman", "Neutral"];
 const NOTE = "Messages to the agent stay in English.";
 // Every canvas module with a TEXT block, by its ES name (canvas-<name>.js): the catalog covers them all.
 const MODULE_FILES = readdirSync(ASSET_DIR).filter((name) => /^canvas-[a-z-]+\.js$/.test(name)).sort();
@@ -141,18 +142,18 @@ test("the default is the browser's language: es* is Spanish, anything else or no
 test("Settings ends with Español, English and Match the browser as radio items and the note, with the menu's keys", async () => {
 	const canvas = await loadLanguage();
 	const items = openSettings(canvas);
-	assert.deepEqual(labels(items), ["Design system board", "Keyboard shortcuts", "Technical details", ...LANGUAGE_ITEMS]);
-	assert.deepEqual(items.slice(3).map((item) => [item.getAttribute("role"), item.getAttribute("aria-checked")]), [["menuitemradio", "false"], ["menuitemradio", "false"], ["menuitemradio", "true"]], "Match the browser is the default");
+	assert.deepEqual(labels(items), ["Design system board", "Keyboard shortcuts", "Technical details", ...THEME_ITEMS, ...LANGUAGE_ITEMS]);
+	assert.deepEqual(items.slice(5).map((item) => [item.getAttribute("role"), item.getAttribute("aria-checked")]), [["menuitemradio", "false"], ["menuitemradio", "false"], ["menuitemradio", "true"]], "Match the browser is the default");
 	assert.deepEqual(texts(menuEl(canvas), "gd-menu-note"), [NOTE]);
 	assert.deepEqual(withClass(menuEl(canvas), "gd-menu-note").map((note) => note.getAttribute("role")), ["none"], "a menu owns only items, groups and separators: the note is presentational");
-	assert.equal(withClass(menuEl(canvas), "gd-menu-separator").length, 1, "a separator before the language");
-	// The menu's keys: the arrows go from Technical details to the radios and wrap.
-	items[2].focus();
-	keyOn(items[2], "ArrowDown");
-	assert.equal(canvas.document.activeElement, items[3]);
-	keyOn(items[3], "End");
+	assert.equal(withClass(menuEl(canvas), "gd-menu-separator").length, 2, "a separator before the theme and one before the language");
+	// The menu's keys: the arrows go from the theme radios to the language radios and wrap.
+	items[4].focus();
+	keyOn(items[4], "ArrowDown");
 	assert.equal(canvas.document.activeElement, items[5]);
-	keyOn(items[5], "ArrowDown");
+	keyOn(items[5], "End");
+	assert.equal(canvas.document.activeElement, items[7]);
+	keyOn(items[7], "ArrowDown");
 	assert.equal(canvas.document.activeElement, items[0]);
 	keyOn(items[0], "Escape");
 	assert.equal(menuEl(canvas).hidden, true);
@@ -166,11 +167,11 @@ test("Settings ends with Español, English and Match the browser as radio items 
 	assert.deepEqual(canvas.languageWrites(), ["es"]);
 	const spanish = openSettings(canvas);
 	assert.equal(menuEl(canvas).getAttribute("aria-label"), "Ajustes");
-	assert.deepEqual(labels(spanish), ["Tablero del design system", "Atajos de teclado", "Detalles técnicos", "Español", "English", "Igual que el navegador"]);
-	assert.deepEqual(spanish.slice(3).map((item) => item.getAttribute("aria-checked")), ["true", "false", "false"]);
+	assert.deepEqual(labels(spanish), ["Tablero del design system", "Atajos de teclado", "Detalles técnicos", "Gentleman", "Neutro", "Español", "English", "Igual que el navegador"]);
+	assert.deepEqual(spanish.slice(5).map((item) => item.getAttribute("aria-checked")), ["true", "false", "false"]);
 	assert.deepEqual(texts(menuEl(canvas), "gd-menu-note"), ["Los mensajes al agente siguen en inglés."]);
 	// Space chooses too.
-	const english = spanish[4];
+	const english = spanish[6];
 	english.focus();
 	keyOn(english, " ");
 	assert.equal(lang(canvas), "en");
@@ -183,15 +184,16 @@ test("Settings heads the language radios with Language / Idioma: visible, out of
 	const canvas = await loadLanguage();
 	const heading = () => {
 		const items = openSettings(canvas);
-		const [title] = withClass(menuEl(canvas), "gd-menu-heading");
-		const [group] = findAll(menuEl(canvas), (element) => element.getAttribute("role") === "group");
+		// The language's group comes after the theme's (design-canvas-theme.test.ts).
+		const [, title] = withClass(menuEl(canvas), "gd-menu-heading");
+		const [, group] = findAll(menuEl(canvas), (element) => element.getAttribute("role") === "group");
 		const grouped = labels(findAll(group, (element) => element.getAttribute("role") === "menuitemradio"));
-		// From Technical details the arrows go straight to the first radio and back: the heading is never a stop.
-		items[2].focus();
-		keyOn(items[2], "ArrowDown");
-		const down = canvas.document.activeElement === items[3];
-		keyOn(items[3], "ArrowUp");
-		const up = canvas.document.activeElement === items[2];
+		// From the last theme radio the arrows go straight to the first language radio and back: the heading is never a stop.
+		items[4].focus();
+		keyOn(items[4], "ArrowDown");
+		const down = canvas.document.activeElement === items[5];
+		keyOn(items[5], "ArrowUp");
+		const up = canvas.document.activeElement === items[4];
 		const result = [title.textContent, title.getAttribute("role"), title.getAttribute("tabindex"), group.getAttribute("aria-labelledby") === title.id && title.id !== "", grouped, down, up];
 		keyOn(canvas.document.activeElement!, "Escape");
 		return result;
@@ -211,7 +213,7 @@ test("the saved choice wins over the browser; an unknown or unreadable one is Ma
 	assert.equal(lang(broken), "es", "unreadable storage follows the browser");
 	const checked = () => {
 		const items = openSettings(broken);
-		const value = items.slice(3).map((item) => item.getAttribute("aria-checked"));
+		const value = items.slice(5).map((item) => item.getAttribute("aria-checked"));
 		$(broken, "gd-rail-settings").dispatch("click");
 		return value;
 	};
@@ -345,7 +347,7 @@ function sameShape(english: Record<string, unknown>, spanish: Record<string, unk
 }
 
 test("ES has every key of each covered module's TEXT, with the same parameters, and nothing else, never session", () => {
-	assert.deepEqual(COVERED, ["boards", "checks", "comments", "compare", "events", "export", "focus", "handoffs", "layout", "minimap", "parts", "popover", "rail", "sizes", "tokens"], "every module that shows text has a TEXT block");
+	assert.deepEqual(COVERED, ["boards", "checks", "comments", "compare", "events", "export", "focus", "handoffs", "layout", "minimap", "parts", "popover", "rail", "sizes", "theme", "tokens"], "every module that shows text has a TEXT block");
 	assert.deepEqual(Object.keys(ES).filter((key) => key !== "html").sort(), [...COVERED].sort());
 	for (const module of COVERED) sameShape(englishText(module), ES[module as keyof typeof ES] as Record<string, unknown>, module);
 	assert.ok(!Object.hasOwn(ES, "session") && Object.values(ES).every((entry) => !Object.hasOwn(entry as object, "session")), "no session key");

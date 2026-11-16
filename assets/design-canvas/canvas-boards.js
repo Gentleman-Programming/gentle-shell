@@ -86,9 +86,29 @@ export function init(ctx) {
 	/**
 	 * A board's frame or one of its size frames (canvas-sizes.js): comment mode never reaches the system board.
 	 * `inspect`: Technical details is on, so the frame measures the hovered element for the token inspector.
+	 * `colors`: the theme's outline colors (outlineColors), left out when they cannot be read.
 	 */
 	function sendMode(surface) {
-		surface.frame.contentWindow?.postMessage({ type: "gd:mode", enabled: state.commenting && !actions.ownerOf(surface).system, inspect: state.technical }, "*");
+		const colors = outlineColors();
+		surface.frame.contentWindow?.postMessage({ type: "gd:mode", enabled: state.commenting && !actions.ownerOf(surface).system, inspect: state.technical, ...(colors ? { colors } : {}) }, "*");
+	}
+
+	/**
+	 * The Comment mode outlines inside an artboard are canvas chrome, so they take the theme's colors, read from
+	 * canvas.css as they apply now: the hover's border, both outlines' fill and the selected one's border. null when
+	 * the page cannot compute them (no stylesheet yet): the frame keeps the colors it has.
+	 */
+	function outlineColors() {
+		if (typeof win.getComputedStyle !== "function") return null;
+		const style = win.getComputedStyle(doc.documentElement);
+		const colors = { accent: style.getPropertyValue("--gd-accent").trim(), wash: style.getPropertyValue("--gd-highlight-wash").trim(), focus: style.getPropertyValue("--gd-focus").trim() };
+		return Object.values(colors).every(Boolean) ? colors : null;
+	}
+
+	/** A change of theme: only the outline colors (gd:colors), so the frame's mode, outlines and inspector stay as they are. */
+	function sendColors(surface) {
+		const colors = outlineColors();
+		if (colors) surface.frame.contentWindow?.postMessage({ type: "gd:colors", colors }, "*");
 	}
 
 	function boardUrl(board) {
@@ -452,5 +472,5 @@ export function init(ctx) {
 		for (const [option, slug] of invalidOptions) option.textContent = T.invalidDesign(slug);
 	}
 
-	return { refreshDesigns, sendMode, boardUrl, loadManifest, reloadBoard, onSystemChange, showDesign, start, relabel };
+	return { refreshDesigns, sendMode, sendColors, boardUrl, loadManifest, reloadBoard, onSystemChange, showDesign, start, relabel };
 }

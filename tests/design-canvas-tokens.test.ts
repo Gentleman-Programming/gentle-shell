@@ -205,7 +205,7 @@ test("only well-formed tokens count: a custom property name, a value, at most 50
 test("Technical details is a checkbox item in Settings, off by default and remembered in this browser", async () => {
 	const canvas = await loadTokens();
 	$(canvas, "gd-rail-settings").dispatch("click");
-	assert.deepEqual(settingsItems(canvas).map((item) => texts(item, "gd-menu-label")[0]), ["Design system board", "Keyboard shortcuts", "Technical details", "Español", "English", "Match the browser"]);
+	assert.deepEqual(settingsItems(canvas).map((item) => texts(item, "gd-menu-label")[0]), ["Design system board", "Keyboard shortcuts", "Technical details", "Gentleman", "Neutral", "Español", "English", "Match the browser"]);
 	const item = technicalItem(canvas)!;
 	assert.equal(item.getAttribute("role"), "menuitemcheckbox");
 	assert.equal(item.getAttribute("aria-checked"), "false");

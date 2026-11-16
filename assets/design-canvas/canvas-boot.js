@@ -60,6 +60,7 @@ import * as popover from "./canvas-popover.js";
 import * as rail from "./canvas-rail.js";
 import * as sizes from "./canvas-sizes.js";
 import { createStore } from "./canvas-store.js";
+import * as theme from "./canvas-theme.js";
 import * as tokens from "./canvas-tokens.js";
 import * as ui from "./canvas-ui.js";
 import * as view from "./canvas-view.js";
@@ -72,7 +73,7 @@ import * as view from "./canvas-view.js";
  * the popover's (leave Comment mode). The checks come before the layout: their Esc clears
  * the ring of Show before the selected artboard.
  */
-const MODULES = [view, focus, boards, handoffs, parts, tokens, compare, events, comments, menu, rail, sizes, exporter, checks, layout, minimap, popover, messages];
+const MODULES = [view, focus, boards, handoffs, parts, tokens, compare, events, comments, menu, theme, rail, sizes, exporter, checks, layout, minimap, popover, messages];
 
 export function boot(win, doc) {
 	const config = JSON.parse(doc.getElementById("gd-config").textContent);
@@ -200,6 +201,7 @@ export function boot(win, doc) {
 	else win.addEventListener("resize", viewportResized);
 
 	ctx.i18n.startLanguage();
+	actions.startTheme();
 	actions.setMode(actions.storedMode());
 	actions.startRail();
 	actions.startSizes();

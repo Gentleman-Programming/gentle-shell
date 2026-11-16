@@ -31,7 +31,7 @@ function importWithoutGlobals(names: string[]) {
 }
 
 test("no canvas module touches the DOM or window when it is imported", () => {
-	assert.equal(MODULES.length, 24);
+	assert.equal(MODULES.length, 25);
 	const result = importWithoutGlobals(MODULES);
 	assert.equal(result.stderr, "");
 	assert.deepEqual(result.stdout.trim().split("\n"), MODULES.map((name) => `imported ${name}`));
@@ -46,7 +46,8 @@ test("canvas.js is the two-line entry and index.html loads it as a module", () =
 	assert.equal(read("canvas.js"), 'import { boot } from "./canvas-boot.js";\nboot(window, document);\n');
 	const html = read("index.html");
 	assert.match(html, /<script type="module" src="\{\{BASE\}\}assets\/canvas\.js"><\/script>/);
-	assert.equal(html.match(/<script\b[^>]*\bsrc=/g)?.length, 1, "canvas.js is the only script the page loads");
+	// theme-early.js, a classic script that paints a saved theme before the first frame (design-canvas-theme.test.ts), is not a module.
+	assert.deepEqual(html.match(/<script\b[^>]*\bsrc="[^"]*"/g), ['<script src="{{BASE}}assets/theme-early.js"', '<script type="module" src="{{BASE}}assets/canvas.js"'], "canvas.js is the only module the page loads");
 	assert.ok(!/\bdefer\b/.test(html), "module scripts are deferred already");
 });
 

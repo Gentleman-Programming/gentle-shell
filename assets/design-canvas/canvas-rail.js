@@ -1,6 +1,6 @@
 // The tool rail on the left: Move and Comment (one pressed pair over Comment
 // mode), Overview (Fit) and Settings (a menu with the design system board, the
-// keyboard shortcuts, Technical details, which turns the token inspector on, and the language). Its single-key shortcuts, and the ? list where a person
+// keyboard shortcuts, Technical details, which turns the token inspector on, the theme and the language). Its single-key shortcuts, and the ? list where a person
 // gives any of them another single key, saved in this browser for every design
 // the canvas server shows (per address: a restarted server has a new port).
 
@@ -257,7 +257,7 @@ export function init(ctx) {
 		els.railSettings.focus();
 	}
 
-	/** What Settings offers: the design system board (when there is one, and not over Compare), the keyboard shortcuts, Technical details and the language. */
+	/** What Settings offers: the design system board (when there is one, and not over Compare), the keyboard shortcuts, Technical details, the theme and the language. */
 	function settingsActions() {
 		return [
 			// Checked again when chosen: a live reload may have removed the board while the menu was open.
@@ -267,6 +267,9 @@ export function init(ctx) {
 			{ label: T.keys, icon: "i-keys", shortcut: keyText(shortcutKey(shortcutById("help"))), run: openShortcuts },
 			// A checkbox: the token inspector in Comment mode (canvas-tokens.js).
 			{ label: T.technical, icon: "i-code", checked: state.technical, run: () => actions.setTechnical(!state.technical) },
+			// The theme: radios under their heading, applied at once (canvas-theme.js).
+			{ separator: true },
+			...actions.themeActions(),
 			// The language: radios under their heading, applied at once (canvas-i18n.js), and what stays English.
 			{ separator: true },
 			{ group: T.language, actions: LANGUAGES.map(([choice, label]) => ({ label: T[label], radio: true, checked: state.languageChoice === choice, run: () => ctx.i18n.setLanguage(choice) })) },

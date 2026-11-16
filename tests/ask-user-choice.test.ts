@@ -30,6 +30,7 @@ interface ChoiceTool {
 	renderShell?: string;
 	name: string;
 	description?: string;
+	promptSnippet?: string;
 	promptGuidelines?: string[];
 	parameters: ChoiceParameters;
 	execute: (...args: unknown[]) => Promise<ChoiceResult>;
@@ -209,7 +210,9 @@ test("ask_user_choice registers without runtime actions or overriding the open q
 	assert.deepEqual(registration.activeTools(), ["read", "ask_user_question"]);
 });
 
-test("ask_user_choice keeps closed mode by default and makes custom mode opt-in", () => {
+const TYPE_YOUR_ANSWER = "Type your answer";
+
+test("ask_user_choice offers a Type your answer entry by default and closes it only on allowCustomResponse false", () => {
 	const { tool } = registerChoiceTool();
 	const optionsSchema = tool.parameters.properties?.options;
 	const optionSchema = optionsSchema?.items;
@@ -218,8 +221,14 @@ test("ask_user_choice keeps closed mode by default and makes custom mode opt-in"
 	assert.equal(tool.parameters.additionalProperties, false);
 	assert.deepEqual(Object.keys(tool.parameters.properties ?? {}).sort(), ["allowCustomResponse", "options", "question"]);
 	assert.equal(tool.parameters.properties?.allowCustomResponse !== undefined, true);
-	assert.match(tool.description ?? "", /allowCustomResponse/);
-	assert.match((tool.promptGuidelines ?? []).join(" "), /Never enable allowCustomResponse.*provider-owned consent prompts.*maintenance authorizations.*exact opaque token/);
+	assert.match(tool.description ?? "", /"Type your answer" free-text entry is shown unless allowCustomResponse is false/);
+	assert.doesNotMatch(tool.description ?? "", /only when allowCustomResponse is explicitly enabled/);
+	assert.doesNotMatch(tool.promptSnippet ?? "", /closed|exact opaque/);
+	assert.match(tool.promptSnippet ?? "", /Type your answer/);
+	const guidelines = (tool.promptGuidelines ?? []).join(" ");
+	assert.match(guidelines, /Pass allowCustomResponse: false to ask_user_choice for provider-owned consent prompts, maintenance authorizations, or any decision that requires an exact opaque token\./);
+	assert.match(guidelines, /keep two to four concrete options/);
+	assert.doesNotMatch(guidelines, /Enable allowCustomResponse only when/);
 	assert.equal(optionsSchema?.minItems, 2);
 	assert.equal(optionsSchema?.maxItems, 4);
 	assert.equal(optionSchema?.additionalProperties, false);
@@ -349,11 +358,11 @@ test("ask_user_choice retains native rendered hit testing for mouse selection", 
 	assert.equal(completionCalls, 1, "late keyboard input cannot complete the choice twice");
 });
 
-test("ask_user_choice supports an opt-in custom response from keyboard navigation", async () => {
+test("ask_user_choice offers Type your answer by default and returns the typed customResponse from keyboard navigation", async () => {
 	const { tool } = registerChoiceTool();
 	const rendered: string[] = [];
 	const response = "  exactly as typed  ";
-	const result = await tool.execute("call", { question: "Explain?", options, allowCustomResponse: true }, new AbortController().signal, undefined, {
+	const result = await tool.execute("call", { question: "Explain?", options }, new AbortController().signal, undefined, {
 		mode: "tui",
 		ui: {
 			custom: async (factory: ChoiceCustomFactory) => {
@@ -375,7 +384,7 @@ test("ask_user_choice supports an opt-in custom response from keyboard navigatio
 			},
 		},
 	});
-	assert.match(rendered[0] ?? "", /Other…/);
+	assert.match(rendered[0] ?? "", /Type your answer/);
 	assert.match(rendered[1] ?? "", /Custom response/);
 	assert.deepEqual(result.details, { question: "Explain?", options, customResponse: response });
 	assert.equal(result.content[0]?.text, `User responded: ${response}`);
@@ -409,7 +418,7 @@ test("ask_user_choice uses native input decoding and supplied custom editor keyb
 				component.handleInput("\x1b[98u");
 				component.handleInput("\x08");
 				component.handleInput("\x18");
-				assert.match(component.render(80).join("\n"), /Other…/);
+				assert.match(component.render(80).join("\n"), /Type your answer/);
 				component.handleInput("\x0f");
 				component.handleInput("\x13");
 				return completed;
@@ -435,7 +444,7 @@ test("ask_user_choice activates an opt-in custom response from the Other row poi
 					(value) => { completed = value; },
 				);
 				const lines = component.render(80);
-				const otherRow = lines.findIndex((line) => stripTerminalSequences(line).includes("Other…"));
+				const otherRow = lines.findIndex((line) => stripTerminalSequences(line).includes(TYPE_YOUR_ANSWER));
 				assert.ok(otherRow >= 0);
 				const event = (type: string) => ({
 					type, button: "left", x: 0, y: otherRow, screenX: 0, screenY: otherRow,
@@ -474,7 +483,7 @@ test("ask_user_choice rejects empty custom responses and escapes back to list ca
 				assert.equal(completed, undefined, "whitespace-only submission stays in the editor");
 				assert.match(choice.render(80).join("\n"), /Custom response/);
 				choice.handleInput("\x1b");
-				assert.match(choice.render(80).join("\n"), /Other…/);
+				assert.match(choice.render(80).join("\n"), /Type your answer/);
 				choice.handleInput("\x1b");
 				return completed;
 			},
@@ -483,7 +492,7 @@ test("ask_user_choice rejects empty custom responses and escapes back to list ca
 	assert.deepEqual(result.details, { question: "Explain?", options, cancelled: true });
 });
 
-test("ask_user_choice renders Other only when custom response is explicitly enabled", async () => {
+test("ask_user_choice renders Type your answer unless allowCustomResponse is explicitly false", async () => {
 	const { tool } = registerChoiceTool();
 	for (const allowCustomResponse of [undefined, false, true]) {
 		let rendered = "";
@@ -500,16 +509,17 @@ test("ask_user_choice renders Other only when custom response is explicitly enab
 				return undefined;
 			} },
 		});
-		assert.equal(rendered.includes("Other…"), allowCustomResponse === true);
+		assert.equal(rendered.includes(TYPE_YOUR_ANSWER), allowCustomResponse !== false, `allowCustomResponse=${String(allowCustomResponse)}`);
+		assert.equal(rendered.includes("Other…"), false, "the retired Other… label is gone");
 	}
 });
 
 test("ask_user_choice handles a closed Kilo hash decision with an opaque envelope value", async () => {
 	const { tool } = registerChoiceTool(["read"]);
 	const rendered = { value: "" };
-	const result = await tool.execute("call", { question: "Proceed?", options }, new AbortController().signal, undefined, tuiContext(["\x1b[B", "\r"], rendered));
+	const result = await tool.execute("call", { question: "Proceed?", options, allowCustomResponse: false }, new AbortController().signal, undefined, tuiContext(["\x1b[B", "\r"], rendered));
 	assert.match(rendered.value, /Proceed\?|Authorize observed hash|Accept the baseline hash|Preserve requested hash|Keep the hash/);
-	assert.doesNotMatch(rendered.value, /Type something|authorize_observed_hash|preserve_requested_hash/);
+	assert.doesNotMatch(rendered.value, /Type something|Type your answer|authorize_observed_hash|preserve_requested_hash/);
 	assert.deepEqual(result.details.selection, { value: "preserve_requested_hash", label: "Preserve requested hash", index: 2 });
 	assert.equal(result.content[0]?.text, "User selected: 2. Preserve requested hash (value: preserve_requested_hash)");
 });
@@ -553,21 +563,21 @@ test("ask_user_choice resolves a selection through RPC dialogs on an interactive
 
 	assert.equal(selectCalls.length, 1);
 	assert.equal(selectCalls[0]?.title, "Proceed?");
-	assert.deepEqual(selectCalls[0]?.options, [options[0]!.label, options[1]!.label]);
+	assert.deepEqual(selectCalls[0]?.options, [options[0]!.label, options[1]!.label, TYPE_YOUR_ANSWER]);
 	assert.deepEqual(result.details.selection, { value: options[1]!.value, label: options[1]!.label, index: 2 });
 	assert.equal(result.content[0]?.text, `User selected: 2. ${options[1]!.label} (value: ${options[1]!.value})`);
 	assert.deepEqual(registration.emittedEvents(), RPC_BLOCKED_SEQUENCE);
 });
 
-test("ask_user_choice resolves an Other… custom response through ctx.ui.input on an interactive host", async (t) => {
+test("ask_user_choice resolves a default Type your answer response through ctx.ui.input on an interactive host", async (t) => {
 	withInteractiveHostEnv(t);
 	const registration = registerChoiceTool();
 	const { tool } = registration;
-	const { ctx, selectCalls, inputCalls } = rpcHostContext(["Other…"], ["a free-form reply"]);
+	const { ctx, selectCalls, inputCalls } = rpcHostContext([TYPE_YOUR_ANSWER], ["a free-form reply"]);
 
-	const result = await tool.execute("call", { question: "Explain?", options, allowCustomResponse: true }, new AbortController().signal, undefined, ctx);
+	const result = await tool.execute("call", { question: "Explain?", options }, new AbortController().signal, undefined, ctx);
 
-	assert.deepEqual(selectCalls[0]?.options, [options[0]!.label, options[1]!.label, "Other…"]);
+	assert.deepEqual(selectCalls[0]?.options, [options[0]!.label, options[1]!.label, TYPE_YOUR_ANSWER]);
 	assert.equal(inputCalls.length, 1);
 	assert.equal(inputCalls[0]?.title, "Explain?");
 	assert.deepEqual(result.details, { question: "Explain?", options, customResponse: "a free-form reply" });
@@ -588,16 +598,53 @@ test("ask_user_choice cancels through RPC dialogs like the TUI path when select 
 	assert.deepEqual(registration.emittedEvents(), RPC_BLOCKED_SEQUENCE, "the blocked lifecycle must still balance on a cancel");
 });
 
-test("ask_user_choice cancels through RPC dialogs when the Other… input is cancelled", async (t) => {
+test("ask_user_choice cancels through RPC dialogs when the Type your answer input is cancelled", async (t) => {
 	withInteractiveHostEnv(t);
 	const registration = registerChoiceTool();
 	const { tool } = registration;
-	const { ctx } = rpcHostContext(["Other…"], [undefined]);
+	const { ctx } = rpcHostContext([TYPE_YOUR_ANSWER], [undefined]);
 
-	const result = await tool.execute("call", { question: "Explain?", options, allowCustomResponse: true }, new AbortController().signal, undefined, ctx);
+	const result = await tool.execute("call", { question: "Explain?", options }, new AbortController().signal, undefined, ctx);
 
 	assert.deepEqual(result.details, { question: "Explain?", options, cancelled: true });
 	assert.deepEqual(registration.emittedEvents(), RPC_BLOCKED_SEQUENCE, "the blocked lifecycle must still balance on a cancel");
+});
+
+test("ask_user_choice keeps a consent-shaped RPC choice closed when allowCustomResponse is false", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerChoiceTool();
+	const { ctx, selectCalls, inputCalls } = rpcHostContext([TYPE_YOUR_ANSWER]);
+
+	const result = await tool.execute("call", { question: "Authorize?", options, allowCustomResponse: false }, new AbortController().signal, undefined, ctx);
+
+	assert.deepEqual(selectCalls[0]?.options, [options[0]!.label, options[1]!.label], "closed mode offers no free-text entry");
+	assert.equal(inputCalls.length, 0, "closed mode never opens a free-text input");
+	assert.deepEqual(result.details, { question: "Authorize?", options, cancelled: true }, "a forged free-text pick is not an answer in closed mode");
+});
+
+test("ask_user_choice never maps typed text to an option value, even when it equals a label or opaque token", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerChoiceTool();
+	for (const typed of [options[0]!.value, options[1]!.label, "1"]) {
+		const { ctx } = rpcHostContext([TYPE_YOUR_ANSWER], [typed]);
+		const result = await tool.execute("call", { question: "Explain?", options }, new AbortController().signal, undefined, ctx);
+		assert.deepEqual(result.details, { question: "Explain?", options, customResponse: typed });
+		assert.ok(!("selection" in (result.details as object)), "custom text is never an opaque-token answer");
+		assert.equal(result.content[0]?.text, `User responded: ${typed}`);
+	}
+});
+
+test("ask_user_choice omits the RPC free-text entry when a declared option already uses its label", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerChoiceTool();
+	const colliding = [options[0]!, { label: TYPE_YOUR_ANSWER, description: "A declared option.", value: "declared_token" }];
+	const { ctx, selectCalls, inputCalls } = rpcHostContext([TYPE_YOUR_ANSWER]);
+
+	const result = await tool.execute("call", { question: "Pick?", options: colliding }, new AbortController().signal, undefined, ctx);
+
+	assert.deepEqual(selectCalls[0]?.options, [options[0]!.label, TYPE_YOUR_ANSWER]);
+	assert.equal(inputCalls.length, 0);
+	assert.deepEqual(result.details.selection, { value: "declared_token", label: TYPE_YOUR_ANSWER, index: 2 });
 });
 
 test("ask_user_choice emits a private balanced lifecycle around selection and cancellation", async () => {
@@ -741,4 +788,14 @@ test("ask_user_choice renderResult renders selected, custom response with text, 
 		theme,
 	).render(80).join("\n");
 	assert.match(cancelled, /Cancelled/);
+});
+
+test("ask_user_choice RPC blank Type your answer input cancels like the TUI", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerChoiceTool();
+	for (const typed of ["", "   "]) {
+		const { ctx } = rpcHostContext([TYPE_YOUR_ANSWER], [typed]);
+		const result = await tool.execute("call", { question: "Explain?", options }, new AbortController().signal, undefined, ctx);
+		assert.deepEqual(result.details, { question: "Explain?", options, cancelled: true });
+	}
 });

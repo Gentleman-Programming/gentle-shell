@@ -318,7 +318,7 @@ The same registration adds thin-orchestration rules to `codemode`'s prompt guide
 Gentle Shell ships its own interactive tools instead of depending on third-party extensions; the built-ins replace `npm:pi-subagents-j0k3r` and `npm:@juicesharp/rpiv-todo` (see Gentle Agents and Gentle Todo below for the removal steps).
 
 - **`ask_user_question`** — one to four structured questions in a single questionnaire, each with two to four options, multi-select, per-option descriptions and previews — rendered as real TUI dialogs, usable in the live session.
-- **`ask_user_choice`** — one exactly representable single-select question, with an opt-in free-text response.
+- **`ask_user_choice`** — one exactly representable single-select question that offers "Type your answer" by default; provider consent, maintenance authorizations and exact-token decisions pass `allowCustomResponse: false`.
 - **`todo`** — plan tracking with the Gentle Todo card (see Gentle Todo below).
 - **`bash_background`**, **`monitor`**, **`job_stop`**, **`job_list`** — background shell jobs that notify the agent when they exit, or on every output line (see Background jobs below).
 - **`gentle_review` / capture tools** — the native review surface for receipt-driven development. While RDD is not off, **`gentle_review_run`** runs an ordinary native review in one call ([ordinary review in one call](review-coordinator.md)).

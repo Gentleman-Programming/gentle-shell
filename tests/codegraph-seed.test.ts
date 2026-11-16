@@ -134,6 +134,46 @@ test("a failing sidecar placement returns seed-failed and leaves no torn databas
 	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db-wal")), false, "the squatter directory is not ours to remove");
 });
 
+test("a validating sync that checkpointed away the staged sidecars still publishes the seed", async (t) => {
+	const { main, worktree } = worktreePair(t);
+	// A live main daemon leaves WAL-mode sidecars behind, so the seed stages them too.
+	writeFileSync(join(main, ".codegraph", "codegraph.db-wal"), "wal-bytes");
+	writeFileSync(join(main, ".codegraph", "codegraph.db-shm"), "shm-bytes");
+	const { input, calls } = seedHarness(worktree, {
+		run: async (args, cwd) => {
+			calls.push(args.join(" "));
+			// A clean close checkpoints the copied WAL into the database and SQLite deletes
+			// the sidecars it folded in: the staged -wal/-shm are gone after the sync.
+			rmSync(join(cwd, ".codegraph", "codegraph.db-wal"), { force: true });
+			rmSync(join(cwd, ".codegraph", "codegraph.db-shm"), { force: true });
+			return { ok: true, removedEntries: false };
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seeded", "a checkpointed sidecar holds no pending state: the seed still publishes");
+	assert.deepEqual(calls, ["sync -q"], "exactly one sync validates the copy");
+	assert.equal(readFileSync(join(worktree, ".codegraph", "codegraph.db"), "utf8"), "index-bytes", "the checkpointed database is published");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "a sidecar the sync removed is skipped, not missed, and no staging leftover remains");
+});
+
+test("a staged database removed by the validating sync still fails the seed", async (t) => {
+	const { worktree } = worktreePair(t);
+	const { input } = seedHarness(worktree, {
+		run: async (_args, cwd) => {
+			rmSync(join(cwd, ".codegraph", "codegraph.db"), { force: true });
+			return { ok: true, removedEntries: false };
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed", "the database rename stays required: its absence is a failure, never a skip");
+	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "nothing is published");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore"], "no staging remnant stays behind");
+});
+
 test("seedWorktreeIndex: symlinked destinations never receive or redirect seed writes", async (t) => {
 	if (process.platform === "win32") return t.skip("creating symlinks needs privileges on Windows");
 	const { worktree } = worktreePair(t);

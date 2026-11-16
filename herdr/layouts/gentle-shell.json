@@ -1,0 +1,202 @@
+{
+  "id": "root",
+  "type": "row",
+  "titlebar": "none",
+  "traffic_lights": [
+    14,
+    17
+  ],
+  "background": "canvas",
+  "theme": {
+    "light": "gentle-shell-light",
+    "dark": "gentle-shell-dark"
+  },
+  "terminal_padding": [
+    14,
+    12
+  ],
+  "divider": {
+    "width": 1,
+    "color": "border"
+  },
+  "children": [
+    {
+      "id": "sidebar",
+      "type": "column",
+      "size": {
+        "px": 251
+      },
+      "min": 44,
+      "max": 480,
+      "background": "chrome",
+      "resizable": false,
+      "children": [
+        {
+          "id": "brand",
+          "type": "block",
+          "size": {
+            "px": 46
+          },
+          "window_drag": true,
+          "content": {
+            "mod": "gentle-sidebar",
+            "props": {
+              "part": "brand"
+            }
+          }
+        },
+        {
+          "id": "spaces",
+          "type": "block",
+          "size": {
+            "px": 200.25
+          },
+          "min": 54,
+          "content": {
+            "mod": "gentle-spaces"
+          }
+        },
+        {
+          "id": "agents",
+          "type": "block",
+          "size": {
+            "weight": 1
+          },
+          "min": 60,
+          "content": {
+            "mod": "gentle-agents"
+          }
+        },
+        {
+          "id": "sidebar-footer",
+          "type": "block",
+          "size": {
+            "px": 111
+          },
+          "content": {
+            "mod": "gentle-sidebar",
+            "props": {
+              "part": "usage"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "work",
+      "type": "column",
+      "resizable": false,
+      "children": [
+        {
+          "id": "tabs",
+          "type": "block",
+          "size": {
+            "px": 42
+          },
+          "window_drag": true,
+          "content": {
+            "mod": "gentle-tabs"
+          }
+        },
+        {
+          "id": "work-body",
+          "type": "row",
+          "padding": 8,
+          "gap": 8,
+          "children": [
+            {
+              "id": "views",
+              "type": "stack",
+              "active": "chat",
+              "children": [
+                {
+                  "id": "chat",
+                  "title": "Chat",
+                  "type": "block",
+                  "radius": 10,
+                  "background": "background",
+                  "border": {
+                    "width": 1,
+                    "color": "border"
+                  },
+                  "content": {
+                    "mod": "gentle-chat",
+                    "props": {
+                      "stack": "views",
+                      "self": "chat",
+                      "other": "main"
+                    }
+                  }
+                },
+                {
+                  "id": "main",
+                  "type": "block",
+                  "content": {
+                    "tab": "active",
+                    "pane": {
+                      "gap": 8,
+                      "radius": 10,
+                      "background": "background",
+                      "lone": true,
+                      "border": {
+                        "width": 1,
+                        "color": "border"
+                      },
+                      "focus": {
+                        "width": 1,
+                        "color": "accent"
+                      },
+                      "header": {
+                        "content": {
+                          "mod": "gentle-pane"
+                        },
+                        "height": 40,
+                        "position": "top",
+                        "reveal": "always"
+                      }
+                    }
+                  },
+                  "title": "Terminal"
+                }
+              ]
+            },
+            {
+              "id": "panel",
+              "type": "column",
+              "size": {
+                "px": 372
+              },
+              "min": 280,
+              "max": 900,
+              "radius": 10,
+              "background": "chrome",
+              "border": {
+                "width": 1,
+                "color": "border"
+              },
+              "children": [
+                {
+                  "id": "inspector",
+                  "type": "block",
+                  "content": {
+                    "mod": "gentle-inspector"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "status",
+          "type": "block",
+          "size": {
+            "px": 28
+          },
+          "content": {
+            "mod": "gentle-status"
+          }
+        }
+      ]
+    }
+  ]
+}

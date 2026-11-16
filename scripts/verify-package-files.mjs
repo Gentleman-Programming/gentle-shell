@@ -39,6 +39,8 @@ export const requiredPaths = [
   ...installerPaths,
   "extensions/gentle-notifications.ts",
   "extensions/gentle-star-prompt.ts",
+  "extensions/gentle-tower.ts",
+  "lib/tower-server.ts",
   "lib/notification-audio.ts",
   "lib/notification-audio-native.ts",
   "lib/notification-audio-windows.ts",
@@ -123,6 +125,7 @@ export const requiredPaths = [
   "lib/child-package-injection.ts",
   "lib/gentle-ai-binary.ts",
   "lib/gentle-shell-launcher.ts",
+  "lib/gentle-shell-desktop.ts",
   "lib/gentle-shell-bundled.ts",
   "lib/gentle-shell-startup-update.ts",
   "lib/gentle-shell-update-panel.ts",
@@ -145,6 +148,7 @@ export const requiredPaths = [
 	"runtime/child-package-injection.mjs",
 	"runtime/gentle-ai-binary.mjs",
 	"runtime/gentle-shell-launcher.mjs",
+	"runtime/gentle-shell-desktop.mjs",
 	"runtime/gentle-shell-bundled.mjs",
 	"runtime/gentle-shell-startup-update.mjs",
 	"runtime/gentle-shell-update-panel.mjs",
@@ -158,6 +162,13 @@ export const requiredPaths = [
 	"runtime/review-risk-assessment.mjs",
 	"runtime/review-relay-contract.mjs",
 	"runtime/telemetry-trigger.mjs",
+	"runtime/tower-open.mjs",
+	"runtime/tower-server.mjs",
+	"runtime/tower-hub.mjs",
+	"runtime/tower-presence.mjs",
+	"runtime/tower-actions.mjs",
+	"runtime/tower-snapshot.mjs",
+	"runtime/tower-launch.mjs",
   "scripts/check-provider-contract.mjs",
   "scripts/download-progress.mjs",
   "scripts/gentle-ai-installer.mjs",
@@ -412,13 +423,21 @@ export function reconcileGeneratedRuntimeSources(packageRoot, sources, paths) {
   return { drifted };
 }
 
+// Gentle Tower: /gentle:tower serves this built web app. It is a build output
+// (gitignored), so it is required only when the caller built it first:
+// prepack and prepublishOnly pass --with-built-web right after `pnpm build:tower`.
+export const builtWebPaths = Object.freeze(["web/tower/dist/index.html"]);
+export function packageRequiredPaths(argv = process.argv) {
+  return argv.includes("--with-built-web") ? [...requiredPaths, ...builtWebPaths] : requiredPaths;
+}
+
 async function main() {
   if (existsSync(join(root, "extensions/sdd-init.ts"))) {
     console.error("gentle-pi package must not restore the retired SDD init extension");
     process.exit(1);
   }
 
-  const missing = missingRequiredPaths(root, requiredPaths);
+  const missing = missingRequiredPaths(root, packageRequiredPaths());
 
   if (missing.length > 0) {
     console.error("gentle-pi package is missing required Pi resources:");

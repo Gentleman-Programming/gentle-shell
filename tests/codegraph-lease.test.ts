@@ -675,15 +675,16 @@ test("a reclaimer whose mutex was replaced mid-section aborts instead of removin
 	// Park 1: the child's first verdict blocks reading the fifo. Unblocking it lets the child take
 	// the per-path mutex and enter its critical section, whose in-section recheck parks again.
 	releaseParkedFifo(await parkFifo(fifo));
-	// Park 2: the child now sits inside its critical section, holding the mutex.
-	// The fifo open alone cannot prove section entry: on a slow runner it can resolve against the
-	// previous read's still-open fd before the child creates the mutex, so wait for the mutex file.
-	const parked = await parkFifo(fifo);
+	// Park 2: the child now sits inside its critical section, holding the mutex. The mutex file is
+	// the only reliable proof the first read completed: re-opening the fifo immediately after the
+	// release can satisfy the open against the still-blocked first reader (Linux schedules its EOF
+	// late), permanently denying it EOF. Wait for the mutex, then park the in-section recheck.
 	const sectionDeadline = Date.now() + 10_000;
 	while (!existsSync(`${path}.mutex`)) {
 		if (Date.now() >= sectionDeadline) assert.fail("the child never entered its critical section");
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
+	const parked = await parkFifo(fifo);
 	assert.equal(existsSync(`${path}.mutex`), true, "the parked child holds the per-path mutex inside its section");
 
 	// The hazard [4590605571] names, materialized: another reclaimer holding an earlier stale

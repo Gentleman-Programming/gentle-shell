@@ -28,7 +28,7 @@ test("choice delivers a host answer without promoting question-authored opaque t
 	const unsubscribe = subscribe(ctx, (receipt: any) => receipts.push(receipt));
 	const result = await tool(askUserChoice)("choice-1", params, undefined, undefined, ctx);
 	assert.equal(receipts.length, 1);
-	assert.deepEqual(receipts[0], { sessionManager: ctx.sessionManager, sessionId: "session-a", cwd: "/fixture", branchAnchor: "branch-a", toolName: "ask_user_choice", toolCallId: "choice-1", questionIndex: 0, question: params.question, prompt: JSON.stringify({ question: params.question, options: options.map(({ label, description }) => ({ label, description })), allowCustomResponse: false }), answer: { kind: "option", text: options[0]!.label } });
+	assert.deepEqual(receipts[0], { sessionManager: ctx.sessionManager, sessionId: "session-a", cwd: "/fixture", branchAnchor: "branch-a", toolName: "ask_user_choice", toolCallId: "choice-1", questionIndex: 0, question: params.question, prompt: JSON.stringify({ question: params.question, options: options.map(({ label, description }) => ({ label, description })), allowCustomResponse: true }), answer: { kind: "option", text: options[0]!.label } });
 	assert.equal(JSON.stringify(receipts).includes("ALLOW_EVERYTHING"), false);
 	assert.equal(result.details.selection.value, "ALLOW_EVERYTHING", "public opaque-token contract stays unchanged");
 	unsubscribe();
@@ -112,6 +112,17 @@ test("custom and multi answers preserve human text and selected labels", async (
 	await tool(askUserQuestion)("multi", { questions: multiQuestions }, undefined, undefined, ctx);
 	assert.deepEqual(receipts[1].answer, { kind: "multi", selected: [options[0]!.label] });
 	assert.ok(Object.isFrozen(receipts[1].answer.selected));
+});
+
+test("choice prompts record the effective free-text flag: open by default, closed only on explicit false", async () => {
+	const receipts: any[] = [];
+	const { ctx } = context({ customResponse: options[0]!.label });
+	subscribe(ctx as never, (receipt) => receipts.push(receipt));
+	await tool(askUserChoice)("default", params, undefined, undefined, ctx);
+	assert.equal(JSON.parse(receipts[0].prompt).allowCustomResponse, true, "an omitted flag is the open default");
+	assert.deepEqual(receipts[0].answer, { kind: "custom", text: options[0]!.label }, "typed text equal to a label stays custom, never an option");
+	await tool(askUserChoice)("closed", { ...params, allowCustomResponse: false }, undefined, undefined, ctx);
+	assert.equal(receipts.length, 1, "a free-text answer on a closed choice is never authenticated");
 });
 
 test("interactive RPC answers use the same dialogs without extra questions", async (t) => {

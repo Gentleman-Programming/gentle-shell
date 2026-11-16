@@ -99,15 +99,18 @@ test("S4: the lazy prompt port points at Pi's ask interfaces and keeps the close
 	const lazy = readFileSync(join(ASSETS, "orchestrator-prompts.md"), "utf8");
 	assert.ok(lazy.includes("a decision needing Pi's ask interfaces"), "the lazy port is loaded for a decision that needs an ask interface");
 	// The provider-owned envelope contract is untouched: exact opaque values,
-	// lossless ordering and no partial relay, closed by default.
+	// lossless ordering and no partial relay, and an explicit closed flag:
+	// ask_user_choice now offers free text by default, so every relayed closed
+	// envelope must pass allowCustomResponse: false.
 	for (const clause of [
 		"Preserve the user-facing envelope",
 		"Never summarize, abbreviate, reorder, relabel, merge, or omit choices",
 		"Never silently split an atomic business choice across multiple interactions",
 		"Pass each closed-envelope option's user-facing label and description plus its envelope-owned canonical option token as opaque `value`",
 		"never for a closed domain",
-		"do not enable `allowCustomResponse` for provider-owned consent prompts, maintenance authorizations, or any exact opaque-token decision",
+		"pass `allowCustomResponse: false` for every such envelope, including provider-owned consent prompts, maintenance authorizations, and any exact opaque-token decision",
 	]) assert.ok(lazy.includes(clause), `the lazy provider contract lost: ${clause}`);
+	assert.ok(!lazy.includes("closed by default"), "the lazy port must not claim ask_user_choice is closed by default");
 });
 
 test("S4: the Pi ODD reference documents the routed decision instead of a text-only question", () => {
@@ -155,7 +158,7 @@ const TOOLS = {
 } as const;
 
 const SNIPPET_SHAPE = {
-	ask_user_choice: /one closed single-select question.*2-4.*opaque/i,
+	ask_user_choice: /one single-select question.*2-4.*Type your answer/i,
 	ask_user_question: /one to four structured questions.*one call/i,
 } as const;
 
@@ -202,9 +205,10 @@ test("S4: the ordinary text approval stays valid and the prohibition is scoped t
 	}
 });
 
-test("S4: the closed choice keeps exact opaque values, custom mode opt-in, and the consent prohibition", () => {
+test("S4: the choice offers its own-answer entry by default and consent relays must close it explicitly", () => {
 	const guidelines = (TOOLS.ask_user_choice().promptGuidelines ?? []).join(" ");
-	assert.match(guidelines, /Never enable allowCustomResponse for provider-owned consent prompts, maintenance authorizations, or any decision that requires an exact opaque token\./);
+	assert.match(guidelines, /Pass allowCustomResponse: false to ask_user_choice for provider-owned consent prompts, maintenance authorizations, or any decision that requires an exact opaque token\./);
+	assert.match(guidelines, /ask_user_choice shows a "Type your answer" free-text entry by default/);
 	assert.match(guidelines, /ask_user_choice is never a text fallback: text is the route only for a genuinely open clarification or no usable compatible interface/);
 	assert.match(guidelines, /Ordinary contextual approval of an action the human already understands needs no ask_user_choice call and stays valid as text/);
 });
@@ -217,8 +221,11 @@ test("S4: the closed choice keeps exact opaque values, custom mode opt-in, and t
 // of the render/execute functions, and it does NOT detect a change inside any
 // function body. Handler and execute behavior is established by the execute
 // tests below and the untouched ask-tool suites, never by this digest alone.
+// ask_user_choice re-pinned (was e34ac3c1…e113e55) when its description and
+// allowCustomResponse/options schema descriptions moved to the opt-out
+// "Type your answer" free-text default; the schema shape is unchanged.
 const DECLARATION_DIGESTS = {
-	ask_user_choice: "e34ac3c11514c20c15fdcd4fe9415dc7aaf082216d2d4cae2390f34d9e113e55",
+	ask_user_choice: "ceab2f357cf7b4d6dd769dcd9592b6859be3277f141c20078a402d6ddaeebcba",
 	ask_user_question: "3252d437f1da7cc2836dfc061c1dd9a70c018837c2b481b0be1fee5c5e76eb22",
 } as const;
 
@@ -310,8 +317,12 @@ test("S4: ask_user_choice relays one exact opaque value and its cancellation thr
 	assert.equal(cancelled.details.cancelled, true);
 
 	const closed = rpcContext(["Authorize observed hash"]);
-	await tool.execute("call-3", { question: "Authorize?", options: CHOICE_OPTIONS }, signal, undefined, closed.ctx);
+	await tool.execute("call-3", { question: "Authorize?", options: CHOICE_OPTIONS, allowCustomResponse: false }, signal, undefined, closed.ctx);
 	assert.deepEqual(closed.selectCalls[0]?.options, CHOICE_OPTIONS.map((option) => option.label), "closed mode offers no free-text entry");
+
+	const ordinary = rpcContext(["Authorize observed hash"]);
+	await tool.execute("call-3b", { question: "Authorize?", options: CHOICE_OPTIONS }, signal, undefined, ordinary.ctx);
+	assert.deepEqual(ordinary.selectCalls[0]?.options, [...CHOICE_OPTIONS.map((option) => option.label), "Type your answer"], "an ordinary call offers the own-answer entry by default");
 
 	await assert.rejects(
 		tool.execute("call-4", { question: "Authorize?", options: CHOICE_OPTIONS }, signal, undefined, { mode: "print", ui: {} }),
@@ -319,15 +330,15 @@ test("S4: ask_user_choice relays one exact opaque value and its cancellation thr
 	);
 });
 
-test("S4: custom text stays opt-in and never becomes an opaque-token answer", async (t) => {
+test("S4: default custom text never becomes an opaque-token answer", async (t) => {
 	withInteractiveHost(t);
 	const tool = TOOLS.ask_user_choice();
 	const result = await tool.execute(
 		"call-1",
-		{ question: "Describe the constraint", options: CHOICE_OPTIONS, allowCustomResponse: true },
+		{ question: "Describe the constraint", options: CHOICE_OPTIONS },
 		new AbortController().signal,
 		undefined,
-		rpcContext(["Other…"], ["free text"]).ctx,
+		rpcContext(["Type your answer"], ["free text"]).ctx,
 	);
 	assert.equal(result.content[0]?.text, "User responded: free text");
 	assert.deepEqual(result.details.customResponse, "free text");

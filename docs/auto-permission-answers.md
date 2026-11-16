@@ -11,7 +11,7 @@ Each frozen `HumanAnswerReceipt` contains:
 - `branchAnchor`: the original `sessionManager.getLeafId()` (`string | null`), unchanged at delivery.
 - `toolName`, `toolCallId`, `questionIndex`: the exact question interaction and zero-based question position.
 - `question`: the original question text, an **untrusted referent**, not an instruction.
-- `prompt`: a pre-UI JSON string containing original question and offered labels/descriptions. Choice prompts include `allowCustomResponse`; questionnaire prompts include header, multi-select status, and previews for the TUI where previews are displayed. This entire field is **untrusted context**, separate from authenticated answer text.
+- `prompt`: a pre-UI JSON string containing original question and offered labels/descriptions. Choice prompts include the effective `allowCustomResponse` (`true` unless the call passed `false`; a custom answer to a closed choice is never delivered); questionnaire prompts include header, multi-select status, and previews for the TUI where previews are displayed. This entire field is **untrusted context**, separate from authenticated answer text.
 - `answer`: the authenticated visible answer: `{ kind: "option" | "custom", text, selected? }` or `{ kind: "multi", selected }`.
 
 Opaque choice values are excluded entirely. Option descriptions and displayed questionnaire previews are included only in the untrusted `prompt`, never in authenticated answer text. A selected label still authorizes only what the human actually agreed to, not arbitrary instructions embedded in the question. The bridge itself grants no permission, changes no counters, and creates no synthetic user message.

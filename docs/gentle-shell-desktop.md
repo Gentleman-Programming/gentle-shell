@@ -15,10 +15,12 @@ window is checked against it side by side (`herdr/FIDELITY-T6.md`).</sub>
 
 ## Quick path
 
+0. Until Gentle Shell Desktop is in a release, switch to the main channel: `gentle-shell upgrade --channel main`.
 1. In a project folder, run `gentle-shell desktop`.
 2. Read the plan it prints and answer `y`. It installs Herdr app if needed, the mods, the layout
    and the shortcuts, then opens Herdr with a Gentle Shell session in this folder.
 3. Talk to the session in the chat. Press `⌘J` for the real TUI, `⌘K` for every command.
+4. Sessions that were already running before you installed show up after you restart them: they load the desktop feed when they start.
 
 ```
 gentle-shell desktop [--yes] [--no-open]
@@ -45,7 +47,7 @@ gentle-shell desktop --uninstall
 | Gentle Shell sessions in a known home | The mods read the sessions of `~/.gentle-shell/agent` (bundled Gentle Shell) and `~/.pi/agent` (Gentle AI as a Pi extension). For another home (`--home <path>`, `GENTLE_PI_AGENT_HOME`, `PI_CODING_AGENT_DIR`), list its agent dir in `~/.config/herdr-app/gentle-shell-roots.json` as `{ "roots": ["~/my/agent"] }`. Herdr app lets mods read only inside your home folder. See [where readers look](desktop-feed.md#where-readers-look). |
 | Remote machines (optional) | Herdr's own machines (`hc machine ls`, **Add machine** in the sidebar). A session on another machine shows what herdr-core reports (state, title, its Terminal); its chat and inspector stay on that machine ([Remote machines](#remote-machines)). |
 
-The live checks so far ran on macOS with Herdr app 0.1.15 and 0.1.16 (the pin since S15: every mod passes `herdr-app check` on 0.1.16, whose changelog has no breaking change for mods, layouts or keys).
+The live checks so far ran on macOS with Herdr app 0.1.15 and 0.1.16, and on Windows 11 for the guard tests. The pin is 0.1.16: every mod passes `herdr-app check` on it, and its changelog has no breaking change for mods, layouts or keys. On Windows and Linux, the `⌘` shortcuts are macOS keys; use the Chat | Terminal switch and the palette button instead.
 
 ## What you see
 

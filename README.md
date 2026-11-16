@@ -326,11 +326,19 @@ The Status panel has a **Jobs** section with each running job's description. Whe
 
 Gentle Shell Desktop shows your Gentle Shell sessions in [Herdr app](https://herdr.dev): the conversation as a native chat, with Changes, Todo, Agents, Jobs, Review and Session stats beside it, and the real TUI one switch away (`⌘J`). It is Herdr, unchanged, plus Gentle Shell's own mods and layout; the desktop acts with exactly the authority you have in the terminal, and consent is always answered in the terminal.
 
+- **Every session on your machine**, in two sidebar sections: **Herdr** (running in this window, with the Chat | Terminal switch) and **TUI** (running in any other terminal, such as Herdr TUI or Ghostty; you can still write to it from the chat).
+- **Needs you** pinned at the top of the sidebar, with a notification, whenever a session waits for an answer.
+- **A minimal chat** like the TUI's: every tool, diff or subagent is one line that expands (`⌘O` expands or collapses all).
+- **Plan usage and model profiles**: every usage window the TUI shows, and switching profiles from the header.
+- **Remote machines** from Herdr (**Add machine**), and **light and dark** themes that follow Herdr and the system.
+
 ```bash
 gentle-shell desktop              # install what is missing (asks first), then open the window
 gentle-shell desktop --status     # versions and what is installed
 gentle-shell desktop --uninstall  # remove our mods, layout and shortcuts; Herdr stays
 ```
+
+To try it before it reaches a release, switch to the main channel first with `gentle-shell upgrade --channel main`, then run `gentle-shell desktop`. Sessions that were already open show up after you restart them.
 
 Requires macOS on Apple silicon or Linux (x86_64, arm64); Gentle Shell installs Herdr app 0.1.16 for you, checked against a pinned SHA-256. On Windows, install Herdr app with its official installer first.
 

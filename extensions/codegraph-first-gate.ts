@@ -39,7 +39,9 @@ function gateApplies(cwd: unknown): boolean {
  * (mem_context, mem_search, mem_get_observation) are blocked until a codegraph query or explore
  * has finalized in the same user prompt. The requested operation is tracked from the call's
  * start — an init completion never credits. Credit is end-of-execution only — a failed or
- * unavailable query or explore counts — and expires with every new prompt, and it applies only
+ * unavailable query or explore counts — and expires with every new user prompt, whether that
+ * prompt starts a run or is delivered as steering or a queued follow-up inside a running loop,
+ * and it applies only
  * to a fully settled window: while any graph execution is still active, or when a new graph call
  * starts after credit was granted, memory reads stay blocked. The gate is scoped: it applies
  * only to workspaces that have a codegraph index — a filesystem probe of the database file,
@@ -82,6 +84,24 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 		credited = false;
 		activeGraphExecutions.clear();
 		queryExploreExecutions.clear();
+	});
+
+	// A delivered user message starts the window over on its own: Pi (1.2.0+, which the manifest
+	// permits) consumes steering and queued follow-up messages inside the running agent loop
+	// without another before_agent_start, so the reset must ride the delivery event too.
+	// message_end fires for every message; only a user role resets — assistant, tool-result,
+	// and custom deliveries never expire credit.
+	pi.on?.("message_end", (event) => {
+		try {
+			const role = (event as { message?: { role?: unknown } | undefined | null } | undefined | null)?.message?.role;
+			if (role === "user") {
+				credited = false;
+				activeGraphExecutions.clear();
+				queryExploreExecutions.clear();
+			}
+		} catch {
+			/* a hostile payload must never break the host */
+		}
 	});
 
 	// Start-of-execution: the graph call is now active, so no memory read may pass the gate

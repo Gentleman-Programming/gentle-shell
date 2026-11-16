@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -91,6 +91,31 @@ function settled(): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, 10));
 }
 
+/** Whether this process really cannot traverse a chmod-000 directory: root on Linux (and any
+ * other DAC-bypass context) still can, so the permission-denial fixtures would exercise the
+ * wrong branch there. Probes with the same statSync indexState uses and reports whether
+ * traversal is denied, so the callers can skip with a clear reason when it is not. */
+function directoryTraversalDenied(): boolean {
+	const probe = mkdtempSync(join(tmpdir(), "gentle-codegraph-readiness-deny-probe-"));
+	const denied = join(probe, "denied");
+	mkdirSync(denied);
+	writeFileSync(join(denied, "codegraph.db"), "index");
+	chmodSync(denied, 0o000);
+	let traversalDenied: boolean;
+	try {
+		traversalDenied = !statSync(join(denied, "codegraph.db")).isFile();
+	} catch {
+		traversalDenied = true;
+	}
+	try {
+		chmodSync(denied, 0o755);
+	} catch {
+		/* root traversal still allows the restore */
+	}
+	rmSync(probe, { recursive: true, force: true });
+	return traversalDenied;
+}
+
 test("indexState: the database file is the index, not the directory", (t) => {
 	const present = dir(t, "present");
 	writeDb(present);
@@ -108,6 +133,7 @@ test("indexState: an access error is unknown, not absent", (t) => {
 	// lease suite's unreadable-token test uses), so the access-error path cannot be
 	// exercised there: the test is POSIX-only.
 	if (process.platform === "win32") return;
+	if (!directoryTraversalDenied()) return t.skip("this process traverses chmod-000 directories (root or another DAC-bypass context): the access-error path cannot be exercised");
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-codegraph-readiness-denied-"));
 	mkdirSync(join(cwd, ".codegraph"));
 	writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "index");
@@ -297,7 +323,7 @@ test("daemonFor: newest live daemon wins and its registered spelling is returned
 	const cwd = dir(t, "daemon");
 	const registry = dir(t, "registry");
 	const alias = join(registry, "alias");
-	symlinkSync(cwd, alias);
+	symlinkSync(cwd, alias, "junction");
 	const liveSocket = join(registry, "live.sock");
 	writeFileSync(liveSocket, "");
 	writeFileSync(join(registry, "one.json"), JSON.stringify({ root: alias, socketPath: liveSocket, startedAt: 2, pid: process.pid }));
@@ -410,6 +436,46 @@ test("warmUpDaemon: a timed-out warm-up kills its spawned child instead of leaki
 	assert.equal(alive(), false, "the timed-out warm-up child is killed, not leaked to hold the daemon lock");
 });
 
+test("warmUpDaemon: a timed-out warm-up whose child ignores SIGTERM is SIGKILLed", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const bin = dir(t, "warm-term-ignore-bin");
+	const pidFile = join(bin, "child.pid");
+	// trap '' TERM: the shell and the sleep it runs inherit an ignored SIGTERM, so only a bounded
+	// SIGKILL escalation can end this warm-up child before it keeps holding the daemon lock.
+	writeFileSync(join(bin, "codegraph"), "#!/bin/sh\ntrap '' TERM\nprintf '%s\\n' \"$$\" > \"$FAKE_PIDFILE\"\nsleep 30\n");
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.FAKE_PIDFILE = pidFile;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		delete process.env.FAKE_PIDFILE;
+		if (!existsSync(pidFile)) return;
+		try {
+			process.kill(Number(readFileSync(pidFile, "utf8").trim()), "SIGKILL");
+		} catch {
+			/* already gone */
+		}
+	});
+	const warmed = await warmUpDaemon(dir(t, "warm-term-ignore"), false, 500);
+	assert.equal(warmed, false, "the ignoring warm-up child still reports the failed warm-up");
+	const fileDeadline = Date.now() + 3_000;
+	while (!existsSync(pidFile) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.ok(existsSync(pidFile), "the fake daemon spawned");
+	const pid = Number(readFileSync(pidFile, "utf8").trim());
+	const alive = () => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	const deadline = Date.now() + 3_000;
+	while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(alive(), false, "a SIGTERM-ignoring warm-up child is SIGKILLed before its result, never left alive holding the daemon lock");
+});
+
 test("runCodegraph: a timeout kills the command's whole process group, grandchildren included", async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
 	const bin = dir(t, "tree-kill-bin");
@@ -467,6 +533,32 @@ test("buildWindowsCommand: a UNC project path keeps its backslashes and cmd meta
 	);
 });
 
+test("buildWindowsCommand: a literal percent in an argument is rejected, not cmd-expanded", () => {
+	// With USERNAME=alice, cmd.exe expands %USERNAME% even inside double quotes and offers no
+	// command-line escape for a literal percent, so no faithful transport exists through
+	// shell:true and the npm .cmd shim: the builder rejects such an argument instead of letting
+	// the command target a different project than the lease protects.
+	assert.throws(() => buildWindowsCommand(["sync", "-q", "C:\\repos\\%USERNAME%"]), /C:\\repos\\%USERNAME%/);
+	assert.equal(
+		buildWindowsCommand(["sync", "-q", "C:\\repos\\plain"]),
+		"codegraph \"sync\" \"-q\" \"C:\\repos\\plain\"",
+		"percent-free arguments keep their exact cmd.exe transport",
+	);
+});
+
+test("runCodegraph: a percent-carrying project path is rejected before any spawn on Windows", async (t) => {
+	if (process.platform !== "win32") return t.skip("the cmd.exe percent expansion only exists on win32");
+	const project = join(tmpdir(), `gentle-codegraph-readiness-pct-${process.pid}-%USERNAME%`);
+	mkdirSync(project, { recursive: true });
+	t.after(() => rmSync(project, { recursive: true, force: true }));
+	const reasons: string[] = [];
+	const ok = await runCodegraph(["sync", "-q"], project, 1_000, undefined, (info) => {
+		reasons.push(info.stderrTail ?? "");
+	});
+	assert.equal(ok, false, "the percent path is rejected: no command runs for the wrong project");
+	assert.match(reasons[0] ?? "", /percent/, "the rejection says why no command ran");
+});
+
 test("runCodegraph: a SIGTERM-ignoring command is SIGKILLed before the timeout result", async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
 	const bin = dir(t, "sigkill-bin");
@@ -512,20 +604,50 @@ test("runCodegraph: a SIGTERM-ignoring command is SIGKILLed before the timeout r
 	assert.deepEqual(pids.map(alive), [false, false], "the SIGTERM-ignoring tree is SIGKILLed before the result is delivered");
 });
 
+test("runCodegraph: a command that exits zero after handling the timeout's SIGTERM is still failed", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const bin = dir(t, "term-exit-zero-bin");
+	const pidFile = join(bin, "child.pid");
+	// The trap answers SIGTERM with a clean exit 0 well inside the SIGKILL grace window, so the
+	// close callback sees code 0 — the deadline still expired, and the run must stay failed.
+	writeFileSync(join(bin, "codegraph"), "#!/bin/sh\ntrap 'exit 0' TERM\nprintf '%s\\n' \"$$\" > \"$FAKE_PIDFILE\"\nwhile :; do sleep 0.05; done\n");
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.FAKE_PIDFILE = pidFile;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		delete process.env.FAKE_PIDFILE;
+		if (!existsSync(pidFile)) return;
+		try {
+			process.kill(Number(readFileSync(pidFile, "utf8").trim()), "SIGKILL");
+		} catch {
+			/* already gone */
+		}
+	});
+	const events: Array<{ ok: boolean; exitCode?: number | null }> = [];
+	const ok = await runCodegraph(["sync", "-q"], dir(t, "term-exit-zero-cwd"), 300, undefined, (info) => {
+		events.push({ ok: info.ok, exitCode: info.exitCode });
+	});
+	assert.equal(ok, false, "the deadline expired: the run reports the timeout, not the later exit code");
+	assert.deepEqual(events, [{ ok: false, exitCode: 0 }], "the command exited zero after SIGTERM and the result still records the timeout failure");
+});
+
 /** The seed's mid-flight staging shape — `<worktree>/.codegraph/seed-xxxx/.codegraph/codegraph.db`
- * with real sources in the worktree — plus a fake codegraph CLI on PATH: `status` prints the
- * counter file's tracked-file count (the shape a real `codegraph status <project>` reports),
- * and the per-test `syncScript` fakes the sync at the runCodegraph/exec boundary, so the REAL
- * runner (link materialization + probes + sync) is what the test exercises. */
+ * with real sources in the worktree — plus a fake codegraph CLI on PATH: `files` prints the
+ * paths file's tracked-file listing (the shape a real `codegraph files --format flat -j
+ * <project>` reports), and the per-test `syncScript` fakes the sync at the runCodegraph/exec
+ * boundary, so the REAL runner (link materialization + probes + sync) is what the test
+ * exercises. */
 function seedSyncHarness(t: test.TestContext, name: string, syncScript: string): { staging: string; seen: () => string } {
 	const bin = dir(t, `${name}-bin`);
-	const countFile = join(bin, "count");
+	const pathsFile = join(bin, "paths.json");
 	const seenFile = join(bin, "seen.log");
-	writeFileSync(countFile, "3\n");
+	writeFileSync(pathsFile, '[{"path":"src/a.ts","language":"typescript","nodeCount":1},{"path":"src/b.ts","language":"typescript","nodeCount":1},{"path":"src/c.ts","language":"typescript","nodeCount":1}]\n');
 	writeFileSync(join(bin, "codegraph"), [
 		"#!/bin/sh",
 		'case "$1" in',
-		'  status) printf "CodeGraph Status\\n\\n  Files:     %s\\n" "$(cat "$FAKE_COUNT" 2>/dev/null || echo 0)" ;;',
+		'  files) cat "$FAKE_PATHS" 2>/dev/null || printf "[]" ;;',
 		`  sync) ${syncScript} ;;`,
 		"esac",
 		"exit 0",
@@ -533,11 +655,11 @@ function seedSyncHarness(t: test.TestContext, name: string, syncScript: string):
 	chmodSync(join(bin, "codegraph"), 0o755);
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${bin}:${previousPath}`;
-	process.env.FAKE_COUNT = countFile;
+	process.env.FAKE_PATHS = pathsFile;
 	process.env.FAKE_SEEN = seenFile;
 	t.after(() => {
 		process.env.PATH = previousPath;
-		delete process.env.FAKE_COUNT;
+		delete process.env.FAKE_PATHS;
 		delete process.env.FAKE_SEEN;
 	});
 	const worktree = dir(t, `${name}-wt`);
@@ -560,10 +682,10 @@ function seedSyncHarness(t: test.TestContext, name: string, syncScript: string):
 
 test("runCodegraphSeedSync: an exit-0 staging sync that drops tracked entries reports removedEntries", async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
-	// The fake sync empties the tracked-file counter exactly like a real sources-less sync does
+	// The fake sync empties the tracked-file listing exactly like a real sources-less sync does
 	// (probed: a 3-file index synced in an empty project exits 0 with 0 files) — while checking
 	// that the staging project really sees the worktree's sources through the runner's links.
-	const { staging, seen } = seedSyncHarness(t, "seed-drop", 'printf 0 > "$FAKE_COUNT"; [ -f "$3/src/a.ts" ] && printf seen >> "$FAKE_SEEN"');
+	const { staging, seen } = seedSyncHarness(t, "seed-drop", 'printf \'[]\\n\' > "$FAKE_PATHS"; [ -f "$3/src/a.ts" ] && printf seen >> "$FAKE_SEEN"');
 	const report = await runCodegraphSeedSync(["sync", "-q"], staging, 10_000);
 	assert.deepEqual(report, { ok: true, removedEntries: true }, "an exit-0 sync that emptied the staged index is a failed validation, never a publishable one");
 	assert.equal(seen(), "seen", "the validating sync ran with the worktree's real sources visible in the staging project");
@@ -577,14 +699,23 @@ test("runCodegraphSeedSync: a clean staging sync against the worktree's real sou
 	assert.equal(seen(), "seen", "the validating sync ran with the worktree's real sources visible in the staging project");
 });
 
-test("runCodegraphSeedSync: a staging copy whose status cannot be counted fails closed", async (t) => {
+test("runCodegraphSeedSync: a sync that swaps one entry for another still reports removedEntries", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	// The staged index starts with {a,b,c}; the fake sync replaces c with d. The net count stays
+	// 3, but a tracked entry was dropped: identities decide, never the net file count.
+	const { staging } = seedSyncHarness(t, "seed-swap", 'printf \'%s\\n\' \'[{"path":"src/a.ts","language":"typescript","nodeCount":1},{"path":"src/b.ts","language":"typescript","nodeCount":1},{"path":"src/d.ts","language":"typescript","nodeCount":1}]\' > "$FAKE_PATHS"');
+	const report = await runCodegraphSeedSync(["sync", "-q"], staging, 10_000);
+	assert.deepEqual(report, { ok: true, removedEntries: true }, "a same-count swap still dropped a tracked entry: the SeedSyncReport must say so");
+});
+
+test("runCodegraphSeedSync: a staging copy whose tracked files cannot be listed fails closed", async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
 	const bin = dir(t, "seed-torn-bin");
 	const seenFile = join(bin, "seen.log");
 	writeFileSync(join(bin, "codegraph"), [
 		"#!/bin/sh",
 		'case "$1" in',
-		'  status) printf "CodeGraph Status\\n\\n(no statistics)\\n" ;;',
+		'  files) printf "not-a-json-listing\\n" ;;',
 		'  sync) printf seen >> "$FAKE_SEEN" ;;',
 		"esac",
 		"exit 0",
@@ -872,6 +1003,7 @@ test("prepareReadiness: an index that turns unknown under the init lock fails cl
 	// The chmod 000 access-error probe is POSIX-only (Windows ACLs do not map it to a statSync
 	// denial), so the tri-state recheck's fail-closed branch runs on POSIX only.
 	if (process.platform === "win32") return;
+	if (!directoryTraversalDenied()) return t.skip("this process traverses chmod-000 directories (root or another DAC-bypass context): the access-error path cannot be exercised");
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-codegraph-readiness-init-unknown-"));
 	t.after(() => {
 		try {
@@ -1070,22 +1202,27 @@ test("syncBeforeSearch: a live CodeGraph writer lock means zero CLI calls", asyn
 	assert.deepEqual(calls, [], "the live writer owns the refresh");
 });
 
-test("prepareReadiness: the init run receives the lock's adopt hook", async (t) => {
+test("prepareReadiness: the init run's spawn lands on the init lease token", async (t) => {
 	const fresh = dir(t, "init-adopt");
 	writeFileSync(join(fresh, "package.json"), "{}\n");
-	const seen: Array<{ pid: number; proxy: boolean }> = [];
+	const locks = dir(t, "init-adopt-locks");
+	const seen: Array<{ args: string; mine: boolean; writerPid?: number }> = [];
 	const result = await prepareReadiness(fakeInput(fresh, {
-		run: async (args, _cwd, _timeout, onSpawn) => {
-			if (args[0] === "init") {
-				assert.equal(typeof onSpawn, "function", "the init run can report its spawn");
-				onSpawn?.(4242, false);
-			}
+		locksDir: locks,
+		run: async (args, _cwd, _timeoutMs, onSpawn) => {
+			assert.equal(typeof onSpawn, "function", "the " + args[0] + " child can report its spawn to the lease");
+			onSpawn?.(4242, false);
+			const token = JSON.parse(readFileSync(lockPathFor(fresh, "init", locks), "utf8")) as { pid: number; writerPid?: number };
+			seen.push({ args: args.join(" "), mine: token.pid === process.pid, writerPid: token.writerPid });
 			return true;
 		},
 		warm: async () => true,
 	}));
 	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
-	assert.equal(seen.length, 0);
+	assert.deepEqual(seen, [
+		{ args: "init -y", mine: true, writerPid: 4242 },
+	], "the init child lands on the init lease token while it is held");
+	assert.equal(readLeaseVerdict(lockPathFor(fresh, "init", locks)), "free", "the lease is released after the init");
 });
 
 test("prepareReadiness: a main-busy seed stands down benignly with nothing to warm", async (t) => {

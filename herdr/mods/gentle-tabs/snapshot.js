@@ -191,6 +191,57 @@ export const SESSION_KINDS = {
 // session that runs elsewhere on this computer.
 export const sessionKind = (s) => (s?.terminal ? (machineOf(s.terminal.address) ? SESSION_KINDS.remote : SESSION_KINDS.herdr) : SESSION_KINDS.tui);
 
+// S15: a session's live state, the same words in every region (sidebar, tabs, status bar, chat):
+//   blocked  a question, a permission prompt, a consent or a blocker waits for the person;
+//   working  its turn runs: "Working", "Working · 2 agents", "Working · 2 agents · 1 job";
+//   waiting  its turn ended while its background subagents or jobs still run: "Waiting on 2 agents"
+//            (never "Idle" while that work runs);
+//   idle     nothing runs.
+// The publisher's own words (`activity.label`, docs/desktop-feed.md) when it says them; a snapshot
+// from an older Gentle Shell gets them from its agents and jobs sections.
+const counted = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+export function liveState(feed) {
+  const a = feed?.activity ?? {};
+  const agents = Number.isInteger(a.agents) ? a.agents : Number(feed?.agents?.active) || 0;
+  const jobs = Number.isInteger(a.jobs) ? a.jobs : Array.isArray(feed?.jobs?.running) ? feed.jobs.running.length : 0;
+  const work = [agents > 0 ? counted(agents, "agent") : null, jobs > 0 ? counted(jobs, "job") : null].filter(Boolean).join(" · ");
+  if (feed?.pendingQuestion || a.state === "blocked") return { status: "blocked", label: "Needs you", agents, jobs, work };
+  if (a.state === "working" || a.streaming) return { status: "working", label: work ? `Working · ${work}` : "Working", agents, jobs, work };
+  if (a.state === "waiting" || work) return { status: "waiting", label: `Waiting on ${work || "background work"}`, agents, jobs, work };
+  return { status: "idle", label: "Idle", agents, jobs, work };
+}
+
+// S15: what a session waits for, or null: { kind, word, reason, id }. kind: question (an ask tool),
+// permission (a pi dialog: select, confirm, input), consent (a content-free blocker), blocked (the
+// session says it waits, nothing more). `id` names this wait, so one notification per question.
+const NEED_WORD = { question: "Question", permission: "Permission", consent: "Consent", blocked: "Blocked" };
+export function needsYou(feed) {
+  const q = feed?.pendingQuestion;
+  const a = feed?.activity;
+  if (!q && a?.state !== "blocked") return null;
+  const kind = !q ? "blocked" : q.kind === "choice" || q.kind === "questionnaire" ? "question" : q.kind === "prompt" ? "permission" : q.kind === "consent" ? "consent" : "blocked";
+  const reason = String(q?.question || a?.blockedLabel || "Waiting for your answer").replace(/\s+/g, " ").trim();
+  return { kind, word: NEED_WORD[kind], reason, id: String(q?.toolCallId || q?.openedAt || "blocked") };
+}
+
+// Every Gentle Shell session that waits for the person, wherever it runs (S15, the sidebar's pinned
+// "Needs you"): { key, session, need } for each live snapshot that waits (needsYou), then each
+// Gentle Shell terminal of this window Herdr reports blocked whose snapshot says nothing (a remote
+// one, an older Gentle Shell). Oldest wait first: the one that waited longest leads.
+export function needsYouList(sessions) {
+  const out = [];
+  let blocked;
+  try { blocked = new Map(agents().filter((a) => isGentle(a.app) && a.status === "blocked").map((a) => [a.address, a])); } catch { blocked = new Map(); }
+  for (const s of sessions ?? []) {
+    const need = s.feed ? needsYou(s.feed) : null;
+    if (need) out.push({ key: s.key, session: s, need, since: String(s.feed.pendingQuestion?.openedAt ?? s.feed.updatedAt ?? "") });
+    else if (s.terminal && blocked.has(s.terminal.address)) {
+      out.push({ key: s.key, session: s, need: { kind: "blocked", word: NEED_WORD.blocked, reason: "Waiting for you in its terminal", id: "herdr" }, since: "" });
+    }
+  }
+  return out.sort((x, y) => x.since.localeCompare(y.since));
+}
+
 // Where a session runs, for a row's second line: its Herdr terminal, its Herdr TUI pane, else its pid.
 export function whereLabel(s) {
   if (s?.terminal) return s.terminal.address;

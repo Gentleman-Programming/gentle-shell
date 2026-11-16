@@ -50,14 +50,85 @@ const textOf = (content) =>
     ? content
     : (content ?? []).filter((c) => c?.type === "text").map((c) => c.text ?? "").join("\n");
 
-// The first meaningful line of a tool's arguments: the usual keys first, else compact JSON.
-export function summarize(args) {
+// The one line beside a tool's name in the minimal view (S11, S15): what the call does, in words,
+// never the JSON of its arguments (the open row shows them whole). Known tools say it their way;
+// any other tool: the usual keys first, else its first string value (depth-first, bounded).
+const str = (v) => (typeof v === "string" && v.trim() ? v : null);
+const more = (list) => (list.length > 1 ? ` (+${list.length - 1} more)` : "");
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const COMMON_KEYS = ["command", "path", "file_path", "pattern", "query", "url", "prompt", "task", "description"];
+
+// The first string anywhere in a value (objects in key order, arrays in order), or null.
+function firstString(value, depth = 0) {
+  if (str(value)) return value;
+  if (depth > 4 || value == null || typeof value !== "object") return null;
+  for (const v of Array.isArray(value) ? value.slice(0, 20) : Object.values(value).slice(0, 40)) {
+    const found = firstString(v, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+// todo: "write · 3 tasks, 1 in progress", "update #2 → done", "add · <title>", "list".
+function todoSummary(a) {
+  const action = str(a.action) ?? "todo";
+  if (Array.isArray(a.tasks)) {
+    const live = a.tasks.filter((t) => t?.status === "in_progress").length;
+    return `${action} · ${plural(a.tasks.length, "task")}${live ? `, ${live} in progress` : ""}`;
+  }
+  const id = Number.isInteger(a.id) ? ` #${a.id}` : "";
+  const status = str(a.status) ? ` → ${a.status}` : "";
+  const title = str(a.title) ? ` · ${a.title}` : "";
+  return `${action}${id}${status}${title}`;
+}
+
+// codemode: its first line that is code (not blank, not only a comment).
+function codeLine(code) {
+  const lines = String(code ?? "").split("\n").map((l) => l.trim());
+  return lines.find((l) => l && !/^(\/\/|\/\*|\*|#)/.test(l)) ?? lines.find(Boolean) ?? "";
+}
+
+function describe(name, a) {
+  const n = String(name ?? "");
+  if (n === "todo") return todoSummary(a);
+  if (n === "ask_user_choice") return str(a.question) ?? "";
+  if (n === "ask_user_question") {
+    const qs = Array.isArray(a.questions) ? a.questions : [];
+    const first = str(qs[0]?.question) ?? str(qs[0]?.header);
+    return first ? first.split("\n").find((l) => l.trim()) + more(qs) : "";
+  }
+  if (n === "subagent_run") {
+    const what = str(a.label) ?? str(a.task) ?? str(a.prompt);
+    return [str(a.agent), what && firstLine(what)].filter(Boolean).join(" · ");
+  }
+  if (n === "bash_background" || n === "monitor") return str(a.label) ?? str(a.command) ?? "";
+  if (n.startsWith("job_")) return str(a.job_id) ?? str(a.id) ?? "";
+  if (n === "web_search") {
+    const qs = Array.isArray(a.queries) ? a.queries.filter(str) : [];
+    return str(a.query) ?? (qs.length ? qs[0] + more(qs) : "");
+  }
+  if (n === "fetch_content") {
+    const us = Array.isArray(a.urls) ? a.urls.filter(str) : [];
+    return str(a.url) ?? (us.length ? us[0] + more(us) : "");
+  }
+  if (n.startsWith("mem_")) {
+    const named = str(a.title) ?? str(a.query) ?? str(a.topic_key) ?? str(a.project);
+    if (named) return named;
+    return a.id != null && a.id !== "" ? `#${a.id}` : "";
+  }
+  if (n === "codemode" || n.endsWith("__codemode")) return codeLine(a.code ?? a.script);
+  if (n.startsWith("gentle_review")) return str(a.operation) ?? str(a.action) ?? "";
+  return null;
+}
+
+export function summarize(name, args) {
   if (args == null) return "";
   if (typeof args === "string") return firstLine(args);
-  for (const key of ["command", "path", "file_path", "pattern", "query", "url", "prompt", "task", "description"]) {
-    if (typeof args[key] === "string" && args[key].trim()) return firstLine(args[key]);
-  }
-  return firstLine(JSON.stringify(args));
+  if (typeof args !== "object") return firstLine(String(args));
+  const said = describe(name, args);
+  if (said !== null) return firstLine(said);
+  for (const key of COMMON_KEYS) if (str(args[key])) return firstLine(args[key]);
+  return firstLine(firstString(args) ?? "");
 }
 
 const firstLine = (s) => {
@@ -170,7 +241,7 @@ function ingestMessage(feed, id, m, at) {
       if (c?.type === "text" && c.text?.trim()) blocks.push({ type: "text", text: c.text });
       else if (c?.type === "thinking" && (c.thinking?.trim() || c.redacted)) blocks.push({ type: "thinking", text: c.redacted ? "_(redacted)_" : c.thinking });
       else if (c?.type === "toolCall") {
-        const call = { id: c.id, name: c.name ?? "tool", args: c.arguments ?? {}, summary: summarize(c.arguments), result: null };
+        const call = { id: c.id, name: c.name ?? "tool", args: c.arguments ?? {}, summary: summarize(c.name, c.arguments), result: null };
         if (c.id) feed.tools.set(c.id, call);
         blocks.push({ type: "tool", call });
       }

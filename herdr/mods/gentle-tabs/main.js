@@ -14,12 +14,15 @@
 // (restore when maximised) and close at its end, as Herdr's `tabs` does, with its vector icons on
 // Windows (icons/win-*.svg, copied from Herdr app's defaults, Apache-2.0). macOS keeps its
 // traffic lights at the layout's `traffic_lights`.
+// S15: a tab's state counts its session's live work (snapshot.js liveState): its dot stays working
+// and its word says "Working · 2 agents" or "Waiting on 2 agents" while background subagents or jobs
+// run, even when Herdr calls the terminal idle.
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
 import { spaces, agents, terminals, run, openOverlay, window, layout, settings } from "herdr";
 import { tokens, stateDot, sessionTitle, kindBadge } from "./tokens.js";
-import { FeedSource, isGentle, followHerdr, selectSession, projectOf, spaceFor, machineOf, SESSION_KINDS } from "./snapshot.js";
+import { FeedSource, isGentle, followHerdr, selectSession, projectOf, spaceFor, machineOf, liveState, SESSION_KINDS } from "./snapshot.js";
 
 const MOD = "gentle-tabs";
 
@@ -33,7 +36,7 @@ function find(node, id) {
 }
 
 // Herdr status → artboard .state kind (the tab shows only the dot; the word is its tooltip).
-const KIND = { blocked: ["need", "Needs you"], working: ["work", "Working"], done: ["done", "Done"], idle: ["idle", "Idle"] };
+const KIND = { blocked: ["need", "Needs you"], working: ["work", "Working"], waiting: ["work", "Waiting"], done: ["done", "Done"], idle: ["idle", "Idle"] };
 
 export default class GentleTabs extends View {
   init(_props, cx) {
@@ -54,9 +57,20 @@ export default class GentleTabs extends View {
     return sessionTitle(a?.title) || (a ? "Gentle Shell" : `Tab ${tab.name}`);
   }
 
+  // Herdr's tab state with its Gentle Shell session's live work (S15): needs you when either says
+  // so; the snapshot's working / waiting words over Herdr's idle or done; else Herdr's.
+  tabState(tab) {
+    const a = agents().find((x) => x.tab === tab.id && isGentle(x.app));
+    const feed = a ? this.source.of(terminals().find((t) => t.address === a.address)) : null;
+    const live = feed ? liveState(feed) : null;
+    if (tab.status === "blocked" || live?.status === "blocked") return KIND.blocked;
+    if (live && (live.status === "waiting" || live.status === "working")) return [KIND[live.status][0], live.label];
+    return KIND[tab.status] ?? KIND.idle;
+  }
+
   item(c, tab, i, shown, space, active, outside) {
     const on = tab.active && !outside;
-    const [kind, word] = KIND[tab.status] ?? KIND.idle;
+    const [kind, word] = this.tabState(tab);
     const stop = (_e, cx) => cx.stop_propagation();
     return h_flex().id(`tab-${tab.id}`).relative().h(34).flex_none().max_w(260).overflow_hidden().whitespace_nowrap().px(12).gap(8).items_center()
       .rounded_tl(8).rounded_tr(8).text_size(12.5).line_height("18.75px").cursor_pointer()
@@ -85,8 +99,9 @@ export default class GentleTabs extends View {
   // A session outside Herdr app (T11): the tab's look, its state from the snapshot, a click shows it.
   elsewhere(c, s, on) {
     const f = s.feed;
-    const status = f.pendingQuestion || f.activity?.state === "blocked" ? "blocked" : f.activity?.state === "working" || f.activity?.streaming ? "working" : "idle";
-    const [kind, word] = KIND[status];
+    const live = liveState(f);
+    const [kind] = KIND[live.status] ?? KIND.idle;
+    const word = live.label;
     const pane = f.identity?.herdr?.paneId;
     return h_flex().id(`tab-${s.key}`).relative().h(34).flex_none().max_w(260).overflow_hidden().whitespace_nowrap().px(12).gap(8).items_center()
       .rounded_tl(8).rounded_tr(8).text_size(12.5).line_height("18.75px").cursor_pointer()

@@ -40,12 +40,12 @@ gentle-shell desktop --uninstall
 | Need | Detail |
 |---|---|
 | A computer Herdr app runs on | macOS on Apple silicon and Linux (x86_64, arm64): Gentle Shell installs Herdr app for you. Windows: install Herdr app with its official installer first ([below](#how-herdr-app-is-installed)). |
-| Herdr app 0.1.15 or newer | Older or missing: Gentle Shell installs exactly 0.1.15. Newer: used as it is. |
+| Herdr app 0.1.16 or newer | Older or missing: Gentle Shell installs exactly 0.1.16. Newer: used as it is. |
 | herdr-core | Herdr app offers to set it up the first time it opens. |
 | Gentle Shell sessions in a known home | The mods read the sessions of `~/.gentle-shell/agent` (bundled Gentle Shell) and `~/.pi/agent` (Gentle AI as a Pi extension). For another home (`--home <path>`, `GENTLE_PI_AGENT_HOME`, `PI_CODING_AGENT_DIR`), list its agent dir in `~/.config/herdr-app/gentle-shell-roots.json` as `{ "roots": ["~/my/agent"] }`. Herdr app lets mods read only inside your home folder. See [where readers look](desktop-feed.md#where-readers-look). |
 | Remote machines (optional) | Herdr's own machines (`hc machine ls`, **Add machine** in the sidebar). A session on another machine shows what herdr-core reports (state, title, its Terminal); its chat and inspector stay on that machine ([Remote machines](#remote-machines)). |
 
-The live checks so far ran on macOS with Herdr app 0.1.15.
+The live checks so far ran on macOS with Herdr app 0.1.15 and 0.1.16 (the pin since S15: every mod passes `herdr-app check` on 0.1.16, whose changelog has no breaking change for mods, layouts or keys).
 
 ## What you see
 
@@ -68,12 +68,12 @@ Shell show and answer like the others, but take messages from the desktop only a
 
 | Region | Shows |
 |---|---|
-| **Sidebar** | **Projects** (Herdr spaces, and the project of each session no space holds: "1 Herdr · 2 TUI · $4.74", how many need you), two sections of sessions, each with its count and the ones that need you first: **Herdr · In this window** (every agent in the window) and **TUI · Other terminals**; and **Plan usage** (what the TUI usage panel, alt+u, shows: the plan name when the provider reports one, every window of the session's provider, such as 5h and 7d, the other providers the panel lists with their windows or its note, when the first window resets, and a refresh button, the panel's `r`; the block grows with its rows). An empty section says so in one line. |
-| **Tabs** | One tab per session in the shown project, named after the session, with a state dot (needs you, working, done, idle) and its kind badge: the space's tabs, then the project's sessions in other terminals. |
-| **Chat header** | Session name, its kind badge and the **Chat \| Terminal** switch (for a TUI session, where it runs instead); then project / branch · changed files, and the facts: Model · effort · profile, Persona, Ctx, Cost ("sub" on a subscription, as the TUI footer says), and the permission mode. |
+| **Sidebar** | **Needs you**, pinned at the top only while a session waits for you (a question, a permission prompt, a consent, a blocker), wherever it runs: one row per session with what it waits for, its kind badge and the question or reason; click to show it. When a session in another terminal starts waiting, Herdr's "needs you" sound plays (if Settings › Sounds is on) and a toast names it unless you are looking at it; click the toast to show it (Herdr already does both for the agents of its own terminals, so nothing is told twice). Then **Projects** (Herdr spaces, and the project of each session no space holds: "1 Herdr · 2 TUI · $4.74", how many need you), two sections of sessions, each with its count and the ones that need you first: **Herdr · In this window** (every agent in the window) and **TUI · Other terminals**, each row with its state: Needs you, "Working · 2 agents" while its turn runs, "Waiting on 2 agents" once the turn ended while its subagents or background jobs still run (never Idle then), Idle; and **Plan usage** (what the TUI usage panel, alt+u, shows: the plan name when the provider reports one, every window of the session's provider, such as 5h and 7d, the other providers the panel lists with their windows or its note, when the first window resets, and a refresh button, the panel's `r`; the block grows with its rows). An empty section says so in one line. |
+| **Tabs** | One tab per session in the shown project, named after the session, with a state dot (needs you, working, waiting on its subagents or jobs, done, idle; the dot's tooltip says "Working · 2 agents" or "Waiting on 2 agents") and its kind badge: the space's tabs, then the project's sessions in other terminals. |
+| **Chat header** | Session name, its kind badge, its state while it is not idle ("Working · 2 agents", "Waiting on 2 agents", "Needs you") and the **Chat \| Terminal** switch (for a TUI session, where it runs instead); then project / branch · changed files, and the facts: Model · effort · profile, Persona, Ctx, Cost ("sub" on a subscription, as the TUI footer says), and the permission mode. |
 | **Chat** | The conversation: your messages, answers in markdown, thinking, tool calls (read-only runs grouped as "Explored"), diffs, subagent cards, and the open question. The composer sits at the bottom. |
 | **Inspector** | Six tabs: **Changes**, **Todo**, **Agents**, **Jobs**, **Review**, **Session** (turns, tool calls, duration, cost, subagent spend, cost by model, integrations). |
-| **Status bar** | The ODD phase and todo position, streaming / working / idle (with tok/s when published), what the session waits for, jobs running · done, and **⌘K Commands**. |
+| **Status bar** | The ODD phase and todo position, streaming / working / idle (with tok/s when published; "working · 2 agents", and "waiting on 2 agents" once the turn ended while subagents or background jobs still run), what the session waits for, jobs running · done, **Agents N running** (the inspector's Agents count: background subagents are agents, not jobs), and **⌘K Commands**. |
 
 **Terminal** shows the real Gentle Shell TUI of the same session, in the same place, under a header
 with the session's name, its Herdr badge, its folder and the same **Chat \| Terminal** switch
@@ -156,7 +156,7 @@ conversation's own text is one line, and any line opens.
 
 | Item | One line | Open |
 |---|---|---|
-| Tool call | Status, tool, short argument, the result's gist (a failure's last line in red), duration | Arguments and output |
+| Tool call | Status, tool, what it does in words, never its raw arguments (todo "write · 3 tasks, 1 in progress", ask_user_choice its question, subagent_run "agent · label", web_search its query, fetch_content its URL, mem_* the title or query, codemode its first line of code, gentle_review* its operation, bash_background its label; any other tool its first text value), the result's gist (a failure's last line in red), duration | Arguments and output |
 | Reads and searches in a row | "Explored · 2 reads, 1 search" | The tool lines |
 | Thinking | "Thought for 14s" when the session hides thinking (`hideThinkingBlock`, ctrl+t in its TUI); open when it does not | The thinking |
 | Edit | File, +added −removed | The diff card |
@@ -358,7 +358,7 @@ own instructions. `gentle-shell self-uninstall` covers Gentle Shell itself
 
 ### Herdr version pin
 
-The mods are built and checked against Herdr app **0.1.15** (`HERDR_APP_VERSION` in
+The mods are built and checked against Herdr app **0.1.16** (`HERDR_APP_VERSION` in
 `lib/gentle-shell-desktop.ts`). Herdr app is 0.1.x and changes its mod API between versions, so a
 newer Herdr can reject a mod. Then:
 
@@ -374,9 +374,9 @@ Gentle Shell never downgrades a newer Herdr app.
 ## Reference: what `gentle-shell desktop` does
 
 1. **Herdr app.** It looks for `herdr-app` on your `PATH`, then in `~/.local/bin`, and reads
-   `herdr-app --version`. Version 0.1.15 or newer is used as it is; we built and checked the mods
-   against 0.1.15 (`HERDR_APP_VERSION` in `lib/gentle-shell-desktop.ts`). If Herdr app is missing
-   or older, Gentle Shell installs exactly 0.1.15 (see below).
+   `herdr-app --version`. Version 0.1.16 or newer is used as it is; we built and checked the mods
+   against 0.1.16 (`HERDR_APP_VERSION` in `lib/gentle-shell-desktop.ts`). If Herdr app is missing
+   or older, Gentle Shell installs exactly 0.1.16 (see below).
 2. **Mods and layout.** It copies every `herdr/mods/gentle-*` folder of the running Gentle Shell
    package into `<herdr home>/mods/` and `herdr/layouts/gentle-shell.json` into
    `<herdr home>/layouts/`, and the layout's two themes, `herdr/themes/gentle-shell-light.json` and
@@ -440,10 +440,10 @@ Herdr's documented installer is `curl -fsSL https://releases.herdr.dev/app/insta
 `app/latest.json` and runs whatever script the server returns. Gentle Shell follows the same steps,
 but for one pinned version, and it does not pipe a script into a shell:
 
-- It downloads `https://releases.herdr.dev/app/0.1.15/herdr-app-<target>.tar.gz` (the versioned file
+- It downloads `https://releases.herdr.dev/app/0.1.16/herdr-app-<target>.tar.gz` (the versioned file
   the official installer downloads; `HERDR_RELEASES_URL` selects a mirror, as for Herdr itself).
 - It refuses the file unless its SHA-256 equals the value pinned in Gentle Shell. The pins come from
-  Herdr's immutable release manifest `https://releases.herdr.dev/app/0.1.15/manifest.json`.
+  Herdr's immutable release manifest `https://releases.herdr.dev/app/0.1.16/manifest.json`.
 - macOS (Apple silicon): the bundle must have a valid Developer ID signature
   (`codesign -dvv`, then `codesign --verify --deep --strict`), as the official installer requires for
   release builds. It becomes `~/Applications/Herdr.app`, with `~/.local/bin/herdr-app` linked to it.

@@ -13,12 +13,15 @@
 // S14: an agent on another machine (a remote space, `hc machine ls`) stays in this window's section
 // with the Remote badge named after its machine; what it shows is herdr-core's (state, title,
 // space): its snapshot is on that machine, so no spend or session name from it.
+// S15: a row's state counts the session's live work (snapshot.js liveState): "Working · 2 agents"
+// while its turn runs, "Waiting on 2 agents" once the turn ended but its subagents or jobs still
+// run (Herdr calls that terminal idle), never "Idle" while that work runs.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, spaces, run, setAgentOrder, layout } from "herdr";
 import { tokens, eyebrow, state, sessionTitle, sessionCost, kindBadge } from "./tokens.js";
-import { FeedSource, followHerdr, selectSession, projectOf, projectName, whereLabel, machineOf, SESSION_KINDS } from "./snapshot.js";
+import { FeedSource, followHerdr, selectSession, projectOf, projectName, whereLabel, machineOf, liveState, SESSION_KINDS } from "./snapshot.js";
 
 const MOD = "gentle-agents";
 
@@ -34,9 +37,18 @@ const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 
 // pi titles its terminal "π - <folder>"; π is a letter, so it is cut by name first.
 const clean = (s) => sessionTitle(s).replace(/^[^\p{L}\p{N}]+/u, "").trim();
-const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
+const RANK = { blocked: 4, done: 3, working: 2, waiting: 2, idle: 1 };
 // Herdr status → artboard .state kind and label.
-const KIND = { blocked: ["need", "Needs you"], working: ["work", "Working"], done: ["done", "Done"], idle: ["idle", "Idle"] };
+const KIND = { blocked: ["need", "Needs you"], working: ["work", "Working"], waiting: ["work", "Waiting"], done: ["done", "Done"], idle: ["idle", "Idle"] };
+
+// A Herdr agent's state with its snapshot's live work (S15): needs you when either says so; the
+// snapshot's working / waiting words (with their counts) over Herdr's idle or done; else Herdr's.
+function herdrState(a, feed) {
+  const live = feed ? liveState(feed) : null;
+  if (a.status === "blocked" || live?.status === "blocked") return { status: "blocked", label: KIND.blocked[1] };
+  if (live && (live.status === "waiting" || live.status === "working")) return live;
+  return { status: a.status, label: (KIND[a.status] ?? KIND.idle)[1] };
+}
 
 // The row title (as the built-in `agents` title()): the Gentle Shell session name, else a tab
 // someone named, else the agent's own terminal title, else the program.
@@ -72,7 +84,9 @@ export default class GentleAgents extends View {
   }
 
   row(c, a, tab, feed, on) {
-    const [kind, label] = KIND[a.status] ?? KIND.idle;
+    const st = herdrState(a, feed);
+    const [kind] = KIND[st.status] ?? KIND.idle;
+    const label = st.label;
     const app = a.app ?? a.program?.key ?? a.program?.name ?? "terminal";
     const machine = machineOf(a.address);
     return v_flex().id(`ag-${a.address}`).w_full().h(48.75).flex_none().p(6).rounded(6).cursor_pointer()
@@ -93,8 +107,9 @@ export default class GentleAgents extends View {
   // its spend and where it runs.
   elsewhereRow(c, s, on) {
     const f = s.feed;
-    const status = statusOf(f);
-    const [kind, label] = KIND[status] ?? KIND.idle;
+    const st = liveState(f);
+    const [kind] = KIND[st.status] ?? KIND.idle;
+    const label = st.label;
     const title = f.identity?.sessionName || projectName(projectOf(f)) || "Gentle Shell";
     return v_flex().id(`ag-${s.key}`).w_full().h(48.75).flex_none().p(6).rounded(6).cursor_pointer()
       .when(on, (el) => el.bg(c.selected))
@@ -122,8 +137,8 @@ export default class GentleAgents extends View {
     return div().flex_none().px(6).pb(4).text_size(12).line_height("18px").text_color(c.faint).child(text);
   }
 
-  compact(c, a, i) {
-    const [kind] = KIND[a.status] ?? KIND.idle;
+  compact(c, a, i, feed) {
+    const [kind] = KIND[herdrState(a, feed).status] ?? KIND.idle;
     return h_flex().id(`ag-${a.address}`).h(26).px(8).gap(4).items_center().rounded(6).cursor_pointer()
       .hover((s) => s.bg(c.selected)).on_click(() => run("pane.focus", { pane: a.pane }))
       .child(div().flex_1().text_right().text_color(c.muted).child(String(i + 1)))
@@ -138,10 +153,12 @@ export default class GentleAgents extends View {
     let list = agents().filter((a) => a.pinned || !kids.has(a.address));
     this.track(list, now);
     const since = (a) => this.changed[a.address]?.at ?? 0;
-    list = [...list].sort((x, y) => (y.pinned - x.pinned) || (RANK[y.status] ?? 0) - (RANK[x.status] ?? 0) || since(y) - since(x) || y.seq - x.seq);
+    const terms = new Map(terminals().map((t) => [t.address, t]));
+    const feedOf = new Map(list.map((a) => [a.address, this.source.of(terms.get(a.address))]));
+    const rank = (a) => RANK[herdrState(a, feedOf.get(a.address)).status] ?? 0;
+    list = [...list].sort((x, y) => (y.pinned - x.pinned) || rank(y) - rank(x) || since(y) - since(x) || y.seq - x.seq);
     setAgentOrder(list.map((a) => a.address));
     const tabs = new Map(spaces().flatMap((s) => s.tabs).map((t) => [t.id, t]));
-    const terms = new Map(terminals().map((t) => [t.address, t]));
     const collapsed = narrow();
     // The shown session (snapshot.js targetSession) is the highlighted row, Herdr's or not.
     const shown = this.source.target(this.last);
@@ -151,7 +168,7 @@ export default class GentleAgents extends View {
     const herdrOn = (a) => (shown ? shown.terminal?.address === a.address : a.focused);
     if (collapsed) {
       return v_flex().id("root").size_full().min_h(0).bg(c.chrome).font_family(c.sans).text_size(13).pt(10).pb(6)
-        .child(v_flex().id("ag-list").flex_1().min_h(0).overflow_y_scrollbar().children(list.map((a, i) => this.compact(c, a, i))));
+        .child(v_flex().id("ag-list").flex_1().min_h(0).overflow_y_scrollbar().children(list.map((a, i) => this.compact(c, a, i, feedOf.get(a.address)))));
     }
     // Two sections, one scroll: this window's Herdr terminals, then TUIs in other terminals.
     return v_flex().id("root").size_full().min_h(0).bg(c.chrome).font_family(c.sans).text_size(13)
@@ -159,15 +176,15 @@ export default class GentleAgents extends View {
       .child(v_flex().id("ag-list").flex_1().min_h(0).overflow_y_scrollbar()
         .child(this.head(c, SESSION_KINDS.herdr, list.length, true))
         .when(list.length === 0, (el) => el.child(this.none(c, "No agent in this window yet.")))
-        .children(list.map((a) => this.row(c, a, tabs.get(a.tab), this.source.of(terms.get(a.address)), herdrOn(a))))
+        .children(list.map((a) => this.row(c, a, tabs.get(a.tab), feedOf.get(a.address), herdrOn(a))))
         .child(this.head(c, SESSION_KINDS.tui, elsewhere.length, false))
         .when(elsewhere.length === 0, (el) => el.child(this.none(c, "No Gentle Shell TUI in another terminal.")))
         .children(elsewhere.map((s) => this.elsewhereRow(c, s, shown?.key === s.key))));
   }
 }
 
-// A snapshot's state in Herdr's words: blocked (a question, prompt or consent waits), working, idle.
+// A snapshot's state in Herdr's words: blocked (a question, prompt or consent waits), working,
+// waiting (S15: only its background subagents or jobs run), idle.
 function statusOf(f) {
-  if (f?.pendingQuestion || f?.activity?.state === "blocked") return "blocked";
-  return f?.activity?.state === "working" || f?.activity?.streaming ? "working" : "idle";
+  return liveState(f).status;
 }

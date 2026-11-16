@@ -332,7 +332,7 @@ gentle-shell desktop --status     # versions and what is installed
 gentle-shell desktop --uninstall  # remove our mods, layout and shortcuts; Herdr stays
 ```
 
-Requires macOS on Apple silicon or Linux (x86_64, arm64); Gentle Shell installs Herdr app 0.1.15 for you, checked against a pinned SHA-256. On Windows, install Herdr app with its official installer first.
+Requires macOS on Apple silicon or Linux (x86_64, arm64); Gentle Shell installs Herdr app 0.1.16 for you, checked against a pinned SHA-256. On Windows, install Herdr app with its official installer first.
 
 **[Docs →](docs/gentle-shell-desktop.md)**
 

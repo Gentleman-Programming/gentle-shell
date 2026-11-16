@@ -80,7 +80,7 @@ gone or that were not updated for a day. The folder is created `0700` and files
 | `jobs` | `running[]` and `recent[]` (finished tail) with `startedAt`, `endedAt`, `exitCode`, `elapsedMs` at write time |
 | `review` | `state`, `label`, `scope` |
 | `stats` | `turns`, `toolCalls`, `toolErrors`, `cost`, token counts, `cacheHitRate`, `durationMs`, `models[]` |
-| `activity` | `state` (`working`, `blocked`, `idle`), `streaming`, ODD `phase` and `phaseLabel`, `blockedLabel` |
+| `activity` | `state` (`working`, `waiting`, `blocked`, `idle`), `streaming`, ODD `phase` and `phaseLabel`, `blockedLabel`; S15: `agents` and `jobs` (the session's subagents and background jobs that still run, the same numbers as `agents.active` and `jobs.running`) and `label`, the words every desktop region shows: "Working · 2 agents" while the turn runs, "Waiting on 2 agents · 1 job" once the turn ended but that work still runs (`waiting`, never `idle`), the blocker's label, else "Idle". Background subagents are the agents owner's, not the jobs registry's: they count in `agents`, never in `jobs` |
 | `pendingQuestion` | the open question or `null` (below) |
 | `commands` | the session's slash commands for the desktop palette and the composer's `/` menu: `items[]` (`name`, `description`, `args`, `terminal`, `source`) and `truncated` (below) |
 
@@ -129,7 +129,8 @@ every flush runs on pi's event loop, so the publisher keeps both rare and cheap.
 
 - **Urgent tier (≤ 16 ms):** a question opening or closing (`pendingQuestion`),
   a permission mode change, an `activity.state` transition (idle ↔ working ↔
-  blocked) are written at once; a desktop prompt being held or released flushes
+  waiting ↔ blocked; S15: the last subagent or job ending moves `waiting` to
+  `idle` at once) are written at once; a desktop prompt being held or released flushes
   at once too (the snapshot has no field of its own for it, so it writes only
   what changed with it). A pending routine write rides along.
 - **Routine tier:** everything else (stats, context, changes, usage, commands,

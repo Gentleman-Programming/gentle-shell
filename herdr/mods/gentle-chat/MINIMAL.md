@@ -26,7 +26,7 @@ conversation's own text is one line, and any line opens and closes again.
 
 | Item | Minimal (default) | Open |
 |---|---|---|
-| Tool call | One `.tool` row: ✓ / ✕ / a still • while it runs, name, short argument (path relative to the project, "· N lines", "· N matches"), the bash outcome or the **error's last line in red**, the duration, chevron | Arguments (when they say more than the row) and the output, up to 6000 characters |
+| Tool call | One `.tool` row: ✓ / ✕ / a still • while it runs, name, what the call does in words (path relative to the project, "· N lines", "· N matches"; S15, `feed.js summarize`: todo "write · 3 tasks, 1 in progress" / "update #2 → done", ask_user_choice / ask_user_question the question, subagent_run "agent · label", bash_background / monitor the label, job_* the job id, web_search the query, fetch_content the URL, mem_* the title or query, codemode the first line of code, gentle_review* the operation; any other tool its first string value; **never the JSON of the arguments**), the bash outcome or the **error's last line in red**, the duration, chevron | Arguments (when they say more than the row) and the output, up to 6000 characters |
 | Two or more reads / searches in a row | "✓ Explored · 2 reads, 1 search 0.9s" | The tool rows, each one minimal or open on its own |
 | Thinking run (consecutive blocks are one run) | "Thought for Ns" (italic, chevron) when the session hides thinking; **open** when it does not | The thinking text |
 | Edit with a patch | One `.tool` row: ✓, edit, file, +N −M | The artboard's diff card: hunk, Next hunk, Open in Changes |

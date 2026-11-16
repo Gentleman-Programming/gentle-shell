@@ -20,6 +20,7 @@ import { oddPhaseLabel, type OddPhase } from "./odd-phase.ts";
 import { profileRoutingRows, readProfileOrchestrator, type OrchestratorMode } from "./agent-profiles.ts";
 import type { AgentModelConfig } from "./model-routing-authority.ts";
 import { CODEX_PROVIDER, providerNote, USAGE_FETCH_FAILED_NOTE } from "./shell-usage.ts";
+import { FINISHED_STATUSES } from "./agents-protocol.ts";
 
 export const DESKTOP_FEED_SCHEMA = "gentle-shell.desktop-feed/v1";
 /** Coalescing window: a burst of changes becomes one write at most this late. */
@@ -273,7 +274,22 @@ export interface DesktopFeedSnapshot {
 		durationMs: number;
 		models: Array<{ model: string; turns: number; tokens: number; cost: number }>;
 	};
-	activity: { state: "working" | "blocked" | "idle"; streaming: boolean; phase: string | null; phaseLabel: string | null; blockedLabel: string | null };
+	/**
+	 * S15: `waiting` is a session whose turn ended while its background subagents or jobs still
+	 * run. `agents` / `jobs`: the live work (the same counts as `agents.active` and
+	 * `jobs.running`); `label`: the words every desktop region shows ("Working · 2 agents",
+	 * "Waiting on 2 agents", "Idle", or the blocker's own label).
+	 */
+	activity: {
+		state: DesktopFeedActivityState;
+		streaming: boolean;
+		phase: string | null;
+		phaseLabel: string | null;
+		blockedLabel: string | null;
+		agents: number;
+		jobs: number;
+		label: string;
+	};
 	pendingQuestion: DesktopFeedPendingQuestion | null;
 	/**
 	 * The session's slash commands: pi's built-ins, then its registry (extension
@@ -284,6 +300,38 @@ export interface DesktopFeedSnapshot {
 		items: Array<{ name: string; description: string | null; args: string | null; terminal: boolean; source: "builtin" | "extension" | "prompt" | "skill" }>;
 		truncated: boolean;
 	};
+}
+
+export type DesktopFeedActivityState = "working" | "waiting" | "blocked" | "idle";
+
+// ---- Live work (S15) ----
+
+/** Subagents of the session that still run (queued, running, waiting): the header's Agents count. */
+export function runningAgents(agents: readonly DesktopAgentEntry[] | undefined): number {
+	return (agents ?? []).filter((agent) => !FINISHED_STATUSES.includes(agent.status)).length;
+}
+
+/** Background jobs of the session that still run: the status bar's Jobs count. */
+export function runningJobs(jobs: readonly DesktopJobEntry[] | undefined): number {
+	return (jobs ?? []).filter((job) => job.status === "running").length;
+}
+
+/** blocked > working (the turn) > waiting (only background work) > idle. */
+export function desktopActivityState(turn: { working: boolean; blocked: number }, agents: number, jobs: number): DesktopFeedActivityState {
+	if (turn.blocked > 0) return "blocked";
+	if (turn.working) return "working";
+	return agents > 0 || jobs > 0 ? "waiting" : "idle";
+}
+
+const counted = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** The activity's words: "Working · 2 agents · 1 job", "Waiting on 2 agents", "Idle". */
+export function desktopActivityLabel(state: DesktopFeedActivityState, agents: number, jobs: number, blockedLabel: string | null = null): string {
+	const work = [agents > 0 ? counted(agents, "agent") : null, jobs > 0 ? counted(jobs, "job") : null].filter(Boolean).join(" · ");
+	if (state === "blocked") return blockedLabel ?? "Needs you";
+	if (state === "working") return work ? `Working · ${work}` : "Working";
+	if (state === "waiting") return `Waiting on ${work}`;
+	return "Idle";
 }
 
 // ---- Raw input the extension collects from the existing owners ----
@@ -490,7 +538,6 @@ function changesSection(input: DesktopFeedInput["changes"]): DesktopFeedSnapshot
 
 function agentsSection(agents: readonly DesktopAgentEntry[] | undefined): DesktopFeedSnapshot["agents"] {
 	if (!agents) return null;
-	const finished = new Set(["completed", "failed", "cancelled", "timed_out"]);
 	let tokens = 0;
 	let cost = 0;
 	for (const agent of agents) {
@@ -508,7 +555,7 @@ function agentsSection(agents: readonly DesktopAgentEntry[] | undefined): Deskto
 			thinking: optionalText(agent.thinking),
 			spend: { tokens: finite(agent.usage?.total), cost: finite(agent.usage?.cost) },
 		})),
-		active: agents.filter((agent) => !finished.has(agent.status)).length,
+		active: runningAgents(agents),
 		spend: { runs: agents.length, tokens, cost },
 	};
 }
@@ -564,6 +611,10 @@ export function buildDesktopFeedSnapshot(input: DesktopFeedInput): DesktopFeedSn
 	const todo = input.todo;
 	const progress = todoSummary(todo);
 	const effort = input.model?.reasoning ? input.thinkingLevel : undefined;
+	const agentsLive = runningAgents(input.agents);
+	const jobsLive = runningJobs(input.jobs?.slice(0, DESKTOP_FEED_LIMITS.jobs));
+	const state = desktopActivityState(input.activity, agentsLive, jobsLive);
+	const blockedLabel = input.activity.blocked > 0 ? optionalText(input.activity.blockedLabel) : null;
 	return {
 		schema: DESKTOP_FEED_SCHEMA,
 		updatedAt: new Date(now).toISOString(),
@@ -624,11 +675,14 @@ export function buildDesktopFeedSnapshot(input: DesktopFeedInput): DesktopFeedSn
 			models: input.stats.models.slice(0, DESKTOP_FEED_LIMITS.models).map((model) => ({ model: clipText(model.model), turns: model.turns, tokens: model.tokens, cost: finite(model.cost) })),
 		},
 		activity: {
-			state: input.activity.blocked > 0 ? "blocked" : input.activity.working ? "working" : "idle",
+			state,
 			streaming: input.activity.streaming,
 			phase: input.activity.phase ?? null,
 			phaseLabel: input.activity.phase ? oddPhaseLabel(input.activity.phase) : null,
-			blockedLabel: input.activity.blocked > 0 ? optionalText(input.activity.blockedLabel) : null,
+			blockedLabel,
+			agents: agentsLive,
+			jobs: jobsLive,
+			label: desktopActivityLabel(state, agentsLive, jobsLive, blockedLabel),
 		},
 		pendingQuestion: input.pendingQuestion ?? null,
 		commands: commandsSection(input.commands),

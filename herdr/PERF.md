@@ -83,6 +83,16 @@ No timer, watch or process was added. The machine headers read Herdr's live `mac
 click. Measured the same way (2026-11-15, Herdr app 0.1.16, an idle session shown): dark
 0.19–0.30 %, light 0.25 %, Herdr's `main` layout 0.47 %.
 
+## S15 (live work, tool summaries, Needs you, Herdr 0.1.16)
+
+No timer, watch, poll or animation was added. "Working · 2 agents" / "Waiting on 2 agents" are
+words the publisher already writes in the snapshot (`activity.label`), read in render; the pinned
+Needs you section is computed from the shared feeds in gentle-spaces' render; the notification is
+the feed leader's (gentle-status): it runs only when its read changed, as the publish does.
+Measured the same way (2026-11-16, Herdr app 0.1.16, window in front): an idle Herdr session
+shown 0.34 % and 0.14 %, Herdr's `main` layout 0.37 %. While a TUI session wrote a long reply
+and a toast showed, 3.6 % (the chat redrawing what the session wrote, not idle).
+
 ## Trade-offs
 
 - The artboard's pulsing working dot (S8) is still: the cost was ~40 % CPU for as long as any

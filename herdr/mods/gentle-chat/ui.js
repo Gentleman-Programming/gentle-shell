@@ -7,7 +7,7 @@ import { home } from "herdr";
 import { v_flex, h_flex, TextView, Textarea, Popover } from "gpui-base";
 import { alpha, mono, R } from "./tokens.js";
 import { money, prettyModel, seconds, parsePatch } from "./feed.js";
-import { SESSION_KINDS, machineOf } from "./snapshot.js";
+import { SESSION_KINDS, machineOf, liveState } from "./snapshot.js";
 
 const MOD = "gentle-chat";
 // A session that runs outside Herdr app (T11): what the Terminal switch and ⌘J say instead.
@@ -92,6 +92,13 @@ export function header(v, p) {
   const { stack } = v.stackProps();
   const title = s?.identity?.sessionName || f.name || sessionTitle(v.agentInfo?.title) || "Gentle Shell";
   // The session's kind badge follows its name (S10): Herdr or TUI, as in the sidebar and tabs.
+  // S15: then its live state while it is not idle, the sidebar's words ("Working · 2 agents",
+  // "Waiting on 2 agents", "Needs you"); an idle session keeps the artboard's quiet header. A
+  // narrow card (< 640px) leaves it to the sidebar and the status bar: the name keeps the room.
+  const live = s ? liveState(s) : null;
+  const herdrWorking = v.agentInfo?.status === "working";
+  const roomy = (v.headW ?? Infinity) >= 640;
+  const shownLive = !roomy ? null : live && live.status !== "idle" ? live : herdrWorking ? { status: "working", label: "Working" } : null;
   const row1 = h_flex().min_h(30).items_center().justify_between().gap(16).min_w(0).overflow_hidden()
     .child(h_flex().flex_1().min_w(v.elsewhere() ? 150 : 0).gap(8).items_center()
       .child(div().id("title").min_w(0).truncate().text_size(14).font_semibold()
@@ -99,7 +106,9 @@ export function header(v, p) {
         .child(title))
       .when(Boolean(v.key), (el) => el.child(machineOf(v.address)
         ? kindBadge(p, SESSION_KINDS.remote, machineOf(v.address))
-        : kindBadge(p, v.elsewhere() ? SESSION_KINDS.tui : SESSION_KINDS.herdr))))
+        : kindBadge(p, v.elsewhere() ? SESSION_KINDS.tui : SESSION_KINDS.herdr)))
+      .when(Boolean(shownLive), (el) => el.child(div().id("chat-state").flex_none()
+        .child(stateLabel(p, shownLive.status === "blocked" ? "need" : "work", shownLive.label)))))
     .when(Boolean(stack), (el) => el.child(v.elsewhere() ? elsewhere(v, p) : viewSwitch(v, p)));
   // No clip here: the Model and permission menus open from this row.
   const row2 = h_flex().items_center().justify_between().gap(16).min_w(0)

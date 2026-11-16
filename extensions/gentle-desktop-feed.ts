@@ -7,12 +7,15 @@ import {
 	buildDesktopFeedSnapshot,
 	clipText,
 	createDesktopFeedScheduler,
+	desktopActivityState,
 	DESKTOP_FEED_LIMITS,
 	DESKTOP_FEED_QUESTION_TOOLS,
 	desktopFeedDigest,
 	pendingPrompt,
 	pendingQuestionFromTool,
 	realDesktopFeedTimers,
+	runningAgents,
+	runningJobs,
 	type DesktopFeedPendingQuestion,
 	type DesktopFeedTimers,
 } from "../lib/desktop-feed.ts";
@@ -229,10 +232,11 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 		};
 
 		// S13: what the desktop must see at once. A change here makes the write urgent.
+		// S15: the state counts background work (working / waiting / idle), as the snapshot does.
 		const urgentKey = (session: Live): string => {
 			const question = pendingQuestion(session);
 			return JSON.stringify([
-				session.blocked > 0 ? "blocked" : session.working ? "working" : "idle",
+				desktopActivityState(session, runningAgents(session.agents), runningJobs(session.jobs?.slice(0, DESKTOP_FEED_LIMITS.jobs))),
 				question ? [question.kind, question.toolCallId, question.question, question.terminalOnly, question.openedAt] : null,
 				session.permission?.mode ?? null,
 				session.held ? 1 : 0,

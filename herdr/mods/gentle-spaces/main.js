@@ -17,12 +17,19 @@
 // on an unavailable one opens Settings › Machines (its login guidance). A remote space counts its
 // Gentle Shell sessions from herdr-core ("1 Remote"): their snapshots and spend stay on that
 // machine, so no spend is shown for them. With only this computer, nothing changes.
+// S15 (Needs you): pinned above Projects, only while at least one Gentle Shell session waits for the
+// person (a question, a permission prompt, a consent, a blocker), wherever it runs: one row per
+// session (snapshot.js needsYouList, the one that waited longest first) with its name, what it
+// waits for (Question, Permission, Consent, Blocked), its kind badge (Herdr / TUI / Remote) and the
+// waiting reason; a click shows that session (selectSession). Read from the shared feeds, like the
+// rest of this mod: no timer, watch or read of its own. The notification is the status bar's
+// (gentle-status, the feed leader).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, agents, terminals, machines, run, openOverlay, layout } from "herdr";
-import { tokens, eyebrow, money } from "./tokens.js";
-import { FeedSource, isGentle, followHerdr, selectSession, projectOf, projectName, spaceFor, machineOf, SESSION_KINDS } from "./snapshot.js";
+import { tokens, eyebrow, money, kindBadge } from "./tokens.js";
+import { FeedSource, isGentle, followHerdr, selectSession, projectOf, projectName, spaceFor, machineOf, needsYouList, sessionKind, SESSION_KINDS } from "./snapshot.js";
 import { machineGroups, STATE_WORD } from "./machines.js";
 
 function find(node, id) {
@@ -40,6 +47,10 @@ const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 const PAD_TOP = 10, PAD_BOTTOM = 6, HEADER = 38, ROW = 48.75, MAX_ROWS = 6;
 // A machine header and a machine's "New space there" row (S14).
 const MACHINE = 26, EMPTY = 28;
+// The pinned Needs you section (S15): its eyebrow row, its rows (the space row's height), at most
+// NEED_ROWS of them (then one "+N more" line), and the gap before Projects.
+const NEED_HEAD = 26, NEED_ROWS = 4, NEED_MORE = 22, NEED_GAP = 8;
+const MOD = "gentle-spaces";
 
 // "gentle-pi" → "gp", "herdr-zoo" → "hz", "web" → "we".
 export function initials(name) {
@@ -65,6 +76,7 @@ export default class GentleSpaces extends View {
   // split by weight: Projects takes its rows, Agents the rest), up to MAX_ROWS rows.
   // `extra`: the machine headers and empty-machine rows (S14), in px, on top of the rows.
   fit(rows, extra = 0) {
+    // (extra also carries the Needs you section's height, S15)
     const want = PAD_TOP + HEADER + Math.min(Math.max(rows, 1), MAX_ROWS) * ROW + extra + PAD_BOTTOM;
     const node = find(layout(), "spaces");
     if (node && Math.abs((node.size?.px ?? 0) - want) > 0.5) run("layout.resize", { id: "spaces", px: want });
@@ -192,6 +204,52 @@ export default class GentleSpaces extends View {
       .when(off, (el) => el.child(g.state === "loading" ? "Loading…" : "Not reachable now"));
   }
 
+  // S15: the pinned Needs you section's height for `n` waiting sessions (0 when none).
+  needHeight(n, collapsed) {
+    if (!n) return 0;
+    if (collapsed) return 26 + NEED_GAP;
+    return NEED_HEAD + Math.min(n, NEED_ROWS) * ROW + (n > NEED_ROWS ? NEED_MORE : 0) + NEED_GAP;
+  }
+
+  // One waiting session: its name and what it waits for, then its kind badge and the reason.
+  needRow(c, w, on) {
+    const s = w.session;
+    const f = s.feed;
+    const kind = sessionKind(s);
+    const machine = machineOf(s.terminal?.address);
+    const name = f?.identity?.sessionName || (f ? projectName(projectOf(f)) : null) || s.terminal?.title || "Gentle Shell";
+    return v_flex().id(`need-${w.key}`).w_full().min_w(0).overflow_hidden().h(ROW).flex_none().p(6).rounded(6).cursor_pointer()
+      .when(on, (el) => el.bg(c.selected))
+      .hover((st) => st.bg(c.selected))
+      .tooltip(`${w.need.word}: ${w.need.reason}`)
+      .on_click(() => selectSession(s))
+      .child(h_flex().h(19.5).min_w(0).overflow_hidden().gap(8).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(13).line_height("19.5px").text_color(c.text).child(name))
+        .child(div().flex_none().font_family(c.mono).font_weight(600).text_size(10.5).line_height("13.5px").text_color(c.warn).child(w.need.word.toUpperCase())))
+      .child(h_flex().h(17.25).gap(6).items_center().min_w(0).overflow_hidden()
+        .child(kindBadge(c, kind, MOD, machine))
+        .child(div().min_w(0).truncate().text_size(11.5).line_height("17.25px").text_color(c.muted).child(w.need.reason)));
+  }
+
+  needs(c, waits, shownKey, collapsed) {
+    if (collapsed) {
+      return h_flex().w_full().h(26).mb(NEED_GAP).flex_none().justify_center()
+        .child(h_flex().id("needs").w(32).h(26).gap(4).rounded(6).justify_center().items_center().cursor_pointer()
+          .hover((s) => s.bg(c.selected)).tooltip(`${plural(waits.length, "session")} need${waits.length === 1 ? "s" : ""} you`)
+          .on_click(() => selectSession(waits[0].session))
+          .child(div().size(5).rounded(3).bg(c.warn))
+          .child(div().font_family(c.mono).text_size(11).text_color(c.warn).child(String(waits.length))));
+    }
+    const more = waits.length - NEED_ROWS;
+    return v_flex().id("needs").flex_none().mb(NEED_GAP)
+      .child(h_flex().h(NEED_HEAD).flex_none().px(6).pb(6).items_center().justify_between()
+        .child(eyebrow(c, "Needs you", c.warn))
+        .child(div().font_family(c.mono).text_size(11.5).line_height("17.25px").text_color(c.warn).child(String(waits.length))))
+      .children(waits.slice(0, NEED_ROWS).map((w) => this.needRow(c, w, w.key === shownKey)))
+      .when(more > 0, (el) => el.child(div().h(NEED_MORE).flex_none().px(6).text_size(11.5).line_height("17.25px").text_color(c.muted)
+        .child(`+${more} more waiting`)));
+  }
+
   compact(c, w, i, info) {
     return h_flex().id(`space-${w.id}`).w(32).h(26).rounded(6).justify_center().items_center().cursor_pointer()
       .when(w.active, (el) => el.bg(c.selected))
@@ -210,7 +268,8 @@ export default class GentleSpaces extends View {
     let groups = null;
     try { groups = collapsed ? null : machineGroups(sp, machines()); } catch { groups = null; }
     const heads = groups ? groups.length * MACHINE + groups.filter((g) => !g.spaces.length).length * EMPTY : 0;
-    this.fit(sp.length + (collapsed ? 0 : extra.length), heads);
+    const waits = needsYouList(this.source.sessions());
+    this.fit(sp.length + (collapsed ? 0 : extra.length), heads + this.needHeight(waits.length, collapsed));
     // The highlighted project is the shown session's (snapshot.js targetSession): a session outside
     // Herdr app shows its own project, else Herdr's shown space.
     const shown = this.source.target(this.last);
@@ -220,6 +279,7 @@ export default class GentleSpaces extends View {
     const isOn = (w) => (outside ? outsideSpace?.id === w.id : w.active);
     return v_flex().id("root").size_full().min_h(0).bg(c.chrome).font_family(c.sans).text_size(13)
       .pt(PAD_TOP).px(collapsed ? 0 : 10).pb(PAD_BOTTOM)
+      .when(waits.length > 0, (el) => el.child(this.needs(c, waits, shown ? shown.key : null, collapsed)))
       .child(h_flex().h(HEADER).flex_none().px(6).pb(6).items_center().justify_between()
         .when(collapsed, (el) => el.px(0).justify_center())
         .when(!collapsed, (el) => el.child(eyebrow(c, "Projects")))

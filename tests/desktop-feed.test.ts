@@ -219,7 +219,7 @@ test("S2: the snapshot carries every TUI field in the v1 schema shape", () => {
 		},
 		review: { state: "in_review", label: "Review in progress", scope: "a.ts +1 file" },
 		stats: { turns: 4, toolCalls: 7, toolErrors: 1, cost: 1.25, input: 100, output: 50, cacheRead: 300, cacheWrite: 10, cacheHitRate: 0.75, durationMs: 60_000, models: [{ model: "claude-opus-5-5", turns: 4, tokens: 460, cost: 1.25 }] },
-		activity: { state: "working", streaming: true, phase: "implementing", phaseLabel: "implementing…", blockedLabel: null },
+		activity: { state: "working", streaming: true, phase: "implementing", phaseLabel: "implementing…", blockedLabel: null, agents: 1, jobs: 1, label: "Working · 1 agent · 1 job" },
 		pendingQuestion: null,
 		commands: { items: DESKTOP_FEED_BUILTIN_COMMANDS.map((command) => ({ ...command, source: "builtin" })), truncated: false },
 	});
@@ -396,7 +396,7 @@ test("S2: the extension writes once per burst and never rewrites an unchanged sn
 	h.fire("tool_execution_start", { toolCallId: "c1", toolName: "read", args: {} }, h.ctx);
 	h.clock.run();
 	assert.equal(h.writes.length, writes + 1);
-	assert.deepEqual(h.read().activity, { state: "working", streaming: true, phase: null, phaseLabel: null, blockedLabel: null });
+	assert.deepEqual(h.read().activity, { state: "working", streaming: true, phase: null, phaseLabel: null, blockedLabel: null, agents: 0, jobs: 0, label: "Working" });
 	assert.equal(h.clock.armed, 0, "nothing stays armed while nothing changes");
 });
 

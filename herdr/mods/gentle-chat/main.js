@@ -20,7 +20,7 @@ import { v_flex, TextareaState, ScrollHandle } from "gpui-base";
 import { agents, props, layout, hc, run, setShared, shared, theme, watchFolder, nextCommand } from "herdr";
 import { readFile } from "fs/promises";
 import { sessionFileFor, readAfter, readTail, utf8 } from "./session.js";
-import { FeedSource, allSessions, targetSession, machineOf } from "./snapshot.js";
+import { FeedSource, allSessions, targetSession, machineOf, liveState } from "./snapshot.js";
 import { createFeed, ingest, hideThinkingFrom } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
 import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, PERM, ELSEWHERE } from "./ui.js";
@@ -910,7 +910,13 @@ export default class GentleChat extends View {
     for (let i = from; i < list.length; i++) rows.push(lane(entry(this, p, list[i], working && i === list.length - 1)));
     const pq = this.snap?.pendingQuestion;
     if (pq) rows.push(lane(askCard(this, p, pq)));
-    else if (working) rows.push(lane(stateLabel(p, "work", "Working")));
+    else {
+      // S15: "Working · 2 agents" while the turn runs, "Waiting on 2 agents" once it ended while its
+      // background subagents or jobs still run.
+      const live = this.snap ? liveState(this.snap) : null;
+      const busy = live && (live.status === "working" || live.status === "waiting");
+      if (working || busy) rows.push(lane(stateLabel(p, "work", busy ? live.label : "Working")));
+    }
     const empty = !rows.length;
     // Pinned to the newest entry: new items pin it, scrolling up unpins it. scroll_to_item
     // reveals a child with the least scroll, so the target is a 1px sentinel after the last row,

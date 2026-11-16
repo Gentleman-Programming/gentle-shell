@@ -180,11 +180,11 @@ function seedUserFiles(f: Fixture) {
 const userKeys = ["mods/agents/main.js", "mods/gentle-custom/main.js", "layouts/main.json", "settings.json"];
 const userSnapshot = (f: Fixture) => Object.fromEntries(Object.entries(tree(f.herdrHome)).filter(([key]) => userKeys.includes(key)));
 
-test("pins Herdr app 0.1.15 with the SHA-256 of every official release target", () => {
-	assert.equal(HERDR_APP_VERSION, "0.1.15");
-	assert.equal(HERDR_APP_RELEASE.version, "0.1.15");
+test("pins Herdr app 0.1.16 with the SHA-256 of every official release target", () => {
+	assert.equal(HERDR_APP_VERSION, "0.1.16");
+	assert.equal(HERDR_APP_RELEASE.version, "0.1.16");
 	assert.deepEqual(Object.keys(HERDR_APP_RELEASE.sha256).sort(), ["linux-aarch64", "linux-x86_64", "macos-aarch64", "windows-x86_64"]);
-	assert.equal(HERDR_APP_RELEASE.sha256["macos-aarch64"], "3633ea5d868ea410f84dfbb77a26205de331f4df52fdb3fb006b2b3978458459");
+	assert.equal(HERDR_APP_RELEASE.sha256["macos-aarch64"], "99000875ead9333a33f5cb60274ccd9cf9d3e47360f03613a467295105c71c04");
 	for (const sum of Object.values(HERDR_APP_RELEASE.sha256)) assert.match(sum, /^[0-9a-f]{64}$/);
 });
 
@@ -238,7 +238,7 @@ test("fresh install asks, downloads the pinned release, installs mods and layout
 
 test("already installed Herdr app: no download, and an up-to-date second run just opens without asking", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.16", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.17", f.state);
 	writeFileSync(join(f.state, "running"), "");
 	writeFileSync(join(f.state, "ls.json"), JSON.stringify({ spaces: [{ folder: f.cwd, tabs: [{ terminals: [{ app: "gentle-shell" }] }] }] }));
 	assert.equal(await runDesktop(context(f, { args: ["--yes"] })), 0, f.err.join("\n"));
@@ -284,7 +284,7 @@ test("a download that does not match the pinned SHA-256 installs nothing", async
 
 test("a failing herdr-app check restores the previous gentle-* copies and never switches", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	writeFileSync(join(f.state, "running"), "");
 	seedUserFiles(f);
 	mkdirSync(join(f.herdrHome, "mods", "gentle-a"), { recursive: true });
@@ -304,7 +304,7 @@ test("a failing herdr-app check restores the previous gentle-* copies and never 
 
 test("a failing herdr-app check on a fresh Herdr home leaves no empty mods/ or layouts/ folder behind", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"], fail: "gentle-a" })), 1);
 	assert.match(f.err.join("\n"), /herdr-app check failed for gentle-a/);
 	assert.equal(existsSync(f.herdrHome), false);
@@ -323,7 +323,7 @@ function hasMarker(dir: string, marker: string): boolean {
 
 test("a user's own gentle-* mod and gentle-shell layout are never lost across install, refresh and uninstall", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	const userMod = join(f.herdrHome, "mods", "gentle-a");
 	const userLayout = join(f.herdrHome, "layouts", "gentle-shell.json");
 	mkdirSync(join(userMod, "lib"), { recursive: true });
@@ -354,7 +354,7 @@ test("a user's own gentle-* mod and gentle-shell layout are never lost across in
 
 test("uninstall without Gentle Shell Desktop's state removes nothing, so an unknown gentle-shell layout stays", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	mkdirSync(join(f.herdrHome, "layouts"), { recursive: true });
 	mkdirSync(join(f.herdrHome, "mods", "gentle-a"), { recursive: true });
 	writeFileSync(join(f.herdrHome, "layouts", "gentle-shell.json"), "{\"mine\":1}\n");
@@ -374,7 +374,7 @@ test("only a Gentle Shell that ships the desktop command is asked to refresh aft
 
 test("uninstall removes only our mods and layout, keeps a backup and switches back to the previous layout", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	writeFileSync(join(f.state, "running"), "");
 	writeFileSync(join(f.state, "layout"), "win98");
 	seedUserFiles(f);
@@ -397,7 +397,7 @@ test("uninstall removes only our mods and layout, keeps a backup and switches ba
 
 test("uninstall falls back to the main layout when none was recorded", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
 	writeFileSync(join(f.state, "running"), "");
 	writeFileSync(join(f.state, "layout"), "gentle-shell");
@@ -418,7 +418,7 @@ test("--status prints versions and what is installed", async (t) => {
 		"  Mods: none installed (ships gentle-a, gentle-b)",
 		"  Window: not running",
 	]);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	writeFileSync(join(f.state, "running"), "");
 	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
 	f.out.length = 0;
@@ -426,7 +426,7 @@ test("--status prints versions and what is installed", async (t) => {
 	assert.deepEqual(f.out, [
 		"Gentle Shell Desktop",
 		"  Gentle Shell: 9.9.9",
-		`  Herdr app: 0.1.15 at ${join(f.bin, "herdr-app")} (needs ${HERDR_APP_VERSION} or newer)`,
+		`  Herdr app: ${HERDR_APP_VERSION} at ${join(f.bin, "herdr-app")} (needs ${HERDR_APP_VERSION} or newer)`,
 		`  Herdr home: ${f.herdrHome}`,
 		`  Layout gentle-shell: installed at ${join(f.herdrHome, "layouts", "gentle-shell.json")}`,
 		`  Mods: gentle-a, gentle-b installed in ${join(f.herdrHome, "mods")}`,
@@ -436,7 +436,7 @@ test("--status prints versions and what is installed", async (t) => {
 
 test("non-interactive without --yes refuses and writes nothing; declining also installs nothing", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	assert.equal(await runDesktop(context(f, { interactive: false })), 1);
 	assert.deepEqual(f.questions, []);
 	assert.deepEqual(f.err, ["gentle-shell desktop: nothing was installed. Run it in an interactive terminal to confirm, or pass --yes."]);
@@ -451,7 +451,7 @@ test("non-interactive without --yes refuses and writes nothing; declining also i
 
 test("--refresh updates installed mods without asking or opening, and does nothing when desktop was never installed", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	assert.equal(await runDesktop(context(f, { args: ["--refresh"], interactive: false })), 0);
 	assert.equal(existsSync(f.herdrHome), false);
 	assert.deepEqual(f.calls(), []);
@@ -490,7 +490,7 @@ test("the real package herdr/ folder ships gentle-* mods and the gentle-shell la
 
 test("themes: herdr/themes/gentle-shell-*.json install into themes/, a user's file there is kept and put back, refresh and uninstall follow (S14)", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	const pkgThemes = join(f.pkg, "herdr", "themes");
 	mkdirSync(pkgThemes, { recursive: true });
 	writeFileSync(join(pkgThemes, "gentle-shell-dark.json"), "{\"dark\":1}\n");
@@ -612,7 +612,7 @@ test("Projects group by machine like Herdr's spaces once a machine is not this c
 
 test("a swap conflict rolls back: Herdr home, originals and a created mods/ folder are as before (B1)", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	const originals = join(f.home, ".gentle-shell", "desktop", "originals", "layouts");
 	mkdirSync(originals, { recursive: true });
 	writeFileSync(join(originals, "gentle-shell.json"), "{\"earlier\":1}\n");
@@ -628,7 +628,7 @@ test("a swap conflict rolls back: Herdr home, originals and a created mods/ fold
 
 test("a state.json written before `layout` existed treats our layout as ours (migration, B1)", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));
 	const stateFile = join(f.home, ".gentle-shell", "desktop", "state.json");
 	const { layout: _layout, ...old } = JSON.parse(readFileSync(stateFile, "utf8"));
@@ -656,7 +656,7 @@ const OUR_SECTION = { "cmd-k": "mod.open:gentle-palette", "cmd-j": "gentle-statu
 function keysFixture(t: TestContext, options: { running?: boolean } = {}) {
 	const f = fixture(t);
 	writeFileSync(join(f.pkg, "herdr", "keys.json"), SHIPPED_KEYS);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	if (options.running) writeFileSync(join(f.state, "running"), "");
 	const keysFile = join(f.herdrHome, "keys.json");
 	const stateFile = join(f.home, ".gentle-shell", "desktop", "state.json");
@@ -857,7 +857,7 @@ test("keys: a running Herdr that already reports keys.error gets no write", asyn
 
 test("keys: a package without herdr/keys.json never touches keys.json (PRESERVE)", async (t) => {
 	const f = fixture(t);
-	installFakeHerdr(join(f.bin, "herdr-app"), "0.1.15", f.state);
+	installFakeHerdr(join(f.bin, "herdr-app"), HERDR_APP_VERSION, f.state);
 	mkdirSync(f.herdrHome, { recursive: true });
 	writeFileSync(join(f.herdrHome, "keys.json"), USER_KEYS);
 	assert.equal(await runDesktop(context(f, { args: ["--yes", "--no-open"] })), 0, f.err.join("\n"));

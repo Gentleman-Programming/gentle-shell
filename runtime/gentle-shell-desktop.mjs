@@ -21,7 +21,7 @@ import { delimiter, join } from "node:path";
 // The Herdr app the mods were built and checked against (`herdr-app check`,
 // live fidelity passes). Newer apps are accepted; older or missing ones get
 // exactly this release.
-export const HERDR_APP_VERSION = "0.1.15";
+export const HERDR_APP_VERSION = "0.1.16";
 
 
 
@@ -30,16 +30,16 @@ export const HERDR_APP_VERSION = "0.1.15";
 
 
 // From Herdr's immutable per-version manifest,
-// https://releases.herdr.dev/app/0.1.15/manifest.json (the file the official
+// https://releases.herdr.dev/app/0.1.16/manifest.json (the file the official
 // install.sh reads through app/latest.json). Pinned here so a changed or
 // replaced download never installs.
 export const HERDR_APP_RELEASE                  = {
 	version: HERDR_APP_VERSION,
 	sha256: {
-		"linux-aarch64": "0e5fd95a056452ec31e32fe6aa5a47a8b1d42020ae8f3a10cda2e0a1001d4124",
-		"linux-x86_64": "f99e1e04be82c0e10b2f69ee7403ca34386f480d92511df5865af4703e7655dd",
-		"macos-aarch64": "3633ea5d868ea410f84dfbb77a26205de331f4df52fdb3fb006b2b3978458459",
-		"windows-x86_64": "62ddf27ee9acc13d9b3421389817d1cabdc906c23f9ff1363f6cdbc8af3da39c",
+		"linux-aarch64": "efeef4f1759b0e8900f205c2c22b14287a112f874406539b4ea1b3be24b73631",
+		"linux-x86_64": "282d2632196b238206cfe66bfb61c0faf299ca1c91843bd076521bbe36571216",
+		"macos-aarch64": "99000875ead9333a33f5cb60274ccd9cf9d3e47360f03613a467295105c71c04",
+		"windows-x86_64": "abdc5400679cb730223a43b2a5216999a1edad3c2e80368f0ad3c43ea9895fe3",
 	},
 };
 

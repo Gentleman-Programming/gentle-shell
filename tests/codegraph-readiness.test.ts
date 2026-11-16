@@ -153,10 +153,10 @@ test("prepareReadiness: an existing index is synced and then warmed", async (t) 
 		},
 	}));
 	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
-	assert.deepEqual(calls, ["run:unlock", "run:sync -q", "warm"], "a sync is always preceded by an unlock");
+	assert.deepEqual(calls, ["run:sync -q", "warm"], "the daemon-less refresh runs the sync alone: no unlock ever removes a live owner's lock");
 });
 
-test("prepareReadiness: a live daemon syncs without unlocking; a dead one keeps unlock-then-sync", async (t) => {
+test("prepareReadiness: a live daemon syncs without unlocking; a dead one runs the same plain sync", async (t) => {
 	const cwd = dir(t, "sync-live-daemon");
 	writeDb(cwd);
 	const registry = dir(t, "sync-live-registry");
@@ -188,38 +188,22 @@ test("prepareReadiness: a live daemon syncs without unlocking; a dead one keeps 
 			return true;
 		},
 	}));
-	assert.deepEqual(deadCalls, ["run:unlock", "run:sync -q"], "no live daemon: the stale-lock clear still precedes the sync");
+	assert.deepEqual(deadCalls, ["run:sync -q"], "no live daemon: the lease holder refreshes with the sync alone");
 });
 
-test("prepareReadiness: a failed unlock prevents the sync, a failed sync still warms", async (t) => {
-	const locked = dir(t, "unlock-fail");
-	writeDb(locked);
-	const calls: string[] = [];
-	const unlocked = await prepareReadiness(fakeInput(locked, {
-		run: async () => {
-			calls.push("run");
-			return false;
-		},
-		warm: async () => {
-			calls.push("warm");
-			return true;
-		},
-	}));
-	assert.deepEqual(unlocked, { action: "sync", ok: false, warm: "ok" }, "the index still exists, so it is warmed");
-	assert.deepEqual(calls, ["run", "warm"], "the unlock failed, so the sync never ran");
-
+test("prepareReadiness: a failed daemon-less sync still warms; a failed init does not", async (t) => {
 	const synced = dir(t, "sync-fail");
 	writeDb(synced);
 	const syncCalls: string[] = [];
 	const failedSync = await prepareReadiness(fakeInput(synced, {
 		run: async (args) => {
 			syncCalls.push(`run:${args[0]}`);
-			return args[0] === "unlock";
+			return false;
 		},
 		warm: async () => true,
 	}));
 	assert.deepEqual(failedSync, { action: "sync", ok: false, warm: "ok" }, "a failed sync leaves an index to warm");
-	assert.deepEqual(syncCalls, ["run:unlock", "run:sync"], "the unlock succeeded, so the sync ran and failed");
+	assert.deepEqual(syncCalls, ["run:sync"], "only the sync ran: no unlock precedes it any more");
 
 	const fresh = dir(t, "init-fail");
 	writeFileSync(join(fresh, "package.json"), "{}\n");
@@ -306,7 +290,7 @@ test("prepareReadiness: a reload followed by a startup for the same cwd still ru
 		},
 	}));
 	assert.deepEqual(startup, { action: "sync", ok: true, warm: "ok" }, "the startup is never served the reload's cached skip");
-	assert.deepEqual(calls, ["unlock", "sync -q"], "the startup runs its own refresh");
+	assert.deepEqual(calls, ["sync -q"], "the startup runs its own refresh");
 });
 
 test("daemonFor: newest live daemon wins and its registered spelling is returned", (t) => {
@@ -638,7 +622,7 @@ test("runCodegraphSeedSync: an ordinary sync outside a seed staging project keep
 	assert.equal(report, true, "a non-staging call delegates to the plain runCodegraph contract");
 });
 
-test("syncBeforeSearch: unlock first, then sync -q; a failed sync reports only sync", async (t) => {
+test("syncBeforeSearch: the daemon-less refresh runs only sync -q; a failure reports only sync", async (t) => {
 	const cwd = dir(t, "search-order");
 	const calls: string[] = [];
 	const failures: string[] = [];
@@ -646,16 +630,16 @@ test("syncBeforeSearch: unlock first, then sync -q; a failed sync reports only s
 		cwd,
 		run: async (args) => {
 			calls.push(args.join(" "));
-			return args[0] === "unlock";
+			return false;
 		},
 		onFailed: (stage) => failures.push(stage),
 	});
 	await settled();
-	assert.deepEqual(calls, ["unlock", "sync -q"]);
+	assert.deepEqual(calls, ["sync -q"], "no unlock ever precedes the daemon-less sync");
 	assert.deepEqual(failures, ["sync"]);
 });
 
-test("syncBeforeSearch: a live daemon syncs only, never unlocked; no daemon keeps unlock+sync", async (t) => {
+test("syncBeforeSearch: a live daemon syncs only; no daemon runs the same single sync", async (t) => {
 	const cwd = dir(t, "search-live-daemon");
 	const registry = dir(t, "search-live-registry");
 	const socket = join(registry, "live.sock");
@@ -684,27 +668,30 @@ test("syncBeforeSearch: a live daemon syncs only, never unlocked; no daemon keep
 		},
 	});
 	await settled();
-	assert.deepEqual(deadCalls, ["unlock", "sync -q"], "no live daemon: the stale lock is still cleared first");
+	assert.deepEqual(deadCalls, ["sync -q"], "no live daemon: the lease holder refreshes with the sync alone");
 });
 
-test("syncBeforeSearch: a failed unlock never runs the sync and reports only unlock", async (t) => {
-	const cwd = dir(t, "search-unlock-fail");
+test("syncBeforeSearch: a damaged sync lease reports a blocked refresh and never syncs past it", async (t) => {
+	const cwd = dir(t, "search-lease-damaged");
+	const locks = dir(t, "search-lease-damaged-locks");
+	writeFileSync(lockPathFor(cwd, "sync", locks), "{not-json\n");
 	const calls: string[] = [];
 	const failures: string[] = [];
 	syncBeforeSearch({
 		cwd,
+		locksDir: locks,
 		run: async (args) => {
 			calls.push(args.join(" "));
-			return false;
+			return true;
 		},
 		onFailed: (stage) => failures.push(stage),
 	});
 	await settled();
-	assert.deepEqual(calls, ["unlock"], "the unlock failed, so the sync never ran");
-	assert.deepEqual(failures, ["unlock"]);
+	assert.deepEqual(calls, [], "no unlock, no sync: nobody owns this refresh");
+	assert.deepEqual(failures, ["lease"], "the blocked lease is the reported stage");
 });
 
-test("syncBeforeSearch: concurrent calls for one cwd coalesce into a single unlock+sync", async (t) => {
+test("syncBeforeSearch: concurrent calls for one cwd coalesce into a single sync", async (t) => {
 	const cwd = dir(t, "search-coalesce");
 	const calls: string[] = [];
 	let release: (() => void) | undefined;
@@ -713,21 +700,21 @@ test("syncBeforeSearch: concurrent calls for one cwd coalesce into a single unlo
 	});
 	const run: SearchSyncInput["run"] = async (args) => {
 		calls.push(args.join(" "));
-		if (args[0] === "unlock") await gate;
+		if (args[0] === "sync") await gate;
 		return true;
 	};
 
 	syncBeforeSearch({ cwd, run });
 	syncBeforeSearch({ cwd, run });
-	assert.deepEqual(calls, ["unlock"], "the second call starts no second job while one is in flight");
+	assert.deepEqual(calls, ["sync -q"], "the second call starts no second job while one is in flight");
 
 	release?.();
 	await settled();
-	assert.deepEqual(calls, ["unlock", "sync -q"], "exactly one unlock+sync sequence serves both callers");
+	assert.deepEqual(calls, ["sync -q"], "exactly one sync serves both callers");
 
 	syncBeforeSearch({ cwd, run });
 	await settled();
-	assert.deepEqual(calls, ["unlock", "sync -q", "unlock", "sync -q"], "a settled job frees the cwd for the next turn");
+	assert.deepEqual(calls, ["sync -q", "sync -q"], "a settled job frees the cwd for the next turn");
 });
 
 test("syncBeforeSearch: a rejecting run never surfaces an unhandled rejection", async (t) => {
@@ -740,7 +727,7 @@ test("syncBeforeSearch: a rejecting run never surfaces an unhandled rejection", 
 	syncBeforeSearch({
 		cwd,
 		run: async () => {
-			throw new Error("unlock exploded");
+			throw new Error("refresh exploded");
 		},
 	});
 	await settled();
@@ -765,12 +752,12 @@ test("prepareReadiness: a live sync lease in another session skips the sync and 
 			return true;
 		},
 	}));
-	assert.deepEqual(result, { action: "sync", ok: true, warm: "skipped" }, "another session is refreshing: not a failure, and its unlock may still be running");
-	assert.deepEqual(calls, [], "no unlock, no sync, no warm: the holder owns the refresh and no daemon starts under it");
+	assert.deepEqual(result, { action: "sync", ok: true, warm: "skipped" }, "another session is refreshing: not a failure, and its sync may still be running");
+	assert.deepEqual(calls, [], "no sync, no warm: the holder owns the refresh and no daemon starts under it");
 	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "held-live", "the foreign lease is never stolen");
 });
 
-test("prepareReadiness: the daemon-less unlock and sync children are adopted onto the sync lease", async (t) => {
+test("prepareReadiness: the daemon-less sync child is adopted onto the sync lease", async (t) => {
 	const cwd = dir(t, "sync-adopt");
 	writeDb(cwd);
 	const locks = dir(t, "sync-adopt-locks");
@@ -787,9 +774,8 @@ test("prepareReadiness: the daemon-less unlock and sync children are adopted ont
 	}));
 	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
 	assert.deepEqual(seen, [
-		{ args: "unlock", mine: true, writerPid: 4242 },
 		{ args: "sync -q", mine: true, writerPid: 4242 },
-	], "both the unlock and the sync child land on the sync lease token while it is held");
+	], "the sync child lands on the sync lease token while it is held");
 	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "free", "the lease is released after the refresh");
 });
 
@@ -807,7 +793,7 @@ test("prepareReadiness: a damaged sync lease is a loud failure, not another sess
 		},
 	}));
 	assert.equal(result.ok, false, "an unowned damaged token must not report the refresh as handled");
-	assert.deepEqual(calls, [], "no unlock, no sync: nobody owns this refresh, and the failure says so");
+	assert.deepEqual(calls, [], "no sync: nobody owns this refresh, and the failure says so");
 	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "unknown", "the damaged token stays untouched");
 });
 
@@ -839,7 +825,7 @@ test("prepareReadiness: the daemon-less sync takes and releases the lease when i
 		},
 	}));
 	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
-	assert.deepEqual(calls, ["run:unlock", "run:sync -q"]);
+	assert.deepEqual(calls, ["run:sync -q"]);
 	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "free", "the lease is released after the sync");
 });
 
@@ -938,7 +924,7 @@ test("syncBeforeSearch: a live sync lease in another session means zero CLI call
 		onFailed: (stage) => failures.push(stage),
 	});
 	await settled();
-	assert.deepEqual(calls, [], "no unlock, no sync: the live lease holder owns this refresh");
+	assert.deepEqual(calls, [], "no sync: the live lease holder owns this refresh");
 	assert.deepEqual(failures, []);
 });
 
@@ -1049,7 +1035,7 @@ test("two real sessions racing one fresh project run exactly one init", async (t
 	assert.equal(indexState(cwd), "present", "the racing init produced the shared database");
 });
 
-test("prepareReadiness: a live CodeGraph writer lock means no unlock, no sync, and ok", async (t) => {
+test("prepareReadiness: a live CodeGraph writer lock means no sync, and ok", async (t) => {
 	const cwd = dir(t, "sync-writer-busy");
 	writeDb(cwd);
 	writeFileSync(join(cwd, ".codegraph", "codegraph.lock"), String(process.pid));
@@ -1065,7 +1051,7 @@ test("prepareReadiness: a live CodeGraph writer lock means no unlock, no sync, a
 		},
 	}));
 	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
-	assert.deepEqual(calls, ["warm"], "a live writer is never unlocked under");
+	assert.deepEqual(calls, ["warm"], "a live writer is never refreshed under");
 });
 
 test("syncBeforeSearch: a live CodeGraph writer lock means zero CLI calls", async (t) => {
@@ -1172,7 +1158,7 @@ test("prepareReadiness: a sync failing twice beside a live daemon reports daemon
 	assert.deepEqual(events, [{ action: "sync", ok: false, daemonAlive: true, exitCode: 1, stderrTail: "database is locked" }]);
 });
 
-test("prepareReadiness: without a live daemon unlock+sync stays single-shot and reports daemonAlive false", async (t) => {
+test("prepareReadiness: without a live daemon the sync stays single-shot and reports daemonAlive false", async (t) => {
 	const cwd = dir(t, "sync-dead-single");
 	writeDb(cwd);
 	const calls: string[] = [];
@@ -1185,13 +1171,13 @@ test("prepareReadiness: without a live daemon unlock+sync stays single-shot and 
 		},
 		run: async (args) => {
 			calls.push(`run:${args.join(" ")}`);
-			return args[0] === "unlock";
+			return false;
 		},
 		onIndexed: (indexed) => {
 			events.push({ ...indexed });
 		},
 	}));
-	assert.deepEqual(calls, ["run:unlock", "run:sync -q"], "the daemon-less path is unchanged: unlock once, sync once");
+	assert.deepEqual(calls, ["run:sync -q"], "the daemon-less path is unchanged: sync once, no retry");
 	assert.deepEqual(sleeps, [], "the backoff belongs to the live-daemon branch only");
 	assert.deepEqual(events, [{ action: "sync", ok: false, daemonAlive: false }]);
 });
@@ -1230,7 +1216,7 @@ test("syncBeforeSearch: beside a live daemon a failed sync retries once; daemon-
 	syncBeforeSearch({
 		cwd: deadCwd,
 		registryDir: dir(t, "search-dead-detail-registry"),
-		run: async (args) => args[0] === "unlock",
+		run: async () => false,
 		onFailed: (stage, info) => {
 			deadFailures.push({ stage, info: { ...info } });
 		},

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import codegraphFirstGate from "../extensions/codegraph-first-gate.ts";
@@ -9,8 +12,22 @@ const BLOCK_REASON =
 
 type Handler = (event: unknown, ctx?: unknown) => unknown;
 
+/** One workspace the installed gate fires in: with `indexed`, a .codegraph/codegraph.db exists. */
+function gateWorkspace(t: test.TestContext, indexed: boolean): string {
+	const cwd = mkdtempSync(join(tmpdir(), `gentle-codegraph-first-gate-${indexed ? "indexed" : "bare"}-`));
+	if (indexed) {
+		mkdirSync(join(cwd, ".codegraph"));
+		writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "index");
+	}
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	return cwd;
+}
+
+/** The ctx the gate's handlers fire with: seeded by installGate, retargetable per test. */
+let fireCtx: { cwd: string } | undefined;
+
 /** A fake pi that records the handler each pi.on registration leaves behind, per event name. */
-function installGate(): Map<string, Handler> {
+function installGate(t: test.TestContext, indexed = true): Map<string, Handler> {
 	const handlers = new Map<string, Handler>();
 	const pi = {
 		on(event: string, handler: Handler) {
@@ -18,6 +35,7 @@ function installGate(): Map<string, Handler> {
 		},
 	} as unknown as ExtensionAPI;
 	codegraphFirstGate(pi);
+	fireCtx = { cwd: gateWorkspace(t, indexed) };
 	return handlers;
 }
 
@@ -25,11 +43,11 @@ function installGate(): Map<string, Handler> {
 function fire(handlers: Map<string, Handler>, event: string, payload: unknown): unknown {
 	const handler = handlers.get(event);
 	assert.ok(typeof handler === "function", `the gate registers a ${event} handler`);
-	return handler(payload, {});
+	return handler(payload, fireCtx ?? {});
 }
 
-test("(a) fresh prompt: mem_search is blocked with the exact reason", () => {
-	const handlers = installGate();
+test("(a) fresh prompt: mem_search is blocked with the exact reason", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
 		block: true,
@@ -37,16 +55,16 @@ test("(a) fresh prompt: mem_search is blocked with the exact reason", () => {
 	});
 });
 
-test("(b) a finalized codegraph call credits the prompt for memory reads", () => {
-	const handlers = installGate();
+test("(b) a finalized codegraph call credits the prompt for memory reads", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1", result: { ok: false, error: "daemon down" } });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 });
 
-test("(c) a failed codegraph call still credits: the end handler never reads the result payload", () => {
-	const handlers = installGate();
+test("(c) a failed codegraph call still credits: the end handler never reads the result payload", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	// Reading any field besides toolName throws, so credit proves the handler ignores the
 	// outcome entirely: end-of-execution means the call finalized, failure included.
@@ -61,16 +79,16 @@ test("(c) a failed codegraph call still credits: the end handler never reads the
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 });
 
-test("(d) an mcp__codegraph__ tool call also credits the prompt", () => {
-	const handlers = installGate();
+test("(d) an mcp__codegraph__ tool call also credits the prompt", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_explore", toolCallId: "t1", args: { query: "flow" } });
 	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_explore", toolCallId: "t1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 });
 
-test("(e) a new user prompt resets the credit", () => {
-	const handlers = installGate();
+test("(e) a new user prompt resets the credit", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
@@ -82,8 +100,8 @@ test("(e) a new user prompt resets the credit", () => {
 	});
 });
 
-test("(j) credit survives turn boundaries within one user request", () => {
-	const handlers = installGate();
+test("(j) credit survives turn boundaries within one user request", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
@@ -95,8 +113,8 @@ test("(j) credit survives turn boundaries within one user request", () => {
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 });
 
-test("(k) every before_agent_start resets the credit, user or custom run", () => {
-	const handlers = installGate();
+test("(k) every before_agent_start resets the credit, user or custom run", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "explore", query: "flow" } });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
@@ -107,16 +125,16 @@ test("(k) every before_agent_start resets the credit, user or custom run", () =>
 	});
 });
 
-test("(f) memory writes are never blocked, even before any codegraph call", () => {
-	const handlers = installGate();
+test("(f) memory writes are never blocked, even before any codegraph call", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	for (const toolName of ["mem_save", "mem_update", "mem_session_summary"]) {
 		assert.equal(fire(handlers, "tool_call", { toolName }), undefined, `${toolName} is a write, not a read`);
 	}
 });
 
-test("(g) every persistent-memory read is blocked before a codegraph call", () => {
-	const handlers = installGate();
+test("(g) every persistent-memory read is blocked before a codegraph call", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	for (const toolName of ["mem_context", "mem_search", "mem_get_observation"]) {
 		assert.deepEqual(
@@ -127,14 +145,14 @@ test("(g) every persistent-memory read is blocked before a codegraph call", () =
 	}
 });
 
-test("(h) non-memory tools are never blocked by the gate", () => {
-	const handlers = installGate();
+test("(h) non-memory tools are never blocked by the gate", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "read" }), undefined);
 });
 
-test("(i) a hostile event payload never throws: the guards return undefined", () => {
-	const handlers = installGate();
+test("(i) a hostile event payload never throws: the guards return undefined", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	const explosive = {} as { toolName?: unknown };
 	Object.defineProperty(explosive, "toolName", {
@@ -157,8 +175,8 @@ test("(i) a hostile event payload never throws: the guards return undefined", ()
 	});
 });
 
-test("(l) memory reads stay blocked while a graph execution is still active; a new graph call after credit re-opens the window", () => {
-	const handlers = installGate();
+test("(l) memory reads stay blocked while a graph execution is still active; a new graph call after credit re-opens the window", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	// Graph calls A and B run in parallel: A's completion must not credit while B still runs.
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "a", args: { operation: "query", query: "a" } });
@@ -180,8 +198,8 @@ test("(l) memory reads stay blocked while a graph execution is still active; a n
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 });
 
-test("(m) only a query or explore completion credits the window: an init completion never does", () => {
-	const handlers = installGate();
+test("(m) only a query or explore completion credits the window: an init completion never does", (t) => {
+	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	// The session tool's init: a completed index build is not the query or explore the rule names.
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "i1", args: { operation: "init" } });
@@ -221,4 +239,57 @@ test("(m) only a query or explore completion credits the window: an init complet
 		block: true,
 		reason: BLOCK_REASON,
 	}, "an unreadable operation stays uncredited");
+});
+
+test("(n) a workspace without a codegraph index passes memory reads with no graph involvement", (t) => {
+	const handlers = installGate(t, false);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	for (const toolName of ["mem_context", "mem_search", "mem_get_observation"]) {
+		assert.equal(fire(handlers, "tool_call", { toolName }), undefined, `${toolName} passes: no index means no gate`);
+	}
+	// The presence probe is a filesystem stat of .codegraph/codegraph.db, never a codegraph
+	// call, so an unindexed workspace's memory reads pay zero graph involvement — machines
+	// without the CLI are never blocked either.
+});
+
+test("(o) the override matrix: =1 forces the gate on without an index, =0 off with one, any other value defers to the index", (t) => {
+	const previous = process.env.GENTLE_CODEGRAPH_MEMORY_GATE;
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_CODEGRAPH_MEMORY_GATE;
+		else process.env.GENTLE_CODEGRAPH_MEMORY_GATE = previous;
+	});
+	const handlers = installGate(t, false);
+	const bare = fireCtx;
+	assert.ok(bare !== undefined, "installGate seeds the no-index workspace");
+	const indexed = { cwd: gateWorkspace(t, true) };
+	fire(handlers, "before_agent_start", { messageType: "user" });
+
+	process.env.GENTLE_CODEGRAPH_MEMORY_GATE = "1";
+	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), { block: true, reason: BLOCK_REASON }, "=1 forces the gate on even where no index exists");
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the forced gate still credits a finalized query");
+
+	process.env.GENTLE_CODEGRAPH_MEMORY_GATE = "0";
+	fireCtx = indexed;
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "=0 turns the gate off even where an index exists");
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t2", args: { operation: "query", query: "symbol" } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "still off while a graph call is mid-window");
+
+	process.env.GENTLE_CODEGRAPH_MEMORY_GATE = "yes";
+	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), { block: true, reason: BLOCK_REASON }, "any other value defers to the index, which exists here");
+	fireCtx = bare;
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "deferred to an absent index: the gate is off");
+	delete process.env.GENTLE_CODEGRAPH_MEMORY_GATE;
+	fireCtx = indexed;
+	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), { block: true, reason: BLOCK_REASON }, "unset defers to the index too");
+});
+
+test("(p) a host ctx without a workspace cwd fails open: the gate never breaks the call", (t) => {
+	const handlers = installGate(t);
+	fireCtx = undefined;
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_get_observation" }), undefined);
 });

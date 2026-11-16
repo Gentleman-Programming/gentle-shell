@@ -74,15 +74,14 @@ type DaemonlessRefresh =
 	| { kind: "writing" }
 	| { kind: "held-live" }
 	| { kind: "lease-blocked" }
-	| { kind: "unlock-failed" }
 	| { kind: "done"; synced: boolean };
 
 /**
  * The daemon-less half of an index refresh, shared by prepareReadiness and syncBeforeSearch: when
  * CodeGraph itself is writing, its live lock is left alone; only the sync-lease holder refreshes —
- * a live lease in another session means that session is unlocking+syncing right now (an unlock here
- * would clear its live lock), so this session runs nothing. The unlock is a precondition, not
- * best-effort: when it fails, the sync never runs.
+ * a live lease in another session means that session is syncing right now, so this session runs
+ * nothing. No unlock precedes the sync: CodeGraph's own FileLock reclaims stale locks itself, and
+ * an unlock could remove a live owner's lock.
  */
 async function daemonlessRefresh(cwd: string, opts: { run: CodegraphRun; locksDir?: string; sink?: (info: CodegraphCommandInfo) => void }): Promise<DaemonlessRefresh> {
 	if (codegraphWritingIndex(cwd)) return { kind: "writing" };
@@ -93,19 +92,18 @@ async function daemonlessRefresh(cwd: string, opts: { run: CodegraphRun; locksDi
 		return syncLeaseHeldLive(cwd, opts.locksDir) ? { kind: "held-live" } : { kind: "lease-blocked" };
 	}
 	try {
-		// Both children are adopted onto the lease: the detached child can outlive this launcher before
+		// The sync child is adopted onto the lease: the detached child can outlive this launcher before
 		// it creates codegraph.lock, and its recorded pid keeps the verdict held-live — a live writer
-		// is never unlocked under, the same hook acquireInitLock gives its init child.
+		// is never raced, the same hook acquireInitLock gives its init child.
 		const adoptChild = (pid: number, proxy: boolean): void => lease.adopt(pid, proxy);
-		if (!(await opts.run(["unlock"], cwd, SYNC_TIMEOUT_MS, adoptChild))) return { kind: "unlock-failed" };
 		return { kind: "done", synced: await opts.run(["sync", "-q"], cwd, SYNC_TIMEOUT_MS, adoptChild, opts.sink) };
 	} finally {
 		lease.release();
 	}
 }
 
-/** prepareReadiness's boolean view: another writer or holder handled the refresh, a blocked lease or
- * failed unlock did not, and otherwise the sync outcome decides. */
+/** prepareReadiness's boolean view: another writer or holder handled the refresh, a blocked lease
+ * did not, and otherwise the sync outcome decides. */
 function daemonlessOk(outcome: DaemonlessRefresh): boolean {
 	if (outcome.kind === "done") return outcome.synced;
 	return outcome.kind === "writing" || outcome.kind === "held-live";
@@ -344,12 +342,11 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			let standDown = false;
 			let alive = false;
 			if (action === "sync") {
-				// A live daemon holds the writer lock and its index is never stale: a CLI `sync -q` coexists
-				// with it (daemon.log auto-syncs), so it is never unlocked — "if an index exists, do not
-				// re-index — only sync". Without a live daemon a stale lock can block the sync, so it is
-				// cleared first, mirroring the repo's refresh discipline ("codegraph unlock && codegraph
-				// sync"). That unlock is a precondition, not best-effort: when it fails, the sync does not
-				// run and the failure is reported as the sync's own.
+			// A live daemon holds the writer lock and its index is never stale: a CLI `sync -q` coexists
+			// with it (daemon.log auto-syncs) — "if an index exists, do not re-index — only sync". Without
+			// a live daemon, only the sync-lease holder refreshes (daemonlessRefresh decides); nothing is
+			// unlocked first, because CodeGraph's own FileLock reclaims stale locks itself and an unlock
+			// could remove a live owner's lock.
 				try { alive = daemonFor(input.cwd, input.registryDir).alive; } catch { /* not alive */ }
 				if (alive) {
 					ok = await runSyncWithRetry(input.run, input.cwd, input.sleep ?? defaultSyncSleep, syncInfo.sink);
@@ -357,9 +354,9 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 					// Daemon-less: only the sync-lease holder refreshes (daemonlessRefresh decides).
 					const refreshed = await daemonlessRefresh(input.cwd, { run: input.run, locksDir: input.locksDir, sink: syncInfo.sink });
 					if (refreshed.kind === "held-live") {
-						// The holder may still be inside its "unlock": a daemon started now could lose its writer lock
-						// to that unlock, so the warm-up stands down. The ok verdict is unchanged: another session
-						// refreshing is not this session failing.
+						// The holder may still be mid-sync: the warm-up stands down rather than racing the other
+						// session's refresh. The ok verdict is unchanged: another session refreshing is not this
+						// session failing.
 						standDown = true;
 					}
 					ok = daemonlessOk(refreshed);
@@ -443,7 +440,7 @@ export interface SearchSyncInput {
 	run: CodegraphRun;
 	/** Sleeps the live-daemon sync retry backoff; injectable for tests. */
 	sleep?(ms: number): Promise<void>;
-	onFailed?(stage: "unlock" | "sync", info: { daemonAlive: boolean; exitCode?: number | null; stderrTail?: string }): void;
+	onFailed?(stage: "lease" | "sync", info: { daemonAlive: boolean; exitCode?: number | null; stderrTail?: string }): void;
 	/** Surfaces an unexpected exception from the refresh itself (not a command failure). */
 	onError?(reason: string): void;
 }
@@ -452,10 +449,9 @@ export interface SearchSyncInput {
 const searchSyncInFlight = new Map<string, Promise<void>>();
 
 /**
- * Refreshes the index before a search, in the background: sync -q, preceded by an unlock only when no
- * daemon is alive — a live daemon holds the writer lock and is never stale, and a CLI sync coexists
- * with it (daemon.log auto-syncs). Each run is within the sync timeout, and the unlock is a
- * precondition, not best-effort — when it runs and fails, the sync never runs. Never blocks and
+ * Refreshes the index before a search, in the background: sync -q only. A live daemon holds the
+ * writer lock and is never stale, and a CLI sync coexists with it (daemon.log auto-syncs); without
+ * one, the sync lease decides who refreshes. Each run is within the sync timeout. Never blocks and
  * never rejects; failures surface only through onFailed.
  */
 export function syncBeforeSearch(input: SearchSyncInput): void {
@@ -471,15 +467,14 @@ export function syncBeforeSearch(input: SearchSyncInput): void {
 				if (!synced) input.onFailed?.("sync", { daemonAlive: true, ...(info.get() ?? {}) });
 				return;
 			}
-			// Daemon-less: the sync lease decides who refreshes. A live lease in another session
-			// means zero CLI calls here — an unlock would clear that session's live lock.
-			// Daemon-less: the sync lease decides who refreshes (daemonlessRefresh decides).
+			// Daemon-less: the sync lease decides who refreshes (daemonlessRefresh decides). A live
+			// lease in another session means zero CLI calls here.
 			const outcome = await daemonlessRefresh(input.cwd, { run: input.run, locksDir: input.locksDir, sink: info.sink });
 			if (outcome.kind === "writing" || outcome.kind === "held-live") return;
-			if (outcome.kind === "lease-blocked" || outcome.kind === "unlock-failed") {
-				// A live holder owns this refresh; anything else that blocked the lease is an
-				// unlock-blocking condition this session reports instead of silently skipping.
-				input.onFailed?.("unlock", { daemonAlive: false });
+			if (outcome.kind === "lease-blocked") {
+				// A damaged or unreadable lease is nobody's refresh: this session reports the blocked
+				// refresh instead of silently skipping it.
+				input.onFailed?.("lease", { daemonAlive: false });
 				return;
 			}
 			if (!outcome.synced) input.onFailed?.("sync", { daemonAlive: false, ...(info.get() ?? {}) });

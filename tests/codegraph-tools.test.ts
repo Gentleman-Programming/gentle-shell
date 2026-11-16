@@ -13,7 +13,6 @@ import codeGraphTools, {
 	codegraphSyncFailureNotice,
 	findCodeGraphNodeScriptOnPath,
 	isSameDirectory,
-	shouldSeedSessionWorktrees,
 	triggerSearchSync,
 	type CodeGraphRunner,
 	type DaemonExplore,
@@ -570,22 +569,10 @@ test("the per-prompt sync reset binds to before_agent_start, never to a prompt's
 	(handlers.get("before_agent_start") as () => void)();
 	assert.equal(triggerSearchSync(cwd, ctx, syncRun), true, "a new user prompt re-arms the sync");
 	await settled();
-	assert.deepEqual(calls, [["unlock"], ["sync", "-q"], ["unlock"], ["sync", "-q"]]);
+	assert.deepEqual(calls, [["sync", "-q"], ["sync", "-q"]]);
 });
 
-test("the session_start sibling scan is parent-only: reloads and ordinary child sessions never rescan", (t) => {
-	withoutChildEnv(t);
-	// A parent session pre-warms its unindexed sibling worktrees; a /reload is not a new session.
-	assert.equal(shouldSeedSessionWorktrees("startup"), true);
-	assert.equal(shouldSeedSessionWorktrees("reload"), false);
-	// An ordinary child session (CHILD_ENV=1) never rescans siblings — the child's own
-	// unindexed-worktree initialization in prepareReadiness stays a separate, unchanged path.
-	process.env.GENTLE_PI_AGENTS_CHILD = "1";
-	assert.equal(shouldSeedSessionWorktrees("startup"), false);
-	assert.equal(shouldSeedSessionWorktrees("reload"), false);
-});
-
-test("triggerSearchSync: an unindexed workspace starts no doomed unlock+sync", async (t) => {
+test("triggerSearchSync: an unindexed workspace starts no doomed sync", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
 	const calls: string[][] = [];
@@ -597,7 +584,7 @@ test("triggerSearchSync: an unindexed workspace starts no doomed unlock+sync", a
 	assert.equal(triggerSearchSync(cwd, ctx, syncRun), false, "nothing to refresh without an index");
 	assert.equal(triggerSearchSync(cwd, ctx, syncRun), false, "still nothing on a second call");
 	await settled();
-	assert.deepEqual(calls, [], "no unlock, no sync, no doomed CLI processes per turn");
+	assert.deepEqual(calls, [], "no sync, no doomed CLI processes per turn");
 });
 
 test("triggerSearchSync: an unexpected exception notifies instead of vanishing", async (t) => {
@@ -1161,7 +1148,7 @@ test("init runs the CLI with the workspace, never the daemon, and never triggers
 	assert.equal(syncCalls, 0, "init never triggers the background sync");
 });
 
-test("the first search of a turn triggers one background unlock+sync, later searches none", async (t) => {
+test("the first search of a turn triggers one background sync, later searches none", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
 	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
@@ -1183,16 +1170,16 @@ test("the first search of a turn triggers one background unlock+sync, later sear
 
 	assert.equal((first.details as { syncTriggered?: boolean }).syncTriggered, true);
 	await settled();
-	assert.deepEqual(calls, [["unlock"], ["sync", "-q"]]);
+	assert.deepEqual(calls, [["sync", "-q"]]);
 
 	await tool.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, ctx);
 	await settled();
-	assert.deepEqual(calls, [["unlock"], ["sync", "-q"]], "one background sync per turn");
+	assert.deepEqual(calls, [["sync", "-q"]], "one background sync per turn");
 
 	clearSearchSync();
 	await tool.execute("test", { operation: "query", query: "again" }, undefined, undefined, ctx);
 	await settled();
-	assert.deepEqual(calls, [["unlock"], ["sync", "-q"], ["unlock"], ["sync", "-q"]], "a new turn syncs again");
+	assert.deepEqual(calls, [["sync", "-q"], ["sync", "-q"]], "a new turn syncs again");
 });
 
 test("a subagent child never triggers the background sync", async (t) => {
@@ -1268,8 +1255,8 @@ test("codegraphSyncFailureNotice: beside a live daemon the note is info with the
 		text: "codegraph sync failed in /repo — exit 3: lock busy",
 		level: "warning",
 	});
-	assert.deepEqual(codegraphSyncFailureNotice("/repo", "unlock", {}), {
-		text: "codegraph unlock failed in /repo",
+	assert.deepEqual(codegraphSyncFailureNotice("/repo", "lease", {}), {
+		text: "codegraph sync skipped in /repo: the cross-session sync lease is not acquirable",
 		level: "warning",
 	});
 	assert.deepEqual(codegraphSyncFailureNotice("/repo", "sync", { daemonAlive: true, exitCode: null }), {
@@ -1305,7 +1292,7 @@ test("triggerSearchSync: a failing sync beside a live daemon notifies info, a da
 	const deadCwd = workspace(t);
 	await writeIndex(["init", deadCwd], { cwd: deadCwd, maxBuffer: 1 });
 	const deadCtx = { cwd: deadCwd, hasUI: true, ui: { notify: (text: string, level: "info" | "warning") => notices.push({ text, level }) } } as unknown as ExtensionContext;
-	const deadRun = async (args: readonly string[]): Promise<boolean> => args[0] === "unlock";
+	const deadRun = async (): Promise<boolean> => false;
 	triggerSearchSync(deadCwd, deadCtx, deadRun, { registryDir: join(deadCwd, "no-registry"), sleep: instant });
 	await settled();
 	assert.equal(notices.length, 2);

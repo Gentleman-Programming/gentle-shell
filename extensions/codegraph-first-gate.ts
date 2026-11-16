@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { indexState } from "../lib/codegraph-lease.ts";
 
 /**
  * The persistent-memory reads the AGENTS.md Memory ordering rule gates: they may run
@@ -9,6 +10,30 @@ const MEMORY_READ_TOOLS = new Set(["mem_context", "mem_search", "mem_get_observa
 const BLOCK_REASON =
 	"codegraph-first gate: persistent-memory reads come after a codegraph query or explore in the same user prompt (AGENTS.md Memory ordering). Call codegraph first - a failed or unavailable attempt also counts - then retry this memory read.";
 
+/** The environment override for the gate's workspace scoping: "1" forces it on, "0" off. */
+const MEMORY_GATE_OVERRIDE = "GENTLE_CODEGRAPH_MEMORY_GATE";
+
+/**
+ * Whether the Memory ordering gate applies to the workspace a memory read runs in: only a
+ * workspace that actually has a codegraph index pays the rule, so an unindexed project's memory
+ * reads pass with zero graph involvement — the presence probe is a filesystem stat of
+ * .codegraph/codegraph.db, never a codegraph call, so machines without the CLI are never blocked
+ * either. GENTLE_CODEGRAPH_MEMORY_GATE wins both ways: "1" forces the gate on without an index,
+ * "0" turns it off with one; any other value defers to the index. The probe re-runs per call, so
+ * an index created mid-session starts gating at the next read. Any error — or a host ctx without
+ * a cwd — fails open like every guard here: the gate can never break a tool call.
+ */
+function gateApplies(cwd: unknown): boolean {
+	const override = process.env[MEMORY_GATE_OVERRIDE];
+	if (override === "1") return true;
+	if (override === "0") return false;
+	try {
+		return typeof cwd === "string" && indexState(cwd) === "present";
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Per-prompt codegraph-first gate (AGENTS.md Memory ordering): persistent-memory reads
  * (mem_context, mem_search, mem_get_observation) are blocked until a codegraph query or explore
@@ -16,8 +41,11 @@ const BLOCK_REASON =
  * start — an init completion never credits. Credit is end-of-execution only — a failed or
  * unavailable query or explore counts — and expires with every new prompt, and it applies only
  * to a fully settled window: while any graph execution is still active, or when a new graph call
- * starts after credit was granted, memory reads stay blocked. The guard is total: any internal
- * error allows the call, so the gate can never break a tool call.
+ * starts after credit was granted, memory reads stay blocked. The gate is scoped: it applies
+ * only to workspaces that have a codegraph index — a filesystem probe of the database file,
+ * never a CLI call — with GENTLE_CODEGRAPH_MEMORY_GATE=1 forcing it on and =0 off, so an
+ * unindexed workspace's memory reads pass with no graph involvement at all. The guard is total:
+ * any internal error allows the call, so the gate can never break a tool call.
  *
  * Wired through pi's extension-directory discovery (discoverAndLoadExtensions over
  * extensions/); no manifest entry is needed — the runtime-harness EXTENSIONS list is
@@ -89,13 +117,15 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 		}
 	});
 
-	// The gate itself: block persistent-memory reads until the codegraph-first window is both
-	// credited and settled (no graph execution still active); every guard failure (throwing
-	// payload, malformed toolName) allows the call rather than breaking it.
-	pi.on?.("tool_call", (event) => {
+	// The gate itself: in a workspace the gate applies to, block persistent-memory reads until the
+	// codegraph-first window is both credited and settled (no graph execution still active); every
+	// guard failure (throwing payload, malformed toolName, missing workspace) allows the call
+	// rather than breaking it.
+	pi.on?.("tool_call", (event, ctx) => {
 		try {
 			const toolName = (event as { toolName?: unknown } | undefined | null)?.toolName;
-			if (typeof toolName === "string" && MEMORY_READ_TOOLS.has(toolName) && (!credited || activeGraphExecutions.size > 0)) {
+			const cwd = (ctx as { cwd?: unknown } | undefined | null)?.cwd;
+			if (typeof toolName === "string" && MEMORY_READ_TOOLS.has(toolName) && gateApplies(cwd) && (!credited || activeGraphExecutions.size > 0)) {
 				return { block: true, reason: BLOCK_REASON };
 			}
 			return undefined;

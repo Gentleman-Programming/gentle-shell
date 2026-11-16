@@ -7,8 +7,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
 import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
-import { seedSessionWorktrees } from "../lib/codegraph-session-seed.ts";
-import { ensureDirectExposureInAgentHomes } from "../lib/codegraph-mcp-exposure.ts";
 
 const CODEGRAPH_OPERATION = {
 	INIT: "init",
@@ -515,7 +513,7 @@ export function clearSearchSync(): void {
 	daemonSkipUntil.clear();
 }
 
-/** What a failed unlock/sync knows about its own cause when the runner reported it. */
+/** What a failed sync knows about its own cause when the runner reported it. */
 export interface CodegraphSyncFailureInfo {
 	daemonAlive?: boolean;
 	exitCode?: number | null;
@@ -529,12 +527,12 @@ export interface CodegraphSyncFailureInfo {
  */
 export function codegraphSyncFailureNotice(
 	cwd: string,
-	stage: "sync" | "unlock",
+	stage: "sync" | "lease",
 	info: CodegraphSyncFailureInfo,
 ): { text: string; level: "info" | "warning" } {
 	const reason = info.exitCode === undefined ? "" : info.exitCode === null ? " — killed (timeout)" : ` — exit ${info.exitCode}`;
 	const tail = info.stderrTail === undefined || info.stderrTail.length === 0 ? "" : `: ${info.stderrTail}`;
-	if (stage === "unlock") return { text: `codegraph unlock failed in ${cwd}${reason}${tail}`, level: "warning" };
+	if (stage === "lease") return { text: `codegraph sync skipped in ${cwd}: the cross-session sync lease is not acquirable`, level: "warning" };
 	if (info.daemonAlive) {
 		return { text: `codegraph sync failed in ${cwd} (daemon alive; its file watcher keeps the index fresh)${reason}${tail}`, level: "info" };
 	}
@@ -542,14 +540,14 @@ export function codegraphSyncFailureNotice(
 }
 
 /**
- * Fires the per-prompt unlock+sync for `cwd` in the background and returns whether a job was
- * started: a subagent child or a cwd already refreshed this prompt never starts one, so the
- * first search of a prompt is neither blocked nor duplicated.
+ * Fires the per-prompt background sync for `cwd` and returns whether a job was started: a subagent
+ * child or a cwd already refreshed this prompt never starts one, so the first search of a prompt
+ * is neither blocked nor duplicated.
  */
 export function triggerSearchSync(cwd: string, ctx: ExtensionContext, run: SearchSyncInput["run"] = runCodegraph, opts?: { indexed?: boolean; registryDir?: string; sleep?: (ms: number) => Promise<void> }): boolean {
 	if (process.env[CHILD_ENV] === "1" || searchSynced.has(cwd)) return false;
 	// Nothing to refresh without an index: an unindexed workspace must not spawn a doomed
-	// unlock+sync CLI pair (plus failure notices) every turn — init owns the first index.
+	// sync CLI call (plus failure notices) every turn — init owns the first index.
 	if (!(opts?.indexed ?? indexExists(cwd))) return false;
 	searchSynced.add(cwd);
 	syncBeforeSearch({
@@ -650,7 +648,7 @@ export function createCodeGraphTool(
 				// next query is fast again. Never blocks this call. Routed through the injected adapter so
 				// tests supplying the other query seams never reach the real daemon spawn.
 				rewarm(cwd);
-				// One background unlock+sync per prompt before the first search keeps the index fresh;
+				// One background sync per prompt before the first search keeps the index fresh;
 				// the search never waits for it.
 				// One indexExists per query serves the sync gate and the result paths below; a daemon
 				// that answers ok confirms the same fact.
@@ -729,34 +727,9 @@ export function registerCodeGraphTool(pi: ExtensionAPI): void {
 	pi.registerTool(createCodeGraphTool());
 }
 
-/** The one in-process mcp.json exposure ensure: later session starts are no-ops. */
-let exposureEnsured = false;
-
-function ensureExposureOnce(): void {
-	// Subagent children never patch user config; the parent session owns it once.
-	if (exposureEnsured || process.env[CHILD_ENV] === "1") return;
-	exposureEnsured = true;
-	try {
-		ensureDirectExposureInAgentHomes();
-	} catch {
-		/* never surface: the exposure patch is best effort */
-	}
-}
-
-/**
- * Whether session_start runs the sibling pre-warm scan: a /reload is not a new session, and
- * sibling pre-warming is parent-only (the child-worktree spec) — an ordinary child session
- * (GENTLE_PI_AGENTS_CHILD=1) never rescans its siblings. The child's own unindexed-worktree
- * initialization in prepareReadiness is a separate path and stays unchanged. Exported as a
- * test seam: the production caller is the session_start handler below.
- */
-export function shouldSeedSessionWorktrees(reason: string): boolean {
-	return reason !== "reload" && process.env[CHILD_ENV] !== "1";
-}
-
 export default function codeGraphTools(pi: ExtensionAPI): void {
 	registerCodeGraphTool(pi);
-	// One background unlock+sync per user prompt: the first search of every prompt fires it.
+	// One background sync per user prompt: the first search of every prompt fires it.
 	// The reset binds to before_agent_start — the user-prompt boundary — not turn_start, which
 	// fires for every assistant response (including each response between tool calls) and would
 	// clear the 60-second daemon bypass and re-arm the background sync mid-prompt. Verified in
@@ -834,19 +807,5 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			.catch(() => {
 				/* never surface: the session may already be gone */
 			});
-		// Sibling pre-warm: the repo's other unindexed linked worktrees are seeded from this
-		// session's index, quietly in the background — no notice, never awaited. A /reload is
-		// not a new session, and an ordinary child session is parent-only territory, so neither
-		// ever rescans (shouldSeedSessionWorktrees).
-		if (shouldSeedSessionWorktrees(reason)) {
-			void seedSessionWorktrees({ cwd: ctx.cwd, run: runCodegraphSeedSync }).catch(() => {
-				/* never surface: pre-warm is best effort */
-			});
-		}
-		// Direct MCP exposure: Pi defaults an MCP server's tools to codemode-only reach, so an
-		// existing `codegraph` entry in the pi or Gentle Shell agent mcp.json gets
-		// `"exposure": "direct"` once per process — only when the field is absent, never
-		// overwriting an existing value, never creating an entry, and silent like the pre-warm.
-		ensureExposureOnce();
 	});
 }

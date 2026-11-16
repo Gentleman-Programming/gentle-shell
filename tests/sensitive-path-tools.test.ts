@@ -50,6 +50,12 @@ function toolCall(options: HarnessOptions = {}) {
 }
 
 const reason = (path: string) => `Gentle AI safety policy blocked access to sensitive path: ${path}. Ask the user for an explicit safer plan.`;
+// gentle-shell#1305: an absolute path outside the session worktree now stops
+// for the path-consent fence first. The desktop guard's silence still surfaces:
+// the result is either allowed outright or held by the fence's consent gate,
+// never by the sensitive-path reason above.
+const desktopGuardSilent = (result: { block?: boolean; reason?: string } | undefined) =>
+	result === undefined || (result.block === true && result.reason?.includes("outside the session worktree") === true);
 
 test("grep, find, and ls deny a sensitive path exactly like read (gentle-shell#2349)", async () => {
 	const call = toolCall();
@@ -178,10 +184,10 @@ for (const mode of [undefined, "super-yolo"] as const) {
 test("a custom agent home's desktop folder is guarded only while that home is the resolved one (T7)", async () => {
 	const call = toolCall();
 	const path = `${CUSTOM_AGENT_HOME}/desktop/sessions/a.json`;
-	assert.equal(await call("write", { path, content: "x" }), undefined, path);
-	assert.equal(await call("bash", { command: `mkdir -p ${CUSTOM_AGENT_HOME}/desktop/inbox` }), undefined);
+	assert.ok(desktopGuardSilent(await call("write", { path, content: "x" })), path);
+	assert.ok(desktopGuardSilent(await call("bash", { command: `mkdir -p ${CUSTOM_AGENT_HOME}/desktop/inbox` })));
 	// A `..` that leaves the desktop folder leaves the guard too.
-	assert.equal(await call("read", { path: "~/.gentle-shell/agent/desktop/../notes.md" }), undefined);
+	assert.ok(desktopGuardSilent(await call("read", { path: "~/.gentle-shell/agent/desktop/../notes.md" })));
 });
 
 test("ordinary project folders named agent/desktop/... stay readable and writable (T7 FP)", async () => {
@@ -260,10 +266,15 @@ test("adding the desktop folders keeps every earlier deny and the ordinary allow
 			assert.deepEqual(await call("read", { path }), { block: true, reason: reason(path) }, `${mode ?? "normal"} read ${path}`);
 		}
 		assert.deepEqual(await call("bash", { command: "cat ~/.aws/credentials" }), { block: true, reason: reason("~/.aws/credentials") });
-		for (const path of ["src/desktop/inbox.ts", "docs/desktop-feed.md", "lib/desktop-feed-actions.ts", "desktop/inbox/readme.md", "/opt/custom/agent/desktop/inbox/a.json"]) {
+		for (const path of ["src/desktop/inbox.ts", "docs/desktop-feed.md", "lib/desktop-feed-actions.ts", "desktop/inbox/readme.md"]) {
 			assert.equal(await call("read", { path }), undefined, path);
 			assert.equal(await call("write", { path, content: "x" }), undefined, path);
 		}
+		// gentle-shell#1305: that last ordinary allow sits outside the session
+		// worktree, so the consent fence holds it; the desktop guard stays silent.
+		const absolute = "/opt/custom/agent/desktop/inbox/a.json";
+		assert.ok(desktopGuardSilent(await call("read", { path: absolute })), `${mode ?? "normal"} read ${absolute}`);
+		assert.ok(desktopGuardSilent(await call("write", { path: absolute, content: "x" })), `${mode ?? "normal"} write ${absolute}`);
 		assert.equal(await call("bash", { command: "cat src/index.ts" }), undefined);
 	}
 });

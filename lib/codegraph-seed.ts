@@ -18,6 +18,13 @@ export type SeedOutcome =
 	/** Copy, validating sync, or an unsafe (symlinked) destination failed; the worktree is left without a database. */
 	| "seed-failed";
 
+/** What the validating sync reported about the staged index: a bare boolean is the exit
+ * status alone, while the object form also says whether the sync removed tracked entries
+ * (ok = exit 0, removedEntries = entries dropped from the staged index). The staging project
+ * has no source files, so a removal there is always a loss: an emptied index must never be
+ * published even though the sync exited 0. */
+export type SeedSyncReport = boolean | { ok: boolean; removedEntries: boolean };
+
 export interface SeedInput {
 	/** The linked worktree that wants an index. */
 	cwd: string;
@@ -27,8 +34,10 @@ export interface SeedInput {
 	initLockWaitMs?: number;
 	/** Sleep between transient retries; injectable for tests. */
 	sleep?(ms: number): Promise<void>;
-	/** Runs `codegraph <args> <cwd>`; the validating sync, with the staging project as its cwd. */
-	run(args: readonly string[], cwd: string, timeoutMs: number): Promise<boolean>;
+	/** Runs `codegraph <args> <cwd>`; the validating sync, with the staging project as its
+	 * cwd. Returning the object form lets the runner report whether the sync removed
+	 * tracked entries, which a bare exit status cannot prove either way. */
+	run(args: readonly string[], cwd: string, timeoutMs: number): Promise<SeedSyncReport>;
 }
 
 /**
@@ -78,11 +87,14 @@ export async function retryTransient<T>(step: () => T, sleep: (ms: number) => Pr
 
 /**
  * Seeds a linked worktree's index by copying the main checkout's database into
- * an isolated staging project, validating the copy there, and publishing it
- * only after that sync succeeds — all under the worktree's init lock. The sync
- * is the integrity check: a torn copy fails in staging and nothing is
- * published, so no other session can accept a database the seed might still
- * remove, and the worktree never keeps a half-seeded index.
+ * an isolated staging project, validating the copy there, and publishing it only
+ * after that sync succeeds without removing tracked entries — all under the
+ * worktree's init lock. The sync is the integrity check: a torn copy fails in
+ * staging, and so does a sync that emptied the staged index (the staging project
+ * has no source files, so every removal is a loss, never a reconciliation, even
+ * on exit 0); nothing is published in either case, so no other session can accept
+ * a database the seed might still remove, and the worktree never keeps a
+ * half-seeded index.
  */
 export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: SeedOutcome }> {
 	const { sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = input;
@@ -156,10 +168,15 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 				return { outcome: "seed-failed" };
 			}
 
-			const synced = await input.run(["sync", "-q"], stagingRoot, SYNC_TIMEOUT_MS);
+			const report = await input.run(["sync", "-q"], stagingRoot, SYNC_TIMEOUT_MS);
+			// The staging project deliberately has no source files, so a sync that removed
+			// tracked entries emptied the copied index without reconciling anything: exit 0
+			// or not, that report is a failed validation and never a seedable database.
+			const synced = report === true || (typeof report === "object" && report.ok === true && report.removedEntries !== true);
 			if (!synced) {
-				// A torn or stale copy fails the validating sync in staging: nothing was published,
-				// so the worktree is exactly as absent as before and init stays possible.
+				// A torn or stale copy fails the validating sync in staging, and so does a
+				// sync that emptied the staged index: nothing was published, so the worktree
+				// is exactly as absent as before and init stays possible.
 				return { outcome: "seed-failed" };
 			}
 			// Sidecars first, the database last: no intermediate state has a database without

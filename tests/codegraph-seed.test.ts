@@ -176,6 +176,43 @@ test("a failed validating sync leaves no published codegraph.db", async (t) => {
 	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore"], "staging is cleaned and the worktree stays exactly as absent as before");
 });
 
+test("seedWorktreeIndex: an exit-0 sync that removed tracked entries is a failed validation", async (t) => {
+	const { worktree } = worktreePair(t);
+	let visibleDuringSync: boolean | undefined;
+	const { input } = seedHarness(worktree, {
+		run: async (_args, cwd) => {
+			// The staging project has no source files, so a real sync drops every tracked
+			// entry and still exits 0, leaving an emptied staged database behind.
+			writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "emptied");
+			visibleDuringSync = !fileAbsent(join(worktree, ".codegraph", "codegraph.db"));
+			return { ok: true, removedEntries: true };
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed", "an emptied staged index is never seedable, even on exit-0");
+	assert.equal(visibleDuringSync, false, "nothing is visible to any consumer while the validating sync runs");
+	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "no emptied database is published");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore"], "staging is cleaned and the worktree stays exactly as absent as before");
+});
+
+test("seedWorktreeIndex: an exit-0 sync that preserved tracked entries publishes the seed", async (t) => {
+	const { worktree } = worktreePair(t);
+	const { input, calls } = seedHarness(worktree, {
+		run: async (args) => {
+			calls.push(args.join(" "));
+			return { ok: true, removedEntries: false };
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seeded");
+	assert.deepEqual(calls, ["sync -q"], "exactly one sync validates the copy");
+	assert.equal(readFileSync(join(worktree, ".codegraph", "codegraph.db"), "utf8"), "index-bytes");
+});
+
 test("seedWorktreeIndex: two real sessions seeding one worktree copy exactly once", async (t) => {
 	const { worktree } = worktreePair(t);
 	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-race-"));
@@ -190,7 +227,7 @@ test("seedWorktreeIndex: two real sessions seeding one worktree copy exactly onc
 		"  cwd,",
 		"  run: async (args) => {",
 		'    if (args[0] === "sync") {',
-		"      appendFileSync(logPath, `copy ${process.pid}\\\\n`);",
+		"      appendFileSync(logPath, `copy ${process.pid}\\n`);",
 		"      await new Promise((resolve) => setTimeout(resolve, 200));",
 		"      return true;",
 		"    }",

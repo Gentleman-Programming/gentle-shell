@@ -841,6 +841,31 @@ test("registered event leaves Pi-listed project package skills out without publi
 	assert.equal(existsSync(join(cwd, ".atl", "skill-registry.md")), false);
 });
 
+test("a symlinked copy of a Pi-listed skill emits no effective row", async (t) => {
+	// gentle-shell#3302: the skills CLI keeps one real copy under .agents/skills and
+	// symlinks it into .claude/skills. With cwd at the home directory both roots
+	// sit inside the project prefix, so the symlink must not re-list the skill
+	// Pi already rendered in `<available_skills>`.
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-symlinked-listed-")));
+	t.after(() => rmSync(cwd, { recursive: true, force: true }));
+	isolatedHome(t);
+	const realDir = join(cwd, ".agents", "skills", "shared");
+	const realPath = join(realDir, "SKILL.md");
+	mkdirSync(realDir, { recursive: true });
+	writeFileSync(realPath, "---\nname: shared\ndescription: Shared skill.\n---\n");
+	mkdirSync(join(cwd, ".claude", "skills"), { recursive: true });
+	try {
+		symlinkSync(realDir, join(cwd, ".claude", "skills", "shared"), "junction");
+	} catch (error) {
+		t.skip(`symlink creation unavailable: ${error instanceof Error ? error.message : String(error)}`);
+		return;
+	}
+	const { pi, handlers } = fakeSkillRegistryPi(); skillRegistry(pi);
+	const options = { skills: [{ name: "shared", description: "Shared skill.", filePath: realPath, sourceInfo: { scope: "user", origin: "top-level" } }], appendSystemPrompt: "" };
+	await handlers.get("before_agent_start")![0]({ systemPromptOptions: options }, { cwd, hasUI: false });
+	assert.equal(options.appendSystemPrompt, "");
+});
+
 test("Pi-listed global packages, project-local packages, and custom paths emit no rows", async (t) => {
 	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-apply-matrix-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));

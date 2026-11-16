@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import net from "node:net";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { canonicalRoot } from "./codegraph-canonical.ts";
 
 /** The hello line a CodeGraph daemon sends carries `protocol`; this is the only one spoken here. */
@@ -201,8 +202,12 @@ export function mcpReplyKind(message: McpReply): McpReplyKind | undefined {
  */
 export function mcpLineReader(onReply: (message: McpReply | undefined) => boolean | void, maxBufferChars: number = Number.POSITIVE_INFINITY): (chunk: string | Buffer) => boolean {
 	let buffer = "";
+	// One decoder for the whole conversation: a multibyte UTF-8 character split across Buffer chunks
+	// corrupts into replacement characters under a per-chunk toString; the decoder holds the trailing
+	// bytes until the next chunk completes them.
+	const decoder = new StringDecoder("utf8");
 	return (chunk: string | Buffer) => {
-		buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+		buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
 		if (buffer.length > maxBufferChars) return true;
 		let newline: number;
 		while ((newline = buffer.indexOf("\n")) >= 0) {

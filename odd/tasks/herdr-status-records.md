@@ -20,7 +20,7 @@ Runner: `node --experimental-strip-types --test tests/<file>.test.ts`; `pnpm typ
 - T2 | S1-S6 | parent | pending | Publish issue and PR to Gentleman-Programming/gentle-shell (decision: "Publicar issue y PR") | commit: n/a
 - T3 | S7 | parent inline | done | Remove `ctx` projection, context refresh hooks and docs row; RED 2+2 fails, GREEN 21/17, typecheck 0 | commit: `fix(herdr): stop publishing the ctx status record`
 - T4 | S8 | parent inline | done | Return accepted receipt after transport replacement; suppress only the display event; RED (stale returned), GREEN tests/gentle-agents.test.ts 369/369 | commit: `fix(agents): keep the accepted send receipt after transport replacement`
-- T5 | S9 | parent inline | pending | Retry failed terminal writes and hand unflushed clears to the next owner | commit: pending
+- T5 | S9 | parent inline | done | Retry failed terminal writes after 1 s (WRITE_RETRY_MS) and hand unflushed records to the next owner; replay todo before the terminal attaches; RED 2 fails, GREEN 19/21/369, typecheck 0 | commit: `fix(herdr): retry failed status writes and hand unflushed clears to the next session`
 
 ## Log
 

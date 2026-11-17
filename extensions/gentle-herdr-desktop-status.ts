@@ -7,6 +7,8 @@ import { isJobsSidebarSnapshot, JOBS_SIDEBAR_EVENT, type JobsSidebarSnapshot } f
 import { replayTodo, todoProgress, TODO_PROGRESS_EVENT, type TodoState } from "../lib/shell-todo.ts";
 
 const WIDGET_KEY = "gentle-shell:herdr-desktop-status";
+/** Delay before retrying a diff the terminal rejected part of. */
+export const WRITE_RETRY_MS = 1000;
 const taskStatuses = new Set(["queued", "running", "waiting", "completed", "failed", "cancelled", "timed_out"]);
 const todoStatuses = new Set(["pending", "in_progress", "blocked", "done", "dropped"]);
 
@@ -58,6 +60,8 @@ type Session = {
 	errors: Map<string, { record: DesktopRecord; expiresAt: number }>;
 	seenJobErrors: Set<string>;
 	seenTaskErrors: Set<string>;
+	/** The last diff stopped at a failed write; retry even without a TTL deadline. */
+	dirty: boolean;
 	cancelTimer?: () => void;
 	unsubscribe: Array<() => void>;
 };
@@ -74,18 +78,22 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 		// Keep seen job identities across replacement of the same session so an
 		// old finished sidebar tail cannot revive a record we just cleared.
 		const seenJobsBySession = new Map<string, Set<string>>();
+		// Records a closing owner could not clear. The next owner starts from them, so
+		// its first diff clears them unless it publishes a replacement with the same ID.
+		let unflushed = new Map<string, DesktopRecord>();
 		const owns = (ctx: ExtensionContext) => owner !== undefined && ctx.sessionManager === owner.manager && ctx.sessionManager.getSessionId() === owner.id;
 		// Track successful individual writes so a later cleanup can clear even a
 		// partially published diff if terminal.write throws.
-		const apply = (s: Session, next: Map<string, DesktopRecord>) => {
-			if (!s.terminal) return;
+		const apply = (s: Session, next: Map<string, DesktopRecord>): boolean => {
+			if (!s.terminal) return true;
 			for (const chunk of diffRecords(s.previous, next)) {
-				try { s.terminal.write(chunk); } catch { break; }
+				try { s.terminal.write(chunk); } catch { return false; }
 				const id = /:id=([A-Za-z0-9_./-]+)\x1b\\$/.exec(chunk)?.[1];
 				if (!id) continue;
 				const record = next.get(id);
 				if (record) s.previous.set(id, record); else s.previous.delete(id);
 			}
+			return true;
 		};
 		const publish = (s: Session) => {
 			if (owner !== s) return;
@@ -105,13 +113,15 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 				const name = [...pending.values()].at(-1);
 				if (name !== undefined) next.set(`ask/${segment(peer)}`, { state: "blocked", kind: "question", title: name, msg: `question from ${name}` });
 			}
-			apply(s, next);
+			s.dirty = !apply(s, next);
+			if (s.dirty && !s.cancelTimer) arm(s);
 		};
 		const arm = (s: Session) => {
 			s.cancelTimer?.(); s.cancelTimer = undefined;
-			if (owner !== s || (s.sends.size === 0 && s.errors.size === 0)) return;
+			if (owner !== s || (s.sends.size === 0 && s.errors.size === 0 && !s.dirty)) return;
 			const deadlines = [...s.sends.values()].map(at => at + SEND_TTL_MS);
 			for (const error of s.errors.values()) deadlines.push(error.expiresAt);
+			if (s.dirty) deadlines.push(now() + WRITE_RETRY_MS);
 			const delay = Math.max(0, Math.min(...deadlines) - now());
 			s.cancelTimer = schedule(() => { s.cancelTimer = undefined; publish(s); arm(s); }, delay);
 		};
@@ -120,7 +130,7 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 			for (const unsubscribe of s.unsubscribe) unsubscribe();
 			s.unsubscribe = [];
 			apply(s, new Map());
-			if (owner === s) owner = undefined;
+			if (owner === s) { owner = undefined; unflushed = new Map(s.previous); }
 		};
 		const updateTodo = (s: Session, tasks: unknown) => {
 			if (!validTodoTasks(tasks)) return;
@@ -137,8 +147,9 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 			if (!id) return;
 			const seenJobErrors = seenJobsBySession.get(id) ?? new Set<string>();
 			seenJobsBySession.set(id, seenJobErrors);
-			const s: Session = { id, startedAt: now(), ctx, manager: ctx.sessionManager, previous: new Map(), tasks: [], consults: new Map(), sends: new Map(), asksFromPeers: new Map(), errors: new Map(), seenJobErrors, seenTaskErrors: new Set(), unsubscribe: [] };
+			const s: Session = { id, startedAt: now(), ctx, manager: ctx.sessionManager, previous: unflushed, dirty: false, tasks: [], consults: new Map(), sends: new Map(), asksFromPeers: new Map(), errors: new Map(), seenJobErrors, seenTaskErrors: new Set(), unsubscribe: [] };
 			owner = s;
+			unflushed = new Map();
 			const listen = (name: string, handler: (data: any) => void) => {
 				s.unsubscribe.push(pi.events.on(name, (data: unknown) => {
 					try { if (owner === s && s.manager.getSessionId() === s.id && data && typeof data === "object" && (data as { sessionId?: unknown }).sessionId === s.id) handler(data); }
@@ -205,11 +216,13 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 				} else return;
 				publish(s);
 			});
+			// Replay before the terminal attaches so the first diff already has the todo
+			// and replaces an unflushed record instead of clearing it first.
+			replay(s);
 			ctx.ui.setWidget(WIDGET_KEY, tui => {
 				if (owner === s) { s.terminal = tui.terminal; publish(s); }
 				return { render: () => [], invalidate() {}, dispose() { if (owner === s) close(s); } };
 			});
-			replay(s);
 			try { pi.events.emit(HERDR_DESKTOP_TASKS_REQUEST, { sessionId: s.id }); } catch { /* Optional display source. */ }
 		});
 		pi.on("session_tree", (_event, ctx) => { if (owns(ctx)) replay(owner!); });

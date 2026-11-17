@@ -29,7 +29,12 @@ function harness(env: NodeJS.ProcessEnv = { HC_TERMINAL_ID: "terminal", PI_PROGR
 	let now = 1000;
 	let nextTimer = 0;
 	const timers = new Map<number, { at: number; fn: () => void }>();
-	const terminal = { write(data: string) { assert.equal(this, terminal); writes.push(data); }, setProgramStatus() { throw new Error("root status must not be touched"); } };
+	let failingWrites = 0;
+	const terminal = { write(data: string) {
+		assert.equal(this, terminal);
+		if (failingWrites > 0) { failingWrites--; throw new Error("write failed"); }
+		writes.push(data);
+	}, setProgramStatus() { throw new Error("root status must not be touched"); } };
 	const pi = {
 		on(name: string, fn: Handler) { handlers.set(name, fn); },
 		events: {
@@ -61,6 +66,7 @@ function harness(env: NodeJS.ProcessEnv = { HC_TERMINAL_ID: "terminal", PI_PROGR
 		emit(name: string, data: unknown) { pi.events.emit(name, data); },
 		advance(ms: number) { now += ms; for (;;) { const due = [...timers].find(([, timer]) => timer.at <= now); if (!due) break; timers.delete(due[0]); due[1].fn(); } },
 		pendingTimers: () => timers.size,
+		failNextWrites(count: number) { failingWrites = count; },
 		listenerCount: (name: string) => listeners.get(name)?.size ?? 0,
 	};
 }
@@ -347,3 +353,31 @@ test("replacement clears every published record and ignores stale events and shu
 	h.fire("session_shutdown", {}, other.ctx); assert.equal(h.writes.at(-1), clear("todo"));
 	assert.equal(h.pendingTimers(), 0);
 });
+
+test("S9 retries an expiry clear that failed once until the terminal accepts it", () => {
+	const h = harness(); h.fire("session_start");
+	h.emit(SEND, { sessionId: "s1", target: "peer" });
+	assert.deepEqual(h.writes, [record("sent/peer", `state=idle:msg=${msg("sent to peer")}`)]);
+	h.failNextWrites(1); h.advance(5000);
+	assert.equal(h.writes.length, 1);
+	assert.equal(h.pendingTimers(), 1);
+	h.advance(1000);
+	assert.deepEqual(h.writes, [record("sent/peer", `state=idle:msg=${msg("sent to peer")}`), clear("sent/peer")]);
+	assert.equal(h.pendingTimers(), 0);
+});
+
+test("S9 hands clears that failed during replacement to the next session without removing its own records", () => {
+	const h = harness(); h.branch([todoEntry([task(1, "Work", "in_progress")])]); h.fire("session_start");
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", startedAt: 1 }] } });
+	const published = [record("todo", "state=working:progress=0:title=V29yaw=="), record("bg/j", "state=working:title=Sm9i")];
+	assert.deepEqual(h.writes, published);
+	const other = h.context("s2"); other.branch([todoEntry([task(1, "Next", "in_progress")])]);
+	h.failNextWrites(1); h.fire("session_start", {}, other.ctx);
+	assert.deepEqual(h.writes, [...published, clear("bg/j"), record("todo", `state=working:progress=0:title=${msg("Next")}`)]);
+	h.fire("session_shutdown", {}, other.ctx);
+	assert.equal(h.writes.at(-1), clear("todo"));
+	const third = h.context("s3"); h.fire("session_start", {}, third.ctx);
+	assert.equal(h.writes.at(-1), clear("todo"));
+	assert.equal(h.writes.filter(write => write === clear("bg/j")).length, 1);
+});
+

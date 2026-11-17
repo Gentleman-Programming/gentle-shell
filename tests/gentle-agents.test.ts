@@ -869,10 +869,8 @@ test("Herdr send keeps an accepted receipt when the transport is replaced before
 	const result = await pending;
 	assert.equal(result.content[0].text, "Message m1 from s1 to peer accepted for delivery; it is not a delivery or read receipt.");
 	assert.equal(result.details.error, undefined);
-	assert.equal(result.details.gentleAgents.messageId, "m1");
-	assert.equal(result.details.gentleAgents.senderSessionId, "s1");
-	assert.equal(result.details.gentleAgents.recipientSessionId, "peer");
-	assert.equal(result.details.gentleAgents.state, "accepted");
+	const receipt = result.details.gentleAgents as { messageId: string; senderSessionId: string; recipientSessionId: string; state: string };
+	assert.deepEqual([receipt.messageId, receipt.senderSessionId, receipt.recipientSessionId, receipt.state], ["m1", "s1", "peer", "accepted"]);
 	assert.deepEqual(reports(), []);
 });
 

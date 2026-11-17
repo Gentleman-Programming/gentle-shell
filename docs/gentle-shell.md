@@ -34,7 +34,7 @@ Each update is a full record; `state=clear` removes its ID. Fields not listed fo
 | `sent/<target>` | `idle` | No title; message `sent to <target>`. | Present for five seconds after the latest accepted send. |
 | `ask/<peer>` | `blocked` / `question` | Title is the peer's display name, falling back to its ID; message `question from <name>`. | Present while an incoming message remains unanswered; cleared when handled or after its five-minute expiry. |
 
-All sub-records clear on session shutdown, widget disposal or session replacement. Titles and messages are UTF-8 encoded as base64 after terminal controls are replaced with spaces, and each is capped at 512 bytes without splitting a Unicode scalar. Dynamic ID segments use ASCII letters, digits, `_`, `-` and `.`; unsafe, reserved `h-` or overlong segments become `h-` plus a truncated SHA-256 digest. Original target names remain in the encoded messages. IDs are at most 64 characters.
+All sub-records clear on session shutdown, widget disposal or session replacement. If the terminal rejects a write, the remaining changes are retried about one second later; records a replaced session could not clear are cleared by the next session, unless it publishes the same ID again, in which case the new record replaces them. Titles and messages are UTF-8 encoded as base64 after terminal controls are replaced with spaces, and each is capped at 512 bytes without splitting a Unicode scalar. Dynamic ID segments use ASCII letters, digits, `_`, `-` and `.`; unsafe, reserved `h-` or overlong segments become `h-` plus a truncated SHA-256 digest. Original target names remain in the encoded messages. IDs are at most 64 characters.
 
 ## Updating Pi safely
 

@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent"],
-  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "list_sessions", "switch_session"],
+  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "session_snapshot"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list and cancel, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, and `agents_update` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list and cancel methods and its one transition event, not the agent dispatch tools, which stay agent tools. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), and [Subagents limits](#subagents-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list and cancel, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, and `agents_update` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list and cancel methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), and [Subagents limits](#subagents-limits).
 
 ### `get_snapshot`
 
@@ -95,6 +95,43 @@ Returns the current event sequence and a bounded state projection:
 The projection carries only store identity, scope, mutability, status, and revision — never store content, never a path. It is the cheap way for a client to notice that one of the six revisions moved and then call `get_config` for that store. `state` is `{}` when no Desktop command has bound a session context yet, or when that context has no working directory: without one, the project and pin layers cannot be read truthfully, so nothing is projected instead of a guess.
 
 This snapshot does not project permission state: use `get_permission_mode` for that. `sequence` is the number of delivered events, so a client that saw `seq: 4` expects `sequence: 4` from a fresh snapshot unless it missed an event.
+
+#### Session sections
+
+`get_snapshot` accepts one optional param, `sections`: the session state the TUI sidebar and the Herdr feed show, read live from the feed owner's projection (`buildDesktopFeedSnapshot`, schema `gentle-shell.desktop-feed/v1`) through an in-process seam, never from the feed's file.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "requestId": "desktop-43",
+  "method": "get_snapshot",
+  "params": { "sections": ["todo", "changes", "activity"] }
+}
+```
+
+Without a `sections` key the request is the legacy read above, byte-for-byte (other params stay ignored as before). With it, params are exactly `{ "sections": [...] }`: a non-empty array of unique names from `project`, `model`, `context`, `cost`, `usage`, `profiles`, `permission`, `todo`, `changes`, `agents`, `jobs`, `review`, `stats`, `activity`, `pendingQuestion`, `commands`. Any other shape, an unknown or repeated name, or an extra key is `invalid_request`, before any owner work. The answer keeps `state.config` exactly as the legacy read and adds `state.session` with the requested sections in that canonical order:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "sequence": 4,
+  "state": {
+    "config": { "stores": ["…as above…"] },
+    "session": {
+      "todo": { "items": [{ "id": 2, "title": "Build feed", "state": "in_progress", "note": null }], "progress": { "done": 1, "total": 2, "open": 1 }, "current": "Build feed", "truncated": false },
+      "changes": {
+        "files": [{ "path": "lib/a.ts", "root": "root-70e56188b8da", "status": "modified", "added": 3, "deleted": 1 }],
+        "summary": { "files": 1, "added": 3, "deleted": 1 },
+        "worktrees": [{ "root": "root-70e56188b8da", "branch": "feat/x", "files": 1 }],
+        "truncated": false
+      },
+      "activity": { "state": "working", "streaming": true, "phase": "implementing", "phaseLabel": "implementing…", "blockedLabel": null, "agents": 0, "jobs": 0, "label": "Working" }
+    }
+  }
+}
+```
+
+Each section is the feed's own shape (see `DesktopFeedSnapshot` in `lib/desktop-feed.ts`) with two path-free changes: `project` is `{ "name", "branch", "dirty" }`, where `name` is the basename of the working directory (`null` for a filesystem root such as `/` or a drive root such as `C:\`), and in `changes` every worktree `root` is an opaque, stable label (`root-` plus 12 hex characters) while every file carries a `path` relative to its worktree plus that worktree's `root` label (`null`, with the bare file name, for a path no worktree holds). Windows-style roots (a drive letter or backslashes) match their files case- and separator-insensitively; POSIX roots match case-sensitively. A worktree whose root is `/` or a bare drive gets `root: null` and never relativizes a path: its files cross as bare file names with `root: null`. A section the session has nothing for is `null`, as in the feed (`changes` before the first scan, `review` before a review, `pendingQuestion` with no open question). When the feed is not running for this session (the extension is not loaded, the process is not Gentle Shell, or the session is not live) the answer is `session_unavailable`; `get_snapshot` without `sections` is unaffected. A read never emits an event.
 
 ### `get_config`
 
@@ -267,7 +304,7 @@ Outside a resolvable Git worktree `pins` reports `writeTargets: []`: there is no
 `revision` is a `sha256` digest over canonical JSON (sorted keys, `undefined` members dropped) of `{store, status, value}` for that read. It is stable across equivalent reads: reformatting a file, reordering its keys, or touching its mtime does not move it, while any change to normalized content does. The same caveat as `writeRevision` applies: a read that produced no content (`missing`, `invalid`) digests only `{store, status}`, so two different broken files for one store share a read revision. It is deliberately not a transaction token:
 
 - it is computed **at read time**, after the owner normalized the content, not from file bytes and not from an owner-maintained counter;
-- there is no watcher, no subscription, and no cross-process lock, so two processes can each see a different revision at the same wall-clock moment and neither is told when the other writes;
+- there is no cross-process lock, and the only change notification is the best-effort external `config_changed` event (see [`config_changed`](#config_changed)), so two processes can each see a different revision at the same wall-clock moment, and when a watcher is missing nobody is told that the other one wrote;
 - a multi-layer store (`models`, `subagents`, `pins`) can change between the individual layer reads that make up one projection; that projection is still a truthful report of the layers that were read;
 - it orders nothing, so it must never be compared between sessions or used as a precondition for a write. `expectedRevision` is the only precondition this contract accepts, and it is compared against `writeTargets[].writeRevision` — never against `revision`.
 
@@ -942,6 +979,85 @@ Otherwise the answer is the outcome, with the screen's notices as `notes` (`leve
 
 Only one apply runs at a time in a Pi process, across sessions. A request that arrives while another apply is running answers `profile_apply_busy` and changes nothing. While an apply runs, `set_config` for `profiles`, `profile_fallbacks`, and `pins` also answers `profile_apply_busy` and writes nothing: the apply rewrites the profiles store (and restores it on failure) from the snapshot it read, so an edit accepted mid-apply would otherwise be lost. Retry after the apply answers. The `/gentle:profiles` screen's Use in this session and Make default (including the save they make first) take the same gate, so they never run alongside a Desktop apply and a Desktop apply answers `profile_apply_busy` while one of them runs.
 
+### `list_sessions`
+
+Lists saved Pi sessions through Pi's own session owner (`SessionManager.list` / `listAll`), newest first, so a client can offer a "resume session" list without reading Pi's session files or settings.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-70", "method": "list_sessions", "params": { "scope": "project", "limit": 20 } }
+```
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `scope` | no | `"project"` or `"all"` | `project` (default) lists the active project's sessions; `all` lists every project's. |
+| `limit` | no | integer 1–50 | Page size; default 20. |
+| `cursor` | no | string | The opaque `nextCursor` of the previous page. |
+
+Any other key, a non-integer or out-of-range `limit`, an unknown `scope`, or a cursor this slice did not issue is `invalid_request`, answered before any session is read. The session directory is resolved exactly as Pi's `/resume` resolves it, from the live session manager: `project` is `list(cwd, sessionDir)`, and `all` is `listAll()` for the default directory or `listAll(sessionDir)` for a custom `sessionDir` (settings, `--session-dir`, or `PI_CODING_AGENT_SESSION_DIR`). A read has no side effect and never emits an event.
+
+Success:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-70",
+  "ok": true,
+  "data": {
+    "sessions": [
+      { "id": "0b5c9a12-7d4e-4f3a-9c1e-2a6b8d0f4e31", "name": "Release prep", "modified": 1793577600000, "messageCount": 14, "firstMessage": "Prepare the 1.4 release notes", "project": "gentle-shell", "current": true },
+      { "id": "5e21f0aa-3b7c-4d18-8f6e-91c2d4b7a053", "modified": 1793491200000, "messageCount": 3, "firstMessage": "Why does the build fail on Windows?", "project": "gentle-shell", "current": false }
+    ],
+    "nextCursor": "WzE3OTM0OTEyMDAwMDAsIjVlMjFmMGFhIl0"
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Pi's session id; pass it to `switch_session`. |
+| `name` | The name the user gave the session, present only when set; at most 200 characters. |
+| `modified` | Last activity (latest message time, else the session start), in milliseconds. |
+| `messageCount` | Messages in the session file, as Pi counts them. |
+| `firstMessage` | The first user message with whitespace collapsed, at most 200 characters; a cut ends with `…`. Pi reports `(no messages)` for an empty session. |
+| `project` | The display name of the session's project: the last segment of its working directory, or `unknown`. Never a path. |
+| `current` | `true` for the session this Pi process is running. |
+
+No file path, working directory, parent-session path, or full message text ever crosses the wire. `nextCursor` is present only when more sessions follow; it is a keyset position (last time and id), so sessions saved between pages never shift or repeat entries. When no Desktop command has bound a session context, or the context has no session manager or session directory (an in-memory session), the answer is `sessions_unavailable`.
+
+### `switch_session`
+
+Switches this Pi process to a saved session by id. The id is resolved through Pi's owner (`SessionManager.findById`, plus the exact id in Pi's all-sessions listing for `scope: "all"`), and the switch is the command context's own `switchSession`. The session file path never crosses the wire, in either direction.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-71", "method": "switch_session", "params": { "id": "5e21f0aa-3b7c-4d18-8f6e-91c2d4b7a053" } }
+```
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `id` | yes | non-empty string, at most 256 characters | A session id from `list_sessions`. |
+| `scope` | no | `"project"` or `"all"` | Where the id is resolved: `project` (default) or every project. Pass the scope the id was listed with. |
+
+Any other key (including a Pi-style `sessionPath`), a missing or empty `id`, or an unknown `scope` is `invalid_request`. An id that does not resolve in the requested scope is `not_found`, and nothing is switched. When no Desktop command has bound a session context, or that context cannot switch, the answer is `sessions_unavailable`.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-71",
+  "ok": true,
+  "data": { "id": "5e21f0aa-3b7c-4d18-8f6e-91c2d4b7a053", "changed": true }
+}
+```
+
+- **Switching to the current session** is a no-op: `{ "id": …, "changed": false }`, no switch, no event.
+- **A cancelled switch** (an extension's `session_before_switch` handler cancelled it) answers `{ "id": …, "changed": false, "cancelled": true }`; the session is unchanged.
+- **A refused switch** (for example the session's working directory no longer exists) answers `sessions_unavailable` with a fixed message; Pi's error, which names paths, never crosses.
+- **The sequence resets.** A switch starts a new session, exactly like Pi's own `switch_session`: the old session receives `session_shutdown`, the new one starts with a fresh channel, and event `seq` starts again at 1. The response is published by the new session, after it started, still correlated by `requestId`; an event of the new session may precede it. Fetch `get_snapshot` after a switch.
+- **One switch at a time; nothing is lost.** From the moment a `switch_session` is dispatched until it answers, every other Desktop request (any method, including another `switch_session` and `capabilities`) is answered at once with the retryable `session_switching` error and does nothing. A request that was already waiting on an owner when the switch tears the session down is answered `session_switching` right before the teardown, and a request Pi delivers to the replaced session during the replacement is answered `session_switching` too. Every request gets exactly one response; only the switch itself answers from the new session. This includes `capabilities` and `get_snapshot`: they are refused too, because their answer would describe the session being replaced. Retry every refused request, including those two, after the switch's response arrives. A switch that ends without replacing the session (cancelled, refused, or `not_found`) releases the gate at once. Use a fresh `requestId` per request: the exemption for the in-flight switch is by `requestId`.
+- **A streaming turn is aborted.** Pi settles any active response before it replaces the session, so a switch during a streaming turn aborts that turn and persists it to the old session first, as Pi's own `switch_session` does.
+- This slice emits no event of its own.
+
 ## Responses
 
 Success:
@@ -971,7 +1087,7 @@ Failure:
 }
 ```
 
-Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `not_found`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
+Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `sessions_unavailable`, `session_switching`, `not_found`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
 
 | Code | Meaning |
 | --- | --- |
@@ -992,7 +1108,9 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `profiles_unavailable` | The profiles owner did not answer for this session (the owning extension is not loaded, the session changed, or no Desktop command bound a session context). Nothing was written. |
 | `unknown_profile` | `apply_profile` named a profile that is not saved in `profiles.json`. No routing, settings, agents, or pins were written (a missing `profiles.json` may have been seeded). |
 | `profile_apply_busy` | An `apply_profile` is still running; returned to a second `apply_profile` and to `set_config` for `profiles`, `profile_fallbacks`, or `pins`. Nothing was written by this request. |
-| `not_found` | `cancel_job` or `get_job_output` named a job id, or `cancel_subagent` named a subagent id, that does not exist or belongs to another session. Nothing was stopped or read. |
+| `sessions_unavailable` | No Desktop command bound a session context, the context has no session manager, session directory, or `switchSession`, the installed Pi lacks the session owner calls, reading sessions failed, or Pi refused the switch. Nothing was switched. |
+| `session_switching` | A `switch_session` was in flight when this request arrived (or the switch tore the session down while this request waited on an owner). Nothing was done; retry after the switch answers. |
+| `not_found` | `cancel_job` or `get_job_output` named a job id, or `cancel_subagent` named a subagent id, that does not exist or belongs to another session; or `switch_session` named an id that does not resolve in the requested scope. Nothing was stopped, read, or switched. |
 | `internal_error` | Unexpected failure; message stays generic. |
 
 ## Events
@@ -1009,11 +1127,16 @@ Domain events use the same widget channel:
 }
 ```
 
-The event name above is illustrative; `capabilities` is authoritative for implemented events. `seq` starts at 1 after successful delivery in each newly started session and resets on session shutdown or reload. After shutdown the channel does not answer further commands. Clients should fetch `get_snapshot` after connecting and whenever they detect a sequence gap. Responses do not increment the event sequence.
+The event name above is illustrative; `capabilities` is authoritative for implemented events. `seq` starts at 1 after successful delivery in each newly started session and resets on session shutdown, reload, or a session switch (Pi's own `switch_session` or this channel's). After shutdown the channel does not answer further commands. Clients should fetch `get_snapshot` after connecting and whenever they detect a sequence gap. Responses do not increment the event sequence.
 
 ### `permission_mode_changed`
 
-Emitted at most once per successful `set_permission_mode`, always after its response line, and never for rejected, unavailable, or no-op requests:
+Emitted in two ways:
+
+- **`source: "desktop"`**: at most once per successful `set_permission_mode`, always after its response line, and never for rejected, unavailable, or no-op requests.
+- **`source: "external"`**: asynchronously, when the session mode or the persisted default changes outside Desktop RPC (for example `/gentle:mode`, `/gentle:mode default`, or `/gentle:yolo`).
+
+A Desktop change:
 
 ```json
 {
@@ -1031,11 +1154,44 @@ Emitted at most once per successful `set_permission_mode`, always after its resp
 }
 ```
 
-`source` is `desktop` because this slice only publishes events for changes it made itself; `persisted` reports whether that request saved the default. Mode changes made elsewhere in the session (for example a `/gentle:mode` prompt) are visible through `get_permission_mode` but do not emit this event. Two owner-side changes are also silent: the owner revoking YOLO when the workspace or interactive host changes, and the first permission call of a session pinning its mode to the saved default. Re-read with `get_permission_mode` after reconnecting or switching sessions. If the owner cannot confirm the state right after a `set_permission_mode` (the session was replaced or revoked meanwhile), the answer is `permission_unavailable` with no event, never an echo of the requested mode.
+For `source: "desktop"`, `persisted` reports whether that request saved the default. If the owner cannot confirm the state right after a `set_permission_mode` (the session was replaced or revoked meanwhile), the answer is `permission_unavailable` with no event, never an echo of the requested mode.
+
+An external change:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "event",
+  "seq": 2,
+  "event": "permission_mode_changed",
+  "data": {
+    "mode": "yolo",
+    "previous_mode": "normal",
+    "default_mode": "normal",
+    "persisted": false,
+    "source": "external"
+  }
+}
+```
+
+External changes are driven by the permission owner's existing in-process observer (the one the desktop feed uses); there is no polling and no file watcher. Every owner notification restarts a debounce window of about 250 ms; when it closes, the channel re-reads the owner and emits only when `mode` or `default_mode` differs from the last state this channel reported (a `get_permission_mode` answer, a `set_permission_mode` answer, or an earlier event). `previous_mode` is the mode of that last reported state, and `persisted` is `true` when the persisted default is what changed. Consequences:
+
+- a Desktop `set_permission_mode` is never echoed as an external event: its response records the confirmed state first, and an observer window that closes while a Desktop request is still applying waits for it;
+- a burst inside one window is one event with the final state, and a change undone inside the window emits nothing;
+- owner-side changes surface the same way, for example the owner revoking YOLO when the workspace or interactive host changes;
+- a default written to the policy file by another process does not notify this process's owner, so it becomes visible on the next `get_permission_mode` and emits nothing;
+- without the permission owner (extension not loaded), there are no external events and the methods answer `permission_unavailable`.
+
+Observation starts on `session_start` for an interactive RPC host only, and stops on session shutdown and on session switch. Re-read with `get_permission_mode` after reconnecting or switching sessions.
 
 ### `config_changed`
 
-Emitted at most once per successful `set_config` that actually changed its target, always after its response line, and never for rejected, unavailable, conflicted, or no-op requests:
+Emitted in two ways:
+
+- **`source: "desktop"`**: at most once per successful `set_config` that actually changed its target, always after its response line, and never for rejected, unavailable, conflicted, or no-op requests.
+- **`source: "external"`**: asynchronously and best effort, when a store's revision changes outside Desktop RPC (`/gentle:profiles`, an editor saving `profiles.json`, the installer, or another `pi` process).
+
+A Desktop write:
 
 ```json
 {
@@ -1054,7 +1210,41 @@ Emitted at most once per successful `set_config` that actually changed its targe
 }
 ```
 
-`store`, `scope`, `revision`, and `writeRevision` are the resulting values, identical to the response that precedes the event, so a client that missed the response can reconcile from the event alone. `source` is `desktop` because this slice only publishes events for changes it made itself; a change made by `/gentle:profiles`, by the installer, or by another `pi` process becomes visible on the next read and emits nothing.
+For `source: "desktop"`, `store`, `scope`, `revision`, and `writeRevision` are the resulting values, identical to the response that precedes the event, so a client that missed the response can reconcile from the event alone.
+
+An external change:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "event",
+  "seq": 3,
+  "event": "config_changed",
+  "data": {
+    "store": "profiles",
+    "scope": "global",
+    "revision": "sha256:5f1d0c7a9e2b4d6f8a0c2e4b6d8f0a1c",
+    "status": "ok",
+    "source": "external"
+  }
+}
+```
+
+`store`, `scope`, `revision`, and `status` match what `get_config` and `get_snapshot` would answer for that store at that moment. There is no `value`, no `writeTarget` or `writeRevision` (an external writer may have touched any layer), and no path; read the store with `get_config` for its content and write targets.
+
+Detection watches the owner files' directories, non-recursively, for an interactive RPC host only: the config home (`profiles.json`, `profile-fallbacks.json`, `models.json`), the agent home and its `gentle-ai/` directory (global `subagents.json`, the managed-assets manifest), the session cwd's `.pi/` and `.pi/gentle-ai/` (project `subagents.json` and `models.json`, the `repo` pin), and the Git common dir's `gentle-ai/` (the `local` pin) when the cwd is a resolvable worktree. Only events for those owner file names count. About 250 ms after the last relevant event, every store's revision is recomputed with the same readers `get_config` uses, and an event is emitted only for a store whose revision differs from the last revision this channel reported (a `get_config` answer, a `get_snapshot` projection, a `set_config` answer, or an earlier event). Consequences:
+
+- a Desktop `set_config` is never echoed: its response records the resulting revision before the owner's own rename wakes the watcher;
+- reformatting a file, rewriting identical content, or undoing a change inside the window emits nothing, because the revision did not move;
+- a burst inside one window yields at most one event per changed store, and `pins` moves too when a `profiles` change makes a pin stale or valid.
+
+`source` says whether the event answers a Desktop write **to that same store**. A Desktop write can change another store's derived state: for example a `set_config` on `profiles` that drops the profile a pin names makes `pins` stale. The `profiles` change is the `source: "desktop"` event that follows the response; the `pins` change arrives later through the watcher, exactly once, as `source: "external"`.
+
+A directory that does not exist yet (for example a project without `.pi/`, or a fresh `<git-common-dir>/gentle-ai/`) is watched through its nearest existing ancestor, non-recursively and only for the creation of the next path segment. When that segment appears the ancestor watcher is closed and the next level is watched, until the owner directory itself is; each step recomputes once, so a pin that `/gentle:profiles` writes into a new directory raises exactly one event. A watched directory that is later removed reports its stores (now `missing`) and falls back to the same ancestor watching, so recreating it and writing the store again raises one event.
+
+When a Desktop command binds a different session cwd, the watchers move with it, and the stores whose layers depend on the cwd (`models` and `subagents` project layers, and `pins`) are re-read at that moment: each one whose revision differs from the last one this channel reported is announced with `source: "external"` and becomes the new baseline, so a later unrelated change never carries stale extra events. If a change was detected but its debounce window had not closed when the cwd moved, every store is re-read instead, so that change is reported rather than dropped with the old watchers.
+
+This is **best effort**, and `get_snapshot` revisions stay the source of truth. A path with no existing ancestor, an unsupported platform, or an exhausted watcher limit simply produces no external events for that directory; the channel keeps working and never reports an error for it. Watchers are created on `session_start` and are disposed, ancestor watchers included, on session shutdown and on session switch. A client that must not miss a change still compares `get_snapshot` revisions after connecting and after a sequence gap.
 
 ### `rate_limit`
 
@@ -1176,6 +1366,22 @@ Follows an `apply_profile` answer whose `status` is `applied`, after the respons
 
 `source` is always `desktop`: an apply from the `/gentle:profiles` screen emits nothing on this channel. `confirmation_required`, `not_applied`, and every error emit nothing. Clients that show profile state should re-read `get_config` for `profiles` after this event.
 
+### `session_snapshot`
+
+Carries the session sections whose content changed since the last `session_snapshot` (or since the bridge subscribed at session start), in the same path-free shapes as `get_snapshot`'s `state.session`:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "event",
+  "seq": 5,
+  "event": "session_snapshot",
+  "data": { "sections": { "pendingQuestion": { "kind": "prompt", "question": "Pick one", "terminalOnly": true, "…": "…" } } }
+}
+```
+
+It is emitted when the feed publishes, on the feed's own tiers: within 16 ms for urgent state (an open or answered question, the permission mode, an idle/working/blocked transition, a held prompt), otherwise after a 250 ms debounce, and at most once per second while the session is busy. A flush that changes nothing emits nothing, and a section is included only when its content changed; a job's `elapsedMs`, which moves on every flush, is not a change (derive it from `startedAt`). A client that needs the whole state reads `get_snapshot` with `sections` after connecting or after a sequence gap. Advertised only while the feed seam is wired.
+
 ## Configuration limits
 
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
@@ -1185,7 +1391,7 @@ Follows an `apply_profile` answer whose `status` is `applied`, after the respons
 - **Per-process guard, not a transaction.** The `expectedRevision` check and the owner's atomic rename happen in one synchronous step, so concurrent Desktop requests in one process cannot both commit from the same revision. Across processes there is no lock: another `pi` process, `/gentle:profiles`, or the installer can write between the check and the rename, and this contract cannot detect that. Treat `expectedRevision` as conflict detection, not as mutual exclusion.
 - **No paths, no secrets.** Physical paths are rejected as request input and never appear in a response, an event, or an error message. Content is limited to what these stores hold: profile names, routing entries, fallback chains, pin names, layer statuses, and asset ownership keys and hashes. `managed_assets` is additionally filtered to ownership-shaped entries — a relative asset path below the agent home plus a 64-hex sha256 digest — so an absolute path, a traversal segment, or an arbitrary string in the manifest is omitted rather than echoed. No credential, token, auth file, provider error, or conversation content is read or returned.
 - **Truthful normalization.** Content is what the owner's normalizer produced. Entries an owner drops (an unsafe agent key, an unknown thinking level, a stale `active` marker) are absent from `value`; if everything was dropped, the store reads `ok` with an empty map rather than being reported as `invalid`. A file the owner cannot parse at all reads `invalid`. A **write** may not rely on that leniency: data the normalizer would drop is rejected as `invalid_data`, so a Desktop write can never delete content it does not understand.
-- **No watcher.** Nothing is pushed except this slice's own `config_changed`. A change made by another `pi` process, by `/gentle:profiles`, or by the installer becomes visible on the next read and produces no event.
+- **Best-effort external events.** A change made by another `pi` process, by `/gentle:profiles`, by an editor, or by the installer produces a debounced `config_changed` with `source: "external"` when the owner directory can be watched and the store's revision really moved (see [`config_changed`](#config_changed)). When a watcher cannot be created, nothing is pushed for that directory and the change becomes visible on the next read. There is no polling and no cached copy: the watcher only decides when to recompute revisions with the owner readers.
 - **This slice does not implement** permission changes beyond the existing slice, subscription usage beyond the read/refresh contract below, subagents beyond the list/cancel contract below, music, profile application, store materialization, or any Gentle Desktop client change.
 
 ## Permission limits
@@ -1193,7 +1399,7 @@ Follows an `apply_profile` answer whose `status` is `applied`, after the respons
 - The methods delegate to the Gentle AI extension's permission owner in the same Pi process. When that extension is not loaded, both methods answer `permission_unavailable` instead of guessing state.
 - Session changes require the owner's interactive-host admission: the TUI, or an RPC process with `GENTLE_SHELL_INTERACTIVE_HOST=1`. Headless RPC children and subagent children stay closed exactly as before.
 - Permission control is never an agent-callable tool; only `/gentle:desktop` over the interactive RPC channel reaches it.
-- This slice adds no filesystem watcher and no second store. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); subscription usage is limited to the `get_subscription_usage` and `refresh_subscription_usage` contract in [Usage limits](#usage-limits); background jobs are limited to the `list_jobs`, `cancel_job`, and `get_job_output` contract in [Jobs limits](#jobs-limits); subagents are limited to the `list_subagents` and `cancel_subagent` contract in [Subagents limits](#subagents-limits); music and any Desktop client change are not implemented.
+- Permission state adds no filesystem watcher and no second store: external `permission_mode_changed` events follow the owner's in-process observer. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); subscription usage is limited to the `get_subscription_usage` and `refresh_subscription_usage` contract in [Usage limits](#usage-limits); background jobs are limited to the `list_jobs`, `cancel_job`, and `get_job_output` contract in [Jobs limits](#jobs-limits); subagents are limited to the `list_subagents` and `cancel_subagent` contract in [Subagents limits](#subagents-limits); music and any Desktop client change are not implemented.
 - Requests are not queued. Pi's own RPC loop dispatches prompts concurrently, so overlapping `set_permission_mode` calls reach the owner in whatever order their own reads finish, and one can apply right after the other. What stays guaranteed: every request gets exactly one correlated response, responses never cross, and each response and its optional event are published as an adjacent pair with a monotonic `seq`. Send permission requests one at a time and correlate with `requestId`; the maintainer probe does exactly that.
 
 ### Trust boundary
@@ -1253,6 +1459,24 @@ Follows an `apply_profile` answer whose `status` is `applied`, after the respons
 - **Confirmation is Desktop's job.** The token binds an apply to the title and message that were shown and to the exact saved profile; it is not a proof that a person saw them.
 - **Truthful absence.** When the owning extension is not loaded, `apply_profile` answers `profiles_unavailable` rather than inventing an outcome.
 
+## Session limits
+
+- **One owner, one schema.** `get_snapshot { sections }` and `session_snapshot` read the feed extension's live projection through a defensive, versioned owner-service adapter (`gentle:desktop:session-service`, the session analogue of the jobs seam). There is no second state store, no tool-event replay, and no read of the feed file under the agent home.
+- **Path-free projection.** No `identity` block, no `pid`/`ppid`/`ancestors`, no session file, no agent dir, and no absolute path from the projection crosses the wire: `project.cwd` becomes its basename `project.name`, worktree roots become opaque labels, and file paths are relative to their worktree. This rule covers every structural field the projection derives (working directory, worktree roots, file paths, identity).
+- **Free text passes as written.** Text a person or the agent wrote (pending question titles and options, todo titles and notes, activity and blocker labels, command descriptions) crosses exactly as the feed shows it, even when it contains a path: redacting inside text would corrupt it. This follows the `list_jobs` label precedent, where an explicit label is the agent's own wording and is kept.
+- **Bounded.** Arrays and text keep the feed's own caps (for example 200 changed files, 100 todos, 50 jobs and subagents, 200 commands, 500-character text, 2000-character question text), so the payload never grows with the session's lifetime. The channel has no separate response byte limit; requests stay under 64 KiB.
+- **Truthful absence.** When the feed is not running for the session, `sections` answer `session_unavailable` and `capabilities` omit `session_snapshot` rather than inventing an empty state. The feed runs only in Gentle Shell (not plain Pi), in the TUI or an interactive RPC host, and never in subagent children.
+
+## Sessions limits
+
+- **One owner, no second scanner.** `list_sessions` and `switch_session` call Pi's own `SessionManager.list`, `listAll`, and `findById`, with the session directory read from the live session manager, the same calls Pi's `/resume` makes. There is no session index, cache, file parser, or settings reader in this slice, and the session-history and stats scanners are not reused for it.
+- **Ids in, ids out.** The wire carries session ids, never a session file path, working directory, or parent-session path. The path Pi resolves stays inside the process and goes straight to the command context's `switchSession`.
+- **Bounded projection.** Each entry carries exactly `id`, `name?`, `modified`, `messageCount?`, `firstMessage` (at most 200 characters), `project` (a display name), and `current`. The full conversation text Pi reads for search is never returned. A page holds at most 50 entries.
+- **The listing reads files.** Pi reads every session file in scope to build its list, so `scope: "all"` over a large history costs as much as Pi's own `/resume` across all projects. Prefer `project` and page with `limit`.
+- **A switch replaces the session.** Every per-session bridge and the router restart with the new session; event `seq` restarts at 1, and Desktop should re-read `get_snapshot` and any state it shows. A switch during a streaming turn aborts that turn first (Pi's behavior). A failure after Pi already tore the old session down cannot be answered by either session.
+- **Exactly once across a switch.** Pi dispatches prompts concurrently, so requests sent right after a `switch_session` can reach the session being replaced. The router refuses them with `session_switching` while the switch is in flight, answers any request still waiting on an owner right before the teardown, and the replaced instance answers late deliveries through the UI object it extracted before Pi invalidated its context. The switch's own response comes from the new session.
+- **No agent tool.** Sessions are reachable only through `/gentle:desktop` over the interactive RPC channel.
+
 ## Verification
 
 ```sh
@@ -1260,11 +1484,14 @@ node --experimental-strip-types --test \
   tests/desktop-rpc.test.ts \
   tests/desktop-rpc-permissions.test.ts \
   tests/desktop-rpc-config.test.ts \
+  tests/desktop-rpc-config-watch.test.ts \
   tests/desktop-rpc-usage.test.ts \
   tests/desktop-rpc-design.test.ts \
   tests/desktop-rpc-jobs.test.ts \
   tests/desktop-rpc-agents.test.ts \
   tests/desktop-rpc-profiles.test.ts \
+  tests/desktop-rpc-session.test.ts \
+  tests/desktop-rpc-sessions.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 
@@ -1278,9 +1505,15 @@ The jobs tests use the existing background-job fake (the same fake shell operati
 
 The subagents tests use a real `TaskStore` plus a fake runner (never a child process) and a fake owner service only: they cover the whitelisted model/usage/cost projection and field redaction, the closed `lastStep` vocabulary (raw error/path/secret/provider text never crosses), the bounded active + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`agents_unavailable`, never a fabricated empty list), the `runner.cancel` stop path and its boolean result, already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `agents_update` events with foreign-session filtering, content dedupe and burst coalescing, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also run the real `gentleAgents` owner seam in-process over a fake child (real `TaskStore` + real `AgentRunner`, never a real process): a truthful empty list, a typed `not_found` cancel, a live-task cancel that honors `runner.cancel`'s result with no immediate event and one eventual `agents_update`, and the persisted usage breakdown surviving `saveTask`/`loadStoredTask` restore.
 
+The session tests load the real desktop RPC and feed extensions on one fake Pi with fake timers and an isolated agent home: they cover the strict `sections` params, the path-free projection (basename, opaque roots, relative multi-worktree paths), a byte-identical `get_snapshot` without `sections` with and without the feed, `session_unavailable` and the missing `session_snapshot` capability without the feed, reads that emit no event, and `session_snapshot` carrying only changed sections on the feed's routine (250 ms) and urgent (16 ms) tiers, with no event for an unchanged flush.
+
 The profiles tests use a fake owner service only: they cover param validation, owner absence (`profiles_unavailable`), the result shapes, the `profile_applied` event only after `applied`, and that the token changes with the mode, name, title, message, and profile content. The owner itself is covered in `tests/gentle-ai.test.ts`, which drives the real screen actions in a temporary config home: a default apply asks the screen's diff and writes nothing without its token, a wrong or stale token asks again and writes nothing, an unknown profile writes nothing, a session apply binds without writing shared state, and only one apply runs at a time.
 
 The config tests build six stores in a temporary root and inject the worktree identity, so no real user config, agent home, or repository pin is read. On the read side they cover every store, current path precedence, missing and malformed layers, revision stability and change, the read-only split, rejected stores/params/paths, the bounded snapshot projection, and a byte-and-mtime comparison proving a read never mutates a store. On the write side they cover a valid write for each writable store and both pin layers, clearing either pin layer and observing the winner fall back, clearing an already-missing layer as a no-op, clearing and replacing an unreadable layer, creating a missing store, a stale or missing `expectedRevision` (including on a clear), the documented rejection order (envelope, then store identity, then mutability, then revision, then payload), data the owner would drop, malformed pin clear shapes, extra and physical-path keys, every read-only store, a forced owner write failure (the store path is a directory) answering `write_failed` with no path, OS code, or event and an unchanged tree, the no-op path with untouched bytes and mtime, the resulting disk bytes, revision movement and its invalid-state coarseness, the response-then-event order over the real transport, and that a stopped session neither answers nor writes. They also re-check that the config dispatcher still falls through to the permission bridge.
+
+The external-change tests inject the directory watcher factory and a fake clock, so no assertion depends on real filesystem notification timing. They cover debounce coalescing and window restart, name filtering in shared directories, the real `fs.watch` watcher closing itself when its directory is removed (on Windows a removed directory otherwise keeps the process alive), watcher-creation failure (one directory and every directory) leaving `get_config`, `get_snapshot`, and `set_config` working with no error and no event, an external `profiles` edit producing one `config_changed` with `source: "external"` and no content or path, unchanged recomputed revisions (reformatting, change-and-undo) emitting nothing, a Desktop `set_config` never echoed as external, pin layers watched in the session worktree and re-targeted when the cwd changes, the cwd-dependent stores re-read and announced once on a re-target, a change still debounced when the cwd moves flushed rather than lost, a removed owner directory re-armed through its ancestor with exactly one event after it is recreated and written, a Desktop `profiles` write that makes a pin stale reported as one external `pins` event, a missing owner directory watched through its nearest existing ancestor and upgraded step by step (and closed on dispose), real `fs.watch` runs (rename-replace, Desktop write without echo, delete, recreate, a late `.pi/` directory, a local pin written into a fresh `<git-common-dir>/gentle-ai/`, nothing after reset), disposal on session shutdown and session switch (watchers closed, pending recompute cancelled, nothing published), no watcher and no owner subscription for TUI or headless hosts, `/gentle:mode` and `/gentle:mode default` producing external `permission_mode_changed` events over the real `registerYoloSessionPolicy` owner, a Desktop `set_permission_mode` never echoed (including an owner window that closes while the set is in flight), an external change right after a Desktop set's response still reported, a throwing emitter never propagating, a re-read in flight across a reset never emitting, `wire()` never rejecting when the owner throws, observation stopping on shutdown and restarting with a fresh sequence, and a missing permission owner leaving config events intact.
+
+The sessions tests write real Pi session files into an isolated root (a custom session directory, and a default agent directory through `PI_CODING_AGENT_DIR`) and run Pi's real `SessionManager` through the Desktop command: they cover the project and all-projects scopes for both a custom and the default session directory, newest-first order, the whitelisted projection (no path, cwd, session file, or full message text), the bounded `firstMessage`, the display-only `project`, `current`, keyset paging and its end, param validation before any owner work, `sessions_unavailable` without a bound context, a late list dropped after a reset, a switch that hands Pi the owner-resolved file and answers from the replacement session with a fresh sequence, the current-session no-op, `not_found` outside the requested scope, a cancelled switch, a refused switch with no raw error, `session_switching` for every request dispatched while a switch is in flight (and the gate's release after a cancelled or failed switch), a request pending on an owner at teardown answered exactly once, a command delivered to the replaced instance answered without touching its stale context, path-, glob-, and prefix-shaped ids that never resolve, another project's entries exposing only its display name, forged cursors, and a backslash name projected unchanged. The router tests cover the gate and `abandonPending` (one answer, the kept request still answered by its outcome, late outcomes dropped).
 
 The maintainer probes run the installed Pi runtime with isolated HOME, agent home, config home, session, and temporary directories and no provider or network. They cover:
 
@@ -1291,6 +1524,7 @@ The maintainer probes run the installed Pi runtime with isolated HOME, agent hom
 5. usage owner — the real `extensions/gentle-shell.ts` usage owner is loaded alongside this extension, and the probe reads `get_subscription_usage` for `anthropic` and `openai-codex` and observes truthful offline `pending` answers with no event and no live provider fetch. It never calls `refresh_subscription_usage` against a live provider;
 6. design owner — the real `extensions/gentle-design.ts` design owner is loaded alongside this extension, and the probe reads `get_design_canvas` (with and without `includeUrl`) and observes the truthful owner-loaded stopped state (`running: false`, `slug: null`, `connectedClients: 0`, `designs: []`) with no event and no tokenized URL. It never starts a canvas server or opens a browser;
 7. jobs owner — the real `extensions/gentle-agents.ts` jobs owner is loaded alongside this extension, and the probe reads `list_jobs` and observes the truthful owner-loaded empty list (`jobs: []`) with no event and no command or output path on the wire. It never starts a job;
-8. subagents owner — the real `extensions/gentle-agents.ts` subagents owner is loaded alongside this extension, and the probe reads `list_subagents` and observes the truthful owner-loaded empty list (`agents: []`) with no event and no prompt text, session path, or working directory on the wire. It never starts a child.
+8. subagents owner — the real `extensions/gentle-agents.ts` subagents owner is loaded alongside this extension, and the probe reads `list_subagents` and observes the truthful owner-loaded empty list (`agents: []`) with no event and no prompt text, session path, or working directory on the wire. It never starts a child;
+9. sessions — with a session pre-seeded in the probe's `--session-dir`, the probe lists it through `list_sessions`, switches to it by id, receives the correlated response from the replacement session, reads `get_snapshot` at sequence 0, sees the session listed as `current`, gets `changed: false` for a second switch, and reads the seeded conversation through Pi's `get_messages`. No session file or absolute path appears on the wire. Three more probes send requests back to back right after a `switch_session` and check that each gets exactly one response and that the session then listed as current matches the switch that answered `changed: true`: another switch plus `list_sessions` (each `session_switching` or a real answer); a second switch to the same id (`session_switching`, final session unchanged); and `get_snapshot`, `capabilities`, and `list_jobs` (each `session_switching`).
 
 What this does not prove: a live Desktop conversation approving the request. The probe writes RPC stdin itself, so it demonstrates that the production owner accepts the change and reports it truthfully, not that a person consented. It also does not cover `persist: true` end to end; persistence is covered by the owner and focused unit tests. Nothing in this slice proves a cross-process guarantee either: the probes use one process, which is exactly the scope `expectedRevision` provides. The design probe does not prove a live browser canvas: it only proves the owner-loaded stopped state without starting a server, while open/refresh/stop transitions and URL trust are covered by the injected-canvas unit tests. The jobs probe does not prove a live job or a live `cancel_job` kill: it only proves the owner-loaded empty list without starting a job, while the stop path, terminal idempotency, and events are covered by the fake-registry unit tests. The subagents probe does not prove a live subagent or a live `cancel_subagent` of a running child: it only proves the owner-loaded empty list without starting a child, while the runner cancel path, terminal idempotency, and events are covered by the fake-runner unit tests.

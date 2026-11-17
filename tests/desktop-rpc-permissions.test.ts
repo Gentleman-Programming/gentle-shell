@@ -122,6 +122,8 @@ test("capabilities advertise the wired permission domain and no agent tool", asy
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",
+		"list_sessions",
+		"switch_session",
 	]);
 	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]);
 	assert.deepEqual(app.tools, [], "the control surface is never an agent-callable tool");

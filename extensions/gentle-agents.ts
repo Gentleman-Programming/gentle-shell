@@ -24,8 +24,8 @@ import { createLocalBashOperations, keyHint, SettingsManager, type ExtensionAPI,
 import { createJobRegistry, isStandaloneSleep, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
 import { JOB_GLYPH, JOB_NOTICE_TYPE, jobDetails, jobNoticeText, monitorEventsText, monitorStoppedText, registerBackgroundJobTools, type BackgroundJobsChange } from "../lib/background-jobs-tools.ts";
 import { createMonitorController, mergeMonitorBatches, type MonitorNotice } from "../lib/background-monitor.ts";
-import { DESKTOP_JOBS_SERVICE_CHANNEL, DESKTOP_JOBS_SERVICE_SCHEMA, projectDesktopJob, selectDesktopJobs, type DesktopJobsCancelOutcome, type DesktopJobsOwnerRead, type DesktopJobsService } from "../lib/desktop-rpc-jobs.ts";
-import { DESKTOP_AGENTS_SERVICE_CHANNEL, DESKTOP_AGENTS_SERVICE_SCHEMA, accumulateTaskUsage, projectDesktopAgent, selectDesktopAgents, type DesktopAgentsCancelOutcome, type DesktopAgentsOwnerRead, type DesktopAgentsService } from "../lib/desktop-rpc-agents.ts";
+import { DESKTOP_JOBS_SERVICE_CHANNEL, DESKTOP_JOBS_SERVICE_SCHEMA, projectDesktopJob, projectDesktopJobOutput, selectDesktopJobs, type DesktopJobsCancelOutcome, type DesktopJobsOutputOutcome, type DesktopJobsOwnerRead, type DesktopJobsService } from "../lib/desktop-rpc-jobs.ts";
+import { DESKTOP_AGENTS_SERVICE_CHANNEL, DESKTOP_AGENTS_SERVICE_SCHEMA, accumulateTaskUsage, projectDesktopAgent, projectDesktopAgentThread, selectDesktopAgents, type DesktopAgentsCancelOutcome, type DesktopAgentsOwnerRead, type DesktopAgentsService, type DesktopAgentsThreadOutcome } from "../lib/desktop-rpc-agents.ts";
 import { JobsView } from "../lib/jobs-view.ts";
 import { JOBS_FINISHED_TTL_MS } from "../lib/jobs-widget.ts";
 import { JOBS_SIDEBAR_EVENT, JOBS_STATUS_KEY } from "../lib/jobs-sidebar-state.ts";
@@ -1230,8 +1230,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// controller only through this versioned, adapter-shaped seam — the jobs
 	// analogue of the usage/design owner services. The adapter never runs or
 	// stops a job itself: `cancel` is `job_stop`'s exact stop path
-	// (`monitors.cancel` then `registry.stop`), and `observe` is driven by the
-	// same actual registry changes below. There is no second registry, process
+	// (`monitors.cancel` then `registry.stop`), `output` reads the registry's
+	// own bounded in-memory tail, and `observe` is driven by the same actual
+	// registry changes below. There is no second registry, process
 	// manager, or store.
 	const desktopJobsObservers = new Set<(sessionId: string) => void>();
 	const notifyDesktopJobs = (sessionId: string): void => {
@@ -1264,10 +1265,19 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				jobs.stop(job.id);
 				return { kind: "ok", job: projectDesktopJob(job), changed: wasRunning };
 			};
+			const output = (id: string): DesktopJobsOutputOutcome => {
+				if (disposed) return { kind: "not_found" };
+				const job = jobs.get(id);
+				// The same ownership rule list_jobs and cancel apply: a foreign or
+				// unknown id is a typed not_found, never another session's output.
+				if (!job || job.ownerSessionId !== sessionId) return { kind: "not_found" };
+				return { kind: "ok", view: projectDesktopJobOutput(job) };
+			};
 			request.respond({
 				schema: DESKTOP_JOBS_SERVICE_SCHEMA,
 				read,
 				cancel,
+				output,
 				observe: (onChange) => {
 					if (disposed) return () => {};
 					subscriptions.add(onChange);
@@ -1331,10 +1341,20 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				const changed = requested && after.status !== before.status;
 				return { kind: "ok", agent: projectDesktopAgent(after), requested, changed };
 			};
+			// A pure read of the single TaskStore through the activity widget's own
+			// projection, behind the same ownership check `cancel` applies: a foreign
+			// or unknown id is a typed not_found, never another session's thread.
+			const thread = (id: string): DesktopAgentsThreadOutcome => {
+				if (disposed) return { kind: "not_found" };
+				const task = store.get(id);
+				if (!task || task.parentSessionId !== sessionId) return { kind: "not_found" };
+				return { kind: "ok", thread: projectDesktopAgentThread(id, store.thread(id)) };
+			};
 			request.respond({
 				schema: DESKTOP_AGENTS_SERVICE_SCHEMA,
 				read,
 				cancel,
+				thread,
 				observe: (onChange) => {
 					if (disposed) return () => {};
 					subscriptions.add(onChange);

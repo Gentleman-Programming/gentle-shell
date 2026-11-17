@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "apply_profile", "list_subagents", "cancel_subagent", "list_sessions", "switch_session"],
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff"],
   "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "session_snapshot"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list and cancel, the profile apply, the subagents list and cancel, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, and `agents_update` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list and cancel methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list and cancel methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), and [Subagents limits](#subagents-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, and `agents_update` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), and [Subagents limits](#subagents-limits).
 
 ### `get_snapshot`
 
@@ -759,7 +759,7 @@ Each entry carries only the whitelisted fields of the owner's `JobRecord`:
 | `endedAt` | When a non-running job ended, present only after it ends. |
 | `exitCode` | The job's own exit code, present only when the owner recorded one (`null` for an exit without a code). |
 
-No command text, working directory, output path or tail, environment, owner session id, monitor counters, or error string ever crosses the wire. The list is bounded: running jobs first (newest start first), then recently-finished jobs (newest end first) within a 60-second linger, capped at 50 entries, so the answer can never grow with the process lifetime. When the jobs owner is absent (the owning extension is not loaded), the answer is `jobs_unavailable` — never a fabricated empty list.
+No command text, working directory, output path or tail, environment, owner session id, monitor counters, or error string ever crosses the wire in a list entry; a job's output tail is available only through the separate, owner-verified [`get_job_output`](#get_job_output) read. The list is bounded: running jobs first (newest start first), then recently-finished jobs (newest end first) within a 60-second linger, capped at 50 entries, so the answer can never grow with the process lifetime. When the jobs owner is absent (the owning extension is not loaded), the answer is `jobs_unavailable` — never a fabricated empty list.
 
 ### `cancel_job`
 
@@ -788,6 +788,46 @@ Only the `id` key is accepted; any other key, a non-string or empty `id`, or a r
 ```
 
 The response is the **actual post-action state**, re-read from the owner — never an echo of the request. A job that was already terminal (an `exited`, `stopped`, or `failed` job) answers that terminal state with `status` unchanged and no `changed` marker, and emits no event; there is no race-driven error for a job that finished just before the cancel. The response line always precedes its `jobs_update` event.
+
+### `get_job_output`
+
+Reads one background job's bounded output tail from the existing jobs owner: the registry's own in-memory tail (the last 20 lines, at most 2 000 characters per line — `TAIL_LINES`/`MAX_TAIL_LINE_CHARS` in `lib/background-jobs.ts`). It is a pollable read: it never starts, stops, or changes a job, never reads the job's log file, and emits no event. Params are exactly `{ id }`.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-60", "method": "get_job_output", "params": { "id": "job-1" } }
+```
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `id` | yes | non-empty string | The job to read, as reported by `list_jobs` or `jobs_update`. |
+
+Only the `id` key is accepted; any other key, a non-string or empty `id`, or a `job_id` key is `invalid_request`, answered before any owner work. The id is resolved against the active owner session with the same ownership rule `list_jobs` and `cancel_job` apply: an unknown id or a job owned by another session is a typed `not_found`, never another session's output.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-60",
+  "ok": true,
+  "data": {
+    "job": { "id": "job-1", "label": "CI for PR 42", "status": "running", "startedAt": 1788600000000 },
+    "output": "✓ lint\n✓ typecheck\nrunning tests 100%",
+    "truncated": true
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `job` | The same whitelisted projection as one `list_jobs` entry (`id`, `label`, `status`, `startedAt`, `endedAt?`, `exitCode?`), so a poller knows when the job has ended. |
+| `output` | The tail as one plain-text field: the kept lines joined by `\n`, oldest first. Empty when the job has printed nothing yet. |
+| `truncated` | `true` once the tail stopped being the job's whole output: earlier lines were dropped, or a line longer than 2 000 characters was shortened to its newest characters after a leading `…`. |
+
+**Terminal control sequences are stripped server-side; the text is plain.** The owner tail keeps raw job output (it only joins chunks and strips a trailing CR), so progress bars and colored output carry ANSI escape sequences. This method removes CSI sequences (colors, cursor moves, 7- and 8-bit), OSC sequences (window titles, hyperlinks; BEL- or ST-terminated, or unterminated to the end of the line), DCS/SOS/PM/APC strings, and the remaining two-character escapes; a line that redraws itself with carriage returns shows only its last non-empty segment, which is what a terminal would leave visible; every other control character except tab is removed. A consumer renders `output` as plain text and must not expect, or interpret, escape sequences in it. Truncation is multi-byte safe: a half UTF-16 character left by a fixed-length cut is removed, never sent.
+
+**The tail is not sanitized for content.** The wire carries no command, working directory, output path, environment, owner session id, monitor counter, or error string as a field, and nothing is inferred from the label. But `output` is arbitrary process output, and it can legitimately contain whatever the job printed: echoed commands, paths, tokens, or other secrets. That content is the job owner's own data; requesting it is the consumer session's standing decision. A consumer should treat it like terminal output — show it to the session owner, never log or forward it as if it were redacted.
+
+The answer is bounded by construction: at most 20 lines and 40 019 UTF-16 code units (20 × 2 001 plus 19 newlines). The bridge re-validates the owner's answer, re-applies that bound (keeping the newest output and setting `truncated`), and re-normalizes it before it reaches the wire. When the jobs owner is absent, or the loaded owner adapter predates the output read, the answer is `jobs_unavailable`; a throwing or malformed owner answer is also `jobs_unavailable`, with no raw error on the wire. There is no `job_output` event: a client that shows a live tail polls this method.
 
 ### `list_subagents`
 
@@ -839,7 +879,7 @@ Each entry carries only the whitelisted fields of the owner's `TaskRecord`:
 | `lastStep` | A closed phase label derived from the task status, never the raw owner step text: `queued`, `waiting`, `running`, a fixed safe active step (`starting`, `writing`, `cleaning up`, `generating tool arguments`, `question dismissed`, `answered`, `interrupted`), or the generic terminal reason (`completed`, `failed`, `cancelled`, `timed_out`). Raw `TaskRecord.lastStep` text can carry an error message, a stderr tail, or a provider body, so it is mapped into this closed vocabulary and never forwarded. |
 | `usage` | The helper's accumulated usage: `total` tokens, `cost`, and — once the run settled — the final-assistant `input`, `output`, `cache` (read + write), and `reasoning` token breakdown. The breakdown fields are absent for an in-flight task whose breakdown is not recorded yet, and for a restored finished task whose run never recorded one. |
 
-No prompt text, tool arguments or output, working directory, session path, result, error text, or full session internals ever cross the wire. The list is bounded: active tasks first (recency order), then recently-finished tasks (newest end first), capped at 50 entries, so the answer can never grow with the process lifetime. When the agents owner is absent (the owning extension is not loaded), the answer is `agents_unavailable` — never a fabricated empty list.
+No prompt text, tool arguments or output, working directory, session path, result, error text, or full session internals ever cross the wire in a list entry; tool arguments, tool output, and thread text are only readable, bounded, through [`get_subagent_thread`](#get_subagent_thread). The list is bounded: active tasks first (recency order), then recently-finished tasks (newest end first), capped at 50 entries, so the answer can never grow with the process lifetime. When the agents owner is absent (the owning extension is not loaded), the answer is `agents_unavailable` — never a fabricated empty list.
 
 ### `cancel_subagent`
 
@@ -872,6 +912,53 @@ The response is the **actual post-action state**, re-read from the owner — nev
 - A **queued** task is finished synchronously: `runner.cancel` returns `true` and the store transitions to `cancelled`, so the response reports `cancelled` and is followed by one `agents_update` event.
 - A **running** task is cancelled asynchronously: `runner.cancel` returns `true` but the store has not transitioned yet, so the response reports the still-`running` state and emits **no immediate event**. The real transition (the child exit to `cancelled`) arrives later through the normal `agents_update` path. A repeated in-flight cancel is likewise `changed: false` with no event.
 - An already-terminal task returns its terminal state with no event; there is no race-driven error for a task that finished just before the cancel. An unknown or foreign id is a typed `not_found`. The response line always precedes any `agents_update` event.
+
+### `get_subagent_thread`
+
+Reads one subagent's bounded activity thread from the same `TaskStore` the `gentle-agents.activity/v1` widget projects, so a client can show what a finished or background subagent did. Params are `{ id, sinceVersion? }`.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-62", "method": "get_subagent_thread", "params": { "id": "m3a1-worker", "sinceVersion": 41 } }
+```
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `id` | yes | non-empty string | The subagent to read, as reported by `list_subagents`. |
+| `sinceVersion` | no | non-negative integer | The `version` of the client's last read of this thread. |
+
+Only the `id` and `sinceVersion` keys are accepted; any other key, a non-string or empty `id`, or a `sinceVersion` that is not a non-negative integer is `invalid_request`, rejected before the owner is reached. The id is resolved with the same ownership rule as `list_subagents` and `cancel_subagent`: only a subagent whose parent session is the calling session is readable; an unknown id, a subagent of another session, or a finished subagent the store has already evicted is a typed `not_found`. When the agents owner is not loaded, the answer is `agents_unavailable`. A read has no side effect and never emits an event.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-62",
+  "ok": true,
+  "data": {
+    "id": "m3a1-worker",
+    "version": 57,
+    "items": [
+      { "kind": "text", "text": "Mapping the repository layout." },
+      { "kind": "tool", "name": "read", "args": "{\"path\":\"README.md\"}", "running": false, "isError": false, "output": "# Project…" },
+      { "kind": "note", "text": "retrying (2/3)" }
+    ],
+    "dropped": 0,
+    "truncated": false
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | The subagent the thread belongs to. |
+| `version` | The store's thread version. It grows with every change to the thread, including in-place changes to an existing item. |
+| `items` | The thread, oldest first, in the exact projection and bounds of `gentle-agents.activity/v1`: the last 40 items; `text`, `thinking`, and `note` items carry `text` (at most 2 000 characters); `tool` items carry `name`, `args` (the JSON-encoded arguments, at most 500 characters), `running`, `isError`, and `output` (at most 500 characters). A cut field ends with `…`. The list is then bounded to 256 KB by the same halving the widget applies. |
+| `dropped` | How many older items the store itself evicted from this thread (beyond its own 400-item retention). They are gone and no read can return them. |
+| `truncated` | `true` when the store still holds more items than `items` carries (the 40-item window or the byte bound cut older ones). |
+
+`sinceVersion` makes polling cheap. When it equals the current `version`, nothing changed since that read: `items` is empty and `truncated` is `false`. Any other value returns the whole bounded window. The store keeps one version per thread, not per item, and an item can change after it first appears (streamed text merges into the last text item; a tool item receives its output and end state later), so the whole window is the smallest answer guaranteed to contain every changed item. A client replaces its view with the returned items.
+
+Tool args and output are the subagent's own data: they contain whatever its tools received and printed, which can include file contents, command output, or anything else the subagent read. They are bounded, not redacted. Text, thinking, and note items are likewise the subagent's own output (a note can carry an error message). Prompt text, the working directory, the session path, the tool call id, and the result are not part of a thread item.
 
 ### `apply_profile`
 
@@ -1018,6 +1105,74 @@ Any other key (including a Pi-style `sessionPath`), a missing or empty `id`, or 
 - **A streaming turn is aborted.** Pi settles any active response before it replaces the session, so a switch during a streaming turn aborts that turn and persists it to the old session first, as Pi's own `switch_session` does.
 - This slice emits no event of its own.
 
+### `get_changes`
+
+Reads the session's uncommitted changes from the same owner `/gentle:changes` uses: the shell's `WorktreeChangesTracker` over the session's roots (its own repository and every worktree its subagents used), each against its `HEAD`, untracked files included. Params must be an empty object.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-70", "method": "get_changes", "params": {} }
+```
+
+Success:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-70",
+  "ok": true,
+  "data": {
+    "roots": [{ "id": "root-1", "label": "gentle-shell" }],
+    "files": [
+      { "root": "root-1", "path": "lib/shell-changes.ts", "status": "modified", "added": 12, "deleted": 3 },
+      { "root": "root-1", "path": "notes.md", "status": "untracked", "added": 4, "deleted": 0 }
+    ],
+    "truncated": false
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `roots[].id` | An opaque, session-scoped root identifier (`root-1`, `root-2`, …). It names a root for `get_change_diff`; it is not a path. |
+| `roots[].label` | A display name: the root's directory name. Never an absolute path. Two roots can share a label; `id` tells them apart. |
+| `files[].root` | The `id` of the root the file belongs to. |
+| `files[].path` | The path relative to its root, exactly as Git reports it (`/` separators). |
+| `files[].status` | One of `modified`, `added`, `deleted`, `renamed`, or `untracked`. |
+| `files[].added`, `files[].deleted` | Line counts from `git diff --numstat HEAD`; an untracked file counts its own lines. |
+| `truncated` | `true` when more than 200 files changed across all roots; `files` then holds the first 200 (roots in owner order, paths sorted within each root). |
+
+Only roots with changes are listed, so a clean session answers `roots: []` and `files: []`. A read refreshes the owner's scan the way opening the panel does; it starts, writes, or stages nothing and never emits an event. Any params key is `invalid_request`. `changes_unavailable` answers when the session has no root to scan or when Git failed for any root: a failed scan is never reported as a clean root.
+
+### `get_change_diff`
+
+Reads one changed file's unified diff, the same Git diff the `/gentle:changes` panel shows for it: a tracked file is `git diff HEAD -- <path>`, an untracked file is a diff against an empty file. Unlike the panel, it runs with `--no-textconv --no-ext-diff` and `-c core.fsmonitor=false`, so it never executes a command the repository's configuration names; for a file with a `.gitattributes` textconv driver or an external diff driver the text is Git's plain diff and can differ from the panel. Params are exactly `{ root, path }`, both strings.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-71", "method": "get_change_diff", "params": { "root": "root-1", "path": "notes.md" } }
+```
+
+Success:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-71",
+  "ok": true,
+  "data": {
+    "root": "root-1",
+    "path": "notes.md",
+    "diff": "diff --git a/notes.md b/notes.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes.md\n@@ -0,0 +1,4 @@\n+…\n",
+    "truncated": false
+  }
+}
+```
+
+`path` must be a file in the owner's current change set for that root, matched exactly against the owner's own file list (no normalization, no case folding). Anything else answers `not_found`: an unknown or stale root id, a root's absolute path or label in place of its id, a path outside the set (including a clean tracked file or `.git/config` that exists on disk), `..` traversal, an absolute path, a path whose directory resolves outside the root through a link (Git for Windows lists files behind a junction as part of the tree), or a path whose directory resolves inside the repository's git dir or common dir (for example a junction to `.git` inside the root). The method can never read an arbitrary file.
+
+A diff is file content: it can contain whatever the user's files contain, secrets included, exactly as the panel would show them. Nothing beyond the diff text is added — no absolute path, no Git command. `diff` is capped at 256 KiB of UTF-8, cut after the last whole line inside the bound (or on a character boundary for one very long line), with `truncated: true`. A diff past the panel's own 1 MiB bound, where the panel shows a "too large" notice, still answers its first 256 KiB with `truncated: true`. An empty `diff` means Git reported no difference. Wrong param types or extra keys are `invalid_request`; Git failing or timing out is `changes_unavailable`. A read never emits an event.
+
 ## Responses
 
 Success:
@@ -1065,12 +1220,13 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `design_unavailable` | The design canvas owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
 | `jobs_unavailable` | The background-jobs owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
 | `agents_unavailable` | The subagents owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
+| `changes_unavailable` | The changes owner did not answer for this session (the owning extension is not loaded, or the session changed), the session has no root to scan, or Git failed or timed out. Nothing was changed. |
 | `profiles_unavailable` | The profiles owner did not answer for this session (the owning extension is not loaded, the session changed, or no Desktop command bound a session context). Nothing was written. |
 | `unknown_profile` | `apply_profile` named a profile that is not saved in `profiles.json`. No routing, settings, agents, or pins were written (a missing `profiles.json` may have been seeded). |
 | `profile_apply_busy` | An `apply_profile` is still running; returned to a second `apply_profile` and to `set_config` for `profiles`, `profile_fallbacks`, or `pins`. Nothing was written by this request. |
 | `sessions_unavailable` | No Desktop command bound a session context, the context has no session manager, session directory, or `switchSession`, the installed Pi lacks the session owner calls, reading sessions failed, or Pi refused the switch. Nothing was switched. |
 | `session_switching` | A `switch_session` was in flight when this request arrived (or the switch tore the session down while this request waited on an owner). Nothing was done; retry after the switch answers. |
-| `not_found` | `cancel_job` named a job id, or `cancel_subagent` named a subagent id, that does not exist or belongs to another session; or `switch_session` named an id that does not resolve in the requested scope. Nothing was stopped or switched. |
+| `not_found` | `cancel_job` or `get_job_output` named a job id, or `cancel_subagent` or `get_subagent_thread` named a subagent id, that does not exist, belongs to another session, or was already evicted by the store; or `switch_session` named an id that does not resolve in the requested scope; or `get_change_diff` named a root and path that are not a file in the owner's current change set. Nothing was stopped, read, or switched. |
 | `internal_error` | Unexpected failure; message stays generic. |
 
 ## Events
@@ -1352,14 +1508,14 @@ It is emitted when the feed publishes, on the feed's own tiers: within 16 ms for
 - **No paths, no secrets.** Physical paths are rejected as request input and never appear in a response, an event, or an error message. Content is limited to what these stores hold: profile names, routing entries, fallback chains, pin names, layer statuses, and asset ownership keys and hashes. `managed_assets` is additionally filtered to ownership-shaped entries — a relative asset path below the agent home plus a 64-hex sha256 digest — so an absolute path, a traversal segment, or an arbitrary string in the manifest is omitted rather than echoed. No credential, token, auth file, provider error, or conversation content is read or returned.
 - **Truthful normalization.** Content is what the owner's normalizer produced. Entries an owner drops (an unsafe agent key, an unknown thinking level, a stale `active` marker) are absent from `value`; if everything was dropped, the store reads `ok` with an empty map rather than being reported as `invalid`. A file the owner cannot parse at all reads `invalid`. A **write** may not rely on that leniency: data the normalizer would drop is rejected as `invalid_data`, so a Desktop write can never delete content it does not understand.
 - **Best-effort external events.** A change made by another `pi` process, by `/gentle:profiles`, by an editor, or by the installer produces a debounced `config_changed` with `source: "external"` when the owner directory can be watched and the store's revision really moved (see [`config_changed`](#config_changed)). When a watcher cannot be created, nothing is pushed for that directory and the change becomes visible on the next read. There is no polling and no cached copy: the watcher only decides when to recompute revisions with the owner readers.
-- **This slice does not implement** permission changes beyond the existing slice, subscription usage beyond the read/refresh contract below, subagents beyond the list/cancel contract below, music, profile application, store materialization, or any Gentle Desktop client change.
+- **This slice does not implement** permission changes beyond the existing slice, subscription usage beyond the read/refresh contract below, subagents beyond the list/cancel/thread-read contract below, music, profile application, store materialization, or any Gentle Desktop client change.
 
 ## Permission limits
 
 - The methods delegate to the Gentle AI extension's permission owner in the same Pi process. When that extension is not loaded, both methods answer `permission_unavailable` instead of guessing state.
 - Session changes require the owner's interactive-host admission: the TUI, or an RPC process with `GENTLE_SHELL_INTERACTIVE_HOST=1`. Headless RPC children and subagent children stay closed exactly as before.
 - Permission control is never an agent-callable tool; only `/gentle:desktop` over the interactive RPC channel reaches it.
-- Permission state adds no filesystem watcher and no second store: external `permission_mode_changed` events follow the owner's in-process observer. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); subscription usage is limited to the `get_subscription_usage` and `refresh_subscription_usage` contract in [Usage limits](#usage-limits); background jobs are limited to the `list_jobs` and `cancel_job` contract in [Jobs limits](#jobs-limits); subagents are limited to the `list_subagents` and `cancel_subagent` contract in [Subagents limits](#subagents-limits); music and any Desktop client change are not implemented.
+- Permission state adds no filesystem watcher and no second store: external `permission_mode_changed` events follow the owner's in-process observer. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); subscription usage is limited to the `get_subscription_usage` and `refresh_subscription_usage` contract in [Usage limits](#usage-limits); background jobs are limited to the `list_jobs`, `cancel_job`, and `get_job_output` contract in [Jobs limits](#jobs-limits); subagents are limited to the `list_subagents`, `cancel_subagent`, and `get_subagent_thread` contract in [Subagents limits](#subagents-limits); changed files are limited to the `get_changes` and `get_change_diff` contract in [Changes limits](#changes-limits); music and any Desktop client change are not implemented.
 - Requests are not queued. Pi's own RPC loop dispatches prompts concurrently, so overlapping `set_permission_mode` calls reach the owner in whatever order their own reads finish, and one can apply right after the other. What stays guaranteed: every request gets exactly one correlated response, responses never cross, and each response and its optional event are published as an adjacent pair with a monotonic `seq`. Send permission requests one at a time and correlate with `requestId`; the maintainer probe does exactly that.
 
 ### Trust boundary
@@ -1389,24 +1545,30 @@ It is emitted when the feed publishes, on the feed's own tiers: within 16 ms for
 
 ## Jobs limits
 
-- **One owner, no second registry or process manager.** `list_jobs`, `cancel_job`, and the `jobs_update` event reach the existing jobs owner — the single parent-session `JobRegistry` plus the parent `MonitorController` — through a defensive, versioned owner-service adapter, the jobs analogue of the usage and design seams. There is no second registry, no second process manager, no subagent cancellation, and no cached copy.
-- **List + cancel only.** This slice has exactly two methods, `list_jobs` and `cancel_job`, and one event, `jobs_update`. It does not start jobs: `bash_background` and `monitor` stay agent tools, and there is no run/start method on this channel. `cancel_job` is `job_stop`'s exact stop path — the monitor controller's `cancel` (dropping timers and pending lines) followed by the registry's `stop` (aborting the process tree) — not a second stop implementation.
+- **One owner, no second registry or process manager.** `list_jobs`, `cancel_job`, `get_job_output`, and the `jobs_update` event reach the existing jobs owner — the single parent-session `JobRegistry` plus the parent `MonitorController` — through a defensive, versioned owner-service adapter, the jobs analogue of the usage and design seams. There is no second registry, no second process manager, no subagent cancellation, and no cached copy.
+- **List, cancel, and output read only.** This slice has exactly three methods, `list_jobs`, `cancel_job`, and `get_job_output`, and one event, `jobs_update`. It does not start jobs: `bash_background` and `monitor` stay agent tools, and there is no run/start method on this channel. `cancel_job` is `job_stop`'s exact stop path — the monitor controller's `cancel` (dropping timers and pending lines) followed by the registry's `stop` (aborting the process tree) — not a second stop implementation.
 - **Safe projection only.** The wire carries exactly `id`, `label`, `status`, `startedAt`, `endedAt?`, and `exitCode?`. No command text, working directory, output path or tail, environment, owner session id, monitor counters, or error string is ever returned or logged. A foreign field on an owner entry is dropped by the projection, never echoed.
 - **Bounded list.** `list_jobs` returns running jobs first (newest start first), then recently-finished jobs (newest end first) within a 60-second linger, capped at 50 entries. Finished jobs older than the linger drop out, so the answer can never grow with the process lifetime. That expiry is time-based and emits no `jobs_update`; a client that shows finished jobs should age them out with the same 60-second linger or re-read `list_jobs`.
 - **No-op and failure mean no event.** A `cancel_job` on an already-terminal job answers that terminal state with no event, and a `cancel_job` on an unknown or foreign id answers `not_found` with no event. A `job_stop` that finds the job already terminal likewise changes nothing and emits nothing. Only an actual registry change (start, settle, or a running→stopped transition) emits `jobs_update`.
 - **Agent work reaches the app.** The bridge subscribes to the owner eagerly at session start, so a job started or stopped by the agent (or any other path through the owner) still arrives as a `jobs_update` event. Every actual registry change funnels through the owner's single `refreshJobStatus` path, including a monitor's self-timeout/flood stop, so no stop path can bypass the notification. The bridge dedupes byte-identical projected lists, so a stop that also flushes pending lines still emits exactly once. Session replacement or shutdown disconnects the observer and drops late outcomes, and the router's own publisher guard drops superseded events. A changed `cancel_job`'s response always precedes its event.
-- **Truthful absence.** When the owning extension is not loaded, `list_jobs` and `cancel_job` answer `jobs_unavailable` rather than inventing an empty list or a fake stop. A job that exists but belongs to another session is indistinguishable from an unknown id at this boundary: both answer `not_found`.
+- **Bounded, plain, owner-verified output.** `get_job_output` returns only the owner's existing in-memory tail (at most 20 lines of at most 2 000 characters), never the job's log file, with terminal control sequences stripped and a `truncated` flag. It applies the same ownership rule as `list_jobs`. The tail is the job's own unsanitized process output and can contain anything the job printed, including secrets; the method does not, and cannot, redact it. It is a read with no event; there is no `job_output` event, so a live tail is polled.
+- **Output outlives the list entry.** A finished job leaves `list_jobs` after the 60-second linger, but `get_job_output` keeps answering for it, for the same session, as long as the owner registry still holds it — exactly like `cancel_job`. A client must not treat a missing list entry as proof that the output is gone.
+- **A cut can leave escape-parameter text.** The owner shortens a line longer than 2 000 characters to its newest characters before this method sees it. When that cut lands inside an escape sequence, the ESC byte is gone, so a fragment of the sequence's parameters (for example `5;196m`) can remain as visible text after the leading `…`. This is a known cosmetic limit of the owner cut; the answer still never carries an ESC byte or any control character other than tab.
+- **Truthful absence.** When the owning extension is not loaded, `list_jobs`, `cancel_job`, and `get_job_output` answer `jobs_unavailable` rather than inventing an empty list, a fake stop, or an empty tail. A job that exists but belongs to another session is indistinguishable from an unknown id at this boundary: both answer `not_found`.
 
 ## Subagents limits
 
 - **One owner, no second store or runner.** `list_subagents`, `cancel_subagent`, and the `agents_update` event reach the existing agents owner — the single parent-session `TaskStore` plus the parent `AgentRunner` — through a defensive, versioned owner-service adapter, the agents analogue of the jobs seam. There is no second store, no second runner, no subagent spawning, and no cached copy.
-- **List + cancel only.** This slice has exactly two methods, `list_subagents` and `cancel_subagent`, and one event, `agents_update`. It does not start subagents: the agent dispatch tools stay agent tools, and there is no run/start method on this channel. `cancel_subagent` is the agents panel's exact stop path — `runner.cancel` — not a second stop implementation and never a request to the model to stop itself.
-- **Safe projection only.** The wire carries exactly `id`, `agent`, `status`, `model`, `modelSource?`, `fallbackFrom?`, `thinking?`, `lastStep`, and `usage` (`total`, `cost`, and the final-assistant `input`/`output`/`cache`/`reasoning` breakdown when recorded). `lastStep` is a closed, status-derived phase label, never the raw owner step text, which can carry an error message, a stderr tail, or a provider body. No prompt text, tool arguments or output, working directory, session path, result, error text, or full session internals is ever returned or logged. A foreign field on an owner entry is dropped by the projection, never echoed.
+- **List, cancel, and thread read only.** This slice has exactly three methods, `list_subagents`, `cancel_subagent`, and `get_subagent_thread`, and one event, `agents_update`. It does not start subagents: the agent dispatch tools stay agent tools, and there is no run/start method on this channel. `cancel_subagent` is the agents panel's exact stop path — `runner.cancel` — not a second stop implementation and never a request to the model to stop itself.
+- **Safe projection only.** A list or cancel entry carries exactly `id`, `agent`, `status`, `model`, `modelSource?`, `fallbackFrom?`, `thinking?`, `lastStep`, and `usage` (`total`, `cost`, and the final-assistant `input`/`output`/`cache`/`reasoning` breakdown when recorded). `lastStep` is a closed, status-derived phase label, never the raw owner step text, which can carry an error message, a stderr tail, or a provider body. No prompt text, working directory, session path, result, error text, or full session internals is ever returned or logged, and tool arguments, tool output, and thread text (including a streamed error note) appear only in a bounded `get_subagent_thread` item. A foreign field on an owner entry is dropped by the projection, never echoed.
 - **Bounded list.** `list_subagents` returns active tasks first (recency order), then recently-finished tasks (newest end first), capped at 50 entries. The store already evicts finished tasks beyond its own retention, so the answer can never grow with the process lifetime.
 - **No-op and failure mean no event.** A `cancel_subagent` on an already-terminal task answers that terminal state with no event, and a `cancel_subagent` on an unknown or foreign id answers `not_found` with no event. A running task's cancel is requested but asynchronous: the response reports the still-`running` state and emits no immediate byte-identical event; only the real store transition (the child exit to `cancelled`) emits through the normal `agents_update` path. Only an actual TaskStore transition (add, status change, or the completion-time usage recording) emits `agents_update`.
 - **Usage persists across restore.** The completion-time usage breakdown is written to the task's history record, so a restored finished task keeps its final breakdown. A task whose run never recorded a breakdown (no final-assistant observation) has no breakdown fields after restore.
 - **Agent work reaches the app.** The bridge subscribes to the owner eagerly at session start, so a subagent started or settled by the agent (or any other path through the owner) still arrives as an `agents_update` event. Bursts of transitions are coalesced into one event per window and byte-identical projected lists are deduped, so a settle that records usage right after its status change still emits exactly once. Session replacement or shutdown disconnects the observer, cancels the pending coalesced flush, and drops late outcomes, and the router's own publisher guard drops superseded events. A changed `cancel_subagent`'s response always precedes its event.
-- **Truthful absence.** When the owning extension is not loaded, `list_subagents` and `cancel_subagent` answer `agents_unavailable` rather than inventing an empty list or a fake stop. A task that exists but belongs to another session is indistinguishable from an unknown id at this boundary: both answer `not_found`.
+- **Thread read is the widget's projection.** `get_subagent_thread` reuses the `gentle-agents.activity/v1` per-thread projection and bounds (`projectRpcThread`, then `boundRpcThread`, in `lib/agents-rpc-publisher.ts`): the last 40 items, 2 000 characters per text item, 500 for tool args and output, and the 256 KB halving. It is a read behind the `cancel_subagent` ownership check, emits no event, and adds no channel: it is one more read on the existing owner-service adapter. Tool args and output are the subagent's own data — whatever its tools received and printed — bounded but not redacted.
+- **`sinceVersion` is thread-level.** The store keeps one version per thread, not per item, and items change in place (streamed text, tool output, tool end), so `sinceVersion` returns either nothing (unchanged) or the whole bounded window, never a partial diff.
+- **Tool names are not length-capped.** Like the `gentle-agents.activity/v1` widget, a thread item's tool `name` is forwarded without a length cap, so a single huge tool name can keep one item above the 256 KB halving target (halving never drops below one item). Capping it is a follow-up for the widget and this method together, so the two keep the same projection.
+- **Truthful absence.** When the owning extension is not loaded, `list_subagents`, `cancel_subagent`, and `get_subagent_thread` answer `agents_unavailable` rather than inventing an empty list, a fake stop, or an empty thread. A task that exists but belongs to another session is indistinguishable from an unknown id at this boundary: both answer `not_found`.
 - **Unproven live-child boundary.** The deterministic tests drive the real owner with a real `TaskStore` and a real `AgentRunner` over a fake child (never a real process), and the maintainer probe lists the owner-loaded empty list without starting a child. This slice does not yet prove a live `cancel_subagent` of a running child over the installed runtime end to end; the in-process real-owner test exercises the real `runner.cancel` path and its eventual `agents_update`, but a real OS child is out of scope.
 
 ## Profiles limits
@@ -1434,6 +1596,18 @@ It is emitted when the feed publishes, on the feed's own tiers: within 16 ms for
 - **Exactly once across a switch.** Pi dispatches prompts concurrently, so requests sent right after a `switch_session` can reach the session being replaced. The router refuses them with `session_switching` while the switch is in flight, answers any request still waiting on an owner right before the teardown, and the replaced instance answers late deliveries through the UI object it extracted before Pi invalidated its context. The switch's own response comes from the new session.
 - **No agent tool.** Sessions are reachable only through `/gentle:desktop` over the interactive RPC channel.
 
+## Changes limits
+
+- **One owner, no second tracker.** `get_changes` and `get_change_diff` reach the existing `/gentle:changes` owner — the shell's `WorktreeChangesTracker` over `sessionChangeRoots` — through a defensive, versioned owner-service adapter, the changes analogue of the usage and jobs seams. There is no second scan, no watcher, and no cached copy. `loadFileDiff` lives in `lib/change-diff.ts`, shared by the panel and this slice, so both run the same Git arguments over the same bounded runner.
+- **Read only, no event.** This slice has exactly two methods and no event. It never stages, reverts, commits, or opens a file. Every `get_changes` and every `get_change_diff` rescans the worktree, as the panel does when it opens, which also refreshes the shell's own changes widget.
+- **No repository-configured commands in the diff.** `get_change_diff` passes `--no-textconv --no-ext-diff` and `-c core.fsmonitor=false`, so a `.gitattributes` textconv driver, an external diff driver, or an fsmonitor hook configured in the repository never runs for a Desktop read. The panel keeps Git's default behavior, so the two can differ for files with such a driver. The rescan itself is the panel's own `git status` and `git diff --numstat`, unchanged.
+- **Confinement.** A diff is served only for a file the owner itself lists for that root, by exact match, and only when the file's directory resolves inside the root and outside the repository's git dir and common dir (resolved through links, so an alias such as a junction to `.git` is refused). Request paths that are absolute or contain `..` segments or control characters are refused before the owner is asked; the owner's exact match is the real boundary. The file entry, its status, and so its Git arguments always come from the owner's list, never from the request.
+- **Opaque roots.** A root crosses the wire only as an opaque id and its directory name. Ids are assigned per owner adapter (per session); after a session change, call `get_changes` again before `get_change_diff`.
+- **Bounded.** `get_changes` carries at most 200 files with `truncated`, the desktop feed's bound. `get_change_diff` carries at most 256 KiB of diff text with `truncated`; the Git run itself stays under the panel's 1 MiB bound.
+- **Content, not metadata.** Diff text is the user's file content and can carry anything those files carry. Errors stay generic: Git output, absolute paths, and Git commands never appear in an error.
+- **Truthful absence.** When the owning extension is not loaded, the session has no root to scan, or Git fails for any root, both methods answer `changes_unavailable` rather than an empty list.
+- **Same baseline as the panel.** Both methods diff against `HEAD`, like the panel today; when the panel moves to session-baseline diffs (#765), this slice follows it.
+
 ## Verification
 
 ```sh
@@ -1449,6 +1623,8 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-profiles.test.ts \
   tests/desktop-rpc-session.test.ts \
   tests/desktop-rpc-sessions.test.ts \
+  tests/desktop-rpc-changes.test.ts \
+  tests/change-diff.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 
@@ -1458,11 +1634,13 @@ The design tests use only injected fake canvas/server/browser factories and a fa
 
 The usage tests use a fake owner service and a fake fetch/modelRegistry only: they cover the five statuses, the safe projection and plan-only-when-public rule, provider filters, unknown-provider `unavailable`, invalid params, refresh delegation with the provider filter forwarded, the response-before-event order over the router, the Anthropic typed `unsupported` no-op, the out-of-scope `out_of_scope` no-op (including the real owner never reaching the fetcher), content-based change detection (a same-millisecond payload change emits once, byte-equivalent data stays a no-op), late-discovery disposal after a reset, no duplicate event on no-op/failed refresh, raw-error and secret redaction, header-driven `rate_limit` events, stale-session disconnects, and the versioned adapter discovery. One test runs the real `gentleShell` owner seam to prove Claude's 5h/7d windows arrive as structured snapshots from response headers, never header text.
 
-The jobs tests use the existing background-job fake (the same fake shell operations and monitor controller as the background-jobs tests) and a fake owner service only: they cover the whitelisted projection and field redaction, the bounded running + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`jobs_unavailable`, never a fabricated empty list), the `job_stop` stop path (monitor cancel + registry stop), already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `jobs_update` events with foreign-session filtering, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also drive the real `job_stop` tool to prove the change descriptor distinguishes a running→stopped stop from a no-op stop.
+The jobs tests use the existing background-job fake (the same fake shell operations and monitor controller as the background-jobs tests) and a fake owner service only: they cover the whitelisted projection and field redaction, the bounded running + recent-finished selection, list/cancel/output param shapes, the active-session filter, owner absence (`jobs_unavailable`, never a fabricated empty list), the `job_stop` stop path (monitor cancel + registry stop), already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `jobs_update` events with foreign-session filtering, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also drive the real `job_stop` tool to prove the change descriptor distinguishes a running→stopped stop from a no-op stop. For `get_job_output` they cover the plain-text normalization (CSI, OSC, two-character escapes, carriage-return progress lines, control characters, and half characters left by a cut), the owner's 20-line and per-line bounds and the `truncated` flag, own versus foreign and unknown ids, invalid params rejected before discovery, an absent, outdated, throwing, or malformed owner answering `jobs_unavailable`, no event on a read, the real `gentle-agents` owner answering its own job, and the transport answer without an owner.
 
-The subagents tests use a real `TaskStore` plus a fake runner (never a child process) and a fake owner service only: they cover the whitelisted model/usage/cost projection and field redaction, the closed `lastStep` vocabulary (raw error/path/secret/provider text never crosses), the bounded active + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`agents_unavailable`, never a fabricated empty list), the `runner.cancel` stop path and its boolean result, already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `agents_update` events with foreign-session filtering, content dedupe and burst coalescing, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also run the real `gentleAgents` owner seam in-process over a fake child (real `TaskStore` + real `AgentRunner`, never a real process): a truthful empty list, a typed `not_found` cancel, a live-task cancel that honors `runner.cancel`'s result with no immediate event and one eventual `agents_update`, and the persisted usage breakdown surviving `saveTask`/`loadStoredTask` restore.
+The subagents tests use a real `TaskStore` plus a fake runner (never a child process) and a fake owner service only: they cover the whitelisted model/usage/cost projection and field redaction, the `get_subagent_thread` projection matching the activity widget's thread exactly (40-item window, per-field bounds, store `version` and `dropped`, `truncated`, and the byte-bound halving), its `sinceVersion` unchanged and changed answers, its param shapes rejected before discovery, unknown and foreign-session `not_found`, an absent, older, throwing, or malformed owner answering `agents_unavailable` without leaking, and a single response line with no event, the closed `lastStep` vocabulary (raw error/path/secret/provider text never crosses), the bounded active + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`agents_unavailable`, never a fabricated empty list), the `runner.cancel` stop path and its boolean result, already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `agents_update` events with foreign-session filtering, content dedupe and burst coalescing, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also run the real `gentleAgents` owner seam in-process over a fake child (real `TaskStore` + real `AgentRunner`, never a real process): a truthful empty list, a typed `not_found` cancel, a live-task cancel that honors `runner.cancel`'s result with no immediate event and one eventual `agents_update`, an owned thread read through the activity projection with a foreign-session `not_found`, and the persisted usage breakdown surviving `saveTask`/`loadStoredTask` restore.
 
 The session tests load the real desktop RPC and feed extensions on one fake Pi with fake timers and an isolated agent home: they cover the strict `sections` params, the path-free projection (basename, opaque roots, relative multi-worktree paths), a byte-identical `get_snapshot` without `sections` with and without the feed, `session_unavailable` and the missing `session_snapshot` capability without the feed, reads that emit no event, and `session_snapshot` carrying only changed sections on the feed's routine (250 ms) and urgent (16 ms) tiers, with no event for an unchanged flush.
+
+The changes tests load the real `gentleShell` owner and this extension together over temporary Git repositories (real `git`; a wrapped runner only to force a failure). They cover the opaque root id and directory-name label with no absolute path anywhere on the wire, root-relative paths and statuses, the 200-file cap, `get_change_diff` answering byte-for-byte what the panel's `loadFileDiff` answers for tracked and untracked files (including `/dev/null` on Windows), the 256 KiB cut on a line boundary and the head of a diff past the panel's 1 MiB bound, `not_found` for an unknown root, a root's absolute path or label in place of its id, a clean tracked file and `.git/config` that exist on disk, a missing file, `..` traversal, absolute paths, `./`, backslash, case, and trailing-space aliases, and a file behind a directory link (a junction on Windows), `invalid_request` for wrong shapes with no Git run, `changes_unavailable` without an owner, without a repository, and when Git status or the diff fails (with no Git output on the wire), one response line and no event per read, that the owner answers discovery only for its own live session, that a repository textconv driver never runs for `get_change_diff` while the panel's default call still honors it, that a junction to `.git` inside the root is refused, odd Windows path forms (`file.ts.`, `::$DATA`, short names, `\\?\` and UNC prefixes, trailing `/`), a stale root id from a previous session, and directories swapped to junctions after listing. `tests/change-diff.test.ts` proves the panel's `loadFileDiff` export is the shared lib function and keeps its arguments, bound notice, and failure behavior on real Git.
 
 The profiles tests use a fake owner service only: they cover param validation, owner absence (`profiles_unavailable`), the result shapes, the `profile_applied` event only after `applied`, and that the token changes with the mode, name, title, message, and profile content. The owner itself is covered in `tests/gentle-ai.test.ts`, which drives the real screen actions in a temporary config home: a default apply asks the screen's diff and writes nothing without its token, a wrong or stale token asks again and writes nothing, an unknown profile writes nothing, a session apply binds without writing shared state, and only one apply runs at a time.
 

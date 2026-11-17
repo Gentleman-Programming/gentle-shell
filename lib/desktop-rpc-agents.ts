@@ -11,10 +11,11 @@
 // source of truth; this module is a projection, not a second store, runner,
 // or process manager.
 
-import type { ChildResponseObservation, ChildTokenMeasurement, TaskRecord, TaskStatus, TaskUsage } from "./agents-protocol.ts";
-import { FINISHED_STATUSES, TASK_STATUS } from "./agents-protocol.ts";
+import type { ChildResponseObservation, ChildTokenMeasurement, TaskRecord, TaskStatus, TaskThread, TaskUsage } from "./agents-protocol.ts";
+import { FINISHED_STATUSES, TASK_STATUS, THREAD_ITEM } from "./agents-protocol.ts";
+import { boundRpcThread, DEFAULT_MAX_BYTES, projectRpcThread, TEXT_ITEM_LIMIT, TOOL_ARGS_LIMIT, TOOL_OUTPUT_LIMIT, type RpcThreadItem } from "./agents-rpc-publisher.ts";
 
-export const DESKTOP_AGENTS_METHODS = ["list_subagents", "cancel_subagent"] as const;
+export const DESKTOP_AGENTS_METHODS = ["list_subagents", "cancel_subagent", "get_subagent_thread"] as const;
 export const DESKTOP_AGENTS_EVENT = "agents_update";
 /** Advertised only because the owner seam records the TaskStore transitions this event carries. */
 export const DESKTOP_AGENTS_EVENTS = [DESKTOP_AGENTS_EVENT] as const;
@@ -123,6 +124,25 @@ export type DesktopAgentsCancelOutcome =
 	| { kind: "not_found" };
 
 /**
+ * One subagent's bounded activity thread: the exact per-item projection and
+ * bounds of the `gentle-agents.activity/v1` widget (`projectRpcThread`), plus
+ * the store's own thread `version` and `dropped` eviction count. `truncated` is
+ * `true` when the store holds more items than the answer carries (the 40-item
+ * window or the byte bound cut older items).
+ */
+export interface DesktopAgentThread {
+	id: string;
+	version: number;
+	items: RpcThreadItem[];
+	dropped: number;
+	truncated: boolean;
+}
+
+export type DesktopAgentsThreadOutcome =
+	| { kind: "ok"; thread: DesktopAgentThread }
+	| { kind: "not_found" };
+
+/**
  * The owner-service adapter the bridge discovers. Every method is defensive:
  * after `dispose()` it answers empty/no-op rather than speaking into a
  * replaced session.
@@ -131,6 +151,12 @@ export interface DesktopAgentsService {
 	schema: typeof DESKTOP_AGENTS_SERVICE_SCHEMA;
 	read(): DesktopAgentsOwnerRead;
 	cancel(id: string): DesktopAgentsCancelOutcome;
+	/**
+	 * Read one owned subagent's bounded thread. Optional so an adapter that
+	 * predates it still serves list/cancel; the bridge answers
+	 * `agents_unavailable` for `get_subagent_thread` when it is absent.
+	 */
+	thread?(id: string): DesktopAgentsThreadOutcome;
 	/** Subscribe to actual TaskStore transitions; the unsubscribe stops delivery. */
 	observe(onChange: (sessionId: string) => void): () => void;
 	dispose(): void;
@@ -266,6 +292,74 @@ export function parseDesktopAgentEntry(value: unknown): DesktopAgentEntry | unde
 }
 
 /**
+ * Projects one owner thread through the widget's own projection and bounds:
+ * `projectRpcThread` (last 40 items, per-item field limits) then
+ * `boundRpcThread` (256 KB, halving). Pure: never mutates the thread.
+ */
+export function projectDesktopAgentThread(id: string, thread: TaskThread, maxBytes: number = DEFAULT_MAX_BYTES): DesktopAgentThread {
+	const bounded = boundRpcThread(projectRpcThread(thread), maxBytes);
+	return { id, version: bounded.version, items: bounded.items, dropped: bounded.dropped, truncated: bounded.items.length < thread.items.length };
+}
+
+function nonNegativeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Bounds an item field may reach after `truncate` (the limit itself). */
+function boundedString(value: unknown, limit: number): value is string {
+	return typeof value === "string" && value.length <= limit;
+}
+
+function parseThreadItem(value: unknown): RpcThreadItem | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (raw.kind === THREAD_ITEM.TOOL) {
+		if (typeof raw.name !== "string" || !boundedString(raw.args, TOOL_ARGS_LIMIT) || !boundedString(raw.output, TOOL_OUTPUT_LIMIT)) return undefined;
+		if (typeof raw.running !== "boolean" || typeof raw.isError !== "boolean") return undefined;
+		return { kind: THREAD_ITEM.TOOL, name: raw.name, args: raw.args, running: raw.running, isError: raw.isError, output: raw.output };
+	}
+	if (raw.kind === THREAD_ITEM.TEXT || raw.kind === THREAD_ITEM.THINKING || raw.kind === THREAD_ITEM.NOTE) {
+		if (!boundedString(raw.text, TEXT_ITEM_LIMIT)) return undefined;
+		return { kind: raw.kind, text: raw.text };
+	}
+	return undefined;
+}
+
+/**
+ * Defensive validation of the owner's thread answer, which crosses the event
+ * bus: every field is rebuilt from the whitelist and every item must already
+ * respect the activity projection's bounds. Anything else is junk the bridge
+ * answers `agents_unavailable` for.
+ */
+export function parseDesktopAgentThread(value: unknown): DesktopAgentThread | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	if (typeof raw.id !== "string" || raw.id.length === 0) return undefined;
+	if (!nonNegativeInteger(raw.version) || !nonNegativeInteger(raw.dropped) || typeof raw.truncated !== "boolean") return undefined;
+	if (!Array.isArray(raw.items)) return undefined;
+	const items: RpcThreadItem[] = [];
+	for (const entry of raw.items) {
+		const item = parseThreadItem(entry);
+		if (item === undefined) return undefined;
+		items.push(item);
+	}
+	return { id: raw.id, version: raw.version, items, dropped: raw.dropped, truncated: raw.truncated };
+}
+
+/**
+ * Applies `sinceVersion` to a projected thread. The store keeps one thread
+ * version, not per-item versions, and an existing item can still change in
+ * place (streamed text merges into the last item; a tool item gets its output
+ * and end state later). So a `sinceVersion` equal to the current version means
+ * nothing changed since that read and returns no items; any other value
+ * returns the whole bounded window, which holds every item that changed.
+ */
+export function applySinceVersion(thread: DesktopAgentThread, sinceVersion: number | undefined): DesktopAgentThread {
+	if (sinceVersion === undefined || sinceVersion !== thread.version) return thread;
+	return { ...thread, items: [], truncated: false };
+}
+
+/**
  * `list_subagents` params must be an empty object; anything else is a typed
  * `invalid_request` before any owner work happens.
  */
@@ -285,10 +379,25 @@ export function parseCancelSubagentParams(params: Record<string, unknown>): { id
 	return { id: params.id };
 }
 
+/**
+ * `get_subagent_thread` params are `{ id: non-empty string, sinceVersion?:
+ * non-negative integer }`. Anything else is a typed `invalid_request` before
+ * any owner work happens.
+ */
+export function parseGetSubagentThreadParams(params: Record<string, unknown>): { id: string; sinceVersion?: number } | { error: { code: string; message: string } } {
+	const keys = Object.keys(params);
+	if (keys.some((key) => key !== "id" && key !== "sinceVersion")) return { error: INVALID_AGENTS_PARAMS };
+	if (typeof params.id !== "string" || params.id.length === 0) return { error: INVALID_AGENTS_PARAMS };
+	if (!keys.includes("sinceVersion")) return { id: params.id };
+	if (!nonNegativeInteger(params.sinceVersion)) return { error: INVALID_AGENTS_PARAMS };
+	return { id: params.id, sinceVersion: params.sinceVersion };
+}
+
 /** True only for the adapter-shaped object the discovery responder must return. */
 export function isDesktopAgentsServiceShape(value: unknown): value is DesktopAgentsService {
 	if (!value || typeof value !== "object") return false;
 	const adapter = value as Partial<DesktopAgentsService>;
 	if (adapter.schema !== DESKTOP_AGENTS_SERVICE_SCHEMA) return false;
+	if (adapter.thread !== undefined && typeof adapter.thread !== "function") return false;
 	return [adapter.read, adapter.cancel, adapter.observe, adapter.dispose].every((fn) => typeof fn === "function");
 }

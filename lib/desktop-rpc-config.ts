@@ -633,6 +633,8 @@ function parseStoreParam(params: Record<string, unknown>): DesktopConfigStore | 
 	return params.store;
 }
 
+export type DesktopConfigEmit = (event: string, data: Record<string, unknown>) => void;
+
 /**
  * `get_config` and the bounded `set_config` writer, over the owner readers and
  * the three owner writers.
@@ -641,8 +643,6 @@ function parseStoreParam(params: Record<string, unknown>): DesktopConfigStore | 
  * bridge, because the pin and project layers depend on the live session cwd.
  * Reads never write, so a read can never advance a store.
  */
-export type DesktopConfigEmit = (event: string, data: Record<string, unknown>) => void;
-
 export class DesktopConfigBridge {
 	private host: ExtensionContext | undefined;
 	private readonly overrides: DesktopConfigOverrides;
@@ -664,10 +664,13 @@ export class DesktopConfigBridge {
 		// owner files, so the watchers follow it, and the stores whose layers
 		// depend on the cwd are re-read now. One that reads differently from what
 		// this channel last reported is announced as external and re-baselined, so
-		// the next unrelated change does not carry a stale extra event.
+		// the next unrelated change does not carry a stale extra event. A change
+		// the old watchers detected but had not recomputed yet would be dropped
+		// with them, so a pending window flushes every store instead.
 		if (this.emit && this.watchedCwd !== undefined && context.cwd !== this.watchedCwd) {
+			const pending = this.watcher?.hasPending() ?? false;
 			this.watch();
-			this.report(CWD_DEPENDENT_STORES);
+			this.report(pending ? DESKTOP_CONFIG_STORES : CWD_DEPENDENT_STORES);
 		}
 	}
 

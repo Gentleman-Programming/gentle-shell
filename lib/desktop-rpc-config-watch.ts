@@ -33,9 +33,14 @@ export const realDesktopChangeTimers: DesktopChangeTimers = {
 /**
  * Watches one directory and calls `onChange` with the changed entry name when
  * the platform reports one. Answers a closer, or throws when the directory
- * cannot be watched; the caller treats a throw as "no watcher here".
+ * cannot be watched; the caller treats a throw as "no watcher here". When the
+ * directory itself disappears the watcher closes itself and calls `onChange`
+ * one last time with `removed: true`, so the caller can watch for its return.
  */
-export type DesktopDirectoryWatch = (dir: string, onChange: (filename: string | undefined) => void) => () => void;
+export type DesktopDirectoryWatch = (
+	dir: string,
+	onChange: (filename: string | undefined, removed?: boolean) => void,
+) => () => void;
 
 /**
  * `fs.watch` on a directory, non-persistent; a runtime error closes it silently.
@@ -43,7 +48,8 @@ export type DesktopDirectoryWatch = (dir: string, onChange: (filename: string | 
  * When the watched directory itself is removed, Windows keeps reporting events
  * for it indefinitely, which keeps the process alive and never reaches the
  * `error` path. A watcher whose directory is gone is therefore closed on its
- * next event: that directory produces no further external events this session.
+ * next event and reports `removed`; `DesktopDirectoryWatcher` then watches the
+ * nearest existing ancestor until the directory comes back.
  */
 export const watchDesktopDirectory: DesktopDirectoryWatch = (dir, onChange) => {
 	let closed = false;
@@ -60,7 +66,7 @@ export const watchDesktopDirectory: DesktopDirectoryWatch = (dir, onChange) => {
 		if (closed) return;
 		if (!existsSync(dir)) {
 			close();
-			onChange(undefined);
+			onChange(undefined, true);
 			return;
 		}
 		onChange(typeof filename === "string" && filename.length > 0 ? basename(filename) : undefined);
@@ -73,6 +79,8 @@ export interface DesktopDebouncer {
 	/** (Re)starts the window; the callback runs once, `ms` after the last call. */
 	schedule(): void;
 	cancel(): void;
+	/** Whether a window is open, i.e. a change is waiting for its recompute. */
+	pending(): boolean;
 }
 
 export function createDesktopDebouncer(timers: DesktopChangeTimers, ms: number, run: () => void): DesktopDebouncer {
@@ -104,6 +112,7 @@ export function createDesktopDebouncer(timers: DesktopChangeTimers, ms: number, 
 			}, ms);
 		},
 		cancel,
+		pending: () => pending,
 	};
 }
 
@@ -134,7 +143,8 @@ export interface DesktopDirectoryWatcherOptions {
  * When that segment appears, the ancestor watcher is closed and the target is
  * armed again one level closer, until the real directory is watched; each
  * upgrade schedules one recompute, because the owner file may already have been
- * written before the closer watcher existed.
+ * written before the closer watcher existed. A watched directory that is later
+ * removed falls back to the same ancestor watching, so its recreation is seen.
  */
 export class DesktopDirectoryWatcher {
 	private readonly watch: DesktopDirectoryWatch;
@@ -166,6 +176,11 @@ export class DesktopDirectoryWatcher {
 		return this.closers.size;
 	}
 
+	/** Whether a detected change is still waiting for its debounced recompute. */
+	hasPending(): boolean {
+		return !this.disposed && this.debouncer.pending();
+	}
+
 	dispose(): void {
 		this.disposed = true;
 		this.debouncer.cancel();
@@ -183,7 +198,15 @@ export class DesktopDirectoryWatcher {
 			present = false;
 		}
 		if (present) {
-			this.open(dir, (filename) => {
+			const close = this.open(dir, (filename, removed) => {
+				if (removed) {
+					// The real watcher already closed itself; watch for the directory
+					// to come back, and recompute: its stores just changed.
+					if (close) this.release(close);
+					this.arm(dir, names);
+					this.debouncer.schedule();
+					return;
+				}
 				if (filename !== undefined && !names.has(filename)) return;
 				this.debouncer.schedule();
 			});
@@ -226,11 +249,14 @@ export class DesktopDirectoryWatcher {
 	}
 
 	/** Opens one watcher, or none: a directory that cannot be watched is skipped. */
-	private open(dir: string, onEvent: (filename: string | undefined) => void): (() => void) | undefined {
+	private open(
+		dir: string,
+		onEvent: (filename: string | undefined, removed?: boolean) => void,
+	): (() => void) | undefined {
 		try {
-			const close = this.watch(dir, (filename) => {
+			const close = this.watch(dir, (filename, removed) => {
 				if (this.disposed) return;
-				onEvent(filename);
+				onEvent(filename, removed);
 			});
 			if (this.disposed) {
 				safeClose(close);

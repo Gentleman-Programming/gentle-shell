@@ -54,7 +54,7 @@ function fakeClock(): FakeClock {
 
 interface FakeWatch {
 	dir: string;
-	onChange: (filename: string | undefined) => void;
+	onChange: (filename: string | undefined, removed?: boolean) => void;
 	closed: boolean;
 }
 
@@ -64,7 +64,7 @@ function fakeWatches(fails: (dir: string) => boolean = () => false) {
 	return {
 		all,
 		attempts,
-		factory(dir: string, onChange: (filename: string | undefined) => void) {
+		factory(dir: string, onChange: (filename: string | undefined, removed?: boolean) => void) {
 			attempts.push(dir);
 			if (fails(dir)) throw Object.assign(new Error("ENOSPC: watcher limit"), { code: "ENOSPC" });
 			const watch: FakeWatch = { dir, onChange, closed: false };
@@ -81,6 +81,17 @@ function fakeWatches(fails: (dir: string) => boolean = () => false) {
 			for (const watch of all) {
 				if (watch.closed || watch.dir !== dir) continue;
 				watch.onChange(filename);
+				delivered += 1;
+			}
+			return delivered;
+		},
+		/** What the real watcher does when its own directory disappears: close, then report it. */
+		remove(dir: string): number {
+			let delivered = 0;
+			for (const watch of all) {
+				if (watch.closed || watch.dir !== dir) continue;
+				watch.closed = true;
+				watch.onChange(undefined, true);
 				delivered += 1;
 			}
 			return delivered;
@@ -1027,4 +1038,122 @@ test("a permission re-read still in flight when the session resets never emits",
 	hold?.();
 	await settle();
 	assert.deepEqual(events, []);
+});
+
+// ---- Native review follow-ups (#3321): pending recompute on re-target, removed directories, wire() rejections ----
+
+test("a change debounced before a cwd re-target is still reported", (t) => {
+	const root = scratchRoot(t, "gentle-desktop-watch-r3-");
+	const configHome = join(root, "config");
+	const first = join(root, "a");
+	const second = join(root, "b");
+	for (const directory of [first, second]) mkdirSync(directory, { recursive: true });
+	writeJson(profilesFilePath(configHome), profilesNamed(["team", "ops"], "team"));
+	const clock = fakeClock();
+	const watches = fakeWatches();
+	const bridge = new DesktopConfigBridge(
+		{ configHome, agentHome: join(root, "agent"), resolveWorktree: worktreeAt },
+		{ watch: watches.factory, timers: clock },
+	);
+	const events: Array<Record<string, unknown>> = [];
+	bridge.attach({ cwd: first } as unknown as ExtensionContext);
+	bridge.wire((_event, data) => events.push(data));
+
+	writeJson(profilesFilePath(configHome), profilesNamed(["team", "ops"], "ops"));
+	watches.fire(configHome, "profiles.json");
+	// The window has not closed yet when a command binds another cwd.
+	bridge.attach({ cwd: second } as unknown as ExtensionContext);
+	clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS * 2);
+	assert.deepEqual(
+		events.map((data) => [data.store, data.source]),
+		[["profiles", "external"]],
+		"the pending global change is flushed by the re-target, once",
+	);
+	bridge.reset();
+});
+
+test("a removed owner directory is re-armed through its ancestor and reports its recreation once", (t) => {
+	const root = scratchRoot(t, "gentle-desktop-watch-r4-");
+	const configHome = join(root, "config");
+	const cwd = join(root, "ws");
+	mkdirSync(cwd, { recursive: true });
+	writeJson(profilesFilePath(configHome), profilesNamed(["team"], "team"));
+	const clock = fakeClock();
+	const watches = fakeWatches();
+	const bridge = new DesktopConfigBridge(
+		{ configHome, agentHome: join(root, "agent"), resolveWorktree: worktreeAt },
+		{ watch: watches.factory, timers: clock },
+	);
+	const events: Array<Record<string, unknown>> = [];
+	bridge.attach({ cwd } as unknown as ExtensionContext);
+	bridge.wire((_event, data) => events.push(data));
+
+	rmSync(configHome, { recursive: true, force: true });
+	assert.equal(watches.remove(configHome), 1);
+	clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS);
+	assert.deepEqual(events.map((data) => [data.store, data.status]), [["profiles", "missing"]]);
+	assert.ok(
+		watches.open().some((watch) => watch.dir === root),
+		"the nearest existing ancestor watches for the directory to come back",
+	);
+
+	mkdirSync(configHome);
+	writeJson(profilesFilePath(configHome), profilesNamed(["ops"], "ops"));
+	watches.fire(root, "config");
+	assert.ok(watches.open().some((watch) => watch.dir === configHome), "upgraded to the recreated directory");
+	watches.fire(configHome, "profiles.json");
+	clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS);
+	assert.deepEqual(
+		events.slice(1).map((data) => [data.store, data.source, data.status]),
+		[["profiles", "external", "ok"]],
+		"exactly one event for the recreated store",
+	);
+	bridge.reset();
+	assert.deepEqual(watches.open(), []);
+});
+
+test("wire() never rejects when the permission owner throws, and leaves no external events", async () => {
+	const clock = fakeClock();
+	let notify: (() => void) | undefined;
+	const adapter = {
+		read: async () => "OFF",
+		toggle: async () => {},
+		get readSnapshot(): never {
+			throw new Error("owner torn down");
+		},
+		observe: (refresh: () => void) => {
+			notify = refresh;
+			return () => (notify = undefined);
+		},
+		dispose: () => {},
+	};
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => unhandled.push(reason);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		const bridge = new DesktopPermissionBridge({} as ExtensionAPI, async () => adapter as never, { timers: clock });
+		const events: unknown[] = [];
+		bridge.attach({ cwd: "/w" } as unknown as ExtensionContext);
+		await assert.doesNotReject(bridge.wire((_event, data) => events.push(data)));
+		notify?.();
+		clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS);
+		await settle();
+		assert.deepEqual(events, []);
+
+		const failing = new DesktopPermissionBridge(
+			{} as ExtensionAPI,
+			(() => {
+				throw new Error("discovery exploded");
+			}) as never,
+			{ timers: clock },
+		);
+		failing.attach({ cwd: "/w" } as unknown as ExtensionContext);
+		await assert.doesNotReject(failing.wire(() => {}));
+		bridge.reset();
+		failing.reset();
+		await settle();
+		assert.deepEqual(unhandled, []);
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
 });

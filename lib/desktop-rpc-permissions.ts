@@ -131,17 +131,28 @@ export class DesktopPermissionBridge {
 		if (!context) return;
 		this.emit = emit;
 		const generation = this.generation;
-		const adapter = await this.owner(context);
-		if (generation !== this.generation || !adapter || this.unobserve) return;
 		try {
+			const adapter = await this.owner(context);
+			if (generation !== this.generation || !adapter || this.unobserve) return;
 			this.unobserve = adapter.observe(() => this.debouncer.schedule());
+			const epoch = this.reportEpoch;
+			const state = await this.read(context);
+			if (generation !== this.generation || epoch !== this.reportEpoch || !state) return;
+			this.report(state);
 		} catch {
-			return;
+			// A failing owner leaves this session without external permission
+			// events; nothing reaches the caller or the process as a rejection.
+			if (generation !== this.generation) return;
+			this.emit = undefined;
+			this.debouncer.cancel();
+			const unobserve = this.unobserve;
+			this.unobserve = undefined;
+			try {
+				unobserve?.();
+			} catch {
+				/* display-only owner teardown */
+			}
 		}
-		const epoch = this.reportEpoch;
-		const state = await this.read(context);
-		if (generation !== this.generation || epoch !== this.reportEpoch || !state) return;
-		this.report(state);
 	}
 
 	private report(state: PermissionState): void {
@@ -228,8 +239,8 @@ export class DesktopPermissionBridge {
 
 	private async read(context: ExtensionContext): Promise<PermissionState | undefined> {
 		const adapter = await this.owner(context);
-		if (!adapter || typeof adapter.readSnapshot !== "function") return undefined;
 		try {
+			if (!adapter || typeof adapter.readSnapshot !== "function") return undefined;
 			const snapshot = await adapter.readSnapshot();
 			if (!snapshot || snapshot.yolo === YOLO_DISPLAY.unavailable) return undefined;
 			if (!isPermissionMode(snapshot.mode) || !isPermissionMode(snapshot.defaultMode)) return undefined;

@@ -90,6 +90,21 @@ test("T11: probes stay inside the authorized commands or the scratch copy, and v
 	assert.ok(!/\n {2}- (edit|write)\n/.test(tools), "verify must not gain edit or write tools");
 });
 
+test("gentle-shell#3280: preparer support wording keeps safe aliases distinct from dependency links", () => {
+	for (const text of [verify, read("docs/delegated-verification.md")]) containsAll(text, [
+		"tracked internal relative symlink leaves (file aliases and directory skill aliases)",
+		"separately from HEAD/index mode and blob identity",
+		"staged/working retargets, deletions and file/link transitions",
+		"Targets must be present in the tracked or explicitly included regular payload",
+		"aliases never enumerate or copy excluded children",
+		"Absolute, escaping, .git, dangling or cyclic targets",
+		"link chains (including directory targets containing aliases)",
+		"linked ancestors and untracked dependency links remain",
+		"Source node-type and link-target drift fail preparation",
+		"do not claim atomic protection against hostile filesystem races",
+	], "preparer support boundary");
+});
+
 test("gentle-shell#3082: verification inputs bind to named commits, not live files", () => {
 	containsAll(verify, [
 		"Bind verification inputs to the commits the parent named (baseline and candidate), not to live workspace files",

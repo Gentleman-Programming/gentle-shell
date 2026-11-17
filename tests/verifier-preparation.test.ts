@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -35,13 +35,192 @@ function fixture(t: any) {
 	mkdirSync(join(source, "node_modules", "local-dep"), { recursive: true });
 	writeFileSync(join(source, "node_modules", "local-dep", "index.js"), "module.exports = 42;\n");
 	const snapshot = () => [git("status", "--porcelain=v1"), readFileSync(join(source, ".git", "index")).toString("hex"), readFileSync(join(source, "app.cjs"), "utf8")];
-	const prepare = (include: string[], scratch = mkdtempSync(join(root, "copy-")), runtimeArtifacts: string[] = [], requestedBaseline = baseline) => {
-		const result = spawnSync(process.execPath, [fileURLToPath(helper), source, scratch,
+	const prepare = (include: string[], scratch = mkdtempSync(join(root, "copy-")), runtimeArtifacts: string[] = [], requestedBaseline = baseline, preload?: string) => {
+		const result = spawnSync(process.execPath, [...(preload ? ["--import", preload] : []), fileURLToPath(helper), source, scratch,
 			JSON.stringify({ include, baseline: requestedBaseline, runtimeArtifacts, checks: ["node probe.cjs"] })], { env, encoding: "utf8" });
 		return { ...result, scratch, work: join(scratch, "work"), receipt: result.stdout ? JSON.parse(result.stdout) : undefined };
 	};
 	return { root, source, git, baseline, snapshot, prepare };
 }
+
+// #3280: inspect link nodes and Git objects separately, never via dereferenced reads.
+function assertPrepared(f: ReturnType<typeof fixture>, result: ReturnType<ReturnType<typeof fixture>["prepare"]>) {
+	assert.equal(result.status, 0, result.receipt?.reason ?? result.stderr);
+	assert.equal(result.stderr, "");
+	assert.equal(result.receipt.status, "ready");
+	assert.equal(result.receipt.probesRun, 0);
+	for (const args of [["rev-parse", "HEAD"], ["ls-files", "--stage"], ["ls-tree", "-r", "HEAD"]]) {
+		assert.equal(execFileSync("git", args, { cwd: result.work, env, encoding: "utf8" }).trim(), f.git(...args));
+	}
+}
+
+function assertRejected(f: ReturnType<typeof fixture>, result: ReturnType<ReturnType<typeof fixture>["prepare"]>, before: string[]) {
+	assert.equal(result.status, 1);
+	assert.equal(result.stderr, "");
+	assert.equal(result.receipt.status, "setup-failed");
+	assert.match(result.receipt.reason, /unsupported|changed/);
+	assert.equal(result.receipt.probesRun, 0);
+	assert.deepEqual(result.receipt.unrunChecks, ["node probe.cjs"]);
+	assert.deepEqual(f.snapshot(), before);
+}
+
+test("#3280: committed file and skill directory aliases preserve literal text and independent payload in either enumeration order", t => {
+	for (const target of ["a-target", "z-target"]) {
+		const f = fixture(t);
+		mkdirSync(join(f.source, target));
+		writeFileSync(join(f.source, target, "SKILL.md"), "committed skill\n");
+		mkdirSync(join(f.source, ".agents"));
+		symlinkSync(`./${target}/SKILL.md`, join(f.source, "file-alias"));
+		symlinkSync(`../${target}`, join(f.source, ".agents", "skill"), "dir");
+		f.git("add", target, "file-alias", ".agents/skill"); f.git("commit", "-qm", "aliases");
+		writeFileSync(join(f.source, target, "SKILL.md"), "staged skill\n"); f.git("add", target);
+		writeFileSync(join(f.source, target, "SKILL.md"), "working skill\n");
+		writeFileSync(join(f.source, target, "excluded.txt"), "not selected\n");
+		const before = f.snapshot(), result = f.prepare([".agents/skill"]);
+		assertPrepared(f, result);
+		for (const [path, text] of [["file-alias", `./${target}/SKILL.md`], [".agents/skill", `../${target}`]]) {
+			assert.ok(lstatSync(join(result.work, path)).isSymbolicLink());
+			assert.equal(readlinkSync(join(result.work, path)), text);
+			assert.equal(readlinkSync(join(f.source, path)), text);
+			assert.match(f.git("ls-files", "--stage", path), /^120000 /);
+		}
+		assert.equal(readFileSync(join(result.work, target, "SKILL.md"), "utf8"), "working skill\n");
+		assert.equal(execFileSync("git", ["show", `:${target}/SKILL.md`], { cwd: result.work, env, encoding: "utf8" }), "staged skill\n");
+		assert.equal(existsSync(join(result.work, target, "excluded.txt")), false);
+		assert.equal(readFileSync(join(f.source, target, "SKILL.md"), "utf8"), "working skill\n");
+		assert.equal(readFileSync(join(f.source, target, "excluded.txt"), "utf8"), "not selected\n");
+		assert.deepEqual(f.snapshot(), before);
+	}
+});
+
+test("#3280: staged and working retargets, deletions and file/link transitions retain index identity", t => {
+	for (const change of ["retarget", "working-delete", "staged-delete", "link-to-file", "file-to-link", "staged-link-to-file", "staged-file-to-link"]) {
+		const f = fixture(t), path = join(f.source, "alias"), initiallyFile = change.includes("file-to-link");
+		if (initiallyFile) writeFileSync(path, "regular baseline\n"); else symlinkSync("app.cjs", path);
+		f.git("add", "alias"); f.git("commit", "-qm", "alias baseline");
+		unlinkSync(path);
+		if (change === "retarget") {
+			symlinkSync("probe.cjs", path); f.git("add", "alias"); unlinkSync(path); symlinkSync("./staged.md", path);
+		} else if (change === "staged-delete") f.git("add", "alias");
+		else if (change.includes("link-to-file")) {
+			writeFileSync(path, "regular working\n");
+			if (change.startsWith("staged")) f.git("add", "alias");
+		} else if (initiallyFile) {
+			symlinkSync("./app.cjs", path);
+			if (change.startsWith("staged")) f.git("add", "alias");
+		}
+		const before = f.snapshot(), result = f.prepare([]);
+		assertPrepared(f, result);
+		if (change.endsWith("delete")) {
+			assert.equal(existsSync(join(result.work, "alias")), false);
+			assert.equal(existsSync(path), false);
+		} else if (change.includes("link-to-file")) {
+			assert.ok(lstatSync(join(result.work, "alias")).isFile());
+			assert.equal(readFileSync(join(result.work, "alias"), "utf8"), "regular working\n");
+			assert.equal(readFileSync(path, "utf8"), "regular working\n");
+		} else {
+			const expected = change === "retarget" ? "./staged.md" : "./app.cjs";
+			assert.equal(readlinkSync(join(result.work, "alias")), expected);
+			assert.equal(readlinkSync(path), expected);
+		}
+		assert.deepEqual(f.snapshot(), before);
+	}
+});
+
+test("#3280: unsafe tracked links and linked ancestors fail closed without target expansion", t => {
+	for (const kind of ["absolute", "escape", "git", "git-case", "dangling", "self", "pair", "ancestor-cycle", "chain", "linked-parent", "dotdot-link", "untracked-file", "untracked-dir", "deleted-target"]) {
+		const f = fixture(t), alias = join(f.source, "alias");
+		let target = "app.cjs";
+		if (kind === "absolute") target = join(f.source, "app.cjs");
+		if (kind === "escape") target = "../source/app.cjs";
+		if (kind === "git") target = ".git/config";
+		if (kind === "git-case") target = ".GiT/config";
+		if (kind === "dangling") target = "missing";
+		if (kind === "self") target = "alias";
+		if (kind === "ancestor-cycle") target = ".";
+		if (["pair", "chain", "linked-parent", "dotdot-link"].includes(kind)) {
+			symlinkSync(kind === "pair" ? "alias" : kind === "chain" ? "app.cjs" : "node_modules/local-dep", join(f.source, "other"));
+			f.git("add", "other");
+			target = kind === "linked-parent" ? "other/index.js" : kind === "dotdot-link" ? "other/../app.cjs" : "other";
+		}
+		if (kind === "deleted-target") target = "staged.md";
+		if (kind === "untracked-file") target = "selected [x].cjs";
+		if (kind === "untracked-dir") target = "node_modules/local-dep";
+		symlinkSync(target, alias); f.git("add", "alias");
+		if (kind === "deleted-target") unlinkSync(join(f.source, "staged.md"));
+		const before = f.snapshot(), result = f.prepare([]);
+		assertRejected(f, result, before);
+		assert.equal(existsSync(result.work), false);
+		assert.equal(readlinkSync(alias), target);
+	}
+	const f = fixture(t);
+	mkdirSync(join(f.source, "parent")); writeFileSync(join(f.source, "parent", "child"), "tracked\n");
+	f.git("add", "parent/child"); unlinkSync(join(f.source, "parent", "child"));
+	// Move no data through the linked ancestor, even if the destination file exists.
+	rmSync(join(f.source, "parent"), { recursive: true }); symlinkSync("node_modules/local-dep", join(f.source, "parent"), "dir");
+	const before = f.snapshot();
+	assertRejected(f, f.prepare([]), before);
+});
+
+test("#3280: link targets may use explicit regular payload, never untracked dependency links", t => {
+	const f = fixture(t);
+	symlinkSync("node_modules/local-dep", join(f.source, "alias"), "dir"); f.git("add", "alias");
+	const before = f.snapshot(), result = f.prepare(["node_modules/local-dep"]);
+	assertPrepared(f, result);
+	assert.equal(readlinkSync(join(result.work, "alias")), "node_modules/local-dep");
+	assert.equal(readFileSync(join(result.work, "node_modules/local-dep/index.js"), "utf8"), "module.exports = 42;\n");
+	assert.deepEqual(f.snapshot(), before);
+	symlinkSync("local-dep", join(f.source, "node_modules", "linked"), "dir");
+	const linkedBefore = f.snapshot();
+	assertRejected(f, f.prepare(["node_modules/linked"]), linkedBefore);
+});
+
+test("#3280: source node-type and literal link-target drift fail deterministically before readiness", t => {
+	for (const change of ["file-to-link", "link-to-file", "retarget", "linked-ancestor", "before-file-read", "before-link-read", "before-file-write"]) {
+		const f = fixture(t), path = join(f.source, "alias"), regular = change === "file-to-link" || change.startsWith("before-file");
+		if (regular) writeFileSync(path, "module.exports = 3;\n"); else symlinkSync("app.cjs", path);
+		f.git("add", "alias");
+		const index = readFileSync(join(f.source, ".git/index")), head = f.git("rev-parse", "HEAD");
+		const preload = join(f.root, "drift.mjs");
+		// Builtin interception follows the existing syncBuiltinESMExports pattern;
+		// mutate at clone, after a source read, or after a destination write; no sleeps.
+		const mutation = regular ? `fs.unlinkSync(path); fs.symlinkSync('app.cjs', path);` :
+			change === "link-to-file" ? `fs.unlinkSync(path); fs.writeFileSync(path, 'module.exports = 3;\\n');` :
+			change !== "linked-ancestor" ? `fs.unlinkSync(path); fs.symlinkSync('./app.cjs', path);` :
+			`fs.renameSync(source, source + '-saved'); fs.symlinkSync(source + '-saved', source, 'dir');`;
+		const atClone = change.endsWith("-read"), beforeWrite = change === "before-file-write";
+		writeFileSync(preload, `import fs from 'node:fs'; import cp from 'node:child_process'; import { syncBuiltinESMExports } from 'node:module';
+			const source = fs.realpathSync(${JSON.stringify(f.source)}), path = source + '/alias';
+			const host = ${atClone ? "cp" : "fs"}, method = ${JSON.stringify(atClone ? "execFileSync" : beforeWrite ? "readFileSync" : regular ? "writeFileSync" : "symlinkSync")}, original = host[method];
+			let armed = false, fired = false;
+			const clone = cp.execFileSync;
+			if (${beforeWrite}) cp.execFileSync = (...args) => { const result = clone(...args); if (args[1].includes('clone')) armed = true; return result; };
+			host[method] = (...args) => { const result = original(...args);
+				if (!fired && (${atClone ? "args[1].includes('clone')" : beforeWrite ? "armed && String(args[0]) === path" : "String(args[method === 'symlinkSync' ? 1 : 0]).endsWith('/work/alias')"})) { fired = true; ${mutation} }
+				return result; }; syncBuiltinESMExports();`);
+		const result = f.prepare([], undefined, [], f.baseline, preload);
+		assert.equal(result.status, 1, `${change}: ${JSON.stringify(result.receipt)}`);
+		assert.equal(result.receipt.status, "setup-failed");
+		assert.match(result.receipt.reason, /changed/);
+		assert.equal(result.stderr, "");
+		if (change.startsWith("before-")) assert.equal(existsSync(join(result.work, "alias")), false);
+		assert.equal(result.receipt.probesRun, 0);
+		assert.deepEqual(result.receipt.unrunChecks, ["node probe.cjs"]);
+		assert.deepEqual(readFileSync(join(f.source, ".git/index")), index);
+		assert.equal(f.git("rev-parse", "HEAD"), head);
+	}
+});
+
+test("#3280: submodules and conflict stages remain unsupported", t => {
+	for (const conflict of [false, true]) {
+		const f = fixture(t), object = f.git("rev-parse", conflict ? ":app.cjs" : "HEAD");
+		execFileSync("git", ["update-index", "--index-info"], { cwd: f.source, env,
+			input: conflict ? `0 ${"0".repeat(40)}\tapp.cjs\n100644 ${object} 1\tapp.cjs\n100644 ${object} 2\tapp.cjs\n` : `160000 ${object}\tmodule\n` });
+		const before = f.snapshot(), result = f.prepare([]);
+		assertRejected(f, result, before);
+		assert.equal(existsSync(result.work), false);
+	}
+});
 
 test("#3009: actual preparer preserves Git publication, baseline, index and required local inputs", t => {
 	const f = fixture(t), before = f.snapshot();

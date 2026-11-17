@@ -2,7 +2,7 @@
 // Offline, single-root Git preparation. Never runs probes or removes failed scratch.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statfsSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statfsSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -42,37 +42,84 @@ try {
 	if (plan.baseline !== undefined && (typeof plan.baseline !== "string" || !/^[a-f0-9]{40,64}$/.test(plan.baseline))) fail("baseline must be a full commit object ID");
 	const indexPath = join(source, ".git", "index"), indexHash = hash(readFileSync(indexPath));
 	const staged = git(source, ["ls-files", "--stage", "-z"]);
-	if (names(staged).some(entry => !/^100(644|755) [a-f0-9]+ 0\t/.test(entry))) fail("unsupported index: links, submodules or conflicts");
+	if (names(staged).some(entry => !/^(100644|100755|120000) [a-f0-9]+ 0\t/.test(entry))) fail("unsupported index: submodules or conflicts");
 	if (names(git(source, ["ls-files", "-v", "-z"])).some(entry => !entry.startsWith("H "))) fail("unsupported index flags: sparse or assume-unchanged entries");
-	const tracked = names(git(source, ["ls-files", "-z"]));
+	const tracked = new Set(names(git(source, ["ls-files", "-z"])));
 	const files = new Map(), missing = [], excludedRuntimeArtifacts = [];
-	function resolveInput(path) {
+	function resolveInput(path, allowLeafLink = false) {
 		remaining();
 		if (typeof path !== "string" || !path || path.includes("\\") || path.split("/").some(part => !part || part === "." || part === ".." || part.toLowerCase() === ".git") || isAbsolute(path)) fail("unsupported input path: use literal repository-relative paths outside .git");
 		const absolute = join(source, path);
 		if (!inside(source, absolute)) fail("unsupported input outside repository");
-		// Check each ancestor before following directories, including dependency junctions.
-		for (let current = absolute; current !== source; current = dirname(current)) {
-			if (statAt(current)?.isSymbolicLink()) fail("unsupported linked input; provide an independent regular-file dependency payload");
+		// Check root and ancestors top-down BEFORE inspecting a leaf through them.
+		if (!statAt(source)?.isDirectory() || statAt(source)?.isSymbolicLink()) fail("source node type changed during preparation");
+		let current = source;
+		for (const part of path.split("/")) {
+			current = join(current, part);
+			if ((!allowLeafLink || current !== absolute) && statAt(current)?.isSymbolicLink()) fail("unsupported linked input; provide an independent regular-file dependency payload");
 		}
 		return absolute;
 	}
 	function collect(path, required) {
-		const absolute = resolveInput(path), stat = statAt(absolute);
+		const absolute = resolveInput(path, tracked.has(path)), stat = statAt(absolute);
 		if (!stat) { if (required) fail(`required input missing: ${path}`); missing.push(path); return; }
 		if (stat.isDirectory()) {
 			if (!required) fail("unsupported tracked file replaced by directory; no implicit untracked expansion");
 			for (const entry of readdirSync(absolute)) collect(`${path}/${entry}`, true);
 			return;
 		}
-		if (!stat.isFile()) fail(`unsupported required runtime artifact: ${path}`);
+		const kind = stat.isSymbolicLink() ? "link" : "file";
+		if (kind === "file" && !stat.isFile()) fail(`unsupported required runtime artifact: ${path}`);
 		if (files.has(path)) return;
-		payloadBytes += stat.size;
+		payloadBytes += kind === "file" ? stat.size : 0;
 		if (files.size >= MAX_FILES || payloadBytes > MAX_BYTES) fail("payload exceeds preparation limit (20000 files / 256MiB); narrow the complete required payload");
-		files.set(path, { absolute, mode: stat.mode, digest: hash(readFileSync(absolute)) });
+		files.set(path, { absolute, kind, mode: stat.mode, ...(kind === "link" ? { target: readlinkSync(absolute, { encoding: "buffer" }) } : { digest: hash(readFileSync(absolute)) }) });
 	}
 	for (const path of tracked) collect(path, false);
 	for (const path of plan.include) collect(path, true);
+	// Only ordinary collection supplies target payload. Never enumerate through an alias.
+	const payloadDirs = new Set(), linkedDirs = new Set();
+	for (const [path, file] of files) {
+		for (let parent = dirname(path); parent !== "."; parent = dirname(parent)) {
+			(file.kind === "file" ? payloadDirs : linkedDirs).add(parent);
+		}
+	}
+	function linkTarget(root, path, bytes) {
+		const text = bytes.toString("utf8");
+		if (!text || !Buffer.from(text).equals(bytes) || isAbsolute(text) || text.includes("\\")) fail(`unsupported link target: ${path}`);
+		let target = dirname(join(root, path));
+		// Inspect literal components before normalizing '..': linked/../file is not safe.
+		const parts = text.split("/");
+		for (const [index, part] of parts.entries()) {
+			if (!part || part === ".") continue;
+			if (part.toLowerCase() === ".git") fail(`unsupported .git link target: ${path}`);
+			target = resolve(target, part);
+			if (target !== root && !inside(root, target)) fail(`unsupported escaping link target: ${path}`);
+			const stat = statAt(target);
+			if (!stat || stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()) || (index < parts.length - 1 && !stat.isDirectory())) fail(`unsupported dangling or linked target: ${path}`);
+		}
+		return target;
+	}
+	function validateLinks(root) {
+		for (const [path, file] of files) {
+			if (file.kind !== "link") continue;
+			remaining();
+			const target = linkTarget(root, path, file.target), targetPath = relative(root, target);
+			// Directories must have ordinary payload and no nested aliases (chains/cycles).
+			if (files.get(targetPath)?.kind !== "file" && (!payloadDirs.has(targetPath) || linkedDirs.has(targetPath))) fail(`unsupported link target absent from regular payload or cyclic: ${path}`);
+		}
+	}
+	function checkType(path, file) {
+		const stat = statAt(resolveInput(path, true));
+		if (!stat || (file.kind === "link" ? !stat.isSymbolicLink() : !stat.isFile()) || stat.mode !== file.mode) fail("source node type or mode changed during preparation");
+	}
+	function readPayload(path, file) {
+		checkType(path, file);
+		const bytes = file.kind === "link" ? readlinkSync(file.absolute, { encoding: "buffer" }) : readFileSync(file.absolute);
+		if (file.kind === "link" ? !bytes.equals(file.target) : hash(bytes) !== file.digest) fail("source input changed during preparation");
+		return bytes;
+	}
+	validateLinks(source);
 	for (const path of plan.runtimeArtifacts ?? []) {
 		const stat = statAt(resolveInput(path));
 		if (!stat || stat.isFile() || stat.isDirectory()) fail(`runtime artifact must name an existing non-regular input: ${path}`);
@@ -88,15 +135,21 @@ try {
 	git(work, ["read-tree", head]);
 	const patch = git(source, ["diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", head, "--"], undefined, null, 2 * MAX_BYTES);
 	if (patch.length) git(work, ["apply", "--cached", "--binary", "-"], patch);
-	for (const [path, file] of files) {
+	// Materialize regular files first, then literal links; no checkout or alias traversal.
+	for (const kind of ["file", "link"]) for (const [path, file] of files) {
+		if (file.kind !== kind) continue;
 		remaining();
-		const bytes = readFileSync(file.absolute);
-		if (hash(bytes) !== file.digest) fail("source input changed during preparation");
+		const bytes = readPayload(path, file);
 		mkdirSync(dirname(join(work, path)), { recursive: true });
-		writeFileSync(join(work, path), bytes, { mode: file.mode });
+		checkType(path, file);
+		if (kind === "link") symlinkSync(bytes, join(work, path));
+		else writeFileSync(join(work, path), bytes, { mode: file.mode });
 	}
+	for (const [path, file] of files) readPayload(path, file);
+	validateLinks(source);
+	validateLinks(work);
 	if (git(work, ["ls-files", "--stage", "-z"]) !== staged || hash(readFileSync(indexPath)) !== indexHash || git(source, ["rev-parse", "HEAD"]).trim() !== head ||
-		[...files.values()].some(file => hash(readFileSync(file.absolute)) !== file.digest) || missing.some(path => statAt(join(source, path)))) fail("source/index changed or copied index differs; no probes permitted");
+		missing.some(path => statAt(resolveInput(path, true)))) fail("source/index changed or copied index differs; no probes permitted");
 	remaining();
 	console.log(JSON.stringify({ status: "ready", work, head, baseline: plan.baseline ?? head, fileCount: files.size, payloadBytes,
 		durationMs: performance.now() - started, excludedRuntimeArtifacts, probesRun: 0 }));

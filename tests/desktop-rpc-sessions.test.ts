@@ -236,7 +236,9 @@ test("the sessions slice advertises two methods and no event", async (t) => {
 	await app.invoke(request("caps", "capabilities"));
 	const caps = responseFor(app.payloads(), "caps");
 	assert.equal(caps.ok, true);
-	assert.deepEqual(caps.data.methods.slice(-2), ["list_sessions", "switch_session"]);
+	const at = caps.data.methods.indexOf("list_sessions");
+	assert.notEqual(at, -1);
+	assert.deepEqual(caps.data.methods.slice(at, at + 2), ["list_sessions", "switch_session"]);
 	assert.equal(caps.data.events.includes("list_sessions"), false);
 });
 

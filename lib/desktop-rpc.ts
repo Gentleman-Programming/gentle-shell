@@ -20,6 +20,15 @@ export type DesktopRpcDomain = (
 	params: Record<string, unknown>,
 ) => DesktopRpcOutcome | undefined | Promise<DesktopRpcOutcome | undefined>;
 
+/**
+ * Reads `get_snapshot`'s optional session sections. `undefined` means the
+ * request named none, so the legacy snapshot answers unchanged; a success's
+ * `data` becomes `state.session`.
+ */
+export type DesktopRpcSessionReader = (
+	params: Record<string, unknown>,
+) => DesktopRpcOutcome | undefined | Promise<DesktopRpcOutcome>;
+
 type DesktopRpcRequest = {
 	schema: typeof DESKTOP_RPC_SCHEMA;
 	requestId: string;
@@ -93,22 +102,26 @@ export class DesktopRpcRouter {
 	private sequence = 0;
 	private publisher: DesktopRpcPublish | undefined;
 	private readonly methods: readonly string[];
-	private readonly events: readonly string[];
+	/** A list, or a reader for events whose wiring is only known at request time. */
+	private readonly events: readonly string[] | (() => readonly string[]);
 	private readonly state: () => DesktopRpcState;
 	private readonly domain: DesktopRpcDomain | undefined;
+	private readonly session: DesktopRpcSessionReader | undefined;
 	private readonly pending = new Set<PendingRequest>();
 	private gate: DesktopRpcGate | undefined;
 
 	constructor(
 		methods: readonly string[] = DEFAULT_METHODS,
-		events: readonly string[] = [],
+		events: readonly string[] | (() => readonly string[]) = [],
 		state: () => DesktopRpcState = () => ({}),
 		domain?: DesktopRpcDomain,
+		session?: DesktopRpcSessionReader,
 	) {
 		this.methods = methods;
 		this.events = events;
 		this.state = state;
 		this.domain = domain;
+		this.session = session;
 	}
 
 	start(publish: DesktopRpcPublish): void {
@@ -217,6 +230,10 @@ export class DesktopRpcRouter {
 			this.settle(publish, request.requestId, outcome);
 			return;
 		}
+		if (request.method === "get_snapshot" && this.session) {
+			const pending = this.sessionSnapshot(publish, request.requestId, request.params);
+			if (pending !== false) return pending;
+		}
 
 		let data: Record<string, unknown>;
 		try {
@@ -227,7 +244,7 @@ export class DesktopRpcRouter {
 						command: DESKTOP_RPC_COMMAND,
 						widget: DESKTOP_RPC_WIDGET,
 						methods: [...this.methods],
-						events: [...this.events],
+						events: [...(typeof this.events === "function" ? this.events() : this.events)],
 					};
 					break;
 				default:
@@ -239,6 +256,42 @@ export class DesktopRpcRouter {
 			return;
 		}
 		this.settle(publish, request.requestId, { ok: true, data });
+	}
+
+	/**
+	 * `get_snapshot` with session sections: the snapshot is assembled once the
+	 * owner answered, so `sequence` is the one current at answer time. Returns
+	 * `false` when the request named no sections (the legacy read answers).
+	 */
+	private sessionSnapshot(publish: DesktopRpcPublish, requestId: string, params: Record<string, unknown>): false | void | Promise<void> {
+		let outcome: DesktopRpcOutcome | undefined | Promise<DesktopRpcOutcome>;
+		try {
+			outcome = this.session!(params);
+		} catch {
+			this.settle(publish, requestId, { ok: false, error: INTERNAL_ERROR });
+			return;
+		}
+		if (outcome === undefined) return false;
+		const finish = (value: DesktopRpcOutcome | undefined) => {
+			if (!value || value.ok === false) {
+				this.settle(publish, requestId, value ?? { ok: false, error: INTERNAL_ERROR });
+				return;
+			}
+			let data: DesktopRpcState;
+			try {
+				const snapshot = this.snapshot();
+				data = { ...snapshot, state: { ...snapshot.state, session: value.data } };
+			} catch {
+				this.settle(publish, requestId, { ok: false, error: INTERNAL_ERROR });
+				return;
+			}
+			// A read never carries an event.
+			this.settle(publish, requestId, { ok: true, data });
+		};
+		if (isThenable(outcome)) {
+			return Promise.resolve(outcome).then(finish, () => this.settle(publish, requestId, { ok: false, error: INTERNAL_ERROR }));
+		}
+		finish(outcome);
 	}
 
 	private settle(

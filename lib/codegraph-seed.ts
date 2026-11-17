@@ -185,7 +185,9 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 			// different or unreadable nonce) stands down instead of replacing the newer database, and
 			// the caller falls back to init. The displaced lock's own release() is nonce-fenced and
 			// removes nothing.
-			if (leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
+			// An unreadable ACQUISITION nonce stands down the same way: undefined === undefined would
+			// otherwise pass the fence and publish over a database this seed can no longer prove it owns.
+			if (heldNonce === undefined || leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
 				return { outcome: "seed-failed" };
 			}
 			// Sidecars first, the database last: no intermediate state has a database without

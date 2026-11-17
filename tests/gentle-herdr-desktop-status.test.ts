@@ -381,3 +381,14 @@ test("S9 hands clears that failed during replacement to the next session without
 	assert.equal(h.writes.filter(write => write === clear("bg/j")).length, 1);
 });
 
+
+test("S9 retries a failed write after WRITE_RETRY_MS even while a longer TTL timer is armed", () => {
+	const h = harness(); h.fire("session_start");
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", startedAt: 1, status: "failed", endedAt: 2000 }] } });
+	const n = h.writes.length;
+	h.failNextWrites(1); h.emit(TODO, { sessionId: "s1", done: 0, total: 2, current: "X" });
+	assert.equal(h.writes.length, n);
+	h.advance(1000);
+	assert.deepEqual(h.writes.slice(n), [record("todo", `state=working:progress=0:title=${msg("X")}`)]);
+	assert.equal(h.pendingTimers(), 1);
+});

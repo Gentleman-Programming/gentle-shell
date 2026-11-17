@@ -114,7 +114,8 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 				if (name !== undefined) next.set(`ask/${segment(peer)}`, { state: "blocked", kind: "question", title: name, msg: `question from ${name}` });
 			}
 			s.dirty = !apply(s, next);
-			if (s.dirty && !s.cancelTimer) arm(s);
+			// arm keeps the earliest deadline, so a pending TTL timer never delays the retry.
+			if (s.dirty) arm(s);
 		};
 		const arm = (s: Session) => {
 			s.cancelTimer?.(); s.cancelTimer = undefined;

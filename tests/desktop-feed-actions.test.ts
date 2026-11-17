@@ -466,6 +466,15 @@ test("S2: runDesktopAction calls only the owner its kind names", async () => {
 
 // ---- Existing desktop RPC behaviour is unchanged ----
 
+
+/** Channel lines other than the feed's session_snapshot events, without the shared event counter. */
+function withoutSessionSnapshots(lines: Array<string | undefined>): unknown[] {
+	return lines
+		.map((line) => JSON.parse(line!) as Record<string, unknown>)
+		.filter((line) => line.event !== "session_snapshot")
+		.map(({ seq: _seq, ...line }) => line);
+}
+
 test("S2: desktop RPC set_permission_mode answers are byte-identical with the feed and its inbox loaded", async (t) => {
 	const previous = process.env[INTERACTIVE_HOST_ENV];
 	process.env[INTERACTIVE_HOST_ENV] = "1";
@@ -491,7 +500,9 @@ test("S2: desktop RPC set_permission_mode answers are byte-identical with the fe
 	};
 	const without = await run(false);
 	const withFeed = await run(true);
-	assert.deepEqual(withFeed, without);
+	// #3319: the feed also publishes its own session_snapshot events on the
+	// channel; every other line is unchanged, in the same order.
+	assert.deepEqual(withoutSessionSnapshots(withFeed), withoutSessionSnapshots(without));
 	assert.equal(without.length, 5, "two answers with their events and one refusal");
 });
 

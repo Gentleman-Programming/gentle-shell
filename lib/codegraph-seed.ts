@@ -1,6 +1,6 @@
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { acquireInitLock, codegraphWritingIndex, defaultLocksDir, lockPathFor, readLeaseVerdict } from "./codegraph-lease.ts";
+import { acquireInitLock, codegraphWritingIndex, defaultLocksDir, lockPathFor, readLeaseVerdict, type LeaseToken } from "./codegraph-lease.ts";
 import { linkedWorktreeIdentity, SYNC_TIMEOUT_MS } from "./codegraph-readiness.ts";
 import type { SeedOutcome, SeedSyncReport } from "./codegraph-readiness.ts";
 
@@ -41,6 +41,17 @@ function isFile(path: string): boolean {
 		return statSync(path).isFile();
 	} catch {
 		return false;
+	}
+}
+
+/** The init-lock token's nonce when readable and present — the lease module's private readNonce
+ * mirrored here, because the publication fence needs that identity without widening lease.ts's
+ * export surface. */
+function leaseNonce(path: string): string | undefined {
+	try {
+		return (JSON.parse(readFileSync(path, "utf8")) as LeaseToken).nonce;
+	} catch {
+		return undefined;
 	}
 }
 
@@ -89,17 +100,21 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 
 	// Never copy a main index that is being written right now: CodeGraph's own writer lock (any
 	// launcher) or another session's live init lease on the main checkout means a torn copy.
+	const locksDir = input.locksDir ?? defaultLocksDir();
 	const mainBusy =
 		codegraphWritingIndex(main) ||
-		readLeaseVerdict(lockPathFor(main, "init", input.locksDir ?? defaultLocksDir())) === "held-live";
+		readLeaseVerdict(lockPathFor(main, "init", locksDir)) === "held-live";
 	if (mainBusy) return { outcome: "main-busy" };
 
 	const lock = await acquireInitLock(input.cwd, {
-		locksDir: input.locksDir,
+		locksDir,
 		waitMs: input.initLockWaitMs,
 	});
 	if (lock.outcome === "present") return { outcome: "target-exists" };
 	if (lock.outcome === "skipped") return { outcome: "deferred" };
+	// This seed's identity for the publication fence below: the nonce of the init-lock token
+	// just acquired — the lease module's owns() pattern (release and adopt are fenced on it too).
+	const heldNonce = leaseNonce(lockPathFor(input.cwd, "init", locksDir));
 	try {
 		// Re-checked under the lock: another session may have finished while we waited.
 		if (isFile(targetDb)) return { outcome: "target-exists" };
@@ -160,6 +175,17 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 				// A torn or stale copy fails the validating sync in staging, and so does a
 				// sync that emptied the staged index: nothing was published, so the worktree
 				// is exactly as absent as before and init stays possible.
+				return { outcome: "seed-failed" };
+			}
+			// Publication fence, mirroring the lease module's owns() checks: the init lease's TTL is the
+			// hard displacement bound, so this seed can be reclaimed mid-flight — suspended past the
+			// TTL — while another session takes the lease and publishes a newer index into this worktree.
+			// The renames place staged files over whatever the target holds now, so ownership is
+			// re-verified against the CURRENT token immediately before them: a displaced seed (a
+			// different or unreadable nonce) stands down instead of replacing the newer database, and
+			// the caller falls back to init. The displaced lock's own release() is nonce-fenced and
+			// removes nothing.
+			if (leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
 				return { outcome: "seed-failed" };
 			}
 			// Sidecars first, the database last: no intermediate state has a database without

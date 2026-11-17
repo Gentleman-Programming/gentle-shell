@@ -279,11 +279,13 @@ const CODEGRAPH_INDEX_BLOCK_REASON = "CodeGraph: an index already exists for thi
 
 /**
  * The command past its leading whitespace and `FOO=1 BAR=2` assignments — shell syntax, not the
- * command itself — plus whether one of those assignments is a literal
- * `GENTLE_CODEGRAPH_ALLOW_INDEX=1`, the in-command form of the launch-environment override.
- * A quoted value (`FOO="a b"`) is consumed whole, spaces included, so the command after it is
- * still located. Only the exact value `1` — quoted or not — overrides: any other value is an
- * ordinary assignment and the launch environment stays authoritative.
+ * command itself — plus whether those assignments leave `GENTLE_CODEGRAPH_ALLOW_INDEX` at the
+ * literal `1`, the in-command form of the launch-environment override. Every assignment to that
+ * variable updates the state in order, so the LAST one wins exactly as the shell applies them:
+ * `=1 ... =0` leaves no override, `=0 ... =1` is one. A quoted value (`FOO="a b"`) is consumed
+ * whole, spaces included, so the command after it is still located. Only the exact value `1` —
+ * quoted or not — overrides: any other value is an ordinary assignment and the launch
+ * environment stays authoritative.
  */
 function leadingAssignments(command: string): { rest: string; allowIndexOverride: boolean } {
 	let rest = command.trimStart();
@@ -292,7 +294,8 @@ function leadingAssignments(command: string): { rest: string; allowIndexOverride
 	// value may contain that whitespace, so the token spans it as one quoted stretch.
 	const assignment = /^([A-Za-z_][A-Za-z0-9_]*=(?:[^\s"']|"[^"]*"|'[^']*')*)\s+/;
 	for (let match = assignment.exec(rest); match !== null; match = assignment.exec(rest)) {
-		if (unquoteAssignment(match[1]) === "GENTLE_CODEGRAPH_ALLOW_INDEX=1") allowIndexOverride = true;
+		// The shell applies the LAST assignment, so every one updates the state in order.
+		allowIndexOverride = unquoteAssignment(match[1]) === "GENTLE_CODEGRAPH_ALLOW_INDEX=1";
 		rest = rest.slice(match[0].length);
 	}
 	return { rest, allowIndexOverride };
@@ -306,13 +309,28 @@ function unquoteAssignment(token: string): string {
 /**
  * The executable commands of a shell command list: an unquoted `&&`, `||`, `|`, `;`, `&`, or
  * newline ends one command and starts the next, while quotes keep a separator as content — an
- * `echo "codegraph index ."` argument is not a second command.
+ * `echo "codegraph index ."` argument is not a second command. A backslash escapes the next
+ * character outside single quotes, so an escaped quote never opens or closes a quoted section
+ * (`echo \" ; codegraph index .` is two commands, the second a rebuild).
  */
 function shellCommandList(command: string): string[] {
 	const commands: string[] = [];
 	let current = "";
 	let quote: "'" | '"' | undefined;
+	let escaped = false;
 	for (const char of command) {
+		// A backslash outside single quotes makes the next character literal, so an escaped
+		// quote is content, never a quote toggle; inside single quotes it is literal itself.
+		if (escaped) {
+			current += char;
+			escaped = false;
+			continue;
+		}
+		if (char === "\\" && quote !== "'") {
+			current += char;
+			escaped = true;
+			continue;
+		}
 		if (quote !== undefined) {
 			current += char;
 			if (char === quote) quote = undefined;
@@ -805,6 +823,13 @@ export function createCodeGraphTool(
 				return fail(new Error(reason), { reason });
 			}
 			try {
+				// Re-checked under the acquired lock: the other initializer may have finished AND
+				// released while this call waited, so acquisition succeeds with the database already
+				// in place — the free-lease branch is not a completion proof. Rebuilding here would
+				// kill the shared daemon that finished init just serves, so the holder stands down.
+				if (indexExists(cwd) && process.env.GENTLE_CODEGRAPH_ALLOW_INDEX !== "1") {
+					return fail(new Error(CODEGRAPH_INDEX_BLOCK_REASON), { reason: CODEGRAPH_INDEX_BLOCK_REASON });
+				}
 				const result = await runner(args, { cwd, signal, maxBuffer: PROCESS_MAX_BUFFER });
 				return finish(truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n")), { excludeAlways: true });
 			} catch (error: unknown) {
@@ -843,10 +868,13 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			if (event.toolName !== "bash" && event.toolName !== "bash_background") return undefined;
 			const command = (event.input as { command?: unknown }).command;
 			if (typeof command !== "string") return undefined;
-			const rebuild = codegraphIndexCommands(command)[0];
-			if (rebuild === undefined) return undefined;
+			const rebuilds = codegraphIndexCommands(command);
+			if (rebuilds.length === 0) return undefined;
 			const repoRoot = gitTopLevel(ctx.cwd);
-			if (repoRoot === undefined || !indexExists(repoRoot) || process.env.GENTLE_CODEGRAPH_ALLOW_INDEX === "1" || rebuild.allowIndexOverride) return undefined;
+			if (repoRoot === undefined || !indexExists(repoRoot) || process.env.GENTLE_CODEGRAPH_ALLOW_INDEX === "1") return undefined;
+			// The override must ride EVERY rebuild command: one authorized rebuild never
+			// authorizes the rest of the list (`=1 codegraph index .; codegraph init`).
+			if (rebuilds.every((rebuild) => rebuild.allowIndexOverride)) return undefined;
 			return { block: true, reason: CODEGRAPH_INDEX_BLOCK_REASON };
 		} catch {
 			return undefined;

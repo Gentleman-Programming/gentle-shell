@@ -63,11 +63,11 @@ Returns the currently implemented contract; clients must not infer support from 
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
   "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "apply_profile", "list_subagents", "cancel_subagent"],
-  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]
+  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "session_snapshot"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list and cancel, the profile apply, the subagents list and cancel, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, and `agents_update` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list and cancel methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list and cancel methods and its one transition event, not the agent dispatch tools, which stay agent tools. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), and [Subagents limits](#subagents-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list and cancel, the profile apply, the subagents list and cancel, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, and `agents_update` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list and cancel methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list and cancel methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), and [Subagents limits](#subagents-limits).
 
 ### `get_snapshot`
 
@@ -95,6 +95,43 @@ Returns the current event sequence and a bounded state projection:
 The projection carries only store identity, scope, mutability, status, and revision — never store content, never a path. It is the cheap way for a client to notice that one of the six revisions moved and then call `get_config` for that store. `state` is `{}` when no Desktop command has bound a session context yet, or when that context has no working directory: without one, the project and pin layers cannot be read truthfully, so nothing is projected instead of a guess.
 
 This snapshot does not project permission state: use `get_permission_mode` for that. `sequence` is the number of delivered events, so a client that saw `seq: 4` expects `sequence: 4` from a fresh snapshot unless it missed an event.
+
+#### Session sections
+
+`get_snapshot` accepts one optional param, `sections`: the session state the TUI sidebar and the Herdr feed show, read live from the feed owner's projection (`buildDesktopFeedSnapshot`, schema `gentle-shell.desktop-feed/v1`) through an in-process seam, never from the feed's file.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "requestId": "desktop-43",
+  "method": "get_snapshot",
+  "params": { "sections": ["todo", "changes", "activity"] }
+}
+```
+
+Without a `sections` key the request is the legacy read above, byte-for-byte (other params stay ignored as before). With it, params are exactly `{ "sections": [...] }`: a non-empty array of unique names from `project`, `model`, `context`, `cost`, `usage`, `profiles`, `permission`, `todo`, `changes`, `agents`, `jobs`, `review`, `stats`, `activity`, `pendingQuestion`, `commands`. Any other shape, an unknown or repeated name, or an extra key is `invalid_request`, before any owner work. The answer keeps `state.config` exactly as the legacy read and adds `state.session` with the requested sections in that canonical order:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "sequence": 4,
+  "state": {
+    "config": { "stores": ["…as above…"] },
+    "session": {
+      "todo": { "items": [{ "id": 2, "title": "Build feed", "state": "in_progress", "note": null }], "progress": { "done": 1, "total": 2, "open": 1 }, "current": "Build feed", "truncated": false },
+      "changes": {
+        "files": [{ "path": "lib/a.ts", "root": "root-70e56188b8da", "status": "modified", "added": 3, "deleted": 1 }],
+        "summary": { "files": 1, "added": 3, "deleted": 1 },
+        "worktrees": [{ "root": "root-70e56188b8da", "branch": "feat/x", "files": 1 }],
+        "truncated": false
+      },
+      "activity": { "state": "working", "streaming": true, "phase": "implementing", "phaseLabel": "implementing…", "blockedLabel": null, "agents": 0, "jobs": 0, "label": "Working" }
+    }
+  }
+}
+```
+
+Each section is the feed's own shape (see `DesktopFeedSnapshot` in `lib/desktop-feed.ts`) with two path-free changes: `project` is `{ "name", "branch", "dirty" }`, where `name` is the basename of the working directory (`null` for a filesystem root), and in `changes` every worktree `root` is an opaque, stable label (`root-` plus 12 hex characters) while every file carries a `path` relative to its worktree plus that worktree's `root` label (`null`, with the bare file name, for a path no worktree holds). A section the session has nothing for is `null`, as in the feed (`changes` before the first scan, `review` before a review, `pendingQuestion` with no open question). When the feed is not running for this session (the extension is not loaded, the process is not Gentle Shell, or the session is not live) the answer is `session_unavailable`; `get_snapshot` without `sections` is unaffected. A read never emits an event.
 
 ### `get_config`
 
@@ -1136,6 +1173,22 @@ Follows an `apply_profile` answer whose `status` is `applied`, after the respons
 
 `source` is always `desktop`: an apply from the `/gentle:profiles` screen emits nothing on this channel. `confirmation_required`, `not_applied`, and every error emit nothing. Clients that show profile state should re-read `get_config` for `profiles` after this event.
 
+### `session_snapshot`
+
+Carries the session sections whose content changed since the last `session_snapshot` (or since the bridge subscribed at session start), in the same path-free shapes as `get_snapshot`'s `state.session`:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "event",
+  "seq": 5,
+  "event": "session_snapshot",
+  "data": { "sections": { "pendingQuestion": { "kind": "prompt", "question": "Pick one", "terminalOnly": true, "…": "…" } } }
+}
+```
+
+It is emitted when the feed publishes, on the feed's own tiers: within 16 ms for urgent state (an open or answered question, the permission mode, an idle/working/blocked transition, a held prompt), otherwise after a 250 ms debounce, and at most once per second while the session is busy. A flush that changes nothing emits nothing, and a section is included only when its content changed; a job's `elapsedMs`, which moves on every flush, is not a change (derive it from `startedAt`). A client that needs the whole state reads `get_snapshot` with `sections` after connecting or after a sequence gap. Advertised only while the feed seam is wired.
+
 ## Configuration limits
 
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
@@ -1210,6 +1263,13 @@ Follows an `apply_profile` answer whose `status` is `applied`, after the respons
 - **Confirmation is Desktop's job.** The token binds an apply to the title and message that were shown and to the exact saved profile; it is not a proof that a person saw them.
 - **Truthful absence.** When the owning extension is not loaded, `apply_profile` answers `profiles_unavailable` rather than inventing an outcome.
 
+## Session limits
+
+- **One owner, one schema.** `get_snapshot { sections }` and `session_snapshot` read the feed extension's live projection through a defensive, versioned owner-service adapter (`gentle:desktop:session-service`, the session analogue of the jobs seam). There is no second state store, no tool-event replay, and no read of the feed file under the agent home.
+- **Path-free projection.** No `identity` block, no `pid`/`ppid`/`ancestors`, no session file, no agent dir, and no absolute path from the projection crosses the wire: `project.cwd` becomes its basename `project.name`, worktree roots become opaque labels, and file paths are relative to their worktree. Free text the agent or a person wrote (todo titles, question text, command descriptions) is shown as the feed shows it.
+- **Bounded.** Arrays and text keep the feed's own caps (for example 200 changed files, 100 todos, 50 jobs and subagents, 200 commands, 500-character text, 2000-character question text), so the payload never grows with the session's lifetime. The channel has no separate response byte limit; requests stay under 64 KiB.
+- **Truthful absence.** When the feed is not running for the session, `sections` answer `session_unavailable` and `capabilities` omit `session_snapshot` rather than inventing an empty state. The feed runs only in Gentle Shell (not plain Pi), in the TUI or an interactive RPC host, and never in subagent children.
+
 ## Verification
 
 ```sh
@@ -1222,6 +1282,7 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-jobs.test.ts \
   tests/desktop-rpc-agents.test.ts \
   tests/desktop-rpc-profiles.test.ts \
+  tests/desktop-rpc-session.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 
@@ -1234,6 +1295,8 @@ The usage tests use a fake owner service and a fake fetch/modelRegistry only: th
 The jobs tests use the existing background-job fake (the same fake shell operations and monitor controller as the background-jobs tests) and a fake owner service only: they cover the whitelisted projection and field redaction, the bounded running + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`jobs_unavailable`, never a fabricated empty list), the `job_stop` stop path (monitor cancel + registry stop), already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `jobs_update` events with foreign-session filtering, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also drive the real `job_stop` tool to prove the change descriptor distinguishes a running→stopped stop from a no-op stop.
 
 The subagents tests use a real `TaskStore` plus a fake runner (never a child process) and a fake owner service only: they cover the whitelisted model/usage/cost projection and field redaction, the closed `lastStep` vocabulary (raw error/path/secret/provider text never crosses), the bounded active + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`agents_unavailable`, never a fabricated empty list), the `runner.cancel` stop path and its boolean result, already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `agents_update` events with foreign-session filtering, content dedupe and burst coalescing, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also run the real `gentleAgents` owner seam in-process over a fake child (real `TaskStore` + real `AgentRunner`, never a real process): a truthful empty list, a typed `not_found` cancel, a live-task cancel that honors `runner.cancel`'s result with no immediate event and one eventual `agents_update`, and the persisted usage breakdown surviving `saveTask`/`loadStoredTask` restore.
+
+The session tests load the real desktop RPC and feed extensions on one fake Pi with fake timers and an isolated agent home: they cover the strict `sections` params, the path-free projection (basename, opaque roots, relative multi-worktree paths), a byte-identical `get_snapshot` without `sections` with and without the feed, `session_unavailable` and the missing `session_snapshot` capability without the feed, reads that emit no event, and `session_snapshot` carrying only changed sections on the feed's routine (250 ms) and urgent (16 ms) tiers, with no event for an unchanged flush.
 
 The profiles tests use a fake owner service only: they cover param validation, owner absence (`profiles_unavailable`), the result shapes, the `profile_applied` event only after `applied`, and that the token changes with the mode, name, title, message, and profile content. The owner itself is covered in `tests/gentle-ai.test.ts`, which drives the real screen actions in a temporary config home: a default apply asks the screen's diff and writes nothing without its token, a wrong or stale token asks again and writes nothing, an unknown profile writes nothing, a session apply binds without writing shared state, and only one apply runs at a time.
 

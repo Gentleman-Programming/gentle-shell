@@ -25,6 +25,8 @@ import { DesktopJobsBridge } from "../lib/desktop-jobs-service.ts";
 import { DESKTOP_AGENTS_EVENTS, DESKTOP_AGENTS_METHODS } from "../lib/desktop-rpc-agents.ts";
 import { DesktopAgentsBridge } from "../lib/desktop-agents-service.ts";
 import { DESKTOP_PROFILES_EVENTS, DESKTOP_PROFILES_METHODS, DesktopProfilesBridge } from "../lib/desktop-rpc-profiles.ts";
+import { DESKTOP_SESSION_EVENTS } from "../lib/desktop-rpc-session.ts";
+import { DesktopSessionBridge } from "../lib/desktop-session-service.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 
 function publisher(ctx: ExtensionContext): DesktopRpcPublish {
@@ -45,7 +47,9 @@ export default function desktopRpc(pi: ExtensionAPI) {
 	// existing parent-session job registry and monitor controller; subagents
 	// list/cancel delegate to the existing parent-session TaskStore and
 	// AgentRunner; profile applies delegate to the existing `/gentle:profiles`
-	// owner and its own apply actions. None has a store of its own.
+	// owner and its own apply actions; session sections delegate to the live
+	// feed projection (`extensions/gentle-desktop-feed.ts`). None has a store of
+	// its own.
 	const permissions = new DesktopPermissionBridge(pi);
 	const config = new DesktopConfigBridge();
 	const usage = new DesktopUsageBridge(pi);
@@ -53,6 +57,7 @@ export default function desktopRpc(pi: ExtensionAPI) {
 	const jobs = new DesktopJobsBridge(pi);
 	const agents = new DesktopAgentsBridge(pi);
 	const profiles = new DesktopProfilesBridge(pi);
+	const sessions = new DesktopSessionBridge(pi);
 	const domain: DesktopRpcDomain = (method, params) => {
 		// Config is the only synchronous bridge; permission, usage, design, jobs,
 		// profiles, and agents answers are awaited in fall-through order, so an unknown
@@ -74,11 +79,14 @@ export default function desktopRpc(pi: ExtensionAPI) {
 			return agents.handle(method, params);
 		})();
 	};
+	const events = [...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS];
 	const router = new DesktopRpcRouter(
 		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_PROFILES_METHODS, ...DESKTOP_AGENTS_METHODS],
-		[...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS],
+		// `session_snapshot` is advertised only while the feed owner seam is wired.
+		() => (sessions.wired ? [...events, ...DESKTOP_SESSION_EVENTS] : events),
 		() => config.snapshotState(),
 		domain,
+		(params) => sessions.snapshot(params),
 	);
 
 	pi.on("session_start", (_event, ctx) => {
@@ -89,11 +97,13 @@ export default function desktopRpc(pi: ExtensionAPI) {
 		jobs.reset();
 		profiles.reset();
 		agents.reset();
+		sessions.reset();
 		router.stop();
 		if (!isInteractiveRpcHost(ctx.mode)) return;
 		design.attach(ctx);
 		jobs.attach(ctx);
 		agents.attach(ctx);
+		sessions.attach(ctx);
 		router.start(publisher(ctx));
 		// Header-driven usage snapshots (Claude's 5h/7d windows, Codex SSE
 		// headers) become ordered `rate_limit` events through the router.
@@ -113,6 +123,10 @@ export default function desktopRpc(pi: ExtensionAPI) {
 		// request still reaches the app.
 		agents.wire((event, data) => router.emit(event, data));
 		void agents.start();
+		// Feed-published session state becomes ordered `session_snapshot` events
+		// carrying only the changed sections, on the feed's own tiers.
+		sessions.wire((event, data) => router.emit(event, data));
+		void sessions.start();
 	});
 
 	pi.on("session_shutdown", () => {
@@ -123,6 +137,7 @@ export default function desktopRpc(pi: ExtensionAPI) {
 		jobs.reset();
 		profiles.reset();
 		agents.reset();
+		sessions.reset();
 		router.stop();
 	});
 
@@ -137,6 +152,7 @@ export default function desktopRpc(pi: ExtensionAPI) {
 			jobs.attach(ctx);
 			profiles.attach(ctx);
 			agents.attach(ctx);
+			sessions.attach(ctx);
 			await router.handle(args);
 		},
 	});

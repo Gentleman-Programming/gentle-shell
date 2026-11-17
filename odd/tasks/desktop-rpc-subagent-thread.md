@@ -13,7 +13,7 @@ Implements #3323 on branch `feat/desktop-rpc-subagent-thread`. Delivery: single 
 ## Tasks
 
 - T1 [S1,S2,S3,S4,S5] Desktop RPC slice: owner seam, method(s)/event, docs in `docs/desktop-rpc.md`, tests. Route: delegated writer (Writer trigger a: parallel independent units in separate worktrees). Status: done. Commit: 9f7b4f3f2.
-- T2 [S1,S2,S3,S4,S5] Push, PR closing #3323 with `type:feature`. Route: parent. Status: pending.
+- T2 [S1,S2,S3,S4,S5] Push, PR closing #3323 with `type:feature`. Route: parent. Status: done — PR #3334.
 
 ## Log
 
@@ -23,3 +23,4 @@ Implements #3323 on branch `feat/desktop-rpc-subagent-thread`. Delivery: single 
 - L4 (decision, S4): `DesktopAgentsService.thread` is optional in the adapter shape so existing fake adapters (tower, feed tests) still discover; the bridge answers `agents_unavailable` when it is absent.
 - L5 (evidence): RED observed with lib/extensions stashed (`SyntaxError: ... does not provide an export named 'parseDesktopAgentThread'`, 1 fail). GREEN: `tests/desktop-rpc*.test.ts` 185 tests, 184 pass, 1 fail = known Windows 0o600 env failure (`desktop-rpc-permissions.test.ts:191`, fails identically on base); `tests/agents-rpc-publisher.test.ts` pass; maintainer probe (subagent/design/jobs) 3/3 pass; `pnpm run typecheck` 0 diagnostics; `pnpm run check:runtime-modules` pass; `node scripts/verify-package-files.mjs` pass. Importers of changed modules (25 files, `--test-force-exit`): 792 tests, 774 pass, 16 fail = known Windows base failures (desktop-feed 3, desktop-feed-actions 3, desktop-feed-actions-guards 3, gentle-agents 7).
 - L6 (evidence, verifier follow-up): independent verifier found no blockers. Its 8 probes added to `tests/desktop-rpc-agents.test.ts` (relative imports, helpers prefixed `probe*`) and a docs limit line that tool names are not length-capped (follow-up for widget and RPC together). Commit 87aa54e05. `tests/desktop-rpc-agents.test.ts` + `tests/agents-rpc-publisher.test.ts`: 74/74 pass; `tests/desktop-rpc*.test.ts`: 193 tests, 192 pass, 1 fail = known 0o600 env failure; `pnpm run typecheck`: 0 diagnostics.
+- L7 (2026-11-16): Native review (risk, reliability, readability) approved and acknowledged; advisory notes listed in the PR. PR #3334 opened.

@@ -8251,12 +8251,21 @@ test("a job notice survives session switching and is delivered only to its owner
 	const { ctx: other } = fakeContext();
 	Object.assign(other.sessionManager, { getSessionId: () => "s2" });
 	const notices = () => sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+	// The finished sidebar entry rides queueJobNotice itself, so it is the
+	// observable proof that the exit notice is queued for its owner.
+	const snapshots: Array<{ sessionId: string; snapshot: { jobs: Array<{ id: string; label: string; startedAt: number; status?: string }> } }> = [];
+	pi.events.on("gentle-ai:jobs-sidebar", (value) => { snapshots.push(value as typeof snapshots[number]); });
+	const noticeQueued = () => snapshots.some((entry) => entry.snapshot.jobs.some((job) => job.id === "job-1" && job.status === "exited"));
 	try {
 		await fire("session_start", owner);
 		await fire("agent_start", owner);
 		await tools.get("bash_background")!.execute("b1", { command: "make build", label: "owner job" }, undefined, undefined, owner);
 		jobs.runs[0]!.exit(0);
-		await jobIo();
+		// The retention checks below mean anything only while the exit notice is
+		// already queued for the owner: confirm it before the session switch, so
+		// an implementation that drops queued notices on a switch cannot pass by
+		// queuing the notice only after the resume instead.
+		await eventually(noticeQueued, "the owner's exit notice must be queued before the session switch");
 		assert.equal(notices().length, 0, "the busy owner holds the exit notice");
 
 		await fire("session_start", other, { reason: "new" });

@@ -126,6 +126,9 @@ const MISSING_REVISION = { code: "revision_conflict", message: "expectedRevision
 const STALE_REVISION = { code: "revision_conflict", message: "Config changed since expectedRevision was read" } as const;
 const WRITE_FAILED = { code: "write_failed", message: "Config store write failed" } as const;
 
+/** Stores with a layer that the session cwd locates (project layers and pins). */
+const CWD_DEPENDENT_STORES: readonly DesktopConfigStore[] = ["models", "subagents", "pins"];
+
 /** Authoritative stores this slice may write; every other store is read-only. */
 const AUTHORITATIVE_STORES: ReadonlySet<DesktopConfigStore> = new Set(["profiles", "profile_fallbacks", "pins"]);
 
@@ -658,8 +661,14 @@ export class DesktopConfigBridge {
 	attach(context: ExtensionContext): void {
 		this.host = context;
 		// Pin and project layers follow the session cwd: a moved cwd moves the
-		// owner files, so the watchers follow it.
-		if (this.emit && this.watchedCwd !== undefined && context.cwd !== this.watchedCwd) this.watch();
+		// owner files, so the watchers follow it, and the stores whose layers
+		// depend on the cwd are re-read now. One that reads differently from what
+		// this channel last reported is announced as external and re-baselined, so
+		// the next unrelated change does not carry a stale extra event.
+		if (this.emit && this.watchedCwd !== undefined && context.cwd !== this.watchedCwd) {
+			this.watch();
+			this.report(CWD_DEPENDENT_STORES);
+		}
 	}
 
 	/** Session start/shutdown: watchers, baselines, and the emitter belong to one session. */
@@ -709,12 +718,17 @@ export class DesktopConfigBridge {
 	/** Debounced: recompute every revision and report only real, unreported changes. */
 	private recompute(watcher: DesktopDirectoryWatcher): void {
 		if (watcher !== this.watcher) return;
+		this.report(DESKTOP_CONFIG_STORES);
+	}
+
+	/** Emits an external `config_changed` for each given store whose revision moved. */
+	private report(stores: readonly DesktopConfigStore[]): void {
 		const host = this.host;
 		const emit = this.emit;
 		if (!host || !emit) return;
 		const root = withRoots(host, this.overrides);
 		if (!root) return;
-		for (const store of DESKTOP_CONFIG_STORES) {
+		for (const store of stores) {
 			let current: StoreRevision;
 			try {
 				current = storeRevision(store, root);

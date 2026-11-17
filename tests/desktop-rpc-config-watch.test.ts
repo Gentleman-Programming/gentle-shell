@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -99,7 +99,7 @@ test("a burst of directory changes is coalesced into one recompute per debounce 
 	const clock = fakeClock();
 	const watches = fakeWatches();
 	let runs = 0;
-	const watcher = new DesktopDirectoryWatcher(() => (runs += 1), { watch: watches.factory, timers: clock });
+	const watcher = new DesktopDirectoryWatcher(() => (runs += 1), { watch: watches.factory, timers: clock, exists: () => true });
 	assert.equal(watcher.start([{ dir: "/owner", names: ["profiles.json"] }]), 1);
 
 	watches.fire("/owner", "profiles.json");
@@ -118,7 +118,7 @@ test("unrelated entries in a watched directory never schedule a recompute; unnam
 	const clock = fakeClock();
 	const watches = fakeWatches();
 	let runs = 0;
-	const watcher = new DesktopDirectoryWatcher(() => (runs += 1), { watch: watches.factory, timers: clock });
+	const watcher = new DesktopDirectoryWatcher(() => (runs += 1), { watch: watches.factory, timers: clock, exists: () => true });
 	watcher.start([
 		{ dir: "/owner", names: ["profiles.json"] },
 		{ dir: "/owner", names: ["profile-fallbacks.json"] },
@@ -144,7 +144,7 @@ test("a directory that cannot be watched is skipped without throwing", () => {
 	const clock = fakeClock();
 	const watches = fakeWatches((dir) => dir === "/missing");
 	let runs = 0;
-	const watcher = new DesktopDirectoryWatcher(() => (runs += 1), { watch: watches.factory, timers: clock });
+	const watcher = new DesktopDirectoryWatcher(() => (runs += 1), { watch: watches.factory, timers: clock, exists: () => true });
 	assert.equal(
 		watcher.start([
 			{ dir: "/missing", names: ["models.json"] },
@@ -162,6 +162,7 @@ test("a directory that cannot be watched is skipped without throwing", () => {
 			throw new Error("unsupported platform");
 		},
 		timers: clock,
+		exists: () => true,
 	});
 	assert.equal(none.start([{ dir: "/owner", names: ["profiles.json"] }]), 0);
 	none.dispose();
@@ -172,7 +173,7 @@ test("dispose closes every watcher and cancels a pending recompute", () => {
 	const clock = fakeClock();
 	const watches = fakeWatches();
 	let runs = 0;
-	const watcher = new DesktopDirectoryWatcher(() => (runs += 1), { watch: watches.factory, timers: clock });
+	const watcher = new DesktopDirectoryWatcher(() => (runs += 1), { watch: watches.factory, timers: clock, exists: () => true });
 	watcher.start([
 		{ dir: "/a", names: ["x.json"] },
 		{ dir: "/b", names: ["y.json"] },
@@ -580,6 +581,8 @@ test("pin layers are watched in the session worktree and follow a cwd change", a
 	const second = join(root, "second");
 	for (const directory of [configHome, first, second]) mkdirSync(directory, { recursive: true });
 	const resolveWorktree = (_path: string, cwd: string) => ({ root: cwd, commonDir: join(cwd, ".git-common") });
+	const pinDirs = (cwd: string) => [dirname(localProfilePinPath(join(cwd, ".git-common"))), dirname(repoProfileDeclarationPath(cwd))];
+	for (const directory of [...pinDirs(first), ...pinDirs(second)]) mkdirSync(directory, { recursive: true });
 	const clock = fakeClock();
 	const watches = fakeWatches();
 	const bridge = new DesktopConfigBridge(
@@ -590,7 +593,6 @@ test("pin layers are watched in the session worktree and follow a cwd change", a
 	bridge.attach({ cwd: first } as unknown as ExtensionContext);
 	bridge.wire((event, data) => events.push({ event, data }));
 
-	const pinDirs = (cwd: string) => [dirname(localProfilePinPath(join(cwd, ".git-common"))), dirname(repoProfileDeclarationPath(cwd))];
 	const open = () => watches.open().map((watch) => watch.dir);
 	for (const dir of pinDirs(first)) assert.ok(open().includes(dir), `watches ${dir}`);
 	const targets = configWatchTargets({ cwd: first, configHome, agentHome: join(root, "agent"), resolveWorktree });
@@ -703,4 +705,326 @@ test("the real directory watcher closes itself when its directory is removed", {
 	if (seen.length > 0 && !seen.slice(-1).includes("profiles.json")) assert.equal(seen.at(-1), undefined);
 	close();
 	close();
+});
+
+// ---- Verifier follow-ups (#3321): knock-on stores, cwd re-target, late directories ----
+
+const worktreeAt = (_path: string, cwd: string) => ({ root: cwd, commonDir: join(cwd, ".git-common") });
+const pinFile = (profile: string) => ({ kind: PROFILE_PIN_KIND, version: PROFILE_PIN_VERSION, profile });
+function profilesNamed(names: string[], active: string): Record<string, unknown> {
+	return {
+		kind: PROFILES_KIND,
+		version: PROFILES_VERSION,
+		active,
+		profiles: Object.fromEntries(names.map((name) => [name, { explore: { model: "anthropic/claude-explore" } }])),
+	};
+}
+function scratchRoot(t: test.TestContext, prefix: string): string {
+	const root = mkdtempSync(join(tmpdir(), prefix));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	return root;
+}
+
+test("a Desktop profiles write that makes a pin stale reports the pin once, as external", (t) => {
+	const root = scratchRoot(t, "gentle-desktop-watch-p1-");
+	const configHome = join(root, "config");
+	const cwd = join(root, "ws");
+	mkdirSync(cwd, { recursive: true });
+	writeJson(profilesFilePath(configHome), profilesNamed(["team", "ops"], "team"));
+	writeJson(repoProfileDeclarationPath(cwd), pinFile("ops"));
+	const clock = fakeClock();
+	const watches = fakeWatches();
+	const bridge = new DesktopConfigBridge(
+		{ configHome, agentHome: join(root, "agent"), resolveWorktree: worktreeAt },
+		{ watch: watches.factory, timers: clock },
+	);
+	const events: Array<Record<string, unknown>> = [];
+	bridge.attach({ cwd } as unknown as ExtensionContext);
+	bridge.wire((_event, data) => events.push(data));
+
+	const read = bridge.handle("get_config", { store: "profiles" }) as any;
+	const out = bridge.handle("set_config", {
+		store: "profiles",
+		data: profilesNamed(["team"], "team"),
+		expectedRevision: read.data.writeTargets[0].writeRevision,
+	}) as any;
+	assert.equal(out.ok, true);
+	assert.equal(out.event.data.store, "profiles");
+	assert.equal(out.event.data.source, "desktop");
+
+	watches.fire(dirname(profilesFilePath(configHome)), "profiles.json");
+	clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS);
+	watches.fire(dirname(profilesFilePath(configHome)), "profiles.json");
+	clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS);
+	// `source` answers "was this a Desktop write to this store": the pin went stale
+	// as a consequence, so it is reported once, as external; profiles is not echoed.
+	assert.deepEqual(
+		events.map((data) => [data.store, data.source, data.status]),
+		[["pins", "external", "invalid"]],
+	);
+	bridge.reset();
+});
+
+test("a cwd re-target reports cwd-dependent stores that changed and re-baselines them", (t) => {
+	const root = scratchRoot(t, "gentle-desktop-watch-p2-");
+	const configHome = join(root, "config");
+	const first = join(root, "a");
+	const second = join(root, "b");
+	writeJson(profilesFilePath(configHome), profilesNamed(["team", "ops"], "team"));
+	writeJson(repoProfileDeclarationPath(first), pinFile("ops"));
+	mkdirSync(second, { recursive: true });
+	const clock = fakeClock();
+	const watches = fakeWatches();
+	const bridge = new DesktopConfigBridge(
+		{ configHome, agentHome: join(root, "agent"), resolveWorktree: worktreeAt },
+		{ watch: watches.factory, timers: clock },
+	);
+	const events: Array<Record<string, unknown>> = [];
+	bridge.attach({ cwd: first } as unknown as ExtensionContext);
+	bridge.wire((_event, data) => events.push(data));
+
+	bridge.attach({ cwd: second } as unknown as ExtensionContext);
+	assert.deepEqual(
+		events.map((data) => [data.store, data.source, data.status]),
+		[["pins", "external", "missing"]],
+		"the pins of the new cwd differ; models and subagents read the same in both",
+	);
+
+	// An unrelated external change afterwards reports only itself.
+	writeJson(fallbacksFilePath(configHome), { kind: FALLBACKS_KIND, version: FALLBACKS_VERSION, profiles: {} });
+	watches.fire(configHome, "profile-fallbacks.json");
+	clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS);
+	assert.deepEqual(
+		events.map((data) => data.store),
+		["pins", "profile_fallbacks"],
+	);
+
+	// Re-binding the same cwd changes nothing and emits nothing.
+	bridge.attach({ cwd: second } as unknown as ExtensionContext);
+	assert.equal(events.length, 2);
+	bridge.reset();
+});
+
+test("a missing owner directory is watched through its nearest existing ancestor and upgraded once created", (t) => {
+	const root = scratchRoot(t, "gentle-desktop-watch-late-");
+	const target = join(root, "a", "b");
+	const clock = fakeClock();
+	const watches = fakeWatches();
+	let runs = 0;
+	const watcher = new DesktopDirectoryWatcher(() => (runs += 1), { watch: watches.factory, timers: clock });
+	assert.equal(watcher.start([{ dir: target, names: ["x.json"] }]), 1);
+	assert.deepEqual(watches.open().map((watch) => watch.dir), [root], "the nearest existing ancestor, not recursive");
+
+	watches.fire(root, "zzz");
+	watches.fire(root, "a");
+	assert.deepEqual(watches.open().map((watch) => watch.dir), [root], "no upgrade before the segment exists");
+
+	mkdirSync(join(root, "a"));
+	watches.fire(root, "a");
+	assert.deepEqual(watches.open().map((watch) => watch.dir), [join(root, "a")], "one level closer; the ancestor watcher is closed");
+
+	mkdirSync(target);
+	writeFileSync(join(target, "x.json"), "{}\n");
+	watches.fire(join(root, "a"), undefined);
+	assert.deepEqual(watches.open().map((watch) => watch.dir), [target], "upgraded to the real directory");
+	clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS);
+	assert.equal(runs, 1, "the upgrade recomputes once, in case the file was written before the watcher");
+
+	watches.fire(target, "other.json");
+	clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS);
+	assert.equal(runs, 1);
+	watches.fire(target, "x.json");
+	clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS);
+	assert.equal(runs, 2);
+
+	watcher.dispose();
+	assert.deepEqual(watches.open(), []);
+	assert.equal(watches.all.length, 3, "one watcher per step, each closed");
+});
+
+test("a pending ancestor watcher is closed on dispose", (t) => {
+	const root = scratchRoot(t, "gentle-desktop-watch-late-dispose-");
+	const clock = fakeClock();
+	const watches = fakeWatches();
+	let runs = 0;
+	const watcher = new DesktopDirectoryWatcher(() => (runs += 1), { watch: watches.factory, timers: clock });
+	watcher.start([{ dir: join(root, "later"), names: ["x.json"] }]);
+	watcher.dispose();
+	assert.deepEqual(watches.open(), []);
+	mkdirSync(join(root, "later"));
+	for (const watch of watches.all) watch.onChange("later");
+	clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS);
+	assert.equal(runs, 0);
+	assert.deepEqual(watches.open(), [], "a disposed watcher never upgrades");
+});
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+async function waitFor(condition: () => boolean, ms = 3000): Promise<void> {
+	for (let waited = 0; waited < ms && !condition(); waited += 25) await delay(25);
+}
+
+test("real fs.watch: a local pin written into a fresh git-common gentle-ai directory raises exactly one event", { timeout: 20_000 }, async (t) => {
+	const root = scratchRoot(t, "gentle-desktop-watch-real-pin-");
+	const configHome = join(root, "config");
+	const cwd = join(root, "ws");
+	mkdirSync(cwd, { recursive: true });
+	writeJson(profilesFilePath(configHome), profilesNamed(["team"], "team"));
+	const bridge = new DesktopConfigBridge({ configHome, agentHome: join(root, "agent"), resolveWorktree: worktreeAt });
+	const events: Array<Record<string, unknown>> = [];
+	bridge.attach({ cwd } as unknown as ExtensionContext);
+	bridge.wire((_event, data) => events.push(data));
+	t.after(() => bridge.reset());
+	await delay(100);
+
+	writeJson(localProfilePinPath(join(cwd, ".git-common")), pinFile("team"));
+	await waitFor(() => events.length > 0);
+	await delay(800);
+	assert.deepEqual(events.map((data) => [data.store, data.source, data.status]), [["pins", "external", "ok"]]);
+});
+
+// P3 from the verifier probe: real fs.watch and real timers.
+test("real fs.watch: rename-replace, Desktop write, delete, recreate, late .pi directory, reset", { timeout: 30_000 }, async (t) => {
+	const root = scratchRoot(t, "gentle-desktop-watch-real-p3-");
+	const configHome = join(root, "config");
+	const cwd = join(root, "ws");
+	const agentHome = join(root, "agent");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(agentHome, { recursive: true });
+	const path = profilesFilePath(configHome);
+	writeJson(path, profilesNamed(["team", "ops"], "team"));
+	const bridge = new DesktopConfigBridge({ configHome, agentHome, resolveWorktree: worktreeAt });
+	const events: Array<Record<string, unknown>> = [];
+	bridge.attach({ cwd } as unknown as ExtensionContext);
+	bridge.wire((_event, data) => events.push(data));
+	t.after(() => bridge.reset());
+	await delay(100);
+	const since = (start: number) => events.slice(start).map((data) => [data.store, data.status]);
+
+	// Atomic temp + rename replace.
+	writeFileSync(`${path}.tmp123`, JSON.stringify(profilesNamed(["team", "ops"], "ops")));
+	renameSync(`${path}.tmp123`, path);
+	await waitFor(() => events.length > 0);
+	await delay(600);
+	assert.deepEqual(
+		events.map((data) => [data.store, data.source, Object.keys(data).sort().join(",")]),
+		[["profiles", "external", "revision,scope,source,status,store"]],
+	);
+
+	// A Desktop write is never echoed by the real watcher.
+	let start = events.length;
+	const read = bridge.handle("get_config", { store: "profiles" }) as any;
+	const out = bridge.handle("set_config", {
+		store: "profiles",
+		data: profilesNamed(["team", "ops"], "team"),
+		expectedRevision: read.data.writeTargets[0].writeRevision,
+	}) as any;
+	assert.equal(out.ok, true);
+	await delay(800);
+	assert.deepEqual(since(start), []);
+
+	start = events.length;
+	unlinkSync(path);
+	await waitFor(() => events.length > start);
+	await delay(600);
+	assert.deepEqual(since(start), [["profiles", "missing"]]);
+
+	start = events.length;
+	writeJson(path, profilesNamed(["team"], "team"));
+	await waitFor(() => events.length > start);
+	await delay(600);
+	assert.deepEqual(since(start), [["profiles", "ok"]]);
+
+	// `.pi` did not exist at start: the cwd ancestor watcher upgrades to it.
+	start = events.length;
+	writeJson(join(cwd, ".pi", "subagents.json"), { agents: {} });
+	writeJson(repoProfileDeclarationPath(cwd), pinFile("team"));
+	await waitFor(() => new Set(events.slice(start).map((data) => data.store)).size >= 2);
+	await delay(800);
+	const late = since(start).map(([store]) => store as string);
+	assert.deepEqual([...late].sort(), ["pins", "subagents"], "one event per changed store, no duplicates");
+
+	bridge.reset();
+	start = events.length;
+	writeJson(path, profilesNamed(["ops"], "ops"));
+	await delay(600);
+	assert.deepEqual(since(start), [], "nothing after reset");
+});
+
+// P4 from the verifier probe.
+test("an external permission change right after a Desktop set's response is still reported", async () => {
+	const clock = fakeClock();
+	let state = { mode: "normal", defaultMode: "normal" };
+	let notify = () => {};
+	const adapter = {
+		read: async () => "OFF",
+		toggle: async () => {},
+		readSnapshot: async () => ({ yolo: "OFF", mode: state.mode, defaultMode: state.defaultMode }),
+		setMode: async (mode: string) => {
+			state = { ...state, mode };
+			notify();
+			return true;
+		},
+		observe: (refresh: () => void) => {
+			notify = refresh;
+			return () => (notify = () => {});
+		},
+		dispose: () => {},
+	};
+	const bridge = new DesktopPermissionBridge({} as ExtensionAPI, async () => adapter as never, { timers: clock });
+	const events: Array<Record<string, unknown>> = [];
+	bridge.attach({ cwd: "/w" } as unknown as ExtensionContext);
+	await bridge.wire((_event, data) => events.push(data));
+	const out = (await bridge.handle("set_permission_mode", { mode: "yolo" })) as any;
+	assert.equal(out.event.data.source, "desktop");
+	state = { ...state, mode: "auto" };
+	notify();
+	clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS);
+	await settle();
+	assert.deepEqual(events, [{ mode: "auto", previous_mode: "yolo", default_mode: "normal", persisted: false, source: "external" }]);
+
+	// A throwing emitter never propagates into the owner observer or the timer.
+	const throwing = new DesktopPermissionBridge({} as ExtensionAPI, async () => adapter as never, { timers: clock });
+	throwing.attach({ cwd: "/w" } as unknown as ExtensionContext);
+	await throwing.wire(() => {
+		throw new Error("closed");
+	});
+	state = { ...state, mode: "normal" };
+	assert.doesNotThrow(() => notify());
+	assert.doesNotThrow(() => clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS));
+	await settle();
+	throwing.reset();
+	bridge.reset();
+});
+
+// P5 from the verifier probe.
+test("a permission re-read still in flight when the session resets never emits", async () => {
+	const clock = fakeClock();
+	let state = { mode: "normal", defaultMode: "normal" };
+	let notify = () => {};
+	let hold: (() => void) | undefined;
+	const adapter = {
+		read: async () => "OFF",
+		toggle: async () => {},
+		readSnapshot: async () => {
+			if (hold === undefined && state.mode === "yolo") await new Promise<void>((resolve) => (hold = resolve));
+			return { yolo: "OFF", mode: state.mode, defaultMode: state.defaultMode };
+		},
+		observe: (refresh: () => void) => {
+			notify = refresh;
+			return () => (notify = () => {});
+		},
+		dispose: () => {},
+	};
+	const bridge = new DesktopPermissionBridge({} as ExtensionAPI, async () => adapter as never, { timers: clock });
+	const events: Array<Record<string, unknown>> = [];
+	bridge.attach({ cwd: "/w" } as unknown as ExtensionContext);
+	await bridge.wire((_event, data) => events.push(data));
+	state = { ...state, mode: "yolo" };
+	notify();
+	clock.advance(DESKTOP_CHANGE_DEBOUNCE_MS);
+	await delay(5);
+	bridge.reset();
+	hold?.();
+	await settle();
+	assert.deepEqual(events, []);
 });

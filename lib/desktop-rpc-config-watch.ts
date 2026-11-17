@@ -9,7 +9,7 @@
 // this module only decides *when* to recompute them.
 
 import { existsSync, watch as fsWatch } from "node:fs";
-import { basename } from "node:path";
+import { basename, dirname } from "node:path";
 
 /** Debounce window shared by config and permission change detection. */
 export const DESKTOP_CHANGE_DEBOUNCE_MS = 250;
@@ -117,6 +117,8 @@ export interface DesktopDirectoryWatcherOptions {
 	watch?: DesktopDirectoryWatch;
 	timers?: DesktopChangeTimers;
 	debounceMs?: number;
+	/** Directory existence check; injectable so tests can use abstract paths. */
+	exists?: (path: string) => boolean;
 }
 
 /**
@@ -125,15 +127,25 @@ export interface DesktopDirectoryWatcherOptions {
  * unrelated file in a shared directory (a repository's `.pi/`) does not trigger
  * a recompute; an event without a name is always relevant, because some
  * platforms never report one.
+ *
+ * A target directory that does not exist yet (a project without `.pi/`, a fresh
+ * `<git common dir>/gentle-ai/`) is watched through its nearest existing
+ * ancestor, non-recursively, for the creation of the next path segment only.
+ * When that segment appears, the ancestor watcher is closed and the target is
+ * armed again one level closer, until the real directory is watched; each
+ * upgrade schedules one recompute, because the owner file may already have been
+ * written before the closer watcher existed.
  */
 export class DesktopDirectoryWatcher {
 	private readonly watch: DesktopDirectoryWatch;
+	private readonly exists: (path: string) => boolean;
 	private readonly debouncer: DesktopDebouncer;
-	private closers: Array<() => void> = [];
+	private readonly closers = new Set<() => void>();
 	private disposed = false;
 
 	constructor(onChange: () => void, options: DesktopDirectoryWatcherOptions = {}) {
 		this.watch = options.watch ?? watchDesktopDirectory;
+		this.exists = options.exists ?? existsSync;
 		this.debouncer = createDesktopDebouncer(
 			options.timers ?? realDesktopChangeTimers,
 			options.debounceMs ?? DESKTOP_CHANGE_DEBOUNCE_MS,
@@ -141,7 +153,7 @@ export class DesktopDirectoryWatcher {
 		);
 	}
 
-	/** Starts every watcher it can; answers how many directories are watched. */
+	/** Starts every watcher it can; answers how many watchers are open. */
 	start(targets: readonly DesktopWatchTarget[]): number {
 		if (this.disposed) return 0;
 		const byDir = new Map<string, Set<string>>();
@@ -150,31 +162,91 @@ export class DesktopDirectoryWatcher {
 			for (const name of target.names) names.add(name);
 			byDir.set(target.dir, names);
 		}
-		for (const [dir, names] of byDir) {
-			try {
-				const close = this.watch(dir, (filename) => {
-					if (this.disposed) return;
-					if (filename !== undefined && !names.has(filename)) return;
-					this.debouncer.schedule();
-				});
-				if (this.disposed) {
-					safeClose(close);
-					continue;
-				}
-				this.closers.push(close);
-			} catch {
-				/* best effort: this directory simply produces no external events */
-			}
-		}
-		return this.closers.length;
+		for (const [dir, names] of byDir) this.arm(dir, names);
+		return this.closers.size;
 	}
 
 	dispose(): void {
 		this.disposed = true;
 		this.debouncer.cancel();
-		const closers = this.closers;
-		this.closers = [];
+		const closers = [...this.closers];
+		this.closers.clear();
 		for (const close of closers) safeClose(close);
+	}
+
+	private arm(dir: string, names: ReadonlySet<string>): void {
+		if (this.disposed) return;
+		let present: boolean;
+		try {
+			present = this.exists(dir);
+		} catch {
+			present = false;
+		}
+		if (present) {
+			this.open(dir, (filename) => {
+				if (filename !== undefined && !names.has(filename)) return;
+				this.debouncer.schedule();
+			});
+			return;
+		}
+		const pending = this.nearestExisting(dir);
+		if (!pending) return;
+		let upgraded = false;
+		const close = this.open(pending.ancestor, (filename) => {
+			if (upgraded) return;
+			if (filename !== undefined && filename !== basename(pending.next)) return;
+			let created: boolean;
+			try {
+				created = this.exists(pending.next);
+			} catch {
+				created = false;
+			}
+			if (!created) return;
+			upgraded = true;
+			if (close) this.release(close);
+			this.arm(dir, names);
+			this.debouncer.schedule();
+		});
+	}
+
+	/** The closest existing ancestor of `dir` and the missing child below it. */
+	private nearestExisting(dir: string): { ancestor: string; next: string } | undefined {
+		let next = dir;
+		let ancestor = dirname(dir);
+		while (ancestor !== next) {
+			try {
+				if (this.exists(ancestor)) return { ancestor, next };
+			} catch {
+				return undefined;
+			}
+			next = ancestor;
+			ancestor = dirname(ancestor);
+		}
+		return undefined;
+	}
+
+	/** Opens one watcher, or none: a directory that cannot be watched is skipped. */
+	private open(dir: string, onEvent: (filename: string | undefined) => void): (() => void) | undefined {
+		try {
+			const close = this.watch(dir, (filename) => {
+				if (this.disposed) return;
+				onEvent(filename);
+			});
+			if (this.disposed) {
+				safeClose(close);
+				return undefined;
+			}
+			this.closers.add(close);
+			return close;
+		} catch {
+			/* best effort: this directory simply produces no external events */
+			return undefined;
+		}
+	}
+
+	private release(close: () => void): void {
+		this.closers.delete(close);
+		safeClose(close);
 	}
 }
 

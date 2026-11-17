@@ -315,6 +315,34 @@ test("an earlier-boot token of this machine is reclaimable stale once expired: t
 	assert.equal(readLeaseVerdict(path, now), "held-stale", "a live-looking writer pid from an earlier boot must not hold the expired token forever");
 });
 
+test("a same-boot token from another PID namespace is not a reboot: unknown, never stealable", (t) => {
+	const host = localHostIdentity();
+	const machine = localMachineIdentity();
+	if (host === null || machine === null || !host.startsWith("linux:")) {
+		t.skip("same-boot PID namespaces exist only on linux with derivable identity");
+		return;
+	}
+	const match = /^(linux:[0-9a-f-]{36}):pid:\[(\d+)\]$/.exec(host);
+	assert.ok(match, "the linux host identity carries the boot id and PID namespace");
+	const otherNamespace = match[2] === "4026531836" ? "4026531840" : "4026531836";
+	const sameBootOtherNs = `${match[1]}:pid:[${otherNamespace}]`;
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+
+	// Two containers of one boot share the machine id and boot id and differ only in PID
+	// namespace: their holders are live pids of THIS boot, so an expired token from the sibling
+	// namespace may not be read as from an earlier boot — the mismatch stays fail-closed, the
+	// lease is never reclaimed from the live sibling. deadPid() proves the verdict is
+	// boot-driven, not pid-driven.
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now - 120_000, expiresAt: now + 60_000, host: sameBootOtherNs, machine });
+	assert.notEqual(readLeaseVerdict(path, now), "held-stale", "unexpired, a same-boot other-namespace token is never stale");
+
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now - 120_000, expiresAt: now - 1, host: sameBootOtherNs, machine });
+	assert.equal(readLeaseVerdict(path, now), "unknown", "expired, a same-boot other-namespace token is not a reboot: unknown, not stale");
+	assert.equal(tryAcquireLease(path, "init", 600_000, now), undefined, "never stealable while the holder's boot is still running");
+});
+
 test("a foreign machine's token, or a legacy boot-only token, stays unknown across reboots: never stealable", (t) => {
 	const host = localHostIdentity();
 	const machine = localMachineIdentity();

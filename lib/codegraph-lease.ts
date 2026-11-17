@@ -86,6 +86,17 @@ function deriveHostIdentity(): string | null {
 	return null;
 }
 
+/**
+ * The boot-scoped half of a holder identity — darwin:<boot> / linux:<boot> without the PID
+ * namespace: two containers of one boot share it while differing in namespace, so only a change
+ * of this half proves the token's pids died with an earlier boot. Null when the string is not a
+ * host identity this module could have written.
+ */
+function bootScopeOf(host: string): string | null {
+	const match = /^((?:darwin|linux):[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?::pid:\[\d+\])?$/i.exec(host);
+	return match === null ? null : match[1].toLowerCase();
+}
+
 let cachedMachineIdentity: string | null | undefined;
 
 /**
@@ -173,13 +184,18 @@ export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: s
 	// Reboot recovery: a token whose machine-stable identity matches this machine but whose
 	// boot-scoped identity does not was written before this machine's last reboot — every pid it
 	// records (holder, proxy, or adopted writer) died with that boot and cannot be probed alive
-	// here, even where a coincidental live pid answers to the same number. Expired, such a token
+	// here, even where a coincidental live pid answers to the same number. Only a verified BOOT
+	// change proves that: two containers of the same boot share the machine id and boot id and
+	// differ only in PID namespace — their holders are live pids of this boot, so a namespace
+	// mismatch alone is not a reboot and stays fail-closed below. Expired, a rebooted token
 	// is reclaimable stale (the wedge is bounded by the TTL); unexpired it stays fail-closed
 	// until its TTL bounds it; a different machine or a legacy token without the machine part
 	// keeps the unknown verdict exactly as before.
 	if (
 		token.host !== undefined && token.machine !== undefined &&
-		token.machine === leaseMachineIdentity() && token.host !== leaseHostIdentity()
+		token.machine === leaseMachineIdentity() &&
+		bootScopeOf(token.host) !== null && bootScopeOf(leaseHostIdentity() ?? "") !== null &&
+		bootScopeOf(token.host) !== bootScopeOf(leaseHostIdentity() ?? "")
 	) {
 		return token.expiresAt <= now ? "held-stale" : "unknown";
 	}

@@ -345,6 +345,34 @@ test("an expired host-less lease whose holder pid is alive is never reclaimable 
 	assert.equal(tryAcquireLease(lockPath, "init", 600_000, Date.now()), undefined, "the reclaim the displacement fixtures rely on is refused for this token shape");
 });
 
+test("a seed whose init-lock nonce is unreadable at publication stands down", async (t) => {
+	const { worktree } = worktreePair(t);
+	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-unreadable-"));
+	t.after(() => rmSync(sandbox, { recursive: true, force: true }));
+	const locksDir = join(sandbox, "locks");
+	const lockPath = lockPathFor(worktree, "init", locksDir);
+	const { input } = seedHarness(worktree, {
+		locksDir,
+		run: async () => {
+			// The token becomes unreadable between validation and publication: a directory
+			// at the lock path makes every nonce read fail (EISDIR) — the unreadable shape,
+			// not the replaced-token shape the displacement test covers. (An acquisition-time
+			// undefined nonce cannot be produced through this interface: the lease is only
+			// acquired after its own nonce write reads back, so the fence's heldNonce guard
+			// is fail-closed hardening for that side of the contract.)
+			rmSync(lockPath, { force: true });
+			mkdirSync(lockPath);
+			return true;
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed", "an unreadable nonce is nobody's proof of ownership: the seed stands down");
+	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "nothing is published over a database the seed can no longer prove it owns");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore"], "staging is cleaned and the worktree stays exactly as absent as before");
+});
+
 test("retryTransient retries transient codes with backoff and fails others at once", async () => {
 	const sleeps: number[] = [];
 	const sleep = async (ms: number) => {

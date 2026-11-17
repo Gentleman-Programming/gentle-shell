@@ -180,7 +180,7 @@ test("installed Pi dispatches Desktop RPC without adding conversation messages",
 		assert.equal(response.kind, "response");
 		assert.equal(response.requestId, "real-1");
 		assert.equal(response.ok, true);
-		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_review_mode", "set_review_mode", "get_usage_stats"]);
+		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status"]);
 		assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed"]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -406,6 +406,52 @@ test("installed Pi serves the owner-loaded empty job list without starting a job
 		assert.equal(JSON.stringify(payloads).includes("command"), false, "no command text leaks into the wire");
 		assert.equal(JSON.stringify(payloads).includes("outputPath"), false, "no output path leaks into the wire");
 	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+/**
+ * Real production wiring for the update-status slice: the installed runtime
+ * reads its own version, the channel record, and Pi's package listing. The
+ * probe runs with `PI_OFFLINE=1`, so even `refresh: true` looks nothing up and
+ * every looked-up item stays unknown — never "up to date".
+ */
+test("installed Pi serves offline update status without a lookup and without paths", async () => {
+	const root = isolatedRoot("desktop-rpc-updates-");
+	const probe = new LiveProbe(root, [desktopExtension]);
+	try {
+		const responseFor = (requestId: string) => probe.waitFor(
+			(record) => record.type === "extension_ui_request" && record.widgetKey === DESKTOP_RPC_WIDGET &&
+				JSON.parse(record.widgetLines[0]).kind === "response" &&
+				JSON.parse(record.widgetLines[0]).requestId === requestId,
+			`response ${requestId}`,
+		).then((record) => JSON.parse(record.widgetLines[0]));
+
+		// The refresh is sent only after the plain read answered: each request
+		// is a separate prompt, and the probe keeps one in flight at a time.
+		for (const [id, params] of [["updates-1", {}], ["updates-2", { refresh: true }]] as const) {
+			probe.send(prompt(`prompt-${id}`, desktopRequest(id, "get_update_status", params)));
+			const status = await responseFor(id);
+			assert.equal(status.ok, true, JSON.stringify(status));
+			assert.equal(status.data.offline, true);
+			assert.equal(status.data.refreshed, false);
+			assert.equal(status.data.gentleShell.channel, "release", "no channel record means release");
+			assert.equal(status.data.gentleShell.command, "gentle-shell upgrade");
+			assert.notEqual(status.data.gentleShell.state, "up_to_date");
+			assert.match(status.data.pi.current, /^\d+\.\d+\.\d+/);
+			assert.deepEqual([status.data.pi.latest, status.data.pi.state], [null, "unknown"]);
+			assert.deepEqual(status.data.packages, { available: true, items: [], truncated: false, command: "gentle-shell update --extensions", checkedAt: null });
+		}
+		const payloads = probe.desktopPayloads();
+		assert.equal(payloads.some((payload) => payload.kind === "event"), false, "a read emits nothing");
+		const wire = JSON.stringify(payloads);
+		assert.equal(wire.includes(root) || wire.includes(JSON.stringify(root).slice(1, -1)), false, "no absolute path leaks into the wire");
+
+		const closed = await probe.close();
+		assert.equal(closed.status, 0, closed.stderr);
+		assert.equal(closed.stderr, "");
+	} finally {
+		probe.kill();
 		rmSync(root, { recursive: true, force: true });
 	}
 });

@@ -773,3 +773,83 @@ test("installed Pi answers every request exactly once while a switch is in fligh
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+/** Two saved sessions in the probe's workspace: `sess-a`, and the newer `sess-b`. */
+function seedSwitchSessions(root: string): void {
+	const workspace = join(root, "workspace");
+	const seeded = Date.UTC(2026, 10, 1);
+	for (const [id, offset] of [["sess-a", 0], ["sess-b", 5000]] as const) {
+		const at = seeded + offset;
+		const header = { type: "session", version: 3, id, timestamp: new Date(at).toISOString(), cwd: workspace };
+		const message = {
+			type: "message",
+			id: `${id}-m1`,
+			parentId: null,
+			timestamp: new Date(at + 1000).toISOString(),
+			message: { role: "user", content: [{ type: "text", text: `${id} question` }], timestamp: at + 1000 },
+		};
+		writeFileSync(join(root, "sessions", `${new Date(at).toISOString().replace(/[:.]/g, "-")}_${id}.jsonl`), `${JSON.stringify(header)}\n${JSON.stringify(message)}\n`);
+	}
+}
+
+/**
+ * Sends `burst` back to back on a fresh runtime, waits for one response per
+ * request plus a settle window for late duplicates, and returns each request's
+ * responses and the session the following `list_sessions` reports as current.
+ */
+async function switchBurst(prefix: string, burst: Array<[string, string, Record<string, unknown>]>) {
+	const root = isolatedRoot(prefix);
+	seedSwitchSessions(root);
+	const probe = new LiveProbe(root, [desktopExtension]);
+	try {
+		const responses = (requestId: string) => probe.desktopPayloads().filter((payload) => payload.kind === "response" && payload.requestId === requestId);
+		const responseFor = (requestId: string) => probe.waitFor(
+			(record) => record.type === "extension_ui_request" && record.widgetKey === DESKTOP_RPC_WIDGET &&
+				JSON.parse(record.widgetLines[0]).kind === "response" &&
+				JSON.parse(record.widgetLines[0]).requestId === requestId,
+			`response ${requestId}`,
+		).then((record) => JSON.parse(record.widgetLines[0]));
+		burst.forEach(([requestId, method, params]) => probe.send(prompt(`prompt-${requestId}`, desktopRequest(requestId, method, params))));
+		for (const [requestId] of burst) await responseFor(requestId);
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 1000));
+		const answers = new Map(burst.map(([requestId]) => [requestId, responses(requestId)]));
+		probe.send(prompt("prompt-final", desktopRequest("final", "list_sessions")));
+		const final = await responseFor("final");
+		const current = final.data.sessions.filter((session: any) => session.current).map((session: any) => session.id);
+		const closed = await probe.close();
+		assert.equal(closed.status, 0, closed.stderr);
+		return { answers, current };
+	} finally {
+		probe.kill();
+		rmSync(root, { recursive: true, force: true });
+	}
+}
+
+test("installed Pi refuses a second back-to-back switch to the same id and keeps the first", async () => {
+	const { answers, current } = await switchBurst("desktop-rpc-sessions-twice-", [
+		["sw-x1", "switch_session", { id: "sess-b" }],
+		["sw-x2", "switch_session", { id: "sess-b" }],
+	]);
+	assert.equal(answers.get("sw-x1")!.length, 1, "exactly one response for sw-x1");
+	assert.equal(answers.get("sw-x2")!.length, 1, "exactly one response for sw-x2");
+	assert.deepEqual(answers.get("sw-x1")![0].data, { id: "sess-b", changed: true });
+	assert.equal(answers.get("sw-x2")![0].error.code, "session_switching");
+	assert.deepEqual(current, ["sess-b"]);
+});
+
+test("installed Pi refuses get_snapshot, capabilities, and list_jobs sent during a switch exactly once each", async () => {
+	const { answers, current } = await switchBurst("desktop-rpc-sessions-reads-", [
+		["sw-y", "switch_session", { id: "sess-a" }],
+		["snap", "get_snapshot", {}],
+		["caps", "capabilities", {}],
+		["jobs", "list_jobs", {}],
+	]);
+	assert.equal(answers.get("sw-y")!.length, 1);
+	assert.deepEqual(answers.get("sw-y")![0].data, { id: "sess-a", changed: true });
+	for (const id of ["snap", "caps", "jobs"]) {
+		assert.equal(answers.get(id)!.length, 1, `exactly one response for ${id}`);
+		assert.equal(answers.get(id)![0].ok, false, id);
+		assert.equal(answers.get(id)![0].error.code, "session_switching", id);
+	}
+	assert.deepEqual(current, ["sess-a"]);
+});

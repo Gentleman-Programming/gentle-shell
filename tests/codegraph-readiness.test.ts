@@ -708,6 +708,81 @@ test("runCodegraphSeedSync: a sync that swaps one entry for another still report
 	assert.deepEqual(report, { ok: true, removedEntries: true }, "a same-count swap still dropped a tracked entry: the SeedSyncReport must say so");
 });
 
+test("runCodegraphSeedSync: a multibyte tracked path split across stdout chunks survives the identity comparison", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	// The before-listing splits é (UTF-8 C3 A9) between two stdout writes with a pause between
+	// them, so the runner's capture sees two Buffer chunks; the after-listing prints the same
+	// bytes whole. A per-chunk decode corrupts the before-listing into caf\uFFFD and the identity
+	// comparison reports a removal for a file that is still tracked. The stderr capture gets the
+	// same split treatment, and its decoded tail must come back intact too.
+	const bin = dir(t, "seed-split-bin");
+	const listing = `${JSON.stringify([{ path: "src/café.ts", language: "typescript", nodeCount: 1 }])}\n`;
+	// é is the two UTF-8 bytes C3 A9: the boundary between them is the split point (a per-chunk
+	// decode turns each side into a replacement character).
+	const eAccent = Buffer.from("é", "utf8");
+	const bytes = Buffer.from(listing, "utf8");
+	const splitAt = bytes.indexOf(eAccent) + 1; // between é's two UTF-8 bytes
+	writeFileSync(join(bin, "paths-head"), bytes.subarray(0, splitAt));
+	writeFileSync(join(bin, "paths-tail"), bytes.subarray(splitAt));
+	const pathsFile = join(bin, "paths.json");
+	writeFileSync(pathsFile, bytes);
+	const errBytes = Buffer.from("stderr: src/café.ts\n", "utf8");
+	const errSplitAt = errBytes.indexOf(eAccent) + 1;
+	writeFileSync(join(bin, "err-head"), errBytes.subarray(0, errSplitAt));
+	writeFileSync(join(bin, "err-tail"), errBytes.subarray(errSplitAt));
+	const splitDone = join(bin, "split-done");
+	writeFileSync(join(bin, "codegraph"), [
+		"#!/bin/sh",
+		'case "$1" in',
+		"  files)",
+		'    if [ -f "$FAKE_SPLIT_DONE" ]; then',
+		'      cat "$FAKE_PATHS"',
+		"    else",
+		'      cat "$FAKE_HEAD"',
+		'      cat "$FAKE_ERR_HEAD" >&2',
+		"      sleep 0.2",
+		'      cat "$FAKE_TAIL"',
+		'      cat "$FAKE_ERR_TAIL" >&2',
+		'      touch "$FAKE_SPLIT_DONE"',
+		"    fi",
+		"    ;;",
+		"  sync) : ;;",
+		"esac",
+		"exit 0",
+	].join("\n"));
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.FAKE_PATHS = pathsFile;
+	process.env.FAKE_HEAD = join(bin, "paths-head");
+	process.env.FAKE_TAIL = join(bin, "paths-tail");
+	process.env.FAKE_ERR_HEAD = join(bin, "err-head");
+	process.env.FAKE_ERR_TAIL = join(bin, "err-tail");
+	process.env.FAKE_SPLIT_DONE = splitDone;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		delete process.env.FAKE_PATHS;
+		delete process.env.FAKE_HEAD;
+		delete process.env.FAKE_TAIL;
+		delete process.env.FAKE_ERR_HEAD;
+		delete process.env.FAKE_ERR_TAIL;
+		delete process.env.FAKE_SPLIT_DONE;
+	});
+	const worktree = dir(t, "seed-split-wt");
+	mkdirSync(join(worktree, "src"), { recursive: true });
+	writeFileSync(join(worktree, "src", "a.ts"), "export const a = 1;\n");
+	const staging = join(worktree, ".codegraph", "seed-ab12cd");
+	mkdirSync(join(staging, ".codegraph"), { recursive: true });
+	writeFileSync(join(staging, ".codegraph", "codegraph.db"), "index-bytes");
+	const stderrTails: string[] = [];
+	const report = await runCodegraphSeedSync(["sync", "-q"], staging, 10_000, undefined, (info) => {
+		if (info.stderrTail !== undefined) stderrTails.push(info.stderrTail);
+	});
+	assert.deepEqual(report, { ok: true, removedEntries: false }, "the multibyte path split across chunks is the same tracked identity before and after the sync");
+	assert.ok(stderrTails.some((tail) => tail.includes("stderr: src/café.ts")), "the stderr tail decodes its split multibyte bytes intact");
+	assert.equal(existsSync(splitDone), true, "the split before-listing ran exactly once");
+});
+
 test("runCodegraphSeedSync: a staging copy whose tracked files cannot be listed fails closed", async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
 	const bin = dir(t, "seed-torn-bin");

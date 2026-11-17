@@ -22,6 +22,11 @@ export interface LeaseToken {
 	/** The holder's host and PID-namespace identity (boot id based): a pid is judged dead only on
 	 * the machine that wrote the token; absent when the platform cannot derive one. */
 	host?: string;
+	/** The machine-stable part of the holder's identity (reboot-invariant): with the boot-scoped
+	 * `host` it proves a same-machine token from an earlier boot — whose pids died with that boot —
+	 * reclaimable once expired, instead of an unknown wedge after every reboot. Absent on legacy
+	 * tokens and platforms without a derivable machine identity (those keep the legacy verdict). */
+	machine?: string;
 	/** The codegraph process this holder spawned, when observed: on win32 a shell wraps it. */
 	writerPid?: number;
 	/** The spawn was shelled (a cmd.exe wrapper): this pid is a proxy, not the real writer. */
@@ -81,6 +86,45 @@ function deriveHostIdentity(): string | null {
 	return null;
 }
 
+let cachedMachineIdentity: string | null | undefined;
+
+/**
+ * This machine's reboot-invariant identity: the darwin IOPlatformUUID, or the linux
+ * /etc/machine-id. It complements the boot-scoped leaseHostIdentity: a token whose machine part
+ * matches but whose boot part differs was written before this machine's last reboot, so every
+ * pid it records died with that boot (pids do not survive a reboot) — reclaimable once expired
+ * instead of wedging as unknown until manual cleanup. Null means this platform cannot derive
+ * one, and cross-boot recovery stays fail-closed exactly as before. Adding the derived value to
+ * new tokens is the deliberate migration: legacy tokens without it keep the legacy verdict.
+ */
+export function leaseMachineIdentity(): string | null {
+	if (cachedMachineIdentity === undefined) cachedMachineIdentity = deriveMachineIdentity();
+	return cachedMachineIdentity;
+}
+
+function deriveMachineIdentity(): string | null {
+	try {
+		if (process.platform === "darwin") {
+			const registry = execFileSync("/usr/sbin/ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], { encoding: "utf8", timeout: 1000, maxBuffer: 16_384, stdio: ["ignore", "pipe", "pipe"] });
+			const uuid = /"IOPlatformUUID" = "([0-9a-f-]{36})"/i.exec(registry)?.[1];
+			if (uuid !== undefined) return `darwin:${uuid.toLowerCase()}`;
+		}
+		if (process.platform === "linux") {
+			for (const file of ["/etc/machine-id", "/var/lib/dbus/machine-id"]) {
+				try {
+					const id = readFileSync(file, "utf8").trim();
+					if (/^[0-9a-f]{32}$/.test(id)) return `linux:${id}`;
+				} catch {
+					/* absent: try the other spelling */
+				}
+			}
+		}
+	} catch {
+		/* no fallback: an unverifiable machine never gets cross-boot verdicts */
+	}
+	return null;
+}
+
 /**
  * Reads a token file and judges it. An expired token or a dead holder is stale (stealable) — but
  * only on the host that can prove the holder's pid local (see leaseHostIdentity); anywhere else
@@ -92,7 +136,10 @@ function deriveHostIdentity(): string | null {
  * token back to held-live, because a live writer is never unlocked under. Expiry is the hard
  * displacement bound: an expired token is reclaimed even while its local holder's pid still lives
  * (a wedged holder must not keep the lease forever); the displaced holder's own state changes stay
- * nonce-fenced in release() and adopt().
+ * nonce-fenced in release() and adopt(). A token from an earlier boot of this machine (its
+ * machine-stable identity matches, its boot-scoped identity does not) has no pid left to probe —
+ * they died with that boot — so it expires into reclaimable stale instead of an unknown wedge;
+ * a different machine, or a legacy token without the machine part, keeps the fail-closed unknown.
  */
 export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: string): LeaseVerdict {
 	// CodeGraph's own writer lock outranks everything, a missing launcher token included: a live
@@ -114,13 +161,27 @@ export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: s
 			typeof (parsed as LeaseToken).pid !== "number" ||
 			typeof (parsed as LeaseToken).startedAt !== "number" ||
 			typeof (parsed as LeaseToken).expiresAt !== "number" ||
-			((parsed as LeaseToken).host !== undefined && typeof (parsed as LeaseToken).host !== "string")
+			((parsed as LeaseToken).host !== undefined && typeof (parsed as LeaseToken).host !== "string") ||
+			((parsed as LeaseToken).machine !== undefined && typeof (parsed as LeaseToken).machine !== "string")
 		) {
 			return "unknown";
 		}
 		token = parsed as LeaseToken;
 	} catch {
 		return "unknown";
+	}
+	// Reboot recovery: a token whose machine-stable identity matches this machine but whose
+	// boot-scoped identity does not was written before this machine's last reboot — every pid it
+	// records (holder, proxy, or adopted writer) died with that boot and cannot be probed alive
+	// here, even where a coincidental live pid answers to the same number. Expired, such a token
+	// is reclaimable stale (the wedge is bounded by the TTL); unexpired it stays fail-closed
+	// until its TTL bounds it; a different machine or a legacy token without the machine part
+	// keeps the unknown verdict exactly as before.
+	if (
+		token.host !== undefined && token.machine !== undefined &&
+		token.machine === leaseMachineIdentity() && token.host !== leaseHostIdentity()
+	) {
+		return token.expiresAt <= now ? "held-stale" : "unknown";
 	}
 	// A proxy pid (a cmd.exe wrapper on win32) reported inside its trust window holds the same
 	// way — the real writer is still starting behind it.
@@ -151,7 +212,7 @@ export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: s
  * damaged file).
  */
 function writeTokenExclusively(path: string, kind: LeaseKind, ttlMs: number, now: number, nonce: string): boolean {
-	const token: LeaseToken = { kind, pid: process.pid, startedAt: now, expiresAt: now + ttlMs, nonce, host: leaseHostIdentity() ?? undefined };
+	const token: LeaseToken = { kind, pid: process.pid, startedAt: now, expiresAt: now + ttlMs, nonce, host: leaseHostIdentity() ?? undefined, machine: leaseMachineIdentity() ?? undefined };
 	const temp = `${path}.${randomUUID()}.tmp`;
 	try {
 		writeFileSync(temp, `${JSON.stringify(token)}\n`);
@@ -167,7 +228,9 @@ function writeTokenExclusively(path: string, kind: LeaseKind, ttlMs: number, now
 /**
  * Records the spawned writer pid on this holder's token, best effort: only our own token is ever
  * touched — the holder pid AND this acquisition's nonce must still match, so a holder displaced
- * past its TTL (the TTL is the displacement bound) rewrites nothing on the newer owner's token.
+ * past its TTL (the TTL is the displacement bound) rewrites nothing on the newer owner's token,
+ * and the publish itself is fenced on still owning the per-path mutex: an adopter stalled past
+ * the mutex TTL between its checks and the rename never publishes over a newer owner's token.
  * The updated metadata is written whole to a temp file beside the token and renamed over
  * it inside the per-path mutex (the ownership protocol stale recovery and release already
  * serialize on): a process dying mid-write can leave only a complete token behind, never a
@@ -175,7 +238,7 @@ function writeTokenExclusively(path: string, kind: LeaseKind, ttlMs: number, now
  * restore a damaged file.
  */
 function adoptWriterPid(path: string, pid: number, proxy: boolean, now: number = Date.now(), nonce?: string): void {
-	withPathMutex(path, MUTEX_WAIT_MS, () => {
+	withPathMutex(path, MUTEX_WAIT_MS, (owns) => {
 		try {
 			const token = JSON.parse(readFileSync(path, "utf8")) as LeaseToken;
 			if (token.pid !== process.pid) return undefined; // lost or stolen since: never touch another holder's token
@@ -186,6 +249,10 @@ function adoptWriterPid(path: string, pid: number, proxy: boolean, now: number =
 			const temp = `${path}.${randomUUID()}.tmp`;
 			try {
 				writeFileSync(temp, `${JSON.stringify(token)}\n`);
+				// The ownership fence every effectful section re-applies: an adopter stalled past the
+				// mutex TTL between its nonce check and this publish must not rename its stale adoption
+				// over whatever newer owner retook the path meanwhile.
+				if (!owns()) return undefined;
 				renameSync(temp, path); // same filesystem: the swap is atomic, the token is never half-written
 			} finally {
 				rmSync(temp, { force: true }); // best effort: an unrenamed temp is litter, never state

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,6 +62,31 @@ function localHostIdentity(): string | null {
 /** This machine's identity for fixtures, omitted where the platform cannot derive one (there the
  * lib preserves the legacy judgement shape for identity-less tokens). */
 const localHost = (): string | undefined => localHostIdentity() ?? undefined;
+
+/** Mirrors the lib's machine-stable identity derivation (darwin IOPlatformUUID / linux
+ * machine-id): fixtures that must read as THIS machine across reboots carry this value. */
+function localMachineIdentity(): string | null {
+	try {
+		if (process.platform === "darwin") {
+			const registry = execFileSync("/usr/sbin/ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], { encoding: "utf8" }).trim();
+			const uuid = /"IOPlatformUUID" = "([0-9a-f-]{36})"/i.exec(registry)?.[1];
+			if (uuid !== undefined) return `darwin:${uuid.toLowerCase()}`;
+		}
+		if (process.platform === "linux") {
+			for (const file of ["/etc/machine-id", "/var/lib/dbus/machine-id"]) {
+				try {
+					const id = readFileSync(file, "utf8").trim();
+					if (/^[0-9a-f]{32}$/.test(id)) return `linux:${id}`;
+				} catch {
+					/* absent: try the other spelling */
+				}
+			}
+		}
+	} catch {
+		/* unverifiable on this platform: fixtures fall back to boot-scoped identity only */
+	}
+	return null;
+}
 
 /** Opens the fifo for writing without blocking: -1 until the reader under test has it open. */
 function openFifoWriter(fifo: string): number {
@@ -258,6 +284,63 @@ test("a token from another host or PID namespace is never judged dead locally: u
 	}
 });
 
+test("an earlier-boot token of this machine is reclaimable stale once expired: the reboot wedge is bounded", (t) => {
+	const host = localHostIdentity();
+	const machine = localMachineIdentity();
+	if (host === null || machine === null) {
+		t.skip("this platform cannot derive machine or boot identity: cross-boot recovery keeps its fail-closed shape");
+		return;
+	}
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+	// The pre-reboot session's token: this machine's stable identity, the previous boot's scoped
+	// identity, and holder pids that cannot exist any more — pids do not survive a reboot. The
+	// live current process as the recorded holder proves the verdict is boot-driven, not pid-driven.
+	const earlierBoot = host.startsWith("darwin:") ? "darwin:00000000-1111-2222-3333-444444444444" : "linux:00000000-1111-2222-3333-444444444444:pid:[4026531836]";
+
+	writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now + 60_000, host: earlierBoot, machine });
+	assert.equal(readLeaseVerdict(path, now), "unknown", "unexpired, an earlier-boot token stays fail-closed until its TTL bounds it");
+
+	writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now - 1, host: earlierBoot, machine });
+	assert.equal(readLeaseVerdict(path, now), "held-stale", "expired, an earlier-boot token is stale: its holder died with that boot");
+	const lease = tryAcquireLease(path, "init", 600_000, now);
+	assert.ok(lease, "the expired earlier-boot token is recovered instead of wedging sync and init forever");
+	lease.release();
+	assert.equal(readLeaseVerdict(path, now), "free");
+
+	// The adopted-writer wrinkle: a writer pid recorded before the reboot may name a live pid
+	// now (pid reuse), but that pid is not the writer — the boot check must outrank it.
+	writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now - 1, host: earlierBoot, machine, writerPid: process.pid, writerProxy: false, writerPidAt: now - 120_000 });
+	assert.equal(readLeaseVerdict(path, now), "held-stale", "a live-looking writer pid from an earlier boot must not hold the expired token forever");
+});
+
+test("a foreign machine's token, or a legacy boot-only token, stays unknown across reboots: never stealable", (t) => {
+	const host = localHostIdentity();
+	const machine = localMachineIdentity();
+	if (host === null || machine === null) {
+		t.skip("this platform cannot derive machine or boot identity: the fail-closed shape is covered by the foreign-host test");
+		return;
+	}
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+	const earlierBoot = host.startsWith("darwin:") ? "darwin:00000000-1111-2222-3333-444444444444" : "linux:00000000-1111-2222-3333-444444444444:pid:[4026531836]";
+	const foreignMachine = machine.startsWith("darwin:") ? "darwin:ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb" : `linux:${"f".repeat(32)}`;
+
+	// Another machine writing into a shared locks dir: its machine identity differs, so even an
+	// expired earlier-boot-looking token is never reclaimed here — its holder may be live there.
+	writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now - 1, host: earlierBoot, machine: foreignMachine });
+	assert.equal(readLeaseVerdict(path, now), "unknown", "a foreign machine's expired token stays unknown, fail-closed");
+	assert.equal(tryAcquireLease(path, "init", 600_000, now), undefined, "never stealable");
+
+	// A legacy token (written before the machine part existed): different boot, no machine part —
+	// the pre-existing fail-closed behavior is deliberately preserved for it.
+	writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now - 1, host: earlierBoot });
+	assert.equal(readLeaseVerdict(path, now), "unknown", "a legacy boot-only token keeps its unknown verdict");
+	assert.equal(tryAcquireLease(path, "init", 600_000, now), undefined);
+});
+
 test("a local holder's stale token is still judged by pid and TTL once host identity matches", (t) => {
 	const dir = locksDir(t);
 	const path = join(dir, "token.json");
@@ -317,6 +400,100 @@ test("a displaced holder's adopt() and release() cannot touch the newer owner's 
 
 	second.release();
 	assert.equal(readLeaseVerdict(path, now + 2), "free");
+});
+
+test("an adoption stalled past its mutex does not publish over the replacement owner's token", async (t) => {
+	if (process.platform === "win32") {
+		t.skip("the fifo orchestration is POSIX-only");
+		return;
+	}
+	const dir = locksDir(t);
+	const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-lease-adopt-")));
+	t.after(() => rmSync(sandbox, { recursive: true, force: true }));
+	const path = join(dir, "token.json");
+	const ready = join(sandbox, "ready");
+	const go = join(sandbox, "go");
+	const marker = join(sandbox, "result");
+	const done = join(sandbox, "done");
+	const script = join(sandbox, "child.mjs");
+	// The child acquires the free path, then parks INSIDE its adoption's critical section: the
+	// token file is swapped for a fifo, so the section's token read blocks on the parent's writer.
+	writeFileSync(script, [
+		'import { existsSync, writeFileSync } from "node:fs";',
+		"const [libHref, tokenPath, ready, go, marker, done] = process.argv.slice(2);",
+		"const { tryAcquireLease } = await import(libHref);",
+		"const lease = tryAcquireLease(tokenPath, \"sync\", 60_000, Date.now());",
+		"writeFileSync(ready, lease ? \"acquired\" : \"lost\");",
+		"if (!lease) process.exit(1);",
+		"const deadline = Date.now() + 10_000;",
+		"while (!existsSync(go)) {",
+		"	if (Date.now() >= deadline) process.exit(2);",
+		"}",
+		"lease.adopt(4242, false);",
+		"writeFileSync(marker, \"adopted\");",
+		"const doneDeadline = Date.now() + 10_000;",
+		"while (!existsSync(done)) {",
+		"	if (Date.now() >= doneDeadline) process.exit(3);",
+		"}",
+	].join("\n") + "\n");
+	const libHref = new URL("../lib/codegraph-lease.ts", import.meta.url).href;
+	const child = spawn(process.execPath, ["--experimental-strip-types", script, libHref, path, ready, go, marker, done], { stdio: "ignore" });
+	t.after(() => {
+		try {
+			child.kill();
+		} catch {
+			/* already gone */
+		}
+	});
+	const closed = new Promise<number>((resolve) => {
+		child.on("close", (code: number | null) => resolve(code ?? -1));
+	});
+	const readyDeadline = Date.now() + 10_000;
+	while (!existsSync(ready)) {
+		if (Date.now() >= readyDeadline) assert.fail("the child never acquired the lease");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	assert.equal(readFileSync(ready, "utf8"), "acquired", "the child starts as the path's owner");
+
+	// Swap the live token file for a fifo: the child's adoption parks reading it inside the
+	// per-path mutex, past its holder-pid and nonce checks' read.
+	const stalledToken = readFileSync(path, "utf8");
+	rmSync(path);
+	execFileSync("mkfifo", [path]);
+	writeFileSync(go, "");
+	const parked = await parkFifo(path);
+	assert.equal(existsSync(`${path}.mutex`), true, "the parked child holds the per-path mutex inside its adoption section");
+
+	// The adopter is displaced exactly as a stall past MUTEX_TTL_MS displaces it: its mutex is
+	// removed, a replacement owner acquires the now-free path, and a fresh mutex guards it.
+	rmSync(`${path}.mutex`, { force: true });
+	rmSync(path); // the fifo name goes; the parked reader keeps its open descriptor
+	const second = tryAcquireLease(path, "sync", 120_000, Date.now());
+	assert.ok(second, "with the path clear the replacement owner acquires it");
+	const replacementToken = readFileSync(path, "utf8");
+	const replacementMutex = `${path}.mutex`;
+	writeToken(replacementMutex, { pid: process.pid, startedAt: Date.now(), expiresAt: Date.now() + 60_000, nonce: randomUUID() });
+	const replacementMutexBytes = readFileSync(replacementMutex, "utf8");
+
+	// The stalled adoption resumes: its pid and nonce checks still pass against the bytes it
+	// read, but the section no longer owns the mutex — publishing would rename the stale
+	// adoption over the replacement owner's token.
+	writeSync(parked, stalledToken);
+	closeSync(parked);
+	const deadline = Date.now() + 10_000;
+	while (!existsSync(marker)) {
+		if (Date.now() >= deadline) assert.fail("the child never finished its adoption");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	assert.equal(readFileSync(marker, "utf8"), "adopted", "the adoption ran to its end");
+	assert.equal(readFileSync(path, "utf8"), replacementToken, "the adoption must not publish over the replacement owner's token");
+	assert.equal(readFileSync(replacementMutex, "utf8"), replacementMutexBytes, "the replacement owner's mutex is never removed by the displaced adoption");
+	assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".tmp")), [], "the aborted adoption leaves no temp litter behind");
+	writeFileSync(done, "");
+	assert.equal(await closed, 0);
+	rmSync(replacementMutex, { force: true }); // the replacement owner's section ends: its mutex goes
+	second.release();
+	assert.equal(readLeaseVerdict(path, Date.now()), "free");
 });
 
 test("lock paths are keyed by the real project path and kind, under a shared locks dir", (t) => {
@@ -407,7 +584,13 @@ test("a token expiring exactly now is stale, and the token shape is exactly kind
 	const lease = tryAcquireLease(fresh, "sync", 120_000, now);
 	assert.ok(lease);
 	const token = JSON.parse(readFileSync(fresh, "utf8")) as Record<string, unknown>;
-	assert.deepEqual(Object.keys(token).sort(), ["expiresAt", "host", "kind", "nonce", "pid", "startedAt"], "the token carries its acquisition's nonce and host identity and nothing else");
+	// The token's identity fields exist only where the platform can derive them: on Windows
+	// leaseHostIdentity() and leaseMachineIdentity() are null, JSON serialization omits both
+	// keys, and a fixed expected set would fail the suite there.
+	const expectedKeys = ["expiresAt", "kind", "nonce", "pid", "startedAt"];
+	if (localHostIdentity() !== null) expectedKeys.push("host");
+	if (localMachineIdentity() !== null) expectedKeys.push("machine");
+	assert.deepEqual(Object.keys(token).sort(), expectedKeys.sort(), "the token carries its acquisition's nonce and the identity fields this platform can derive, and nothing else");
 	lease.release();
 	const again = tryAcquireLease(fresh, "sync", 120_000, now);
 	assert.ok(again);
@@ -688,16 +871,21 @@ test("a reclaimer whose mutex was replaced mid-section aborts instead of removin
 	assert.equal(existsSync(`${path}.mutex`), true, "the parked child holds the per-path mutex inside its section");
 
 	// The hazard [4590605571] names, materialized: another reclaimer holding an earlier stale
-	// observation removes the section holder's mutex instead of the one it observed stale.
+	// observation removes the section holder's mutex instead of the one it observed stale. The
+	// replacement owner is then mid-recovery itself: it holds a fresh mutex over a path whose
+	// token still READS stale — exactly what the parked child's recheck will see, so the verdict
+	// alone cannot save that token and the owns() fence is the only thing left standing between
+	// the displaced section and removing the newer owner's state [4593661541].
 	rmSync(`${path}.mutex`, { force: true });
+	writeToken(path, { kind: "sync", pid: deadPid(), startedAt: now - 120_000, expiresAt: now - 1, host });
+	const replacementMutex = `${path}.mutex`;
+	writeToken(replacementMutex, { pid: process.pid, startedAt: now, expiresAt: now + 60_000, nonce: randomUUID() });
+	const replacementTokenBytes = readFileSync(path, "utf8");
+	const replacementMutexBytes = readFileSync(replacementMutex, "utf8");
 
-	// A second session recovers the stale lease and acquires it while the first is parked.
-	const second = tryAcquireLease(path, "sync", 120_000, Date.now());
-	assert.ok(second, "with the mutex path clear the stale lease is recovered");
-	const secondToken = readFileSync(path, "utf8");
-
-	// The parked child's verdict completes now: it must not acquire a second lease and must leave
-	// the newer owner's token exactly as it found it.
+	// The parked child's verdict completes now: the recheck reads the stale-looking token under a
+	// mutex it no longer owns — it must abort at the fence, acquire nothing, and remove neither
+	// the replacement owner's token nor the replacement mutex.
 	releaseParkedFifo(parked);
 	const deadline = Date.now() + 10_000;
 	while (!existsSync(marker)) {
@@ -705,9 +893,9 @@ test("a reclaimer whose mutex was replaced mid-section aborts instead of removin
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 	assert.equal(readFileSync(marker, "utf8"), "lost", "the displaced reclaimer must not acquire a second lease");
-	assert.equal(readFileSync(path, "utf8"), secondToken, "the newer owner's token survives byte-for-byte");
+	assert.equal(readFileSync(path, "utf8"), replacementTokenBytes, "the newer owner's stale-looking token survives byte-for-byte: the fence, not the verdict, saved it");
+	assert.equal(readFileSync(replacementMutex, "utf8"), replacementMutexBytes, "the replacement owner's mutex is never removed by the displaced section's exit");
 	writeFileSync(done, "");
 	assert.equal(await closed, 0);
-	second.release();
-	assert.equal(readLeaseVerdict(path, Date.now()), "free");
+	assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".tmp") || name.endsWith(".stale")), [], "no temp or stale-steal litter is left behind");
 });

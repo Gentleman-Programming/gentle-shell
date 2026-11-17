@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { existsSync, linkSync, lstatSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 import { daemonFor, mcpCallRequests, mcpCallText, mcpInitializeRequest, mcpLineReader, mcpReplyKind, projectSpelling } from "./codegraph-daemon.ts";
 import type { DaemonInfo } from "./codegraph-daemon.ts";
@@ -616,15 +617,20 @@ function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: nu
 		if (child !== undefined && child.pid !== undefined) {
 			try { opts.onSpawn?.(child.pid, process.platform === "win32"); } catch { /* bookkeeping is best effort */ }
 		}
+		// One persistent decoder per stream: a multibyte UTF-8 character split across Buffer chunks
+		// corrupts into replacement characters under a per-chunk toString (the same class as the
+		// daemon's line reader), and the seed's tracked-file identities compare decoded strings.
+		const stderrDecoder = new StringDecoder("utf8");
 		child?.stderr?.on("data", (chunk: Buffer) => {
 			// Only the tail is ever shown: keep the last slice, never the whole stream.
-			stderrTail = (stderrTail + chunk.toString("utf8")).slice(-2_000);
+			stderrTail = (stderrTail + stderrDecoder.write(chunk)).slice(-2_000);
 		});
+		const stdoutDecoder = new StringDecoder("utf8");
 		child?.stdout?.on("data", (chunk: Buffer) => {
 			// The pipe is always drained (a full one would block the child). Diagnostics only ever
 			// need the bounded tail; the seed's tracked-file listing is the one caller that parses
 			// structured output, so its capture runs unbounded — a tail could truncate the JSON.
-			const text = chunk.toString("utf8");
+			const text = stdoutDecoder.write(chunk);
 			stdoutKept = stdoutChars === undefined ? stdoutKept + text : (stdoutKept + text).slice(-stdoutChars);
 		});
 		const timer = setTimeout(() => {

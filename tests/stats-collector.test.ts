@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { aggregateStats, createStatsLoader, currentSessionStats, parseSessionLines, shiftDay, STATS_RANGE, STATS_SCOPE, weekdayOf, type StatsFilter } from "../lib/stats-collector.ts";
+import { aggregateStats, createStatsLoader, currentSessionStats, hasReadableSessionsRoot, parseSessionLines, shiftDay, STATS_RANGE, STATS_SCOPE, weekdayOf, type StatsFilter } from "../lib/stats-collector.ts";
 import { SESSION_CHANGE_ENTRY } from "../lib/session-changes.ts";
 
 // The /gentle:stats collector: a streaming loader over Pi's session files and
@@ -192,4 +192,31 @@ test("currentSessionStats summarizes the live session including captured line ch
 	assert.equal(empty.durationMs, 0);
 	assert.equal(empty.lines, undefined);
 	assert.equal(empty.model, undefined);
+});
+
+test("concurrent loads of the same roots share one in-flight scan; a later load scans again", async () => {
+	const loader = createStatsLoader();
+	const first = loader.load([SESSIONS]);
+	const second = loader.load([SESSIONS]);
+	const [a, b] = await Promise.all([first, second]);
+	// One scan answers both callers: the very same result array.
+	assert.equal(a, b);
+	assert.deepEqual(a.map((session) => session.id).sort(), ["aaa", "bbb", "ccc", "ddd"]);
+	// Different roots never share a scan, and a settled scan is never reused.
+	const other = await loader.load([SESSIONS, USER_SESSIONS]);
+	assert.notEqual(other, a);
+	const again = await loader.load([SESSIONS]);
+	assert.notEqual(again, a);
+	assert.deepEqual(again.map((session) => session.id).sort(), ["aaa", "bbb", "ccc", "ddd"]);
+});
+
+test("hasReadableSessionsRoot is true only when at least one root is a readable directory", async () => {
+	const missing = join(tmpdir(), "gentle-stats-missing-root");
+	const file = join(mkdtempSync(join(tmpdir(), "gentle-stats-file-")), "not-a-dir");
+	writeFileSync(file, "x");
+	assert.equal(await hasReadableSessionsRoot([]), false);
+	assert.equal(await hasReadableSessionsRoot([missing]), false);
+	assert.equal(await hasReadableSessionsRoot([missing, file]), false);
+	assert.equal(await hasReadableSessionsRoot([missing, mkdtempSync(join(tmpdir(), "gentle-stats-empty-"))]), true);
+	assert.equal(await hasReadableSessionsRoot([SESSIONS]), true);
 });

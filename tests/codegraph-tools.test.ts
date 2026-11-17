@@ -795,6 +795,65 @@ test("the tool_call guard blocks re-index from a subdirectory session of an inde
 	assert.equal(verdictFrom(bareSub), undefined, "no index anywhere: the first index stays the legitimate init path");
 });
 
+/** The tool_call guard's verdict function over an indexed workspace, with the launch override
+ * cleared for the test's lifetime: the guard's domain (existing index, no override). */
+async function guardOnIndexedWorkspace(t: test.TestContext): Promise<(command: string, toolName?: string) => unknown> {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const pi = {
+		registerTool() {
+			/* the registered tool's shape is covered above */
+		},
+		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+			handlers.set(event, handler);
+		},
+	} as unknown as ExtensionAPI;
+	codeGraphTools(pi);
+	const guard = handlers.get("tool_call");
+	const indexed = workspace(t);
+	await writeIndex(["init", indexed], { cwd: indexed, maxBuffer: 1 });
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	const ctx = { cwd: indexed } as ExtensionContext;
+	return (command: string, toolName = "bash") =>
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName, input: { command } }, ctx);
+}
+
+test("the guard's inline override honors the last GENTLE_CODEGRAPH_ALLOW_INDEX assignment", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	const superseded = verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=1 GENTLE_CODEGRAPH_ALLOW_INDEX=0 codegraph index .") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(superseded?.block, true, "a trailing =0 leaves no override: the shell applies the last assignment, so the rebuild is blocked");
+	assert.match(superseded?.reason ?? "", /an index already exists/);
+	assert.equal(verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=0 GENTLE_CODEGRAPH_ALLOW_INDEX=1 codegraph index ."), undefined, "a trailing =1 is the override the command actually runs with");
+});
+
+test("the guard requires the inline override on every rebuild command in the list", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	const leaked = verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=1 codegraph index .; codegraph init .") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(leaked?.block, true, "the second rebuild carries no override of its own, so the whole shell call is blocked");
+	assert.match(leaked?.reason ?? "", /an index already exists/);
+	assert.equal(
+		verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=1 codegraph index .; GENTLE_CODEGRAPH_ALLOW_INDEX=1 codegraph init ."),
+		undefined,
+		"a list where every rebuild carries its own override is the deliberate rebuild the override exists for",
+	);
+});
+
+test("the guard still detects rebuild commands hidden behind backslash-escaped quotes", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	// An escaped quote passes a literal quote to echo: the shell opens no quoted section, so
+	// the semicolon after it separates a real second command. The pair is assembled from char
+	// codes because a backslash-before-quote literal is corruption-prone in generated code.
+	const escapedQuote = `${String.fromCharCode(92)}${String.fromCharCode(34)}`;
+	const hidden = verdict(`echo ${escapedQuote} ; codegraph index .`) as { block?: boolean; reason?: string } | undefined;
+	assert.equal(hidden?.block, true, "the rebuild behind the escaped quote is detected and blocked");
+	assert.match(hidden?.reason ?? "", /an index already exists/);
+	assert.equal(verdict(`echo ${escapedQuote} ; codegraph status`), undefined, "a non-rebuild command behind an escaped quote stays allowed");
+});
+
 function writeCodeGraphPackage(binDir: string, scriptSource = "#!/usr/bin/env node\n"): string {
 	const pkgRoot = join(binDir, "node_modules", "@colbymchenry", "codegraph");
 	mkdirSync(pkgRoot, { recursive: true });
@@ -1333,6 +1392,42 @@ test("operation init refuses to rebuild an existing index without the explicit o
 	assert.equal(runnerCalls, 1, "the explicit override allows the deliberate rebuild");
 	assert.equal(lockAcquisitions, 1, "the override still runs under the init lock");
 	assert.match(rebuilt.content[0].text, /rebuilt/);
+});
+
+test("init rechecks index presence after acquiring a lock another initializer finished behind", async (t) => {
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	let runnerCalls = 0;
+	let releases = 0;
+	// The pre-check sees an index-less workspace; while this call waits on the lock, the other
+	// initializer finishes AND releases, so acquisition succeeds with the database in place.
+	const initLock = async (): Promise<InitLockOutcome> => {
+		await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+		return { outcome: "acquired", release: () => { releases += 1; }, adopt: () => {} };
+	};
+	const tool = createCodeGraphTool(async () => {
+		runnerCalls += 1;
+		return { stdout: "rebuilt", stderr: "" };
+	}, { initLock });
+
+	const refused = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+
+	assert.equal(runnerCalls, 0, "the completed index is never rebuilt over the shared daemon");
+	assert.equal(releases, 1, "the acquired lock is released when init stands down");
+	assert.match(refused.content[0].text, /an index already exists/);
+	assert.match(refused.content[0].text, /GENTLE_CODEGRAPH_ALLOW_INDEX=1/);
+	assert.equal((refused.details as { status?: string }).status, "failed");
+
+	process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = "1";
+	await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.equal(runnerCalls, 1, "the explicit override still allows the deliberate rebuild after the recheck");
+	assert.equal(releases, 2, "the lock is released however init ends");
 });
 
 

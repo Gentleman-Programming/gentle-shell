@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { retryTransient, seedWorktreeIndex, worktreeMainRoot, type SeedInput } from "../lib/codegraph-seed.ts";
+import { lockPathFor, tryAcquireLease } from "../lib/codegraph-lease.ts";
 
 /** git that fails the test WITH stderr instead of swallowing it. */
 function git(args: readonly string[], cwd: string): void {
@@ -297,6 +298,33 @@ test("a busy main index defers seeding without touching the worktree", async (t)
 	assert.equal(result.outcome, "main-busy");
 	assert.deepEqual(calls, [], "nothing ran and nothing was copied");
 	assert.equal(fileAbsent(join(worktree, ".codegraph")), true, "the worktree is untouched");
+});
+
+test("a seed displaced from its init lease before publication never replaces the newer index", async (t) => {
+	const { worktree } = worktreePair(t);
+	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-fence-"));
+	t.after(() => rmSync(sandbox, { recursive: true, force: true }));
+	const locksDir = join(sandbox, "locks");
+	const { input } = seedHarness(worktree, {
+		locksDir,
+		run: async () => {
+			// The suspension window between validation and publication: while this seed sits in
+			// the validating sync, its lease's TTL elapses and another session reclaims the
+			// lease and publishes a newer index into the same worktree.
+			const path = lockPathFor(worktree, "init", locksDir);
+			const { expiresAt } = JSON.parse(readFileSync(path, "utf8")) as { expiresAt: number };
+			const reclaimer = tryAcquireLease(path, "init", 600_000, expiresAt + 1_000, worktree);
+			assert.ok(reclaimer, "the other session reclaims the expired lease");
+			writeFileSync(join(worktree, ".codegraph", "codegraph.db"), "newer-index-bytes");
+			return true;
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed", "a displaced seed stands down so the caller falls back to init");
+	assert.equal(readFileSync(join(worktree, ".codegraph", "codegraph.db"), "utf8"), "newer-index-bytes", "the newer database the other session published survives");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "no staging leftover and no stale seed sidecar is left behind");
 });
 
 test("retryTransient retries transient codes with backoff and fails others at once", async () => {

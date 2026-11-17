@@ -608,6 +608,7 @@ test("the Desktop transport advertises the design method and event", async (t) =
 		"get_design_canvas",
 		"list_jobs",
 		"cancel_job",
+		"get_job_output",
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",

@@ -116,6 +116,9 @@ test("(e) a new user prompt resets the credit", (t) => {
 test("(j) credit survives turn boundaries within one user request", (t) => {
 	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
+	// The prompt searched the workspace first, so the gate stays armed: the assertions below
+	// can pass only while the query's credit genuinely survives the turn boundary.
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "j-arm", args: { pattern: "symbol" } });
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
 	// turn_start fires per LLM turn, not per user prompt: a later turn of the
@@ -148,14 +151,18 @@ test("(q) a steering user message delivered inside the running loop resets the c
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 	// Pi (1.2.0+) consumes steering inside the current agent loop with no second
-	// before_agent_start: the delivered user message must re-open the window itself.
+	// before_agent_start: the delivered user message must re-open the window itself,
+	// credit and search activity both - the steered turn starts with clean activity state.
 	fire(handlers, "message_end", { message: { role: "user", content: "also check the lease path" } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the steered turn carries no search activity over from the searched prompt");
+	// The steered window arms again only through its own search and credits again after
+	// its own query; only a user role resets - assistant, tool-result, and custom
+	// deliveries never expire re-earned credit.
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "q-arm-2", args: { pattern: "lease" } });
 	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
 		block: true,
 		reason: BLOCK_REASON,
-	}, "a delivered steering message starts the codegraph-first window over");
-	// The steered window credits again after its own query, and only a user role resets:
-	// assistant, tool-result, and custom deliveries never expire re-earned credit.
+	}, "the steered prompt's own search re-arms the gate");
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t2", args: { operation: "query", query: "lease" } });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t2" });
 	for (const role of ["assistant", "toolResult", "custom"]) {
@@ -176,10 +183,13 @@ test("(r) a queued follow-up user message consumed after agent_end resets the cr
 	handlers.get("agent_end")?.({ messages: [] });
 	handlers.get("agent_start")?.({});
 	fire(handlers, "message_end", { message: { role: "user", content: "now summarize what changed" } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_get_observation" }), undefined, "a memory-only follow-up carries no search activity over from the searched prompt");
+	// The follow-up's own search re-arms the gate until its own query or explore credits it.
+	fire(handlers, "tool_execution_start", { toolName: "find", toolCallId: "r-arm-2", args: { pattern: "*.ts" } });
 	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_get_observation" }), {
 		block: true,
 		reason: BLOCK_REASON,
-	}, "a delivered follow-up message starts the codegraph-first window over");
+	}, "the follow-up prompt's own search re-arms the gate");
 });
 
 test("(f) memory writes are never blocked, even before any codegraph call", (t) => {
@@ -294,8 +304,10 @@ test("(m) only a query or explore completion credits the window: an init complet
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "q1", args: { operation: "query", query: "symbol" } });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "q1", result: { ok: false, error: "daemon down" } });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a failed query credits like any finalized attempt");
-	// An explore through the MCP proxy name credits too.
+	// An explore through the MCP proxy name credits too - under an armed gate, so the
+	// assertion can pass only through the explore's own credit.
 	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "m-arm", args: { pattern: "symbol" } });
 	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_explore", toolCallId: "e1", args: { query: "flow" } });
 	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_explore", toolCallId: "e1", result: { ok: false } });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "an MCP explore credits");
@@ -319,6 +331,9 @@ test("(m) only a query or explore completion credits the window: an init complet
 test("(n) a workspace without a codegraph index passes memory reads with no graph involvement", (t) => {
 	const handlers = installGate(t, false);
 	fire(handlers, "before_agent_start", { messageType: "user" });
+	// The prompt searched the workspace, so the reads below can pass only through the
+	// no-index bypass - an applicability regression that gates this workspace fails them.
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "n-arm", args: { pattern: "symbol" } });
 	for (const toolName of ["mem_context", "mem_search", "mem_get_observation"]) {
 		assert.equal(fire(handlers, "tool_call", { toolName }), undefined, `${toolName} passes: no index means no gate`);
 	}
@@ -366,6 +381,9 @@ test("(p) a host ctx without a workspace cwd fails open: the gate never breaks t
 	const handlers = installGate(t);
 	fireCtx = undefined;
 	fire(handlers, "before_agent_start", { messageType: "user" });
+	// The prompt searched the workspace, so the reads below can pass only through the
+	// cwd-less fail-open - an applicability regression that gates a cwd-less ctx fails them.
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "p-arm", args: { pattern: "symbol" } });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_get_observation" }), undefined);
 });

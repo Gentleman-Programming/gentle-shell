@@ -50,9 +50,10 @@ function gateApplies(cwd: unknown): boolean {
  * regardless, so a read never interleaves a live graph call. A prompt with no workspace
  * search is never gated: its memory reads pass with zero graph involvement. The requested
  * operation is tracked from the call's start — an init completion never credits. Credit is
- * end-of-execution only — a failed or unavailable query or explore counts — and expires with
- * every new user prompt, whether that prompt starts a run or is delivered as steering or a
- * queued follow-up inside a running loop, and it applies only to a fully settled window:
+ * end-of-execution only — a failed or unavailable query or explore counts — and, like the
+ * prompt's search-activity marker, expires with every new user prompt, whether that prompt
+ * starts a run or is delivered as steering or a queued follow-up inside a running loop;
+ * credit applies only to a fully settled window:
  * while any graph execution is still active, or when a new graph call starts after credit
  * was granted, memory reads stay blocked. The gate is scoped: it applies only to workspaces
  * that have a codegraph index — a filesystem probe of the database file, never a CLI call —
@@ -103,6 +104,8 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 	// A delivered user message starts the window over on its own: Pi (1.2.0+, which the manifest
 	// permits) consumes steering and queued follow-up messages inside the running agent loop
 	// without another before_agent_start, so the reset must ride the delivery event too.
+	// The search-activity marker resets with the credit, so a memory-only follow-up such as
+	// "now summarize what changed" is not gated by the searched prompt that came before it.
 	// message_end fires for every message; only a user role resets — assistant, tool-result,
 	// and custom deliveries never expire credit.
 	pi.on?.("message_end", (event) => {
@@ -110,6 +113,7 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 			const role = (event as { message?: { role?: unknown } | undefined | null } | undefined | null)?.message?.role;
 			if (role === "user") {
 				credited = false;
+				searchActivity = false;
 				activeGraphExecutions.clear();
 				queryExploreExecutions.clear();
 			}

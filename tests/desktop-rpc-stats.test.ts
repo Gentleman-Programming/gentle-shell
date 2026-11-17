@@ -21,7 +21,7 @@ import {
 	type DesktopStatsService,
 } from "../lib/desktop-rpc-stats.ts";
 import { DesktopStatsBridge, discoverDesktopStatsService } from "../lib/desktop-stats-service.ts";
-import { createStatsLoader, type SessionRecord, type StatsLoader } from "../lib/stats-collector.ts";
+import { createStatsLoader, localDayKey, type SessionRecord, type StatsLoader } from "../lib/stats-collector.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 import { isolatedConfigEnv, removeIsolatedConfigHomes } from "./isolated-config-home.ts";
 
@@ -34,6 +34,10 @@ after(removeIsolatedConfigHomes);
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Days are bucketed in local time like the panel, so expected day keys go
+// through the owner's own `localDayKey`. Every fixture sits at 12:00 UTC, so
+// its local day keeps the same 7d/30d window membership from UTC-11 to UTC+14.
+const localDay = (iso: string): string => localDayKey(Date.parse(iso));
 const ALPHA = "/home/devel/secret/alpha";
 const BETA = "/home/devel/secret/beta";
 
@@ -175,7 +179,7 @@ test("get_usage_stats defaults to the last 7 days of the current project", async
 		scope: "project",
 		totals: { sessions: 1, messages: 2, inputTokens: 110, outputTokens: 55, cacheReadTokens: 1000, cacheWriteTokens: 200, totalTokens: 1365, cost: 0.51 },
 		byModel: [{ model: "claude-opus-5-5", messages: 2, tokens: 1365, cost: 0.51, share: 1 }],
-		byDay: [{ day: "2026-10-09", tokens: 1365 }],
+		byDay: [{ day: localDay("2026-10-09T12:00:00.000Z"), tokens: 1365 }],
 		truncated: { byModel: false, byDay: false },
 	});
 });
@@ -195,7 +199,7 @@ test("get_usage_stats honors range and scope exactly like aggregateStats, with p
 			{ model: "claude-opus-5-5", messages: 2, tokens: 1365, cost: 0.51, share: 1365 / 2665 },
 			{ model: "gpt-5.5", messages: 2, tokens: 1300, cost: 1.25, share: 1300 / 2665 },
 		],
-		byDay: [{ day: "2026-09-20", tokens: 1000 }, { day: "2026-10-08", tokens: 300 }, { day: "2026-10-09", tokens: 1365 }],
+		byDay: [{ day: localDay("2026-09-20T12:00:00.000Z"), tokens: 1000 }, { day: localDay("2026-10-08T12:00:00.000Z"), tokens: 300 }, { day: localDay("2026-10-09T12:00:00.000Z"), tokens: 1365 }],
 		byProject: [
 			{ name: "alpha", sessions: 2, messages: 3, tokens: 2365, cost: 1.51 },
 			{ name: "beta", sessions: 1, messages: 1, tokens: 300, cost: 0.25 },
@@ -206,7 +210,7 @@ test("get_usage_stats honors range and scope exactly like aggregateStats, with p
 	assert.equal(all.data.range, "all");
 	assert.equal(all.data.totals.sessions, 4);
 	assert.equal(all.data.totals.totalTokens, 2675);
-	assert.deepEqual(all.data.byDay[0], { day: "2025-01-01", tokens: 10 });
+	assert.deepEqual(all.data.byDay[0], { day: localDay("2025-01-01T12:00:00.000Z"), tokens: 10 });
 	assert.deepEqual(all.data.byProject.map((project: { name: string; sessions: number }) => [project.name, project.sessions]), [["alpha", 3], ["beta", 1]]);
 
 	// Project scope never carries a project breakdown.
@@ -244,8 +248,8 @@ test("get_usage_stats bounds models, days, and projects and flags truncation whi
 	assert.equal(data.byProject.length, 50);
 	assert.deepEqual(data.truncated, { byModel: true, byDay: true, byProject: true });
 	// The most recent days are kept, oldest first; the largest project leads.
-	assert.equal(data.byDay.at(-1).day, new Date(NOW).toISOString().slice(0, 10));
-	assert.equal(data.byDay[0].day, new Date(NOW - 399 * DAY_MS).toISOString().slice(0, 10));
+	assert.equal(data.byDay.at(-1).day, localDayKey(NOW));
+	assert.equal(data.byDay[0].day, localDayKey(NOW - 399 * DAY_MS));
 	assert.deepEqual(data.byProject[0], { name: "bulk", sessions: 1, messages: 450, tokens: 450, cost: 0 });
 });
 

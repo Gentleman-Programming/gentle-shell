@@ -18,7 +18,7 @@ import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellChromeBar, renderShellChromePad, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { DIFF_MAX_BYTES, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
-import { changeDirectoryInsideRoot, loadFileDiff, runFileDiff } from "../lib/change-diff.ts";
+import { changeDirectoryInsideRoot, loadFileDiff, repositoryGitDirectories, runFileDiff } from "../lib/change-diff.ts";
 import { DESKTOP_CHANGES_SERVICE_CHANNEL, DESKTOP_CHANGES_SERVICE_SCHEMA, projectDesktopChanges, projectDesktopDiff, type DesktopChangesService } from "../lib/desktop-rpc-changes.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { windowsProcessTreeKiller, type ProcessTreeKiller } from "../lib/native-review-cli.ts";
@@ -2624,9 +2624,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					const file = tree?.model.files.find((candidate) => candidate.path === path);
 					if (!tree || !file) return { kind: "not_found" };
 					// Git lists files behind a directory link (a Windows junction) as
-					// part of the tree; Desktop never serves content outside the root.
-					if (!(await changeDirectoryInsideRoot(tree.root, file.path))) return { kind: "not_found" };
-					const projected = projectDesktopDiff(await runFileDiff(deps.gitRunner(tree.root, DIFF_MAX_BYTES), file));
+					// part of the tree; Desktop never serves content outside the root,
+					// nor the repository's own git dir reached through an alias in it.
+					const gitDirectories = await repositoryGitDirectories(deps.gitRunner(tree.root), tree.root);
+					if (disposed || !gitDirectories) return { kind: "unavailable" };
+					if (!(await changeDirectoryInsideRoot(tree.root, file.path, gitDirectories))) return { kind: "not_found" };
+					// Unlike the panel, never run a command the repository's config
+					// names (textconv, external diff, fsmonitor) for a Desktop read.
+					const projected = projectDesktopDiff(await runFileDiff(deps.gitRunner(tree.root, DIFF_MAX_BYTES), file, { inertRepositoryCommands: true }));
 					if (disposed || !projected) return { kind: "unavailable" };
 					return { kind: "ok", ...projected };
 				},

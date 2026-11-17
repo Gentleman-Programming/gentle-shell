@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -441,7 +441,7 @@ test("changes_unavailable when there is no owner, no worktree, or Git fails", as
 	assert.ok(!JSON.stringify(failed).includes("/secret/path"));
 	await statusFails.fire("session_shutdown");
 
-	const diffFails = app(t, repo.root, { gitRunner: (cwd, max) => { const run = realGit(cwd, max); return async (args) => args[0] === "diff" && !args.includes("--numstat") ? { stdout: "fatal: /secret/path", code: 128 } : run(args); } });
+	const diffFails = app(t, repo.root, { gitRunner: (cwd, max) => { const run = realGit(cwd, max); return async (args) => args.includes("diff") && !args.includes("--numstat") ? { stdout: "fatal: /secret/path", code: 128 } : run(args); } });
 	await diffFails.fire("session_start");
 	const root = (await diffFails.call("get_changes")).data.roots[0].id as string;
 	const diffFailed = await diffFails.call("get_change_diff", { root, path: "file.ts" });
@@ -483,4 +483,126 @@ test("the owner answers discovery only for its own live session", async (t) => {
 	await a.fire("session_shutdown");
 	a.listeners.get(DESKTOP_CHANGES_SERVICE_CHANNEL)![0]!({ context: a.ctx, respond: (service: unknown) => answers.push(service) });
 	assert.equal(answers.length, 0, "a shut-down session is never answered");
+});
+
+// ---- Hardening: repository-configured drivers, the git dir, and verifier probes ----
+
+const linkDir = (target: string, path: string) => symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
+const unlinkDirs = (paths: string[]) => { for (const path of paths) { try { rmdirSync(path); } catch { /* already gone */ } } };
+
+function scratchDir(t: test.TestContext, prefix: string) {
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	return dir;
+}
+
+test("get_change_diff never runs a repository textconv driver; the panel path is unchanged", async (t) => {
+	const repo = tempRepo(t);
+	const scratch = scratchDir(t, "gentle-rpc-driver-");
+	const marker = join(scratch, "marker.txt");
+	const script = join(scratch, "driver.sh");
+	const posix = (path: string) => path.split("\\").join("/");
+	writeFileSync(script, `#!/bin/sh\necho ran >> '${posix(marker)}'\ncat "$1"\n`);
+	writeFileSync(join(repo.root, ".gitattributes"), "*.txt diff=evil\n");
+	writeFileSync(join(repo.root, "a.txt"), "one\n");
+	repo.git("add", ".gitattributes", "a.txt");
+	repo.git("commit", "-q", "-m", "attr");
+	repo.git("config", "diff.evil.textconv", `sh '${posix(script)}'`);
+	writeFileSync(join(repo.root, "a.txt"), "two\n");
+	const runs = () => (existsSync(marker) ? readFileSync(marker, "utf8").split("\n").filter(Boolean).length : 0);
+	const a = app(t, repo.root);
+	await a.fire("session_start");
+	const root = (await a.call("get_changes")).data.roots[0].id as string;
+	const diff = await a.call("get_change_diff", { root, path: "a.txt" });
+	assert.equal(diff.ok, true);
+	assert.match(diff.data.diff, /-one\n\+two\n/);
+	assert.equal(runs(), 0, "the RPC diff never executes the repository's textconv command");
+	await a.fire("session_shutdown");
+	await loadFileDiff(realGit(repo.root, DIFF_MAX_BYTES), { path: "a.txt", added: 1, deleted: 1, status: CHANGE_STATUS.MODIFIED });
+	assert.ok(runs() > 0, "the panel's default call is exactly as before (it still honors the driver)");
+});
+
+test("a junction to the git dir inside the root is never served", async (t) => {
+	const repo = tempRepo(t);
+	writeFileSync(join(repo.root, "file.ts"), "changed\n");
+	try {
+		linkDir(join(repo.root, ".git"), join(repo.root, "g"));
+	} catch (error) {
+		t.skip(`directory links unavailable here: ${(error as NodeJS.ErrnoException).code}`);
+		return;
+	}
+	t.after(() => unlinkDirs([join(repo.root, "g")]));
+	const a = app(t, repo.root);
+	await a.fire("session_start");
+	const listed = await a.call("get_changes");
+	const root = listed.data.roots[0].id as string;
+	const paths = listed.data.files.map((file: { path: string }) => file.path);
+	if (process.platform === "win32") assert.ok(paths.includes("g/config"), "Git lists the aliased git dir: the case is exercised");
+	for (const path of ["g/config", "g/HEAD", "g/refs/heads/main"]) {
+		const response = await a.call("get_change_diff", { root, path });
+		assert.deepEqual(response.error, CHANGE_NOT_FOUND, path);
+	}
+	assert.equal((await a.call("get_change_diff", { root, path: "file.ts" })).ok, true, "ordinary files still answer");
+	await a.fire("session_shutdown");
+});
+
+test("P1: odd Windows and URL path forms are not_found and leak nothing", async (t) => {
+	const repo = tempRepo(t);
+	writeFileSync(join(repo.root, "file.ts"), "changed\n");
+	const a = app(t, repo.root);
+	await a.fire("session_start");
+	const root = (await a.call("get_changes")).data.roots[0].id as string;
+	for (const path of ["file.ts.", "file.ts::$DATA", "file.ts:x", "FILE~1.TS", "file%2Ets", "file.ts\0", "\\\\?\\" + join(repo.root, "file.ts"), "//?/C:/x", "\\\\localhost\\c$\\x", "x/".repeat(3000) + "file.ts", "file.ts/", "File.ts", "./file.ts"]) {
+		const response = await a.call("get_change_diff", { root, path });
+		assert.deepEqual(response.error, CHANGE_NOT_FOUND, JSON.stringify(path.slice(0, 30)));
+		for (const variant of pathVariants(repo.root)) assert.ok(!JSON.stringify(response).includes(variant));
+	}
+	await a.fire("session_shutdown");
+});
+
+test("P2: a root id from a previous session is not_found", async (t) => {
+	const repo = tempRepo(t);
+	writeFileSync(join(repo.root, "file.ts"), "changed\n");
+	const a = app(t, repo.root);
+	await a.fire("session_start");
+	const root = (await a.call("get_changes")).data.roots[0].id as string;
+	await a.fire("session_shutdown");
+	await a.fire("session_start");
+	assert.deepEqual((await a.call("get_change_diff", { root, path: "file.ts" })).error, CHANGE_NOT_FOUND);
+	await a.fire("session_shutdown");
+});
+
+test("P3: a directory swapped to a junction after listing is refused, nested links too", async (t) => {
+	const repo = tempRepo(t);
+	const outside = scratchDir(t, "gentle-rpc-swap-");
+	writeFileSync(join(outside, "secret.txt"), "TOP-SECRET-SWAP\n");
+	const moved = scratchDir(t, "gentle-rpc-moved-");
+	mkdirSync(join(repo.root, "sub"));
+	writeFileSync(join(repo.root, "sub", "secret.txt"), "inside\n");
+	mkdirSync(join(repo.root, "u"));
+	writeFileSync(join(repo.root, "u", "secret.txt"), "inside-untracked\n");
+	repo.git("add", "sub");
+	repo.git("commit", "-q", "-m", "sub");
+	writeFileSync(join(repo.root, "sub", "secret.txt"), "inside changed\n");
+	const a = app(t, repo.root);
+	await a.fire("session_start");
+	const root = (await a.call("get_changes")).data.roots[0].id as string;
+	renameSync(join(repo.root, "sub"), join(moved, "sub"));
+	renameSync(join(repo.root, "u"), join(moved, "u"));
+	try {
+		linkDir(outside, join(repo.root, "sub"));
+		linkDir(outside, join(repo.root, "u"));
+	} catch (error) {
+		t.skip(`directory links unavailable here: ${(error as NodeJS.ErrnoException).code}`);
+		return;
+	}
+	mkdirSync(join(repo.root, "a", "b"), { recursive: true });
+	linkDir(outside, join(repo.root, "a", "b", "j"));
+	t.after(() => unlinkDirs([join(repo.root, "sub"), join(repo.root, "u"), join(repo.root, "a", "b", "j")]));
+	for (const path of ["sub/secret.txt", "u/secret.txt", "a/b/j/secret.txt"]) {
+		const response = await a.call("get_change_diff", { root, path });
+		assert.ok(!JSON.stringify(response).includes("TOP-SECRET"), path);
+		assert.equal(response.ok, false, path);
+	}
+	await a.fire("session_shutdown");
 });

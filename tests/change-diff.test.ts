@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import * as shell from "../extensions/gentle-shell.ts";
-import { fileDiffArgs, loadFileDiff, runFileDiff } from "../lib/change-diff.ts";
+import { changeDirectoryInsideRoot, fileDiffArgs, loadFileDiff, repositoryGitDirectories, runFileDiff } from "../lib/change-diff.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_TOO_LARGE } from "../lib/shell-changes.ts";
 
 // The `/gentle:changes` panel and Desktop RPC read one file's diff through the
@@ -30,6 +30,25 @@ test("fileDiffArgs keeps the panel's HEAD diff and empty-file diff for untracked
 	assert.deepEqual(fileDiffArgs({ path: "lib/a.ts", status: CHANGE_STATUS.MODIFIED }), ["diff", "HEAD", "--", "lib/a.ts"]);
 	assert.deepEqual(fileDiffArgs({ path: "lib/a.ts", status: CHANGE_STATUS.DELETED }), ["diff", "HEAD", "--", "lib/a.ts"]);
 	assert.deepEqual(fileDiffArgs({ path: "notes.md", status: CHANGE_STATUS.UNTRACKED }), ["diff", "--no-index", "--", "/dev/null", "notes.md"]);
+	assert.deepEqual(fileDiffArgs({ path: "lib/a.ts", status: CHANGE_STATUS.MODIFIED }, {}), ["diff", "HEAD", "--", "lib/a.ts"], "the default stays the panel's call");
+});
+
+test("the inert option adds only the switches that stop repository-configured commands", () => {
+	const inert = { inertRepositoryCommands: true };
+	assert.deepEqual(fileDiffArgs({ path: "lib/a.ts", status: CHANGE_STATUS.MODIFIED }, inert), ["-c", "core.fsmonitor=false", "diff", "--no-textconv", "--no-ext-diff", "HEAD", "--", "lib/a.ts"]);
+	assert.deepEqual(fileDiffArgs({ path: "notes.md", status: CHANGE_STATUS.UNTRACKED }, inert), ["-c", "core.fsmonitor=false", "diff", "--no-textconv", "--no-ext-diff", "--no-index", "--", "/dev/null", "notes.md"]);
+});
+
+test("changeDirectoryInsideRoot refuses a directory inside an excluded one, and repositoryGitDirectories names the git dir", async (t) => {
+	const repo = tempRepo(t);
+	const run = shell.shellGitRunner(repo.root, process.env);
+	const directories = await repositoryGitDirectories(run, repo.root);
+	assert.ok(directories && directories.length === 2);
+	assert.equal(await changeDirectoryInsideRoot(repo.root, "tracked.txt", directories!), true);
+	assert.equal(await changeDirectoryInsideRoot(repo.root, ".git/config", directories!), false);
+	assert.equal(await changeDirectoryInsideRoot(repo.root, ".git/refs/heads/main", directories!), false);
+	assert.equal(await changeDirectoryInsideRoot(repo.root, "gone/file.txt", directories!), true, "a missing directory has nothing on disk to reach");
+	assert.equal(await repositoryGitDirectories(async () => ({ stdout: "", code: 128 }), repo.root), undefined);
 });
 
 test("real Git on this platform: tracked and untracked diffs, and the panel bound", async (t) => {

@@ -1,0 +1,23 @@
+# Desktop RPC: read and toggle review (RDD) mode over Desktop RPC with confirmation
+
+Implements #3324 on branch `feat/desktop-rpc-review-mode`. Delivery: single PR closing #3324. Test runner: `node --experimental-strip-types --test` (`pnpm test`), plus `pnpm run typecheck`.
+
+## Specs
+
+- S1 (#3324, Proposed outcome, verbatim): A review slice on Desktop RPC, served by the same native CLI adapter the TUI uses:
+- S2 (#3324, Proposed outcome, verbatim): `get_review_mode {}` → `{ effective: "enabled" | "disabled" | "unknown", source, scopes: { global, clone } }`, read through `gentle-ai review mode status --json`. A failed or timed-out read answers `effective: "unknown"` (fail closed), never a guess.
+- S3 (#3324, Proposed outcome, verbatim): `set_review_mode { enabled: boolean, scope: "clone" | "global", confirmationToken?: string }`. Because the switch is the user's, the first call answers `confirmation_required` with a title, message, and token (same pattern as `apply_profile`: sha256 over the request and current state). Only a second call with that token applies the change. A stale token (state changed in between) answers `confirmation_required` again with a fresh token. Single-flight like `apply_profile`.
+- S4 (#3324, Proposed outcome, verbatim): Semantics follow the owner exactly: clone-scope enable only clears a clone-local off and cannot override a global off; the response reports the resulting effective mode and source, re-read after the write.
+- S5 (#3324, Proposed outcome, verbatim): `review_mode_changed` event after a change that actually changed the effective state or a scope. No event for no-ops or failures.
+- S6 (#3324, Proposed outcome, verbatim): `review_unavailable` when `gentle-ai` is not installed or does not support the command. No path, no CLI output, and no command line on the wire.
+
+## Tasks
+
+- T1 [S1,S2,S3,S4,S5,S6] Desktop RPC slice: owner seam, method(s)/event, docs in `docs/desktop-rpc.md`, tests. Route: delegated writer (Writer trigger a: parallel independent units in separate worktrees). Status: done (partial: see L3, two test files outside the edit surface need the new names). Commit: d9926a061.
+- T2 [S1,S2,S3,S4,S5,S6] Push, PR closing #3324 with `type:feature`. Route: parent. Status: pending.
+
+## Log
+
+- L1 (2026-11-16, user): "no, vamos a hacer los RPCs siempre de la mejor manera posible, vamos a crear los issues, aprobarlos y hacer los pr" — scope chosen: "Set recomendado (Recommended)".
+- L2: #3324 approved (`status:approved`). Specs above quote its Proposed outcome.
+- L3 (2026-11-16, writer): T1 implemented in d9926a061. Methods `get_review_mode {}` -> `{effective, source, scopes:{global, clone}}` and `set_review_mode {enabled, scope, confirmationToken?}` -> `confirmation_required` (`mode`, `confirmation{title,message,token}`) or `applied` (`changed`, `mode` re-read after the write); event `review_mode_changed {mode, previousMode}`; errors `invalid_request`, `review_unavailable`, `review_mode_busy`. Owner seam `gentle:desktop:review-service` answered in `extensions/gentle-ai.ts` through `executeReviewMode` (the native adapter `/gentle:review-mode` uses); subagent children never answer. Decisions: `set_review_mode` against an unreadable state answers `review_unavailable` (no confirmation can be bound to an unknown state, fail closed); a write with unknown outcome also answers `review_unavailable` (the only error code the issue names) with a distinct message; busy uses a new `review_mode_busy` code (as `profile_apply_busy`); `source` maps `clone_local` to `clone` to match the `scope` param. Evidence: RED (missing modules) then `tests/desktop-rpc-review.test.ts` 21/21 pass; `pnpm run typecheck` no regressions; `check:runtime-modules` and `verify-package-files` pass; `tests/desktop-rpc*.test.ts` 186/193 pass, the 6 capability-list tests in desktop-rpc-{agents,config,design,jobs,permissions,usage}.test.ts fail only because they pin the full method/event list (outside the edit surface), plus `set_permission_mode persists the default only when explicitly requested` (file mode 0o600 on Windows, unrelated). `tests/gentle-ai.test.ts` 206/208: the two "balanced Herdr projection" tests pin the set of private host-discovery channels and need `gentle:desktop:review-service` added at line 1895 (outside the edit surface; base passes 208/208). Next: parent extends the surface for those 7 files or updates them, then T2.

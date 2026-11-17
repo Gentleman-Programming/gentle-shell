@@ -12,7 +12,7 @@ Implements #3321 on branch `feat/desktop-rpc-external-change-events`. Delivery: 
 ## Tasks
 
 - T1 [S1,S2,S3,S4] Desktop RPC slice: owner seam, method(s)/event, docs in `docs/desktop-rpc.md`, tests. Route: delegated writer (Writer trigger a: parallel independent units in separate worktrees). Status: done. Commits: 1875eacf4, e159bf7f2, 13913b1be.
-- T2 [S1,S2,S3,S4] Push, PR closing #3321 with `type:feature`. Route: parent. Status: pending.
+- T2 [S1,S2,S3,S4] Push, PR closing #3321 with `type:feature`. Route: parent. Status: done — PR #3335.
 
 ## Log
 
@@ -25,3 +25,4 @@ Implements #3321 on branch `feat/desktop-rpc-external-change-events`. Delivery: 
 - L7 (verification): tests/desktop-rpc-config-watch.test.ts 26/26 and exits on its own (exit 0, about 27 s). desktop-rpc-{config 44, agents 32, design 22, jobs 24, usage 23, safety 5, profiles 5, rpc 8} pass; desktop-rpc-permissions 8/9 (known Windows 0o600 assertion at :191). `pnpm run typecheck` no regressions.
 - L8 (2026-11-16, native review approved; parent asked to fix three warnings in one bounded batch): fixed in 13913b1be. R3: a cwd re-target while a change is still debounced now flushes every store instead of only the cwd-dependent ones, so the pending change is reported (RED: the profiles change was lost). R4: a removed watched directory now reports `removed` from the real watcher and falls back to nearest-ancestor watching, so recreating it and writing the store gives exactly one event (RED: no ancestor watcher was armed). R4: `DesktopPermissionBridge.wire()` wraps its owner/read awaits and `read()` guards the `readSnapshot` lookup, so a throwing owner never rejects into the caller and leaves the session without external permission events (RED: unwanted rejection "owner torn down"). R2: the bridge JSDoc now sits on `DesktopConfigBridge`.
 - L9 (verification): tests/desktop-rpc-config-watch.test.ts 29/29, exits on its own (exit 0, about 29 s). desktop-rpc-{config 44, agents 32, design 22, jobs 24, usage 23, safety 5, profiles 5, rpc 8} pass; desktop-rpc-permissions 8/9 (known Windows 0o600 assertion at :191). `pnpm run typecheck` no regressions.
+- L10 (2026-11-16): Native review (resilience, reliability, readability) approved and acknowledged; its warnings fixed in 13913b1be (delta under_budget). PR #3335 opened.

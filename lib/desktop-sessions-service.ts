@@ -88,6 +88,8 @@ export class DesktopSessionsBridge {
 	private readonly owner: unknown;
 	private host: CommandHost | undefined;
 	private generation = 0;
+	/** The switch dispatched and not yet settled; at most one per session. */
+	private inFlight: { requestId: string | null } | undefined;
 
 	constructor(options: DesktopSessionsBridgeOptions = {}) {
 		this.owner = "owner" in options ? options.owner : SessionManager;
@@ -102,6 +104,17 @@ export class DesktopSessionsBridge {
 	reset(): void {
 		this.generation += 1;
 		this.host = undefined;
+		this.inFlight = undefined;
+	}
+
+	/**
+	 * The switch currently in flight, from its dispatch until it settles or the
+	 * session is torn down. While it is set, the extension refuses every other
+	 * Desktop request with `session_switching` so none can be lost in the
+	 * teardown.
+	 */
+	switchInFlight(): { requestId: string | null } | undefined {
+		return this.inFlight;
 	}
 
 	/**
@@ -175,6 +188,25 @@ export class DesktopSessionsBridge {
 		if (parsed.id === where.currentId) return { ok: true, data: { id: parsed.id, changed: false } };
 		const switchSession = host.switchSession;
 		if (typeof switchSession !== "function") return { ok: false, error: SESSIONS_UNAVAILABLE };
+		// Marked synchronously at dispatch, before any await, so a request the
+		// RPC loop dispatches right after this one is already refused.
+		const token = { requestId };
+		this.inFlight = token;
+		try {
+			return await this.performSwitch(switchSession, host, where, owner, parsed, requestId);
+		} finally {
+			if (this.inFlight === token) this.inFlight = undefined;
+		}
+	}
+
+	private async performSwitch(
+		switchSession: NonNullable<CommandHost["switchSession"]>,
+		host: CommandHost,
+		where: SessionLocation,
+		owner: DesktopSessionsOwner,
+		parsed: DesktopSwitchSessionParams,
+		requestId: string | null,
+	): Promise<DesktopRpcOutcome> {
 		const generation = this.generation;
 		let sessionPath: string | undefined | null;
 		try {

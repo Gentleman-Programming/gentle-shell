@@ -706,3 +706,70 @@ test("installed Pi lists sessions and switches by id through the runtime's own s
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+/**
+ * Regression for back-to-back requests while a switch is in flight: Pi's RPC
+ * loop dispatches prompts concurrently, so requests sent right after a
+ * `switch_session` reach the session that is being torn down. Every request
+ * must still get exactly one response, and the session the last list reports
+ * as current must agree with the switches that answered `changed: true`.
+ */
+test("installed Pi answers every request exactly once while a switch is in flight", async () => {
+	const root = isolatedRoot("desktop-rpc-sessions-race-");
+	const workspace = join(root, "workspace");
+	const seeded = Date.UTC(2026, 10, 1);
+	for (const [id, offset] of [["sess-a", 0], ["sess-b", 5000]] as const) {
+		const at = seeded + offset;
+		const header = { type: "session", version: 3, id, timestamp: new Date(at).toISOString(), cwd: workspace };
+		const message = {
+			type: "message",
+			id: `${id}-m1`,
+			parentId: null,
+			timestamp: new Date(at + 1000).toISOString(),
+			message: { role: "user", content: [{ type: "text", text: `${id} question` }], timestamp: at + 1000 },
+		};
+		writeFileSync(join(root, "sessions", `${new Date(at).toISOString().replace(/[:.]/g, "-")}_${id}.jsonl`), `${JSON.stringify(header)}\n${JSON.stringify(message)}\n`);
+	}
+	const probe = new LiveProbe(root, [desktopExtension]);
+	try {
+		const responses = (requestId: string) => probe.desktopPayloads().filter((payload) => payload.kind === "response" && payload.requestId === requestId);
+		const responseFor = (requestId: string) => probe.waitFor(
+			(record) => record.type === "extension_ui_request" && record.widgetKey === DESKTOP_RPC_WIDGET &&
+				JSON.parse(record.widgetLines[0]).kind === "response" &&
+				JSON.parse(record.widgetLines[0]).requestId === requestId,
+			`response ${requestId}`,
+		).then((record) => JSON.parse(record.widgetLines[0]));
+
+		probe.send(prompt("prompt-sw-1", desktopRequest("sw-1", "switch_session", { id: "sess-a" })));
+		assert.deepEqual((await responseFor("sw-1")).data, { id: "sess-a", changed: true });
+
+		probe.send(prompt("prompt-sw-2", desktopRequest("sw-2", "switch_session", { id: "sess-b" })));
+		probe.send(prompt("prompt-sw-3", desktopRequest("sw-3", "switch_session", { id: "sess-a" })));
+		probe.send(prompt("prompt-ls-4", desktopRequest("ls-4", "list_sessions")));
+		const sw2 = await responseFor("sw-2");
+		const sw3 = await responseFor("sw-3");
+		const ls4 = await responseFor("ls-4");
+		// Late duplicates would arrive after the replacement session settles.
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 1000));
+		for (const id of ["sw-1", "sw-2", "sw-3", "ls-4"]) assert.equal(responses(id).length, 1, `exactly one response for ${id}`);
+		assert.deepEqual(sw2.data, { id: "sess-b", changed: true }, JSON.stringify(sw2));
+		for (const answer of [sw3, ls4]) {
+			if (!answer.ok) assert.equal(answer.error.code, "session_switching", JSON.stringify(answer));
+		}
+
+		probe.send(prompt("prompt-ls-5", desktopRequest("ls-5", "list_sessions")));
+		const ls5 = await responseFor("ls-5");
+		const expected = sw3.ok && sw3.data.changed === true ? "sess-a" : "sess-b";
+		assert.deepEqual(
+			ls5.data.sessions.filter((session: any) => session.current).map((session: any) => session.id),
+			[expected],
+			"the current session matches the last switch that answered changed: true",
+		);
+
+		const closed = await probe.close();
+		assert.equal(closed.status, 0, closed.stderr);
+	} finally {
+		probe.kill();
+		rmSync(root, { recursive: true, force: true });
+	}
+});

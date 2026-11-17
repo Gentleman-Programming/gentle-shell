@@ -73,7 +73,9 @@ type ParamError = { error: { code: string; message: string } };
 export const INVALID_SESSIONS_PARAMS = { code: "invalid_request", message: "Invalid sessions parameters" } as const;
 export const SESSIONS_UNAVAILABLE = { code: "sessions_unavailable", message: "Sessions owner unavailable for this session" } as const;
 export const SESSION_SWITCH_FAILED = { code: "sessions_unavailable", message: "The session could not be opened" } as const;
-export const SESSION_NOT_FOUND = { code: "not_found", message: "No session with that id in the requested scope" } as const;
+/** Every request that arrives while a switch is in flight; retry after the switch answers. */
+export const SESSION_SWITCHING = { code: "session_switching", message: "A session switch is in progress; retry after it answers" } as const;
+export const SESSION_NOT_FOUND ={ code: "not_found", message: "No session with that id in the requested scope" } as const;
 
 function isScope(value: unknown): value is DesktopSessionsScope {
 	return value === "project" || value === "all";
@@ -228,6 +230,11 @@ export function parseSwitchSessionParams(params: Record<string, unknown>): Deskt
  */
 export function desktopSessionsResponseLine(requestId: string, data: Record<string, unknown>): string {
 	return JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, kind: "response", requestId, ok: true, data });
+}
+
+/** A failure response line in the router's exact shape, for an instance whose router a switch already stopped. */
+export function desktopSessionsErrorLine(requestId: string | null, error: { code: string; message: string }): string {
+	return JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, kind: "response", requestId, ok: false, error: { code: error.code, message: error.message } });
 }
 
 /** The correlation id of a raw `/gentle:desktop` request, or `null` when it has none. */

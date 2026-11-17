@@ -25,14 +25,18 @@ import { DesktopJobsBridge } from "../lib/desktop-jobs-service.ts";
 import { DESKTOP_AGENTS_EVENTS, DESKTOP_AGENTS_METHODS } from "../lib/desktop-rpc-agents.ts";
 import { DesktopAgentsBridge } from "../lib/desktop-agents-service.ts";
 import { DESKTOP_PROFILES_EVENTS, DESKTOP_PROFILES_METHODS, DesktopProfilesBridge } from "../lib/desktop-rpc-profiles.ts";
-import { DESKTOP_SESSIONS_EVENTS, DESKTOP_SESSIONS_METHODS, desktopRequestId } from "../lib/desktop-rpc-sessions.ts";
+import { DESKTOP_SESSIONS_EVENTS, DESKTOP_SESSIONS_METHODS, desktopRequestId, desktopSessionsErrorLine, SESSION_SWITCHING } from "../lib/desktop-rpc-sessions.ts";
 import { DesktopSessionsBridge } from "../lib/desktop-sessions-service.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 
 function publisher(ctx: ExtensionContext): DesktopRpcPublish {
+	// Extract the UI once: Pi invalidates a captured ctx after a session switch,
+	// but an extracted raw object stays usable, so a switch-retired instance can
+	// still answer the requests that reach it during the replacement.
+	const ui = ctx.ui;
 	return (line) => {
 		try {
-			ctx.ui.setWidget(DESKTOP_RPC_WIDGET, [line]);
+			ui.setWidget(DESKTOP_RPC_WIDGET, [line]);
 		} catch {
 			throw new Error("Desktop RPC transport unavailable");
 		}
@@ -62,6 +66,11 @@ export default function desktopRpc(pi: ExtensionAPI) {
 	// synchronously from `handle`, so the sessions slice reads it before any
 	// await; a switch needs it to answer from the replacement session.
 	let dispatchingRequestId: string | null = null;
+	// The publisher of the running session, and the one kept after a switch tore
+	// this instance down. Pi can still dispatch a command to a replaced instance
+	// (its ctx is stale by then); that command is answered `session_switching`.
+	let activePublish: DesktopRpcPublish | undefined;
+	let retiredPublish: DesktopRpcPublish | undefined;
 	const domain: DesktopRpcDomain = (method, params) => {
 		const sessionsOutcome = sessions.handle(method, params, dispatchingRequestId);
 		if (sessionsOutcome !== undefined) return sessionsOutcome;
@@ -91,6 +100,11 @@ export default function desktopRpc(pi: ExtensionAPI) {
 		() => config.snapshotState(),
 		domain,
 	);
+	// While a `switch_session` is in flight, every other request is answered at
+	// once with a retryable `session_switching`: Pi's RPC loop dispatches
+	// prompts concurrently, and an answer that settled after the teardown would
+	// otherwise be dropped with the old session.
+	router.setGate(() => (sessions.switchInFlight() ? SESSION_SWITCHING : undefined));
 
 	pi.on("session_start", (_event, ctx) => {
 		permissions.reset();
@@ -102,11 +116,14 @@ export default function desktopRpc(pi: ExtensionAPI) {
 		agents.reset();
 		sessions.reset();
 		router.stop();
+		activePublish = undefined;
+		retiredPublish = undefined;
 		if (!isInteractiveRpcHost(ctx.mode)) return;
 		design.attach(ctx);
 		jobs.attach(ctx);
 		agents.attach(ctx);
-		router.start(publisher(ctx));
+		activePublish = publisher(ctx);
+		router.start(activePublish);
 		// Header-driven usage snapshots (Claude's 5h/7d windows, Codex SSE
 		// headers) become ordered `rate_limit` events through the router.
 		usage.wire((event, data) => router.emit(event, data));
@@ -128,6 +145,15 @@ export default function desktopRpc(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", () => {
+		// A switch is tearing this session down: answer every request still
+		// waiting on an owner before the router stops, so none is lost. Only the
+		// switch itself is kept; the replacement session answers it.
+		const switching = sessions.switchInFlight();
+		if (switching) {
+			router.abandonPending(SESSION_SWITCHING, (requestId) => requestId === switching.requestId);
+			retiredPublish = activePublish;
+		}
+		activePublish = undefined;
 		permissions.reset();
 		config.reset();
 		usage.reset();
@@ -142,6 +168,15 @@ export default function desktopRpc(pi: ExtensionAPI) {
 	pi.registerCommand(DESKTOP_RPC_COMMAND, {
 		description: "Handle a versioned Gentle Desktop RPC request",
 		async handler(args, ctx) {
+			if (retiredPublish) {
+				// This instance was replaced by a switch: never touch the stale ctx.
+				try {
+					retiredPublish(desktopSessionsErrorLine(desktopRequestId(args), SESSION_SWITCHING));
+				} catch {
+					/* transport failures are never retried as a second response */
+				}
+				return;
+			}
 			if (!isInteractiveRpcHost(ctx.mode)) return;
 			permissions.attach(ctx);
 			config.attach(ctx);

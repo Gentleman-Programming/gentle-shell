@@ -250,3 +250,44 @@ test("TUI and headless RPC sessions do not activate the Desktop channel", async 
 	await app.invoke(request("capabilities"));
 	assert.equal(app.widgets.length, 0);
 });
+
+test("a router gate refuses a request synchronously before any domain work", async () => {
+	const lines: string[] = [];
+	const calls: string[] = [];
+	const domain: DesktopRpcDomain = (method) => { calls.push(method); return { ok: true, data: {} }; };
+	const router = new DesktopRpcRouter(["capabilities", "get_snapshot", "set_permission_mode"], [], undefined, domain);
+	router.start((line) => lines.push(line));
+	router.setGate(() => ({ code: "session_switching", message: "busy" }));
+	router.handle(JSON.stringify(request("set_permission_mode", { mode: "auto" })));
+	router.handle(JSON.stringify(request("capabilities")));
+	router.handle(JSON.stringify({ ...request("capabilities"), method: "unknown" }));
+	assert.deepEqual(calls, [], "no domain call while gated");
+	assert.deepEqual(lines.map((line) => JSON.parse(line).error.code), ["session_switching", "session_switching", "unsupported_method"]);
+
+	router.setGate(undefined);
+	await router.handle(JSON.stringify(request("set_permission_mode", { mode: "auto" })));
+	assert.deepEqual(calls, ["set_permission_mode"], "an open gate dispatches as before");
+	assert.equal(JSON.parse(lines.at(-1)!).ok, true);
+});
+
+test("abandonPending answers each pending request once, keeps the named one, and drops their late outcomes", async () => {
+	const lines: string[] = [];
+	const resolvers = new Map<string, (outcome: DesktopRpcOutcome) => void>();
+	const domain: DesktopRpcDomain = (_method, params) => new Promise((resolve) => resolvers.set(String(params.tag), resolve));
+	const router = new DesktopRpcRouter(["capabilities", "get_snapshot", "slow"], [], undefined, domain);
+	router.start((line) => lines.push(line));
+	const first = router.handle(JSON.stringify({ ...request("slow", { tag: "a" }), requestId: "req-a" }));
+	const kept = router.handle(JSON.stringify({ ...request("slow", { tag: "b" }), requestId: "req-b" }));
+	router.abandonPending({ code: "session_switching", message: "busy" }, (requestId) => requestId === "req-b");
+	assert.deepEqual(lines.map((line) => [JSON.parse(line).requestId, JSON.parse(line).error.code]), [["req-a", "session_switching"]]);
+
+	resolvers.get("a")!({ ok: true, data: { late: true } });
+	resolvers.get("b")!({ ok: true, data: { kept: true } });
+	await Promise.all([first, kept]);
+	assert.deepEqual(lines.map((line) => JSON.parse(line).requestId), ["req-a", "req-b"], "the abandoned request never answers twice");
+	assert.deepEqual(JSON.parse(lines[1]!).data, { kept: true });
+
+	router.stop();
+	router.abandonPending({ code: "session_switching", message: "busy" });
+	assert.equal(lines.length, 2, "a stopped router answers nothing");
+});

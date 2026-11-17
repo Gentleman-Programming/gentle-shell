@@ -25,6 +25,8 @@ import { DesktopJobsBridge } from "../lib/desktop-jobs-service.ts";
 import { DESKTOP_AGENTS_EVENTS, DESKTOP_AGENTS_METHODS } from "../lib/desktop-rpc-agents.ts";
 import { DesktopAgentsBridge } from "../lib/desktop-agents-service.ts";
 import { DESKTOP_PROFILES_EVENTS, DESKTOP_PROFILES_METHODS, DesktopProfilesBridge } from "../lib/desktop-rpc-profiles.ts";
+import { DESKTOP_REVIEW_EVENTS, DESKTOP_REVIEW_METHODS } from "../lib/desktop-rpc-review.ts";
+import { DesktopReviewBridge } from "../lib/desktop-review-service.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 
 function publisher(ctx: ExtensionContext): DesktopRpcPublish {
@@ -45,7 +47,9 @@ export default function desktopRpc(pi: ExtensionAPI) {
 	// existing parent-session job registry and monitor controller; subagents
 	// list/cancel delegate to the existing parent-session TaskStore and
 	// AgentRunner; profile applies delegate to the existing `/gentle:profiles`
-	// owner and its own apply actions. None has a store of its own.
+	// owner and its own apply actions; review (RDD) mode reads and changes
+	// delegate to the `/gentle:review-mode` owner and its native CLI adapter.
+	// None has a store of its own.
 	const permissions = new DesktopPermissionBridge(pi);
 	const config = new DesktopConfigBridge();
 	const usage = new DesktopUsageBridge(pi);
@@ -53,9 +57,10 @@ export default function desktopRpc(pi: ExtensionAPI) {
 	const jobs = new DesktopJobsBridge(pi);
 	const agents = new DesktopAgentsBridge(pi);
 	const profiles = new DesktopProfilesBridge(pi);
+	const review = new DesktopReviewBridge(pi);
 	const domain: DesktopRpcDomain = (method, params) => {
 		// Config is the only synchronous bridge; permission, usage, design, jobs,
-		// profiles, and agents answers are awaited in fall-through order, so an unknown
+		// profiles, agents, and review answers are awaited in fall-through order, so an unknown
 		// method still resolves to the router's `unsupported_method` instead of an
 		// early `undefined`.
 		const configOutcome = config.handle(method, params);
@@ -71,12 +76,14 @@ export default function desktopRpc(pi: ExtensionAPI) {
 			if (jobsOutcome !== undefined) return jobsOutcome;
 			const profilesOutcome = await profiles.handle(method, params);
 			if (profilesOutcome !== undefined) return profilesOutcome;
-			return agents.handle(method, params);
+			const agentsOutcome = await agents.handle(method, params);
+			if (agentsOutcome !== undefined) return agentsOutcome;
+			return review.handle(method, params);
 		})();
 	};
 	const router = new DesktopRpcRouter(
-		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_PROFILES_METHODS, ...DESKTOP_AGENTS_METHODS],
-		[...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS],
+		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_PROFILES_METHODS, ...DESKTOP_AGENTS_METHODS, ...DESKTOP_REVIEW_METHODS],
+		[...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS, ...DESKTOP_REVIEW_EVENTS],
 		() => config.snapshotState(),
 		domain,
 	);
@@ -89,6 +96,7 @@ export default function desktopRpc(pi: ExtensionAPI) {
 		jobs.reset();
 		profiles.reset();
 		agents.reset();
+		review.reset();
 		router.stop();
 		if (!isInteractiveRpcHost(ctx.mode)) return;
 		design.attach(ctx);
@@ -123,6 +131,7 @@ export default function desktopRpc(pi: ExtensionAPI) {
 		jobs.reset();
 		profiles.reset();
 		agents.reset();
+		review.reset();
 		router.stop();
 	});
 
@@ -137,6 +146,7 @@ export default function desktopRpc(pi: ExtensionAPI) {
 			jobs.attach(ctx);
 			profiles.attach(ctx);
 			agents.attach(ctx);
+			review.attach(ctx);
 			await router.handle(args);
 		},
 	});

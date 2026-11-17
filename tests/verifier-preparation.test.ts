@@ -212,6 +212,7 @@ test("#3280: source node-type and literal link-target drift fail deterministical
 });
 
 test("#3280: submodules and conflict stages remain unsupported", t => {
+	const reasons: string[] = [];
 	for (const conflict of [false, true]) {
 		const f = fixture(t), object = f.git("rev-parse", conflict ? ":app.cjs" : "HEAD");
 		execFileSync("git", ["update-index", "--index-info"], { cwd: f.source, env,
@@ -219,7 +220,9 @@ test("#3280: submodules and conflict stages remain unsupported", t => {
 		const before = f.snapshot(), result = f.prepare([]);
 		assertRejected(f, result, before);
 		assert.equal(existsSync(result.work), false);
+		reasons.push(result.receipt.reason);
 	}
+	assert.deepEqual(reasons, ["unsupported index: links, submodules or conflicts", "unsupported index: links, submodules or conflicts"]);
 });
 
 test("#3009: actual preparer preserves Git publication, baseline, index and required local inputs", t => {

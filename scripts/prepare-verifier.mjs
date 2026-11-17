@@ -42,7 +42,7 @@ try {
 	if (plan.baseline !== undefined && (typeof plan.baseline !== "string" || !/^[a-f0-9]{40,64}$/.test(plan.baseline))) fail("baseline must be a full commit object ID");
 	const indexPath = join(source, ".git", "index"), indexHash = hash(readFileSync(indexPath));
 	const staged = git(source, ["ls-files", "--stage", "-z"]);
-	if (names(staged).some(entry => !/^(100644|100755|120000) [a-f0-9]+ 0\t/.test(entry))) fail("unsupported index: submodules or conflicts");
+	if (names(staged).some(entry => !/^(100644|100755|120000) [a-f0-9]+ 0\t/.test(entry))) fail("unsupported index: links, submodules or conflicts");
 	if (names(git(source, ["ls-files", "-v", "-z"])).some(entry => !entry.startsWith("H "))) fail("unsupported index flags: sparse or assume-unchanged entries");
 	const tracked = new Set(names(git(source, ["ls-files", "-z"])));
 	const files = new Map(), missing = [], excludedRuntimeArtifacts = [];

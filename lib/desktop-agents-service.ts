@@ -3,7 +3,7 @@
 // `extensions/gentle-agents.ts`) through a defensive, versioned owner-service
 // event/adapter — the agents analogue of the jobs `discoverDesktopJobsService`
 // seam. It never starts, stops, or spawns a subagent itself and keeps no
-// second store or runner: every list and every cancel is the owner's own
+// second store or runner: every list, cancel, and thread read is the owner's own
 // answer, shaped into the Desktop RPC contract by
 // `lib/desktop-rpc-agents.ts`.
 
@@ -11,11 +11,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import {
 	AGENT_NOT_FOUND,
 	AGENTS_UNAVAILABLE,
+	applySinceVersion,
 	DESKTOP_AGENTS_EVENT,
 	DESKTOP_AGENTS_SERVICE_CHANNEL,
 	isDesktopAgentsServiceShape,
 	parseCancelSubagentParams,
 	parseDesktopAgentEntry,
+	parseDesktopAgentThread,
+	parseGetSubagentThreadParams,
 	parseListSubagentsParams,
 	type DesktopAgentEntry,
 	type DesktopAgentsOwnerRead,
@@ -138,21 +141,19 @@ export class DesktopAgentsBridge {
 	}
 
 	async handle(method: string, params: Record<string, unknown>): Promise<DesktopRpcOutcome | undefined> {
-		if (method !== "list_subagents" && method !== "cancel_subagent") return undefined;
+		if (method !== "list_subagents" && method !== "cancel_subagent" && method !== "get_subagent_thread") return undefined;
 		const host = this.host;
 		if (!host) return { ok: false, error: AGENTS_UNAVAILABLE };
 		// Parse before discovery: a malformed request must never trigger owner work.
-		if (method === "list_subagents") {
-			const parsed = parseListSubagentsParams(params);
-			if ("error" in parsed) return { ok: false, error: parsed.error };
-		} else {
-			const parsed = parseCancelSubagentParams(params);
-			if ("error" in parsed) return { ok: false, error: parsed.error };
-		}
+		const parsed = method === "list_subagents"
+			? parseListSubagentsParams(params)
+			: method === "cancel_subagent" ? parseCancelSubagentParams(params) : parseGetSubagentThreadParams(params);
+		if ("error" in parsed) return { ok: false, error: parsed.error };
 		const generation = this.generation;
 		const service = await this.owner(host);
 		if (generation !== this.generation || !service) return { ok: false, error: AGENTS_UNAVAILABLE };
-		return method === "list_subagents" ? this.list(service) : this.cancel(service, params);
+		if (method === "list_subagents") return this.list(service);
+		return method === "cancel_subagent" ? this.cancel(service, params) : this.thread(service, params);
 	}
 
 	private async owner(context: ExtensionContext): Promise<DesktopAgentsService | undefined> {
@@ -256,6 +257,26 @@ export class DesktopAgentsBridge {
 		const read = this.readOwner(service);
 		if (!read) return { ok: false, error: AGENTS_UNAVAILABLE };
 		return { ok: true, data: { agents: read.agents } as unknown as Record<string, unknown> };
+	}
+
+	/** A read: the owner's bounded thread for one owned id, never an event. */
+	private thread(service: DesktopAgentsService, params: Record<string, unknown>): DesktopRpcOutcome {
+		// Params were already validated before discovery; reparse defensively.
+		const parsed = parseGetSubagentThreadParams(params);
+		if ("error" in parsed) return { ok: false, error: parsed.error };
+		if (typeof service.thread !== "function") return { ok: false, error: AGENTS_UNAVAILABLE };
+		let outcome: ReturnType<NonNullable<DesktopAgentsService["thread"]>>;
+		try {
+			outcome = service.thread(parsed.id);
+		} catch {
+			// Raw owner failures carry prompt text and path detail; none of it crosses.
+			return { ok: false, error: AGENTS_UNAVAILABLE };
+		}
+		if (!outcome || outcome.kind === "not_found") return { ok: false, error: AGENT_NOT_FOUND };
+		// The owner's projected thread crosses the event bus: re-validate it.
+		const thread = parseDesktopAgentThread(outcome.thread);
+		if (thread === undefined || thread.id !== parsed.id) return { ok: false, error: AGENTS_UNAVAILABLE };
+		return { ok: true, data: applySinceVersion(thread, parsed.sinceVersion) as unknown as Record<string, unknown> };
 	}
 
 	private cancel(service: DesktopAgentsService, params: Record<string, unknown>): DesktopRpcOutcome {

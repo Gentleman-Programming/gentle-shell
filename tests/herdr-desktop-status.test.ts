@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { activeTodoTitle } from "../lib/herdr-activity.ts";
 import {
-	SEND_TTL_MS, diffRecords, encodeClear, encodeRecord, projectAll, projectContext, projectJobs,
+	SEND_TTL_MS, diffRecords, encodeClear, encodeRecord, projectAll, projectJobs,
 	projectSends, projectSubagents, projectTodo, projectWaits, type DesktopRecord,
 } from "../lib/herdr-desktop-status.ts";
 
@@ -38,38 +38,18 @@ test("other records retain rounded working/blocked progress and omit it for idle
 	}
 });
 
-test("S12 context projects and encodes idle progress with exact rounding and clamping", () => {
-	for (const [percent, expected] of [[-10, 0], [0, 0], [0.49, 0], [0.5, 1], [49.49, 49], [49.5, 50], [99.5, 100], [100, 100], [200, 100]]) {
-		const projected = projectContext(percent);
-		assert.deepEqual(projected, records(["ctx", { state: "working", progress: expected }]));
-		assert.equal(encodeRecord("ctx", projected.get("ctx")), `\x1b]7501;state=working:progress=${expected}:id=ctx\x1b\\`);
-	}
-	assert.equal(encodeRecord("ctx", { state: "working", progress: 52.6 }), "\x1b]7501;state=working:progress=53:id=ctx\x1b\\");
-	// herdr-core keeps progress only with working/blocked, so an idle ctx record would lose it.
-	assert.equal(encodeRecord("ctx", { state: "idle", progress: 40 }), "\x1b]7501;state=idle:id=ctx\x1b\\");
-});
-
-test("S12 unknown or invalid context is absent and clears a previously published ctx", () => {
-	const previous = records(["ctx", { state: "working", progress: 50 }]);
-	for (const percent of [undefined, null, NaN, Infinity, -Infinity, "50", {}, []]) {
-		const projected = projectContext(percent);
-		assert.deepEqual(projected, empty);
-		assert.deepEqual(diffRecords(previous, projected), ["\x1b]7501;state=clear:id=ctx\x1b\\"]);
-	}
-});
-
-test("S12 projectAll combines ctx with existing sources and leaves them unchanged when unknown", () => {
+test("S12 projectAll never publishes ctx, even when context usage is known", () => {
 	const todo = { done: 1, total: 2, current: "One" };
-	const projected = projectAll({ todo, context: 25.5 });
-	assert.equal(encodeRecord("ctx", projected.get("ctx")), "\x1b]7501;state=working:progress=26:id=ctx\x1b\\");
-	assert.deepEqual(projected.get("todo"), { state: "working", title: "One", progress: 50 });
-	assert.deepEqual(projectAll({ todo }), projectTodo(todo));
+	for (const context of [0, 25.5, 100, undefined, null, NaN]) {
+		assert.equal(projectAll({ context }).has("ctx"), false);
+		assert.deepEqual(projectAll({ todo, context }), projectTodo(todo));
+	}
 });
 
 test("S2 projectAll ignores the obsolete decision input without changing other sources", () => {
 	const inputs = { todo: { done: 1, total: 2, current: "One" }, context: 25.5 };
 	const before = projectAll(inputs);
-	assert.deepEqual(before, records(["todo", { state: "working", title: "One", progress: 50 }], ["ctx", { state: "working", progress: 26 }]));
+	assert.deepEqual(before, records(["todo", { state: "working", title: "One", progress: 50 }]));
 	assert.deepEqual(projectAll({ ...inputs, decision: { active: true, label: "Choose" } }), before);
 });
 

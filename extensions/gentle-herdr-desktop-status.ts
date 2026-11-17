@@ -49,7 +49,6 @@ type Session = {
 	manager: ExtensionContext["sessionManager"];
 	terminal?: Terminal;
 	previous: Map<string, DesktopRecord>;
-	context?: unknown;
 	todo?: unknown;
 	jobs?: JobsSidebarSnapshot;
 	tasks: HerdrDesktopTask[];
@@ -94,7 +93,7 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 			for (const [target, at] of s.sends) if (time - at >= SEND_TTL_MS) s.sends.delete(target);
 			for (const [id, error] of s.errors) if (time >= error.expiresAt) s.errors.delete(id);
 			const targets = [...new Set(s.consults.values())];
-			const next = projectAll({ context: s.context, todo: s.todo,
+			const next = projectAll({ todo: s.todo,
 				jobs: s.jobs && { jobs: s.jobs.jobs.map(job => ({ ...job, id: segment(job.id) })) },
 				subagents: s.tasks.map(task => ({ ...task, id: segment(task.id, 54) })),
 				waits: targets.map(target => segment(target)), sends: [...s.sends].map(([target, at]) => ({ target: segment(target), at })), now: time });
@@ -108,13 +107,6 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 			}
 			apply(s, next);
 		};
-		// Pi's session projection is committed after message_end, so read at turn,
-		// tool and session boundaries rather than during the message_end callback.
-		const refreshContext = (s: Session, ctx: ExtensionContext) => {
-			try { s.context = ctx.getContextUsage?.()?.percent; } catch { s.context = undefined; }
-			publish(s);
-		};
-		const refreshOwnedContext = (ctx: ExtensionContext) => { if (owns(ctx)) refreshContext(owner!, ctx); };
 		const arm = (s: Session) => {
 			s.cancelTimer?.(); s.cancelTimer = undefined;
 			if (owner !== s || (s.sends.size === 0 && s.errors.size === 0)) return;
@@ -147,7 +139,6 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 			seenJobsBySession.set(id, seenJobErrors);
 			const s: Session = { id, startedAt: now(), ctx, manager: ctx.sessionManager, previous: new Map(), tasks: [], consults: new Map(), sends: new Map(), asksFromPeers: new Map(), errors: new Map(), seenJobErrors, seenTaskErrors: new Set(), unsubscribe: [] };
 			owner = s;
-			refreshContext(s, ctx);
 			const listen = (name: string, handler: (data: any) => void) => {
 				s.unsubscribe.push(pi.events.on(name, (data: unknown) => {
 					try { if (owner === s && s.manager.getSessionId() === s.id && data && typeof data === "object" && (data as { sessionId?: unknown }).sessionId === s.id) handler(data); }
@@ -221,13 +212,7 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 			replay(s);
 			try { pi.events.emit(HERDR_DESKTOP_TASKS_REQUEST, { sessionId: s.id }); } catch { /* Optional display source. */ }
 		});
-		pi.on("session_tree", (_event, ctx) => { if (owns(ctx)) { replay(owner!); refreshOwnedContext(ctx); } });
-		pi.on("turn_start", (_event, ctx) => refreshOwnedContext(ctx));
-		pi.on("tool_execution_start", (_event, ctx) => refreshOwnedContext(ctx));
-		pi.on("turn_end", (_event, ctx) => refreshOwnedContext(ctx));
-		pi.on("agent_settled", (_event, ctx) => refreshOwnedContext(ctx));
-		pi.on("session_compact", (_event, ctx) => refreshOwnedContext(ctx));
-		pi.on("model_select", (_event, ctx) => refreshOwnedContext(ctx));
+		pi.on("session_tree", (_event, ctx) => { if (owns(ctx)) replay(owner!); });
 		pi.on("tool_execution_end", (event, ctx) => {
 			if (!owns(ctx) || event.toolName !== "todo" || event.isError) return;
 			try {

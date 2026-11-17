@@ -33,7 +33,6 @@ Each update is a full record; `state=clear` removes its ID. Fields not listed fo
 | `wait/<target>` | `working` | No title; message `consulting <target>`. | Present until the last concurrent consultation to that target settles. |
 | `sent/<target>` | `idle` | No title; message `sent to <target>`. | Present for five seconds after the latest accepted send. |
 | `ask/<peer>` | `blocked` / `question` | Title is the peer's display name, falling back to its ID; message `question from <name>`. | Present while an incoming message remains unanswered; cleared when handled or after its five-minute expiry. |
-| `ctx` | `working` | No title or message; progress is the rounded context percentage, clamped to 0–100. | Updated when usage changes; cleared when usage is unknown. |
 
 All sub-records clear on session shutdown, widget disposal or session replacement. Titles and messages are UTF-8 encoded as base64 after terminal controls are replaced with spaces, and each is capped at 512 bytes without splitting a Unicode scalar. Dynamic ID segments use ASCII letters, digits, `_`, `-` and `.`; unsafe, reserved `h-` or overlong segments become `h-` plus a truncated SHA-256 digest. Original target names remain in the encoded messages. IDs are at most 64 characters.
 

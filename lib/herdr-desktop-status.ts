@@ -10,7 +10,6 @@ export interface DesktopRecord {
 	msg?: string;
 }
 export interface DesktopStatusInputs {
-	context?: unknown;
 	todo?: unknown;
 	jobs?: unknown;
 	subagents?: unknown;
@@ -96,12 +95,6 @@ export function diffRecords(previous: Map<string, DesktopRecord>, next: Map<stri
 	for (const id of before.keys()) if (!after.has(id)) changes.push(encodeClear(id)!);
 	for (const [id, encoded] of after) if (before.get(id) !== encoded) changes.push(encoded);
 	return changes;
-}
-
-/** Context is absent when Pi cannot determine a finite percentage. */
-export function projectContext(percent: unknown): Map<string, DesktopRecord> {
-	return typeof percent === "number" && Number.isFinite(percent)
-		? new Map([["ctx", { state: "working", progress: roundedProgress(percent) }]]) : new Map();
 }
 
 /** Match activeTodoTitle without importing its Pi and I/O dependencies. */
@@ -207,7 +200,7 @@ export function projectAll(inputs: unknown): Map<string, DesktopRecord> {
 		if (!object(inputs)) return new Map();
 		const result = new Map<string, DesktopRecord>();
 		for (const source of [projectTodo(inputs.todo), projectJobs(inputs.jobs), projectSubagents(inputs.subagents),
-			projectWaits(inputs.waits), projectSends(inputs.sends, inputs.now), projectContext(inputs.context)]) {
+			projectWaits(inputs.waits), projectSends(inputs.sends, inputs.now)]) {
 			for (const [id, record] of source) result.set(id, record);
 		}
 		return result;

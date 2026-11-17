@@ -88,68 +88,27 @@ test("S3 gates on terminal, launcher, child marker and interactive UI without to
 test("S2 ignores attention events without subscribing or writing a decision or root record", () => {
 	const h = harness(); h.usage(42); h.branch([todoEntry([task(1, "Work", "in_progress")])]); h.fire("session_start");
 	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", startedAt: 1 }] } });
-	const existing = [record("ctx", "state=working:progress=42"), record("todo", "state=working:progress=0:title=V29yaw=="), record("bg/j", "state=working:title=Sm9i")];
+	const existing = [record("todo", "state=working:progress=0:title=V29yaw=="), record("bg/j", "state=working:title=Sm9i")];
 	assert.equal(h.listenerCount(NOTIFICATION_ATTENTION_EVENT), 0);
 	for (const event of [{ active: true, label: "Choose" }, { active: true }, { active: false }, null]) h.emit(NOTIFICATION_ATTENTION_EVENT, event);
 	assert.deepEqual(h.writes, existing);
 	h.fire("session_shutdown");
-	assert.deepEqual(h.writes, [...existing, clear("ctx"), clear("todo"), clear("bg/j")]);
+	assert.deepEqual(h.writes, [...existing, clear("todo"), clear("bg/j")]);
 });
 
-test("S12 publishes only rounded changes, clears unknown usage, and clears ctx on shutdown", () => {
-	const h = harness(); h.usage(49.4); h.fire("session_start");
-	assert.deepEqual(h.writes, [record("ctx", "state=working:progress=49")]);
-	h.usage(49.49); h.fire("turn_end");
-	assert.equal(h.writes.length, 1);
-	h.usage(49.5); h.fire("turn_end");
-	assert.deepEqual(h.writes, [record("ctx", "state=working:progress=49"), record("ctx", "state=working:progress=50")]);
-	h.usage(50.49); h.fire("turn_end"); assert.equal(h.writes.length, 2);
-	h.usage(null); h.fire("session_compact"); assert.equal(h.writes.at(-1), clear("ctx"));
-	h.usage(undefined); h.fire("turn_end"); assert.equal(h.writes.length, 3);
-	h.usage(52.7); h.fire("turn_end"); assert.equal(h.writes.at(-1), record("ctx", "state=working:progress=53"));
-	h.fire("session_shutdown");
-	assert.deepEqual(h.writes, [record("ctx", "state=working:progress=49"), record("ctx", "state=working:progress=50"), clear("ctx"), record("ctx", "state=working:progress=53"), clear("ctx")]);
-});
-
-test("S12 context changes leave other published records intact", () => {
-	const h = harness(); h.usage(42.4); h.branch([todoEntry([task(1, "Work", "in_progress")])]); h.fire("session_start");
-	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", startedAt: 1 }] } });
-	assert.deepEqual(h.writes, [record("ctx", "state=working:progress=42"), record("todo", "state=working:progress=0:title=V29yaw=="), record("bg/j", "state=working:title=Sm9i")]);
-	h.usage(42.49); h.fire("turn_end"); assert.equal(h.writes.length, 3);
-	h.usage(42.51); h.fire("turn_end"); assert.equal(h.writes.at(-1), record("ctx", "state=working:progress=43"));
-	h.usage(null); h.fire("turn_end"); assert.equal(h.writes.at(-1), clear("ctx"));
-	h.fire("session_shutdown"); assert.deepEqual(h.writes.slice(-2), [clear("todo"), clear("bg/j")]);
-});
-
-test("S12 refreshes at committed turn, tool, model, tree, compaction and settlement boundaries", () => {
-	const h = harness(); h.usage(10); h.fire("session_start");
+test("S12 never publishes a ctx record: known context usage alone leaves no activity", () => {
+	const h = harness(); h.usage(42); h.fire("session_start");
 	for (const [event, percent] of [["turn_start", 20], ["tool_execution_start", 30], ["turn_end", 40],
 		["model_select", 50], ["session_tree", 60], ["session_compact", 70], ["agent_settled", 80]] as const) {
 		h.usage(percent); h.fire(event);
 	}
-	assert.deepEqual(h.writes, [10, 20, 30, 40, 50, 60, 70, 80].map(percent => record("ctx", `state=working:progress=${percent}`)));
-	h.fire("session_shutdown"); assert.equal(h.writes.at(-1), clear("ctx"));
-});
-
-test("S12 fails closed when usage is unavailable and widget disposal clears the record", () => {
-	const h = harness(); h.usage(null); h.fire("session_start"); assert.deepEqual(h.writes, []);
-	h.usage(0); h.fire("turn_end"); assert.deepEqual(h.writes, [record("ctx", "state=working:progress=0")]);
-	h.throwUsage(); h.fire("turn_end"); h.fire("model_select");
-	assert.deepEqual(h.writes, [record("ctx", "state=working:progress=0"), clear("ctx")]);
-	h.usage(100); h.fire("turn_end"); h.widget()?.dispose?.();
-	assert.deepEqual(h.writes, [record("ctx", "state=working:progress=0"), clear("ctx"), record("ctx", "state=working:progress=100"), clear("ctx")]);
-	h.usage(42); h.fire("turn_end"); h.fire("session_shutdown"); assert.equal(h.writes.length, 4);
-});
-
-test("S12 replacement clears ctx and ignores refreshes or shutdown from the old session", () => {
-	const h = harness(); h.usage(12.2); h.fire("session_start");
-	const other = h.context("s2"); other.usage(35.5); h.fire("session_start", {}, other.ctx);
-	assert.deepEqual(h.writes, [record("ctx", "state=working:progress=12"), clear("ctx"), record("ctx", "state=working:progress=36")]);
-	h.usage(99);
-	for (const event of ["turn_start", "tool_execution_start", "turn_end", "session_compact", "model_select", "session_tree", "agent_settled", "session_shutdown"]) h.fire(event, {}, h.ctx);
-	assert.equal(h.writes.length, 3);
-	other.usage(80); h.fire("turn_end", {}, other.ctx); h.fire("session_shutdown", {}, other.ctx);
-	assert.deepEqual(h.writes.slice(-2), [record("ctx", "state=working:progress=80"), clear("ctx")]);
+	assert.deepEqual(h.writes, []);
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", startedAt: 1 }] } });
+	assert.deepEqual(h.writes, [record("bg/j", "state=working:title=Sm9i")]);
+	h.usage(90); h.fire("turn_end");
+	assert.deepEqual(h.writes, [record("bg/j", "state=working:title=Sm9i")]);
+	h.fire("session_shutdown");
+	assert.deepEqual(h.writes, [record("bg/j", "state=working:title=Sm9i"), clear("bg/j")]);
 });
 
 test("S4 replays and updates todo, handles branch navigation and ignores failed or malformed updates", () => {

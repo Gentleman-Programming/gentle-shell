@@ -10,7 +10,14 @@
 // the owner's `writeProfilePinSync` / `clearProfilePinSync`, one explicitly named
 // layer per request. `models`, `subagents`, and `managed_assets` are derived or
 // installer-owned and answer a typed `read_only` error to every write. There is no
-// second store, no cached copy, and no filesystem watcher.
+// second store and no cached copy.
+//
+// Changes made outside this channel are detected best effort: once wired for an
+// interactive RPC host, the bridge watches the owner files' directories (see
+// `configWatchTargets`), and after a debounced change recomputes every store's
+// revision and emits `config_changed` with `source: "external"` only for a store
+// whose revision differs from the last revision this channel reported. A
+// Desktop write records its own resulting revision first, so it is never echoed.
 //
 // The write revision is the digest of the exact single file the owner rewrites,
 // which is why `pins` reports one revision per layer instead of the merged read
@@ -21,6 +28,7 @@
 // so a second `pi` process can still write between the check and the rename.
 
 import { createHash } from "node:crypto";
+import { basename, dirname } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { managedAssetsManifestPath, readManagedAssetsManifestResult, type ManagedAssetsManifest } from "./agent-assets.ts";
 import { gentlePiConfigHome, resolveGentlePiAgentHome } from "./agent-home.ts";
@@ -37,6 +45,7 @@ import {
 import { evaluateProfilePin, clearProfilePinSync, readProfilePinStatus, writeProfilePinSync } from "./agent-profile-pin.ts";
 import { parseAgentsConfig, readSubagentsFileResult, subagentsConfigPaths } from "./agents-config.ts";
 import type { DesktopRpcOutcome, DesktopRpcState } from "./desktop-rpc.ts";
+import { DesktopDirectoryWatcher, type DesktopDirectoryWatcherOptions, type DesktopWatchTarget } from "./desktop-rpc-config-watch.ts";
 import { isDesktopProfileApplyRunning } from "./desktop-rpc-profiles.ts";
 import { fallbacksFilePath, normalizeFallbacksFile, readFallbacksFile, writeFallbacksFile } from "./model-fallback-store.ts";
 import { modelConfigPaths, normalizeModelConfig, readModelConfigFile, readSavedModelConfig } from "./model-routing-authority.ts";
@@ -387,6 +396,47 @@ export function readConfigStore(store: DesktopConfigStore, root: DesktopConfigRo
 	};
 }
 
+/** One store's revision as `get_snapshot` reports it, without its content. */
+interface StoreRevision {
+	store: DesktopConfigStore;
+	scope: DesktopConfigScope;
+	status: DesktopConfigStatus;
+	revision: string;
+}
+
+function storeRevision(store: DesktopConfigStore, root: DesktopConfigRoots): StoreRevision {
+	const reader = STORE_READERS[store];
+	const read = reader.read(root);
+	return { store, scope: reader.scope, status: read.status, revision: configRevision(store, read.status, read.value) };
+}
+
+function watchTarget(path: string): DesktopWatchTarget {
+	return { dir: dirname(path), names: [basename(path)] };
+}
+
+/**
+ * The owner files every store reads, as directory + entry name, resolved by the
+ * same owner path helpers the readers use. Pin layers depend on the session cwd's
+ * worktree, so they are absent outside a resolvable worktree. Directories are
+ * watched, not files, because the owners replace files by atomic rename.
+ */
+export function configWatchTargets(root: DesktopConfigRoots): DesktopWatchTarget[] {
+	const models = modelConfigPaths(root.configHome, root.cwd);
+	const subagents = subagentsConfigPaths({ cwd: root.cwd, home: root.agentHome, agentHome: root.agentHome });
+	const targets = [
+		watchTarget(profilesFilePath(root.configHome)),
+		watchTarget(fallbacksFilePath(root.configHome)),
+		watchTarget(models.global),
+		watchTarget(models.project),
+		watchTarget(subagents.global),
+		watchTarget(subagents.project),
+		watchTarget(managedAssetsManifestPath(root.agentHome)),
+	];
+	const pins = readProfilePinStatus(root.cwd, root.resolveWorktree);
+	if (pins) targets.push(watchTarget(pins.localPath), watchTarget(pins.repoPath));
+	return targets;
+}
+
 function layerWriteInfo(
 	store: DesktopConfigStore,
 	target: DesktopConfigWriteTarget,
@@ -588,20 +638,103 @@ function parseStoreParam(params: Record<string, unknown>): DesktopConfigStore | 
  * bridge, because the pin and project layers depend on the live session cwd.
  * Reads never write, so a read can never advance a store.
  */
+export type DesktopConfigEmit = (event: string, data: Record<string, unknown>) => void;
+
 export class DesktopConfigBridge {
 	private host: ExtensionContext | undefined;
 	private readonly overrides: DesktopConfigOverrides;
+	private readonly watchOptions: DesktopDirectoryWatcherOptions;
+	private emit: DesktopConfigEmit | undefined;
+	private watcher: DesktopDirectoryWatcher | undefined;
+	private watchedCwd: string | undefined;
+	/** The last revision this channel reported per store (read, snapshot, write, or event). */
+	private readonly reported = new Map<DesktopConfigStore, string>();
 
-	constructor(overrides: DesktopConfigOverrides = {}) {
+	constructor(overrides: DesktopConfigOverrides = {}, watchOptions: DesktopDirectoryWatcherOptions = {}) {
 		this.overrides = overrides;
+		this.watchOptions = watchOptions;
 	}
 
 	attach(context: ExtensionContext): void {
 		this.host = context;
+		// Pin and project layers follow the session cwd: a moved cwd moves the
+		// owner files, so the watchers follow it.
+		if (this.emit && this.watchedCwd !== undefined && context.cwd !== this.watchedCwd) this.watch();
 	}
 
+	/** Session start/shutdown: watchers, baselines, and the emitter belong to one session. */
 	reset(): void {
 		this.host = undefined;
+		this.emit = undefined;
+		this.unwatch();
+		this.reported.clear();
+	}
+
+	/**
+	 * Interactive RPC hosts only: turn external store changes into ordered
+	 * `config_changed` events. The current revisions become the baseline, so
+	 * wiring never emits by itself.
+	 */
+	wire(emit: DesktopConfigEmit): void {
+		this.emit = emit;
+		this.watch();
+	}
+
+	private unwatch(): void {
+		const watcher = this.watcher;
+		this.watcher = undefined;
+		this.watchedCwd = undefined;
+		watcher?.dispose();
+	}
+
+	private watch(): void {
+		this.unwatch();
+		const host = this.host;
+		if (!host || !this.emit) return;
+		try {
+			const root = withRoots(host, this.overrides);
+			if (!root) return;
+			for (const store of DESKTOP_CONFIG_STORES) {
+				if (!this.reported.has(store)) this.reported.set(store, storeRevision(store, root).revision);
+			}
+			const watcher = new DesktopDirectoryWatcher(() => this.recompute(watcher), this.watchOptions);
+			this.watcher = watcher;
+			this.watchedCwd = root.cwd;
+			watcher.start(configWatchTargets(root));
+		} catch {
+			/* best effort: the channel keeps working without external events */
+		}
+	}
+
+	/** Debounced: recompute every revision and report only real, unreported changes. */
+	private recompute(watcher: DesktopDirectoryWatcher): void {
+		if (watcher !== this.watcher) return;
+		const host = this.host;
+		const emit = this.emit;
+		if (!host || !emit) return;
+		const root = withRoots(host, this.overrides);
+		if (!root) return;
+		for (const store of DESKTOP_CONFIG_STORES) {
+			let current: StoreRevision;
+			try {
+				current = storeRevision(store, root);
+			} catch {
+				continue;
+			}
+			if (this.reported.get(store) === current.revision) continue;
+			this.reported.set(store, current.revision);
+			try {
+				emit(DESKTOP_CONFIG_EVENT, {
+					store: current.store,
+					scope: current.scope,
+					revision: current.revision,
+					status: current.status,
+					source: "external",
+				});
+			} catch {
+				/* a closed transport never throws back into a watcher */
+			}
+		}
 	}
 
 	handle(method: string, params: Record<string, unknown>): DesktopRpcOutcome | undefined {
@@ -619,6 +752,7 @@ export class DesktopConfigBridge {
 		const root = withRoots(host, this.overrides);
 		if (!root) return { ok: false, error: UNAVAILABLE };
 		const data = readConfigStore(parsed, root);
+		this.reported.set(parsed, data.revision);
 		return { ok: true, data: data as unknown as Record<string, unknown> };
 	}
 
@@ -683,6 +817,9 @@ export class DesktopConfigBridge {
 		// not an echo of the request. The resulting write revision also decides
 		// whether this request really changed anything.
 		const after = readConfigStore(store, root);
+		// Recorded before the response leaves, so the watcher waking on the owner's
+		// own rename recomputes this revision and stays silent.
+		this.reported.set(store, after.revision);
 		const writeRevision = after.writeTargets?.find((entry) => entry.target === plan.target)?.writeRevision;
 		const changed = writeRevision !== plan.writeRevision;
 		const data = { ...after, writeTarget: plan.target, writeRevision, changed } as Record<string, unknown>;
@@ -715,14 +852,14 @@ export class DesktopConfigBridge {
 		return {
 			config: {
 				stores: DESKTOP_CONFIG_STORES.map((store) => {
-					const reader = STORE_READERS[store];
-					const read = reader.read(root);
+					const current = storeRevision(store, root);
+					this.reported.set(store, current.revision);
 					return {
 						store,
-						scope: reader.scope,
+						scope: current.scope,
 						readOnly: storeReadOnly(store),
-						status: read.status,
-						revision: configRevision(store, read.status, read.value),
+						status: current.status,
+						revision: current.revision,
 					};
 				}),
 			},

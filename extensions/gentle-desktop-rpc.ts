@@ -26,6 +26,13 @@ import { DESKTOP_AGENTS_EVENTS, DESKTOP_AGENTS_METHODS } from "../lib/desktop-rp
 import { DesktopAgentsBridge } from "../lib/desktop-agents-service.ts";
 import { DESKTOP_PROFILES_EVENTS, DESKTOP_PROFILES_METHODS, DesktopProfilesBridge } from "../lib/desktop-rpc-profiles.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
+import type { DesktopChangeTimers, DesktopDirectoryWatch } from "../lib/desktop-rpc-config-watch.ts";
+
+/** Test seams for external-change detection; production uses `fs.watch` and real timers. */
+export interface DesktopRpcExtensionOptions {
+	watch?: DesktopDirectoryWatch;
+	timers?: DesktopChangeTimers;
+}
 
 function publisher(ctx: ExtensionContext): DesktopRpcPublish {
 	return (line) => {
@@ -37,7 +44,7 @@ function publisher(ctx: ExtensionContext): DesktopRpcPublish {
 	};
 }
 
-export default function desktopRpc(pi: ExtensionAPI) {
+export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensionOptions = {}) {
 	// Permission control always delegates to the existing Gentle AI session owner;
 	// config reads and writes delegate to the existing store owners; subscription
 	// usage delegates to the existing usage owner; design canvas reads delegate
@@ -46,8 +53,9 @@ export default function desktopRpc(pi: ExtensionAPI) {
 	// list/cancel delegate to the existing parent-session TaskStore and
 	// AgentRunner; profile applies delegate to the existing `/gentle:profiles`
 	// owner and its own apply actions. None has a store of its own.
-	const permissions = new DesktopPermissionBridge(pi);
-	const config = new DesktopConfigBridge();
+	const changeTimers = options.timers === undefined ? {} : { timers: options.timers };
+	const permissions = new DesktopPermissionBridge(pi, undefined, changeTimers);
+	const config = new DesktopConfigBridge({}, { ...changeTimers, ...(options.watch === undefined ? {} : { watch: options.watch }) });
 	const usage = new DesktopUsageBridge(pi);
 	const design = new DesktopDesignBridge(pi);
 	const jobs = new DesktopJobsBridge(pi);
@@ -113,6 +121,16 @@ export default function desktopRpc(pi: ExtensionAPI) {
 		// request still reaches the app.
 		agents.wire((event, data) => router.emit(event, data));
 		void agents.start();
+		// Changes made outside Desktop RPC (`/gentle:mode`, `/gentle:profiles`, an
+		// editor, another `pi` process) become `source: "external"` events. Both are
+		// best effort: the permission side follows the owner's observer, the config
+		// side watches the owner files' directories; a missing owner or a watcher that
+		// cannot be created leaves the channel working without these events. The
+		// session_start/session_shutdown resets above dispose them.
+		permissions.attach(ctx);
+		void permissions.wire((event, data) => router.emit(event, data));
+		config.attach(ctx);
+		config.wire((event, data) => router.emit(event, data));
 	});
 
 	pi.on("session_shutdown", () => {

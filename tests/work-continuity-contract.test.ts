@@ -183,15 +183,22 @@ test("S3 F1/F2: a partial stop or exhausted limit affects only that work while u
 	assert.ok(prompt.includes("Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work"), "no fake complete");
 });
 
-test("S4-S5: worker exhaustion exposes a bounded continuation without waiving proof", async () => {
-	includesAll(await delivered(), [
-		"An exhausted worker-local correction limit ends that automatic cycle, not necessarily the feature.",
-		"Stop and report the remaining work, failed checks and missing proof, and offer an explicit human-controlled bounded continuation.",
-		"Name its scope, executor, correction limit and checks, or let the human stop.",
+// ODD orchestrator-owns-correction-exhaustion S1/S2/S4: the parent owns the next step after worker exhaustion,
+// acts on the diagnosed loop cause, never repeats an attempt, and blocks only the unit on a recurring cause.
+test("S1-S2: worker exhaustion hands the next step to the parent, which acts on the diagnosed cause", async () => {
+	const prompt = await delivered();
+	includesAll(prompt, [
+		"An exhausted worker-local correction limit ends that worker's cycle, not the unit; within native authority you own the next step, unasked.",
+		"Name the loop's cause from the evidence; act on it: fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence;",
+		"never repeat an attempt or swap executors to dodge limits.",
+		"Same cause again or no new hypothesis: block the unit; continue independent work.",
 		"Before any worker continuation, confirm no child is active or has an uncertain status.",
 		"A new session does not reset any limit.",
-		"When specifically authorized and not prohibited by actual native authority, continue ordinary in-scope compilation or implementation.",
+		"Honor explicit one-run, no-retry, or diagnostic-only limits.",
 	]);
+	for (const removed of ["human-controlled bounded continuation", "let the human stop"]) {
+		assert.ok(!prompt.includes(removed), `worker exhaustion must not route to the human: ${removed}`);
+	}
 });
 
 test("worker-prohibited maintenance has a bounded parent-only route, not a permission bypass", async () => {

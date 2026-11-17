@@ -33,6 +33,8 @@ import { DESKTOP_SESSIONS_EVENTS, DESKTOP_SESSIONS_METHODS, desktopRequestId, de
 import { DesktopSessionsBridge } from "../lib/desktop-sessions-service.ts";
 import { DESKTOP_REVIEW_EVENTS, DESKTOP_REVIEW_METHODS } from "../lib/desktop-rpc-review.ts";
 import { DesktopReviewBridge } from "../lib/desktop-review-service.ts";
+import { DESKTOP_STATS_EVENTS, DESKTOP_STATS_METHODS } from "../lib/desktop-rpc-stats.ts";
+import { DesktopStatsBridge } from "../lib/desktop-stats-service.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import type { DesktopChangeTimers, DesktopDirectoryWatch } from "../lib/desktop-rpc-config-watch.ts";
 
@@ -69,7 +71,9 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 	// delegate to Pi's own `SessionManager` and the command context's
 	// `switchSession`; changed files and per-file diffs delegate to the existing
 	// `/gentle:changes` tracker; review (RDD) mode reads and changes delegate to
-	// the `/gentle:review-mode` owner and its native CLI adapter. None has a store
+	// the `/gentle:review-mode` owner and its native CLI adapter; cross-session
+	// usage stats delegate to the existing `/gentle:stats` owner and its one
+	// cached loader. None has a store
 	// of its own.
 	const changeTimers = options.timers === undefined ? {} : { timers: options.timers };
 	const permissions = new DesktopPermissionBridge(pi, undefined, changeTimers);
@@ -92,11 +96,12 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 	let retiredPublish: DesktopRpcPublish | undefined;
 	const changes = new DesktopChangesBridge(pi);
 	const review = new DesktopReviewBridge(pi);
+	const stats = new DesktopStatsBridge(pi);
 	const domain: DesktopRpcDomain = (method, params) => {
 		const sessionsOutcome = sessionList.handle(method, params, dispatchingRequestId);
 		if (sessionsOutcome !== undefined) return sessionsOutcome;
 		// Config is the only synchronous bridge; permission, usage, design, jobs,
-		// profiles, agents, changes, and review answers are awaited in fall-through order, so an unknown
+		// profiles, agents, changes, review, and stats answers are awaited in fall-through order, so an unknown
 		// method still resolves to the router's `unsupported_method` instead of an
 		// early `undefined`.
 		const configOutcome = config.handle(method, params);
@@ -116,12 +121,14 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 			if (agentsOutcome !== undefined) return agentsOutcome;
 			const changesOutcome = await changes.handle(method, params);
 			if (changesOutcome !== undefined) return changesOutcome;
-			return review.handle(method, params);
+			const reviewOutcome = await review.handle(method, params);
+			if (reviewOutcome !== undefined) return reviewOutcome;
+			return stats.handle(method, params);
 		})();
 	};
-	const events = [...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS, ...DESKTOP_SESSIONS_EVENTS, ...DESKTOP_CHANGES_EVENTS, ...DESKTOP_REVIEW_EVENTS];
+	const events = [...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS, ...DESKTOP_SESSIONS_EVENTS, ...DESKTOP_CHANGES_EVENTS, ...DESKTOP_REVIEW_EVENTS, ...DESKTOP_STATS_EVENTS];
 	const router = new DesktopRpcRouter(
-		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_PROFILES_METHODS, ...DESKTOP_AGENTS_METHODS, ...DESKTOP_SESSIONS_METHODS, ...DESKTOP_CHANGES_METHODS, ...DESKTOP_REVIEW_METHODS],
+		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_PROFILES_METHODS, ...DESKTOP_AGENTS_METHODS, ...DESKTOP_SESSIONS_METHODS, ...DESKTOP_CHANGES_METHODS, ...DESKTOP_REVIEW_METHODS, ...DESKTOP_STATS_METHODS],
 		// `session_snapshot` is advertised only while the feed owner seam is wired.
 		() => (sessions.wired ? [...events, ...DESKTOP_SESSION_EVENTS] : events),
 		() => config.snapshotState(),
@@ -146,6 +153,7 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		sessionList.reset();
 		changes.reset();
 		review.reset();
+		stats.reset();
 		router.stop();
 		activePublish = undefined;
 		retiredPublish = undefined;
@@ -211,6 +219,7 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		sessionList.reset();
 		changes.reset();
 		review.reset();
+		stats.reset();
 		router.stop();
 	});
 
@@ -238,6 +247,7 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 			sessionList.attach(ctx);
 			changes.attach(ctx);
 			review.attach(ctx);
+			stats.attach(ctx);
 			dispatchingRequestId = desktopRequestId(args);
 			let pending: void | Promise<void>;
 			try {

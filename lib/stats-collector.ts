@@ -1,5 +1,5 @@
 import { createReadStream, realpathSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { listSessionFiles } from "../extensions/history/session-scan.ts";
 import { SessionChanges } from "./session-changes.ts";
@@ -242,37 +242,66 @@ function preferredCopy(kept: SessionRecord, other: SessionRecord): SessionRecord
 	return lastUsageAt(other) > lastUsageAt(kept) ? other : kept;
 }
 
-/** A loader over one or more sessions roots that re-reads only files whose size or mtime changed since the last load. */
+/**
+ * A loader over one or more sessions roots that re-reads only files whose size
+ * or mtime changed since the last load. Concurrent loads of the same roots
+ * share one in-flight scan (and its result), so the panel and a Desktop read
+ * never scan the same history twice at once.
+ */
 export function createStatsLoader(): StatsLoader {
 	const cache = new Map<string, { size: number; mtimeMs: number; record: SessionRecord | undefined }>();
-	return {
-		async load(sessionsRoots) {
-			const files = sessionFiles(typeof sessionsRoots === "string" ? [sessionsRoots] : sessionsRoots).sort();
-			const live = new Set(files);
-			for (const path of cache.keys()) if (!live.has(path)) cache.delete(path);
-			const byId = new Map<string, SessionRecord>();
-			const sessions: SessionRecord[] = [];
-			for (const path of files) {
-				let info;
-				try {
-					info = await stat(path);
-				} catch {
-					continue;
-				}
-				let cached = cache.get(path);
-				if (!cached || cached.size !== info.size || cached.mtimeMs !== info.mtimeMs) {
-					cached = { size: info.size, mtimeMs: info.mtimeMs, record: await readSessionFile(path) };
-					cache.set(path, cached);
-				}
-				const record = cached.record;
-				if (!record) continue;
-				// A header without an ID cannot be matched to another copy.
-				if (record.id === UNKNOWN) sessions.push(record);
-				else byId.set(record.id, byId.has(record.id) ? preferredCopy(byId.get(record.id)!, record) : record);
+	let inFlight: { key: string; scan: Promise<SessionRecord[]> } | undefined;
+	const scan = async (roots: readonly string[]): Promise<SessionRecord[]> => {
+		const files = sessionFiles(roots).sort();
+		const live = new Set(files);
+		for (const path of cache.keys()) if (!live.has(path)) cache.delete(path);
+		const byId = new Map<string, SessionRecord>();
+		const sessions: SessionRecord[] = [];
+		for (const path of files) {
+			let info;
+			try {
+				info = await stat(path);
+			} catch {
+				continue;
 			}
-			return [...byId.values(), ...sessions];
+			let cached = cache.get(path);
+			if (!cached || cached.size !== info.size || cached.mtimeMs !== info.mtimeMs) {
+				cached = { size: info.size, mtimeMs: info.mtimeMs, record: await readSessionFile(path) };
+				cache.set(path, cached);
+			}
+			const record = cached.record;
+			if (!record) continue;
+			// A header without an ID cannot be matched to another copy.
+			if (record.id === UNKNOWN) sessions.push(record);
+			else byId.set(record.id, byId.has(record.id) ? preferredCopy(byId.get(record.id)!, record) : record);
+		}
+		return [...byId.values(), ...sessions];
+	};
+	return {
+		load(sessionsRoots) {
+			const roots = typeof sessionsRoots === "string" ? [sessionsRoots] : [...sessionsRoots];
+			const key = JSON.stringify(roots);
+			if (inFlight?.key === key) return inFlight.scan;
+			const current = { key, scan: scan(roots) };
+			inFlight = current;
+			const settle = () => { if (inFlight === current) inFlight = undefined; };
+			current.scan.then(settle, settle);
+			return current.scan;
 		},
 	};
+}
+
+/** True when at least one sessions root is a directory this process can list. */
+export async function hasReadableSessionsRoot(sessionsRoots: readonly string[]): Promise<boolean> {
+	for (const root of sessionsRoots) {
+		try {
+			await readdir(root);
+			return true;
+		} catch {
+			// a missing, non-directory, or unreadable root does not count
+		}
+	}
+	return false;
 }
 
 export function aggregateStats(sessions: readonly SessionRecord[], filter: StatsFilter): StatsSummary {

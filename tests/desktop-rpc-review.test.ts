@@ -377,7 +377,9 @@ test("the Desktop transport advertises the review methods and event", async (t) 
 	const data = app.lines[0]!.data;
 	assert.deepEqual(DESKTOP_REVIEW_METHODS, ["get_review_mode", "set_review_mode"]);
 	assert.deepEqual(DESKTOP_REVIEW_EVENTS, ["review_mode_changed"]);
-	assert.deepEqual(data.methods.slice(-2), ["get_review_mode", "set_review_mode"]);
+	const at = data.methods.indexOf("get_review_mode");
+	assert.notEqual(at, -1);
+	assert.deepEqual(data.methods.slice(at, at + 2), ["get_review_mode", "set_review_mode"]);
 	assert.equal(data.events.at(-1), "review_mode_changed");
 });
 

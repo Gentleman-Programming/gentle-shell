@@ -463,6 +463,15 @@ test("S12: the action kinds add refresh_usage and apply_profile and keep every e
 
 // ---- The desktop RPC is unchanged ----
 
+
+/** Channel lines other than the feed's session_snapshot events, without the shared event counter. */
+function withoutSessionSnapshots(lines: Array<string | undefined>): unknown[] {
+	return lines
+		.map((line) => JSON.parse(line!) as Record<string, unknown>)
+		.filter((line) => line.event !== "session_snapshot")
+		.map(({ seq: _seq, ...line }) => line);
+}
+
 test("S12: desktop RPC refresh_subscription_usage and apply_profile answers are byte-identical with the feed loaded", async (t) => {
 	const previous = process.env[INTERACTIVE_HOST_ENV];
 	process.env[INTERACTIVE_HOST_ENV] = "1";
@@ -491,7 +500,9 @@ test("S12: desktop RPC refresh_subscription_usage and apply_profile answers are 
 	};
 	const without = await run(false);
 	const withFeed = await run(true);
-	assert.deepEqual(withFeed.lines, without.lines);
+	// #3319: the feed also publishes its own session_snapshot events on the
+	// channel; every other line is unchanged, in the same order.
+	assert.deepEqual(withoutSessionSnapshots(withFeed.lines), withoutSessionSnapshots(without.lines));
 	assert.ok(without.lines.length >= 2);
 	assert.deepEqual(withFeed.refreshes, without.refreshes);
 	assert.deepEqual(withFeed.applies, without.applies);

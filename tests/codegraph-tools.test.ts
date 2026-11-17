@@ -999,6 +999,48 @@ test("the guard still detects rebuild commands hidden behind backslash-escaped q
 	assert.equal(verdict(`echo ${escapedQuote} ; codegraph status`), undefined, "a non-rebuild command behind an escaped quote stays allowed");
 });
 
+test("the guard's inline override survives an unrelated assignment after it", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	assert.equal(
+		verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=1 FOO=bar codegraph index ."),
+		undefined,
+		"an unrelated assignment between the override and the rebuild changes nothing: the authorized rebuild stays allowed",
+	);
+	const throughFoo = verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=1 FOO=bar GENTLE_CODEGRAPH_ALLOW_INDEX=0 codegraph init .") as { block?: boolean } | undefined;
+	assert.equal(throughFoo?.block, true, "a trailing =0 reached through an unrelated assignment still removes the override: the last assignment to the variable wins");
+	const superseded = verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=1 FOO=bar GENTLE_CODEGRAPH_ALLOW_INDEX=0 codegraph index .") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(superseded?.block, true, "a later assignment to the override variable itself still wins through the unrelated one");
+	assert.match(superseded?.reason ?? "", /an index already exists/);
+});
+
+test("the guard strips shell line continuations before locating rebuild commands", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	// A backslash-newline pair is removed by the shell before parsing, so the scanner must
+	// drop it too. Assembled from char codes because a backslash-before-newline literal
+	// is corruption-prone in generated code.
+	const continuation = String.fromCharCode(92) + String.fromCharCode(10);
+	const bare = verdict("codegraph " + continuation + "index .") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(bare?.block, true, "a continued rebuild command is detected and blocked");
+	assert.match(bare?.reason ?? "", /an index already exists/);
+	const assigned = verdict("FOO=1 " + continuation + "codegraph index .") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(assigned?.block, true, "a continuation between a leading assignment and the rebuild verb is removed too");
+	assert.equal(verdict("codegraph " + continuation + "status"), undefined, "a continued non-rebuild command stays allowed");
+	const quoted = verdict("echo 'foo " + continuation + "bar'; codegraph index .") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(quoted?.block, true, "a backslash-newline inside single quotes stays content: the rebuild after the separator is still detected");
+});
+
+test("the guard keeps literal quotes inside quoted override values", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	// Assembled from char codes: a quote-inside-quotes literal is corruption-prone.
+	const dquote = String.fromCharCode(34);
+	const squote = String.fromCharCode(39);
+	const innerQuoted = "GENTLE_CODEGRAPH_ALLOW_INDEX=" + dquote + squote + "1" + squote + dquote + " codegraph index .";
+	const blocked = verdict(innerQuoted) as { block?: boolean; reason?: string } | undefined;
+	assert.equal(blocked?.block, true, "an override value of '1' (quotes included) is not the exact value 1: the rebuild stays blocked");
+	assert.match(blocked?.reason ?? "", /an index already exists/);
+	assert.equal(verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=" + dquote + "1" + dquote + " codegraph index ."), undefined, "a plain quoted 1 is still the exact value 1 and authorizes");
+});
+
 function writeCodeGraphPackage(binDir: string, scriptSource = "#!/usr/bin/env node\n"): string {
 	const pkgRoot = join(binDir, "node_modules", "@colbymchenry", "codegraph");
 	mkdirSync(pkgRoot, { recursive: true });
@@ -1624,6 +1666,42 @@ test("init rechecks the .codegraph identity under the acquired lease, override i
 	assert.equal(runnerCalls, 0, "the identity check is independent of the rebuild override");
 	assert.equal(releases, 2, "the override path releases its lock too");
 	assert.match(overrideRefused.content[0].text, /CodeGraph failed to run/);
+});
+
+
+test("init after an acquired lock runs only for an absent index: unknown stands down unless overridden", async (t) => {
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	// A self-referential symlink makes every stat of codegraph.db fail with ELOOP — the
+	// "unknown" index state: indexExists() alone treats it as no index, so an unfenced
+	// init would rebuild on a guess.
+	mkdirSync(join(cwd, ".codegraph"));
+	symlinkSync(join(cwd, ".codegraph", "codegraph.db"), join(cwd, ".codegraph", "codegraph.db"));
+	let runnerCalls = 0;
+	let releases = 0;
+	const tool = createCodeGraphTool(async () => {
+		runnerCalls += 1;
+		return { stdout: "rebuilt", stderr: "" };
+	}, { initLock: async () => ({ outcome: "acquired" as const, release: () => { releases += 1; }, adopt: () => {} }) });
+
+	const refused = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+
+	assert.equal(runnerCalls, 0, "an unknown index state never authorizes a rebuild on a guess");
+	assert.equal(releases, 1, "the acquired lock is released when init stands down");
+	assert.match(refused.content[0].text, /an index already exists/);
+	assert.match(refused.content[0].text, /GENTLE_CODEGRAPH_ALLOW_INDEX=1/);
+	assert.equal((refused.details as { status?: string }).status, "failed");
+
+	process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = "1";
+	const rebuilt = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.equal(runnerCalls, 1, "the explicit override still authorizes the deliberate rebuild of an unknown state");
+	assert.equal(releases, 2, "the lock is released however init ends");
 });
 
 test("every search awaits its refresh before the query runs", async (t) => {

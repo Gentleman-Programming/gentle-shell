@@ -1,0 +1,24 @@
+# Desktop RPC: expose changed files and bounded per-file diffs over Desktop RPC
+
+Implements #3322 on branch `feat/desktop-rpc-change-diff`. Delivery: single PR closing #3322. Test runner: `node --experimental-strip-types --test` (`pnpm test`), plus `pnpm run typecheck`.
+
+## Specs
+
+- S1 (#3322, Proposed outcome, verbatim): Two read-only Desktop RPC methods over the same owner the TUI uses:
+- S2 (#3322, Proposed outcome, verbatim): `get_changes {}` → `{ roots: [{ id, label }], files: [{ root, path, status, added, deleted }], truncated }`. `path` is relative to its root, `root` is an opaque id, `label` is a display name (never an absolute path). Same caps as the feed (200 files).
+- S3 (#3322, Proposed outcome, verbatim): `get_change_diff { root, path }` → `{ root, path, diff, truncated }`: the unified diff of one file, exactly what the TUI shows (tracked: `git diff HEAD -- path`; untracked: diff against an empty file), capped at 256 KiB with `truncated: true` beyond it.
+- S4 (#3322, Proposed outcome, verbatim): `path` must be a file in the owner's current change set for that root. Anything else (unknown root, a path outside the set, `..` traversal, absolute paths) answers `not_found`, so the method can never be used to read arbitrary files. `changes_unavailable` when there is no worktree or `git` fails.
+- S5 (#3322, Proposed outcome, verbatim): The docs state that a diff is file content: it can contain whatever the user's files contain. Nothing beyond the diff text is added (no absolute path, no git command).
+- S6 (#3322, Proposed outcome, verbatim): `loadFileDiff` moves into a `lib/` module shared by the TUI and the RPC slice, so both show the same diff.
+
+## Tasks
+
+- T1 [S1,S2,S3,S4,S5,S6] Desktop RPC slice: owner seam, method(s)/event, docs in `docs/desktop-rpc.md`, tests. Route: delegated writer (Writer trigger a: parallel independent units in separate worktrees). Status: done. Commit: bc57a3bca.
+- T2 [S1,S2,S3,S4,S5,S6] Push, PR closing #3322 with `type:feature`. Route: parent. Status: pending.
+
+## Log
+
+- L1 (2026-11-16, user): "no, vamos a hacer los RPCs siempre de la mejor manera posible, vamos a crear los issues, aprobarlos y hacer los pr" — scope chosen: "Set recomendado (Recommended)".
+- L2: #3322 approved (`status:approved`). Specs above quote its Proposed outcome.
+- L3 (T1, writer): implemented `lib/change-diff.ts` (shared `loadFileDiff`, `runFileDiff`, `fileDiffArgs`, `changeDirectoryInsideRoot`; `extensions/gentle-shell.ts` re-exports the same function), `lib/desktop-rpc-changes.ts` (contract), `lib/desktop-changes-service.ts` (bridge), owner seam `gentle:desktop:changes-service` in `extensions/gentle-shell.ts` over the `/gentle:changes` `WorktreeChangesTracker`, registration in `extensions/gentle-desktop-rpc.ts`, docs in `docs/desktop-rpc.md`. Covers S1-S6. Decisions: (a) reads refresh the tracker like opening the panel (and repaint the shell widget), emit no event; (b) `changes_unavailable` when no root is scanned or Git fails for ANY root (a failed scan is never reported as clean; no extra field was added to signal partial results); a clean repo is an empty success; (c) root ids are `root-N`, assigned per owner adapter (per session), labels are the root directory name; (d) a diff past the panel's 1 MiB bound (panel shows DIFF_TOO_LARGE) still answers its first 256 KiB with `truncated: true`, cut on a line boundary; (e) found on this machine: Git for Windows lists files behind a directory junction as untracked files of the tree, so the change set itself can name content outside the root. The RPC owner refuses those (`not_found`) via a realpath check of the file's directory; the TUI panel keeps its existing behavior unchanged (S6), so the panel still shows them — pre-existing, flagged for follow-up.
+- L4 (T1 verification, Windows): RED observed first for the transport/owner tests (10 failing before wiring) and for the junction guard (fails with the guard removed). GREEN: `tests/desktop-rpc-changes.test.ts` 23/23, `tests/change-diff.test.ts` 3/3, `tests/desktop-rpc{,-agents,-config,-design,-jobs,-usage,-safety,-profiles}.test.ts` all pass; `pnpm run typecheck` 0 diagnostics; `pnpm run check:runtime-modules` ok; `node scripts/verify-package-files.mjs` ok. Failures identical on the base commit 95179bd (environmental, not from this change): desktop-rpc-permissions `set_permission_mode persists the default only when explicitly requested` (0o600), desktop-feed-actions 3 S2 tests, desktop-feed 3 tests (and the file lingers after finishing, on base too), image-paste-chips 1, standalone-config-home 1, gentle-shell 3 (base shows 6), session-changes-shell `a repository rooted at HOME...`; session-changes-shell `the open panel diffs the selected file...` is flaky on base and branch alike. Capability lists pinned in the six desktop-rpc-* transport tests and tests/desktop-rpc.test.ts were appended with the two new methods (surface extension from the coordinator).

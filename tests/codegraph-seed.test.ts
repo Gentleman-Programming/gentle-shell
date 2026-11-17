@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync, spawn } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -371,6 +371,43 @@ test("a seed whose init-lock nonce is unreadable at publication stands down", as
 	assert.equal(result.outcome, "seed-failed", "an unreadable nonce is nobody's proof of ownership: the seed stands down");
 	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "nothing is published over a database the seed can no longer prove it owns");
 	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore"], "staging is cleaned and the worktree stays exactly as absent as before");
+});
+
+test("a seed displaced while a transient publication retry waits never publishes over the replacement", async (t) => {
+	if (process.platform === "win32") return t.skip("chmod-based EACCES is a POSIX retry trigger");
+	const { worktree } = worktreePair(t);
+	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-retry-fence-"));
+	t.after(() => rmSync(sandbox, { recursive: true, force: true }));
+	const locksDir = join(sandbox, "locks");
+	const lockPath = lockPathFor(worktree, "init", locksDir);
+	let displaced = false;
+	const { input } = seedHarness(worktree, {
+		locksDir,
+		run: async () => {
+			// The first rename fails transiently: a read-only index directory makes the
+			// placement fail with EACCES, one of the transient retry codes.
+			chmodSync(join(worktree, ".codegraph"), 0o555);
+			return true;
+		},
+		sleep: async () => {
+			// The retry wait is the displacement window: the lease's TTL elapses while this
+			// seed sits parked, another session reclaims it and publishes a newer index, and
+			// the directory becomes writable again so an unfenced retry would now succeed.
+			if (displaced) return;
+			displaced = true;
+			chmodSync(join(worktree, ".codegraph"), 0o755);
+			const { expiresAt } = JSON.parse(readFileSync(lockPath, "utf8")) as { expiresAt: number };
+			const reclaimer = tryAcquireLease(lockPath, "init", 600_000, expiresAt + 1_000, worktree);
+			assert.ok(reclaimer, "the other session reclaims the lease during the retry wait");
+			writeFileSync(join(worktree, ".codegraph", "codegraph.db"), "newer-index-bytes");
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed", "a seed displaced mid-retry aborts instead of renaming over the replacement holder's index");
+	assert.equal(readFileSync(join(worktree, ".codegraph", "codegraph.db"), "utf8"), "newer-index-bytes", "the newer database the other session published survives");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "no staging leftover and no stale seed file is left behind");
 });
 
 test("retryTransient retries transient codes with backoff and fails others at once", async () => {

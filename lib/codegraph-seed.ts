@@ -63,8 +63,10 @@ const INDEX_GITIGNORE = "*\n!.gitignore\n";
 const TRANSIENT_CODES = new Set(["EACCES", "EPERM", "EBUSY"]);
 const TRANSIENT_ATTEMPTS = 3;
 
-/** Runs one synchronous filesystem step, retrying only the transient codes; anything else fails at once. */
-export async function retryTransient<T>(step: () => T, sleep: (ms: number) => Promise<void>): Promise<T> {
+/** Runs one synchronous filesystem step, retrying only the transient codes; anything else fails at once.
+ * An optional beforeRetry hook runs after each retry wait, so a caller can re-check an
+ * ownership fence before paying for the next attempt; a throw from it aborts the retries. */
+export async function retryTransient<T>(step: () => T, sleep: (ms: number) => Promise<void>, beforeRetry?: () => void): Promise<T> {
 	let lastError: unknown;
 	for (let attempt = 0; attempt < TRANSIENT_ATTEMPTS; attempt += 1) {
 		try {
@@ -73,7 +75,10 @@ export async function retryTransient<T>(step: () => T, sleep: (ms: number) => Pr
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === undefined || !TRANSIENT_CODES.has(code)) throw error;
 			lastError = error;
-			if (attempt + 1 < TRANSIENT_ATTEMPTS) await sleep(50 * (attempt + 1));
+			if (attempt + 1 < TRANSIENT_ATTEMPTS) {
+				await sleep(50 * (attempt + 1));
+				beforeRetry?.();
+			}
 		}
 	}
 	throw lastError;
@@ -200,9 +205,22 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 					// its frames were folded into the staged database, so the loop skips it. The
 					// database rename stays required — a missing database still fails the seed.
 					if (finalPath !== targetDb && !isFile(stagedPath)) continue;
-					await retryTransient(() => renameSync(stagedPath, finalPath), sleep);
+					// The wait before a retry can outlast the init lease: ownership is re-verified after
+					// every wait, so a seed displaced mid-publication aborts instead of renaming over
+					// the replacement holder's index.
+					await retryTransient(() => renameSync(stagedPath, finalPath), sleep, () => {
+						if (leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
+							throw new Error("the init lease changed hands while the publication waited to retry");
+						}
+					});
 				}
 			} catch {
+				// A displaced seed removes nothing: once the lease has changed hands, whatever sits
+				// at the final paths belongs to the replacement holder, and removing it is that
+				// holder's cleanup, never this seed's.
+				if (leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
+					return { outcome: "seed-failed" };
+				}
 				// A torn placement leaves no index: every placed file goes, so the worktree is
 				// exactly as absent as before and init stays possible. (A placement failure is
 				// the seed-failed outcome, never a rejection; the database itself was never

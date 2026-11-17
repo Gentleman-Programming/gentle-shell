@@ -174,6 +174,7 @@ test("CodeGraph workspace rejection names the compared paths and Git's own error
 });
 
 test("CodeGraph init is never bounded by the query timeout; only the user's signal bounds it (#1901)", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	const ctx = { cwd } as ExtensionContext;
 	// Behaves like execFile: settles only when its signal aborts, then rejects with AbortError.
@@ -329,6 +330,7 @@ test("an already-aborted caller returns the abort failure before the re-warm, ba
 
 
 test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore commands", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	const runnerCalls: Array<{ args: readonly string[]; cwd: string }> = [];
 	const daemonCalls: string[] = [];
@@ -476,6 +478,7 @@ test("CodeGraph tool asks git once per cwd per turn, not once per search", async
 });
 
 test("CodeGraph init reports the missing binary distinctly", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	const unavailable = Object.assign(new Error("spawn codegraph ENOENT"), { code: "ENOENT" });
 	const tool = createCodeGraphTool(async () => {
@@ -498,6 +501,7 @@ test("CodeGraph init reports the missing binary distinctly", async (t) => {
 });
 
 test("CodeGraph tool configures a process buffer above the returned-output truncation threshold", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	let maxBuffer = 0;
 	const tool = createCodeGraphTool(async (_args, options) => {
@@ -514,6 +518,7 @@ test("CodeGraph tool configures a process buffer above the returned-output trunc
 });
 
 test("the CLI process buffer is a byte budget covering the character cap at maximum UTF-8 width", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	let maxBuffer = 0;
 	const tool = createCodeGraphTool(async (_args, options) => {
@@ -1029,6 +1034,7 @@ test("Windows shim helpers resolve quoted PATH entries in order without strippin
 });
 
 test("Windows launcher passes command metacharacters as one literal argv value", async (t) => {
+	withoutChildEnv(t);
 	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-bin-")));
 	t.after(() => rmSync(binDir, { recursive: true, force: true }));
 	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
@@ -1081,6 +1087,7 @@ function excludeLines(cwd: string): string[] {
 }
 
 test("CodeGraph init keeps the whole .codegraph index out of git through the local exclude file, idempotently", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	writeFileSync(join(cwd, "tracked.txt"), "tracked\n");
 	execFileSync("git", ["add", "tracked.txt"], { cwd });
@@ -1099,6 +1106,7 @@ test("CodeGraph init keeps the whole .codegraph index out of git through the loc
 });
 
 test("CodeGraph exclusion appends on a new line and recognizes an equivalent existing pattern", async (t) => {
+	withoutChildEnv(t);
 	const appended = workspace(t);
 	writeFileSync(excludeFile(appended), "# local\n*.log");
 	await createCodeGraphTool(writeIndex, { initLock: lockAcquired }).execute("test", { operation: "init" }, undefined, undefined, { cwd: appended } as ExtensionContext);
@@ -1113,6 +1121,7 @@ test("CodeGraph exclusion appends on a new line and recognizes an equivalent exi
 });
 
 test("CodeGraph exclusion uses the exclude file git resolves for a linked worktree", async (t) => {
+	withoutChildEnv(t);
 	const base = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-worktree-")));
 	t.after(() => rmSync(base, { recursive: true, force: true }));
 	const primary = join(base, "primary");
@@ -1394,6 +1403,7 @@ test("a daemon miss recovers after one warm-up attempt", async (t) => {
 });
 
 test("init runs the CLI with the workspace, never the daemon, and never triggers a sync", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	const calls: Array<{ args: readonly string[]; cwd: string }> = [];
 	let daemonCalls = 0;
@@ -1425,6 +1435,7 @@ test("init runs the CLI with the workspace, never the daemon, and never triggers
 	assert.equal(syncCalls, 0, "init never triggers the background sync");
 });
 test("explicit init runs under the cross-session init lock: a held lock fails closed, and the lock is always released", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	const ctx = { cwd } as ExtensionContext;
 	let runnerCalls = 0;
@@ -1458,6 +1469,7 @@ test("explicit init runs under the cross-session init lock: a held lock fails cl
 });
 
 test("operation init refuses to rebuild an existing index without the explicit override, like the bash guard", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
 	const ctx = { cwd } as ExtensionContext;
@@ -1494,6 +1506,7 @@ test("operation init refuses to rebuild an existing index without the explicit o
 });
 
 test("init rechecks index presence after acquiring a lock another initializer finished behind", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	const ctx = { cwd } as ExtensionContext;
 	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
@@ -1628,7 +1641,51 @@ test("a subagent child never triggers the background sync", async (t) => {
 	assert.deepEqual(calls, []);
 });
 
+test("a subagent child init is refused: index creation is parent-session-owned", async (t) => {
+	const cwd = workspace(t);
+	const runnerCalls: Array<{ args: readonly string[]; cwd: string }> = [];
+	let lockAcquisitions = 0;
+	const childInitLock = async (): Promise<InitLockOutcome> => {
+		lockAcquisitions += 1;
+		return { outcome: "acquired", release: () => {}, adopt: () => {} };
+	};
+	const tool = createCodeGraphTool(async (args, options) => {
+		runnerCalls.push({ args, cwd: options.cwd });
+		return { stdout: "indexed", stderr: "" };
+	}, { initLock: childInitLock });
+	const ctx = { cwd } as ExtensionContext;
+	const previous = process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.GENTLE_PI_AGENTS_CHILD = "1";
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
+		else process.env.GENTLE_PI_AGENTS_CHILD = previous;
+	});
+
+	// S1: the child guard refuses before the CLI runner is ever invoked, leaving no partial index.
+	const refused = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.equal(runnerCalls.length, 0, "the child guard refuses before the CLI runner is invoked");
+	assert.equal(lockAcquisitions, 0, "the child guard refuses before touching the cross-session init lock");
+	assert.deepEqual(refused.content, [{
+		type: "text",
+		text: "CodeGraph init is refused in a subagent child: index creation is parent-session-owned. Query and explore the shared index instead; the parent session owns init.",
+	}]);
+	assert.deepEqual(refused.details, {
+		status: "failed",
+		operation: "init",
+		cwd,
+		fallback: "Use read, grep, and find for this exploration.",
+	});
+	assert.equal(existsSync(join(cwd, ".codegraph")), false, "the refusal builds no partial index");
+
+	// S2: without the child flag the same call reaches the CLI runner exactly as before.
+	delete process.env.GENTLE_PI_AGENTS_CHILD;
+	const allowed = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.deepEqual(allowed.content, [{ type: "text", text: "indexed" }]);
+	assert.deepEqual(runnerCalls, [{ args: ["init", cwd], cwd }]);
+});
+
 test("CodeGraph init still succeeds and reports when git is unavailable for the local exclusion", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	const empty = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-nogit-")));
 	const originalPath = process.env.PATH;
@@ -1651,6 +1708,7 @@ test("CodeGraph init still succeeds and reports when git is unavailable for the 
 });
 
 test("CodeGraph excludes a partial index left behind by a failed init without changing the fallback text", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	const result = await createCodeGraphTool(async (args, options) => {
 		await writeIndex(args, options);

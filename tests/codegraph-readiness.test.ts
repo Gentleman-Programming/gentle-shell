@@ -639,6 +639,59 @@ test("warmUpDaemon: a timed-out warm-up whose child ignores SIGTERM is SIGKILLed
 	assert.equal(alive(), false, "a SIGTERM-ignoring warm-up child is SIGKILLed before its result, never left alive holding the daemon lock");
 });
 
+test("warmUpDaemon: a valid call reply after the deadline keeps the warm-up failed", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const bin = dir(t, "warm-late-reply-bin");
+	const pidFile = join(bin, "child.pid");
+	const initializeReply = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2024-11-05", capabilities: {} } });
+	const lateCallReply = JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [{ text: "late" }] } });
+	// Handshake at once, then the deadline passes while the tools/call answer is still pending:
+	// a reply that lands only after the timeout — before the SIGKILL escalation ends the
+	// SIGTERM-ignoring child — must not turn the missed warm-up into a success.
+	const script = [
+		"#!/bin/sh",
+		"trap '' TERM",
+		"printf '%s\\n' \"$$\" > \"$FAKE_PIDFILE\"",
+		"printf '%s\\n' '" + initializeReply + "'",
+		"sleep 0.7",
+		"printf '%s\\n' '" + lateCallReply + "'",
+		"sleep 30",
+		"",
+	].join("\n");
+	writeFileSync(join(bin, "codegraph"), script);
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.FAKE_PIDFILE = pidFile;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		delete process.env.FAKE_PIDFILE;
+		if (!existsSync(pidFile)) return;
+		try {
+			process.kill(Number(readFileSync(pidFile, "utf8").trim()), "SIGKILL");
+		} catch {
+			/* already gone */
+		}
+	});
+	const warmed = await warmUpDaemon(dir(t, "warm-late-reply"), false, 500);
+	assert.equal(warmed, false, "a call reply that lands after the deadline does not report a successful warm-up");
+	const fileDeadline = Date.now() + 3_000;
+	while (!existsSync(pidFile) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.ok(existsSync(pidFile), "the fake daemon spawned");
+	const pid = Number(readFileSync(pidFile, "utf8").trim());
+	const alive = () => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	const deadline = Date.now() + 5_000;
+	while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(alive(), false, "the late reply settles the result, and the SIGKILL escalation still ends the child");
+});
+
 test("runCodegraph: a timeout kills the command's whole process group, grandchildren included", async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
 	const bin = dir(t, "tree-kill-bin");

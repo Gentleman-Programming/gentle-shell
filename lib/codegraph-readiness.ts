@@ -209,14 +209,20 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 	}
 	return new Promise((resolve) => {
 		let settled = false;
+		let timedOut = false;
 		let child: ReturnType<typeof spawn> | undefined;
 		let escalate: ReturnType<typeof setTimeout> | undefined;
 		const project = projectSpelling(daemon, cwd);
 		const finish = (ok: boolean) => {
 			if (settled) return;
+			// A reply that lands after the deadline — while the timed-out child is still being torn
+			// down — settles the missed warm-up as failed, never as a late success.
+			if (timedOut) ok = false;
 			settled = true;
 			clearTimeout(timer);
-			if (escalate !== undefined) clearTimeout(escalate);
+			// An early settlement does not cancel the kill escalation: a child that ignores SIGTERM
+			// must still be SIGKILLed before it can keep holding the daemon lock.
+			if (!timedOut && escalate !== undefined) clearTimeout(escalate);
 			// Destroy, not end: an ended pipe still holds the event loop until the server exits.
 			try { child?.stdin?.destroy(); } catch { /* already closed */ }
 			try { child?.stdout?.destroy(); } catch { /* already gone */ }
@@ -230,6 +236,7 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 		// the tree is gone — KILL_WAIT_MS stays the cap for a close that never comes — so a
 		// stubborn warm-up can never stay alive holding the daemon lock past its result.
 		const timer = setTimeout(() => {
+			timedOut = true;
 			killProcessTree(child, true);
 			escalate = setTimeout(() => {
 				killProcessTree(child, true, "SIGKILL");

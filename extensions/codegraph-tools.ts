@@ -100,6 +100,9 @@ const MAX_OUTPUT_CHARS = 100_000;
 // before truncateOutput could bound it (400k CJK characters are ~1.2 MB against a 1 MB buffer).
 const PROCESS_MAX_BUFFER = 3 * MAX_REPLY_CHARS;
 const FALLBACK_INSTRUCTIONS = "Use read, grep, and find for this exploration.";
+// A subagent child (CHILD_ENV) never starts an index operation of its own: index creation is
+// parent-session-owned, so the child init guard refuses instead of reaching the CLI runner.
+const CHILD_INIT_REFUSAL = "CodeGraph init is refused in a subagent child: index creation is parent-session-owned. Query and explore the shared index instead; the parent session owns init.";
 // each daemon query attempt is bounded, so a hung daemon on a slow filesystem (for example a
 // WSL /mnt mount) cannot block the turn indefinitely (#1901); init is the legitimately slow
 // first index, so only the user's signal bounds it.
@@ -880,6 +883,11 @@ export function createCodeGraphTool(
 				} catch (error: unknown) {
 					return fail(error, { syncTriggered });
 				}
+			}
+			// A subagent child (CHILD_ENV) never starts an index operation of its own: index creation is
+			// parent-session-owned, so init refuses here without ever invoking the CLI runner.
+			if (process.env[CHILD_ENV] === "1") {
+				return fail(new Error(CHILD_INIT_REFUSAL), { reason: CHILD_INIT_REFUSAL });
 			}
 			// init keeps its CLI path: it is the legitimately slow first index, bounded only by the user's signal.
 			// The same guard the bash path enforces: an existing index is refreshed with sync, never

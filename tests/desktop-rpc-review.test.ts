@@ -19,6 +19,7 @@ import {
 	type DesktopReviewSetRequest,
 } from "../lib/desktop-rpc-review.ts";
 import { DesktopReviewBridge, discoverDesktopReviewService } from "../lib/desktop-review-service.ts";
+import { beginDesktopReviewModeSet, desktopReviewModeConfirmation, endDesktopReviewModeSet } from "../lib/desktop-rpc-review.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NATIVE_REVIEW_OPERATION, NativeReviewCliError, type NativeReviewCli, type NativeReviewModeRequest } from "../lib/native-review-cli.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
@@ -521,4 +522,155 @@ test("a subagent child never answers the review owner seam", async (t) => {
 	const { pi, ctx } = await realOwner(t, native, { GENTLE_PI_AGENTS_CHILD: "1" });
 	assert.equal(await discoverDesktopReviewService(pi, ctx), undefined);
 	assert.deepEqual(native.calls, []);
+});
+
+// ---- Independent verifier probes (P1-P9), kept as regressions ----
+
+type S = { global: "on" | "off" | ""; cloneLocal: "on" | "off" | ""; effective: "on" | "off"; source: "default" | "global" | "clone_local"; revision?: string };
+
+function probeOwner(initial: S, opts: { writeGate?: Promise<void>; throwOn?: "read" | "write" } = {}) {
+	let state = { ...initial };
+	const writes: unknown[] = [];
+	const service = {
+		schema: DESKTOP_REVIEW_SERVICE_SCHEMA,
+		async read() { if (opts.throwOn === "read") throw new Error("C:\\secret\\path gentle-ai review mode status --json"); return { kind: "status" as const, status: { ...state } }; },
+		async write(req: { enabled: boolean; scope: "clone" | "global" }) {
+			writes.push(req);
+			if (opts.writeGate) await opts.writeGate;
+			if (opts.throwOn === "write") throw new Error("C:\\secret\\path boom");
+			if (req.scope === "global") state.global = req.enabled ? "on" : "off";
+			else state.cloneLocal = req.enabled ? "" : "off";
+			const eff = state.global === "off" || state.cloneLocal === "off" ? "off" : "on";
+			state.effective = eff;
+			state.source = state.cloneLocal === "off" ? "clone_local" : state.global !== "" ? "global" : "default";
+			return { kind: "status" as const, status: { ...state } };
+		},
+		dispose() {},
+		set(next: S) { state = { ...next }; },
+	};
+	return { service, writes };
+}
+
+function probeBridge(service: unknown) {
+	const b = new DesktopReviewBridge({} as never, { discover: async () => service as never });
+	b.attach({ cwd: "x" } as never);
+	return b;
+}
+
+const ON: S = { global: "", cloneLocal: "", effective: "on", source: "default" };
+
+test("P1 token for a different request (enabled or scope) never writes", async () => {
+	const { service, writes } = probeOwner(ON);
+	const b = probeBridge(service);
+	const tokFalseClone = desktopReviewModeConfirmation({ enabled: false, scope: "clone" }, ON).token;
+	for (const params of [{ enabled: true, scope: "clone" }, { enabled: false, scope: "global" }, { enabled: true, scope: "global" }]) {
+		const r = await b.handle("set_review_mode", { ...params, confirmationToken: tokFalseClone }) as any;
+		assert.equal(r.ok, true); assert.equal(r.data.status, "confirmation_required");
+	}
+	assert.equal(writes.length, 0);
+});
+
+test("P2 replay after apply is stale and never writes again", async () => {
+	const { service, writes } = probeOwner(ON);
+	const b = probeBridge(service);
+	const first = await b.handle("set_review_mode", { enabled: false, scope: "global" }) as any;
+	const token = first.data.confirmation.token;
+	const applied = await b.handle("set_review_mode", { enabled: false, scope: "global", confirmationToken: token }) as any;
+	assert.equal(applied.data.status, "applied"); assert.equal(applied.data.changed, true); assert.ok(applied.event);
+	const replay = await b.handle("set_review_mode", { enabled: false, scope: "global", confirmationToken: token }) as any;
+	assert.equal(replay.data.status, "confirmation_required");
+	assert.equal(writes.length, 1);
+});
+
+test("P3 stale token after an out-of-band revision change never writes", async () => {
+	const st: S = { ...ON, revision: "r1" };
+	const { service, writes } = probeOwner(st);
+	const b = probeBridge(service);
+	const token = ((await b.handle("set_review_mode", { enabled: false, scope: "clone" })) as any).data.confirmation.token;
+	service.set({ ...st, revision: "r2" });
+	const r = await b.handle("set_review_mode", { enabled: false, scope: "clone", confirmationToken: token }) as any;
+	assert.equal(r.data.status, "confirmation_required"); assert.notEqual(r.data.confirmation.token, token);
+	assert.equal(writes.length, 0);
+});
+
+test("P4 two concurrent confirmed sets: second is busy, gate frees after", async () => {
+	let release!: () => void;
+	const gate = new Promise<void>((r) => { release = r; });
+	const { service, writes } = probeOwner(ON, { writeGate: gate });
+	const b = probeBridge(service);
+	const token = desktopReviewModeConfirmation({ enabled: false, scope: "global" }, ON).token;
+	const p1 = b.handle("set_review_mode", { enabled: false, scope: "global", confirmationToken: token });
+	await new Promise((r) => setTimeout(r, 10));
+	const second = await b.handle("set_review_mode", { enabled: false, scope: "global", confirmationToken: token }) as any;
+	assert.equal(second.ok, false); assert.equal(second.error.code, "review_mode_busy");
+	// get is not gated
+	const g = await b.handle("get_review_mode", {}) as any; assert.equal(g.ok, true);
+	release(); await p1;
+	assert.equal(writes.length, 1);
+	assert.equal(beginDesktopReviewModeSet(), true); endDesktopReviewModeSet();
+});
+
+test("P5 gate released on read throw, write throw, and discover throw; no detail on wire", async () => {
+	for (const throwOn of ["read", "write"] as const) {
+		const { service } = probeOwner(ON, { throwOn });
+		const b = probeBridge(service);
+		const token = desktopReviewModeConfirmation({ enabled: false, scope: "clone" }, ON).token;
+		const r = await b.handle("set_review_mode", { enabled: false, scope: "clone", confirmationToken: token }) as any;
+		assert.equal(r.ok, false); assert.equal(r.error.code, "review_unavailable");
+		assert.doesNotMatch(JSON.stringify(r), /secret|gentle-ai|boom/);
+		assert.equal(beginDesktopReviewModeSet(), true); endDesktopReviewModeSet();
+	}
+	const b = new DesktopReviewBridge({} as never, { discover: async () => { throw new Error("x"); } });
+	b.attach({ cwd: "x" } as never);
+	const r = await b.handle("set_review_mode", { enabled: true, scope: "clone" }) as any;
+	assert.equal(r.error.code, "review_unavailable");
+	assert.equal(beginDesktopReviewModeSet(), true); endDesktopReviewModeSet();
+});
+
+test("P6 read throw on get -> effective unknown, no detail", async () => {
+	const { service } = probeOwner(ON, { throwOn: "read" });
+	const r = await probeBridge(service).handle("get_review_mode", {}) as any;
+	assert.equal(r.data.effective, "unknown"); assert.doesNotMatch(JSON.stringify(r), /secret|gentle-ai/);
+});
+
+test("P7 reset during a pending discover returns unavailable and never writes", async () => {
+	const { service, writes } = probeOwner(ON);
+	let resolveDiscover!: (v: unknown) => void;
+	const b = new DesktopReviewBridge({} as never, { discover: () => new Promise((r) => { resolveDiscover = r; }) as never });
+	b.attach({ cwd: "x" } as never);
+	const token = desktopReviewModeConfirmation({ enabled: false, scope: "global" }, ON).token;
+	const p = b.handle("set_review_mode", { enabled: false, scope: "global", confirmationToken: token });
+	await new Promise((r) => setTimeout(r, 5));
+	b.reset();
+	resolveDiscover(service);
+	const r = await p as any;
+	assert.equal(r.error.code, "review_unavailable"); assert.equal(writes.length, 0);
+});
+
+test("P8 a reset during the pending pre-write read never writes and emits nothing", async () => {
+	let releaseRead!: () => void;
+	const readGate = new Promise<void>((r) => { releaseRead = r; });
+	const { service, writes } = probeOwner(ON);
+	const origRead = service.read;
+	service.read = async () => { await readGate; return origRead(); };
+	const b = probeBridge(service);
+	const token = desktopReviewModeConfirmation({ enabled: false, scope: "global" }, ON).token;
+	const p = b.handle("set_review_mode", { enabled: false, scope: "global", confirmationToken: token });
+	await new Promise((r) => setTimeout(r, 5));
+	b.reset(); releaseRead();
+	const r = await p as any;
+	assert.equal(writes.length, 0, "a superseded session never writes the switch");
+	assert.equal(r?.event, undefined, "no event follows a stale outcome");
+	assert.deepEqual(r, { ok: false, error: UNAVAILABLE });
+	assert.equal(beginDesktopReviewModeSet(), true, "the gate is released"); endDesktopReviewModeSet();
+});
+
+test("P9 clone enable under global off: applied, changed false, no event", async () => {
+	const st: S = { global: "off", cloneLocal: "", effective: "off", source: "global" };
+	const { service } = probeOwner(st);
+	const b = probeBridge(service);
+	const c = await b.handle("set_review_mode", { enabled: true, scope: "clone" }) as any;
+	assert.match(c.data.confirmation.message, /cannot override/);
+	const r = await b.handle("set_review_mode", { enabled: true, scope: "clone", confirmationToken: c.data.confirmation.token }) as any;
+	assert.equal(r.data.changed, false); assert.equal(r.event, undefined); assert.equal(r.data.mode.effective, "disabled");
 });

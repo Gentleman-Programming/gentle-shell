@@ -106,7 +106,7 @@ export class DesktopReviewBridge {
 			if (!request) return { ok: false, error: INVALID_SET_REVIEW_MODE };
 			if (!beginDesktopReviewModeSet()) return { ok: false, error: REVIEW_MODE_BUSY };
 			try {
-				return await this.withOwner((service) => this.set(service, request));
+				return await this.withOwner((service, generation) => this.set(service, request, generation));
 			} finally {
 				endDesktopReviewModeSet();
 			}
@@ -114,7 +114,7 @@ export class DesktopReviewBridge {
 		return undefined;
 	}
 
-	private async withOwner(run: (service: DesktopReviewService) => Promise<DesktopRpcOutcome>): Promise<DesktopRpcOutcome> {
+	private async withOwner(run: (service: DesktopReviewService, generation: number) => Promise<DesktopRpcOutcome>): Promise<DesktopRpcOutcome> {
 		const context = this.host;
 		if (!context) return { ok: false, error: REVIEW_UNAVAILABLE };
 		const generation = this.generation;
@@ -122,7 +122,7 @@ export class DesktopReviewBridge {
 		try {
 			service = await this.discover(this.pi, context);
 			if (!service || generation !== this.generation) return { ok: false, error: REVIEW_UNAVAILABLE };
-			return await run(service);
+			return await run(service, generation);
 		} catch {
 			return { ok: false, error: REVIEW_UNAVAILABLE };
 		} finally {
@@ -149,7 +149,7 @@ export class DesktopReviewBridge {
 		return { ok: true, data: { ...projectDesktopReviewMode(read.kind === "status" ? read.status : undefined) } };
 	}
 
-	private async set(service: DesktopReviewService, request: DesktopReviewSetRequest & { confirmationToken?: string }): Promise<DesktopRpcOutcome> {
+	private async set(service: DesktopReviewService, request: DesktopReviewSetRequest & { confirmationToken?: string }, generation: number): Promise<DesktopRpcOutcome> {
 		const subject: DesktopReviewSetRequest = { enabled: request.enabled, scope: request.scope };
 		const before = await this.read(service);
 		if (before.kind === "unavailable") return { ok: false, error: REVIEW_UNAVAILABLE };
@@ -162,6 +162,11 @@ export class DesktopReviewBridge {
 			// was shown): ask again with the current text and a fresh token.
 			return { ok: true, data: { status: "confirmation_required", ...subject, mode: previousMode, confirmation } };
 		}
+		// A reset (session replacement or shutdown) while the pre-write read was
+		// pending supersedes this request: its publisher is gone, so never write
+		// the switch on its behalf. Like the other slices' stale outcomes, the
+		// answer is unavailable, which the router drops; the client re-reads.
+		if (generation !== this.generation) return { ok: false, error: REVIEW_UNAVAILABLE };
 		let written: unknown;
 		try {
 			written = await service.write(subject);

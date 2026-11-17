@@ -36,6 +36,15 @@ type DesktopRpcRequest = {
 	params: Record<string, unknown>;
 };
 
+/** A typed refusal a gate or an abandonment answers with. */
+export type DesktopRpcError = { code: string; message: string };
+
+/** Decides, before dispatch, whether a request must be refused (for example while a session switch is in flight). */
+export type DesktopRpcGate = (method: string) => DesktopRpcError | undefined;
+
+/** One dispatched request still waiting for its asynchronous domain outcome. */
+type PendingRequest = { requestId: string; done: boolean };
+
 type DecodedRequest = {
 	request?: DesktopRpcRequest;
 	requestId: string | null;
@@ -98,6 +107,8 @@ export class DesktopRpcRouter {
 	private readonly state: () => DesktopRpcState;
 	private readonly domain: DesktopRpcDomain | undefined;
 	private readonly session: DesktopRpcSessionReader | undefined;
+	private readonly pending = new Set<PendingRequest>();
+	private gate: DesktopRpcGate | undefined;
 
 	constructor(
 		methods: readonly string[] = DEFAULT_METHODS,
@@ -121,6 +132,34 @@ export class DesktopRpcRouter {
 	stop(): void {
 		this.sequence = 0;
 		this.publisher = undefined;
+		for (const token of this.pending) token.done = true;
+		this.pending.clear();
+	}
+
+	/** Install (or clear) the pre-dispatch gate. A gated request is answered synchronously and never reaches a domain. */
+	setGate(gate: DesktopRpcGate | undefined): void {
+		this.gate = gate;
+	}
+
+	/**
+	 * Answer every still-pending domain request with `error`, except those
+	 * `keep` names, and drop their late outcomes. Used right before the session
+	 * is torn down, so a request dispatched before the teardown still gets
+	 * exactly one response instead of a silently dropped one.
+	 */
+	abandonPending(error: DesktopRpcError, keep: (requestId: string) => boolean = () => false): void {
+		const publish = this.publisher;
+		if (!publish) return;
+		for (const token of [...this.pending]) {
+			if (keep(token.requestId)) continue;
+			token.done = true;
+			this.pending.delete(token);
+			try {
+				publish(JSON.stringify(errorResponse(token.requestId, error.code, error.message)));
+			} catch {
+				/* transport failures are never retried as a second response */
+			}
+		}
 	}
 
 	snapshot() {
@@ -158,6 +197,16 @@ export class DesktopRpcRouter {
 			publish(JSON.stringify(errorResponse(request.requestId, "unsupported_method", "Unsupported Desktop RPC method")));
 			return;
 		}
+		let refused: DesktopRpcError | undefined;
+		try {
+			refused = this.gate?.(request.method);
+		} catch {
+			refused = INTERNAL_ERROR;
+		}
+		if (refused) {
+			publish(JSON.stringify(errorResponse(request.requestId, refused.code, refused.message)));
+			return;
+		}
 		if (request.method !== "capabilities" && request.method !== "get_snapshot") {
 			if (!this.domain) {
 				publish(JSON.stringify(errorResponse(request.requestId, "unsupported_method", "Unsupported Desktop RPC method")));
@@ -171,9 +220,11 @@ export class DesktopRpcRouter {
 				return;
 			}
 			if (isThenable(outcome)) {
+				const token: PendingRequest = { requestId: request.requestId, done: false };
+				this.pending.add(token);
 				return Promise.resolve(outcome).then(
-					(value) => this.settle(publish, request.requestId, value),
-					() => this.settle(publish, request.requestId, { ok: false, error: INTERNAL_ERROR }),
+					(value) => this.settle(publish, request.requestId, value, token),
+					() => this.settle(publish, request.requestId, { ok: false, error: INTERNAL_ERROR }, token),
 				);
 			}
 			this.settle(publish, request.requestId, outcome);
@@ -247,7 +298,14 @@ export class DesktopRpcRouter {
 		publish: DesktopRpcPublish,
 		requestId: string,
 		outcome: DesktopRpcOutcome | undefined,
+		token?: PendingRequest,
 	): void {
+		if (token) {
+			// Already answered by `abandonPending` (or dropped by `stop`): never a second response.
+			if (token.done) return;
+			token.done = true;
+			this.pending.delete(token);
+		}
 		if (this.publisher !== publish) return;
 		if (!outcome) {
 			publish(JSON.stringify(errorResponse(requestId, "unsupported_method", "Unsupported Desktop RPC method")));

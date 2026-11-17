@@ -3329,8 +3329,9 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			}
 			try {
 				const accepted = await transport.client.sendNotification(recipient, message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
-				if (activeTransportFor(ctx) !== transport) return text("Error: session messaging is not ready.", { error: "stale" });
-				emitHerdr(HERDR_DESKTOP_SEND, { sessionId: transport.sessionId, target: recipient });
+				// The peer already accepted: a replaced transport only suppresses the display event,
+				// never the receipt, or a retry would duplicate the message.
+				if (activeTransportFor(ctx) === transport) emitHerdr(HERDR_DESKTOP_SEND, { sessionId: transport.sessionId, target: recipient });
 				return text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted", message, reason, senderLabel: sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? ""), recipientLabel: messagePeerLabel(agentHome, recipient) } });
 			} catch {
 				return text("Error: session message was not accepted.", { error: "not accepted" });

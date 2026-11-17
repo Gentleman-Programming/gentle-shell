@@ -19,7 +19,7 @@ Runner: `node --experimental-strip-types --test tests/<file>.test.ts`; `pnpm typ
 - T1 | S1-S6 | delegated worker (context backstop) | done | Producer, failure TTL (60 s) and contract docs; focused files 23/21/368 GREEN, typecheck 0, full suite only pre-existing failures (L5) | commit: the PR commit `feat(herdr): publish Gentle Shell activity as OSC 7501 status records`
 - T2 | S1-S6 | parent | pending | Publish issue and PR to Gentleman-Programming/gentle-shell (decision: "Publicar issue y PR") | commit: n/a
 - T3 | S7 | parent inline | done | Remove `ctx` projection, context refresh hooks and docs row; RED 2+2 fails, GREEN 21/17, typecheck 0 | commit: `fix(herdr): stop publishing the ctx status record`
-- T4 | S8 | parent inline | pending | Return accepted receipt after transport replacement; suppress only the display event | commit: pending
+- T4 | S8 | parent inline | done | Return accepted receipt after transport replacement; suppress only the display event; RED (stale returned), GREEN tests/gentle-agents.test.ts 369/369 | commit: `fix(agents): keep the accepted send receipt after transport replacement`
 - T5 | S9 | parent inline | pending | Retry failed terminal writes and hand unflushed clears to the next owner | commit: pending
 
 ## Log

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -13,6 +13,9 @@ import {
 	DESKTOP_STATS_SERVICE_CHANNEL,
 	DESKTOP_STATS_SERVICE_SCHEMA,
 	INVALID_STATS_PARAMS,
+	parseUsageStatsParams,
+	projectDesktopUsageStats,
+	projectDisplayName,
 	STATS_UNAVAILABLE,
 	type DesktopStatsOwnerRead,
 	type DesktopStatsService,
@@ -64,8 +67,9 @@ function writeSession(root: string, cwd: string, id: string, usages: Usage[], pr
 	writeFileSync(join(dir, `${id}.jsonl`), lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
 }
 
-function historyRoot(): string {
+function historyRoot(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "desktop-rpc-stats-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
 	writeSession(root, ALPHA, "s-alpha-1", [
 		{ at: "2026-10-09T12:00:00.000Z", model: "claude-opus-5-5", input: 100, output: 50, cacheRead: 1000, cacheWrite: 200, total: 1350, cost: 0.5 },
 		{ at: "2026-10-09T12:05:00.000Z", model: "claude-opus-5-5", input: 10, output: 5, cost: 0.01 },
@@ -159,7 +163,7 @@ test("the Desktop transport advertises get_usage_stats and no new event", (t) =>
 // ---- The read ----
 
 test("get_usage_stats defaults to the last 7 days of the current project", async (t) => {
-	const app = harness(t, { roots: [historyRoot()] });
+	const app = harness(t, { roots: [historyRoot(t)] });
 	await app.invoke("stats-1", {});
 	const responses = app.responses();
 	assert.equal(responses.length, 1, "a read publishes its response and no event");
@@ -177,7 +181,7 @@ test("get_usage_stats defaults to the last 7 days of the current project", async
 });
 
 test("get_usage_stats honors range and scope exactly like aggregateStats, with projects as display names", async (t) => {
-	const app = harness(t, { roots: [historyRoot()] });
+	const app = harness(t, { roots: [historyRoot(t)] });
 	await app.invoke("stats-30d", { range: "30d", scope: "all" });
 	await app.invoke("stats-all", { range: "all", scope: "all" });
 	await app.invoke("stats-all-project", { range: "all", scope: "project" });
@@ -220,6 +224,7 @@ test("get_usage_stats honors range and scope exactly like aggregateStats, with p
 
 test("get_usage_stats bounds models, days, and projects and flags truncation while totals stay complete", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "desktop-rpc-stats-bounds-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const bulk: Usage[] = [];
 	for (let day = 0; day < 450; day++) {
 		bulk.push({ at: new Date(NOW - day * DAY_MS).toISOString(), model: `model-${String(day % 60).padStart(2, "0")}`, input: 1, output: 0, cost: 0 });
@@ -245,7 +250,7 @@ test("get_usage_stats bounds models, days, and projects and flags truncation whi
 });
 
 test("get_usage_stats reads through the owner's single loader and concurrent requests share one load", async (t) => {
-	const root = historyRoot();
+	const root = historyRoot(t);
 	const spy = spyLoader();
 	const app = harness(t, { roots: [root], loader: spy.loader });
 	await Promise.all([app.invoke("c-1", { range: "all", scope: "all" }), app.invoke("c-2", { range: "all", scope: "all" })]);
@@ -261,7 +266,7 @@ test("get_usage_stats reads through the owner's single loader and concurrent req
 
 test("invalid get_usage_stats params are rejected before any owner load", async (t) => {
 	const spy = spyLoader();
-	const app = harness(t, { roots: [historyRoot()], loader: spy.loader });
+	const app = harness(t, { roots: [historyRoot(t)], loader: spy.loader });
 	const invalid: Array<Record<string, unknown>> = [
 		{ range: "1d" },
 		{ range: 7 },
@@ -295,7 +300,7 @@ test("get_usage_stats answers stats_unavailable without the stats owner extensio
 });
 
 test("the stats owner leaves the bus on session shutdown", async (t) => {
-	const app = harness(t, { roots: [historyRoot()] });
+	const app = harness(t, { roots: [historyRoot(t)] });
 	assert.equal(app.listeners.get(DESKTOP_STATS_SERVICE_CHANNEL)?.size, 1);
 	await app.fire("session_shutdown");
 	assert.equal(app.listeners.get(DESKTOP_STATS_SERVICE_CHANNEL)?.size, 0);
@@ -353,4 +358,70 @@ test("discoverDesktopStatsService accepts the versioned adapter and ignores malf
 		(payload as { respond(service: unknown): void }).respond({ schema: "gentle-pi.desktop-stats-service/v0", read: async () => ({ kind: "unavailable" }), dispose: () => {} });
 	});
 	assert.equal(await discoverDesktopStatsService(pi, ctx), undefined);
+});
+
+// ---- Regressions from the independent verifier's probes ----
+
+const INVALID_PARAMS: Array<Record<string, unknown>> = [{ range: null }, { scope: null }, { range: "1d" }, { scope: "global" }, { extra: 1 }, { range: 7 }, { range: "7D" }];
+
+test("invalid params are rejected before discovery, with or without an attached host", async () => {
+	for (const attached of [true, false]) {
+		for (const params of INVALID_PARAMS) {
+			let discovered = 0;
+			const bridge = new DesktopStatsBridge({} as ExtensionAPI, { discover: async () => { discovered++; return undefined; } });
+			if (attached) bridge.attach({ cwd: "/x" } as unknown as ExtensionContext);
+			assert.deepEqual(await bridge.handle("get_usage_stats", params), { ok: false, error: INVALID_STATS_PARAMS }, `${attached} ${JSON.stringify(params)}`);
+			assert.equal(discovered, 0);
+		}
+	}
+	// Valid params without an attached host stay a truthful absence.
+	const bridge = new DesktopStatsBridge({} as ExtensionAPI, { discover: async () => undefined });
+	assert.deepEqual(await bridge.handle("get_usage_stats", {}), { ok: false, error: STATS_UNAVAILABLE });
+	assert.deepEqual(parseUsageStatsParams({}), { range: "7d", scope: "project" });
+});
+
+function record(id: string, cwd: string, usages: Array<{ at: number; model: string; input: number }>): SessionRecord {
+	return {
+		id,
+		cwd,
+		startedAt: Date.parse("2026-10-01T00:00:00.000Z"),
+		messages: usages.map((usage) => ({ timestamp: usage.at, provider: "p", model: usage.model, input: usage.input, output: 1, cacheRead: 2, cacheWrite: 3, total: usage.input + 6, cost: 0.1 })),
+	};
+}
+
+test("the projection carries no ids, paths, or text, and duplicate project basenames stay two rows", () => {
+	const sessions = [
+		record("sid-a", "/home/u/secret/alpha", [{ at: Date.parse("2026-10-09T10:00:00.000Z"), model: "m1", input: 100 }, { at: Date.parse("2026-10-08T10:00:00.000Z"), model: "m2", input: 50 }]),
+		record("sid-b", "/home/u/secret/beta", [{ at: Date.parse("2026-09-01T10:00:00.000Z"), model: "m1", input: 70 }]),
+		record("sid-c", "/home/u/other/alpha", [{ at: Date.parse("2024-01-01T10:00:00.000Z"), model: "m3", input: 5 }]),
+	];
+	const out = projectDesktopUsageStats(sessions, { range: "all", scope: "all", cwd: "/home/u/secret/alpha", now: NOW });
+	const json = JSON.stringify(out);
+	for (const bad of ["sid-", "secret/", "/home", "\\\\"]) assert.ok(!json.includes(bad), bad);
+	assert.deepEqual(out.byProject!.map((project) => project.name).sort(), ["alpha", "alpha", "beta"]);
+	assert.equal(out.truncated.byProject, false);
+	const project = projectDesktopUsageStats(sessions, { range: "7d", scope: "project", cwd: "/home/u/secret/alpha", now: NOW });
+	assert.equal(project.byProject, undefined);
+	assert.equal(project.totals.sessions, 1);
+	assert.equal(project.totals.messages, 2);
+	assert.equal(projectDisplayName("C:\\Users\\x\\proj\\"), "proj");
+	assert.equal(projectDisplayName(""), "unknown");
+});
+
+test("the projection bounds 51 models, 401 days, and 51 projects and cuts long model ids", () => {
+	const sessions: SessionRecord[] = [];
+	for (let index = 0; index < 51; index++) sessions.push({ id: `s${index}`, cwd: `/p/proj${index}`, startedAt: NOW - 500 * DAY_MS, messages: [] });
+	for (let day = 0; day < 401; day++) {
+		sessions[day % 51]!.messages.push({ timestamp: NOW - day * DAY_MS, model: `model-${day % 51}`.padEnd(day === 0 ? 200 : 0, "x"), provider: "p", input: 1, output: 0, cacheRead: 0, cacheWrite: 0, total: 1, cost: 0 });
+	}
+	const out = projectDesktopUsageStats(sessions, { range: "all", scope: "all", cwd: "/p/proj0", now: NOW });
+	assert.equal(out.byModel.length, 50);
+	assert.equal(out.truncated.byModel, true);
+	assert.equal(out.byDay.length, 400);
+	assert.equal(out.truncated.byDay, true);
+	assert.equal(out.byProject!.length, 50);
+	assert.equal(out.truncated.byProject, true);
+	assert.ok(out.byModel.every((model) => model.model.length <= 128));
+	const days = out.byDay.map((day) => day.day);
+	assert.deepEqual([...days].sort(), days);
 });

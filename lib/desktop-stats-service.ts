@@ -86,11 +86,12 @@ export class DesktopStatsBridge {
 
 	async handle(method: string, params: Record<string, unknown>): Promise<DesktopRpcOutcome | undefined> {
 		if (method !== "get_usage_stats") return undefined;
-		const host = this.host;
-		if (!host) return { ok: false, error: STATS_UNAVAILABLE };
-		// Parse before discovery: a malformed request must never trigger owner work.
+		// Parse first: a malformed request is `invalid_request` whatever the
+		// session state, and never triggers owner work.
 		const query = parseUsageStatsParams(params);
 		if ("error" in query) return { ok: false, error: query.error };
+		const host = this.host;
+		if (!host) return { ok: false, error: STATS_UNAVAILABLE };
 		const generation = this.generation;
 		const service = await this.owner(host);
 		if (generation !== this.generation || !service) return { ok: false, error: STATS_UNAVAILABLE };

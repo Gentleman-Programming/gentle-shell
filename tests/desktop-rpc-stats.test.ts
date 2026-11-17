@@ -161,7 +161,7 @@ test("the Desktop transport advertises get_usage_stats and no new event", (t) =>
 	const response = app.responses()[0];
 	assert.equal(response.data.methods.at(-1), "get_usage_stats");
 	assert.equal(response.data.methods.filter((method: string) => method === "get_usage_stats").length, 1);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed"]);
 });
 
 // ---- The read ----

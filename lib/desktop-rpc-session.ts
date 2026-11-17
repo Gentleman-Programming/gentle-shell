@@ -97,7 +97,10 @@ export function desktopSessionRootLabel(root: string): string {
 	return `root-${createHash("sha256").update(root).digest("hex").slice(0, 12)}`;
 }
 
-const ABSOLUTE_PATH = /^(?:[a-zA-Z]:[\\/]|[\\/])/;
+/** A drive-qualified or rooted path (POSIX `/`, Windows `C:`, `\`, or UNC `\\`). */
+const ABSOLUTE_PATH = /^(?:[a-zA-Z]:|[\\/])/;
+/** A bare drive designator: `C:` once trailing separators are gone. */
+const DRIVE_ONLY = /^[a-zA-Z]:$/;
 
 /** The last path segment, whichever separator the platform used. */
 function baseName(path: string): string {
@@ -106,34 +109,55 @@ function baseName(path: string): string {
 
 function projectSection(project: DesktopFeedSnapshot["project"]) {
 	const name = baseName(project.cwd);
-	return { name: name.length > 0 ? name : null, branch: project.branch, dirty: project.dirty };
+	// A filesystem root (`/`) or a drive root (`C:\`) names no project.
+	return { name: name.length > 0 && !DRIVE_ONLY.test(name) ? name : null, branch: project.branch, dirty: project.dirty };
+}
+
+/**
+ * A worktree root normalized for prefix matching, or undefined for a root
+ * that would relativize everything (`/`, a bare drive). Windows-style roots
+ * (a drive letter or a backslash) compare case-insensitively, as the
+ * filesystem does; POSIX roots stay case-sensitive.
+ */
+function matchableRoot(root: string): { prefix: string; fold: boolean } | undefined {
+	const trimmed = root.replaceAll("\\", "/").replace(/\/+$/, "");
+	if (trimmed.length === 0 || DRIVE_ONLY.test(trimmed)) return undefined;
+	const fold = /^[a-zA-Z]:/.test(root) || root.includes("\\");
+	return { prefix: `${fold ? trimmed.toLowerCase() : trimmed}/`, fold };
 }
 
 /**
  * Changes without a path: each worktree root becomes its opaque label, and
  * each file path is made relative to the worktree that holds it (several
  * worktrees prefix the combined model's paths with their absolute root). A
- * path no worktree holds keeps only its file name.
+ * path no worktree holds keeps only its file name. A root of `/` or a bare
+ * drive gets no label and holds no file, so it never relativizes every path.
  */
 function changesSection(changes: DesktopFeedSnapshot["changes"]) {
 	if (!changes) return null;
+	const label = (root: string) => (matchableRoot(root) ? desktopSessionRootLabel(root) : null);
 	const roots = changes.worktrees
-		.map((tree) => ({ root: tree.root, label: desktopSessionRootLabel(tree.root) }))
-		.sort((left, right) => right.root.length - left.root.length);
-	const single = changes.worktrees.length === 1 ? desktopSessionRootLabel(changes.worktrees[0]!.root) : null;
+		.flatMap((tree) => {
+			const match = matchableRoot(tree.root);
+			return match ? [{ ...match, label: desktopSessionRootLabel(tree.root) }] : [];
+		})
+		.sort((left, right) => right.prefix.length - left.prefix.length);
+	const single = changes.worktrees.length === 1 ? label(changes.worktrees[0]!.root) : null;
+	// A lone `/` or drive-root worktree: its relative paths are root-relative, so only the name crosses.
+	const unlabeled = changes.worktrees.length === 1 && single === null;
 	const locate = (path: string): { path: string; root: string | null } => {
 		const normalized = path.replaceAll("\\", "/");
-		for (const { root, label } of roots) {
-			const prefix = `${root.replaceAll("\\", "/").replace(/\/+$/, "")}/`;
-			if (normalized.startsWith(prefix)) return { path: normalized.slice(prefix.length), root: label };
+		const folded = normalized.toLowerCase();
+		for (const { prefix, fold, label: rootLabel } of roots) {
+			if ((fold ? folded : normalized).startsWith(prefix)) return { path: normalized.slice(prefix.length), root: rootLabel };
 		}
-		if (ABSOLUTE_PATH.test(path)) return { path: baseName(path), root: null };
+		if (ABSOLUTE_PATH.test(path) || unlabeled) return { path: baseName(path), root: null };
 		return { path, root: single };
 	};
 	return {
 		files: changes.files.map((file) => ({ ...locate(file.path), status: file.status, added: file.added, deleted: file.deleted })),
 		summary: { ...changes.summary },
-		worktrees: changes.worktrees.map((tree) => ({ root: desktopSessionRootLabel(tree.root), branch: tree.branch, files: tree.files })),
+		worktrees: changes.worktrees.map((tree) => ({ root: label(tree.root), branch: tree.branch, files: tree.files })),
 		truncated: changes.truncated,
 	};
 }

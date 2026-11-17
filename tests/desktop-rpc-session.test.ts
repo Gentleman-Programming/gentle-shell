@@ -420,3 +420,223 @@ test("S2: the router keeps get_snapshot byte-identical when no session reader is
 	router.handle(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "a", method: "get_snapshot", params: { sections: ["todo"] } }));
 	assert.deepEqual(JSON.parse(lines[0]!).data, { schema: DESKTOP_RPC_SCHEMA, sequence: 0, state: { config: { stores: [] } } });
 });
+
+// ---- Path edge cases (verifier correction batch) ----
+
+test("S4: a filesystem or drive root cwd has no project name", () => {
+	for (const cwd of ["/", "C:\\", "D:/", "c:"]) {
+		const snapshot = buildDesktopFeedSnapshot(fixtureInput({ identity: { ...fixtureInput().identity, cwd } }));
+		assert.equal((projectDesktopSessionSections(snapshot, ["project"]).project as { name: string | null }).name, null, cwd);
+	}
+});
+
+test("S4: Windows roots match case- and separator-insensitively; POSIX roots stay case-sensitive", () => {
+	const one = changesModel([{ path: "x", added: 1, deleted: 0, status: "modified" }]);
+	const combined = changesModel([
+		{ path: "c:/repo/App/src/x.ts", added: 1, deleted: 0, status: "modified" },
+		{ path: "C:\\REPO\\app\\lib\\y.ts", added: 1, deleted: 0, status: "modified" },
+		{ path: "/Srv/Repo/z.ts", added: 1, deleted: 0, status: "modified" },
+		{ path: "/srv/repo/w.ts", added: 1, deleted: 0, status: "modified" },
+	]);
+	const snapshot = buildDesktopFeedSnapshot(fixtureInput({ changes: { model: combined, worktrees: [{ root: "C:\\Repo\\App", branch: "a", model: one }, { root: "/srv/repo", branch: "b", model: one }] } }));
+	const { changes } = projectDesktopSessionSections(snapshot, ["changes"]) as { changes: { files: Array<{ path: string; root: string | null }> } };
+	const windows = desktopSessionRootLabel("C:\\Repo\\App");
+	const posix = desktopSessionRootLabel("/srv/repo");
+	assert.deepEqual(changes.files.map((file) => [file.path, file.root]).sort(), [
+		["lib/y.ts", windows],
+		["src/x.ts", windows],
+		["w.ts", posix],
+		["z.ts", null],
+	]);
+});
+
+test("S4: a worktree root of / or a bare drive never relativizes paths and has no label", () => {
+	for (const root of ["/", "C:\\", "d:/"]) {
+		const one = changesModel([{ path: "x", added: 1, deleted: 0, status: "modified" }]);
+		const combined = changesModel([
+			{ path: "/etc/hosts", added: 1, deleted: 0, status: "modified" },
+			{ path: "C:\\Windows\\win.ini", added: 1, deleted: 0, status: "modified" },
+			{ path: "etc/relative.ts", added: 1, deleted: 0, status: "modified" },
+		]);
+		const snapshot = buildDesktopFeedSnapshot(fixtureInput({ changes: { model: combined, worktrees: [{ root, branch: "b", model: one }] } }));
+		const { changes } = projectDesktopSessionSections(snapshot, ["changes"]) as { changes: { files: Array<{ path: string; root: string | null }>; worktrees: Array<{ root: string | null }> } };
+		assert.deepEqual(changes.files.map((file) => [file.path, file.root]).sort(), [["hosts", null], ["relative.ts", null], ["win.ini", null]], root);
+		assert.deepEqual(changes.worktrees.map((tree) => tree.root), [null], root);
+	}
+});
+
+// ---- Verifier probes (regression tests) ----
+
+const PROBE_WIN_CWD = "C:\\Users\\devel\\My Projects\\gentle-shell";
+function probeInput(overrides: Record<string, unknown> = {}): DesktopFeedInput {
+	const model = changesModel([{ path: "lib/a.ts", added: 3, deleted: 1, status: "modified" }]);
+	return {
+		now: Date.UTC(2026, 10, 14, 12, 0, 0),
+		identity: { sessionId: "sess-1", sessionFile: "C:\\Users\\devel\\.pi\\agent\\sessions\\s.jsonl", sessionName: "Feed", cwd: PROBE_WIN_CWD, realCwd: "\\\\?\\C:\\Users\\devel\\My Projects\\gentle-shell", pid: 100, ppid: 99, ancestors: [98, 1], mode: "rpc", agentDir: "C:\\Users\\devel\\.pi\\agent", env: { USERNAME: "devel", HOME: "C:\\Users\\devel" } },
+		branch: "feat/x",
+		model: { id: "m", provider: "anthropic", reasoning: true },
+		thinkingLevel: "high", subscription: true,
+		profile: { name: "work", tier: "fast" },
+		context: { percent: 42, tokens: 84_000, contextWindow: 200_000 },
+		usage: undefined,
+		permission: { mode: "normal" },
+		todo: { tasks: [{ id: 1, title: "Write tests", status: "in_progress" }], nextId: 2, updatedTurn: 1 },
+		changes: { model, worktrees: [{ root: PROBE_WIN_CWD, branch: "feat/x", model }] },
+		agents: [],
+		jobs: [{ id: "j1", label: "npm test", status: "running", startedAt: Date.UTC(2026, 10, 14, 11, 59, 0) }],
+		review: undefined,
+		stats: { cost: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, turns: 1, toolCalls: 1, toolErrors: 0, spanMs: 1, cacheHitRate: null, models: [] },
+		activity: { working: false, blocked: 0, blockedLabel: undefined, streaming: false, phase: undefined },
+		pendingQuestion: undefined,
+		...overrides,
+	} as DesktopFeedInput;
+}
+const PROBE_NEEDLES = ["\\devel", "devel\\", "/devel", "Users", "C:", "D:", "\\\\", "server", "My Projects", ".pi", "s.jsonl", "/home", "/srv", "4242", "ancestors", "identity", "agentDir", "realCwd", "sessionFile"];
+
+test("S4 probe: Windows/UNC/POSIX/spaces paths in structural fields never reach the wire", () => {
+	const roots = [PROBE_WIN_CWD, "D:\\wt\\feature branch", "\\\\server\\share\\repo", "/srv/home/dev/repo"];
+	const combined = changesModel([
+		{ path: `${PROBE_WIN_CWD}\\lib\\a.ts`, added: 1, deleted: 0, status: "modified" },
+		{ path: "D:/wt/feature branch/b.ts", added: 1, deleted: 0, status: "modified" },
+		{ path: "\\\\server\\share\\repo\\c.ts", added: 1, deleted: 0, status: "modified" },
+		{ path: "/srv/home/dev/repo/d.ts", added: 1, deleted: 0, status: "modified" },
+		{ path: "C:\\Users\\devel\\Desktop\\outside.txt", added: 1, deleted: 0, status: "modified" },
+		{ path: "c:\\users\\devel\\my projects\\gentle-shell\\casemismatch.ts", added: 1, deleted: 0, status: "modified" },
+	]);
+	const one = changesModel([{ path: "x", added: 1, deleted: 0, status: "modified" }]);
+	const snap = buildDesktopFeedSnapshot(probeInput({ changes: { model: combined, worktrees: roots.map((root) => ({ root, branch: "b", model: one })) } }));
+	const sections = projectDesktopSessionSections(snap, DESKTOP_SESSION_SECTIONS);
+	const wire = JSON.stringify(sections);
+	for (const needle of PROBE_NEEDLES) assert.equal(wire.includes(needle), false, `${needle} in ${wire}`);
+	assert.deepEqual((sections.project as any).name, "gentle-shell");
+	const paths = (sections.changes as any).files.map((f: any) => [f.path, f.root]);
+	assert.deepEqual(paths.map((p: any) => p[0]).sort(), ["b.ts", "c.ts", "casemismatch.ts", "d.ts", "lib/a.ts", "outside.txt"]);
+});
+
+test("S4 probe: project name of a filesystem root", () => {
+	for (const [cwd, want] of [["/", null], ["C:\\", null], ["\\\\server\\share\\", "share"]] as const) {
+		const snap = buildDesktopFeedSnapshot(probeInput({ identity: { ...probeInput().identity, cwd } }));
+		const p = projectDesktopSessionSections(snap, ["project"]).project as any;
+		assert.equal(p.name, want, `cwd ${cwd} -> ${JSON.stringify(p.name)}`);
+	}
+});
+
+function probeService(initial: DesktopFeedSnapshot) {
+	let current = initial;
+	const observers = new Set<(s: DesktopFeedSnapshot) => void>();
+	return {
+		set(value: DesktopFeedSnapshot) { current = value; },
+		observers,
+		service: {
+			schema: "gentle-pi.desktop-session-service/v1" as const,
+			read: () => current,
+			observe: (fn: (s: DesktopFeedSnapshot) => void) => { observers.add(fn); return () => observers.delete(fn); },
+			dispose: () => {},
+		},
+	};
+}
+
+test("S3 probe: no event for updatedAt/elapsed-only changes; a late publish captured before reset is dropped", async () => {
+	const first = buildDesktopFeedSnapshot(probeInput());
+	const fake = probeService(first);
+	const bridge = new DesktopSessionBridge({} as ExtensionAPI, { discover: async () => fake.service });
+	bridge.attach({} as ExtensionContext);
+	const events: any[] = [];
+	bridge.wire((name, data) => events.push({ name, data }));
+	await bridge.start();
+	const captured = [...fake.observers];
+	for (const fn of captured) fn(buildDesktopFeedSnapshot(probeInput({ now: Date.UTC(2026, 10, 14, 12, 0, 30) })));
+	assert.equal(events.length, 0, "elapsed/updatedAt only");
+	const changed = buildDesktopFeedSnapshot(probeInput({ todo: { tasks: [{ id: 1, title: "Write tests", status: "completed" }], nextId: 2, updatedTurn: 2 } }));
+	for (const fn of captured) fn(changed);
+	assert.deepEqual(events.map((e) => Object.keys(e.data.sections)), [["todo"]]);
+	bridge.reset();
+	const late = buildDesktopFeedSnapshot(probeInput({ permission: { mode: "yolo" } }));
+	for (const fn of captured) fn(late);
+	assert.equal(events.length, 1, "late publish after reset dropped");
+	// Re-wired session with a fresh emitter: still nothing from the stale observer.
+	bridge.attach({} as ExtensionContext);
+	bridge.wire((name, data) => events.push({ name, data }));
+	for (const fn of captured) fn(late);
+	assert.equal(events.length, 1, "stale observer after re-wire dropped");
+});
+
+test("S2 probe: invalid sections answer invalid_request before any owner discovery", async () => {
+	let discovered = 0;
+	const bridge = new DesktopSessionBridge({} as ExtensionAPI, { discover: async () => { discovered += 1; return undefined; } });
+	bridge.attach({} as ExtensionContext);
+	for (const params of [{ sections: [] }, { sections: ["todo", "todo"] }, { sections: ["bogus"] }, { sections: ["todo"], x: 1 }, { sections: "todo" }, { sections: [null] }, { sections: ["Todo"] }, { sections: ["__proto__"] }, { sections: Array(17).fill("todo") }]) {
+		const out = await bridge.snapshot(params as Record<string, unknown>);
+		assert.deepEqual(out, { ok: false, error: { code: "invalid_request", message: "Invalid session snapshot sections" } }, JSON.stringify(params));
+	}
+	assert.equal(discovered, 0);
+});
+
+function probeCtx(sessionId = "sess-1") {
+	const widgets: any[] = [];
+	return {
+		cwd: PROBE_WIN_CWD, mode: "rpc", hasUI: true, isIdle: () => true,
+		model: { id: "m", provider: "anthropic", reasoning: true, contextWindow: 200_000 },
+		modelRegistry: { isUsingOAuth: () => true },
+		getContextUsage: () => ({ tokens: 1000, contextWindow: 200_000, percent: 0.5 }),
+		ui: { setWidget(key: string, lines: string[]) { widgets.push({ key, lines }); } }, widgets,
+		sessionManager: { getSessionId: () => sessionId, getSessionFile: () => "C:\\Users\\devel\\.pi\\agent\\sessions\\s.jsonl", getSessionName: () => undefined, getCwd: () => PROBE_WIN_CWD, getBranch: () => [], getEntries: () => [] },
+	};
+}
+
+async function probeHarness(t: test.TestContext) {
+	interactiveHost(t);
+	const h = fakePi();
+	desktopRpc(h.pi);
+	const agentDir = mkdtempSync(join(tmpdir(), "vprobe-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+	const c = fakeTimers();
+	createDesktopFeedExtension({ env: GENTLE_ENV, agentDir, now: () => Date.UTC(2026, 10, 14, 12, 0, 0), timers: c.timers, git: () => async () => ({ stdout: "", code: 128 }), parentOf: async () => undefined, profile: () => ({ name: "work", tier: "fast" }), realpath: (p) => p, sweep: () => {}, actionWatch: () => () => {}, store: (d, id) => createDesktopFeedStore(d, id) })(h.pi);
+	const ctx = probeCtx();
+	t.after(() => h.fire("session_shutdown", { reason: "quit" }, ctx));
+	h.fire("session_start", { reason: "startup" }, ctx);
+	await settle(); c.run(); await settle(); c.run(); await settle();
+	const lines = () => ctx.widgets.filter((w: any) => w.key === "gentle-desktop-rpc").map((w: any) => w.lines[0] as string);
+	let i = 0;
+	return { ...h, ctx, c, lines, async invoke(method: string, params: Record<string, unknown> = {}) { i += 1; const before = lines().length; await h.commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: `r${i}`, method, params }), ctx); return lines().slice(before); } };
+}
+
+test("S3 probe: with the feed, every event's seq is contiguous and get_snapshot.sequence equals delivered events; wire has no path", async (t) => {
+	const app = await probeHarness(t);
+	app.bus.emit(REVIEW_SIDEBAR_EVENT, { sessionId: "sess-1", snapshot: { state: "in_review", scope: "a.ts" } });
+	app.c.run();
+	await app.invoke("list_jobs");
+	app.fire("ui_prompt_start", { title: "Pick C:\\Users\\devel\\x?", kind: "select" }, app.ctx);
+	app.c.run();
+	app.bus.emit(REVIEW_SIDEBAR_EVENT, { sessionId: "sess-1", snapshot: { state: "closed", scope: "a.ts" } });
+	app.c.run();
+	const snap = JSON.parse((await app.invoke("get_snapshot"))[0]!);
+	const all = app.lines().map((l) => JSON.parse(l));
+	const seqs = all.filter((l: any) => l.kind === "event").map((l: any) => l.seq);
+	assert.ok(seqs.length >= 3, `events ${seqs}`);
+	assert.deepEqual(seqs, seqs.map((_: unknown, i: number) => i + 1));
+	assert.equal(snap.data.sequence, seqs.length);
+	const full = JSON.parse((await app.invoke("get_snapshot", { sections: [...DESKTOP_SESSION_SECTIONS] }))[0]!);
+	const wire = JSON.stringify(full.data.state.session) + all.filter((l: any) => l.event === "session_snapshot").map((l: any) => JSON.stringify(l)).join("");
+	// Free text (the prompt title) is shown as written: strip it before checking structural fields.
+	const structural = wire.replaceAll("Pick C:\\\\Users\\\\devel\\\\x?", "");
+	for (const needle of ["\\devel", "devel\\", "Users", "My Projects", ".pi", "s.jsonl"]) assert.equal(structural.includes(needle), false, needle);
+	assert.equal(full.data.state.session.project.name, "gentle-shell");
+});
+
+test("S3 probe: session switch disposes the old owner; the new session's events still flow and the old one's do not", async (t) => {
+	const app = await probeHarness(t);
+	const ctx2 = probeCtx("sess-2"); (ctx2 as any).widgets = app.ctx.widgets; (ctx2 as any).ui = app.ctx.ui;
+	app.fire("session_shutdown", { reason: "new" }, app.ctx);
+	app.fire("session_start", { reason: "new" }, ctx2);
+	await settle(); app.c.run(); await settle(); app.c.run(); await settle();
+	const before = app.lines().length;
+	app.bus.emit(REVIEW_SIDEBAR_EVENT, { sessionId: "sess-1", snapshot: { state: "in_review", scope: "old.ts" } });
+	app.c.run();
+	assert.equal(app.lines().slice(before).some((l) => l.includes("old.ts")), false);
+	app.bus.emit(REVIEW_SIDEBAR_EVENT, { sessionId: "sess-2", snapshot: { state: "in_review", scope: "new.ts" } });
+	app.c.run();
+	const after = app.lines().slice(before).map((l) => JSON.parse(l));
+	assert.equal(after.filter((l: any) => l.event === "session_snapshot" && JSON.stringify(l).includes("new.ts")).length, 1);
+	app.fire("session_shutdown", { reason: "quit" }, ctx2);
+});

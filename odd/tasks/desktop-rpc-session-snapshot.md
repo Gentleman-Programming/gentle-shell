@@ -14,7 +14,7 @@ Implements #3319 on branch `feat/desktop-rpc-session-snapshot`. Delivery: single
 ## Tasks
 
 - T1 [S1,S2,S3,S4,S5,S6] Desktop RPC slice: owner seam, method(s)/event, docs in `docs/desktop-rpc.md`, tests. Route: delegated writer (Writer trigger a: parallel independent units in separate worktrees). Status: done. Commit: 60c67a7e2.
-- T2 [S1,S2,S3,S4,S5,S6] Push, PR closing #3319 with `type:feature`. Route: parent. Status: pending.
+- T2 [S1,S2,S3,S4,S5,S6] Push, PR closing #3319 with `type:feature`. Route: parent. Status: done — PR #3328.
 
 ## Log
 
@@ -26,3 +26,4 @@ Implements #3319 on branch `feat/desktop-rpc-session-snapshot`. Delivery: single
 - L6 (2026-11-16, coordinator decision, verbatim): "Free text (decision, parent-owned): user/agent free text (pendingQuestion titles/options, todo text, activity labels, command descriptions) passes as written, even if it contains a path. Redacting inside text would corrupt it, and this follows the jobs-label precedent. S4's \"no absolute path anywhere\" applies to every structural field the projection derives (cwd, roots, file paths, identity)." `docs/desktop-rpc.md` Session limits now states this exception explicitly.
 - L7 (verifier correction batch): a drive-root cwd (`C:\`, `D:/`) now gives `project.name: null`, like `/`. Windows-style roots (drive letter or backslashes) match file paths case- and separator-insensitively; POSIX roots stay case-sensitive. A worktree root of `/` or a bare drive gets `root: null` and never relativizes a path (its files cross as bare file names with `root: null`). The verifier's probes were added to `tests/desktop-rpc-session.test.ts` (relative imports, base-differential probe dropped); RED observed first for the drive-root name, case-insensitive match, and root-guard tests (4 failing incl. the probe), then GREEN.
 - L8 (verification after correction): `tests/desktop-rpc-session.test.ts` 21/21; desktop-rpc 8/8, agents 32/32, config 44/44, design 22/22, jobs 24/24, profiles 5/5, safety 5/5, usage 23/23; permissions 8 pass / 1 fail (known Windows 0o600). `--test-force-exit` feed suites: actions-guards 3, actions 3, performance 1, desktop-feed 3 failures, the 10 names known on base; live-work 6/6, plan-profiles 14/14, send-prompt 18/18, tool-summaries 5/5. `pnpm run typecheck`: no regressions.
+- L9 (2026-11-16): Native review (risk, resilience, reliability, readability) approved and acknowledged; advisory follow-ups listed in the PR. PR #3328 opened.

@@ -39,6 +39,7 @@ import {
 	type DesktopAgentThread,
 } from "../lib/desktop-rpc-agents.ts";
 import { DesktopAgentsBridge, discoverDesktopAgentsService } from "../lib/desktop-agents-service.ts";
+import * as probeAgents from "../lib/desktop-rpc-agents.ts";
 import { DESKTOP_RPC_SCHEMA, DesktopRpcRouter, type DesktopRpcDomain } from "../lib/desktop-rpc.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
@@ -1146,4 +1147,164 @@ test("a shut-down owner leaves the agents service channel and never answers disc
 	let answered = 0;
 	harness.pi.events.emit(DESKTOP_AGENTS_SERVICE_CHANNEL, { context: harness.ctx, respond: () => { answered += 1; } });
 	assert.equal(answered, 0, "a replaced runtime is never discovered through the old owner");
+});
+
+// ---- get_subagent_thread: independent verifier probes (regression) ----
+function probeTask(id: string, parentSessionId: string, o: any = {}) {
+	return { id, agent: "w", mode: "task", prompt: "SECRETPROMPT", label: "p", cwd: "/r", parentSessionId, status: TASK_STATUS.RUNNING, createdAt: 1, startedAt: 1, endedAt: null, model: "m", thinking: undefined, sessionPath: "/s.jsonl", error: null, result: null, lastStep: "x", lastActivityAt: 1, turns: 0, toolCalls: 0, tokens: 0, cost: 0, ...o };
+}
+function probeOwner(store: any, sessionId = "session-a", over: any = {}) {
+	let disposed = false;
+	let discoveries = 0;
+	const service: any = {
+		schema: probeAgents.DESKTOP_AGENTS_SERVICE_SCHEMA,
+		read: () => ({ sessionId, agents: probeAgents.selectDesktopAgents(store.list(sessionId)) }),
+		cancel: () => ({ kind: "not_found" }),
+		thread: (id: string) => {
+			if (disposed) return { kind: "not_found" };
+			const t = store.get(id);
+			if (!t || t.parentSessionId !== sessionId) return { kind: "not_found" };
+			return { kind: "ok", thread: probeAgents.projectDesktopAgentThread(id, store.thread(id)) };
+		},
+		observe: () => () => {},
+		dispose: () => { disposed = true; },
+		...over,
+	};
+	return { service, count: () => discoveries, discover: async () => { discoveries++; return service; } };
+}
+function probeBridge(o: any, sessionId = "session-a") {
+	const b = new DesktopAgentsBridge({} as any, { discover: o.discover, schedule: () => () => {}, coalesceMs: 1 });
+	b.attach({ sessionManager: { getSessionId: () => sessionId } } as any);
+	const events: any[] = [];
+	b.wire((e: string) => events.push(e));
+	return { b, events };
+}
+function probeSeeded() {
+	const store = new TaskStore();
+	store.add(probeTask("mine", "session-a"));
+	store.add(probeTask("theirs", "session-b"));
+	store.add(probeTask("grandchild", "child-session-of-mine"));
+	store.apply("mine", { type: "text", text: "hello" }, 2);
+	store.apply("theirs", { type: "tool_start", callId: "c", name: "bash", args: { cmd: "cat ~/.ssh/id_rsa" } }, 2);
+	store.apply("grandchild", { type: "note", text: "nested" }, 2);
+	return store;
+}
+
+test("probe: invalid params are invalid_request before discovery", async () => {
+	const o = probeOwner(probeSeeded());
+	const { b } = probeBridge(o);
+	for (const p of [{}, { id: "" }, { id: 3 }, { id: "mine", extra: 1 }, { id: "mine", sinceVersion: -1 }, { id: "mine", sinceVersion: 1.5 }, { id: "mine", sinceVersion: 2 ** 60 }, { id: "mine", sinceVersion: "1" }, { id: "mine", sinceVersion: null }, { id: "mine", sinceVersion: NaN }, { id: "mine", sinceVersion: Infinity }]) {
+		const r: any = await b.handle("get_subagent_thread", p as any);
+		assert.equal(r.ok, false, JSON.stringify(p));
+		assert.equal(r.error.code, "invalid_request", JSON.stringify(p));
+	}
+	assert.equal(o.count(), 0);
+});
+
+test("probe: ownership: foreign, nested, unknown are not_found with no leak; own ok", async () => {
+	const o = probeOwner(probeSeeded());
+	const { b, events } = probeBridge(o);
+	for (const id of ["theirs", "grandchild", "nope", "__proto__", "constructor"]) {
+		const r: any = await b.handle("get_subagent_thread", { id });
+		assert.equal(r.ok, false, id);
+		assert.equal(r.error.code, probeAgents.AGENT_NOT_FOUND.code, id);
+		assert.ok(!JSON.stringify(r).includes("id_rsa"));
+	}
+	const r: any = await b.handle("get_subagent_thread", { id: "mine" });
+	assert.equal(r.ok, true);
+	assert.deepEqual(r.data.items, [{ kind: "text", text: "hello" }]);
+	assert.ok(!JSON.stringify(r).includes("SECRETPROMPT"));
+	assert.equal(events.length, 0);
+});
+
+test("probe: session switch: a session-b owner cannot read the session-a subagent", async () => {
+	const o = probeOwner(probeSeeded(), "session-b");
+	const { b } = probeBridge(o, "session-b");
+	const r: any = await b.handle("get_subagent_thread", { id: "mine" });
+	assert.equal(r.error.code, probeAgents.AGENT_NOT_FOUND.code);
+});
+
+test("probe: reset during discovery answers agents_unavailable", async () => {
+	const o = probeOwner(probeSeeded());
+	let release: any;
+	const gate = new Promise((r) => { release = r; });
+	const b = new DesktopAgentsBridge({} as any, { discover: () => gate as any, schedule: () => () => {} });
+	b.attach({ sessionManager: { getSessionId: () => "session-a" } } as any);
+	const pending = b.handle("get_subagent_thread", { id: "mine" });
+	b.reset();
+	release(o.service);
+	const r: any = await pending;
+	assert.equal(r.error.code, probeAgents.AGENTS_UNAVAILABLE.code);
+});
+
+test("probe: older adapter, throwing, malformed, id mismatch, oversized item answer agents_unavailable", async () => {
+	const store = probeSeeded();
+	const cases = [
+		{ thread: undefined },
+		{ thread: () => { throw new Error("/home/x SECRETPROMPT"); } },
+		{ thread: () => ({ kind: "ok", thread: { id: "mine", version: 1, dropped: 0, truncated: false, items: [{ kind: "text", text: "x".repeat(2001) }] } }) },
+		{ thread: () => ({ kind: "ok", thread: { id: "other", version: 1, dropped: 0, truncated: false, items: [] } }) },
+		{ thread: () => ({ kind: "ok", thread: { id: "mine", version: -1, dropped: 0, truncated: false, items: [] } }) },
+	];
+	for (const over of cases) {
+		const o = probeOwner(store, "session-a", over);
+		const { b } = probeBridge(o);
+		const r: any = await b.handle("get_subagent_thread", { id: "mine" });
+		assert.equal(r.error.code, probeAgents.AGENTS_UNAVAILABLE.code);
+		assert.ok(!JSON.stringify(r).includes("SECRETPROMPT"));
+	}
+});
+
+test("probe: bounds: dropped vs eviction, 256KB halving with escape-heavy text", async () => {
+	const store = new TaskStore({ maxItems: 400 });
+	store.add(probeTask("t", "session-a"));
+	// Text is sanitized and capped at 2000 chars (≤ ~6 KB/item), so a realistic text-only
+	// window never exceeds 256 KB; tool names are the one unbounded field the widget forwards.
+	for (let i = 0; i < 450; i++) store.apply("t", { type: "tool_start", callId: "c" + i, name: "n".repeat(8000), args: {} }, i);
+	const raw = store.thread("t");
+	assert.equal(raw.items.length, 400);
+	assert.equal(raw.dropped, 50);
+	const { b } = probeBridge(probeOwner(store));
+	const r: any = await b.handle("get_subagent_thread", { id: "t" });
+	assert.equal(r.ok, true);
+	assert.ok(Buffer.byteLength(JSON.stringify(r.data)) <= 256 * 1024);
+	assert.equal(r.data.items.length, 20, "40 items of ~12KB halved once");
+	assert.equal(r.data.dropped, 50);
+	assert.equal(r.data.truncated, true);
+	assert.ok(r.data.items.every((it: any) => it.kind === "tool" && it.name.length === 8000));
+	const w = projectRpcActivity(store, { parentSessionId: "session-a" });
+	assert.equal(w.tasks[0].thread.items.length, 40);
+});
+
+test("probe: tool item caps: args 500, output 500, exact key set", async () => {
+	const store = new TaskStore();
+	store.add(probeTask("t", "session-a"));
+	store.apply("t", { type: "tool_start", callId: "c", name: "bash", args: { cmd: "y".repeat(900) } }, 1);
+	store.apply("t", { type: "tool_end", callId: "c", output: "o".repeat(900), isError: true }, 2);
+	const { b } = probeBridge(probeOwner(store));
+	const r: any = await b.handle("get_subagent_thread", { id: "t" });
+	const it = r.data.items[0];
+	assert.equal(it.args.length, 500);
+	assert.equal(it.output.length, 500);
+	assert.equal(it.isError, true);
+	assert.equal(it.running, false);
+	assert.deepEqual(Object.keys(it).sort(), ["args", "isError", "kind", "name", "output", "running"]);
+	assert.deepEqual(Object.keys(r.data).sort(), ["dropped", "id", "items", "truncated", "version"]);
+});
+
+test("probe: sinceVersion: equal returns [], other values return the window; in-place change bumps version", async () => {
+	const store = new TaskStore();
+	store.add(probeTask("t", "session-a"));
+	store.apply("t", { type: "text", text: "a" }, 1);
+	const { b } = probeBridge(probeOwner(store));
+	const first: any = await b.handle("get_subagent_thread", { id: "t" });
+	const v = first.data.version;
+	const same: any = await b.handle("get_subagent_thread", { id: "t", sinceVersion: v });
+	assert.deepEqual(same.data, { ...first.data, items: [], truncated: false });
+	store.apply("t", { type: "text", text: "b" }, 2);
+	const after: any = await b.handle("get_subagent_thread", { id: "t", sinceVersion: v });
+	assert.equal(after.data.version, v + 1);
+	assert.deepEqual(after.data.items, [{ kind: "text", text: "ab" }]);
+	const higher: any = await b.handle("get_subagent_thread", { id: "t", sinceVersion: v + 100 });
+	assert.equal(higher.data.items.length, 1);
 });

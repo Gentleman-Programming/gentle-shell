@@ -62,7 +62,7 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "apply_profile", "list_subagents", "cancel_subagent"],
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "apply_profile", "list_subagents", "cancel_subagent", "get_changes", "get_change_diff"],
   "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]
 }
 ```
@@ -902,6 +902,74 @@ Otherwise the answer is the outcome, with the screen's notices as `notes` (`leve
 
 Only one apply runs at a time in a Pi process, across sessions. A request that arrives while another apply is running answers `profile_apply_busy` and changes nothing. While an apply runs, `set_config` for `profiles`, `profile_fallbacks`, and `pins` also answers `profile_apply_busy` and writes nothing: the apply rewrites the profiles store (and restores it on failure) from the snapshot it read, so an edit accepted mid-apply would otherwise be lost. Retry after the apply answers. The `/gentle:profiles` screen's Use in this session and Make default (including the save they make first) take the same gate, so they never run alongside a Desktop apply and a Desktop apply answers `profile_apply_busy` while one of them runs.
 
+### `get_changes`
+
+Reads the session's uncommitted changes from the same owner `/gentle:changes` uses: the shell's `WorktreeChangesTracker` over the session's roots (its own repository and every worktree its subagents used), each against its `HEAD`, untracked files included. Params must be an empty object.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-70", "method": "get_changes", "params": {} }
+```
+
+Success:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-70",
+  "ok": true,
+  "data": {
+    "roots": [{ "id": "root-1", "label": "gentle-shell" }],
+    "files": [
+      { "root": "root-1", "path": "lib/shell-changes.ts", "status": "modified", "added": 12, "deleted": 3 },
+      { "root": "root-1", "path": "notes.md", "status": "untracked", "added": 4, "deleted": 0 }
+    ],
+    "truncated": false
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `roots[].id` | An opaque, session-scoped root identifier (`root-1`, `root-2`, …). It names a root for `get_change_diff`; it is not a path. |
+| `roots[].label` | A display name: the root's directory name. Never an absolute path. Two roots can share a label; `id` tells them apart. |
+| `files[].root` | The `id` of the root the file belongs to. |
+| `files[].path` | The path relative to its root, exactly as Git reports it (`/` separators). |
+| `files[].status` | One of `modified`, `added`, `deleted`, `renamed`, or `untracked`. |
+| `files[].added`, `files[].deleted` | Line counts from `git diff --numstat HEAD`; an untracked file counts its own lines. |
+| `truncated` | `true` when more than 200 files changed across all roots; `files` then holds the first 200 (roots in owner order, paths sorted within each root). |
+
+Only roots with changes are listed, so a clean session answers `roots: []` and `files: []`. A read refreshes the owner's scan the way opening the panel does; it starts, writes, or stages nothing and never emits an event. Any params key is `invalid_request`. `changes_unavailable` answers when the session has no root to scan or when Git failed for any root: a failed scan is never reported as a clean root.
+
+### `get_change_diff`
+
+Reads one changed file's unified diff, exactly what the `/gentle:changes` panel shows for it: a tracked file is `git diff HEAD -- <path>`, an untracked file is a diff against an empty file. Params are exactly `{ root, path }`, both strings.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-71", "method": "get_change_diff", "params": { "root": "root-1", "path": "notes.md" } }
+```
+
+Success:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-71",
+  "ok": true,
+  "data": {
+    "root": "root-1",
+    "path": "notes.md",
+    "diff": "diff --git a/notes.md b/notes.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes.md\n@@ -0,0 +1,4 @@\n+…\n",
+    "truncated": false
+  }
+}
+```
+
+`path` must be a file in the owner's current change set for that root, matched exactly against the owner's own file list (no normalization, no case folding). Anything else answers `not_found`: an unknown or stale root id, a root's absolute path or label in place of its id, a path outside the set (including a clean tracked file or `.git/config` that exists on disk), `..` traversal, an absolute path, or a path whose directory resolves outside the root through a link (Git for Windows lists files behind a junction as part of the tree). The method can never read an arbitrary file.
+
+A diff is file content: it can contain whatever the user's files contain, secrets included, exactly as the panel would show them. Nothing beyond the diff text is added — no absolute path, no Git command. `diff` is capped at 256 KiB of UTF-8, cut after the last whole line inside the bound (or on a character boundary for one very long line), with `truncated: true`. A diff past the panel's own 1 MiB bound, where the panel shows a "too large" notice, still answers its first 256 KiB with `truncated: true`. An empty `diff` means Git reported no difference. Wrong param types or extra keys are `invalid_request`; Git failing or timing out is `changes_unavailable`. A read never emits an event.
+
 ## Responses
 
 Success:
@@ -949,10 +1017,11 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `design_unavailable` | The design canvas owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
 | `jobs_unavailable` | The background-jobs owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
 | `agents_unavailable` | The subagents owner did not answer for this session (the owning extension is not loaded, or the session changed). State unchanged. |
+| `changes_unavailable` | The changes owner did not answer for this session (the owning extension is not loaded, or the session changed), the session has no root to scan, or Git failed or timed out. Nothing was changed. |
 | `profiles_unavailable` | The profiles owner did not answer for this session (the owning extension is not loaded, the session changed, or no Desktop command bound a session context). Nothing was written. |
 | `unknown_profile` | `apply_profile` named a profile that is not saved in `profiles.json`. No routing, settings, agents, or pins were written (a missing `profiles.json` may have been seeded). |
 | `profile_apply_busy` | An `apply_profile` is still running; returned to a second `apply_profile` and to `set_config` for `profiles`, `profile_fallbacks`, or `pins`. Nothing was written by this request. |
-| `not_found` | `cancel_job` named a job id, or `cancel_subagent` named a subagent id, that does not exist or belongs to another session. Nothing was stopped. |
+| `not_found` | `cancel_job` named a job id, or `cancel_subagent` named a subagent id, that does not exist or belongs to another session; nothing was stopped. Or `get_change_diff` named a root and path that are not a file in the owner's current change set; nothing was read. |
 | `internal_error` | Unexpected failure; message stays generic. |
 
 ## Events
@@ -1153,7 +1222,7 @@ Follows an `apply_profile` answer whose `status` is `applied`, after the respons
 - The methods delegate to the Gentle AI extension's permission owner in the same Pi process. When that extension is not loaded, both methods answer `permission_unavailable` instead of guessing state.
 - Session changes require the owner's interactive-host admission: the TUI, or an RPC process with `GENTLE_SHELL_INTERACTIVE_HOST=1`. Headless RPC children and subagent children stay closed exactly as before.
 - Permission control is never an agent-callable tool; only `/gentle:desktop` over the interactive RPC channel reaches it.
-- This slice adds no filesystem watcher and no second store. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); subscription usage is limited to the `get_subscription_usage` and `refresh_subscription_usage` contract in [Usage limits](#usage-limits); background jobs are limited to the `list_jobs` and `cancel_job` contract in [Jobs limits](#jobs-limits); subagents are limited to the `list_subagents` and `cancel_subagent` contract in [Subagents limits](#subagents-limits); music and any Desktop client change are not implemented.
+- This slice adds no filesystem watcher and no second store. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); subscription usage is limited to the `get_subscription_usage` and `refresh_subscription_usage` contract in [Usage limits](#usage-limits); background jobs are limited to the `list_jobs` and `cancel_job` contract in [Jobs limits](#jobs-limits); subagents are limited to the `list_subagents` and `cancel_subagent` contract in [Subagents limits](#subagents-limits); changed files are limited to the `get_changes` and `get_change_diff` contract in [Changes limits](#changes-limits); music and any Desktop client change are not implemented.
 - Requests are not queued. Pi's own RPC loop dispatches prompts concurrently, so overlapping `set_permission_mode` calls reach the owner in whatever order their own reads finish, and one can apply right after the other. What stays guaranteed: every request gets exactly one correlated response, responses never cross, and each response and its optional event are published as an adjacent pair with a monotonic `seq`. Send permission requests one at a time and correlate with `requestId`; the maintainer probe does exactly that.
 
 ### Trust boundary
@@ -1210,6 +1279,17 @@ Follows an `apply_profile` answer whose `status` is `applied`, after the respons
 - **Confirmation is Desktop's job.** The token binds an apply to the title and message that were shown and to the exact saved profile; it is not a proof that a person saw them.
 - **Truthful absence.** When the owning extension is not loaded, `apply_profile` answers `profiles_unavailable` rather than inventing an outcome.
 
+## Changes limits
+
+- **One owner, no second tracker.** `get_changes` and `get_change_diff` reach the existing `/gentle:changes` owner — the shell's `WorktreeChangesTracker` over `sessionChangeRoots` — through a defensive, versioned owner-service adapter, the changes analogue of the usage and jobs seams. There is no second scan, no watcher, and no cached copy. `loadFileDiff` lives in `lib/change-diff.ts`, shared by the panel and this slice, so both run the same Git arguments over the same bounded runner.
+- **Read only, no event.** This slice has exactly two methods and no event. It never stages, reverts, commits, or opens a file. A read refreshes the owner's scan, which also refreshes the shell's own changes widget, exactly as opening the panel does.
+- **Confinement.** A diff is served only for a file the owner itself lists for that root, by exact match, and only when the file's directory resolves inside the root. Request paths that are absolute or contain `..` segments or control characters are refused before the owner is asked; the owner's exact match is the real boundary. The file entry, its status, and so its Git arguments always come from the owner's list, never from the request.
+- **Opaque roots.** A root crosses the wire only as an opaque id and its directory name. Ids are assigned per owner adapter (per session); after a session change, call `get_changes` again before `get_change_diff`.
+- **Bounded.** `get_changes` carries at most 200 files with `truncated`, the desktop feed's bound. `get_change_diff` carries at most 256 KiB of diff text with `truncated`; the Git run itself stays under the panel's 1 MiB bound.
+- **Content, not metadata.** Diff text is the user's file content and can carry anything those files carry. Errors stay generic: Git output, absolute paths, and Git commands never appear in an error.
+- **Truthful absence.** When the owning extension is not loaded, the session has no root to scan, or Git fails for any root, both methods answer `changes_unavailable` rather than an empty list.
+- **Same baseline as the panel.** Both methods diff against `HEAD`, like the panel today; when the panel moves to session-baseline diffs (#765), this slice follows it.
+
 ## Verification
 
 ```sh
@@ -1222,6 +1302,8 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-jobs.test.ts \
   tests/desktop-rpc-agents.test.ts \
   tests/desktop-rpc-profiles.test.ts \
+  tests/desktop-rpc-changes.test.ts \
+  tests/change-diff.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 
@@ -1234,6 +1316,8 @@ The usage tests use a fake owner service and a fake fetch/modelRegistry only: th
 The jobs tests use the existing background-job fake (the same fake shell operations and monitor controller as the background-jobs tests) and a fake owner service only: they cover the whitelisted projection and field redaction, the bounded running + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`jobs_unavailable`, never a fabricated empty list), the `job_stop` stop path (monitor cancel + registry stop), already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `jobs_update` events with foreign-session filtering, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also drive the real `job_stop` tool to prove the change descriptor distinguishes a running→stopped stop from a no-op stop.
 
 The subagents tests use a real `TaskStore` plus a fake runner (never a child process) and a fake owner service only: they cover the whitelisted model/usage/cost projection and field redaction, the closed `lastStep` vocabulary (raw error/path/secret/provider text never crosses), the bounded active + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`agents_unavailable`, never a fabricated empty list), the `runner.cancel` stop path and its boolean result, already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `agents_update` events with foreign-session filtering, content dedupe and burst coalescing, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also run the real `gentleAgents` owner seam in-process over a fake child (real `TaskStore` + real `AgentRunner`, never a real process): a truthful empty list, a typed `not_found` cancel, a live-task cancel that honors `runner.cancel`'s result with no immediate event and one eventual `agents_update`, and the persisted usage breakdown surviving `saveTask`/`loadStoredTask` restore.
+
+The changes tests load the real `gentleShell` owner and this extension together over temporary Git repositories (real `git`; a wrapped runner only to force a failure). They cover the opaque root id and directory-name label with no absolute path anywhere on the wire, root-relative paths and statuses, the 200-file cap, `get_change_diff` answering byte-for-byte what the panel's `loadFileDiff` answers for tracked and untracked files (including `/dev/null` on Windows), the 256 KiB cut on a line boundary and the head of a diff past the panel's 1 MiB bound, `not_found` for an unknown root, a root's absolute path or label in place of its id, a clean tracked file and `.git/config` that exist on disk, a missing file, `..` traversal, absolute paths, `./`, backslash, case, and trailing-space aliases, and a file behind a directory link (a junction on Windows), `invalid_request` for wrong shapes with no Git run, `changes_unavailable` without an owner, without a repository, and when Git status or the diff fails (with no Git output on the wire), one response line and no event per read, and that the owner answers discovery only for its own live session. `tests/change-diff.test.ts` proves the panel's `loadFileDiff` export is the shared lib function and keeps its arguments, bound notice, and failure behavior on real Git.
 
 The profiles tests use a fake owner service only: they cover param validation, owner absence (`profiles_unavailable`), the result shapes, the `profile_applied` event only after `applied`, and that the token changes with the mode, name, title, message, and profile content. The owner itself is covered in `tests/gentle-ai.test.ts`, which drives the real screen actions in a temporary config home: a default apply asks the screen's diff and writes nothing without its token, a wrong or stale token asks again and writes nothing, an unknown profile writes nothing, a session apply binds without writing shared state, and only one apply runs at a time.
 

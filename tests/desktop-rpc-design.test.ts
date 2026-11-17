@@ -611,6 +611,8 @@ test("the Desktop transport advertises the design method and event", async (t) =
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",
+		"get_changes",
+		"get_change_diff",
 	]);
 	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]);
 });

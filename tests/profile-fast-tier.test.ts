@@ -96,7 +96,7 @@ for (const [provider, api] of [["openai", "openai-responses"], ["openai-codex", 
      notify() {},
      async custom(factory: PanelFactory) {
       let action: unknown;
-      const panel = factory(
+      const panel = await factory(
        { terminal: { rows: 30 }, requestRender() {} } as Parameters<PanelFactory>[0],
        { fg: (_tone: string, value: string) => value } as Parameters<PanelFactory>[1],
        {} as Parameters<PanelFactory>[2],

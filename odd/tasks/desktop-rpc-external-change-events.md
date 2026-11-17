@@ -1,0 +1,23 @@
+# Desktop RPC: emit config and permission change events for changes made outside Desktop RPC
+
+Implements #3321 on branch `feat/desktop-rpc-external-change-events`. Delivery: single PR closing #3321. Test runner: `node --experimental-strip-types --test` (`pnpm test`), plus `pnpm run typecheck`.
+
+## Specs
+
+- S1 (#3321, Proposed outcome, verbatim): `permission_mode_changed` is also emitted when the session mode or the persisted default changes outside Desktop RPC, with `source: "external"` (Desktop-made changes keep `source: "desktop"`). Driven by the owner's existing observer; no polling.
+- S2 (#3321, Proposed outcome, verbatim): `config_changed` is also emitted when a store's revision changes outside Desktop RPC, with `source: "external"` and the same payload shape (store, scope, revision, status; no content, no path). Detection watches the owner files' directories, debounced (≈ 250 ms), and emits only when the recomputed revision differs from the last revision the channel reported, so a Desktop write never produces a duplicate external event.
+- S3 (#3321, Proposed outcome, verbatim): If a watcher cannot be created (unsupported platform, watcher limits), the channel keeps working without external config events and does not error; the docs describe this as best effort, and `get_snapshot` revisions stay the source of truth.
+- S4 (#3321, Proposed outcome, verbatim): Watchers are created only for an interactive RPC host, and are disposed on session shutdown and on session switch.
+
+## Tasks
+
+- T1 [S1,S2,S3,S4] Desktop RPC slice: owner seam, method(s)/event, docs in `docs/desktop-rpc.md`, tests. Route: delegated writer (Writer trigger a: parallel independent units in separate worktrees). Status: done. Commit: 1875eacf4.
+- T2 [S1,S2,S3,S4] Push, PR closing #3321 with `type:feature`. Route: parent. Status: pending.
+
+## Log
+
+- L1 (2026-11-16, user): "no, vamos a hacer los RPCs siempre de la mejor manera posible, vamos a crear los issues, aprobarlos y hacer los pr" — scope chosen: "Set recomendado (Recommended)".
+- L2: #3321 approved (`status:approved`). Specs above quote its Proposed outcome.
+- L3 (2026-11-16, writer): T1 done in 1875eacf4. New `lib/desktop-rpc-config-watch.ts` (debouncer over injectable timers, best-effort directory watcher filtered by owner file names). `DesktopConfigBridge.wire` watches the owner directories (`configWatchTargets`, pin layers from the cwd worktree, re-targeted when a command binds another cwd) and emits `config_changed` `{store, scope, revision, status, source:"external"}` only when a recomputed revision differs from the last revision the channel reported (get_config, get_snapshot, set_config, or a prior event). `DesktopPermissionBridge.wire` subscribes to `YoloUiAdapter.observe`, debounced 250 ms, emits `permission_mode_changed` `{mode, previous_mode, default_mode, persisted, source:"external"}` against the last reported state; a window closing during an in-flight Desktop set is deferred. Wired in `session_start` only for interactive RPC hosts; disposed by the existing resets. `desktopRpc(pi, {watch, timers})` is a test seam.
+- L4 (decisions): (a) the Desktop `config_changed` payload is unchanged (no `status` added); the external one carries `status` and omits `writeTarget`/`writeRevision` because an external writer may touch any layer. (b) External `persisted` = the persisted default changed. (c) Permission default written by another process is not observed (spec: owner observer, no polling); documented. (d) Found and fixed a Windows issue: a removed watched directory keeps emitting events forever and keeps the process alive (reproduced: tests/desktop-rpc-config.test.ts hung after passing); `watchDesktopDirectory` now closes a watcher whose directory is gone, with a regression test.
+- L5 (verification): tests/desktop-rpc-config-watch.test.ts 18/18 (RED first: 7 behavior tests failed before implementation); desktop-rpc-{agents 32, config 44, design 22, jobs 24, profiles 5, safety 5, usage 23, rpc 8} all pass; desktop-rpc-permissions 8/9, the failure is the known Windows 0o600 assertion at :191. desktop-feed{,-actions,-plan-profiles} failure sets identical to base 95179bd (Windows environmental). `pnpm run typecheck` no regressions; `check:runtime-modules` ok; `verify-package-files.mjs` ok.

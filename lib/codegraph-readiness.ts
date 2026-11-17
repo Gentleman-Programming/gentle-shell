@@ -80,7 +80,10 @@ export function firstLineOf(error: unknown, max?: number): string {
 /**
  * One sync -q beside a live daemon, retried once after a backoff when it fails: the CLI coexists
  * with the daemon by design and its busy windows close by themselves, so one retry absorbs the
- * transient failure without touching the lease design. The sink receives the last attempt outcome.
+ * transient failure without touching the lease design. One deadline covers the complete refresh:
+ * both attempts and the backoff draw on the same SYNC_TIMEOUT_MS budget, so the sequence can never
+ * run twice the timeout plus the backoff — a first attempt that already spent the budget ends the
+ * refresh instead of buying a retry no budget is left for. The sink receives the last attempt outcome.
  */
 async function runSyncWithRetry(
 	run: CodegraphRun,
@@ -88,10 +91,13 @@ async function runSyncWithRetry(
 	sleep: (ms: number) => Promise<void>,
 	sink?: (info: CodegraphCommandInfo) => void,
 ): Promise<boolean> {
-	const attempt = (): Promise<boolean> => run(["sync", "-q"], cwd, SYNC_TIMEOUT_MS, undefined, sink);
-	if (await attempt()) return true;
+	const deadline = Date.now() + SYNC_TIMEOUT_MS;
+	const attempt = (timeoutMs: number): Promise<boolean> => run(["sync", "-q"], cwd, timeoutMs, undefined, sink);
+	if (await attempt(SYNC_TIMEOUT_MS)) return true;
+	// The backoff is worth waiting only when a usable budget survives it for the retry.
+	if (deadline - Date.now() <= SYNC_RETRY_DELAY_MS) return false;
 	await sleep(SYNC_RETRY_DELAY_MS);
-	return attempt();
+	return attempt(Math.max(deadline - Date.now(), 0));
 }
 
 type DaemonlessRefresh =
@@ -504,8 +510,9 @@ const searchSyncInFlight = new Map<string, Promise<void>>();
  * Refreshes the index before a search and resolves once that refresh has settled: sync -q only.
  * A live daemon holds the writer lock and is never stale, and a CLI sync coexists with it
  * (daemon.log auto-syncs); without one, the sync lease decides who refreshes. A call that arrives
- * while a refresh is in flight resolves with that same job instead of starting another. Each run
- * is within the sync timeout. Never rejects; failures surface only through onFailed.
+ * while a refresh is in flight resolves with that same job instead of starting another. The whole
+ * refresh — attempts and backoff together — stays within one sync timeout. Never rejects; failures
+ * surface only through onFailed.
  */
 export function syncBeforeSearch(input: SearchSyncInput): Promise<void> {
 	const running = searchSyncInFlight.get(input.cwd);

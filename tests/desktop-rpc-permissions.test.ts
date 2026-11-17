@@ -118,6 +118,7 @@ test("capabilities advertise the wired permission domain and no agent tool", asy
 		"get_design_canvas",
 		"list_jobs",
 		"cancel_job",
+		"get_job_output",
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",

@@ -3,8 +3,8 @@
 // inside `extensions/gentle-agents.ts`) through a defensive, versioned
 // owner-service event/adapter — the jobs analogue of the usage
 // `discoverDesktopUsageService` seam. It never starts, stops, or polls a job
-// itself and keeps no second registry: every list and every cancel is the
-// owner's own answer, shaped into the Desktop RPC contract by
+// itself and keeps no second registry: every list, cancel, and output read is
+// the owner's own answer, shaped into the Desktop RPC contract by
 // `lib/desktop-rpc-jobs.ts`.
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -16,6 +16,8 @@ import {
 	JOBS_UNAVAILABLE,
 	parseCancelJobParams,
 	parseDesktopJobEntry,
+	parseDesktopJobOutput,
+	parseJobOutputParams,
 	parseListJobsParams,
 	type DesktopJobEntry,
 	type DesktopJobsOwnerRead,
@@ -60,8 +62,8 @@ interface DesktopJobsBridgeOptions {
 }
 
 /**
- * The Desktop domain slice for `list_jobs`, `cancel_job`, and the `jobs_update`
- * event. It is wired to the router's `emit` so agent-driven registry changes
+ * The Desktop domain slice for `list_jobs`, `cancel_job`, `get_job_output`,
+ * and the `jobs_update` event. It is wired to the router's `emit` so agent-driven registry changes
  * become ordered events, and it owns the session-scoped lifecycle: a reset
  * (session replacement or shutdown) disconnects the owner observer and drops
  * stale async outcomes. There is no start/run method here — those remain the
@@ -121,7 +123,7 @@ export class DesktopJobsBridge {
 	}
 
 	async handle(method: string, params: Record<string, unknown>): Promise<DesktopRpcOutcome | undefined> {
-		if (method !== "list_jobs" && method !== "cancel_job") return undefined;
+		if (method !== "list_jobs" && method !== "cancel_job" && method !== "get_job_output") return undefined;
 		const host = this.host;
 		if (!host) return { ok: false, error: JOBS_UNAVAILABLE };
 		// Parse before discovery: a malformed request must never trigger owner work.
@@ -129,13 +131,14 @@ export class DesktopJobsBridge {
 			const parsed = parseListJobsParams(params);
 			if ("error" in parsed) return { ok: false, error: parsed.error };
 		} else {
-			const parsed = parseCancelJobParams(params);
+			const parsed = method === "cancel_job" ? parseCancelJobParams(params) : parseJobOutputParams(params);
 			if ("error" in parsed) return { ok: false, error: parsed.error };
 		}
 		const generation = this.generation;
 		const service = await this.owner(host);
 		if (generation !== this.generation || !service) return { ok: false, error: JOBS_UNAVAILABLE };
-		return method === "list_jobs" ? this.list(service) : this.cancel(service, params);
+		if (method === "list_jobs") return this.list(service);
+		return method === "cancel_job" ? this.cancel(service, params) : this.output(service, params);
 	}
 
 	private async owner(context: ExtensionContext): Promise<DesktopJobsService | undefined> {
@@ -225,6 +228,30 @@ export class DesktopJobsBridge {
 		const read = this.readOwner(service);
 		if (!read) return { ok: false, error: JOBS_UNAVAILABLE };
 		return { ok: true, data: { jobs: read.jobs } as unknown as Record<string, unknown> };
+	}
+
+	/**
+	 * A read: the owner's bounded, ownership-checked tail for one job. It has no
+	 * side effects and never emits an event.
+	 */
+	private output(service: DesktopJobsService, params: Record<string, unknown>): DesktopRpcOutcome {
+		// Params were already validated before discovery; reparse defensively.
+		const parsed = parseJobOutputParams(params);
+		if ("error" in parsed) return { ok: false, error: parsed.error };
+		// An owner adapter without the output read cannot answer this method.
+		if (typeof service.output !== "function") return { ok: false, error: JOBS_UNAVAILABLE };
+		let outcome: ReturnType<NonNullable<DesktopJobsService["output"]>>;
+		try {
+			outcome = service.output(parsed.id);
+		} catch {
+			// Raw owner failures carry paths and command detail; none of it crosses.
+			return { ok: false, error: JOBS_UNAVAILABLE };
+		}
+		if (!outcome || outcome.kind === "not_found") return { ok: false, error: JOB_NOT_FOUND };
+		// The owner's answer crosses the event bus: re-validate, re-bound, re-normalize.
+		const view = parseDesktopJobOutput(outcome.view);
+		if (view === undefined) return { ok: false, error: JOBS_UNAVAILABLE };
+		return { ok: true, data: view as unknown as Record<string, unknown> };
 	}
 
 	private cancel(service: DesktopJobsService, params: Record<string, unknown>): DesktopRpcOutcome {

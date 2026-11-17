@@ -656,6 +656,7 @@ test("the Desktop transport advertises the agents methods and event", (t) => {
 		"get_design_canvas",
 		"list_jobs",
 		"cancel_job",
+		"get_job_output",
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",

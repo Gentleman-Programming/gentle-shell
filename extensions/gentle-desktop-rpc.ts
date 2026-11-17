@@ -56,7 +56,7 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 	// Permission control always delegates to the existing Gentle AI session owner;
 	// config reads and writes delegate to the existing store owners; subscription
 	// usage delegates to the existing usage owner; design canvas reads delegate
-	// to the existing design owner; background jobs list/cancel delegate to the
+	// to the existing design owner; background jobs list/cancel/output delegate to the
 	// existing parent-session job registry and monitor controller; subagents
 	// list/cancel delegate to the existing parent-session TaskStore and
 	// AgentRunner; profile applies delegate to the existing `/gentle:profiles`

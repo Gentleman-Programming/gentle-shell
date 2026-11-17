@@ -214,7 +214,7 @@ test("S2: the post-exhaustion route follows the active delegation mode", () => {
 		if (mode === "organic") {
 			assert.ok(paragraph.includes("fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence;"), `${persona} organic route`);
 		} else {
-			assert.ok(paragraph.includes("never edit: relaunch a bounded writer with the diagnosis, new evidence and changed scope or hypothesis;"), `${persona} full-delegation route`);
+			assert.ok(paragraph.includes("never edit: launch a new bounded writer with the diagnosis, new evidence and changed scope or hypothesis;"), `${persona} full-delegation route`);
 			assert.ok(!paragraph.includes("inline"), `${persona} full delegation never fixes inline after exhaustion`);
 		}
 	}
@@ -233,4 +233,14 @@ test("gentle-shell#3082: a stopped verification carries its terminal disposition
 		"name the missing proof and resume authorized in-scope work at `status: partial`",
 		"never PASS, never silently dropped",
 	], "verification terminal disposition");
+});
+
+test("S2 (verifier P2): full delegation launches a new writer after exhaustion; per-fix continuation is scoped to the worker's limit", () => {
+	for (const persona of personas) {
+		const p = prompt(persona, "full-delegation");
+		const paragraph = p.split("\n\n").find((block) => block.startsWith("An exhausted worker-local")) ?? "";
+		assert.match(paragraph, /launch a new bounded writer/);
+		assert.ok(!p.includes("Fixes to one unit continue its worker (`subagent_continue`), never a new worker per fix."), "unscoped per-fix rule contradicts the post-exhaustion launch");
+		assert.ok(p.includes("In-limit fixes continue the worker (`subagent_continue`), never a new worker per fix."));
+	}
 });

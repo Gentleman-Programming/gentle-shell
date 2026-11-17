@@ -17,6 +17,7 @@ import { visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@ear
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { CHILD_PACKAGE_INJECTION_ENV, encodeChildPackageInjection } from "../lib/child-package-injection.ts";
 import installGentleAgents, { agentRuntimePaths, agentsCollapseKey, agentsEnabled, agentsStopKey, agentsViewKey, agentResultPreview, answerThroughUi, childContextExtensionPaths, completionText, createDefaultSessionTransport, legacySubagentsInstalled, HOLD_RECHECK_MS, INPUT_PROMPT_GRACE_MS, PARENT_WAKE_GRACE_MS, type AgentsDeps, type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import { createHerdrDesktopStatusExtension } from "../extensions/gentle-herdr-desktop-status.ts";
 import { ActiveSessionClient, ActiveSessionListener, SessionPresenceError, SessionPresenceRegistry, type PresenceRecord } from "../lib/agents-session-transport.ts";
 import { WindowsActiveSessionClient, WindowsActiveSessionListener } from "../lib/windows-session-transport.ts";
 import { historyDir, loadHistory, loadStoredTask, saveTask } from "../lib/agents-history.ts";
@@ -704,6 +705,152 @@ test("host query delivery exposes correlation and accepts one current-session re
 	assert.match((await tools.get("subagent_reply")!.execute("duplicate", { task_id: taskId, request_id: "q1", message: "again" }, undefined, undefined, ctx)).content[0].text, /unavailable/);
 });
 
+test("Herdr task snapshots preserve child queries through replies and session replacement", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const started = await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "Ask", label: "Inspect files", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	const snapshot = () => (h.events.filter(e => e.name === "gentle-pi:herdr-desktop:tasks").at(-1)?.data as { sessionId: string; tasks: Array<{ id: string; label: string; pendingQuery: boolean }> });
+	assert.equal(snapshot().sessionId, "s1");
+	assert.equal(snapshot().tasks.find(t => t.id === id)?.label, "Inspect files");
+	assert.equal(snapshot().tasks.find(t => t.id === id)?.pendingQuery, false);
+	runtime.children[0].message({ id: "q1", kind: "query", message: "First?" });
+	runtime.children[0].message({ id: "q2", kind: "query", message: "Second?" });
+	await tick(); assert.equal(snapshot().tasks.find(t => t.id === id)?.pendingQuery, true);
+	const reply = h.tools.get("subagent_reply")!;
+	assert.equal((await reply.execute("reply", { task_id: id, request_id: "q1", message: "answer" }, undefined, undefined, ctx)).content[0].text, "Reply accepted for delivery.");
+	assert.equal(snapshot().tasks.find(t => t.id === id)?.pendingQuery, true);
+	ctx.sessionManager.getSessionId = () => "s2"; await h.fire("session_start", ctx);
+	ctx.sessionManager.getSessionId = () => "s1"; await h.fire("session_start", ctx);
+	assert.equal(snapshot().tasks.find(t => t.id === id)?.pendingQuery, true);
+	assert.equal((await reply.execute("reply", { task_id: id, request_id: "q2", message: "answer" }, undefined, undefined, ctx)).content[0].text, "Reply accepted for delivery.");
+	assert.equal(snapshot().tasks.find(t => t.id === id)?.pendingQuery, false);
+	runtime.children[0].emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] });
+	runtime.children[0].emit({ type: "agent_settled" }); await tick();
+	assert.ok(!snapshot().tasks.some(t => t.id === id));
+});
+
+test("S4 failed subagent reaches OSC without changing the active-only tasks snapshot", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	const writes: string[] = [];
+	const setWidget = ctx.ui.setWidget.bind(ctx.ui);
+	let statusWidget: { dispose?: () => void } | undefined;
+	ctx.ui.setWidget = ((key: string, factory: any, ...args: any[]) => {
+		if (key !== "gentle-shell:herdr-desktop-status") return (setWidget as Function)(key, factory, ...args);
+		statusWidget?.dispose?.();
+		statusWidget = typeof factory === "function" ? factory({ terminal: { write: (value: string) => writes.push(value), setProgramStatus: () => { throw new Error("root"); } } }, plainTheme) : undefined;
+	}) as typeof ctx.ui.setWidget;
+	createHerdrDesktopStatusExtension({ env: { HC_TERMINAL_ID: "terminal", PI_PROGRAM_STATUS_APP: "gentle-shell" }, now: () => 1000, schedule: () => () => {} })(h.pi);
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx);
+	const started = await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "Map", label: "Inspect", mode: "background" }, undefined, undefined, ctx);
+	const id = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick(); runtime.children[0].exit(1);
+	await eventually(() => h.events.some(e => e.name === "gentle-pi:herdr-desktop:task-finished"), "failure must reach Herdr");
+	const snapshots = h.events.filter(e => e.name === "gentle-pi:herdr-desktop:tasks").map(e => e.data as { tasks: Array<{ id: string; status: string }> });
+	assert.ok(snapshots.some(s => s.tasks.some(t => t.id === id)));
+	assert.ok(snapshots.every(s => s.tasks.every(t => !["completed", "failed", "cancelled", "timed_out"].includes(t.status))), "existing tasks consumers still receive active tasks only");
+	assert.deepEqual(snapshots.at(-1)!.tasks, []);
+	assert.deepEqual(writes, [`\x1b]7501;state=working:title=SW5zcGVjdA==:id=subagents/${id}\x1b\\`,
+		`\x1b]7501;state=error:title=SW5zcGVjdA==:msg=ZmFpbGVk:id=subagents/${id}\x1b\\`]);
+	await h.fire("session_shutdown", ctx);
+	assert.deepEqual(writes, [`\x1b]7501;state=working:title=SW5zcGVjdA==:id=subagents/${id}\x1b\\`,
+		`\x1b]7501;state=error:title=SW5zcGVjdA==:msg=ZmFpbGVk:id=subagents/${id}\x1b\\`, `\x1b]7501;state=clear:id=subagents/${id}\x1b\\`]);
+});
+
+test("Herdr consult start and finally settlement report success and discovery failure without changing receipts", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	let ready = false, resolveRead!: (value: any[]) => void, rejectRead!: (error: Error) => void;
+	let pendingRead: Promise<any[]> | undefined;
+	const registry = { list: async () => [], listActivations: async () => pendingRead ?? [] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("unexpected send"); } }),
+	};
+	gentleAgents(h.pi, {}, runtime.deps); await h.fire("session_start", ctx); await eventually(() => ready, "transport ready");
+	const tool = h.tools.get("orchestrator_consult")!;
+	const reports = () => h.events.filter(e => e.name === "gentle-pi:herdr-desktop:consult").map(e => e.data as { sessionId: string; target: string; callId: string; phase: string });
+	for (const fail of [false, true]) {
+		pendingRead = new Promise((resolve, reject) => { resolveRead = resolve; rejectRead = reject; });
+		const pending = tool.execute("consult", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+		const start = reports().at(-1)!; assert.equal(start.phase, "start"); assert.equal(start.target, "peer"); assert.equal(start.sessionId, "s1"); assert.ok(start.callId);
+		if (fail) rejectRead(new Error("discovery failed")); else resolveRead([]);
+		const result = JSON.parse((await pending).content[0].text); assert.equal(result.status, "unavailable");
+		assert.deepEqual(reports().at(-1), { ...start, phase: "settle" });
+	}
+	const before = reports().length;
+	await assert.rejects(tool.execute("invalid", {}, undefined, undefined, ctx), /Invalid metadata/);
+	assert.equal(reports().length, before);
+});
+
+test("Herdr consult events are not reported for revoke-reasoning, which is not a consultation", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	let ready = false;
+	const registry = { list: async () => [], listActivations: async () => [] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("unexpected send"); } }),
+	};
+	gentleAgents(h.pi, {}, runtime.deps); await h.fire("session_start", ctx); await eventually(() => ready, "transport ready");
+	const tool = h.tools.get("orchestrator_consult")!;
+	await tool.execute("revoke", { kind: "revoke-reasoning", recipient_session_id: "peer" }, undefined, undefined, ctx).catch(() => undefined);
+	assert.equal(h.events.filter(e => e.name === "gentle-pi:herdr-desktop:consult").length, 0);
+});
+
+test("Herdr consult failure clears the actual terminal record through the two registered extensions", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	const writes: string[] = [];
+	let ready = false, rejectRead!: (error: Error) => void;
+	const pendingRead = new Promise<any[]>((_resolve, reject) => { rejectRead = reject; });
+	const registry = { list: async () => [], listActivations: async () => pendingRead };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("unexpected send"); } }),
+	};
+	const setWidget = ctx.ui.setWidget.bind(ctx.ui);
+	let statusWidget: { dispose?: () => void } | undefined;
+	ctx.ui.setWidget = ((key: string, factory: any, ...args: any[]) => {
+		if (key !== "gentle-shell:herdr-desktop-status") return (setWidget as Function)(key, factory, ...args);
+		statusWidget?.dispose?.();
+		statusWidget = typeof factory === "function" ? factory({ terminal: { write: (value: string) => writes.push(value), setProgramStatus: () => { throw new Error("root"); } } }, plainTheme) : undefined;
+	}) as typeof ctx.ui.setWidget;
+	createHerdrDesktopStatusExtension({ env: { HC_TERMINAL_ID: "terminal", PI_PROGRAM_STATUS_APP: "gentle-shell" } })(h.pi);
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx); await eventually(() => ready, "transport ready");
+	const pending = h.tools.get("orchestrator_consult")!.execute("consult", { recipient_session_id: "peer" }, undefined, undefined, ctx);
+	assert.deepEqual(writes, ["\x1b]7501;state=working:msg=Y29uc3VsdGluZyBwZWVy:id=wait/peer\x1b\\"]);
+	rejectRead(new Error("failed"));
+	assert.equal(JSON.parse((await pending).content[0].text).status, "unavailable");
+	assert.deepEqual(writes, ["\x1b]7501;state=working:msg=Y29uc3VsdGluZyBwZWVy:id=wait/peer\x1b\\", "\x1b]7501;state=clear:id=wait/peer\x1b\\"]);
+});
+
+test("Herdr send events occur only after acceptance and preserve the existing send result", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+	let ready = false, settle!: (value: { id: string; accepted: true }) => void, reject!: (error: Error) => void;
+	const registry = { list: async () => [], listActivations: async () => [] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => { ready = true; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: () => new Promise((resolve, fail) => { settle = resolve; reject = fail; }) }),
+	};
+	gentleAgents(h.pi, {}, runtime.deps); await h.fire("session_start", ctx); await eventually(() => ready, "transport ready");
+	const tool = h.tools.get("orchestrator_send_message")!;
+	const reports = () => h.events.filter(e => e.name === "gentle-pi:herdr-desktop:send").map(e => e.data);
+	const params = { recipient_session_id: "peer", message: "hello", reason: "because the peer needs an update" };
+	let pending = tool.execute("send", params, undefined, undefined, ctx);
+	await eventually(() => !!settle, "send pending"); assert.deepEqual(reports(), []);
+	settle({ id: "m1", accepted: true }); const accepted = await pending;
+	assert.match(accepted.content[0].text, /accepted for delivery; it is not a delivery or read receipt/);
+	assert.deepEqual(reports(), [{ sessionId: "s1", target: "peer" }]);
+	pending = tool.execute("send", params, undefined, undefined, ctx); await tick(); reject(new Error("rejected"));
+	assert.equal((await pending).details.error, "not accepted"); assert.equal(reports().length, 1);
+});
+
 // S15 P9a: a parent busy past the query deadline still gets its answer to the
 // child, as a steering message, and the tool result says what happened.
 function expiringQueryHarness() {
@@ -730,6 +877,15 @@ function expiringQueryHarness() {
 	const steers = () => harness.children[0].written.filter((command) => command.type === "steer").map((command) => command.message);
 	return { h, ctx, harness, timers, reply, begin, start, expire, steers };
 }
+
+test("Herdr clears a child's pending-query flag when its query expires", async () => {
+	const q = expiringQueryHarness();
+	const taskId = await q.start();
+	const snapshot = () => (q.h.events.filter(e => e.name === "gentle-pi:herdr-desktop:tasks").at(-1)!.data as { tasks: Array<{ id: string; pendingQuery: boolean }> }).tasks.find(t => t.id === taskId);
+	assert.equal(snapshot()?.pendingQuery, true);
+	q.expire();
+	assert.equal(snapshot()?.pendingQuery, false);
+});
 
 test("a query that expires while the parent is busy still reaches the parent once, marked expired", async () => {
 	const q = expiringQueryHarness();
@@ -6800,7 +6956,7 @@ for (const boundary of ["session_compact", "session_compact_failed"] as const) {
 // router: an idle parent must be woken through the prompt lifecycle, a busy
 // run keeps the follow-up route, and a parent compacting without a run holds
 // the message for the next boundary.
-async function orchestratorHost() {
+async function orchestratorHost(agentHome?: string) {
 	const host = fakePi();
 	const harness = deps();
 	const timers = recordTimers(harness.deps);
@@ -6812,13 +6968,128 @@ async function orchestratorHost() {
 			return { registry, start: async () => {}, close: async () => {} };
 		},
 	};
-	gentleAgents(host.pi, {}, harness.deps);
+	gentleAgents(host.pi, {}, { ...harness.deps, ...(agentHome ? { agentHome } : {}) });
 	const { ctx } = fakeContext();
 	await host.fire("session_start", ctx);
 	await eventually(() => received !== undefined, "session transport listener starts");
-	const notify = (message: string) => received!({ id: "m1", senderSessionId: "peer", message });
+	const notify = (message: string, id = "m1", senderSessionId = "peer") => received!({ id, senderSessionId, message });
 	return { ...host, ctx, timers, notify };
 }
+
+test("S14 idle inbound records retain their name and settle after the run that receives stored content", async () => {
+	const profile = join(root, "herdr-inbound-profile");
+	mkdirSync(profile, { recursive: true });
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Alice", activity: [] });
+	try {
+		const h = await orchestratorHost(profile);
+		const reports = () => h.events.filter(e => e.name === "gentle-pi:herdr-desktop:inbound").map(e => e.data);
+		await h.notify("hello idle"); await tick();
+		assert.deepEqual(h.sent[0], { message: { customType: "gentle-agents.orchestrator-message", content: "Session message from peer (correlation m1): hello idle", display: true,
+			details: { gentleAgents: { senderSessionId: "peer", recipientSessionId: "s1", correlationId: "m1", direction: "incoming", message: "hello idle", senderLabel: "Alice", recipientLabel: "" } } }, options: { triggerTurn: false } });
+		assert.deepEqual(reports(), [{ sessionId: "s1", peer: "peer", peerName: "Alice", id: "m1", phase: "received" }]);
+		await h.fire("turn_end", h.ctx); assert.equal(reports().length, 1);
+		await h.fire("agent_start", h.ctx); await h.fire("turn_end", h.ctx);
+		assert.deepEqual(reports().at(-1), { sessionId: "s1", peer: "peer", peerName: "Alice", id: "m1", phase: "handled" });
+		await h.fire("agent_settled", h.ctx); assert.equal(reports().length, 2);
+	} finally { publisher.dispose(); }
+});
+
+test("S14 follow-ups settle only after their own message enters a subsequent turn", async () => {
+	const h = await orchestratorHost();
+	const reports = () => h.events.filter(e => e.name === "gentle-pi:herdr-desktop:inbound").map(e => e.data);
+	await h.fire("agent_start", h.ctx);
+	await h.notify("first", "one"); await h.notify("second", "two");
+	assert.deepEqual(reports(), ["one", "two"].map(id => ({ sessionId: "s1", peer: "peer", id, phase: "received" })));
+	await h.fire("turn_end", h.ctx); assert.equal(reports().length, 2, "follow-ups are not part of the current turn");
+	await h.fire("message_start", h.ctx, { message: { role: "custom", ...h.sent[0]!.message } });
+	await h.fire("turn_end", h.ctx);
+	assert.deepEqual(reports().at(-1), { sessionId: "s1", peer: "peer", id: "one", phase: "handled" });
+	await h.fire("message_start", h.ctx, { message: { role: "custom", ...h.sent[1]!.message } });
+	await h.fire("agent_settled", h.ctx);
+	assert.deepEqual(reports().at(-1), { sessionId: "s1", peer: "peer", id: "two", phase: "handled" });
+});
+
+test("S14 held peer messages do not settle at a boundary before their delivery", async () => {
+	const h = await orchestratorHost(); const reports = () => h.events.filter(e => e.name === "gentle-pi:herdr-desktop:inbound").map(e => e.data);
+	h.setIdle(false); await h.notify("held");
+	assert.deepEqual(reports(), [{ sessionId: "s1", peer: "peer", id: "m1", phase: "received" }]);
+	await h.fire("turn_end", h.ctx); assert.equal(reports().length, 1);
+	await h.fire("agent_start", h.ctx); await h.fire("turn_end", h.ctx);
+	assert.equal(h.sent.length, 1); assert.deepEqual(h.sent[0]!.options, { deliverAs: "followUp", triggerTurn: true });
+	assert.equal(reports().length, 1);
+	await h.fire("message_start", h.ctx, { message: { role: "custom", ...h.sent[0]!.message } });
+	await h.fire("turn_end", h.ctx);
+	assert.deepEqual(reports().at(-1), { sessionId: "s1", peer: "peer", id: "m1", phase: "handled" });
+});
+
+test("S14 unrelated session boundaries cannot settle this session's inbound messages", async () => {
+	const h = await orchestratorHost(), other = fakeContext().ctx;
+	const reports = () => h.events.filter(e => e.name === "gentle-pi:herdr-desktop:inbound").map(e => e.data);
+	await h.notify("idle", "one");
+	await h.fire("agent_start", other); await h.fire("turn_end", other);
+	assert.equal(reports().length, 1, "a stale run did not consume this session's stored message");
+	await h.fire("agent_start", h.ctx); await h.fire("agent_settled", other);
+	assert.equal(reports().length, 1, "a stale settlement cannot clear this session's turn");
+	await h.fire("turn_end", h.ctx);
+	assert.deepEqual(reports().at(-1), { sessionId: "s1", peer: "peer", id: "one", phase: "handled" });
+	await h.fire("agent_start", h.ctx); await h.notify("queued", "two");
+	const message = { role: "custom", ...h.sent.at(-1)!.message };
+	await h.fire("message_start", other, { message }); await h.fire("turn_end", h.ctx);
+	assert.equal(reports().length, 3, "a foreign message_start cannot mark a follow-up consumed");
+	await h.fire("message_start", h.ctx, { message }); await h.fire("turn_end", h.ctx);
+	assert.deepEqual(reports().at(-1), { sessionId: "s1", peer: "peer", id: "two", phase: "handled" });
+});
+
+test("S14 received and handled events publish and clear a real peer record", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext(), writes: string[] = [];
+	let received: ((notification: { id: string; senderSessionId: string; message: string }) => Promise<void>) | undefined;
+	runtime.deps.sessionTransport = { ...inertSessionTransport, createListener: (registry, _id, callback) => {
+		received = callback; return { registry, start: async () => {}, close: async () => {} };
+	} };
+	const setWidget = ctx.ui.setWidget.bind(ctx.ui);
+	let statusWidget: { dispose?: () => void } | undefined;
+	ctx.ui.setWidget = ((key: string, factory: any, ...args: any[]) => {
+		if (key !== "gentle-shell:herdr-desktop-status") return (setWidget as Function)(key, factory, ...args);
+		statusWidget?.dispose?.(); statusWidget = typeof factory === "function" ? factory({ terminal: { write: (value: string) => writes.push(value) } }, plainTheme) : undefined;
+	}) as typeof ctx.ui.setWidget;
+	createHerdrDesktopStatusExtension({ env: { HC_TERMINAL_ID: "terminal", PI_PROGRAM_STATUS_APP: "gentle-shell" } })(h.pi);
+	gentleAgents(h.pi, {}, runtime.deps);
+	await h.fire("session_start", ctx); await eventually(() => !!received, "inbound transport ready");
+	await h.fire("agent_start", ctx); await received!({ id: "one", senderSessionId: "peer", message: "hello" });
+	assert.deepEqual(writes, ["\x1b]7501;state=blocked:kind=question:title=cGVlcg==:msg=cXVlc3Rpb24gZnJvbSBwZWVy:id=ask/peer\x1b\\"]);
+	await h.fire("turn_end", ctx); assert.equal(writes.length, 1);
+	await h.fire("message_start", ctx, { message: { role: "custom", ...h.sent[0]!.message } });
+	await h.fire("turn_end", ctx); assert.equal(writes.at(-1), "\x1b]7501;state=clear:id=ask/peer\x1b\\");
+});
+
+test("S14 dropped held messages clear and session replacement cancels expiry", async () => {
+	const h = await orchestratorHost(); const reports = () => h.events.filter(e => e.name === "gentle-pi:herdr-desktop:inbound").map(e => e.data);
+	h.setIdle(false); await h.notify("held"); h.setIdle(true);
+	const send = h.pi.sendMessage; h.pi.sendMessage = (() => { throw new Error("delivery failed"); }) as typeof h.pi.sendMessage;
+	await h.fire("turn_end", h.ctx); h.pi.sendMessage = send;
+	assert.deepEqual(reports().map((event: any) => event.phase), ["received", "handled"]);
+	await h.notify("later", "m2"); await h.fire("session_start", h.ctx, { reason: "new" });
+	assert.equal(h.timers.run(300_000), 0);
+	assert.deepEqual(reports().map((event: any) => event.phase), ["received", "handled", "received"]);
+});
+
+test("S14 a swallowed wake cannot leave an inbound status forever", async () => {
+	const h = await orchestratorHost(); const reports = () => h.events.filter(e => e.name === "gentle-pi:herdr-desktop:inbound").map(e => e.data);
+	await h.notify("unhandled");
+	assert.equal(h.timers.run(300_000), 1);
+	assert.deepEqual(reports(), [{ sessionId: "s1", peer: "peer", id: "m1", phase: "received" }, { sessionId: "s1", peer: "peer", id: "m1", phase: "handled" }]);
+});
+
+test("S14 inbound display observer failure does not change delivery or errors", async () => {
+	const h = await orchestratorHost(); const emit = h.pi.events.emit.bind(h.pi.events);
+	h.pi.events.emit = ((name: string, data: unknown) => { if (name === "gentle-pi:herdr-desktop:inbound") throw new Error("display failed"); return emit(name, data); }) as typeof h.pi.events.emit;
+	await h.fire("agent_start", h.ctx); await h.notify("original");
+	assert.deepEqual(h.sent[0]!.options, { deliverAs: "followUp", triggerTurn: true });
+	assert.equal(h.sent[0]!.message.content, "Session message from peer (correlation m1): original");
+	Object.assign(h.ctx, { isIdle: () => { throw new Error("stale"); } });
+	await assert.rejects(h.notify("rejected", "m2"), /stale/);
+	assert.equal(h.sent.length, 1);
+});
 
 test("an orchestrator message to an idle parent is stored without a direct turn and wakes the parent once", async () => {
 	const { fire, ctx, sent, userMessages, delivery, notify } = await orchestratorHost();
@@ -7726,6 +7997,52 @@ test("bash_background returns at once, and an idle parent gets one stored exit n
 		await fire("session_shutdown", ctx);
 		jobs.cleanup();
 	}
+});
+
+test("S4 real background exit status reaches the terminal as an error record", async () => {
+	const h = fakePi(), jobs = fakeJobShell(), { ctx } = fakeContext();
+	const writes: string[] = [];
+	const setWidget = ctx.ui.setWidget.bind(ctx.ui);
+	let statusWidget: { dispose?: () => void } | undefined;
+	ctx.ui.setWidget = ((key: string, factory: any, ...args: any[]) => {
+		if (key !== "gentle-shell:herdr-desktop-status") return (setWidget as Function)(key, factory, ...args);
+		statusWidget?.dispose?.();
+		statusWidget = typeof factory === "function" ? factory({ terminal: { write: (value: string) => writes.push(value), setProgramStatus: () => { throw new Error("root"); } } }, plainTheme) : undefined;
+	}) as typeof ctx.ui.setWidget;
+	createHerdrDesktopStatusExtension({ env: { HC_TERMINAL_ID: "terminal", PI_PROGRAM_STATUS_APP: "gentle-shell" }, now: () => 1000, schedule: () => () => {} })(h.pi);
+	gentleAgents(h.pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	try {
+		await h.fire("session_start", ctx);
+		await h.tools.get("bash_background")!.execute("start", { command: "make build", label: "Build" }, undefined, undefined, ctx);
+		jobs.runs[0]!.exit(7);
+		await eventually(() => writes.length === 2, "job failure must reach the terminal");
+		assert.deepEqual(writes, ["\x1b]7501;state=working:title=QnVpbGQ=:id=bg/job-1\x1b\\", "\x1b]7501;state=error:title=QnVpbGQ=:msg=ZXhpdGVkIDc=:id=bg/job-1\x1b\\"]);
+		await h.fire("session_shutdown", ctx);
+		assert.deepEqual(writes, ["\x1b]7501;state=working:title=QnVpbGQ=:id=bg/job-1\x1b\\", "\x1b]7501;state=error:title=QnVpbGQ=:msg=ZXhpdGVkIDc=:id=bg/job-1\x1b\\", "\x1b]7501;state=clear:id=bg/job-1\x1b\\"]);
+	} finally { await h.fire("session_shutdown", ctx); jobs.cleanup(); }
+});
+
+test("Herdr snapshot requests and session resume replay running jobs without changing job commands", async () => {
+	const h = fakePi(), jobs = fakeJobShell();
+	gentleAgents(h.pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx: owner } = fakeContext(), { ctx: other } = fakeContext();
+	other.sessionManager.getSessionId = () => "s2";
+	const snapshots = () => h.events.filter(e => e.name === "gentle-pi:herdr-desktop:jobs");
+	const sidebar = () => h.events.filter(e => e.name === "gentle-ai:jobs-sidebar");
+	try {
+		await h.fire("session_start", owner);
+		await h.tools.get("bash_background")!.execute("start", { command: "make build", label: "Build" }, undefined, undefined, owner);
+		const before = snapshots().length, sidebarBefore = sidebar().length;
+		h.pi.events.emit("gentle-pi:herdr-desktop:tasks-request", { sessionId: "s1" });
+		assert.equal(snapshots().length, before + 1);
+		assert.equal(sidebar().length, sidebarBefore, "Herdr replay must not replace finished sidebar tails");
+		assert.deepEqual((snapshots().at(-1)!.data as any).snapshot.jobs.map(({ id, label }: any) => ({ id, label })), [{ id: "job-1", label: "Build" }]);
+		await h.fire("session_start", other, { reason: "new" });
+		await h.fire("session_start", owner, { reason: "resume" });
+		assert.deepEqual((snapshots().at(-1)!.data as any).snapshot.jobs.map(({ id, label }: any) => ({ id, label })), [{ id: "job-1", label: "Build" }]);
+		assert.match(toolText(await h.tools.get("job_list")!.execute("list", {}, undefined, undefined, owner)), /job-1 · running · Build/);
+		assert.match(toolText(await h.tools.get("job_stop")!.execute("stop", { job_id: "job-1" }, undefined, undefined, owner)), /Stopped job-1/);
+	} finally { await h.fire("session_shutdown", owner); jobs.cleanup(); }
 });
 
 test("a job notice survives session switching and is delivered only to its owner (#3205)", async () => {

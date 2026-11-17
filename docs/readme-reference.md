@@ -107,6 +107,10 @@ permission mode, todo, changes, subagents, jobs, review, stats, activity and the
 open question) under `<agentDir>/desktop/sessions/<sessionId>.json`, for the
 Gentle Shell Desktop mods. See [desktop feed format](desktop-feed.md).
 
+## OSC 7501 activity records
+
+The [OSC 7501 activity record contract](gentle-shell.md#osc-7501-activity-record-contract) documents the sub-records available to third-party consumers.
+
 ## Herdr active-work summary
 
 Choose `/gentle:customize` → **Layout** → **Task summary: on/off** to show or

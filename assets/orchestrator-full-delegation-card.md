@@ -28,7 +28,7 @@ Before delegating, declare a subject via `orchestrator_session_id`.
 
 #### Allowed edit surfaces (MANDATORY)
 
-The writer refuses to write outside its exact surfaces and stops with `interaction_required` without them. Every new writer launch carries the section (a continuation inherits it); after an admission rejection, repair what it names once, never relaunch the same prompt unchanged.
+The writer refuses to write outside its exact surfaces and stops with `interaction_required` without them. Every new writer launch carries the section (a continuation inherits it); after an admission rejection, repair what it names once, never relaunch the same prompt unchanged, and never end the turn on one: take the next step it names.
 
 Before launching any bounded writer, even the native `Agent` fallback, derive its surface from the task (files the change touches, plus directories where it authorizes new files) and pass it under `## Allowed edit surfaces`:
 

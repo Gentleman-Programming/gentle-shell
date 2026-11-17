@@ -180,7 +180,7 @@ test("installed Pi dispatches Desktop RPC without adding conversation messages",
 		assert.equal(response.kind, "response");
 		assert.equal(response.requestId, "real-1");
 		assert.equal(response.ok, true);
-		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "apply_profile", "list_subagents", "cancel_subagent"]);
+		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "apply_profile", "list_subagents", "cancel_subagent", "list_sessions", "switch_session"]);
 		assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -621,6 +621,82 @@ test("installed Pi applies a Desktop permission change through the real owner wi
 			"one ordered event follows its response and nothing else is emitted",
 		);
 		assert.equal(existsSync(join(root, "config", "permission-mode.json")), false, "persist:false never writes the default");
+
+		const closed = await probe.close();
+		assert.equal(closed.status, 0, closed.stderr);
+		assert.equal(closed.stderr, "");
+	} finally {
+		probe.kill();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+/**
+ * Real production wiring for the sessions slice: the installed runtime lists
+ * sessions through Pi's own `SessionManager` with the probe's custom
+ * `--session-dir`, then switches by id through the command context's
+ * `switchSession`. The response arrives from the replacement session, whose
+ * router starts a fresh event sequence, and the switched-to conversation is
+ * the one Pi now serves. No provider is called.
+ */
+test("installed Pi lists sessions and switches by id through the runtime's own session owner", async () => {
+	const root = isolatedRoot("desktop-rpc-sessions-");
+	const workspace = join(root, "workspace");
+	const seeded = Date.UTC(2026, 10, 1);
+	const header = { type: "session", version: 3, id: "probe-seeded", timestamp: new Date(seeded).toISOString(), cwd: workspace };
+	const message = {
+		type: "message",
+		id: "probe-m1",
+		parentId: null,
+		timestamp: new Date(seeded + 1000).toISOString(),
+		message: { role: "user", content: [{ type: "text", text: "seeded question" }], timestamp: seeded + 1000 },
+	};
+	writeFileSync(join(root, "sessions", "2026-11-01T00-00-00-000Z_probe-seeded.jsonl"), `${JSON.stringify(header)}\n${JSON.stringify(message)}\n`);
+	const probe = new LiveProbe(root, [desktopExtension]);
+	try {
+		const responseFor = (requestId: string) => probe.waitFor(
+			(record) => record.type === "extension_ui_request" && record.widgetKey === DESKTOP_RPC_WIDGET &&
+				JSON.parse(record.widgetLines[0]).kind === "response" &&
+				JSON.parse(record.widgetLines[0]).requestId === requestId,
+			`response ${requestId}`,
+		).then((record) => JSON.parse(record.widgetLines[0]));
+
+		probe.send(prompt("prompt-list", desktopRequest("sessions-1", "list_sessions")));
+		const listed = await responseFor("sessions-1");
+		assert.equal(listed.ok, true, JSON.stringify(listed));
+		const seededEntry = listed.data.sessions.find((session: any) => session.id === "probe-seeded");
+		assert.deepEqual(seededEntry, {
+			id: "probe-seeded",
+			modified: seeded + 1000,
+			messageCount: 1,
+			firstMessage: "seeded question",
+			project: "workspace",
+			current: false,
+		});
+
+		probe.send(prompt("prompt-switch", desktopRequest("switch-1", "switch_session", { id: "probe-seeded" })));
+		const switched = await responseFor("switch-1");
+		assert.deepEqual(switched.data, { id: "probe-seeded", changed: true }, JSON.stringify(switched));
+
+		probe.send(prompt("prompt-snapshot", desktopRequest("snapshot-1", "get_snapshot")));
+		const snapshot = await responseFor("snapshot-1");
+		assert.equal(snapshot.data.sequence, 0, "the replacement session's router starts a fresh sequence");
+
+		probe.send(prompt("prompt-list-2", desktopRequest("sessions-2", "list_sessions")));
+		const after = await responseFor("sessions-2");
+		assert.equal(after.data.sessions.find((session: any) => session.id === "probe-seeded").current, true);
+
+		probe.send(prompt("prompt-same", desktopRequest("switch-2", "switch_session", { id: "probe-seeded" })));
+		assert.deepEqual((await responseFor("switch-2")).data, { id: "probe-seeded", changed: false });
+
+		probe.send({ id: "messages-1", type: "get_messages" });
+		const messages = await probe.waitFor((record) => record.id === "messages-1", "get_messages response");
+		assert.equal(messages.data.messages.length, 1, "Pi now serves the switched-to conversation");
+
+		const wire = JSON.stringify(probe.desktopPayloads());
+		assert.equal(wire.includes(".jsonl"), false, "no session file crosses the wire");
+		assert.equal(wire.includes(JSON.stringify(root).slice(1, -1)), false, "no absolute path crosses the wire");
+		assert.equal(probe.desktopPayloads().some((payload) => payload.kind === "event"), false, "listing and switching emit no event");
 
 		const closed = await probe.close();
 		assert.equal(closed.status, 0, closed.stderr);

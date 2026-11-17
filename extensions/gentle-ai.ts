@@ -173,6 +173,13 @@ import {
 	type DesktopProfilesService,
 } from "../lib/desktop-rpc-profiles.ts";
 import {
+	DESKTOP_REVIEW_SERVICE_CHANNEL,
+	DESKTOP_REVIEW_SERVICE_SCHEMA,
+	type DesktopReviewOwnerRead,
+	type DesktopReviewOwnerWrite,
+	type DesktopReviewService,
+} from "../lib/desktop-rpc-review.ts";
+import {
 	REVIEW_HOST_RELAY_FAILURE,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_ENV,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS,
@@ -13766,6 +13773,69 @@ function createGentleAiExtensionForTesting(
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
 		},
+	});
+
+	// Desktop's get_review_mode/set_review_mode (#3324) reach this same switch
+	// through a versioned, adapter-shaped seam: every read and write goes
+	// through executeReviewMode and the native adapter, exactly like
+	// /gentle:review-mode. The Desktop bridge owns the confirmation step; this
+	// owner only reads (bounded, fail closed) and writes then re-reads. Raw
+	// native errors never leave: they are classified as unavailable (gentle-ai
+	// missing or the command unsupported), unknown, or failed. Subagent
+	// children never answer, and hosts without an event bus skip the seam.
+	const DESKTOP_REVIEW_WRITE_TIMEOUT_MS = 10_000;
+	const reviewModeUnavailable = (error: unknown): boolean => {
+		const code = asNativeReviewCliError(error)?.code;
+		return code === NATIVE_REVIEW_ERROR_CODE.UNAVAILABLE || code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE ||
+			code === NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING || code === NATIVE_REVIEW_ERROR_CODE.UNSUPPORTED_TRANSITION_OPERATION;
+	};
+	const boundedReviewMode = async (request: NativeReviewModeRequest, ctx: ExtensionContext, timeoutMs: number) => {
+		const signal = AbortSignal.timeout(timeoutMs);
+		return await Promise.race([executeReviewMode({ ...request, signal }, ctx), rddAbortRejection(signal)]);
+	};
+	if (typeof pi.events?.on === "function") pi.events.on(DESKTOP_REVIEW_SERVICE_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object") return;
+		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopReviewService): void }>;
+		if (typeof request.respond !== "function" || !request.context) return;
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
+		const ctx = request.context;
+		let disposed = false;
+		const read = async (): Promise<DesktopReviewOwnerRead> => {
+			if (disposed || nativeReviewCli?.reviewMode === undefined) return { kind: "unavailable" };
+			try {
+				const result = await boundedReviewMode({ cwd: ctx.cwd, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }, ctx, resolveRddStatusTimeoutMs(permissionEnvironment));
+				if (result.operation !== NATIVE_REVIEW_MODE_OPERATION.STATUS || !isValidRddModeStatus(result.status)) return { kind: "unknown" };
+				const { global, cloneLocal, effective, source, revision } = result.status;
+				return { kind: "status", status: { global, cloneLocal, effective, source, ...(revision === undefined ? {} : { revision }) } };
+			} catch (error) {
+				return reviewModeUnavailable(error) ? { kind: "unavailable" } : { kind: "unknown" };
+			}
+		};
+		try {
+			request.respond({
+				schema: DESKTOP_REVIEW_SERVICE_SCHEMA,
+				read,
+				async write({ enabled, scope }): Promise<DesktopReviewOwnerWrite> {
+					if (disposed || nativeReviewCli?.reviewMode === undefined) return { kind: "unavailable" };
+					const operation = enabled ? NATIVE_REVIEW_MODE_OPERATION.ENABLE : NATIVE_REVIEW_MODE_OPERATION.DISABLE;
+					try {
+						const result = await boundedReviewMode({ cwd: ctx.cwd, operation, scope }, ctx, DESKTOP_REVIEW_WRITE_TIMEOUT_MS);
+						if (result.operation !== operation) return { kind: "failed" };
+					} catch (error) {
+						// A write that could not start changed nothing; any other failure
+						// has an unknown outcome and is never retried.
+						return reviewModeUnavailable(error) ? { kind: "unavailable" } : { kind: "failed" };
+					}
+					// Report the owner's state re-read after the write, not the write's echo.
+					return await read();
+				},
+				dispose: () => {
+					disposed = true;
+				},
+			});
+		} catch {
+			/* obsolete trusted context: discovery expires closed */
+		}
 	});
 
 	// gentle-pi#677: gentle-ai owns telemetry end to end (status, the opt-out

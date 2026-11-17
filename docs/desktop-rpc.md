@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff"],
-  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "session_snapshot"]
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode"],
+  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "session_snapshot"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, and `agents_update` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), and [Subagents limits](#subagents-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), and [Review limits](#review-limits).
 
 ### `get_snapshot`
 
@@ -1173,6 +1173,102 @@ Success:
 
 A diff is file content: it can contain whatever the user's files contain, secrets included, exactly as the panel would show them. Nothing beyond the diff text is added — no absolute path, no Git command. `diff` is capped at 256 KiB of UTF-8, cut after the last whole line inside the bound (or on a character boundary for one very long line), with `truncated: true`. A diff past the panel's own 1 MiB bound, where the panel shows a "too large" notice, still answers its first 256 KiB with `truncated: true`. An empty `diff` means Git reported no difference. Wrong param types or extra keys are `invalid_request`; Git failing or timing out is `changes_unavailable`. A read never emits an event.
 
+### `get_review_mode`
+
+Reads the receipt-driven development (RDD) switch for this session's workspace through the same native review CLI adapter `/gentle:review-mode` uses (`gentle-ai review mode status --json`). It has no side effects and emits no event.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-70", "method": "get_review_mode", "params": {} }
+```
+
+`params` must be empty; any key is `invalid_request`.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-70",
+  "ok": true,
+  "data": {
+    "effective": "disabled",
+    "source": "global",
+    "scopes": { "global": "disabled", "clone": "unset" }
+  }
+}
+```
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `effective` | `enabled`, `disabled`, `unknown` | Whether reviews run in this workspace. |
+| `source` | `default`, `global`, `clone`, `unknown` | Which setting decided `effective`: no setting (on by default), the machine-wide setting, or this repository's setting. |
+| `scopes.global`, `scopes.clone` | `enabled`, `disabled`, `unset`, `unknown` | The stored machine-wide and repository settings. |
+
+A failed, timed-out, or unrecognized read answers `effective: "unknown"` with every other field `unknown`. It fails closed and never guesses. When `gentle-ai` is not installed or does not support the command, the answer is `review_unavailable` instead.
+
+### `set_review_mode`
+
+Changes the switch. Because the switch is the user's, a change takes two calls: the first answers a confirmation and writes nothing, and only a second call carrying that confirmation's token writes.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-71", "method": "set_review_mode", "params": { "enabled": false, "scope": "global" } }
+```
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | yes | boolean | `true` turns reviews on, `false` turns them off. |
+| `scope` | yes | `"clone"` or `"global"` | `clone` changes this repository's setting; `global` changes the machine-wide setting. |
+| `confirmationToken` | no | string, 1–128 characters | The `token` from a previous `confirmation_required` answer for the same `enabled` and `scope`. |
+
+Any other key or a malformed value is `invalid_request`, rejected before the owner is reached. The first call answers the current mode and the dialog to show:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-71",
+  "ok": true,
+  "data": {
+    "status": "confirmation_required",
+    "enabled": false,
+    "scope": "global",
+    "mode": { "effective": "enabled", "source": "default", "scopes": { "global": "unset", "clone": "unset" } },
+    "confirmation": {
+      "title": "Turn review mode off machine-wide?",
+      "message": "Receipt-driven development is currently on (decided by the default). Reviews will be off for every repository on this machine.",
+      "token": "9b2e…"
+    }
+  }
+}
+```
+
+Desktop must show `title` and `message` to the human and resend with `confirmationToken` only after the human approves. Declining means not resending.
+
+- **The token is bound to what was shown.** It is a sha256 over `enabled`, `scope`, the exact title and message, and the owner state they were computed from (both stored settings, the effective mode, its source, and the owner's revision when it reports one). A wrong token, or a stale one because the switch changed in between (in the TUI, in Herdr, or in another process), answers `confirmation_required` again with the current text and a fresh token, and writes nothing.
+- **The token is not authentication.** As with `apply_profile`, whoever can write Pi's RPC stdin can read and resend it; getting a human to confirm is Desktop's job.
+- **No confirmation without a known state.** When the current state cannot be read, the answer is `review_unavailable` and nothing is written.
+
+With a matching token the owner writes the setting, re-reads the switch, and answers the re-read state:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-72",
+  "ok": true,
+  "data": {
+    "status": "applied",
+    "enabled": false,
+    "scope": "global",
+    "changed": true,
+    "mode": { "effective": "disabled", "source": "global", "scopes": { "global": "disabled", "clone": "unset" } }
+  }
+}
+```
+
+The semantics are the owner's own. A machine-wide off wins over a repository setting, so `enabled: true` with `scope: "clone"` only clears this repository's off setting and cannot override a machine-wide off: it answers `applied` with `effective: "disabled"` and `source: "global"`, and its confirmation message says so before anything is written. `changed` is `true` only when the re-read state differs from the state the confirmation was computed from, in `effective`, `source`, or either scope. A no-op answers `changed: false`. When the re-read itself fails, `mode` is the fail-closed unknown shape and `changed` is `false`. A write whose outcome is unknown (it failed or timed out after starting) answers `review_unavailable` and is never retried; re-read with `get_review_mode`.
+
+Only one `set_review_mode` runs at a time in a Pi process. A request that arrives while another is running answers `review_mode_busy` and changes nothing. `get_review_mode` is never blocked.
+
 ## Responses
 
 Success:
@@ -1202,7 +1298,7 @@ Failure:
 }
 ```
 
-Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `sessions_unavailable`, `session_switching`, `not_found`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
+Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `sessions_unavailable`, `session_switching`, `review_unavailable`, `review_mode_busy`, `not_found`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
 
 | Code | Meaning |
 | --- | --- |
@@ -1226,6 +1322,8 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `profile_apply_busy` | An `apply_profile` is still running; returned to a second `apply_profile` and to `set_config` for `profiles`, `profile_fallbacks`, or `pins`. Nothing was written by this request. |
 | `sessions_unavailable` | No Desktop command bound a session context, the context has no session manager, session directory, or `switchSession`, the installed Pi lacks the session owner calls, reading sessions failed, or Pi refused the switch. Nothing was switched. |
 | `session_switching` | A `switch_session` was in flight when this request arrived (or the switch tore the session down while this request waited on an owner). Nothing was done; retry after the switch answers. |
+| `review_unavailable` | The review-mode owner did not answer for this session (extension not loaded, subagent child, or no Desktop command bound a session context), `gentle-ai` is not installed or does not support `review mode`, `set_review_mode` could not read the current state, or a write's outcome is unknown. The message says which; it never carries a path, CLI output, or a command line. |
+| `review_mode_busy` | A `set_review_mode` is still running. Nothing was written by this request. |
 | `not_found` | `cancel_job` or `get_job_output` named a job id, or `cancel_subagent` or `get_subagent_thread` named a subagent id, that does not exist, belongs to another session, or was already evicted by the store; or `switch_session` named an id that does not resolve in the requested scope; or `get_change_diff` named a root and path that are not a file in the owner's current change set. Nothing was stopped, read, or switched. |
 | `internal_error` | Unexpected failure; message stays generic. |
 
@@ -1498,6 +1596,25 @@ Carries the session sections whose content changed since the last `session_snaps
 
 It is emitted when the feed publishes, on the feed's own tiers: within 16 ms for urgent state (an open or answered question, the permission mode, an idle/working/blocked transition, a held prompt), otherwise after a 250 ms debounce, and at most once per second while the session is busy. A flush that changes nothing emits nothing, and a section is included only when its content changed; a job's `elapsedMs`, which moves on every flush, is not a change (derive it from `startedAt`). A client that needs the whole state reads `get_snapshot` with `sections` after connecting or after a sequence gap. Advertised only while the feed seam is wired.
 
+### `review_mode_changed`
+
+Follows a confirmed `set_review_mode` whose re-read state differs from the state the confirmation was computed from, after the response line.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "event",
+  "seq": 4,
+  "event": "review_mode_changed",
+  "data": {
+    "mode": { "effective": "disabled", "source": "global", "scopes": { "global": "disabled", "clone": "unset" } },
+    "previousMode": { "effective": "enabled", "source": "default", "scopes": { "global": "unset", "clone": "unset" } }
+  }
+}
+```
+
+`mode` is identical to the response's `mode`. `confirmation_required`, a no-op (`changed: false`), an unreadable re-read, and every error emit nothing. A change made in the TUI, in Herdr, or by another process emits nothing on this channel; re-read with `get_review_mode`.
+
 ## Configuration limits
 
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
@@ -1608,6 +1725,16 @@ It is emitted when the feed publishes, on the feed's own tiers: within 16 ms for
 - **Truthful absence.** When the owning extension is not loaded, the session has no root to scan, or Git fails for any root, both methods answer `changes_unavailable` rather than an empty list.
 - **Same baseline as the panel.** Both methods diff against `HEAD`, like the panel today; when the panel moves to session-baseline diffs (#765), this slice follows it.
 
+## Review limits
+
+- **One owner, no second adapter.** `get_review_mode` and `set_review_mode` reach the `/gentle:review-mode` owner in `extensions/gentle-ai.ts` through a defensive, versioned owner-service adapter, like the profiles seam. Every read and write is that owner's `executeReviewMode` call over the native review CLI adapter, so status-cache invalidation and pending-consent cleanup on a disable are the TUI's own. The Desktop side never spawns `gentle-ai` and keeps no copy of the switch.
+- **Fail closed.** A read is bounded by the same timeout as the RDD status line (`GENTLE_PI_RDD_STATUS_TIMEOUT_MS`, 3 seconds by default) and a write by 10 seconds. A failed, timed-out, or unrecognized read is `unknown`, never a guess. A native failure is classified as unavailable (`gentle-ai` missing or the command unsupported), unknown, or failed; its message, exit detail, and paths never cross.
+- **User-owned switch.** This slice never changes the switch on its own: only a confirmed `set_review_mode` writes, and subagent children never answer the seam. Review start, skip, and candidate consent stay terminal-only.
+- **Token binds, it does not authenticate.** The confirmation token binds a change to the request and the exact state and text that were shown, so a stale or mismatched token never writes. It is not a secret: anyone who can write Pi's RPC stdin can read it and send it back.
+- **Desktop-only gate.** The single-flight gate serializes `set_review_mode` requests from Desktop in one Pi process. It does not gate the terminal `/gentle:review-mode` command, Herdr, or another process; a change from one of those between the two calls makes the token stale, and the second call asks again.
+- **A reset never writes late.** When the session is replaced or shut down while a confirmed `set_review_mode` is still discovering the owner or reading the current state, the write is not attempted and no event is emitted. That request gets no answer, because the router drops outcomes for a superseded session. A client that got no answer re-reads with `get_review_mode` and asks again.
+- **Truthful absence.** When the owning extension is not loaded, both methods answer `review_unavailable` rather than inventing a mode.
+
 ## Verification
 
 ```sh
@@ -1625,6 +1752,7 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-sessions.test.ts \
   tests/desktop-rpc-changes.test.ts \
   tests/change-diff.test.ts \
+  tests/desktop-rpc-review.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 
@@ -1643,6 +1771,8 @@ The session tests load the real desktop RPC and feed extensions on one fake Pi w
 The changes tests load the real `gentleShell` owner and this extension together over temporary Git repositories (real `git`; a wrapped runner only to force a failure). They cover the opaque root id and directory-name label with no absolute path anywhere on the wire, root-relative paths and statuses, the 200-file cap, `get_change_diff` answering byte-for-byte what the panel's `loadFileDiff` answers for tracked and untracked files (including `/dev/null` on Windows), the 256 KiB cut on a line boundary and the head of a diff past the panel's 1 MiB bound, `not_found` for an unknown root, a root's absolute path or label in place of its id, a clean tracked file and `.git/config` that exist on disk, a missing file, `..` traversal, absolute paths, `./`, backslash, case, and trailing-space aliases, and a file behind a directory link (a junction on Windows), `invalid_request` for wrong shapes with no Git run, `changes_unavailable` without an owner, without a repository, and when Git status or the diff fails (with no Git output on the wire), one response line and no event per read, that the owner answers discovery only for its own live session, that a repository textconv driver never runs for `get_change_diff` while the panel's default call still honors it, that a junction to `.git` inside the root is refused, odd Windows path forms (`file.ts.`, `::$DATA`, short names, `\\?\` and UNC prefixes, trailing `/`), a stale root id from a previous session, and directories swapped to junctions after listing. `tests/change-diff.test.ts` proves the panel's `loadFileDiff` export is the shared lib function and keeps its arguments, bound notice, and failure behavior on real Git.
 
 The profiles tests use a fake owner service only: they cover param validation, owner absence (`profiles_unavailable`), the result shapes, the `profile_applied` event only after `applied`, and that the token changes with the mode, name, title, message, and profile content. The owner itself is covered in `tests/gentle-ai.test.ts`, which drives the real screen actions in a temporary config home: a default apply asks the screen's diff and writes nothing without its token, a wrong or stale token asks again and writes nothing, an unknown profile writes nothing, a session apply binds without writing shared state, and only one apply runs at a time.
+
+The review tests use a fake owner service and a fake native review adapter only; they never run `gentle-ai`, so nothing on the machine is toggled. They cover the wire projection of every source and scope, fail-closed `unknown` on a failed, timed-out, malformed, or throwing read, `review_unavailable` for a missing owner, host, adapter, or unsupported command, strict params rejected before discovery, the first call writing nothing, a matching token writing then re-reading, wrong and stale tokens asking again with a fresh token, the process-wide single-flight gate, clone enable under a global off (dialog text and a `changed: false` no-op), a scope-only change emitting the event, failed writes emitting nothing and carrying no CLI detail, the response-before-event order over the transport, and the versioned adapter discovery. They also load the real `extensions/gentle-ai.ts` owner over a fake adapter to prove the STATUS, write-with-scope, re-read call sequence, the error classification, the bounded read, and that a subagent child never answers.
 
 The config tests build six stores in a temporary root and inject the worktree identity, so no real user config, agent home, or repository pin is read. On the read side they cover every store, current path precedence, missing and malformed layers, revision stability and change, the read-only split, rejected stores/params/paths, the bounded snapshot projection, and a byte-and-mtime comparison proving a read never mutates a store. On the write side they cover a valid write for each writable store and both pin layers, clearing either pin layer and observing the winner fall back, clearing an already-missing layer as a no-op, clearing and replacing an unreadable layer, creating a missing store, a stale or missing `expectedRevision` (including on a clear), the documented rejection order (envelope, then store identity, then mutability, then revision, then payload), data the owner would drop, malformed pin clear shapes, extra and physical-path keys, every read-only store, a forced owner write failure (the store path is a directory) answering `write_failed` with no path, OS code, or event and an unchanged tree, the no-op path with untouched bytes and mtime, the resulting disk bytes, revision movement and its invalid-state coarseness, the response-then-event order over the real transport, and that a stopped session neither answers nor writes. They also re-check that the config dispatcher still falls through to the permission bridge.
 

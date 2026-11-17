@@ -6,7 +6,7 @@ import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
 import gentleAgents, { type SessionTransportFactory } from "../extensions/gentle-agents.ts";
-import { createJobRegistry, MAX_TAIL_LINE_CHARS, TAIL_LINES, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
+import { createJobRegistry, createOutputTail, MAX_TAIL_LINE_CHARS, TAIL_LINES, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
 import { createMonitorController, type MonitorController } from "../lib/background-monitor.ts";
 import { registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
 import {
@@ -635,6 +635,10 @@ interface RealOwnerHarness {
 	service: DesktopJobsService;
 	events: Array<{ event: string; data: Record<string, unknown> }>;
 	fireTimeout(ms?: number): void;
+	/** The host session id the harness context reports; changeable to model a session switch. */
+	session: { id: string };
+	/** Advance the owner clock. */
+	tick(ms: number): void;
 }
 
 function recordedSchedule() {
@@ -661,7 +665,7 @@ function recordedSchedule() {
  * the real owner service and subscribes a Desktop bridge. This is the same
  * production wiring the maintainer probe loads, driven in-process.
  */
-async function realOwnerHarness(t: test.TestContext): Promise<RealOwnerHarness> {
+async function realOwnerHarness(t: test.TestContext, session: { id: string } = { id: "session-a" }): Promise<RealOwnerHarness> {
 	const root = mkdtempSync(join(tmpdir(), "desktop-rpc-jobs-real-"));
 	t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }));
 	const home = join(root, "home");
@@ -707,7 +711,7 @@ async function realOwnerHarness(t: test.TestContext): Promise<RealOwnerHarness> 
 		hasUI: true,
 		mode: "tui",
 		sessionManager: {
-			getSessionId: () => "session-a",
+			getSessionId: () => session.id,
 			getCwd: () => cwd,
 			getEntries: () => [],
 			getBranch: () => [],
@@ -758,7 +762,7 @@ async function realOwnerHarness(t: test.TestContext): Promise<RealOwnerHarness> 
 	bridge.wire((event, data) => events.push({ event, data }));
 	await bridge.start();
 
-	return { pi, ctx, tools, fake, scheduled, service, events, fireTimeout: (ms = 1000) => scheduled.fire(ms), handlers, listeners };
+	return { pi, ctx, tools, fake, scheduled, service, events, fireTimeout: (ms = 1000) => scheduled.fire(ms), handlers, listeners, session, tick: (ms: number) => { clock += ms; } };
 }
 
 test("the real owner notifies a monitor self-timeout exactly once and suppresses duplicate lists", async (t) => {
@@ -1008,4 +1012,173 @@ test("get_job_output answers jobs_unavailable through the transport without an o
 	assert.equal(response.requestId, "out-1");
 	assert.equal(response.ok, false);
 	assert.deepEqual(response.error, JOBS_UNAVAILABLE);
+});
+
+// ---- get_job_output: independent-verifier probes pinned as regressions ----
+
+const HAS_ESC_OR_CONTROL = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/;
+
+test("the real owner never reads one session's output into another session's adapter", async (t) => {
+	const harness = await realOwnerHarness(t);
+	await harness.tools.get("monitor").execute(undefined, { command: "tail -f app.log", timeout_seconds: 60, label: "app log" }, undefined, undefined, harness.ctx);
+	harness.fake.runs[0]!.onData(Buffer.from("SECRET_TOKEN=abc\n"));
+	assert.equal(harness.service.output!("job-1").kind, "ok", "the owning session reads its own job");
+
+	// The host switches to another session; its adapter is discovered fresh.
+	harness.session.id = "session-b";
+	for (const handler of harness.handlers.get("session_start") ?? []) await handler({ reason: "new" }, harness.ctx);
+	const other = await discoverDesktopJobsService(harness.pi, harness.ctx);
+	assert.ok(other, "the new session's adapter is discovered");
+	assert.deepEqual(other.output!("job-1"), { kind: "not_found" });
+
+	const bridge = new DesktopJobsBridge(harness.pi, { discover: async () => other });
+	bridge.attach(harness.ctx);
+	const outcome = await bridge.handle("get_job_output", { id: "job-1" });
+	assert.deepEqual(errorOf(outcome), JOB_NOT_FOUND);
+	assert.equal(JSON.stringify(outcome).includes("SECRET"), false, "no byte of the other session's output crosses");
+});
+
+test("a reset during discovery answers get_job_output with jobs_unavailable and never reads output", async () => {
+	let release: () => void = () => {};
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	let outputCalls = 0;
+	const service: DesktopJobsService = {
+		schema: DESKTOP_JOBS_SERVICE_SCHEMA,
+		read: () => ({ sessionId: "session-a", jobs: [] }),
+		cancel: () => ({ kind: "not_found" }),
+		output: () => {
+			outputCalls += 1;
+			return { kind: "ok", view: { job: { id: "j", label: "l", status: "running", startedAt: 1 }, output: "old secret", truncated: false } };
+		},
+		observe: () => () => {},
+		dispose: () => {},
+	};
+	const bridge = new DesktopJobsBridge({} as ExtensionAPI, { discover: async () => { await gate; return service; } });
+	bridge.attach({ sessionManager: { getSessionId: () => "session-a" } } as unknown as ExtensionContext);
+	const pending = bridge.handle("get_job_output", { id: "j" });
+	bridge.reset();
+	release();
+	const outcome = await pending;
+	assert.deepEqual(errorOf(outcome), JOBS_UNAVAILABLE);
+	assert.equal(outputCalls, 0, "a superseded session's owner is never read");
+	assert.equal(JSON.stringify(outcome).includes("old secret"), false);
+});
+
+test("get_job_output keeps answering a finished owned job after it leaves list_jobs", async (t) => {
+	const harness = await realOwnerHarness(t);
+	await harness.tools.get("monitor").execute(undefined, { command: "tail -f app.log", timeout_seconds: 60, label: "app log" }, undefined, undefined, harness.ctx);
+	harness.fake.runs[0]!.onData(Buffer.from("done line\n"));
+	harness.fake.runs[0]!.resolve(0);
+	await settle();
+	assert.equal(harness.service.output!("job-1").kind, "ok", "readable within the list linger");
+
+	harness.tick(JOBS_FINISHED_TTL_MS + 1);
+	assert.deepEqual(harness.service.read().jobs, [], "the finished job has left list_jobs");
+	const past = harness.service.output!("job-1");
+	assert.equal(past.kind, "ok", "the owner registry still holds it, so its output stays readable");
+	assert.equal((past as { kind: "ok"; view: { output: string } }).view.output, "done line");
+});
+
+test("plainJobOutput strips string, 8-bit, lone, and redraw sequences idempotently", () => {
+	const cases: Array<[string, string]> = [
+		["\u001bP1$r0m\u001b\\after", "after"],
+		["\u001b_apc payload\u001b\\x", "x"],
+		["trailing lone esc\u001b", "trailing lone esc"],
+		["a\u0085b\u009cc", "abc"],
+		["\u001b[2K\u001b[1Gprogress 40%", "progress 40%"],
+		["col1\tcol2", "col1\tcol2"],
+		["50%\r\r", "50%"],
+		["\u001b]0;t\u0007\u001b[31m10%\u001b[0m\r\u001b[31m20%\u001b[0m", "20%"],
+		["abc\r\u001b[K", "abc"],
+		["\u001b[?25l\u001b[?25hhidden cursor", "hidden cursor"],
+	];
+	for (const [input, expected] of cases) {
+		const once = plainJobOutput([input]);
+		assert.equal(once, expected, JSON.stringify(input));
+		assert.equal(plainJobOutput([once]), once, `idempotent: ${JSON.stringify(input)}`);
+	}
+});
+
+test("an owner line cut inside an escape sequence leaves no ESC byte or control character", () => {
+	// Known cosmetic limit: the owner's fixed-length cut can land inside an
+	// escape sequence, so a fragment of its parameters can remain visible text.
+	// What must never remain is the ESC byte or any control character but tab.
+	const tail = createOutputTail();
+	tail.push(`\u001b[38;5;196m${"x".repeat(MAX_TAIL_LINE_CHARS - 5)}\n`);
+	assert.equal(tail.truncated(), true);
+	const plain = plainJobOutput(tail.lines());
+	assert.equal(plain.includes("\u001b"), false);
+	assert.equal(HAS_ESC_OR_CONTROL.test(plain), false);
+	assert.ok(plain.endsWith("x".repeat(MAX_TAIL_LINE_CHARS - 5)));
+});
+
+test("the owner tail truncation flag holds at its exact boundaries", () => {
+	const lines = (count: number) => Array.from({ length: count }, (_, i) => `l${i}`).join("\n");
+
+	const exact = createOutputTail();
+	exact.push(`${lines(TAIL_LINES)}\n`);
+	assert.equal(exact.lines().length, TAIL_LINES);
+	assert.equal(exact.truncated(), false, "exactly TAIL_LINES complete lines is complete");
+
+	const plus = createOutputTail();
+	plus.push(`${lines(TAIL_LINES)}\npartial`);
+	assert.equal(plus.lines().length, TAIL_LINES);
+	assert.equal(plus.lines().at(-1), "partial");
+	assert.equal(plus.truncated(), true, "TAIL_LINES complete lines plus a partial drops the oldest");
+
+	const atLimit = createOutputTail();
+	atLimit.push(`${"y".repeat(MAX_TAIL_LINE_CHARS)}\n`);
+	assert.equal(atLimit.truncated(), false, "a line of exactly MAX_TAIL_LINE_CHARS is not cut");
+
+	const overLimit = createOutputTail();
+	overLimit.push(`${"y".repeat(MAX_TAIL_LINE_CHARS + 1)}\n`);
+	assert.equal(overLimit.truncated(), true, "one character more is cut");
+
+	const crlf = createOutputTail();
+	crlf.push("a\r\nb\r\n");
+	assert.deepEqual(crlf.lines(), ["a", "b"]);
+	assert.equal(crlf.truncated(), false, "CRLF line endings lose nothing");
+});
+
+test("an owner without a callable output read keeps list and cancel working", async () => {
+	const base = {
+		schema: DESKTOP_JOBS_SERVICE_SCHEMA,
+		read: () => ({ sessionId: "session-a", jobs: [{ id: "j", label: "l", status: "running" as const, startedAt: 1 }] }),
+		cancel: () => ({ kind: "ok" as const, job: { id: "j", label: "l", status: "stopped" as const, startedAt: 1, endedAt: 2 }, changed: true }),
+		observe: () => () => {},
+		dispose: () => {},
+	};
+	const { bridge } = makeBridge(base as DesktopJobsService);
+	assert.equal((await bridge.handle("list_jobs", {})).ok, true);
+	const cancelled = await bridge.handle("cancel_job", { id: "j" });
+	assert.equal(cancelled.ok, true, JSON.stringify(cancelled));
+	assert.deepEqual(errorOf(await bridge.handle("get_job_output", { id: "j" })), JOBS_UNAVAILABLE);
+
+	const notCallable = makeBridge({ ...base, output: 5 } as unknown as DesktopJobsService);
+	assert.deepEqual(errorOf(await notCallable.bridge.handle("get_job_output", { id: "j" })), JOBS_UNAVAILABLE);
+});
+
+test("get_job_output drops every extra owner key and rejects non-string ids", async () => {
+	const service = {
+		schema: DESKTOP_JOBS_SERVICE_SCHEMA,
+		read: () => ({ sessionId: "session-a", jobs: [] }),
+		cancel: () => ({ kind: "not_found" }),
+		output: () => ({
+			kind: "ok",
+			view: {
+				job: { id: "j", label: "l", status: "exited", startedAt: 1, endedAt: 2, exitCode: 3, command: "rm -rf", cwd: "/x", ownerSessionId: "session-a" },
+				output: "o", truncated: false, outputPath: "/p", env: { A: 1 }, error: "boom",
+			},
+		}),
+		observe: () => () => {},
+		dispose: () => {},
+	} as unknown as DesktopJobsService;
+	const { bridge } = makeBridge(service);
+	assert.deepEqual(await bridge.handle("get_job_output", { id: "j" }), {
+		ok: true,
+		data: { job: { id: "j", label: "l", status: "exited", startedAt: 1, endedAt: 2, exitCode: 3 }, output: "o", truncated: false },
+	});
+	for (const params of [{ id: null }, { id: ["j"] }, { id: { toString: () => "j" } }, { id: "j", id2: "k" }]) {
+		assert.deepEqual(errorOf(await bridge.handle("get_job_output", params as Record<string, unknown>)), INVALID_JOBS_PARAMS);
+	}
 });

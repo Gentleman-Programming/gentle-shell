@@ -612,6 +612,7 @@ test("the Desktop transport advertises the design method and event", async (t) =
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",
+		"get_subagent_thread",
 		"list_sessions",
 		"switch_session",
 	]);

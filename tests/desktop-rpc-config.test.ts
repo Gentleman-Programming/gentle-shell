@@ -1331,6 +1331,7 @@ test("capabilities advertise the wired config read and write surface", async (t)
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",
+		"get_subagent_thread",
 		"list_sessions",
 		"switch_session",
 	]);

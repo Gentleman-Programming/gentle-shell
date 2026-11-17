@@ -607,6 +607,7 @@ test("the Desktop transport advertises the jobs methods and event", (t) => {
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",
+		"get_subagent_thread",
 		"list_sessions",
 		"switch_session",
 	]);

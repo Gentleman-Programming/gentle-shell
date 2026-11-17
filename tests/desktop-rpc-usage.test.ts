@@ -667,6 +667,7 @@ test("the Desktop transport advertises the usage methods and rate_limit event", 
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",
+		"get_subagent_thread",
 		"list_sessions",
 		"switch_session",
 	]);

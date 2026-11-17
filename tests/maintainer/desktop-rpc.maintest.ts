@@ -180,7 +180,7 @@ test("installed Pi dispatches Desktop RPC without adding conversation messages",
 		assert.equal(response.kind, "response");
 		assert.equal(response.requestId, "real-1");
 		assert.equal(response.ok, true);
-		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "list_sessions", "switch_session"]);
+		assert.deepEqual(response.data.methods, ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session"]);
 		assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -414,14 +414,16 @@ test("installed Pi serves the owner-loaded empty job list without starting a job
  * Real production wiring for the subagents slice: the installed runtime loads
  * the actual agents owner (`extensions/gentle-agents.ts`, which owns the single
  * parent-session `TaskStore` plus the parent `AgentRunner`) alongside this
- * transport extension. `list_subagents` is a read, so the probe stays offline
- * and observes the truthful owner-loaded empty list — it never starts a child.
+ * transport extension. `list_subagents` and `get_subagent_thread` are reads, so
+ * the probe stays offline and observes the truthful owner-loaded empty list and
+ * a typed `not_found` thread — it never starts a child.
  */
 test("installed Pi serves the owner-loaded empty subagent list without starting a child", () => {
 	const root = isolatedRoot("desktop-rpc-agents-");
 	try {
 		const input = [
 			prompt("prompt-list", desktopRequest("agents-1", "list_subagents")),
+			prompt("prompt-thread", desktopRequest("agents-2", "get_subagent_thread", { id: "unknown-subagent" })),
 		].map((value) => JSON.stringify(value)).join("\n") + "\n";
 		const child = spawnSync(process.execPath, probeArgs(root, [jobsOwnerExtension, desktopExtension]), {
 			cwd: join(root, "workspace"),
@@ -443,6 +445,10 @@ test("installed Pi serves the owner-loaded empty subagent list without starting 
 		const list = byRequest("agents-1");
 		assert.equal(list.ok, true, JSON.stringify(list));
 		assert.deepEqual(list.data, { agents: [] }, "no subagents exist, so the list is empty rather than fabricated");
+
+		const thread = byRequest("agents-2");
+		assert.equal(thread.ok, false, JSON.stringify(thread));
+		assert.equal(thread.error.code, "not_found", "the loaded owner answers an unknown thread id as not_found, not agents_unavailable");
 
 		assert.equal(payloads.some((payload) => payload.kind === "event"), false, "an offline list emits nothing");
 		assert.equal(JSON.stringify(payloads).includes("prompt"), false, "no prompt text leaks into the wire");

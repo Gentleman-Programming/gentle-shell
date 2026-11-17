@@ -122,6 +122,7 @@ test("capabilities advertise the wired permission domain and no agent tool", asy
 		"apply_profile",
 		"list_subagents",
 		"cancel_subagent",
+		"get_subagent_thread",
 		"list_sessions",
 		"switch_session",
 	]);

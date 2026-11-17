@@ -286,6 +286,7 @@ const CODEGRAPH_INDEX_BLOCK_REASON = "CodeGraph: an index already exists for thi
  * whole, spaces included, so the command after it is still located. Only the exact value `1` —
  * quoted or not — overrides: any other value is an ordinary assignment and the launch
  * environment stays authoritative.
+ * An assignment to any other variable leaves the current state unchanged.
  */
 function leadingAssignments(command: string): { rest: string; allowIndexOverride: boolean } {
 	let rest = command.trimStart();
@@ -294,16 +295,38 @@ function leadingAssignments(command: string): { rest: string; allowIndexOverride
 	// value may contain that whitespace, so the token spans it as one quoted stretch.
 	const assignment = /^([A-Za-z_][A-Za-z0-9_]*=(?:[^\s"']|"[^"]*"|'[^']*')*)\s+/;
 	for (let match = assignment.exec(rest); match !== null; match = assignment.exec(rest)) {
-		// The shell applies the LAST assignment, so every one updates the state in order.
-		allowIndexOverride = unquoteAssignment(match[1]) === "GENTLE_CODEGRAPH_ALLOW_INDEX=1";
+		// Only assignments to the override's own variable change its state — an unrelated
+		// FOO=bar between the override and the rebuild changes nothing — and among that
+		// variable's assignments the shell applies the LAST one, so each updates in order.
+		if (match[1].slice(0, match[1].indexOf("=")) === "GENTLE_CODEGRAPH_ALLOW_INDEX") {
+			allowIndexOverride = unquoteAssignment(match[1]) === "GENTLE_CODEGRAPH_ALLOW_INDEX=1";
+		}
 		rest = rest.slice(match[0].length);
 	}
 	return { rest, allowIndexOverride };
 }
 
-/** The token with its quoted stretches unquoted, so `FOO="1"` and `FOO=1` compare equal. */
+/** The token with shell quote removal applied to its value: an enclosing pair of quotes is
+ * stripped, while quotes inside a quoted value stay literal exactly as the shell assigns
+ * them — so a double-quoted '1' keeps its inner quotes and only the exact value 1 overrides. */
 function unquoteAssignment(token: string): string {
-	return token.replace(/(["'][^"']*["'])/g, (quoted) => quoted.slice(1, -1));
+	const equals = token.indexOf("=");
+	if (equals === -1) return token;
+	let value = "";
+	let quote: '"' | "'" | undefined;
+	for (let index = equals + 1; index < token.length; index += 1) {
+		const char = token[index];
+		if (quote === undefined && (char === '"' || char === "'")) {
+			quote = char;
+			continue;
+		}
+		if (quote === char) {
+			quote = undefined;
+			continue;
+		}
+		value += char;
+	}
+	return token.slice(0, equals + 1) + value;
 }
 
 /**
@@ -312,6 +335,7 @@ function unquoteAssignment(token: string): string {
  * `echo "codegraph index ."` argument is not a second command. A backslash escapes the next
  * character outside single quotes, so an escaped quote never opens or closes a quoted section
  * (`echo \" ; codegraph index .` is two commands, the second a rebuild).
+ * A backslash-newline pair is different: the shell removes it as a line continuation, so it is dropped here instead of escaping the newline.
  */
 function shellCommandList(command: string): string[] {
 	const commands: string[] = [];
@@ -321,13 +345,18 @@ function shellCommandList(command: string): string[] {
 	for (const char of command) {
 		// A backslash outside single quotes makes the next character literal, so an escaped
 		// quote is content, never a quote toggle; inside single quotes it is literal itself.
+		// A backslash-newline pair, by contrast, is a line continuation the shell removes
+		// before parsing, so the scanner drops it too: a continued rebuild is still the rebuild,
+		// never a command hidden behind its own backslash.
 		if (escaped) {
-			current += char;
+			if (char !== "\n") {
+				current += "\\";
+				current += char;
+			}
 			escaped = false;
 			continue;
 		}
 		if (char === "\\" && quote !== "'") {
-			current += char;
 			escaped = true;
 			continue;
 		}
@@ -827,7 +856,10 @@ export function createCodeGraphTool(
 				// released while this call waited, so acquisition succeeds with the database already
 				// in place — the free-lease branch is not a completion proof. Rebuilding here would
 				// kill the shared daemon that finished init just serves, so the holder stands down.
-				if (indexExists(cwd) && process.env.GENTLE_CODEGRAPH_ALLOW_INDEX !== "1") {
+				// "absent" is the only state this init still serves: "present" and "unknown" both stand
+				// down — an unreadable .codegraph is never rebuilt on a guess — and the override stays
+				// the one deliberate path through.
+				if (indexState(cwd) !== "absent" && process.env.GENTLE_CODEGRAPH_ALLOW_INDEX !== "1") {
 					return fail(new Error(CODEGRAPH_INDEX_BLOCK_REASON), { reason: CODEGRAPH_INDEX_BLOCK_REASON });
 				}
 				const result = await runner(args, { cwd, signal, maxBuffer: PROCESS_MAX_BUFFER });

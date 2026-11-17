@@ -2206,6 +2206,12 @@ test("native Windows: the main channel extracts its source with System32's tar.e
 		assert.equal((await lookPath("tar", env, "win32", host.fs))?.toLowerCase(), join(gitUsrBin, "tar.exe").toLowerCase(), "a bare tar resolves to MSYS tar");
 		const extracted: string[] = [];
 		const run = async (command: string, argv: string[], options: { cwd?: string; deadlineMs: number }) => {
+			if (argv[0] === "run" && argv[1] === "build:tower") {
+				const dist = join(options.cwd!, "web", "tower", "dist");
+				mkdirSync(dist, { recursive: true });
+				writeFileSync(join(dist, "index.html"), "<!doctype html><title>tower</title>");
+				return { code: 0, stdout: "" };
+			}
 			if (argv[0] !== "pack") {
 				extracted.push(command);
 				return host.run(command, argv, { env, cwd: options.cwd, deadlineMs: options.deadlineMs, stderrTail: 4096 });

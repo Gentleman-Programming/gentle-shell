@@ -75,6 +75,13 @@ function world({ owner = "pnpm", latest = "4.1.0", commits = { ai: AI_SHA, shell
 			writeFileSync(join(argv[argv.indexOf("-C") + 1], "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.1.0", scripts: { prepack: "x" } }));
 			return { code: 0, stdout: "" };
 		}
+		const tower = argv.indexOf("build:tower");
+		if (tower > 0 && argv[tower - 1] === "run") {
+			const dist = join(options.cwd!, "web", "tower", "dist");
+			mkdirSync(dist, { recursive: true });
+			writeFileSync(join(dist, "index.html"), "<!doctype html><title>tower</title>");
+			return { code: 0, stdout: "" };
+		}
 		if (failShellInstall && argv.includes("-g") && argv.some((arg) => arg.endsWith(".tgz"))) return { code: 1, stdout: "" };
 		if (argv.includes("pack")) {
 			const version = JSON.parse(readFileSync(join(options.cwd!, "package.json"), "utf8")).version;

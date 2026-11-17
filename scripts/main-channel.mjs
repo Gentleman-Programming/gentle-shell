@@ -11,7 +11,10 @@
 //     back to the pinned binary silently.
 //   - Gentle Shell: the exact commit's source tarball, versioned
 //     `<version>-main.<sha12>` and packed without `prepack` (which runs the full
-//     test suite), then installed globally like any local tarball.
+//     test suite). `prepack` is also what builds Gentle Tower's web app, so the
+//     pack step runs `pnpm run build:tower` itself and refuses a tarball that
+//     lacks `web/tower/dist/index.html`, then installs globally like any local
+//     tarball.
 // The recorded channel lets `gentle-shell upgrade` follow release or main.
 import { dirname, isAbsolute, join, posix, relative, win32 } from "node:path";
 import { gentleAiDevBinaryRegistrationPath, registerGentleAiDevBinary, unregisterGentleAiDevBinary } from "../runtime/gentle-ai-binary.mjs";
@@ -229,12 +232,25 @@ export async function packMainShell({ commit, ctx, fetch, run, pnpm, fs, platfor
 			throw new MainChannelError("main-shell-pack-failed", "the downloaded source is not the gentle-pi package");
 		}
 		manifest.version = mainVersion(manifest.version, commit);
-		// prepack runs the full test suite; postinstall (the native binary) stays.
+		// prepack runs the full test suite and builds Gentle Tower; postinstall (the
+		// native binary) stays. Without prepack, pack would omit web/tower/dist and
+		// `gentle-shell tower` would fail on every main-channel install (Linux
+		// included): the files list ships dist/, but only after build:tower.
 		if (manifest.scripts) {
 			delete manifest.scripts.prepack;
 			delete manifest.scripts.prepare;
 		}
 		await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, "\t")}\n`);
+		const tower = await run(pnpm.command, [...pnpm.prefix, "run", "build:tower"], {
+			cwd: source, deadlineMs: deadlines.build, stderrTail: 4096,
+		});
+		if (!succeeded(tower)) {
+			throw new MainChannelError("main-shell-tower-build-failed", "the Gentle Tower web app could not be built for the main package", stderrCause(tower));
+		}
+		const towerIndex = join(source, "web", "tower", "dist", "index.html");
+		if (!(await fs.stat(towerIndex).then((info) => info.isFile(), () => false))) {
+			throw new MainChannelError("main-shell-tower-build-failed", "the Gentle Tower web app build did not produce web/tower/dist/index.html");
+		}
 		const pack = await run(pnpm.command, [...pnpm.prefix, "pack", "--pack-destination", packages], { cwd: source, deadlineMs: deadlines.pack });
 		const tgz = join(packages, `gentle-pi-${manifest.version}.tgz`);
 		if (!succeeded(pack) || !(await fs.stat(tgz).then((info) => info.isFile(), () => false))) {

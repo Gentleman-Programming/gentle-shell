@@ -12,7 +12,7 @@ Implements #3320 on branch `feat/desktop-rpc-sessions`. Delivery: single PR clos
 ## Tasks
 
 - T1 [S1,S2,S3,S4] Desktop RPC slice: owner seam, method(s)/event, docs in `docs/desktop-rpc.md`, tests. Route: delegated writer (Writer trigger a: parallel independent units in separate worktrees). Status: done. Commits: b3a15cfb0, 835e0b524, 4b9df59b7.
-- T2 [S1,S2,S3,S4] Push, PR closing #3320 with `type:feature`. Route: parent. Status: pending.
+- T2 [S1,S2,S3,S4] Push, PR closing #3320 with `type:feature`. Route: parent. Status: done — PR #3330.
 
 ## Log
 
@@ -24,3 +24,4 @@ Implements #3320 on branch `feat/desktop-rpc-sessions`. Delivery: single PR clos
 - L6 (verifier non-blocking look): the name `C:\Users\devel\secret` arriving as `C:Usersdevelsecret` comes from the probe itself: in a JS string literal `"C:\Users\devel\secret"`, `\U`, `\d`, `\s` are escapes, so the file already held `C:Usersdevelsecret`. Neither the projection nor Pi strips backslashes; a regression test pins a backslash name projected unchanged. Also noted: `firstMessage` is the user's own first message, as S2 specifies; text the user typed (which may contain a path) is shown bounded, not redacted.
 - L7 (fix verification, 835e0b524): race probe RED before the fix (`response sw-3 did not arrive within 20000ms`, 3/3 runs), GREEN after (5/5 runs). `tests/desktop-rpc-sessions.test.ts` 27/27; `tests/desktop-rpc*.test.ts` 200/201 (only the known Windows 0o600 failure); `node --experimental-strip-types --test --test-force-exit tests/maintainer/desktop-rpc.maintest.ts` 10/10; `pnpm run typecheck` 0 diagnostics; feed tests unchanged (plan-profiles 14/14, actions 21/24, feed 17/20, same Windows failures as on origin/main).
 - L8 (2026-11-16, coordinator after the verifier recheck confirmed the fix): added recheck scenarios B and C as real-runtime probes (4b9df59b7). B: back-to-back switches to `sess-b` answer `changed: true` then `session_switching`, final session `sess-b`. C: a switch to `sess-a` followed by `get_snapshot`, `capabilities`, `list_jobs` answers each `session_switching` exactly once, final session `sess-a`. Docs now say `capabilities` and `get_snapshot` are refused during a switch and are retried after it answers. Evidence: `node --experimental-strip-types --test --test-force-exit tests/maintainer/desktop-rpc.maintest.ts` 12/12 (B and C also 2/2 on two more runs); `tests/desktop-rpc-sessions.test.ts` 27/27.
+- L9 (2026-11-16): Native review (risk, resilience, reliability) approved and acknowledged; advisory follow-ups listed in the PR. PR #3330 opened.

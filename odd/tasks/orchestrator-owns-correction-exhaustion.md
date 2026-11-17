@@ -29,11 +29,13 @@ Making a new test fail for the expected reason is RED construction, not a correc
 
 Keep: the worker's two-attempt limit; no blind retries or self-reprompt loops; consent, security, destructive, publishing and remote boundaries; user-set one-run/no-retry limits; native review budgets; independent authorized work continuing. Never raise prompt budgets.
 
-### S5 User-requested delegation is admitted
+### S5 A refused delegation never ends the turn blocked
 
 > "Toquemos el hallazgo, cuál sería la mejore solución."
 
-(Chosen option C.) An explicit user request to delegate is a valid writer reason, distinct from model-initiated speculative delegation (which stays blocked for small organic work). The parent declares it on the launch with a verbatim quote from the user's latest message; runtime admission accepts it only when the quote appears literally in that message (not invented, not from older turns, not from tool output). Without such a quote, current admission is unchanged. If admission still rejects work the user explicitly asked to delegate, the parent never ends the turn blocked: it asks with `ask_user_choice` (do it inline / track it as an ODD task / switch to full delegation, plus the typed answer) and continues independent work.
+> "si el usuario no sabe y está pidiendo justamente delegar algo que es chico y no está Contemplando la pérdida de tokens y demás, de última, mantenemos como lo tenemos, bloqueamos y le decimos no, no se puede delegar. Lo haré inline o algo así. O le damos ahí las preguntas con las recomendaciones."
+
+Writer admission is unchanged: small organic work stays blocked from delegation, even when the user asks for it. When admission refuses a writer, the parent never ends the turn blocked: for small understood work it does it inline and says in one line why delegation was refused (it costs more for small work); if the user explicitly required delegation, it asks with `ask_user_choice` and a marked recommendation — do it inline (recommended for small work), track it as an ODD task, or switch to full delegation, plus the typed answer — and continues independent work meanwhile.
 
 ## Tasks
 
@@ -44,7 +46,7 @@ Keep: the worker's two-attempt limit; no blind retries or self-reprompt loops; c
 | T3 Independent verification (risk 3) + full suites | pending | S1–S4 | verifier + parent | pending |
 | T4 Measure (bench C11, OpenAI) if authorized | pending | S2–S3 | parent | pending |
 | T5 Issues + PRs + merge | pending | all | parent | pending |
-| T6 Gentle Shell: admit user-requested delegation by verbatim quote; ask instead of stopping | pending | S5 | bounded writer + verifier (risk 2 guard) | pending |
+| T6 Gentle Shell: refused delegation never ends blocked (inline or ask with recommendation) | pending | S5 | bounded writer + verifier | pending |
 
 ## Log
 
@@ -56,3 +58,4 @@ Keep: the worker's two-attempt limit; no blind retries or self-reprompt loops; c
 - L6 (T2 evidence): Pi commit `c94f81193` — worker contract, always-on continuation paragraph (mode-aware route), docs and pinned tests; RED→GREEN on bounded-stop, work-continuity and independent-recovery-delivery; organic primary prompt exactly at cap (24251/24251), full delegation −5 B. Full suite 11242 tests, 4 fail, 96 skipped; types 0; runtime modules OK. Classification: `tests/agents-prompt-lifecycle-runtime.test.ts` 7/7 and `tests/gentle-agents.test.ts` 351/351 pass in isolation (load flakes, #3205 seen before); `tests/session-profile-extension.test.ts` fails the two "A3 foreign launch …" cases identically on current main `defc9a6e6` (48 pass / 2 fail both) — pre-existing on main, not this change.
 - L7 (C11 run 1, invalid): all 6 cells were stopped by organic admission ("small task has no existing ODD feature task") before any worker ran; the parent refused to bypass and ended with "needs a harness policy adjustment" even though the user prompt explicitly required delegation. US$0.49. Rerun with an ODD task in the fixture.
 - L8 (user, decision): "Toquemos el hallazgo, cuál sería la mejore solución." Options presented: A (admit a verbatim-quoted user request), B (ask instead of stopping, no admission change), C (A + B). User chose C. Added S5/T6.
+- L9 (user, scope change): asked when a user would legitimately request delegating small work, then: "si el usuario no sabe y está pidiendo justamente delegar algo que es chico y no está Contemplando la pérdida de tokens y demás, de última, mantenemos como lo tenemos, bloqueamos y le decimos no, no se puede delegar. Lo haré inline o algo así. O le damos ahí las preguntas con las recomendaciones." Option C replaced by B: admission unchanged; legitimate reasons (context relief, parallelism) are already covered by the backstop and parallel-unit reasons, and users who want delegation by default have full-delegation mode. S5 rewritten.

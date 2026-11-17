@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "apply_profile", "list_subagents", "cancel_subagent"],
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "apply_profile", "list_subagents", "cancel_subagent", "get_usage_stats"],
   "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list and cancel, the profile apply, the subagents list and cancel, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, and `agents_update` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list and cancel methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list and cancel methods and its one transition event, not the agent dispatch tools, which stay agent tools. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), and [Subagents limits](#subagents-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list and cancel, the profile apply, the subagents list and cancel, the cross-session usage-stats read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, and `agents_update` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list and cancel methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list and cancel methods and its one transition event, not the agent dispatch tools, which stay agent tools. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), and [Stats limits](#stats-limits).
 
 ### `get_snapshot`
 
@@ -836,6 +836,57 @@ The response is the **actual post-action state**, re-read from the owner — nev
 - A **running** task is cancelled asynchronously: `runner.cancel` returns `true` but the store has not transitioned yet, so the response reports the still-`running` state and emits **no immediate event**. The real transition (the child exit to `cancelled`) arrives later through the normal `agents_update` path. A repeated in-flight cancel is likewise `changed: false` with no event.
 - An already-terminal task returns its terminal state with no event; there is no race-driven error for a task that finished just before the cancel. An unknown or foreign id is a typed `not_found`. The response line always precedes any `agents_update` event.
 
+### `get_usage_stats`
+
+Reads cross-session usage — the same history `/gentle:stats` shows — through the stats owner's own loader and the same `aggregateStats` aggregation the panel runs, so the panel and Desktop never disagree. Params are optional `range` and `scope`.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-61", "method": "get_usage_stats", "params": { "range": "30d", "scope": "all" } }
+```
+
+| Param | Required | Values | Meaning |
+| --- | --- | --- | --- |
+| `range` | no | `7d` (default), `30d`, `all` | The local calendar days counted: the last 7 or 30 days including today, or everything. |
+| `scope` | no | `project` (default), `all` | `project` counts only sessions whose working directory is this session's; `all` counts every session. |
+
+Any other key, or any other value (including `null`), is rejected as `invalid_request` before the owner is asked. A read has no side effect: it never writes, and never emits an event.
+
+Success:
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-61",
+  "ok": true,
+  "data": {
+    "range": "30d",
+    "scope": "all",
+    "totals": { "sessions": 3, "messages": 4, "inputTokens": 1310, "outputTokens": 155, "cacheReadTokens": 1000, "cacheWriteTokens": 200, "totalTokens": 2665, "cost": 1.76 },
+    "byModel": [
+      { "model": "claude-opus-5-5", "messages": 2, "tokens": 1365, "cost": 0.51, "share": 0.512 },
+      { "model": "gpt-5.5", "messages": 2, "tokens": 1300, "cost": 1.25, "share": 0.488 }
+    ],
+    "byDay": [{ "day": "2026-09-20", "tokens": 1000 }, { "day": "2026-10-08", "tokens": 300 }, { "day": "2026-10-09", "tokens": 1365 }],
+    "byProject": [
+      { "name": "alpha", "sessions": 2, "messages": 3, "tokens": 2365, "cost": 1.51 },
+      { "name": "beta", "sessions": 1, "messages": 1, "tokens": 300, "cost": 0.25 }
+    ],
+    "truncated": { "byModel": false, "byDay": false, "byProject": false }
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `totals` | Sessions with at least one assistant usage record in range, those records (`messages`), their token counts, `totalTokens` (each record's own total, or the sum of its parts when it has none), and `cost` in the provider's currency units. Totals always cover the whole range, even when an array below is truncated. |
+| `byModel` | One row per model id, largest `tokens` first; `share` is the model's fraction of `totals.totalTokens`. At most 50 rows. |
+| `byDay` | Tokens per local calendar day (`YYYY-MM-DD`) with any usage, oldest first. At most 400 rows: the most recent days are kept. |
+| `byProject` | Present only for `scope: "all"`. One row per working directory, shown by its display name (the last path segment, never the path), largest `tokens` first. Two directories with the same last segment stay two rows. At most 50 rows. |
+| `truncated` | `true` for each array that had more rows than its bound. `byProject` appears only with `byProject`. |
+
+Model ids and project names longer than 128 characters are cut. No session id, path, provider, prompt, or message text ever crosses the wire. The panel's other figures (streaks, most active day, longest session) are not part of this answer. When no sessions root can be read, or the stats owner is not loaded, the answer is `stats_unavailable` — never a fabricated zero.
+
 ### `apply_profile`
 
 Applies one saved profile through the `/gentle:profiles` screen's own actions: `mode: "default"` runs **Make default for new sessions**, and `mode: "session"` runs **Use in this session**. There is no second apply implementation, so the diff confirmation, the pinned-repository rule, and the rollback are the screen's own.
@@ -931,7 +982,7 @@ Failure:
 }
 ```
 
-Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `not_found`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
+Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invalid_data`, `revision_conflict`, `write_failed`, `unsupported_method`, `permission_unavailable`, `permission_denied`, `config_unavailable`, `usage_unavailable`, `design_unavailable`, `jobs_unavailable`, `agents_unavailable`, `profiles_unavailable`, `unknown_profile`, `profile_apply_busy`, `stats_unavailable`, `not_found`, and `internal_error`. A request that cannot supply a valid correlation ID uses `requestId: null`. State/provider failures use the generic `internal_error` message rather than exposing raw paths, credentials, or provider errors. Transport failures from `setWidget` are never retried as a second response.
 
 | Code | Meaning |
 | --- | --- |
@@ -952,6 +1003,7 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `profiles_unavailable` | The profiles owner did not answer for this session (the owning extension is not loaded, the session changed, or no Desktop command bound a session context). Nothing was written. |
 | `unknown_profile` | `apply_profile` named a profile that is not saved in `profiles.json`. No routing, settings, agents, or pins were written (a missing `profiles.json` may have been seeded). |
 | `profile_apply_busy` | An `apply_profile` is still running; returned to a second `apply_profile` and to `set_config` for `profiles`, `profile_fallbacks`, or `pins`. Nothing was written by this request. |
+| `stats_unavailable` | No sessions root could be read, or the stats owner did not answer for this session (the owning extension is not loaded, or the session changed). Nothing was read. |
 | `not_found` | `cancel_job` named a job id, or `cancel_subagent` named a subagent id, that does not exist or belongs to another session. Nothing was stopped. |
 | `internal_error` | Unexpected failure; message stays generic. |
 
@@ -1153,7 +1205,7 @@ Follows an `apply_profile` answer whose `status` is `applied`, after the respons
 - The methods delegate to the Gentle AI extension's permission owner in the same Pi process. When that extension is not loaded, both methods answer `permission_unavailable` instead of guessing state.
 - Session changes require the owner's interactive-host admission: the TUI, or an RPC process with `GENTLE_SHELL_INTERACTIVE_HOST=1`. Headless RPC children and subagent children stay closed exactly as before.
 - Permission control is never an agent-callable tool; only `/gentle:desktop` over the interactive RPC channel reaches it.
-- This slice adds no filesystem watcher and no second store. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); subscription usage is limited to the `get_subscription_usage` and `refresh_subscription_usage` contract in [Usage limits](#usage-limits); background jobs are limited to the `list_jobs` and `cancel_job` contract in [Jobs limits](#jobs-limits); subagents are limited to the `list_subagents` and `cancel_subagent` contract in [Subagents limits](#subagents-limits); music and any Desktop client change are not implemented.
+- This slice adds no filesystem watcher and no second store. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); subscription usage is limited to the `get_subscription_usage` and `refresh_subscription_usage` contract in [Usage limits](#usage-limits); background jobs are limited to the `list_jobs` and `cancel_job` contract in [Jobs limits](#jobs-limits); subagents are limited to the `list_subagents` and `cancel_subagent` contract in [Subagents limits](#subagents-limits); cross-session usage is limited to the `get_usage_stats` read in [Stats limits](#stats-limits); music and any Desktop client change are not implemented.
 - Requests are not queued. Pi's own RPC loop dispatches prompts concurrently, so overlapping `set_permission_mode` calls reach the owner in whatever order their own reads finish, and one can apply right after the other. What stays guaranteed: every request gets exactly one correlated response, responses never cross, and each response and its optional event are published as an adjacent pair with a monotonic `seq`. Send permission requests one at a time and correlate with `requestId`; the maintainer probe does exactly that.
 
 ### Trust boundary
@@ -1210,6 +1262,15 @@ Follows an `apply_profile` answer whose `status` is `applied`, after the respons
 - **Confirmation is Desktop's job.** The token binds an apply to the title and message that were shown and to the exact saved profile; it is not a proof that a person saw them.
 - **Truthful absence.** When the owning extension is not loaded, `apply_profile` answers `profiles_unavailable` rather than inventing an outcome.
 
+## Stats limits
+
+- **One owner, one loader, one aggregation.** `get_usage_stats` reaches the `/gentle:stats` owner in `extensions/gentle-stats.ts` through a defensive, versioned owner-service adapter, the stats analogue of the jobs seam. The owner reads the same sessions roots as the panel (the active home and the user's original Pi home) with the panel's own loader instance, so both share one size/mtime cache: an unchanged session file is never re-read. Totals, models, and days come from the panel's `aggregateStats` with the requested range and scope; each project row is that same aggregation scoped to one project. There is no second parser, cache, or store.
+- **Shared in-flight load.** The loader answers concurrent loads of the same roots with one in-flight scan, so overlapping Desktop requests (or a request while the panel is loading) read the history once. The scan is asynchronous and streams files line by line; nothing is persisted.
+- **Read only, no event.** This slice has exactly one method and no event. History changes as sessions run; a client re-reads when it wants fresh numbers.
+- **Safe, bounded projection.** The wire carries counts, token sums, costs, model ids, day keys, and project display names only. Arrays are capped (models 50, days 400, projects 50) with a `truncated` flag per array; totals stay complete. A session's id, path, provider, or message text never crosses, and a raw read failure is answered with the fixed `stats_unavailable` message.
+- **Truthful absence.** When no sessions root can be read, or the owner is not loaded, the answer is `stats_unavailable`. A readable root with no usage answers zeros, which is the truth.
+- **Same numbers as the panel, including its gaps.** Records the panel counts are counted here too: an assistant record with zero usage still counts as a message (see #1921). This slice does not change what the aggregation counts.
+
 ## Verification
 
 ```sh
@@ -1222,6 +1283,7 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-jobs.test.ts \
   tests/desktop-rpc-agents.test.ts \
   tests/desktop-rpc-profiles.test.ts \
+  tests/desktop-rpc-stats.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 
@@ -1236,6 +1298,8 @@ The jobs tests use the existing background-job fake (the same fake shell operati
 The subagents tests use a real `TaskStore` plus a fake runner (never a child process) and a fake owner service only: they cover the whitelisted model/usage/cost projection and field redaction, the closed `lastStep` vocabulary (raw error/path/secret/provider text never crosses), the bounded active + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`agents_unavailable`, never a fabricated empty list), the `runner.cancel` stop path and its boolean result, already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `agents_update` events with foreign-session filtering, content dedupe and burst coalescing, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also run the real `gentleAgents` owner seam in-process over a fake child (real `TaskStore` + real `AgentRunner`, never a real process): a truthful empty list, a typed `not_found` cancel, a live-task cancel that honors `runner.cancel`'s result with no immediate event and one eventual `agents_update`, and the persisted usage breakdown surviving `saveTask`/`loadStoredTask` restore.
 
 The profiles tests use a fake owner service only: they cover param validation, owner absence (`profiles_unavailable`), the result shapes, the `profile_applied` event only after `applied`, and that the token changes with the mode, name, title, message, and profile content. The owner itself is covered in `tests/gentle-ai.test.ts`, which drives the real screen actions in a temporary config home: a default apply asks the screen's diff and writes nothing without its token, a wrong or stale token asks again and writes nothing, an unknown profile writes nothing, a session apply binds without writing shared state, and only one apply runs at a time.
+
+The stats tests write session files into a temporary sessions root outside the worktree and load the real `gentle-stats` owner with the real Desktop transport: they cover the advertised method with no new event, the 7-day/current-project defaults, every range and scope against `aggregateStats`, project display names and the absence of paths, session ids, providers, and message text, the model/day/project bounds with `truncated` and complete totals, reads through the owner's single loader with concurrent requests sharing one load, invalid params rejected before any load, `stats_unavailable` for unreadable roots and for an absent owner, the owner leaving the bus on shutdown, a session reset dropping an in-flight read, throwing or malformed owner reads, and the versioned adapter discovery. `tests/stats-collector.test.ts` pins the shared in-flight load and the readable-root check.
 
 The config tests build six stores in a temporary root and inject the worktree identity, so no real user config, agent home, or repository pin is read. On the read side they cover every store, current path precedence, missing and malformed layers, revision stability and change, the read-only split, rejected stores/params/paths, the bounded snapshot projection, and a byte-and-mtime comparison proving a read never mutates a store. On the write side they cover a valid write for each writable store and both pin layers, clearing either pin layer and observing the winner fall back, clearing an already-missing layer as a no-op, clearing and replacing an unreadable layer, creating a missing store, a stale or missing `expectedRevision` (including on a clear), the documented rejection order (envelope, then store identity, then mutability, then revision, then payload), data the owner would drop, malformed pin clear shapes, extra and physical-path keys, every read-only store, a forced owner write failure (the store path is a directory) answering `write_failed` with no path, OS code, or event and an unchanged tree, the no-op path with untouched bytes and mtime, the resulting disk bytes, revision movement and its invalid-state coarseness, the response-then-event order over the real transport, and that a stopped session neither answers nor writes. They also re-check that the config dispatcher still falls through to the permission bridge.
 

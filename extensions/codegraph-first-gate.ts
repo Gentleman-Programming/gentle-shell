@@ -2,16 +2,23 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { indexState } from "../lib/codegraph-lease.ts";
 
 /**
- * The persistent-memory reads the AGENTS.md Memory ordering rule gates: they may run
- * only after a codegraph query or explore has finalized in the same user prompt.
+ * The persistent-memory reads the AGENTS.md Memory ordering rule gates in a prompt that has
+ * searched the workspace: there they may run only after a codegraph query or explore has
+ * finalized in the same user prompt.
  */
 const MEMORY_READ_TOOLS = new Set(["mem_context", "mem_search", "mem_get_observation"]);
 
 const BLOCK_REASON =
-	"codegraph-first gate: persistent-memory reads come after a codegraph query or explore in the same user prompt (AGENTS.md Memory ordering). Call codegraph first - a failed or unavailable attempt also counts - then retry this memory read.";
+	"codegraph-first gate: persistent-memory reads during workspace-search activity come after a codegraph query or explore in the same user prompt (AGENTS.md Memory ordering). Call codegraph first - a failed or unavailable attempt also counts - then retry this memory read; prompts with no workspace search are never gated.";
 
 /** The environment override for the gate's workspace scoping: "1" forces it on, "0" off. */
 const MEMORY_GATE_OVERRIDE = "GENTLE_CODEGRAPH_MEMORY_GATE";
+
+/**
+ * The conservative bash-command sniff that marks a prompt as a workspace search: a command
+ * naming rg, grep, fd, find, ag or ack as a standalone word.
+ */
+const SEARCH_COMMAND_SNIFF = /\b(?:rg|grep|fd|find|ag|ack)\b/;
 
 /**
  * Whether the Memory ordering gate applies to the workspace a memory read runs in: only a
@@ -35,20 +42,23 @@ function gateApplies(cwd: unknown): boolean {
 }
 
 /**
- * Per-prompt codegraph-first gate (AGENTS.md Memory ordering): persistent-memory reads
- * (mem_context, mem_search, mem_get_observation) are blocked until a codegraph query or explore
- * has finalized in the same user prompt. The requested operation is tracked from the call's
- * start — an init completion never credits. Credit is end-of-execution only — a failed or
- * unavailable query or explore counts — and expires with every new user prompt, whether that
- * prompt starts a run or is delivered as steering or a queued follow-up inside a running loop,
- * and it applies only
- * to a fully settled window: while any graph execution is still active, or when a new graph call
- * starts after credit was granted, memory reads stay blocked. The gate is scoped: it applies
- * only to workspaces that have a codegraph index — a filesystem probe of the database file,
- * never a CLI call — with GENTLE_CODEGRAPH_MEMORY_GATE=1 forcing it on and =0 off, so an
- * unindexed workspace's memory reads pass with no graph involvement at all. The guard is total:
- * any internal error allows the call, so the gate can never break a tool call.
- *
+ * Per-prompt codegraph-first gate (AGENTS.md Memory ordering), scoped to workspace-search
+ * prompts: persistent-memory reads (mem_context, mem_search, mem_get_observation) are blocked
+ * once the prompt has searched the workspace — a grep, find or ls tool execution, or a bash
+ * command naming rg, grep, fd, find, ag or ack — until a codegraph query or explore has
+ * finalized in the same user prompt; a graph execution in flight blocks memory reads
+ * regardless, so a read never interleaves a live graph call. A prompt with no workspace
+ * search is never gated: its memory reads pass with zero graph involvement. The requested
+ * operation is tracked from the call's start — an init completion never credits. Credit is
+ * end-of-execution only — a failed or unavailable query or explore counts — and expires with
+ * every new user prompt, whether that prompt starts a run or is delivered as steering or a
+ * queued follow-up inside a running loop, and it applies only to a fully settled window:
+ * while any graph execution is still active, or when a new graph call starts after credit
+ * was granted, memory reads stay blocked. The gate is scoped: it applies only to workspaces
+ * that have a codegraph index — a filesystem probe of the database file, never a CLI call —
+ * with GENTLE_CODEGRAPH_MEMORY_GATE=1 forcing it on and =0 off, so an unindexed workspace's
+ * memory reads pass with no graph involvement at all. The guard is total: any internal
+ * error allows the call, so the gate can never break a tool call. *
  * Wired through pi's extension-directory discovery (discoverAndLoadExtensions over
  * extensions/); no manifest entry is needed — the runtime-harness EXTENSIONS list is
  * banner-test-specific, not a wiring manifest.
@@ -56,6 +66,9 @@ function gateApplies(cwd: unknown): boolean {
 export default function codegraphFirstGate(pi: ExtensionAPI): void {
 	// Credit lives in this activation only and expires with every user prompt.
 	let credited = false;
+	// Whether this prompt has searched the workspace: a grep, find or ls tool execution, or a
+	// bash command naming a search tool. The gate bites memory reads only in such prompts.
+	let searchActivity = false;
 	// The graph executions that started but have not finalized: one call's completion must not
 	// credit the prompt while a sibling call is still running, and a graph call that starts after
 	// credit was granted re-opens the window until it finalizes.
@@ -82,6 +95,7 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 	// not per LLM turn, so credit earned in one turn of a request survives into its later turns.
 	pi.on?.("before_agent_start", () => {
 		credited = false;
+		searchActivity = false;
 		activeGraphExecutions.clear();
 		queryExploreExecutions.clear();
 	});
@@ -116,6 +130,14 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 				activeGraphExecutions.add(toolCallId);
 				if (isQueryOrExplore(toolName, (event as { args?: unknown }).args)) queryExploreExecutions.add(toolCallId);
 			}
+			// A search tool or search-shaped bash command marks the prompt as a workspace search,
+			// arming the gate for its memory reads; a hostile or malformed payload never throws.
+			if (toolName === "grep" || toolName === "find" || toolName === "ls") {
+				searchActivity = true;
+			} else if (toolName === "bash") {
+				const command = ((event as { args?: { command?: unknown } | undefined | null } | undefined | null)?.args)?.command;
+				if (typeof command === "string" && SEARCH_COMMAND_SNIFF.test(command)) searchActivity = true;
+			}
 		} catch {
 			/* a hostile payload must never break the host */
 		}
@@ -137,15 +159,15 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 		}
 	});
 
-	// The gate itself: in a workspace the gate applies to, block persistent-memory reads until the
-	// codegraph-first window is both credited and settled (no graph execution still active); every
-	// guard failure (throwing payload, malformed toolName, missing workspace) allows the call
-	// rather than breaking it.
+	// The gate itself: in a workspace the gate applies to, block persistent-memory reads once
+	// the prompt has searched the workspace until the codegraph-first window is credited — and
+	// always while a graph execution is still active; every guard failure (throwing payload,
+	// malformed toolName, missing workspace) allows the call rather than breaking it.
 	pi.on?.("tool_call", (event, ctx) => {
 		try {
 			const toolName = (event as { toolName?: unknown } | undefined | null)?.toolName;
 			const cwd = (ctx as { cwd?: unknown } | undefined | null)?.cwd;
-			if (typeof toolName === "string" && MEMORY_READ_TOOLS.has(toolName) && gateApplies(cwd) && (!credited || activeGraphExecutions.size > 0)) {
+			if (typeof toolName === "string" && MEMORY_READ_TOOLS.has(toolName) && gateApplies(cwd) && (activeGraphExecutions.size > 0 || (searchActivity && !credited))) {
 				return { block: true, reason: BLOCK_REASON };
 			}
 			return undefined;

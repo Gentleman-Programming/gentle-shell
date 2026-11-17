@@ -17,6 +17,7 @@ import {
 	runningAgents,
 	runningJobs,
 	type DesktopFeedPendingQuestion,
+	type DesktopFeedSnapshot,
 	type DesktopFeedTimers,
 } from "../lib/desktop-feed.ts";
 import { createDesktopFeedStore, sweepDesktopFeedOrphans, type DesktopFeedStore } from "../lib/desktop-feed-store.ts";
@@ -32,6 +33,7 @@ import type { DesktopRpcOutcome } from "../lib/desktop-rpc.ts";
 import type { DesktopAgentEntry } from "../lib/desktop-rpc-agents.ts";
 import type { DesktopJobEntry } from "../lib/desktop-rpc-jobs.ts";
 import type { DesktopUsageEntry } from "../lib/desktop-rpc-usage.ts";
+import { DESKTOP_SESSION_SERVICE_CHANNEL, DESKTOP_SESSION_SERVICE_SCHEMA, type DesktopSessionService } from "../lib/desktop-rpc-session.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { PROFILE_TIER_EVENT } from "../lib/openai-fast-tier.ts";
 import { REVIEW_SIDEBAR_EVENT, isReviewSidebarSnapshot, type ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
@@ -243,66 +245,78 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			]);
 		};
 
+		// The snapshot of what the TUI shows now. The flush writes it; the Desktop
+		// RPC session seam (#3319) reads it live. Building has no side effect beyond
+		// the command-registry and stats-fold caches.
+		const buildSnapshot = (session: Live): DesktopFeedSnapshot => {
+			const { ctx } = session;
+			const manager = ctx.sessionManager;
+			const model = ctx.model;
+			let subscription = false;
+			try { subscription = model ? SUBSCRIPTION_PROVIDERS.has(model.provider) || ctx.modelRegistry.isUsingOAuth(model) : false; } catch { subscription = false; }
+			let context: ReturnType<ExtensionContext["getContextUsage"]>;
+			try { context = ctx.getContextUsage(); } catch { context = undefined; }
+			let thinkingLevel: string | undefined;
+			try { thinkingLevel = pi.getThinkingLevel(); } catch { thinkingLevel = undefined; }
+			// The command registry (T10): extension commands, prompt templates, skills.
+			// S13: read once per session start or resource rediscovery, not per flush.
+			if (session.commandsStale) {
+				session.commandsStale = false;
+				try { session.commands = typeof pi.getCommands === "function" ? pi.getCommands() : undefined; } catch { session.commands = undefined; }
+			}
+			const commands = session.commands;
+			return buildDesktopFeedSnapshot({
+				now: now(),
+				identity: {
+					sessionId: session.sessionId,
+					sessionFile: manager.getSessionFile?.(),
+					sessionName: manager.getSessionName?.(),
+					cwd: ctx.cwd,
+					realCwd: session.realCwd,
+					pid: process.pid,
+					ppid: process.ppid,
+					ancestors: session.ancestors,
+					mode: ctx.mode,
+					agentDir,
+					env,
+				},
+				branch: session.branch,
+				model: model ? { id: model.id, provider: model.provider, reasoning: Boolean(model.reasoning) } : undefined,
+				thinkingLevel,
+				subscription,
+				profile: session.profile,
+				context: context ? { percent: context.percent, tokens: context.tokens, contextWindow: context.contextWindow } : undefined,
+				usage: session.usage,
+				usageProviders: session.usageProviders,
+				permission: session.permission,
+				todo: session.todo,
+				changes: session.changes.scanned ? { model: session.changes.tracker.model, worktrees: session.changes.tracker.worktrees, uncounted: session.changes.lines.uncounted() } : undefined,
+				agents: session.agents,
+				jobs: session.jobs,
+				review: session.review,
+				stats: sessionStats(session),
+				activity: { working: session.working, blocked: session.blocked, blockedLabel: session.blockedLabel, streaming: session.streaming, phase: oddPhaseRegistry.get(session.sessionId) },
+				pendingQuestion: pendingQuestion(session),
+				commands,
+			});
+		};
+		// #3319: the Desktop RPC session seam's observers, told of each snapshot a flush publishes.
+		const snapshotObservers = new Set<(sessionId: string, snapshot: DesktopFeedSnapshot) => void>();
 		const flush = () => {
 			const session = live;
 			if (!session || session.closed) return;
-			const { ctx } = session;
 			try {
 				// Changes are Git work: never at the session start itself, first at the
 				// first flush (once the shell registered its roots), then per settled turn.
 				if (!session.changes.requested) refreshChanges(session);
-				const manager = ctx.sessionManager;
-				const model = ctx.model;
-				let subscription = false;
-				try { subscription = model ? SUBSCRIPTION_PROVIDERS.has(model.provider) || ctx.modelRegistry.isUsingOAuth(model) : false; } catch { subscription = false; }
-				let context: ReturnType<ExtensionContext["getContextUsage"]>;
-				try { context = ctx.getContextUsage(); } catch { context = undefined; }
-				let thinkingLevel: string | undefined;
-				try { thinkingLevel = pi.getThinkingLevel(); } catch { thinkingLevel = undefined; }
-				// The command registry (T10): extension commands, prompt templates, skills.
-				// S13: read once per session start or resource rediscovery, not per flush.
-				if (session.commandsStale) {
-					session.commandsStale = false;
-					try { session.commands = typeof pi.getCommands === "function" ? pi.getCommands() : undefined; } catch { session.commands = undefined; }
-				}
-				const commands = session.commands;
 				session.publishedKey = urgentKey(session);
-				const snapshot = buildDesktopFeedSnapshot({
-					now: now(),
-					identity: {
-						sessionId: session.sessionId,
-						sessionFile: manager.getSessionFile?.(),
-						sessionName: manager.getSessionName?.(),
-						cwd: ctx.cwd,
-						realCwd: session.realCwd,
-						pid: process.pid,
-						ppid: process.ppid,
-						ancestors: session.ancestors,
-						mode: ctx.mode,
-						agentDir,
-						env,
-					},
-					branch: session.branch,
-					model: model ? { id: model.id, provider: model.provider, reasoning: Boolean(model.reasoning) } : undefined,
-					thinkingLevel,
-					subscription,
-					profile: session.profile,
-					context: context ? { percent: context.percent, tokens: context.tokens, contextWindow: context.contextWindow } : undefined,
-					usage: session.usage,
-					usageProviders: session.usageProviders,
-					permission: session.permission,
-					todo: session.todo,
-					changes: session.changes.scanned ? { model: session.changes.tracker.model, worktrees: session.changes.tracker.worktrees, uncounted: session.changes.lines.uncounted() } : undefined,
-					agents: session.agents,
-					jobs: session.jobs,
-					review: session.review,
-					stats: sessionStats(session),
-					activity: { working: session.working, blocked: session.blocked, blockedLabel: session.blockedLabel, streaming: session.streaming, phase: oddPhaseRegistry.get(session.sessionId) },
-					pendingQuestion: pendingQuestion(session),
-					commands,
-				});
+				const snapshot = buildSnapshot(session);
 				const digest = desktopFeedDigest(snapshot);
 				if (digest === session.lastDigest) return;
+				// The same tiers as the file: an observer hears a changed snapshot when it is written.
+				for (const observer of [...snapshotObservers]) {
+					try { observer(session.sessionId, snapshot); } catch { /* an observer never breaks the feed */ }
+				}
 				if (session.store.write(snapshot)) session.lastDigest = digest;
 			} catch { /* The feed is display data: it never interrupts Pi. */ }
 		};
@@ -599,6 +613,44 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 			session.actions = actions;
 			actions.start();
 		};
+
+		// #3319: the Desktop RPC session seam. The adapter is bound to the asking
+		// session: it reads that session's live snapshot and hears its flushes only.
+		// The feed answers only where it runs (the TUI or an interactive RPC host).
+		pi.events.on(DESKTOP_SESSION_SERVICE_CHANNEL, (data: unknown) => {
+			const request = record(data);
+			const context = request.context as ExtensionContext | undefined;
+			if (typeof request.respond !== "function" || !context) return;
+			let sessionId: string | undefined;
+			try {
+				if (!context.hasUI || (context.mode !== "tui" && !isInteractiveRpcHost(context.mode, env))) return;
+				sessionId = context.sessionManager.getSessionId();
+			} catch { return; }
+			if (!sessionId) return;
+			const bound = sessionId;
+			let disposed = false;
+			const mine = new Set<(sessionId: string, snapshot: DesktopFeedSnapshot) => void>();
+			const service: DesktopSessionService = {
+				schema: DESKTOP_SESSION_SERVICE_SCHEMA,
+				read: () => {
+					const session = live;
+					if (disposed || !session || session.closed || session.sessionId !== bound) return undefined;
+					try { return buildSnapshot(session); } catch { return undefined; }
+				},
+				observe: (onSnapshot) => {
+					const observer = (id: string, snapshot: DesktopFeedSnapshot) => { if (!disposed && id === bound) onSnapshot(snapshot); };
+					mine.add(observer);
+					snapshotObservers.add(observer);
+					return () => { mine.delete(observer); snapshotObservers.delete(observer); };
+				},
+				dispose: () => {
+					disposed = true;
+					for (const observer of mine) snapshotObservers.delete(observer);
+					mine.clear();
+				},
+			};
+			(request.respond as (service: DesktopSessionService) => void)(service);
+		});
 
 		// Bus listeners are registered once; each one only speaks for the live session.
 		pi.events.on(NOTIFICATION_ATTENTION_EVENT, (data: unknown) => {

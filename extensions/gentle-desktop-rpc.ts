@@ -30,6 +30,13 @@ import { DesktopSessionBridge } from "../lib/desktop-session-service.ts";
 import { DESKTOP_SESSIONS_EVENTS, DESKTOP_SESSIONS_METHODS, desktopRequestId, desktopSessionsErrorLine, SESSION_SWITCHING } from "../lib/desktop-rpc-sessions.ts";
 import { DesktopSessionsBridge } from "../lib/desktop-sessions-service.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
+import type { DesktopChangeTimers, DesktopDirectoryWatch } from "../lib/desktop-rpc-config-watch.ts";
+
+/** Test seams for external-change detection; production uses `fs.watch` and real timers. */
+export interface DesktopRpcExtensionOptions {
+	watch?: DesktopDirectoryWatch;
+	timers?: DesktopChangeTimers;
+}
 
 function publisher(ctx: ExtensionContext): DesktopRpcPublish {
 	// Extract the UI once: Pi invalidates a captured ctx after a session switch,
@@ -45,7 +52,7 @@ function publisher(ctx: ExtensionContext): DesktopRpcPublish {
 	};
 }
 
-export default function desktopRpc(pi: ExtensionAPI) {
+export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensionOptions = {}) {
 	// Permission control always delegates to the existing Gentle AI session owner;
 	// config reads and writes delegate to the existing store owners; subscription
 	// usage delegates to the existing usage owner; design canvas reads delegate
@@ -57,8 +64,9 @@ export default function desktopRpc(pi: ExtensionAPI) {
 	// feed projection (`extensions/gentle-desktop-feed.ts`); sessions list/switch
 	// delegate to Pi's own `SessionManager` and the command context's
 	// `switchSession`. None has a store of its own.
-	const permissions = new DesktopPermissionBridge(pi);
-	const config = new DesktopConfigBridge();
+	const changeTimers = options.timers === undefined ? {} : { timers: options.timers };
+	const permissions = new DesktopPermissionBridge(pi, undefined, changeTimers);
+	const config = new DesktopConfigBridge({}, { ...changeTimers, ...(options.watch === undefined ? {} : { watch: options.watch }) });
 	const usage = new DesktopUsageBridge(pi);
 	const design = new DesktopDesignBridge(pi);
 	const jobs = new DesktopJobsBridge(pi);
@@ -155,6 +163,16 @@ export default function desktopRpc(pi: ExtensionAPI) {
 		// carrying only the changed sections, on the feed's own tiers.
 		sessions.wire((event, data) => router.emit(event, data));
 		void sessions.start();
+		// Changes made outside Desktop RPC (`/gentle:mode`, `/gentle:profiles`, an
+		// editor, another `pi` process) become `source: "external"` events. Both are
+		// best effort: the permission side follows the owner's observer, the config
+		// side watches the owner files' directories; a missing owner or a watcher that
+		// cannot be created leaves the channel working without these events. The
+		// session_start/session_shutdown resets above dispose them.
+		permissions.attach(ctx);
+		void permissions.wire((event, data) => router.emit(event, data));
+		config.attach(ctx);
+		config.wire((event, data) => router.emit(event, data));
 	});
 
 	pi.on("session_shutdown", () => {

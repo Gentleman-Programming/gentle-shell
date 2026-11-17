@@ -8,6 +8,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import type { InitLockOutcome } from "../lib/codegraph-lease.ts";
 import type { EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
+import { SYNC_RETRY_DELAY_MS, SYNC_TIMEOUT_MS } from "../lib/codegraph-readiness.ts";
 import codeGraphTools, {
 	armExposureEnsureForTest,
 	clearSearchWindow,
@@ -1635,6 +1636,9 @@ test("every search awaits its refresh before the query runs", async (t) => {
 
 test("a subagent child never triggers the background sync", async (t) => {
 	const cwd = workspace(t);
+	// An index is what makes the sync reachable at all: without one the unindexed-workspace
+	// guard would return false before the child-session guard ever mattered.
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
 	const calls: string[][] = [];
 	const tool = createCodeGraphTool(
 		async () => ({ stdout: "cli", stderr: "" }),
@@ -1792,4 +1796,82 @@ test("awaitSearchSync: a failing sync beside a live daemon notifies info, a daem
 	assert.equal(notices.length, 2);
 	assert.equal(notices[1].level, "warning", "without a daemon the failure stays a warning");
 	assert.equal(notices[1].text, `codegraph sync failed in ${deadCwd}`);
+});
+
+test("one budget covers the whole live-daemon refresh: the retry and the backoff draw on what the first attempt left", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	const registry = join(cwd, "registry");
+	mkdirSync(registry);
+	const socket = join(registry, "live.sock");
+	writeFileSync(socket, "");
+	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: cwd, socketPath: socket, startedAt: 1, pid: process.pid }));
+	const budgets: number[] = [];
+	const sleeps: number[] = [];
+	// The module's clock is driven only by the injected seams, so the budget arithmetic is
+	// observable without one real 120-second wait: the sleep advances the clock exactly the
+	// way the real backoff would.
+	let now = Date.now();
+	const realNow = Date.now;
+	Date.now = () => now;
+	t.after(() => {
+		Date.now = realNow;
+	});
+	const ctx = { cwd } as ExtensionContext;
+
+	const refreshed = await awaitSearchSync(cwd, ctx, async (_args, _cwd, timeoutMs) => {
+		budgets.push(timeoutMs);
+		return false;
+	}, {
+		registryDir: registry,
+		sleep: async (ms) => {
+			sleeps.push(ms);
+			now += ms;
+		},
+	});
+
+	assert.equal(refreshed, true, "a refresh covered the search even though the sync failed");
+	assert.deepEqual(sleeps, [SYNC_RETRY_DELAY_MS], "one full backoff separates the two attempts");
+	assert.equal(budgets.length, 2, "the failing sync beside a live daemon is retried once");
+	assert.equal(budgets[0], SYNC_TIMEOUT_MS, "the first attempt gets the whole sync budget");
+	assert.equal(budgets[1], SYNC_TIMEOUT_MS - SYNC_RETRY_DELAY_MS, "a fast-failing first attempt leaves the budget minus the backoff for the retry");
+	assert.ok(budgets[1] + sleeps[0] <= SYNC_TIMEOUT_MS, "attempt plus backoff plus retry stay inside one sync budget");
+});
+
+test("a refresh whose first attempt spent the whole budget ends there: no backoff, no second attempt", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	const registry = join(cwd, "registry");
+	mkdirSync(registry);
+	const socket = join(registry, "live.sock");
+	writeFileSync(socket, "");
+	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: cwd, socketPath: socket, startedAt: 1, pid: process.pid }));
+	const budgets: number[] = [];
+	const sleeps: number[] = [];
+	// The first attempt runs to its timeout, spending exactly the budget it was granted.
+	let now = Date.now();
+	const realNow = Date.now;
+	Date.now = () => now;
+	t.after(() => {
+		Date.now = realNow;
+	});
+	const ctx = { cwd } as ExtensionContext;
+
+	const refreshed = await awaitSearchSync(cwd, ctx, async (_args, _cwd, timeoutMs) => {
+		budgets.push(timeoutMs);
+		now += timeoutMs;
+		return false;
+	}, {
+		registryDir: registry,
+		sleep: async (ms) => {
+			sleeps.push(ms);
+			now += ms;
+		},
+	});
+
+	assert.equal(refreshed, true, "the budget-exhausted refresh still settled before the search");
+	assert.deepEqual(budgets, [SYNC_TIMEOUT_MS], "the whole-budget refresh makes exactly one attempt");
+	assert.deepEqual(sleeps, [], "no backoff fits what the first attempt already spent");
 });

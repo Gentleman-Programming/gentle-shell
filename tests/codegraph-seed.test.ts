@@ -315,6 +315,102 @@ test("a busy main writer still seeds through a lock-safe snapshot", async (t) =>
 	}
 });
 
+test("a transient SQLITE_IOERR during the snapshot is retried and the seed still publishes", async (t) => {
+	const { worktree } = worktreePair(t);
+	const { DatabaseSync: RealDatabaseSync } = await import("node:sqlite");
+	let constructions = 0;
+	const { input, calls } = seedHarness(worktree, {
+		// The observed bun flake as an injection: the first DatabaseSync construction throws
+		// the transient IOERR and every later one delegates to the real module.
+		importSqlite: async () => ({
+			DatabaseSync: class extends RealDatabaseSync {
+				constructor(...args: ConstructorParameters<typeof RealDatabaseSync>) {
+					constructions += 1;
+					if (constructions === 1) throw Object.assign(new Error("disk I/O error"), { code: "ERR_SQLITE_ERROR" });
+					super(...args);
+				}
+			},
+		}),
+		sleep: async () => {},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seeded", "a lone snapshot IOERR is retried, so the worktree still gets its index this session");
+	assert.deepEqual(calls, ["sync -q"], "exactly one sync validates the snapshot");
+	assert.deepEqual(markerNotes(join(worktree, ".codegraph", "codegraph.db")), ["committed"], "the retried snapshot still publishes the committed marker");
+});
+
+test("a non-IOERR sqlite snapshot error fails the seed without burning retries", async (t) => {
+	const { worktree } = worktreePair(t);
+	const { DatabaseSync: RealDatabaseSync } = await import("node:sqlite");
+	let constructions = 0;
+	const sleeps: number[] = [];
+	const { input, calls } = seedHarness(worktree, {
+		// A corruption-shaped sqlite error: never retried, whatever the code says.
+		importSqlite: async () => ({
+			DatabaseSync: class extends RealDatabaseSync {
+				constructor(...args: ConstructorParameters<typeof RealDatabaseSync>) {
+					constructions += 1;
+					if (constructions === 1) throw Object.assign(new Error("file is not a database"), { code: "ERR_SQLITE_ERROR" });
+					super(...args);
+				}
+			},
+		}),
+		sleep: async (ms: number) => {
+			sleeps.push(ms);
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed", "only the IOERR shape is transient: corruption stays fatal");
+	assert.equal(constructions, 1, "exactly one construction attempt: no retry was spent");
+	assert.deepEqual(sleeps, [], "and no retry wait was burned either");
+	assert.deepEqual(calls, [], "the validating sync never ran");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore"], "staging is cleaned and the worktree stays exactly as absent as before");
+});
+
+test("a seed displaced while a snapshot retry waits never publishes over the replacement", async (t) => {
+	const { worktree } = worktreePair(t);
+	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-snapshot-fence-"));
+	t.after(() => rmSync(sandbox, { recursive: true, force: true }));
+	const locksDir = join(sandbox, "locks");
+	const lockPath = lockPathFor(worktree, "init", locksDir);
+	const { DatabaseSync: RealDatabaseSync } = await import("node:sqlite");
+	let constructions = 0;
+	let displaced = false;
+	const { input } = seedHarness(worktree, {
+		locksDir,
+		importSqlite: async () => ({
+			DatabaseSync: class extends RealDatabaseSync {
+				constructor(...args: ConstructorParameters<typeof RealDatabaseSync>) {
+					constructions += 1;
+					if (constructions === 1) throw Object.assign(new Error("disk I/O error"), { code: "ERR_SQLITE_ERROR" });
+					super(...args);
+				}
+			},
+		}),
+		sleep: async () => {
+			if (displaced) return;
+			displaced = true;
+			// The retry wait is the displacement window, exactly like the publication fence: the
+			// lease's TTL elapses while this seed sits parked, another session reclaims it and
+			// publishes a newer index into the same worktree.
+			const { expiresAt } = JSON.parse(readFileSync(lockPath, "utf8")) as { expiresAt: number };
+			const reclaimer = tryAcquireLease(lockPath, "init", 600_000, expiresAt + 1_000, worktree);
+			assert.ok(reclaimer, "the other session reclaims the lease during the snapshot retry wait");
+			writeFileSync(join(worktree, ".codegraph", "codegraph.db"), "newer-index-bytes");
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed", "a seed displaced mid-snapshot aborts instead of publishing over the replacement holder's index");
+	assert.equal(readFileSync(join(worktree, ".codegraph", "codegraph.db"), "utf8"), "newer-index-bytes", "the newer database the other session published survives");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "no staging leftover and no stale seed file is left behind");
+});
+
 test("a main checkout mid-init defers seeding without touching the worktree", async (t) => {
 	const { main, worktree } = worktreePair(t);
 	const locksDir = mkdtempSync(join(tmpdir(), "gentle-pi-seed-locks-"));

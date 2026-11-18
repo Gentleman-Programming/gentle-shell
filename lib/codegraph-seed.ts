@@ -17,6 +17,9 @@ export interface SeedInput {
 	initLockWaitMs?: number;
 	/** Sleep between transient retries; injectable for tests. */
 	sleep?(ms: number): Promise<void>;
+	/** Loads node:sqlite for the snapshot; injectable so tests can flake the open. The
+	 * default dynamic import keeps module unavailability a runtime fail-closed outcome. */
+	importSqlite?: () => Promise<Pick<typeof import("node:sqlite"), "DatabaseSync">>;
 	/** Runs `codegraph <args> <cwd>`; the validating sync, with the staging project as its
 	 * cwd. Returning the object form lets the runner report whether the sync removed
 	 * tracked entries, which a bare exit status cannot prove either way. */
@@ -61,17 +64,39 @@ const INDEX_GITIGNORE = "*\n!.gitignore\n";
 const TRANSIENT_CODES = new Set(["EACCES", "EPERM", "EBUSY"]);
 const TRANSIENT_ATTEMPTS = 3;
 
-/** Runs one synchronous filesystem step, retrying only the transient codes; anything else fails at once.
+/** The transient-error test the filesystem retry has always used: a retryable errno code. */
+function isTransientFsCode(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code !== undefined && TRANSIENT_CODES.has(code);
+}
+
+/** The observed bun flake this classifier covers: node:sqlite threw ERR_SQLITE_ERROR
+ * "disk I/O error" from VACUUM INTO while a WAL writer was active on the source database,
+ * and an immediate rerun succeeded byte-identically (node itself never showed it). Narrow
+ * on purpose: only that IOERR shape is retried — corruption, malformed and locked errors
+ * stay fatal, because a retry cannot fix them and would only hide a real failure. */
+function isTransientSqliteError(error: unknown): boolean {
+	const sqlite = error as NodeJS.ErrnoException;
+	return sqlite.code === "ERR_SQLITE_ERROR" && /disk I\/O error/.test(sqlite.message ?? "");
+}
+
+/** Runs one synchronous step, retrying only transient errors; anything else fails at once.
  * An optional beforeRetry hook runs after each retry wait, so a caller can re-check an
- * ownership fence before paying for the next attempt; a throw from it aborts the retries. */
-export async function retryTransient<T>(step: () => T, sleep: (ms: number) => Promise<void>, beforeRetry?: () => void): Promise<T> {
+ * ownership fence before paying for the next attempt; a throw from it aborts the retries.
+ * An optional classifier decides which errors count as transient; the default is the
+ * filesystem's errno set, and the sqlite snapshot passes the IOERR-only classifier above. */
+export async function retryTransient<T>(
+	step: () => T,
+	sleep: (ms: number) => Promise<void>,
+	beforeRetry?: () => void,
+	isTransient: (error: unknown) => boolean = isTransientFsCode,
+): Promise<T> {
 	let lastError: unknown;
 	for (let attempt = 0; attempt < TRANSIENT_ATTEMPTS; attempt += 1) {
 		try {
 			return step();
 		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === undefined || !TRANSIENT_CODES.has(code)) throw error;
+			if (!isTransient(error)) throw error;
 			lastError = error;
 			if (attempt + 1 < TRANSIENT_ATTEMPTS) {
 				await sleep(50 * (attempt + 1));
@@ -98,7 +123,10 @@ export async function retryTransient<T>(step: () => T, sleep: (ms: number) => Pr
  * the newer database the replacement holder published.
  */
 export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: SeedOutcome }> {
-	const { sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = input;
+	const {
+		sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+		importSqlite = () => import("node:sqlite"),
+	} = input;
 	const main = worktreeMainRoot(input.cwd);
 	if (main === undefined || !isFile(join(main, ".codegraph", "codegraph.db"))) return { outcome: "not-seedable" };
 	const targetDir = join(input.cwd, ".codegraph");
@@ -157,26 +185,42 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 				// the main database through its own WAL — a writer mid-commit is the snapshot's
 				// input, never a torn copy — and it refuses an existing target file, preserving
 				// the exclusive-creation safety the raw copy's "wx" probe used to provide.
-				const { DatabaseSync } = await import("node:sqlite");
-				const source = new DatabaseSync(join(main, ".codegraph", "codegraph.db"), { readOnly: true });
-				try {
-					source.exec("VACUUM INTO '" + stagedPath.replaceAll("'", "''") + "'");
-				} finally {
-					source.close();
-				}
-				// The snapshot inherits the source's on-disk WAL mode; the published database
-				// must stand alone with no -wal/-shm beside it, so the staged copy is converted
-				// into a rollback-journal database before it ever leaves staging.
-				const stagedDb = new DatabaseSync(stagedPath);
-				try {
-					stagedDb.exec("PRAGMA journal_mode=DELETE");
-				} finally {
-					stagedDb.close();
-				}
+				const { DatabaseSync } = await importSqlite();
+				// The whole snapshot is one retried unit: bun has been seen throwing a transient
+				// ERR_SQLITE_ERROR "disk I/O error" from VACUUM INTO beside a live WAL writer, and
+				// an immediate rerun succeeded byte-identically, so that IOERR shape is retried
+				// instead of costing the worktree its index for the session.
+				await retryTransient(() => {
+					// VACUUM INTO refuses an existing target, so every attempt starts clean: an
+					// attempt that died mid-copy leaves no partial file for the next one.
+					rmSync(stagedPath, { force: true });
+					const source = new DatabaseSync(join(main, ".codegraph", "codegraph.db"), { readOnly: true });
+					try {
+						source.exec("VACUUM INTO '" + stagedPath.replaceAll("'", "''") + "'");
+					} finally {
+						source.close();
+					}
+					// The snapshot inherits the source's on-disk WAL mode; the published database
+					// must stand alone with no -wal/-shm beside it, so the staged copy is converted
+					// into a rollback-journal database before it ever leaves staging.
+					const stagedDb = new DatabaseSync(stagedPath);
+					try {
+						stagedDb.exec("PRAGMA journal_mode=DELETE");
+					} finally {
+						stagedDb.close();
+					}
+				}, sleep, () => {
+					// The wait before a retry can outlast the init lease, exactly like the
+					// publication fence below: a seed displaced mid-snapshot stands down instead
+					// of paying for another attempt on a lease it no longer holds.
+					if (leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
+						throw new Error("the init lease changed hands while the snapshot waited to retry");
+					}
+				}, isTransientSqliteError);
 			} catch {
-				// A failed snapshot — node:sqlite unavailable, a failed open, a refused target —
-				// leaves no index: staging is removed whole, so the worktree is exactly as
-				// absent as before the seed.
+				// A failed snapshot — node:sqlite unavailable, a failed open, a refused target,
+				// a transient IOERR that outlived its retries — leaves no index: staging is
+				// removed whole, so the worktree is exactly as absent as before the seed.
 				return { outcome: "seed-failed" };
 			}
 

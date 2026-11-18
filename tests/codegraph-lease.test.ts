@@ -728,6 +728,28 @@ test("adoption replaces the token under the per-path mutex: never a truncating r
 	outcome.release();
 });
 
+test("adoption waits out brief per-path mutex contention instead of skipping at the first deadline", async (t) => {
+	const dir = locksDir(t);
+	const cwd = project(t);
+	const path = lockPathFor(cwd, "sync", dir);
+	const lease = tryAcquireSyncLease(cwd, dir);
+	assert.ok(lease !== undefined, "the free sync lease is acquired");
+
+	// A live local holder's mutex that ages out mid-wait: withPathMutex must keep waiting while
+	// the holder is live and the record unexpired (the spawned-writer record outlives a brief
+	// stall), then steal the expired mutex and publish the adoption — not skip at the first deadline.
+	const now = Date.now();
+	writeToken(path + ".mutex", { pid: process.pid, startedAt: now, expiresAt: now + 600 });
+	const started = Date.now();
+	lease.adopt(4242, false);
+	const elapsed = Date.now() - started;
+	const token = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+	assert.equal(token.writerPid, 4242, "the adoption waits out the contended window and publishes");
+	assert.ok(elapsed >= 500, `adoption waited out the contention (elapsed ${elapsed} ms)`);
+	lease.release();
+	assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".tmp") || name.endsWith(".mutex") || name.endsWith(".stale")), [], "adoption leaves no temp, mutex, or stale-steal litter behind");
+});
+
 test("two real sessions reclaiming one stale token: exactly one acquisition, the winner's token survives", async (t) => {
 	const dir = locksDir(t);
 	const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-lease-race-")));

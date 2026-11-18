@@ -254,7 +254,7 @@ function writeTokenExclusively(path: string, kind: LeaseKind, ttlMs: number, now
  * restore a damaged file.
  */
 function adoptWriterPid(path: string, pid: number, proxy: boolean, now: number = Date.now(), nonce?: string): void {
-	withPathMutex(path, MUTEX_WAIT_MS, (owns) => {
+	withPathMutex(path, ADOPT_MUTEX_WAIT_MS, (owns) => {
 		try {
 			const token = JSON.parse(readFileSync(path, "utf8")) as LeaseToken;
 			if (token.pid !== process.pid) return undefined; // lost or stolen since: never touch another holder's token
@@ -302,6 +302,9 @@ interface MutexToken {
 const MUTEX_TTL_MS = 10_000;
 /** Waiting for a live mutex holder is bounded: a wedged holder fail-closes the attempt instead. */
 const MUTEX_WAIT_MS = 250;
+/** Adoption waits out brief per-path mutex contention (observed under win32 load): the
+ * spawned-writer record outlives a short stall, unlike a fast skip that loses it. */
+const ADOPT_MUTEX_WAIT_MS = 2_000;
 const MUTEX_POLL_MS = 5;
 
 function mutexPathFor(path: string): string {

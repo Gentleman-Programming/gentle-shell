@@ -31,6 +31,7 @@ import { ReviewContinuationRegistry, type RetainedReviewContinuation, type Retai
 import { boundedFindingClaims, parseReviewCoordinatorInput, runReviewCoordinator } from "../lib/review-coordinator.ts";
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
+import { PROFILE_CARD_SETTINGS_CHANGED, writeProfileCard } from "../lib/profile-card-policy.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
@@ -6802,7 +6803,7 @@ async function runProfilesPanelAction(
 }
 
 /** `/gentle:profiles`: seed or open the store, then loop the panel over one action at a time until it closes. */
-const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import | publish <name> | export-routing | restore-routing | clear]";
+const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import | publish <name> | export-routing | restore-routing | clear | card on|off]";
 
 /**
  * `/gentle:profiles` opens the models screen. File operations live in
@@ -6811,13 +6812,33 @@ const PROFILES_COMMAND_USAGE = "Usage: /gentle:profiles [export <name> | import 
  * profile through `profiles.export.json`, `publish <name>` toggles the
  * committed repository declaration, and `export-routing` / `restore-routing`
  * move the saved global routing (models.json, not a profile) through
- * `models.export.json`. The routing verbs carry their own names so a profile
+ * `models.export.json`. `card on|off` shows or hides the sidebar profile card
+ * (a global flag, hidden by default, live). The routing verbs carry their own names so a profile
  * can never be mistaken for them.
  */
 async function handleProfilesCommand(ctx: ExtensionContext, live: LiveSession, args = ""): Promise<void> {
 	const [verb = "", ...rest] = args.trim().split(/\s+/).filter(Boolean);
 	if (verb === "") {
 		await openModelsScreen(ctx, live);
+		return;
+	}
+	if (verb === "card") {
+		const choice = rest.length === 1 ? rest[0] : undefined;
+		if (choice !== "on" && choice !== "off") {
+			ctx.ui.notify(PROFILES_COMMAND_USAGE, "warning");
+			return;
+		}
+		try {
+			writeProfileCard(choice === "on");
+		} catch (error) {
+			ctx.ui.notify(`Could not save the profile card setting: ${profilesErrorMessage(error)}`, "warning");
+			return;
+		}
+		live.events?.emit(PROFILE_CARD_SETTINGS_CHANGED, { visible: choice === "on" });
+		ctx.ui.notify(
+			choice === "on" ? "Profile card shown. Turn it off with /gentle:profiles card off." : "Profile card hidden. Turn it on with /gentle:profiles card on.",
+			"info",
+		);
 		return;
 	}
 	if (verb === "export-routing" || verb === "restore-routing" || verb === "clear") {
@@ -13438,7 +13459,7 @@ function createGentleAiExtensionForTesting(
 	}
 
 	pi.registerCommand("gentle:profiles", {
-		description: "Open the models screen (profiles as tabs). Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear.",
+		description: "Open the models screen (profiles as tabs). Subcommands: export <name>, import, publish <name>, export-routing, restore-routing, clear, card on|off.",
 		handler: async (args, ctx) => {
 			await handleProfilesCommand(ctx, pi, typeof args === "string" ? args : "");
 		},

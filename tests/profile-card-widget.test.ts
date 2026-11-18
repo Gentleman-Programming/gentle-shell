@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
+	buildProfileCardItems,
 	initialProfileIndex,
 	nextProfileIndex,
 	previousProfileIndex,
 	profileCardActionAt,
-	profileCardItems,
 	reconcileProfileIndex,
 	renderProfileCardSection,
 	type ProfileCardItem,
@@ -25,17 +25,18 @@ const plainTheme = {
 const item = (name: string, markers: Partial<ProfileCardItem> = {}): ProfileCardItem => ({ name, active: false, pinned: false, session: false, ...markers });
 const three = [item("alpha"), item("beta", { active: true }), item("gamma")];
 
-test("profileCardItems reads names and markers from buildProfileListItems labels", () => {
-	const items = profileCardItems([
-		{ id: "a", label: "a", description: "1 role" },
-		{ id: "b (x)", label: "b (x) (active) (pinned)", description: "2 roles" },
-		{ id: "c", label: "c (active) (session)", description: "2 roles" },
+test("buildProfileCardItems names the markers from the raw profiles file, session outranking pin", () => {
+	const file = { profiles: { a: {}, "b (x)": {}, c: {}, d: {} }, active: "c" };
+	assert.deepEqual(buildProfileCardItems(file), [
+		item("a"), item("b (x)"), item("c", { active: true }), item("d"),
 	]);
-	assert.deepEqual(items, [
-		item("a"),
-		item("b (x)", { active: true, pinned: true }),
-		item("c", { active: true, session: true }),
+	assert.deepEqual(buildProfileCardItems(file, "b (x)", "c"), [
+		item("a"), item("b (x)", { pinned: true }), item("c", { active: true, session: true }), item("d"),
 	]);
+	assert.deepEqual(buildProfileCardItems(file, "c", "c"), [
+		item("a"), item("b (x)"), item("c", { active: true, session: true }), item("d"),
+	], "a profile that is both bound and pinned shows the session marker only");
+	assert.deepEqual(buildProfileCardItems({ profiles: {} }), []);
 });
 
 test("initial index prefers the session profile, then the active one, else 0", () => {

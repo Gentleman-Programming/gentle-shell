@@ -340,6 +340,21 @@ test("rail orders live work first, then Status, without standalone changes", (t)
 	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle Shell ✿", "", "todo", "", "agents", "", "Status"]);
 });
 
+test("the profiles section renders between agents and Status when registered and is absent otherwise", (t) => {
+	const f = fixture();
+	for (const key of ["todo", "agents"]) sidebarPart(f.tui, key, { render: () => [key, ""], invalidate() {} });
+	t.after(installSidebar(f.tui, theme));
+	const lines = () => rail(f).render(50).map((line) => line.trim());
+	assert.deepEqual(lines(), ["✿ Gentle Shell ✿", "", "todo", "", "agents", "", "Status"], "no profiles part: nothing is reserved for it");
+	const profiles = sidebarPart(f.tui, "profiles", { render: () => [] as string[], invalidate() {}, dispose() {} }, { digest: () => "p", render: () => ["profiles", ""], invalidate() {} });
+	assert.deepEqual(lines(), ["✿ Gentle Shell ✿", "", "todo", "", "agents", "", "profiles", "", "Status"], "profiles sits after agents and before Status");
+	sidebarState(f.tui).visibility = { todo: false };
+	invalidateSidebar(f.tui);
+	assert.deepEqual(lines(), ["✿ Gentle Shell ✿", "", "agents", "", "profiles", "", "Status"], "the todo visibility filter still applies");
+	profiles.dispose();
+	assert.deepEqual(lines(), ["✿ Gentle Shell ✿", "", "agents", "", "Status"]);
+});
+
 test("branding belongs to scroll content before Status, never transcript or narrow bottom", (t) => {
 	const f = fixture();
 	t.after(installSidebar(f.tui, theme));

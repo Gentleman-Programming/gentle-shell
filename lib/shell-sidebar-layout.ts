@@ -341,7 +341,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// A carded section renders one indent wider; its body rows drop that indent inside the card.
 			const renderWidth = carded ? panelInnerWidth(theme, contentWidth) + PANEL_ROW_INDENT : contentWidth - RAIL_PADDING * 2;
 			// Live work first, then the session Status sections (design/shell-rework/02-proposal.html).
-			const sections = ["todo", "jobs", "agents", "footer"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
+			const sections = ["todo", "jobs", "agents", "profiles", "footer"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
 				const component = state.parts.get(key);
 				if (!component) {
 					sectionCache.delete(key);
@@ -401,7 +401,9 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 						// The title row folds the section like its header; body rows keep their own rows.
 						const frame = { frameWidth: renderWidth, frameHeight: section.lines.length };
 						hits.push({ key: section.key, component: section.component, startY: top + geometry.headerRow, height: 1, width: renderWidth, x: geometry.headerX, row: group.start, wholeRow: true, ...frame });
-						if (body.length) hits.push({ key: section.key, component: section.component, startY: top + geometry.bodyRow, height: body.length, width: renderWidth - PANEL_ROW_INDENT, x: geometry.bodyX - PANEL_ROW_INDENT, row: group.start + 1, ...frame });
+						// The body drops its indent, so its frame x starts PANEL_ROW_INDENT left of bodyX: the span
+						// is the whole frame width, which keeps the last body cells (a ▶ in the last column) hittable.
+						if (body.length) hits.push({ key: section.key, component: section.component, startY: top + geometry.bodyRow, height: body.length, width: renderWidth, x: geometry.bodyX - PANEL_ROW_INDENT, row: group.start + 1, ...frame });
 					});
 					const loose = (layout.loose ?? []).map((row) => section.lines[row] ?? "").filter((row) => row.trim() !== "");
 					if (loose.length && sectionGap(density())) railLines.push("");

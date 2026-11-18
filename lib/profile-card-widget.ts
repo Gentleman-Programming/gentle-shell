@@ -1,5 +1,5 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
-import type { ProfileListItem } from "./agent-profiles.ts";
+import type { AgentProfilesFile } from "./agent-profiles.ts";
 import { clipPanelText, PANEL_ROW_INDENT, renderPanelHeader, renderPanelRow, type PanelTheme } from "./shell-panel.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
@@ -41,17 +41,18 @@ export const PROFILE_CARD_EMPTY_HINT = "No profiles yet. Create one in /gentle:p
 
 // ---- Navigation state ----
 
-/** Names and markers from `buildProfileListItems` (the label carries `(active)`, `(pinned)`, `(session)`). */
-export function profileCardItems(listItems: readonly ProfileListItem[]): ProfileCardItem[] {
-	return listItems.map((entry) => {
-		const rest = entry.label.startsWith(entry.id) ? entry.label.slice(entry.id.length) : "";
-		return {
-			name: entry.id,
-			active: rest.includes("(active)"),
-			pinned: rest.includes("(pinned)"),
-			session: rest.includes("(session)"),
-		};
-	});
+/**
+ * One item per saved profile, with the same markers `buildProfileListItems`
+ * names: `active` is the global claim; a session binding outranks the pin, so
+ * `session` and `pinned` never both apply to one profile.
+ */
+export function buildProfileCardItems(file: Pick<AgentProfilesFile, "profiles" | "active">, pinned?: string, sessionBound?: string): ProfileCardItem[] {
+	return Object.keys(file.profiles).map((name) => ({
+		name,
+		active: name === file.active,
+		pinned: name !== sessionBound && name === pinned,
+		session: name === sessionBound,
+	}));
 }
 
 /** The profile in effect for the session: session marker first, then active, else the first. */

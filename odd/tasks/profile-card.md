@@ -40,7 +40,7 @@ current session. Opt-in through `/gentle:profiles card on|off`.
 ## Tasks
 
 - [x] T1 — S1, S6(command part): profile-card policy store + `card on|off` subcommand + usage/docs. Route: worker A. Commit: 89f989edd
-- [ ] T2 — S2, S5: pure card renderer, navigation state (wrap) and ◀/▶/use hit map, unit tests. Route: worker B (parallel with T1). Commit: —
+- [x] T2 — S2, S5: pure card renderer, navigation state (wrap) and ◀/▶/use hit map, unit tests. Route: worker B (parallel with T1). Commit: 22754ce4b
 - [ ] T3 — S1, S2: sidebar wiring (section key, visibility gate, panel sheet order, widget registration, mouse dispatch). Route: worker C after T1+T2. Commit: —
 - [ ] T4 — S3: use action through the owner under the apply gate, confirmation and notices. Route: worker C (continue). Commit: —
 - [ ] T5 — S4: shortcuts in `KEYMAP_ACTIONS` and registration, `tests/keymaps.test.ts`. Route: worker C (continue). Commit: —

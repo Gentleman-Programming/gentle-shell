@@ -32,6 +32,8 @@ import { boundedFindingClaims, parseReviewCoordinatorInput, runReviewCoordinator
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { PROFILE_CARD_SETTINGS_CHANGED, writeProfileCard } from "../lib/profile-card-policy.ts";
+import { createProfileCardOwner, mountProfileCard } from "../lib/profile-card-sidebar.ts";
+import { buildProfileCardItems, type ProfileCardItem } from "../lib/profile-card-widget.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
@@ -3426,6 +3428,18 @@ function sessionProfileAuthorityAvailable(ctx: ExtensionContext): boolean {
 	const manager = ctx.sessionManager;
 	if (typeof manager?.getSessionId !== "function" || typeof manager.getBranch !== "function") return true;
 	return readSessionProfileAuthority(manager).available;
+}
+
+/**
+ * The sidebar profile card's items: the saved profiles with the markers the
+ * /gentle:profiles list names. An unreadable store shows no profiles.
+ */
+function readProfileCardItems(ctx: ExtensionContext): ProfileCardItem[] {
+	const read = readProfilesFileResult(profilesFilePath(gentleAiConfigHome()));
+	if (read.status !== "valid") return [];
+	const sessionBound = sessionLaunchProfile(ctx, sessionProfileAuthorityAvailable(ctx))?.name;
+	const pinned = evaluateProfilePin(readProfilePinStatus(ctx.cwd), read.file.profiles).winner?.profile;
+	return buildProfileCardItems(read.file, pinned, sessionBound);
 }
 
 /** The routing this session's launches use: its profile, or the global effective routing. */
@@ -12370,6 +12384,16 @@ function createGentleAiExtensionForTesting(
 	const statusTiming = new StatusTimingDiagnostics();
 	const reviewSidebar = createReviewSidebarPublisher(pi);
 	const sessionProfiles = createSessionProfileIntegration();
+	// The sidebar profile card: one owner holds the card state (visibility, shown
+	// profile) so the use action and keyboard shortcuts act on the same selection.
+	let profileCardCtx: ExtensionContext | undefined;
+	let stopProfileCardEvents: (() => void) | undefined;
+	const profileCard = createProfileCardOwner({
+		loadItems: () => {
+			if (!profileCardCtx) throw new Error("no session");
+			return readProfileCardItems(profileCardCtx);
+		},
+	});
 	pi.on("session_before_fork", async (event, ctx) => {
 		await waitCurrentSessionProfileSelection(ctx.sessionManager);
 		sessionProfiles.beforeFork(ctx.sessionManager, { entryId: event.entryId, position: event.position });
@@ -12421,6 +12445,9 @@ function createGentleAiExtensionForTesting(
 		statusTiming.reset();
 		reminderSessionActive = false;
 		reminderEpoch += 1;
+		stopProfileCardEvents?.();
+		stopProfileCardEvents = undefined;
+		profileCardCtx = undefined;
 		activeRddContext = undefined;
 		unbindPreparation?.();
 		unbindPreparation = undefined;
@@ -12920,6 +12947,13 @@ function createGentleAiExtensionForTesting(
 		const profileSessionId = ctx.sessionManager?.getSessionId?.();
 		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
 		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
+		// The card re-reads its visibility store on the settings event (the payload is not trusted).
+		profileCardCtx = ctx;
+		stopProfileCardEvents?.();
+		stopProfileCardEvents = pi.events?.on?.(PROFILE_CARD_SETTINGS_CHANGED, () => profileCard.refreshVisibility());
+		profileCard.refreshVisibility();
+		profileCard.refreshItems();
+		if (ctx.hasUI && typeof ctx.ui.setWidget === "function") ctx.ui.setWidget("gentle-profile-card", (tui, theme) => mountProfileCard(tui, theme, profileCard));
 		// gentle-shell#2742: only a session's own start tells this process its
 		// startup state; anything else leaves it unknown.
 		let startupProfile: SessionProfileStartupState | undefined;

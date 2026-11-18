@@ -874,6 +874,30 @@ test("Herdr send keeps an accepted receipt when the transport is replaced before
 	assert.deepEqual(reports(), []);
 });
 
+test("Herdr send keeps an accepted receipt when the session is replaced and the old ctx turns stale before acceptance resolves", async () => {
+	const h = fakePi(), runtime = deps(), { ctx } = fakeContext(), { ctx: next } = fakeContext();
+	let starts = 0, settle!: (value: { id: string; accepted: true }) => void;
+	const registry = { list: async () => [], listActivations: async () => [] };
+	runtime.deps.sessionTransport = {
+		createRegistry: async () => registry,
+		createListener: () => ({ registry, start: async () => { starts++; }, close: async () => {} }),
+		createClient: () => ({ close() {}, sendNotification: () => new Promise((resolve) => { settle = resolve; }) }),
+	};
+	gentleAgents(h.pi, {}, runtime.deps); await h.fire("session_start", ctx); await eventually(() => starts === 1, "transport ready");
+	const reports = () => h.events.filter(e => e.name === "gentle-pi:herdr-desktop:send").map(e => e.data);
+	const pending = h.tools.get("orchestrator_send_message")!.execute("send", { recipient_session_id: "peer", message: "hello", reason: "because the peer needs an update" }, undefined, undefined, ctx);
+	await eventually(() => !!settle, "send pending");
+	await h.fire("session_start", next); await eventually(() => starts === 2, "session replaced");
+	Object.defineProperty(ctx, "sessionManager", { get() { throw new Error("This extension ctx is stale after session replacement or reload."); } });
+	settle({ id: "m1", accepted: true });
+	const result = await pending;
+	assert.equal(result.content[0].text, "Message m1 from s1 to peer accepted for delivery; it is not a delivery or read receipt.");
+	assert.equal(result.details.error, undefined);
+	const receipt = result.details.gentleAgents as { messageId: string; senderSessionId: string; recipientSessionId: string; state: string };
+	assert.deepEqual([receipt.messageId, receipt.senderSessionId, receipt.recipientSessionId, receipt.state], ["m1", "s1", "peer", "accepted"]);
+	assert.deepEqual(reports(), []);
+});
+
 // S15 P9a: a parent busy past the query deadline still gets its answer to the
 // child, as a steering message, and the tool result says what happened.
 function expiringQueryHarness() {

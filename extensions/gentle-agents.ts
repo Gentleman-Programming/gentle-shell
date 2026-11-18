@@ -3328,11 +3328,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "denied" });
 			}
 			try {
+				// Read the sender label while ctx is live: Pi invalidates it on session replacement.
+				const senderLabel = sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? "");
 				const accepted = await transport.client.sendNotification(recipient, message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
-				// The peer already accepted: a replaced transport only suppresses the display event,
-				// never the receipt, or a retry would duplicate the message.
-				if (activeTransportFor(ctx) === transport) emitHerdr(HERDR_DESKTOP_SEND, { sessionId: transport.sessionId, target: recipient });
-				return text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted", message, reason, senderLabel: sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? ""), recipientLabel: messagePeerLabel(agentHome, recipient) } });
+				// The peer already accepted: a replaced transport or stale ctx only suppresses the
+				// display event, never the receipt, or a retry would duplicate the message.
+				let current = false;
+				try { current = activeTransportFor(ctx) === transport; } catch { /* stale ctx: the session was replaced */ }
+				if (current) emitHerdr(HERDR_DESKTOP_SEND, { sessionId: transport.sessionId, target: recipient });
+				return text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted", message, reason, senderLabel, recipientLabel: messagePeerLabel(agentHome, recipient) } });
 			} catch {
 				return text("Error: session message was not accepted.", { error: "not accepted" });
 			}

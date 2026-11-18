@@ -102,10 +102,18 @@ function markersText(entry: ProfileCardItem): string {
 	return marks.length ? `(${marks.join(", ")})` : "";
 }
 
+export interface ProfileCardRenderOptions {
+	/** Only the header row is drawn: no body rows and no hits. */
+	collapsed?: boolean;
+	/** The pointer is on the title row: it paints the shared hover role like the other cards. */
+	hovered?: boolean;
+}
+
 /** The profile card section: header, one navigation row and the use row; or the empty-state hint. */
-export function renderProfileCardSection(items: readonly ProfileCardItem[], index: number, theme: PanelTheme, width: number): ProfileCardRender {
+export function renderProfileCardSection(items: readonly ProfileCardItem[], index: number, theme: PanelTheme, width: number, options: ProfileCardRenderOptions = {}): ProfileCardRender {
 	const w = Math.max(0, Math.floor(width));
-	const header = renderPanelHeader(theme, w, { title: "Profile", open: true });
+	const header = renderPanelHeader(theme, w, { title: "Profile", open: !options.collapsed, hovered: options.hovered === true });
+	if (options.collapsed) return { lines: [header], hits: [] };
 	if (items.length === 0) {
 		return { lines: [header, renderPanelRow(w, theme.fg(META_ROLE, clipPanelText(PROFILE_CARD_EMPTY_HINT, Math.max(0, w - PANEL_ROW_INDENT))))], hits: [] };
 	}

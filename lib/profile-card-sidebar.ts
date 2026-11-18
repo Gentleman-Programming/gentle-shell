@@ -4,6 +4,7 @@ import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earend
 import { effectiveKey, type KeymapBindings } from "./keymaps.ts";
 import { evaluateProfilePin, readProfilePinStatus } from "./agent-profile-pin.ts";
 import { profilesFilePath, readProfilesFileResult, type ProfilesFileReadResult } from "./agent-profiles.ts";
+import { NativePointerRegion } from "./native-pointer-region.ts";
 import { resolveProfileCard } from "./profile-card-policy.ts";
 import { readSessionProfileBinding } from "./session-profile-binding.ts";
 import { readSessionProfileDisk, type SessionProfileSource } from "./session-profile-disk-reader.ts";
@@ -21,7 +22,7 @@ import {
 	type ProfileCardItem,
 } from "./profile-card-widget.ts";
 import type { PanelTheme } from "./shell-panel.ts";
-import { sidebarPart, type SidebarRail } from "./shell-sidebar.ts";
+import { releaseSidebarHover, setSidebarHover, sidebarPart, type SidebarRail } from "./shell-sidebar.ts";
 import { invalidateSidebar } from "./shell-sidebar-layout.ts";
 
 // The sidebar profile card's owner and registration glue. The owner holds the
@@ -57,6 +58,10 @@ export interface ProfileCardOwner {
 	index(): number;
 	/** The shown profile, or undefined with no saved profiles. */
 	shown(): ProfileCardItem | undefined;
+	/** Whether the card shows only its header. In memory like the other cards' collapse state: it resets with the session. */
+	collapsed(): boolean;
+	/** Fold or unfold the card; repaints every surface. */
+	toggleCollapsed(): void;
 	/** Re-read the visibility flag from its store; a card turning on restarts at the session's profile. */
 	refreshVisibility(): void;
 	/** Re-read the saved profiles, keeping the shown one by name when it still exists. */
@@ -82,6 +87,7 @@ export function createProfileCardOwner(options: ProfileCardOwnerOptions): Profil
 	let items: readonly ProfileCardItem[] = [];
 	let index = 0;
 	let selectedName: string | undefined;
+	let collapsed = false;
 	let loadedAt = Number.NEGATIVE_INFINITY;
 	const emit = () => { for (const listener of [...listeners]) listener(); };
 	// A failed read (a stale session context, say) keeps what the card already shows.
@@ -112,6 +118,11 @@ export function createProfileCardOwner(options: ProfileCardOwnerOptions): Profil
 		items: () => items,
 		index: () => index,
 		shown: () => items[index],
+		collapsed: () => collapsed,
+		toggleCollapsed() {
+			collapsed = !collapsed;
+			emit();
+		},
 		refreshVisibility() {
 			let next = false;
 			try { next = resolveProfileCard({ gentlePiConfigHome: options.configHome?.() }).visible; } catch { next = false; }
@@ -143,7 +154,7 @@ export function createProfileCardOwner(options: ProfileCardOwnerOptions): Profil
 			listeners.add(listener);
 			return () => { listeners.delete(listener); };
 		},
-		digest: () => JSON.stringify([visible, items, index]),
+		digest: () => JSON.stringify([visible, items, index, collapsed]),
 	};
 }
 
@@ -162,37 +173,68 @@ export function runProfileCardAction(owner: ProfileCardOwner, action: ProfileCar
  */
 export function mountProfileCard(tui: TUI, theme: PanelTheme, owner: ProfileCardOwner): Component & { dispose(): void } {
 	let hits: readonly ProfileCardHit[] = [];
+	// Only the title row is the collapse control (frame row 0), like the other cards.
+	let hovered = false;
 	const repaint = () => {
 		invalidateSidebar(tui);
 		(tui as { requestRender?: () => void }).requestRender?.();
 	};
 	const unsubscribe = owner.onChange(repaint);
-	const rail: SidebarRail & { dispose(): void } = {
-		surface: "panel",
+	const card: Component = {
 		render(width: number) {
 			hits = [];
 			if (!owner.visible()) return [];
-			const section = renderProfileCardSection(owner.items(), owner.index(), theme, width);
+			const section = renderProfileCardSection(owner.items(), owner.index(), theme, width, { collapsed: owner.collapsed(), hovered });
 			hits = section.hits;
 			return section.lines;
 		},
-		digest() {
-			owner.pollItems();
-			return owner.digest();
+		invalidate() {
+			hovered = false;
 		},
-		handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-			if (event.type !== "click" || event.button !== "left" || !owner.visible()) return undefined;
+	};
+	const region: NativePointerRegion = new NativePointerRegion(card, {
+		onHover(event) {
+			if (!owner.visible()) return undefined;
+			const next = event.y === 0;
+			if (next) setSidebarHover(tui, region, () => region.clearHover());
+			else setSidebarHover(tui);
+			if (next === hovered) return { handled: true };
+			hovered = next;
+			return { handled: true, render: true };
+		},
+		onLeave() {
+			releaseSidebarHover(tui, region);
+			if (!hovered) return;
+			hovered = false;
+			repaint();
+		},
+		onClick(event) {
+			if (event.button !== "left" || !owner.visible()) return undefined;
+			if (event.y === 0) {
+				region.clearHover();
+				owner.toggleCollapsed();
+				return { handled: true, render: true };
+			}
 			const action = profileCardActionAt(hits, event.x, event.y);
 			if (action === undefined) return undefined;
 			runProfileCardAction(owner, action);
 			return { handled: true, render: true };
 		},
-		invalidate() {},
-		dispose() { unsubscribe(); },
+	});
+	const rail: SidebarRail & { dispose(): void } = {
+		surface: "panel",
+		render: (width: number) => region.render(width),
+		digest() {
+			owner.pollItems();
+			return hovered ? `${owner.digest()}:hover` : owner.digest();
+		},
+		handleMouse: (event: TuiMouseEvent) => region.handleMouse(event),
+		invalidate: () => region.invalidate(),
+		dispose() { unsubscribe(); region.dispose(); },
 	};
 	const bottom: Component & { dispose?(): void } = { render: () => [], invalidate() {} };
 	const part = sidebarPart(tui, PROFILE_CARD_SIDEBAR_KEY, bottom, rail);
-	return { ...part, dispose() { unsubscribe(); part.dispose(); } };
+	return { ...part, dispose() { unsubscribe(); region.dispose(); part.dispose(); } };
 }
 
 // ---- Display read ----

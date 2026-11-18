@@ -78,7 +78,8 @@ test("clicks on ◀ and ▶ wrap through the profiles and re-render", (t) => {
 	assert.deepEqual(f.state.used, [], "navigation never uses a profile");
 	assert.equal(f.rail.handleMouse!({ ...click(prevX, 1), button: "right" }), undefined);
 	assert.equal(f.rail.handleMouse!({ ...click(prevX, 1), type: "press" }), undefined);
-	assert.equal(f.rail.handleMouse!(click(prevX, 0)), undefined, "the header is not an action");
+	assert.deepEqual(f.rail.handleMouse!(click(prevX, 0)), { handled: true, render: true }, "the header folds the card (S7), it is not an arrow action");
+	assert.deepEqual(f.rail.handleMouse!(click(prevX, 0)), { handled: true, render: true });
 	assert.equal(f.rail.handleMouse!(click(prevX + 2, 1)), undefined, "the name is not an action");
 	assert.equal(shown(), "beta");
 });
@@ -116,7 +117,7 @@ test("an empty profile list shows only the hint, with no actions", (t) => {
 	const lines = f.rail.render(60).map((line) => line.trimEnd());
 	assert.equal(lines.length, 2);
 	assert.equal(lines[1], `  ${PROFILE_CARD_EMPTY_HINT}`);
-	for (let x = 0; x < 48; x++) for (let y = 0; y < 3; y++) assert.equal(f.rail.handleMouse!(click(x, y)), undefined);
+	for (let x = 0; x < 48; x++) for (let y = 1; y < 3; y++) assert.equal(f.rail.handleMouse!(click(x, y)), undefined);
 	assert.equal(f.owner.use(), false);
 	assert.equal(f.owner.next(), false);
 	assert.deepEqual(f.state.used, []);

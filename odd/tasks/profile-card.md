@@ -37,14 +37,21 @@ current session. Opt-in through `/gentle:profiles card on|off`.
   `docs/readme-reference.md` and `docs/gentle-shell.md` describe the subcommand, the card and
   the shortcuts.
 
+- **S7 Header behaves like the other cards.** User (L7): "Al pasar el mouse por encima del titulo
+  del card, no se agrega el color amarrillo como los demas cards para poder collapsar el card, de
+  hecho, no se colapsa." The profile card's title row gets the same hover highlight as the other
+  sidebar cards (agents, jobs, todo) and a click on it collapses/expands the card through the same
+  mechanism and persistence those cards use (including any collapse keymap convention they share).
+
 ## Tasks
 
 - [x] T1 — S1, S6(command part): profile-card policy store + `card on|off` subcommand + usage/docs. Route: worker A. Commit: 89f989edd
 - [x] T2 — S2, S5: pure card renderer, navigation state (wrap) and ◀/▶/use hit map, unit tests. Route: worker B (parallel with T1). Commit: 22754ce4b
 - [x] T3 — S1, S2: sidebar wiring (section key, visibility gate, panel sheet order, widget registration, mouse dispatch). Route: worker C after T1+T2. Commit: a46c77f9b
 - [x] T4 — S3: use action through the owner under the apply gate, confirmation and notices. Route: worker C (continue). Commit: 185f35d8f
-- [ ] T4b — S2: initial profile = the one actually in effect for the session (startup/frozen records included) through a pure read. Route: worker C (continue). Commit: —
-- [ ] T5 — S4: shortcuts in `KEYMAP_ACTIONS` and registration, `tests/keymaps.test.ts`. Route: worker C (continue). Commit: —
+- [x] T4b — S2: initial profile = the one actually in effect for the session (startup/frozen records included) through a pure read; session file and profiles.json re-read only on change. Route: worker C (continue). Commit: b057cca59
+- [x] T5 — S4: shortcuts in `KEYMAP_ACTIONS` and registration, `tests/keymaps.test.ts`. Route: worker C (continue). Commit: 02b58b714
+- [x] T7 — S7: header hover highlight and collapse like the other cards. Route: worker C (continue). Commit: (this commit)
 - [ ] T6 — S6: final docs pass, `pnpm test` + typecheck. Route: verify. Commit: —
 
 ## Log
@@ -55,3 +62,5 @@ current session. Opt-in through `/gentle:profiles card on|off`.
 - **L4 (evidence):** explorer map — sidebar fixed list `lib/shell-sidebar-layout.ts:344`; flag-store precedent `lib/card-style-policy.ts`; parser `handleProfilesCommand` `extensions/gentle-ai.ts:6811`; apply path `applyDesktopProfile` `:6897` → `runProfilesPanelAction` `:6193`; keymaps `lib/keymaps.ts:31-43`, registration `extensions/gentle-shell.ts:3171-3218`. `pnpm install` deps OK; root postinstall (gentle-ai binary) failed with EPERM — unit tests unaffected (`tests/keymaps.test.ts` 7/7 pass).
 - **L5 (evidence, T3):** carded body hit width in `lib/shell-sidebar-layout.ts` widened from `renderWidth - PANEL_ROW_INDENT` to `renderWidth` (last two body columns were unclickable) — shared code, review focus. `tests/gentle-ai.test.ts` has 20 failures on the branch vs 23 on a clean HEAD copy (environmental, pre-existing). `readProfileCardItems` used `sessionProfileAuthorityAvailable`, which can clear an uncorroborated session binding: a display read must not mutate state — replaced by a pure read in T4. The `/gentle:panel` sheet shows the card without mouse routing; decision: keep it there, keyboard shortcuts (S4) make it usable.
 - **L6 (evidence, T4):** pure display read uses `readSessionProfileBinding(sessionId)?.name`; sessions with only a startup/frozen record show no session marker and start on the active profile, which misses S2 ("the profile currently in effect for the session") → T4b. The real `runProfilesPanelAction` confirmation path through `useProfileFromCard` is covered only by typecheck and fakes.
+- **L7 (user report after manual test, verbatim):** "Ya aparece el card, aunque quisiera indicar algunas cosas para tomar en cuenta. Al pasar el mouse por encima del titulo del card, no se agrega el color amarrillo como los demas cards para poder collapsar el card, de hecho, no se colapsa." Likely cause: T3 used a plain `handleMouse` without `NativePointerRegion` (no hover state, header row not wired to collapse) → S7, T7.
+- **L8 (evidence, T6):** the independent verifier timed out after 30 min stalled in a bash call (likely the full suite); no verdict produced. Pending user decision on relaunch.

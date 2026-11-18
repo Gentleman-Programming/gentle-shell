@@ -25,9 +25,9 @@ Each update is a full record; `state=clear` removes its ID. Fields not listed fo
 | ID | State / kind | Title, message and progress | Lifecycle |
 | --- | --- | --- | --- |
 | `todo` | `working` | Title is the first in-progress todo; progress is the rounded percentage of completed todos. No message. | Updated while an in-progress todo exists; otherwise cleared. |
-| `bg/<jobId>` | `working` | Title is the job label. No message. | Present while running; cleared on success or `stopped`. A monitor reaching its mandatory timeout is stopped normally. |
+| `bg/<jobId>` | `working` | Title is the explicitly supplied job label; otherwise `background job` for `bash_background` or `monitor` for `monitor` (and `background job` if the kind is unavailable). Commands are never published as fallback titles. No message. | Present while running; cleared on success or `stopped`. A monitor reaching its mandatory timeout is stopped normally. |
 | `bg/<jobId>` | `error` | Same title; message `exited <code>` for a nonzero exit code, or `failed` for failed status. | Replaces the running record and clears after 60 seconds. Missing exit codes are not guessed as failures. |
-| `subagents/<taskId>` | `working` | Title is the task label, falling back to the agent name. No message. | Present while queued or running; clears immediately on success or cancellation. |
+| `subagents/<taskId>` | `working` | Title is the explicitly supplied task label, otherwise the agent name; prompt text is never published as a fallback title. No message. | Present while queued or running; clears immediately on success or cancellation. |
 | `subagents/<taskId>` | `blocked` / `question` | Same title; message `waiting for user` for a child question, or `question for parent` for an unanswered parent query. The parent query takes precedence. | Updated as questions change; clears immediately on success or cancellation. |
 | `subagents/<taskId>` | `error` | Same title; message `failed` or `timed out`. | Replaces the active record and clears after 60 seconds. |
 | `wait/<target>` | `working` | No title; message `consulting <target>`. | Present until the last concurrent consultation to that target settles. |

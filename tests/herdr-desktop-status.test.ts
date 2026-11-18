@@ -140,11 +140,11 @@ test("todo fails closed for missing current, invalid counts and sanitized-empty 
 
 test("jobs project only running snapshot entries; finished tails are absent", () => {
 	const snapshot = { jobs: [
-		{ id: "j1", label: "Job", startedAt: 1 },
+		{ id: "j1", label: "Job", explicitLabel: "Job", startedAt: 1 },
 		{ id: "j2", label: "done", startedAt: 2, status: "exited", endedAt: 3, exitCode: 0 },
 		{ id: "j3", label: "stopped", startedAt: 2, status: "stopped" },
 		{ id: "j4", label: "failed", startedAt: 2, status: "failed", exitCode: null },
-		{ id: "j5", label: "Second", startedAt: 2 },
+		{ id: "j5", label: "Second", explicitLabel: "Second", startedAt: 2 },
 	] };
 	const projected = projectJobs(snapshot);
 	assert.deepEqual(projected, records(["bg/j1", { state: "working", title: "Job" }], ["bg/j5", { state: "working", title: "Second" }]));
@@ -161,18 +161,18 @@ test("jobs reject malformed snapshots and never emit invalid IDs", () => {
 		{ jobs: [{ id: "a", label: "x", startedAt: 0 }, null] }]) {
 		assert.deepEqual(projectJobs(value), empty);
 	}
-	assert.deepEqual(projectJobs({ jobs: [{ id: "bad:id", label: "bad", startedAt: 0 }, { id: "ok", label: "Job", startedAt: 0 }] }),
+	assert.deepEqual(projectJobs({ jobs: [{ id: "bad:id", label: "bad", startedAt: 0 }, { id: "ok", label: "Job", explicitLabel: "Job", startedAt: 0 }] }),
 		records(["bg/ok", { state: "working", title: "Job" }]));
 });
 
 test("subagent statuses and pending queries project, with label fallback and terminal precedence", () => {
 	const input = [
-		{ id: "q", agent: "agent", label: "Queue", status: "queued" },
+		{ id: "q", agent: "agent", label: "Queue", explicitLabel: "Queue", status: "queued" },
 		{ id: "r", agent: "Runner", status: "running" },
-		{ id: "w", agent: "agent", label: "Ask", status: "waiting" },
-		{ id: "p", agent: "agent", label: "Query", status: "running", pendingQuery: true },
+		{ id: "w", agent: "agent", label: "Ask", explicitLabel: "Ask", status: "waiting" },
+		{ id: "p", agent: "agent", label: "Query", explicitLabel: "Query", status: "running", pendingQuery: true },
 		{ id: "t", agent: "agent", status: "queued", pendingQuery: true },
-		{ id: "both", agent: "agent", label: "Both", status: "waiting", pendingQuery: true },
+		{ id: "both", agent: "agent", label: "Both", explicitLabel: "Both", status: "waiting", pendingQuery: true },
 		...(["completed", "failed", "cancelled", "timed_out"] as const).map((status) => ({ id: status, agent: "agent", status, pendingQuery: true })),
 	];
 	const projected = projectSubagents(input);
@@ -232,7 +232,7 @@ test("sends reject malformed entries and clocks, and preserve a newer send for t
 test("projectAll merges independent sources in todo, jobs, subagents, waits, sends order", () => {
 	const all = projectAll({
 		todo: { done: 1, total: 2, current: "One" },
-		jobs: { jobs: [{ id: "j", label: "Job", startedAt: 1 }] },
+		jobs: { jobs: [{ id: "j", label: "Job", explicitLabel: "Job", startedAt: 1 }] },
 		subagents: [{ id: "s", agent: "Ask", status: "waiting" }],
 		waits: ["peer"], sends: [{ target: "peer", at: 1 }], now: 2,
 	});

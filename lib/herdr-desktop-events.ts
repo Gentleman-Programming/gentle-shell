@@ -13,6 +13,8 @@ export interface HerdrDesktopTask {
 	id: string;
 	agent: string;
 	label: string;
+	/** Explicit label only; label may be derived from a task prompt. */
+	explicitLabel?: string;
 	status: TaskStatus;
 	pendingQuery: boolean;
 }

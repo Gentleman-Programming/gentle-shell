@@ -93,7 +93,7 @@ test("S3 gates on terminal, launcher, child marker and interactive UI without to
 
 test("S2 ignores attention events without subscribing or writing a decision or root record", () => {
 	const h = harness(); h.usage(42); h.branch([todoEntry([task(1, "Work", "in_progress")])]); h.fire("session_start");
-	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", startedAt: 1 }] } });
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", explicitLabel: "Job", startedAt: 1 }] } });
 	const existing = [record("todo", "state=working:progress=0:title=V29yaw=="), record("bg/j", "state=working:title=Sm9i")];
 	assert.equal(h.listenerCount(NOTIFICATION_ATTENTION_EVENT), 0);
 	for (const event of [{ active: true, label: "Choose" }, { active: true }, { active: false }, null]) h.emit(NOTIFICATION_ATTENTION_EVENT, event);
@@ -109,7 +109,7 @@ test("S12 never publishes a ctx record: known context usage alone leaves no acti
 		h.usage(percent); h.fire(event);
 	}
 	assert.deepEqual(h.writes, []);
-	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", startedAt: 1 }] } });
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", explicitLabel: "Job", startedAt: 1 }] } });
 	assert.deepEqual(h.writes, [record("bg/j", "state=working:title=Sm9i")]);
 	h.usage(90); h.fire("turn_end");
 	assert.deepEqual(h.writes, [record("bg/j", "state=working:title=Sm9i")]);
@@ -134,9 +134,53 @@ test("S4 replays and updates todo, handles branch navigation and ignores failed 
 	h.fire("session_shutdown");
 });
 
+test("S11 task OSC titles use explicit labels, not local prompt labels, for working and errors", () => {
+	const h = harness(); h.fire("session_start");
+	const unlabeled = { id: "a", agent: "explore", label: "Private prompt sentence", status: "running" };
+	const labeled = { id: "b", agent: "explore", label: "Local label", explicitLabel: "Inspect files", status: "running" };
+	h.emit(TASKS, { sessionId: "s1", tasks: [unlabeled, labeled] });
+	h.emit(TASK_FINISHED, { sessionId: "s1", task: { ...unlabeled, status: "failed" } });
+	h.emit(TASK_FINISHED, { sessionId: "s1", task: { ...labeled, status: "timed_out" } });
+	h.emit(TASK_FINISHED, { sessionId: "s1", task: { ...unlabeled, id: "c", status: "failed" } });
+	assert.deepEqual(h.writes, [
+		record("subagents/a", `state=working:title=${msg("explore")}`),
+		record("subagents/b", `state=working:title=${msg("Inspect files")}`),
+		record("subagents/a", `state=error:title=${msg("explore")}:msg=${msg("failed")}`),
+		record("subagents/b", `state=error:title=${msg("Inspect files")}:msg=${msg("timed out")}`),
+		record("subagents/c", `state=error:title=${msg("explore")}:msg=${msg("failed")}`),
+	]);
+	h.fire("session_shutdown");
+});
+
+for (const source of [JOBS, JOBS_REPLAY]) for (const kind of ["command", "monitor", undefined] as const) {
+	test(`S12 ${source} ${kind ?? "legacy"} job titles never use command labels`, () => {
+		const h = harness(); h.fire("session_start");
+		const title = kind === "monitor" ? "monitor" : "background job";
+		const job = { id: "j", label: "run --argument private", startedAt: 1000, ...(kind ? { kind } : {}) };
+		h.emit(source, { sessionId: "s1", snapshot: { jobs: [job] } });
+		h.emit(source, { sessionId: "s1", snapshot: { jobs: [{ ...job, status: "exited", exitCode: 7 }] } });
+		h.emit(source, { sessionId: "s1", snapshot: { jobs: [{ ...job, id: "direct", status: "failed", endedAt: 1000 }] } });
+		assert.deepEqual(h.writes, [record("bg/j", `state=working:title=${msg(title)}`),
+			record("bg/j", `state=error:title=${msg(title)}:msg=${msg("exited 7")}`),
+			record("bg/direct", `state=error:title=${msg(title)}:msg=${msg("failed")}`)]);
+		h.fire("session_shutdown");
+	});
+}
+
+test("S12 labeled jobs retain their explicit title in live and replay records", () => {
+	for (const source of [JOBS, JOBS_REPLAY]) {
+		const h = harness(); h.fire("session_start");
+		const job = { id: "j", label: "Local display", explicitLabel: "Build", kind: "command", startedAt: 1000 };
+		h.emit(source, { sessionId: "s1", snapshot: { jobs: [job] } });
+		h.emit(source, { sessionId: "s1", snapshot: { jobs: [{ ...job, status: "failed" }] } });
+		assert.deepEqual(h.writes, [record("bg/j", `state=working:title=${msg("Build")}`), record("bg/j", `state=error:title=${msg("Build")}:msg=${msg("failed")}`)]);
+		h.fire("session_shutdown");
+	}
+});
+
 test("S4 job errors retain id and title for 60 seconds; success, stopped and unknown exits clear", () => {
 	const h = harness(); h.fire("session_start");
-	const jobs = ["a", "b", "c", "d", "e"].map(id => ({ id, label: id.toUpperCase(), startedAt: 1 }));
+	const jobs = ["a", "b", "c", "d", "e"].map(id => ({ id, label: id.toUpperCase(), explicitLabel: id.toUpperCase(), startedAt: 1 }));
 	h.emit(JOBS, { sessionId: "foreign", snapshot: { jobs } });
 	h.emit(JOBS_REPLAY, { sessionId: "s1", snapshot: { jobs } });
 	const working = jobs.map(job => record(`bg/${job.id}`, `state=working:title=${msg(job.label)}`));
@@ -166,7 +210,7 @@ test("S4 job errors retain id and title for 60 seconds; success, stopped and unk
 test("S4 subagent failure and timeout override live records without a clear, then expire; cancellation clears", () => {
 	const h = harness(); h.fire("session_start");
 	const tasks = [
-		{ id: "a", agent: "Agent", label: "Label", status: "waiting", pendingQuery: true },
+		{ id: "a", agent: "Agent", label: "Label", explicitLabel: "Label", status: "waiting", pendingQuery: true },
 		{ id: "b", agent: "Fallback", label: "", status: "running" },
 		{ id: "c", agent: "Done", status: "running" }, { id: "d", agent: "Cancel", status: "queued" },
 	];
@@ -191,8 +235,8 @@ test("S4 subagent failure and timeout override live records without a clear, the
 test("S4 error and send timers coexist and shutdown or replacement clears errors once", () => {
 	for (const replacement of [false, true]) {
 		const h = harness(); h.fire("session_start");
-		h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", startedAt: 1 }] } });
-		h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", startedAt: 1, status: "failed" }] } });
+		h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", explicitLabel: "Job", startedAt: 1 }] } });
+		h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", explicitLabel: "Job", startedAt: 1, status: "failed" }] } });
 		h.emit(SEND, { sessionId: "s1", target: "peer" }); h.advance(5000);
 		const expected = [record("bg/j", `state=working:title=${msg("Job")}`), record("bg/j", `state=error:title=${msg("Job")}:msg=${msg("failed")}`),
 			record("sent/peer", `state=idle:msg=${msg("sent to peer")}`), clear("sent/peer")];
@@ -206,7 +250,7 @@ test("S4 error and send timers coexist and shutdown or replacement clears errors
 
 test("S4 replacement does not revive a failure from an earlier session's finished-job tail", () => {
 	const h = harness(); h.fire("session_start");
-	const running = { id: "j", label: "Job", startedAt: 1 };
+	const running = { id: "j", label: "Job", explicitLabel: "Job", startedAt: 1 };
 	const finished = { ...running, status: "failed", endedAt: 1000 };
 	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [running] } });
 	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [finished] } });
@@ -231,13 +275,13 @@ test("S3 long subagent identifiers hash into the 64-byte id limit", () => {
 test("S6 task labels, waiting and pending queries project, malformed and foreign snapshots do not erase", () => {
 	const h = harness(); h.fire("session_start");
 	assert.deepEqual(h.events.filter(e => e.name === TASKS_REQUEST).map(e => e.data), [{ sessionId: "s1" }]);
-	const tasks = [{ id: "t1", agent: "Agent", label: "Label", status: "queued", pendingQuery: false }];
+	const tasks = [{ id: "t1", agent: "Agent", label: "Label", explicitLabel: "Label", status: "queued", pendingQuery: false }];
 	h.emit(TASKS, { sessionId: "s1", tasks });
 	h.emit(TASKS, { sessionId: "foreign", tasks: [] });
 	h.emit(TASKS, { sessionId: "s1", tasks: [{ ...tasks[0], pendingQuery: "yes" }] });
 	h.emit(TASKS, { sessionId: "s1", tasks: [{ ...tasks[0], status: "running", pendingQuery: true }] });
 	h.emit(TASKS, { sessionId: "s1", tasks: [{ ...tasks[0], status: "waiting" }] });
-	h.emit(TASKS, { sessionId: "s1", tasks: [{ ...tasks[0], status: "running", label: "", pendingQuery: false }] });
+	h.emit(TASKS, { sessionId: "s1", tasks: [{ ...tasks[0], status: "running", label: "", explicitLabel: "", pendingQuery: false }] });
 	h.emit(TASKS, { sessionId: "s1", tasks: [{ ...tasks[0], status: "completed" }] });
 	assert.deepEqual(h.writes, [record("subagents/t1", "state=working:title=TGFiZWw="),
 		record("subagents/t1", `state=blocked:kind=question:title=TGFiZWw=:msg=${msg("question for parent")}`),
@@ -368,7 +412,7 @@ test("S9 retries an expiry clear that failed once until the terminal accepts it"
 
 test("S9 hands clears that failed during replacement to the next session without removing its own records", () => {
 	const h = harness(); h.branch([todoEntry([task(1, "Work", "in_progress")])]); h.fire("session_start");
-	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", startedAt: 1 }] } });
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "Job", explicitLabel: "Job", startedAt: 1 }] } });
 	const published = [record("todo", "state=working:progress=0:title=V29yaw=="), record("bg/j", "state=working:title=Sm9i")];
 	assert.deepEqual(h.writes, published);
 	const other = h.context("s2"); other.branch([todoEntry([task(1, "Next", "in_progress")])]);

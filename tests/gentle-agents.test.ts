@@ -732,6 +732,25 @@ test("Herdr task snapshots preserve child queries through replies and session re
 	assert.ok(!snapshot().tasks.some(t => t.id === id));
 });
 
+test("S11 Herdr task events separate explicit titles from prompt-derived local card labels", async () => {
+	for (const [supplied, local, explicit] of [[undefined, "Private prompt sentence", undefined], ["   ", "Private prompt sentence", undefined], ["  Inspect   files  ", "Inspect files", "Inspect files"]] as const) {
+		const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
+		gentleAgents(h.pi, {}, runtime.deps); await h.fire("session_start", ctx);
+		const started = await h.tools.get("subagent_run")!.execute("run", { agent: "explore", task: "Private prompt sentence. More detail", ...(supplied === undefined ? {} : { label: supplied }), mode: "background" }, undefined, undefined, ctx);
+		const details = started.details.gentleAgents as { taskId: string; label: string };
+		assert.equal(details.label, local, "the local card keeps taskLabel() behavior");
+		await tick();
+		const active = (h.events.filter(e => e.name === "gentle-pi:herdr-desktop:tasks").at(-1)!.data as { sessionId: string; tasks: Array<any> });
+		assert.equal(active.sessionId, "s1");
+		assert.deepEqual(active.tasks.find(t => t.id === details.taskId), { id: details.taskId, agent: "explore", label: local, explicitLabel: explicit, status: "running", pendingQuery: false });
+		runtime.children[0].exit(1);
+		await eventually(() => h.events.some(e => e.name === "gentle-pi:herdr-desktop:task-finished"), "failure event");
+		const finished = h.events.filter(e => e.name === "gentle-pi:herdr-desktop:task-finished").at(-1)!.data;
+		assert.deepEqual(finished, { sessionId: "s1", task: { id: details.taskId, agent: "explore", label: local, explicitLabel: explicit, status: "failed", pendingQuery: false } });
+		await h.fire("session_shutdown", ctx);
+	}
+});
+
 test("S4 failed subagent reaches OSC without changing the active-only tasks snapshot", async () => {
 	const h = fakePi(), runtime = deps(), { ctx } = fakeContext();
 	const writes: string[] = [];
@@ -876,6 +895,8 @@ test("Herdr send keeps an accepted receipt when the transport is replaced before
 
 test("Herdr send keeps an accepted receipt when the session is replaced and the old ctx turns stale before acceptance resolves", async () => {
 	const h = fakePi(), runtime = deps(), { ctx } = fakeContext(), { ctx: next } = fakeContext();
+	Object.assign(ctx.sessionManager, { getSessionName: () => "Origin" });
+	Object.assign(next.sessionManager, { getSessionId: () => "s2", getSessionName: () => "Replacement" });
 	let starts = 0, settle!: (value: { id: string; accepted: true }) => void;
 	const registry = { list: async () => [], listActivations: async () => [] };
 	runtime.deps.sessionTransport = {
@@ -893,8 +914,8 @@ test("Herdr send keeps an accepted receipt when the session is replaced and the 
 	const result = await pending;
 	assert.equal(result.content[0].text, "Message m1 from s1 to peer accepted for delivery; it is not a delivery or read receipt.");
 	assert.equal(result.details.error, undefined);
-	const receipt = result.details.gentleAgents as { messageId: string; senderSessionId: string; recipientSessionId: string; state: string };
-	assert.deepEqual([receipt.messageId, receipt.senderSessionId, receipt.recipientSessionId, receipt.state], ["m1", "s1", "peer", "accepted"]);
+	const receipt = result.details.gentleAgents as { messageId: string; senderSessionId: string; senderLabel: string; recipientSessionId: string; state: string };
+	assert.deepEqual([receipt.messageId, receipt.senderSessionId, receipt.senderLabel, receipt.recipientSessionId, receipt.state], ["m1", "s1", "Origin", "peer", "accepted"]);
 	assert.deepEqual(reports(), []);
 });
 
@@ -8066,6 +8087,31 @@ test("S4 real background exit status reaches the terminal as an error record", a
 		assert.deepEqual(writes, ["\x1b]7501;state=working:title=QnVpbGQ=:id=bg/job-1\x1b\\", "\x1b]7501;state=error:title=QnVpbGQ=:msg=ZXhpdGVkIDc=:id=bg/job-1\x1b\\"]);
 		await h.fire("session_shutdown", ctx);
 		assert.deepEqual(writes, ["\x1b]7501;state=working:title=QnVpbGQ=:id=bg/job-1\x1b\\", "\x1b]7501;state=error:title=QnVpbGQ=:msg=ZXhpdGVkIDc=:id=bg/job-1\x1b\\", "\x1b]7501;state=clear:id=bg/job-1\x1b\\"]);
+	} finally { await h.fire("session_shutdown", ctx); jobs.cleanup(); }
+});
+
+test("S12 live and replay job snapshots retain local labels and carry only explicit Herdr labels", async () => {
+	const h = fakePi(), jobs = fakeJobShell(), { ctx } = fakeContext();
+	gentleAgents(h.pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const rows = (name: string) => (h.events.filter(e => e.name === name).at(-1)!.data as { sessionId: string; snapshot: { jobs: Array<any> } });
+	const project = (snapshot: ReturnType<typeof rows>) => snapshot.snapshot.jobs.map(({ id, label, explicitLabel, kind, status, exitCode }) => ({ id, label, explicitLabel, kind, status, exitCode })).sort((a, b) => a.id.localeCompare(b.id));
+	try {
+		await h.fire("session_start", ctx);
+		await h.tools.get("bash_background")!.execute("a", { command: "build --private-value" }, undefined, undefined, ctx);
+		await h.tools.get("monitor")!.execute("b", { command: "watch --private-value", timeout_seconds: 30 }, undefined, undefined, ctx);
+		await h.tools.get("bash_background")!.execute("c", { command: "make build", label: "  Build  " }, undefined, undefined, ctx);
+		const expected = [
+			{ id: "job-1", label: "build --private-value", explicitLabel: undefined, kind: "command", status: undefined, exitCode: undefined },
+			{ id: "job-2", label: "watch --private-value", explicitLabel: undefined, kind: "monitor", status: undefined, exitCode: undefined },
+			{ id: "job-3", label: "Build", explicitLabel: "Build", kind: "command", status: undefined, exitCode: undefined },
+		];
+		assert.equal(rows("gentle-ai:jobs-sidebar").sessionId, "s1");
+		assert.deepEqual(project(rows("gentle-ai:jobs-sidebar")), expected);
+		h.pi.events.emit("gentle-pi:herdr-desktop:tasks-request", { sessionId: "s1" });
+		assert.deepEqual(project(rows("gentle-pi:herdr-desktop:jobs")), expected);
+		jobs.runs[0]!.exit(7);
+		await eventually(() => project(rows("gentle-ai:jobs-sidebar")).some(row => row.id === "job-1" && row.status === "exited"), "finished sidebar event");
+		assert.deepEqual(project(rows("gentle-ai:jobs-sidebar")).find(row => row.id === "job-1"), { ...expected[0], status: "exited", exitCode: 7 });
 	} finally { await h.fire("session_shutdown", ctx); jobs.cleanup(); }
 });
 

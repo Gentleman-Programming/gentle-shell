@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { HERDR_DESKTOP_TASKS, HERDR_DESKTOP_TASKS_REQUEST, HERDR_DESKTOP_TASK_FINISHED, HERDR_DESKTOP_JOBS, HERDR_DESKTOP_CONSULT, HERDR_DESKTOP_SEND, HERDR_DESKTOP_INBOUND, type HerdrDesktopTask } from "../lib/herdr-desktop-events.ts";
-import { diffRecords, projectAll, SEND_TTL_MS, ERROR_TTL_MS, type DesktopRecord } from "../lib/herdr-desktop-status.ts";
+import { desktopJobTitle, desktopTaskTitle, diffRecords, projectAll, SEND_TTL_MS, ERROR_TTL_MS, type DesktopRecord } from "../lib/herdr-desktop-status.ts";
 import { isJobsSidebarSnapshot, JOBS_SIDEBAR_EVENT, type JobsSidebarSnapshot } from "../lib/jobs-sidebar-state.ts";
 import { replayTodo, todoProgress, TODO_PROGRESS_EVENT, type TodoState } from "../lib/shell-todo.ts";
 
@@ -30,6 +30,7 @@ function validTasks(value: unknown): value is HerdrDesktopTask[] {
 		&& typeof task.id === "string" && task.id.length > 0 && typeof task.agent === "string" && task.agent.trim().length > 0
 		&& typeof task.status === "string" && taskStatuses.has(task.status)
 		&& (task.label === undefined || typeof task.label === "string")
+		&& (task.explicitLabel === undefined || typeof task.explicitLabel === "string")
 		&& (task.pendingQuery === undefined || typeof task.pendingQuery === "boolean"));
 }
 function validTodoTasks(value: unknown): value is TodoState["tasks"] {
@@ -169,7 +170,7 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 					if (failure && !s.seenJobErrors.has(identity)) {
 						s.seenJobErrors.add(identity);
 						if (job.endedAt === undefined || job.endedAt >= s.startedAt) {
-							s.errors.set(id, { record: { state: "error", title: s.previous.get(id)?.title ?? job.label, msg: failure }, expiresAt: now() + ERROR_TTL_MS });
+							s.errors.set(id, { record: { state: "error", title: s.previous.get(id)?.title ?? desktopJobTitle(job), msg: failure }, expiresAt: now() + ERROR_TTL_MS });
 						}
 					} else if (!failure) {
 						s.errors.delete(id);
@@ -187,7 +188,7 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 				const id = `subagents/${segment(task.id, 54)}`;
 				if (s.seenTaskErrors.has(id)) return;
 				s.seenTaskErrors.add(id);
-				const title = s.previous.get(id)?.title ?? (task.label?.trim() ? task.label : task.agent);
+				const title = s.previous.get(id)?.title ?? desktopTaskTitle(task);
 				s.errors.set(id, { record: { state: "error", title, msg: task.status === "timed_out" ? "timed out" : "failed" }, expiresAt: now() + ERROR_TTL_MS });
 				s.tasks = s.tasks.filter(active => active.id !== task.id);
 				publish(s); arm(s);

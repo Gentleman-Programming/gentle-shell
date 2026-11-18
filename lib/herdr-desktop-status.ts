@@ -126,9 +126,16 @@ export function projectTodo(input: unknown): Map<string, DesktopRecord> {
 function validJob(job: unknown): job is Raw {
 	if (!object(job) || typeof job.id !== "string" || job.id.length === 0 || typeof job.label !== "string"
 		|| typeof job.startedAt !== "number" || !Number.isFinite(job.startedAt)) return false;
+	if (job.explicitLabel !== undefined && typeof job.explicitLabel !== "string") return false;
+	if (job.kind !== undefined && job.kind !== "command" && job.kind !== "monitor") return false;
 	if (job.status !== undefined && job.status !== "exited" && job.status !== "stopped" && job.status !== "failed") return false;
 	if (job.endedAt !== undefined && (typeof job.endedAt !== "number" || !Number.isFinite(job.endedAt))) return false;
 	return job.exitCode === undefined || job.exitCode === null || typeof job.exitCode === "number";
+}
+
+/** A sidebar label can contain the command, so only explicit provenance is publishable. */
+export function desktopJobTitle(job: { explicitLabel?: unknown; kind?: unknown }): string {
+	return typeof job.explicitLabel === "string" && job.explicitLabel.trim() ? job.explicitLabel : job.kind === "monitor" ? "monitor" : "background job";
 }
 
 export function projectJobs(input: unknown): Map<string, DesktopRecord> {
@@ -137,7 +144,7 @@ export function projectJobs(input: unknown): Map<string, DesktopRecord> {
 		const result = new Map<string, DesktopRecord>();
 		for (const job of input.jobs) {
 			const id = `bg/${job.id}`;
-			if (job.status === undefined && validId(id)) result.set(id, { state: "working", title: job.label as string });
+			if (job.status === undefined && validId(id)) result.set(id, { state: "working", title: desktopJobTitle(job) });
 		}
 		return result;
 	} catch { return new Map(); }
@@ -148,7 +155,13 @@ function validTask(task: unknown): task is Raw {
 		&& typeof task.agent === "string" && task.agent.trim().length > 0
 		&& typeof task.status === "string" && taskStates.includes(task.status)
 		&& (task.label === undefined || typeof task.label === "string")
+		&& (task.explicitLabel === undefined || typeof task.explicitLabel === "string")
 		&& (task.pendingQuery === undefined || typeof task.pendingQuery === "boolean");
+}
+
+/** Local task labels can contain the prompt; only an explicit label is publishable. */
+export function desktopTaskTitle(task: { explicitLabel?: unknown; agent: unknown }): string {
+	return typeof task.explicitLabel === "string" && task.explicitLabel.trim() ? task.explicitLabel : task.agent as string;
 }
 
 export function projectSubagents(input: unknown): Map<string, DesktopRecord> {
@@ -158,7 +171,7 @@ export function projectSubagents(input: unknown): Map<string, DesktopRecord> {
 		for (const task of input) {
 			const id = `subagents/${task.id}`;
 			if (!validId(id) || (task.status !== "queued" && task.status !== "running" && task.status !== "waiting")) continue;
-			const title = typeof task.label === "string" && task.label.trim() ? task.label : task.agent as string;
+			const title = desktopTaskTitle({ explicitLabel: task.explicitLabel, agent: task.agent });
 			result.set(id, task.pendingQuery === true
 				? { state: "blocked", kind: "question", title, msg: "question for parent" }
 				: task.status === "waiting" ? { state: "blocked", kind: "question", title, msg: "waiting for user" }

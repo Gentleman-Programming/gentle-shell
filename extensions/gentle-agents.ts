@@ -1263,7 +1263,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const all = store.list(sessionId);
 			const previous = herdrTaskSession === sessionId ? herdrActiveTasks : new Set<string>();
 			const tasks = all.filter(task => !isFinished(task.status)).map(task => ({
-				id: task.id, agent: task.agent, label: task.label, status: task.status,
+				id: task.id, agent: task.agent, label: task.label, explicitLabel: task.explicitLabel, status: task.status,
 				pendingQuery: (herdrQueries.get(task.id)?.size ?? 0) > 0,
 			}));
 			herdrTaskSession = sessionId;
@@ -1272,7 +1272,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			// record; existing snapshot consumers retain their original contract.
 			for (const task of all) if (previous.has(task.id) && (task.status === "failed" || task.status === "timed_out")) {
 				emitHerdr(HERDR_DESKTOP_TASK_FINISHED, { sessionId, task: {
-					id: task.id, agent: task.agent, label: task.label, status: task.status, pendingQuery: false,
+					id: task.id, agent: task.agent, label: task.label, explicitLabel: task.explicitLabel, status: task.status, pendingQuery: false,
 				} });
 			}
 			emitHerdr(HERDR_DESKTOP_TASKS, { sessionId, tasks });
@@ -1314,7 +1314,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		try {
 			const running = jobs.list(sessionId).filter(job => job.status === "running")
 				.sort((a, b) => b.startedAt - a.startedAt)
-				.map(({ id, label, startedAt }) => ({ id, label, startedAt }));
+				.map(({ id, label, explicitLabel, kind, startedAt }) => ({ id, label, explicitLabel, kind, startedAt }));
 			emitHerdr(HERDR_DESKTOP_JOBS, { sessionId, snapshot: { jobs: running } });
 		} catch { /* Display-only replay. */ }
 	};
@@ -1940,8 +1940,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (sessionId) {
 			try {
 				pi.events.emit(JOBS_SIDEBAR_EVENT, { sessionId, snapshot: { jobs: [
-					...running.map(({ id, label, startedAt }) => ({ id, label, startedAt })),
-					...finished.map(({ id, label, startedAt, status, endedAt, exitCode }) => ({ id, label, startedAt, status, endedAt, exitCode })),
+					...running.map(({ id, label, explicitLabel, kind, startedAt }) => ({ id, label, explicitLabel, kind, startedAt })),
+					...finished.map(({ id, label, explicitLabel, kind, startedAt, status, endedAt, exitCode }) => ({ id, label, explicitLabel, kind, startedAt, status, endedAt, exitCode })),
 				] } });
 			} catch { /* Display only. */ }
 			// Every actual registry change funnels through this refresh, including

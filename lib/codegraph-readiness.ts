@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { existsSync, linkSync, lstatSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -6,6 +6,8 @@ import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 import { daemonFor, mcpCallRequests, mcpCallText, mcpInitializeRequest, mcpLineReader, mcpReplyKind, projectSpelling } from "./codegraph-daemon.ts";
 import type { DaemonInfo } from "./codegraph-daemon.ts";
+import { resolveCodegraphEntry } from "./codegraph-cli-resolve.ts";
+import type { CodegraphEntry } from "./codegraph-cli-resolve.ts";
 import { acquireInitLock, codegraphWritingIndex, indexState, syncLeaseHeldLive, tryAcquireSyncLease, type IndexState } from "./codegraph-lease.ts";
 import { resolveSessionWorktree, type WorktreeIdentity } from "./session-worktree-registry.ts";
 
@@ -173,15 +175,41 @@ export function buildWindowsCommand(args: readonly string[]): string {
 	return ["codegraph", ...args.map(quoteForCmd)].join(" ");
 }
 
+/** The process view the spawn decision needs: the platform, the spawn itself, and the win32
+ * cmd-shim resolver. Injectable so the Windows selection is observable off Windows; the
+ * default seam is the real thing, and the POSIX branch never asks the resolver for anything. */
+export interface SpawnCodegraphSeam {
+	platform(): NodeJS.Platform;
+	/** The spawn: an argument-vector call (command, args, options) or a whole-command-line call
+	 * (command, options) for the cmd.exe fallback. */
+	spawn(command: string, args: readonly string[] | SpawnOptions, options?: SpawnOptions): ChildProcess;
+	/** The win32 cmd-shim resolution: null keeps the cmd.exe fallback. */
+	resolveEntry(): CodegraphEntry | null;
+}
+
+const realSpawnSeam: SpawnCodegraphSeam = {
+	platform: () => process.platform,
+	spawn,
+	resolveEntry: () => resolveCodegraphEntry(),
+};
+
 /** Spawns the codegraph CLI from the temp directory (cmd.exe cannot take a UNC working
- * directory): Windows needs a shell for the npm `.cmd` shim and takes the whole fixed command
- * line as one cmd.exe-quoted string (backslashes preserved); POSIX takes a plain argument
- * vector in its own detached group. */
-function spawnCodegraph(args: readonly string[], stdio: ReadonlyArray<"pipe" | "ignore">): ReturnType<typeof spawn> {
-	if (process.platform === "win32") {
-		return spawn(buildWindowsCommand(args), { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: [...stdio] });
+ * directory). On Windows the npm `.cmd` shim is resolved once per process to the node
+ * executable and JS entrypoint it invokes, and a resolved shim is spawned directly as a plain
+ * argument vector — no cmd.exe, no shim, no quoting, and no percent rejection (an argument
+ * vector carries one verbatim where cmd.exe would expand it into another project). An
+ * unresolvable shim — none on PATH, an unknown shape, a vanished target — keeps the exact
+ * previous spawn: the whole fixed command line as one cmd.exe-quoted string through shell:true.
+ * POSIX takes a plain argument vector in its own detached group. */
+export function spawnCodegraph(args: readonly string[], stdio: ReadonlyArray<"pipe" | "ignore">, seam: SpawnCodegraphSeam = realSpawnSeam): ReturnType<typeof spawn> {
+	if (seam.platform() === "win32") {
+		const entry = seam.resolveEntry();
+		if (entry !== null) {
+			return seam.spawn(entry.node, [entry.script, ...args], { cwd: tmpdir(), env: process.env, detached: true, windowsHide: true, stdio: [...stdio] });
+		}
+		return seam.spawn(buildWindowsCommand(args), { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: [...stdio] });
 	}
-	return spawn("codegraph", [...args], { cwd: tmpdir(), env: process.env, detached: true, windowsHide: true, stdio: [...stdio] });
+	return seam.spawn("codegraph", [...args], { cwd: tmpdir(), env: process.env, detached: true, windowsHide: true, stdio: [...stdio] });
 }
 
 

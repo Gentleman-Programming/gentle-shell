@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type SpawnOptions } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -18,12 +18,14 @@ import {
 	runCodegraphSeedSync,
 	sessionSkipsReadiness,
 	skipsSession,
+	spawnCodegraph,
 	SYNC_RETRY_DELAY_MS,
 	syncBeforeSearch,
 	warmUpDaemon,
 	type ReadinessInput,
 	type SearchSyncInput,
 	type SessionStartReason,
+	type SpawnCodegraphSeam,
 } from "../lib/codegraph-readiness.ts";
 
 function dir(t: test.TestContext, name: string): string {
@@ -1584,4 +1586,82 @@ test("prepareReadiness: a child reload or an indexed worktree still skips entire
 	}));
 	assert.deepEqual(indexed, { action: "none", ok: true, warm: "skipped" }, "once the index exists the child skips entirely again");
 	assert.deepEqual(indexedCalls, [], "no seed, no sync: the child skips");
+});
+
+/** A backslash without a backslash literal: keeps the win32 fixture paths transport-safe. */
+const WIN_BS = String.fromCharCode(92);
+
+/** A resolved-shim fixture: the node and entrypoint a win32 codegraph.cmd resolves to. */
+const RESOLVED = {
+	node: ["C:", "nodejs", "node.exe"].join(WIN_BS),
+	script: ["C:", "npm-bin", "node_modules", "@colbymchenry", "codegraph", "dist", "cli.js"].join(WIN_BS),
+};
+
+/** Discriminates the seam spawn's argument forms. Array.isArray cannot exclude a readonly
+ * array in its false branch (a readonly string[] is not assignable to any[]), so the recorder
+ * narrows with its own predicate instead. */
+const isArgVector = (value: readonly string[] | SpawnOptions | undefined): value is readonly string[] => Array.isArray(value);
+
+/** Records every spawn a seam makes, so the win32/POSIX spawn selection is observable off
+ * Windows without any real child process. */
+function recordingSeam(platform: NodeJS.Platform, entry: { node: string; script: string } | null): {
+	seam: SpawnCodegraphSeam;
+	calls: Array<{ command: string; args?: string[]; options: SpawnOptions }>;
+	resolutions: number;
+} {
+	const calls: Array<{ command: string; args?: string[]; options: SpawnOptions }> = [];
+	let resolutions = 0;
+	const seam: SpawnCodegraphSeam = {
+		platform: () => platform,
+		spawn: (command, argsOrOptions, maybeOptions) => {
+			const options = (isArgVector(argsOrOptions) ? maybeOptions : argsOrOptions) ?? {};
+			calls.push(isArgVector(argsOrOptions) ? { command, args: [...argsOrOptions], options } : { command, options });
+			// Only the child reference itself is returned: a pid-shaped stand-in is all spawnCodegraph does with it.
+			return { pid: 4242 } as unknown as ReturnType<SpawnCodegraphSeam["spawn"]>;
+		},
+		resolveEntry: () => {
+			resolutions += 1;
+			return entry;
+		},
+	};
+	return { seam, calls, resolutions };
+}
+
+test("spawnCodegraph: a resolved win32 shim spawns node with the entrypoint as an argument vector", () => {
+	const { seam, calls } = recordingSeam("win32", RESOLVED);
+	spawnCodegraph(["sync", "-q"], ["ignore", "pipe", "pipe"], seam);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].command, RESOLVED.node);
+	assert.deepEqual(calls[0].args, [RESOLVED.script, "sync", "-q"], "the entrypoint leads the argument vector: no cmd.exe, no shim, no quoting");
+	assert.deepEqual(calls[0].options, { cwd: tmpdir(), env: process.env, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+	assert.equal("shell" in calls[0].options, false, "the direct path never consults a shell");
+});
+
+test("spawnCodegraph: a literal percent rides the resolved win32 vector without the cmd.exe rejection", () => {
+	const { seam, calls } = recordingSeam("win32", RESOLVED);
+	const percentArg = ["C:", "repos", "%USERNAME%"].join(WIN_BS);
+	assert.doesNotThrow(() => spawnCodegraph(["sync", "-q", percentArg], ["ignore", "ignore", "ignore"], seam));
+	assert.deepEqual(calls[0]?.args?.slice(1), ["sync", "-q", percentArg], "an argument vector carries the percent to codegraph verbatim");
+});
+
+test("spawnCodegraph: an unresolvable shim keeps the exact cmd.exe string fallback", () => {
+	const { seam, calls } = recordingSeam("win32", null);
+	const args = ["sync", "-q", ["C:", "proj"].join(WIN_BS)];
+	spawnCodegraph(args, ["pipe", "pipe", "ignore"], seam);
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].command, buildWindowsCommand(args), "the fallback builds exactly the cmd.exe command line it always did");
+	assert.equal(calls[0].args, undefined);
+	assert.deepEqual(calls[0].options, { cwd: tmpdir(), env: process.env, shell: true, windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
+});
+
+test("spawnCodegraph: the fallback still refuses a percent argument", () => {
+	const { seam } = recordingSeam("win32", null);
+	assert.throws(() => spawnCodegraph(["sync", "%USERNAME%"], ["ignore", "ignore", "ignore"], seam), /percent/);
+});
+
+test("spawnCodegraph: POSIX spawns the plain argument vector and never consults the resolver", () => {
+	const { seam, calls, resolutions } = recordingSeam("linux", RESOLVED);
+	spawnCodegraph(["sync", "-q"], ["ignore", "pipe", "pipe"], seam);
+	assert.equal(resolutions, 0, "S11: the resolver is consulted on win32 only");
+	assert.deepEqual(calls, [{ command: "codegraph", args: ["sync", "-q"], options: { cwd: tmpdir(), env: process.env, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] } }]);
 });

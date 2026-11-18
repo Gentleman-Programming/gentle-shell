@@ -71,7 +71,7 @@ import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/ag
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { HERDR_BUSY_CHANNEL, nextHerdrBusyAction, type HerdrBusyEmitted } from "../lib/herdr-busy.ts";
-import { HERDR_DESKTOP_TASKS, HERDR_DESKTOP_TASKS_REQUEST, HERDR_DESKTOP_TASK_FINISHED, HERDR_DESKTOP_JOBS, HERDR_DESKTOP_CONSULT, HERDR_DESKTOP_SEND, HERDR_DESKTOP_INBOUND, type HerdrDesktopInbound } from "../lib/herdr-desktop-events.ts";
+import { HERDR_DESKTOP_TASKS, HERDR_DESKTOP_TASKS_REQUEST, HERDR_DESKTOP_TASK_FINISHED, HERDR_DESKTOP_JOBS, HERDR_DESKTOP_JOB_SETTLED, HERDR_DESKTOP_CONSULT, HERDR_DESKTOP_SEND, HERDR_DESKTOP_INBOUND, type HerdrDesktopInbound, type HerdrDesktopJobSettled } from "../lib/herdr-desktop-events.ts";
 import { AGENTS_GLYPH, agentsCardTone, agentsSpend, agentsSummary, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
@@ -1972,6 +1972,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (activeAgentRuns === 0) flushAll();
 	};
 	const settleJob = (job: JobRecord) => {
+		if (job.status !== "running") {
+			const { id, explicitLabel, kind, startedAt, status, endedAt, exitCode } = job;
+			const event: HerdrDesktopJobSettled = { sessionId: job.ownerSessionId, job: { id, explicitLabel, kind, startedAt, status, endedAt, exitCode } };
+			emitHerdr(HERDR_DESKTOP_JOB_SETTLED, event);
+		}
 		// A monitor's pending lines are delivered before its end.
 		if (job.kind === "monitor") monitors.finish(job);
 		queueJobNotice({ job, kind: "exit" });

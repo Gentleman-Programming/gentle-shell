@@ -14,6 +14,7 @@ const INBOUND = "gentle-pi:herdr-desktop:inbound";
 const TODO = "gentle-pi:todo:progress";
 const JOBS = "gentle-ai:jobs-sidebar";
 const JOBS_REPLAY = "gentle-pi:herdr-desktop:jobs";
+const JOB_SETTLED = "gentle-pi:herdr-desktop:job-settled";
 const clear = (id: string) => `\x1b]7501;state=clear:id=${id}\x1b\\`;
 const msg = (value: string) => Buffer.from(value).toString("base64");
 const record = (id: string, fields: string) => `\x1b]7501;${fields}:id=${id}\x1b\\`;
@@ -250,6 +251,116 @@ test("S4 job errors retain id and title for 60 seconds; success, stopped and unk
 	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: finished } });
 	assert.deepEqual(h.writes, [...working, ...errors, clear("bg/a"), clear("bg/b")]);
 	assert.equal(h.pendingTimers(), 0);
+	h.fire("session_shutdown");
+});
+
+test("S19 settled edges publish all four failures even when the sidebar retains only three", () => {
+	const h = harness(); h.fire("session_start");
+	const jobs = [
+		{ id: "a", label: "private command a", explicitLabel: "Compile", kind: "command", startedAt: 1000 },
+		{ id: "b", label: "private command b", explicitLabel: "Previous", kind: "monitor", startedAt: 1001 },
+		{ id: "c", label: "private command c", kind: "monitor", startedAt: 1002 },
+		{ id: "d", label: "private command d", kind: "command", startedAt: 1003 },
+	];
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs } });
+	const working = ["Compile", "Previous", "monitor", "background job"].map((title, i) =>
+		record(`bg/${jobs[i]!.id}`, `state=working:title=${msg(title)}`));
+	assert.deepEqual(h.writes, working);
+	const outcomes = [
+		{ id: "a", startedAt: 1000, status: "failed", endedAt: 1000 },
+		{ id: "b", startedAt: 1001, status: "exited", endedAt: 1001, exitCode: 2, explicitLabel: "Final build", kind: "monitor" },
+		{ id: "c", startedAt: 1002, status: "failed", endedAt: 1002 },
+		{ id: "d", startedAt: 1003, status: "exited", endedAt: 1003, exitCode: -3, kind: "command" },
+	];
+	// The failed rows carry local labels, but only explicit provenance is safe.
+	const finished = outcomes.slice(1).map((outcome, index) => ({ ...jobs[index + 1], ...outcome }));
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: finished } });
+	const snapshotWrites = [clear("bg/a"),
+		record("bg/b", `state=error:title=${msg("Final build")}:msg=${msg("exited 2")}`),
+		record("bg/c", `state=error:title=${msg("monitor")}:msg=${msg("failed")}`),
+		record("bg/d", `state=error:title=${msg("background job")}:msg=${msg("exited -3")}`)];
+	assert.deepEqual(h.writes, [...working, ...snapshotWrites]);
+	for (const job of outcomes) h.emit(JOB_SETTLED, { sessionId: "s1", job });
+	const missing = record("bg/a", `state=error:title=${msg("Compile")}:msg=${msg("failed")}`);
+	assert.deepEqual(h.writes, [...working, ...snapshotWrites, missing]);
+	for (const id of ["a", "b", "c", "d"]) assert.equal(h.writes.filter(write => write.includes(`state=error:`) && write.endsWith(`:id=bg/${id}\x1b\\`)).length, 1);
+	assert.equal(h.pendingTimers(), 1);
+	h.advance(59999); assert.deepEqual(h.writes, [...working, ...snapshotWrites, missing]);
+	h.advance(1);
+	assert.deepEqual(h.writes.slice(-4), [clear("bg/b"), clear("bg/c"), clear("bg/d"), clear("bg/a")]);
+	assert.equal(h.pendingTimers(), 0); h.fire("session_shutdown");
+});
+
+test("S19 settled success and stop clear stale running rows, and foreign events do nothing", () => {
+	const h = harness(); h.fire("session_start");
+	const jobs = ["success", "stopped", "foreign"].map(id => ({ id, label: `private ${id}`, explicitLabel: id, kind: "command", startedAt: 1000 }));
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs } });
+	const working = jobs.map(job => record(`bg/${job.id}`, `state=working:title=${msg(job.explicitLabel)}`));
+	const outcomes = [
+		{ id: "success", kind: "command", startedAt: 1000, status: "exited", endedAt: 1000, exitCode: 0 },
+		{ id: "stopped", kind: "command", startedAt: 1000, status: "stopped", endedAt: 1000, exitCode: 9 },
+	];
+	h.emit(JOB_SETTLED, { sessionId: "other", job: { ...outcomes[0], id: "foreign", exitCode: 9 } });
+	assert.deepEqual(h.writes, working); assert.equal(h.pendingTimers(), 0);
+	for (const job of outcomes) h.emit(JOB_SETTLED, { sessionId: "s1", job });
+	assert.deepEqual(h.writes, [...working, clear("bg/success"), clear("bg/stopped")]);
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [...outcomes.map((outcome, i) => ({ ...jobs[i], ...outcome })), jobs[2]] } });
+	for (const job of outcomes) h.emit(JOB_SETTLED, { sessionId: "s1", job });
+	assert.deepEqual(h.writes, [...working, clear("bg/success"), clear("bg/stopped")]);
+	assert.equal(h.pendingTimers(), 0); h.fire("session_shutdown");
+	assert.equal(h.writes.at(-1), clear("bg/foreign"));
+});
+
+test("S19 event-first failures dedupe against snapshots and respect the session-start boundary", () => {
+	const h = harness(); h.fire("session_start");
+	const running = { id: "j", label: "private shell command", explicitLabel: "Original", kind: "command", startedAt: 1000 };
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [running] } });
+	const working = record("bg/j", `state=working:title=${msg("Original")}`);
+	const edge = { id: "j", explicitLabel: "Override", kind: "command", startedAt: 1000, status: "exited", endedAt: 1000, exitCode: 7 };
+	h.emit(JOB_SETTLED, { sessionId: "s1", job: edge });
+	const error = record("bg/j", `state=error:title=${msg("Override")}:msg=${msg("exited 7")}`);
+	assert.deepEqual(h.writes, [working, error]);
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ ...running, ...edge }] } });
+	h.emit(JOB_SETTLED, { sessionId: "s1", job: edge });
+	h.emit(JOB_SETTLED, { sessionId: "s1", job: { id: "old", kind: "command", startedAt: 10, status: "failed", endedAt: 999 } });
+	assert.deepEqual(h.writes, [working, error]); assert.equal(h.pendingTimers(), 1);
+	h.advance(60000);
+	assert.deepEqual(h.writes, [working, error, clear("bg/j")]);
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ ...running, ...edge }] } });
+	h.emit(JOB_SETTLED, { sessionId: "s1", job: edge });
+	assert.deepEqual(h.writes, [working, error, clear("bg/j")]); assert.equal(h.pendingTimers(), 0);
+	h.fire("session_shutdown");
+});
+
+test("S19 settled titles use explicit or same-identity metadata and never local command labels", () => {
+	for (const scenario of [
+		{ prior: { explicitLabel: "Retained", kind: "command", startedAt: 1 }, edge: { startedAt: 1 }, title: "Retained" },
+		{ prior: { kind: "monitor", startedAt: 1 }, edge: { startedAt: 1 }, title: "monitor" },
+		{ prior: undefined, edge: { kind: "monitor", startedAt: 1 }, title: "monitor" },
+		{ prior: undefined, edge: { kind: "command", startedAt: 1 }, title: "background job" },
+		{ prior: { explicitLabel: "Old", kind: "monitor", startedAt: 1 }, edge: { startedAt: 2 }, title: "background job", remove: true },
+		{ prior: { explicitLabel: "Old", kind: "command", startedAt: 1 }, edge: { explicitLabel: "New", startedAt: 1 }, title: "New" },
+		{ prior: { explicitLabel: "Retained", kind: "command", startedAt: 1 }, edge: { explicitLabel: "\x00", startedAt: 1 }, title: "Retained" },
+	] as const) {
+		const h = harness(); h.fire("session_start");
+		if (scenario.prior) h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ id: "j", label: "private shell command", ...scenario.prior }] } });
+		if ("remove" in scenario) h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [] } });
+		const before = [...h.writes];
+		h.emit(JOB_SETTLED, { sessionId: "s1", job: { id: "j", label: "private shell command", status: "failed", endedAt: 1000, ...scenario.edge } });
+		assert.deepEqual(h.writes, [...before, record("bg/j", `state=error:title=${msg(scenario.title)}:msg=${msg("failed")}`)]);
+		h.fire("session_shutdown");
+	}
+});
+
+test("S19 malformed settled events cannot change records or timers", () => {
+	const h = harness(); h.fire("session_start");
+	const job = { id: "j", kind: "command", startedAt: 1000, status: "failed", endedAt: 1000 };
+	h.emit(JOBS, { sessionId: "s1", snapshot: { jobs: [{ ...job, status: undefined, label: "private", explicitLabel: "Running" }] } });
+	const before = [...h.writes];
+	for (const patch of [{ id: "" }, { startedAt: NaN }, { status: "running" }, { status: undefined },
+		{ explicitLabel: 42 }, { endedAt: NaN }, { exitCode: "7" }]) h.emit(JOB_SETTLED, { sessionId: "s1", job: { ...job, ...patch } });
+	h.emit(JOB_SETTLED, { sessionId: "s1", job: null });
+	assert.deepEqual(h.writes, before); assert.equal(h.pendingTimers(), 0);
 	h.fire("session_shutdown");
 });
 

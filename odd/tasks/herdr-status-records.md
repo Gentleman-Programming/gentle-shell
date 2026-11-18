@@ -22,6 +22,7 @@ Runner: `node --experimental-strip-types --test tests/<file>.test.ts`; `pnpm typ
 - S16: CodeRabbit R4c (lib/herdr-desktop-status.ts:137): "A monitor label containing only U+0000 passes `trim()`, so `desktopJobTitle` selects it. `encodedText` then replaces the control with a space and omits the title. Apply the encoder's control cleanup before deciding whether to use the explicit label." (same for desktopTaskTitle).
 - S17: CodeRabbit R4d (lib/jobs-sidebar-state.ts:17): "Declare the field as `unknown` at this boundary and narrow it where needed."
 - S18: CodeRabbit tests: R4e (lib/background-jobs.ts:171) registry-level test: no/blank label -> `explicitLabel` undefined and `label` = command; `"  Build  "` -> `explicitLabel` and `label` = "Build". R4f (lib/jobs-sidebar-state.ts:35) rejection test for a non-string `explicitLabel`.
+- S19: CodeRabbit R5 (gentle-herdr-desktop-status.ts:190, user: "último comnetario"): "Publish job failures independently of the sidebar's three-row limit. If four jobs exit nonzero before the first job log finishes closing, all four are terminal by the first settlement refresh. The sidebar sends only the three newest finished rows. Herdr clears the fourth job's working record but never receives its failure, so that job does not get the documented 60-second error record. Keep the sidebar limit. Send each settled job's outcome and explicit title metadata through a dedicated event. Continue to clear successful and stopped jobs without publishing an error."
 
 ## Tasks
 
@@ -34,6 +35,7 @@ Runner: `node --experimental-strip-types --test tests/<file>.test.ts`; `pnpm typ
 - T7 | S11-S13 | delegated worker (context backstop) | done | Herdr titles use only explicit labels (agent name / generic job title fallback); tighten the stale-ctx test; worker RED desktop 41 pass/8 fail, GREEN 49/49; parent: gentle-agents 372/372, background-jobs 13/13, shell-sidebar files green, typecheck 0 | commit: `fix(herdr): publish only explicit labels as status record titles`
 - T8 | F1 | parent | done | Open a separate issue for the pre-existing unconfirmed-send outcome (closed/ack_timeout/invalid_ack/io_error reported as "not accepted"); opened #3359 | commit: n/a
 - T9 | S14-S18 | delegated worker (context backstop) | done | CodeRabbit round 4; worker RED 64 pass/3 fail, GREEN 67/67; parent: S14 RED on HEAD gentle-agents.ts then GREEN, gentle-agents 373/373, gentle-shell 348/348, typecheck 0 | commit: `fix(herdr): title error records from explicit metadata and isolate inactive task snapshots`
+- T10 | S19 | delegated worker (context backstop) | done | Dedicated settled-job event for Herdr failure records; worker RED 67 pass/3 fail, GREEN 72/72; parent: producer S19 tests RED 0/3 on HEAD gentle-agents.ts, GREEN gentle-agents 376/376, typecheck 0 | commit: `fix(herdr): publish every job failure through a settled-job event`
 
 ## Log
 
@@ -56,3 +58,4 @@ Runner: `node --experimental-strip-types --test tests/<file>.test.ts`; `pnpm typ
 - L16: Independent verify of 84bb87266 (Risk item 2): S12 met, no blockers; 70/70; probes with non-string kinds (5, null, {}, [], true, "SECRET") never published the command. Advisories (low, not applied): RunningJobDisplay.kind type is wider in practice than declared; non-string kinds covered only by probe.
 - L17: User: "resuelve comentarios de coderrabit y pon como resolve conversation los ya solucionados". Resolved the F1 thread (tracked in #3359). Open: R1 from round 1 (missed earlier) and six round-4 comments (S14-S18).
 - L18: Independent verify of d9f8c4b4d (Risk items 2 and 4): S14-S18 met, no blockers; 67/67, Herdr/S14/label/jobs 27/27; S14 RED with the guard removed; privacy probes clean. Advisories (not applied): jobMetadata/taskLabels grow per job/task for the session lifetime (like seenJobErrors); pre-existing: a task failing in an inactive session shows no error record on return (resetParentDelivery).
+- L19: Verified R5: finished sidebar rows are capped at 3 (extensions/gentle-agents.ts:1939 `.slice(0, 3)`), and Herdr derives failure records only from that snapshot (gentle-herdr-desktop-status.ts updateJobs).

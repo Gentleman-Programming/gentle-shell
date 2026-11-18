@@ -8134,6 +8134,92 @@ test("S12 live and replay job snapshots retain local labels and carry only expli
 	} finally { await h.fire("session_shutdown", ctx); jobs.cleanup(); }
 });
 
+test("S19 each failing job emits a command-free settled event while the sidebar stays capped", async () => {
+	const h = fakePi(), jobs = fakeJobShell(), { ctx } = fakeContext();
+	let clock = 1000;
+	gentleAgents(h.pi, {}, { ...deps().deps, now: () => clock++, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const sidebar = () => h.events.filter(e => e.name === "gentle-ai:jobs-sidebar").map(e => e.data as { sessionId: string; snapshot: { jobs: Array<any> } });
+	const settled = () => h.events.filter(e => e.name === "gentle-pi:herdr-desktop:job-settled").map(e => e.data as { sessionId: string; job: any });
+	try {
+		await h.fire("session_start", ctx);
+		await h.tools.get("bash_background")!.execute("a", { command: "build --private-a", label: "  Build  " }, undefined, undefined, ctx);
+		await h.tools.get("monitor")!.execute("b", { command: "watch --private-b", timeout_seconds: 30 }, undefined, undefined, ctx);
+		await h.tools.get("bash_background")!.execute("c", { command: "build --private-c" }, undefined, undefined, ctx);
+		await h.tools.get("bash_background")!.execute("d", { command: "build --private-d", label: "Tests" }, undefined, undefined, ctx);
+		const running = sidebar().at(-1)!.snapshot.jobs;
+		assert.equal(running.length, 4);
+		const started = new Map(running.map(job => [job.id, job.startedAt]));
+		const before = sidebar().length;
+		for (const [index, run] of jobs.runs.entries()) run.exit(index + 1);
+		await eventually(() => settled().length === 4, "each failure must emit a settled event");
+		const firstFinished = sidebar().slice(before)[0]!.snapshot.jobs.filter(job => job.status !== undefined);
+		assert.equal(firstFinished.length, 3);
+		assert.deepEqual(firstFinished.map(job => job.id), ["job-4", "job-3", "job-2"]);
+		assert.ok(sidebar().slice(before).every(event => event.snapshot.jobs.filter(job => job.status !== undefined).length <= 3));
+		const edges = settled().sort((a, b) => a.job.id.localeCompare(b.job.id));
+		assert.deepEqual(edges.map(({ sessionId, job }) => ({ sessionId, id: job.id, explicitLabel: job.explicitLabel, kind: job.kind, startedAt: job.startedAt, status: job.status, exitCode: job.exitCode })), [
+			{ sessionId: "s1", id: "job-1", explicitLabel: "Build", kind: "command", startedAt: started.get("job-1"), status: "exited", exitCode: 1 },
+			{ sessionId: "s1", id: "job-2", explicitLabel: undefined, kind: "monitor", startedAt: started.get("job-2"), status: "exited", exitCode: 2 },
+			{ sessionId: "s1", id: "job-3", explicitLabel: undefined, kind: "command", startedAt: started.get("job-3"), status: "exited", exitCode: 3 },
+			{ sessionId: "s1", id: "job-4", explicitLabel: "Tests", kind: "command", startedAt: started.get("job-4"), status: "exited", exitCode: 4 },
+		]);
+		for (const { job } of edges) {
+			assert.equal(Object.hasOwn(job, "label"), false);
+			assert.equal(typeof job.endedAt, "number"); assert.ok(job.endedAt >= job.startedAt);
+			assert.deepEqual(Object.keys(job).sort(), ["endedAt", "exitCode", "explicitLabel", "id", "kind", "startedAt", "status"]);
+		}
+		assert.doesNotMatch(JSON.stringify(edges), /private/);
+	} finally { await h.fire("session_shutdown", ctx); jobs.cleanup(); }
+});
+
+test("S19 failed and successful registry settlements emit once, while a stop keeps its existing sidebar path", async () => {
+	const h = fakePi(), jobs = fakeJobShell(), { ctx } = fakeContext();
+	const fakeShell = jobs.shell();
+	const shell: NonNullable<AgentsDeps["jobShell"]> = () => ({ operations: {
+		exec(command, cwd, options) {
+			return command === "reject --private" ? Promise.reject(new Error("private failure")) : fakeShell.operations.exec(command, cwd, options);
+		},
+	} });
+	gentleAgents(h.pi, {}, { ...deps().deps, jobShell: shell, jobOutputDir: () => jobs.dir });
+	const settled = () => h.events.filter(e => e.name === "gentle-pi:herdr-desktop:job-settled").map(e => e.data as { sessionId: string; job: any });
+	try {
+		await h.fire("session_start", ctx);
+		await h.tools.get("bash_background")!.execute("a", { command: "reject --private", label: "Fail" }, undefined, undefined, ctx);
+		await eventually(() => settled().length === 1, "failed startup settlement");
+		await h.tools.get("bash_background")!.execute("b", { command: "ok --private" }, undefined, undefined, ctx);
+		jobs.runs[0]!.exit(0);
+		await eventually(() => settled().length === 2, "successful settlement");
+		await h.tools.get("bash_background")!.execute("c", { command: "stop --private" }, undefined, undefined, ctx);
+		await h.tools.get("job_stop")!.execute("stop", { job_id: "job-3" }, undefined, undefined, ctx);
+		await jobIo();
+		assert.deepEqual(settled().map(({ sessionId, job }) => ({ sessionId, id: job.id, explicitLabel: job.explicitLabel, kind: job.kind, status: job.status, exitCode: job.exitCode })), [
+			{ sessionId: "s1", id: "job-1", explicitLabel: "Fail", kind: "command", status: "failed", exitCode: undefined },
+			{ sessionId: "s1", id: "job-2", explicitLabel: undefined, kind: "command", status: "exited", exitCode: 0 },
+		]);
+		assert.ok(settled().every(({ job }) => !Object.hasOwn(job, "label")));
+		const sidebar = h.events.filter(e => e.name === "gentle-ai:jobs-sidebar").at(-1)!.data as { snapshot: { jobs: Array<{ id: string; status?: string }> } };
+		assert.equal(sidebar.snapshot.jobs.find(job => job.id === "job-3")?.status, "stopped");
+	} finally { await h.fire("session_shutdown", ctx); jobs.cleanup(); }
+});
+
+test("S19 a job settling after a session switch reports its owner, not the active session", async () => {
+	const h = fakePi(), jobs = fakeJobShell(), { ctx: owner } = fakeContext(), { ctx: other } = fakeContext();
+	other.sessionManager.getSessionId = () => "s2";
+	gentleAgents(h.pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	try {
+		await h.fire("session_start", owner);
+		await h.tools.get("bash_background")!.execute("start", { command: "build --private" }, undefined, undefined, owner);
+		await h.fire("session_start", other, { reason: "new" });
+		jobs.runs[0]!.exit(5);
+		await eventually(() => h.events.some(e => e.name === "gentle-pi:herdr-desktop:job-settled"), "inactive owner settlement");
+		const edges = h.events.filter(e => e.name === "gentle-pi:herdr-desktop:job-settled");
+		assert.equal(edges.length, 1);
+		const data = edges[0]!.data as { sessionId: string; job: any };
+		assert.equal(data.sessionId, "s1"); assert.equal(data.job.exitCode, 5);
+		assert.equal(Object.hasOwn(data.job, "label"), false);
+	} finally { await h.fire("session_shutdown", other); jobs.cleanup(); }
+});
+
 test("Herdr snapshot requests and session resume replay running jobs without changing job commands", async () => {
 	const h = fakePi(), jobs = fakeJobShell();
 	gentleAgents(h.pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });

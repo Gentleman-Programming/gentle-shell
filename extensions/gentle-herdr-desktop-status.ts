@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Terminal } from "@earendil-works/pi-tui";
-import { HERDR_DESKTOP_TASKS, HERDR_DESKTOP_TASKS_REQUEST, HERDR_DESKTOP_TASK_FINISHED, HERDR_DESKTOP_JOBS, HERDR_DESKTOP_CONSULT, HERDR_DESKTOP_SEND, HERDR_DESKTOP_INBOUND, type HerdrDesktopTask } from "../lib/herdr-desktop-events.ts";
+import { HERDR_DESKTOP_TASKS, HERDR_DESKTOP_TASKS_REQUEST, HERDR_DESKTOP_TASK_FINISHED, HERDR_DESKTOP_JOBS, HERDR_DESKTOP_JOB_SETTLED, HERDR_DESKTOP_CONSULT, HERDR_DESKTOP_SEND, HERDR_DESKTOP_INBOUND, type HerdrDesktopTask } from "../lib/herdr-desktop-events.ts";
 import { desktopJobTitle, desktopTaskTitle, diffRecords, hasUsableDesktopLabel, projectAll, SEND_TTL_MS, ERROR_TTL_MS, type DesktopRecord } from "../lib/herdr-desktop-status.ts";
-import { isJobsSidebarSnapshot, JOBS_SIDEBAR_EVENT, type JobsSidebarSnapshot } from "../lib/jobs-sidebar-state.ts";
+import { isJobsSidebarSnapshot, JOBS_SIDEBAR_EVENT, type JobsSidebarSnapshot, type RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
 import { replayTodo, todoProgress, TODO_PROGRESS_EVENT, type TodoState } from "../lib/shell-todo.ts";
 
 const WIDGET_KEY = "gentle-shell:herdr-desktop-status";
@@ -161,34 +161,48 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 				}));
 			};
 			listen(TODO_PROGRESS_EVENT, data => { if (validProgress(data)) { s.todo = data; publish(s); } });
+			const updateJob = (job: RunningJobDisplay) => {
+				const id = `bg/${segment(job.id)}`;
+				const identity = JSON.stringify([job.id, job.startedAt]);
+				const previous = s.jobMetadata.get(identity);
+				const metadata = {
+					explicitLabel: hasUsableDesktopLabel(job.explicitLabel) ? job.explicitLabel : previous?.explicitLabel,
+					kind: job.kind === "command" || job.kind === "monitor" ? job.kind : previous?.kind,
+				};
+				s.jobMetadata.set(identity, metadata);
+				const failure = job.status === "failed" ? "failed"
+					: job.status === "exited" && typeof job.exitCode === "number" && Number.isFinite(job.exitCode) && job.exitCode !== 0 ? `exited ${job.exitCode}` : undefined;
+				if (failure && !s.seenJobErrors.has(identity)) {
+					s.seenJobErrors.add(identity);
+					if (job.endedAt === undefined || job.endedAt >= s.startedAt) {
+						s.errors.set(id, { record: { state: "error", title: desktopJobTitle(metadata), msg: failure }, expiresAt: now() + ERROR_TTL_MS });
+					}
+				} else if (!failure) {
+					s.errors.delete(id);
+					if (job.status === undefined) s.seenJobErrors.delete(identity);
+				}
+			};
 			const updateJobs = (data: any) => {
 				if (!isJobsSidebarSnapshot(data.snapshot) || !Array.from(data.snapshot.jobs).every(job => job !== undefined)) return;
 				s.jobs = data.snapshot;
-				for (const job of data.snapshot.jobs) {
-					const id = `bg/${segment(job.id)}`;
-					const identity = JSON.stringify([job.id, job.startedAt]);
-					const previous = s.jobMetadata.get(identity);
-					const metadata = {
-						explicitLabel: hasUsableDesktopLabel(job.explicitLabel) ? job.explicitLabel : previous?.explicitLabel,
-						kind: job.kind === "command" || job.kind === "monitor" ? job.kind : previous?.kind,
-					};
-					s.jobMetadata.set(identity, metadata);
-					const failure = job.status === "failed" ? "failed"
-						: job.status === "exited" && typeof job.exitCode === "number" && Number.isFinite(job.exitCode) && job.exitCode !== 0 ? `exited ${job.exitCode}` : undefined;
-					if (failure && !s.seenJobErrors.has(identity)) {
-						s.seenJobErrors.add(identity);
-						if (job.endedAt === undefined || job.endedAt >= s.startedAt) {
-							s.errors.set(id, { record: { state: "error", title: desktopJobTitle(metadata), msg: failure }, expiresAt: now() + ERROR_TTL_MS });
-						}
-					} else if (!failure) {
-						s.errors.delete(id);
-						if (job.status === undefined) s.seenJobErrors.delete(identity);
-					}
-				}
+				for (const job of data.snapshot.jobs) updateJob(job);
 				publish(s); arm(s);
 			};
 			listen(JOBS_SIDEBAR_EVENT, updateJobs);
 			listen(HERDR_DESKTOP_JOBS, updateJobs);
+			listen(HERDR_DESKTOP_JOB_SETTLED, data => {
+				if (!data.job || typeof data.job !== "object") return;
+				// Reuse the sidebar validator without reading a local command as a title.
+				const { id, explicitLabel, kind, startedAt, status, endedAt, exitCode } = data.job;
+				const snapshot = { jobs: [{ id, explicitLabel, kind, startedAt, status, endedAt, exitCode, label: "" }] };
+				if (!isJobsSidebarSnapshot(snapshot)) return;
+				const job = snapshot.jobs[0]!;
+				if (job.status === undefined) return;
+				updateJob(job);
+				// The edge can precede the sidebar refresh, including for success.
+				if (s.jobs) s.jobs = { jobs: s.jobs.jobs.filter(active => active.id !== job.id || active.startedAt !== job.startedAt) };
+				publish(s); arm(s);
+			});
 			listen(HERDR_DESKTOP_TASKS, data => {
 				if (!validTasks(data.tasks)) return;
 				for (const task of data.tasks) if (hasUsableDesktopLabel(task.explicitLabel)) s.taskLabels.set(task.id, task.explicitLabel);

@@ -57,6 +57,14 @@ import {
 	writeOddSlimPolicy,
 	type OddOptionalModule,
 } from "../lib/odd-slim-policy.ts";
+import {
+	ALL_BUNDLED_SKILLS,
+	DEFAULT_ENABLED_BUNDLED_SKILLS,
+	isBundledSkillId,
+	resolveBundledSkillsPolicy,
+	writeBundledSkillsPolicy,
+	type BundledSkillId,
+} from "../lib/bundled-skills-policy.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CLAUDE_BRIDGE_PROVIDER, priceBridgeMessage } from "../lib/bridge-cost.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
@@ -3902,6 +3910,91 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			}
 			ctx.ui.notify(
 				`Use /gentle:odd-slim [status|on|off|enable <module>|disable <module>]. Modules: ${ODD_OPTIONAL_MODULES.join(", ")}`,
+				"warning",
+			);
+		},
+	});
+	pi.registerCommand("gentle:skills", {
+		description: "Choose which bundled gentle-pi skills are auto-loaded and indexed (keeps all skills on disk for manual invocation).",
+		handler: async (args, ctx) => {
+			const trimmed = args.trim();
+			const configHome = gentlePiConfigHome(env);
+			const current = resolveBundledSkillsPolicy({ gentlePiConfigHome: configHome });
+			if (!trimmed && ctx.hasUI && typeof ctx.ui.select === "function") {
+				const selected = new Set<BundledSkillId>(current.enabled);
+				let dirty = false;
+				while (true) {
+					const items = [
+						...ALL_BUNDLED_SKILLS.map((id) => `${selected.has(id) ? "[x]" : "[ ]"} ${id}`),
+						"defaults",
+						"enable-all",
+						"disable-all",
+						dirty ? "Save" : "Close",
+					];
+					const choice = await ctx.ui.select("Bundled gentle-pi skills to auto-index", items);
+					if (choice === undefined || choice === "Close") return;
+					if (choice === "Save") {
+						writeBundledSkillsPolicy([...selected], { gentlePiConfigHome: configHome });
+						ctx.ui.notify(`Bundled skills auto-indexed (${selected.size}/${ALL_BUNDLED_SKILLS.length}). Applies on next turn.`, "info");
+						return;
+					}
+					if (choice === "defaults") {
+						selected.clear();
+						for (const id of DEFAULT_ENABLED_BUNDLED_SKILLS) selected.add(id);
+						dirty = true;
+						continue;
+					}
+					if (choice === "enable-all") {
+						for (const id of ALL_BUNDLED_SKILLS) selected.add(id);
+						dirty = true;
+						continue;
+					}
+					if (choice === "disable-all") {
+						selected.clear();
+						dirty = true;
+						continue;
+					}
+					const id = choice.replace(/^\[[ x]\]\s+/, "");
+					if (isBundledSkillId(id)) {
+						if (selected.has(id)) selected.delete(id);
+						else selected.add(id);
+						dirty = true;
+					}
+				}
+			}
+			const [verb, target] = trimmed.split(/\s+/, 2);
+			if (!verb || verb === "status") {
+				ctx.ui.notify(
+					`Bundled skills auto-indexed (${current.enabled.length}/${ALL_BUNDLED_SKILLS.length}): ${current.enabled.length ? current.enabled.join(", ") : "none"}`,
+					"info",
+				);
+				return;
+			}
+			if (verb === "defaults") {
+				writeBundledSkillsPolicy(DEFAULT_ENABLED_BUNDLED_SKILLS, { gentlePiConfigHome: configHome });
+				ctx.ui.notify(`Reset bundled skills to defaults (${DEFAULT_ENABLED_BUNDLED_SKILLS.join(", ")}).`, "info");
+				return;
+			}
+			if (verb === "enable-all") {
+				writeBundledSkillsPolicy(ALL_BUNDLED_SKILLS, { gentlePiConfigHome: configHome });
+				ctx.ui.notify("Enabled auto-indexing for all 15 bundled skills.", "info");
+				return;
+			}
+			if (verb === "disable-all") {
+				writeBundledSkillsPolicy([], { gentlePiConfigHome: configHome });
+				ctx.ui.notify("Disabled auto-indexing for all bundled skills.", "info");
+				return;
+			}
+			if ((verb === "enable" || verb === "disable") && target && isBundledSkillId(target)) {
+				const next = new Set<BundledSkillId>(current.enabled);
+				if (verb === "enable") next.add(target);
+				else next.delete(target);
+				writeBundledSkillsPolicy([...next], { gentlePiConfigHome: configHome });
+				ctx.ui.notify(`${verb === "enable" ? "Enabled" : "Disabled"} auto-indexing for ${target}.`, "info");
+				return;
+			}
+			ctx.ui.notify(
+				`Use /gentle:skills [status|defaults|enable <id>|disable <id>|enable-all|disable-all].`,
 				"warning",
 			);
 		},

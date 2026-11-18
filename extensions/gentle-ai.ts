@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { resolveOddSlimPolicy, type OddSlimPolicy } from "../lib/odd-slim-policy.ts";
+import { filterBundledSystemPromptSkills, type SystemPromptSkillsOptions } from "../lib/bundled-skills-policy.ts";
 import { filterChildSessionContextFiles, type ContextFileOptions } from "../lib/child-context-files.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "../lib/yolo-temp-scratch.ts";
@@ -13200,6 +13201,11 @@ function createGentleAiExtensionForTesting(
 		// throws and keeps the original files on malformed markers.
 		if (isPrimarySession && gentlePrompt !== "") {
 			filterChildSessionContextFiles(event.systemPromptOptions as ContextFileOptions | undefined);
+			filterBundledSystemPromptSkills(
+				event.systemPromptOptions as SystemPromptSkillsOptions | undefined,
+				join(PACKAGE_ROOT, "skills"),
+				{ gentlePiConfigHome: gentlePiConfigHome(permissionEnvironment) },
+			);
 		}
 		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
 		// and forwards only systemPromptOptions, so the harness is delivered

@@ -4,6 +4,7 @@ import { PROFILE_TIER_EVENT, supportsOpenAIFast } from "../lib/openai-fast-tier.
 import { isDeepStrictEqual } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { resolveOddSlimPolicy, type OddSlimPolicy } from "../lib/odd-slim-policy.ts";
 import { filterChildSessionContextFiles, type ContextFileOptions } from "../lib/child-context-files.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "../lib/yolo-temp-scratch.ts";
@@ -1487,6 +1488,32 @@ function projectOddStepsForMode(steps: string, mode: OrchestratorMode): string {
 // tests/orchestrator-budget.test.ts measures; assets/orchestrator.md is
 // sized with that worst case already included. Production still resolves
 // and passes the real line (on/off/unknown) via resolveRddStatusLine.
+const DEFAULT_ODD_SLIM_POLICY: OddSlimPolicy = { enabled: false, modules: [] };
+
+function projectOrchestratorForOddSlim(text: string, oddSlim: OddSlimPolicy): string {
+	if (!oddSlim.enabled) return text;
+	const active = new Set(oddSlim.modules);
+	const lines = text.split("\n");
+	const kept: string[] = [];
+	for (const line of lines) {
+		if (!active.has("tracking") && (line.startsWith("4. **Track**") || line.includes("orchestrator-tracking.md"))) {
+			continue;
+		}
+		if (!active.has("verification") && (line.startsWith("**High risk**:") || line.startsWith("**Risk line**:") || line.startsWith("3. **Verification rule**"))) {
+			continue;
+		}
+		if (!active.has("4r-review") && line.includes("4r-review")) {
+			continue;
+		}
+		if (!active.has("judgment-day") && line.includes("judgment-day")) {
+			continue;
+		}
+		kept.push(line);
+	}
+	const enabledList = oddSlim.modules.length > 0 ? oddSlim.modules.join(", ") : "none";
+	return `${kept.join("\n")}\n\nODD-slim mode: enabled (optional modules: ${enabledList}).`;
+}
+
 const orchestratorPromptCache = new Map<string, string>();
 function getOrchestratorPrompt(
 	cwd: string = process.cwd(),
@@ -1494,6 +1521,7 @@ function getOrchestratorPrompt(
 	rddStatusLine: string = renderRddStatusLine(undefined),
 	hostMode?: string,
 	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
+	oddSlim: OddSlimPolicy = DEFAULT_ODD_SLIM_POLICY,
 ): string {
 	const background: BackgroundSubagentsRendering = {
 		policy: loadBackgroundSubagentsPolicy(cwd),
@@ -1502,10 +1530,11 @@ function getOrchestratorPrompt(
 	};
 	// The workflow mode is part of the key: without it a profile switch would keep
 	// serving the previous profile's rules for the rest of the process.
-	const cacheKey = `${background.policy}:${background.capability}:${background.singleShot}:${rddStatusLine}:${delegationMode}`;
+	const oddSlimKey = oddSlim.enabled ? `slim:${oddSlim.modules.join(",")}` : "full";
+	const cacheKey = `${background.policy}:${background.capability}:${background.singleShot}:${rddStatusLine}:${delegationMode}:${oddSlimKey}`;
 	let prompt = orchestratorPromptCache.get(cacheKey);
 	if (prompt === undefined) {
-		prompt = renderOrchestratorPrompt(ASSETS_DIR, background, rddStatusLine, delegationMode);
+		prompt = renderOrchestratorPrompt(ASSETS_DIR, background, rddStatusLine, delegationMode, oddSlim);
 		orchestratorPromptCache.set(cacheKey, prompt);
 	}
 	return prompt;
@@ -1516,9 +1545,13 @@ function renderOrchestratorPrompt(
 	background: BackgroundSubagentsRendering = DEFAULT_BACKGROUND_SUBAGENTS_RENDERING,
 	rddStatusLine: string = renderRddStatusLine(undefined),
 	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
+	oddSlim: OddSlimPolicy = DEFAULT_ODD_SLIM_POLICY,
 ): string {
 	const backgroundPolicyBlock = `${renderBackgroundSubagentsStatusLine(background)}\n${rddStatusLine}`;
-	return projectForRddState(applyDelegationMode(assetsDir, readFileSync(join(assetsDir, "orchestrator.md"), "utf8"), delegationMode), rddStatusLine)
+	return projectOrchestratorForOddSlim(
+		projectForRddState(applyDelegationMode(assetsDir, readFileSync(join(assetsDir, "orchestrator.md"), "utf8"), delegationMode), rddStatusLine),
+		oddSlim,
+	)
 		.replaceAll("{{GENTLE_PI_ASSETS_ROOT}}", assetsDir)
 		.replaceAll(
 			"{{GENTLE_PI_BACKGROUND_POLICY}}",
@@ -1703,6 +1736,7 @@ function buildGentlePrompt(
 	rddStatusLine: string = renderRddStatusLine(undefined),
 	hostMode?: string,
 	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
+	oddSlim: OddSlimPolicy = DEFAULT_ODD_SLIM_POLICY,
 ): string {
 	// cost-speed-painpoints S5, P14 (PD-57): each persona states its Spanish register once, in its
 	// own bullets, so no second Language line repeats it.
@@ -1753,7 +1787,7 @@ Harness principles:
 ${testFirstPrinciple}${isRddStatusLineOff(rddStatusLine) ? "" : "\n- When the user asks to stop receipt-driven development, run `gentle-ai review mode disable` without arguing, working around it, or proposing alternatives first; never enable it unless the user explicitly asks."}
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 
-${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode, delegationMode)}${headlessDeliveryNote(hostMode)}`;
+${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode, delegationMode, oddSlim)}${headlessDeliveryNote(hostMode)}`;
 }
 
 // Bench gate-p53-r1-BS40 x6 run 3: in a headless RPC session the ask-on-risk
@@ -13140,6 +13174,7 @@ function createGentleAiExtensionForTesting(
 					// Enter back restores them. A child or named-agent session keeps the
 					// organic rules: its own instructions are the bounded task it received.
 					isPrimarySession ? resolveSessionDelegationMode(ctx, permissionEnvironment) : DEFAULT_ORCHESTRATOR_MODE,
+					isPrimarySession ? resolveOddSlimPolicy({ gentlePiConfigHome: gentlePiConfigHome(permissionEnvironment) }).policy : DEFAULT_ODD_SLIM_POLICY,
 				)}`;
 		// gentle-pi#560 / gentle-ai#4056, #4057: inject the mirrored provider
 		// contract bundle's review execution contract for the primary session

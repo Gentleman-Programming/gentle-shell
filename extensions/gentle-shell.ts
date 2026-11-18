@@ -50,6 +50,13 @@ import {
 	writeOptionalExtensionsPolicy,
 	type OptionalExtensionId,
 } from "../lib/optional-extensions-policy.ts";
+import {
+	ODD_OPTIONAL_MODULES,
+	isOddOptionalModule,
+	resolveOddSlimPolicy,
+	writeOddSlimPolicy,
+	type OddOptionalModule,
+} from "../lib/odd-slim-policy.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CLAUDE_BRIDGE_PROVIDER, priceBridgeMessage } from "../lib/bridge-cost.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
@@ -3832,6 +3839,69 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			}
 			ctx.ui.notify(
 				`Use /gentle:extensions [status|enable <id>|disable <id>|enable-all|disable-all]. Valid ids: ${OPTIONAL_EXTENSION_IDS.join(", ")}`,
+				"warning",
+			);
+		},
+	});
+	pi.registerCommand("gentle:odd-slim", {
+		description: "Configure ODD-slim mode and choose which optional ODD modules (tracking, verification, 4r-review, judgment-day) load by default.",
+		handler: async (args, ctx) => {
+			const trimmed = args.trim();
+			const configHome = gentlePiConfigHome(env);
+			const current = resolveOddSlimPolicy({ gentlePiConfigHome: configHome }).policy;
+			if (!trimmed && ctx.hasUI && typeof ctx.ui.select === "function") {
+				let enabled = current.enabled;
+				const modules = new Set<OddOptionalModule>(current.modules);
+				let dirty = false;
+				while (true) {
+					const items = [
+						`odd-slim mode: ${enabled ? "ON" : "OFF"} (toggle)`,
+						...ODD_OPTIONAL_MODULES.map((mod) => `${modules.has(mod) ? "[x]" : "[ ]"} ${mod}`),
+						dirty ? "Save" : "Close",
+					];
+					const choice = await ctx.ui.select("ODD-slim configuration", items);
+					if (choice === undefined || choice === "Close") return;
+					if (choice === "Save") {
+						writeOddSlimPolicy({ enabled, modules: [...modules] }, { gentlePiConfigHome: configHome });
+						ctx.ui.notify(`ODD-slim: ${enabled ? "on" : "off"}; optional modules: ${modules.size ? [...modules].join(", ") : "none"}. Applies on next turn.`, "info");
+						return;
+					}
+					if (choice.startsWith("odd-slim mode:")) {
+						enabled = !enabled;
+						dirty = true;
+						continue;
+					}
+					const mod = choice.replace(/^\[[ x]\]\s+/, "");
+					if (isOddOptionalModule(mod)) {
+						if (modules.has(mod)) modules.delete(mod);
+						else modules.add(mod);
+						dirty = true;
+					}
+				}
+			}
+			const [verb, target] = trimmed.split(/\s+/, 2);
+			if (!verb || verb === "status") {
+				ctx.ui.notify(
+					`ODD-slim: ${current.enabled ? "on" : "off"}; optional modules: ${current.modules.length ? current.modules.join(", ") : "none"}`,
+					"info",
+				);
+				return;
+			}
+			if (verb === "on" || verb === "off") {
+				writeOddSlimPolicy({ enabled: verb === "on", modules: current.modules }, { gentlePiConfigHome: configHome });
+				ctx.ui.notify(`ODD-slim: ${verb}. Applies on next turn.`, "info");
+				return;
+			}
+			if ((verb === "enable" || verb === "disable") && target && isOddOptionalModule(target)) {
+				const next = new Set<OddOptionalModule>(current.modules);
+				if (verb === "enable") next.add(target);
+				else next.delete(target);
+				writeOddSlimPolicy({ enabled: current.enabled, modules: [...next] }, { gentlePiConfigHome: configHome });
+				ctx.ui.notify(`ODD-slim module ${target}: ${verb === "enable" ? "enabled" : "disabled"}. Applies on next turn.`, "info");
+				return;
+			}
+			ctx.ui.notify(
+				`Use /gentle:odd-slim [status|on|off|enable <module>|disable <module>]. Modules: ${ODD_OPTIONAL_MODULES.join(", ")}`,
 				"warning",
 			);
 		},

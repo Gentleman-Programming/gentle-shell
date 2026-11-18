@@ -33,7 +33,6 @@ export function isJobsSidebarSnapshot(value: unknown): value is JobsSidebarSnaps
 		if (!job || typeof job !== "object") return false;
 		if (typeof job.id !== "string" || job.id.length === 0 || typeof job.label !== "string") return false;
 		if (job.explicitLabel !== undefined && typeof job.explicitLabel !== "string") return false;
-		if (job.kind !== undefined && job.kind !== "command" && job.kind !== "monitor") return false;
 		if (typeof job.startedAt !== "number" || !Number.isFinite(job.startedAt)) return false;
 		if (job.status !== undefined && job.status !== "exited" && job.status !== "stopped" && job.status !== "failed") return false;
 		if (job.endedAt !== undefined && (typeof job.endedAt !== "number" || !Number.isFinite(job.endedAt))) return false;

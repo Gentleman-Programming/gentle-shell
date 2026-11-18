@@ -255,3 +255,14 @@ test("all projections fail closed without throwing even when malformed property 
 		assert.deepEqual(result, empty);
 	}
 });
+
+test("S12 snapshots without provenance or with an unknown kind still validate and never publish label text", async () => {
+	const { isJobsSidebarSnapshot } = await import("../lib/jobs-sidebar-state.ts");
+	const legacy = { jobs: [{ id: "j1", label: "rm -rf SECRET", startedAt: 1 }] };
+	const unknownKind = { jobs: [{ id: "j1", label: "rm -rf SECRET", kind: "other", startedAt: 1 }] };
+	for (const snapshot of [legacy, unknownKind]) {
+		assert.equal(isJobsSidebarSnapshot(snapshot), true);
+		assert.deepEqual([...projectJobs(snapshot)], [["bg/j1", { state: "working", title: "background job" }]]);
+	}
+	assert.deepEqual([...projectJobs({ jobs: [{ id: "j1", label: "c", explicitLabel: " \t", kind: "monitor", startedAt: 1 }] })], [["bg/j1", { state: "working", title: "monitor" }]]);
+});

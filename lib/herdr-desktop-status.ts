@@ -127,7 +127,6 @@ function validJob(job: unknown): job is Raw {
 	if (!object(job) || typeof job.id !== "string" || job.id.length === 0 || typeof job.label !== "string"
 		|| typeof job.startedAt !== "number" || !Number.isFinite(job.startedAt)) return false;
 	if (job.explicitLabel !== undefined && typeof job.explicitLabel !== "string") return false;
-	if (job.kind !== undefined && job.kind !== "command" && job.kind !== "monitor") return false;
 	if (job.status !== undefined && job.status !== "exited" && job.status !== "stopped" && job.status !== "failed") return false;
 	if (job.endedAt !== undefined && (typeof job.endedAt !== "number" || !Number.isFinite(job.endedAt))) return false;
 	return job.exitCode === undefined || job.exitCode === null || typeof job.exitCode === "number";

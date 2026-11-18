@@ -619,6 +619,28 @@ const daemonSkipUntil = new Map<string, number>();
 /** How long a wedged daemon is bypassed after its post-warm attempt times out. */
 const DAEMON_SKIP_MS = 60_000;
 
+/**
+ * How long a settled pre-query sync keeps a win32 root fresh: consecutive searches inside this
+ * window run no `sync -q` of their own — each one is a full CLI startup on Windows (×5 on a
+ * network share). POSIX refreshes before every search exactly as before (S11).
+ */
+export const SYNC_FRESH_WINDOW_MS = 60_000;
+
+/**
+ * The canonical roots (resolveWorkspaceCwd already realpath'ed them) whose last pre-query sync
+ * settled without failure, and when. Purely time-based — a new user prompt does not reset it:
+ * the index does not go stale at a prompt boundary. Win32 only (S4/S11).
+ */
+const syncFreshAt = new Map<string, number>();
+
+/**
+ * One tracked refresh per cwd on win32: only the call that created the underlying job observes
+ * its failure callbacks (a caller that joined an in-flight job sees none of them), so the
+ * creator records the shared verdict — a joiner awaiting the same promise can never misread
+ * "no failure reached me" as a successful sync.
+ */
+const searchSyncOutcome = new Map<string, Promise<void>>();
+
 /** A new user prompt starts a new search window: git, the local exclusion, and the daemon are re-asked once. The index itself refreshes before every search. */
 export function clearSearchWindow(): void {
 	workspaceVerified.clear();
@@ -664,21 +686,53 @@ export async function awaitSearchSync(cwd: string, ctx: ExtensionContext, run: S
 	// Nothing to refresh without an index: an unindexed workspace must not spawn a doomed
 	// sync CLI call (plus failure notices) every query — init owns the first index.
 	if (!(opts?.indexed ?? indexExists(cwd))) return false;
-	await syncBeforeSearch({
-		cwd,
-		registryDir: opts?.registryDir,
-		sleep: opts?.sleep,
-		run,
-		onFailed: (stage, failure) => {
-			if (!ctx.hasUI) return;
-			const notice = codegraphSyncFailureNotice(cwd, stage, failure);
-			ctx.ui.notify(notice.text, notice.level);
-		},
-		onError: (reason) => {
-			if (!ctx.hasUI) return;
-			ctx.ui.notify(`CodeGraph refresh failed in ${cwd}: ${reason}`, "warning");
-		},
-	});
+	// Windows pays a full CLI startup per pre-query sync (S4): a root whose last sync settled
+	// successfully inside the freshness window is already served by it — straight to the query.
+	// POSIX keeps its refresh-before-every-search flow exactly as it is (S11).
+	const windowed = process.platform === "win32";
+	const freshAt = syncFreshAt.get(cwd);
+	if (windowed && freshAt !== undefined && Date.now() - freshAt < SYNC_FRESH_WINDOW_MS) return false;
+	if (windowed) {
+		const running = searchSyncOutcome.get(cwd);
+		// A joined in-flight refresh covers this search like one's own — and its creating call
+		// records the shared verdict, so a joiner never mistakes it for a fresh successful sync.
+		if (running) {
+			await running;
+			return true;
+		}
+	}
+	let failed = false;
+	const job = (async (): Promise<void> => {
+		await syncBeforeSearch({
+			cwd,
+			registryDir: opts?.registryDir,
+			sleep: opts?.sleep,
+			run,
+			onFailed: (stage, failure) => {
+				failed = true;
+				if (!ctx.hasUI) return;
+				const notice = codegraphSyncFailureNotice(cwd, stage, failure);
+				ctx.ui.notify(notice.text, notice.level);
+			},
+			onError: (reason) => {
+				failed = true;
+				if (!ctx.hasUI) return;
+				ctx.ui.notify(`CodeGraph refresh failed in ${cwd}: ${reason}`, "warning");
+			},
+		});
+		if (windowed) {
+			// Only a refresh that settled with no reported failure buys freshness; a failure never
+			// does, and it clears any older mark so the very next search refreshes again.
+			if (failed) syncFreshAt.delete(cwd);
+			else syncFreshAt.set(cwd, Date.now());
+		}
+	})();
+	if (windowed) searchSyncOutcome.set(cwd, job);
+	try {
+		await job;
+	} finally {
+		if (windowed) searchSyncOutcome.delete(cwd);
+	}
 	return true;
 }
 
@@ -687,7 +741,9 @@ export function createCodeGraphTool(
 	{
 		queryTimeoutMs = CODEGRAPH_QUERY_TIMEOUT_MS,
 		daemonExplore = queryViaDaemon,
-		warm = (project: string, timeoutMs: number) => warmUpDaemon(project, false, timeoutMs),
+		// The win32 query path never awaits its warm-up (S9), so there it runs backgrounded — an
+		// unref'ed warm-up cannot keep the session alive; POSIX keeps the foreground warm.
+		warm = (project: string, timeoutMs: number) => warmUpDaemon(project, process.platform === "win32", timeoutMs),
 		rewarm = (project: string) => maybeRewarm(project),
 		syncRun = runCodegraph,
 		gitRun = defaultGitRun,
@@ -783,9 +839,19 @@ export function createCodeGraphTool(
 					// abort once, so a listener registered on an already-aborted signal never fires, and the
 					// warm-up could otherwise consume its whole budget after the cancellation.
 					if (viaDaemon?.status !== "ok" && !signal?.aborted) {
-						// Best-effort warm-up between the two attempts: a daemon that was never started gets one.
-						await raceWithAbort(signal, warm(cwd, DAEMON_ATTEMPT_TIMEOUT_MS).catch(() => { /* best effort */ }));
-						if (!signal?.aborted) viaDaemon = await raceWithAbort(signal, attempt()) ?? undefined;
+						if (process.platform === "win32") {
+							// A daemon-death query must never stack attempt → warm (up to 120 s) → attempt → CLI
+							// (S9): the warm-up runs in the background — the default warm seam passes
+							// background=true on win32, so it never keeps this process alive — and this query
+							// falls through to the CLI at once, with no second daemon attempt even after a fast
+							// warm failure. The DAEMON_SKIP_MS bypass below still spans the warm-up, so a
+							// background warm that revives the daemon is picked up at the next window.
+							void warm(cwd, DAEMON_ATTEMPT_TIMEOUT_MS).catch(() => { /* best effort */ });
+						} else {
+							// Best-effort warm-up between the two attempts: a daemon that was never started gets one.
+							await raceWithAbort(signal, warm(cwd, DAEMON_ATTEMPT_TIMEOUT_MS).catch(() => { /* best effort */ }));
+							if (!signal?.aborted) viaDaemon = await raceWithAbort(signal, attempt()) ?? undefined;
+						}
 					}
 					if (viaDaemon?.status === "timeout" || viaDaemon?.status === "unavailable") {
 						// The post-warm attempt still cannot serve — wedged (timeout) or refusing (unavailable,

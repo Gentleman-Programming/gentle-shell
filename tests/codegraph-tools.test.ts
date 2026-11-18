@@ -19,6 +19,7 @@ import codeGraphTools, {
 	isSameDirectory,
 	isWorkspaceProjectRoot,
 	awaitSearchSync,
+	SYNC_FRESH_WINDOW_MS,
 	type CodeGraphRunner,
 	type DaemonExplore,
 } from "../extensions/codegraph-tools.ts";
@@ -58,6 +59,13 @@ function withoutChildEnv(t: test.TestContext): void {
 		if (previous === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
 		else process.env.GENTLE_PI_AGENTS_CHILD = previous;
 	});
+}
+
+/** Pins process.platform for the test's lifetime, so the win32-gated paths (S11) are exercised on any host. */
+function withPlatform(t: test.TestContext, platform: string): void {
+	const previous = process.platform;
+	Object.defineProperty(process, "platform", { configurable: true, value: platform });
+	t.after(() => Object.defineProperty(process, "platform", { configurable: true, value: previous }));
 }
 
 test("CodeGraph tool rejects non-project, nested-project, HOME, and temporary workspaces before init", async (t) => {
@@ -722,6 +730,103 @@ test("a refresh already in flight is awaited, never duplicated", async (t) => {
 	assert.equal(await first, true);
 	assert.equal(await second, true, "the second caller awaits the same in-flight refresh");
 	assert.equal(runs, 1, "one refresh covers both callers");
+});
+
+test("win32: searches inside the sync freshness window pay one sync; an expired window syncs again", async (t) => {
+	withoutChildEnv(t);
+	withPlatform(t, "win32");
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	const calls: string[][] = [];
+	const syncRun = async (args: readonly string[]): Promise<boolean> => {
+		calls.push([...args]);
+		return true;
+	};
+	// The window arithmetic is observable without one real minute of waiting: the clock moves
+	// exactly as far as the window is long, the way the readiness budget tests drive it.
+	let now = Date.now();
+	const realNow = Date.now;
+	Date.now = () => now;
+	t.after(() => {
+		Date.now = realNow;
+	});
+	const tool = createCodeGraphTool(async () => ({ stdout: "cli", stderr: "" }), {
+		daemonExplore: daemonOk,
+		rewarm: noRewarm,
+		syncRun,
+	});
+	const ctx = { cwd } as ExtensionContext;
+
+	const first = await tool.execute("test", { operation: "query", query: "one" }, undefined, undefined, ctx);
+	assert.equal((first.details as { syncTriggered?: boolean }).syncTriggered, true, "the first search refreshes");
+	const second = await tool.execute("test", { operation: "explore", query: "two" }, undefined, undefined, ctx);
+	assert.equal((second.details as { syncTriggered?: boolean }).syncTriggered, undefined, "a search inside the window runs no sync of its own");
+	assert.deepEqual(calls, [["sync", "-q"]], "one sync covers both searches inside the window");
+
+	now += SYNC_FRESH_WINDOW_MS;
+	const third = await tool.execute("test", { operation: "query", query: "three" }, undefined, undefined, ctx);
+	assert.equal((third.details as { syncTriggered?: boolean }).syncTriggered, true, "the expired window refreshes again");
+	assert.deepEqual(calls, [["sync", "-q"], ["sync", "-q"]]);
+});
+
+test("win32: a failed sync never marks the window fresh; the next search refreshes again", async (t) => {
+	withoutChildEnv(t);
+	withPlatform(t, "win32");
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	const noDaemon = { registryDir: join(cwd, "no-registry") };
+	let mode: "fail" | "throw" | "ok" = "fail";
+	const runs: string[] = [];
+	const syncRun = async (): Promise<boolean> => {
+		runs.push(mode);
+		if (mode === "fail") return false;
+		if (mode === "throw") throw new Error("refresh exploded");
+		return true;
+	};
+	const ctx = { cwd } as ExtensionContext;
+
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun, noDaemon), true, "the failed refresh still covered its search");
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun, noDaemon), true, "a failed sync buys no freshness: the next search refreshes again");
+	assert.deepEqual(runs, ["fail", "fail"]);
+
+	mode = "throw";
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun, noDaemon), true, "the exploding refresh still covered its search");
+	assert.deepEqual(runs, ["fail", "fail", "throw"], "an unexpected exception never marks fresh either");
+
+	mode = "ok";
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun, noDaemon), true, "the first successful sync refreshes");
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun, noDaemon), false, "only a settled successful sync opens the window");
+	assert.deepEqual(runs, ["fail", "fail", "throw", "ok"], "exactly one sync inside the fresh window");
+});
+
+test("win32: a caller that joins a failing in-flight refresh inherits its verdict, not freshness", async (t) => {
+	withoutChildEnv(t);
+	withPlatform(t, "win32");
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	const noDaemon = { registryDir: join(cwd, "no-registry") };
+	let runs = 0;
+	let release: (() => void) | undefined;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const syncRun = async (): Promise<boolean> => {
+		runs += 1;
+		await gate;
+		return false;
+	};
+	const ctx = { cwd } as ExtensionContext;
+
+	const first = awaitSearchSync(cwd, ctx, syncRun, noDaemon);
+	const second = awaitSearchSync(cwd, ctx, syncRun, noDaemon);
+	await settled();
+	release?.();
+	assert.equal(await first, true);
+	assert.equal(await second, true, "the joiner awaits the same in-flight refresh");
+	assert.equal(runs, 1, "one refresh covers both callers");
+
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun, noDaemon), true, "the failed shared refresh bought no freshness for either caller");
+	assert.equal(runs, 2, "the next search syncs again");
 });
 
 test("awaitSearchSync: an unindexed workspace starts no doomed sync", async (t) => {
@@ -1412,6 +1517,135 @@ test("a daemon miss recovers after one warm-up attempt", async (t) => {
 	assert.equal(answers.length, 0, "exactly two daemon attempts");
 	assert.equal(warmCalls, 1);
 	assert.equal(runnerCalls, 0);
+});
+
+test("win32: a daemon-death search returns through the CLI without waiting for the warm-up", async (t) => {
+	withoutChildEnv(t);
+	withPlatform(t, "win32");
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	let release: (() => void) | undefined;
+	const warmGate = new Promise<boolean>((resolve) => {
+		release = () => resolve(true);
+	});
+	let warmCalls = 0;
+	let daemonCalls = 0;
+	let runnerCalls = 0;
+	const tool = createCodeGraphTool(async () => {
+		runnerCalls += 1;
+		return { stdout: "cli answer", stderr: "" };
+	}, {
+		daemonExplore: async () => {
+			daemonCalls += 1;
+			return { status: "unavailable" };
+		},
+		rewarm: noRewarm,
+		warm: () => {
+			warmCalls += 1;
+			return warmGate;
+		},
+		syncRun: syncNothing,
+	});
+	const ctx = { cwd } as ExtensionContext;
+
+	const result = await Promise.race([
+		tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx),
+		new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the query blocked on the warm-up")), 3_000)),
+	]);
+	assert.deepEqual(result.content, [{ type: "text", text: "cli answer" }]);
+	assert.equal((result.details as { viaDaemon?: boolean }).viaDaemon, false);
+	assert.equal(daemonCalls, 1, "one daemon attempt: no second behind a warm-up the query never waits for");
+	assert.equal(warmCalls, 1, "the warm-up is still triggered, in the background");
+	assert.equal(runnerCalls, 1, "the CLI answers immediately");
+
+	// The DAEMON_SKIP_MS bypass keeps its meaning: the failed chain still skips the daemon this turn.
+	const second = await tool.execute("test", { operation: "query", query: "again" }, undefined, undefined, ctx);
+	assert.deepEqual(second.content, [{ type: "text", text: "cli answer" }]);
+	assert.equal(daemonCalls, 1, "the turn bypass is unchanged");
+	assert.equal(warmCalls, 1, "a bypassed daemon is not re-warmed per query");
+	assert.equal(runnerCalls, 2);
+
+	release?.();
+	await settled();
+});
+
+test("win32: a fast warm failure still skips the second daemon attempt and answers through the CLI", async (t) => {
+	withoutChildEnv(t);
+	withPlatform(t, "win32");
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	let daemonCalls = 0;
+	let warmCalls = 0;
+	let runnerCalls = 0;
+	const tool = createCodeGraphTool(async () => {
+		runnerCalls += 1;
+		return { stdout: "cli", stderr: "" };
+	}, {
+		daemonExplore: async () => {
+			daemonCalls += 1;
+			return { status: "timeout" };
+		},
+		rewarm: noRewarm,
+		warm: async () => {
+			warmCalls += 1;
+			return false;
+		},
+		syncRun: syncNothing,
+	});
+	const ctx = { cwd } as ExtensionContext;
+
+	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx);
+
+	assert.deepEqual(result.content, [{ type: "text", text: "cli" }]);
+	assert.equal((result.details as { viaDaemon?: boolean }).viaDaemon, false);
+	assert.equal(daemonCalls, 1, "no second daemon attempt after a fast warm failure");
+	assert.equal(warmCalls, 1);
+	assert.equal(runnerCalls, 1, "the CLI answers as the last resort");
+});
+
+test("POSIX: every search still refreshes, and the daemon chain keeps its attempt, warm, attempt order", async (t) => {
+	withoutChildEnv(t);
+	withPlatform(t, "linux");
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	const calls: string[][] = [];
+	const syncRun = async (args: readonly string[]): Promise<boolean> => {
+		calls.push([...args]);
+		return true;
+	};
+	const ctx = { cwd } as ExtensionContext;
+	const noDaemon = { registryDir: join(cwd, "no-registry") };
+
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun, noDaemon), true);
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun, noDaemon), true);
+	assert.deepEqual(calls, [["sync", "-q"], ["sync", "-q"]], "no freshness window off win32: every search refreshes");
+
+	let daemonCalls = 0;
+	let warmCalls = 0;
+	let runnerCalls = 0;
+	const tool = createCodeGraphTool(async () => {
+		runnerCalls += 1;
+		return { stdout: "cli", stderr: "" };
+	}, {
+		daemonExplore: async () => {
+			daemonCalls += 1;
+			return { status: "unavailable" };
+		},
+		rewarm: noRewarm,
+		warm: async () => {
+			warmCalls += 1;
+			return false;
+		},
+		syncRun: syncNothing,
+	});
+
+	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx);
+
+	assert.match(result.content[0].text, /cli/);
+	assert.equal(daemonCalls, 2, "the warm-up is still awaited between the two attempts");
+	assert.equal(warmCalls, 1);
+	assert.equal(runnerCalls, 1);
+	assert.equal((result.details as { syncTriggered?: boolean }).syncTriggered, true, "the pre-query sync still runs for every search");
 });
 
 test("init runs the CLI with the workspace, never the daemon, and never triggers a sync", async (t) => {

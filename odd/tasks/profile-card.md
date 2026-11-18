@@ -41,7 +41,7 @@ current session. Opt-in through `/gentle:profiles card on|off`.
 
 - [x] T1 — S1, S6(command part): profile-card policy store + `card on|off` subcommand + usage/docs. Route: worker A. Commit: 89f989edd
 - [x] T2 — S2, S5: pure card renderer, navigation state (wrap) and ◀/▶/use hit map, unit tests. Route: worker B (parallel with T1). Commit: 22754ce4b
-- [ ] T3 — S1, S2: sidebar wiring (section key, visibility gate, panel sheet order, widget registration, mouse dispatch). Route: worker C after T1+T2. Commit: —
+- [x] T3 — S1, S2: sidebar wiring (section key, visibility gate, panel sheet order, widget registration, mouse dispatch). Route: worker C after T1+T2. Commit: a46c77f9b
 - [ ] T4 — S3: use action through the owner under the apply gate, confirmation and notices. Route: worker C (continue). Commit: —
 - [ ] T5 — S4: shortcuts in `KEYMAP_ACTIONS` and registration, `tests/keymaps.test.ts`. Route: worker C (continue). Commit: —
 - [ ] T6 — S6: final docs pass, `pnpm test` + typecheck. Route: verify. Commit: —
@@ -52,3 +52,4 @@ current session. Opt-in through `/gentle:profiles card on|off`.
 - **L2 (user decisions):** arrows clickable + global keyboard shortcuts; "use" = only this session; `/gentle:profiles card on|off`, persisted globally, hidden by default; clone at `Desktop\tools\gentle-shell` from upstream.
 - **L3 (user decision):** shortcuts `Alt+,` / `Alt+.` / `Alt+M` (Alt+Left/Right are Pi word motion; Alt+Enter is Pi's reserved follow-up).
 - **L4 (evidence):** explorer map — sidebar fixed list `lib/shell-sidebar-layout.ts:344`; flag-store precedent `lib/card-style-policy.ts`; parser `handleProfilesCommand` `extensions/gentle-ai.ts:6811`; apply path `applyDesktopProfile` `:6897` → `runProfilesPanelAction` `:6193`; keymaps `lib/keymaps.ts:31-43`, registration `extensions/gentle-shell.ts:3171-3218`. `pnpm install` deps OK; root postinstall (gentle-ai binary) failed with EPERM — unit tests unaffected (`tests/keymaps.test.ts` 7/7 pass).
+- **L5 (evidence, T3):** carded body hit width in `lib/shell-sidebar-layout.ts` widened from `renderWidth - PANEL_ROW_INDENT` to `renderWidth` (last two body columns were unclickable) — shared code, review focus. `tests/gentle-ai.test.ts` has 20 failures on the branch vs 23 on a clean HEAD copy (environmental, pre-existing). `readProfileCardItems` used `sessionProfileAuthorityAvailable`, which can clear an uncorroborated session binding: a display read must not mutate state — replaced by a pure read in T4. The `/gentle:panel` sheet shows the card without mouse routing; decision: keep it there, keyboard shortcuts (S4) make it usable.

@@ -1,6 +1,10 @@
 import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { evaluateProfilePin, readProfilePinStatus } from "./agent-profile-pin.ts";
+import { profilesFilePath, readProfilesFileResult } from "./agent-profiles.ts";
 import { resolveProfileCard } from "./profile-card-policy.ts";
+import { readSessionProfileBinding } from "./session-profile-binding.ts";
 import {
+	buildProfileCardItems,
 	initialProfileIndex,
 	nextProfileIndex,
 	previousProfileIndex,
@@ -184,4 +188,60 @@ export function mountProfileCard(tui: TUI, theme: PanelTheme, owner: ProfileCard
 	const bottom: Component & { dispose?(): void } = { render: () => [], invalidate() {} };
 	const part = sidebarPart(tui, PROFILE_CARD_SIDEBAR_KEY, bottom, rail);
 	return { ...part, dispose() { unsubscribe(); part.dispose(); } };
+}
+
+// ---- Display read ----
+
+/**
+ * The saved profiles with their markers, read without side effects. The session
+ * marker is the in-memory session binding (`readSessionProfileBinding`), not
+ * `resolveSessionProfile` or the authority check: those can freeze a profile or
+ * clear a binding they cannot corroborate, and looking at a card must never
+ * change what a session launches with. A session without a recorded binding
+ * simply shows no session marker. An unreadable or missing store shows nothing
+ * and is never seeded.
+ */
+export function readProfileCardItems(source: { configHome: string; sessionId: string | undefined; cwd: string }): ProfileCardItem[] {
+	const read = readProfilesFileResult(profilesFilePath(source.configHome));
+	if (read.status !== "valid") return [];
+	const sessionBound = readSessionProfileBinding(source.sessionId)?.name;
+	const pinned = evaluateProfilePin(readProfilePinStatus(source.cwd), read.file.profiles).winner?.profile;
+	return buildProfileCardItems(read.file, pinned, sessionBound);
+}
+
+// ---- Use action ----
+
+export const PROFILE_CARD_BUSY_NOTICE = "Another profile apply is already running. Wait for it to finish, then use the profile again.";
+
+export interface ProfileCardUseDeps {
+	/** The shared single-apply gate (`beginDesktopProfileApply`); false when another apply holds it. */
+	begin: () => boolean;
+	end: () => void;
+	notify: (message: string, level: "info" | "warning") => void;
+	/** The owner's "Use in this session" action for one profile, with its own dialog and notices. */
+	run: (name: string) => Promise<void>;
+	/** Re-read the card's items so the markers reflect the outcome. */
+	refresh: () => void;
+}
+
+/**
+ * The card's use handler: runs the owner action under the shared apply gate. A
+ * busy gate applies nothing and says so; a failing action is notified, never
+ * thrown into the TUI; the gate is always released and the markers refreshed.
+ */
+export function createProfileCardUseHandler(deps: ProfileCardUseDeps): ProfileCardUseHandler {
+	return async (name) => {
+		if (!deps.begin()) {
+			deps.notify(PROFILE_CARD_BUSY_NOTICE, "info");
+			return;
+		}
+		try {
+			await deps.run(name);
+		} catch (error) {
+			deps.notify(`Could not use profile "${name}" in this session: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		} finally {
+			deps.end();
+			try { deps.refresh(); } catch { /* A failed re-read keeps the markers on screen. */ }
+		}
+	};
 }

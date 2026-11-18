@@ -32,8 +32,7 @@ import { boundedFindingClaims, parseReviewCoordinatorInput, runReviewCoordinator
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { PROFILE_CARD_SETTINGS_CHANGED, writeProfileCard } from "../lib/profile-card-policy.ts";
-import { createProfileCardOwner, mountProfileCard } from "../lib/profile-card-sidebar.ts";
-import { buildProfileCardItems, type ProfileCardItem } from "../lib/profile-card-widget.ts";
+import { createProfileCardOwner, createProfileCardUseHandler, mountProfileCard, readProfileCardItems } from "../lib/profile-card-sidebar.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
@@ -3431,15 +3430,23 @@ function sessionProfileAuthorityAvailable(ctx: ExtensionContext): boolean {
 }
 
 /**
- * The sidebar profile card's items: the saved profiles with the markers the
- * /gentle:profiles list names. An unreadable store shows no profiles.
+ * The card's use action: the owner's "Use in this session" with the real session
+ * context, so its confirmation dialog and notices appear as for /gentle:profiles.
+ * Reads the store (never seeds or writes it) and runs only for a profile that still exists.
  */
-function readProfileCardItems(ctx: ExtensionContext): ProfileCardItem[] {
-	const read = readProfilesFileResult(profilesFilePath(gentleAiConfigHome()));
-	if (read.status !== "valid") return [];
-	const sessionBound = sessionLaunchProfile(ctx, sessionProfileAuthorityAvailable(ctx))?.name;
-	const pinned = evaluateProfilePin(readProfilePinStatus(ctx.cwd), read.file.profiles).winner?.profile;
-	return buildProfileCardItems(read.file, pinned, sessionBound);
+async function useProfileFromCard(ctx: ExtensionContext, live: LiveSession, name: string): Promise<void> {
+	const path = profilesFilePath(gentleAiConfigHome());
+	const read = readProfilesFileResult(path);
+	if (read.status !== "valid") {
+		ctx.ui.notify(`el Gentleman cannot use profile "${name}": ${path} is missing or invalid. Run /gentle:profiles.`, "warning");
+		return;
+	}
+	if (!hasOwnProfile(read.file.profiles, name)) {
+		ctx.ui.notify(`el Gentleman cannot use profile "${name}": it is no longer in profiles.json.`, "warning");
+		return;
+	}
+	const config = normalizeModelConfig(read.file.profiles[name]) ?? {};
+	await runProfilesPanelAction(ctx, live, path, read.file, { type: "use-session", name, config });
 }
 
 /** The routing this session's launches use: its profile, or the global effective routing. */
@@ -12391,9 +12398,19 @@ function createGentleAiExtensionForTesting(
 	const profileCard = createProfileCardOwner({
 		loadItems: () => {
 			if (!profileCardCtx) throw new Error("no session");
-			return readProfileCardItems(profileCardCtx);
+			return readProfileCardItems({ configHome: gentleAiConfigHome(), sessionId: profileCardCtx.sessionManager?.getSessionId?.(), cwd: profileCardCtx.cwd });
 		},
 	});
+	profileCard.setUseHandler(createProfileCardUseHandler({
+		begin: beginDesktopProfileApply,
+		end: endDesktopProfileApply,
+		notify: (message, level) => { profileCardCtx?.ui.notify(message, level); },
+		run: async (name) => {
+			if (!profileCardCtx) throw new Error("no active session");
+			await useProfileFromCard(profileCardCtx, pi, name);
+		},
+		refresh: () => profileCard.refreshItems(),
+	}));
 	pi.on("session_before_fork", async (event, ctx) => {
 		await waitCurrentSessionProfileSelection(ctx.sessionManager);
 		sessionProfiles.beforeFork(ctx.sessionManager, { entryId: event.entryId, position: event.position });

@@ -2,6 +2,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { isOptionalExtensionEnabled } from "../lib/optional-extensions-policy.ts";
 import { codemodeReaches, GUIDE_TOOL_ROUTE, hideBehindCodemode } from "../lib/hidden-tools.ts";
 import { guidePlacement, GuidePopover, guideStepText, guideSteps, GuideTour, type GuideMode, type GuideResult } from "../lib/gentle-guide.ts";
 import { sidebarState } from "../lib/shell-sidebar.ts";
@@ -55,6 +57,7 @@ function railColumns(tui: TUI | undefined): number | undefined {
 }
 
 export default function gentleGuide(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env): void {
+	if (!isOptionalExtensionEnabled("gentle-guide", { gentlePiConfigHome: gentlePiConfigHome(env) })) return;
 	// Delegated children only run their task.
 	if (env.GENTLE_PI_AGENTS_CHILD === "1") return;
 	let active: Session | undefined;

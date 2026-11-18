@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { isOptionalExtensionEnabled } from "../lib/optional-extensions-policy.ts";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { codemodeReaches, DESIGN_TOOLS_ROUTE, hideBehindCodemode } from "../lib/hidden-tools.ts";
 import type { DesignSessionContent } from "../lib/design-canvas-server.ts";
@@ -71,6 +72,7 @@ function isDirectory(path: string): boolean {
 }
 
 export default function gentleDesign(pi: ExtensionAPI, deps: GentleDesignDeps = {}): void {
+	if (!isOptionalExtensionEnabled("gentle-design")) return;
 	// Primary runs only; unknown (no run yet, or a child) keeps the tools declared.
 	let withoutDesigns = false;
 	const skillPath = deps.skillPath ?? fileURLToPath(new URL("../skills/design/SKILL.md", import.meta.url));

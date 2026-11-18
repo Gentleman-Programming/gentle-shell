@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { readSessionProfileBinding } from "../lib/session-profile-binding.ts";
 import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { isOptionalExtensionEnabled } from "../lib/optional-extensions-policy.ts";
 import { freezeSessionProfileAtStartup, readFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 import { isServiceTier } from "../lib/model-routing-authority.ts";
 import { applyOpenAITier, CHILD_TIER_ENV, PROFILE_TIER_EVENT } from "../lib/openai-fast-tier.ts";
@@ -9,6 +10,7 @@ import { applyOpenAITier, CHILD_TIER_ENV, PROFILE_TIER_EVENT } from "../lib/open
 type Selection = "standard" | "fast" | undefined;
 
 export default function (pi: ExtensionAPI) {
+	if (!isOptionalExtensionEnabled("gentle-fast")) return;
 	let selection: Selection;
 	let profileModel: string | undefined;
 

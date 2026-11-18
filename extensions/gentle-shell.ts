@@ -43,6 +43,13 @@ import { commandKeymapId, commandKeymapIds, effectiveKey, keymapCommand, keymapL
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PANEL_BUTTON, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, SHELL_PULSE_WATCHDOG_MS, withPromptHint, workingTick, type PromptState } from "../lib/shell-prompt.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+import {
+	OPTIONAL_EXTENSION_IDS,
+	isOptionalExtensionId,
+	resolveOptionalExtensionsPolicy,
+	writeOptionalExtensionsPolicy,
+	type OptionalExtensionId,
+} from "../lib/optional-extensions-policy.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CLAUDE_BRIDGE_PROVIDER, priceBridgeMessage } from "../lib/bridge-cost.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
@@ -3755,6 +3762,78 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
+		},
+	});
+	pi.registerCommand("gentle:extensions", {
+		description: "Choose which optional gentle-pi extensions auto-load (status|enable <name>|disable <name>|enable-all|disable-all); no argument opens a menu.",
+		handler: async (args, ctx) => {
+			const trimmed = args.trim();
+			const current = resolveOptionalExtensionsPolicy({ gentlePiConfigHome: gentlePiConfigHome(env) });
+			if (!trimmed && ctx.hasUI && typeof ctx.ui.select === "function") {
+				const selected = new Set<OptionalExtensionId>(current.enabled);
+				let dirty = false;
+				while (true) {
+					const items = [
+						...OPTIONAL_EXTENSION_IDS.map((id) => `${selected.has(id) ? "[x]" : "[ ]"} ${id}`),
+						"enable-all",
+						"disable-all",
+						dirty ? "Save and reload" : "Close",
+					];
+					const choice = await ctx.ui.select("Optional gentle-pi extensions (all disabled by default)", items);
+					if (choice === undefined || choice === "Close") return;
+					if (choice === "Save and reload") {
+						writeOptionalExtensionsPolicy([...selected], { gentlePiConfigHome: gentlePiConfigHome(env) });
+						await ctx.reload();
+						return;
+					}
+					if (choice === "enable-all") {
+						for (const id of OPTIONAL_EXTENSION_IDS) selected.add(id);
+						dirty = true;
+						continue;
+					}
+					if (choice === "disable-all") {
+						selected.clear();
+						dirty = true;
+						continue;
+					}
+					const id = choice.replace(/^\[[ x]\]\s+/, "");
+					if (isOptionalExtensionId(id)) {
+						if (selected.has(id)) selected.delete(id);
+						else selected.add(id);
+						dirty = true;
+					}
+				}
+			}
+			const [verb, target] = trimmed.split(/\s+/, 2);
+			if (!verb || verb === "status") {
+				ctx.ui.notify(
+					`Optional extensions enabled (${current.enabled.length}/${OPTIONAL_EXTENSION_IDS.length}): ${current.enabled.length ? current.enabled.join(", ") : "none"} (file: ${current.globalFile})`,
+					"info",
+				);
+				return;
+			}
+			if (verb === "enable-all") {
+				writeOptionalExtensionsPolicy(OPTIONAL_EXTENSION_IDS, { gentlePiConfigHome: gentlePiConfigHome(env) });
+				ctx.ui.notify(`Enabled all optional extensions (${OPTIONAL_EXTENSION_IDS.join(", ")}). Run /reload to apply.`, "info");
+				return;
+			}
+			if (verb === "disable-all") {
+				writeOptionalExtensionsPolicy([], { gentlePiConfigHome: gentlePiConfigHome(env) });
+				ctx.ui.notify("Disabled all optional extensions. Run /reload to apply.", "info");
+				return;
+			}
+			if ((verb === "enable" || verb === "disable") && target && isOptionalExtensionId(target)) {
+				const next = new Set<OptionalExtensionId>(current.enabled);
+				if (verb === "enable") next.add(target);
+				else next.delete(target);
+				writeOptionalExtensionsPolicy([...next], { gentlePiConfigHome: gentlePiConfigHome(env) });
+				ctx.ui.notify(`${verb === "enable" ? "Enabled" : "Disabled"} ${target}. Run /reload to apply.`, "info");
+				return;
+			}
+			ctx.ui.notify(
+				`Use /gentle:extensions [status|enable <id>|disable <id>|enable-all|disable-all]. Valid ids: ${OPTIONAL_EXTENSION_IDS.join(", ")}`,
+				"warning",
+			);
 		},
 	});
 	// User-owned, like gentle:background-subagents and gentle:review-mode: the

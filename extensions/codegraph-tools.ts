@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpat
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { isOptionalExtensionEnabled } from "../lib/optional-extensions-policy.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const CODEGRAPH_OPERATION = {
@@ -433,5 +434,6 @@ export function registerCodeGraphTool(pi: ExtensionAPI): void {
 }
 
 export default function codeGraphTools(pi: ExtensionAPI): void {
+	if (!isOptionalExtensionEnabled("codegraph-tools")) return;
 	registerCodeGraphTool(pi);
 }

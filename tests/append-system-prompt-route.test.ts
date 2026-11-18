@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import gentleTodo from "../extensions/gentle-todo.ts";
+import { OPTIONAL_EXTENSIONS_SCHEMA } from "../lib/optional-extensions-policy.ts";
 
 // gentle-shell#1485: pi-claude-bridge forwards only the structured
 // systemPromptOptions parts of before_agent_start (contextFiles, skills,
@@ -28,7 +29,11 @@ before(async () => {
 	fixtureRoot = root;
 	fixtureCwd = join(root, "project");
 	const home = join(root, "home");
-	for (const directory of [fixtureCwd, home]) await mkdir(directory);
+	for (const directory of [fixtureCwd, home, join(home, "config")]) await mkdir(directory);
+	writeFileSync(
+		join(home, "config", "optional-extensions.json"),
+		JSON.stringify({ schema: OPTIONAL_EXTENSIONS_SCHEMA, enabled: ["gentle-todo"] }),
+	);
 	Object.assign(fixtureEnvironment, {
 		HOME: home, USERPROFILE: home,
 		GENTLE_PI_CONFIG_HOME: join(home, "config"),
@@ -80,7 +85,7 @@ function gentleTodoHandlers(): { handlers: Map<string, Handler[]>; tools: Map<st
 		},
 		registerShortcut() {},
 	} as unknown as ExtensionAPI;
-	gentleTodo(pi, {});
+	gentleTodo(pi, fixtureEnvironment);
 	return { handlers, tools };
 }
 

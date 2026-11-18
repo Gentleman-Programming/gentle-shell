@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { ScrollView, Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { isOptionalExtensionEnabled } from "../lib/optional-extensions-policy.ts";
 import type { OrchestratorMode } from "../lib/agent-profiles.ts";
 import { resolveOrchestratorMode } from "../lib/orchestrator-mode-policy.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
@@ -133,6 +134,7 @@ function todoOrchestratorMode(ctx: ExtensionContext, env: NodeJS.ProcessEnv): Or
 }
 
 export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env): void {
+	if (!isOptionalExtensionEnabled("gentle-todo", { gentlePiConfigHome: gentlePiConfigHome(env) })) return;
 	if (!todoEnabled(env)) return;
 	const sessions = new Map<string, TodoSession>();
 	const collapseKey = todoCollapseKey(env, loadKeymaps(env).bindings);

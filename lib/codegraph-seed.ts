@@ -1,6 +1,6 @@
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { acquireInitLock, codegraphWritingIndex, defaultLocksDir, lockPathFor, readLeaseVerdict, type LeaseToken } from "./codegraph-lease.ts";
+import { acquireInitLock, defaultLocksDir, lockPathFor, readLeaseVerdict, type LeaseToken } from "./codegraph-lease.ts";
 import { linkedWorktreeIdentity, SYNC_TIMEOUT_MS } from "./codegraph-readiness.ts";
 import type { SeedOutcome, SeedSyncReport } from "./codegraph-readiness.ts";
 
@@ -25,9 +25,9 @@ export interface SeedInput {
 
 /**
  * The main checkout a linked worktree belongs to, or undefined for the main
- * checkout itself (or anything that is not a linked worktree): seeding copies
- * the main checkout's database, so the main checkout has nothing to copy and
- * keeps its ordinary init path.
+ * checkout itself (or anything that is not a linked worktree): seeding snapshots
+ * the main checkout's database, so the main checkout has nothing to snapshot
+ * and keeps its ordinary init path.
  */
 export function worktreeMainRoot(cwd: string): string | undefined {
 	// The probe is readiness's linkedWorktreeIdentity: seed already value-imports from readiness
@@ -55,8 +55,6 @@ function leaseNonce(path: string): string | undefined {
 	}
 }
 
-/** The database and its SQLite sidecars, in copy order; missing ones are skipped. */
-const SEED_FILES = ["codegraph.db", "codegraph.db-wal", "codegraph.db-shm"] as const;
 const INDEX_GITIGNORE = "*\n!.gitignore\n";
 
 /** Windows antivirus and indexers can hold a just-written file for a moment; these codes pass on a quick retry. */
@@ -85,15 +83,19 @@ export async function retryTransient<T>(step: () => T, sleep: (ms: number) => Pr
 }
 
 /**
- * Seeds a linked worktree's index by copying the main checkout's database into
- * an isolated staging project, validating the copy there, and publishing it only
- * after that sync succeeds without removing tracked entries — all under the
- * worktree's init lock. The sync is the integrity check: a torn copy fails in
- * staging, and so does a sync that emptied the staged index (the staging project
- * has no source files, so every removal is a loss, never a reconciliation, even
- * on exit 0); nothing is published in either case, so no other session can accept
- * a database the seed might still remove, and the worktree never keeps a
- * half-seeded index.
+ * Seeds a linked worktree's index by taking a lock-safe snapshot of the main
+ * checkout's database into an isolated staging project, validating the snapshot
+ * there, and publishing it only after that sync succeeds without removing
+ * tracked entries — all under the worktree's init lock. The snapshot (SQLite's
+ * VACUUM INTO) reads through the source's WAL, so a live writer never defers
+ * the seed and never tears the copy, and the sync is the integrity check: a bad
+ * snapshot fails in staging, and so does a sync that emptied the staged index
+ * (the staging project has no source files, so every removal is a loss, never
+ * a reconciliation, even on exit 0); nothing is published in either case, so no
+ * other session can accept a database the seed might still remove, and the
+ * worktree never keeps a half-seeded index. Publication is fenced on the init
+ * lease's nonce: a seed displaced mid-flight stands down instead of replacing
+ * the newer database the replacement holder published.
  */
 export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: SeedOutcome }> {
 	const { sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = input;
@@ -103,11 +105,11 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 	const targetDb = join(targetDir, "codegraph.db");
 	if (isFile(targetDb)) return { outcome: "target-exists" };
 
-	// Never copy a main index that is being written right now: CodeGraph's own writer lock (any
-	// launcher) or another session's live init lease on the main checkout means a torn copy.
 	const locksDir = input.locksDir ?? defaultLocksDir();
+	// The main checkout's own index creation is the one state with nothing coherent to copy:
+	// a live init lease means the database is being built right now. A live CodeGraph writer,
+	// by contrast, is exactly what the lock-safe snapshot reads through, so it never defers.
 	const mainBusy =
-		codegraphWritingIndex(main) ||
 		readLeaseVerdict(lockPathFor(main, "init", locksDir)) === "held-live";
 	if (mainBusy) return { outcome: "main-busy" };
 
@@ -143,50 +145,57 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 
 		// The seed stays unpublished until validation succeeds: everything is staged in its
 		// own scratch project inside the index directory and the validating sync runs there,
-		// so codegraph.db only appears at its final path once the copy has passed — no other
-		// session can accept a database this seed might still remove.
+		// so codegraph.db only appears at its final path once the snapshot has passed — no
+		// other session can accept a database this seed might still remove.
 		const stagingRoot = mkdtempSync(join(targetDir, "seed-"));
 		const stagingIndex = join(stagingRoot, ".codegraph");
 		try {
 			mkdirSync(stagingIndex);
-			const staged: Array<[staged: string, final: string]> = [];
+			const stagedPath = join(stagingIndex, "codegraph.db");
 			try {
-				for (const name of SEED_FILES) {
-					const source = join(main, ".codegraph", name);
-					if (!isFile(source)) continue;
-					const stagedPath = join(stagingIndex, name);
-					// The exclusive probe makes the destination this seed's own regular file: a
-					// pre-existing path (a symlink above all) rejects instead of redirecting the copy.
-					writeFileSync(stagedPath, "", { flag: "wx" });
-					await retryTransient(() => copyFileSync(source, stagedPath), sleep);
-					staged.push([stagedPath, join(targetDir, name)]);
+				// A lock-safe snapshot instead of a byte copy of live files: VACUUM INTO reads
+				// the main database through its own WAL — a writer mid-commit is the snapshot's
+				// input, never a torn copy — and it refuses an existing target file, preserving
+				// the exclusive-creation safety the raw copy's "wx" probe used to provide.
+				const { DatabaseSync } = await import("node:sqlite");
+				const source = new DatabaseSync(join(main, ".codegraph", "codegraph.db"), { readOnly: true });
+				try {
+					source.exec("VACUUM INTO '" + stagedPath.replaceAll("'", "''") + "'");
+				} finally {
+					source.close();
 				}
-				if (!staged.some(([, final]) => final === targetDb)) {
-					// The source database vanished mid-copy: nothing worth publishing.
-					return { outcome: "seed-failed" };
+				// The snapshot inherits the source's on-disk WAL mode; the published database
+				// must stand alone with no -wal/-shm beside it, so the staged copy is converted
+				// into a rollback-journal database before it ever leaves staging.
+				const stagedDb = new DatabaseSync(stagedPath);
+				try {
+					stagedDb.exec("PRAGMA journal_mode=DELETE");
+				} finally {
+					stagedDb.close();
 				}
 			} catch {
-				// A failing copy leaves no index: staging is removed whole, so the worktree is
-				// exactly as absent as before and init stays possible.
+				// A failed snapshot — node:sqlite unavailable, a failed open, a refused target —
+				// leaves no index: staging is removed whole, so the worktree is exactly as
+				// absent as before the seed.
 				return { outcome: "seed-failed" };
 			}
 
 			const report = await input.run(["sync", "-q"], stagingRoot, SYNC_TIMEOUT_MS);
 			// The staging project deliberately has no source files, so a sync that removed
-			// tracked entries emptied the copied index without reconciling anything: exit 0
+			// tracked entries emptied the staged index without reconciling anything: exit 0
 			// or not, that report is a failed validation and never a seedable database.
 			const synced = report === true || (typeof report === "object" && report.ok === true && report.removedEntries !== true);
 			if (!synced) {
-				// A torn or stale copy fails the validating sync in staging, and so does a
-				// sync that emptied the staged index: nothing was published, so the worktree
-				// is exactly as absent as before and init stays possible.
+				// A torn or stale snapshot fails the validating sync in staging, and so does a
+				// sync that emptied the staged index: nothing was published, so the worktree is
+				// exactly as absent as before the seed.
 				return { outcome: "seed-failed" };
 			}
 			// Publication fence, mirroring the lease module's owns() checks: the init lease's TTL is the
 			// hard displacement bound, so this seed can be reclaimed mid-flight — suspended past the
 			// TTL — while another session takes the lease and publishes a newer index into this worktree.
-			// The renames place staged files over whatever the target holds now, so ownership is
-			// re-verified against the CURRENT token immediately before them: a displaced seed (a
+			// The rename places the staged snapshot over whatever the target holds now, so ownership is
+			// re-verified against the CURRENT token immediately before it: a displaced seed (a
 			// different or unreadable nonce) stands down instead of replacing the newer database, and
 			// the caller falls back to init. The displaced lock's own release() is nonce-fenced and
 			// removes nothing.
@@ -195,41 +204,32 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 			if (heldNonce === undefined || leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
 				return { outcome: "seed-failed" };
 			}
-			// Sidecars first, the database last: no intermediate state has a database without
-			// the sidecars it may need, and the file every consumer keys on — codegraph.db —
-			// appears only after the copy is already validated.
-			staged.sort(([, a], [, b]) => Number(a === targetDb) - Number(b === targetDb));
+			// The standalone snapshot is the only staged file, so the name every consumer
+			// keys on — codegraph.db — appears at its final path only after the copy has
+			// already been validated.
 			try {
-				for (const [stagedPath, finalPath] of staged) {
-					// A sidecar the validating sync checkpointed and removed holds no pending state:
-					// its frames were folded into the staged database, so the loop skips it. The
-					// database rename stays required — a missing database still fails the seed.
-					if (finalPath !== targetDb && !isFile(stagedPath)) continue;
-					// The wait before a retry can outlast the init lease: ownership is re-verified after
-					// every wait, so a seed displaced mid-publication aborts instead of renaming over
-					// the replacement holder's index.
-					await retryTransient(() => renameSync(stagedPath, finalPath), sleep, () => {
-						if (leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
-							throw new Error("the init lease changed hands while the publication waited to retry");
-						}
-					});
-				}
+				// The wait before a retry can outlast the init lease: ownership is re-verified after
+				// every wait, so a seed displaced mid-publication aborts instead of renaming over
+				// the replacement holder's index.
+				await retryTransient(() => renameSync(stagedPath, targetDb), sleep, () => {
+					if (leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
+						throw new Error("the init lease changed hands while the publication waited to retry");
+					}
+				});
 			} catch {
 				// A displaced seed removes nothing: once the lease has changed hands, whatever sits
-				// at the final paths belongs to the replacement holder, and removing it is that
+				// at the final path belongs to the replacement holder, and removing it is that
 				// holder's cleanup, never this seed's.
 				if (leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
 					return { outcome: "seed-failed" };
 				}
-				// A torn placement leaves no index: every placed file goes, so the worktree is
-				// exactly as absent as before and init stays possible. (A placement failure is
-				// the seed-failed outcome, never a rejection; the database itself was never
-				// placed, so nothing another session accepted is removed here.)
-				for (const [, finalPath] of staged) {
-					try {
-						rmSync(finalPath, { force: true });
-					} catch { /* a final path this seed did not place is not ours to remove */ }
-				}
+				// A failed placement leaves no index: the database itself was never placed, so
+				// nothing another session accepted is removed here. (A placement failure is the
+				// seed-failed outcome, never a rejection; a final path this seed did not place —
+				// a squatter directory above all — is not ours to remove either.)
+				try {
+					rmSync(targetDb, { force: true });
+				} catch { /* a final path this seed did not place is not ours to remove */ }
 				return { outcome: "seed-failed" };
 			}
 			return { outcome: "seeded" };

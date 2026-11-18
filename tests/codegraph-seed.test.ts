@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { retryTransient, seedWorktreeIndex, worktreeMainRoot, type SeedInput } from "../lib/codegraph-seed.ts";
 import { leaseHostIdentity, lockPathFor, readLeaseVerdict, tryAcquireLease } from "../lib/codegraph-lease.ts";
 
@@ -40,7 +41,34 @@ function worktreePair(t: test.TestContext): { main: string; worktree: string } {
 
 function writeDb(root: string): void {
 	mkdirSync(join(root, ".codegraph"), { recursive: true });
-	writeFileSync(join(root, ".codegraph", "codegraph.db"), "index-bytes");
+	const db = new DatabaseSync(join(root, ".codegraph", "codegraph.db"));
+	db.exec("CREATE TABLE IF NOT EXISTS marker (id INTEGER PRIMARY KEY, note TEXT)");
+	db.exec("INSERT INTO marker (note) VALUES ('committed')");
+	db.close();
+}
+
+/** Opens the main fixture's database in WAL mode and returns the live handle: the second
+ * commit stays in the -wal while the handle is open, exactly like a main daemon mid-write. */
+function openMainDbWithWal(main: string): DatabaseSync {
+	mkdirSync(join(main, ".codegraph"), { recursive: true });
+	// worktreePair's writeDb already wrote a plain database here: this fixture replaces it
+	// wholesale so the WAL handle starts from exactly the two rows the test pins.
+	rmSync(join(main, ".codegraph", "codegraph.db"), { force: true });
+	const db = new DatabaseSync(join(main, ".codegraph", "codegraph.db"));
+	db.exec("PRAGMA journal_mode=wal");
+	db.exec("CREATE TABLE marker (id INTEGER PRIMARY KEY, note TEXT)");
+	db.exec("INSERT INTO marker (note) VALUES ('committed')");
+	db.exec("INSERT INTO marker (note) VALUES ('wal-only')");
+	return db;
+}
+
+function markerNotes(path: string): string[] {
+	const db = new DatabaseSync(path, { readOnly: true });
+	try {
+	return db.prepare("SELECT note FROM marker ORDER BY id").all().map((row) => String((row as { note: unknown }).note));
+	} finally {
+	db.close();
+	}
 }
 
 function fileAbsent(path: string): boolean {
@@ -90,7 +118,7 @@ test("seedWorktreeIndex: staged copy, gitignore, rename, then one sync; the targ
 
 	assert.equal(result.outcome, "seeded");
 	assert.deepEqual(calls, ["sync -q"], "exactly one sync validates the copy");
-	assert.equal(readFileSync(join(worktree, ".codegraph", "codegraph.db"), "utf8"), "index-bytes");
+	assert.deepEqual(markerNotes(join(worktree, ".codegraph", "codegraph.db")), ["committed"]);
 	assert.equal(readFileSync(join(worktree, ".codegraph", ".gitignore"), "utf8"), "*\n!.gitignore\n");
 	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "only the index and its gitignore remain: no staging leftovers");
 });
@@ -119,44 +147,14 @@ test("seedWorktreeIndex: a failed sync removes the seeded database so absent sta
 	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore"], "and no staging remnant either");
 });
 
-test("a failing sidecar placement returns seed-failed and leaves no torn database", async (t) => {
-	const { main, worktree } = worktreePair(t);
-	// The main checkout carries sidecars, so the seed stages and renames them too.
-	writeFileSync(join(main, ".codegraph", "codegraph.db-wal"), "wal-bytes");
-	writeFileSync(join(main, ".codegraph", "codegraph.db-shm"), "shm-bytes");
-	// A directory squatting on a sidecar's final name makes that rename fail.
-	mkdirSync(join(worktree, ".codegraph", "codegraph.db-wal"), { recursive: true });
-
+test("a blocked final placement returns seed-failed and leaves no torn database", async (t) => {
+	const { worktree } = worktreePair(t);
+	// A directory squatting on the database's final name makes the publish rename fail.
+	mkdirSync(join(worktree, ".codegraph", "codegraph.db"), { recursive: true });
 	const result = await seedWorktreeIndex(seedHarness(worktree).input);
-	assert.equal(result.outcome, "seed-failed", "the caller learns to fall back to init, not a rejection");
-	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "the database must not be in place while a sidecar failed");
-	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db-wal"], "no staged remnant stays behind; only the squatter directory remains");
-	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db-shm")), true, "an already-placed sidecar is cleaned too");
-	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db-wal")), false, "the squatter directory is not ours to remove");
-});
-
-test("a validating sync that checkpointed away the staged sidecars still publishes the seed", async (t) => {
-	const { main, worktree } = worktreePair(t);
-	// A live main daemon leaves WAL-mode sidecars behind, so the seed stages them too.
-	writeFileSync(join(main, ".codegraph", "codegraph.db-wal"), "wal-bytes");
-	writeFileSync(join(main, ".codegraph", "codegraph.db-shm"), "shm-bytes");
-	const { input, calls } = seedHarness(worktree, {
-		run: async (args, cwd) => {
-			calls.push(args.join(" "));
-			// A clean close checkpoints the copied WAL into the database and SQLite deletes
-			// the sidecars it folded in: the staged -wal/-shm are gone after the sync.
-			rmSync(join(cwd, ".codegraph", "codegraph.db-wal"), { force: true });
-			rmSync(join(cwd, ".codegraph", "codegraph.db-shm"), { force: true });
-			return { ok: true, removedEntries: false };
-		},
-	});
-
-	const result = await seedWorktreeIndex(input);
-
-	assert.equal(result.outcome, "seeded", "a checkpointed sidecar holds no pending state: the seed still publishes");
-	assert.deepEqual(calls, ["sync -q"], "exactly one sync validates the copy");
-	assert.equal(readFileSync(join(worktree, ".codegraph", "codegraph.db"), "utf8"), "index-bytes", "the checkpointed database is published");
-	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "a sidecar the sync removed is skipped, not missed, and no staging leftover remains");
+	assert.equal(result.outcome, "seed-failed", "the caller learns the copy failed, never a rejection");
+	assert.equal(lstatSync(join(worktree, ".codegraph", "codegraph.db")).isDirectory(), true, "the squatter is not ours to remove");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "no staging remnant stays behind");
 });
 
 test("a staged database removed by the validating sync still fails the seed", async (t) => {
@@ -251,7 +249,7 @@ test("seedWorktreeIndex: an exit-0 sync that preserved tracked entries publishes
 
 	assert.equal(result.outcome, "seeded");
 	assert.deepEqual(calls, ["sync -q"], "exactly one sync validates the copy");
-	assert.equal(readFileSync(join(worktree, ".codegraph", "codegraph.db"), "utf8"), "index-bytes");
+	assert.deepEqual(markerNotes(join(worktree, ".codegraph", "codegraph.db")), ["committed"]);
 });
 
 test("seedWorktreeIndex: two real sessions seeding one worktree copy exactly once", async (t) => {
@@ -290,12 +288,36 @@ test("seedWorktreeIndex: two real sessions seeding one worktree copy exactly onc
 	assert.equal(lines.length, 1, `exactly one seed ran, got: ${lines.join(" | ")}`);
 });
 
-test("a busy main index defers seeding without touching the worktree", async (t) => {
+test("a busy main writer still seeds through a lock-safe snapshot", async (t) => {
 	const { main, worktree } = worktreePair(t);
+	const db = openMainDbWithWal(main);
+	t.after(() => db.close());
+	// A live CodeGraph writer lock on the main checkout: the common state whenever the
+	// main session's daemon is refreshing the index.
 	writeFileSync(join(main, ".codegraph", "codegraph.lock"), String(process.pid));
 	const { input, calls } = seedHarness(worktree);
+
 	const result = await seedWorktreeIndex(input);
-	assert.equal(result.outcome, "main-busy");
+
+	assert.equal(result.outcome, "seeded", "a busy writer never defers: the snapshot reads committed state");
+	assert.deepEqual(calls, ["sync -q"], "exactly one sync validates the snapshot");
+	assert.deepEqual(
+		readdirSync(join(worktree, ".codegraph")).sort(),
+		[".gitignore", "codegraph.db"],
+		"only the standalone snapshot is published: no sidecar files",
+	);
+	assert.deepEqual(markerNotes(join(worktree, ".codegraph", "codegraph.db")), ["committed", "wal-only"], "the snapshot carries the WAL-resident commit");
+});
+
+test("a main checkout mid-init defers seeding without touching the worktree", async (t) => {
+	const { main, worktree } = worktreePair(t);
+	const locksDir = mkdtempSync(join(tmpdir(), "gentle-pi-seed-locks-"));
+	t.after(() => rmSync(locksDir, { recursive: true, force: true }));
+	const token = { kind: "init", pid: process.pid, startedAt: Date.now(), expiresAt: Date.now() + 60_000 };
+	writeFileSync(lockPathFor(main, "init", locksDir), JSON.stringify(token) + "\n");
+	const { input, calls } = seedHarness(worktree, { locksDir });
+	const result = await seedWorktreeIndex(input);
+	assert.equal(result.outcome, "main-busy", "the main index is being created: there is nothing coherent to copy yet");
 	assert.deepEqual(calls, [], "nothing ran and nothing was copied");
 	assert.equal(fileAbsent(join(worktree, ".codegraph")), true, "the worktree is untouched");
 });

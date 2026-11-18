@@ -3779,12 +3779,29 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			}
 		},
 	});
+function mergeSetEdits<T extends string>(
+	latest: readonly T[],
+	initial: ReadonlySet<T>,
+	edited: ReadonlySet<T>,
+): T[] {
+	const next = new Set<T>(latest);
+	for (const item of initial) {
+		if (!edited.has(item)) next.delete(item);
+	}
+	for (const item of edited) {
+		if (!initial.has(item)) next.add(item);
+	}
+	return [...next];
+}
+
 	pi.registerCommand("gentle:extensions", {
 		description: "Choose which optional gentle-pi extensions auto-load (status|enable <name>|disable <name>|enable-all|disable-all); no argument opens a menu.",
 		handler: async (args, ctx) => {
 			const trimmed = args.trim();
-			const current = resolveOptionalExtensionsPolicy({ gentlePiConfigHome: gentlePiConfigHome(env) });
+			const configHome = gentlePiConfigHome(env);
+			const current = resolveOptionalExtensionsPolicy({ gentlePiConfigHome: configHome });
 			if (!trimmed && ctx.hasUI && typeof ctx.ui.select === "function") {
+				const initial = new Set<OptionalExtensionId>(current.enabled);
 				const selected = new Set<OptionalExtensionId>(current.enabled);
 				let dirty = false;
 				while (true) {
@@ -3797,7 +3814,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					const choice = await ctx.ui.select("Optional gentle-pi extensions (all disabled by default)", items);
 					if (choice === undefined || choice === "Close") return;
 					if (choice === "Save and reload") {
-						writeOptionalExtensionsPolicy([...selected], { gentlePiConfigHome: gentlePiConfigHome(env) });
+						const latest = resolveOptionalExtensionsPolicy({ gentlePiConfigHome: configHome }).enabled;
+						writeOptionalExtensionsPolicy(mergeSetEdits(latest, initial, selected), { gentlePiConfigHome: configHome });
 						await ctx.reload();
 						return;
 					}
@@ -3858,6 +3876,8 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const configHome = gentlePiConfigHome(env);
 			const current = resolveOddSlimPolicy({ gentlePiConfigHome: configHome }).policy;
 			if (!trimmed && ctx.hasUI && typeof ctx.ui.select === "function") {
+				const initialEnabled = current.enabled;
+				const initialModules = new Set<OddOptionalModule>(current.modules);
 				let enabled = current.enabled;
 				const modules = new Set<OddOptionalModule>(current.modules);
 				let dirty = false;
@@ -3870,8 +3890,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					const choice = await ctx.ui.select("ODD-slim configuration", items);
 					if (choice === undefined || choice === "Close") return;
 					if (choice === "Save") {
-						writeOddSlimPolicy({ enabled, modules: [...modules] }, { gentlePiConfigHome: configHome });
-						ctx.ui.notify(`ODD-slim: ${enabled ? "on" : "off"}; optional modules: ${modules.size ? [...modules].join(", ") : "none"}. Applies on next turn.`, "info");
+						const latest = resolveOddSlimPolicy({ gentlePiConfigHome: configHome }).policy;
+						const nextEnabled = enabled !== initialEnabled ? enabled : latest.enabled;
+						const nextModules = mergeSetEdits(latest.modules, initialModules, modules);
+						writeOddSlimPolicy({ enabled: nextEnabled, modules: nextModules }, { gentlePiConfigHome: configHome });
+						ctx.ui.notify(`ODD-slim: ${nextEnabled ? "on" : "off"}; optional modules: ${nextModules.length ? nextModules.join(", ") : "none"}. Applies on next turn.`, "info");
 						return;
 					}
 					if (choice.startsWith("odd-slim mode:")) {
@@ -3921,6 +3944,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const configHome = gentlePiConfigHome(env);
 			const current = resolveBundledSkillsPolicy({ gentlePiConfigHome: configHome });
 			if (!trimmed && ctx.hasUI && typeof ctx.ui.select === "function") {
+				const initial = new Set<BundledSkillId>(current.enabled);
 				const selected = new Set<BundledSkillId>(current.enabled);
 				let dirty = false;
 				while (true) {
@@ -3934,8 +3958,10 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					const choice = await ctx.ui.select("Bundled gentle-pi skills to auto-index", items);
 					if (choice === undefined || choice === "Close") return;
 					if (choice === "Save") {
-						writeBundledSkillsPolicy([...selected], { gentlePiConfigHome: configHome });
-						ctx.ui.notify(`Bundled skills auto-indexed (${selected.size}/${ALL_BUNDLED_SKILLS.length}). Applies on next turn.`, "info");
+						const latest = resolveBundledSkillsPolicy({ gentlePiConfigHome: configHome }).enabled;
+						const nextSkills = mergeSetEdits(latest, initial, selected);
+						writeBundledSkillsPolicy(nextSkills, { gentlePiConfigHome: configHome });
+						ctx.ui.notify(`Bundled skills auto-indexed (${nextSkills.length}/${ALL_BUNDLED_SKILLS.length}). Applies on next turn.`, "info");
 						return;
 					}
 					if (choice === "defaults") {

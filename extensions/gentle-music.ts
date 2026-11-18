@@ -259,7 +259,6 @@ async function handOverTerminal<T>(tui: TerminalOwner, signals: MusicSignals, ru
 }
 
 export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}): void {
-	if (!isOptionalExtensionEnabled("gentle-music")) return;
 	const which = deps.which ?? ((name: string) => findOnPath(name));
 	const spawn = deps.spawn ?? defaultSpawn;
 	const signals = deps.signals ?? defaultSignals;
@@ -278,6 +277,18 @@ export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}
 		const stream = resolveGentleStream(which, player?.installed() ? player.gentleStream : undefined);
 		return stream ? { stream } : { offer: player };
 	};
+
+	// Keep quit cleanup registered even after disabling and reloading gentle-music,
+	// so any player started earlier by this process still stops when Pi quits.
+	pi.on("session_shutdown", async (event) => {
+		if ((event as { reason?: string }).reason !== "quit" || !usage.used) return;
+		const { stream } = await findPlayer();
+		if (!stream) return;
+		usage.used = false;
+		await runCaptured(spawn, stream.command, [...stream.prefix, "ctl", "stop"], shutdownTimeoutMs);
+	});
+
+	if (!isOptionalExtensionEnabled("gentle-music")) return;
 
 	/** The bundled offer: undefined when declined or failed (after telling the user). */
 	const offerInstall = async (ctx: ExtensionContext, player: BundledMusicPlayer): Promise<GentleStreamCommand | undefined> => {
@@ -352,15 +363,5 @@ export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}
 			if (request.kind === "ctl") await control(ctx, stream, request.command);
 			else await openTui(ctx, stream, request.mood);
 		},
-	});
-
-	// Quitting Pi stops music it started, so no audio outlives the shell.
-	// Switching or reloading sessions keeps the same process, so the music plays on.
-	pi.on("session_shutdown", async (event) => {
-		if ((event as { reason?: string }).reason !== "quit" || !usage.used) return;
-		const { stream } = await findPlayer();
-		if (!stream) return;
-		usage.used = false;
-		await runCaptured(spawn, stream.command, [...stream.prefix, "ctl", "stop"], shutdownTimeoutMs);
 	});
 }

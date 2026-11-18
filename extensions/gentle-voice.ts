@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { registerVoiceCommand, type VoiceCommandDeps } from "../lib/voice-command.ts";
 import { isOptionalExtensionEnabled } from "../lib/optional-extensions-policy.ts";
 
@@ -8,6 +9,6 @@ import { isOptionalExtensionEnabled } from "../lib/optional-extensions-policy.ts
 // downloaded, loaded or recorded until the user runs the command or holds Space.
 
 export default function gentleVoice(pi: ExtensionAPI, deps: VoiceCommandDeps = {}): void {
-	if (!isOptionalExtensionEnabled("gentle-voice")) return;
+	if (!isOptionalExtensionEnabled("gentle-voice", { gentlePiConfigHome: gentlePiConfigHome(deps.env) })) return;
 	registerVoiceCommand(pi, deps);
 }

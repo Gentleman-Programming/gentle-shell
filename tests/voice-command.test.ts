@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
-import nodeTest from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import nodeTest, { after } from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import gentleVoice from "../extensions/gentle-voice.ts";
+import { writeOptionalExtensionsPolicy } from "../lib/optional-extensions-policy.ts";
 import { VoiceInstallError, type VoiceInstallProgress, type VoiceInstallResult } from "../lib/voice-install.ts";
 import { VoiceSessionError, type VoiceSessionState, type VoiceTranscript } from "../lib/voice-session.ts";
 import { VOICE_COMMAND_NAME, type VoiceCommandDeps, type VoiceDictation } from "../lib/voice-command.ts";
@@ -189,7 +193,17 @@ interface Harness {
 	clock: ReturnType<typeof manualClock>;
 }
 
-function harness(overrides: { platform?: string; arch?: string; installed?: boolean; install?: (kind: "runtime" | "model", options: { signal: AbortSignal; onProgress(progress: VoiceInstallProgress): void }) => Promise<VoiceInstallResult>; env?: NodeJS.ProcessEnv; pushToTalk?: boolean } = {}): Harness {
+const testRoots: string[] = [];
+after(() => {
+	for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function harness(overrides: { platform?: string; arch?: string; installed?: boolean; install?: (kind: "runtime" | "model", options: { signal: AbortSignal; onProgress(progress: VoiceInstallProgress): void }) => Promise<VoiceInstallResult>; env?: NodeJS.ProcessEnv; pushToTalk?: boolean; disablePolicy?: boolean } = {}): Harness {
+	const configHome = mkdtempSync(join(tmpdir(), "voice-cmd-cfg-"));
+	testRoots.push(configHome);
+	if (!overrides.disablePolicy) {
+		writeOptionalExtensionsPolicy(["gentle-voice"], { gentlePiConfigHome: configHome });
+	}
 	const calls: string[] = [];
 	const sessions: FakeSession[] = [];
 	const installs: Harness["installs"] = [];
@@ -199,7 +213,7 @@ function harness(overrides: { platform?: string; arch?: string; installed?: bool
 	const state = overrides.installed ? "installed" : "missing";
 	const install = overrides.install ?? (async (kind) => ({ kind, path: `${VOICE_HOME}/${kind}`, alreadyInstalled: false }));
 	const deps: VoiceCommandDeps = {
-		env: overrides.env ?? {},
+		env: { GENTLE_PI_CONFIG_HOME: configHome, ...(overrides.env ?? {}) },
 		probe: () => { calls.push("probe"); return { platform: overrides.platform ?? "darwin", arch: overrides.arch ?? "arm64" }; },
 		readStatus: async (target) => {
 			calls.push(`status:${target}`);
@@ -235,6 +249,14 @@ async function run(pi: ReturnType<typeof fakePi>, ui: ReturnType<typeof fakeCont
 }
 
 // --- registration and refusals ------------------------------------------------
+
+test("does not register /gentle:voice when gentle-voice is disabled by policy", async () => {
+	const h = harness({ disablePolicy: true });
+	const pi = register(h);
+	assert.deepEqual([...pi.commands.keys()], []);
+	await pi.fire("session_start");
+	assert.deepEqual(h.calls, []);
+});
 
 test("registers only /gentle:voice and does no voice work at registration or session start", async () => {
 	const h = harness();

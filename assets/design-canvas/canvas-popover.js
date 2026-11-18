@@ -2,20 +2,6 @@
 // drop), Esc and Shift+Esc in the canvas, and the submit that saves or sends the
 // comment. Its Implement only this button belongs to canvas-parts.js.
 
-// Every string the comment box shows, in English; canvas-i18n-es.js has the Spanish (its static labels are index.html's).
-// The comment the person writes is sent as written.
-const TEXT = Object.freeze({
-	shotType: "Attach a PNG, JPEG, WebP or GIF image.",
-	shotSize: "The screenshot must be at most 5 MB.",
-	shotRead: "The screenshot could not be read.",
-	limits: (max) => `Write a comment of 1 to ${max} characters.`,
-	sending: "Sending…",
-	savedOnly: "Saved, but not sent to the session",
-	saved: "Saved; use Send all to send it",
-	sent: "Sent to the session",
-	notSent: (reason) => `Not sent: ${reason}`,
-});
-
 const LIMITS = { selector: 500, excerpt: 300, comment: 2000, screenshotBytes: 5 * 1024 * 1024 };
 const SCREENSHOT_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 
@@ -24,7 +10,6 @@ export function init(ctx) {
 	const { state } = store;
 	const { base, isFiniteNumber } = api;
 	const { setStatus } = ui;
-	const T = ctx.i18n.text("popover", TEXT);
 
 	function readPick(data) {
 		if (typeof data.selector !== "string") return null;
@@ -41,8 +26,6 @@ export function init(ctx) {
 	 * made at (viewport, null at the artboard's own size); the popover opens beside the element in that frame.
 	 */
 	function openPopover(surface, pick) {
-		// The comment box takes the token inspector's place.
-		actions.hideInspector();
 		win.clearTimeout(state.closeTimer);
 		const board = actions.ownerOf(surface);
 		// A pick in another frame replaces the open one: that frame's highlight goes, as on a close.
@@ -78,12 +61,8 @@ export function init(ctx) {
 	}
 
 	/** The popover's message line; a refusal's raw code in its tooltip (canvas-parts.js) goes with the message it explained. */
-	// Set when the message is the canvas's own wording, given as a function so a language switch words it again.
-	let worded = null;
 	function showMessage(text, isError) {
-		worded = typeof text === "function" ? text : null;
-		els.message.setAttribute("data-gd-message-owner", "comment");
-		els.message.textContent = worded ? worded() : text;
+		els.message.textContent = text;
 		els.message.title = "";
 		els.message.classList.toggle("gd-error", isError);
 	}
@@ -95,8 +74,8 @@ export function init(ctx) {
 	/** Reads one image file into the popover; a later attach or a clear discards a read still running. */
 	function attachShot(file) {
 		if (!file || els.popover.hidden) return;
-		if (!SCREENSHOT_TYPES.includes(file.type)) return shotError(T.shotType);
-		if (file.size === 0 || file.size > LIMITS.screenshotBytes) return shotError(T.shotSize);
+		if (!SCREENSHOT_TYPES.includes(file.type)) return shotError("Attach a PNG, JPEG, WebP or GIF image.");
+		if (file.size === 0 || file.size > LIMITS.screenshotBytes) return shotError("The screenshot must be at most 5 MB.");
 		store.setPopover({ shotToken: state.shotToken + 1 });
 		const token = state.shotToken;
 		const reader = new win.FileReader();
@@ -109,7 +88,7 @@ export function init(ctx) {
 			els.shotAttach.hidden = true;
 			showMessage("", false);
 		});
-		reader.addEventListener("error", () => { if (token === state.shotToken) shotError(T.shotRead); });
+		reader.addEventListener("error", () => { if (token === state.shotToken) shotError("The screenshot could not be read."); });
 		reader.readAsDataURL(file);
 	}
 
@@ -147,9 +126,6 @@ export function init(ctx) {
 	});
 
 	function closePopover() {
-		// Before the early return: every path that closes the box (focus mode ending, another size, Comment mode off,
-		// a pan or a zoom) also ends the token inspector's panel, open or not.
-		actions.hideInspector();
 		if (els.popover.hidden) return;
 		win.clearTimeout(state.closeTimer);
 		// The frame that was picked clears its outline.
@@ -193,9 +169,9 @@ export function init(ctx) {
 		const pick = state.pick;
 		if (!pick) return;
 		const comment = els.text.value.trim();
-		if (!comment || comment.length > LIMITS.comment) return showMessage(() => T.limits(LIMITS.comment), true);
+		if (!comment || comment.length > LIMITS.comment) return showMessage(`Write a comment of 1 to ${LIMITS.comment} characters.`, true);
 		els.send.disabled = true;
-		showMessage(() => T.sending, false);
+		showMessage("Sending…", false);
 		const shot = state.shot;
 		try {
 			const response = await win.fetch(`${base}api/comments`, {
@@ -213,22 +189,16 @@ export function init(ctx) {
 			if (state.pick !== pick) return;
 			els.text.value = "";
 			if (state.shot === shot) clearShot();
-			const done = () => (savedOnly ? T.savedOnly : response.status === 201 ? T.saved : T.sent);
-			showMessage(() => done(), savedOnly);
-			setStatus(done(), savedOnly);
+			const done = savedOnly ? "Saved, but not sent to the session" : response.status === 201 ? "Saved; use Send all to send it" : "Sent to the session";
+			showMessage(done, savedOnly);
+			setStatus(done, savedOnly);
 			store.setPopover({ closeTimer: win.setTimeout(closePopover, savedOnly ? 2500 : 1200) });
 		} catch (error) {
 			if (state.pick !== pick) return;
 			els.send.disabled = false;
-			showMessage(() => T.notSent(error.message), true);
+			showMessage(`Not sent: ${error.message}`, true);
 		}
 	});
 
-	/** A new language: the message on screen, when it is the canvas's own wording (the rest of the box is keyed markup). */
-	function relabel() {
-		if (!worded || els.message.getAttribute("data-gd-message-owner") !== "comment") return;
-		els.message.textContent = worded();
-	}
-
-	return { relabel, readPick, openPopover, closePopover };
+	return { readPick, openPopover, closePopover };
 }

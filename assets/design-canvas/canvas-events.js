@@ -1,14 +1,8 @@
 // Live reload: the server's event stream (show and change events).
 
-// In English; canvas-i18n-es.js has the Spanish.
-const TEXT = Object.freeze({
-	disconnected: "Live reload disconnected, retrying…",
-});
-
 export function init(ctx) {
 	const { win, els, store, api, ui, actions } = ctx;
 	const { state } = store;
-	const T = ctx.i18n.text("events", TEXT);
 	const { base } = api;
 	const { setStatus } = ui;
 
@@ -17,7 +11,7 @@ export function init(ctx) {
 		source.addEventListener("open", () => {
 			if (els.status.classList.contains("gd-error")) setStatus("", false);
 		});
-		source.addEventListener("error", () => setStatus(T.disconnected, true));
+		source.addEventListener("error", () => setStatus("Live reload disconnected, retrying…", true));
 		source.addEventListener("show", (event) => {
 			let request;
 			try { request = JSON.parse(event.data); } catch { return; }
@@ -31,8 +25,6 @@ export function init(ctx) {
 			if (!change || typeof change.file !== "string") return;
 			if (change.slug === null) {
 				if (change.file === "system.html") actions.onSystemChange().catch(() => {});
-				// The design tokens: nothing reloads, the token inspector compares with the new ones.
-				else if (change.file === "system.md") actions.loadTokens().catch(() => {});
 				return;
 			}
 			if (typeof change.slug !== "string") return;

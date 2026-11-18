@@ -67,7 +67,6 @@ export function init(ctx) {
 	const { state } = store;
 	const { getJson, postJson, delivery } = api;
 	const { setStatus, showToast } = ui;
-	const T = ctx.i18n.text("parts", TEXT);
 	// The part whose Remove confirm is open, and the Removes in flight ("<slug>/<id>").
 	let confirming = null;
 	const removing = new Set();
@@ -86,7 +85,7 @@ export function init(ctx) {
 	const partNote = doc.createElement("p");
 	partNote.id = "gd-popover-part-note";
 	partNote.className = "gd-popover-note";
-	partNote.textContent = T.partOffline;
+	partNote.textContent = TEXT.partOffline;
 	partNote.hidden = true;
 	els.form.append(partNote);
 
@@ -113,14 +112,14 @@ export function init(ctx) {
 	const removeKey = (slug, part) => `${slug}/${part.id}`;
 	const twoDigits = (value) => String(value).padStart(2, "0");
 
-	/** "09:30" today, "Oct 26, 09:30" this year, "Mar 4 2020, 09:05" before (in Spanish "26 oct, 09:30"); null when unreadable. */
+	/** "09:30" today, "Oct 26, 09:30" this year, "Mar 4 2020, 09:05" before; null when unreadable. */
 	function timeOf(value) {
 		const date = typeof value === "string" ? new Date(value) : null;
 		if (!date || Number.isNaN(date.getTime())) return null;
 		const now = new Date();
 		const clock = `${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`;
 		if (date.toDateString() === now.toDateString()) return { time: clock, today: true };
-		const day = date.toLocaleDateString(state.language === "es" ? "es-ES" : "en-US", { month: "short", day: "numeric" });
+		const day = date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 		return { time: `${date.getFullYear() === now.getFullYear() ? day : `${day} ${date.getFullYear()}`}, ${clock}`, today: false };
 	}
 
@@ -150,16 +149,16 @@ export function init(ctx) {
 		item.dataset.status = kind;
 		const head = doc.createElement("div");
 		head.className = "gd-part-head";
-		head.append(chip("gd-part-title", board ? board.artboard.title : part.file), chip("gd-part-state", T.states[kind]));
+		head.append(chip("gd-part-title", board ? board.artboard.title : part.file), chip("gd-part-state", TEXT.states[kind]));
 		item.append(head);
-		if (typeof part.excerpt === "string" && part.excerpt) item.append(chip("gd-part-excerpt", T.quoted(part.excerpt)));
+		if (typeof part.excerpt === "string" && part.excerpt) item.append(chip("gd-part-excerpt", TEXT.quoted(part.excerpt)));
 		const when = timeOf(kind === "implemented" ? part.implementedAt : kind === "in_progress" ? part.startedAt : part.sentAt);
-		if (when) item.append(chip("gd-part-time", T.times[kind](when.time, when.today)));
-		if (typeof part.note === "string" && part.note) item.append(chip("gd-part-note", T.quoted(part.note)));
+		if (when) item.append(chip("gd-part-time", TEXT.times[kind](when.time, when.today)));
+		if (typeof part.note === "string" && part.note) item.append(chip("gd-part-note", TEXT.quoted(part.note)));
 		const controls = doc.createElement("div");
 		controls.className = "gd-part-actions";
-		const show = button("gd-part-show", T.show, () => showPart(part));
-		show.setAttribute("aria-label", T.showLabel(number, part.file));
+		const show = button("gd-part-show", TEXT.show, () => showPart(part));
+		show.setAttribute("aria-label", TEXT.showLabel(number, part.file));
 		show.dataset.control = "show";
 		show.disabled = !board;
 		controls.append(show);
@@ -172,19 +171,19 @@ export function init(ctx) {
 	function removeControl(part, number, slug) {
 		const key = removeKey(slug, part);
 		const inFlight = removing.has(key);
-		const start = button("gd-part-remove", T.remove, () => {
+		const start = button("gd-part-remove", TEXT.remove, () => {
 			confirming = key;
 			start.hidden = true;
 			confirm.hidden = false;
 			yes.focus();
 		});
-		start.setAttribute("aria-label", T.removeLabel(number, part.file));
+		start.setAttribute("aria-label", TEXT.removeLabel(number, part.file));
 		start.dataset.control = "remove";
 		start.disabled = inFlight;
 		const confirm = doc.createElement("div");
 		confirm.className = "gd-part-confirm";
 		confirm.setAttribute("role", "group");
-		confirm.setAttribute("aria-label", T.confirmLabel(number));
+		confirm.setAttribute("aria-label", TEXT.confirmLabel(number));
 		// Cancel and Esc wait for a Remove in flight: Remove (start) is disabled until it answers.
 		const close = () => {
 			if (removing.has(key)) return;
@@ -193,11 +192,11 @@ export function init(ctx) {
 			start.hidden = false;
 			start.focus();
 		};
-		const yes = button("gd-part-confirm-yes gd-primary", T.remove, () => removePart(slug, part));
+		const yes = button("gd-part-confirm-yes gd-primary", TEXT.remove, () => removePart(slug, part));
 		yes.dataset.control = "yes";
 		// In flight it stays focusable, so the redraw keeps keyboard focus on it; removePart ignores the click.
 		if (inFlight) yes.setAttribute("aria-disabled", "true");
-		const no = button("gd-part-confirm-no", T.cancel, close);
+		const no = button("gd-part-confirm-no", TEXT.cancel, close);
 		no.dataset.control = "no";
 		no.disabled = inFlight;
 		confirm.addEventListener("keydown", (event) => {
@@ -206,7 +205,7 @@ export function init(ctx) {
 			event.stopPropagation();
 			close();
 		});
-		confirm.append(chip("gd-part-question", T.question), yes, no);
+		confirm.append(chip("gd-part-question", TEXT.question), yes, no);
 		const open = confirming === key;
 		confirm.hidden = !open;
 		start.hidden = open;
@@ -224,7 +223,7 @@ export function init(ctx) {
 		const rendered = parts.map((part, index) => renderPart(part, index, slug));
 		els.partsList.replaceChildren(...rendered);
 		els.parts.hidden = parts.length === 0;
-		els.partsTitle.textContent = T.title(parts.length);
+		els.partsTitle.textContent = TEXT.title(parts.length);
 		if (focus) restoreFocus(rendered, focus);
 	}
 
@@ -268,7 +267,7 @@ export function init(ctx) {
 		}
 		if (load !== partLoads || slug !== state.slug) return;
 		// A failed read keeps the parts shown.
-		if (failure) return setStatus(T.unreadable(slug, failure.message), true);
+		if (failure) return setStatus(TEXT.unreadable(slug, failure.message), true);
 		const parts = data && Array.isArray(data.parts) ? data.parts.filter(isPart) : [];
 		for (const part of parts) reported.add(removeKey(slug, part));
 		setParts(slug, parts);
@@ -288,7 +287,7 @@ export function init(ctx) {
 	function showPart(part) {
 		const board = state.parts.slug === state.slug ? boardOf(part, state.slug) : null;
 		if (!board) {
-			setStatus(T.notShown, true);
+			setStatus(TEXT.notShown, true);
 			renderParts();
 			return;
 		}
@@ -308,8 +307,8 @@ export function init(ctx) {
 		const current = slug === state.slug && state.parts.slug === slug;
 		if (reply.ok) {
 			reported.add(key);
-			setStatus(T.removed, false);
-			showToast(T.removed, false);
+			setStatus(TEXT.removed, false);
+			showToast(TEXT.removed, false);
 			if (!current) return;
 			partLoads += 1;
 			setParts(slug, state.parts.parts.filter((entry) => entry.id !== part.id));
@@ -317,7 +316,7 @@ export function init(ctx) {
 			return;
 		}
 		const code = typeof reply.body.error === "string" ? reply.body.error : "";
-		const text = T.notRemoved(T.removeErrors[code] ?? (reply.body.reason || code || `HTTP ${reply.status}`));
+		const text = TEXT.notRemoved(TEXT.removeErrors[code] ?? (reply.body.reason || code || `HTTP ${reply.status}`));
 		setStatus(text, true);
 		showToast(text, true);
 		if (!current) return;
@@ -326,20 +325,11 @@ export function init(ctx) {
 		else renderParts();
 	}
 
-	/** A new language: the list (focus kept, as on any re-render), the note and Implement only this's tooltip (not its state). */
-	function relabel() {
-		partNote.textContent = T.partOffline;
-		els.partAdd.title = delivery.part ? T.partTitle : T.partOffline;
-		renderParts();
-	}
-
 	/** Implement only this on the open popover: enabled only when the page config says the server can deliver a part and that element is not in flight. */
 	function renderPartButton() {
 		const offline = !delivery.part;
 		els.partAdd.disabled = offline || Boolean(state.pick && sending.has(sendKey(state.pick)));
-		els.partAdd.title = offline ? T.partOffline : T.partTitle;
-		// Worded where it is shown: the language may have been set after init (a stored choice).
-		partNote.textContent = T.partOffline;
+		els.partAdd.title = offline ? TEXT.partOffline : TEXT.partTitle;
 		partNote.hidden = !offline;
 		if (offline) els.partAdd.setAttribute("aria-describedby", partNote.id);
 		else els.partAdd.removeAttribute("aria-describedby");
@@ -348,12 +338,11 @@ export function init(ctx) {
 	function sendFailure(reply) {
 		const code = typeof reply.body.error === "string" ? reply.body.error : "";
 		const reason = typeof reply.body.reason === "string" ? reply.body.reason : "";
-		const why = code === "delivery-failed" ? T.deliveryFailed(reason) : T.sendErrors[code] ?? (reason || code || `HTTP ${reply.status}`);
-		return { text: T.notSent(why), code };
+		const why = code === "delivery-failed" ? TEXT.deliveryFailed(reason) : TEXT.sendErrors[code] ?? (reason || code || `HTTP ${reply.status}`);
+		return { text: TEXT.notSent(why), code };
 	}
 
 	function popoverMessage(text, isError, detail = "") {
-		els.message.setAttribute("data-gd-message-owner", "parts");
 		els.message.textContent = text;
 		els.message.title = detail;
 		els.message.classList.toggle("gd-error", isError);
@@ -365,10 +354,10 @@ export function init(ctx) {
 		const key = sendKey(pick);
 		if (sending.has(key)) return;
 		const note = els.text.value.replace(/\r\n?/g, "\n").trim();
-		if (note.length > NOTE_LIMIT) return popoverMessage(T.noteTooLong(NOTE_LIMIT), true);
+		if (note.length > NOTE_LIMIT) return popoverMessage(TEXT.noteTooLong(NOTE_LIMIT), true);
 		sending.add(key);
 		els.partAdd.disabled = true;
-		popoverMessage(T.sending, false);
+		popoverMessage(TEXT.sending, false);
 		const board = pick.board;
 		const slug = board.slug;
 		const reply = await postJson(`api/designs/${encodeURIComponent(slug)}/implement-part`, { file: board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, ...(note ? { note } : {}) }).catch(failed);
@@ -388,14 +377,14 @@ export function init(ctx) {
 		if (typeof reply.body.id === "string") {
 			noteParts(slug, { id: reply.body.id, file: board.artboard.file, selector: pick.selector, excerpt: pick.excerpt, status: "sent", queued, sentAt: new Date().toISOString(), startedAt: null, implementedAt: null, ...(note ? { instruction: note } : {}) });
 		}
-		const done = queued ? T.queued(board.artboard.title) : T.sent(board.artboard.title);
+		const done = queued ? TEXT.queued(board.artboard.title) : TEXT.sent(board.artboard.title);
 		setStatus(done, false);
 		showToast(done, false);
 		if (!open) return;
 		els.text.value = "";
-		popoverMessage(T.sentShort, false);
+		popoverMessage(TEXT.sentShort, false);
 		store.setPopover({ closeTimer: win.setTimeout(actions.closePopover, CLOSE_MS) });
 	});
 
-	return { relabel, loadParts, clearParts, renderParts, renderPartButton };
+	return { loadParts, clearParts, renderParts, renderPartButton };
 }

@@ -7,7 +7,7 @@
 // canvas-boards.js asks for the button when it builds a board (boardMenuButton).
 // Results and failures show on the status line and the toast (canvas-ui.js).
 
-// Every string the export shows, in English; canvas-i18n-es.js has the Spanish. Artboard titles and file names stay as written.
+// Every string the export shows, in English until the i18n PR keys them.
 const TEXT = Object.freeze({
 	button: (title) => `More actions for ${title}`,
 	menu: (title) => `${title} actions`,
@@ -33,7 +33,6 @@ const TEXT = Object.freeze({
 	doneUpscaled: "Exported PNG at 2× (upscaled).",
 	downloadFailed: (reason) => `Could not download the artboard (${reason}). Open it from design/ in your project instead.`,
 	printFailed: (reason) => `Could not print the artboard (${reason}). Open it from design/ in your project instead.`,
-	error: "error",
 });
 
 // Every PNG export starts the artboard at Desktop, its own size.
@@ -57,7 +56,6 @@ const FRAME_WAIT_MS = 500;
 export function init(ctx) {
 	const { win, doc, els, store, api, ui, actions } = ctx;
 	const { state } = store;
-	const T = ctx.i18n.text("export", TEXT);
 	// Each board's ⋯ button, so an export can give the keyboard focus back to the current board's.
 	const buttons = new WeakMap();
 	// True while a PNG export runs: a second one would share its body class, its view restore and its capture.
@@ -69,35 +67,22 @@ export function init(ctx) {
 		buttons.set(board, button);
 		button.type = "button";
 		button.className = "gd-menu-button";
-		labelButton(board, button);
+		button.setAttribute("aria-label", TEXT.button(board.artboard.title));
 		button.setAttribute("aria-haspopup", "menu");
 		button.setAttribute("aria-expanded", "false");
 		button.setAttribute("aria-controls", els.menu.id);
 		button.append(actions.icon("i-more", "gd-i gd-i-s"));
-		actions.wireMenu(button, (last) => actions.showMenu(button, menuActions(board), T.menu(board.artboard.title), last));
+		actions.wireMenu(button, (last) => actions.showMenu(button, menuActions(board), TEXT.menu(board.artboard.title), last));
 		return button;
-	}
-
-	/** The ⋯ button's name, in the current language. */
-	function labelButton(board, button) {
-		button.setAttribute("aria-label", T.button(board.artboard.title));
-	}
-
-	/** A new language: each ⋯ button's name, in place; the menu is built when it opens, so it opens in the language shown. */
-	function relabel() {
-		for (const board of state.boards) {
-			const button = buttons.get(board);
-			if (button) labelButton(board, button);
-		}
 	}
 
 	/** What the menu offers for one artboard, in order: the exports only. */
 	function menuActions(board) {
 		return [
-			{ label: T.png, icon: "i-image", run: () => exportArtboard(board, 1) },
-			{ label: T.png2x, icon: "i-image", run: () => exportArtboard(board, 2) },
-			{ label: T.pdf, icon: "i-file", run: () => exportPdf(board) },
-			{ label: T.html, icon: "i-download", run: () => downloadHtml(board) },
+			{ label: TEXT.png, icon: "i-image", run: () => exportArtboard(board, 1) },
+			{ label: TEXT.png2x, icon: "i-image", run: () => exportArtboard(board, 2) },
+			{ label: TEXT.pdf, icon: "i-file", run: () => exportPdf(board) },
+			{ label: TEXT.html, icon: "i-download", run: () => downloadHtml(board) },
 		];
 	}
 
@@ -125,12 +110,12 @@ export function init(ctx) {
 	}
 
 	/**
-	 * Rejects with T.stopped once the shared video ends (the browser's Stop sharing, a closed tab):
+	 * Rejects with TEXT.stopped once the shared video ends (the browser's Stop sharing, a closed tab):
 	 * nothing paints after that, so no wait of the export may outlive it.
 	 */
 	function sharingEnded(stream) {
 		const ended = new Promise((_resolve, reject) => {
-			for (const track of stream.getVideoTracks()) track.addEventListener("ended", () => reject(new Error(T.stopped)), { once: true });
+			for (const track of stream.getVideoTracks()) track.addEventListener("ended", () => reject(new Error(TEXT.stopped)), { once: true });
 		});
 		// Ending after the export finished concerns nobody.
 		ended.catch(() => {});
@@ -176,14 +161,14 @@ export function init(ctx) {
 	 */
 	async function exportArtboard(chosen, scale) {
 		if (!win.navigator?.mediaDevices?.getDisplayMedia) {
-			reportFailure(T.failed(T.unavailable));
+			reportFailure(TEXT.failed(TEXT.unavailable));
 			return;
 		}
 		// Synchronous, so the capture below still starts from the menu activation.
 		if (exporting) return;
 		exporting = true;
 		// Not a confirm dialog: the browser lets the capture start only for a few seconds after the click.
-		ui.setStatus(T.choose, false);
+		ui.setStatus(TEXT.choose, false);
 		let stream = null;
 		// The board whose inspector highlight was cleared for the capture.
 		let cleared = null;
@@ -198,11 +183,11 @@ export function init(ctx) {
 			const live = (promise) => Promise.race([ended, promise]);
 			// Some systems (such as Linux on Wayland) only offer windows or screens; their frame is not this tab's viewport.
 			const surface = stream.getVideoTracks?.()[0]?.getSettings?.().displaySurface;
-			if (surface && surface !== "browser") throw new Error(surface === "monitor" ? T.sharedScreen : T.sharedOther(surface));
+			if (surface && surface !== "browser") throw new Error(surface === "monitor" ? TEXT.sharedScreen : TEXT.sharedOther(surface));
 			// A stream that is already inactive will send no ended event.
-			if (stream.getVideoTracks().some((track) => track.readyState === "ended")) throw new Error(T.stopped);
+			if (stream.getVideoTracks().some((track) => track.readyState === "ended")) throw new Error(TEXT.stopped);
 			const board = currentBoard(chosen);
-			if (!board) throw new Error(T.gone);
+			if (!board) throw new Error(TEXT.gone);
 			if (state.focus !== board) actions.enterFocus(board);
 			if (state.size.kind !== DESKTOP.kind) {
 				store.setFocus({ size: DESKTOP });
@@ -230,7 +215,7 @@ export function init(ctx) {
 			await live(nextPaint());
 			const rect = board.frame.getBoundingClientRect();
 			if (rect.width <= 0 || rect.height <= 0 || rect.left < 0 || rect.top < 0 || rect.left + rect.width > win.innerWidth || rect.top + rect.height > win.innerHeight) {
-				throw new Error(T.window(Math.ceil(rect.width), Math.ceil(rect.height)));
+				throw new Error(TEXT.window(Math.ceil(rect.width), Math.ceil(rect.height)));
 			}
 			const video = doc.createElement("video");
 			video.srcObject = stream;
@@ -241,26 +226,26 @@ export function init(ctx) {
 			await live(nextVideoFrame(video));
 			// A reload (of the design or of the artboard's own frame) or a close during the waits moved or repainted
 			// the artboard away from the rectangle measured above.
-			if (currentBoard(board) !== board || state.focus !== board || board.frame.src !== source) throw new Error(T.changed);
+			if (currentBoard(board) !== board || state.focus !== board || board.frame.src !== source) throw new Error(TEXT.changed);
 			const sx = video.videoWidth / win.innerWidth;
 			const sy = video.videoHeight / win.innerHeight;
-			if (!Number.isFinite(sx) || !Number.isFinite(sy) || sx <= 0 || sy <= 0) throw new Error(T.noFrame);
+			if (!Number.isFinite(sx) || !Number.isFinite(sy) || sx <= 0 || sy <= 0) throw new Error(TEXT.noFrame);
 			const canvas = doc.createElement("canvas");
 			canvas.width = Math.round(rect.width * scale);
 			canvas.height = Math.round(rect.height * scale);
 			const context = canvas.getContext("2d");
-			if (!context) throw new Error(T.noPng);
+			if (!context) throw new Error(TEXT.noPng);
 			context.drawImage(video, rect.left * sx, rect.top * sy, rect.width * sx, rect.height * sy, 0, 0, canvas.width, canvas.height);
 			stream.getTracks().forEach((track) => track.stop());
 			stream = null;
 			const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-			if (!blob) throw new Error(T.encode);
+			if (!blob) throw new Error(TEXT.encode);
 			download(win.URL.createObjectURL(blob), `${fileName(board, true)}${scale === 2 ? "@2x" : ""}.png`);
-			const done = scale === 2 && (sx < 2 || sy < 2) ? T.doneUpscaled : T.done;
+			const done = scale === 2 && (sx < 2 || sy < 2) ? TEXT.doneUpscaled : TEXT.done;
 			ui.setStatus(done, false);
 			ui.showToast(done, false);
 		} catch (error) {
-			reportFailure(T.failed(sentence(error?.message || T.denied)));
+			reportFailure(TEXT.failed(sentence(error?.message || TEXT.denied)));
 		} finally {
 			exporting = false;
 			stream?.getTracks().forEach((track) => track.stop());
@@ -316,7 +301,7 @@ export function init(ctx) {
 		const frame = doc.createElement("iframe");
 		frame.setAttribute("sandbox", "allow-scripts");
 		frame.setAttribute("referrerpolicy", "no-referrer");
-		frame.title = T.frameTitle(title);
+		frame.title = TEXT.frameTitle(title);
 		frame.style.width = `${width}px`;
 		frame.style.height = `${height}px`;
 		holder.append(frame);
@@ -341,7 +326,7 @@ export function init(ctx) {
 			// A newer export replaced this one meanwhile: its failure concerns nobody.
 			if (endPrint !== done) return;
 			done();
-			reportFailure(T.printFailed(error?.message || T.error));
+			reportFailure(TEXT.printFailed(error?.message || "error"));
 			return;
 		}
 		if (endPrint !== done) return;
@@ -353,7 +338,7 @@ export function init(ctx) {
 			} catch (error) {
 				// No dialog opened, so no afterprint will come.
 				done();
-				reportFailure(T.printFailed(error?.message || T.error));
+				reportFailure(TEXT.printFailed(error?.message || "error"));
 			}
 		}, { once: true });
 		frame.setAttribute("src", url);
@@ -385,9 +370,9 @@ export function init(ctx) {
 			const html = at === -1 ? served : served.slice(0, at) + served.slice(at + tag.length);
 			download(win.URL.createObjectURL(new win.Blob([html], { type: "text/html" })), fileName(board));
 		} catch (error) {
-			reportFailure(T.downloadFailed(error?.message || T.error));
+			reportFailure(TEXT.downloadFailed(error?.message || "error"));
 		}
 	}
 
-	return { boardMenuButton, closeBoardMenu, relabel };
+	return { boardMenuButton, closeBoardMenu };
 }

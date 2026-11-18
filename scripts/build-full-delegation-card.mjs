@@ -5,7 +5,7 @@
 // Full delegation mode must never put an organic routing rule ("small work stays
 // inline", "a large task alone never delegates") in front of the orchestrator,
 // but it still needs the rules both modes share: handoff language, launch
-// checks, allowed edit surfaces, and background policy. Those rules
+// checks, allowed edit surfaces, background policy, the closing block. Those rules
 // keep exactly one source, the organic assets that contract tests already pin;
 // this script projects the shared sections out of them, so the card can never
 // drift into a second, diverging copy.
@@ -41,6 +41,16 @@ function section(text, heading, source) {
 	while (body.length > 0 && body[0] === "") body.shift();
 	while (body.length > 0 && body.at(-1) === "") body.pop();
 	return body.join("\n");
+}
+
+/** The first heading after the given heading's section starts. */
+function headingAfter(text, heading, source) {
+	const lines = text.split("\n");
+	const start = lines.indexOf(heading);
+	if (start === -1) throw new Error(`${source}: heading not found: ${JSON.stringify(heading)}`);
+	const next = lines.slice(start + 1).find((line) => HEADING.test(line));
+	if (next === undefined) throw new Error(`${source}: no heading follows ${JSON.stringify(heading)}`);
+	return next;
 }
 
 /** One paragraph line, selected by its exact leading text. */
@@ -91,15 +101,17 @@ export function renderFullDelegationCard(assetsDir) {
 	const differential = paragraph(delegation, "**Differential check (PRESERVE):**", delegationSource);
 	const launch = rewrite(section(delegation, "## Launch", delegationSource), [
 		[" before launching a writer (`orchestrator-writer.md`).", " before launching a writer (below)."],
-		// ceremony-diet S2: the card's first launch bullet restates the always-on
-		// "derive nonempty surfaces" rule and core Safety's parallel-writer rule; both
-		// already live in the injected prompt, so the card drops them (pure dedup).
-		["- Derive nonempty `## Allowed edit surfaces` before launching a writer (below). Parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees.\n", ""],
 		["Otherwise run in the foreground. Detail: reference.", "Otherwise run in the foreground. Detail: below."],
 		["report the capability gap; a fired trigger is never replaced by inline work.", "report the capability gap; never do the work yourself instead."],
 	], delegationSource);
 	const surfaces = section(writer, "#### Allowed edit surfaces (MANDATORY)", writerSource);
 	const background = marked(reference, "gentle-pi:background-subagents", referenceSource);
+	// The closing-block section is selected by position, as the heading that follows
+	// the launch section, and its heading text is copied from the source. Pi runtime
+	// code must never carry the block's name (tests/delegated-key-learnings-contract
+	// .test.ts): this script copies documentation, it never reads model output.
+	const closingHeading = headingAfter(delegation, "## Launch", delegationSource);
+	const closing = section(delegation, closingHeading, delegationSource);
 
 	return [
 		"# Orchestrator — Full Delegation Card (lazy-loaded)",
@@ -127,6 +139,10 @@ export function renderFullDelegationCard(assetsDir) {
 		surfaces,
 		"",
 		background,
+		"",
+		closingHeading,
+		"",
+		closing,
 		"",
 	].join("\n");
 }

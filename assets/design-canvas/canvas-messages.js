@@ -2,10 +2,8 @@
 // iframes sandboxed with scripts only, so each one has an opaque origin; messages
 // are trusted only by matching event.source to a known artboard's frame or, in All
 // sizes, one of its size frames (canvas-sizes.js). The canvas's own messages to
-// artboards (gd:mode, gd:colors, gd:focus, gd:size, gd:pins, gd:pick-at, gd:hover-at, gd:highlight,
-// gd:clear, gd:run-checks) are posted by the module that owns each state. gd:inspect (the element under the
-// pointer, measured) belongs to the token inspector (canvas-tokens.js), and gd:checks (the page's
-// accessibility checks) and gd:located (where the element of a check's ring is now) to canvas-checks.js.
+// artboards (gd:mode, gd:focus, gd:size, gd:pins, gd:pick-at, gd:hover-at, gd:highlight,
+// gd:clear) are posted by the module that owns each state.
 
 export function init(ctx) {
 	const { win, els, store, api, actions } = ctx;
@@ -63,19 +61,9 @@ export function init(ctx) {
 			// A report for another width is a late one from before the frame was resized.
 			if (Math.round(data.width) !== surface.viewWidth) return;
 			actions.setOverflow(surface, data.overflow ? { scrollWidth: data.scrollWidth } : null);
-		} else if (data.type === "gd:inspect") {
-			// Like a pick, a measurement made at a size the frame no longer has would show stale values and
-			// file them with the new size: it is dropped (canvas-sizes.js resized).
-			if (data.generation !== surface.generation) return;
-			actions.inspectFrom(surface, data.element);
-		} else if (data.type === "gd:checks") {
-			actions.checksFrom(surface, data);
-		} else if (data.type === "gd:located") {
-			actions.locatedFrom(surface, data);
 		} else if (data.type === "gd:escape") {
-			// The comment box first, then a check's ring, then Comment mode.
 			if (!els.popover.hidden) actions.closePopover();
-			else if (!actions.clearMark() && state.commenting) actions.setCommenting(false);
+			else if (state.commenting) actions.setCommenting(false);
 		} else if (data.type === "gd:exit-focus") {
 			// Only the focused artboard may end its own focus mode.
 			if (board === state.focus) actions.exitFocus();

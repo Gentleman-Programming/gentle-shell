@@ -2,17 +2,7 @@
 // handoff state, the chosen artboard and its alternatives, and, once implemented
 // with a loopback previewUrl, the button that opens Compare.
 
-// Every string the handoff row shows, in English; canvas-i18n-es.js has the Spanish. Titles, feature paths and notes stay as written.
-const TEXT = Object.freeze({
-	states: { queued: "Queued", sent: "Implementing…", in_progress: "In progress", implemented: "Implemented ✓" },
-	chosen: "Chosen",
-	alternative: "Alternative",
-	feature: "Tracked in this ODD feature document",
-	compare: "Compare",
-	compareLabel: (title) => `Compare ${title} with the running app`,
-	unreadable: (slug, reason) => `handoffs.json for ${slug} cannot be read: ${reason}`,
-});
-
+const HANDOFF_LABELS = { queued: "Queued", sent: "Implementing…", in_progress: "In progress", implemented: "Implemented ✓" };
 const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 const MAX_PREVIEW_URL = 2048;
 
@@ -21,7 +11,6 @@ export function init(ctx) {
 	const { state } = store;
 	const { getJson } = api;
 	const { setStatus } = ui;
-	const T = ctx.i18n.text("handoffs", TEXT);
 
 	function ownPort() {
 		const location = win.location;
@@ -69,16 +58,16 @@ export function init(ctx) {
 		const isChosen = typeof chosen === "string" && chosen === board.artboard.file;
 		board.wrapper.classList.toggle("gd-chosen", isChosen);
 		const parts = [];
-		if (typeof chosen === "string") parts.push(chip(`gd-choice ${isChosen ? "gd-choice-chosen" : "gd-choice-alternative"}`, isChosen ? T.chosen : T.alternative));
+		if (typeof chosen === "string") parts.push(chip(`gd-choice ${isChosen ? "gd-choice-chosen" : "gd-choice-alternative"}`, isChosen ? "Chosen" : "Alternative"));
 		const kind = entry ? handoffKind(entry) : null;
 		let compare = null;
 		if (kind) {
-			const badge = chip("gd-handoff-badge", T.states[kind]);
+			const badge = chip("gd-handoff-badge", HANDOFF_LABELS[kind]);
 			badge.dataset.status = kind;
 			parts.push(badge);
 			if (typeof entry.feature === "string" && entry.feature) {
 				const feature = chip("gd-handoff-feature", entry.feature);
-				feature.title = T.feature;
+				feature.title = "Tracked in this ODD feature document";
 				parts.push(feature);
 			}
 			if (typeof entry.note === "string" && entry.note) {
@@ -91,8 +80,8 @@ export function init(ctx) {
 				compare = doc.createElement("button");
 				compare.type = "button";
 				compare.className = "gd-compare-start";
-				compare.textContent = T.compare;
-				compare.setAttribute("aria-label", T.compareLabel(board.artboard.title));
+				compare.textContent = "Compare";
+				compare.setAttribute("aria-label", `Compare ${board.artboard.title} with the running app`);
 				compare.addEventListener("click", () => actions.enterCompare(board, preview));
 				parts.push(compare);
 			}
@@ -104,15 +93,10 @@ export function init(ctx) {
 		if (hadFocus && compare) compare.focus();
 	}
 
-	function renderHandoffs(options) {
+	function renderHandoffs() {
 		state.boards.forEach(renderHandoff);
 		// The handoff row changes the labels' height: the arrangement and the minimap (its chosen block too) follow.
-		actions.boardsResized(options);
-	}
-
-	/** A new language: the same rows, in place, without closing the token panel (boot places the artboard again). */
-	function relabel() {
-		renderHandoffs({ keepInspector: true });
+		actions.boardsResized();
 	}
 
 	function setHandoffs(slug, data) {
@@ -128,7 +112,7 @@ export function init(ctx) {
 		try {
 			data = await getJson(`api/designs/${encodeURIComponent(slug)}/handoffs`);
 		} catch (error) {
-			setStatus(T.unreadable(slug, error.message), true);
+			setStatus(`handoffs.json for ${slug} cannot be read: ${error.message}`, true);
 		}
 		if (slug === state.slug) setHandoffs(slug, data);
 	}
@@ -145,6 +129,5 @@ export function init(ctx) {
 		renderHandoffs();
 	}
 
-	// A new language rewrites each artboard's handoff row (its chips only; no frame reloads).
-	return { relabel, renderHandoff, loadHandoffs, noteHandoff };
+	return { renderHandoff, loadHandoffs, noteHandoff };
 }

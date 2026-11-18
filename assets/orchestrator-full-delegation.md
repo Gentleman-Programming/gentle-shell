@@ -20,13 +20,13 @@ Task size decides tracking and risk, never who writes. A task is **small** when 
 
 ## Delegation Rules
 
-One writer per unit of behavior: its code, tests and docs together, never split across writers, and never launched while a unit it depends on still runs. Handoff, launch, edit-surface and background rules: `orchestrator-full-delegation-card.md`; tracked work: `orchestrator-tracking.md`.
+One writer per unit of behavior: its code, tests and docs together, never split across writers, and never launched while a unit it depends on still runs. Derive a nonempty `## Allowed edit surfaces` for every launch — narrow repository-relative paths or globs, never `.`, a bare repository root, or an absolute path — and never ask the human to author it. Handoff, launch, edit-surface and background rules: `orchestrator-full-delegation-card.md`; tracked work: `orchestrator-tracking.md`.
 
-Independent units with disjoint surfaces launch together: all their `subagent_run` calls in the same assistant message or one `codemode` script, never one launch per message nor beside a sequential `todo`, `ask_user_*`, `codegraph` or `gentle_review*` (it serializes them); units needing the same file run one at a time. In-limit fixes continue the worker (`subagent_continue`), never a new worker per fix. You own git: writers never commit, push, or run repository-wide formatters and installs.
+Independent units with disjoint surfaces launch together: all their `subagent_run` calls in the same assistant message or one `codemode` script, never one launch per message nor beside a sequential `todo`, `ask_user_*`, `codegraph` or `gentle_review*` (it serializes them); units needing the same file run one at a time. Fixes to one unit continue its worker (`subagent_continue`), never a new worker per fix. You own git: writers never commit, push, or run repository-wide formatters and installs.
 
 ## Mechanisms
 
-1. **Ask** — open product or design decision, routed by ODD step 3; stop and wait.
+1. **Ask** — open product or design decision → one focused question; stop and wait.
 2. **Explore** — mapping beyond one bounded read batch (3 calls, ~10k tokens) or more than 3 lookups → one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence, then one spot check. Reading that prepares a writer belongs in that writer's prompt.
 3. **Verify** — the writer runs the authorized checks and reports `<command>: <observed result>`, observing RED before it writes; you re-run one reported command as a spot check, and add one independent `gentle-ai-verify` only when the Risk line names a high-risk item; verification, handoffs, verifier setup failure: `orchestrator-verification.md` (`## Verifier preparation failure`).
 4. **Track** — by Task Size above.

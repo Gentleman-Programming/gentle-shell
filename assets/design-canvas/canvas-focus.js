@@ -10,16 +10,9 @@ const BACK_SPACE = 48;
 // Every focus session starts at Desktop.
 const DESKTOP = Object.freeze({ kind: "desktop" });
 
-// The mode chip in the top bar, in English; canvas-i18n-es.js has the Spanish.
-const TEXT = Object.freeze({
-	navigating: "Navigating",
-	using: (title) => `Using: ${title} · Shift+Esc to exit`,
-});
-
 export function init(ctx) {
 	const { els, store, actions } = ctx;
 	const { state } = store;
-	const T = ctx.i18n.text("focus", TEXT);
 
 	function allBoards() {
 		return state.systemBoard ? [state.systemBoard, ...state.boards] : state.boards;
@@ -51,8 +44,6 @@ export function init(ctx) {
 	/** Comment mode in navigation: the shield routes the hover to the inspector so it can outline the element. */
 	function hoverAt(event) {
 		if (!state.commenting || state.focus) return setHoverBoard(null);
-		// The token inspector's panel floats over the canvas: the pointer on it keeps the hovered element.
-		if (els.inspector.contains(event.target)) return;
 		const shield = event.target.closest(".gd-shield");
 		const board = shield ? boardOfShield(shield) : null;
 		setHoverBoard(board && !board.system ? board : null);
@@ -95,13 +86,9 @@ export function init(ctx) {
 	 * scrolls inside like a browser window instead of leaving its bottom out of reach.
 	 * All sizes keeps the label at 100% at the top left and fits the size frames below it.
 	 */
-	function centerFocus(options) {
+	function centerFocus() {
 		const board = state.focus;
 		if (!board) return;
-		// The artboard moves under the token inspector's panel (a layout change, a resize): it would sit misplaced. A
-		// language switch (`keepInspector`) moves it only by a label's height, so the panel is placed again instead.
-		const keep = Boolean(options) && options.keepInspector === true;
-		if (!keep) actions.hideInspector();
 		const viewport = els.viewport.getBoundingClientRect();
 		const { width, height } = actions.focusSize(board);
 		// The label above the frame wraps at the frame's width: apply the width before measuring it.
@@ -129,7 +116,6 @@ export function init(ctx) {
 		// The size frames sit a margin below the label, beside the margins and above the Back to canvas band.
 		actions.layoutSizes(board, { top: minTop + FOCUS_MARGIN, side: FOCUS_MARGIN, bottom: BACK_SPACE, width: viewport.width, height: viewport.height });
 		actions.renderDevice();
-		if (keep) actions.placeInspector();
 	}
 
 	/** Shields, hidden and inert boards, toolbar controls and the mode label follow state.focus. */
@@ -157,15 +143,10 @@ export function init(ctx) {
 		els.railFit.disabled = Boolean(focused || state.compare);
 		els.design.disabled = Boolean(focused) || state.designCount === 0;
 		els.back.hidden = !focused;
-		renderNavMode();
+		els.navMode.textContent = focused ? `Using: ${focused.artboard.title} · Shift+Esc to exit` : "Navigating";
 		els.navMode.classList.toggle("gd-using", Boolean(focused));
 		actions.renderArrange();
 		actions.renderMinimap();
-	}
-
-	/** The mode chip: navigating, or the artboard in use. */
-	function renderNavMode() {
-		els.navMode.textContent = state.focus ? T.using(state.focus.artboard.title) : T.navigating;
 	}
 
 	function enterFocus(board) {
@@ -199,5 +180,5 @@ export function init(ctx) {
 
 	els.back.addEventListener("click", exitFocus);
 
-	return { allBoards, boardOfShield, activateBoard, setHoverBoard, hoverAt, sendFocus, setFrameSize, focusRoom, centerFocus, applyFocusState, enterFocus, exitFocus, relabel: renderNavMode };
+	return { allBoards, boardOfShield, activateBoard, setHoverBoard, hoverAt, sendFocus, setFrameSize, focusRoom, centerFocus, applyFocusState, enterFocus, exitFocus };
 }

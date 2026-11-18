@@ -1260,6 +1260,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	const emitHerdrTasks = (sessionId: string | undefined) => {
 		if (!sessionId) return;
 		try {
+			if (sessionId !== activeSessionId()) return;
 			const all = store.list(sessionId);
 			const previous = herdrTaskSession === sessionId ? herdrActiveTasks : new Set<string>();
 			const tasks = all.filter(task => !isFinished(task.status)).map(task => ({

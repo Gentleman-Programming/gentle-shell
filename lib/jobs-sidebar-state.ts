@@ -14,7 +14,8 @@ export interface RunningJobDisplay {
 	label: string;
 	/** Title provenance for external status consumers; label remains the local display. */
 	explicitLabel?: string;
-	kind?: "command" | "monitor";
+	/** Untrusted publishers may send future or non-string kinds. */
+	kind?: unknown;
 	startedAt: number;
 	// Finished-tail fields; optional so older publishers that only list running
 	// jobs keep validating (the Agents-card pattern: results linger briefly).

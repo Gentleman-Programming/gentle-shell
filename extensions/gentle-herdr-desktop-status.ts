@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { HERDR_DESKTOP_TASKS, HERDR_DESKTOP_TASKS_REQUEST, HERDR_DESKTOP_TASK_FINISHED, HERDR_DESKTOP_JOBS, HERDR_DESKTOP_CONSULT, HERDR_DESKTOP_SEND, HERDR_DESKTOP_INBOUND, type HerdrDesktopTask } from "../lib/herdr-desktop-events.ts";
-import { desktopJobTitle, desktopTaskTitle, diffRecords, projectAll, SEND_TTL_MS, ERROR_TTL_MS, type DesktopRecord } from "../lib/herdr-desktop-status.ts";
+import { desktopJobTitle, desktopTaskTitle, diffRecords, hasUsableDesktopLabel, projectAll, SEND_TTL_MS, ERROR_TTL_MS, type DesktopRecord } from "../lib/herdr-desktop-status.ts";
 import { isJobsSidebarSnapshot, JOBS_SIDEBAR_EVENT, type JobsSidebarSnapshot } from "../lib/jobs-sidebar-state.ts";
 import { replayTodo, todoProgress, TODO_PROGRESS_EVENT, type TodoState } from "../lib/shell-todo.ts";
 
@@ -55,6 +55,8 @@ type Session = {
 	todo?: unknown;
 	jobs?: JobsSidebarSnapshot;
 	tasks: HerdrDesktopTask[];
+	jobMetadata: Map<string, { explicitLabel?: string; kind?: "command" | "monitor" }>;
+	taskLabels: Map<string, string>;
 	consults: Map<string, string>;
 	sends: Map<string, number>;
 	asksFromPeers: Map<string, Map<string, string>>;
@@ -149,7 +151,7 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 			if (!id) return;
 			const seenJobErrors = seenJobsBySession.get(id) ?? new Set<string>();
 			seenJobsBySession.set(id, seenJobErrors);
-			const s: Session = { id, startedAt: now(), ctx, manager: ctx.sessionManager, previous: unflushed, dirty: false, tasks: [], consults: new Map(), sends: new Map(), asksFromPeers: new Map(), errors: new Map(), seenJobErrors, seenTaskErrors: new Set(), unsubscribe: [] };
+			const s: Session = { id, startedAt: now(), ctx, manager: ctx.sessionManager, previous: unflushed, dirty: false, tasks: [], jobMetadata: new Map(), taskLabels: new Map(), consults: new Map(), sends: new Map(), asksFromPeers: new Map(), errors: new Map(), seenJobErrors, seenTaskErrors: new Set(), unsubscribe: [] };
 			owner = s;
 			unflushed = new Map();
 			const listen = (name: string, handler: (data: any) => void) => {
@@ -165,12 +167,18 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 				for (const job of data.snapshot.jobs) {
 					const id = `bg/${segment(job.id)}`;
 					const identity = JSON.stringify([job.id, job.startedAt]);
+					const previous = s.jobMetadata.get(identity);
+					const metadata = {
+						explicitLabel: hasUsableDesktopLabel(job.explicitLabel) ? job.explicitLabel : previous?.explicitLabel,
+						kind: job.kind === "command" || job.kind === "monitor" ? job.kind : previous?.kind,
+					};
+					s.jobMetadata.set(identity, metadata);
 					const failure = job.status === "failed" ? "failed"
 						: job.status === "exited" && typeof job.exitCode === "number" && Number.isFinite(job.exitCode) && job.exitCode !== 0 ? `exited ${job.exitCode}` : undefined;
 					if (failure && !s.seenJobErrors.has(identity)) {
 						s.seenJobErrors.add(identity);
 						if (job.endedAt === undefined || job.endedAt >= s.startedAt) {
-							s.errors.set(id, { record: { state: "error", title: s.previous.get(id)?.title ?? desktopJobTitle(job), msg: failure }, expiresAt: now() + ERROR_TTL_MS });
+							s.errors.set(id, { record: { state: "error", title: desktopJobTitle(metadata), msg: failure }, expiresAt: now() + ERROR_TTL_MS });
 						}
 					} else if (!failure) {
 						s.errors.delete(id);
@@ -181,14 +189,19 @@ export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 			};
 			listen(JOBS_SIDEBAR_EVENT, updateJobs);
 			listen(HERDR_DESKTOP_JOBS, updateJobs);
-			listen(HERDR_DESKTOP_TASKS, data => { if (validTasks(data.tasks)) { s.tasks = data.tasks; publish(s); } });
+			listen(HERDR_DESKTOP_TASKS, data => {
+				if (!validTasks(data.tasks)) return;
+				for (const task of data.tasks) if (hasUsableDesktopLabel(task.explicitLabel)) s.taskLabels.set(task.id, task.explicitLabel);
+				s.tasks = data.tasks; publish(s);
+			});
 			listen(HERDR_DESKTOP_TASK_FINISHED, data => {
 				if (!validTasks([data.task]) || (data.task.status !== "failed" && data.task.status !== "timed_out")) return;
 				const task = data.task as HerdrDesktopTask;
 				const id = `subagents/${segment(task.id, 54)}`;
 				if (s.seenTaskErrors.has(id)) return;
 				s.seenTaskErrors.add(id);
-				const title = s.previous.get(id)?.title ?? desktopTaskTitle(task);
+				const explicitLabel = hasUsableDesktopLabel(task.explicitLabel) ? task.explicitLabel : s.taskLabels.get(task.id);
+				const title = desktopTaskTitle({ explicitLabel, agent: task.agent });
 				s.errors.set(id, { record: { state: "error", title, msg: task.status === "timed_out" ? "timed out" : "failed" }, expiresAt: now() + ERROR_TTL_MS });
 				s.tasks = s.tasks.filter(active => active.id !== task.id);
 				publish(s); arm(s);

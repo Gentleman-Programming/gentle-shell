@@ -37,10 +37,19 @@ function validId(id: unknown): id is string {
 	return typeof id === "string" && id.length <= 64 && /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/.test(id);
 }
 
+// OSC fields are encoded, but their decoded text must not contain terminal controls.
+function cleanText(value: string): string {
+	return value.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").trim();
+}
+
+/** Only explicit labels that survive OSC cleanup can replace a safe fallback. */
+export function hasUsableDesktopLabel(value: unknown): value is string {
+	return typeof value === "string" && cleanText(value).length > 0;
+}
+
 function encodedText(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
-	// OSC fields are encoded, but their decoded text must not contain terminal controls.
-	const text = value.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").trim();
+	const text = cleanText(value);
 	let prefix = "";
 	let bytes = 0;
 	for (const scalar of text) {
@@ -134,7 +143,7 @@ function validJob(job: unknown): job is Raw {
 
 /** A sidebar label can contain the command, so only explicit provenance is publishable. */
 export function desktopJobTitle(job: { explicitLabel?: unknown; kind?: unknown }): string {
-	return typeof job.explicitLabel === "string" && job.explicitLabel.trim() ? job.explicitLabel : job.kind === "monitor" ? "monitor" : "background job";
+	return hasUsableDesktopLabel(job.explicitLabel) ? job.explicitLabel : job.kind === "monitor" ? "monitor" : "background job";
 }
 
 export function projectJobs(input: unknown): Map<string, DesktopRecord> {
@@ -160,7 +169,7 @@ function validTask(task: unknown): task is Raw {
 
 /** Local task labels can contain the prompt; only an explicit label is publishable. */
 export function desktopTaskTitle(task: { explicitLabel?: unknown; agent: unknown }): string {
-	return typeof task.explicitLabel === "string" && task.explicitLabel.trim() ? task.explicitLabel : task.agent as string;
+	return hasUsableDesktopLabel(task.explicitLabel) ? task.explicitLabel : task.agent as string;
 }
 
 export function projectSubagents(input: unknown): Map<string, DesktopRecord> {

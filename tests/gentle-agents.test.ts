@@ -955,6 +955,25 @@ test("Herdr clears a child's pending-query flag when its query expires", async (
 	assert.equal(snapshot()?.pendingQuery, false);
 });
 
+test("S14 inactive query expiry preserves active session failure tracking", async () => {
+	const q = expiringQueryHarness();
+	const a = await q.start();
+	q.ctx.sessionManager.getSessionId = () => "s2";
+	await q.h.fire("session_start", q.ctx);
+	const started = await q.h.tools.get("subagent_run")!.execute("run-b", { agent: "explore", task: "Private B prompt", label: "Build B", mode: "background" }, undefined, undefined, q.ctx);
+	const b = (started.details.gentleAgents as { taskId: string }).taskId;
+	await tick();
+	const snapshots = () => q.h.events.filter(e => e.name === "gentle-pi:herdr-desktop:tasks").map(e => e.data as { sessionId: string; tasks: Array<{ id: string; status: string }> });
+	assert.ok(snapshots().some(s => s.sessionId === "s2" && s.tasks.some(t => t.id === b && t.status === "running")));
+	assert.notEqual(a, b);
+	q.expire();
+	const beforeFailure = snapshots().length;
+	q.harness.children[1].exit(1);
+	await eventually(() => snapshots().slice(beforeFailure).some(s => s.sessionId === "s2" && !s.tasks.some(t => t.id === b)), "B failure snapshot");
+	const finished = q.h.events.filter(e => e.name === "gentle-pi:herdr-desktop:task-finished").map(e => e.data);
+	assert.deepEqual(finished, [{ sessionId: "s2", task: { id: b, agent: "explore", label: "Build B", explicitLabel: "Build B", status: "failed", pendingQuery: false } }]);
+});
+
 test("a query that expires while the parent is busy still reaches the parent once, marked expired", async () => {
 	const q = expiringQueryHarness();
 	await q.begin();

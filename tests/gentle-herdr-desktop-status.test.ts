@@ -178,6 +178,52 @@ test("S12 labeled jobs retain their explicit title in live and replay records", 
 	}
 });
 
+test("S15 job errors prefer failed metadata, then matching retained metadata, never local commands", () => {
+	for (const source of [JOBS, JOBS_REPLAY]) {
+		for (const scenario of ["override", "unwritten", "removed", "monitor", "new-start", "direct"] as const) {
+			const h = harness(); h.fire("session_start");
+			const prior = { id: "j", label: "private shell command", explicitLabel: "Original", kind: "command", startedAt: 1 };
+			const working = record("bg/j", `state=working:title=${msg(scenario === "monitor" ? "monitor" : "Original")}`);
+			if (scenario !== "direct") {
+				if (scenario === "unwritten" || scenario === "monitor") h.failNextWrites(1);
+				h.emit(source, { sessionId: "s1", snapshot: { jobs: [scenario === "monitor" ? { ...prior, explicitLabel: undefined, kind: "monitor" } : prior] } });
+			}
+			if (scenario === "removed") h.emit(source, { sessionId: "s1", snapshot: { jobs: [] } });
+			const failed = { id: "j", label: "private shell command", startedAt: scenario === "new-start" ? 2 : 1, status: "failed", ...(scenario === "override" || scenario === "direct" ? { explicitLabel: "Final" } : {}) };
+			h.emit(source, { sessionId: "s1", snapshot: { jobs: [failed] } });
+			const title = scenario === "override" || scenario === "direct" ? "Final" : scenario === "new-start" ? "background job" : scenario === "monitor" ? "monitor" : "Original";
+			const prefix = scenario === "direct" || scenario === "unwritten" || scenario === "monitor" ? [] : scenario === "removed" ? [working, clear("bg/j")] : [working];
+			assert.deepEqual(h.writes, [...prefix, record("bg/j", `state=error:title=${msg(title)}:msg=${msg("failed")}`)], `${source}: ${scenario}`);
+			h.fire("session_shutdown");
+		}
+	}
+});
+
+test("S15 task errors prefer failed metadata, then current-session retained metadata, never local prompts", () => {
+	for (const scenario of ["override", "unwritten", "removed", "direct", "replacement"] as const) {
+		const h = harness(); h.fire("session_start");
+		const prior = { id: "t", agent: "explore", label: "private prompt", explicitLabel: "Original", status: "running" };
+		const working = record("subagents/t", `state=working:title=${msg("Original")}`);
+		if (scenario !== "direct") {
+			if (scenario === "unwritten") h.failNextWrites(1);
+			h.emit(TASKS, { sessionId: "s1", tasks: [prior] });
+		}
+		if (scenario === "removed") h.emit(TASKS, { sessionId: "s1", tasks: [] });
+		let sessionId = "s1";
+		let ctx = h.ctx;
+		if (scenario === "replacement") {
+			const other = h.context("s2"); sessionId = "s2"; ctx = other.ctx;
+			h.failNextWrites(2); h.fire("session_start", {}, ctx);
+		}
+		const failed = { id: "t", agent: "explore", label: "private prompt", status: "failed", ...(scenario === "override" || scenario === "direct" ? { explicitLabel: "Final" } : {}) };
+		h.emit(TASK_FINISHED, { sessionId, task: failed });
+		const title = scenario === "override" || scenario === "direct" ? "Final" : scenario === "replacement" ? "explore" : "Original";
+		const prefix = scenario === "direct" || scenario === "unwritten" ? [] : scenario === "removed" ? [working, clear("subagents/t")] : [working];
+		assert.deepEqual(h.writes, [...prefix, record("subagents/t", `state=error:title=${msg(title)}:msg=${msg("failed")}`)], scenario);
+		h.fire("session_shutdown", {}, ctx);
+	}
+});
+
 test("S4 job errors retain id and title for 60 seconds; success, stopped and unknown exits clear", () => {
 	const h = harness(); h.fire("session_start");
 	const jobs = ["a", "b", "c", "d", "e"].map(id => ({ id, label: id.toUpperCase(), explicitLabel: id.toUpperCase(), startedAt: 1 }));

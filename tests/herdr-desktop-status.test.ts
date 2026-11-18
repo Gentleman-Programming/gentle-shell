@@ -154,6 +154,23 @@ test("jobs project only running snapshot entries; finished tails are absent", ()
 	]);
 });
 
+test("S16 control-only explicit job and task labels use safe fallback titles after encoder cleanup", () => {
+	for (const label of ["\x00", " \x1b\x7f\x9f "]) {
+		const jobs = projectJobs({ jobs: [
+			{ id: "job", label: "private command", explicitLabel: label, startedAt: 1 },
+			{ id: "monitor", label: "private command", explicitLabel: label, kind: "monitor", startedAt: 1 },
+		] });
+		const tasks = projectSubagents([{ id: "task", agent: "explore", label: "private prompt", explicitLabel: label, status: "running" }]);
+		assert.equal(encodeRecord("bg/job", jobs.get("bg/job")), "\x1b]7501;state=working:title=YmFja2dyb3VuZCBqb2I=:id=bg/job\x1b\\");
+		assert.equal(encodeRecord("bg/monitor", jobs.get("bg/monitor")), "\x1b]7501;state=working:title=bW9uaXRvcg==:id=bg/monitor\x1b\\");
+		assert.equal(encodeRecord("subagents/task", tasks.get("subagents/task")), "\x1b]7501;state=working:title=ZXhwbG9yZQ==:id=subagents/task\x1b\\");
+	}
+	const job = projectJobs({ jobs: [{ id: "job", label: "private command", explicitLabel: "Safe\x00title", startedAt: 1 }] });
+	const tasks = projectSubagents([{ id: "task", agent: "explore", label: "private prompt", explicitLabel: "Safe\x00title", status: "running" }]);
+	assert.equal(encodeRecord("bg/job", job.get("bg/job")), "\x1b]7501;state=working:title=U2FmZSB0aXRsZQ==:id=bg/job\x1b\\");
+	assert.equal(encodeRecord("subagents/task", tasks.get("subagents/task")), "\x1b]7501;state=working:title=U2FmZSB0aXRsZQ==:id=subagents/task\x1b\\");
+});
+
 test("jobs reject malformed snapshots and never emit invalid IDs", () => {
 	for (const value of [null, {}, { jobs: null }, { jobs: [{}] }, { jobs: [{ id: "a", label: "x" }] },
 		{ jobs: [{ id: "a", label: "x", startedAt: NaN }] },

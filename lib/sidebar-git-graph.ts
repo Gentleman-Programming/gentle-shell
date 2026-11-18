@@ -26,14 +26,9 @@ export async function readSidebarGitGraph(git: GitRunner): Promise<SidebarGitGra
 
 const TYPE_ROLES: Record<string, string> = { feat: "success", fix: "warning", chore: "muted", merge: "syntaxFunction", refactor: "syntaxFunction", perf: "success", test: "syntaxFunction", build: "warning", ci: "warning" };
 const FRAME_ROLES = ["accent", "muted", "text", "success", "warning", "syntaxFunction"];
-const themeSignatures = new WeakMap<GraphTheme, string>();
 function themeSignature(theme: GraphTheme): string {
- let signature = themeSignatures.get(theme);
- if (signature === undefined) {
-  signature = FRAME_ROLES.map(role => theme.fg(role, "·")).join("") + (theme.bold?.("·") ?? "");
-  themeSignatures.set(theme, signature);
- }
- return signature;
+ // Theme functions can close over a mutable palette: identity is not a style key.
+ return JSON.stringify([...FRAME_ROLES.map(role => theme.fg(role, "·")), theme.bold?.("·") ?? "·"]);
 }
 function renderSubject(subject: string, theme: GraphTheme): string {
  const safe = clean(subject);

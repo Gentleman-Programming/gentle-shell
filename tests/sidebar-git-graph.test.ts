@@ -41,7 +41,7 @@ test("graph rendering sanitizes input, clips widths, bounds viewport and caches 
  assert.deepEqual(renderSidebarGitGraph(graph, theme, 0, 5), []);
 });
 
-test("frame cache memoizes signatures per theme object and preserves every frame key", () => {
+test("frame cache probes current styles with bounded work and preserves every frame key", () => {
  let fgCalls = 0, boldCalls = 0, signatureFgCalls = 0, signatureBoldCalls = 0;
  const theme = {
   fg: (_role: string, text: string) => { fgCalls++; if (text === "·") signatureFgCalls++; return text; },
@@ -65,17 +65,50 @@ test("frame cache memoizes signatures per theme object and preserves every frame
   assert.deepEqual(rows, renderSidebarGitGraph(graph, theme, width, viewport, offset, collapsed, hovered));
   const callsBeforeHit = { fgCalls, boldCalls };
   assert.strictEqual(cache.render(graph, revision, theme, width, viewport, offset, collapsed, hovered), rows);
-  assert.deepEqual({ fgCalls, boldCalls }, callsBeforeHit, "a hit invokes neither fg nor bold, including signature probes");
+  assert.deepEqual({ fgCalls: fgCalls - callsBeforeHit.fgCalls, boldCalls: boldCalls - callsBeforeHit.boldCalls }, { fgCalls: 6, boldCalls: 1 }, "a hit probes styles only, without reconstructing rows");
   previous = rows;
  }
  new SidebarGitFrameCache().render(graph, 1, theme, 40, 3);
- assert.equal(signatureFgCalls, 6, "all frames and cache instances share one signature per theme object");
- assert.equal(signatureBoldCalls, 1);
+ assert.equal(signatureFgCalls, (frames.length * 2 + 1) * 6, "each render probes the six roles once");
+ assert.equal(signatureBoldCalls, frames.length * 2 + 1);
  const replacementTheme = { ...theme };
  const replaced = cache.render(graph, 2, replacementTheme, 41, 2, 1, true, true);
  assert.notStrictEqual(replaced, previous, "theme identity invalidates even when its signature is identical");
- assert.equal(signatureFgCalls, 12);
- assert.equal(signatureBoldCalls, 2);
+ assert.equal(signatureFgCalls, (frames.length * 2 + 2) * 6);
+ assert.equal(signatureBoldCalls, frames.length * 2 + 2);
+});
+
+for (const role of ["accent", "muted", "text", "success", "warning", "syntaxFunction", "bold"]) test(`history cache follows mutable ${role} styles behind the same functions`, () => {
+ const palette: Record<string, number> = {};
+ const theme = {
+  fg: (role: string, text: string) => `\x1b[${palette[role] ?? 32}m${text}\x1b[0m`,
+  bold: (text: string) => `\x1b[${palette.bold ?? 1}m${text}\x1b[0m`,
+ };
+ const graph = { state: "ready" as const, branch: "main", lines: [
+  "* \x1eabc\x1fHEAD\x1ffeat: first\x1e", "* \x1edef\x1f\x1ffix: second\x1e", "* \x1e123\x1f\x1frefactor: third\x1e",
+ ] };
+ const cache = new SidebarGitFrameCache();
+ const draw = () => cache.render(graph, 1, theme, 80, 5, 0, false, role === "warning");
+ const before = draw();
+ assert.strictEqual(draw(), before);
+ palette[role] = role === "bold" ? 4 : 35;
+ const after = draw();
+ assert.notStrictEqual(after, before);
+ assert.notDeepEqual(after, before, "the returned rows carry the changed style");
+ assert.deepEqual(after, renderSidebarGitGraph(graph, theme, 80, 5, 0, false, role === "warning"));
+ assert.strictEqual(draw(), after, "unchanged current styles reuse the rebuilt frame");
+});
+
+test("history style signatures preserve role boundaries", () => {
+ let changed = false;
+ const theme = { fg: (role: string, text: string) => (role === "accent" ? changed ? "ab" : "a" : role === "muted" ? changed ? "c" : "bc" : "") + (text === "·" ? "" : text) };
+ const cache = new SidebarGitFrameCache();
+ const graph = { state: "ready" as const, branch: "main", lines: ["* \x1eabc\x1f\x1ffeat: first\x1e"] };
+ const before = cache.render(graph, 1, theme, 100, 3);
+ changed = true;
+ const after = cache.render(graph, 1, theme, 100, 3);
+ assert.notDeepEqual(after, before);
+ assert.deepEqual(after, renderSidebarGitGraph(graph, theme, 100, 3));
 });
 
 test("identical completed history captures signal settlement without increasing revision", async () => {

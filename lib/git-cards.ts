@@ -23,6 +23,7 @@ export type GitCardsDeps = {
 };
 
 const PLACEHOLDER_HISTORY: SidebarGitGraph = { state: "pending" };
+const CHANGES_FRAME_ROLES = ["accent", "muted", "text", "success", "error", "warning"];
 
 type ChangesFrame = {
 	digest: string | undefined;
@@ -34,6 +35,7 @@ type ChangesFrame = {
 	collapsed: boolean;
 	hovered: boolean;
 	theme: GraphTheme;
+	signature: string;
 	rows: string[];
 };
 
@@ -237,9 +239,12 @@ export class SidebarGitCards {
 		// Hand-built models without a digest remain live, just like the changes widget.
 		const cacheable = !!card && (!card.model || digest !== undefined);
 		const frame = card?.changesFrame;
-		if (cacheable && frame && frame.digest === digest && frame.statusRead === statusRead && frame.placeholderSettled === placeholderSettled && frame.width === width && frame.viewport === viewport && frame.offset === offset && frame.collapsed === collapsed && frame.hovered === hovered && frame.theme === theme) return frame.rows;
+		// Probe current styles even for the same object/functions; the palette
+		// behind them may have changed. Serialization preserves role boundaries.
+		const signature = JSON.stringify([...CHANGES_FRAME_ROLES.map(role => theme.fg(role, "·")), theme.bold?.("·") ?? "·"]);
+		if (cacheable && frame && frame.digest === digest && frame.statusRead === statusRead && frame.placeholderSettled === placeholderSettled && frame.width === width && frame.viewport === viewport && frame.offset === offset && frame.collapsed === collapsed && frame.hovered === hovered && frame.theme === theme && frame.signature === signature) return frame.rows;
 		const finish = (rows: string[]): string[] => {
-			if (card) card.changesFrame = cacheable ? { digest, statusRead, placeholderSettled, width, viewport, offset, collapsed, hovered, theme, rows } : undefined;
+			if (card) card.changesFrame = cacheable ? { digest, statusRead, placeholderSettled, width, viewport, offset, collapsed, hovered, theme, signature, rows } : undefined;
 			return rows;
 		};
 		const rows = [renderPanelHeader(theme, width, { title: "Changes", count: `${files.length}`, open: !collapsed, hovered })];

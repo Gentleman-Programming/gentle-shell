@@ -501,7 +501,44 @@ test("an initial runner rejection contains a throwing error-path repaint and can
 	cards.dispose();
 });
 
-test("changes frames cache without color work and invalidate every render input", async () => {
+for (const role of ["accent", "muted", "text", "success", "error", "warning", "bold"]) test(`changes cache follows mutable ${role} styles behind the same functions`, async () => {
+	const f = fixture();
+	f.cards.enter(MAIN);
+	await f.settle();
+	const palette: Record<string, number> = {};
+	const paint = {
+		fg: (role: string, text: string) => `\x1b[${palette[role] ?? 32}m${text}\x1b[0m`,
+		bold: (text: string) => `\x1b[${palette.bold ?? 1}m${text}\x1b[0m`,
+	};
+	const draw = () => f.cards.changesRows(paint, 80, 4, 0, false, role === "warning");
+	const before = draw();
+	assert.strictEqual(draw(), before);
+	palette[role] = role === "bold" ? 4 : 35;
+	const after = draw();
+	assert.notStrictEqual(after, before);
+	assert.notDeepEqual(after, before, "the returned rows carry the changed style");
+	assert.match(after.join("\n"), role === "bold" ? /\x1b\[4m/ : /\x1b\[35m/);
+	assert.ok(after.every(row => visibleWidth(row) === 80), "style changes preserve layout");
+	assert.strictEqual(draw(), after, "stable current styles reuse the rebuilt frame");
+	f.cards.dispose();
+});
+
+test("changes style signatures preserve role boundaries", async () => {
+	const f = fixture();
+	f.cards.enter(MAIN);
+	await f.settle();
+	let changed = false;
+	const paint = { fg: (role: string, text: string) => (role === "accent" ? changed ? "ab" : "a" : role === "muted" ? changed ? "c" : "bc" : "") + (text === "·" ? "" : text) };
+	const draw = () => f.cards.changesRows(paint, 100, 4);
+	const before = draw();
+	changed = true;
+	const after = draw();
+	assert.notDeepEqual(after, before);
+	assert.strictEqual(draw(), after);
+	f.cards.dispose();
+});
+
+test("changes frames cache with bounded style probes and invalidate every render input", async () => {
 	const f = fixture();
 	f.cards.enter(MAIN);
 	await f.settle();
@@ -513,7 +550,7 @@ test("changes frames cache without color work and invalidate every render input"
 		const first = render();
 		const before = [colors, bolds];
 		assert.strictEqual(render(), first, "a hit reuses the single frame");
-		assert.deepEqual([colors, bolds], before, "a hit performs no theme work");
+		assert.deepEqual([colors - before[0], bolds - before[1]], [6, 1], "a hit probes styles only, without reconstructing rows");
 		return first;
 	};
 	const original = hit(() => draw());

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SidebarGitCards } from "../lib/git-cards.ts";
+import { SidebarGitCards, type GitCardsSettings } from "../lib/git-cards.ts";
 import type { GitRunner } from "../lib/shell-changes.ts";
 
 // The GIT cards must paint the last good frame while a root switch is still
@@ -12,7 +12,7 @@ import type { GitRunner } from "../lib/shell-changes.ts";
 const theme = { fg: (_role: string, text: string) => text, bold: (text: string) => text };
 const MAIN = "/main", WT = "/wt";
 
-function fixture() {
+function fixture(settings: GitCardsSettings = { history: true, diff: true }, observeDelivery = false) {
 	const holds = new Map<string, Promise<void>>();
 	const releases = new Map<string, () => void>();
 	const calls: Array<{ root: string; args: string[] }> = [];
@@ -33,6 +33,8 @@ function fixture() {
 		heldStatus = new Promise<void>(resolve => { releaseHeldStatus = resolve; });
 	};
 	let publishes = 0;
+	let failedPublishes = 0;
+	let delivered: { root: string | undefined; statusRead: boolean; rows: string[] } | undefined;
 	const hold = (root: string) => { holds.set(root, new Promise<void>(resolve => releases.set(root, resolve))); };
 	const release = (root: string) => { const resolve = releases.get(root); holds.delete(root); releases.delete(root); resolve?.(); };
 	const git = (root: string): GitRunner => async args => {
@@ -58,12 +60,137 @@ function fixture() {
 		git,
 		untrackedLines: () => async () => 0,
 		fileRevision: () => undefined,
-		publish: () => { publishes++; },
-	}, { history: true, diff: true });
+		publish: () => {
+			publishes++;
+			if (failedPublishes > 0) { failedPublishes--; throw new Error("repaint failed"); }
+			if (observeDelivery) delivered = { root: cards.paintedRoot, statusRead: cards.statusRead, rows: render() };
+		},
+	}, settings);
 	const render = () => [...cards.historyRows(theme, 80, 4), ...cards.changesRows(theme, 80, 4)];
 	const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
-	return { cards, calls, hold, release, render, settle, extra, failures, holdHistory, releaseHistory: () => releaseHistory?.(), publishes: () => publishes, setHardFailure: (v: boolean) => { hardFailure = v; }, holdNextStatus, releaseHeldStatus: () => releaseHeldStatus?.(), statusCalls: (root: string) => calls.filter(c => c.root === root && c.args[0] === "status").length };
+	return { cards, calls, hold, release, render, settle, extra, failures, delivered: () => delivered, failPublishes: (count = 1) => { failedPublishes = count; }, holdHistory, releaseHistory: () => releaseHistory?.(), publishes: () => publishes, setHardFailure: (v: boolean) => { hardFailure = v; }, holdNextStatus, releaseHeldStatus: () => releaseHeldStatus?.(), statusCalls: (root: string) => calls.filter(c => c.root === root && c.args[0] === "status").length };
 }
+
+test("an unchanged diff refresh delivers an initial frame whose asynchronous repaint failed", async () => {
+	const f = fixture({ history: false, diff: true }, true);
+	f.cards.enter(MAIN);
+	assert.match(f.delivered()!.rows.join("\n"), /Loading changes…/);
+	f.failPublishes();
+	await f.settle();
+	assert.equal(f.cards.statusRead, true, "capture survives the failed notification");
+	assert.equal(f.delivered()!.statusRead, false);
+	assert.match(f.delivered()!.rows.join("\n"), /Loading changes…/);
+	const attempts = f.publishes();
+	await f.cards.refreshDiff();
+	assert.equal(f.publishes(), attempts + 1);
+	assert.equal(f.delivered()!.statusRead, true);
+	assert.match(f.delivered()!.rows.join("\n"), /main\.ts/);
+	assert.doesNotMatch(f.delivered()!.rows.join("\n"), /Loading changes…/);
+	await f.cards.refreshDiff();
+	assert.equal(f.publishes(), attempts + 1, "successful delivery dedupes subsequent refreshes");
+	f.cards.dispose();
+});
+
+for (const refresh of ["diff", "history"] as const) test(`an unchanged ${refresh} refresh delivers a failed MAIN to WT notification`, async () => {
+	const f = fixture(undefined, true);
+	f.cards.enter(MAIN);
+	await f.settle();
+	const main = f.delivered();
+	f.holdHistory(WT);
+	f.cards.select(WT);
+	await f.settle();
+	assert.strictEqual(f.delivered(), main, "the barrier retains the delivered MAIN frame");
+	f.failPublishes();
+	f.releaseHistory();
+	await f.settle();
+	assert.equal(f.cards.paintedRoot, WT);
+	assert.strictEqual(f.delivered(), main, "a rejected notification leaves the observer on MAIN");
+	const attempts = f.publishes();
+	await (refresh === "diff" ? f.cards.refreshDiff() : f.cards.refreshHistory());
+	assert.equal(f.publishes(), attempts + 1);
+	assert.equal(f.delivered()!.root, WT);
+	assert.equal(f.delivered()!.statusRead, true);
+	assert.match(f.delivered()!.rows.join("\n"), /wt history/);
+	assert.match(f.delivered()!.rows.join("\n"), /wt\.ts/);
+	assert.doesNotMatch(f.delivered()!.rows.join("\n"), /main history|main\.ts/);
+	await f.cards.refreshHistory();
+	await f.cards.refreshDiff();
+	assert.equal(f.publishes(), attempts + 1);
+	f.cards.dispose();
+});
+
+for (const diff of [false, true]) test(`same-root reentry retries delivery with readers ${diff ? "enabled" : "disabled"}`, async () => {
+	const f = fixture({ history: false, diff }, true);
+	if (diff) {
+		f.cards.enter(MAIN);
+		f.failPublishes();
+		await f.settle();
+	} else {
+		f.failPublishes();
+		assert.throws(() => f.cards.enter(MAIN), /repaint failed/, "synchronous publication keeps its throwing contract");
+	}
+	const calls = f.calls.length;
+	const attempts = f.publishes();
+	f.cards.leave();
+	f.cards.enter(MAIN);
+	await f.settle();
+	assert.equal(f.publishes(), attempts + 1);
+	assert.equal(f.delivered()!.root, MAIN);
+	if (diff) assert.match(f.delivered()!.rows.join("\n"), /main\.ts/);
+	else assert.equal(f.calls.length, calls, "delivery needs no readers");
+	f.cards.leave();
+	f.cards.enter(MAIN);
+	await f.settle();
+	assert.equal(f.publishes(), attempts + 1, "unchanged delivered reentry remains deduped");
+	f.cards.dispose();
+});
+
+test("persistent delivery failure is bounded and hidden or disposed work cannot retry", async () => {
+	const f = fixture({ history: false, diff: true }, true);
+	f.cards.enter(MAIN);
+	const loading = f.delivered();
+	f.failPublishes(Infinity);
+	await f.settle();
+	const attempts = f.publishes();
+	await f.settle();
+	assert.equal(f.publishes(), attempts, "no autonomous retry");
+	for (let i = 1; i <= 2; i++) {
+		await assert.doesNotReject(f.cards.refreshDiff());
+		assert.equal(f.publishes(), attempts + i, "one attempt per unchanged refresh");
+		assert.strictEqual(f.delivered(), loading);
+		assert.equal(f.cards.statusRead, true);
+	}
+	f.extra.add(MAIN);
+	f.holdNextStatus(MAIN);
+	const stale = f.cards.refreshDiff();
+	await f.settle();
+	f.cards.leave();
+	f.releaseHeldStatus();
+	await stale;
+	const hidden = f.publishes();
+	const calls = f.calls.length;
+	await f.cards.refreshDiff();
+	await f.cards.refreshHistory();
+	assert.equal(f.publishes(), hidden);
+	assert.equal(f.calls.length, calls);
+	assert.strictEqual(f.delivered(), loading);
+	f.failPublishes(0);
+	f.cards.enter(MAIN);
+	await f.settle();
+	assert.match(f.delivered()!.rows.join("\n"), /created\.ts/);
+	f.holdNextStatus(MAIN);
+	const disposed = f.cards.refreshDiff();
+	await f.settle();
+	const last = f.delivered();
+	const beforeDispose = f.publishes();
+	f.cards.dispose();
+	f.releaseHeldStatus();
+	await disposed;
+	await f.cards.refreshDiff();
+	f.cards.enter(MAIN);
+	assert.equal(f.publishes(), beforeDispose);
+	assert.strictEqual(f.delivered(), last);
+});
 
 test("initial pending is not an error or a reusable settled snapshot", async () => {
 	const f = fixture();

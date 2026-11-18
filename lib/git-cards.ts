@@ -124,7 +124,13 @@ export class SidebarGitCards {
 		this.active = true;
 		this.selected = root;
 		const card = this.card(root);
-		if (this.painted === root) { this.load(card); return; }
+		if (this.painted === root) {
+			this.load(card);
+			// Enabled readers settle asynchronously; with both disabled there
+			// is no completion callback to retry an undelivered cached frame.
+			if (this.complete(card)) this.settle(card);
+			return;
+		}
 		if (this.painted === undefined) { this.painted = root; this.pending = root; this.load(card); this.publish(); return; }
 		this.switchTo(card);
 	}
@@ -194,7 +200,12 @@ export class SidebarGitCards {
 		}
 		const model = await tracker.refresh();
 		if (epoch !== card.diffEpoch || !this.live(card)) return;
-		if (model.digest === card.model?.digest && tracker.statusRead === card.statusRead) return;
+		if (model.digest === card.model?.digest && tracker.statusRead === card.statusRead) {
+			// An unchanged capture can still owe the host its last notification.
+			// Match load settlement: repaint failure must not reject the read.
+			try { this.settle(card); } catch { /* repaint failures leave delivery pending. */ }
+			return;
+		}
 		card.model = model;
 		card.statusRead = tracker.statusRead;
 		this.settle(card);
@@ -392,7 +403,7 @@ export class SidebarGitCards {
 	private publish(): void {
 		const digest = this.digest();
 		if (digest === this.published) return;
-		this.published = digest;
 		this.deps.publish();
+		this.published = digest;
 	}
 }

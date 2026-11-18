@@ -576,6 +576,28 @@ export function armCodegraphEntryResolverForTest(resolver: () => CodegraphEntry 
 	};
 }
 
+/** The ENOENT-coded "not found" the win32 cascade throws when no proven path could serve the
+ * command: the tool's unavailable classification keys on that code, whatever the host runtime
+ * managed — or failed — to exec. */
+function codegraphNotFound(): Error {
+	return Object.assign(new Error("codegraph was not found: no resolved cmd-shim entry, no package script on PATH, and no bare executable the runtime could run"), { code: "ENOENT" });
+}
+
+/** The exec every spawn in runCodeGraphCommand goes through; undefined means the real
+ * promisified execFile. A test seam so the POSIX bare spawn's ENOENT is observable on any
+ * host runtime; production never arms it. */
+let codegraphExec: typeof execFileAsync | undefined;
+
+/** Test seam for runCodeGraphCommand's exec: the armed fake receives every spawn the runner
+ * performs; the restore puts the real execFile back. Exercised only by the test suite. */
+export function armCodegraphExecForTest(exec: typeof execFileAsync | undefined): () => void {
+	const previous = codegraphExec;
+	codegraphExec = exec;
+	return () => {
+		codegraphExec = previous;
+	};
+}
+
 const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 	const runOptions = {
 		cwd: options.cwd,
@@ -583,47 +605,53 @@ const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 		maxBuffer: options.maxBuffer,
 		windowsHide: true,
 	};
-	let unavailableError: unknown;
-
-	try {
-		const result = await execFileAsync("codegraph", [...args], runOptions);
-		return { stdout: result.stdout, stderr: result.stderr };
-	} catch (error) {
-		// Windows npm installs only shims (codegraph.cmd/.ps1 and a shell script)
-		// with no codegraph.exe, so plain execFile (CreateProcess, no shell)
-		// always fails with ENOENT even when the shim is on PATH.
-		if (process.platform !== "win32" || !isEnoent(error)) throw error;
-		unavailableError = error;
-	}
-
-	// T1's process-lifetime resolution (S3/S11): one provable npm cmd-shim on PATH answers every
-	// failure after the first with a direct node spawn — no PATH rescan per ENOENT. POSIX never
-	// reaches this point, and a null resolution (no shim, unknown shape, vanished target) keeps
-	// the per-call package scan below exactly as before.
-	const entry = codegraphEntryResolver();
-	if (entry !== null) {
+	const exec = codegraphExec ?? execFileAsync;
+	if (process.platform === "win32") {
+		// Runtime-independent precedence, the same one spawnCodegraph uses (S3/S11). Node's
+		// execFile ENOENTs for bare `codegraph` on Windows because npm installs only .cmd shims
+		// and CreateProcess never runs them — but other runtimes differ: bun resolves and runs
+		// the shim through cmd.exe, which used to make this whole cascade unreachable and the
+		// direct-spawn optimization a silent no-op. The proven T1 resolution therefore comes
+		// FIRST, the per-call package scan next, and the bare spawn is the explicit last
+		// resort: whatever a runtime can exec there only ever answers after the provable,
+		// faster paths had their chance, so node, bun, and whatever comes next behave alike.
+		let unavailableError: unknown = codegraphNotFound();
+		const entry = codegraphEntryResolver();
+		if (entry !== null) {
+			try {
+				const result = await exec(entry.node, [entry.script, ...args], runOptions);
+				return { stdout: result.stdout, stderr: result.stderr };
+			} catch (innerError) {
+				if (!isEnoent(innerError)) throw innerError;
+				unavailableError = innerError;
+			}
+		}
+		// Resolve the real package script from each npm global bin directory in PATH
+		// order and run it through the current executable. This remains shell-free,
+		// so argument boundaries are never interpreted by a shell.
+		for (const script of codeGraphNodeScriptsOnPath()) {
+			try {
+				const result = await exec(process.execPath, [script, ...args], runOptions);
+				return { stdout: result.stdout, stderr: result.stderr };
+			} catch (innerError) {
+				if (!isEnoent(innerError)) throw innerError;
+				unavailableError = innerError;
+			}
+		}
+		// Last resort: a real codegraph.exe the runtime can CreateProcess, or — on runtimes
+		// that run .cmd shims — the shim itself. A genuine command failure surfaces as-is;
+		// only a runtime-level miss maps onto the unavailable error.
 		try {
-			const result = await execFileAsync(entry.node, [entry.script, ...args], runOptions);
+			const result = await exec("codegraph", [...args], runOptions);
 			return { stdout: result.stdout, stderr: result.stderr };
-		} catch (innerError) {
-			if (!isEnoent(innerError)) throw innerError;
+		} catch (error) {
+			throw isEnoent(error) ? unavailableError : error;
 		}
 	}
-
-	// Resolve the real package script from each npm global bin directory in PATH
-	// order and run it through the current Node executable. This remains
-	// shell-free, so argument boundaries are never interpreted by a shell.
-	for (const script of codeGraphNodeScriptsOnPath()) {
-		try {
-			const result = await execFileAsync(process.execPath, [script, ...args], runOptions);
-			return { stdout: result.stdout, stderr: result.stderr };
-		} catch (innerError) {
-			if (!isEnoent(innerError)) throw innerError;
-		}
-	}
-
-	throw unavailableError;
+	const result = await exec("codegraph", [...args], runOptions);
+	return { stdout: result.stdout, stderr: result.stderr };
 };
+
 
 /** How long the daemon attempt may take before the CLI fallback takes over. */
 const DAEMON_ATTEMPT_TIMEOUT_MS = 30_000;

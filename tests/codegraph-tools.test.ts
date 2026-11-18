@@ -12,6 +12,7 @@ import type { EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
 import { SYNC_RETRY_DELAY_MS, SYNC_TIMEOUT_MS } from "../lib/codegraph-readiness.ts";
 import codeGraphTools, {
 	armCodegraphEntryResolverForTest,
+	armCodegraphExecForTest,
 	armExposureEnsureForTest,
 	clearSearchWindow,
 	createCodeGraphTool,
@@ -1296,6 +1297,13 @@ test("win32: an unprovable shim (resolver null) keeps the per-call package scan"
 
 test("POSIX: a bare-codegraph ENOENT stays unavailable — no resolver consultation, no package scan", async (t) => {
 	withoutChildEnv(t);
+	// The pinned platform only steers the branch; the bare spawn itself must still ENOENT the
+	// way it does on a real POSIX host — the seam makes that observable under any runtime (bun
+	// on Windows would otherwise run the fixture shim through cmd.exe and answer).
+	const restoreExec = armCodegraphExecForTest((async () => {
+		throw Object.assign(new Error("spawn codegraph ENOENT"), { code: "ENOENT" });
+	}) as unknown as Parameters<typeof armCodegraphExecForTest>[0]);
+	t.after(restoreExec);
 	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-posix-bin-")));
 	t.after(() => rmSync(binDir, { recursive: true, force: true }));
 	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
@@ -1316,6 +1324,50 @@ test("POSIX: a bare-codegraph ENOENT stays unavailable — no resolver consultat
 		{ cwd } as ExtensionContext,
 	);
 
+	assert.match(result.content[0].text, /CodeGraph is unavailable/);
+	assert.equal((result.details as { status?: string }).status, "unavailable");
+});
+
+test("win32: a genuine non-ENOENT failure from the resolver entry surfaces as failed, never unavailable", async (t) => {
+	withoutChildEnv(t);
+	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-winfail-bin-")));
+	t.after(() => rmSync(binDir, { recursive: true, force: true }));
+	writePwdGitShim(binDir);
+	const cwd = workspace(t);
+	withWindowsPath(t, binDir);
+	withPlatform(t, "win32");
+	const entryScript = join(binDir, "direct-entry.js");
+	writeFileSync(entryScript, "process.stdout.write(\"never\")\n");
+	const restoreResolver = armCodegraphEntryResolverForTest(() => ({ node: process.execPath, script: entryScript }));
+	t.after(restoreResolver);
+	let scanRan = false;
+	const restoreExec = armCodegraphExecForTest((async (_file: string, args: readonly string[]) => {
+		if (String(args[0]).endsWith("direct-entry.js")) throw Object.assign(new Error("codegraph exited with status 1"), { code: 1 });
+		scanRan = true;
+		throw Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" });
+	}) as unknown as Parameters<typeof armCodegraphExecForTest>[0]);
+	t.after(restoreExec);
+	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
+	assert.match(result.content[0].text, /CodeGraph failed to run/);
+	assert.equal((result.details as { status?: string }).status, "failed");
+	assert.equal(scanRan, false, "a genuine failure never falls through to the scan");
+});
+
+test("win32: a total miss reports unavailable from the fabricated not-found", async (t) => {
+	withoutChildEnv(t);
+	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-winmiss-bin-")));
+	t.after(() => rmSync(binDir, { recursive: true, force: true }));
+	writePwdGitShim(binDir);
+	const cwd = workspace(t);
+	withWindowsPath(t, binDir);
+	withPlatform(t, "win32");
+	const restoreResolver = armCodegraphEntryResolverForTest(() => null);
+	t.after(restoreResolver);
+	const restoreExec = armCodegraphExecForTest((async () => {
+		throw Object.assign(new Error("spawn codegraph ENOENT"), { code: "ENOENT" });
+	}) as unknown as Parameters<typeof armCodegraphExecForTest>[0]);
+	t.after(restoreExec);
+	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
 	assert.match(result.content[0].text, /CodeGraph is unavailable/);
 	assert.equal((result.details as { status?: string }).status, "unavailable");
 });
@@ -1489,6 +1541,7 @@ test("CodeGraph query prefers the daemon socket and never spawns the CLI", async
 
 test("a daemon that never answers tries twice, warms once, then answers through the CLI", async (t) => {
 	withoutChildEnv(t);
+	withPlatform(t, "linux");
 	const cwd = workspace(t);
 	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
 	let daemonCalls = 0;
@@ -1556,6 +1609,7 @@ test("a hung daemon also falls back to the CLI", async (t) => {
 
 test("a failed daemon chain skips the daemon for the rest of the turn", async (t) => {
 	withoutChildEnv(t);
+	withPlatform(t, "linux");
 	const cwd = workspace(t);
 	let daemonCalls = 0;
 	let runnerCalls = 0;
@@ -1625,6 +1679,7 @@ test("when the daemon and the CLI both fail, the search reports the standard fai
 });
 
 test("a daemon miss recovers after one warm-up attempt", async (t) => {
+	withPlatform(t, "linux");
 	const cwd = workspace(t);
 	const answers: Array<{ status: "ok"; text: string } | { status: "unavailable" }> = [
 		{ status: "unavailable" },

@@ -53,6 +53,10 @@ function fakeDaemon(
 		resolveReady = resolve;
 	});
 	const server = net.createServer((socket) => {
+		// A client that settles mid-conversation destroys its socket; on Windows named pipes
+		// the server's in-flight write then fails asynchronously with EPIPE, and an unhandled
+		// 'error' event would rethrow into the test run (win-only, RID 20261118-165111).
+		socket.on("error", () => {});
 		if (hello !== undefined) socket.write(`${hello}\n`);
 		let buffer = "";
 		socket.on("data", (chunk: Buffer) => {

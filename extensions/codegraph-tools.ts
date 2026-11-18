@@ -672,7 +672,7 @@ const syncFreshAt = new Map<string, number>();
  */
 const searchSyncOutcome = new Map<string, Promise<void>>();
 
-/** A new user prompt starts a new search window: git, the local exclusion, and the daemon are re-asked once. The index itself refreshes before every search. */
+/** A new user prompt starts a new search window: git, the local exclusion, and the daemon are re-asked once. The index refreshes before every search on POSIX; on win32 a settled sync keeps the root fresh for SYNC_FRESH_WINDOW_MS — a time-based window a prompt boundary does not reset (S11). */
 export function clearSearchWindow(): void {
 	workspaceVerified.clear();
 	excludeApplied.clear();

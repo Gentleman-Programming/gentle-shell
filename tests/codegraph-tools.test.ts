@@ -652,8 +652,13 @@ test("every search awaits its own refresh; only the search-window caches reset p
 	};
 	const ctx = { cwd } as ExtensionContext;
 	assert.equal(await awaitSearchSync(cwd, ctx, syncRun), true);
-	assert.equal(await awaitSearchSync(cwd, ctx, syncRun), true, "every search refreshes, not only the first of a prompt");
-	assert.deepEqual(calls, [["sync", "-q"], ["sync", "-q"]]);
+	if (process.platform === "win32") {
+		assert.equal(await awaitSearchSync(cwd, ctx, syncRun), false, "win32 serves a search inside the freshness window from the last settled sync (S11)");
+		assert.deepEqual(calls, [["sync", "-q"]]);
+	} else {
+		assert.equal(await awaitSearchSync(cwd, ctx, syncRun), true, "every search refreshes, not only the first of a prompt");
+		assert.deepEqual(calls, [["sync", "-q"], ["sync", "-q"]]);
+	}
 });
 
 test("session_start ensures direct mcp exposure once per process, and a child session never does", (t) => {
@@ -1998,11 +2003,19 @@ test("every search awaits its refresh before the query runs", async (t) => {
 	await settled();
 	gates[1]?.();
 	await second;
-	assert.deepEqual(
-		events,
-		["sync-start", "sync-end", "query", "sync-start", "sync-end", "query"],
-		"every search refreshes again, with no per-prompt gate",
-	);
+	if (process.platform === "win32") {
+		assert.deepEqual(
+			events,
+			["sync-start", "sync-end", "query", "query"],
+			"win32 serves the second search from the first's settled sync inside the freshness window (S11)",
+		);
+	} else {
+		assert.deepEqual(
+			events,
+			["sync-start", "sync-end", "query", "sync-start", "sync-end", "query"],
+			"every search refreshes again, with no per-prompt gate",
+		);
+	}
 });
 
 test("a subagent child never triggers the background sync", async (t) => {

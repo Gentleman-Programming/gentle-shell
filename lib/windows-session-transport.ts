@@ -17,6 +17,18 @@ import {
 } from "./agents-session-transport.ts";
 
 export const FIXED_WINDOWS_POWERSHELL = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+
+/**
+ * The environment for the pinned PowerShell 5.1 child: the parent's, without PSModulePath.
+ * A parent started from PowerShell 7 carries PS7 module directories there, and 5.1 would then
+ * load its own Microsoft.PowerShell.Security from them and fail. An absent variable makes 5.1
+ * compute its default module set. Windows names are case-insensitive, so every casing is removed.
+ */
+function windowsPowerShellEnvironment(): NodeJS.ProcessEnv {
+	const env = { ...process.env };
+	for (const key of Object.keys(env)) if (key.toLowerCase() === "psmodulepath") delete env[key];
+	return env;
+}
 const MAX_CONTROL_BYTES = 16_384;
 // The native helper caps one raw pipe request at MaxPipeBytes = 65,536. Its event
 // carries that request as canonical base64, so this private envelope is bounded by
@@ -328,7 +340,7 @@ export class WindowsSessionTransportHost {
 		if (this.started) return this.started;
 		if (this.stopped) return Promise.reject(transportError("Windows transport host exited", "stopped"));
 		try {
-			this.child = this.spawnProcess(FIXED_WINDOWS_POWERSHELL, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", this.runtimeScript], { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }) as SpawnedHost;
+			this.child = this.spawnProcess(FIXED_WINDOWS_POWERSHELL, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", this.runtimeScript], { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: windowsPowerShellEnvironment() }) as SpawnedHost;
 		} catch { return Promise.reject(transportError("Windows transport host unavailable", "spawn")); }
 		this.child.stdout.on("data", this.onStdoutData);
 		this.child.stdout.on("error", this.onStdoutError);

@@ -160,6 +160,7 @@ import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
+import { singleOverlay, type TrackClose } from "../lib/single-overlay.ts";
 import { buildNotificationRows } from "../lib/notification-customize.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
@@ -2391,19 +2392,14 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		return [...(row ? [row] : []), ...(cardHidden ? (state.parts.get("agents")?.alert?.(width) ?? []) : [])];
 	};
 	// The rail's sections as a full-width sheet: /gentle:panel, or a tap on the mobile work row.
-	// The sheet leaves the editor's [ Panel ] clickable, so an open sheet is reused
-	// instead of stacking another overlay per click.
-	let openSheet: Promise<null | undefined> | undefined;
-	const openPanelSheet = (ctx: ExtensionContext) => {
-		if (openSheet) return openSheet;
-		const opened = showPanelSheet(ctx).finally(() => { if (openSheet === opened) openSheet = undefined; });
-		openSheet = opened;
-		return opened;
-	};
-	const showPanelSheet = (ctx: ExtensionContext) =>
+	// The sheet leaves the editor's [ Panel ] clickable, so a second click closes the
+	// open sheet instead of stacking another overlay per click.
+	const panelSheetToggle = singleOverlay();
+	const openPanelSheet = (ctx: ExtensionContext) => panelSheetToggle((track) => showPanelSheet(ctx, track));
+	const showPanelSheet = (ctx: ExtensionContext, track: TrackClose) =>
 		ctx.ui.custom<null>(
 			(tui, theme, _keybindings, done) => {
-				const close = withOverlayRepaint(tui, done);
+				const close = track(withOverlayRepaint(tui, done), null);
 				let scrollTop = 0;
 				let maxScroll = 0;
 				let backHovered = false;
@@ -2451,16 +2447,22 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		description: "Show the sidebar panel (todos, jobs, agents, changes, review, integrations) as a full-width sheet.",
 		handler: async (_args, ctx) => openPanelSheet(ctx),
 	});
-	const openUsage = (ctx: ExtensionContext) =>
+	// Every usage opener (header, status bar, footer clicks, the shortcut, the
+	// command) shares one toggle: the header stays clickable under the panel, so
+	// a second activation closes it instead of stacking another (#2062).
+	const usageToggle = singleOverlay();
+	const openUsage = (ctx: ExtensionContext) => usageToggle((track) => showUsage(ctx, track));
+	const showUsage = (ctx: ExtensionContext, track: TrackClose) =>
 		ctx.ui.custom<null>(
 			(tui, theme, _keybindings, done) => {
+				const close = track(withOverlayRepaint(tui, done), null);
 				const view = new UsageView(usage, {
 					theme,
 					now: () => deps.now(),
 					active: () => (ctx.model ? { provider: ctx.model.provider } : undefined),
 					registry: () => usageSources,
 					onRefresh: () => refreshUsage(ctx, true),
-					onClose: () => withOverlayRepaint(tui, done)(null),
+					onClose: () => close(null),
 					requestRender: () => tui.requestRender(),
 					scope: () => ({ providers: usageScope, failed: new Set(usageFailures) }),
 					gauge: () => gaugePaint(ctx),

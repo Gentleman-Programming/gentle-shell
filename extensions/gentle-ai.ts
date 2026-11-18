@@ -32,7 +32,8 @@ import { boundedFindingClaims, parseReviewCoordinatorInput, runReviewCoordinator
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { PROFILE_CARD_SETTINGS_CHANGED, writeProfileCard } from "../lib/profile-card-policy.ts";
-import { createProfileCardOwner, createProfileCardReader, createProfileCardUseHandler, mountProfileCard } from "../lib/profile-card-sidebar.ts";
+import { loadKeymaps } from "../lib/keymaps.ts";
+import { createProfileCardOwner, createProfileCardReader, createProfileCardUseHandler, mountProfileCard, registerProfileCardShortcuts } from "../lib/profile-card-sidebar.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
@@ -12959,6 +12960,12 @@ function createGentleAiExtensionForTesting(
 				return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 			},
 		});
+	}
+
+	// Pi reads extension shortcuts at startup and /reload; the keys resolve like every Gentle keymap.
+	{
+		const keymapEnv = dependencies.processEnv ?? process.env;
+		registerProfileCardShortcuts(pi, profileCard, keymapEnv, loadKeymaps(keymapEnv).bindings);
 	}
 
 	pi.on("session_start", async (event, ctx) => {

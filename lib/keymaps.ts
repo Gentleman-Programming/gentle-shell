@@ -38,6 +38,9 @@ export const KEYMAP_ACTIONS: readonly KeymapAction[] = [
 	{ id: "jobs.collapse", label: "Collapse the jobs card", env: "GENTLE_PI_JOBS_KEY", defaultKey: "ctrl+shift+j" },
 	{ id: "todo.collapse", label: "Collapse the todo list", env: "GENTLE_PI_TODO_KEY", defaultKey: "ctrl+shift+t" },
 	{ id: "stats.view", label: "Usage stats", env: "GENTLE_PI_STATS_VIEW_KEY", command: "gentle:stats" },
+	{ id: "profileCard.previous", label: "Previous profile (profile card)", env: "GENTLE_PI_PROFILE_CARD_PREVIOUS_KEY", defaultKey: "alt+," },
+	{ id: "profileCard.next", label: "Next profile (profile card)", env: "GENTLE_PI_PROFILE_CARD_NEXT_KEY", defaultKey: "alt+." },
+	{ id: "profileCard.use", label: "Use the shown profile in this session (profile card)", env: "GENTLE_PI_PROFILE_CARD_USE_KEY", defaultKey: "alt+m" },
 ];
 
 // Pi refuses extension shortcuts on these editor-global keybindings

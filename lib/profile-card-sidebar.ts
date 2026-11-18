@@ -1,5 +1,7 @@
 import { statSync } from "node:fs";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { effectiveKey, type KeymapBindings } from "./keymaps.ts";
 import { evaluateProfilePin, readProfilePinStatus } from "./agent-profile-pin.ts";
 import { profilesFilePath, readProfilesFileResult, type ProfilesFileReadResult } from "./agent-profiles.ts";
 import { resolveProfileCard } from "./profile-card-policy.ts";
@@ -343,4 +345,45 @@ export function createProfileCardUseHandler(deps: ProfileCardUseDeps): ProfileCa
 			try { deps.refresh(); } catch { /* A failed re-read keeps the markers on screen. */ }
 		}
 	};
+}
+
+// ---- Keyboard shortcuts ----
+
+export const PROFILE_CARD_HIDDEN_NOTICE = "The profile card is hidden. Turn it on with /gentle:profiles card on.";
+export const PROFILE_CARD_EMPTY_NOTICE = "The profile card has no saved profiles. Create one in /gentle:profiles.";
+
+/**
+ * One shortcut press. A hidden card or an empty list changes nothing and says
+ * why in a single info notice; otherwise previous/next move the shown profile
+ * (the owner repaints the rail) and use runs the same handler a click runs.
+ */
+export function runProfileCardShortcut(owner: ProfileCardOwner, action: ProfileCardAction, notify: (message: string, level: "info") => void): void {
+	if (!owner.visible()) { notify(PROFILE_CARD_HIDDEN_NOTICE, "info"); return; }
+	if (owner.items().length === 0) { notify(PROFILE_CARD_EMPTY_NOTICE, "info"); return; }
+	runProfileCardAction(owner, action);
+}
+
+const PROFILE_CARD_SHORTCUTS: ReadonlyArray<{ id: string; action: ProfileCardAction; description: string }> = [
+	{ id: "profileCard.previous", action: "previous", description: "Show the previous profile on the profile card" },
+	{ id: "profileCard.next", action: "next", description: "Show the next profile on the profile card" },
+	{ id: "profileCard.use", action: "use", description: "Use the profile shown on the profile card in this session" },
+];
+
+/**
+ * Register the card's shortcuts on the key each `KEYMAP_ACTIONS` entry resolves
+ * to (environment variable, then saved keymaps.json, then default; "off" or
+ * empty leaves one unregistered). Called where the owner lives, with the same
+ * `effectiveKey` resolution every Gentle shortcut uses.
+ */
+export function registerProfileCardShortcuts(pi: Pick<ExtensionAPI, "registerShortcut">, owner: ProfileCardOwner, env: NodeJS.ProcessEnv, bindings: KeymapBindings): void {
+	// Minimal hosts (and test doubles) have no shortcut registry.
+	if (typeof pi.registerShortcut !== "function") return;
+	for (const shortcut of PROFILE_CARD_SHORTCUTS) {
+		const key = effectiveKey(shortcut.id, env, bindings);
+		if (!key) continue;
+		pi.registerShortcut(key as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: shortcut.description,
+			handler: (ctx: ExtensionContext) => runProfileCardShortcut(owner, shortcut.action, (message, level) => ctx.ui.notify(message, level)),
+		});
+	}
 }

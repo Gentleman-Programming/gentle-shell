@@ -51,6 +51,7 @@ test("every action and palette command has a Keymaps row with its current key, p
 		"Command palette: alt+k", "Browse changes: alt+g", "Subscription usage: alt+u", "Cycle visual preset: alt+l",
 		"Subagents overlay: alt+w (GENTLE_PI_AGENTS_VIEW_KEY)", "Stop active subagents: alt+s", "Collapse the agents card: ctrl+shift+a",
 		"Collapse the jobs card: ctrl+shift+j", "Collapse the todo list: ctrl+shift+t", "Usage stats: none",
+		"Previous profile (profile card): alt+,", "Next profile (profile card): alt+.", "Use the shown profile in this session (profile card): alt+m",
 		"/gentle:design · Design · HTML artboards: none", "Reload now to apply keymap changes",
 	]);
 });

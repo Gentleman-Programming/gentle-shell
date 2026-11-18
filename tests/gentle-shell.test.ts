@@ -816,6 +816,43 @@ test("clicking the header's usage segment opens the usage panel; other header cl
 	}
 });
 
+test("repeated clicks on the header's usage segment never stack panels: the second click closes the one panel", async () => {
+	const { pi, handlers } = fakePi();
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+
+	const liveFooterData = { getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const tui = { terminal: { rows: 40, columns: 160 }, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, footerData: unknown) => { render(width: number): string[]; dispose(): void };
+	const component = factory(tui, plainTheme, liveFooterData);
+	try {
+		const header = sidebarState(tui as unknown as TUI).parts.get("header") as SidebarRail;
+		const usageAt = header.render(160).join("").indexOf("usage");
+		const clickUsage = async () => {
+			const hit = header.handleMouse?.({ type: "click", button: "left", x: usageAt + 1, y: 0, screenX: usageAt + 1, screenY: 0, width: 160, height: 1, shift: false, alt: false, ctrl: false } as TuiMouseEvent);
+			assert.equal(hit?.handled, true);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		};
+		const panels = () => ui.customOptions!.filter((options) => (options as { overlayOptions?: { width?: string } })?.overlayOptions?.width === "70%").length;
+		const before = panels();
+		await clickUsage();
+		assert.equal(panels(), before + 1, "the first click opens the usage panel");
+		const firstView = ui.overlayView;
+		await clickUsage();
+		assert.equal(panels(), before + 1, "the second click closes the panel instead of stacking another");
+		await clickUsage();
+		assert.equal(panels(), before + 2, "a third click opens it again");
+		assert.notEqual(ui.overlayView, firstView);
+		ui.overlayView!.handleInput("\x1b");
+		await clickUsage();
+		assert.equal(panels(), before + 3, "after one escape the next click opens it again");
+		ui.overlayView!.handleInput("\x1b");
+	} finally {
+		component.dispose();
+	}
+});
+
 test("profile reader follows store changes and rejects missing or invalid active markers", (t) => {
 	const root = mkdtempSync(join(tmpdir(), "shell-profile-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -8368,23 +8405,30 @@ test("beside the rail no header placement repeats the raw permission-mode status
 	}
 });
 
-test("repeated [ Panel ] or /gentle:panel opens never stack sheets: one stays open until it closes", async () => {
+test("repeated [ Panel ] or /gentle:panel opens never stack sheets: a second open closes the one sheet", async () => {
 	const { pi, commands } = fakePi();
 	gentleShell(pi, {});
 	const { ctx, ui } = fakeContext();
 	const open = () => commands.get("gentle:panel")!.handler("", ctx);
 	const before = ui.customOptions!.length;
-	const first = open();
-	const again = [open(), open(), open()];
+	let settled = false;
+	const first = Promise.resolve(open()).then(() => { settled = true; });
 	await new Promise((resolve) => setImmediate(resolve));
-	assert.equal(ui.customOptions!.length, before + 1, "four clicks open one sheet");
-	ui.overlayView!.handleInput("\x1b");
-	await Promise.all([first, ...again]);
+	assert.equal(ui.customOptions!.length, before + 1, "the first click opens one sheet");
+	assert.equal(settled, false, "the sheet stays open");
+	await open();
+	await first;
+	assert.equal(ui.customOptions!.length, before + 1, "the second click closes the sheet instead of stacking another");
 	const reopened = open();
 	await new Promise((resolve) => setImmediate(resolve));
-	assert.equal(ui.customOptions!.length, before + 2, "after one escape the sheet opens again");
+	assert.equal(ui.customOptions!.length, before + 2, "a third click opens it again");
 	ui.overlayView!.handleInput("\x1b");
 	await reopened;
+	const afterEscape = open();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(ui.customOptions!.length, before + 3, "after one escape the next click opens it again");
+	ui.overlayView!.handleInput("\x1b");
+	await afterEscape;
 });
 
 test("on a transparent rail a click on a section card's title folds that section, and the rail has no key hints row", async (t) => {

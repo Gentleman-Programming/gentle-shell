@@ -72,6 +72,8 @@ type Session = {
 export function createHerdrDesktopStatusExtension(options: StatusOptions = {}) {
 	return (pi: ExtensionAPI): void => {
 		const env = options.env ?? process.env;
+		// Fail closed on any GENTLE_PI_AGENTS_CHILD value (gentle-agents checks === "1"): this
+		// publishes to an external host, so an ambiguous marker never enables it.
 		if (!env.HC_TERMINAL_ID || env.PI_PROGRAM_STATUS_APP !== "gentle-shell" || env.GENTLE_PI_AGENTS_CHILD !== undefined) return;
 		const now = options.now ?? Date.now;
 		const schedule = options.schedule ?? ((fn: () => void, ms: number) => {

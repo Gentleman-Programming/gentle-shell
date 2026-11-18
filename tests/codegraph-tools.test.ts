@@ -5,11 +5,13 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { clearCodegraphResolveCache, resolveCodegraphEntry } from "../lib/codegraph-cli-resolve.ts";
 import { MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import type { InitLockOutcome } from "../lib/codegraph-lease.ts";
 import type { EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
 import { SYNC_RETRY_DELAY_MS, SYNC_TIMEOUT_MS } from "../lib/codegraph-readiness.ts";
 import codeGraphTools, {
+	armCodegraphEntryResolverForTest,
 	armExposureEnsureForTest,
 	clearSearchWindow,
 	createCodeGraphTool,
@@ -1182,6 +1184,137 @@ test("Windows launcher passes command metacharacters as one literal argv value",
 	assert.equal(existsSync(join(cwd, "shell-injection.txt")), false);
 });
 
+/** The POSIX-host stand-in for git under a clobbered PATH: every git interrogation answers with
+ * the cwd itself, the way the Windows-launcher fixture above does. */
+function writePwdGitShim(binDir: string): void {
+	if (process.platform === "win32") return;
+	writeFileSync(join(binDir, "git"), "#!/bin/sh\nprintf '%s\\n' \"$PWD\"\n");
+	chmodSync(join(binDir, "git"), 0o755);
+}
+
+/** A bin dir whose two spawn targets answer differently, so which path ran is one observable
+ * string: the package-scan target (npm-shim.js) prints scan:<argv>, while the direct-entry
+ * target (dist/cli.js, the file T1's resolver proves) prints direct:<argv>. */
+function writeCompetingTargetsBin(t: test.TestContext): { binDir: string; entryScript: string } {
+	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-compete-bin-")));
+	t.after(() => rmSync(binDir, { recursive: true, force: true }));
+	const pkgRoot = join(binDir, "node_modules", "@colbymchenry", "codegraph");
+	mkdirSync(join(pkgRoot, "dist"), { recursive: true });
+	const echo = (prefix: string) => "process.stdout.write(" + JSON.stringify(prefix) + " + JSON.stringify(process.argv.slice(2)));\n";
+	const entryScript = join(pkgRoot, "dist", "cli.js");
+	writeFileSync(entryScript, echo("direct:"));
+	writeFileSync(join(pkgRoot, "npm-shim.js"), echo("scan:"));
+	writeFileSync(join(pkgRoot, "package.json"), JSON.stringify({ bin: { codegraph: "npm-shim.js" } }));
+	// A scan anchor the per-call fallback can find; the armed resolver bypasses its parsing, so
+	// any plain non-npm content serves.
+	writeFileSync(join(binDir, "codegraph.cmd"), "rem scan-anchor shim\n");
+	return { binDir, entryScript };
+}
+
+test("win32: the ENOENT fallback spawns the resolver's entry directly, ahead of the package scan", async (t) => {
+	withoutChildEnv(t);
+	const { binDir, entryScript } = writeCompetingTargetsBin(t);
+	writePwdGitShim(binDir);
+	const cwd = workspace(t);
+	// The PATH is clobbered while the platform is still the host's own, like the launcher test
+	// above: a win32-pinned clobber would join PATH with ";" and leave the host's real codegraph
+	// reachable through the intact later ":"-entries.
+	withWindowsPath(t, binDir);
+	withPlatform(t, "win32");
+	const restore = armCodegraphEntryResolverForTest(() => ({ node: process.execPath, script: entryScript }));
+	t.after(restore);
+
+	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute(
+		"test",
+		{ operation: "init" },
+		undefined,
+		undefined,
+		{ cwd } as ExtensionContext,
+	);
+
+	assert.equal(result.content[0].text, "direct:" + JSON.stringify(["init", cwd]), "the resolved entry answers, not the package-scan target");
+});
+
+test("win32: repeated ENOENT fallbacks consult the resolver, never a fresh PATH scan", async (t) => {
+	withoutChildEnv(t);
+	// No codegraph.cmd and no package anywhere on this PATH: the per-call scan can never answer,
+	// so only the resolver's (process-lifetime cached, T1) entry can — a rescan cannot succeed.
+	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-empty-bin-")));
+	t.after(() => rmSync(binDir, { recursive: true, force: true }));
+	writePwdGitShim(binDir);
+	const cwd = workspace(t);
+	withWindowsPath(t, binDir);
+	withPlatform(t, "win32");
+	const entryScript = join(binDir, "direct-entry.js");
+	writeFileSync(entryScript, "process.stdout.write(\"stable answer\");\n");
+	let consultations = 0;
+	const restore = armCodegraphEntryResolverForTest(() => {
+		consultations += 1;
+		return { node: process.execPath, script: entryScript };
+	});
+	t.after(restore);
+
+	const tool = createCodeGraphTool(undefined, { initLock: lockAcquired });
+	const ctx = { cwd } as ExtensionContext;
+	for (let run = 1; run <= 3; run += 1) {
+		const result = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+		assert.equal(result.content[0].text, "stable answer", `fallback ${run} is answered by the resolver entry`);
+	}
+	assert.equal(consultations, 3, "every failure consults the resolver; the once-per-process scan lives inside its cache");
+});
+
+test("win32: an unprovable shim (resolver null) keeps the per-call package scan", async (t) => {
+	withoutChildEnv(t);
+	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-nullresolve-bin-")));
+	t.after(() => rmSync(binDir, { recursive: true, force: true }));
+	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+	writePwdGitShim(binDir);
+	const cwd = workspace(t);
+	withWindowsPath(t, binDir);
+	withPlatform(t, "win32");
+	clearCodegraphResolveCache();
+	t.after(() => clearCodegraphResolveCache());
+
+	// The real resolver against the real PATH and files: writeCodeGraphPackage's shim is not the
+	// npm cmd-shim shape, so the resolution is genuinely null and the fallback must keep the scan.
+	assert.equal(resolveCodegraphEntry(), null);
+
+	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute(
+		"test",
+		{ operation: "init" },
+		undefined,
+		undefined,
+		{ cwd } as ExtensionContext,
+	);
+	assert.deepEqual(result.content, [{ type: "text", text: JSON.stringify(["init", cwd]) }]);
+});
+
+test("POSIX: a bare-codegraph ENOENT stays unavailable — no resolver consultation, no package scan", async (t) => {
+	withoutChildEnv(t);
+	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-posix-bin-")));
+	t.after(() => rmSync(binDir, { recursive: true, force: true }));
+	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+	writePwdGitShim(binDir);
+	const cwd = workspace(t);
+	withWindowsPath(t, binDir);
+	withPlatform(t, "linux");
+	const restore = armCodegraphEntryResolverForTest(() => {
+		throw new Error("the resolver is a win32-only consultation (S11)");
+	});
+	t.after(restore);
+
+	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute(
+		"test",
+		{ operation: "init" },
+		undefined,
+		undefined,
+		{ cwd } as ExtensionContext,
+	);
+
+	assert.match(result.content[0].text, /CodeGraph is unavailable/);
+	assert.equal((result.details as { status?: string }).status, "unavailable");
+});
+
 // Real CodeGraph writes .codegraph/.gitignore with `*` and `!.gitignore`, so the
 // .gitignore itself stays untracked and would otherwise enter every diff.
 const writeIndex: CodeGraphRunner = async (_args, options) => {
@@ -1790,6 +1923,10 @@ test("init rechecks index presence after acquiring a lock another initializer fi
 
 
 test("init after an acquired lock runs only for an absent index: unknown stands down unless overridden", async (t) => {
+	// The init refusal under test is the lock-ordered stand-down, not the subagent-child refusal:
+	// a test runner that is itself flagged as a child (GENTLE_PI_AGENTS_CHILD=1) would refuse one
+	// step earlier and never acquire the lock, so this runs as a plain parent session.
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	const ctx = { cwd } as ExtensionContext;
 	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;

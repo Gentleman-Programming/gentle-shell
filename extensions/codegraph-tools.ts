@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { resolveCodegraphEntry, type CodegraphEntry } from "../lib/codegraph-cli-resolve.ts";
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { acquireInitLock, type InitLockOutcome } from "../lib/codegraph-lease.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
@@ -559,6 +560,22 @@ export function findCodeGraphNodeScriptOnPath(): string | undefined {
 	return codeGraphNodeScriptsOnPath().next().value;
 }
 
+/** The cmd-shim resolution the win32 ENOENT fallback consults: T1's process-lifetime resolver
+ * by default, so the PATH scan happens once per process and every later failure is a cache hit.
+ * A test seam because the real resolution needs a Windows filesystem: the suite arms a fake
+ * entry to observe the fallback's consultation off Windows; production never arms it. */
+let codegraphEntryResolver: () => CodegraphEntry | null = resolveCodegraphEntry;
+
+/** Test seam for the win32 ENOENT fallback: arms the resolver its failures consult and returns
+ * the restore. Exercised only by the test suite; not part of the tool's runtime surface. */
+export function armCodegraphEntryResolverForTest(resolver: () => CodegraphEntry | null): () => void {
+	const previous = codegraphEntryResolver;
+	codegraphEntryResolver = resolver;
+	return () => {
+		codegraphEntryResolver = previous;
+	};
+}
+
 const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 	const runOptions = {
 		cwd: options.cwd,
@@ -577,6 +594,20 @@ const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 		// always fails with ENOENT even when the shim is on PATH.
 		if (process.platform !== "win32" || !isEnoent(error)) throw error;
 		unavailableError = error;
+	}
+
+	// T1's process-lifetime resolution (S3/S11): one provable npm cmd-shim on PATH answers every
+	// failure after the first with a direct node spawn — no PATH rescan per ENOENT. POSIX never
+	// reaches this point, and a null resolution (no shim, unknown shape, vanished target) keeps
+	// the per-call package scan below exactly as before.
+	const entry = codegraphEntryResolver();
+	if (entry !== null) {
+		try {
+			const result = await execFileAsync(entry.node, [entry.script, ...args], runOptions);
+			return { stdout: result.stdout, stderr: result.stderr };
+		} catch (innerError) {
+			if (!isEnoent(innerError)) throw innerError;
+		}
 	}
 
 	// Resolve the real package script from each npm global bin directory in PATH

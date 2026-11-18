@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import net from "node:net";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { Worker } from "node:worker_threads";
 import { canonicalRoot } from "./codegraph-canonical.ts";
 
 /** The hello line a CodeGraph daemon sends carries `protocol`; this is the only one spoken here. */
@@ -32,23 +33,24 @@ export function resetDaemonRegistryMemo(): void {
 }
 
 /** Exported for the tests that read the registry directly; daemonFor and daemonSockets call it in production. */
-/** Daemons registered for `root` in any spelling, newest first. Reads the registry only; starts nothing. */
-export function registeredDaemons(root: string, registryDir: string = join(homedir(), ".codegraph", "daemons")): RegisteredDaemon[] {
+/** Daemons registered for `root` in any spelling, newest first. Reads the registry only; starts nothing.
+ * The platform picks the fold: on win32 both spellings compare through the process-lifetime canonical memo. */
+export function registeredDaemons(root: string, registryDir: string = join(homedir(), ".codegraph", "daemons"), platform: NodeJS.Platform = process.platform): RegisteredDaemon[] {
 	let files: string[];
 	try {
 		files = readdirSync(registryDir).filter((file) => file.endsWith(".json"));
 	} catch {
 		return [];
 	}
-	const wanted = canonicalRoot(root);
+	const wanted = canonicalRoot(root, platform);
 	// The listing is fresh on every call: a record that appeared or vanished changes it and busts the memo.
-	const key = `${registryDir}|${wanted}|${files.join(",")}`;
+	const key = `${registryDir}|${wanted}|${platform}|${files.join(",")}`;
 	if (registryMemo !== undefined && registryMemo.key === key && Date.now() - registryMemo.at < REGISTRY_MEMO_MS) return registryMemo.daemons;
 	const found: RegisteredDaemon[] = [];
 	for (const file of files) {
 		try {
 			const entry = JSON.parse(readFileSync(join(registryDir, file), "utf8"));
-			if (typeof entry.root !== "string" || typeof entry.socketPath !== "string" || canonicalRoot(entry.root) !== wanted) continue;
+			if (typeof entry.root !== "string" || typeof entry.socketPath !== "string" || canonicalRoot(entry.root, platform) !== wanted) continue;
 			found.push({
 				root: entry.root,
 				socketPath: entry.socketPath,
@@ -74,19 +76,91 @@ export function processAlive(pid: number): boolean {
 	}
 }
 
-/**
- * Whether a daemon socket is still there. A Windows named pipe is not a file: listing the pipe
- * directory shows the live ones without connecting to them, and a listing that fails counts as
- * present rather than risk missing a live daemon. Every other socket path is a socket file.
- */
-function socketPresent(socketPath: string): boolean {
-	if (process.platform !== "win32" || !socketPath.toLowerCase().startsWith(PIPE_PREFIX)) return existsSync(socketPath);
-	const name = socketPath.slice(PIPE_PREFIX.length).toLowerCase();
+/** How long one connect probe may take: a daemon that is there answers or refuses fast; anything slower is not liveness. */
+const PIPE_PROBE_TIMEOUT_MS = 250;
+/** A probe that connected says the pipe is live for this window, so the checks inside one composite
+ * operation do not reconnect every time. Nothing else is remembered: a refused or inconclusive
+ * answer is probed again on the next check, because a pipe can appear at any moment. */
+const PIPE_PROBE_MEMO_MS = 5_000;
+const pipeProbeMemo = new Map<string, number>();
+
+/** The outcome of one connect probe of a named pipe: open means the pipe accepted the connection,
+ * refused means the pipe is not there, and anything else — a timeout, an odd error — is inconclusive. */
+export type PipeProbeOutcome = "open" | "refused" | "inconclusive";
+
+/** One liveness probe of a named pipe: connects with the socket layer ask() speaks and answers within
+ * the given budget. Injectable so the tests can fake the net/socket layer. */
+export type PipeProbe = (pipePath: string, timeoutMs: number) => PipeProbeOutcome;
+
+/** The probe's worker side as plain JavaScript, so it needs no compiled file: the connect runs on the
+ * worker's own event loop while the calling thread waits on the shared cell, the first outcome lands
+ * there (1 open, 2 refused, 3 anything else), and destroying the socket lets the worker's loop drain.
+ * ECONNREFUSED and ENOENT are the no-listener spellings for a Windows pipe name; a busy or protected
+ * pipe stays inconclusive. */
+const PROBE_WORKER_SOURCE = `
+const { workerData } = require("node:worker_threads");
+const net = require("node:net");
+const state = workerData.state;
+const report = (code) => {
+	if (Atomics.compareExchange(state, 0, 0, code) !== 0) return;
+	Atomics.notify(state, 0);
+};
+const socket = net.createConnection(workerData.pipePath);
+socket.once("connect", () => {
+	socket.destroy();
+	report(1);
+});
+socket.once("error", (error) => {
+	socket.destroy();
+	report(error && (error.code === "ECONNREFUSED" || error.code === "ENOENT") ? 2 : 3);
+});
+setTimeout(() => {
+	socket.destroy();
+	report(3);
+}, workerData.timeoutMs).unref();
+`;
+
+/** One probe of the daemon's own pipe: a worker owns the event loop the async connect needs while
+ * this thread waits on the shared cell for the outcome or the deadline, so the check answers within
+ * the probe budget instead of enumerating every named pipe on the machine. A worker that never
+ * starts or never reports is inconclusive, never absent. */
+function connectProbe(pipePath: string, timeoutMs: number): PipeProbeOutcome {
+	const state = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 	try {
-		return readdirSync(PIPE_PREFIX).some((entry) => entry.toLowerCase() === name);
+		const worker = new Worker(PROBE_WORKER_SOURCE, { eval: true, workerData: { pipePath, timeoutMs, state } });
+		Atomics.wait(state, 0, 0, Math.max(1, timeoutMs));
+		void worker.terminate();
 	} catch {
-		return true;
+		return "inconclusive";
 	}
+	const code = Atomics.load(state, 0);
+	return code === 1 ? "open" : code === 2 ? "refused" : "inconclusive";
+}
+
+let pipeProbe: PipeProbe = connectProbe;
+
+/** Tests swap in a fake net/socket layer and restore the real probe with undefined; a swap clears
+ * the remembered positives so every fake starts from an empty cache. Production never calls it. */
+export function setPipeProbeForTests(probe: PipeProbe | undefined): void {
+	pipeProbe = probe ?? connectProbe;
+	pipeProbeMemo.clear();
+}
+
+/**
+ * Whether a daemon socket is still there. Every path outside the Windows pipe namespace is a socket
+ * file and keeps its filesystem check. A Windows named pipe is not a file: one short connect probe
+ * of the daemon's own pipe replaces enumerating every named pipe on the machine, and a probe that
+ * connected is remembered for a short window. A clean refusal — the pipe is not there — is the one
+ * answer that counts as absent; every other failure still counts as present rather than risk
+ * missing a live daemon, the same fail-safe the pipe listing had.
+ */
+export function socketPresent(socketPath: string, platform: NodeJS.Platform = process.platform): boolean {
+	if (platform !== "win32" || !socketPath.toLowerCase().startsWith(PIPE_PREFIX)) return existsSync(socketPath);
+	const probedAt = pipeProbeMemo.get(socketPath);
+	if (probedAt !== undefined && Date.now() - probedAt < PIPE_PROBE_MEMO_MS) return true;
+	const outcome = pipeProbe(socketPath, PIPE_PROBE_TIMEOUT_MS);
+	if (outcome === "open") pipeProbeMemo.set(socketPath, Date.now());
+	return outcome !== "refused";
 }
 
 export interface DaemonInfo {
@@ -98,14 +172,14 @@ export interface DaemonInfo {
 }
 
 /** The project's daemons that are still there — pid alive, socket present — newest first. */
-export function liveDaemons(cwd: string, registryDir?: string): RegisteredDaemon[] {
-	return registeredDaemons(cwd, registryDir).filter((entry) => entry.pid !== undefined && processAlive(entry.pid) && socketPresent(entry.socketPath));
+export function liveDaemons(cwd: string, registryDir?: string, platform: NodeJS.Platform = process.platform): RegisteredDaemon[] {
+	return registeredDaemons(cwd, registryDir, platform).filter((entry) => entry.pid !== undefined && processAlive(entry.pid) && socketPresent(entry.socketPath, platform));
 }
 
 /** The project's newest daemon from CodeGraph's own registry. Reads only; starts nothing. */
-export function daemonFor(cwd: string, registryDir?: string): DaemonInfo {
-	const alive = liveDaemons(cwd, registryDir)[0];
-	return { alive: alive !== undefined, root: (alive ?? registeredDaemons(cwd, registryDir)[0])?.root };
+export function daemonFor(cwd: string, registryDir?: string, platform: NodeJS.Platform = process.platform): DaemonInfo {
+	const alive = liveDaemons(cwd, registryDir, platform)[0];
+	return { alive: alive !== undefined, root: (alive ?? registeredDaemons(cwd, registryDir, platform)[0])?.root };
 }
 
 /** The project spelled as its daemon registered it, or the real path of `cwd` when no daemon matches:

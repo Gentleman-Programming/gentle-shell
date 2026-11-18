@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { canonicalRoot, foldRoot, unfoldRoot } from "../lib/codegraph-canonical.ts";
+import { canonicalRoot, foldRoot, resetCanonicalMemo, unfoldRoot } from "../lib/codegraph-canonical.ts";
 
 /** A backslash without a backslash literal: keeps this file clear of escape-transport mangling. */
 const BS = String.fromCharCode(92);
@@ -41,4 +41,54 @@ test("canonicalRoot on POSIX equals realpath: lock tokens never re-key", (t) => 
 	const real = realpathSync(dir(t, "posix"));
 	assert.equal(canonicalRoot(real), real);
 	assert.equal(canonicalRoot(`${real}/`), real);
+});
+
+test("the win32 fold remembers one unfold per spelling for the process lifetime", (t) => {
+	const base = dir(t, "memo");
+	const first = join(base, "first");
+	const second = join(base, "second");
+	mkdirSync(first);
+	mkdirSync(second);
+	const link = join(base, "link");
+	symlinkSync(first, link);
+	const firstKey = canonicalRoot(first, "win32");
+	assert.equal(canonicalRoot(link, "win32"), firstKey, "a symlinked spelling folds to its target's key");
+	rmSync(link);
+	symlinkSync(second, link);
+	assert.equal(canonicalRoot(link, "win32"), firstKey, "the process-lifetime memo keeps the first unfold");
+	assert.equal(canonicalRoot(`${link}//`, "win32"), firstKey, "a separator spelling resolves to the same memo entry");
+	resetCanonicalMemo();
+	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "after the reset the new target is read fresh");
+});
+
+test("off Windows every call reads the filesystem and leaves the memo untouched", (t) => {
+	const base = dir(t, "passthrough");
+	const first = join(base, "first");
+	const second = join(base, "second");
+	mkdirSync(first);
+	mkdirSync(second);
+	const link = join(base, "link");
+	symlinkSync(first, link);
+	const firstKey = canonicalRoot(link, "win32");
+	rmSync(link);
+	symlinkSync(second, link);
+	assert.equal(canonicalRoot(link, "darwin"), canonicalRoot(second, "darwin"), "off Windows the flipped symlink is read fresh");
+	assert.equal(canonicalRoot(link, "win32"), firstKey, "the fresh off-Windows read neither used nor changed the memo");
+	resetCanonicalMemo();
+	assert.equal(canonicalRoot(link, "darwin"), canonicalRoot(second, "darwin"), "unchanged after a memo reset it never touched");
+});
+
+test("the default platform never memoizes on a POSIX host", (t) => {
+	if (process.platform === "win32") return;
+	const base = dir(t, "default");
+	const first = join(base, "first");
+	const second = join(base, "second");
+	mkdirSync(first);
+	mkdirSync(second);
+	const link = join(base, "link");
+	symlinkSync(first, link);
+	assert.equal(unfoldRoot(link), realpathSync(first), "the default call resolves the link");
+	rmSync(link);
+	symlinkSync(second, link);
+	assert.equal(unfoldRoot(link), realpathSync(second), "the default call chain reads the flip fresh, memo or not");
 });

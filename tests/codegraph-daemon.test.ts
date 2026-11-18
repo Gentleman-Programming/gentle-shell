@@ -6,8 +6,9 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { daemonFor, exploreViaDaemon, liveDaemons, mcpLineReader, mcpReplyKind, parseMcpReply, registeredDaemons, resetDaemonRegistryMemo } from "../lib/codegraph-daemon.ts";
-import type { McpReply } from "../lib/codegraph-daemon.ts";
+import { daemonFor, exploreViaDaemon, liveDaemons, mcpLineReader, mcpReplyKind, parseMcpReply, registeredDaemons, resetDaemonRegistryMemo, setPipeProbeForTests, socketPresent } from "../lib/codegraph-daemon.ts";
+import type { McpReply, PipeProbeOutcome } from "../lib/codegraph-daemon.ts";
+import { canonicalRoot } from "../lib/codegraph-canonical.ts";
 
 function dir(t: test.TestContext, name: string): string {
 	const cwd = mkdtempSync(join(tmpdir(), `gentle-codegraph-daemon-${name}-`));
@@ -231,4 +232,86 @@ test("mcpLineReader keeps a multibyte character split across Buffer chunks intac
 	assert.equal(lines.length, 0, "the half-finished line is buffered, not delivered");
 	read(bytes.subarray(splitAt));
 	assert.deepEqual(lines, [{ id: 2, result: { content: [{ type: "text", text: "café" }] } }], "é survives the chunk boundary");
+});
+
+/** A backslash without a backslash literal: pipe paths stay clear of escape-transport mangling. */
+const DAEMON_BS = String.fromCharCode(92);
+
+/** A path in the Windows pipe namespace, built without backslash literals. */
+function namedPipe(name: string): string {
+	return ["", "", ".", "pipe", name].join(DAEMON_BS);
+}
+
+test("socketPresent on win32 probes the daemon's own pipe with a short budget", (t) => {
+	const open = namedPipe("gentle-shell-probe-open");
+	const refused = namedPipe("gentle-shell-probe-refused");
+	const odd = namedPipe("gentle-shell-probe-odd");
+	const seen: Array<{ path: string; timeoutMs: number }> = [];
+	let answer: PipeProbeOutcome = "open";
+	setPipeProbeForTests((path, timeoutMs) => {
+		seen.push({ path, timeoutMs });
+		return answer;
+	});
+	t.after(() => setPipeProbeForTests(undefined));
+	assert.equal(socketPresent(open, "win32"), true, "a pipe that accepts the connect is present");
+	assert.equal(socketPresent(open, "win32"), true, "the second check inside the window is answered from the cache");
+	assert.deepEqual(seen, [{ path: open, timeoutMs: 250 }], "one probe budgeted at 250ms replaces listing every named pipe on the machine");
+	answer = "refused";
+	assert.equal(socketPresent(refused, "win32"), false, "a clean refusal is the one proof of absence");
+	assert.equal(socketPresent(refused, "win32"), false, "an absent pipe is never remembered");
+	assert.equal(seen.length, 3, "every absent check probes again");
+	answer = "inconclusive";
+	assert.equal(socketPresent(odd, "win32"), true, "a timeout or odd error still counts as present rather than risk missing a live daemon");
+	assert.equal(socketPresent(odd, "win32"), true, "a fail-safe answer is not remembered as a positive one");
+	assert.equal(seen.length, 5, "every inconclusive check probes again");
+});
+
+test("socketPresent keeps the plain socket-file check off Windows and never probes", (t) => {
+	const registry = dir(t, "posix-check");
+	const socketFile = join(registry, "daemon.sock");
+	writeFileSync(socketFile, "");
+	let probes = 0;
+	setPipeProbeForTests(() => {
+		probes++;
+		return "open";
+	});
+	t.after(() => setPipeProbeForTests(undefined));
+	assert.equal(socketPresent(socketFile, "darwin"), true, "a socket file is still a filesystem check");
+	assert.equal(socketPresent(join(registry, "gone.sock"), "darwin"), false, "a missing socket file is still absent");
+	assert.equal(socketPresent(namedPipe("gentle-shell-probe-posix"), "darwin"), false, "a pipe-shaped path off Windows is only a file check too");
+	assert.equal(probes, 0, "the probe layer is never consulted off Windows");
+});
+
+test("swapping the probe layer starts with an empty cache", (t) => {
+	const pipe = namedPipe("gentle-shell-probe-swap");
+	setPipeProbeForTests(() => "open");
+	assert.equal(socketPresent(pipe, "win32"), true);
+	let probes = 0;
+	setPipeProbeForTests(() => {
+		probes++;
+		return "open";
+	});
+	t.after(() => setPipeProbeForTests(undefined));
+	assert.equal(socketPresent(pipe, "win32"), true);
+	assert.equal(probes, 1, "a remembered positive dies with the layer that recorded it");
+});
+
+test("daemonFor on win32 lives through the probe and the memoized canonical fold", (t) => {
+	const project = dir(t, "win32-fold");
+	const registry = dir(t, "win32-fold-registry");
+	const pipe = namedPipe("gentle-shell-win32-fold");
+	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: `${project}//`, socketPath: pipe, startedAt: 1, pid: process.pid }));
+	assert.equal(canonicalRoot(project, "win32"), canonicalRoot(`${project}//`, "win32"), "both spellings unfold once through the memo");
+	const seen: string[] = [];
+	setPipeProbeForTests((path) => {
+		seen.push(path);
+		return "open";
+	});
+	t.after(() => setPipeProbeForTests(undefined));
+	const found = daemonFor(project, registry, "win32");
+	assert.equal(found.alive, true, "the pid is alive and the pipe accepted the probe");
+	assert.equal(found.root, `${project}//`, "the registered spelling is returned as-is");
+	assert.deepEqual(seen, [pipe], "the liveness check probed the daemon's own pipe, not the whole machine");
+	setPipeProbeForTests(() => "refused");
+	assert.equal(daemonFor(project, registry, "win32").alive, false, "a refused pipe is not a live daemon even with a live pid");
 });

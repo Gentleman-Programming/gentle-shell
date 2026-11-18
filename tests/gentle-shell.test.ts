@@ -434,7 +434,7 @@ test("session shutdown detaches the footer before a queued fullscreen render and
 		assert.ok(jobsTimer);
 		assert.ok(sidebarTimer);
 		tui.doRender();
-		assert.ok(frames.at(-1)!.startsWith("\x1b[48;2;"), "the old fullscreen light theme paints");
+		assert.equal(frames.at(-1), `${foreground}hi\x1b[0m${foreground}${" ".repeat(158)}\x1b[0m`, "the old fullscreen light theme keeps the terminal background");
 		const queuedRender = () => tui.doRender(); // The real scheduled callback resolves the host method when it runs.
 		await fire(old.handlers, "session_shutdown", first.ctx);
 		oldLive = false;
@@ -458,7 +458,7 @@ test("session shutdown detaches the footer before a queued fullscreen render and
 		assert.equal(frames.at(-1), "hi\x1b[0m", "regular mode keeps the terminal background");
 		tui.mode = "fullscreen";
 		tui.doRender();
-		assert.ok(frames.at(-1)!.startsWith(`\x1b[48;2;243;242;241m${foreground}`), "the replacement paints its own light theme");
+		assert.equal(frames.at(-1), `${foreground}hi\x1b[0m${foreground}${" ".repeat(158)}\x1b[0m`, "the replacement restores its theme foreground without painting the background");
 		oldFooter.dispose();
 		oldFooter.dispose();
 		state.appearance = "dark";
@@ -466,7 +466,7 @@ test("session shutdown detaches the footer before a queued fullscreen render and
 		assert.equal(frames.at(-1), "hi\x1b[0m", "the replacement still follows a dark switch");
 		state.appearance = "light";
 		tui.doRender();
-		assert.ok(frames.at(-1)!.startsWith("\x1b[48;2;"), "late old disposal cannot remove the new paint");
+		assert.equal(frames.at(-1), `${foreground}hi\x1b[0m${foreground}${" ".repeat(158)}\x1b[0m`, "late old disposal cannot remove the new foreground restoration");
 		assert.equal(staleReads, 0);
 		assert.equal(unsubscribed, 1);
 		await fire(fresh.handlers, "session_shutdown", second.ctx);

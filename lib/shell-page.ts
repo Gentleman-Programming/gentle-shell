@@ -1,14 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 
-// A light theme on a dark terminal leaves every unpainted cell (prose,
-// gaps, the column between the conversation and the rail) on the terminal's
-// dark background, with the terminal's light default text on top. The page
-// paint gives those cells a paper background and the theme's text color.
-// Dark themes keep the terminal background (and any wallpaper behind it).
-
-/** Paper behind a light theme: a hair darker than white so cards and the rail still read as surfaces. */
-const PAPER = { r: 243, g: 242, b: 241 };
-const PAPER_256 = 255;
+// Light themes use the theme's text color across the fullscreen page while
+// retaining the terminal background. Dark themes keep the terminal defaults.
 const IMAGE_LINE = /\x1b_G|\x1b\]1337;File=/;
 const SGR = /\x1b\[([0-9;:]*)m/g;
 
@@ -19,7 +12,7 @@ export interface PageTheme {
 }
 export interface PageColors { bg: string; fg: string }
 
-/** The page colors for `theme`, or undefined when the terminal background should show. */
+/** The light theme's page foreground, or undefined when terminal defaults should apply. */
 export function pageColors(theme: PageTheme): PageColors | undefined {
 	if (theme.appearance !== "light" || typeof theme.getFgAnsi !== "function") return undefined;
 	let fg = "";
@@ -28,8 +21,7 @@ export function pageColors(theme: PageTheme): PageColors | undefined {
 	} catch {
 		return undefined;
 	}
-	const bg = theme.getColorMode?.() === "256color" ? `\x1b[48;5;${PAPER_256}m` : `\x1b[48;2;${PAPER.r};${PAPER.g};${PAPER.b}m`;
-	return { bg, fg };
+	return { bg: "", fg };
 }
 
 /** Which defaults an SGR sequence restores: its foreground, its background, or both. */

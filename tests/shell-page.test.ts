@@ -11,8 +11,8 @@ test("only a light theme gets a painted page: dark themes keep the terminal back
 	assert.equal(pageColors({}), undefined);
 	const page = pageColors(light)!;
 	assert.equal(page.fg, FG, "default-colored text takes the theme's text color");
-	assert.match(page.bg, /^\x1b\[48;2;\d+;\d+;\d+m$/);
-	assert.equal(pageColors({ ...light, getColorMode: () => "256color" })!.bg, "\x1b[48;5;255m");
+	assert.equal(page.bg, "", "the terminal background remains visible");
+	assert.deepEqual(pageColors({ ...light, getColorMode: () => "256color" }), { bg: "", fg: FG });
 });
 
 test("a page row fills the width and re-arms only what each reset cleared", () => {
@@ -20,12 +20,9 @@ test("a page row fills the width and re-arms only what each reset cleared", () =
 	const card = "\x1b[48;5;194m";
 	const row = paintPageRow(`plain ${card}card \x1b[31mred\x1b[39m still card\x1b[49m after`, 40, page);
 	assert.equal(strip(row).length, 40, "the row is padded to the full width");
-	assert.ok(row.startsWith(page.bg + page.fg), "the row opens on the page");
-	assert.ok(row.includes(`\x1b[39m${page.fg} still card`), "a foreground reset brings back the page text color");
-	assert.ok(!row.includes(`\x1b[39m${page.bg}`), "a foreground reset keeps the card background");
-	assert.ok(row.includes(`\x1b[49m${page.bg} after`), "a background reset brings back the page");
-	assert.ok(paintPageRow("a\x1b[0mb", 4, page).includes(`\x1b[0m${page.bg}${page.fg}b`), "a full reset re-arms both");
-	assert.ok(paintPageRow("a\x1b[mb", 4, page).includes(`\x1b[m${page.bg}${page.fg}b`));
+	assert.equal(row, `${FG}plain ${card}card \x1b[31mred\x1b[39m${FG} still card\x1b[49m after${" ".repeat(9)}\x1b[0m`);
+	assert.equal(paintPageRow("a\x1b[0mb", 4, page), `${FG}a\x1b[0m${FG}b  \x1b[0m`, "a full reset restores the theme foreground");
+	assert.equal(paintPageRow("a\x1b[mb", 4, page), `${FG}a\x1b[m${FG}b  \x1b[0m`);
 	// Color components equal to 0 are not resets.
 	assert.equal(paintPageRow("\x1b[38;2;0;0;0mx", 1, page), `${page.bg}${page.fg}\x1b[38;2;0;0;0mx\x1b[0m`);
 	assert.equal(paintPageRow("\x1b[48;5;0mx", 1, page), `${page.bg}${page.fg}\x1b[48;5;0mx\x1b[0m`);
@@ -44,7 +41,7 @@ test("the page paint wraps the fullscreen render only, follows theme changes and
 	assert.deepEqual(tui.applyLineResets(["doc"]), ["doc\x1b[0m"], "the scrollback document dump stays unpainted");
 	tui.doRender();
 	assert.equal(strip(calls[0]![0]!), "hi    ");
-	assert.ok(calls[0]![0]!.startsWith("\x1b[48;2;"));
+	assert.ok(calls[0]![0]!.startsWith(FG));
 	theme = { appearance: "dark" };
 	tui.doRender();
 	assert.deepEqual(calls[1], ["hi\x1b[0m"], "switching to a dark theme stops painting");
@@ -79,7 +76,7 @@ test("an old page-paint disposer cannot displace a replacement or read its stale
 	assert.equal(tui.doRender, newRender);
 	assert.equal(tui.applyLineResets, newResets);
 	assert.doesNotThrow(() => tui.doRender(), "replacement can still call the old wrapper in its chain");
-	assert.ok(frames.at(-1)!.startsWith("\x1b[48;2;"));
+	assert.ok(frames.at(-1)!.startsWith(FG));
 	theme = { appearance: "dark" };
 	tui.doRender();
 	assert.equal(frames.at(-1), "hi\x1b[0m", "the new owner's dark theme stops painting");
@@ -102,7 +99,7 @@ test("the page follows a theme switch behind one stable theme object (Pi's theme
 	tui.doRender();
 	Object.assign(state, { appearance: "light", name: "light" });
 	tui.doRender();
-	assert.ok(frames[0]!.startsWith("\x1b[48;2;"));
+	assert.ok(frames[0]!.startsWith(FG));
 	assert.equal(frames[1], "hi", "switching to a dark theme stops painting");
-	assert.ok(frames[2]!.startsWith("\x1b[48;2;"), "switching back paints again");
+	assert.ok(frames[2]!.startsWith(FG), "switching back paints again");
 });

@@ -405,10 +405,17 @@ export function runProfileCardShortcut(owner: ProfileCardOwner, action: ProfileC
 	runProfileCardAction(owner, action);
 }
 
-const PROFILE_CARD_SHORTCUTS: ReadonlyArray<{ id: string; action: ProfileCardAction; description: string }> = [
+/** The collapse shortcut: a hidden card changes nothing and says why; otherwise it toggles the same state as the title click. */
+export function runProfileCardCollapseShortcut(owner: ProfileCardOwner, notify: (message: string, level: "info") => void): void {
+	if (!owner.visible()) { notify(PROFILE_CARD_HIDDEN_NOTICE, "info"); return; }
+	owner.toggleCollapsed();
+}
+
+const PROFILE_CARD_SHORTCUTS: ReadonlyArray<{ id: string; action: ProfileCardAction | "collapse"; description: string }> = [
 	{ id: "profileCard.previous", action: "previous", description: "Show the previous profile on the profile card" },
 	{ id: "profileCard.next", action: "next", description: "Show the next profile on the profile card" },
 	{ id: "profileCard.use", action: "use", description: "Use the profile shown on the profile card in this session" },
+	{ id: "profileCard.collapse", action: "collapse", description: "Collapse or expand the profile card" },
 ];
 
 /**
@@ -425,7 +432,11 @@ export function registerProfileCardShortcuts(pi: Pick<ExtensionAPI, "registerSho
 		if (!key) continue;
 		pi.registerShortcut(key as Parameters<ExtensionAPI["registerShortcut"]>[0], {
 			description: shortcut.description,
-			handler: (ctx: ExtensionContext) => runProfileCardShortcut(owner, shortcut.action, (message, level) => ctx.ui.notify(message, level)),
+			handler: (ctx: ExtensionContext) => {
+				const notify = (message: string, level: "info") => ctx.ui.notify(message, level);
+				if (shortcut.action === "collapse") runProfileCardCollapseShortcut(owner, notify);
+				else runProfileCardShortcut(owner, shortcut.action, notify);
+			},
 		});
 	}
 }

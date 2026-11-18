@@ -42,17 +42,22 @@ current session. Opt-in through `/gentle:profiles card on|off`.
   hecho, no se colapsa." The profile card's title row gets the same hover highlight as the other
   sidebar cards (agents, jobs, todo) and a click on it collapses/expands the card through the same
   mechanism and persistence those cards use (including any collapse keymap convention they share).
+- **S8 Collapse shortcut.** Decision (L9): like the agents/jobs/todo cards, the profile card gets a
+  collapse keymap action `profileCard.collapse`, default `ctrl+shift+e`, with a `GENTLE_PI_*` env
+  override following the existing collapse keymaps; it toggles the same in-memory collapsed state
+  as the title click.
 
 ## Tasks
 
-- [x] T1 — S1, S6(command part): profile-card policy store + `card on|off` subcommand + usage/docs. Route: worker A. Commit: 89f989edd
-- [x] T2 — S2, S5: pure card renderer, navigation state (wrap) and ◀/▶/use hit map, unit tests. Route: worker B (parallel with T1). Commit: 22754ce4b
-- [x] T3 — S1, S2: sidebar wiring (section key, visibility gate, panel sheet order, widget registration, mouse dispatch). Route: worker C after T1+T2. Commit: a46c77f9b
-- [x] T4 — S3: use action through the owner under the apply gate, confirmation and notices. Route: worker C (continue). Commit: 185f35d8f
-- [x] T4b — S2: initial profile = the one actually in effect for the session (startup/frozen records included) through a pure read; session file and profiles.json re-read only on change. Route: worker C (continue). Commit: b057cca59
-- [x] T5 — S4: shortcuts in `KEYMAP_ACTIONS` and registration, `tests/keymaps.test.ts`. Route: worker C (continue). Commit: 02b58b714
-- [x] T7 — S7: header hover highlight and collapse like the other cards. Route: worker C (continue). Commit: (this commit)
-- [ ] T6 — S6: final docs pass, `pnpm test` + typecheck. Route: verify. Commit: —
+- [x] T1 — S1, S6(command part): profile-card policy store + `card on|off` subcommand + usage/docs. Route: worker A. Commit: 1c1c5a756
+- [x] T2 — S2, S5: pure card renderer, navigation state (wrap) and ◀/▶/use hit map, unit tests. Route: worker B (parallel with T1). Commit: 566add7ba
+- [x] T3 — S1, S2: sidebar wiring (section key, visibility gate, panel sheet order, widget registration, mouse dispatch). Route: worker C after T1+T2. Commit: 75354b300
+- [x] T4 — S3: use action through the owner under the apply gate, confirmation and notices. Route: worker C (continue). Commit: 218ee5f57
+- [x] T4b — S2: initial profile = the one actually in effect for the session (startup/frozen records included) through a pure read; session file and profiles.json re-read only on change. Route: worker C (continue). Commit: 96c10756f
+- [x] T5 — S4: shortcuts in `KEYMAP_ACTIONS` and registration, `tests/keymaps.test.ts`. Route: worker C (continue). Commit: 57c327b53
+- [x] T7 — S7: header hover highlight and collapse like the other cards. Route: worker C (continue). Commit: 3c73b0395
+- [x] T8 — S8: collapse keymap ctrl+shift+e. Route: worker. Commit: the commit that adds Ctrl+Shift+E (last on the branch)
+- [-] T6 — S6: final docs pass, `pnpm test` + typecheck. Route: verify. Commit: —
 
 ## Log
 
@@ -64,3 +69,4 @@ current session. Opt-in through `/gentle:profiles card on|off`.
 - **L6 (evidence, T4):** pure display read uses `readSessionProfileBinding(sessionId)?.name`; sessions with only a startup/frozen record show no session marker and start on the active profile, which misses S2 ("the profile currently in effect for the session") → T4b. The real `runProfilesPanelAction` confirmation path through `useProfileFromCard` is covered only by typecheck and fakes.
 - **L7 (user report after manual test, verbatim):** "Ya aparece el card, aunque quisiera indicar algunas cosas para tomar en cuenta. Al pasar el mouse por encima del titulo del card, no se agrega el color amarrillo como los demas cards para poder collapsar el card, de hecho, no se colapsa." Likely cause: T3 used a plain `handleMouse` without `NativePointerRegion` (no hover state, header row not wired to collapse) → S7, T7.
 - **L8 (evidence, T6):** the independent verifier timed out after 30 min stalled in a bash call (likely the full suite); no verdict produced. Pending user decision on relaunch.
+- **L9 (user decisions):** collapse shortcut `Ctrl+Shift+E`. On T6: "Olvidate de la verificacion t6" — independent final verification dropped by the user.

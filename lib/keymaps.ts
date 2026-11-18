@@ -41,6 +41,7 @@ export const KEYMAP_ACTIONS: readonly KeymapAction[] = [
 	{ id: "profileCard.previous", label: "Previous profile (profile card)", env: "GENTLE_PI_PROFILE_CARD_PREVIOUS_KEY", defaultKey: "alt+," },
 	{ id: "profileCard.next", label: "Next profile (profile card)", env: "GENTLE_PI_PROFILE_CARD_NEXT_KEY", defaultKey: "alt+." },
 	{ id: "profileCard.use", label: "Use the shown profile in this session (profile card)", env: "GENTLE_PI_PROFILE_CARD_USE_KEY", defaultKey: "alt+m" },
+	{ id: "profileCard.collapse", label: "Collapse the profile card", env: "GENTLE_PI_PROFILE_CARD_COLLAPSE_KEY", defaultKey: "ctrl+shift+e" },
 ];
 
 // Pi refuses extension shortcuts on these editor-global keybindings

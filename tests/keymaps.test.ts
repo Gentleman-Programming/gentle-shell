@@ -14,7 +14,7 @@ import {
 const DEFAULTS: Record<string, string | undefined> = {
 	commands: "alt+k", changes: "alt+g", usage: "alt+u", preset: "alt+l", "agents.view": "alt+a",
 	"agents.stop": "alt+s", "agents.collapse": "ctrl+shift+a", "jobs.collapse": "ctrl+shift+j", "todo.collapse": "ctrl+shift+t", "stats.view": undefined,
-	"profileCard.previous": "alt+,", "profileCard.next": "alt+.", "profileCard.use": "alt+m",
+	"profileCard.previous": "alt+,", "profileCard.next": "alt+.", "profileCard.use": "alt+m", "profileCard.collapse": "ctrl+shift+e",
 };
 
 function scratch(): string {

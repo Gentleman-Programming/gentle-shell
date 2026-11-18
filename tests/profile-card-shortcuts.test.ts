@@ -33,9 +33,9 @@ function fixture(t: { after(fn: () => void): void }, profiles: ProfileCardItem[]
 	return { owner, registered, notices, used, setVisible, press };
 }
 
-test("the three shortcuts register on alt+, alt+. and alt+m, spelled as Pi's key parser accepts them", (t) => {
+test("the navigation and use shortcuts register on alt+, alt+. and alt+m, spelled as Pi's key parser accepts them", (t) => {
 	const f = fixture(t, [item("a")]);
-	assert.deepEqual([...f.registered.keys()].sort(), ["alt+,", "alt+.", "alt+m"]);
+	assert.deepEqual([...f.registered.keys()].sort(), ["alt+,", "alt+.", "alt+m", "ctrl+shift+e"]);
 	assert.equal(matchesKey("\x1b,", "alt+,"), true);
 	assert.equal(matchesKey("\x1b.", "alt+."), true);
 	assert.equal(matchesKey("\x1bm", "alt+m"), true);
@@ -101,9 +101,52 @@ test("use runs the same use handler once with the shown profile name", async (t)
 });
 
 test("an environment variable rebinds, and off or empty leaves a shortcut unregistered", (t) => {
-	const f = fixture(t, [item("a")], { GENTLE_PI_PROFILE_CARD_NEXT_KEY: "alt+j", GENTLE_PI_PROFILE_CARD_PREVIOUS_KEY: "off", GENTLE_PI_PROFILE_CARD_USE_KEY: "" });
+	const f = fixture(t, [item("a")], { GENTLE_PI_PROFILE_CARD_NEXT_KEY: "alt+j", GENTLE_PI_PROFILE_CARD_PREVIOUS_KEY: "off", GENTLE_PI_PROFILE_CARD_USE_KEY: "", GENTLE_PI_PROFILE_CARD_COLLAPSE_KEY: "off" });
 	assert.deepEqual([...f.registered.keys()], ["alt+j"]);
-	const saved = fixture(t, [item("a")], {}, { "profileCard.use": "alt+y", "profileCard.next": null });
+	const saved = fixture(t, [item("a")], {}, { "profileCard.use": "alt+y", "profileCard.next": null, "profileCard.collapse": null });
 	assert.deepEqual([...saved.registered.keys()].sort(), ["alt+,", "alt+y"]);
 	assert.equal(effectiveKey("profileCard.previous", {}, {}), "alt+,");
+});
+
+test("collapse shortcut registers on ctrl+shift+e, spelled as Pi's key parser accepts it", (t) => {
+	const f = fixture(t, [item("a")]);
+	assert.ok(f.registered.has("ctrl+shift+e"));
+	assert.match(f.registered.get("ctrl+shift+e")!.description!, /collapse/i);
+	assert.equal(matchesKey("\x1b[69;6u", "ctrl+shift+e"), true);
+	assert.equal(effectiveKey("profileCard.collapse", {}, {}), "ctrl+shift+e");
+});
+
+test("collapse shortcut toggles the same state as the title click, repaints at once, and shows no notice", async (t) => {
+	const f = fixture(t, [item("a"), item("b")]);
+	f.setVisible(true);
+	let repaints = 0;
+	f.owner.onChange(() => { repaints++; });
+	await f.press("ctrl+shift+e");
+	assert.equal(f.owner.collapsed(), true);
+	assert.equal(repaints, 1);
+	await f.press("ctrl+shift+e");
+	assert.equal(f.owner.collapsed(), false);
+	assert.equal(repaints, 2);
+	assert.deepEqual(f.notices, []);
+	assert.deepEqual(f.used, []);
+	assert.equal(f.owner.shown()!.name, "a");
+});
+
+test("collapse shortcut with the card hidden changes nothing and shows the hidden notice", async (t) => {
+	const f = fixture(t, [item("a")]);
+	const digest = f.owner.digest();
+	await f.press("ctrl+shift+e");
+	assert.equal(f.owner.collapsed(), false);
+	assert.equal(f.owner.digest(), digest);
+	assert.deepEqual(f.notices, [["info", PROFILE_CARD_HIDDEN_NOTICE]]);
+});
+
+test("GENTLE_PI_PROFILE_CARD_COLLAPSE_KEY rebinds the collapse shortcut; off or empty disables it", (t) => {
+	const moved = fixture(t, [item("a")], { GENTLE_PI_PROFILE_CARD_COLLAPSE_KEY: "alt+e" });
+	assert.ok(moved.registered.has("alt+e"));
+	assert.ok(!moved.registered.has("ctrl+shift+e"));
+	for (const value of ["off", ""]) {
+		const f = fixture(t, [item("a")], { GENTLE_PI_PROFILE_CARD_COLLAPSE_KEY: value });
+		assert.deepEqual([...f.registered.keys()].sort(), ["alt+,", "alt+.", "alt+m"], `value "${value}"`);
+	}
 });

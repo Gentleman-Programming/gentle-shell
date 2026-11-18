@@ -1460,6 +1460,7 @@ const FULL_DELEGATION_SENTENCE_REPLACEMENTS: ReadonlyArray<readonly [string, str
 const RDD_ONLY_SENTENCES: readonly string[] = [
 	" When RDD is on and native assess returns a tier, that tier wins.",
 	" (assess `escalate` when RDD is on or unknown)",
+	"\n## Gentle AI RDD ownership\n\nWhile RDD is not off, this package injects the mirrored provider-bundle review execution contract; Gentle AI writes nothing into this prompt. Absent that mirrored contract, this package invents no lifecycle instructions.\n",
 	"- An eligible interactive Pi host may resolve `gentle-ai.review-integration.consent/v3` before the envelope reaches the model. Permission: host-owned. If `gentle_review` returns the envelope unresolved, it is still the original provider-owned two-choice contract. Use `ask_user_choice` exactly or relay losslessly and stop. Never add the host action to a decoded or relayed provider envelope.\n",
 	" The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch; native review runs only under the user-owned RDD switch.",
 ];
@@ -1749,8 +1750,7 @@ ${projectForRddState(projectOddStepsForMode(oddProtocolSteps(), delegationMode),
 Harness principles:
 - el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
 - Clarify scope, constraints, acceptance criteria, and non-goals when needed for the human to understand the action or to resolve consequential uncertainty. Reuse what is already established; after informed approval, proceed without repeating the clarification unless new consequential uncertainty appears.
-${testFirstPrinciple}
-- When the user asks to stop receipt-driven development, run \`gentle-ai review mode disable\` without arguing, working around it, or proposing alternatives first; never enable it unless the user explicitly asks.
+${testFirstPrinciple}${isRddStatusLineOff(rddStatusLine) ? "" : "\n- When the user asks to stop receipt-driven development, run `gentle-ai review mode disable` without arguing, working around it, or proposing alternatives first; never enable it unless the user explicitly asks."}
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 
 ${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode, delegationMode)}${headlessDeliveryNote(hostMode)}`;

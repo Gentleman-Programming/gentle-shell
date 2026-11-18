@@ -291,22 +291,28 @@ test("seedWorktreeIndex: two real sessions seeding one worktree copy exactly onc
 test("a busy main writer still seeds through a lock-safe snapshot", async (t) => {
 	const { main, worktree } = worktreePair(t);
 	const db = openMainDbWithWal(main);
-	t.after(() => db.close());
-	// A live CodeGraph writer lock on the main checkout: the common state whenever the
-	// main session's daemon is refreshing the index.
-	writeFileSync(join(main, ".codegraph", "codegraph.lock"), String(process.pid));
-	const { input, calls } = seedHarness(worktree);
+	try {
+		// A live CodeGraph writer lock on the main checkout: the common state whenever the
+		// main session's daemon is refreshing the index.
+		writeFileSync(join(main, ".codegraph", "codegraph.lock"), String(process.pid));
+		const { input, calls } = seedHarness(worktree);
 
-	const result = await seedWorktreeIndex(input);
+		const result = await seedWorktreeIndex(input);
 
-	assert.equal(result.outcome, "seeded", "a busy writer never defers: the snapshot reads committed state");
-	assert.deepEqual(calls, ["sync -q"], "exactly one sync validates the snapshot");
-	assert.deepEqual(
-		readdirSync(join(worktree, ".codegraph")).sort(),
-		[".gitignore", "codegraph.db"],
-		"only the standalone snapshot is published: no sidecar files",
-	);
-	assert.deepEqual(markerNotes(join(worktree, ".codegraph", "codegraph.db")), ["committed", "wal-only"], "the snapshot carries the WAL-resident commit");
+		assert.equal(result.outcome, "seeded", "a busy writer never defers: the snapshot reads committed state");
+		assert.deepEqual(calls, ["sync -q"], "exactly one sync validates the snapshot");
+		assert.deepEqual(
+			readdirSync(join(worktree, ".codegraph")).sort(),
+			[".gitignore", "codegraph.db"],
+			"only the standalone snapshot is published: no sidecar files",
+		);
+		assert.deepEqual(markerNotes(join(worktree, ".codegraph", "codegraph.db")), ["committed", "wal-only"], "the snapshot carries the WAL-resident commit");
+	} finally {
+		// Windows: node:test runs t.after hooks in registration order (FIFO), so
+		// worktreePair's rmSync teardown would run while this WAL handle is still
+		// open (EBUSY). The busy-writer fixture only needs it open during the seed.
+		db.close();
+	}
 });
 
 test("a main checkout mid-init defers seeding without touching the worktree", async (t) => {

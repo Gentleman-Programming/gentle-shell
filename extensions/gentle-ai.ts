@@ -32,7 +32,7 @@ import { boundedFindingClaims, parseReviewCoordinatorInput, runReviewCoordinator
 import { StatusTimingDiagnostics } from "../lib/status-timing-diagnostics.ts";
 import { isOddPhase, oddPhaseRegistry, ODD_PHASES } from "../lib/odd-phase.ts";
 import { PROFILE_CARD_SETTINGS_CHANGED, writeProfileCard } from "../lib/profile-card-policy.ts";
-import { createProfileCardOwner, createProfileCardUseHandler, mountProfileCard, readProfileCardItems } from "../lib/profile-card-sidebar.ts";
+import { createProfileCardOwner, createProfileCardReader, createProfileCardUseHandler, mountProfileCard } from "../lib/profile-card-sidebar.ts";
 import { shellEnabled } from "../lib/shell-bar.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { declareReviewRelayHandshake } from "../lib/review-relay-contract.ts";
@@ -12395,10 +12395,11 @@ function createGentleAiExtensionForTesting(
 	// profile) so the use action and keyboard shortcuts act on the same selection.
 	let profileCardCtx: ExtensionContext | undefined;
 	let stopProfileCardEvents: (() => void) | undefined;
+	const profileCardReader = createProfileCardReader();
 	const profileCard = createProfileCardOwner({
 		loadItems: () => {
 			if (!profileCardCtx) throw new Error("no session");
-			return readProfileCardItems({ configHome: gentleAiConfigHome(), sessionId: profileCardCtx.sessionManager?.getSessionId?.(), cwd: profileCardCtx.cwd });
+			return profileCardReader.items({ configHome: gentleAiConfigHome(), sessionId: profileCardCtx.sessionManager?.getSessionId?.(), cwd: profileCardCtx.cwd, ...(typeof profileCardCtx.sessionManager?.getBranch === "function" ? { session: profileCardCtx.sessionManager } : {}) });
 		},
 	});
 	profileCard.setUseHandler(createProfileCardUseHandler({
@@ -12409,7 +12410,8 @@ function createGentleAiExtensionForTesting(
 			if (!profileCardCtx) throw new Error("no active session");
 			await useProfileFromCard(profileCardCtx, pi, name);
 		},
-		refresh: () => profileCard.refreshItems(),
+		// A use just changed the session record: drop what the reader cached so the markers re-read.
+		refresh: () => { profileCardReader.invalidate(); profileCard.refreshItems(); },
 	}));
 	pi.on("session_before_fork", async (event, ctx) => {
 		await waitCurrentSessionProfileSelection(ctx.sessionManager);

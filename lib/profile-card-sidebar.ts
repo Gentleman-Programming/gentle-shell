@@ -1,8 +1,11 @@
+import { statSync } from "node:fs";
 import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { evaluateProfilePin, readProfilePinStatus } from "./agent-profile-pin.ts";
-import { profilesFilePath, readProfilesFileResult } from "./agent-profiles.ts";
+import { profilesFilePath, readProfilesFileResult, type ProfilesFileReadResult } from "./agent-profiles.ts";
 import { resolveProfileCard } from "./profile-card-policy.ts";
 import { readSessionProfileBinding } from "./session-profile-binding.ts";
+import { readSessionProfileDisk, type SessionProfileSource } from "./session-profile-disk-reader.ts";
+import { isSessionProfileFamilyEntry } from "./session-profile-persistence.ts";
 import {
 	buildProfileCardItems,
 	initialProfileIndex,
@@ -192,21 +195,117 @@ export function mountProfileCard(tui: TUI, theme: PanelTheme, owner: ProfileCard
 
 // ---- Display read ----
 
+export interface ProfileCardReaderDeps {
+	/** The pure session record read; tests inject a counting spy. */
+	readDisk?: typeof readSessionProfileDisk;
+	readProfiles?: typeof readProfilesFileResult;
+}
+
+export interface ProfileCardSource {
+	configHome: string;
+	sessionId: string | undefined;
+	cwd: string;
+	session?: SessionProfileSource;
+}
+
+export interface ProfileCardReader {
+	/** The saved profiles with their markers; see `readProfileCardItems`. */
+	items(source: ProfileCardSource): ProfileCardItem[];
+	/** Forget what was read, so the next `items` reads again (right after a use). */
+	invalidate(): void;
+}
+
+/** Cheap file identity from one stat (inode, size, mtime in ns); undefined when the file cannot be statted. */
+function fileSignature(path: string | undefined): string | undefined {
+	if (path === undefined) return undefined;
+	try {
+		const stat = statSync(path, { bigint: true });
+		return `${stat.ino}:${stat.size}:${stat.mtimeNs}`;
+	} catch { return undefined; }
+}
+
+/** The id of the newest session-profile record on the branch: an in-memory scan, no I/O. */
+function newestRecordId(session: SessionProfileSource): string {
+	try {
+		const branch = session.getBranch();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			if (isSessionProfileFamilyEntry(branch[index])) return String((branch[index] as { id?: unknown }).id);
+		}
+	} catch { /* An unreadable branch is simply a different signal. */ }
+	return "";
+}
+
 /**
- * The saved profiles with their markers, read without side effects. The session
- * marker is the in-memory session binding (`readSessionProfileBinding`), not
- * `resolveSessionProfile` or the authority check: those can freeze a profile or
- * clear a binding they cannot corroborate, and looking at a card must never
- * change what a session launches with. A session without a recorded binding
- * simply shows no session marker. An unreadable or missing store shows nothing
- * and is never seeded.
+ * The card's display reader. Strictly pure (no freeze, clear, append or write),
+ * and change-driven: a visible card refreshes every second, and the session
+ * file can be several MB, so each source is re-read only when its signal moved.
+ *
+ * Session marker. The newest session-profile record on the branch, corroborated
+ * by `readSessionProfileDisk` (stateless, no writes, no cache): a bind is the
+ * user's explicit choice (origin `user`) or the session's startup record
+ * (origin local/repo/global), so the newest record gives the precedence; a
+ * clear or no record means no profile. `resolveSessionProfile` and
+ * `readSessionProfileAuthority` are NOT used: they freeze a profile or clear a
+ * binding they cannot corroborate. Signal for re-reading: the session file's
+ * stat signature (a profile record reaches disk only by appending, which moves
+ * size and mtime), the newest profile record id on the branch (an in-memory
+ * scan; a record newer than disk is not disk-corroborated yet) and the
+ * in-memory binding name. A stat is one syscall regardless of file size; the
+ * branch scan costs no I/O. An indeterminate read (file not flushed, record
+ * newer than disk) is never cached: it falls back to the in-memory binding
+ * (`readSessionProfileBinding`, a copy read) and retries on the next tick.
+ *
+ * profiles.json is small but is gated the same way, by its stat signature.
  */
-export function readProfileCardItems(source: { configHome: string; sessionId: string | undefined; cwd: string }): ProfileCardItem[] {
-	const read = readProfilesFileResult(profilesFilePath(source.configHome));
-	if (read.status !== "valid") return [];
-	const sessionBound = readSessionProfileBinding(source.sessionId)?.name;
-	const pinned = evaluateProfilePin(readProfilePinStatus(source.cwd), read.file.profiles).winner?.profile;
-	return buildProfileCardItems(read.file, pinned, sessionBound);
+export function createProfileCardReader(deps: ProfileCardReaderDeps = {}): ProfileCardReader {
+	const readDisk = deps.readDisk ?? readSessionProfileDisk;
+	const readProfiles = deps.readProfiles ?? readProfilesFileResult;
+	let marker: { signal: string; name: string | undefined } | undefined;
+	let profiles: { path: string; signature: string; result: ProfilesFileReadResult } | undefined;
+	const readProfilesGated = (path: string): ProfilesFileReadResult => {
+		const signature = fileSignature(path);
+		if (signature !== undefined && profiles?.path === path && profiles.signature === signature) return profiles.result;
+		const result = readProfiles(path);
+		profiles = signature !== undefined && result.status === "valid" ? { path, signature, result } : undefined;
+		return result;
+	};
+	const readMarker = (sessionId: string | undefined, session: SessionProfileSource | undefined): string | undefined => {
+		const memory = readSessionProfileBinding(sessionId)?.name;
+		if (session === undefined) return memory;
+		let file: string | undefined;
+		try { file = session.getSessionFile(); } catch { return memory; }
+		const signature = fileSignature(file);
+		const signal = signature === undefined ? undefined : JSON.stringify([sessionId, file, signature, newestRecordId(session), memory ?? null]);
+		if (signal !== undefined && marker?.signal === signal) return marker.name;
+		try {
+			const disk = readDisk(session);
+			if (disk.status === "indeterminate") return memory;
+			const name = disk.status === "bound" ? disk.binding.name : undefined;
+			marker = signal === undefined ? undefined : { signal, name };
+			return name;
+		} catch { return memory; }
+	};
+	return {
+		items(source) {
+			const read = readProfilesGated(profilesFilePath(source.configHome));
+			if (read.status !== "valid") return [];
+			const pinned = evaluateProfilePin(readProfilePinStatus(source.cwd), read.file.profiles).winner?.profile;
+			return buildProfileCardItems(read.file, pinned, readMarker(source.sessionId, source.session));
+		},
+		invalidate() {
+			marker = undefined;
+			profiles = undefined;
+		},
+	};
+}
+
+/**
+ * The saved profiles with their markers, read without side effects. Without a
+ * `reader` every call reads fresh; the live card passes one shared reader.
+ * A missing or invalid store shows nothing and is never seeded.
+ */
+export function readProfileCardItems(source: ProfileCardSource, reader: ProfileCardReader = createProfileCardReader()): ProfileCardItem[] {
+	return reader.items(source);
 }
 
 // ---- Use action ----

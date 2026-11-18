@@ -3,9 +3,12 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { readProfilesFileResult } from "../lib/agent-profiles.ts";
+import { readSessionProfileDisk } from "../lib/session-profile-disk-reader.ts";
 import { beginDesktopProfileApply, endDesktopProfileApply, isDesktopProfileApplyRunning } from "../lib/desktop-rpc-profiles.ts";
-import { PROFILE_CARD_BUSY_NOTICE, createProfileCardOwner, createProfileCardUseHandler, readProfileCardItems } from "../lib/profile-card-sidebar.ts";
+import { PROFILE_CARD_BUSY_NOTICE, createProfileCardOwner, createProfileCardReader, createProfileCardUseHandler, readProfileCardItems } from "../lib/profile-card-sidebar.ts";
 import { bindSessionProfile, readSessionProfileBinding, readSessionProfileStartupNone, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { createSessionProfileBind, createSessionProfileClear, createSessionProfileStartupBind, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import type { ProfileCardItem } from "../lib/profile-card-widget.ts";
 
 const item = (name: string, markers: Partial<ProfileCardItem> = {}): ProfileCardItem => ({ name, active: false, pinned: false, session: false, ...markers });
@@ -132,4 +135,155 @@ test("the display read marks the session binding without mutating session profil
 	assert.deepEqual(readdirSync(home).sort(), ["profiles.json"], "no store file was written");
 	assert.deepEqual(readProfileCardItems({ configHome: join(home, "missing"), sessionId: "s1", cwd: home }), [], "no profiles file shows no profiles and writes nothing");
 	assert.deepEqual(readdirSync(home).sort(), ["profiles.json"]);
+});
+
+// ---- The session marker follows the profile in effect: explicit choice, then the startup record, else none ----
+
+const profilesJson = `${JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "alpha", profiles: { alpha: {}, beta: {}, gamma: {} } })}
+`;
+const recordEntry = (id: string, data: unknown) => ({ type: "custom", id, parentId: null, timestamp: "2026-10-05T00:00:00Z", customType: SESSION_PROFILE_CUSTOM_TYPE, data });
+function sessionFixture(t: { after(fn: () => void): void }, entries: unknown[], options: { flushed?: boolean } = {}) {
+	const home = scratch(t);
+	t.after(() => resetSessionProfileBindingsForTesting());
+	writeFileSync(join(home, "profiles.json"), profilesJson);
+	const file = join(home, "session.jsonl");
+	if (options.flushed !== false) writeFileSync(file, [{ type: "session", id: "s2", version: 3 }, ...entries].map((row) => JSON.stringify(row)).join("\n"));
+	const session = { getSessionId: () => "s2", getSessionFile: () => file, getBranch: () => entries };
+	const read = () => readProfileCardItems({ configHome: home, sessionId: "s2", cwd: home, session });
+	const snapshot = () => JSON.stringify([readSessionProfileBinding("s2"), readSessionProfileStartupNone("s2"), readdirSync(home).sort(), readFileSync(join(home, "profiles.json"), "utf8"), options.flushed === false ? "" : readFileSync(file, "utf8"), entries]);
+	return { home, read, snapshot };
+}
+const marks = (items: ProfileCardItem[]) => items.map((entry) => `${entry.name}${entry.active ? "*" : ""}${entry.session ? "#" : ""}`);
+function startIndex(home: string, read: () => ProfileCardItem[]) {
+	const owner = createProfileCardOwner({ loadItems: read, configHome: () => home });
+	writeFileSync(join(home, "profile-card.json"), `${JSON.stringify({ schema: "gentle-pi.profile-card/v1", visible: true })}
+`);
+	owner.refreshVisibility();
+	return owner.shown()?.name;
+}
+
+test("an explicit session choice marks its profile and the card starts there", (t) => {
+	const f = sessionFixture(t, [recordEntry("e1", createSessionProfileBind("gamma", {}))]);
+	const before = f.snapshot();
+	assert.deepEqual(marks(f.read()), ["alpha*", "beta", "gamma#"]);
+	assert.equal(startIndex(f.home, f.read), "gamma");
+	assert.equal(f.snapshot().replace(/"profile-card\.json",/, ""), before.replace(/"profile-card\.json",/, ""), "session state, stores and the session file are untouched");
+});
+
+test("a startup-only record marks the startup profile and the card starts there", (t) => {
+	for (const origin of ["global", "local", "repo"] as const) {
+		const f = sessionFixture(t, [recordEntry("s1", createSessionProfileStartupBind(origin, "beta", {}))]);
+		const before = f.snapshot();
+		assert.deepEqual(marks(f.read()), ["alpha*", "beta#", "gamma"], origin);
+		assert.equal(startIndex(f.home, f.read), "beta", origin);
+		assert.equal(f.snapshot().replace(/"profile-card\.json",/, ""), before.replace(/"profile-card\.json",/, ""), `${origin}: nothing mutated`);
+	}
+});
+
+test("a newer clear (legacy or started with no profile) shows no session marker and the card falls back to the active profile", (t) => {
+	for (const clear of [createSessionProfileClear(), createSessionProfileClear("none")]) {
+		const f = sessionFixture(t, [recordEntry("e1", createSessionProfileBind("gamma", {})), recordEntry("e2", clear)]);
+		const before = f.snapshot();
+		assert.deepEqual(marks(f.read()), ["alpha*", "beta", "gamma"]);
+		assert.equal(startIndex(f.home, f.read), "alpha");
+		assert.equal(f.snapshot().replace(/"profile-card\.json",/, ""), before.replace(/"profile-card\.json",/, ""));
+	}
+});
+
+test("a session with no record falls back to the active profile", (t) => {
+	const f = sessionFixture(t, []);
+	const before = f.snapshot();
+	assert.deepEqual(marks(f.read()), ["alpha*", "beta", "gamma"]);
+	assert.equal(startIndex(f.home, f.read), "alpha");
+	assert.equal(f.snapshot().replace(/"profile-card\.json",/, ""), before.replace(/"profile-card\.json",/, ""));
+});
+
+test("a session file not flushed yet falls back to the in-memory binding, still without writes", (t) => {
+	const f = sessionFixture(t, [recordEntry("e1", createSessionProfileBind("beta", {}))], { flushed: false });
+	assert.deepEqual(marks(f.read()), ["alpha*", "beta", "gamma"], "nothing bound in memory yet: no marker");
+	bindSessionProfile("s2", "beta", {});
+	const before = f.snapshot();
+	assert.deepEqual(marks(f.read()), ["alpha*", "beta#", "gamma"]);
+	assert.equal(f.snapshot(), before);
+});
+
+// ---- The session file and profiles.json are re-read only when they change ----
+
+function counted(t: { after(fn: () => void): void }, flushed = true) {
+	const home = scratch(t);
+	t.after(() => resetSessionProfileBindingsForTesting());
+	writeFileSync(join(home, "profiles.json"), profilesJson);
+	const file = join(home, "session.jsonl");
+	const entries: unknown[] = [];
+	const flush = () => writeFileSync(file, [{ type: "session", id: "s3", version: 3 }, ...entries].map((row) => JSON.stringify(row)).join("\n"));
+	if (flushed) flush();
+	let diskReads = 0;
+	let profileReads = 0;
+	const reader = createProfileCardReader({
+		readDisk: (source) => { diskReads++; return readSessionProfileDisk(source); },
+		readProfiles: (path) => { profileReads++; return readProfilesFileResult(path); },
+	});
+	const session = { getSessionId: () => "s3", getSessionFile: () => file, getBranch: () => entries };
+	const read = () => marks(readProfileCardItems({ configHome: home, sessionId: "s3", cwd: home, session }, reader));
+	return { home, entries, flush, reader, read, disk: () => diskReads, profiles: () => profileReads };
+}
+
+test("repeated reads with an unchanged session file and profiles.json read neither again", (t) => {
+	const f = counted(t);
+	f.entries.push(recordEntry("e1", createSessionProfileBind("gamma", {})));
+	f.flush();
+	for (let i = 0; i < 5; i++) assert.deepEqual(f.read(), ["alpha*", "beta", "gamma#"]);
+	assert.equal(f.disk(), 1, "the session file is parsed once");
+	assert.equal(f.profiles(), 1, "profiles.json is parsed once");
+});
+
+test("an appended session record re-reads the file and moves the marker", (t) => {
+	const f = counted(t);
+	f.entries.push(recordEntry("e1", createSessionProfileBind("gamma", {})));
+	f.flush();
+	assert.deepEqual(f.read(), ["alpha*", "beta", "gamma#"]);
+	f.entries.push(recordEntry("e2", createSessionProfileBind("beta", {})));
+	f.flush();
+	assert.deepEqual(f.read(), ["alpha*", "beta#", "gamma"]);
+	assert.equal(f.disk(), 2);
+	f.read();
+	assert.equal(f.disk(), 2, "stable again afterwards");
+});
+
+test("an edited profiles.json is re-read; a changed in-memory binding or invalidate() re-reads the session", (t) => {
+	const f = counted(t);
+	f.entries.push(recordEntry("e1", createSessionProfileBind("gamma", {})));
+	f.flush();
+	f.read();
+	writeFileSync(join(f.home, "profiles.json"), profilesJson.replace('"gamma":{}', '"gamma":{},"delta":{}'));
+	assert.deepEqual(f.read(), ["alpha*", "beta", "gamma#", "delta"]);
+	assert.equal(f.profiles(), 2);
+	assert.equal(f.disk(), 1, "the session file did not change");
+	bindSessionProfile("s3", "beta", {});
+	f.read();
+	assert.equal(f.disk(), 2, "a changed in-memory binding name re-reads");
+	f.reader.invalidate();
+	f.read();
+	assert.equal(f.disk(), 3, "invalidate (after a use) re-reads");
+	assert.equal(f.profiles(), 3, "and profiles.json too");
+});
+
+test("an indeterminate read is never cached as final", (t) => {
+	const f = counted(t, false);
+	f.entries.push(recordEntry("e1", createSessionProfileBind("gamma", {})));
+	// No session file yet: indeterminate, memory has no binding.
+	assert.deepEqual(f.read(), ["alpha*", "beta", "gamma"]);
+	assert.deepEqual(f.read(), ["alpha*", "beta", "gamma"]);
+	assert.equal(f.disk(), 2, "retried on every tick");
+	f.flush();
+	assert.deepEqual(f.read(), ["alpha*", "beta", "gamma#"], "the flushed file now decides");
+	f.read();
+	assert.equal(f.disk(), 3, "and is cached once determinate");
+	// A record newer than disk is indeterminate too: retried, never frozen.
+	f.entries.push(recordEntry("e2", createSessionProfileBind("beta", {})));
+	f.read();
+	f.read();
+	assert.equal(f.disk(), 5);
+	f.flush();
+	assert.deepEqual(f.read(), ["alpha*", "beta#", "gamma"]);
 });

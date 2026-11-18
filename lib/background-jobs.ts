@@ -106,6 +106,8 @@ export interface JobRecord {
 	readonly id: string;
 	readonly kind: JobKind;
 	readonly label: string;
+	/** The supplied label only; label itself can fall back to the command. */
+	readonly explicitLabel?: string;
 	readonly command: string;
 	readonly cwd: string;
 	readonly ownerSessionId: string;
@@ -166,10 +168,12 @@ export function createJobRegistry(deps: JobRegistryDeps) {
 		}
 		const { operations, commandPrefix } = deps.shell(request.cwd);
 		const id = `job-${++counter}`;
+		const explicitLabel = request.label?.trim() || undefined;
 		const job: JobRecord = {
 			id,
 			kind: request.kind ?? "command",
-			label: request.label?.trim() || request.command,
+			label: explicitLabel || request.command,
+			explicitLabel,
 			command: request.command,
 			cwd: request.cwd,
 			ownerSessionId: request.ownerSessionId,

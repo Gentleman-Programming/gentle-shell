@@ -581,6 +581,7 @@ export class AgentRunner {
 			mode: request.mode,
 			prompt: request.prompt,
 			label: taskLabel(request.prompt, request.label),
+			explicitLabel: taskLabel("", request.label) || undefined,
 			cwd: request.cwd,
 			parentSessionId: request.parentSessionId,
 			status: TASK_STATUS.QUEUED,

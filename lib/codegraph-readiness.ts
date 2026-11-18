@@ -416,18 +416,24 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 				// The init lock keeps two sessions on one fresh project from building the same index
 				// twice; after acquiring, the state is re-checked — another init may have finished
 				// while this one waited for the lock.
-				// A linked worktree with a main-checkout index is seeded (copy + sync) instead of
-				// initialized: seeded and target-exists stand done, deferred fails closed like a
-				// skipped lock, and every other outcome falls through to the ordinary init path.
+				// A linked worktree with a main-checkout index is seeded (snapshot + sync) instead
+				// of initialized: seeded and target-exists stand done, deferred fails closed like
+				// a skipped lock, seed-failed stands down, and not-seedable — no parent index — is
+				// a fresh project that falls through to the ordinary init path.
 				let seeded: { outcome: SeedOutcome } | undefined;
 				if (input.seed) seeded = await input.seed(input.cwd);
 				if (seeded !== undefined && (seeded.outcome === "seeded" || seeded.outcome === "target-exists")) {
 					ok = true;
 				} else if (seeded?.outcome === "main-busy") {
-					// The main checkout is mid-write: nothing failed, but there is no index to warm either.
+					// The main checkout's own index is being created right now: nothing failed,
+					// but there is no index to warm either.
 					ok = true;
 					standDown = true;
 				} else if (seeded?.outcome === "deferred") {
+					ok = false;
+				} else if (seeded?.outcome === "seed-failed") {
+					// AGENTS.md: "init is for fresh projects without a parent index" — a failed
+					// copy of an existing parent index stands down; the worktree is never initialized.
 					ok = false;
 				} else {
 					const lock = await acquireInitLock(input.cwd, {

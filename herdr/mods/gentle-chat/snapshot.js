@@ -90,24 +90,83 @@ export async function readFeeds(roots) {
 
 const positive = (n) => Number.isInteger(n) && n > 0;
 
-// Whether each publisher still runs: one `ps` for the pids not checked in the last ALIVE_MS (a
-// crashed session leaves its snapshot behind until the next session start sweeps it). Without
-// `ps` (Windows) every snapshot counts as live.
+// Whether each publisher still runs: one process-list read for the pids not checked in the last
+// ALIVE_MS (a crashed session leaves its snapshot behind until the next session start sweeps it).
+// POSIX hosts ask `ps`. Windows has none, so it asks `tasklist`; a pid that is listed can still be
+// another process (Windows reuses pids), so a feed that carries `identity.startedAt` is also
+// checked against the process's creation time, once per pid for as long as it stays listed.
 const ALIVE_MS = 5000;
+const SAME_START_MS = 10000; // the publisher's own clock reading vs the OS creation time
 const alive = new Map(); // pid -> { ok, at }
+const startVerified = new Map(); // pid -> the startedAt that was matched to that pid's process
+
+const isWindowsHost = () => /^[A-Za-z]:|\\/.test(String(home() ?? ""));
+
+// `tasklist /NH /FO CSV` rows: "Image Name","PID","Session Name","Session#","Mem Usage".
+export const parseTasklistPids = (stdout) =>
+  new Set([...String(stdout).matchAll(/^"[^"]*","(\d+)"/gm)].map((m) => Number(m[1])));
+
+// "<pid>,<creation time in epoch ms>" lines.
+export const parseStartTimes = (stdout) =>
+  new Map([...String(stdout).matchAll(/^(\d+),(\d+)\s*$/gm)].map((m) => [Number(m[1]), Number(m[2])]));
+
+// Unknown on either side means "cannot tell", which counts as the same process.
+export const sameProcess = (startedAt, startMs) =>
+  !Number.isFinite(startedAt) || !Number.isFinite(startMs) || Math.abs(startedAt - startMs) <= SAME_START_MS;
+
+async function windowsRunning() {
+  try {
+    const r = await exec("tasklist", ["/NH", "/FO", "CSV"], { timeout: 4000 });
+    return r.code === 0 ? parseTasklistPids(r.stdout) : undefined;
+  } catch {
+    return undefined; // no tasklist: every snapshot counts as live, as before
+  }
+}
+
+async function windowsStartTimes(pids) {
+  try {
+    const script = `Get-CimInstance Win32_Process | Where-Object { @(${pids.join(",")}) -contains $_.ProcessId } | ForEach-Object { "$($_.ProcessId),$([int64](($_.CreationDate.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds))" }`;
+    const r = await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: 8000 });
+    return r.code === 0 ? parseStartTimes(r.stdout) : new Map();
+  } catch {
+    return new Map();
+  }
+}
+
+async function checkWindows(feeds, want, now) {
+  const running = await windowsRunning();
+  if (!running) return;
+  const startedOf = new Map(feeds.filter((f) => positive(f.identity?.pid) && positive(f.identity?.startedAt)).map((f) => [f.identity.pid, f.identity.startedAt]));
+  for (const pid of want) if (!running.has(pid)) startVerified.delete(pid);
+  const unverified = want.filter((pid) => running.has(pid) && startedOf.has(pid) && startVerified.get(pid) !== startedOf.get(pid));
+  const starts = unverified.length ? await windowsStartTimes(unverified) : new Map();
+  for (const pid of want) {
+    let ok = running.has(pid);
+    if (ok && unverified.includes(pid) && starts.has(pid)) {
+      ok = sameProcess(startedOf.get(pid), starts.get(pid));
+      if (ok) startVerified.set(pid, startedOf.get(pid));
+    }
+    alive.set(pid, { ok, at: now });
+  }
+}
+
 export async function liveFeeds(feeds) {
   const now = Date.now();
   const want = [...new Set(feeds.map((f) => f.identity?.pid).filter(positive))].filter((pid) => !(now - (alive.get(pid)?.at ?? 0) < ALIVE_MS));
   if (want.length) {
-    try {
-      // `ps -p` lists the pids that run; it exits 1 when one of them does not.
-      const r = await exec("ps", ["-o", "pid=", "-p", want.join(",")], { timeout: 3000 });
-      if (r.code === 0 || r.code === 1) {
-        const running = new Set(String(r.stdout).split(/\s+/).map(Number).filter(positive));
-        for (const pid of want) alive.set(pid, { ok: running.has(pid), at: now });
+    if (isWindowsHost()) {
+      await checkWindows(feeds, want, now);
+    } else {
+      try {
+        // `ps -p` lists the pids that run; it exits 1 when one of them does not.
+        const r = await exec("ps", ["-o", "pid=", "-p", want.join(",")], { timeout: 3000 });
+        if (r.code === 0 || r.code === 1) {
+          const running = new Set(String(r.stdout).split(/\s+/).map(Number).filter(positive));
+          for (const pid of want) alive.set(pid, { ok: running.has(pid), at: now });
+        }
+      } catch {
+        // no ps: the publisher's own sweep is the only cleanup
       }
-    } catch {
-      // no ps: the publisher's own sweep is the only cleanup
     }
     if (alive.size > 256) for (const [pid, v] of alive) if (now - v.at > 60000) alive.delete(pid);
   }

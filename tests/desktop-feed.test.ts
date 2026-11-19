@@ -250,6 +250,22 @@ test("should publish the persona the extension resolves for the session cwd", as
 	assert.ok(seen.includes("/w"));
 });
 
+test("should publish the publisher start time only when the input carries a valid one", () => {
+	const base = fixtureInput().identity;
+	assert.equal(buildDesktopFeedSnapshot(fixtureInput({ identity: { ...base, startedAt: 1_700_000_000_000 } })).identity.startedAt, 1_700_000_000_000);
+	for (const bad of [undefined, 0, -5, Number.NaN]) {
+		assert.equal("startedAt" in buildDesktopFeedSnapshot(fixtureInput({ identity: { ...base, startedAt: bad } })).identity, false, String(bad));
+	}
+});
+
+test("should stamp the session feed with the time the agent process started", async (t) => {
+	const before = Date.now();
+	const h = feedHarness(t);
+	await h.start();
+	const startedAt = (h.read().identity as { startedAt?: number }).startedAt;
+	assert.ok(typeof startedAt === "number" && startedAt > 0 && startedAt <= before, `startedAt=${startedAt}`);
+});
+
 test("should keep the persona null when resolving it throws", async (t) => {
 	const h = feedHarness(t, { persona: () => { throw new Error("unreadable"); } });
 	await h.start();

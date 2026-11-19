@@ -194,6 +194,8 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 		if (env.GENTLE_PI_AGENTS_CHILD === "1" || env.PI_PROGRAM_STATUS_APP !== "gentle-shell") return;
 		const agentDir = options.agentDir ?? resolveGentlePiAgentHome(env);
 		const now = options.now ?? Date.now;
+		// When this agent process started, so readers can tell it from a process that reused its pid.
+		const startedAt = Math.round(now() - process.uptime() * 1000);
 		const timers = options.timers ?? realDesktopFeedTimers;
 		const gitFor = options.git ?? ((root: string) => desktopFeedGitRunner(root, env));
 		const readProfile = options.profile ?? createDesktopFeedProfileReader(env);
@@ -284,6 +286,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 					realCwd: session.realCwd,
 					pid: process.pid,
 					ppid: process.ppid,
+					startedAt,
 					ancestors: session.ancestors,
 					mode: ctx.mode,
 					agentDir,

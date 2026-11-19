@@ -2993,6 +2993,7 @@ function armSessionStartWiring(t: test.TestContext): {
 		"esac",
 		'case "$1" in',
 		'  init)',
+		'    if [ -n "$GENTLE_SS_INIT_FAIL" ]; then sleep 0.3; exit 1; fi',
 		'    mkdir -p "$3/.codegraph"',
 		'    printf "index" > "$3/.codegraph/codegraph.db"',
 		"    ;;",
@@ -3120,4 +3121,29 @@ test("session_start announces sync through the real path with the existing wordi
 		{ text: "warming up CodeGraph...", level: "info" },
 		{ text: `CodeGraph warm-up failed in ${cwd}`, level: "warning" },
 	], "the sync branch's notice chain is unchanged by the deferred emission");
+});
+
+test("session_start tells the user to run init manually after the silent retries are exhausted", { timeout: 20_000 }, async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const harness = armSessionStartWiring(t);
+	process.env.GENTLE_SS_INIT_FAIL = "1";
+	t.after(() => {
+		delete process.env.GENTLE_SS_INIT_FAIL;
+	});
+
+	const { notices, calls } = harness.fire(cwd);
+	await untilNotice(notices, /run "codegraph init" manually/, 10_000);
+	assert.deepEqual(notices, [
+		{ text: "initializing the current repo for CodeGraph...", level: "info" },
+		{ text: `codegraph init failed in ${cwd} after 3 retries; run "codegraph init" manually`, level: "warning" },
+	], "the exhaustion notice names the manual action and the retry count after the start line");
+	assert.equal(
+		calls().filter((call) => call === "init").length,
+		4,
+		"one initial run plus three silent retries through the real session-start path",
+	);
+	assert.ok(!existsSync(join(cwd, ".codegraph", "codegraph.db")), "the failing init created no database");
 });

@@ -148,6 +148,10 @@ function daemonlessOk(outcome: DaemonlessRefresh): boolean {
 }
 
 const INIT_TIMEOUT_MS = 600_000;
+/** The silent retries a failed session-start init run gets inside the held init lock: one
+ * initial attempt plus this many. Each attempt draws its own full INIT_TIMEOUT_MS budget and
+ * reports its spawn to the lease; only the exhausted failure reaches the user. */
+export const INIT_RETRY_COUNT = 3;
 /** How long a killed command may take to be gone before the timeout is reported anyway. */
 const KILL_WAIT_MS = 10_000;
 /** Grace a timed-out command gets to obey SIGTERM before the unignorable SIGKILL ends its tree. */
@@ -491,7 +495,7 @@ export interface ReadinessInput {
 	/** Warms the daemon; true when it worked. */
 	warm(cwd: string): Promise<boolean>;
 	onStart?(action: IndexAction): void;
-	onIndexed?(result: { action: IndexAction; ok: boolean; daemonAlive?: boolean; exitCode?: number | null; stderrTail?: string }): void;
+	onIndexed?(result: { action: IndexAction; ok: boolean; daemonAlive?: boolean; exitCode?: number | null; stderrTail?: string; /** How many `codegraph init` runs the held-lock loop attempted (one initial plus silent retries); present only when that loop ran. */ initAttempts?: number }): void;
 	onWarmStart?(): void;
 }
 
@@ -534,6 +538,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			const syncInfo = lastInfoSink();
 			let standDown = false;
 			let alive = false;
+			let initAttempts: number | undefined;
 			if (action === "sync") {
 			// A live daemon holds the writer lock and its index is never stale: a CLI `sync -q` coexists
 			// with it (daemon.log auto-syncs) — "if an index exists, do not re-index — only sync". Without
@@ -593,7 +598,21 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 							if (rechecked === "present") ok = true;
 							// The plan's link refusal, rechecked under the lock: a `.codegraph` that became a link
 							// while this session waited is not this session's to initialize either.
-							else if (rechecked === "absent" && safeIndexDirectory(input.cwd)) ok = await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS, (pid, proxy) => lock.adopt(pid, proxy));
+							else if (rechecked === "absent" && safeIndexDirectory(input.cwd)) {
+								// A failed init process is retried silently inside the SAME held lock — one
+								// initial run plus up to INIT_RETRY_COUNT retries — before the session gives up
+								// and the failure notice tells the user to run init by hand. A run that
+								// resolves true ends the loop at once; a thrown run keeps the existing
+								// semantics (no retry, the error surfaces). Unlike the sync retry, every
+								// attempt draws its own full INIT_TIMEOUT_MS budget: a legitimately slow
+								// first index must not eat the retries' time.
+								const adoptChild = (pid: number, proxy: boolean): void => lock.adopt(pid, proxy);
+								ok = false;
+								for (let attempt = 1; attempt <= INIT_RETRY_COUNT + 1 && !ok; attempt += 1) {
+									initAttempts = attempt;
+									ok = await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS, adoptChild);
+								}
+							}
 							else ok = false;
 						} finally {
 							lock.release();
@@ -603,7 +622,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 					}
 				}
 			}
-			try { input.onIndexed?.(action === "sync" ? { action, ok, daemonAlive: alive, ...(syncInfo.get() ?? {}) } : { action, ok }); } catch { /* never worth stopping the warm-up */ }
+			try { input.onIndexed?.(action === "sync" ? { action, ok, daemonAlive: alive, ...(syncInfo.get() ?? {}) } : { action, ok, ...(initAttempts === undefined ? {} : { initAttempts }) }); } catch { /* never worth stopping the warm-up */ }
 			// A child that just seeded or initialised its own worktree never warms a daemon: it must
 			// not reach for the parent-shared project daemon at session start, and maybeRewarm
 			// already covers its queries lazily.

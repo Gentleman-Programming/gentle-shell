@@ -58,11 +58,30 @@ function isCwdIndependentPath(path: string): boolean {
 	return path.length >= 3 && path.charAt(1) === ":" && (path.charAt(2) === BS || path.charAt(2) === "/");
 }
 
-/** The quoted spans of one shim line: `"%_prog%"  "%dp0%\...\cli.js" %*` holds two. */
-function quotedSpans(line: string): string[] {
-	const spans: string[] = [];
-	for (const match of line.matchAll(/"([^"\r\n]*)"/g)) spans.push(match[1]);
-	return spans;
+/** The exact prefix npm 9+ cmd-shims put on the invocation line before "%_prog%"; older npm
+ * ships the same invocation without it. */
+const MODERN_INVOCATION_PREFIX = "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% |";
+
+/** The one invocation shape a direct spawn reproduces, parsed token by token: npm's modern
+ * prefix (optional), "%_prog%", exactly one quoted "%dp0%"-anchored script span, then the
+ * forwarding %* and nothing else. A wrapper that inserts a fixed argument — a --profile flag
+ * before or after the script — or any extra token returns undefined, so the caller keeps
+ * spawning the shim through cmd.exe exactly as before. Whitespace between the tokens is free;
+ * the tokens themselves are not. */
+function parseInvocationLine(line: string): string | undefined {
+	let rest = line.trim();
+	if (rest.startsWith(MODERN_INVOCATION_PREFIX)) rest = rest.slice(MODERN_INVOCATION_PREFIX.length).trim();
+	const progToken = '"%_prog%"';
+	if (!rest.startsWith(progToken)) return undefined;
+	rest = rest.slice(progToken.length).trim();
+	const scriptOpen = '"%dp0%';
+	if (!rest.startsWith(scriptOpen)) return undefined;
+	const closeQuote = rest.indexOf('"', scriptOpen.length);
+	if (closeQuote < 0) return undefined;
+	const scriptSpan = rest.slice(1, closeQuote);
+	rest = rest.slice(closeQuote + 1).trim();
+	if (rest !== "%*" || scriptSpan.length === 0) return undefined;
+	return scriptSpan;
 }
 
 /**
@@ -71,25 +90,28 @@ function quotedSpans(line: string): string[] {
  * `%dp0%` to the shim's own directory, an `IF EXIST "%dp0%\node.exe"` selection that runs a node
  * beside the shim when present and the bare `node` otherwise (`%_prog%`), and exactly one
  * invocation line forwarding `%*` to `"%_prog%"` with exactly one quoted `%dp0%`-anchored script.
- * The parse mirrors that logic literally; anything else — pnpm-style shims, hand-written
- * wrappers, a `..`-traversal or missing target, an unstable relative spelling — is unprovable and
- * returns null, so the caller keeps spawning the shim through cmd.exe exactly as before.
+ * The parse mirrors that logic literally, accepting only npm's own invocation tokens in order
+ * — the modern `endLocal` prefix where npm ships it — with free whitespace between them;
+ * anything else — pnpm-style shims, hand-written wrappers, a fixed argument the spawn cannot
+ * reproduce, a `..`-traversal or missing target, an unstable relative spelling — is unprovable
+ * and returns null, so the caller keeps spawning the shim through cmd.exe exactly as before.
  */
 function parseCmdShim(text: string, shimDir: string, exists: (path: string) => boolean): CodegraphEntry | null {
 	if (!text.includes("SET dp0=%~dp0")) return null;
 	if (!text.includes('IF EXIST "%dp0%' + BS + 'node.exe"')) return null;
-	// Exactly one invocation line may exist, and it must carry exactly one %dp0%-anchored script:
-	// zero (an absolute or %~dp0% script), two, or a second invocation line are all shapes the
-	// direct spawn cannot prove it reproduces.
-	let scriptSpan: string | undefined;
+	// Exactly one invocation line may exist, and it must be the one supported shape token for
+	// token: a second invocation line, a missing script, or a wrapper's fixed argument are all
+	// shapes the direct spawn cannot prove it reproduces.
+	let invocationLine: string | undefined;
 	let invocationLines = 0;
 	for (const line of text.split(/\r?\n/)) {
 		if (!line.includes('"%_prog%"') || !line.includes("%*")) continue;
 		invocationLines += 1;
-		const dp0Spans = quotedSpans(line).filter((span) => span.startsWith("%dp0%"));
-		if (dp0Spans.length === 1) scriptSpan = dp0Spans[0];
+		invocationLine = line;
 	}
-	if (invocationLines !== 1 || scriptSpan === undefined) return null;
+	if (invocationLines !== 1 || invocationLine === undefined) return null;
+	const scriptSpan = parseInvocationLine(invocationLine);
+	if (scriptSpan === undefined) return null;
 	const script = shimDir + scriptSpan.slice("%dp0%".length);
 	if (!isCwdIndependentPath(script) || !exists(script)) return null;
 	// The same IF EXIST the shim runs: node.exe beside the shim wins, else the bare node, whose
@@ -129,9 +151,15 @@ let cached: CodegraphEntry | null | undefined;
  * verified to exist; every other platform (and every unprovable shim) returns null. Callers treat
  * null as "keep the cmd.exe string spawn" — the resolution can only ever remove spawns, never
  * change which codegraph installation runs. The memo holds for the whole process and covers null
- * alike, so a PATH or shim that changes mid-run cannot produce two different answers.
+ * alike, so a PATH or shim that changes mid-run cannot produce two different answers — with one
+ * exception: a memoized entry whose script has since vanished is re-resolved, because serving it
+ * would start node on a removed entrypoint (a module-load exit the caller cannot tell from a
+ * spawn ENOENT and so never retries around).
  */
 export function resolveCodegraphEntry(io: ResolveCodegraphIo = defaultIo): CodegraphEntry | null {
+	// A cached entry survives only while its entrypoint still exists; a null resolution has
+	// nothing to revalidate and stays memoized.
+	if (cached !== null && cached !== undefined && !io.exists(cached.script)) cached = undefined;
 	if (cached !== undefined) return cached;
 	try {
 		cached = resolveCodegraphEntryWith(io);

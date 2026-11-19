@@ -175,6 +175,12 @@ test("resolveCodegraphEntry: unknown shim shapes fail closed", () => {
 			'"%_prog%"  "' + ["C:", "elsewhere", "cli.js"].join(BS) + '" %*')],
 		["missing dp0 mechanism", npmCmdShim(SCRIPT_REL, modernTail).replaceAll("SET dp0=%~dp0", "REM no dp0 here")],
 		["missing node selection block", npmCmdShim(SCRIPT_REL, modernTail).split("\n").filter((line) => !line.includes("node.exe")).join("\n")],
+		["a fixed argument after the script", npmCmdShim(SCRIPT_REL, (rel) =>
+			'"%_prog%"  "%dp0%' + BS + rel + '" --profile local %*')],
+		["a fixed argument before the script", npmCmdShim(SCRIPT_REL, (rel) =>
+			'"%_prog%" --profile local "%dp0%' + BS + rel + '" %*')],
+		["extra tokens after %*", npmCmdShim(SCRIPT_REL, (rel) =>
+			'"%_prog%"  "%dp0%' + BS + rel + '" %* extra')],
 	];
 	for (const [name, text] of cases) {
 		clearCodegraphResolveCache();
@@ -237,17 +243,20 @@ test("resolveCodegraphEntry: the resolution is memoized for the process until cl
 	] });
 	assert.deepEqual(resolveCodegraphEntry(first.io), { node: NODE_EXE, script: SCRIPT });
 
-	// The world changes (another spelling of the shim entirely) yet the process-lifetime memo
-	// holds: one resolution per process is the whole point of the fix.
+	// The world changes around the shim entirely, yet the process-lifetime memo holds while
+	// the installation is unchanged: the cached script still exists, so the cache hit
+	// revalidates only that existence, never PATH or the shim file.
 	const otherScript = [BIN, "other.js"].join(BS);
 	const second = fakeWorld({ path: BIN, files: [
 		[[BIN, "codegraph.cmd"].join(BS), npmCmdShim("other.js", plainTail)],
+		[NODE_EXE, ""],
+		[SCRIPT, "cli"],
 		[otherScript, "cli"],
 	] });
 	assert.deepEqual(resolveCodegraphEntry(second.io), { node: NODE_EXE, script: SCRIPT }, "a cache hit answers without re-reading PATH or the shim");
 
 	clearCodegraphResolveCache();
-	assert.deepEqual(resolveCodegraphEntry(second.io), { node: "node", script: otherScript }, "clearing re-reads the shim");
+	assert.deepEqual(resolveCodegraphEntry(second.io), { node: NODE_EXE, script: otherScript }, "clearing re-reads the shim");
 
 	// Null is memoized just the same: a resolution that failed does not retry per spawn.
 	clearCodegraphResolveCache();
@@ -260,4 +269,26 @@ test("resolveCodegraphEntry: the resolution is memoized for the process until cl
 	assert.equal(resolveCodegraphEntry(laterGood.io), null, "a failed resolution stays cached for the process");
 	clearCodegraphResolveCache();
 	assert.deepEqual(resolveCodegraphEntry(laterGood.io), { node: "node", script: SCRIPT });
+});
+
+test("resolveCodegraphEntry: a cached entry whose script vanished is resolved again", () => {
+	clearCodegraphResolveCache();
+	const first = fakeWorld({ path: BIN, files: [
+		[[BIN, "codegraph.cmd"].join(BS), npmCmdShim(SCRIPT_REL, modernTail)],
+		[NODE_EXE, ""],
+		[SCRIPT, "cli"],
+	] });
+	assert.deepEqual(resolveCodegraphEntry(first.io), { node: NODE_EXE, script: SCRIPT });
+
+	// An update replaced the entrypoint and removed the old script: the cached entry must not
+	// keep serving the vanished path (node would start, fail the module load, and the caller
+	// would never fall back), so the resolution finds the updated installation instead.
+	const movedScript = [BIN, "moved.js"].join(BS);
+	const updated = fakeWorld({ path: BIN, files: [
+		[[BIN, "codegraph.cmd"].join(BS), npmCmdShim("moved.js", plainTail)],
+		[NODE_EXE, ""],
+		[movedScript, "cli"],
+	] });
+	assert.deepEqual(resolveCodegraphEntry(updated.io), { node: NODE_EXE, script: movedScript }, "the vanished script invalidates the cached entry and resolves the updated installation");
+	assert.deepEqual(resolveCodegraphEntry(updated.io), { node: NODE_EXE, script: movedScript }, "the re-resolved entry is memoized while its script exists");
 });

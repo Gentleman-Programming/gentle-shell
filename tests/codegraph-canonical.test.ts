@@ -15,6 +15,13 @@ function dir(t: test.TestContext, name: string): string {
 	return cwd;
 }
 
+/** A directory link every host can create: a junction on Windows, where an ordinary directory
+ * symlink needs Developer Mode or elevation, an ordinary symlink on POSIX so retargeting the
+ * link stays exercised there. */
+function linkDir(target: string, path: string): void {
+	symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
+}
+
 test("foldRoot: win32 lowercases and strips every trailing separator except a bare drive root", () => {
 	assert.equal(foldRoot(["C:", "Proj", "Src", "", ""].join(BS), "win32"), ["c:", "proj", "src"].join(BS));
 	assert.equal(foldRoot(`C:${BS}`, "win32"), `c:${BS}`, "a bare drive root keeps its separator");
@@ -71,6 +78,42 @@ interface FoldPhase {
 	stats: number;
 	result: string;
 }
+
+test("the win32 fold memoizes one unfold per spelling while the mapping stays valid", (t) => {
+	const base = dir(t, "memo");
+	const first = join(base, "first");
+	const second = join(base, "second");
+	mkdirSync(first);
+	mkdirSync(second);
+	const link = join(base, "link");
+	linkDir(first, link);
+	const firstKey = canonicalRoot(first, "win32");
+	assert.equal(canonicalRoot(link, "win32"), firstKey, "a linked spelling folds to the key of its target");
+	assert.equal(canonicalRoot(`${link}//`, "win32"), firstKey, "a separator spelling resolves to the same memo entry");
+	rmSync(link);
+	linkDir(second, link);
+	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "a retargeted link is revalidated instead of reusing the stale mapping");
+	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "the refreshed mapping serves the next caller");
+	resetCanonicalMemo();
+	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "after the reset the new target is read fresh");
+});
+
+test("off Windows every call reads the filesystem and never diverges from the revalidated fold", (t) => {
+	const base = dir(t, "passthrough");
+	const first = join(base, "first");
+	const second = join(base, "second");
+	mkdirSync(first);
+	mkdirSync(second);
+	const link = join(base, "link");
+	linkDir(first, link);
+	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(first, "win32"), "the linked spelling folds to the key of its target");
+	rmSync(link);
+	linkDir(second, link);
+	assert.equal(canonicalRoot(link, "darwin"), canonicalRoot(second, "darwin"), "off Windows the flipped link is read fresh on every call");
+	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "the win32 fold revalidates the flipped link instead of serving the stale mapping");
+	resetCanonicalMemo();
+	assert.equal(canonicalRoot(link, "darwin"), canonicalRoot(second, "darwin"), "unchanged after a memo reset it never needed");
+});
 
 /** Runs the case-fold memo scenario in a worker thread, measuring every foldRoot call by
  * the statSync calls it costs. The worker's module registry is fresh, so the module under

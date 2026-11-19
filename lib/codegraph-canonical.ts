@@ -7,9 +7,11 @@ export type CanonicalPlatform = typeof process.platform;
 /** A backslash without a backslash literal, so this file never mangles in tool transport. */
 const BS = String.fromCharCode(92);
 
-/** One unfolded form per resolved spelling for the process's lifetime, win32 only: every
- * realpathSync.native on a UNC path is an SMB round-trip chain, so the daemon registry, the lease
- * paths and the workspace guard pay it once per spelling instead of per call. POSIX never touches it. */
+/** One unfolded form per resolved spelling, win32 only: every realpathSync.native on a UNC path
+ * is an SMB round-trip chain, so the daemon registry, the lease paths and the workspace guard pay
+ * it once per spelling instead of per call. Each hit is revalidated with two metadata stats
+ * before use, so a mapping can never outlive the alias it was recorded from. POSIX never
+ * touches it. */
 const unfoldedMemo = new Map<string, string>();
 
 /** Tests reset the memo so a fixture rewritten between calls is read again; production never calls it. */
@@ -20,6 +22,20 @@ export function resetCanonicalMemo(): void {
 /** A bare drive root (`C:` plus one separator): its separator IS the path, so folding keeps it. */
 function isDriveRoot(path: string): boolean {
 	return path.length === 3 && path.charCodeAt(1) === 58 && (path.endsWith(BS) || path.endsWith("/"));
+}
+
+/** Whether the spelling still resolves to the identity the memo recorded: the alias's own stat
+ * follows today's link, so its dev/ino pair matching the recorded target's proves the mapping
+ * survived (a retargeted junction or symlink compares unequal); any stat failure simply
+ * re-walks, because validation must never throw. */
+function stillResolvesTo(alias: string, recorded: string): boolean {
+	try {
+		const aliasStat = statSync(alias);
+		const recordedStat = statSync(recorded);
+		return aliasStat.dev === recordedStat.dev && aliasStat.ino === recordedStat.ino;
+	} catch {
+		return false;
+	}
 }
 
 /** The filesystem walk behind unfoldRoot, without the memo: the native realpath first (on Windows it
@@ -40,15 +56,18 @@ function unfoldRootOnce(path: string): string {
 
 /**
  * The true path on disk with fallbacks, never throwing. On Windows the unfolded form is remembered
- * for the process's lifetime — one SMB round-trip chain per spelling instead of one per call — keyed
- * by the resolved spelling, so separator variants share one entry. Off Windows every call takes the
- * filesystem walk unchanged and nothing is remembered.
+ * per resolved spelling — one SMB round-trip chain per spelling instead of one per call, separator
+ * variants sharing one entry — but a remembered mapping is honored only while the spelling still
+ * resolves to the identity it was recorded from, so an alias retargeted to another checkout (a
+ * junction or symlink flipped mid-session) re-walks instead of pinning lease and daemon identity
+ * to the old target. Off Windows every call takes the filesystem walk unchanged and nothing is
+ * remembered.
  */
 export function unfoldRoot(path: string, platform: CanonicalPlatform = process.platform): string {
 	if (platform !== "win32") return unfoldRootOnce(path);
 	const key = resolve(path);
 	const memoized = unfoldedMemo.get(key);
-	if (memoized !== undefined) return memoized;
+	if (memoized !== undefined && stillResolvesTo(key, memoized)) return memoized;
 	const unfolded = unfoldRootOnce(path);
 	unfoldedMemo.set(key, unfolded);
 	return unfolded;
@@ -167,7 +186,7 @@ export function foldRoot(path: string, platform: CanonicalPlatform = process.pla
 }
 
 /** One directory in any spelling folds to one key: same directory, same daemon, same lock token.
- * On win32 the unfold behind the key comes from the process-lifetime memo. */
+ * On win32 the unfold behind the key comes from the spelling-keyed, revalidated memo. */
 export function canonicalRoot(path: string, platform: CanonicalPlatform = process.platform): string {
 	return foldRoot(unfoldRoot(resolve(path), platform), platform);
 }

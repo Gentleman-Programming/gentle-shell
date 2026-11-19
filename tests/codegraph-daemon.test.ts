@@ -19,6 +19,8 @@ interface FakeDaemon {
 	registryDir: string;
 	/** Resolves when the server is listening and its socket file exists. */
 	ready: Promise<void>;
+	/** How many clients the server accepted; the budget tests assert no socket was opened. */
+	connections: () => number;
 }
 
 /**
@@ -47,10 +49,14 @@ function fakeDaemon(
 	mkdirSync(registryDir, { recursive: true });
 	const socketPath = fakeDaemonSocketPath(process.platform, home);
 	let resolveReady: () => void = () => {};
-	const ready = new Promise<void>((resolve) => {
+	let rejectReady: (error: Error) => void = () => {};
+	const ready = new Promise<void>((resolve, reject) => {
 		resolveReady = resolve;
+		rejectReady = reject;
 	});
+	let connections = 0;
 	const server = net.createServer((socket) => {
+		connections++;
 		if (hello !== undefined) socket.write(`${hello}\n`);
 		let buffer = "";
 		socket.on("data", (chunk: Buffer) => {
@@ -66,10 +72,13 @@ function fakeDaemon(
 			}
 		});
 	});
+	// A listen failure — a socket path past the platform's length limit, a busy pipe — arrives as an
+	// 'error' event; routed into the promise it rejects ready with the cause instead of hanging.
+	server.on("error", rejectReady);
 	server.listen(socketPath, () => resolveReady());
 	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
 	writeFileSync(join(registryDir, "record.json"), JSON.stringify({ root: project, socketPath, startedAt: 1, pid: process.pid }));
-	return { socketPath, registryDir, ready };
+	return { socketPath, registryDir, ready, connections: () => connections };
 }
 
 const HELLO = JSON.stringify({ codegraph: "1.6.0", protocol: 1 });
@@ -114,6 +123,14 @@ test("exploreViaDaemon reports a daemon that accepts but never says hello as a t
 		await exploreViaDaemon(project, "codegraph_explore", { query: "main" }, 5_000, daemon.registryDir, 50),
 		{ status: "timeout" },
 	);
+});
+
+test("exploreViaDaemon opens no socket once the deadline is spent", async (t) => {
+	const project = dir(t, "spent");
+	const daemon = fakeDaemon(t, project, HELLO, INITIALIZED, ANSWER);
+	await daemon.ready;
+	assert.deepEqual(await exploreViaDaemon(project, "codegraph_explore", { query: "main" }, 0, daemon.registryDir), { status: "unavailable" }, "a spent deadline answers without a conversation");
+	assert.equal(daemon.connections(), 0, "the clamp inside ask must not buy one more socket attempt");
 });
 
 test("null and other non-object JSON replies never reach dispatch on either transport", async (t) => {

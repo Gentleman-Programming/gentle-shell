@@ -265,7 +265,8 @@ function ask(socketPath: string, tool: string, args: Record<string, unknown>, ti
 /**
  * Runs one CodeGraph MCP tool call through a daemon already serving `root`, the same text the CLI
  * prints but without a process of its own. It only reads the daemon registry and connects: it never
- * starts a daemon, and never throws. A silent daemon hands the rest of the budget to the next one.
+ * starts a daemon, and never throws. A silent daemon hands the rest of the budget to the next one,
+ * and a spent budget opens no socket at all.
  */
 export async function exploreViaDaemon(
 	root: string,
@@ -279,7 +280,11 @@ export async function exploreViaDaemon(
 		const deadline = Date.now() + timeoutMs;
 		let silent = false;
 		for (const socketPath of daemonSockets(root, registryDir)) {
-			const result = await ask(socketPath, tool, args, deadline - Date.now(), helloTimeoutMs);
+			// Discovery and every earlier attempt already spent part of the budget; a spent deadline
+			// opens no socket, because ask's own clamp would otherwise buy one more attempt.
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) break;
+			const result = await ask(socketPath, tool, args, remaining, helloTimeoutMs);
 			if (result.status === "silent") {
 				silent = true;
 				continue;

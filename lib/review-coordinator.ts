@@ -4,6 +4,132 @@ type Body = Record<string, unknown>;
 const record = (value: unknown): Body => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Body : {};
 const nonempty = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 
+// odd/tasks/review-one-call.md S5: what each finding says, in the reviewer's
+// own words. Each id is looked up in `findings` by exact id and its claim is
+// copied unchanged, cut at the last whole character within
+// REVIEW_FINDING_CLAIM_MAX_BYTES. Claims are added in `ids` order until the
+// next one would pass REVIEW_FINDING_CLAIMS_MAX_BYTES in total; the rest get no
+// entry. An id with no matching finding, or with more than one, is omitted.
+// Beside them, `truncated` lists the ids whose kept claim is a cut prefix and
+// `omitted` the ids whose one matching claim the total limit left out, so
+// neither passes for a whole claim. Reviewer text is untrusted: nothing routes
+// on it. Shared by the facade's approved closure (advisory findings) and the
+// run's correction request (correction findings).
+export const REVIEW_FINDING_CLAIM_MAX_BYTES = 1024;
+export const REVIEW_FINDING_CLAIMS_MAX_BYTES = 8192;
+
+function withinUtf8Bytes(text: string, maximum: number): string {
+	if (Buffer.byteLength(text) <= maximum) return text;
+	let kept = "", bytes = 0;
+	for (const character of text) {
+		bytes += Buffer.byteLength(character);
+		if (bytes > maximum) break;
+		kept += character;
+	}
+	return kept;
+}
+
+export function boundedFindingClaims(ids: readonly string[], findings: readonly { id: string; claim: string }[]): { claims: Record<string, string>; truncated: string[]; omitted: string[] } | undefined {
+	const entries: [string, string][] = [];
+	const truncated: string[] = [], omitted: string[] = [];
+	let total = 0;
+	for (const id of ids) {
+		const matches = findings.filter((finding) => finding.id === id);
+		if (matches.length !== 1) continue;
+		const claim = withinUtf8Bytes(matches[0]!.claim, REVIEW_FINDING_CLAIM_MAX_BYTES);
+		if (omitted.length > 0 || total + Buffer.byteLength(claim) > REVIEW_FINDING_CLAIMS_MAX_BYTES) { omitted.push(id); continue; }
+		total += Buffer.byteLength(claim);
+		entries.push([id, claim]);
+		if (claim !== matches[0]!.claim) truncated.push(id);
+	}
+	// fromEntries defines own data properties, so no id can reach a prototype.
+	return entries.length === 0 ? undefined : { claims: Object.fromEntries(entries), truncated, omitted };
+}
+
+// The provider fields of a correction-request finding relayed in
+// correction_findings, unchanged. The claim travels bounded in
+// correction_finding_claims; evidence and proof references stay in the relayed
+// STATUS envelope.
+const CORRECTION_FINDING_REQUIRED = ["id", "lens", "location", "severity"] as const;
+const CORRECTION_FINDING_OPTIONAL = ["evidence_class", "causal_disposition"] as const;
+
+/** Relay keys for a correction request's findings, or none when any entry is malformed. Never routed on. */
+function correctionFindingKeys(request: unknown): Body {
+	const findings = record(request).findings;
+	if (!Array.isArray(findings) || findings.length === 0) return {};
+	const plain = (value: unknown): value is Body => value !== null && typeof value === "object" && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+	if (!findings.every((finding) => plain(finding) && [...CORRECTION_FINDING_REQUIRED, "claim"].every((key) => Object.hasOwn(finding, key) && nonempty(finding[key]))
+		&& CORRECTION_FINDING_OPTIONAL.every((key) => !Object.hasOwn(finding, key) || typeof finding[key] === "string"))) return {};
+	const entries = findings as Body[];
+	const listed = entries.map((finding) => Object.fromEntries([...CORRECTION_FINDING_REQUIRED, ...CORRECTION_FINDING_OPTIONAL]
+		.filter((key) => Object.hasOwn(finding, key)).map((key) => [key, finding[key]])));
+	const bounded = boundedFindingClaims(entries.map((finding) => finding.id as string), entries as { id: string; claim: string }[]);
+	return { correction_findings: listed,
+		...(bounded === undefined ? {} : { correction_finding_claims: bounded.claims,
+			...(bounded.truncated.length === 0 ? {} : { correction_finding_claims_truncated: bounded.truncated }),
+			...(bounded.omitted.length === 0 ? {} : { correction_finding_claims_omitted: bounded.omitted }) }) };
+}
+
+// The provider fields of a non-blocking finding relayed in
+// non_blocking_findings, unchanged; the claim travels bounded in
+// non_blocking_finding_claims.
+const NON_BLOCKING_FINDING_REQUIRED = ["id", "severity", "disposition"] as const;
+const NON_BLOCKING_FINDING_OPTIONAL = ["lens", "location"] as const;
+const NON_BLOCKING_FINDING_FIELDS = ["id", "lens", "location", "severity", "disposition"] as const;
+export const NON_BLOCKING_FINDINGS_MAX_BYTES = 16 * 1024;
+
+/**
+ * The run's nested provider record without the raw `non_blocking_findings`
+ * (L19): the bounded top-level keys are the only copy. Nothing else changes.
+ */
+function withoutRawNonBlockingFindings(result: Body): Body {
+	const nested = result.result;
+	if (nested === null || typeof nested !== "object" || Array.isArray(nested) || !Object.hasOwn(nested, "non_blocking_findings")) return result;
+	const { non_blocking_findings: _raw, ...rest } = nested as Body;
+	return { ...result, result: rest };
+}
+
+/**
+ * Relay keys for STATUS `non_blocking_findings` (gentle-ai#6088), or none when
+ * the provider sent no such key or any part of it is malformed. An empty
+ * provider list is the provider's answer ("none") and is relayed as such.
+ * Never routed on.
+ */
+function nonBlockingFindingKeys(status: unknown): Body {
+	const native = record(status);
+	if (!Object.hasOwn(native, "non_blocking_findings")) return {};
+	const value = native.non_blocking_findings;
+	const plain = (entry: unknown): entry is Body => entry !== null && typeof entry === "object" && !Array.isArray(entry) && [Object.prototype, null].includes(Object.getPrototypeOf(entry));
+	if (!plain(value) || !nonempty(value.statement) || !Array.isArray(value.findings)) return {};
+	const findings = value.findings as unknown[];
+	if (!findings.every((finding) => plain(finding) && NON_BLOCKING_FINDING_REQUIRED.every((key) => Object.hasOwn(finding, key) && nonempty(finding[key]))
+		&& Object.hasOwn(finding, "claim") && typeof finding.claim === "string"
+		&& NON_BLOCKING_FINDING_OPTIONAL.every((key) => !Object.hasOwn(finding, key) || nonempty(finding[key])))) return {};
+	// The list is bounded too (L19): findings are listed in provider order until
+	// the next one would bring the list past NON_BLOCKING_FINDINGS_MAX_BYTES of
+	// JSON; the rest are only counted. Claims are bounded over the listed ones.
+	const listed: Body[] = [];
+	let listBytes = 2;
+	for (const finding of findings as Body[]) {
+		const entry = Object.fromEntries(NON_BLOCKING_FINDING_FIELDS.filter((key) => Object.hasOwn(finding, key)).map((key) => [key, finding[key]]));
+		const entryBytes = Buffer.byteLength(JSON.stringify(entry)) + (listed.length === 0 ? 0 : 1);
+		if (listBytes + entryBytes > NON_BLOCKING_FINDINGS_MAX_BYTES) break;
+		listBytes += entryBytes;
+		listed.push(entry);
+	}
+	const omittedCount = findings.length - listed.length;
+	const entries = (findings as Body[]).slice(0, listed.length);
+	const bounded = boundedFindingClaims(entries.map((finding) => finding.id as string), entries as { id: string; claim: string }[]);
+	// Statement text shares the per-claim UTF-8 cap; the host marks a cut prefix explicitly.
+	const statement = withinUtf8Bytes(value.statement, REVIEW_FINDING_CLAIM_MAX_BYTES);
+	return { non_blocking_findings: { statement, findings: listed,
+		...(statement === value.statement ? {} : { statement_truncated: true }) },
+		...(omittedCount === 0 ? {} : { non_blocking_findings_omitted_count: omittedCount }),
+		...(bounded === undefined ? {} : { non_blocking_finding_claims: bounded.claims,
+			...(bounded.truncated.length === 0 ? {} : { non_blocking_finding_claims_truncated: bounded.truncated }),
+			...(bounded.omitted.length === 0 ? {} : { non_blocking_finding_claims_omitted: bounded.omitted }) }) };
+}
+
 export interface ReviewCoordinatorInput {
 	workspaceRoot?: string;
 	baseRef?: string;
@@ -74,6 +200,12 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  // The facade's marks on those claims: ids whose claim is a cut prefix, and ids
  // whose claim the per-closure limit left out. Relayed with the claims only.
  let closureClaimMarks: Body = {};
+ // The correction request's findings and their bounded claims, once STATUS
+ // asked for a correction plan: carried by every result after it. Never routed on.
+ let correctionKeys: Body = {};
+ // The provider's non-blocking findings of the STATUS that stopped the run on
+ // a correction request or a stop (escalated). Never routed on.
+ let nonBlockingKeys: Body = {};
  // That closure's capture envelope, kept unread for cancelled only while the
  // retained closure carries advisory_findings.
  let pendingCapture: Body | undefined;
@@ -112,9 +244,11 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  // caller resumes the run with these plus the chosen untracked selection, so
  // START keeps the requested lenses and request context.
  const { untrackedScope: _scope, intendedUntracked: _paths, ...resumeInput } = structuredClone(input);
- const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result, forecasts, reviewer_runs: reviewerRuns,
+ const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result: withoutRawNonBlockingFindings(result), forecasts, reviewer_runs: reviewerRuns,
   ...(closureFindings !== undefined ? { advisory_findings: closureFindings.value } : {}),
   ...(closureFindings !== undefined && closureClaims !== undefined ? { advisory_finding_claims: closureClaims.value, ...closureClaimMarks } : {}),
+  ...structuredClone(correctionKeys),
+  ...structuredClone(nonBlockingKeys),
   ...(outcome === "selection-required" ? { resume_input: resumeInput } : {}),
   ...(lineage === undefined ? {} : { lineage_id: lineage }), metrics: { elapsed_ms: now() - began, facade_calls: steps.length, steps } });
  const status = () => invoke("gentle_review", { operation: "status", lineageId: lineage, ...selectorInput });
@@ -145,7 +279,11 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   }
   if (details.failure !== undefined || details.native_failure !== undefined || details.reconciliation !== undefined || details.reconciliation_failure !== undefined) return finish("blocked", details);
   const transition = record(native.next_transition);
-  if (transition.kind === "stop") return finish("stopped", details);
+  if (transition.kind === "stop") {
+   // Read for relay only, after the routing decision above.
+   nonBlockingKeys = nonBlockingFindingKeys(native);
+   return finish("stopped", details);
+  }
   if (transition.kind === "execute") {
    const operation = record(transition.execute).operation;
    if (operation === "review.start") {
@@ -172,7 +310,16 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   const entries = Array.isArray(details.collectBindings) ? details.collectBindings.map(record) : [];
   // Native explicitly supplies the authored correction request. Do not derive
   // host routing metadata from submission domains or inspect opaque bindings.
-  if (transition.correction_request !== undefined) return finish("input-required", details);
+  if (transition.correction_request !== undefined) {
+   // Read for relay only, after the routing decision above. The correction
+   // fields are returned only beside the provider's answer to the
+   // non-blocking question (L21): without it, a parent holding only the
+   // findings to correct would never learn the non-blocking ones, so the
+   // result stays as before T11 and the parent reads the review as it did.
+   nonBlockingKeys = nonBlockingFindingKeys(native);
+   if (Object.hasOwn(nonBlockingKeys, "non_blocking_findings")) correctionKeys = correctionFindingKeys(transition.correction_request);
+   return finish("input-required", details);
+  }
   // The facade's own pre-lineage intended-untracked selection (selectionBinding
   // and nextStep, no collectBindings): the parent chooses, never the run. The
   // facade's nextStep names the single selection operation, which would start

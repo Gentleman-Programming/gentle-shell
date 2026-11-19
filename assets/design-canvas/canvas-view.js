@@ -19,6 +19,8 @@ export function init(ctx) {
 		els.world.style.setProperty("--gd-inv-zoom", String(1 / state.zoom));
 		els.zoomLevel.textContent = `${Math.round(state.zoom * 100)}%`;
 		actions.renderMinimapView();
+		// An artboard's ⋯ menu would stay behind while its button moves away.
+		actions.closeBoardMenu();
 	}
 
 	/** Zoom so the world point under (px, py) in viewport coordinates stays put. */
@@ -178,5 +180,5 @@ export function init(ctx) {
 	els.zoomOut.addEventListener("click", () => zoomAtCenter(0.8));
 	els.fit.addEventListener("click", fit);
 
-	return { applyView, panBy, fit, refit, handleWheel };
+	return { applyView, zoomAt, panBy, fit, refit, handleWheel };
 }

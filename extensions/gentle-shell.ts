@@ -16,8 +16,10 @@ import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellChromeBar, renderShellChromePad, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
-import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_MAX_LINES, DIFF_TOO_LARGE, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
+import { DIFF_MAX_BYTES, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
+import { changeDirectoryInsideRoot, loadFileDiff, repositoryGitDirectories, runFileDiff } from "../lib/change-diff.ts";
+import { DESKTOP_CHANGES_SERVICE_CHANNEL, DESKTOP_CHANGES_SERVICE_SCHEMA, projectDesktopChanges, projectDesktopDiff, type DesktopChangesService } from "../lib/desktop-rpc-changes.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { windowsProcessTreeKiller, type ProcessTreeKiller } from "../lib/native-review-cli.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
@@ -129,6 +131,15 @@ import {
 	type DoubleEscCancelResolution,
 } from "../lib/double-esc-cancel-policy.ts";
 import { accountIdFromToken, CODEX_PROVIDER, CODEX_USAGE_URL, NAN_PROVIDER, NAN_QUOTA_URL, parseCodexUsage, parseNanQuota, parseProviderUsage, parseUsageHeaders, parseUsageSource, usageScopeProviders, UsageSourceRegistry, UsageStore, USAGE_SOURCE_EVENT, type ProviderUsage, type UsageSource } from "../lib/shell-usage.ts";
+import {
+	DESKTOP_USAGE_SERVICE_CHANNEL,
+	DESKTOP_USAGE_SERVICE_SCHEMA,
+	isRefreshableUsageProvider,
+	isSupportedUsageProvider,
+	type DesktopUsageOwnerRead,
+	type DesktopUsageRecordedSnapshot,
+	type DesktopUsageService,
+} from "../lib/desktop-rpc-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
 import { releaseSidebarHover, setSidebarHover, sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
 import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
@@ -1707,12 +1718,8 @@ export function shellGitRunner(cwd: string, env: NodeJS.ProcessEnv = process.env
 	});
 }
 
-export async function loadFileDiff(git: GitRunner, file: ChangedFile): Promise<string> {
-	const args = file.status === CHANGE_STATUS.UNTRACKED ? ["diff", "--no-index", "--", "/dev/null", file.path] : ["diff", "HEAD", "--", file.path];
-	const result = await git(args);
-	if (result.truncated || result.stdout.length > DIFF_MAX_BYTES || result.stdout.split("\n", DIFF_MAX_LINES + 2).length > DIFF_MAX_LINES + 1) return DIFF_TOO_LARGE;
-	return !result.timedOut && (result.code === 0 || result.code === 1) ? result.stdout : "";
-}
+// One file's diff lives in lib/change-diff.ts so the panel and Desktop RPC show the same text.
+export { loadFileDiff };
 
 // Untracked files have no numstat; count their lines without reading past the diff bound.
 const untrackedLines = (root: string): LineCounter => async (path) => {
@@ -2200,6 +2207,75 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				.map((provider) => refreshProvider(ctx, provider, usageSources.get(provider), force, now)),
 		);
 	};
+	// Desktop's usage slice reaches the owner only through this versioned,
+	// adapter-shaped seam — the usage analogue of the YOLO host-ui adapter. It
+	// wraps the existing UsageStore / UsageSourceRegistry / refreshUsage /
+	// after_provider_response closures; there is no second store, fetcher, or
+	// auth resolver. Header-driven snapshots are broadcast to every subscribed
+	// Desktop consumer through the shared observer set below, already parsed.
+	const desktopUsageObservers = new Set<(recorded: DesktopUsageRecordedSnapshot) => void>();
+	pi.events.on(DESKTOP_USAGE_SERVICE_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object") return;
+		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopUsageService): void }>;
+		if (typeof request.respond !== "function" || !request.context) return;
+		const ctx = request.context;
+		try {
+			let disposed = false;
+			const subscriptions = new Set<(recorded: DesktopUsageRecordedSnapshot) => void>();
+			const read = (provider?: string, outOfScope = false): DesktopUsageOwnerRead => {
+				if (disposed) return { providers: [] };
+				const scope = provider === undefined ? resolveUsageScope(ctx) : [provider];
+				return {
+					providers: scope.map((name) => ({
+						provider: name,
+						supported: isSupportedUsageProvider(name, usageSources.has(name)),
+						refreshable: isRefreshableUsageProvider(name, usageSources.has(name)),
+						failed: usageFailures.has(name),
+						...(outOfScope ? { outOfScope: true } : {}),
+						snapshot: usage.get(name),
+					})),
+				};
+			};
+			const refresh = async (provider?: string): Promise<DesktopUsageOwnerRead> => {
+				if (disposed) return { providers: [] };
+				// Resolve the scope BEFORE delegation: a filtered refresh for a provider
+				// outside the current session scope would never fetch anything (refreshUsage
+				// filters by scope), so it answers a truthful out_of_scope no-op instead of
+				// an ambiguous pending, and never attempts the fetch.
+				const scope = resolveUsageScope(ctx);
+				if (provider !== undefined && !scope.includes(provider)) {
+					return read(provider, true);
+				}
+				// The same API-key/auth logic the panel uses: refreshUsage resolves
+				// the scope, the credentials, and the fetch window itself. Anthropic
+				// is skipped there because it has no usage endpoint, so a refresh
+				// for it is a truthful no-op rather than a fabricated snapshot.
+				await refreshUsage(ctx, true, provider);
+				return read(provider);
+			};
+			request.respond({
+				schema: DESKTOP_USAGE_SERVICE_SCHEMA,
+				read,
+				refresh,
+				observe: (onSnapshot) => {
+					if (disposed) return () => {};
+					subscriptions.add(onSnapshot);
+					desktopUsageObservers.add(onSnapshot);
+					return () => {
+						subscriptions.delete(onSnapshot);
+						desktopUsageObservers.delete(onSnapshot);
+					};
+				},
+				dispose: () => {
+					disposed = true;
+					for (const onSnapshot of subscriptions) desktopUsageObservers.delete(onSnapshot);
+					subscriptions.clear();
+				},
+			});
+		} catch {
+			/* obsolete trusted context: discovery expires closed */
+		}
+	});
 	// Subscribed once, for the life of the extension: a registration can
 	// arrive before the first session_start (the owning extension's factory
 	// runs first) or after it (its own session_start fires later, or it
@@ -2228,6 +2304,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		// A snapshot that arrived with a response is evidence the provider is
 		// answering: a failure some earlier refresh recorded no longer stands.
 		usageFailures.delete(parsed.provider);
+		// Desktop consumers subscribed through the owner service get the already-
+		// parsed snapshot (Claude's 5h/7d windows included), never header text.
+		for (const onSnapshot of [...desktopUsageObservers]) {
+			try { onSnapshot({ provider: parsed.provider, usage: parsed }); } catch { /* a listener never breaks usage */ }
+		}
 		renderHost?.invalidateSidebar?.();
 		renderHost?.requestRender();
 	});
@@ -2496,6 +2577,70 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		const model = await tracker.refresh();
 		if (changes === tracker) applyChanges(ctx, model);
 	};
+	// Desktop's changes slice reaches this tracker only through a versioned,
+	// adapter-shaped seam (the changes analogue of the usage seam above). Both
+	// reads refresh the tracker the way the panel does and answer only from its
+	// own file list: a diff is served for a file in the current change set of a
+	// root this adapter named, through the same Git arguments as the panel.
+	// Roots cross as opaque ids; the absolute path never leaves this closure.
+	pi.events.on(DESKTOP_CHANGES_SERVICE_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object") return;
+		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopChangesService): void }>;
+		if (typeof request.respond !== "function" || !request.context) return;
+		let sessionId: string;
+		try { sessionId = request.context.sessionManager.getSessionId(); } catch { return; }
+		if (!changes || registry?.sessionId !== sessionId) return;
+		let disposed = false;
+		const ids = new Map<string, string>();
+		const idFor = (root: string) => {
+			let id = ids.get(root);
+			if (id === undefined) ids.set(root, id = `root-${ids.size + 1}`);
+			return id;
+		};
+		// No tracked worktree, a failed root, or a replaced session is
+		// unavailable: a failed scan is never reported as a clean root.
+		const scan = async (): Promise<WorktreeChangesTracker | undefined> => {
+			const tracker = changes;
+			if (disposed || !tracker || registry?.sessionId !== sessionId) return undefined;
+			const model = await tracker.refresh();
+			if (disposed || changes !== tracker) return undefined;
+			if (currentContext) applyChanges(currentContext, model);
+			return tracker.scannedRootCount === 0 || tracker.failedRoots.length > 0 ? undefined : tracker;
+		};
+		try {
+			request.respond({
+				schema: DESKTOP_CHANGES_SERVICE_SCHEMA,
+				async read() {
+					const tracker = await scan();
+					return tracker ? projectDesktopChanges(tracker.worktrees, idFor) : undefined;
+				},
+				async diff(rootId, path) {
+					const tracker = await scan();
+					if (!tracker) return { kind: "unavailable" };
+					const root = [...ids].find(([, id]) => id === rootId)?.[0];
+					const tree = root === undefined ? undefined : tracker.worktrees.find((candidate) => candidate.root === root);
+					// Exact match on the owner's own list: the file object (and so its
+					// status and Git arguments) is the owner's, never the request's.
+					const file = tree?.model.files.find((candidate) => candidate.path === path);
+					if (!tree || !file) return { kind: "not_found" };
+					// Git lists files behind a directory link (a Windows junction) as
+					// part of the tree; Desktop never serves content outside the root,
+					// nor the repository's own git dir reached through an alias in it.
+					const gitDirectories = await repositoryGitDirectories(deps.gitRunner(tree.root), tree.root);
+					if (disposed || !gitDirectories) return { kind: "unavailable" };
+					if (!(await changeDirectoryInsideRoot(tree.root, file.path, gitDirectories))) return { kind: "not_found" };
+					// Unlike the panel, never run a command the repository's config
+					// names (textconv, external diff, fsmonitor) for a Desktop read.
+					const projected = projectDesktopDiff(await runFileDiff(deps.gitRunner(tree.root, DIFF_MAX_BYTES), file, { inertRepositoryCommands: true }));
+					if (disposed || !projected) return { kind: "unavailable" };
+					return { kind: "ok", ...projected };
+				},
+				dispose() { disposed = true; },
+			});
+		} catch {
+			/* a responder that throws is ignored */
+		}
+	});
 	pi.registerTool({
 		name: "session_worktree_register",
 		renderShell: "self",

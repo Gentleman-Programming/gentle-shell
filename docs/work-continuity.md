@@ -2,15 +2,18 @@
 
 ## Scope and delivered guidance
 
-This is a Shell prompt-guidance improvement, not an incident closure for #2211 or #1669. The always-on parent guidance distinguishes a recoverable failure from genuinely inaccessible proof before a bounded stop, and describes a parent-only route for explicitly authorized maintenance that a worker cannot perform. Neither rule grants permission, changes correction limits, or implements a backup or rollback operation.
+This is a Shell prompt-guidance improvement, not an incident closure for #2211 or #1669. The provider-owned canonical Close now owns the authorized-work boundary: authorized steps continue, a pending child is a wait event whose completion resumes the turn without asking the human, and only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work. Pi's always-on continuity keeps its unique guard, budget, worker-continuation, and maintenance clauses without restating that boundary or licensing a generic **Needs your decision** stop. The parent-only maintenance route remains guidance for an explicitly authorized operation a worker cannot perform. None of these rules grants permission, changes correction limits, or implements a backup or rollback operation.
 
 | Situation | Guidance delivered to the parent |
 | --- | --- |
 | A test or harness check fails, but a correction and rerun remain in scope and within the existing budget | Correct and continue without asking for approval of each transition. Do not reset the budget or weaken the check. |
-| The human specified one run, no retries, or diagnostic only | Honor that limit; do not propose diagnostic-only or single-attempt authorization unless requested. |
-| Proof is genuinely inaccessible, consent is required, an action is denied, or the correction budget is exhausted | Stop and report the blocker. Terminal outcomes and existing bounded-stop rules remain binding; an unavailable verifier is not retried automatically. The narrow human-requested quota recovery below is a separate attempt. |
+| The human specified one run, no retries, or diagnostic only | Honor that limit; correct only within the existing correction budget and never reset or weaken it. |
+| Proof is missing, partial, unavailable, or declined; consent is required; an action is denied; or the correction budget is exhausted | Missing proof forbids claiming completion of the affected work, never an independently authorized next step; a required authorized check the existing budget still allows keeps running. Denial, missing consent, and exhaustion stop only the work they apply to. Terminal outcomes and existing bounded-stop rules remain binding; an unavailable verifier is not retried automatically. The narrow human-requested quota recovery below is a separate attempt. |
+| A worker exhausts its correction limit and returns `status: partial` with its diagnosed loop cause | The worker's cycle ends, not the unit. The parent decides the next step from that evidence without asking the user: it names the cause and acts on it (organic mode may fix inline when small and understood; full delegation launches a new bounded writer carrying the diagnosis and new evidence with a changed scope or hypothesis). It never repeats the same attempt; the same cause again, or no new hypothesis, blocks that unit while independent work continues. Only a genuinely human decision goes to the user. See `docs/delegated-verification.md`. |
 | A worker cannot perform an upgrade | Only the parent may act after explicit authorization of the operation, exact scope and ownership, preservation, permitted tools, applicable fresh consent and guards, a validated backup, applicable artifact/migration validation, and a recovery path are established. |
 | An authorized rollback mixes task changes and unrelated changes, even in one file | Preserve unrelated edits; remove only proven task-created helpers. Never blanket restore, reset, or clean. Ambiguous ownership or denial stops the operation. |
+
+A tracked task may end the turn pending only while it waits on already-launched work; for the affected work an already-decided denial, missing consent, the user's explicit stop, or an exhausted limit applies; or a genuine human decision stays outstanding. A partial user stop applies only to that work, unrelated runnable authorized work continues, and the turn never abandons runnable work or presents an unverified outcome as final. A report never turns into a blind self-reprompt loop.
 
 Broad feature approval is not destructive-operation authority. Do not reroute a denial to another worker or tool. No real maintenance, backup, migration, rollback, destructive Git operation, or model/provider operation was performed for this work.
 
@@ -22,11 +25,11 @@ A verifier that ended on a temporary quota error without a verdict has not suppl
 
 Preserve the failed attempt and still-valid successful checks; run the missing verification rather than replaying passed suites. Before dispatch, confirm the previous child has ended and no child has uncertain status. A candidate change requires the ordinary verification decision for that changed candidate. Do not automatically wait, retry, or substitute a provider/model. Consent, actual denials, explicit one-run/no-retry limits, terminal native outcomes and exhausted native budgets remain binding; this request does not reset them.
 
-This guidance changes no runtime quota detection, provider selection, or native review authority. The provider-owned Close text and pinned contracts remain unchanged. Delivered-instruction tests do not establish model adherence or a successful subscription-recovery journey.
+This guidance changes no runtime quota detection, provider selection, or native review authority. The provider-owned Close boundary and the pinned installer contracts remain outside this quota-recovery rule. Delivered-instruction tests do not establish model adherence or a successful subscription-recovery journey.
 
 ## Current bounded checks
 
-On the current Windows workspace, with existing dependencies and no installation, network, provider, or model calls, the bounded verification run recorded these results:
+On the earlier Windows workspace, with existing dependencies and no installation, network, provider, or model calls, the bounded verification run recorded these results against the then-current contract 1.4.0 mirror. The current field-test mirror is contract 1.6.0 and `node scripts/check-provider-contract.mjs` validates its bytes:
 
 | Command | Result |
 | --- | --- |
@@ -51,6 +54,6 @@ Those four selected cases are bounded Windows evidence only. They do not attribu
 
 ## Ownership and review limits
 
-The continuity clarification is Shell-owned and operates before existing terminal outcomes. The provider owns the mirrored Close contract; its bundle, hashes, and wording remain unchanged. A provider-owned semantic change requires separate authority.
+The continuity clarification is Shell-owned and defers to the provider-owned Close contract for the authorized-work boundary. This delivery consumes the contract 1.6.0 field-test mirror generated from the finished canonical source through `scripts/mirror-provider-contract.mjs`; Pi never hand-edits bundle bytes or the manifest digest, and the released installer pin and capability rows remain unchanged. A released provider, installer, RDD-switch, native-guard, question-tool, or surface-policy change requires separate authority.
 
-Global RDD was on. An earlier preflight stopped with `immutable_review_transport_unsupported`; no review authority was started, no receipt exists, and review or mode was not retried. That unavailable review transport does not itself authorize or prohibit ordinary delivery; any delivery decision must use its applicable authority and evidence. Two wording advisories remain nonblocking and unproven: the sentence about not proposing diagnostic-only or single-attempt authorization, and the maintenance sentence that stops when a prerequisite is missing. No GitHub issue status was consulted, and this document does not claim publishing, delivery approval, or issue closure.
+Global RDD was on. An earlier preflight stopped with `immutable_review_transport_unsupported`; no review authority was started, no receipt exists, and review or mode was not retried. That unavailable review transport does not itself authorize or prohibit ordinary delivery; any delivery decision must use its applicable authority and evidence. Earlier wording advisories concerned the diagnostic-only sentence, now removed with the generic terminal license, and the maintenance sentence, which remains guidance without new authority. No GitHub issue status was consulted, and this document does not claim publishing, delivery approval, or issue closure.

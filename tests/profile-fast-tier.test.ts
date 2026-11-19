@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createSessionProfileIntegration } from "../lib/session-profile-integration.ts";
 import { normalizeProfilesFile, PROFILES_KIND, PROFILES_VERSION, createProfile, duplicateProfile, emptyProfilesFile, parseProfileExportText, parseProfilesFileText, serializeProfileExport, serializeProfilesFile } from "../lib/agent-profiles.ts";
 import { createSessionProfileBind, readSessionProfileEntry, replaySessionProfileBranch, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
@@ -65,6 +68,68 @@ test("profile UI saves Fast for both providers and independent roles", () => {
   assert.equal(results[0].config.worker.tier, "fast");
  }
 });
+
+for (const [provider, api] of [["openai", "openai-responses"], ["openai-codex", "openai-codex-responses"]]) {
+ for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
+  test(`/gentle:profiles can select and save Fast for ${provider}/${id}`, async (t) => {
+   const root = mkdtempSync(join(tmpdir(), "profile-fast-editor-"));
+   const previous = process.env.GENTLE_PI_CONFIG_HOME;
+   process.env.GENTLE_PI_CONFIG_HOME = root;
+   t.after(() => {
+    if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+    else process.env.GENTLE_PI_CONFIG_HOME = previous;
+    rmSync(root, { recursive: true, force: true });
+   });
+   const path = join(root, "profiles.json");
+   const existing = `${provider}/gpt-6.1-sol`;
+   const orchestrator = { model: `${provider}/${id}`, thinking: "high" };
+   const team = { orchestrator, "review-risk": { model: existing, tier: "standard" } };
+   const initial = { kind: PROFILES_KIND, version: PROFILES_VERSION, active: "daily", profiles: { daily: { orchestrator: { model: existing } }, team } };
+   writeFileSync(path, JSON.stringify(initial));
+   type PanelFactory = Parameters<ExtensionContext["ui"]["custom"]>[0];
+   let visits = 0;
+   const ctx = {
+    cwd: root,
+    sessionManager: SessionManager.inMemory(root),
+    modelRegistry: { getAvailable: async () => [{ provider, api, id }, { provider, api, id: "gpt-6.1-sol" }] },
+    ui: {
+     notify() {},
+     async custom(factory: PanelFactory) {
+      let action: unknown;
+      const panel = await factory(
+       { terminal: { rows: 30 }, requestRender() {} } as Parameters<PanelFactory>[0],
+       { fg: (_tone: string, value: string) => value } as Parameters<PanelFactory>[1],
+       {} as Parameters<PanelFactory>[2],
+       (result) => { action = result; },
+      );
+      const row = () => panel.render(120).find((line) => line.includes(id));
+      assert.ok(panel.handleInput);
+      if (visits++ === 0) {
+       assert.match(row() ?? "", /Standard ▾/, "the new model row offers the tier control");
+       panel.handleInput("t");
+       assert.match(row() ?? "", /Fast ▾/, "t selects Fast on that row");
+       panel.handleInput("s");
+      } else {
+       assert.match(row() ?? "", /Fast ▾/, "the saved tier remains selected after the editor reopens");
+       panel.handleInput("\x1b");
+      }
+      assert.ok(action, "the editor completed the action");
+      return action;
+     },
+    },
+   } as unknown as ExtensionContext;
+   await __testing.openProfilesPanelLoop(ctx, {
+    async setModel() { assert.fail("Save must not change the session model"); },
+    setThinkingLevel() { assert.fail("Save must not change the session effort"); },
+    getThinkingLevel: () => "high",
+   }, "team");
+   assert.equal(visits, 2);
+   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
+    ...initial, profiles: { ...initial.profiles, team: { ...team, orchestrator: { ...orchestrator, tier: "fast" } } },
+   });
+  });
+ }
+}
 
 test("tier and fallback controls coexist at narrow and wide widths", () => {
  const model = "openai/gpt-5.6-luna";

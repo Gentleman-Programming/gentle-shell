@@ -38,12 +38,12 @@ test("S1: the final assistant text is the last assistant message's text", () => 
 	assert.equal(declaredHighRiskItem(split!), undefined);
 });
 
-test("S2: the reminder names the item, the launch, the approval rule, and the Needs your decision close", () => {
+test("S2: the reminder names the item, the launch, the approval rule, and the missing-proof report", () => {
 	const text = verifierSettleReminderText(4);
 	assert.match(text, /`Risk: item 4`/);
 	assert.match(text, /launch `gentle-ai-verify` with the `Risk: item 4` line in its `task`/);
 	assert.match(text, /a user's visual or manual approval does not replace technical verification/i);
-	assert.match(text, /close with \*\*Needs your decision\*\* naming the missing proof/);
+	assert.match(text, /If verification is unavailable, report the missing proof and do not claim the change complete/);
 });
 
 test("S1/S3: one reminder per user prompt, none for Risk: none or after a verifier attempt", () => {

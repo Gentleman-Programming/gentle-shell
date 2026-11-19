@@ -121,10 +121,12 @@ function run(tool: RegisteredTool, params: unknown, ctx: unknown): Promise<ToolR
 
 const INTERACTIVE_HOST_ENV = "GENTLE_SHELL_INTERACTIVE_HOST";
 
-/** Fake interactive-RPC-host ctx: scripted `select` answers, one per call. */
-function rpcHostContext(selectAnswers: readonly (string | undefined)[]) {
+/** Fake interactive-RPC-host ctx: scripted `select`/`input` answers, one per call. */
+function rpcHostContext(selectAnswers: readonly (string | undefined)[], inputAnswers: readonly (string | undefined)[] = []) {
 	const selectCalls: Array<{ title: string; options: string[] }> = [];
+	const inputCalls: Array<{ title: string; placeholder?: string }> = [];
 	let index = 0;
+	let inputIndex = 0;
 	return {
 		ctx: {
 			mode: "rpc",
@@ -136,11 +138,21 @@ function rpcHostContext(selectAnswers: readonly (string | undefined)[]) {
 					index += 1;
 					return answer;
 				},
+				input: async (title: string, placeholder?: string) => {
+					inputCalls.push({ title, placeholder });
+					const answer = inputAnswers[inputIndex];
+					inputIndex += 1;
+					return answer;
+				},
 			},
 		},
 		selectCalls,
+		inputCalls,
 	};
 }
+
+/** The questionnaire's always-available free-text row label (TUI and RPC dialogs). */
+const TYPE_SOMETHING = "Type something.";
 
 function withInteractiveHostEnv(t: { after(fn: () => void): void }): void {
 	const previous = process.env[INTERACTIVE_HOST_ENV];
@@ -258,7 +270,7 @@ test("ask_user_question resolves a single-select answer through RPC dialogs on a
 
 	assert.equal(selectCalls.length, 1);
 	assert.equal(selectCalls[0]?.title, "Proceed: Proceed?");
-	assert.deepEqual(selectCalls[0]?.options, ["Alpha", "Beta"]);
+	assert.deepEqual(selectCalls[0]?.options, ["Alpha", "Beta", TYPE_SOMETHING]);
 	assert.equal(result.content[0]?.text, "1. Proceed? — Alpha");
 	assert.deepEqual(result.details.answers, [
 		{ questionIndex: 0, question: "Proceed?", kind: "option", answer: "Alpha" },
@@ -295,8 +307,8 @@ test("ask_user_question loops select with a trailing Done entry for a multiSelec
 
 	const result = await run(tool, { questions }, ctx);
 
-	assert.deepEqual(selectCalls[0]?.options, ["[ ] One", "[ ] Two", "Done"]);
-	assert.deepEqual(selectCalls[1]?.options, ["[x] One", "[ ] Two", "Done"]);
+	assert.deepEqual(selectCalls[0]?.options, ["[ ] One", "[ ] Two", "Done", TYPE_SOMETHING]);
+	assert.deepEqual(selectCalls[1]?.options, ["[x] One", "[ ] Two", "Done", TYPE_SOMETHING]);
 	assert.equal(result.content[0]?.text, "1. Pick? — selected: One");
 	assert.deepEqual(result.details.answers, [
 		{ questionIndex: 0, question: "Pick?", kind: "multi", answer: null, selected: ["One"] },
@@ -392,6 +404,48 @@ test("ask_user_question multiSelect cancels on an unrecognised host answer inste
 	assert.equal(selectCalls.length, 2);
 	assert.equal(result.content[0]?.text, "User cancelled the questionnaire");
 	assert.deepEqual(result.details, { cancelled: true });
+});
+
+test("ask_user_question offers its free-text row through RPC dialogs and returns a custom answer", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	const { ctx, selectCalls, inputCalls } = rpcHostContext([TYPE_SOMETHING], ["  my own answer  "]);
+
+	const result = await run(tool, { questions: single() }, ctx);
+
+	assert.deepEqual(selectCalls[0]?.options, ["Alpha", "Beta", TYPE_SOMETHING]);
+	assert.deepEqual(inputCalls, [{ title: "Proceed: Proceed?", placeholder: "Type your answer" }]);
+	assert.equal(result.content[0]?.text, "1. Proceed? — (custom)   my own answer  ");
+	assert.deepEqual(result.details.answers, [
+		{ questionIndex: 0, question: "Proceed?", kind: "custom", answer: "  my own answer  " },
+	]);
+});
+
+test("ask_user_question RPC multiSelect free text keeps the toggled options", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	const questions = [
+		{ question: "Pick?", header: "Pick", options: [option("One"), option("Two")], multiSelect: true },
+	];
+	const { ctx } = rpcHostContext(["[ ] One", TYPE_SOMETHING], ["free note"]);
+
+	const result = await run(tool, { questions }, ctx);
+
+	assert.equal(result.content[0]?.text, "1. Pick? — (custom) free note — selected: One");
+	assert.deepEqual(result.details.answers, [
+		{ questionIndex: 0, question: "Pick?", kind: "custom", answer: "free note", selected: ["One"] },
+	]);
+});
+
+test("ask_user_question RPC free text cancels on a cancelled or empty input and never commits a partial answer", async (t) => {
+	withInteractiveHostEnv(t);
+	const { tool } = registerQuestionTool();
+	for (const typed of [undefined, "   "]) {
+		const { ctx } = rpcHostContext([TYPE_SOMETHING], [typed]);
+		const result = await run(tool, { questions: single() }, ctx);
+		assert.deepEqual(result.details, { cancelled: true }, `input=${JSON.stringify(typed)}`);
+		assert.equal(result.content[0]?.text, "User cancelled the questionnaire");
+	}
 });
 
 test("ask_user_question cancels through RPC dialogs like the TUI path when select returns undefined", async (t) => {

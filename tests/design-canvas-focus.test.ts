@@ -55,15 +55,18 @@ test("a taller artboard is top-aligned and clipped to the viewport while focused
 	first.frame.parentElement!.offsetLeft = 480;
 	first.frame.parentElement!.offsetTop = 20;
 	click(first.shield!, 200, 200);
-	// The 700 px viewport keeps a 16 px margin, the 20 px label and a 64 px band for the Back button.
-	assert.equal(first.frame.style.height, "600px");
-	// x centers the 400 px board in 1000 px: 300 - 480; y puts its top 16 + 20 px down: 36 - 20.
-	assert.equal(canvas.world.style.transform, "translate(-180px, 16px) scale(1)");
+	// canvas-layout S5: the 700 px viewport keeps an 8 px margin, the 20 px label and a 48 px band for the Back button.
+	assert.equal(first.frame.style.height, "624px");
+	// canvas-layout S8: Desktop is the 1000 px viewport less its 8 px margins, so x puts the frame at the left margin: 8 - 480;
+	// y puts its top 8 + 20 px down: 28 - 20.
+	assert.equal(first.frame.style.width, "984px");
+	assert.equal(canvas.world.style.transform, "translate(-472px, 8px) scale(1)");
 	// Re-centering (window resize, panel toggle) is idempotent.
 	canvas.windowEvent("resize");
-	assert.equal(canvas.world.style.transform, "translate(-180px, 16px) scale(1)");
+	assert.equal(canvas.world.style.transform, "translate(-472px, 8px) scale(1)");
 	canvas.document.getElementById("gd-back").dispatch("click");
 	assert.equal(first.frame.style.height, "1600px");
+	assert.equal(first.frame.style.width, "400px");
 });
 
 test("entering focus hides an open panel and exiting restores it; a closed panel stays closed", async () => {

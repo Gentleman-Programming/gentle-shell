@@ -1,0 +1,19 @@
+{
+	"name": "gentle-tower-web",
+	"private": true,
+	"type": "module",
+	"description": "Gentle Tower: the web view of every Gentle Shell session. Built into dist/ and served by /gentle:tower.",
+	"scripts": {
+		"dev": "vite",
+		"build": "tsc --noEmit && vite build",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"mermaid": "^11.17.2",
+		"pixi.js": "^8.23.0"
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3",
+		"vite": "^7.3.0"
+	}
+}

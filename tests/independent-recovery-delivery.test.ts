@@ -53,14 +53,18 @@ for (const persona of ["gentleman", "neutral"] as const) {
       for (const guard of ["consent", "a denial", "one-run", "no-retry", "terminal native outcomes", "exhausted native budgets"]) assert.ok(setup.includes(guard), guard);
       assert.match(setup, /no child is active or has an uncertain status/);
       const worker = paragraph(p, "An exhausted worker-local");
-      assert.match(worker, /scope, executor, correction limit and checks/);
+      // orchestrator-owns-correction-exhaustion S1/S2: the parent owns the next step and acts on the loop's cause.
+      assert.match(worker, /not the unit; within native authority you own the next step, unasked/);
+      assert.match(worker, /never repeat an attempt or swap executors to dodge limits/);
+      assert.doesNotMatch(worker, /human-controlled|let the human stop/);
       assert.match(worker, /later explicit requests stay subject to native authority/);
       assert.match(worker, /new session does not reset any limit/);
-      assert.match(worker, /specifically authorized.*actual native authority.*in-scope compilation or implementation/);
-      assert.match(worker, /unavailable proof still blocks completion and delivery/);
+      // harness-continuity T5: the proof boundary moved from this paragraph into the canonical Close.
+      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*proof forbids claiming completion of the affected work, never an independently authorized next step/);
       assert.match(worker, /no child is active or has an uncertain status/);
-      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*never more verification/);
+      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*stop checking only inside an exhausted or denied boundary/);
       assert.doesNotMatch(p, /Stop only for[^\n]*unavailable required proof/);
+      assert.ok(!p.includes("unavailable required proof"), "no rendered prompt stops for unavailable proof");
     });
   }
 }
@@ -94,4 +98,12 @@ test("S2-S5 user recovery docs retain the independent-proof and native-authority
   assert.match(docs, /Missing required proof still blocks completion and delivery/);
   assert.match(docs, /active or uncertain child prevents continuation/);
   assert.match(docs, /explicit one-run\/no-retry limit/);
+  // orchestrator-owns-correction-exhaustion S1/S2: the docs route worker exhaustion to the parent, not the human.
+  const start = docs.indexOf("### Parent continuation after worker correction exhaustion");
+  assert.ok(start >= 0, "docs keep the worker-exhaustion section");
+  const section = docs.slice(start, docs.indexOf("\n## ", start));
+  assert.match(section, /parent decides the next step from the returned evidence, without asking the user/);
+  assert.match(section, /never repeats the same attempt/);
+  assert.match(section, /RED construction/);
+  assert.doesNotMatch(section, /explicit human authorization/);
 });

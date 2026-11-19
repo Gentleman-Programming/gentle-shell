@@ -13,18 +13,22 @@ const ARRANGEMENTS = ["row", "column", "grid"];
 // (DESIGN_LAYOUT_COORDINATE_MAX in lib/design-layout.ts): a layout past it is none this page uses.
 const COORDINATE_MAX = 2_000_000;
 
-// Every string this module shows, in English until the i18n PR keys them.
+// Every string this module shows, in English; canvas-i18n-es.js has the Spanish. A server's reason stays as it came.
 const TEXT = Object.freeze({
 	saveFailed: (slug, reason) => `The layout of ${slug} could not be saved: ${reason}`,
 	readFailed: (slug, reason) => `design/${slug}/layout.json could not be read: ${reason}`,
 	unusable: "it holds no layout this page can use",
+	error: "error",
 });
+// fetchLayout's reason for a layout.json that holds no layout this page can use: TEXT.unusable, in the language shown.
+const UNUSABLE = Object.freeze({});
 
 export function init(ctx) {
 	const { win, doc, els, store, api, ui, actions } = ctx;
 	const { state } = store;
 	const { getJson, postJson } = api;
 	const { setStatus } = ui;
+	const T = ctx.i18n.text("layout", TEXT);
 
 	// The artboard being moved by the pointer (canvas-view.js hands it over): { board, from, moved, view }, `view` the
 	// layout view it was pressed in. This module's own state, like the pan drag in canvas-view.js.
@@ -44,11 +48,14 @@ export function init(ctx) {
 	// layout.json change reads on their way (onLayoutChange): a save that makes one stale and then fails reads the
 	// file again, so another page's change is never lost.
 	let changeReads = 0;
-	// The layout errors the status line keeps showing for a design ({ slug, text }): the last save that failed, while
+	// The layout errors the status line keeps showing for a design ({ slug, reason }): the last save that failed, while
 	// the layout it left is still unsaved, and the last read of layout.json that failed, until one answers or a save succeeds.
 	// While that read error stands nothing is saved (saveLayout): the file is never written over before it can be read.
 	let saveError = null;
 	let readError = null;
+	// The layout error the status line was given last ({ slug, kind, text }), in the language it was shown in: an answer
+	// or a save that succeeds clears the status line only while it still shows that text, whatever the language is now.
+	let shownError = null;
 
 	/** A board's key in layout.json: its artboard file, or the system board's own key. */
 	function layoutKey(board) {
@@ -94,21 +101,35 @@ export function init(ctx) {
 			const value = data ? data.layout : null;
 			if (value === null || value === undefined) return { layout: null, error: "" };
 			const layout = readLayout(value);
-			return layout ? { layout, error: "" } : { layout: undefined, error: TEXT.unusable };
+			return layout ? { layout, error: "" } : { layout: undefined, error: UNUSABLE };
 		} catch (error) {
 			// Only a layout.json the server cannot read or use is news for the status line; an HTTP error or no
 			// connection says nothing about the file, and the layout shown stays without a word, as before.
 			const unreadable = Boolean(error && error.body && error.body.error === "unreadable-layout");
-			return { layout: undefined, error: unreadable ? error.message || "error" : null };
+			return { layout: undefined, error: unreadable ? error.message || T.error : null };
 		}
+	}
+
+	/** The text of a layout error of `kind` ("save" or "read") in the current language, now given to the status line. */
+	function errorText(kind, { slug, reason }) {
+		const text = kind === "save" ? T.saveFailed(slug, reason) : T.readFailed(slug, reason === UNUSABLE ? T.unusable : reason);
+		shownError = { slug, kind, text };
+		return text;
+	}
+
+	/** The status line still shows the layout error of `slug` given last (of `kind`, when named): the exact text, or the start of it with `prefix`. */
+	function showsError(slug, kind, prefix) {
+		if (!shownError || shownError.slug !== slug || (kind && shownError.kind !== kind) || !els.status.classList.contains("gd-error")) return false;
+		const text = els.status.textContent;
+		return prefix ? text.startsWith(shownError.text) : text === shownError.text;
 	}
 
 	/** The layout error the status line shows for the design shown: a failed save while its layout is unsaved, then a failed read. */
 	function layoutError() {
 		const slug = state.slug;
 		const shown = state.layout && state.layout.slug === slug ? state.layout : null;
-		if (saveError && saveError.slug === slug && shown && shown.unsaved) return saveError.text;
-		if (readError && readError.slug === slug) return readError.text;
+		if (saveError && saveError.slug === slug && shown && shown.unsaved) return errorText("save", saveError);
+		if (readError && readError.slug === slug) return errorText("read", readError);
 		return "";
 	}
 
@@ -117,14 +138,13 @@ export function init(ctx) {
 		// null: the read failed for a reason that says nothing about layout.json (keep what the status line says).
 		if (error === null) return;
 		if (error) {
-			readError = { slug, text: TEXT.readFailed(slug, error) };
-			if (show) setStatus(readError.text, true);
+			readError = { slug, reason: error };
+			if (show) setStatus(errorText("read", readError), true);
 			return;
 		}
 		if (!readError || readError.slug !== slug) return;
-		const text = readError.text;
 		readError = null;
-		if (show && els.status.classList.contains("gd-error") && els.status.textContent === text) {
+		if (show && showsError(slug, "read", false)) {
 			const rest = layoutError();
 			setStatus(rest, Boolean(rest));
 		}
@@ -367,15 +387,14 @@ export function init(ctx) {
 			}
 			if (!reply.ok) {
 				// Kept while the layout is unsaved, so a design.json reload shows it again (loadManifest).
-				saveError = { slug, text: TEXT.saveFailed(slug, reply.body.reason || reply.body.error || "error") };
-				if (slug === state.slug) setStatus(saveError.text, true);
+				saveError = { slug, reason: reply.body.reason || reply.body.error || T.error };
+				if (slug === state.slug) setStatus(errorText("save", saveError), true);
 			} else {
 				if (saveError && saveError.slug === slug) saveError = null;
 				// layout.json now holds this save: an earlier failed read of it is over too.
 				if (readError && readError.slug === slug) readError = null;
-				// A retry that succeeds clears this design's layout error, never another status.
-				const text = els.status.textContent;
-				if (els.status.classList.contains("gd-error") && (text.startsWith(TEXT.saveFailed(slug, "")) || text.startsWith(TEXT.readFailed(slug, "")))) setStatus("", false);
+				// A retry that succeeds clears this design's layout error, in the language it was shown in, never another status.
+				if (showsError(slug, null, true)) setStatus("", false);
 			}
 			readAgain();
 		}).catch(() => {});
@@ -424,13 +443,13 @@ export function init(ctx) {
 	 * laid out again, so its gaps stay 80 px; a free layout, or a board being moved, stays where it is. The artboard
 	 * in use stays centered, since focus mode cannot pan.
 	 */
-	function boardsResized() {
+	function boardsResized(options) {
 		if (!moving && (!state.layout || state.layout.arrangement !== "free")) applyLayout();
 		else {
 			sizeWorld();
 			actions.renderMinimap();
 		}
-		if (state.focus) actions.centerFocus();
+		if (state.focus) actions.centerFocus(options);
 	}
 
 	/**

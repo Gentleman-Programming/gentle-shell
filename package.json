@@ -1,6 +1,6 @@
 {
 	"name": "gentle-pi",
-	"version": "4.7.0",
+	"version": "4.9.0",
 	"description": "Turn Pi into el Gentleman: an ODD development harness with focused subagents, configured TDD evidence, native review, and skill discovery.",
 	"license": "MIT",
 	"type": "module",
@@ -30,6 +30,13 @@
 		"contracts/",
 		"docs/",
 		"extensions/",
+		"herdr/",
+		"!herdr/**/gpui-kit.d.ts",
+		"!herdr/**/jsconfig.json",
+		"!herdr/**/.gitignore",
+		"!herdr/**/FIDELITY*.md",
+		"!herdr/**/SPIKE*.md",
+		"!herdr/PERF.md",
 		"lib/",
 		"prompts/",
 		"runtime/",
@@ -38,6 +45,7 @@
 		"tests/",
 		"!tests/fixtures/legacy/sdd-research-v2.5.0.md",
 		"themes/",
+		"web/tower/dist/",
 		"README.md"
 	],
 	"scripts": {
@@ -52,9 +60,10 @@
 		"check:runtime-modules": "node scripts/build-runtime-modules.mjs --check",
 		"test:packed-package": "node scripts/test-packed-runner.mjs",
 		"perf:render-cache": "node scripts/render-cache-performance.mjs",
-		"prepack": "pnpm test && pnpm run check:runtime-modules && node scripts/verify-package-files.mjs",
-		"prepublishOnly": "pnpm test && pnpm run check:runtime-modules && node scripts/verify-package-files.mjs && pnpm run test:packed-package",
-		"typecheck": "node scripts/check-types.mjs"
+		"prepack": "pnpm test && pnpm run check:runtime-modules && pnpm run build:tower && node scripts/verify-package-files.mjs --with-built-web",
+		"prepublishOnly": "pnpm test && pnpm run check:runtime-modules && pnpm run build:tower && node scripts/verify-package-files.mjs --with-built-web && pnpm run test:packed-package",
+		"typecheck": "node scripts/check-types.mjs",
+		"build:tower": "cd web/tower && pnpm install --frozen-lockfile && pnpm build"
 	},
 	"pi": {
 		"image": "https://cdn.jsdelivr.net/npm/gentle-pi/assets/gentle-logo-only.png",

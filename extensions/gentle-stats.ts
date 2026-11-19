@@ -4,7 +4,8 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil
 import { USER_PI_HOME_ENV } from "../lib/gentle-shell-launcher.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
-import { createStatsLoader, currentSessionStats, type StatsLoader } from "../lib/stats-collector.ts";
+import { createStatsLoader, currentSessionStats, hasReadableSessionsRoot, type StatsLoader } from "../lib/stats-collector.ts";
+import { DESKTOP_STATS_SERVICE_CHANNEL, DESKTOP_STATS_SERVICE_SCHEMA, type DesktopStatsOwnerRead, type DesktopStatsService } from "../lib/desktop-rpc-stats.ts";
 import { StatsView } from "../lib/stats-view.ts";
 import { effectiveKey, loadKeymaps, type KeymapBindings } from "../lib/keymaps.ts";
 
@@ -45,6 +46,31 @@ export default function gentleStats(pi: ExtensionAPI, deps: GentleStatsDeps = {}
 	// One loader per process keeps its per-file cache across openings.
 	const loader = deps.loader ?? createStatsLoader();
 	const overlays = new Set<StatsView>();
+
+	// Desktop's `get_usage_stats` reaches this panel's own loader (and its
+	// size/mtime cache) only through this versioned, adapter-shaped seam — the
+	// stats analogue of the jobs/agents owner services. The adapter reads the
+	// same roots the panel reads and never persists anything.
+	const readForDesktop = async (): Promise<DesktopStatsOwnerRead> => {
+		const roots = sessionsRoots();
+		if (!(await hasReadableSessionsRoot(roots))) return { kind: "unavailable" };
+		return { kind: "ok", sessions: await loader.load(roots), now: now() };
+	};
+	const unsubscribeDesktopStatsService = pi.events?.on?.(DESKTOP_STATS_SERVICE_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object") return;
+		const request = payload as Partial<{ respond(service: DesktopStatsService): void }>;
+		if (typeof request.respond !== "function") return;
+		let disposed = false;
+		try {
+			request.respond({
+				schema: DESKTOP_STATS_SERVICE_SCHEMA,
+				read: async () => (disposed ? { kind: "unavailable" } : readForDesktop()),
+				dispose: () => { disposed = true; },
+			});
+		} catch {
+			/* obsolete requester: discovery expires closed */
+		}
+	});
 
 	const openOverlay = async (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
@@ -95,6 +121,9 @@ export default function gentleStats(pi: ExtensionAPI, deps: GentleStatsDeps = {}
 		});
 	}
 	pi.on("session_shutdown", () => {
+		// The owner service leaves the bus with the session, so a replaced
+		// runtime is never discovered through a stale owner.
+		unsubscribeDesktopStatsService?.();
 		for (const view of overlays) { view.handleInput("q"); view.dispose(); }
 		overlays.clear();
 	});

@@ -402,3 +402,61 @@ test("resume_input names the INSPECT's resolved workspace_root only when the cal
  const { workspace_root: _root, ...unrooted } = selecting;
  assert.deepEqual((await runReviewCoordinator(input, backend([{ reviewDue: true }, unrooted]))).resume_input, input);
 });
+
+// odd/tasks/review-one-call.md T11 (S5): the correction request's findings, relayed beside input-required.
+const correctionFinding = (id: string, claim: unknown, extra: Body = {}) => ({ id, lens: "risk", location: "a.ts:1", severity: "CRITICAL", claim, proof_refs: ["p"], evidence: "e", evidence_class: "deterministic", causal_disposition: "introduced", ...extra });
+// L21: the provider answered the non-blocking question (with none), so the correction fields come back.
+const answeredNone = { statement: "s", findings: [] };
+// `null` builds a STATUS without the key (the provider did not answer).
+const correctionStatus = (findings: unknown, nonBlocking: unknown = answeredNone) => ({ ...collect, result: { ...collect.result, next_transition: { kind: "collect", correction_request: { request_hash: "opaque-request", findings } },
+ ...(nonBlocking === null ? {} : { non_blocking_findings: nonBlocking }) }, collectBindings: [{ collectBinding: "plan" }] });
+
+test("a correction request's findings are relayed as provider fields plus bounded claims, never routed on", async () => {
+ const findings = [correctionFinding("B1", "first claim"), correctionFinding("B2", "second claim", { future_field: "kept in STATUS only" }), correctionFinding("B1", "duplicate id")];
+ const response = correctionStatus(findings);
+ const host = backend([response]);
+ const result = await runReviewCoordinator({ lineageId: lineage }, host);
+ assert.equal(result.outcome, "input-required"); assert.equal(host.calls.length, 1);
+ const { non_blocking_findings: _answer, ...nested } = response.result as Body;
+ assert.deepEqual(result.result, { ...response, result: nested }, "the STATUS envelope is relayed unchanged apart from the non-blocking answer (L19)");
+ const listed = { lens: "risk", location: "a.ts:1", severity: "CRITICAL", evidence_class: "deterministic", causal_disposition: "introduced" };
+ assert.deepEqual(result.correction_findings, [{ id: "B1", ...listed }, { id: "B2", ...listed }, { id: "B1", ...listed }]);
+ assert.deepEqual(result.correction_finding_claims, { B2: "second claim" }, "an id with more than one finding is left out");
+ const bounded = await runReviewCoordinator({ lineageId: lineage }, backend([correctionStatus([correctionFinding("B1", "é".repeat(600)), ...Array.from({ length: 8 }, (_, i) => correctionFinding(`C${i}`, "z".repeat(1024)))])]));
+ assert.equal((bounded.correction_finding_claims as Body).B1, "é".repeat(512)); assert.deepEqual(bounded.correction_finding_claims_truncated, ["B1"]);
+ assert.deepEqual(Object.keys(bounded.correction_finding_claims as Body), ["B1", "C0", "C1", "C2", "C3", "C4", "C5", "C6"]); assert.deepEqual(bounded.correction_finding_claims_omitted, ["C7"]);
+});
+
+test("without the provider's non-blocking answer a correction request returns no correction fields (L21)", async () => {
+ const findings = [correctionFinding("B1", "first claim")];
+ const response = correctionStatus(findings, null);
+ const result = await runReviewCoordinator({ lineageId: lineage }, backend([response]));
+ assert.equal(result.outcome, "input-required"); assert.equal(result.result, response, "the STATUS envelope is relayed unchanged");
+ for (const key of ["correction_findings", "correction_finding_claims", "correction_finding_claims_truncated", "correction_finding_claims_omitted", "non_blocking_findings"]) assert.equal(Object.hasOwn(result, key), false, key);
+ // A set the run drops (whitespace-only) is not an answer either.
+ const dropped = await runReviewCoordinator({ lineageId: lineage }, backend([correctionStatus(findings, { statement: " ", findings: [] })]));
+ for (const key of ["correction_findings", "correction_finding_claims", "non_blocking_findings"]) assert.equal(Object.hasOwn(dropped, key), false, `dropped: ${key}`);
+ const answered = await runReviewCoordinator({ lineageId: lineage }, backend([correctionStatus(findings)]));
+ assert.deepEqual(answered.correction_finding_claims, { B1: "first claim" }); assert.deepEqual(answered.non_blocking_findings, answeredNone);
+});
+
+test("a malformed correction finding set is dropped whole and the outcome stays input-required", async () => {
+ const proto = Object.create({ id: "B1" });
+ for (const findings of [undefined, [], "B1", [null], [correctionFinding("B1", "")], [correctionFinding("B1", 3)], [{ ...correctionFinding("B1", "c"), severity: 1 }], [{ ...correctionFinding("B1", "c"), lens: undefined }],
+  [{ ...correctionFinding("B1", "c"), evidence_class: 2 }], [proto], [new Map([["id", "B1"]])], [correctionFinding("B1", "c"), ["B2"]]]) {
+  const result = await runReviewCoordinator({ lineageId: lineage }, backend([correctionStatus(findings)]));
+  assert.equal(result.outcome, "input-required", JSON.stringify(findings));
+  for (const key of ["correction_findings", "correction_finding_claims", "correction_finding_claims_truncated", "correction_finding_claims_omitted"]) assert.equal(Object.hasOwn(result, key), false, `${key}: ${JSON.stringify(findings)}`);
+ }
+});
+
+test("correction findings are read only after the correction request decided input-required, and never from any other response", async () => {
+ // A correction request without kind collect routes as before; its findings are not read.
+ const request: Body = { request_hash: "opaque" };
+ Object.defineProperty(request, "findings", { get() { throw new Error("must not read findings before the routing decision"); } });
+ const stoppedWithRequest = { ...collect, result: { ...collect.result, next_transition: { kind: "stop", correction_request: request } } };
+ assert.equal((await runReviewCoordinator({ lineageId: lineage }, backend([stoppedWithRequest]))).outcome, "stopped");
+ // An approved run carries the advisory keys only.
+ const closedRun = await runReviewCoordinator({ lineageId: lineage }, backend([collect, { ...captured, closure: { advisory_findings: { statement: "s", findings: [{ id: "F1" }] }, advisory_finding_claims: { F1: "c" } } }, approved, closed]));
+ assert.equal(closedRun.outcome, "closed"); assert.equal(Object.hasOwn(closedRun, "correction_findings"), false); assert.deepEqual(closedRun.advisory_finding_claims, { F1: "c" });
+});

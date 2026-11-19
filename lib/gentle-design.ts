@@ -316,6 +316,16 @@ export interface DesignCanvasDeps {
  */
 export type DesignOpenNotice = DesignNotice & { url?: string; opened?: boolean; refreshed?: boolean };
 
+/** Sanitized canvas state: whether a server runs, the slug it last showed (null: system board), and connected pages. */
+export type DesignCanvasState = {
+	running: boolean;
+	slug: string | null;
+	connectedClients: number;
+};
+
+/** An actual open/refresh/stop transition with its sanitized post-transition state; never the URL. */
+export type DesignCanvasTransition = DesignCanvasState & { transition: "open" | "refresh" | "stop" };
+
 export interface DesignCanvas {
 	/**
 	 * Shows `slug`, or the most recent design, on the session's canvas server, starting it when needed.
@@ -326,6 +336,10 @@ export interface DesignCanvas {
 	stop(): Promise<boolean>;
 	/** The URL the running canvas last showed; undefined when none is running. */
 	url(): string | undefined;
+	/** The running canvas's sanitized state (never the URL); stopped when none is running. */
+	state(): Promise<DesignCanvasState>;
+	/** Subscribe to actual open/refresh/stop transitions (sanitized, never the URL). */
+	observe(onTransition: (transition: DesignCanvasTransition) => void): () => void;
 }
 
 /** The canvas of `slug`, or the root canvas (system board only) when slug is null. */
@@ -341,15 +355,29 @@ function canvasUrl(server: DesignCanvasServer, slug: string | null): string {
 export function createDesignCanvas(deliver: (message: DesignSessionContent) => DesignHandoffDelivery | Promise<DesignHandoffDelivery>, deps: DesignCanvasDeps = {}): DesignCanvas {
 	const startServer = deps.startServer ?? startDesignCanvasServer;
 	const openBrowser = deps.openBrowser ?? ((url: string) => openInBrowser(url));
-	let running: { root: string; server: Promise<DesignCanvasServer>; url?: string } | undefined;
+	let running: { root: string; server: Promise<DesignCanvasServer>; url?: string; slug: string | null } | undefined;
+	const observers = new Set<(transition: DesignCanvasTransition) => void>();
+
+	function emitTransition(transition: DesignCanvasTransition): void {
+		for (const onTransition of [...observers]) {
+			try {
+				onTransition(transition);
+			} catch {
+				/* an observer never breaks the canvas */
+			}
+		}
+	}
 
 	async function stop(): Promise<boolean> {
 		const current = running;
 		running = undefined;
 		if (!current) return false;
 		const server = await current.server.catch(() => undefined);
-		await server?.close();
-		return server !== undefined;
+		// A server that never started is a failed action, not a stop transition.
+		if (!server) return false;
+		await server.close();
+		emitTransition({ transition: "stop", running: false, slug: null, connectedClients: 0 });
+		return true;
 	}
 
 	async function serverFor(cwd: string): Promise<DesignCanvasServer> {
@@ -381,7 +409,7 @@ export function createDesignCanvas(deliver: (message: DesignSessionContent) => D
 					return deliver(plan.message);
 				},
 			});
-			running = { root, server };
+			running = { root, server, slug: null };
 			server.catch(() => { if (running?.server === server) running = undefined; });
 		}
 		return running.server;
@@ -407,17 +435,36 @@ export function createDesignCanvas(deliver: (message: DesignSessionContent) => D
 			return { message: `The design canvas could not start: ${error instanceof Error ? error.message : String(error)}`, level: "error" };
 		}
 		const url = canvasUrl(server, slug);
-		if (running) running.url = url;
+		if (running) {
+			running.url = url;
+			running.slug = slug;
+		}
 		if (reused && server.connectedClients() > 0 && server.show(slug) > 0) {
+			emitTransition({ transition: "refresh", running: true, slug, connectedClients: server.connectedClients() });
 			return { message: `Design canvas refreshed: ${url}`, level: "info", url, opened: true, refreshed: true };
 		}
 		const result = await openBrowser(url);
-		if (result.opened) return { message: `Design canvas: ${url}`, level: "info", url, opened: true };
+		if (result.opened) {
+			emitTransition({ transition: "open", running: true, slug, connectedClients: server.connectedClients() });
+			return { message: `Design canvas: ${url}`, level: "info", url, opened: true };
+		}
 		const reason = result.error ? ` (${result.error})` : "";
 		return { message: `Design canvas: ${url}\nThe browser could not be opened${reason}. Open the URL manually.`, level: "warning", url, opened: false };
 	}
 
-	return { open, stop, url: () => running?.url };
+	async function state(): Promise<DesignCanvasState> {
+		if (!running) return { running: false, slug: null, connectedClients: 0 };
+		const server = await running.server.catch(() => undefined);
+		if (!server) return { running: false, slug: null, connectedClients: 0 };
+		return { running: true, slug: running.slug, connectedClients: server.connectedClients() };
+	}
+
+	function observe(onTransition: (transition: DesignCanvasTransition) => void): () => void {
+		observers.add(onTransition);
+		return () => observers.delete(onTransition);
+	}
+
+	return { open, stop, url: () => running?.url, state, observe };
 }
 
 export const DESIGN_COMMENTS_TOOL_NAME = "gentle_design_comments";

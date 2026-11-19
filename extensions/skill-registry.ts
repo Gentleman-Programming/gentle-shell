@@ -170,7 +170,8 @@ async function findSkillFiles(root: string): Promise<string[]> {
 	const nestedSkills: string[] = [];
 	for (const entry of entries) {
 		// Excluded directory names remain excluded even if frontmatter aliases them.
-		if (isExcluded(entry.name)) continue;
+		// Dot-prefixed entries (e.g. `.backup-foo-2026/`) are hidden, as in Pi's loader.
+		if (entry.name.startsWith(".") || isExcluded(entry.name)) continue;
 		const skillDir = join(root, entry.name);
 		let dirInfo;
 		try {
@@ -329,11 +330,20 @@ function dedupeBySkillName(entries: SkillEntry[], cwd: string): SkillEntry[] {
 	}
 	const out: SkillEntry[] = [];
 	for (const [, list] of buckets) {
-		const projectScoped = list.find((e) =>
+		const projectScoped = list.filter((e) =>
 			e.scope?.startsWith("project") ||
 			(e.scope === undefined && comparablePath(e.path).startsWith(projectPrefix)),
 		);
-		out.push(projectScoped ?? list[0]);
+		const pool = projectScoped.length > 0 ? projectScoped : list;
+		// Among sibling skill directories of the winner, the one named after the
+		// skill beats same-name copies such as `<name>.backup-<date>/`. Root order,
+		// direct-over-nested and resolved-first precedence stay unchanged.
+		const first = pool[0];
+		const parent = dirname(dirname(comparablePath(first.path)));
+		const named = pool.find((e) =>
+			basename(dirname(e.path)) === e.name && dirname(dirname(comparablePath(e.path))) === parent,
+		);
+		out.push(named ?? first);
 	}
 	return out.sort((a, b) => compareUtf8(a.name, b.name));
 }

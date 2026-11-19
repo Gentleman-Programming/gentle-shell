@@ -65,7 +65,7 @@ test("S3: setup failures do not trigger repair loops or automatic relaunch", () 
 	assert.ok(!verify.includes("Do not retry setup"), "verifier self-correction replaces the blanket no-retry rule");
 	containsAll(verification, [
 		"A verifier's self-fix of its own setup error (one correction in the same verification) needs no decision; if it made none, relaunch once with the corrected command, unasked.",
-		"If setup still fails or lacks prerequisites, stop: one **Needs your decision** naming the blocker and exact unrun checks as unverified",
+		"If setup still fails or lacks prerequisites, stop verifying: name the blocker and exact unrun checks as unverified",
 		"never repair helpers more or auto-relaunch for it",
 		"Setup/infrastructure failures aren't code findings; tooling defects keep the correction bound.",
 	], "parent setup");
@@ -282,7 +282,7 @@ test("T22: verify blockers get one correction batch and one scoped recheck", () 
 		"one correction batch that fixes every reported blocker",
 		"one re-verify limited to those blockers",
 		"never a new full sweep",
-		"Blockers still open after that stop as one **Needs your decision**",
+		"Blockers still open after that leave the unit `status: partial`, naming any genuine human decision; independent authorized work continues",
 		"Advisories never start a correction",
 		"A second correction runs automatically only when the recheck shows the same blocker still failing",
 		"a new finding never earns one",

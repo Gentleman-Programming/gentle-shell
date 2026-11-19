@@ -11,9 +11,8 @@ import { ORCHESTRATOR_ONLY_MANAGED_BLOCKS } from "../lib/child-context-files.ts"
 // managed ~/AGENTS.md, whose orchestrator-only blocks carry a second
 // orchestrator policy next to the one Gentle Shell injects. Whenever Gentle
 // Shell's own orchestrator prompt is injected, the primary drops the same
-// blocks a delegated child drops (gentle-shell#1587). The engram-protocol
-// block is deduplicated: when several loaded files carry it, only the copy in
-// the file nearest to the working directory stays. Everything else stays.
+// blocks a delegated child drops (gentle-shell#1587) plus the engram-protocol
+// memory block, which gentle-engram injects itself. Everything else stays.
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
@@ -57,20 +56,6 @@ const EXPECTED_PRIMARY = [
 	"",
 	"Prefer small commits.",
 	"",
-	ENGRAM_PROTOCOL,
-	"",
-	REMOTE_AUTHORIZATION,
-	"",
-	"## Closing notes",
-	"Keep lines short.",
-	"",
-].join("\n");
-
-const EXPECTED_PRIMARY_WITH_ENGRAM = [
-	"# My own notes",
-	"",
-	"Prefer small commits.",
-	"",
 	REMOTE_AUTHORIZATION,
 	"",
 	"## Closing notes",
@@ -80,6 +65,7 @@ const EXPECTED_PRIMARY_WITH_ENGRAM = [
 
 // A project file that carries only its own engram-protocol block.
 const PROJECT_AGENTS_MD = `# Repo rules\n\nRun the tests.\n\n${ENGRAM_PROTOCOL}\n`;
+const PROJECT_AGENTS_MD_FILTERED = "# Repo rules\n\nRun the tests.\n";
 
 let fixtureCwd: string;
 let fixtureRoot: string | undefined;
@@ -171,16 +157,16 @@ test("the primary filters a managed AGENTS.md on the same options object without
 	assert.notEqual(systemPromptOptions.contextFiles, contextFiles, "filtered copies replace contextFiles");
 	assert.equal(contextFiles[0].content, MANAGED_AGENTS_MD, "the original entries are never mutated");
 	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.path), contextFiles.map((file) => file.path));
-	assert.equal(systemPromptOptions.contextFiles[0].content, EXPECTED_PRIMARY, "a single engram-protocol copy is kept");
-	assert.doesNotMatch(systemPromptOptions.contextFiles[0].content, /COORDINATOR|SDD orchestrator|sdd-apply|Implementation Routing|4-file rule/);
+	assert.equal(systemPromptOptions.contextFiles[0].content, EXPECTED_PRIMARY, "the engram-protocol block is dropped");
+	assert.doesNotMatch(systemPromptOptions.contextFiles[0].content, /COORDINATOR|SDD orchestrator|sdd-apply|Implementation Routing|4-file rule|engram-protocol/);
 });
 
-test("with engram-protocol in two loaded files the primary keeps only the copy nearest to the working directory", async () => {
+test("with engram-protocol in two loaded files the primary drops both copies", async () => {
 	const { contextFiles, systemPromptOptions, event } = startEvent();
 	await beforeAgentStart()(event, ctx());
-	assert.equal(systemPromptOptions.contextFiles[0].content, EXPECTED_PRIMARY_WITH_ENGRAM, "the farther copy goes");
-	assert.equal(systemPromptOptions.contextFiles[1].content, PROJECT_AGENTS_MD, "the nearest copy stays byte-for-byte");
-	assert.equal(contextFiles[1].content, PROJECT_AGENTS_MD);
+	assert.equal(systemPromptOptions.contextFiles[0].content, EXPECTED_PRIMARY, "the home copy goes");
+	assert.equal(systemPromptOptions.contextFiles[1].content, PROJECT_AGENTS_MD_FILTERED, "the project copy goes too");
+	assert.equal(contextFiles[1].content, PROJECT_AGENTS_MD, "the loaded entry is never mutated on disk");
 });
 
 test("the nested remote-authorization block survives in the primary although its enclosing agent-routing block is dropped", async () => {
@@ -191,7 +177,7 @@ test("the nested remote-authorization block survives in the primary although its
 	assert.ok(home.includes(REMOTE_AUTHORIZATION), "remote-authorization stays byte-for-byte");
 });
 
-test("two engram-protocol copies at the same level, or off the working-directory chain, are both kept", async () => {
+test("two engram-protocol copies at the same level, or off the working-directory chain, are all dropped", async () => {
 	for (const paths of [
 		[join(fixtureCwd, "AGENTS.md"), join(fixtureCwd, "CLAUDE.md")],
 		[join(fixtureRoot!, "elsewhere", "AGENTS.md"), join(fixtureCwd, "AGENTS.md")],
@@ -201,8 +187,8 @@ test("two engram-protocol copies at the same level, or off the working-directory
 		contextFiles[0].path = paths[0];
 		contextFiles[1].path = paths[1];
 		await beforeAgentStart()(event, ctx());
-		assert.equal(systemPromptOptions.contextFiles, contextFiles, `nothing removed for ${paths[0]}`);
-		assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [PROJECT_AGENTS_MD, PROJECT_AGENTS_MD]);
+		assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [PROJECT_AGENTS_MD_FILTERED, PROJECT_AGENTS_MD_FILTERED], `both copies go for ${paths[0]}`);
+		assert.deepEqual(contextFiles.map((file) => file.content), [PROJECT_AGENTS_MD, PROJECT_AGENTS_MD], "the loaded entries stay untouched");
 	}
 });
 
@@ -223,7 +209,7 @@ test("a second primary turn over already-filtered context files removes nothing 
 	assert.notEqual(filtered, contextFiles, "the first turn filtered");
 	await handler(event, ctx());
 	assert.equal(systemPromptOptions.contextFiles, filtered);
-	assert.equal(filtered[1].content, PROJECT_AGENTS_MD, "the remaining single copy is never dropped");
+	assert.equal(filtered[1].content, PROJECT_AGENTS_MD_FILTERED, "the already-filtered copy is never touched again");
 });
 
 for (const scenario of ["child", "named-agent"] as const) {

@@ -488,6 +488,40 @@ test("prepareReadiness: a real git project root with no database reaches the ses
 	assert.equal(indexState(repo), "absent", "the observed run creates nothing itself");
 });
 
+test("prepareReadiness: an orphaned init token from a dead session does not stop the session-start init", async (t) => {
+	const repo = dir(t, "s5-orphan");
+	git(["init", "-b", "main"], repo);
+	writeFileSync(join(repo, "package.json"), "{}\n");
+	// The live orphan's exact shape: an init lock whose session and spawned init child both
+	// died, written without host identity, long past its TTL - the token that fail-closed
+	// every later session start on the machine this fix was diagnosed on.
+	const exited = spawnSync(process.execPath, ["--version"], { stdio: "ignore" });
+	assert.ok(typeof exited.pid === "number" && exited.pid > 0, "a genuinely dead pid is recorded");
+	const locks = dir(t, "s5-orphan-locks");
+	const started = Date.now() - 660_000;
+	const orphan = { kind: "init", pid: exited.pid, startedAt: started, expiresAt: started + 600_000, nonce: "orphan", writerPid: exited.pid, writerProxy: false, writerPidAt: started };
+	writeFileSync(lockPathFor(repo, "init", locks), JSON.stringify(orphan));
+	const runs: string[] = [];
+	const run = async (args: readonly string[]): Promise<boolean> => {
+		runs.push(args.join(" "));
+		return true;
+	};
+	const result = await prepareReadiness({
+		cwd: repo,
+		locksDir: locks,
+		initLockWaitMs: 250,
+		env: {},
+		reason: "startup",
+		isProjectRoot: isWorkspaceProjectRoot,
+		run,
+		seed: (workspace) => seedWorktreeIndex({ cwd: workspace, run }),
+		warm: async () => true,
+	});
+	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
+	assert.deepEqual(runs, ["init -y"], "the orphaned token is reclaimed and init still runs");
+});
+
+
 
 test("prepareReadiness: an unknown index state or a non-project runs nothing", async (t) => {
 	const unknown = dir(t, "unknown");

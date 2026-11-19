@@ -143,7 +143,29 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		t.after(() => rmSync(fallbackRoot!, { recursive: true, force: true }));
 		const packageRoot = join(fallbackRoot, "node_modules", "@colbymchenry", "codegraph");
 		mkdirSync(packageRoot, { recursive: true });
-		writeFileSync(join(fallbackRoot, "codegraph.cmd"), "@ECHO off\n");
+		// A genuine npm cmd-shim (canonical shape, plain tail): the resolver accepts its
+		// invocation, resolves the bare node beside it, and init takes the direct resolver
+		// route. A rejected shim must not fall through to the package scan beside it.
+		const shimBS = "\\";
+		writeFileSync(join(fallbackRoot, "codegraph.cmd"), [
+			'@ECHO off',
+			'GOTO start',
+			':find_dp0',
+			'SET dp0=%~dp0',
+			'EXIT /b',
+			':start',
+			'SETLOCAL',
+			'CALL :find_dp0',
+			'',
+			'IF EXIST "%dp0%' + shimBS + 'node.exe" (',
+			'  SET "_prog=%dp0%' + shimBS + 'node.exe"',
+			') ELSE (',
+			'  SET "_prog=node"',
+			'  SET PATHEXT=%PATHEXT:;.JS;=;%',
+			')',
+			'',
+			'"%_prog%"  "%dp0%' + shimBS + 'node_modules' + shimBS + '@colbymchenry' + shimBS + 'codegraph' + shimBS + 'entry.js" %*',
+		].join("\n"));
 		writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ bin: { codegraph: "entry.js" } }));
 		writeFileSync(join(packageRoot, "entry.js"), "// fixture entry\n");
 		const previousPath = process.env.Path;
@@ -152,7 +174,7 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		t.after(() => { if (previousUpperPath === undefined) delete process.env.PATH; else process.env.PATH = previousUpperPath; });
 		process.env.Path = fallbackRoot;
 		process.env.PATH = fallbackRoot;
-		fallbackCalls = [{ kind: "execFile", command: process.execPath, args: [join(fallbackRoot, "node_modules", "@colbymchenry", "codegraph", "entry.js"), "init", cwd] }];
+		fallbackCalls = [{ kind: "execFile", command: "node", args: [join(fallbackRoot, "node_modules", "@colbymchenry", "codegraph", "entry.js"), "init", cwd] }];
 	}
 	// The fixed query prevents accidental cache misses from becoming a fake proof.
 		const query = "?windows-hidden-contract";

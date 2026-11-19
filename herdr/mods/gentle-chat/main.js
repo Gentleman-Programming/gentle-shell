@@ -23,7 +23,7 @@ import { sessionFileFor, readAfter, readTail, utf8 } from "./session.js";
 import { FeedSource, allSessions, targetSession, machineOf, liveState } from "./snapshot.js";
 import { createFeed, ingest, hideThinkingFrom } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
-import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, PERM, ELSEWHERE } from "./ui.js";
+import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, isWindowsHost, pasteImageKey, PERM, ELSEWHERE } from "./ui.js";
 import { sendAction, errorText, safeKeys, terminalFree, tuiCommand, showTerminal, confirm, confirmed, readSnapshot } from "./actions.js";
 
 const PAGE = 40; // entries drawn at first; "Show earlier" adds this many
@@ -135,6 +135,9 @@ export default class GentleChat extends View {
       { keystroke: "down", action: "gentle_chat_slash_down", context: "GentleSlashMenu > Input" },
       { keystroke: "tab", action: "gentle_chat_slash_complete", context: "GentleSlashMenu > Input" },
     ]);
+    // Windows: Alt+V in the composer attaches the clipboard image like the paperclip does, as it
+    // does in the TUI. Ctrl+V stays a plain text paste there; elsewhere Alt+V types a character.
+    if (isWindowsHost()) cx.bind_keys([{ keystroke: "alt-v", action: "gentle_chat_attach", context: "GentleChatComposer > Input" }]);
     // Every live snapshot (and whether its publisher still runs): the status bar's shared read
     // (snapshot.js FeedSource). A new read re-renders this view, and render follows it.
     this.source = new FeedSource();
@@ -816,8 +819,8 @@ export default class GentleChat extends View {
     });
   }
 
-  // Pastes the clipboard (an image, or files on macOS) into the session's draft, as Ctrl+V in the
-  // terminal does; it goes with the next message sent.
+  // Pastes the clipboard (an image, or files on macOS) into the session's draft, as the paste-image
+  // key does in the terminal (Ctrl+V, Alt+V on Windows); it goes with the next message sent.
   attach(cx) {
     this.act("attach", cx, async () => {
       const address = this.address;
@@ -825,7 +828,7 @@ export default class GentleChat extends View {
       if (!address) return "No Gentle Shell terminal.";
       const busy = terminalFree(this.snap);
       if (busy) return busy;
-      const r = await hc(["keys", address, "ctrl+v"]);
+      const r = await hc(["keys", address, pasteImageKey()]);
       if (r.code !== 0) return (r.stderr || r.stdout || "hc keys failed").trim();
       this.notice = "Clipboard pasted into the session's draft; it goes with your next message.";
       return null;

@@ -12,6 +12,12 @@ import { SESSION_KINDS, machineOf, liveState } from "./snapshot.js";
 const MOD = "gentle-chat";
 // A session that runs outside Herdr app (T11): what the Terminal switch and ⌘J say instead.
 export const ELSEWHERE = "This session runs in another terminal";
+
+// Pi's paste-image key is Ctrl+V, or Alt+V on Windows (docs/gentle-shell.md). The composer is a
+// text field, so Ctrl+V typed there pastes text: the Attach button sends this key to the terminal.
+export const isWindowsHost = () => /^[A-Za-z]:|\\/.test(String(home() ?? ""));
+export const pasteImageKey = () => (isWindowsHost() ? "alt+v" : "ctrl+v");
+export const attachTooltip = () => `Attach: paste the clipboard image into the draft (${isWindowsHost() ? "Alt+V" : "Ctrl+V"})`;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const CLEAR = "#00000000";
 const CLIP = 6000; // characters of a tool's output shown when expanded
@@ -837,12 +843,13 @@ export function composer(v, p, pq) {
   // line is centred; a longer draft grows the box, the clip and Send stay on its centre.
   const field = h_flex().w_full().items_center().gap(8).pl(12).pr(8).py(8).border(1)
     .border_color(v.typing ? p.accent : p.lineStrong).rounded(R.md).bg(p.background)
-    // Attach: the clipboard's image (or files) into the session's draft, as Ctrl+V in the terminal.
+    // Attach: the clipboard's image (or files) into the session's draft, as the paste-image key does in the terminal.
     .child(h_flex().id("attach").w(32).h(32).flex_none().items_center().justify_center().rounded(R.sm).text_color(p.muted)
       .cursor_pointer().when(v.busy === "attach", (el) => el.opacity(0.6))
-      .hover((st) => st.bg(p.selected).text_color(p.text)).tooltip("Attach: paste the clipboard image into the draft (Ctrl+V)")
+      .hover((st) => st.bg(p.selected).text_color(p.text)).tooltip(attachTooltip())
       .on_click((_e, cx) => v.attach(cx)).child(icon("clip", 15)))
     .child(div().flex_1().min_w(0).key_context("GentleChatComposer").on_action("gentle_chat_send", (_e, cx) => v.send(cx))
+      .on_action("gentle_chat_attach", (_e, cx) => v.attach(cx))
       // While the "/" menu is open, ↑/↓/Tab are its keys (main.js binds them in GentleSlashMenu).
       .child(div().w_full().key_context(menu ? "GentleSlashMenu" : "GentleSlashIdle")
         .on_action("gentle_chat_slash_up", (_e, cx) => v.slashMove(-1, cx))

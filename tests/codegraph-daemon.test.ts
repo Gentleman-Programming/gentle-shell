@@ -388,3 +388,22 @@ test("daemonFor on win32 lives through the probe and the memoized canonical fold
 	setPipeProbeForTests(() => "refused");
 	assert.equal(daemonFor(project, registry, "win32").alive, false, "a refused pipe is not a live daemon even with a live pid");
 });
+
+test("mcpLineReader applies the frame cap to the trimmed frame on the partial path too", () => {
+	const replies: Array<McpReply | undefined> = [];
+	const read = mcpLineReader((message) => {
+		replies.push(message);
+		return false;
+	}, 9);
+	// The same short reply, once delivered by one chunk that carries its newline and once with
+	// the newline in a later chunk: the unfinished remainder must take the same trimmed measure
+	// the complete line takes, or the split arrival would report a runaway.
+	assert.equal(read('{"id":2}  '), false, "trailing whitespace before the late newline is not frame content");
+	assert.equal(read("\n"), false);
+	assert.deepEqual(replies, [{ id: 2 }], "the frame reaches dispatch after its newline arrives separately");
+	replies.length = 0;
+	assert.equal(read('{"id":3}'), false);
+	assert.equal(read("  \n"), false, "a short reply followed by separate blank lines keeps working");
+	assert.deepEqual(replies, [{ id: 3 }]);
+	assert.equal(read("0123456789"), true, "a partial frame whose content itself breaks the cap still answers overflow");
+});

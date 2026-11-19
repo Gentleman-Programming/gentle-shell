@@ -284,9 +284,11 @@ export function mcpLineReader(onReply: (message: McpReply | undefined) => boolea
 	const decoder = new StringDecoder("utf8");
 	return (chunk: string | Buffer) => {
 		buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
-		// The cap measures each frame on its own: a complete reply just under it is read even
-		// when its chunk carries trailing blank lines, while one oversized frame — complete or
-		// the unfinished remainder — is the runaway the guard answers true for.
+		// The cap measures each frame on its own, on trimmed content on both paths: a complete
+		// reply just under it is read even when its chunk carries trailing blank lines, and the
+		// unfinished remainder takes the same trimmed measure, so trailing whitespace before a
+		// late newline never counts as frame content; one oversized frame, complete or partial,
+		// is the runaway the guard answers true for.
 		let newline: number;
 		while ((newline = buffer.indexOf("\n")) >= 0) {
 			const line = buffer.slice(0, newline).trim();
@@ -295,7 +297,7 @@ export function mcpLineReader(onReply: (message: McpReply | undefined) => boolea
 			if (line.length === 0) continue;
 			if (onReply(parseMcpReply(line))) return false;
 		}
-		return buffer.length > maxBufferChars;
+		return buffer.trim().length > maxBufferChars;
 	};
 }
 

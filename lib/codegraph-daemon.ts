@@ -271,8 +271,10 @@ export function mcpReplyKind(message: McpReply): McpReplyKind | undefined {
  * from a child's stdout, decoded strings from a socket), splits and trims lines, skips the empty ones, and
  * hands each parsed reply to `onReply` — undefined marks a line `parseMcpReply` rejects; each conversation
  * decides what that means. A truthy return from `onReply` stops the scan for the rest of the chunk, the
- * data handler's `return`. The chunk handler itself answers true when the unparsed buffer grew past
- * `maxBufferChars` — the runaway guard the socket conversation finishes on.
+ * data handler's `return`. The chunk handler itself answers true when one frame — a complete line
+ * or the unfinished remainder — grew past `maxBufferChars`, the runaway guard the socket
+ * conversation finishes on; a frame just under the cap keeps its reply even when blank lines pad
+ * out the chunk that carried it.
  */
 export function mcpLineReader(onReply: (message: McpReply | undefined) => boolean | void, maxBufferChars: number = Number.POSITIVE_INFINITY): (chunk: string | Buffer) => boolean {
 	let buffer = "";
@@ -282,15 +284,18 @@ export function mcpLineReader(onReply: (message: McpReply | undefined) => boolea
 	const decoder = new StringDecoder("utf8");
 	return (chunk: string | Buffer) => {
 		buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
-		if (buffer.length > maxBufferChars) return true;
+		// The cap measures each frame on its own: a complete reply just under it is read even
+		// when its chunk carries trailing blank lines, while one oversized frame — complete or
+		// the unfinished remainder — is the runaway the guard answers true for.
 		let newline: number;
 		while ((newline = buffer.indexOf("\n")) >= 0) {
 			const line = buffer.slice(0, newline).trim();
 			buffer = buffer.slice(newline + 1);
+			if (line.length > maxBufferChars) return true;
 			if (line.length === 0) continue;
 			if (onReply(parseMcpReply(line))) return false;
 		}
-		return false;
+		return buffer.length > maxBufferChars;
 	};
 }
 

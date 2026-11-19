@@ -39,15 +39,24 @@ function fakeDaemonSocketPath(platform: NodeJS.Platform, home: string): string {
  * An in-process daemon speaking the CodeGraph socket protocol: a hello line as soon as a client
  * connects, then initialize and one tools/call reply per the given scripts.
  */
+/** Registration knobs for one fake daemon: a shared registry directory, its record file name,
+ * and its age - the ordering tests need two live daemons in one registry. */
+interface FakeDaemonOptions {
+	registryDir?: string;
+	recordName?: string;
+	startedAt?: number;
+}
+
 function fakeDaemon(
 	t: test.TestContext,
 	project: string,
 	hello: string | undefined,
 	initialize: object,
 	call: object,
+	options: FakeDaemonOptions = {},
 ): FakeDaemon {
 	const home = dir(t, "home");
-	const registryDir = join(home, ".codegraph", "daemons");
+	const registryDir = options.registryDir ?? join(home, ".codegraph", "daemons");
 	mkdirSync(registryDir, { recursive: true });
 	const socketPath = fakeDaemonSocketPath(process.platform, home);
 	let resolveReady: () => void = () => {};
@@ -83,7 +92,7 @@ function fakeDaemon(
 	server.on("error", rejectReady);
 	server.listen(socketPath, () => resolveReady());
 	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
-	writeFileSync(join(registryDir, "record.json"), JSON.stringify({ root: project, socketPath, startedAt: 1, pid: process.pid }));
+	writeFileSync(join(registryDir, options.recordName ?? "record.json"), JSON.stringify({ root: project, socketPath, startedAt: options.startedAt ?? 1, pid: process.pid }));
 	return { socketPath, registryDir, ready, connections: () => connections };
 }
 
@@ -182,6 +191,34 @@ test("daemonFor and the sockets iterate live daemons newest first", async (t) =>
 	assert.equal(found.root, project);
 });
 
+test("two live daemons: the newer socket receives the call first", async (t) => {
+	const project = dir(t, "order");
+	const registryDir = dir(t, "order-registry");
+	const newer = fakeDaemon(t, project, HELLO, INITIALIZED, { ...ANSWER, content: [{ type: "text", text: "newer answer" }] }, { registryDir, recordName: "newer.json", startedAt: 2 });
+	const older = fakeDaemon(t, project, HELLO, INITIALIZED, { ...ANSWER, content: [{ type: "text", text: "older answer" }] }, { registryDir, recordName: "older.json", startedAt: 1 });
+	await newer.ready;
+	await older.ready;
+	assert.deepEqual(
+		await exploreViaDaemon(project, "codegraph_explore", { query: "main" }, 2_000, registryDir),
+		{ status: "ok", text: "newer answer" },
+		"the newer daemon answers, so the older socket never receives the call",
+	);
+});
+
+test("a silent newer daemon hands the remaining budget to the older socket", async (t) => {
+	const project = dir(t, "fallback");
+	const registryDir = dir(t, "fallback-registry");
+	const silent = fakeDaemon(t, project, undefined, INITIALIZED, ANSWER, { registryDir, recordName: "newer.json", startedAt: 2 });
+	const older = fakeDaemon(t, project, HELLO, INITIALIZED, { ...ANSWER, content: [{ type: "text", text: "older answer" }] }, { registryDir, recordName: "older.json", startedAt: 1 });
+	await silent.ready;
+	await older.ready;
+	assert.deepEqual(
+		await exploreViaDaemon(project, "codegraph_explore", { query: "main" }, 5_000, registryDir, 50),
+		{ status: "ok", text: "older answer" },
+		"the newer daemon stayed silent, so the older one answered within the remaining budget",
+	);
+});
+
 test("registeredDaemons reads the registry once per project per window", (t) => {
 	const project = dir(t, "memo");
 	const registry = dir(t, "memo-registry");
@@ -235,6 +272,21 @@ test("mcpLineReader buffers chunks, skips empty and unparseable lines, stops on 
 	const bounded = mcpLineReader(() => true, 9);
 	assert.equal(bounded('{"id":1}\n'), false, "under the cap lines are read");
 	assert.equal(bounded("0123456789"), true, "past the cap the reader answers overflow before reading a line");
+});
+
+test("mcpLineReader caps each frame on its own, not the chunk that carries it", () => {
+	const replies: Array<McpReply | undefined> = [];
+	const read = mcpLineReader((message) => {
+		replies.push(message);
+		return false;
+	}, 9);
+	// A reply just under the cap followed by blank lines in the same chunk: the blank lines
+	// belong to no frame, so the reply is delivered instead of rejected as a runaway.
+	assert.equal(read('{"id":2}\n\n\n\n\n\n\n\n'), false, "an under-cap frame plus trailing blank lines is not a runaway");
+	assert.deepEqual(replies, [{ id: 2 }], "the under-cap reply reached dispatch");
+	assert.equal(read('{"id":3}\n'), false);
+	assert.deepEqual(replies, [{ id: 2 }, { id: 3 }], "the reader keeps working after the blank-line chunk");
+	assert.equal(read("0123456789\n"), true, "a single complete frame over the cap stays rejected");
 });
 
 test("mcpLineReader keeps a multibyte character split across Buffer chunks intact", () => {

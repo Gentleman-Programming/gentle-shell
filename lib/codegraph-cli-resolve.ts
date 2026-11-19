@@ -102,13 +102,30 @@ function parseInvocationLine(line: string): string | undefined {
  * invocation line forwarding `%*` to `"%_prog%"` with exactly one quoted `%dp0%`-anchored script.
  * The parse mirrors that logic literally, accepting only npm's own invocation tokens in order
  * — the modern `endLocal` prefix where npm ships it — with free whitespace between them;
- * anything else — pnpm-style shims, hand-written wrappers, a fixed argument the spawn cannot
- * reproduce, a `..`-traversal or missing target, an unstable relative spelling — is unprovable
- * and returns null, so the caller keeps spawning the shim through cmd.exe exactly as before.
+ * anything else — pnpm-style shims, hand-written wrappers, a rewritten Node-selection
+ * assignment, a fixed argument the spawn cannot reproduce, a `..`-traversal or missing
+ * target, an unstable relative spelling — is unprovable and returns null, so the caller
+ * keeps spawning the shim through cmd.exe exactly as before.
  */
 function parseCmdShim(text: string, shimDir: string, exists: (path: string) => boolean): CodegraphEntry | null {
 	if (!text.includes("SET dp0=%~dp0")) return null;
 	if (!text.includes('IF EXIST "%dp0%' + BS + 'node.exe"')) return null;
+	// The Node selection behind %_prog% must be npm's own, not merely present: exactly the
+	// quoted beside-shim assignment, exactly the quoted bare-node assignment, and no other
+	// mention of _prog beyond an invocation line (one carrying both "%_prog%" and %*, proven
+	// token for token below). A wrapper that keeps the IF EXIST guard and the stock
+	// invocation but rewrites either assignment — or adds one after the block — picks an
+	// executable the direct spawn would not reproduce.
+	let besideShimAssignments = 0;
+	let bareNodeAssignments = 0;
+	for (const line of text.split(/\r?\n/)) {
+		if (!line.includes("_prog")) continue;
+		const trimmed = line.trim();
+		if (trimmed === 'SET "_prog=%dp0%' + BS + 'node.exe"') besideShimAssignments += 1;
+		else if (trimmed === 'SET "_prog=node"') bareNodeAssignments += 1;
+		else if (!(line.includes('"%_prog%"') && line.includes("%*"))) return null;
+	}
+	if (besideShimAssignments !== 1 || bareNodeAssignments !== 1) return null;
 	// Exactly one invocation line may exist, and it must be the one supported shape token for
 	// token: a second invocation line, a missing script, or a wrapper's fixed argument are all
 	// shapes the direct spawn cannot prove it reproduces.
@@ -163,14 +180,22 @@ let cached: CodegraphShimResolution | undefined;
  * shim's direct-spawn entry, a rejection when the first shim exists but cannot be proven, or
  * a miss when no shim is on PATH (and off win32). The memo holds for the whole process and
  * covers rejections and misses alike, so a PATH or shim that changes mid-run cannot produce
- * two different answers — with one exception: a memoized entry whose script has since
+ * two different answers — with two exceptions: a memoized entry whose script has since
  * vanished is re-resolved, because serving it would start node on a removed entrypoint (a
- * module-load exit the caller cannot tell from a spawn ENOENT and so never retries around).
+ * module-load exit the caller cannot tell from a spawn ENOENT and so never retries
+ * around), and so is a memoized absolute node executable that has vanished, because the
+ * shim IF EXIST would now select the bare node while the served entry keeps spawning the
+ * removed file.
  */
 export function resolveCodegraphShimState(io: ResolveCodegraphIo = defaultIo): CodegraphShimResolution {
-	// A cached entry survives only while its entrypoint still exists; a rejection or miss has
-	// nothing to revalidate and stays memoized.
-	if (cached?.status === "entry" && !io.exists(cached.entry.script)) cached = undefined;
+	// A cached entry survives only while both of its spawn targets still exist; a rejection
+	// or miss has nothing to revalidate and stays memoized. The bare "node" is a PATH search
+	// the spawn itself performs, so only an absolute executable has a file to re-check.
+	if (cached?.status === "entry") {
+		const vanishedScript = !io.exists(cached.entry.script);
+		const vanishedNode = cached.entry.node !== "node" && !io.exists(cached.entry.node);
+		if (vanishedScript || vanishedNode) cached = undefined;
+	}
 	if (cached !== undefined) return cached;
 	try {
 		cached = resolveCodegraphEntryWith(io);

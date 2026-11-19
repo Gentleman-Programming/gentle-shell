@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { existsSync, linkSync, lstatSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
+import { cpSync, existsSync, linkSync, lstatSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -100,6 +100,10 @@ async function runSyncWithRetry(
 	// The backoff is worth waiting only when a usable budget survives it for the retry.
 	if (deadline - Date.now() <= SYNC_RETRY_DELAY_MS) return false;
 	await sleep(SYNC_RETRY_DELAY_MS);
+	// A suspended host can resume past the deadline mid-backoff: a retry with a nonpositive
+	// budget would still start a real child and run its whole timeout cleanup for nothing —
+	// the first failure stands.
+	if (deadline - Date.now() <= 0) return false;
 	return attempt(Math.max(deadline - Date.now(), 0));
 }
 
@@ -315,9 +319,22 @@ export { indexState, type IndexState } from "./codegraph-lease.ts";
 export type IndexAction = "sync" | "init" | "none";
 export type SessionStartReason = "startup" | "reload" | "new" | "resume" | "fork";
 
+/** Whether `cwd`'s `.codegraph` is safe for an automatic refresh: a regular directory, or no
+ * `.codegraph` at all. A symlinked one is another checkout's index — the same shape the explicit
+ * tool refuses — and CodeGraph itself follows the link, so an automatic sync or warm-up must
+ * never write into it either. */
+function safeIndexDirectory(cwd: string): boolean {
+	try {
+		const index = lstatSync(join(cwd, ".codegraph"));
+		return !index.isSymbolicLink() && index.isDirectory();
+	} catch {
+		return true; // absent: the tri-state indexState reports that its own way
+	}
+}
+
 /** An existing index is synced; a fresh git project with a marker file is initialised; anything else is left alone. */
 export function planIndexAction(cwd: string, state: IndexState, isProjectRoot: (cwd: string) => boolean): IndexAction {
-	if (state === "present") return "sync";
+	if (state === "present") return safeIndexDirectory(cwd) ? "sync" : "none";
 	if (state === "unknown" || !isProjectRoot(cwd)) return "none";
 	return MARKERS.some((marker) => existsSync(join(cwd, marker))) ? "init" : "none";
 }
@@ -424,6 +441,10 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			const childWorktree = input.env[CHILD_ENV] === "1";
 			const action = planIndexAction(input.cwd, indexState(input.cwd), input.isProjectRoot);
 			if (action === "none") return { action, ok: true, warm: "skipped" };
+			// The child gate read "absent" a moment ago; another session publishing the index in that
+			// window turns the plan into "sync". A child never syncs — it stands down and leaves the
+			// index to the session that just published it.
+			if (childWorktree && action === "sync") return { action: "none", ok: true, warm: "skipped" };
 			try { input.onStart?.(action); } catch { /* never worth stopping the index */ }
 			let ok: boolean;
 			let seedError: string | undefined;
@@ -553,6 +574,9 @@ const searchSyncInFlight = new Map<string, Promise<void>>();
  * surface only through onFailed.
  */
 export function syncBeforeSearch(input: SearchSyncInput): Promise<void> {
+	// A symlinked `.codegraph` is another checkout's index (the explicit tool refuses it too):
+	// the automatic search refresh never writes into the linked database.
+	if (!safeIndexDirectory(input.cwd)) return Promise.resolve();
 	const running = searchSyncInFlight.get(input.cwd);
 	if (running) return running;
 	const job = (async (): Promise<void> => {
@@ -895,6 +919,11 @@ function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: nu
 		child?.on("error", () => finish(false));
 		child?.on("close", (code: number | null) => {
 			exitCode = code;
+			// Group members that ignored SIGTERM must not outlive the reported result: the leader
+			// can exit on the kill signal and close its stdio before the grace escalation fires, so
+			// the close itself sends the group SIGKILL — a group with no remaining members rejects
+			// the signal, and killProcessTree's existing catch ignores that.
+			if (timedOut) killProcessTree(child, true, "SIGKILL");
 			// A zero exit code counts only when the deadline did not expire first: a command that
 			// handles the timeout's SIGTERM and exits 0 was still interrupted by the timeout.
 			finish(!timedOut && code === 0);
@@ -929,17 +958,29 @@ function isSeedStagingRoot(cwd: string): boolean {
  * rather than against an empty project — the emptied-index failure mode. Directories become
  * symlinks (junctions on Windows, where they need no privilege), regular files become hardlinks
  * (no privilege either, and the staging root lives inside the worktree so both share a volume);
- * the seed's staging cleanup unlinks the links without ever following them. */
+ * the seed's staging cleanup unlinks the links without ever following them. A directory link
+ * that cannot be created — a Windows network share takes no junction to a remote directory —
+ * falls back to copying the tree: a snapshot instead of a live view, but the validating sync
+ * reconciles the same files and the publication target is untouched. */
 function materializeStagingSources(worktree: string, stagingRoot: string): void {
 	for (const entry of readdirSync(worktree, { withFileTypes: true })) {
 		if (entry.name === ".codegraph") continue;
 		const target = join(worktree, entry.name);
 		const link = join(stagingRoot, entry.name);
-		if (entry.isDirectory()) symlinkSync(target, link, process.platform === "win32" ? "junction" : undefined);
-		else if (entry.isFile()) linkSync(target, link);
+		if (entry.isDirectory()) {
+			try {
+				symlinkSync(target, link, process.platform === "win32" ? "junction" : undefined);
+			} catch {
+				cpSync(target, link, { recursive: true });
+			}
+		} else if (entry.isFile()) linkSync(target, link);
 		else symlinkSync(target, link);
 	}
 }
+
+/** The exact informational sentence `codegraph files` prints (exit 0, stdout) instead of `[]`
+ * when the index holds no indexed files — the documented-by-source empty result. */
+const EMPTY_INDEX_NOTICE = 'No files indexed. Run "codegraph index" first.';
 
 /** One `codegraph files --format flat -j -p <project>` read of the staged index's tracked-file
  * identities — the CLI prints one {path} record per tracked entry as a JSON array. The capture
@@ -958,7 +999,11 @@ async function stagedTrackedPaths(cwd: string, onSpawn?: (pid: number, proxy: bo
 		}
 		return paths;
 	} catch {
-		return undefined;
+		// CodeGraph prints an informational line — not `[]` — when the index holds no files
+		// (v1.6.0 bin: info('No files indexed. Run "codegraph index" first.'), exit 0, stdout):
+		// a confirmed-empty index is an empty path set, and the validating sync may still add the
+		// worktree's files. Any other non-JSON output stays unprovable and fails closed.
+		return run.stdout.includes(EMPTY_INDEX_NOTICE) ? new Set<string>() : undefined;
 	}
 }
 

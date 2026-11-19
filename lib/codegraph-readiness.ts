@@ -246,7 +246,15 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 		let timedOut = false;
 		let child: ReturnType<typeof spawn> | undefined;
 		let escalate: ReturnType<typeof setTimeout> | undefined;
-		const project = projectSpelling(daemon, cwd);
+				// An unresolvable cwd — deleted between the readiness pass and here — has no real path to
+		// serve: settle false at once instead of letting realpathSync reject the never-rejects promise.
+		let project: string;
+		try {
+			project = projectSpelling(daemon, cwd);
+		} catch {
+			resolve(false);
+			return;
+		}
 		const finish = (ok: boolean) => {
 			if (settled) return;
 			// A reply that lands after the deadline — while the timed-out child is still being torn

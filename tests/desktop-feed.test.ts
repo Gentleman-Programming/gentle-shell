@@ -150,6 +150,7 @@ function feedHarness(t: test.TestContext, options: Partial<DesktopFeedOptions> =
 		timers: clock.timers,
 		git: () => async () => ({ stdout: "", code: 128 }),
 		parentOf: async () => undefined,
+		processStart: async () => undefined,
 		profile: () => ({ name: "work (session)", tier: "fast" }),
 		persona: () => undefined,
 		realpath: (path) => `/private${path}`,
@@ -264,6 +265,41 @@ test("should stamp the session feed with the time the agent process started", as
 	await h.start();
 	const startedAt = (h.read().identity as { startedAt?: number }).startedAt;
 	assert.ok(typeof startedAt === "number" && startedAt > 0 && startedAt <= before, `startedAt=${startedAt}`);
+});
+
+test("should publish the OS creation time as the start time once it is read", async (t) => {
+	const h = feedHarness(t, { processStart: async () => 1_700_000_123_456 });
+	await h.start();
+	const identity = h.read().identity as { startedAt?: number; startedAtSource?: string };
+	assert.equal(identity.startedAt, 1_700_000_123_456);
+	assert.equal(identity.startedAtSource, "os");
+});
+
+test("should not claim an OS start time when only the estimate is known", async (t) => {
+	const h = feedHarness(t);
+	await h.start();
+	assert.equal("startedAtSource" in (h.read().identity as object), false);
+});
+
+test("should keep one process-table read shared and start its TTL when it completes", async () => {
+	let clock = 0;
+	let reads = 0;
+	let release: (text: string) => void = () => {};
+	const parentOf = createWindowsParentOf(() => { reads += 1; return new Promise<string>((resolve) => { release = resolve; }); }, 1000, () => clock);
+	const first = parentOf(44120);
+	clock = 6000; // far past the TTL while the first read is still running
+	const second = parentOf(44712);
+	assert.equal(reads, 1, "the in-flight read is shared");
+	release(WINDOWS_TABLE);
+	assert.equal(await first, 44712);
+	assert.equal(await second, 30320);
+	clock = 6500; // within the TTL counted from completion
+	await parentOf(44120);
+	assert.equal(reads, 1);
+	clock = 7500; // past it
+	release = () => {};
+	void parentOf(44120);
+	assert.equal(reads, 2);
 });
 
 test("should keep the persona null when resolving it throws", async (t) => {

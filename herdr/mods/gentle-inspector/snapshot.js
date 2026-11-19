@@ -90,17 +90,23 @@ export async function readFeeds(roots) {
 
 const positive = (n) => Number.isInteger(n) && n > 0;
 
-// Whether each publisher still runs: one process-list read for the pids not checked in the last
+// Whether each publisher still runs: one process-list read for the feeds not checked in the last
 // ALIVE_MS (a crashed session leaves its snapshot behind until the next session start sweeps it).
 // POSIX hosts ask `ps`. Windows has none, so it asks `tasklist`; a pid that is listed can still be
 // another process (Windows reuses pids), so a feed that carries `identity.startedAt` is also
-// checked against the process's creation time, once per pid for as long as it stays listed.
+// checked, on every expired check, against the creation time the OS reports for that pid. Each
+// feed is judged on its own: two snapshots may share a pid and differ in start time.
 const ALIVE_MS = 5000;
-const SAME_START_MS = 10000; // the publisher's own clock reading vs the OS creation time
-const alive = new Map(); // pid -> { ok, at }
-const startVerified = new Map(); // pid -> the startedAt that was matched to that pid's process
+const SAME_START_MS = 10000; // startedAt estimated from the publisher's clock vs the OS creation time
+const SAME_OS_START_MS = 1000; // startedAt the publisher read from the OS (startedAtSource "os")
+const alive = new Map(); // liveKey -> { ok, at }
 
-const isWindowsHost = () => /^[A-Za-z]:|\\/.test(String(home() ?? ""));
+// A feed's identity for liveness: its pid and the start time it published.
+const liveKey = (f) => `${f.identity?.pid}:${positive(f.identity?.startedAt) ? f.identity.startedAt : ""}`;
+
+// A Windows home starts with a drive ("C:/Users/x", "C:\Users\x") or is a UNC path; a backslash
+// elsewhere in a POSIX path is just a character.
+const isWindowsHost = () => /^(?:[A-Za-z]:|\\\\)/.test(String(home() ?? ""));
 
 // `tasklist /NH /FO CSV` rows: "Image Name","PID","Session Name","Session#","Mem Usage".
 export const parseTasklistPids = (stdout) =>
@@ -110,9 +116,11 @@ export const parseTasklistPids = (stdout) =>
 export const parseStartTimes = (stdout) =>
   new Map([...String(stdout).matchAll(/^(\d+),(\d+)\s*$/gm)].map((m) => [Number(m[1]), Number(m[2])]));
 
-// Unknown on either side means "cannot tell", which counts as the same process.
-export const sameProcess = (startedAt, startMs) =>
-  !Number.isFinite(startedAt) || !Number.isFinite(startMs) || Math.abs(startedAt - startMs) <= SAME_START_MS;
+// Unknown on either side means "cannot tell", which counts as the same process. `fromOs` says the
+// publisher read startedAt from the OS, so the two readings agree to the millisecond; an estimate
+// from the publisher's clock gets a wider margin.
+export const sameProcess = (startedAt, startMs, fromOs = false) =>
+  !Number.isFinite(startedAt) || !Number.isFinite(startMs) || Math.abs(startedAt - startMs) <= (fromOs ? SAME_OS_START_MS : SAME_START_MS);
 
 async function windowsRunning() {
   try {
@@ -133,44 +141,42 @@ async function windowsStartTimes(pids) {
   }
 }
 
-async function checkWindows(feeds, want, now) {
+async function checkWindows(feeds, now) {
   const running = await windowsRunning();
   if (!running) return;
-  const startedOf = new Map(feeds.filter((f) => positive(f.identity?.pid) && positive(f.identity?.startedAt)).map((f) => [f.identity.pid, f.identity.startedAt]));
-  for (const pid of want) if (!running.has(pid)) startVerified.delete(pid);
-  const unverified = want.filter((pid) => running.has(pid) && startedOf.has(pid) && startVerified.get(pid) !== startedOf.get(pid));
-  const starts = unverified.length ? await windowsStartTimes(unverified) : new Map();
-  for (const pid of want) {
+  const stamped = [...new Set(feeds.filter((f) => running.has(f.identity.pid) && positive(f.identity.startedAt)).map((f) => f.identity.pid))];
+  const starts = stamped.length ? await windowsStartTimes(stamped) : new Map();
+  for (const f of feeds) {
+    const { pid, startedAt, startedAtSource } = f.identity;
     let ok = running.has(pid);
-    if (ok && unverified.includes(pid) && starts.has(pid)) {
-      ok = sameProcess(startedOf.get(pid), starts.get(pid));
-      if (ok) startVerified.set(pid, startedOf.get(pid));
-    }
-    alive.set(pid, { ok, at: now });
+    if (ok && positive(startedAt) && starts.has(pid)) ok = sameProcess(startedAt, starts.get(pid), startedAtSource === "os");
+    alive.set(liveKey(f), { ok, at: now });
   }
 }
 
 export async function liveFeeds(feeds) {
   const now = Date.now();
-  const want = [...new Set(feeds.map((f) => f.identity?.pid).filter(positive))].filter((pid) => !(now - (alive.get(pid)?.at ?? 0) < ALIVE_MS));
-  if (want.length) {
+  const due = new Map(); // liveKey -> feed, for the feeds whose last check expired
+  for (const f of feeds) if (positive(f.identity?.pid) && !(now - (alive.get(liveKey(f))?.at ?? 0) < ALIVE_MS)) due.set(liveKey(f), f);
+  if (due.size) {
     if (isWindowsHost()) {
-      await checkWindows(feeds, want, now);
+      await checkWindows([...due.values()], now);
     } else {
       try {
         // `ps -p` lists the pids that run; it exits 1 when one of them does not.
-        const r = await exec("ps", ["-o", "pid=", "-p", want.join(",")], { timeout: 3000 });
+        const pids = [...new Set([...due.values()].map((f) => f.identity.pid))];
+        const r = await exec("ps", ["-o", "pid=", "-p", pids.join(",")], { timeout: 3000 });
         if (r.code === 0 || r.code === 1) {
           const running = new Set(String(r.stdout).split(/\s+/).map(Number).filter(positive));
-          for (const pid of want) alive.set(pid, { ok: running.has(pid), at: now });
+          for (const [key, f] of due) alive.set(key, { ok: running.has(f.identity.pid), at: now });
         }
       } catch {
         // no ps: the publisher's own sweep is the only cleanup
       }
     }
-    if (alive.size > 256) for (const [pid, v] of alive) if (now - v.at > 60000) alive.delete(pid);
+    if (alive.size > 256) for (const [key, v] of alive) if (now - v.at > 60000) alive.delete(key);
   }
-  return feeds.filter((f) => alive.get(f.identity?.pid)?.ok !== false);
+  return feeds.filter((f) => alive.get(liveKey(f))?.ok !== false);
 }
 
 // One session, across every mod and refresh: its agent dir and session id.

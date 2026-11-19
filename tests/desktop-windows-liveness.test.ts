@@ -102,3 +102,68 @@ test("should treat processes whose start times differ by more than the tolerance
 	assert.equal(mod.sameProcess(1_000_000, 1_000_000 + 60_000), false);
 	assert.equal(mod.sameProcess(undefined, 5), true);
 });
+
+test("should keep a Linux home that contains a backslash on the ps path", async (t) => {
+	const { mod, calls } = await loadSnapshot(t, { home: "/home/team\\dev", exec: ({ command }) => (command === "ps" ? { code: 0, stdout: "  200\n" } : { code: 2, stdout: "" }) });
+	assert.equal((await mod.liveFeeds([feedFor(200)])).length, 1);
+	assert.deepEqual(calls.map((c) => c.command), ["ps"]);
+});
+
+test("should treat a drive path and a UNC path as a Windows host", async (t) => {
+	for (const home of ["C:\\Users\\dev", "C:/Users/dev", "\\\\server\\share\\dev"]) {
+		const { mod, calls } = await loadSnapshot(t, { home, exec: ({ command }) => (command === "tasklist" ? tasklist(200) : { code: 1, stdout: "" }) });
+		await mod.liveFeeds([feedFor(200)]);
+		assert.equal(calls[0]?.command, "tasklist", home);
+	}
+});
+
+test("should drop a recycled pid that started seconds after an OS-stamped publisher", async (t) => {
+	const startedAt = Date.UTC(2026, 10, 19, 12, 0, 0);
+	const { mod } = await loadSnapshot(t, {
+		home: WINDOWS_HOME,
+		exec: ({ command }) => (command === "tasklist" ? tasklist(200) : { code: 0, stdout: `200,${startedAt + 8_000}\r\n` }),
+	});
+	const stamped = { identity: { pid: 200, sessionId: "s", startedAt, startedAtSource: "os" } };
+	assert.deepEqual(await mod.liveFeeds([stamped]), []);
+});
+
+test("should keep the wide tolerance for a start time the publisher only estimated", async (t) => {
+	const startedAt = Date.UTC(2026, 10, 19, 12, 0, 0);
+	const { mod } = await loadSnapshot(t, {
+		home: WINDOWS_HOME,
+		exec: ({ command }) => (command === "tasklist" ? tasklist(200) : { code: 0, stdout: `200,${startedAt + 8_000}\r\n` }),
+	});
+	assert.equal((await mod.liveFeeds([feedFor(200, startedAt)])).length, 1);
+});
+
+test("should judge each feed against the process start time on its own when two share a pid", async (t) => {
+	const older = Date.UTC(2026, 10, 19, 12, 0, 0);
+	const newer = older + 3_600_000;
+	const { mod } = await loadSnapshot(t, {
+		home: WINDOWS_HOME,
+		exec: ({ command }) => (command === "tasklist" ? tasklist(200) : { code: 0, stdout: `200,${newer}\r\n` }),
+	});
+	const feeds = [
+		{ identity: { pid: 200, sessionId: "newer", startedAt: newer, startedAtSource: "os" } },
+		{ identity: { pid: 200, sessionId: "older", startedAt: older, startedAtSource: "os" } },
+		{ identity: { pid: 200, sessionId: "unstamped" } },
+	];
+	const live = await mod.liveFeeds(feeds);
+	assert.deepEqual(live.map((f: { identity: { sessionId: string } }) => f.identity.sessionId), ["newer", "unstamped"]);
+});
+
+test("should recheck the creation time after the liveness cache expires even if the pid never left the list", async (t) => {
+	const startedAt = Date.UTC(2026, 10, 19, 12, 0, 0);
+	let osStart = startedAt;
+	const { mod } = await loadSnapshot(t, {
+		home: WINDOWS_HOME,
+		exec: ({ command }) => (command === "tasklist" ? tasklist(200) : { code: 0, stdout: `200,${osStart}\r\n` }),
+	});
+	let clock = 1_000_000;
+	t.mock.method(Date, "now", () => clock);
+	const feed = { identity: { pid: 200, sessionId: "s", startedAt, startedAtSource: "os" } };
+	assert.equal((await mod.liveFeeds([feed])).length, 1);
+	osStart = startedAt + 3_600_000; // the pid was reused by a process that started much later
+	clock += 6_000; // past ALIVE_MS
+	assert.deepEqual(await mod.liveFeeds([feed]), []);
+});

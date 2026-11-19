@@ -73,14 +73,38 @@ export function createWindowsParentOf(
 	ttlMs = WINDOWS_TABLE_TTL_MS,
 	now: () => number = Date.now,
 ): ParentOf {
-	let cached: { at: number; table: Promise<Map<number, number>> } | undefined;
+	// An in-flight read is shared however long it takes; the TTL starts when a read completes, so a
+	// slow PowerShell start is not repeated by every hop of the walk.
+	let cached: { doneAt: number | undefined; table: Promise<Map<number, number>> } | undefined;
 	return async (pid) => {
-		if (!cached || now() - cached.at > ttlMs) {
-			cached = { at: now(), table: read().then((text) => (text === undefined ? new Map<number, number>() : parseProcessTable(text)), () => new Map<number, number>()) };
+		if (!cached || (cached.doneAt !== undefined && now() - cached.doneAt > ttlMs)) {
+			const entry: { doneAt: number | undefined; table: Promise<Map<number, number>> } = { doneAt: undefined, table: Promise.resolve(new Map()) };
+			entry.table = read()
+				.then((text) => (text === undefined ? new Map<number, number>() : parseProcessTable(text)), () => new Map<number, number>())
+				.then((table) => { entry.doneAt = now(); return table; });
+			cached = entry;
 		}
 		const parent = (await cached.table).get(pid);
 		return parent !== undefined && parent > 1 ? parent : undefined;
 	};
+}
+
+const WINDOWS_START_TIMEOUT_MS = 8000;
+
+/** The OS creation time of `pid` (epoch ms, as the readers compute it); undefined off Windows or when unreadable. */
+export function readProcessStartMs(pid: number = process.pid): Promise<number | undefined> {
+	if (process.platform !== "win32" || !Number.isInteger(pid) || pid <= 0) return Promise.resolve(undefined);
+	const script = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { [int64](($p.CreationDate.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds) }`;
+	return new Promise((resolve) => {
+		try {
+			execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: WINDOWS_START_TIMEOUT_MS }, (error, stdout) => {
+				const ms = error ? Number.NaN : Number.parseInt(String(stdout).trim(), 10);
+				resolve(Number.isFinite(ms) && ms > 0 ? ms : undefined);
+			});
+		} catch {
+			resolve(undefined);
+		}
+	});
 }
 
 const windowsParentOf = createWindowsParentOf();

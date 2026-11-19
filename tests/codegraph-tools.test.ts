@@ -1,19 +1,22 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import net from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { clearCodegraphResolveCache, resolveCodegraphEntry } from "../lib/codegraph-cli-resolve.ts";
-import { MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
+import { MAX_REPLY_CHARS, resetDaemonRegistryMemo, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import type { InitLockOutcome } from "../lib/codegraph-lease.ts";
 import type { EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
-import { SYNC_RETRY_DELAY_MS, SYNC_TIMEOUT_MS } from "../lib/codegraph-readiness.ts";
+import { SYNC_RETRY_DELAY_MS, SYNC_TIMEOUT_MS, type IndexState } from "../lib/codegraph-readiness.ts";
 import codeGraphTools, {
 	armCodegraphEntryResolverForTest,
 	armCodegraphExecForTest,
 	armExposureEnsureForTest,
+	armIndexStateForTest,
 	clearSearchWindow,
 	createCodeGraphTool,
 	codeGraphNodeScript,
@@ -265,18 +268,32 @@ test("a caller-aborted search stops paying for daemon attempts instead of runnin
 	assert.ok(elapsed < 2_500, `the aborted call must not run out the daemon budget, took ${elapsed} ms`);
 });
 
-test("an already-aborted caller exits before the daemon warm-up and the CLI fallback stages", async (t) => {
+test("a daemon attempt the caller aborts mid-flight is discarded without paying for the CLI fallback", async (t) => {
 	const cwd = workspace(t);
 	const ctx = { cwd } as ExtensionContext;
+	let attempts = 0;
 	let warmCalls = 0;
 	let runnerCalls = 0;
+	let startedResolve: () => void = () => {};
+	const attemptStarted = new Promise<void>((resolve) => {
+		startedResolve = resolve;
+	});
+	// A wedged daemon socket: the attempt never settles, so the abort — not the attempt — ends
+	// the wait. Cancelling at that point must leave the discarded answer unpaid for: no warm-up,
+	// and never a CLI fallback run whose success result would mask the cancellation.
+	const wedged: DaemonExplore = () => {
+		attempts += 1;
+		startedResolve();
+		return new Promise<DaemonCallResult>(() => {
+			/* never settles: a wedged daemon socket */
+		});
+	};
 	const caller = new AbortController();
-	caller.abort(); // the caller cancelled before the search even started
-	const result = await createCodeGraphTool(async () => {
+	const search = createCodeGraphTool(async () => {
 		runnerCalls += 1;
 		return { stdout: "cli answer", stderr: "" };
 	}, {
-		daemonExplore: async () => ({ status: "unavailable" as const }),
+		daemonExplore: wedged,
 		rewarm: noRewarm,
 		warm: async () => {
 			warmCalls += 1;
@@ -284,12 +301,49 @@ test("an already-aborted caller exits before the daemon warm-up and the CLI fall
 		},
 		syncRun: syncNothing,
 	}).execute("test", { operation: "query", query: "symbol" }, caller.signal, undefined, ctx);
-	assert.equal(warmCalls, 0, "prior cancellation must not enter the warm-up stage");
-	assert.equal(runnerCalls, 0, "prior cancellation must not start the CLI fallback");
+	void attemptStarted.then(() => caller.abort());
+	const result = await Promise.race([
+		search,
+		new Promise<never>((_, reject) => setTimeout(() => reject(new Error("execute did not return after the aborted attempt")), 3_000)),
+	]);
+	assert.equal(attempts, 1, "exactly one daemon attempt started before the abort");
+	assert.equal(warmCalls, 0, "the aborted search never enters the warm-up stage");
+	assert.equal(runnerCalls, 0, "an aborted daemon attempt must not fall through to the CLI runner");
 	assert.match(result.content[0].text, /CodeGraph failed to run/);
 	assert.equal((result.details as { status?: string }).status, "failed");
 });
+test("a cancellation that lands during the sync wait never starts the first daemon attempt", async (t) => {
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	let attempts = 0;
+	let runnerCalls = 0;
+	const caller = new AbortController();
+	// The abort fires between the search's entry check and its first daemon attempt: the
+	// re-warm runs before the sync wait, so this seam cancels after entry but before the
+	// attempt — the exact window where a discarded answer would still open a socket.
+	const tool = createCodeGraphTool(async () => {
+		runnerCalls += 1;
+		return { stdout: "cli answer", stderr: "" };
+	}, {
+		daemonExplore: async () => {
+			attempts += 1;
+			return { status: "ok" as const, text: "daemon answer" };
+		},
+		rewarm: () => {
+			caller.abort();
+		},
+		warm: async () => true,
+		syncRun: syncNothing,
+	});
+	const result = await tool.execute("test", { operation: "query", query: "symbol" }, caller.signal, undefined, ctx);
+	assert.equal(attempts, 0, "a cancelled search must not open a daemon socket whose answer nobody waits for");
+	assert.equal(runnerCalls, 0, "a cancelled search must not pay for the CLI fallback");
+	assert.match(result.content[0].text, /CodeGraph failed to run/);
+	assert.equal((result.details as { status?: string }).status, "failed");
+});
+
 test("an already-aborted caller returns the abort failure before the re-warm, background sync, and first daemon attempt", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
 	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
 	const ctx = { cwd } as ExtensionContext;
@@ -627,10 +681,24 @@ test("module evaluation survives an unresolvable HOME and TMP: registration neve
 	t.after(() => rmSync(holder, { recursive: true, force: true }));
 	const missing = join(holder, "gone");
 	const script = join(holder, "import-check.mjs");
-	writeFileSync(script, `await import(${JSON.stringify(new URL("../extensions/codegraph-tools.ts", import.meta.url).href)});\nconsole.log("codegraph-tools loaded");\n`);
+	// The child first proves the overrides took effect: Node reads HOME on POSIX and
+	// USERPROFILE on Windows for homedir(), and TMPDIR/TEMP/TMP for tmpdir() — all five are
+	// pointed at the missing path, so neither resolution can fall back to a real directory
+	// before the module is imported.
+	const childScript = [
+		"import { homedir, tmpdir } from \"node:os\";",
+		`const missing = ${JSON.stringify(missing)};`,
+		"if (homedir() !== missing || tmpdir() !== missing) {",
+		"  console.error(\"overrides ineffective: home=\" + homedir() + \" tmp=\" + tmpdir());",
+		"  process.exit(1);",
+		"}",
+		`await import(${JSON.stringify(new URL("../extensions/codegraph-tools.ts", import.meta.url).href)});`,
+		"console.log(\"codegraph-tools loaded\");",
+	].join("\n") + "\n";
+	writeFileSync(script, childScript);
 	const child = spawnSync(process.execPath, ["--experimental-strip-types", script], {
 		encoding: "utf8",
-		env: { ...process.env, HOME: missing, TMPDIR: missing },
+		env: { ...process.env, HOME: missing, USERPROFILE: missing, TMPDIR: missing, TEMP: missing, TMP: missing },
 		timeout: 60_000,
 	});
 	assert.equal(child.status, 0, `the module must evaluate with a missing HOME/TMP; stderr: ${child.stderr}`);
@@ -671,6 +739,82 @@ test("CodeGraph tool rejects incomplete or oversized query requests before runni
 		/between 1 and 20/i,
 	);
 	assert.equal(calls, 0);
+});
+
+test("the default query path speaks codegraph_search over the socket: the name the daemon dispatches", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	// A socket-level daemon mirroring the real one's dispatch table: codegraph_search is a
+	// registered tool (query + limit), while any other name gets the same "Unknown tool"
+	// isError reply the real daemon's default case builds — so the tool name on the wire
+	// decides whether the socket can ever serve a query.
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-sockhome-")));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const registryDir = join(home, ".codegraph", "daemons");
+	mkdirSync(registryDir, { recursive: true });
+	// The Windows named-pipe prefix built from char codes: a backslash-dense literal is
+	// corruption-prone in generated source.
+	const backslash = String.fromCharCode(92);
+	const pipePrefix = backslash + backslash + "." + backslash + "pipe" + backslash;
+	const socketPath = process.platform === "win32"
+		? pipePrefix + "gentle-shell-codegraph-search-" + randomUUID()
+		: join(home, "daemon.sock");
+	const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+	const server = net.createServer((socket) => {
+		socket.on("error", () => {});
+		socket.write(JSON.stringify({ codegraph: "1.6.0", protocol: 1 }) + "\n");
+		let buffer = "";
+		socket.on("data", (chunk: Buffer) => {
+			buffer += chunk.toString("utf8");
+			let newline: number;
+			while ((newline = buffer.indexOf("\n")) >= 0) {
+				const line = buffer.slice(0, newline).trim();
+				buffer = buffer.slice(newline + 1);
+				if (line.length === 0) continue;
+				const message = JSON.parse(line) as { id?: number; method?: string; params?: { name?: string; arguments?: Record<string, unknown> } };
+				if (message.method === "initialize") {
+					socket.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "fake", version: "0" } } }) + "\n");
+					continue;
+				}
+				if (message.method === "tools/call") {
+					const name = String(message.params?.name);
+					calls.push({ name, args: message.params?.arguments ?? {} });
+					const result = name === "codegraph_search"
+						? { content: [{ type: "text", text: "daemon answer" }], isError: false }
+						: { content: [{ type: "text", text: "Error: Unknown tool: " + name }], isError: true };
+					socket.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\n");
+				}
+			}
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(socketPath, () => resolve()));
+	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+	writeFileSync(join(registryDir, "record.json"), JSON.stringify({ root: cwd, socketPath, startedAt: 1, pid: process.pid }));
+	// The daemon registry is found through homedir(), which follows HOME on POSIX and
+	// USERPROFILE on Windows — both pointed at the fixture home for this test.
+	const previousHome = process.env.HOME;
+	const previousProfile = process.env.USERPROFILE;
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		if (previousProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = previousProfile;
+		resetDaemonRegistryMemo();
+	});
+	resetDaemonRegistryMemo();
+
+	// daemonExplore left at its default: the production queryViaDaemon is the code under test.
+	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+		rewarm: noRewarm,
+		warm: async () => true,
+		syncRun: syncNothing,
+	});
+	const result = await tool.execute("test", { operation: "query", query: "symbol", limit: 4 }, undefined, undefined, { cwd } as ExtensionContext);
+
+	assert.deepEqual(result.content, [{ type: "text", text: "daemon answer" }], "a registered tool name is served by the socket");
+	assert.deepEqual(calls, [{ name: "codegraph_search", args: { query: "symbol", limit: 4 } }], "the query operation speaks the daemon's registered codegraph_search tool");
 });
 
 test("CodeGraph tool registration exposes a single constrained custom tool", () => {
@@ -770,22 +914,23 @@ test("session_start ensures direct mcp exposure once per process, and a child se
 	};
 	t.after(() => armExposureEnsureForTest(undefined));
 
-	// A child session never patches the user's config — checked first, from a pristine flag.
-	const child = exposureIo();
-	armExposureEnsureForTest(child.io);
+	// One armed spy spans both phases: re-arming between them resets the once-per-process
+	// flag and would hide a child session that incorrectly consumed the parent's only
+	// exposure attempt — with one spy, the parent counts prove the child consumed nothing.
+	const exposure = exposureIo();
+	armExposureEnsureForTest(exposure.io);
 	process.env.GENTLE_PI_AGENTS_CHILD = "1";
 	sessionStart({ reason: "startup" }, ctx);
 	sessionStart({ reason: "startup" }, ctx);
-	assert.equal(child.reads.length, 0, "a child session never reads an agent mcp.json");
+	assert.equal(exposure.reads.length, 0, "a child session never reads an agent mcp.json");
 	delete process.env.GENTLE_PI_AGENTS_CHILD;
 
-	// A parent session ensures exactly once: the second session start is a per-process no-op.
-	const parent = exposureIo();
-	armExposureEnsureForTest(parent.io);
+	// The parent session ensures exactly once against the SAME armed state: the first parent
+	// start performs the only update attempt and the second is a per-process no-op.
 	sessionStart({ reason: "startup" }, ctx);
 	sessionStart({ reason: "startup" }, ctx);
-	assert.equal(parent.reads.length, 4, "each agent-home mcp.json is read once per update attempt (initial read plus the pre-publish re-verify)");
-	assert.equal(parent.writes.length, 2, "each agent-home mcp.json is written exactly once");
+	assert.equal(exposure.reads.length, 4, "each agent-home mcp.json is read once per update attempt (initial read plus the pre-publish re-verify)");
+	assert.equal(exposure.writes.length, 2, "each agent-home mcp.json is written exactly once");
 });
 
 test("a refresh already in flight is awaited, never duplicated", async (t) => {
@@ -906,6 +1051,30 @@ test("win32: a caller that joins a failing in-flight refresh inherits its verdic
 
 	assert.equal(await awaitSearchSync(cwd, ctx, syncRun, noDaemon), true, "the failed shared refresh bought no freshness for either caller");
 	assert.equal(runs, 2, "the next search syncs again");
+});
+
+test("win32: a refresh that ran no sync of its own buys no freshness window", async (t) => {
+	withoutChildEnv(t);
+	withPlatform(t, "win32");
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	// CodeGraph itself is writing this index right now (a live pid in its own writer lock):
+	// the refresh runs no sync here and reports no failure — an outcome this session never
+	// confirmed (the writer may still fail) must not open the freshness window, exactly like
+	// a sync lease held by another session that ran nothing here either.
+	writeFileSync(join(cwd, ".codegraph", "codegraph.lock"), String(process.pid));
+	const runs: number[] = [];
+	const syncRun = async (): Promise<boolean> => {
+		runs.push(runs.length);
+		return true;
+	};
+	const ctx = { cwd } as ExtensionContext;
+	const noDaemon = { registryDir: join(cwd, "no-registry") };
+
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun, noDaemon), true, "the writing-state refresh still covered its search");
+	assert.equal(runs.length, 0, "another writer's live lock means this session runs no sync of its own");
+	assert.equal(await awaitSearchSync(cwd, ctx, syncRun, noDaemon), true, "an unconfirmed refresh buys no freshness: the next search refreshes again");
+	assert.equal(runs.length, 0, "the second search still runs nothing while the writer holds the lock");
 });
 
 test("awaitSearchSync: an unindexed workspace starts no doomed sync", async (t) => {
@@ -1053,6 +1222,41 @@ test("the tool_call guard blocks re-index from a subdirectory session of an inde
 	assert.equal(verdictFrom(bareSub), undefined, "no index anywhere: the first index stays the legitimate init path");
 });
 
+test("the tool_call guard judges a rebuild at the command's own target, not the caller's checkout", async (t) => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const pi = {
+		registerTool() {
+			/* the registered tool's shape is covered above */
+		},
+		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+			handlers.set(event, handler);
+		},
+	} as unknown as ExtensionAPI;
+	codeGraphTools(pi);
+	const guard = handlers.get("tool_call");
+	assert.ok(typeof guard === "function", "the extension registers a tool_call guard");
+	const indexed = workspace(t);
+	await writeIndex(["init", indexed], { cwd: indexed, maxBuffer: 1 });
+	const fresh = workspace(t);
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	const verdict = (command: string) =>
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command } }, { cwd: indexed } as ExtensionContext);
+
+	assert.equal(verdict("codegraph init " + fresh), undefined, "a positional target naming another checkout initializes that checkout, not this index");
+	assert.equal(verdict("codegraph index " + fresh), undefined, "the index rebuild form takes the same positional target");
+	assert.equal(verdict("codegraph init -y " + fresh), undefined, "flags come before the positional path");
+	assert.equal((verdict("codegraph init") as { block?: boolean } | undefined)?.block, true, "a bare rebuild still targets the caller's indexed checkout");
+	assert.equal((verdict("codegraph init " + indexed) as { block?: boolean } | undefined)?.block, true, "an explicit this-checkout target is the rebuild the guard exists for");
+	const nested = join(indexed, "packages", "inner");
+	mkdirSync(nested, { recursive: true });
+	assert.equal((verdict("codegraph index " + nested) as { block?: boolean } | undefined)?.block, true, "a target inside this repo resolves to this repo's index");
+});
+
 /** The tool_call guard's verdict function over an indexed workspace, with the launch override
  * cleared for the test's lifetime: the guard's domain (existing index, no override). */
 async function guardOnIndexedWorkspace(t: test.TestContext): Promise<(command: string, toolName?: string) => unknown> {
@@ -1154,6 +1358,16 @@ test("the guard keeps literal quotes inside quoted override values", async (t) =
 	assert.equal(verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=" + dquote + "1" + dquote + " codegraph index ."), undefined, "a plain quoted 1 is still the exact value 1 and authorizes");
 });
 
+test("the guard does not classify here-document bodies as rebuild commands", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	assert.equal(verdict("cat <<'EOF'\ncodegraph init\ncodegraph index .\nEOF"), undefined, "heredoc body lines are the command's input, not rebuilds");
+	assert.equal(verdict("cat <<EOF\ncodegraph init\n"), undefined, "an unclosed heredoc body runs to the end of the input");
+	assert.equal(verdict("cat <<-EOF\n\tcodegraph init\n\tEOF\ncodegraph status"), undefined, "a <<- delimiter with tab-indented body lines closes the body");
+	assert.equal((verdict("cat <<EOF\nbody\nEOF\ncodegraph index .") as { block?: boolean } | undefined)?.block, true, "commands after the closing delimiter are still inspected");
+	assert.equal((verdict("cat <<EOF; codegraph index .\nbody\nEOF") as { block?: boolean } | undefined)?.block, true, "a rebuild after the operator on the introducing line is still detected");
+	assert.equal(verdict("cat <<< codegraph init"), undefined, "a here-string is one word of one command, never split into commands");
+});
+
 function writeCodeGraphPackage(binDir: string, scriptSource = "#!/usr/bin/env node\n"): string {
 	const pkgRoot = join(binDir, "node_modules", "@colbymchenry", "codegraph");
 	mkdirSync(pkgRoot, { recursive: true });
@@ -1234,7 +1448,14 @@ test("Windows launcher passes command metacharacters as one literal argv value",
 	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-bin-")));
 	t.after(() => rmSync(binDir, { recursive: true, force: true }));
 	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
-	const cwd = workspace(t);
+	// A workspace path carrying a literal metacharacter: "&" splits a command under any
+	// shell reinterpretation, so the child receiving the path as ONE argv value is the
+	// no-shell proof the test title names.
+	const metacharHolder = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-metachar-")));
+	t.after(() => rmSync(metacharHolder, { recursive: true, force: true }));
+	const cwd = join(metacharHolder, "a&b");
+	mkdirSync(cwd);
+	execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
 	if (process.platform !== "win32") {
 		const gitShim = join(binDir, "git");
 		writeFileSync(gitShim, "#!/bin/sh\nprintf '%s\\n' \"$PWD\"\n");
@@ -1978,6 +2199,58 @@ test("explicit init runs under the cross-session init lock: a held lock fails cl
 	assert.equal(releases, 2, "the lock is released however init ends");
 });
 
+test("explicit init hands the spawned child to the init lease, as readiness does", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	const adopted: Array<[number, boolean]> = [];
+	const tool = createCodeGraphTool(async (_args, options) => {
+		options.onSpawn?.(4242, true);
+		return { stdout: "indexed", stderr: "" };
+	}, {
+		initLock: async () => ({
+			outcome: "acquired" as const,
+			release: () => {},
+			adopt: (pid: number, proxy: boolean) => {
+				adopted.push([pid, proxy]);
+			},
+		}),
+	});
+
+	await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+
+	assert.deepEqual(adopted, [[4242, true]], "the runner's spawned child reaches the lease's adopt hook");
+});
+
+test("the default runner reports the real spawned child to the init lease", async (t) => {
+	withoutChildEnv(t);
+	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-adopt-bin-")));
+	t.after(() => rmSync(binDir, { recursive: true, force: true }));
+	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+	writePwdGitShim(binDir);
+	const cwd = workspace(t);
+	withWindowsPath(t, binDir);
+	withPlatform(t, "win32");
+	clearCodegraphResolveCache();
+	t.after(() => clearCodegraphResolveCache());
+	const adopted: Array<[number, boolean]> = [];
+	const tool = createCodeGraphTool(undefined, {
+		initLock: async () => ({
+			outcome: "acquired" as const,
+			release: () => {},
+			adopt: (pid: number, proxy: boolean) => {
+				adopted.push([pid, proxy]);
+			},
+		}),
+	});
+
+	await tool.execute("test", { operation: "init" }, undefined, undefined, { cwd } as ExtensionContext);
+
+	assert.equal(adopted.length, 1, "exactly one spawn is reported to the lease");
+	assert.ok((adopted[0]?.[0] ?? 0) > 0, "the report carries the real child pid");
+	assert.equal(adopted[0]?.[1], true, "a win32 spawn is reported as a proxy pid, like the readiness runner");
+});
+
 test("operation init refuses to rebuild an existing index without the explicit override, like the bash guard", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
@@ -2109,11 +2382,12 @@ test("init after an acquired lock runs only for an absent index: unknown stands 
 		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
 		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
 	});
-	// A self-referential symlink makes every stat of codegraph.db fail with ELOOP — the
-	// "unknown" index state: indexExists() alone treats it as no index, so an unfenced
-	// init would rebuild on a guess.
-	mkdirSync(join(cwd, ".codegraph"));
-	symlinkSync(join(cwd, ".codegraph", "codegraph.db"), join(cwd, ".codegraph", "codegraph.db"));
+	// The "unknown" index state — an unreadable .codegraph — reached through the injected
+	// reader: no filesystem fixture fails a stat on every runner (a self-referential symlink
+	// needs privileges on Windows), and indexExists() alone treats unknown as no index, so
+	// an unfenced init would rebuild on a guess.
+	const restoreIndexState = armIndexStateForTest((): IndexState => "unknown");
+	t.after(restoreIndexState);
 	let runnerCalls = 0;
 	let releases = 0;
 	const tool = createCodeGraphTool(async () => {
@@ -2169,9 +2443,17 @@ test("every search awaits its refresh before the query runs", async (t) => {
 	assert.deepEqual(events, ["sync-start", "sync-end", "query"], "the query runs only after the refresh settled");
 
 	const second = tool.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, ctx);
-	await settled();
-	gates[1]?.();
-	await second;
+	if (process.platform !== "win32") {
+		// The POSIX second refresh must have STARTED before its gate is released: a fixed
+		// sleep races the scheduler, and releasing a gate that does not exist yet would leave
+		// the refresh holding a gate nothing ever opens — the await below then never settles.
+		for (let spin = 0; spin < 200 && gates.length < 2; spin += 1) await settled();
+		gates[1]?.();
+	}
+	await Promise.race([
+		second,
+		new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the second search never settled")), 3_000)),
+	]);
 	if (process.platform === "win32") {
 		assert.deepEqual(
 			events,

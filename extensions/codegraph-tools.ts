@@ -8,7 +8,7 @@ import { resolveCodegraphEntry, type CodegraphEntry } from "../lib/codegraph-cli
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { acquireInitLock, type InitLockOutcome } from "../lib/codegraph-lease.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
-import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type IndexAction, type SessionStartReason } from "../lib/codegraph-readiness.ts";
+import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type IndexState, type IndexAction, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 import { ensureDirectExposureInAgentHomes, type EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
 
 const CODEGRAPH_OPERATION = {
@@ -42,6 +42,10 @@ export interface CodeGraphRunOptions {
 	cwd: string;
 	signal?: AbortSignal;
 	maxBuffer: number;
+	/** Receives the spawned child's pid the moment it exists, so a lock holding the run can
+	 * adopt the writer: a launcher that dies mid-run leaves a token whose recorded child keeps
+	 * the verdict held-live while the writer still writes. */
+	onSpawn?: (pid: number, proxy: boolean) => void;
 }
 
 interface CodeGraphLocalExclude {
@@ -302,8 +306,24 @@ function assertSafeIndexDirectory(cwd: string): void {
  * counts as unconfirmed, so gates on this never fire on an unknown state. Delegates to
  * indexState: true exactly for "present"; absent and unknown both count as no index.
  */
+/** The tri-state index read the tool's gates consult: the real indexState by default. A
+ * test seam because no filesystem fixture yields "unknown" on every runner — a failing stat
+ * needs a self-referential symlink (privileged on Windows) or permission bits (a no-op
+ * there) — so the suite arms the state instead of building it. Production never arms it. */
+let indexStateRead: (cwd: string) => IndexState = indexState;
+
+/** Test seam for the init and search gates' index reads; the restore puts the real
+ * tri-state back. Exercised only by the test suite; not part of the tool's runtime surface. */
+export function armIndexStateForTest(read: ((cwd: string) => IndexState) | undefined): () => void {
+	const previous = indexStateRead;
+	indexStateRead = read ?? indexState;
+	return () => {
+		indexStateRead = previous;
+	};
+}
+
 export function indexExists(cwd: string): boolean {
-	return indexState(cwd) === "present";
+	return indexStateRead(cwd) === "present";
 }
 
 /**
@@ -319,6 +339,25 @@ function gitTopLevel(cwd: string, gitRun: GitRun = defaultGitRun): string | unde
 	} catch {
 		return undefined;
 	}
+}
+
+/** The directory a `codegraph index|init` command targets: its positional path argument —
+ * the CLI resolves one against the caller's cwd (`init [path]`, `index [path]`) — or the
+ * caller's own cwd when the command names none. Flags precede the positional, so only the
+ * first non-flag word can be it. A word with an unterminated quote is a form this parser
+ * cannot place: it falls back to the caller's cwd, keeping the command judged here rather
+ * than silently allowed. */
+function rebuildTargetDir(rest: string, cwd: string): string {
+	const words = rest.trim().split(/\s+/);
+	for (let index = 2; index < words.length; index += 1) {
+		const word = words[index];
+		if (word.startsWith("-")) continue;
+		const quoted = word.length >= 2 && ((word.startsWith('"') && word.endsWith('"')) || (word.startsWith("'") && word.endsWith("'")));
+		const target = quoted ? word.slice(1, -1) : word;
+		if (target.includes('"') || target.includes("'")) return cwd;
+		return resolve(cwd, target);
+	}
+	return cwd;
 }
 
 /** A full re-index from bash is blocked when an index already exists; this is the reason it gets. */
@@ -377,19 +416,156 @@ function unquoteAssignment(token: string): string {
 }
 
 /**
+ * The command with its here-document bodies removed: a `<<WORD` operator makes the lines after
+ * its own line the input of the command (`cat <<'EOF'` feeds the body to cat), not commands of
+ * the list — a literal `codegraph init` line inside the body is data, never a rebuild. The body
+ * runs from the introducing line's newline to the closing delimiter line — a line that is
+ * exactly the word, leading tabs ignored after `<<-` — and scanning continues after it; an
+ * unclosed body runs to the end. `<<<` here-strings carry no body lines and stay as they are,
+ * and quotes and backslashes outside the operator are respected: `echo "<<"` opens no heredoc.
+ */
+function stripHeredocBodies(command: string): string {
+	let out = "";
+	let index = 0;
+	while (index < command.length) {
+		const char = command[index];
+		if (char === "'" || char === '"') {
+			const close = command.indexOf(char, index + 1);
+			const end = close === -1 ? command.length : close + 1;
+			out += command.slice(index, end);
+			index = end;
+			continue;
+		}
+		if (char === "\\") {
+			out += command.slice(index, Math.min(index + 2, command.length));
+			index += 2;
+			continue;
+		}
+		if (char === "<" && command[index + 1] === "<" && command[index + 2] === "<") {
+			out += "<<<";
+			index += 3;
+			continue;
+		}
+		if (char === "<" && command[index + 1] === "<") {
+			const lineEnd = command.indexOf("\n", index);
+			// No newline after the operator: there is no body to strip.
+			if (lineEnd === -1) {
+				out += command.slice(index);
+				return out;
+			}
+			const delimiters = heredocDelimitersOnLine(command, index, lineEnd);
+			if (delimiters.length === 0) {
+				// `<<` with no delimiter word: a syntax error, copied as plain content.
+				out += "<<";
+				index += 2;
+				continue;
+			}
+			out += command.slice(index, lineEnd + 1);
+			index = lineEnd + 1;
+			for (const delimiter of delimiters) {
+				index = endOfHeredocBody(command, index, delimiter);
+			}
+			continue;
+		}
+		out += char;
+		index += 1;
+	}
+	return out;
+}
+
+/** One heredoc delimiter of an introducing line: the word itself and whether `<<-` strips
+ * the body lines' leading tabs before the closing-line comparison. */
+interface HeredocDelimiter {
+	word: string;
+	stripTabs: boolean;
+}
+
+/** Every heredoc delimiter named on one introducing line, in order: bash reads one body per
+ * operator, starting at the line's newline, in the order the operators appear. The bare word
+ * ends at whitespace or a shell separator exactly as the shell ends it (`<<EOF; ...` names
+ * EOF, then the `;` keeps its command meaning); a quoted word's quotes are stripped, the
+ * way the shell derives the delimiter from `<<'EOF'`. */
+function heredocDelimitersOnLine(command: string, from: number, lineEnd: number): HeredocDelimiter[] {
+	const delimiters: HeredocDelimiter[] = [];
+	let index = from;
+	while (index < lineEnd) {
+		const char = command[index];
+		if (char === "'" || char === '"') {
+			const close = command.indexOf(char, index + 1);
+			index = close === -1 ? lineEnd : Math.min(close + 1, lineEnd);
+			continue;
+		}
+		if (char === "\\") {
+			index += 2;
+			continue;
+		}
+		if (char === "<" && command[index + 1] === "<" && command[index + 2] === "<") {
+			index += 3;
+			continue;
+		}
+		if (char === "<" && command[index + 1] === "<") {
+			let cursor = index + 2;
+			let stripTabs = false;
+			if (command[cursor] === "-") {
+				stripTabs = true;
+				cursor += 1;
+			}
+			while (cursor < lineEnd && (command[cursor] === " " || command[cursor] === "\t")) cursor += 1;
+			let word = "";
+			if (cursor < lineEnd && (command[cursor] === "'" || command[cursor] === '"')) {
+				const quote = command[cursor];
+				const close = command.indexOf(quote, cursor + 1);
+				if (close !== -1 && close < lineEnd) {
+					word = command.slice(cursor + 1, close);
+					cursor = close + 1;
+				}
+			}
+			if (word.length === 0) {
+				const start = cursor;
+				while (cursor < lineEnd && !/[\s;&|<>()]/.test(command[cursor])) cursor += 1;
+				word = command.slice(start, cursor);
+				if (word.length === 0) return delimiters;
+			}
+			delimiters.push({ word, stripTabs });
+			index = cursor;
+			continue;
+		}
+		index += 1;
+	}
+	return delimiters;
+}
+
+/** Where a heredoc body ends: after its closing delimiter line's newline, or at the end of
+ * the input when the delimiter never comes (bash reads the body until EOF). */
+function endOfHeredocBody(command: string, from: number, delimiter: HeredocDelimiter): number {
+	let scan = from;
+	for (;;) {
+		const newline = command.indexOf("\n", scan);
+		const line = (newline === -1 ? command.slice(scan) : command.slice(scan, newline)).replace(/\r$/, "");
+		const comparable = delimiter.stripTabs ? line.replace(/^\t+/, "") : line;
+		if (comparable === delimiter.word) return newline === -1 ? command.length : newline + 1;
+		if (newline === -1) return command.length;
+		scan = newline + 1;
+	}
+}
+
+/**
  * The executable commands of a shell command list: an unquoted `&&`, `||`, `|`, `;`, `&`, or
  * newline ends one command and starts the next, while quotes keep a separator as content — an
  * `echo "codegraph index ."` argument is not a second command. A backslash escapes the next
  * character outside single quotes, so an escaped quote never opens or closes a quoted section
  * (`echo \" ; codegraph index .` is two commands, the second a rebuild).
  * A backslash-newline pair is different: the shell removes it as a line continuation, so it is dropped here instead of escaping the newline.
+ * Here-document bodies are removed before the scan: a `<<WORD` operator makes the following
+ * lines the input of the command, not commands of the list, and scanning resumes after the
+ * closing delimiter line.
  */
 function shellCommandList(command: string): string[] {
 	const commands: string[] = [];
 	let current = "";
 	let quote: "'" | '"' | undefined;
 	let escaped = false;
-	for (const char of command) {
+	for (const char of stripHeredocBodies(command)) {
 		// A backslash outside single quotes makes the next character literal, so an escaped
 		// quote is content, never a quote toggle; inside single quotes it is literal itself.
 		// A backslash-newline pair, by contrast, is a line continuation the shell removes
@@ -437,7 +613,7 @@ function shellCommandList(command: string): string[] {
  * boundary keeps every other subcommand (`codegraph indexer`, `sync`, `query`, `unlock`,
  * `status`) out.
  */
-function codegraphIndexCommands(command: string): { allowIndexOverride: boolean }[] {
+function codegraphIndexCommands(command: string): { rest: string; allowIndexOverride: boolean }[] {
 	return shellCommandList(command)
 		.map((part) => leadingAssignments(part))
 		.filter((parsed) => /^codegraph\s+(index|init)\b/.test(parsed.rest));
@@ -640,6 +816,40 @@ export function armCodegraphExecForTest(exec: typeof execFileAsync | undefined):
 	};
 }
 
+/** The real exec wrapped for spawn observation: resolves and rejects with exactly the
+ * promisified form's shapes (the callback's error already carries its code and signal; the
+ * result properties the promisified form attaches are attached here too) while handing the
+ * spawned child's pid to onSpawn the moment the child exists — the callback form returns
+ * the child synchronously; the promisified form never exposes it. The proxy flag mirrors
+ * the readiness runner's report: every win32 spawn is reported as a cmd.exe-carrying
+ * proxy pid. */
+function execFileObserving(
+	command: string,
+	args: readonly string[],
+	options: Parameters<typeof execFileAsync>[2],
+	onSpawn?: (pid: number, proxy: boolean) => void,
+): Promise<{ stdout: string; stderr: string }> {
+	return new Promise((resolve, reject) => {
+		const child = execFile(command, args, options, (error: Error | null, stdout: string, stderr: string) => {
+			if (error !== null) {
+				// The same result properties the promisified form's rejection carries.
+				(error as { stdout?: string }).stdout = stdout;
+				(error as { stderr?: string }).stderr = stderr;
+				reject(error);
+				return;
+			}
+			resolve({ stdout, stderr });
+		});
+		if (onSpawn !== undefined && child?.pid !== undefined) {
+			try {
+				onSpawn(child.pid, process.platform === "win32");
+			} catch {
+				/* lease bookkeeping is best effort, like the readiness runner's */
+			}
+		}
+	});
+}
+
 const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 	const runOptions = {
 		cwd: options.cwd,
@@ -647,7 +857,13 @@ const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 		maxBuffer: options.maxBuffer,
 		windowsHide: true,
 	};
-	const exec = codegraphExec ?? execFileAsync;
+	// The armed test seam replaces the spawn entirely (and never reports a pid — a fake spawns
+	// nothing); the real path runs through the observing wrapper so a lock holding the run can
+	// adopt the spawned writer.
+	const exec = (command: string, commandArgs: readonly string[], execOptions: typeof runOptions) =>
+		codegraphExec !== undefined
+			? codegraphExec(command, commandArgs, execOptions)
+			: execFileObserving(command, commandArgs, execOptions, options.onSpawn);
 	if (process.platform === "win32") {
 		// Runtime-independent precedence, the same one spawnCodegraph uses (S3/S11). Node's
 		// execFile ENOENTs for bare `codegraph` on Windows because npm installs only .cmd shims
@@ -701,13 +917,16 @@ const DAEMON_ATTEMPT_TIMEOUT_MS = 30_000;
 /** One daemon query attempt: undefined or a miss means "use the CLI path". */
 export type DaemonExplore = (cwd: string, parameters: CodeGraphToolParameters, timeoutMs: number) => Promise<DaemonCallResult | undefined>;
 
-/** The daemon speaks the same tool names as the CLI: query and explore, with their natural arguments. */
+/** The daemon's registered MCP tools, with their natural arguments: codegraph_search — the
+ * CLI query's socket name; the daemon's dispatch has no codegraph_query case, so that name
+ * answers "Unknown tool" and the query could never ride the socket — and codegraph_explore.
+ * Both stay callable unlisted, but only these two names are sent. */
 async function queryViaDaemon(cwd: string, parameters: CodeGraphToolParameters, timeoutMs: number): Promise<DaemonCallResult | undefined> {
 	try {
 		const query = requireQuery(parameters.query);
 		const limit = resolveLimit(parameters.limit);
 		return parameters.operation === CODEGRAPH_OPERATION.QUERY
-			? await exploreViaDaemon(cwd, "codegraph_query", { query, limit }, timeoutMs)
+			? await exploreViaDaemon(cwd, "codegraph_search", { query, limit }, timeoutMs)
 			: await exploreViaDaemon(cwd, "codegraph_explore", { query, maxFiles: limit }, timeoutMs);
 	} catch {
 		return undefined;
@@ -837,12 +1056,21 @@ export async function awaitSearchSync(cwd: string, ctx: ExtensionContext, run: S
 		}
 	}
 	let failed = false;
+	// Whether THIS session's refresh actually ran a sync: a lease held by another session
+	// ("held-live") or CodeGraph's own writing lock makes the refresh run nothing here and
+	// report no failure — an outcome this session never confirmed must not open the
+	// freshness window, because the holder's sync may still fail.
+	let ran = false;
+	const observedRun: SearchSyncInput["run"] = (...runArgs: Parameters<SearchSyncInput["run"]>) => {
+		ran = true;
+		return run(...runArgs);
+	};
 	const job = (async (): Promise<void> => {
 		await syncBeforeSearch({
 			cwd,
 			registryDir: opts?.registryDir,
 			sleep: opts?.sleep,
-			run,
+			run: observedRun,
 			onFailed: (stage, failure) => {
 				failed = true;
 				if (!ctx.hasUI) return;
@@ -856,9 +1084,11 @@ export async function awaitSearchSync(cwd: string, ctx: ExtensionContext, run: S
 			},
 		});
 		if (windowed) {
-			// Only a refresh that settled with no reported failure buys freshness; a failure never
-			// does, and it clears any older mark so the very next search refreshes again.
-			if (failed) syncFreshAt.delete(cwd);
+			// Only a refresh this session ran to a settled, unfailed sync buys freshness; a
+			// failure never does, and neither does an outcome that ran nothing here (the holder's
+			// verdict is unconfirmed) — both clear any older mark so the very next search
+			// refreshes again.
+			if (failed || !ran) syncFreshAt.delete(cwd);
 			else syncFreshAt.set(cwd, Date.now());
 		}
 	})();
@@ -966,6 +1196,12 @@ export function createCodeGraphTool(
 				// that answers ok confirms the same fact.
 				const indexed = indexExists(cwd);
 				const syncTriggered = (await raceWithAbort(signal, awaitSearchSync(cwd, ctx, syncRun, { indexed }))) ?? false;
+
+				// A cancellation that landed during the sync wait ends the search here: raceWithAbort
+				// abandons only the WAIT, so evaluating the attempt below would still open a socket and
+				// run a daemon query whose answer nobody waits for. The shared refresh keeps running
+				// for the callers still awaiting it.
+				if (signal?.aborted) return fail(signal.reason ?? new Error("The operation was aborted"), { syncTriggered });
 				const attempt = () => daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, DAEMON_ATTEMPT_TIMEOUT_MS));
 				let viaDaemon: DaemonCallResult | undefined;
 				if (Date.now() >= (daemonSkipUntil.get(cwd) ?? 0)) {
@@ -1069,10 +1305,10 @@ export function createCodeGraphTool(
 				// "absent" is the only state this init still serves: "present" and "unknown" both stand
 				// down — an unreadable .codegraph is never rebuilt on a guess — and the override stays
 				// the one deliberate path through.
-				if (indexState(cwd) !== "absent" && process.env.GENTLE_CODEGRAPH_ALLOW_INDEX !== "1") {
+				if (indexStateRead(cwd) !== "absent" && process.env.GENTLE_CODEGRAPH_ALLOW_INDEX !== "1") {
 					return fail(new Error(CODEGRAPH_INDEX_BLOCK_REASON), { reason: CODEGRAPH_INDEX_BLOCK_REASON });
 				}
-				const result = await runner(args, { cwd, signal, maxBuffer: PROCESS_MAX_BUFFER });
+				const result = await runner(args, { cwd, signal, maxBuffer: PROCESS_MAX_BUFFER, onSpawn: (pid, proxy) => lock.adopt(pid, proxy) });
 				return finish(truncateOutput([result.stdout, result.stderr].filter(Boolean).join("\n")), { excludeAlways: true });
 			} catch (error: unknown) {
 				// A failed init can still leave a partial index behind.
@@ -1143,11 +1379,20 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			if (typeof command !== "string") return undefined;
 			const rebuilds = codegraphIndexCommands(command);
 			if (rebuilds.length === 0) return undefined;
-			const repoRoot = gitTopLevel(ctx.cwd);
-			if (repoRoot === undefined || !indexExists(repoRoot) || process.env.GENTLE_CODEGRAPH_ALLOW_INDEX === "1") return undefined;
+			if (process.env.GENTLE_CODEGRAPH_ALLOW_INDEX === "1") return undefined;
 			// The override must ride EVERY rebuild command: one authorized rebuild never
 			// authorizes the rest of the list (`=1 codegraph index .; codegraph init`).
 			if (rebuilds.every((rebuild) => rebuild.allowIndexOverride)) return undefined;
+			// A rebuild is blocked only at the checkout it would actually rebuild: the CLI takes a
+			// positional project path (`codegraph init /path/to/fresh` initializes THAT checkout,
+			// `init [path]` / `index [path]` in its command surface), so each command is judged at
+			// its own target's git root. A bare `codegraph index`, a target this parser cannot
+			// confidently place, and a target inside this repository all resolve to this repo's
+			// root — every previously blocked form stays blocked.
+			if (!rebuilds.some((rebuild) => {
+				const root = gitTopLevel(rebuildTargetDir(rebuild.rest, ctx.cwd));
+				return root !== undefined && indexExists(root);
+			})) return undefined;
 			return { block: true, reason: CODEGRAPH_INDEX_BLOCK_REASON };
 		} catch {
 			return undefined;

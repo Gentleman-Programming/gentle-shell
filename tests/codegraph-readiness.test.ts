@@ -540,6 +540,74 @@ test("prepareReadiness: the onStart notice precedes the init run it announces", 
 	assert.deepEqual(order, ["start:init", "run:init -y", "warm"], "the announcement is emitted before the init run begins, ahead of the lock wait and the warm");
 });
 
+test("prepareReadiness: a failed init run is silently retried up to three times inside the held lock", async (t) => {
+	const cwd = dir(t, "init-retry-fail");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const locks = dir(t, "init-retry-fail-locks");
+	const runs: string[] = [];
+	const budgets: number[] = [];
+	const holders: boolean[] = [];
+	const indexed: unknown[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		run: async (args, _cwd, timeoutMs) => {
+			runs.push(args.join(" "));
+			budgets.push(timeoutMs);
+			const token = JSON.parse(readFileSync(lockPathFor(cwd, "init", locks), "utf8")) as { pid: number };
+			holders.push(token.pid === process.pid);
+			return false;
+		},
+		onIndexed: (report) => indexed.push(report),
+	}));
+	assert.deepEqual(result, { action: "init", ok: false, warm: "skipped" }, "every attempt failed: the init fails");
+	assert.equal(runs.length, 4, "one initial run plus three silent retries");
+	assert.deepEqual(runs, ["init -y", "init -y", "init -y", "init -y"]);
+	assert.ok(holders.every(Boolean), "the init lock stays held across every attempt");
+	assert.ok(budgets.every((budget) => budget === budgets[0]), "each attempt draws the same full init budget, never a shared shrinking one");
+	assert.deepEqual(indexed, [{ action: "init", ok: false, initAttempts: 4 }], "the exhaustion report carries the attempt count for the manual-instruction notice");
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "init", locks)), "free", "the lease is released after the exhausted retries");
+});
+
+test("prepareReadiness: an init that fails once succeeds on its first silent retry", async (t) => {
+	const cwd = dir(t, "init-retry-once");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	let attempts = 0;
+	const said: string[] = [];
+	const indexed: unknown[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: dir(t, "init-retry-once-locks"),
+		run: async () => {
+			attempts += 1;
+			return attempts > 1;
+		},
+		onStart: (action) => said.push(`start:${action}`),
+		onWarmStart: () => said.push("warm-start"),
+		onIndexed: (report) => indexed.push(report),
+	}));
+	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
+	assert.equal(attempts, 2, "the failing first run is retried once, silently");
+	assert.deepEqual(said, ["start:init", "warm-start"], "no retry notices: the retry is silent");
+	assert.deepEqual(indexed, [{ action: "init", ok: true, initAttempts: 2 }]);
+});
+
+test("prepareReadiness: a first-try successful init runs exactly once", async (t) => {
+	const cwd = dir(t, "init-retry-first");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	let attempts = 0;
+	const indexed: unknown[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: dir(t, "init-retry-first-locks"),
+		run: async () => {
+			attempts += 1;
+			return true;
+		},
+		onIndexed: (report) => indexed.push(report),
+	}));
+	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
+	assert.equal(attempts, 1, "success on the first run: no retries");
+	assert.deepEqual(indexed, [{ action: "init", ok: true, initAttempts: 1 }]);
+});
+
 test("prepareReadiness: an unknown index state or a non-project runs nothing", async (t) => {
 	const unknown = dir(t, "unknown");
 	writeFileSync(join(unknown, "package.json"), "{}\n");

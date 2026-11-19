@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { clearCodegraphResolveCache, resolveCodegraphEntry, type ResolveCodegraphIo } from "../lib/codegraph-cli-resolve.ts";
+import { clearCodegraphResolveCache, resolveCodegraphEntry, resolveCodegraphShimState, type ResolveCodegraphIo } from "../lib/codegraph-cli-resolve.ts";
 
 /** A backslash without a backslash literal: keeps this file clear of escape-transport mangling. */
 const BS = String.fromCharCode(92);
@@ -156,6 +156,45 @@ test("resolveCodegraphEntry: no codegraph.cmd anywhere on PATH is null", () => {
 	clearCodegraphResolveCache();
 	const { io } = fakeWorld({ path: [["C:", "a"].join(BS), ["C:", "b"].join(BS)].join(";"), files: [] });
 	assert.equal(resolveCodegraphEntry(io), null);
+});
+
+test("resolveCodegraphShimState: a proven shim carries its entry", () => {
+	clearCodegraphResolveCache();
+	const { io } = fakeWorld({ path: BIN, files: [
+		[[BIN, "codegraph.cmd"].join(BS), npmCmdShim(SCRIPT_REL, modernTail)],
+		[NODE_EXE, ""],
+		[SCRIPT, "cli"],
+	] });
+	assert.deepEqual(resolveCodegraphShimState(io), { status: "entry", entry: { node: NODE_EXE, script: SCRIPT } });
+	clearCodegraphResolveCache();
+});
+
+test("resolveCodegraphShimState: an unprovable first shim is rejected, not a miss", () => {
+	clearCodegraphResolveCache();
+	const { io } = fakeWorld({ path: BIN, files: [
+		[[BIN, "codegraph.cmd"].join(BS), "rem not an npm cmd-shim"],
+		[SCRIPT, "cli"],
+	] });
+	assert.deepEqual(resolveCodegraphShimState(io), { status: "rejected" }, "the first shim exists; its invocation is simply unprovable");
+	assert.equal(resolveCodegraphEntry(io), null, "the entry projection keeps failing closed on a rejected shim");
+	clearCodegraphResolveCache();
+	const unreadable = fakeWorld({ path: BIN, files: [[[BIN, "codegraph.cmd"].join(BS), null]] });
+	assert.deepEqual(resolveCodegraphShimState(unreadable.io), { status: "rejected" }, "a shim that cannot be read is rejected too");
+	clearCodegraphResolveCache();
+});
+
+test("resolveCodegraphShimState: no codegraph.cmd on PATH — and off win32 — is a miss", () => {
+	clearCodegraphResolveCache();
+	const empty = fakeWorld({ path: [["C:", "a"].join(BS), ["C:", "b"].join(BS)].join(";"), files: [] });
+	assert.deepEqual(resolveCodegraphShimState(empty.io), { status: "miss" });
+	clearCodegraphResolveCache();
+	const posix = fakeWorld({ platform: "linux", path: BIN, files: [
+		[[BIN, "codegraph.cmd"].join(BS), npmCmdShim(SCRIPT_REL, modernTail)],
+		[NODE_EXE, ""],
+		[SCRIPT, "cli"],
+	] });
+	assert.deepEqual(resolveCodegraphShimState(posix.io), { status: "miss" }, "off win32 there is no shim to reject");
+	clearCodegraphResolveCache();
 });
 
 test("resolveCodegraphEntry: unknown shim shapes fail closed", () => {

@@ -1628,7 +1628,7 @@ test("win32: the ENOENT fallback spawns the resolver's entry directly, ahead of 
 	// reachable through the intact later ":"-entries.
 	withWindowsPath(t, binDir);
 	withPlatform(t, "win32");
-	const restore = armCodegraphEntryResolverForTest(() => ({ node: process.execPath, script: entryScript }));
+	const restore = armCodegraphEntryResolverForTest(() => ({ status: "entry", entry: { node: process.execPath, script: entryScript } }));
 	t.after(restore);
 
 	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute(
@@ -1657,7 +1657,7 @@ test("win32: repeated ENOENT fallbacks consult the resolver, never a fresh PATH 
 	let consultations = 0;
 	const restore = armCodegraphEntryResolverForTest(() => {
 		consultations += 1;
-		return { node: process.execPath, script: entryScript };
+		return { status: "entry", entry: { node: process.execPath, script: entryScript } };
 	});
 	t.after(restore);
 
@@ -1670,9 +1670,9 @@ test("win32: repeated ENOENT fallbacks consult the resolver, never a fresh PATH 
 	assert.equal(consultations, 3, "every failure consults the resolver; the once-per-process scan lives inside its cache");
 });
 
-test("win32: an unprovable shim (resolver null) keeps the per-call package scan", async (t) => {
+test("win32: a rejected first shim never falls through to the package scan", async (t) => {
 	withoutChildEnv(t);
-	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-nullresolve-bin-")));
+	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-rejected-bin-")));
 	t.after(() => rmSync(binDir, { recursive: true, force: true }));
 	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
 	writePwdGitShim(binDir);
@@ -1682,18 +1682,54 @@ test("win32: an unprovable shim (resolver null) keeps the per-call package scan"
 	clearCodegraphResolveCache();
 	t.after(() => clearCodegraphResolveCache());
 
-	// The real resolver against the real PATH and files: writeCodeGraphPackage's shim is not the
-	// npm cmd-shim shape, so the resolution is genuinely null and the fallback must keep the scan.
-	assert.equal(resolveCodegraphEntry(), null);
+	// What the real resolver proves on win32 for a shim shaped like writeCodeGraphPackage's
+	// (an invocation line npm never writes): the first shim exists and nothing about it can
+	// be reproduced — a rejection, not a miss. Armed because the real resolution needs a
+	// Windows filesystem to see the shim at all; the lib suite pins the rejection itself.
+	const restore = armCodegraphEntryResolverForTest(() => ({ status: "rejected" }));
+	t.after(restore);
+
 
 	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute(
-		"test",
-		{ operation: "init" },
-		undefined,
-		undefined,
-		{ cwd } as ExtensionContext,
+	"test",
+	{ operation: "init" },
+	undefined,
+	undefined,
+	{ cwd } as ExtensionContext,
 	);
-	assert.deepEqual(result.content, [{ type: "text", text: JSON.stringify(["init", cwd]) }]);
+	// The package beside the rejected shim would happily answer the scan — substituting it
+	// would drop the shim's own invocation — so the cascade must refuse it and end at the
+	// bare spawn, which stays a runtime-level miss nothing turns into an answer.
+	assert.match(result.content[0].text, /CodeGraph is unavailable/);
+	assert.equal((result.details as { status?: string }).status, "unavailable");
+});
+
+test("win32: a genuine miss keeps the cascade: no shim, no scan anchor, unavailable", async (t) => {
+	withoutChildEnv(t);
+	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-miss-bin-")));
+	t.after(() => rmSync(binDir, { recursive: true, force: true }));
+	// The package without its shim: no codegraph.cmd anywhere on PATH, so the resolution is
+	// a genuine miss (nothing was rejected) and the per-call scan keeps its turn, finding no
+	// anchor to expand.
+	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+	rmSync(join(binDir, "codegraph.cmd"));
+	writePwdGitShim(binDir);
+	const cwd = workspace(t);
+	withWindowsPath(t, binDir);
+	withPlatform(t, "win32");
+	clearCodegraphResolveCache();
+	t.after(() => clearCodegraphResolveCache());
+	assert.equal(resolveCodegraphEntry(), null, "no shim on PATH resolves to nothing");
+
+	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute(
+	"test",
+	{ operation: "init" },
+	undefined,
+	undefined,
+	{ cwd } as ExtensionContext,
+	);
+	assert.match(result.content[0].text, /CodeGraph is unavailable/);
+	assert.equal((result.details as { status?: string }).status, "unavailable");
 });
 
 test("POSIX: a bare-codegraph ENOENT stays unavailable — no resolver consultation, no package scan", async (t) => {
@@ -1739,7 +1775,7 @@ test("win32: a genuine non-ENOENT failure from the resolver entry surfaces as fa
 	withPlatform(t, "win32");
 	const entryScript = join(binDir, "direct-entry.js");
 	writeFileSync(entryScript, "process.stdout.write(\"never\")\n");
-	const restoreResolver = armCodegraphEntryResolverForTest(() => ({ node: process.execPath, script: entryScript }));
+	const restoreResolver = armCodegraphEntryResolverForTest(() => ({ status: "entry", entry: { node: process.execPath, script: entryScript } }));
 	t.after(restoreResolver);
 	let scanRan = false;
 	const restoreExec = armCodegraphExecForTest((async (_file: string, args: readonly string[]) => {
@@ -1762,7 +1798,7 @@ test("win32: a total miss reports unavailable from the fabricated not-found", as
 	const cwd = workspace(t);
 	withWindowsPath(t, binDir);
 	withPlatform(t, "win32");
-	const restoreResolver = armCodegraphEntryResolverForTest(() => null);
+	const restoreResolver = armCodegraphEntryResolverForTest(() => ({ status: "miss" }));
 	t.after(restoreResolver);
 	const restoreExec = armCodegraphExecForTest((async () => {
 		throw Object.assign(new Error("spawn codegraph ENOENT"), { code: "ENOENT" });

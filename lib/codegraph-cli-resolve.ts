@@ -14,6 +14,16 @@ export interface CodegraphEntry {
 	script: string;
 }
 
+/** What the resolution proved about the first `codegraph.cmd` cmd.exe would run: a proven
+ * direct-spawn entry; a first shim that exists but cannot be proven (rejected — its
+ * invocation carries something a direct spawn cannot reproduce, so a consumer must keep the
+ * shim's own spawn and never substitute another target for it); or no shim on PATH at all
+ * (miss). */
+export type CodegraphShimResolution =
+	| { status: "entry"; entry: CodegraphEntry }
+	| { status: "rejected" }
+	| { status: "miss" };
+
 /** The process view the resolution needs; injectable so tests resolve off a Windows host. */
 export interface ResolveCodegraphIo {
 	/** The platform: only "win32" resolves, anything else returns null before PATH is touched. */
@@ -120,9 +130,10 @@ function parseCmdShim(text: string, shimDir: string, exists: (path: string) => b
 	return { node: exists(nodeBesideShim) ? nodeBesideShim : "node", script };
 }
 
-/** The resolution proper: win32-only, first codegraph.cmd on PATH, verified or null. Never throws. */
-function resolveCodegraphEntryWith(io: ResolveCodegraphIo): CodegraphEntry | null {
-	if (io.platform() !== "win32") return null;
+/** The resolution proper: win32-only, the first codegraph.cmd on PATH proven, rejected, or a
+ * miss. Never throws. */
+function resolveCodegraphEntryWith(io: ResolveCodegraphIo): CodegraphShimResolution {
+	if (io.platform() !== "win32") return { status: "miss" };
 	const entries = (io.pathEnv() ?? "").split(";");
 	for (const entry of entries) {
 		const dir = stripPathEntry(entry);
@@ -130,43 +141,54 @@ function resolveCodegraphEntryWith(io: ResolveCodegraphIo): CodegraphEntry | nul
 		const shimDir = withoutTrailingSeparator(dir);
 		const shimPath = shimDir + BS + SHIM_NAME;
 		// cmd.exe runs the FIRST codegraph.cmd on PATH, never a later one, so the scan stops at
-		// the first hit: an unprovable first shim is a null resolution (the caller falls back to
-		// the cmd.exe string) rather than a silent divergence to a different installation.
+		// the first hit: an unprovable first shim is a REJECTED resolution (the caller keeps the
+		// shim's own spawn) rather than a silent divergence to a different installation.
 		if (!io.exists(shimPath)) continue;
 		try {
-			return parseCmdShim(io.read(shimPath), shimDir, io.exists);
+			const parsed = parseCmdShim(io.read(shimPath), shimDir, io.exists);
+			return parsed === null ? { status: "rejected" } : { status: "entry", entry: parsed };
 		} catch {
-			return null;
+			return { status: "rejected" };
 		}
 	}
-	return null;
+	return { status: "miss" };
 }
 
-/** The process-lifetime memo: undefined means "not resolved yet", null means "resolved to nothing". */
-let cached: CodegraphEntry | null | undefined;
+/** The process-lifetime memo: undefined means "not resolved yet"; anything else is the
+ * memoized resolution, an entry, a rejection, or a miss alike. */
+let cached: CodegraphShimResolution | undefined;
 
 /**
- * Resolves the `codegraph` npm cmd-shim to a direct-spawn target, once per process: on win32 the
- * first `codegraph.cmd` on PATH is parsed to the node executable and JS entrypoint it invokes,
- * verified to exist; every other platform (and every unprovable shim) returns null. Callers treat
- * null as "keep the cmd.exe string spawn" — the resolution can only ever remove spawns, never
- * change which codegraph installation runs. The memo holds for the whole process and covers null
- * alike, so a PATH or shim that changes mid-run cannot produce two different answers — with one
- * exception: a memoized entry whose script has since vanished is re-resolved, because serving it
- * would start node on a removed entrypoint (a module-load exit the caller cannot tell from a
- * spawn ENOENT and so never retries around).
+ * Resolves what cmd.exe's first `codegraph.cmd` on PATH proves, once per process: a proven
+ * shim's direct-spawn entry, a rejection when the first shim exists but cannot be proven, or
+ * a miss when no shim is on PATH (and off win32). The memo holds for the whole process and
+ * covers rejections and misses alike, so a PATH or shim that changes mid-run cannot produce
+ * two different answers — with one exception: a memoized entry whose script has since
+ * vanished is re-resolved, because serving it would start node on a removed entrypoint (a
+ * module-load exit the caller cannot tell from a spawn ENOENT and so never retries around).
  */
-export function resolveCodegraphEntry(io: ResolveCodegraphIo = defaultIo): CodegraphEntry | null {
-	// A cached entry survives only while its entrypoint still exists; a null resolution has
+export function resolveCodegraphShimState(io: ResolveCodegraphIo = defaultIo): CodegraphShimResolution {
+	// A cached entry survives only while its entrypoint still exists; a rejection or miss has
 	// nothing to revalidate and stays memoized.
-	if (cached !== null && cached !== undefined && !io.exists(cached.script)) cached = undefined;
+	if (cached?.status === "entry" && !io.exists(cached.entry.script)) cached = undefined;
 	if (cached !== undefined) return cached;
 	try {
 		cached = resolveCodegraphEntryWith(io);
 	} catch {
-		cached = null;
+		cached = { status: "miss" };
 	}
 	return cached;
+}
+
+/**
+ * The entry projection of resolveCodegraphShimState: the proven direct-spawn target, or null.
+ * Callers that only need "can I spawn directly" treat null as "keep the shim's cmd.exe spawn"; a caller
+ * that must not substitute anything for the shim cmd.exe would run consults the state, whose
+ * rejection says the first shim exists while its invocation stays unproven.
+ */
+export function resolveCodegraphEntry(io: ResolveCodegraphIo = defaultIo): CodegraphEntry | null {
+	const state = resolveCodegraphShimState(io);
+	return state.status === "entry" ? state.entry : null;
 }
 
 /** Drops the process-lifetime memo; the next resolution re-reads the platform, PATH, and shim. */

@@ -133,19 +133,29 @@ function deriveMachineIdentity(): string | null {
  * damage. With `cwd` given, CodeGraph's own writer lock is consulted first — before any missing-
  * token return, so a live external writer never coexists with a newly granted lease — and a
  * freshly reported proxy writer pid holds for its trust window; both overrides flip a stale-looking
- * token back to held-live, because a live writer is never unlocked under. Expiry is the hard
- * displacement bound: an expired token is reclaimed even while its local holder's pid still lives
- * (a wedged holder must not keep the lease forever); the displaced holder's own state changes stay
- * nonce-fenced in release() and adopt(). A token from an earlier boot of this machine (its
+ * token back to held-live, because a live writer is never unlocked under — but writer pids are
+ * interpreted only where the token's own host recorded them (identity-less legacy tokens
+ * excepted): a foreign token whose writer or holder pid happens to name a live local process is
+ * pid reuse, not a live local refresh, and keeps the fail-closed verdicts below. Expiry is the
+ * hard displacement bound for a token whose host identity matches this one: it is reclaimed even
+ * while its local holder's pid still lives (a wedged holder must not keep the lease forever);
+ * the displaced holder's own state changes stay nonce-fenced in release() and adopt(). A
+ * host-less expired token never reclaims a live holder — without identity the holder may still
+ * be starting its writer — and a foreign holder is never a live local refresh either: both keep
+ * the fail-closed unknown, and the wedge a dead session leaves behind still never outlives its
+ * TTL. A token from an earlier boot of this machine (its
  * machine-stable identity matches, its boot-scoped identity does not) has no pid left to probe —
  * they died with that boot — so it expires into reclaimable stale instead of an unknown wedge;
  * a different machine, or a legacy token without the machine part, keeps the fail-closed unknown.
  */
-export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: string): LeaseVerdict {
+export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: string, hostIdentity?: string | null): LeaseVerdict {
 	// CodeGraph's own writer lock outranks everything, a missing launcher token included: a live
 	// writer behind a stale-looking token — or behind no token at all — must never be unlocked
 	// under, whatever a later pid or TTL check would say.
 	if (cwd !== undefined && codegraphWritingIndex(cwd)) return "held-live";
+	// The host identity every pid judgement below resolves against: the platform's own
+	// derivation, or an explicit one a caller hands in for a host that cannot derive one.
+	const host = hostIdentity !== undefined ? hostIdentity : leaseHostIdentity();
 	let raw: string;
 	try {
 		raw = readFileSync(path, "utf8");
@@ -179,26 +189,42 @@ export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: s
 	// keeps the unknown verdict exactly as before.
 	if (
 		token.host !== undefined && token.machine !== undefined &&
-		token.machine === leaseMachineIdentity() && token.host !== leaseHostIdentity()
+		token.machine === leaseMachineIdentity() && token.host !== host
 	) {
 		return token.expiresAt <= now ? "held-stale" : "unknown";
 	}
-	// A proxy pid (a cmd.exe wrapper on win32) reported inside its trust window holds the same
-	// way — the real writer is still starting behind it.
-	if (token.writerProxy === true && token.writerPidAt !== undefined && now - token.writerPidAt < PROXY_TRUST_MS) return "held-live";
-	// An adopted direct writer (a detached init child on POSIX) can outlive its dead launcher while
-	// it has not written codegraph.lock yet: while that child lives, the token stays held — a live
-	// writer is never unlocked under, whatever the TTL or the dead launcher's pid say.
-	if (token.writerProxy !== true && typeof token.writerPid === "number" && token.writerPid > 0 && processAlive(token.writerPid)) return "held-live";
+	// Writer pids are interpreted only where the token's own host recorded them — a legacy
+	// identity-less token keeps the legacy local reading: a foreign token's writer pid that
+	// happens to match a local process is pid reuse, not a live local writer, so such tokens
+	// keep the provenance rules below instead of any held-live from these checks.
+	if (token.host === undefined || token.host === host) {
+		// A proxy pid (a cmd.exe wrapper on win32) reported inside its trust window holds the same
+		// way — the real writer is still starting behind it.
+		if (token.writerProxy === true && token.writerPidAt !== undefined && now - token.writerPidAt < PROXY_TRUST_MS) return "held-live";
+		// An adopted direct writer (a detached init child on POSIX) can outlive its dead launcher while
+		// it has not written codegraph.lock yet: while that child lives, the token stays held — a live
+		// writer is never unlocked under, whatever the TTL or the dead launcher's pid say.
+		if (token.writerProxy !== true && typeof token.writerPid === "number" && token.writerPid > 0 && processAlive(token.writerPid)) return "held-live";
+	}
 	// Holder pids are judged dead only on the host that wrote the token: with a shared locks dir
 	// (homedir-based), a live holder in another host or container looks dead locally, and stealing
 	// its lease would race its live writer. Without provable locality the verdict is unknown —
 	// fail-closed, never stealable — with one carve-out: an identity-less token (written where the
 	// platform cannot derive identity) still holds while its pid lives here, preserving legacy
 	// liveness without ever granting a dead verdict it cannot prove.
-	const host = leaseHostIdentity();
 	const provablyLocal = token.host !== undefined ? token.host === host : host === null;
-	if (token.expiresAt <= now) return provablyLocal ? "held-stale" : "unknown";
+	if (token.expiresAt <= now) {
+		// A host-less expired token is never reclaimed while its holder pid still lives here:
+		// without identity the holder may still be starting its writer — on any host, identity
+		// or not — so a live holder fail-closes to unknown. The TTL still bounds the wedge: a
+		// dead holder's orphan never outlives it.
+		if (token.host === undefined && processAlive(token.pid)) return "unknown";
+		return provablyLocal ? "held-stale" : "unknown";
+	}
+	// A foreign holder is never a live local refresh either: its pid means nothing here, and
+	// held-live on a coincidental pid match would report another host's refresh as handled —
+	// unknown keeps it fail-closed and unstealable.
+	if (token.host !== undefined && !provablyLocal) return "unknown";
 	if (!provablyLocal) return processAlive(token.pid) ? "held-live" : "unknown";
 	return processAlive(token.pid) ? "held-live" : "held-stale";
 }

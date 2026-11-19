@@ -371,6 +371,7 @@ async function piAgeExclusion(owner, input, siblings) {
  try {
   const text = String(result.stdout ?? '').trim();
   entries = text === '' || text === 'undefined' ? [] : JSON.parse(text);
+  if (entries === null) entries = [];
   if (typeof entries === 'string') entries = [entries];
   if (!succeeded(result) || result.truncated || !Array.isArray(entries) || entries.some(entry => typeof entry !== 'string' || !entry)) throw new Error('invalid');
  } catch { throw invalid(); }

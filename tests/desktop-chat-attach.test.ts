@@ -96,7 +96,7 @@ test("should fall back to the host when the session reports no platform", async 
 });
 
 test("should keep a POSIX home that contains a backslash off the Windows path", async (t) => {
-	const ui = await loadUi(t, "/home/team\dev");
+	const ui = await loadUi(t, "/home/team\\dev");
 	assert.equal(ui.isWindowsHost(), false);
 	assert.equal(ui.pasteImageKey(), "ctrl+v");
 });

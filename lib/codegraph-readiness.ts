@@ -594,7 +594,13 @@ function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: nu
 			settled = true;
 			clearTimeout(timer);
 			if (grace !== undefined) clearTimeout(grace);
-			opts.onInfo?.({ ok, exitCode, stderrTail: stderrTail.length > 0 ? stderrTail : undefined, stdoutTail: stdoutKept.length > 0 ? stdoutKept.slice(-2_000) : undefined });
+			// The diagnostic sink is best effort: a throwing onInfo must not swallow the command's
+			// actual outcome, or the caller holding a lease for this run would never resolve.
+			try {
+				opts.onInfo?.({ ok, exitCode, stderrTail: stderrTail.length > 0 ? stderrTail : undefined, stdoutTail: stdoutKept.length > 0 ? stdoutKept.slice(-2_000) : undefined });
+			} catch {
+				/* the resolved result below is the contract; the sink's failure is diagnostic only */
+			}
 			resolve({ ok, exitCode, stderrTail: stderrTail.length > 0 ? stderrTail : undefined, stdout: stdoutKept });
 		};
 		let child: ReturnType<typeof spawn> | undefined;
@@ -610,7 +616,11 @@ function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: nu
 		} catch (error) {
 			// A refused spawn — cmd.exe cannot carry a literal percent through the .cmd shim — is
 			// a diagnosable failure, not a silent one: the sink sees why no command ran.
-			opts.onInfo?.({ ok: false, stderrTail: firstLineOf(error, 200) });
+			try {
+				opts.onInfo?.({ ok: false, stderrTail: firstLineOf(error, 200) });
+			} catch {
+				/* best-effort diagnostic: the failure result below still resolves */
+			}
 			resolve({ ok: false, stdout: "" });
 			return;
 		}

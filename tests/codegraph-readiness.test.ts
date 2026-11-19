@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import fsSync from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -114,6 +116,25 @@ function directoryTraversalDenied(): boolean {
 	}
 	rmSync(probe, { recursive: true, force: true });
 	return traversalDenied;
+}
+
+/** Whether a killed pid is really gone: a container whose PID 1 never reaps orphans leaves a
+ * terminated child a zombie — kill(pid, 0) still succeeds there, but a zombie can neither run
+ * nor write. /proc's state field recognizes it as terminated on Linux; elsewhere kill(pid, 0)
+ * is the whole answer, and a pid still capable of running keeps failing the test. */
+function processRunning(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+	} catch {
+		return false;
+	}
+	if (process.platform !== "linux") return true;
+	try {
+		const stat = readFileSync("/proc/" + pid + "/stat", "utf8");
+		return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+	} catch {
+		return true;
+	}
 }
 
 test("indexState: the database file is the index, not the directory", (t) => {
@@ -276,8 +297,34 @@ test("prepareReadiness: an init that succeeds warms; a child or reload does noth
 
 test("prepareReadiness: an unknown index state or a non-project runs nothing", async (t) => {
 	const unknown = dir(t, "unknown");
-	const unknownResult = await prepareReadiness(fakeInput(unknown, { isProjectRoot: () => false }));
+	writeFileSync(join(unknown, "package.json"), "{}\n");
+	// A real non-ENOENT stat error for the database: only that makes indexState say "unknown",
+	// where an empty directory would just read "absent" and exercise the non-project branch.
+	const runs: string[] = [];
+	const dbPath = join(unknown, ".codegraph", "codegraph.db");
+	const realStatSync = fsSync.statSync;
+	t.mock.method(fsSync, "statSync", ((...args: Parameters<typeof fsSync.statSync>) => {
+		if (String(args[0]) === dbPath) {
+			const denied = new Error("simulated unreadable index") as NodeJS.ErrnoException;
+			denied.code = "EACCES";
+			throw denied;
+		}
+		return realStatSync(...args);
+	}) as typeof fsSync.statSync);
+	syncBuiltinESMExports();
+	t.after(() => {
+		t.mock.restoreAll();
+		syncBuiltinESMExports();
+	});
+	const unknownResult = await prepareReadiness(fakeInput(unknown, {
+		isProjectRoot: () => true,
+		run: async (args) => {
+			runs.push(args.join(" "));
+			return true;
+		},
+	}));
 	assert.deepEqual(unknownResult, { action: "none", ok: true, warm: "skipped" });
+	assert.deepEqual(runs, [], "an index state that cannot be confirmed runs neither sync nor init");
 
 	const notRoot = dir(t, "not-root");
 	writeFileSync(join(notRoot, "package.json"), "{}\n");
@@ -417,23 +464,15 @@ test("warmUpDaemon: a timed-out warm-up kills its spawned child instead of leaki
 		process.env.PATH = previousPath;
 		delete process.env.FAKE_PIDFILE;
 	});
-	const warmed = await warmUpDaemon(dir(t, "warm-timeout"), false, 500);
-	assert.equal(warmed, false, "the fake daemon never handshakes: the warm-up times out");
+	const warmed = warmUpDaemon(dir(t, "warm-timeout"), false, 500);
 	const fileDeadline = Date.now() + 3_000;
 	while (!existsSync(pidFile) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
 	assert.ok(existsSync(pidFile), "the fake daemon spawned");
 	const pid = Number(readFileSync(pidFile, "utf8").trim());
-	const alive = () => {
-		try {
-			process.kill(pid, 0);
-			return true;
-		} catch {
-			return false;
-		}
-	};
-	const deadline = Date.now() + 3_000;
-	while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.equal(alive(), false, "the timed-out warm-up child is killed, not leaked to hold the daemon lock");
+	assert.equal(await warmed, false, "the fake daemon never handshakes: the warm-up times out");
+	// The termination evidence belongs at settlement: the child must already be gone when the
+	// result is delivered, not merely die soon after a result that resolved on the kill signal.
+	assert.equal(processRunning(pid), false, "the timed-out warm-up child is killed before the result, not leaked to hold the daemon lock");
 });
 
 test("warmUpDaemon: a timed-out warm-up whose child ignores SIGTERM is SIGKILLed", async (t) => {
@@ -506,17 +545,9 @@ test("runCodegraph: a timeout kills the command's whole process group, grandchil
 	while ((!existsSync(pidFile) || !existsSync(grandFile)) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
 	assert.ok(existsSync(pidFile) && existsSync(grandFile), "the fake command and its grandchild started");
 	const pids = [Number(readFileSync(pidFile, "utf8").trim()), Number(readFileSync(grandFile, "utf8").trim())];
-	const alive = (pid: number) => {
-		try {
-			process.kill(pid, 0);
-			return true;
-		} catch {
-			return false;
-		}
-	};
 	const deadline = Date.now() + 3_000;
-	while (pids.some(alive) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.deepEqual(pids.map(alive), [false, false], "the direct child AND its grandchild die with the group kill");
+	while (pids.some(processRunning) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.deepEqual(pids.map(processRunning), [false, false], "the direct child AND its grandchild die with the group kill");
 });
 
 test("buildWindowsCommand: a UNC project path keeps its backslashes and cmd metacharacters stay inert", () => {
@@ -591,17 +622,9 @@ test("runCodegraph: a SIGTERM-ignoring command is SIGKILLed before the timeout r
 	while ((!existsSync(pidFile) || !existsSync(grandFile)) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
 	assert.ok(existsSync(pidFile) && existsSync(grandFile), "the fake command and its grandchild started");
 	const pids = [Number(readFileSync(pidFile, "utf8").trim()), Number(readFileSync(grandFile, "utf8").trim())];
-	const alive = (pid: number) => {
-		try {
-			process.kill(pid, 0);
-			return true;
-		} catch {
-			return false;
-		}
-	};
 	const deadline = Date.now() + 3_000;
-	while (pids.some(alive) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.deepEqual(pids.map(alive), [false, false], "the SIGTERM-ignoring tree is SIGKILLed before the result is delivered");
+	while (pids.some(processRunning) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.deepEqual(pids.map(processRunning), [false, false], "the SIGTERM-ignoring tree is SIGKILLed before the result is delivered");
 });
 
 test("runCodegraph: a command that exits zero after handling the timeout's SIGTERM is still failed", async (t) => {
@@ -631,6 +654,22 @@ test("runCodegraph: a command that exits zero after handling the timeout's SIGTE
 	});
 	assert.equal(ok, false, "the deadline expired: the run reports the timeout, not the later exit code");
 	assert.deepEqual(events, [{ ok: false, exitCode: 0 }], "the command exited zero after SIGTERM and the result still records the timeout failure");
+});
+
+test("runCodegraph: a throwing onInfo sink never swallows the command result", { timeout: 5_000 }, async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const bin = dir(t, "sink-throw-bin");
+	writeFileSync(join(bin, "codegraph"), "#!/bin/sh\nexit 0\n");
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	t.after(() => {
+		process.env.PATH = previousPath;
+	});
+	const ok = await runCodegraph(["sync", "-q"], dir(t, "sink-throw-cwd"), 5_000, undefined, () => {
+		throw new Error("diagnostic sink exploded");
+	});
+	assert.equal(ok, true, "the command's actual outcome resolves even when its diagnostic callback throws");
 });
 
 /** The seed's mid-flight staging shape — `<worktree>/.codegraph/seed-xxxx/.codegraph/codegraph.db`

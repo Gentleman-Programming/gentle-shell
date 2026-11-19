@@ -8,7 +8,7 @@ import { resolveCodegraphShimState, type CodegraphShimResolution } from "../lib/
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { acquireInitLock, type InitLockOutcome } from "../lib/codegraph-lease.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
-import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, WARMUP_TIMEOUT_MS, type SearchSyncInput, type IndexState, type IndexAction, type SessionStartReason } from "../lib/codegraph-readiness.ts";
+import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, WARMUP_TIMEOUT_MS, type SearchSyncInput, type IndexState, type IndexAction, type SessionStartReason, warmUpDaemonDetailed } from "../lib/codegraph-readiness.ts";
 import { ensureDirectExposureInAgentHomes, type EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
 
 const CODEGRAPH_OPERATION = {
@@ -1524,7 +1524,17 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 				if (seeded.outcome === "main-busy") seedStoodDown = true;
 				return seeded;
 			},
-			warm: (workspace) => warmUpDaemon(workspace),
+			warm: async (workspace) => {
+				const outcome = await warmUpDaemonDetailed(workspace);
+				if (outcome.wedged) {
+					// The daemon passed liveness but never answered the probe: it holds the lock and
+					// cannot serve, and a respawn would lose the lock to the wedged holder — name the
+					// state and let the CLI answer queries until the bypass expires.
+					say(`CodeGraph daemon in ${ctx.cwd} is not answering; queries use the CLI fallback for now`, "warning");
+					daemonSkipUntil.set(workspace, Date.now() + DAEMON_SKIP_MS);
+				}
+				return outcome.ok;
+			},
 			onStart: (action) => say(
 				action === "sync"
 					? "syncing the CodeGraph index..."

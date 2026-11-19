@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fsSync from "node:fs";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
+import net from "node:net";import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
@@ -28,6 +29,7 @@ import {
 	SYNC_TIMEOUT_MS,
 	syncBeforeSearch,
 	warmUpDaemon,
+	warmUpDaemonDetailed,
 	type ReadinessInput,
 	type SearchSyncInput,
 	type SessionStartReason,
@@ -574,6 +576,124 @@ test("maybeRewarm: warms in the background only when the daemon is not alive", a
 	assert.deepEqual(warmed, [], "a live daemon needs no re-warm");
 });
 
+/** A backslash without a backslash literal, so generated pipe paths stay clear of escape mangling. */
+const DAEMON_BS = String.fromCharCode(92);
+
+/** The path an in-process fake daemon binds: a unique named-pipe path on Windows — an IPC path
+ * there must live in the pipe namespace or server.listen fails — and a socket file beside the
+ * registry elsewhere (the daemon suite's fakeDaemonSocketPath pattern). */
+function fakeDaemonSocketPath(platform: NodeJS.Platform, home: string): string {
+	if (platform === "win32") return ["", "", ".", "pipe", "gentle-shell-codegraph-warm-" + randomUUID()].join(DAEMON_BS);
+	return join(home, "warm.sock");
+}
+
+/** A wedged daemon registered for `project`: the socket accepts connections but never says hello
+ * — alive by every liveness check, useless as a server (the FM2 shape). */
+function wedgedDaemon(t: test.TestContext, project: string): { cwd: string; registry: string; ready: Promise<void> } {
+	const registry = dir(t, "warm-wedged-registry");
+	const socketPath = fakeDaemonSocketPath(process.platform, registry);
+	const server = net.createServer(() => {
+		/* accepts connections and never speaks */
+	});
+	let listening: () => void = () => {};
+	const ready = new Promise<void>((resolve) => {
+		listening = resolve;
+	});
+	server.listen(socketPath, () => listening());
+	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+	fakeRegistryRecord(registry, project, socketPath, process.pid);
+	return { cwd: project, registry, ready };
+}
+
+/** An in-process daemon that answers the whole warm-probe conversation: a hello line on connect,
+ * then the initialize and tools/call replies (the daemon suite's fakeDaemon pattern). */
+function speakingDaemon(t: test.TestContext, project: string): { cwd: string; registry: string; ready: Promise<void> } {
+	const registry = dir(t, "warm-speaking-registry");
+	const socketPath = fakeDaemonSocketPath(process.platform, registry);
+	const hello = JSON.stringify({ codegraph: "1.6.0", protocol: 1 });
+	const initialized = { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "fake", version: "0" } };
+	const answer = { content: [{ type: "text", text: "daemon answer" }], isError: false };
+	let listening: () => void = () => {};
+	const ready = new Promise<void>((resolve) => {
+		listening = resolve;
+	});
+	const server = net.createServer((socket) => {
+		// A client that settles mid-conversation destroys its socket; on Windows named pipes the
+		// server's in-flight write then fails asynchronously with EPIPE, and an unhandled error
+		// event would rethrow into the test run.
+		socket.on("error", () => {});
+		socket.write(hello + "\n");
+		let buffer = "";
+		socket.on("data", (chunk: Buffer) => {
+			buffer += chunk.toString("utf8");
+			let newline: number;
+			while ((newline = buffer.indexOf("\n")) >= 0) {
+				const line = buffer.slice(0, newline).trim();
+				buffer = buffer.slice(newline + 1);
+				if (line.length === 0) continue;
+				const message = JSON.parse(line) as { id?: number; method?: string };
+				if (message.method === "initialize") socket.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: initialized }) + "\n");
+				if (message.method === "tools/call") socket.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: answer }) + "\n");
+			}
+		});
+	});
+	server.listen(socketPath, () => listening());
+	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+	fakeRegistryRecord(registry, project, socketPath, process.pid);
+	return { cwd: project, registry, ready };
+}
+
+test("warmUpDaemon: a wedged daemon fails the warm gate instead of resolving true", async (t) => {
+	// FM2: the liveness gate counted pid-alive plus a present socket file as warm, so a wedged
+	// daemon — process alive, socket accepting, never an answer — resolved the warm-up true and
+	// left every query to burn a full daemon attempt before the CLI fallback. The empty PATH
+	// makes any spawn fail, so only the gate can produce the verdict.
+	const emptyBin = dir(t, "warm-wedged-bin");
+	const previousPath = process.env.PATH;
+	process.env.PATH = emptyBin;
+	t.after(() => {
+		process.env.PATH = previousPath;
+	});
+	const cwd = dir(t, "warm-wedged");
+	const wedged = wedgedDaemon(t, cwd);
+	await wedged.ready;
+	const warmed = await warmUpDaemon(cwd, false, 5_000, wedged.registry);
+	assert.equal(warmed, false, "an alive-but-silent daemon is not a warm daemon");
+});
+
+test("warmUpDaemonDetailed: a wedged daemon reports wedged and never spawns", async (t) => {
+	// The same empty-PATH guard as the boolean test: only the gate can produce the verdict, and a
+	// wedged daemon must resolve through the probe — never by spawning a serve that would lose
+	// the daemon lock to the wedged holder.
+	const emptyBin = dir(t, "warm-detailed-wedged-bin");
+	const previousPath = process.env.PATH;
+	process.env.PATH = emptyBin;
+	t.after(() => {
+		process.env.PATH = previousPath;
+	});
+	const cwd = dir(t, "warm-detailed-wedged");
+	const wedged = wedgedDaemon(t, cwd);
+	await wedged.ready;
+	const outcome = await warmUpDaemonDetailed(cwd, false, 5_000, wedged.registry, 100);
+	assert.deepEqual(outcome, { ok: false, wedged: true }, "a wedged daemon is an explicit unhealthy outcome: no spawn, no kill");
+});
+
+test("warmUpDaemonDetailed: a healthy daemon resolves ok without spawning", async (t) => {
+	const emptyBin = dir(t, "warm-detailed-ok-bin");
+	const previousPath = process.env.PATH;
+	process.env.PATH = emptyBin;
+	t.after(() => {
+		process.env.PATH = previousPath;
+	});
+	const cwd = dir(t, "warm-detailed-ok");
+	const daemon = speakingDaemon(t, cwd);
+	await daemon.ready;
+	const startedAt = Date.now();
+	const outcome = await warmUpDaemonDetailed(cwd, false, 5_000, daemon.registry);
+	assert.deepEqual(outcome, { ok: true }, "a daemon that answers the probe is warm: no spawn");
+	assert.ok(Date.now() - startedAt < 5_000, "the resolution is immediate");
+});
+
 test("warmUpDaemon: a live daemon resolves true without spawning; a dead record still spawns", async (t) => {
 	// Any spawn would fail: PATH holds nothing but an empty directory, so a true result can only
 	// come from the liveness gate, and a spawn-path result is a fast false.
@@ -585,13 +705,11 @@ test("warmUpDaemon: a live daemon resolves true without spawning; a dead record 
 	});
 
 	const cwd = dir(t, "warm-live");
-	const registry = dir(t, "warm-live-registry");
-	const socket = join(registry, "live.sock");
-	writeFileSync(socket, "");
-	fakeRegistryRecord(registry, cwd, socket, process.pid);
+	const daemon = speakingDaemon(t, cwd);
+	await daemon.ready;
 	const startedAt = Date.now();
-	const warmed = await warmUpDaemon(cwd, false, 5_000, registry);
-	assert.equal(warmed, true, "a live daemon is already warm: no spawn, no handshake");
+	const warmed = await warmUpDaemon(cwd, false, 5_000, daemon.registry);
+	assert.equal(warmed, true, "a verified-live daemon is already warm: no spawn, no handshake");
 	assert.ok(Date.now() - startedAt < 5_000, "the resolution is immediate");
 
 	const exited = spawnSync(process.execPath, ["-e", ""], { encoding: "utf8" });

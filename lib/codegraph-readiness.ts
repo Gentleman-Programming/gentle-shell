@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { cpSync, existsSync, linkSync, lstatSync, readdirSync, realpathSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { copyFile, cp, link, readdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -319,10 +320,11 @@ export { indexState, type IndexState } from "./codegraph-lease.ts";
 export type IndexAction = "sync" | "init" | "none";
 export type SessionStartReason = "startup" | "reload" | "new" | "resume" | "fork";
 
-/** Whether `cwd`'s `.codegraph` is safe for an automatic refresh: a regular directory, or no
- * `.codegraph` at all. A symlinked one is another checkout's index — the same shape the explicit
- * tool refuses — and CodeGraph itself follows the link, so an automatic sync or warm-up must
- * never write into it either. */
+/** Whether `cwd`'s `.codegraph` is safe for an automatic refresh or initialization: a regular
+ * directory, or no `.codegraph` at all. A symlinked one is another checkout's index — the same
+ * shape the explicit tool refuses — and CodeGraph itself follows the link, so an automatic sync,
+ * warm-up, or init must never write into it: an empty linked directory reports "absent", and
+ * init -y would create the other checkout's database through the link. */
 function safeIndexDirectory(cwd: string): boolean {
 	try {
 		const index = lstatSync(join(cwd, ".codegraph"));
@@ -334,7 +336,11 @@ function safeIndexDirectory(cwd: string): boolean {
 
 /** An existing index is synced; a fresh git project with a marker file is initialised; anything else is left alone. */
 export function planIndexAction(cwd: string, state: IndexState, isProjectRoot: (cwd: string) => boolean): IndexAction {
-	if (state === "present") return safeIndexDirectory(cwd) ? "sync" : "none";
+	// The link refusal covers the absent case too: an empty linked `.codegraph` reports "absent",
+	// and init -y would create the other checkout's database through the link — no action at all
+	// is selected for a directory this workspace does not own.
+	if (!safeIndexDirectory(cwd)) return "none";
+	if (state === "present") return "sync";
 	if (state === "unknown" || !isProjectRoot(cwd)) return "none";
 	return MARKERS.some((marker) => existsSync(join(cwd, marker))) ? "init" : "none";
 }
@@ -508,7 +514,9 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 							// report — never a green light to initialize.
 							const rechecked = indexState(input.cwd);
 							if (rechecked === "present") ok = true;
-							else if (rechecked === "absent") ok = await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS, (pid, proxy) => lock.adopt(pid, proxy));
+							// The plan's link refusal, rechecked under the lock: a `.codegraph` that became a link
+							// while this session waited is not this session's to initialize either.
+							else if (rechecked === "absent" && safeIndexDirectory(input.cwd)) ok = await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS, (pid, proxy) => lock.adopt(pid, proxy));
 							else ok = false;
 						} finally {
 							lock.release();
@@ -952,35 +960,54 @@ function isSeedStagingRoot(cwd: string): boolean {
 	return basename(cwd).startsWith("seed-") && basename(dirname(cwd)) === ".codegraph" && existsSync(join(cwd, ".codegraph", "codegraph.db"));
 }
 
+/** Top-level trees the share copy fallback never stages: dependency installs and VCS metadata
+ * are what the scanner ignores anyway, and copying them on a slow share would spend the
+ * session's time and staging space on files no validating sync ever reads. */
+const STAGING_COPY_SKIP = new Set(["node_modules", ".git"]);
+
 /** Makes the staging project see the target worktree's real sources: one link per top-level
  * entry, everything except `.codegraph` (the staged copy lives there). The scanner follows the
  * links, so the validating sync reconciles the staged index against the worktree's own files
  * rather than against an empty project — the emptied-index failure mode. Directories become
- * symlinks (junctions on Windows, where they need no privilege), regular files become hardlinks
- * (no privilege either, and the staging root lives inside the worktree so both share a volume);
- * the seed's staging cleanup unlinks the links without ever following them. A directory link
- * that cannot be created — a Windows network share takes no junction to a remote directory —
- * falls back to copying the tree: a snapshot instead of a live view, but the validating sync
- * reconciles the same files and the publication target is untouched. */
-function materializeStagingSources(worktree: string, stagingRoot: string): void {
-	for (const entry of readdirSync(worktree, { withFileTypes: true })) {
+ * symlinks (junctions on Windows, where they need no privilege); regular files become hard
+ * links where the filesystem supports them (the staging root lives inside the worktree, so both
+ * share a volume). A link the filesystem refuses — a Windows share takes no junction to a
+ * remote directory, and a continuously available SMB 3.0 share takes no hard link either —
+ * falls back to a copy instead of aborting the seed: the directory copy runs off the event
+ * loop and skips the ignored trees, so a large dependency directory can neither block the
+ * session nor eat staging space, and the validating sync still reconciles the same files with
+ * the publication target untouched. The seed's staging cleanup unlinks links and copies alike
+ * without ever following them. */
+async function materializeStagingSources(worktree: string, stagingRoot: string): Promise<void> {
+	for (const entry of await readdir(worktree, { withFileTypes: true })) {
 		if (entry.name === ".codegraph") continue;
 		const target = join(worktree, entry.name);
-		const link = join(stagingRoot, entry.name);
+		const staged = join(stagingRoot, entry.name);
 		if (entry.isDirectory()) {
 			try {
-				symlinkSync(target, link, process.platform === "win32" ? "junction" : undefined);
+				await symlink(target, staged, process.platform === "win32" ? "junction" : undefined);
 			} catch {
-				cpSync(target, link, { recursive: true });
+				await cp(target, staged, { recursive: true, filter: (source) => !STAGING_COPY_SKIP.has(basename(source)) });
 			}
-		} else if (entry.isFile()) linkSync(target, link);
-		else symlinkSync(target, link);
+		} else if (entry.isFile()) {
+			try {
+				await link(target, staged);
+			} catch {
+				await copyFile(target, staged);
+			}
+		} else await symlink(target, staged);
 	}
 }
 
 /** The exact informational sentence `codegraph files` prints (exit 0, stdout) instead of `[]`
  * when the index holds no indexed files — the documented-by-source empty result. */
 const EMPTY_INDEX_NOTICE = 'No files indexed. Run "codegraph index" first.';
+
+/** The complete stdout of the supported CLI's empty case: the informational prefix plus the
+ * notice, and nothing else. A listing that carries the notice next to any other output — a
+ * torn JSON fragment, an extra line — proves nothing about the index and must never pass as a
+ * confirmed-empty one. */
+const EMPTY_INDEX_RESPONSE = `ℹ ${EMPTY_INDEX_NOTICE}`;
 
 /** One `codegraph files --format flat -j -p <project>` read of the staged index's tracked-file
  * identities — the CLI prints one {path} record per tracked entry as a JSON array. The capture
@@ -999,11 +1026,12 @@ async function stagedTrackedPaths(cwd: string, onSpawn?: (pid: number, proxy: bo
 		}
 		return paths;
 	} catch {
-		// CodeGraph prints an informational line — not `[]` — when the index holds no files
+		// CodeGraph prints one informational line — not `[]` — when the index holds no files
 		// (v1.6.0 bin: info('No files indexed. Run "codegraph index" first.'), exit 0, stdout):
-		// a confirmed-empty index is an empty path set, and the validating sync may still add the
-		// worktree's files. Any other non-JSON output stays unprovable and fails closed.
-		return run.stdout.includes(EMPTY_INDEX_NOTICE) ? new Set<string>() : undefined;
+		// exactly that line, and only it, is a confirmed-empty index whose path set is empty (the
+		// validating sync may still add the worktree's files). Any other non-JSON output — the
+		// notice with a torn fragment behind it included — stays unprovable and fails closed.
+		return run.stdout.trim() === EMPTY_INDEX_RESPONSE ? new Set<string>() : undefined;
 	}
 }
 
@@ -1023,7 +1051,7 @@ export function runCodegraphSeedSync(args: readonly string[], cwd: string, timeo
 	}
 	return (async (): Promise<SeedSyncReport> => {
 		try {
-			materializeStagingSources(dirname(dirname(cwd)), cwd);
+			await materializeStagingSources(dirname(dirname(cwd)), cwd);
 		} catch {
 			return { ok: false, removedEntries: false };
 		}

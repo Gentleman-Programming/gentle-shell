@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { acquireInitLock, type InitLockOutcome } from "../lib/codegraph-lease.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
-import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type SessionStartReason } from "../lib/codegraph-readiness.ts";
+import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type IndexAction, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 
 const CODEGRAPH_OPERATION = {
 	INIT: "init",
@@ -198,6 +198,20 @@ function tmpForGuard(): string {
 /** Workspaces whose guard already passed this prompt: git is asked once per cwd per prompt. */
 const workspaceVerified = new Set<string>();
 
+/** Whether a validated workspace still carries its repository marker: a Git toplevel always
+ * holds `.git` — a directory, or the file a linked worktree or submodule writes — so a
+ * cached validation survives only while that marker does. An env-driven GIT_DIR repository
+ * without the marker simply re-validates on every call: one extra git run, never a wrong
+ * cache hit. */
+function gitRootMarkerPresent(resolved: string): boolean {
+	try {
+		lstatSync(join(resolved, ".git"));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function resolveWorkspaceCwd(cwd: string, gitRun: GitRun = defaultGitRun): string {
 	const resolved = realpathSync(cwd);
 	if (!lstatSync(resolved).isDirectory()) {
@@ -206,7 +220,12 @@ function resolveWorkspaceCwd(cwd: string, gitRun: GitRun = defaultGitRun): strin
 	if (resolved === homeForGuard() || resolved === tmpForGuard()) {
 		throw new Error("CodeGraph requires a real Git project root equal to the current workspace, not HOME or a temporary directory.");
 	}
-	if (workspaceVerified.has(resolved)) return resolved;
+	if (workspaceVerified.has(resolved)) {
+		// The cache holds only while the repository identity does: a checkout that lost its
+		// .git mid-prompt re-runs the full root check instead of dispatching into a non-repository.
+		if (gitRootMarkerPresent(resolved)) return resolved;
+		workspaceVerified.delete(resolved);
+	}
 	try {
 		const root = realpathSync(gitRun(["rev-parse", "--show-toplevel"], resolved));
 		if (!isSameDirectory(root, resolved)) {
@@ -625,6 +644,33 @@ export function codegraphSyncFailureNotice(
 }
 
 /**
+ * The notice for one settled session-start index action: a stand-down init — the main
+ * checkout is creating its own index, so this worktree still has no database — reports
+ * deferral instead of creation, while sync keeps its synced line and an init that produced
+ * or confirmed an index keeps the creation line. Failure notices map exactly as the
+ * wiring emitted them before the mapping moved here.
+ */
+export function indexedNotice(
+	result: { action: IndexAction; ok: boolean; stoodDown?: boolean; daemonAlive?: boolean; exitCode?: number | null; stderrTail?: string; initAttempts?: number },
+	cwd: string,
+): { text: string; level: "info" | "warning" } | undefined {
+	// "none" is reported before anything runs and carries no notice of its own.
+	if (result.action === "none") return undefined;
+	if (result.ok) {
+		if (result.action === "sync") return { text: "CodeGraph index synced", level: "info" };
+		if (result.stoodDown) return { text: `CodeGraph index creation deferred in ${cwd}: the main checkout is creating its index`, level: "info" };
+		return { text: "CodeGraph index created", level: "info" };
+	}
+	if (result.action === "sync") return codegraphSyncFailureNotice(cwd, "sync", result);
+	// An init whose silent retries were exhausted is the one failure the user can fix by
+	// hand, so the notice names the action; every other init failure keeps the plain line.
+	if (result.initAttempts !== undefined && result.initAttempts > 1) {
+		return { text: `codegraph init failed in ${cwd} after ${result.initAttempts - 1} retries; run "codegraph init" manually`, level: "warning" };
+	}
+	return { text: `codegraph ${result.action} failed in ${cwd}`, level: "warning" };
+}
+
+/**
  * Fires the per-prompt background sync for `cwd` and returns whether a job was started: a subagent
  * child or a cwd already refreshed this prompt never starts one, so the first search of a prompt
  * is neither blocked nor duplicated.
@@ -823,6 +869,11 @@ export function createCodeGraphTool(
 				return fail(new Error(reason), { reason });
 			}
 			try {
+				// Re-checked under the acquired lease: `.codegraph` may have become a link to
+				// another checkout's index while this init waited — the same identity check the
+				// entry ran, independent of the override, which authorizes rebuilding THIS
+				// target, never an initialization redirected through a link.
+				assertSafeIndexDirectory(cwd);
 				// Re-checked under the acquired lock: the other initializer may have finished AND
 				// released while this call waited, so acquisition succeeds with the database already
 				// in place — the free-lease branch is not a completion proof. Rebuilding here would
@@ -888,13 +939,20 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 		const say = (text: string, level: "info" | "warning") => {
 			if (ctx.hasUI) ctx.ui.notify(text, level);
 		};
+		// The seed outcome the index notice keys on: main-busy is the benign stand-down whose
+		// ok verdict must not read as a created index (the worktree still has no database).
+		let seedStoodDown = false;
 		void prepareReadiness({
 			cwd: ctx.cwd,
 			env: process.env,
 			reason: reason as SessionStartReason,
 			isProjectRoot: isWorkspaceProjectRoot,
 			run: runCodegraph,
-			seed: (workspace) => seedWorktreeIndex({ cwd: workspace, run: runCodegraphSeedSync }),
+			seed: async (workspace) => {
+				const seeded = await seedWorktreeIndex({ cwd: workspace, run: runCodegraphSeedSync });
+				if (seeded.outcome === "main-busy") seedStoodDown = true;
+				return seeded;
+			},
 			warm: (workspace) => warmUpDaemon(workspace),
 			onStart: (action) => say(
 				action === "sync"
@@ -903,16 +961,8 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 				"info",
 			),
 			onIndexed: (result) => {
-				if (result.ok) {
-					say(result.action === "sync" ? "CodeGraph index synced" : "CodeGraph index created", "info");
-					return;
-				}
-				if (result.action === "sync") {
-					const notice = codegraphSyncFailureNotice(ctx.cwd, "sync", result);
-					say(notice.text, notice.level);
-					return;
-				}
-				say(`codegraph ${result.action} failed in ${ctx.cwd}`, "warning");
+				const notice = indexedNotice({ ...result, stoodDown: seedStoodDown }, ctx.cwd);
+				if (notice) say(notice.text, notice.level);
 			},
 			onWarmStart: () => say("warming up CodeGraph...", "info"),
 		})

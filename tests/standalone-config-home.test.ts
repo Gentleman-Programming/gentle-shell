@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
-import { gentleAiDevBinaryRegistrationPath, gentleAiIsolationEnv } from "../lib/gentle-ai-binary.ts";
+import { explicitGentleAiPiConfigDir, gentleAiAbsolutePath, gentleAiDevBinaryRegistrationPath, gentleAiIsolationEnv, gentleAiPiConfigDirOf } from "../lib/gentle-ai-binary.ts";
 import { GENTLE_SHELL_CONFIG_HOME_ENV, setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import { buildPiInvocation, migrateStandaloneConfig, standaloneConfigHome, type ResolvedHome } from "../lib/gentle-shell-launcher.ts";
 import { createActiveProfileReader } from "../extensions/gentle-shell.ts";
@@ -128,11 +128,52 @@ test("Gentle AI processes started from a standalone isolated session get the bun
 	assert.equal(env.GENTLE_AI_HOME, undefined, "standalone keeps Gentle AI's own state where it was");
 });
 
-test("without the marker, or with an explicit GENTLE_PI_CONFIG_HOME, Gentle AI's environment is unchanged", () => {
+test("without the marker or an explicit GENTLE_PI_CONFIG_HOME, Gentle AI's environment is unchanged", () => {
 	const plain = { PATH: "/bin" };
 	assert.equal(gentleAiIsolationEnv(plain), plain);
-	const explicit = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: "/explicit", [MARKER]: "/os-home/.gentle-shell/gentle-ai" };
-	assert.equal(gentleAiIsolationEnv(explicit), explicit);
+	const empty = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: "" };
+	assert.equal(gentleAiIsolationEnv(empty), empty);
+});
+
+// #3365: gentle-pi reads an explicit GENTLE_PI_CONFIG_HOME as its config folder
+// itself, while Gentle AI appends gentle-ai to it unless GENTLE_AI_PI_CONFIG_DIR
+// names the folder. The variable the user set reaches Gentle AI unchanged.
+test("an explicit GENTLE_PI_CONFIG_HOME is given to Gentle AI as GENTLE_AI_PI_CONFIG_DIR, over the marker", () => {
+	const explicit = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: "/space/gentle-ai", [MARKER]: "/os-home/.gentle-shell/gentle-ai" };
+	assert.deepEqual(gentleAiIsolationEnv(explicit, { platform: "linux" }), { ...explicit, GENTLE_AI_PI_CONFIG_DIR: "/space/gentle-ai" });
+	assert.equal("GENTLE_AI_PI_CONFIG_DIR" in explicit, false, "the caller's environment is not changed");
+	// Gentle AI refuses a relative GENTLE_AI_PI_CONFIG_DIR: a relative value keeps its old meaning.
+	const relative = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: "space/gentle-ai", [MARKER]: "/os-home/.gentle-shell/gentle-ai" };
+	assert.equal(gentleAiIsolationEnv(relative, { platform: "linux" }), relative);
+	assert.equal(explicitGentleAiPiConfigDir(relative, "linux"), undefined, "setup snapshots no persona for it either");
+	// Gentle AI's own override is kept.
+	const own = { PATH: "/bin", GENTLE_PI_CONFIG_HOME: "/space/gentle-ai", GENTLE_AI_PI_CONFIG_DIR: "/mine" };
+	assert.equal(gentleAiIsolationEnv(own, { platform: "linux" }), own);
+	assert.equal(explicitGentleAiPiConfigDir(own, "linux"), undefined);
+	// On Windows the user's own override is found whatever its spelling.
+	const spelled = { GENTLE_PI_CONFIG_HOME: "C:\\space\\gentle-ai", Gentle_Ai_Pi_Config_Dir: "C:\\mine" };
+	assert.equal(gentleAiIsolationEnv(spelled, { platform: "win32" }), spelled);
+	// With several spellings, the one Node's spawn keeps (first in sorted order) is the one Gentle AI gets.
+	assert.equal(gentleAiPiConfigDirOf({ Gentle_Ai_Pi_Config_Dir: "C:\\mine", GENTLE_AI_PI_CONFIG_DIR: "C:\\forced" }, "win32"), "C:\\forced");
+	assert.equal(gentleAiPiConfigDirOf({ Gentle_Ai_Pi_Config_Dir: "C:\\mine" }, "win32"), "C:\\mine");
+	// A config home spelled another way on Windows is the same variable for Gentle AI.
+	const mixed = { Gentle_Pi_Config_Home: "C:\\space\\gentle-ai" };
+	assert.deepEqual(gentleAiIsolationEnv(mixed, { platform: "win32" }), { ...mixed, GENTLE_AI_PI_CONFIG_DIR: "C:\\space\\gentle-ai" });
+	assert.equal(explicitGentleAiPiConfigDir({ GENTLE_PI_CONFIG_HOME: "/space/gentle-ai", Gentle_Ai_Pi_Config_Dir: "/mine" }, "linux"), "/space/gentle-ai", "POSIX names are case-sensitive");
+});
+
+test("on Windows only a drive or UNC GENTLE_PI_CONFIG_HOME is given to Gentle AI, the paths Go's filepath.IsAbs accepts", () => {
+	const dir = (value: string) => explicitGentleAiPiConfigDir({ GENTLE_PI_CONFIG_HOME: value }, "win32");
+	assert.equal(dir("C:\\space\\gentle-ai"), "C:\\space\\gentle-ai");
+	assert.equal(dir("c:/space/gentle-ai"), "c:/space/gentle-ai");
+	assert.equal(dir("\\\\server\\share\\gentle-ai"), "\\\\server\\share\\gentle-ai");
+	assert.equal(dir("\\config"), undefined, "rooted without a drive");
+	assert.equal(dir("C:config"), undefined, "drive-relative");
+	assert.equal(dir("space\\gentle-ai"), undefined);
+	assert.equal(gentleAiAbsolutePath("\\config", "win32"), false, "setup snapshots no persona under a GENTLE_AI_PI_CONFIG_DIR Gentle AI refuses");
+	assert.equal(gentleAiAbsolutePath("/config", "linux"), true);
+	const env = { GENTLE_PI_CONFIG_HOME: "\\config" };
+	assert.equal(gentleAiIsolationEnv(env, { platform: "win32" }), env);
 });
 
 test("the main-channel dev-binary registration ignores the marker and an empty GENTLE_PI_CONFIG_HOME", () => {
@@ -258,6 +299,10 @@ function writeFakeGentleAi(path: string) {
 		"import { mkdirSync, writeFileSync } from 'node:fs';",
 		"import { homedir } from 'node:os';",
 		"import { join } from 'node:path';",
+		// Gentle AI 4.6.0 piBackgroundPolicyPath (internal/cli/pi_background.go).
+		"const policyDir = process.env.GENTLE_AI_PI_CONFIG_DIR || (process.env.GENTLE_PI_CONFIG_HOME ? join(process.env.GENTLE_PI_CONFIG_HOME, 'gentle-ai') : join(homedir(), '.pi', 'gentle-ai'));",
+		"mkdirSync(policyDir, { recursive: true });",
+		"writeFileSync(join(policyDir, 'background-subagents.json'), JSON.stringify({ schema: 'gentle-pi.background-subagents/v1', policy: 'on' }));",
 		"for (const dir of [process.env.GENTLE_AI_PI_CONFIG_DIR, join(homedir(), '.pi', 'gentle-ai')]) {",
 		"  if (!dir) continue;",
 		"  mkdirSync(dir, { recursive: true });",
@@ -321,4 +366,50 @@ test("standalone setup gives Gentle AI the config pair and keeps both persona fi
 	assert.deepEqual(seen, { dir: w.shellConfig, parent: join(w.home, ".gentle-shell") });
 	assert.equal(readFileSync(join(w.home, ".pi", "gentle-ai", "persona.json"), "utf8"), "{\"mode\":\"neutral\"}");
 	assert.equal(readFileSync(join(w.shellConfig, "persona.json"), "utf8"), "{\"mode\":\"neutral\"}", "the migrated copy is restored too");
+	assert.equal(existsSync(join(w.shellConfig, "background-subagents.json")), true);
+});
+
+test("#3365: setup for a --home with an explicit GENTLE_PI_CONFIG_HOME writes Gentle AI's files in that folder itself", posixOnly, () => {
+	const w = launcherWorld();
+	const gentleAi = join(w.root, "fake-gentle-ai.mjs");
+	writeFakeGentleAi(gentleAi);
+	const configHome = join(w.root, "space", "gentle-ai");
+	mkdirSync(configHome, { recursive: true });
+	writeFileSync(join(configHome, "persona.json"), "{\"mode\":\"neutral\"}");
+	writeFileSync(join(w.home, ".pi", "gentle-ai", "persona.json"), "{\"mode\":\"neutral\"}");
+	const result = w.run(["--home", join(w.root, "space", "agent"), "setup"], { GENTLE_SHELL_GENTLE_AI_BIN: gentleAi, GENTLE_PI_CONFIG_HOME: configHome });
+	assert.equal(result.status, 0, result.stderr);
+	const seen = JSON.parse(result.stdout.split("\n").find((line) => line.includes("\"dir\""))!);
+	assert.deepEqual(seen, { dir: configHome, parent: configHome }, "the user's GENTLE_PI_CONFIG_HOME reaches Gentle AI unchanged");
+	assert.equal(existsSync(join(configHome, "background-subagents.json")), true);
+	assert.equal(existsSync(join(configHome, "gentle-ai")), false, "no duplicated gentle-ai segment");
+	assert.equal(readFileSync(join(configHome, "persona.json"), "utf8"), "{\"mode\":\"neutral\"}", "the config home's persona is restored");
+	assert.equal(readFileSync(join(w.home, ".pi", "gentle-ai", "persona.json"), "utf8"), "{\"mode\":\"neutral\"}");
+});
+
+test("#3365: with GENTLE_PI_CONFIG_HOME and the user's own GENTLE_AI_PI_CONFIG_DIR, setup keeps that override and its persona", posixOnly, () => {
+	const w = launcherWorld();
+	const gentleAi = join(w.root, "fake-gentle-ai.mjs");
+	writeFakeGentleAi(gentleAi);
+	const own = join(w.root, "own");
+	mkdirSync(own, { recursive: true });
+	writeFileSync(join(own, "persona.json"), "{\"mode\":\"neutral\"}");
+	const configHome = join(w.root, "space", "gentle-ai");
+	const result = w.run(["--home", join(w.root, "space", "agent"), "setup"], { GENTLE_SHELL_GENTLE_AI_BIN: gentleAi, GENTLE_PI_CONFIG_HOME: configHome, GENTLE_AI_PI_CONFIG_DIR: own });
+	assert.equal(result.status, 0, result.stderr);
+	const seen = JSON.parse(result.stdout.split("\n").find((line) => line.includes("\"dir\""))!);
+	assert.deepEqual(seen, { dir: own, parent: configHome });
+	assert.equal(readFileSync(join(own, "persona.json"), "utf8"), "{\"mode\":\"neutral\"}", "the override's persona is restored");
+});
+
+test("#3365: setup for a --home without GENTLE_PI_CONFIG_HOME still writes Gentle AI's files to ~/.pi/gentle-ai", posixOnly, () => {
+	const w = launcherWorld();
+	const gentleAi = join(w.root, "fake-gentle-ai.mjs");
+	writeFakeGentleAi(gentleAi);
+	const result = w.run(["--home", join(w.root, "space", "agent"), "setup"], { GENTLE_SHELL_GENTLE_AI_BIN: gentleAi });
+	assert.equal(result.status, 0, result.stderr);
+	const seen = JSON.parse(result.stdout.split("\n").find((line) => line.includes("\"dir\""))!);
+	assert.deepEqual(seen, { dir: null, parent: null });
+	assert.equal(existsSync(join(w.home, ".pi", "gentle-ai", "background-subagents.json")), true);
+	assert.equal(existsSync(w.shellConfig), false);
 });

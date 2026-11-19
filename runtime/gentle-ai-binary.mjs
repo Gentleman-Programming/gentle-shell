@@ -88,7 +88,9 @@ export function bundledGentleAiPaths(prefix        , platform         = process.
  * GENTLE_PI_CONFIG_HOME (the parent of GENTLE_AI_PI_CONFIG_DIR)
  * when this gentle-pi runs from the valid bundled install GENTLE_SHELL_PREFIX
  * names (runningBundledPrefix). In the standalone launcher's isolated home
- * (#2201) only the config pair, for the folder its marker names. Otherwise
+ * (#2201) only the config pair, for the folder its marker names. With an
+ * explicit GENTLE_PI_CONFIG_HOME, only GENTLE_AI_PI_CONFIG_DIR, for that
+ * folder (#3365). Otherwise
  * `env` itself, unchanged: a gentle-pi installed elsewhere (the user's own,
  * started from the agent's shell, which inherits the variable) keeps its own
  * Gentle AI.
@@ -130,19 +132,63 @@ export function gentleAiIsolationEnv(
 
 // #2201: the same config pair as a bundled install, for the folder the
 // standalone launcher's marker names, when it decides the config home
-// (resolveGentlePiConfigHome; an explicit GENTLE_PI_CONFIG_HOME keeps its
-// existing meaning for Gentle AI). Gentle AI's own state stays where it was.
+// (resolveGentlePiConfigHome). Gentle AI's own state stays where it was.
 // The parent is given only for a folder named gentle-ai, the one Gentle AI
 // 4.0.0 appends to it.
+// #3365: an explicit GENTLE_PI_CONFIG_HOME is gentle-pi's config folder itself,
+// but Gentle AI appends gentle-ai to it unless GENTLE_AI_PI_CONFIG_DIR names
+// the folder, so Gentle AI also gets it as GENTLE_AI_PI_CONFIG_DIR. The
+// variable the user set reaches Gentle AI unchanged.
 function standaloneGentleAiEnv(env                   , platform        )                    {
+	const path = platform === "win32" ? win32 : posix;
+	if (childEnvValue(env, "GENTLE_PI_CONFIG_HOME", platform)) {
+		const dir = explicitGentleAiPiConfigDir(env, platform);
+		return dir === undefined ? env : { ...env, GENTLE_AI_PI_CONFIG_DIR: dir };
+	}
 	const marker = env[GENTLE_SHELL_CONFIG_HOME_ENV];
 	if (marker === undefined || resolveGentlePiConfigHome(env, homedir(), { platform }) !== marker) return env;
-	const path = platform === "win32" ? win32 : posix;
 	return {
 		...env,
 		GENTLE_AI_PI_CONFIG_DIR: marker,
 		...(path.basename(marker) === "gentle-ai" ? { GENTLE_PI_CONFIG_HOME: path.dirname(marker) } : {}),
 	};
+}
+
+/**
+ * The GENTLE_AI_PI_CONFIG_DIR a child started with `env` gets. On Windows a
+ * copied environment ({ ...process.env }) keeps the user's own spelling, and
+ * when several spellings coexist Node's spawn keeps the first one in sorted
+ * order (lib/child_process.js), so this picks the same one.
+ */
+export function gentleAiPiConfigDirOf(env                   , platform         = process.platform)                     {
+	return childEnvValue(env, "GENTLE_AI_PI_CONFIG_DIR", platform);
+}
+
+// A variable's non-empty value as a child started with `env` sees it (see
+// gentleAiPiConfigDirOf): case-insensitive on Windows, first in sorted order.
+function childEnvValue(env                   , name        , platform        )                     {
+	if (platform !== "win32") return env[name] || undefined;
+	const key = Object.keys(env).filter((candidate) => candidate.toUpperCase() === name && env[candidate] !== undefined).sort()[0];
+	return key === undefined ? undefined : env[key] || undefined;
+}
+
+/**
+ * #3365: the folder Gentle Shell gives Gentle AI as GENTLE_AI_PI_CONFIG_DIR for
+ * an explicit GENTLE_PI_CONFIG_HOME outside a bundled install, or undefined.
+ * Never over a GENTLE_AI_PI_CONFIG_DIR already set (Gentle AI's own override),
+ * and only for a path Gentle AI accepts: it refuses one that Go's
+ * filepath.IsAbs rejects, such as a relative path or a Windows path without a
+ * drive or UNC share (\config).
+ */
+export function explicitGentleAiPiConfigDir(env                   , platform         = process.platform)                     {
+	const explicit = childEnvValue(env, "GENTLE_PI_CONFIG_HOME", platform);
+	if (!explicit || gentleAiPiConfigDirOf(env, platform)) return undefined;
+	return gentleAiAbsolutePath(explicit, platform) ? explicit : undefined;
+}
+
+/** Whether Gentle AI (Go's filepath.IsAbs) takes `path` as absolute: on Windows a drive or UNC root. */
+export function gentleAiAbsolutePath(path        , platform         = process.platform)          {
+	return platform === "win32" ? /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/.test(path) : posix.isAbsolute(path);
 }
 
 function sha256(value        )         {

@@ -102,7 +102,7 @@ import {
 	RESUME_HANDOFF_ENV,
 	RESUME_HANDOFF_FILE,
 } from "../runtime/gentle-shell-resume-hint.mjs";
-import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
+import { bundledGentleAiPaths, GENTLE_AI_VERSION, gentleAiBinaryPath, gentleAiAbsolutePath, gentleAiIsolationEnv, gentleAiPiConfigDirOf, PackageLocalGentleAiBinaryMissingError } from "../runtime/gentle-ai-binary.mjs";
 import { DEFAULT_THEME_NAME, installIsolatedTuiModeSetting } from "../scripts/install-tui-mode-setting.mjs";
 import { artifactFor, engramPinVersion } from "../scripts/installer-downloads.mjs";
 import { migrateBundledEngram, migrationPending, MIGRATION_PENDING_NOTICE, MIGRATION_USAGE } from "../scripts/bundled-engram-migration.mjs";
@@ -1041,11 +1041,12 @@ function sharedPersonaPath() {
 // isolated home (#2201): its own config folder's, which a Gentle AI with
 // GENTLE_AI_PI_CONFIG_DIR (gentle-ai #5462) writes, and still the user's,
 // which a pinned Gentle AI without it writes; restoring an unchanged file
-// does nothing.
-function setupPersonaPaths(home) {
-	if (bundledInstall) return [join(bundledGentleAiPaths(bundledInstall.root, process.platform).piConfig, "persona.json"), sharedPersonaPath()];
-	const configHome = standaloneConfigHome(home);
-	return configHome === undefined ? [sharedPersonaPath()] : [join(configHome, "persona.json"), sharedPersonaPath()];
+// does nothing. The folder is the GENTLE_AI_PI_CONFIG_DIR setup's Gentle AI
+// really gets (buildSetupEnv): the bundled one, the isolated home's, an
+// explicit GENTLE_PI_CONFIG_HOME (#3365) or the user's own override.
+function setupPersonaPaths(setupEnv) {
+	const dir = gentleAiPiConfigDirOf(setupEnv, process.platform);
+	return dir && gentleAiAbsolutePath(dir, process.platform) ? [join(dir, "persona.json"), sharedPersonaPath()] : [sharedPersonaPath()];
 }
 
 // The real filesystem behind migrateStandaloneConfig (#2201).
@@ -1346,7 +1347,7 @@ async function runSetupFlow(home, runtime, { dryRun, stdio, timeoutMs, homeHadCo
 	// #2143: a Gentle AI with package exclusion never installs the launcher-owned
 	// gentle-pi; an older one ignores this and runPostInstallCleanup removes it.
 	const env = withLauncherPackagesExcluded(buildSetupEnv(home, runtime, piLauncherDir));
-	const personaSnapshots = setupPersonaPaths(home).map((path) => [path, safely("snapshot your Pi persona file", path, undefined, () => snapshotFile(path))]);
+	const personaSnapshots = setupPersonaPaths(env).map((path) => [path, safely("snapshot your Pi persona file", path, undefined, () => snapshotFile(path))]);
 	const statePath = sharedGentleAiStatePath();
 	const originalStateText = safely("read your Gentle AI state file", statePath, undefined, () => readParsableJsonText(statePath));
 	// Theme restore (never for --link — that home is the user's own

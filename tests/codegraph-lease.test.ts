@@ -10,6 +10,7 @@ import {
 	defaultLocksDir,
 	lockPathFor,
 	readLeaseVerdict,
+	syncLeaseHeldLive,
 	tryAcquireLease,
 	tryAcquireSyncLease,
 } from "../lib/codegraph-lease.ts";
@@ -114,6 +115,22 @@ function releaseParkedFifo(fd: number): void {
 	closeSync(fd);
 }
 
+/** Waits until a child's result file holds its complete expected contents: a marker observed
+ * between its create and its write would otherwise read as an empty string and fail a correct
+ * run. Keeps the established deadline (10s) and poll cadence of the existence loops. */
+async function waitForFileContents(file: string, expected: string, what: string): Promise<void> {
+	const deadline = Date.now() + 10_000;
+	for (;;) {
+		try {
+			if (readFileSync(file, "utf8") === expected) return;
+		} catch {
+			/* not written yet */
+		}
+		if (Date.now() >= deadline) assert.fail(`timed out waiting for ${what}`);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
 test("lease verdicts: free, held-live, held-stale by expiry, held-stale by dead pid, unknown on damage", (t) => {
 	const dir = locksDir(t);
 	const path = join(dir, "token.json");
@@ -124,8 +141,15 @@ test("lease verdicts: free, held-live, held-stale by expiry, held-stale by dead 
 	writeToken(path, liveToken(now));
 	assert.equal(readLeaseVerdict(path, now), "held-live", "live pid inside its TTL");
 
-	writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now - 1, host: localHost() });
-	assert.equal(readLeaseVerdict(path, now), "held-stale", "expired token is stealable");
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now - 120_000, expiresAt: now - 1, host: localHost() });
+	assert.equal(readLeaseVerdict(path, now), "held-stale", "expired token with a dead holder is stealable");
+	// A matching-host token keeps the TTL as its hard displacement bound: a wedged live holder
+	// cannot keep the lease forever. Host-less tokens need a dead holder instead (their own test
+	// below covers both identity shapes).
+	if (localHostIdentity() !== null) {
+		writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now - 1, host: localHostIdentity() });
+		assert.equal(readLeaseVerdict(path, now), "held-stale", "an expired matching-host token is displaced even while its holder lives");
+	}
 
 	writeToken(path, { kind: "sync", pid: deadPid(), startedAt: now, expiresAt: now + 60_000, host: localHost() });
 	assert.equal(readLeaseVerdict(path, now), "held-stale", "dead holder is stealable even inside its TTL");
@@ -228,16 +252,19 @@ test("release is bound to its own acquisition: it never removes a newer owner's 
 
 	const first = tryAcquireLease(path, "sync", 120_000, now);
 	assert.ok(first, "the path is free: the first session acquires");
-	// The first lease expires; a second session steals the now-stale path and re-owns it.
-	const second = tryAcquireLease(path, "sync", 120_000, now + 121_000);
-	assert.ok(second, "the expired token is stolen by the second session");
+	// The first holder's recorded pid dies and its lease runs past its TTL: a second session
+	// steals the now-stale path and re-owns it while the first session's process lives on.
+	const firstToken = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+	writeToken(path, { ...firstToken, pid: deadPid(), expiresAt: now - 1 });
+	const second = tryAcquireLease(path, "sync", 120_000, now);
+	assert.ok(second, "the dead holder's expired token is stolen by the second session");
 	// The first session's late release (its finally after the protected operation ran long) must
 	// remove nothing: the path belongs to the second session now.
 	first.release();
-	assert.equal(readLeaseVerdict(path, now + 121_000), "held-live", "the newer owner's token survives the old release");
+	assert.equal(readLeaseVerdict(path, now), "held-live", "the newer owner's token survives the old release");
 
 	second.release();
-	assert.equal(readLeaseVerdict(path, now + 121_000), "free", "its own release still hands the path back");
+	assert.equal(readLeaseVerdict(path, now), "free", "its own release still hands the path back");
 });
 
 test("a missing launcher token still holds while a live external CodeGraph writer holds codegraph.lock", (t) => {
@@ -384,13 +411,15 @@ test("a displaced holder's adopt() and release() cannot touch the newer owner's 
 	const path = join(dir, "token.json");
 	const now = Date.now();
 
-	// The TTL is the displacement bound: the first holder's lease expires while it lives, and a
-	// second session reclaims the path. The first holder may resume and publish or remove state —
-	// but only on its own acquisition's token, never on the newer owner's.
-	const first = tryAcquireLease(path, "sync", 1, now);
+	// The first holder's recorded pid dies and its lease runs past its TTL: a second session
+	// reclaims the path. The first holder may resume and publish or remove state — but only on
+	// its own acquisition's token, never on the newer owner's.
+	const first = tryAcquireLease(path, "sync", 120_000, now);
 	assert.ok(first, "a free path acquires");
-	const second = tryAcquireLease(path, "sync", 120_000, now + 2);
-	assert.ok(second, "the expired local token is reclaimed even while its first holder lives");
+	const firstToken = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+	writeToken(path, { ...firstToken, pid: deadPid(), expiresAt: now - 1 });
+	const second = tryAcquireLease(path, "sync", 120_000, now);
+	assert.ok(second, "the dead holder's expired token is reclaimed");
 	const before = readFileSync(path, "utf8");
 
 	first.adopt(4242, false);
@@ -399,7 +428,7 @@ test("a displaced holder's adopt() and release() cannot touch the newer owner's 
 	assert.equal(readFileSync(path, "utf8"), before, "its late release removes nothing either");
 
 	second.release();
-	assert.equal(readLeaseVerdict(path, now + 2), "free");
+	assert.equal(readLeaseVerdict(path, now), "free");
 });
 
 test("an adoption stalled past its mutex does not publish over the replacement owner's token", async (t) => {
@@ -448,12 +477,7 @@ test("an adoption stalled past its mutex does not publish over the replacement o
 	const closed = new Promise<number>((resolve) => {
 		child.on("close", (code: number | null) => resolve(code ?? -1));
 	});
-	const readyDeadline = Date.now() + 10_000;
-	while (!existsSync(ready)) {
-		if (Date.now() >= readyDeadline) assert.fail("the child never acquired the lease");
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-	assert.equal(readFileSync(ready, "utf8"), "acquired", "the child starts as the path's owner");
+	await waitForFileContents(ready, "acquired", "the child never acquired the lease");
 
 	// Swap the live token file for a fifo: the child's adoption parks reading it inside the
 	// per-path mutex, past its holder-pid and nonce checks' read.
@@ -480,12 +504,7 @@ test("an adoption stalled past its mutex does not publish over the replacement o
 	// adoption over the replacement owner's token.
 	writeSync(parked, stalledToken);
 	closeSync(parked);
-	const deadline = Date.now() + 10_000;
-	while (!existsSync(marker)) {
-		if (Date.now() >= deadline) assert.fail("the child never finished its adoption");
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-	assert.equal(readFileSync(marker, "utf8"), "adopted", "the adoption ran to its end");
+	await waitForFileContents(marker, "adopted", "the child never finished its adoption");
 	assert.equal(readFileSync(path, "utf8"), replacementToken, "the adoption must not publish over the replacement owner's token");
 	assert.equal(readFileSync(replacementMutex, "utf8"), replacementMutexBytes, "the replacement owner's mutex is never removed by the displaced adoption");
 	assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".tmp")), [], "the aborted adoption leaves no temp litter behind");
@@ -577,7 +596,7 @@ test("a token expiring exactly now is stale, and the token shape is exactly kind
 	const boundary = join(dir, "boundary.json");
 	const now = Date.now();
 
-	writeToken(boundary, { kind: "init", pid: process.pid, startedAt: now, expiresAt: now, host: localHost() });
+	writeToken(boundary, { kind: "init", pid: deadPid(), startedAt: now, expiresAt: now, host: localHost() });
 	assert.equal(readLeaseVerdict(boundary, now), "held-stale", "expiry is inclusive: at-now is stealable");
 
 	const fresh = join(dir, "fresh.json");
@@ -887,15 +906,71 @@ test("a reclaimer whose mutex was replaced mid-section aborts instead of removin
 	// mutex it no longer owns — it must abort at the fence, acquire nothing, and remove neither
 	// the replacement owner's token nor the replacement mutex.
 	releaseParkedFifo(parked);
-	const deadline = Date.now() + 10_000;
-	while (!existsSync(marker)) {
-		if (Date.now() >= deadline) assert.fail("the child never reported its acquisition result");
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-	assert.equal(readFileSync(marker, "utf8"), "lost", "the displaced reclaimer must not acquire a second lease");
+	await waitForFileContents(marker, "lost", "the child never reported its acquisition result");
 	assert.equal(readFileSync(path, "utf8"), replacementTokenBytes, "the newer owner's stale-looking token survives byte-for-byte: the fence, not the verdict, saved it");
 	assert.equal(readFileSync(replacementMutex, "utf8"), replacementMutexBytes, "the replacement owner's mutex is never removed by the displaced section's exit");
 	writeFileSync(done, "");
 	assert.equal(await closed, 0);
 	assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".tmp") || name.endsWith(".stale")), [], "no temp or stale-steal litter is left behind");
 });
+
+test("a foreign token's writer or holder pid is never read as a live local refresh", (t) => {
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+	// A locks dir under a shared homedir can carry another host's token; its recorded pids mean
+	// nothing here. The coincidental-pid hazard: the foreign token's writer pid happens to name
+	// THIS live local process.
+	const foreign = "linux:01234567-89ab-cdef-0123-456789abcdef:pid:[1]";
+	writeToken(path, { kind: "sync", pid: 4242, startedAt: now, expiresAt: now + 60_000, host: foreign, writerPid: process.pid, writerProxy: false, writerPidAt: now });
+	assert.equal(readLeaseVerdict(path, now), "unknown", "a foreign token with a locally-live writer pid is unknown, never held-live");
+	writeToken(path, { kind: "sync", pid: 4242, startedAt: now - 120_000, expiresAt: now - 1, host: foreign, writerPid: process.pid, writerProxy: false, writerPidAt: now });
+	assert.equal(readLeaseVerdict(path, now), "unknown", "expired too: the TTL does not turn a foreign writer pid into a local one");
+	assert.equal(tryAcquireLease(path, "sync", 120_000, now), undefined, "and the path is never stolen past it");
+
+	// A foreign proxy report inside its trust window is equally unprovable here.
+	writeToken(path, { kind: "init", pid: 4242, startedAt: now, expiresAt: now + 60_000, host: foreign, writerPid: 4242, writerProxy: true, writerPidAt: now - 1_000 });
+	assert.equal(readLeaseVerdict(path, now), "unknown", "a foreign proxy window never holds as a local refresh");
+
+	// An unexpired foreign holder whose pid happens to be live locally is just as unprovable.
+	writeToken(path, { kind: "sync", pid: process.pid, startedAt: now, expiresAt: now + 60_000, host: foreign });
+	assert.equal(readLeaseVerdict(path, now), "unknown", "a foreign holder is never a live local holder");
+
+	// The daemonless refresh consumer reads this verdict: a foreign sync token must never be
+	// reported as another session's handled refresh on the strength of a coincidental pid.
+	const cwd = project(t);
+	const syncPath = lockPathFor(cwd, "sync", dir);
+	writeToken(syncPath, { kind: "sync", pid: 4242, startedAt: now, expiresAt: now + 60_000, host: foreign, writerPid: process.pid, writerProxy: false, writerPidAt: now });
+	assert.equal(syncLeaseHeldLive(cwd, dir), false, "a foreign token's coincidental writer pid is nobody's handled refresh");
+
+	// Local provenance keeps writer liveness exactly as before, identity-less legacy included.
+	writeToken(path, { kind: "sync", pid: deadPid(), startedAt: now, expiresAt: now + 60_000, host: localHost(), writerPid: process.pid, writerProxy: false, writerPidAt: now });
+	assert.equal(readLeaseVerdict(path, now), "held-live", "a matching local writer still holds its launcher's token");
+	writeToken(path, { kind: "sync", pid: deadPid(), startedAt: now, expiresAt: now + 60_000, writerPid: process.pid, writerProxy: false, writerPidAt: now });
+	assert.equal(readLeaseVerdict(path, now), "held-live", "an identity-less token's live writer still holds (legacy shape)");
+});
+
+test("an expired host-less token needs a dead holder: a live holder is never reclaimed", (t) => {
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+
+	// A null-identity host (neither identity derivation available) treats a host-less token as
+	// local: expiry alone must not hand the lease over while the holder still lives and may
+	// still be starting its writer. The writer checks have already cleared writer pids here.
+	writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now - 1 });
+	assert.equal(readLeaseVerdict(path, now, undefined, null), "unknown", "a live holder on a null-identity host fail-closes even past the TTL");
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now - 120_000, expiresAt: now - 1 });
+	assert.equal(readLeaseVerdict(path, now, undefined, null), "held-stale", "a dead holder's TTL reclaim stands on a null-identity host");
+
+	// On a host with identity the same host-less shape already failed closed; a matching-host
+	// token keeps the TTL as its hard displacement bound there.
+	const host = localHostIdentity();
+	if (host !== null) {
+		writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now - 1 });
+		assert.equal(readLeaseVerdict(path, now), "unknown", "an identity host never reclaims a host-less token from a live holder");
+		writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now - 1, host });
+		assert.equal(readLeaseVerdict(path, now), "held-stale", "an expired matching-host token is displaced even while its holder lives");
+	}
+});
+

@@ -422,6 +422,21 @@ function mergeResolvedWithLoose(
 	return dedupeBySkillName([...resolved, ...filteredLoose], cwd);
 }
 
+async function canonicalSkillPath(path: string): Promise<string> {
+	try { return comparablePath(await realpath(path)); }
+	catch { return comparablePath(path); }
+}
+
+// gentle-shell#3302: the skills CLI keeps one real copy and symlinks it into
+// other agents' roots (for example .agents/skills into .claude/skills). A loose
+// entry that resolves to a file Pi already resolved or suppressed is that same
+// skill under a second path, never a separate effective winner.
+async function dropAliasesOfResolved(loose: SkillEntry[], resolvedPaths: readonly string[]): Promise<SkillEntry[]> {
+	const canonical = new Set(await Promise.all(resolvedPaths.map(canonicalSkillPath)));
+	const keep = await Promise.all(loose.map(async (entry) => !canonical.has(await canonicalSkillPath(entry.path))));
+	return loose.filter((_, index) => keep[index]);
+}
+
 function scopeForPath(cwd: string, path: string): string {
 	const cleanCwd = comparablePath(cwd);
 	const projectPrefix = cleanCwd.endsWith(sep) ? cleanCwd : `${cleanCwd}${sep}`;
@@ -1000,7 +1015,9 @@ export default function (pi: ExtensionAPI) {
 			const { entries } = await scanDisk(resolve(ctx.cwd));
 			const resolved = lastResolvedSkills.map((skill) => toResolvedEntry(skill, ctx.cwd))
 				.filter((entry): entry is SkillEntry => entry !== undefined);
-			const effective = mergeResolvedWithLoose(resolved, entries, ctx.cwd, lastResolvedSkills.map((skill) => skill.filePath));
+			const resolvedPaths = lastResolvedSkills.map((skill) => skill.filePath);
+			const loose = await dropAliasesOfResolved(entries, resolvedPaths);
+			const effective = mergeResolvedWithLoose(resolved, loose, ctx.cwd, resolvedPaths);
 			const piListed = piRendersAvailableSkills(options as { selectedTools?: unknown });
 			appendEffectivePrompt(options, ctx.cwd, unlistedEntries(effective, piListed ? resolved : []), piListed);
 		} catch {

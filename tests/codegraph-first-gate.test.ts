@@ -6,9 +6,9 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import codegraphFirstGate from "../extensions/codegraph-first-gate.ts";
 
-/** The exact reason a workspace-search prompt's uncredited persistent-memory read is blocked with. */
+/** The exact reason a gated persistent-memory read is blocked with. */
 const BLOCK_REASON =
-	"codegraph-first gate: persistent-memory reads during workspace-search activity come after a codegraph query or explore in the same user prompt (AGENTS.md Memory ordering). Call codegraph first - a failed or unavailable attempt also counts - then retry this memory read; prompts with no workspace search are never gated.";
+	"codegraph-first gate: persistent-memory reads come after codegraph (AGENTS.md Memory ordering): a read is blocked while a codegraph query or explore is in flight, when the same turn's tool batch also lists one or a not-yet-credited workspace search, and, once the prompt has searched the workspace, until a query or explore finalizes in the same user prompt. Call codegraph first - a failed or unavailable attempt also counts - then retry this memory read; a memory-only prompt is never gated.";
 
 type Handler = (event: unknown, ctx?: unknown) => unknown;
 
@@ -69,16 +69,32 @@ test("(a) a memory-only prompt is not gated: fresh-prompt memory reads pass with
 test("(b) a finalized codegraph call credits the prompt for memory reads", (t) => {
 	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
+	// The prompt searches the workspace first, so the read below can pass only through the
+	// query's own credit - never through a gate that was never armed.
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "b-arm", args: { pattern: "symbol" } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the searched prompt blocks the read before the query",
+	);
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "t1", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1", result: { ok: false, error: "daemon down" } });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 });
 
-test("(c) a failed codegraph call still credits: the end handler never reads the result payload", (t) => {
+test("(c) a failed codegraph call still credits: neither the result nor the end event decides it", (t) => {
 	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
-	// Reading any field besides toolName throws, so credit proves the handler ignores the
-	// outcome entirely: end-of-execution means the call finalized, failure included.
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "c-arm", args: { pattern: "symbol" } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the searched prompt blocks the read first",
+	);
+	// Reading any field besides toolName throws from the end event, so the assertions below
+	// prove the closing handler reads nothing but the call's identity: crediting happens at
+	// the post-execution result, which an errored result satisfies exactly like a success.
 	const ended: unknown = new Proxy({ toolName: "codegraph", toolCallId: "t1" }, {
 		get(target, property, receiver) {
 			if (property === "toolName" || property === "toolCallId") return Reflect.get(target, property, receiver);
@@ -86,6 +102,7 @@ test("(c) a failed codegraph call still credits: the end handler never reads the
 		},
 	});
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "t1", isError: true });
 	fire(handlers, "tool_execution_end", ended);
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 });
@@ -93,7 +110,14 @@ test("(c) a failed codegraph call still credits: the end handler never reads the
 test("(d) an mcp__codegraph__ tool call also credits the prompt", (t) => {
 	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "d-arm", args: { pattern: "symbol" } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the searched prompt blocks the read before the explore",
+	);
 	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_explore", toolCallId: "t1", args: { query: "flow" } });
+	fire(handlers, "tool_result", { toolCallId: "t1", isError: true });
 	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_explore", toolCallId: "t1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 });
@@ -102,6 +126,7 @@ test("(e) a new user prompt resets the credit", (t) => {
 	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "t1", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 	fire(handlers, "before_agent_start", { messageType: "user" });
@@ -116,7 +141,11 @@ test("(e) a new user prompt resets the credit", (t) => {
 test("(j) credit survives turn boundaries within one user request", (t) => {
 	const handlers = installGate(t);
 	fire(handlers, "before_agent_start", { messageType: "user" });
+	// The prompt searched the workspace first, so the gate stays armed: the assertions below
+	// can pass only while the query's credit genuinely survives the turn boundary.
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "j-arm", args: { pattern: "symbol" } });
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "t1", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
 	// turn_start fires per LLM turn, not per user prompt: a later turn of the
 	// same request must not expire credit the AGENTS.md rule still honors.
@@ -129,6 +158,7 @@ test("(j) credit survives turn boundaries within one user request", (t) => {
 test("(k) every before_agent_start resets the credit, user or custom run", (t) => {
 	const handlers = installGate(t);
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "explore", query: "flow" } });
+	fire(handlers, "tool_result", { toolCallId: "t1", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 	fire(handlers, "before_agent_start", { messageType: "custom" });
@@ -145,18 +175,24 @@ test("(q) a steering user message delivered inside the running loop resets the c
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "q-arm", args: { pattern: "symbol" } });
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "t1", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 	// Pi (1.2.0+) consumes steering inside the current agent loop with no second
-	// before_agent_start: the delivered user message must re-open the window itself.
+	// before_agent_start: the delivered user message must re-open the window itself,
+	// credit and search activity both - the steered turn starts with clean activity state.
 	fire(handlers, "message_end", { message: { role: "user", content: "also check the lease path" } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the steered turn carries no search activity over from the searched prompt");
+	// The steered window arms again only through its own search and credits again after
+	// its own query; only a user role resets - assistant, tool-result, and custom
+	// deliveries never expire re-earned credit.
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "q-arm-2", args: { pattern: "lease" } });
 	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
 		block: true,
 		reason: BLOCK_REASON,
-	}, "a delivered steering message starts the codegraph-first window over");
-	// The steered window credits again after its own query, and only a user role resets:
-	// assistant, tool-result, and custom deliveries never expire re-earned credit.
+	}, "the steered prompt's own search re-arms the gate");
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t2", args: { operation: "query", query: "lease" } });
+	fire(handlers, "tool_result", { toolCallId: "t2", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t2" });
 	for (const role of ["assistant", "toolResult", "custom"]) {
 		fire(handlers, "message_end", { message: { role, content: "not a user prompt" } });
@@ -169,6 +205,7 @@ test("(r) a queued follow-up user message consumed after agent_end resets the cr
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "r-arm", args: { pattern: "symbol" } });
 	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_query", toolCallId: "t1", args: { query: "flow" } });
+	fire(handlers, "tool_result", { toolCallId: "t1", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_query", toolCallId: "t1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_get_observation" }), undefined);
 	// The run ends and queued follow-ups continue the loop: agent_start may fire again, but
@@ -176,10 +213,13 @@ test("(r) a queued follow-up user message consumed after agent_end resets the cr
 	handlers.get("agent_end")?.({ messages: [] });
 	handlers.get("agent_start")?.({});
 	fire(handlers, "message_end", { message: { role: "user", content: "now summarize what changed" } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_get_observation" }), undefined, "a memory-only follow-up carries no search activity over from the searched prompt");
+	// The follow-up's own search re-arms the gate until its own query or explore credits it.
+	fire(handlers, "tool_execution_start", { toolName: "find", toolCallId: "r-arm-2", args: { pattern: "*.ts" } });
 	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_get_observation" }), {
 		block: true,
 		reason: BLOCK_REASON,
-	}, "a delivered follow-up message starts the codegraph-first window over");
+	}, "the follow-up prompt's own search re-arms the gate");
 });
 
 test("(f) memory writes are never blocked, even before any codegraph call", (t) => {
@@ -227,7 +267,15 @@ test("(i) a hostile event payload never throws: the guards return undefined", (t
 	}
 	assert.equal(fire(handlers, "tool_call", null), undefined);
 	assert.equal(fire(handlers, "tool_call", undefined), undefined);
-	// The credit path is equally guarded: a hostile end event neither throws nor credits.
+	// The credit path is equally guarded: a hostile result event neither throws nor credits.
+	const explosiveResult: unknown = new Proxy({ toolCallId: "never-started" }, {
+		get(target, property, receiver) {
+			if (property === "toolCallId") return Reflect.get(target, property, receiver);
+			throw new Error(`the gate must not read .${String(property)} from tool_result`);
+		},
+	});
+	assert.doesNotThrow(() => fire(handlers, "tool_result", explosiveResult));
+	fire(handlers, "tool_result", { toolCallId: "never-started", isError: false });
 	assert.doesNotThrow(() => fire(handlers, "tool_execution_end", explosive));
 	// The message-delivery reset is equally guarded: a hostile payload neither throws nor resets.
 	const explosiveDelivery = {} as { message?: unknown };
@@ -254,11 +302,13 @@ test("(l) memory reads stay blocked while a graph execution is still active; a n
 	// Graph calls A and B run in parallel: A's completion must not credit while B still runs.
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "a", args: { operation: "query", query: "a" } });
 	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_query", toolCallId: "b", args: { query: "b" } });
+	fire(handlers, "tool_result", { toolCallId: "a", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "a", result: { ok: true } });
 	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
 		block: true,
 		reason: BLOCK_REASON,
 	}, "B is still active, so A's completion cannot credit the prompt yet");
+	fire(handlers, "tool_result", { toolCallId: "b", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_query", toolCallId: "b" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "every graph call finalized: credit applies");
 	// A new graph call starting after credit was granted invalidates it until it completes.
@@ -267,6 +317,7 @@ test("(l) memory reads stay blocked while a graph execution is still active; a n
 		block: true,
 		reason: BLOCK_REASON,
 	}, "a new graph call re-opens the window until it finalizes");
+	fire(handlers, "tool_result", { toolCallId: "c", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "c", result: { ok: false } });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 });
@@ -290,13 +341,17 @@ test("(m) only a query or explore completion credits the window: an init complet
 		block: true,
 		reason: BLOCK_REASON,
 	}, "an MCP non-query/explore completion must not credit either");
-	// A failed query still credits: the end handler never reads the result payload.
+	// A failed query still credits: the crediting path never reads the result payload.
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "q1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "q1", isError: true });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "q1", result: { ok: false, error: "daemon down" } });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a failed query credits like any finalized attempt");
-	// An explore through the MCP proxy name credits too.
+	// An explore through the MCP proxy name credits too - under an armed gate, so the
+	// assertion can pass only through the explore's own credit.
 	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "m-arm", args: { pattern: "symbol" } });
 	fire(handlers, "tool_execution_start", { toolName: "mcp__codegraph__codegraph_explore", toolCallId: "e1", args: { query: "flow" } });
+	fire(handlers, "tool_result", { toolCallId: "e1", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "mcp__codegraph__codegraph_explore", toolCallId: "e1", result: { ok: false } });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "an MCP explore credits");
 	// A hostile args payload never throws and never credits an unknown operation.
@@ -319,6 +374,9 @@ test("(m) only a query or explore completion credits the window: an init complet
 test("(n) a workspace without a codegraph index passes memory reads with no graph involvement", (t) => {
 	const handlers = installGate(t, false);
 	fire(handlers, "before_agent_start", { messageType: "user" });
+	// The prompt searched the workspace, so the reads below can pass only through the
+	// no-index bypass - an applicability regression that gates this workspace fails them.
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "n-arm", args: { pattern: "symbol" } });
 	for (const toolName of ["mem_context", "mem_search", "mem_get_observation"]) {
 		assert.equal(fire(handlers, "tool_call", { toolName }), undefined, `${toolName} passes: no index means no gate`);
 	}
@@ -343,6 +401,7 @@ test("(o) the override matrix: =1 forces the gate on without an index, =0 off wi
 	process.env.GENTLE_CODEGRAPH_MEMORY_GATE = "1";
 	assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), { block: true, reason: BLOCK_REASON }, "=1 forces the gate on even where no index exists");
 	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "t1", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the forced gate still credits a finalized query");
 
@@ -366,6 +425,9 @@ test("(p) a host ctx without a workspace cwd fails open: the gate never breaks t
 	const handlers = installGate(t);
 	fireCtx = undefined;
 	fire(handlers, "before_agent_start", { messageType: "user" });
+	// The prompt searched the workspace, so the reads below can pass only through the
+	// cwd-less fail-open - an applicability regression that gates a cwd-less ctx fails them.
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "p-arm", args: { pattern: "symbol" } });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined);
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_get_observation" }), undefined);
 });
@@ -447,6 +509,7 @@ test("(v) a searched prompt passes once credit finalizes, and an in-flight codeg
 		block: true,
 		reason: BLOCK_REASON,
 	}, "the search-armed prompt waits for the query to finalize");
+	fire(handlers, "tool_result", { toolCallId: "c1", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "c1" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "search armed plus credit granted passes");
 	// A live graph call blocks memory reads even in a prompt that never searched the workspace.
@@ -456,6 +519,378 @@ test("(v) a searched prompt passes once credit finalizes, and an in-flight codeg
 		block: true,
 		reason: BLOCK_REASON,
 	}, "an in-flight codegraph execution always blocks");
+	fire(handlers, "tool_result", { toolCallId: "c2", isError: false });
 	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "c2" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "finalized credit passes with no search activity");
+});
+
+test("(w) a CLI query or explore through bash credits like a graph tool call; init and status never do", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "w-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "w1", args: { command: "codegraph query symbol -p /worktree" } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the CLI query is a graph execution in flight, so the read waits",
+	);
+	fire(handlers, "tool_result", { toolCallId: "w1", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "w1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a finalized CLI query credits the prompt");
+
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "w-arm-2", args: { pattern: "symbol" } });
+	for (const [id, command] of [
+		["w2", "codegraph init"],
+		["w3", "codegraph status -p /worktree"],
+	] as const) {
+		fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: id, args: { command } });
+		fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: id });
+	}
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"init and status completions never credit",
+	);
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "w4", args: { command: "codegraph explore -p /worktree main" } });
+	fire(handlers, "tool_result", { toolCallId: "w4", isError: true });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "w4" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a finalized CLI explore credits even when it failed");
+});
+
+test("(x) a parallel batch that mixes memory reads with graph calls never admits the memory read, whichever order it lists", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	// Pi prepares the batch's calls in source order after the assistant message ends, so the
+	// whole batch is visible before any tool_call admission: mem_search listed FIRST must
+	// still be blocked, not admitted ahead of the graph call it would interleave with.
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "text", text: "checking" },
+		{ type: "toolCall", id: "m1", name: "mem_search", arguments: { query: "lease" } },
+		{ type: "toolCall", id: "g1", name: "codegraph", arguments: { operation: "query", query: "symbol" } },
+	] } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m1" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the memory read listed before the graph call is blocked by the batch composition",
+	);
+	// The same batch with the graph call listed first behaves identically.
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "g2", name: "mcp__codegraph__codegraph_explore", arguments: { query: "flow" } },
+		{ type: "toolCall", id: "m2", name: "mem_context", arguments: {} },
+	] } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_context", toolCallId: "m2" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the memory read listed after the graph call is blocked too",
+	);
+	// A CLI query in the batch mixes it just the same.
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "b1", name: "bash", arguments: { command: "codegraph query symbol -p /worktree" } },
+		{ type: "toolCall", id: "m3", name: "mem_search", arguments: { query: "lease" } },
+	] } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m3" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a bash-run CLI query mixes the batch as surely as the tool call does",
+	);
+	// The mixed batch's own graph calls are never blocked, and the block outlives the batch's
+	// graph credit: the turn's memory reads were refused at admission, not deferred behind it.
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "g3", name: "codegraph", arguments: { operation: "explore", query: "flow" } },
+		{ type: "toolCall", id: "m4", name: "mem_search", arguments: { query: "lease" } },
+	] } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "codegraph", toolCallId: "g3" }), undefined, "the batch's graph call itself is never blocked");
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "g3", args: { operation: "explore", query: "flow" } });
+	fire(handlers, "tool_result", { toolCallId: "g3", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "g3" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m4" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the mixed turn keeps refusing its memory reads even after the graph call credited",
+	);
+	// A later memory-only batch of the same prompt passes: only mixed batches are refused.
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "m5", name: "mem_search", arguments: { query: "lease" } },
+	] } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m5" }), undefined, "a memory-only batch after credit is admitted");
+	// A graph-only parallel batch never arms the refusal for the graph tools themselves.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "g4", name: "codegraph", arguments: { operation: "query", query: "a" } },
+		{ type: "toolCall", id: "g5", name: "codegraph", arguments: { operation: "query", query: "b" } },
+	] } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "codegraph", toolCallId: "g4" }), undefined);
+	assert.equal(fire(handlers, "tool_call", { toolName: "codegraph", toolCallId: "g5" }), undefined, "a parallel graph-only batch is fully admitted");
+	// A memory-only batch in a fresh unsearched prompt passes (the flag never misfires on it).
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "m6", name: "mem_search", arguments: { query: "lease" } },
+	] } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m6" }), undefined, "a memory-only batch without search activity is never blocked");
+	// Hostile assistant payloads never throw and never arm the refusal.
+	for (const content of [undefined, null, 42, "not a batch", {}, { type: "toolCall" }, [{ type: "image" }], [{ type: "toolCall", name: 42 }]]) {
+		assert.doesNotThrow(() => fire(handlers, "message_end", { message: { role: "assistant", content } }), "a hostile batch payload must not throw");
+	}
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "no hostile payload armed the batch refusal");
+});
+
+test("(y) the CLI credit needs an executable command position, not quoted command text", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "y-arm", args: { pattern: "symbol" } });
+	for (const [id, command] of [
+		["y1", "printf '%s\\n' 'codegraph query symbol'"],
+		["y2", "echo \"before anything else, run codegraph query symbol\""],
+	] as const) {
+		fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: id, args: { command } });
+		assert.deepEqual(
+			fire(handlers, "tool_call", { toolName: "mem_search" }),
+			{ block: true, reason: BLOCK_REASON },
+			id + " while it runs: quoted command text is not a graph execution",
+		);
+		fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: id });
+		assert.deepEqual(
+			fire(handlers, "tool_call", { toolName: "mem_search" }),
+			{ block: true, reason: BLOCK_REASON },
+			"the completed " + id + " never credits the prompt",
+		);
+	}
+	// An actual CLI query in a command position - here the final command of an && list -
+	// still counts start to end: its list's success is the proof execution reached it.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "y3", args: { command: "cd /tmp && codegraph query symbol" } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the command-position CLI query is a graph execution while it runs",
+	);
+	fire(handlers, "tool_result", { toolCallId: "y3", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "y3" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a command-position CLI query still credits once finalized");
+});
+
+test("(z) a batch that mixes memory reads with an unrelated _query tool is not a graph batch", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "m1", name: "mem_search", arguments: { query: "lease" } },
+		{ type: "toolCall", id: "q1", name: "mcp__postgres__query", arguments: { sql: "SELECT 1" } },
+	] } });
+	assert.equal(
+		fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m1" }),
+		undefined,
+		"an unrelated _query tool does not make the batch a graph batch",
+	);
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "m2", name: "mem_context", arguments: {} },
+		{ type: "toolCall", id: "g1", name: "mcp__codegraph__codegraph_query", arguments: { query: "flow" } },
+	] } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_context", toolCallId: "m2" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a codegraph query in the batch still refuses the turn's memory reads",
+	);
+});
+
+test("(aa) a CLI query preceded by shell assignments credits like a plain invocation; quoted assignment text never does", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "aa-arm", args: { pattern: "symbol" } });
+	// Bash runs the query with the assignments as its environment: the executable is still
+	// codegraph, so the call is a graph execution start to end.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "aa1", args: { command: "LC_ALL=C codegraph query symbol -p /worktree" } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the assigned CLI query is a graph execution while it runs",
+	);
+	fire(handlers, "tool_result", { toolCallId: "aa1", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "aa1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a finalized assigned CLI query credits the prompt");
+	// Several assignments, and an explore, behave the same.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "aa-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "aa2", args: { command: "NO_COLOR=1 LANG=C.UTF-8 codegraph explore -p /worktree main" } });
+	fire(handlers, "tool_result", { toolCallId: "aa2", isError: true });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "aa2" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "an assigned CLI explore credits even when it failed");
+	// An assignment word that is not leading is an argument, not an environment prefix, and
+	// quoted text stays data: neither runs codegraph.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "aa-arm-3", args: { pattern: "symbol" } });
+	for (const [id, command] of [
+		["aa3", "echo LC_ALL=C codegraph query symbol"],
+		["aa4", "printf '%s\\n' 'note; LC_ALL=C codegraph query symbol'"],
+	] as const) {
+		fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: id, args: { command } });
+		fire(handlers, "tool_result", { toolCallId: id, isError: false });
+		fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: id });
+		assert.deepEqual(
+			fire(handlers, "tool_call", { toolName: "mem_search" }),
+			{ block: true, reason: BLOCK_REASON },
+			`${id} never credits: no executable codegraph invocation`,
+		);
+	}
+});
+
+test("(ab) separators and command words inside quotes are data; the shell's command wrapper still runs the query it wraps", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	// The quoted semicolon is printf data, so nothing graph-shaped ever runs: with no search
+	// activity, a memory read during and after the call passes both times.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ab1", args: { command: "printf '%s\\n' 'note; codegraph query lease'" } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the quoted separator does not start a graph execution");
+	fire(handlers, "tool_result", { toolCallId: "ab1", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ab1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "and it credits nothing when it completes");
+	// With CodeGraph on PATH, the shell's command wrapper runs the query it names; its
+	// lookup form only prints a path and never credits.
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ab-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ab2", args: { command: "command codegraph query lease" } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the wrapped query is a graph execution while it runs",
+	);
+	fire(handlers, "tool_result", { toolCallId: "ab2", isError: true });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ab2" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a finalized wrapped query credits, failure included");
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ab-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ab3", args: { command: "command -v codegraph" } });
+	fire(handlers, "tool_result", { toolCallId: "ab3", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ab3" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the lookup form never credits",
+	);
+});
+
+test("(ac) an invocation a failed && guard skips never credits; a list's success proves its final query ran", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ac-arm", args: { pattern: "symbol" } });
+	// cd fails, so bash never reaches codegraph: the error result is exactly what a skipped
+	// invocation and a failed one share, and neither may credit.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ac1", args: { command: "cd /missing-worktree && codegraph query lease" } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the guarded query blocks while its bash call runs",
+	);
+	fire(handlers, "tool_result", { toolCallId: "ac1", isError: true });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ac1" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a guard that failed before the query credits nothing",
+	);
+	// The same shape with the guard satisfied exits through codegraph itself: a non-error
+	// result proves execution reached the final invocation.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ac2", args: { command: "cd /tmp && codegraph query symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "ac2", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ac2" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the satisfied guard's success proves the final query ran");
+	// An error result for that shape is the undecidable one - a failed query behind a
+	// satisfied guard looks exactly like a skipped one - and an || guard stays undecidable
+	// even on success, as does a guarded invocation with commands following it.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ac-arm-2", args: { pattern: "symbol" } });
+	for (const [id, command, isError] of [
+		["ac3", "cd /tmp && codegraph query symbol", true],
+		["ac4", "codegraph status -p /wt || codegraph query lease", false],
+		["ac5", "true && codegraph query lease; echo done", false],
+	] as const) {
+		fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: id, args: { command } });
+		fire(handlers, "tool_result", { toolCallId: id, isError });
+		fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: id });
+		assert.deepEqual(
+			fire(handlers, "tool_call", { toolName: "mem_search" }),
+			{ block: true, reason: BLOCK_REASON },
+			`${id} cannot prove the invocation ran, so it never credits`,
+		);
+	}
+	// An unconditional position still credits any result, failure included.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ac6", args: { command: "codegraph query symbol -p /worktree" } });
+	fire(handlers, "tool_result", { toolCallId: "ac6", isError: true });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ac6" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the unguarded position credits a failed query like any finalized attempt");
+});
+
+test("(ad) start and end events alone never credit: credit waits for the post-execution tool_result", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ad-arm", args: { pattern: "symbol" } });
+	// Pi fails a truncated response's tool calls without executing them: start and end fire,
+	// the post-execution hook never does, and only that hook may grant credit.
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t9", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t9", result: { isError: true } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"an end event with no tool_result behind it is an unexecuted call: no credit",
+	);
+	// The same shape through the bash workflow, then a genuinely executed query credits.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ad2", args: { command: "codegraph query symbol" } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ad2" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the bash-carried shape is equally unexecuted",
+	);
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "t10", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "t10", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "t10" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "an executed query credits through its tool_result");
+	// A tool_result with no matching start never credits either.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ad-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "never-started", isError: false });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"an orphan tool_result credits nothing",
+	);
+});
+
+test("(ae) a batch that lists a memory read with a workspace search refuses the read until credit settles", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	// Pi admits a batch's calls before running any of them, so the later grep's start event
+	// cannot arm the gate in time: the batch composition itself must refuse the read,
+	// whichever position lists it.
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "text", text: "checking memory and code" },
+		{ type: "toolCall", id: "m1", name: "mem_search", arguments: { query: "lease" } },
+		{ type: "toolCall", id: "s1", name: "grep", arguments: { pattern: "symbol" } },
+	] } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m1" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the read listed before the search is blocked by the batch composition",
+	);
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "s2", name: "bash", arguments: { command: "rg -n lease lib" } },
+		{ type: "toolCall", id: "m2", name: "mem_context", arguments: {} },
+	] } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_context", toolCallId: "m2" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a bash search in the batch refuses the read after it too",
+	);
+	// Settled credit makes the same mixed batch eligible again, and a memory-only batch
+	// never was refused.
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "ae1", args: { operation: "query", query: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "ae1", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "ae1" });
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "s3", name: "grep", arguments: { pattern: "symbol" } },
+		{ type: "toolCall", id: "m3", name: "mem_search", arguments: { query: "lease" } },
+	] } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m3" }), undefined, "settled credit leaves the search-mixed batch eligible");
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "m4", name: "mem_search", arguments: { query: "lease" } },
+	] } });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m4" }), undefined, "a memory-only batch is admitted");
 });

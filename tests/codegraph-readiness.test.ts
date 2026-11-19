@@ -721,6 +721,8 @@ test("warmUpDaemon: a valid call reply after the deadline keeps the warm-up fail
 	assert.ok(existsSync(sawTermFile), "the observed event: the deadline fired and the child caught its group SIGTERM");
 	writeFileSync(goFile, "");
 	assert.equal(await warmed, false, "a call reply that lands after the deadline does not report a successful warm-up");
+	const repliedDeadline = Date.now() + 3_000;
+	while (!existsSync(repliedFile) && Date.now() < repliedDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
 	assert.equal(existsSync(repliedFile), true, "the late reply really was delivered after the deadline");
 	const fileDeadline = Date.now() + 3_000;
 	while (!existsSync(pidFile) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));

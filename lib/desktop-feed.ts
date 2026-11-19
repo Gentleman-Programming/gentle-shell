@@ -19,6 +19,7 @@ import type { DesktopUsageEntry } from "./desktop-rpc-usage.ts";
 import { oddPhaseLabel, type OddPhase } from "./odd-phase.ts";
 import { profileRoutingRows, readProfileOrchestrator, type OrchestratorMode } from "./agent-profiles.ts";
 import type { AgentModelConfig } from "./model-routing-authority.ts";
+import type { PersonaMode } from "./persona-mode.ts";
 import { CODEX_PROVIDER, providerNote, USAGE_FETCH_FAILED_NOTE } from "./shell-usage.ts";
 import { FINISHED_STATUSES } from "./agents-protocol.ts";
 
@@ -215,8 +216,8 @@ export interface DesktopFeedSnapshot {
 		effort: string | null;
 		profile: { name: string | null; tier: "standard" | "fast" | null };
 	};
-	/** No reachable owner today: the persona lives inside gentle-ai.ts (see the T4 report). */
-	persona: null;
+	/** The active persona (lib/persona-mode.ts), or null while the session has not resolved one. */
+	persona: PersonaMode | null;
 	context: { percent: number | null; tokens: number | null; window: number | null } | null;
 	cost: { total: number; subscription: boolean };
 	/**
@@ -356,6 +357,8 @@ export interface DesktopFeedInput {
 	thinkingLevel: string | undefined;
 	subscription: boolean;
 	profile: { name: string | undefined; tier: "standard" | "fast" | undefined; catalog?: DesktopFeedProfileCatalog };
+	/** The active persona; undefined publishes null. */
+	persona?: PersonaMode;
 	context: { percent: number | null; tokens: number | null; contextWindow: number } | undefined;
 	/** The session's own provider, as the usage owner reports it. */
 	usage: DesktopUsageEntry | undefined;
@@ -638,7 +641,7 @@ export function buildDesktopFeedSnapshot(input: DesktopFeedInput): DesktopFeedSn
 			effort: optionalText(effort),
 			profile: { name: optionalText(input.profile.name), tier: input.profile.tier ?? null },
 		},
-		persona: null,
+		persona: input.persona === "neutral" || input.persona === "gentleman" ? input.persona : null,
 		context: input.context ? { percent: finiteOrNull(input.context.percent), tokens: finiteOrNull(input.context.tokens), window: finiteOrNull(input.context.contextWindow) } : null,
 		cost: { total: finite(input.stats.cost), subscription: input.subscription },
 		usage: usageSection(input.usage, input.usageProviders),

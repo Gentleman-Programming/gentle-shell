@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveGentlePiAgentHome } from "../lib/agent-home.ts";
+import { readPersonaMode, type PersonaMode } from "../lib/persona-mode.ts";
 import { CLAUDE_BRIDGE_PROVIDER } from "../lib/bridge-cost.ts";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
 import {
@@ -72,6 +73,8 @@ export interface DesktopFeedOptions {
 	git?: (root: string) => GitRunner;
 	parentOf?: ParentOf;
 	profile?: (cwd: string, sessionId: string | undefined) => DesktopFeedProfile;
+	/** The persona for a session cwd; defaults to the persona.json resolution the TUI uses. */
+	persona?: (cwd: string) => PersonaMode | undefined;
 	realpath?: (path: string) => string | undefined;
 	rootExists?: (root: string) => boolean;
 	sweep?: (agentDir: string, keep: string) => void;
@@ -82,6 +85,11 @@ export interface DesktopFeedOptions {
 }
 
 const SUBSCRIPTION_PROVIDERS = new Set([CLAUDE_BRIDGE_PROVIDER]);
+
+// A persona that cannot be read leaves the feed field null instead of failing the snapshot.
+function safePersona(read: (cwd: string) => PersonaMode | undefined, cwd: string): PersonaMode | undefined {
+	try { return read(cwd); } catch { return undefined; }
+}
 
 function permissionDetail(mode: string): string | undefined {
 	const text = mode === "yolo" ? YOLO_STATUS_TEXT : mode === "super-yolo" ? SUPER_YOLO_STATUS_TEXT : undefined;
@@ -189,6 +197,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 		const timers = options.timers ?? realDesktopFeedTimers;
 		const gitFor = options.git ?? ((root: string) => desktopFeedGitRunner(root, env));
 		const readProfile = options.profile ?? createDesktopFeedProfileReader(env);
+		const readPersona = options.persona ?? ((cwd: string) => readPersonaMode(cwd, env));
 		const rootExists = options.rootExists ?? ((root: string) => { try { return realpathSync(root) !== ""; } catch { return false; } });
 		const realpath = options.realpath ?? ((path: string) => { try { return realpathSync.native(path); } catch { return undefined; } });
 		const activityClock = options.activityClock ?? Date.now;
@@ -285,6 +294,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				thinkingLevel,
 				subscription,
 				profile: session.profile,
+				persona: safePersona(readPersona, ctx.cwd),
 				context: context ? { percent: context.percent, tokens: context.tokens, contextWindow: context.contextWindow } : undefined,
 				usage: session.usage,
 				usageProviders: session.usageProviders,

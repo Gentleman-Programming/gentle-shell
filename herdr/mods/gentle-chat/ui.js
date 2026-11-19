@@ -207,7 +207,9 @@ function facts(v, p) {
   const modelFact = (compact) => profileMenu(v, p, fact("f-model", [k("Model"), ...(compact ? [] : [model ? div().child(model) : none()]), icon("down", 13).text_color(p.muted)],
     compact ? `Model · ${model || "—"} (switch profile)` : "Model · effort · profile (switch profile)").cursor_pointer().hover((st) => st.bg(p.selected))
     .when(v.busy === "profile", (el) => el.opacity(0.6)));
-  const persona = typeof s?.persona === "string" ? s.persona : s?.persona?.name ?? null;
+  // The feed carries the mode token ("gentleman"); show it as a name.
+  const personaRaw = typeof s?.persona === "string" ? s.persona : s?.persona?.name ?? null;
+  const persona = personaRaw ? personaRaw.charAt(0).toUpperCase() + personaRaw.slice(1) : null;
   const personaFact = fact("f-persona", [icon("user", 13).text_color(p.muted), persona ? div().child(persona) : none("No persona")],
     "Persona (opens /gentle:persona in the Terminal)").cursor_pointer().hover((st) => st.bg(p.selected))
     .on_click((_e, cx) => v.command("persona", "/gentle:persona", cx));

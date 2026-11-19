@@ -151,6 +151,7 @@ function feedHarness(t: test.TestContext, options: Partial<DesktopFeedOptions> =
 		git: () => async () => ({ stdout: "", code: 128 }),
 		parentOf: async () => undefined,
 		profile: () => ({ name: "work (session)", tier: "fast" }),
+		persona: () => undefined,
 		realpath: (path) => `/private${path}`,
 		sweep: () => {},
 		store: (dir, sessionId) => {
@@ -233,6 +234,26 @@ test("S2: unknown sources stay null instead of guessed values", () => {
 	for (const key of ["context", "usage", "permission", "changes", "agents", "jobs", "review", "persona", "statuses", "integrations"] as const) assert.equal(snapshot[key], null, key);
 	assert.equal(snapshot.identity.herdr, null);
 	assert.equal(buildDesktopFeedSnapshot(fixtureInput({ activity: { working: true, blocked: 2, blockedLabel: "Choice awaiting input", streaming: false, phase: undefined } })).activity.state, "blocked");
+});
+
+test("should publish the persona the input carries", () => {
+	assert.equal(buildDesktopFeedSnapshot(fixtureInput({ persona: "neutral" })).persona, "neutral");
+	assert.equal(buildDesktopFeedSnapshot(fixtureInput({ persona: "gentleman" })).persona, "gentleman");
+	assert.equal(buildDesktopFeedSnapshot(fixtureInput()).persona, null);
+});
+
+test("should publish the persona the extension resolves for the session cwd", async (t) => {
+	const seen: string[] = [];
+	const h = feedHarness(t, { persona: (cwd) => { seen.push(cwd); return "neutral"; } });
+	await h.start();
+	assert.equal(h.read().persona, "neutral");
+	assert.ok(seen.includes("/w"));
+});
+
+test("should keep the persona null when resolving it throws", async (t) => {
+	const h = feedHarness(t, { persona: () => { throw new Error("unreadable"); } });
+	await h.start();
+	assert.equal(h.read().persona, null);
 });
 
 test("S3: the snapshot names its agent dir as an absolute path, bundled, Pi extension or custom home", () => {

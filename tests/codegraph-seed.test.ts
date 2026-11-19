@@ -523,6 +523,52 @@ test("an independent publish during validation is never replaced by the seed", a
 	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "no staging leftover and nothing the seed did not place is removed");
 });
 
+test("a filesystem that refuses hard links still publishes the validated database", async (t) => {
+	const { worktree } = worktreePair(t);
+	let linkAttempts = 0;
+	const { input, calls } = seedHarness(worktree, {
+		link: () => {
+			linkAttempts += 1;
+			// A continuously available SMB share refuses CreateHardLinkW: the atomic
+			// publish is rejected by the filesystem itself, not by a competing writer.
+			throw Object.assign(new Error("hard links are not supported"), { code: "ENOTSUP" });
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(linkAttempts, 1, "the atomic link publish was attempted exactly once before the fallback");
+	assert.equal(result.outcome, "seeded", "the exclusive-create fallback publishes where the link cannot land");
+	assert.deepEqual(calls, ["sync -q"], "exactly one sync validates the snapshot");
+	assert.deepEqual(markerNotes(join(worktree, ".codegraph", "codegraph.db")), ["committed"], "the published database carries the snapshot's committed data");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "only the index and its gitignore remain: no staging leftovers");
+});
+
+test("the link-less fallback never replaces a database that appeared meanwhile", async (t) => {
+	const { worktree } = worktreePair(t);
+	let linkAttempts = 0;
+	const { input } = seedHarness(worktree, {
+		link: () => {
+			linkAttempts += 1;
+			throw Object.assign(new Error("hard links are not supported"), { code: "ENOTSUP" });
+		},
+		run: async () => {
+			// An independent writer publishes while this seed's validation is pending; the
+			// filesystem refuses the link, so only the fallback's exclusive create can
+			// protect the newer database.
+			writeFileSync(join(worktree, ".codegraph", "codegraph.db"), "independent-bytes");
+			return true;
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(linkAttempts, 1, "the atomic link publish was attempted exactly once before the fallback");
+	assert.equal(result.outcome, "seed-failed", "the copy fallback refuses the occupied name instead of winning it");
+	assert.equal(readFileSync(join(worktree, ".codegraph", "codegraph.db"), "utf8"), "independent-bytes", "the independent publish survives the fallback");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "no staging leftover and nothing the seed did not place is removed");
+});
+
 test("a seed whose init-lock nonce is unreadable at publication stands down", async (t) => {
 	const { worktree } = worktreePair(t);
 	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-unreadable-"));

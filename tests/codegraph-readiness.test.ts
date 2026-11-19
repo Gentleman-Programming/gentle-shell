@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import fsSync from "node:fs";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -296,11 +296,25 @@ test("planIndexAction: a symlinked .codegraph directory is never synced automati
 	const real = dir(t, "plan-symlink-real");
 	writeDb(real);
 	const linked = dir(t, "plan-symlink-linked");
-	symlinkSync(join(real, ".codegraph"), join(linked, ".codegraph"));
+	symlinkSync(join(real, ".codegraph"), join(linked, ".codegraph"), process.platform === "win32" ? "junction" : "dir");
 	// indexState follows the link to "present"; the plan must not turn that into a sync: CodeGraph
 	// would follow the link too and write this workspace's files into the linked checkout's index.
 	assert.equal(planIndexAction(linked, "present", () => true), "none", "the same unsafe directory the explicit tool refuses is never auto-synced");
 	assert.equal(planIndexAction(real, "present", () => false), "sync", "a regular .codegraph directory keeps its sync");
+});
+
+test("planIndexAction: a linked .codegraph without a database is never initialized either", (t) => {
+	const real = dir(t, "plan-link-empty-real");
+	mkdirSync(join(real, ".codegraph"));
+	writeFileSync(join(real, "package.json"), "{}\n");
+	const linked = dir(t, "plan-link-empty-linked");
+	writeFileSync(join(linked, "package.json"), "{}\n");
+	symlinkSync(join(real, ".codegraph"), join(linked, ".codegraph"), process.platform === "win32" ? "junction" : "dir");
+	// indexState follows the link: a target without a database reports "absent", and init -y
+	// would create the other checkout's database through that link — the plan must refuse it.
+	assert.equal(indexState(linked), "absent");
+	assert.equal(planIndexAction(linked, "absent", () => true), "none", "an empty linked index directory is not this workspace's to initialize");
+	assert.equal(planIndexAction(real, "absent", () => true), "init", "a genuinely absent index in a regular directory still allows init");
 });
 
 test("skipsSession: a child or a reload never starts index work", () => {
@@ -799,9 +813,18 @@ test("runCodegraph: a timed-out group member that outlives the SIGTERM leader is
 	const alive = (pid: number) => {
 		try {
 			process.kill(pid, 0);
-			return true;
 		} catch {
 			return false;
+		}
+		// A container whose PID 1 never reaps orphans leaves the killed member a zombie: kill
+		// still succeeds, but a zombie can neither run nor write. /proc's state field recognizes
+		// it as terminated on Linux; a member still capable of running keeps failing the test.
+		if (process.platform !== "linux") return true;
+		try {
+			const stat = readFileSync("/proc/" + pid + "/stat", "utf8");
+			return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+		} catch {
+			return true;
 		}
 	};
 	const deadline = Date.now() + 3_000;
@@ -1167,6 +1190,42 @@ test("runCodegraphSeedSync: an informational empty-index listing is an empty pat
 	assert.equal(existsSync(seenFile), true, "the validating sync ran after the informational empty listing");
 });
 
+test("runCodegraphSeedSync: an empty-index notice with extra output is unprovable, never empty", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const bin = dir(t, "seed-notice-extra-bin");
+	const seenFile = join(bin, "seen.log");
+	// The informational line followed by a torn JSON fragment: only the complete line is the
+	// documented empty case — extra output must not pass as a confirmed-empty index.
+	writeFileSync(join(bin, "codegraph"), [
+		"#!/bin/sh",
+		'case "$1" in',
+		"  files)",
+		"    echo 'ℹ No files indexed. Run \"codegraph index\" first.'",
+		"    echo [{path:torn",
+		"    ;;",
+		'  sync) printf seen >> "$FAKE_SEEN" ;;',
+		"esac",
+		"exit 0",
+	].join("\n"));
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.FAKE_SEEN = seenFile;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		delete process.env.FAKE_SEEN;
+	});
+	const worktree = dir(t, "seed-notice-extra-wt");
+	mkdirSync(join(worktree, "src"), { recursive: true });
+	writeFileSync(join(worktree, "src", "a.ts"), "export const a = 1;\n");
+	const staging = join(worktree, ".codegraph", "seed-ab12cd");
+	mkdirSync(join(staging, ".codegraph"), { recursive: true });
+	writeFileSync(join(staging, ".codegraph", "codegraph.db"), "notice-extra");
+	const report = await runCodegraphSeedSync(["sync", "-q"], staging, 10_000);
+	assert.deepEqual(report, { ok: false, removedEntries: false }, "the notice beside extra output is not a confirmed-empty index: fail closed");
+	assert.equal(existsSync(seenFile), false, "the validating sync never runs on an unprovable listing");
+});
+
 test("runCodegraphSeedSync: a source directory whose link cannot be created is copied instead", async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
 	const { staging, seen } = seedSyncHarness(t, "seed-copy-fallback", '[ -f "$3/src/a.ts" ] && printf seen >> "$FAKE_SEEN"');
@@ -1178,6 +1237,41 @@ test("runCodegraphSeedSync: a source directory whose link cannot be created is c
 	assert.equal(seen(), "seen", "the validating sync saw the worktree's sources through the copy");
 	assert.equal(lstatSync(join(staging, "src")).isSymbolicLink(), false, "the un-linkable source became a real directory in the staging project");
 	assert.equal(readFileSync(join(staging, "src", "a.ts"), "utf8"), "export const a = 1;\n", "the copy carries the worktree's file contents");
+});
+
+test("runCodegraphSeedSync: the share copy fallback leaves the event loop and skips dependency trees", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const { staging, seen } = seedSyncHarness(t, "seed-copy-bounded", '[ -f "$3/src/a.ts" ] && printf seen >> "$FAKE_SEEN"');
+	const worktree = dirname(dirname(staging));
+	mkdirSync(join(worktree, "node_modules", "left-pad"), { recursive: true });
+	writeFileSync(join(worktree, "node_modules", "left-pad", "index.js"), "module.exports = 1;\n");
+	// Pre-existing staging entries force the same link failure a Windows share causes for every
+	// top-level entry, so both trees take the copy fallback.
+	mkdirSync(join(staging, "src"));
+	mkdirSync(join(staging, "node_modules"));
+	const inFlight = runCodegraphSeedSync(["sync", "-q"], staging, 10_000);
+	assert.equal(existsSync(join(staging, "src", "a.ts")), false, "a blocking copy would have finished inside the call itself: the copy runs off the event loop");
+	const report = await inFlight;
+	assert.deepEqual(report, { ok: true, removedEntries: false }, "the bounded copy still validates the staged index");
+	assert.equal(seen(), "seen", "the validating sync saw the worktree's sources through the copy");
+	assert.equal(readFileSync(join(staging, "src", "a.ts"), "utf8"), "export const a = 1;\n", "the worktree's own files are still copied");
+	assert.deepEqual(readdirSync(join(staging, "node_modules")), [], "a dependency tree the scanner ignores is never staged, even on the share fallback");
+});
+
+test("runCodegraphSeedSync: a regular file the share cannot hard-link is copied, not fatal", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const { staging, seen } = seedSyncHarness(t, "seed-file-fallback", '[ -f "$3/src/a.ts" ] && printf seen >> "$FAKE_SEEN"');
+	const worktree = dirname(dirname(staging));
+	writeFileSync(join(worktree, "README.md"), "# sources\n");
+	writeFileSync(join(worktree, "package.json"), "{\n  \"name\": \"staged-sources\"\n}\n");
+	// A pre-existing staging entry makes the hard link fail (EEXIST stands in for a share that
+	// refuses CreateHardLink): the file must copy instead of aborting the whole validation.
+	writeFileSync(join(staging, "package.json"), "stale staging bytes\n");
+	const report = await runCodegraphSeedSync(["sync", "-q"], staging, 10_000);
+	assert.deepEqual(report, { ok: true, removedEntries: false }, "a share without hard links still stages the worktree's regular files");
+	assert.equal(seen(), "seen");
+	assert.equal(readFileSync(join(staging, "package.json"), "utf8"), "{\n  \"name\": \"staged-sources\"\n}\n", "the un-linkable file was copied, so validation and publication can proceed");
+	assert.equal(lstatSync(join(staging, "README.md")).nlink, 2, "where hard links work the staging keeps using them");
 });
 
 test("runCodegraphSeedSync: an ordinary sync outside a seed staging project keeps the boolean report", async (t) => {
@@ -1478,6 +1572,37 @@ test("prepareReadiness: an index that turns unknown under the init lock fails cl
 	assert.deepEqual(calls, [], "unknown never initializes");
 });
 
+test("prepareReadiness: a .codegraph that becomes a link while waiting for the init lock fails closed", async (t) => {
+	const foreign = dir(t, "init-link-swap-foreign");
+	mkdirSync(join(foreign, ".codegraph"));
+	const cwd = dir(t, "init-link-swap");
+	// A regular, database-less .codegraph reads "absent" and safe, so the plan selects init.
+	mkdirSync(join(cwd, ".codegraph"));
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const locks = dir(t, "init-link-swap-locks");
+	writeFileSync(lockPathFor(cwd, "init", locks), `${JSON.stringify({ kind: "init", pid: process.pid, startedAt: Date.now(), expiresAt: Date.now() + 600_000 })}\n`);
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		onStart: () => {
+			setTimeout(() => {
+				// The other session finished, and the directory it left became another checkout's
+				// link before this session acquired the lock: the recheck must refuse to init.
+				rmSync(lockPathFor(cwd, "init", locks), { force: true });
+				rmSync(join(cwd, ".codegraph"), { recursive: true });
+				symlinkSync(join(foreign, ".codegraph"), join(cwd, ".codegraph"), process.platform === "win32" ? "junction" : "dir");
+			}, 100);
+		},
+		run: async (args) => {
+			calls.push(args.join(" "));
+			return true;
+		},
+		warm: async () => true,
+	}));
+	assert.deepEqual(result, { action: "init", ok: false, warm: "skipped" }, "a directory that turned into a link under the lock is never initialized through");
+	assert.deepEqual(calls, [], "no init spawn is handed the linked directory");
+});
+
 test("syncBeforeSearch: a live sync lease in another session means zero CLI calls", async (t) => {
 	const cwd = dir(t, "search-lease-live");
 	const locks = dir(t, "search-lease-locks");
@@ -1637,7 +1762,7 @@ test("prepareReadiness: a symlinked .codegraph directory stands the automatic sy
 	const real = dir(t, "sync-symlink-real");
 	writeDb(real);
 	const linked = dir(t, "sync-symlink-linked");
-	symlinkSync(join(real, ".codegraph"), join(linked, ".codegraph"));
+	symlinkSync(join(real, ".codegraph"), join(linked, ".codegraph"), process.platform === "win32" ? "junction" : "dir");
 	const calls: string[] = [];
 	const result = await prepareReadiness(fakeInput(linked, {
 		locksDir: dir(t, "sync-symlink-locks"),
@@ -1652,6 +1777,27 @@ test("prepareReadiness: a symlinked .codegraph directory stands the automatic sy
 	}));
 	assert.deepEqual(result, { action: "none", ok: true, warm: "skipped" }, "another checkout's linked index is not this workspace's to sync or warm");
 	assert.deepEqual(calls, [], "no sync and no warm-up ever touch the linked database");
+});
+
+test("prepareReadiness: a linked empty .codegraph directory is never initialized through the link", async (t) => {
+	const real = dir(t, "init-link-real");
+	mkdirSync(join(real, ".codegraph"));
+	const linked = dir(t, "init-link-linked");
+	symlinkSync(join(real, ".codegraph"), join(linked, ".codegraph"), process.platform === "win32" ? "junction" : "dir");
+	writeFileSync(join(linked, "package.json"), "{}\n");
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(linked, {
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+		warm: async () => {
+			calls.push("warm");
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "none", ok: true, warm: "skipped" }, "the linked checkout's empty index directory is never initialized by this session");
+	assert.deepEqual(calls, [], "no init and no warm-up ever write through the link");
 });
 
 test("syncBeforeSearch: a live CodeGraph writer lock means zero CLI calls", async (t) => {
@@ -1673,7 +1819,7 @@ test("syncBeforeSearch: a symlinked .codegraph directory means zero CLI calls", 
 	const real = dir(t, "search-symlink-real");
 	writeDb(real);
 	const linked = dir(t, "search-symlink-linked");
-	symlinkSync(join(real, ".codegraph"), join(linked, ".codegraph"));
+	symlinkSync(join(real, ".codegraph"), join(linked, ".codegraph"), process.platform === "win32" ? "junction" : "dir");
 	const calls: string[] = [];
 	await syncBeforeSearch({
 		cwd: linked,

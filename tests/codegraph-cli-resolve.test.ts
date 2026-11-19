@@ -331,3 +331,44 @@ test("resolveCodegraphEntry: a cached entry whose script vanished is resolved ag
 	assert.deepEqual(resolveCodegraphEntry(updated.io), { node: NODE_EXE, script: movedScript }, "the vanished script invalidates the cached entry and resolves the updated installation");
 	assert.deepEqual(resolveCodegraphEntry(updated.io), { node: NODE_EXE, script: movedScript }, "the re-resolved entry is memoized while its script exists");
 });
+test("resolveCodegraphEntry: a cached entry whose selected node executable vanished is resolved again", () => {
+	clearCodegraphResolveCache();
+	const first = fakeWorld({ path: BIN, files: [
+		[[BIN, "codegraph.cmd"].join(BS), npmCmdShim(SCRIPT_REL, modernTail)],
+		[NODE_EXE, ""],
+		[SCRIPT, "cli"],
+	] });
+	assert.deepEqual(resolveCodegraphEntry(first.io), { node: NODE_EXE, script: SCRIPT });
+
+	// An update removed the colocated node.exe while leaving the entrypoint: serving the cached
+	// entry would spawn the removed executable, while the shim itself now selects the bare node
+	// from PATH, so the resolution must follow the shim selection again.
+	const updated = fakeWorld({ path: BIN, files: [
+		[[BIN, "codegraph.cmd"].join(BS), npmCmdShim(SCRIPT_REL, modernTail)],
+		[SCRIPT, "cli"],
+	] });
+	assert.deepEqual(resolveCodegraphEntry(updated.io), { node: "node", script: SCRIPT }, "the vanished node executable invalidates the cached entry and re-selects the bare node");
+	assert.deepEqual(resolveCodegraphEntry(updated.io), { node: "node", script: SCRIPT }, "the re-resolved entry is memoized while its targets exist");
+});
+
+test("resolveCodegraphEntry: a rewritten Node selection fails closed behind the stock invocation", () => {
+	const stock = npmCmdShim(SCRIPT_REL, modernTail);
+	const customNode = 'SET "_prog=' + ["C:", "tools", "node.exe"].join(BS) + '"';
+	const extraAssignment = [stock, 'SET "_prog=node"'].join("\n");
+	const cases: Array<[string, string, boolean]> = [
+		["a custom executable in the ELSE branch", stock.replace('SET "_prog=node"', customNode), false],
+		["a custom executable in the IF branch", stock.replace('SET "_prog=%dp0%' + BS + 'node.exe"', customNode), true],
+		["an unquoted bare-node assignment", stock.replace('SET "_prog=node"', "SET _prog=node"), false],
+		["a second assignment after the selection block", extraAssignment, true],
+	];
+	for (const [name, text, nodeBesideShim] of cases) {
+		clearCodegraphResolveCache();
+		const files: Array<[string, string | null]> = [
+			[[BIN, "codegraph.cmd"].join(BS), text],
+			[SCRIPT, "cli"],
+		];
+		if (nodeBesideShim) files.push([NODE_EXE, ""]);
+		const { io } = fakeWorld({ path: BIN, files });
+		assert.equal(resolveCodegraphEntry(io), null, `${name}: an unproven Node selection keeps the cmd.exe fallback`);
+	}
+});

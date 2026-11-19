@@ -1148,6 +1148,15 @@ export function indexStartNotice(action: "init" | "sync"): { text: string; level
 	return { text: "initializing the current repo for CodeGraph...", level: "info" };
 }
 
+/** How long a session-start index notice waits before it is said. The installed pi TUI paints
+ * an info-level notify as ONE transient status chat line that the next info-level notify
+ * replaces in place, and the session_start emit loop fires further extension notifies right
+ * after this one, so a same-instant say is overwritten before the first render ever paints it.
+ * The warm-up and ready notices fire later, once the chat has settled - which is why the user
+ * sees exactly those - and the same spacing keeps the index line on screen. Bounded: the say
+ * either lands inside this window or a flow that already said something cancels it as stale. */
+export const START_NOTICE_DELAY_MS = 250;
+
 /**
  * Awaits the index refresh for `cwd` and returns whether one covered this search: a subagent
  * child or an unindexed workspace never refreshes, and every other search waits for its refresh
@@ -1540,7 +1549,12 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 	pi.on?.("session_start", (event, ctx) => {
 		const reason = (event as { reason?: unknown }).reason;
 		if (typeof reason !== "string") return;
+		// Whether this session already said anything: the deferred start notice below lands only
+		// while nothing newer has replaced its moment (an index run finishing inside the deferral
+		// window has already said its result, and a stale "initializing..." after that would lie).
+		let said = false;
 		const say = (text: string, level: "info" | "warning") => {
+			said = true;
 			if (ctx.hasUI) ctx.ui.notify(text, level);
 		};
 		// The seed outcome the index notice keys on: main-busy is the benign stand-down whose
@@ -1576,7 +1590,14 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 				// point, so the notice is mapped for the action that is about to run.
 				if (action === "none") return;
 				const notice = indexStartNotice(action);
-				say(notice.text, notice.level);
+				// onStart itself stays synchronous - it fires before the index dispatch runs, ahead of
+				// the lock wait - but the say waits out the session_start notify window so the TUI
+				// paints the line instead of a later extension's notify replacing it before the first
+				// render. An index flow that already said something cancels the stale start line.
+				const timer = setTimeout(() => {
+					if (!said) say(notice.text, notice.level);
+				}, START_NOTICE_DELAY_MS);
+				timer.unref?.();
 			},
 			onIndexed: (result) => {
 				const notice = indexedNotice({ ...result, stoodDown: seedStoodDown }, ctx.cwd);

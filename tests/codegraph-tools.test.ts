@@ -2981,9 +2981,16 @@ function armSessionStartWiring(t: test.TestContext): {
 
 	const bin = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-ss-bin-")));
 	const callsLog = join(bin, "calls.log");
+	// The index commands take a visible moment — the real init runs for seconds — so the
+	// deferred start notice lands while the run is still in flight, exactly as it does live.
 	writeFileSync(join(bin, "codegraph"), [
 		"#!/bin/sh",
 		'printf "%s\\n" "$1" >> "$GENTLE_SS_CALLS"',
+		'case "$1" in',
+		"  init|sync)",
+		"    sleep 0.7",
+		"    ;;",
+		"esac",
 		'case "$1" in',
 		'  init)',
 		'    mkdir -p "$3/.codegraph"',
@@ -3020,9 +3027,8 @@ function armSessionStartWiring(t: test.TestContext): {
 				ui: { notify: (text: string, level: string) => notices.push({ text, level }) },
 			} as unknown as ExtensionContext;
 			sessionStart({ reason: "startup" }, ctx);
-			// onStart fires in prepareReadiness's synchronous section, before any spawn: the
-			// notices captured at handler-return time are exactly what was emitted before the
-			// index run could start.
+			// The start say is deferred past the session_start notify window, so handler-return
+			// time is the dispatch baseline: the captured notices prove nothing was said yet.
 			const syncCapture = notices.map((notice) => ({ ...notice }));
 			return {
 				notices,
@@ -3042,7 +3048,16 @@ async function awaitWarmTail(notices: Array<{ text: string; level: string }>): P
 	}
 }
 
-test("session_start announces init through the real path before the init run", { timeout: 20_000 }, async (t) => {
+/** Waits until a notice matching `pattern` lands in `notices`, bounded by `deadlineMs`. */
+async function untilNotice(notices: Array<{ text: string; level: string }>, pattern: RegExp, deadlineMs: number): Promise<void> {
+	const deadline = Date.now() + deadlineMs;
+	while (Date.now() < deadline && !notices.some((notice) => pattern.test(notice.text))) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	assert.ok(notices.some((notice) => pattern.test(notice.text)), `expected a notice matching ${pattern}`);
+}
+
+test("session_start defers the init start notice past the notify window and says it exactly once", { timeout: 20_000 }, async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
 	withoutChildEnv(t);
 	const cwd = workspace(t);
@@ -3052,19 +3067,26 @@ test("session_start announces init through the real path before the init run", {
 	const { notices, syncCapture, calls } = harness.fire(cwd);
 	assert.deepEqual(
 		syncCapture,
-		[{ text: "initializing the current repo for CodeGraph...", level: "info" }],
-		"the init-start notice is emitted at session-start dispatch time, before any spawn",
+		[],
+		"nothing is said at dispatch time: the start say is deferred past the session_start notify window so the TUI paints it",
+	);
+
+	await untilNotice(notices, /initializing the current repo for CodeGraph/, 5_000);
+	assert.ok(calls().includes("init"), "the real readiness path ran codegraph init while the deferred say was pending");
+	assert.equal(
+		notices.filter((notice) => notice.text === "initializing the current repo for CodeGraph...").length,
+		1,
+		"the deferred start say emits exactly once with the approved wording",
 	);
 
 	await awaitWarmTail(notices);
-	assert.ok(calls().includes("init"), "the real readiness path ran codegraph init");
 	assert.ok(existsSync(join(cwd, ".codegraph", "codegraph.db")), "the fake init created the database");
 	assert.deepEqual(notices, [
 		{ text: "initializing the current repo for CodeGraph...", level: "info" },
 		{ text: "CodeGraph index created", level: "info" },
 		{ text: "warming up CodeGraph...", level: "info" },
 		{ text: `CodeGraph warm-up failed in ${cwd}`, level: "warning" },
-	]);
+	], "the deferred start line still precedes the created/warm notices in the chain");
 });
 
 test("session_start announces sync through the real path with the existing wording", { timeout: 20_000 }, async (t) => {
@@ -3079,8 +3101,15 @@ test("session_start announces sync through the real path with the existing wordi
 	const { notices, syncCapture, calls } = harness.fire(cwd);
 	assert.deepEqual(
 		syncCapture,
-		[{ text: "syncing the CodeGraph index...", level: "info" }],
-		"the sync notice keeps its existing wording and is emitted before the refresh",
+		[],
+		"the sync start say rides the same deferred emission: nothing is said at dispatch time",
+	);
+
+	await untilNotice(notices, /syncing the CodeGraph index/, 5_000);
+	assert.equal(
+		notices.filter((notice) => notice.text === "syncing the CodeGraph index...").length,
+		1,
+		"the deferred sync say emits exactly once with the existing wording",
 	);
 
 	await awaitWarmTail(notices);
@@ -3090,5 +3119,5 @@ test("session_start announces sync through the real path with the existing wordi
 		{ text: "CodeGraph index synced", level: "info" },
 		{ text: "warming up CodeGraph...", level: "info" },
 		{ text: `CodeGraph warm-up failed in ${cwd}`, level: "warning" },
-	], "the sync branch's notice chain is unchanged by the init wording fix");
+	], "the sync branch's notice chain is unchanged by the deferred emission");
 });

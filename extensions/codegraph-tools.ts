@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveCodegraphEntry, type CodegraphEntry } from "../lib/codegraph-cli-resolve.ts";
+import { resolveCodegraphShimState, type CodegraphShimResolution } from "../lib/codegraph-cli-resolve.ts";
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { acquireInitLock, type InitLockOutcome } from "../lib/codegraph-lease.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
@@ -868,11 +868,11 @@ export function findCodeGraphNodeScriptOnPath(): string | undefined {
  * by default, so the PATH scan happens once per process and every later failure is a cache hit.
  * A test seam because the real resolution needs a Windows filesystem: the suite arms a fake
  * entry to observe the fallback's consultation off Windows; production never arms it. */
-let codegraphEntryResolver: () => CodegraphEntry | null = resolveCodegraphEntry;
+let codegraphEntryResolver: () => CodegraphShimResolution = resolveCodegraphShimState;
 
 /** Test seam for the win32 ENOENT fallback: arms the resolver its failures consult and returns
  * the restore. Exercised only by the test suite; not part of the tool's runtime surface. */
-export function armCodegraphEntryResolverForTest(resolver: () => CodegraphEntry | null): () => void {
+export function armCodegraphEntryResolverForTest(resolver: () => CodegraphShimResolution): () => void {
 	const previous = codegraphEntryResolver;
 	codegraphEntryResolver = resolver;
 	return () => {
@@ -960,26 +960,34 @@ const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 		// resort: whatever a runtime can exec there only ever answers after the provable,
 		// faster paths had their chance, so node, bun, and whatever comes next behave alike.
 		let unavailableError: unknown = codegraphNotFound();
-		const entry = codegraphEntryResolver();
-		if (entry !== null) {
+		const resolution = codegraphEntryResolver();
+		if (resolution.status === "entry") {
 			try {
-				const result = await exec(entry.node, [entry.script, ...args], runOptions);
+				const result = await exec(resolution.entry.node, [resolution.entry.script, ...args], runOptions);
 				return { stdout: result.stdout, stderr: result.stderr };
 			} catch (innerError) {
 				if (!isEnoent(innerError)) throw innerError;
 				unavailableError = innerError;
 			}
 		}
-		// Resolve the real package script from each npm global bin directory in PATH
-		// order and run it through the current executable. This remains shell-free,
-		// so argument boundaries are never interpreted by a shell.
-		for (const script of codeGraphNodeScriptsOnPath()) {
-			try {
-				const result = await exec(process.execPath, [script, ...args], runOptions);
-				return { stdout: result.stdout, stderr: result.stderr };
-			} catch (innerError) {
-				if (!isEnoent(innerError)) throw innerError;
-				unavailableError = innerError;
+		// A rejected first shim — one whose invocation this process cannot reproduce — stops the
+		// cascade at the shim's own spawn: the package beside it is not an equivalent (the shim's
+		// fixed arguments would be dropped), so the scan is skipped and the bare spawn below, the
+		// shim's cmd.exe route, is the only remaining path — a runtime that cannot run .cmd files
+		// fails closed into unavailable. A genuine miss (or an entry whose spawn ENOENTed) keeps
+		// the scan exactly as before.
+		if (resolution.status !== "rejected") {
+			// Resolve the real package script from each npm global bin directory in PATH
+			// order and run it through the current executable. This remains shell-free,
+			// so argument boundaries are never interpreted by a shell.
+			for (const script of codeGraphNodeScriptsOnPath()) {
+				try {
+					const result = await exec(process.execPath, [script, ...args], runOptions);
+					return { stdout: result.stdout, stderr: result.stderr };
+				} catch (innerError) {
+					if (!isEnoent(innerError)) throw innerError;
+					unavailableError = innerError;
+				}
 			}
 		}
 		// Last resort: a real codegraph.exe the runtime can CreateProcess, or — on runtimes

@@ -314,7 +314,9 @@ function dropFile(file: string): void {
  * serialize on), and the link is a no-replace publish gated on the acquisition's nonce: a
  * process dying mid-write can leave only a complete token behind, never a truncated one, and
  * an adopter displaced past any of its checks loses cleanly instead of replacing a newer
- * owner's token.
+ * owner's token. A publish that fails after the rename restores the displaced original
+ * first, so a failed best-effort update leaves the original lease effective instead of
+ * deleting it.
  */
 function adoptWriterPid(path: string, pid: number, proxy: boolean, now: number = Date.now(), nonce?: string): void {
 	withPathMutex(path, ADOPT_MUTEX_WAIT_MS, (owns) => {
@@ -354,6 +356,15 @@ function adoptWriterPid(path: string, pid: number, proxy: boolean, now: number =
 				try {
 					linkSync(temp, path); // no-replace: a successor that retook the empty path wins
 				} catch {
+					// The publish failed: restore the displaced original before anything else — a
+					// best-effort metadata update must never delete the lease it updated. Only a record
+					// whose path was legitimately retaken mid-window (the restore loses to EEXIST) is
+					// superseded litter.
+					try {
+						linkSync(graveyard, path);
+					} catch {
+						/* the path was retaken while the record was displaced: it is superseded */
+					}
 					dropFile(graveyard);
 					return undefined;
 				}
@@ -609,7 +620,10 @@ function createLease(path: string, kind: LeaseKind, ttlMs: number, now: number):
  * and only a grabbed file whose nonce matches is deleted. A successor's token published after
  * that check (the checker stalled past its mutex and lease TTLs before acting) is restored with
  * a no-replace link, never deleted; one whose path was legitimately retaken mid-restore is
- * superseded litter. A vanished path counts as removed: nothing blocks the exclusive create.
+ * superseded litter. The restore cannot lose the path to a conforming session either — the
+ * free-path acquisition serializes on the same per-path mutex, so a displaced live record is
+ * never absent to acquisition while its section holds. A vanished path counts as removed:
+ * nothing blocks the exclusive create.
  */
 function removeTokenRecord(path: string, expectedNonce: string | undefined): boolean {
 	const graveyard = `${path}.${randomUUID()}.stale`;
@@ -656,7 +670,9 @@ function releaseOwnToken(path: string, nonce: string): void {
  * a live holder to every later reclaimer, never something to remove. The stale-token removal is
  * additionally fenced on still owning the mutex, so a section whose mutex was replaced mid-flight
  * removes nothing at all, and on removing only the exact stale record observed (see
- * removeTokenRecord), so a successor's token published after the check survives too.
+ * removeTokenRecord), so a successor's token published after the check survives too. The free
+ * path publishes inside the same per-path mutex, so those rename-away windows never read as
+ * acquirable free paths to a conforming session.
  */
 export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, now: number = Date.now(), cwd?: string, mutexWaitMs: number = MUTEX_WAIT_MS): AcquiredLease | undefined {
 	try {
@@ -666,7 +682,16 @@ export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, no
 	}
 	const verdict = readLeaseVerdict(path, now, cwd);
 	if (verdict !== "free" && verdict !== "held-stale") return undefined;
-	if (verdict === "free") return createLease(path, kind, ttlMs, now); // exclusive create is atomic on its own
+	if (verdict === "free") {
+		// The no-replace protocols of adoption, release, and stale recovery rename a record out of
+		// the path before linking its replacement, so the path can read free while its owner's
+		// section is still in flight. The free-path publish takes the same per-path mutex those
+		// sections hold: an acquisition that skipped it could land inside that window, and the
+		// section's restore would then lose the path to it and drop a live holder's record as
+		// superseded litter. The exclusive create still decides ownership; the mutex only makes
+		// the window invisible to acquisition.
+		return withPathMutex(path, mutexWaitMs, () => createLease(path, kind, ttlMs, now));
+	}
 	// held-stale: the remove/create sequence needs serializing against every other reclaimer and
 	// every release — the exclusive create alone does not protect it.
 	return withPathMutex(path, mutexWaitMs, (owns): AcquiredLease | undefined => {
@@ -686,8 +711,9 @@ export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, no
 
 /**
  * The sync lease outlives daemonlessRefresh's whole sync sequence (readiness.ts): the command
- * runs up to SYNC_TIMEOUT_MS (120s) and may then spend KILL_WAIT_MS (10s) dying, so the real
- * worst case is 130s plus margin for retries. The constants are mirrored by value on purpose —
+ * runs up to SYNC_TIMEOUT_MS (120s), may wait KILL_ESCALATE_MS (1s) before the runner
+ * escalates to SIGKILL, and may then spend KILL_WAIT_MS (10s) dying, so the real
+ * worst case is 131s plus margin for retries. The constants are mirrored by value on purpose —
  * readiness value-imports this module, so importing them back would open a
  * readiness -> lease -> readiness cycle. The TTL is the hard displacement bound, not a
  * crash-only backstop: a holder suspended past it may be reclaimed while it still lives (a
@@ -784,7 +810,8 @@ export async function acquireInitLock(
 		if (verdict === "free" || verdict === "held-stale") {
 			// Contention and polling draw on the remaining wait budget, never their own defaults on
 			// top of it: a stale token beside a live mutex spends at most what is left of waitMs
-			// inside the acquisition, and a free path still acquires immediately.
+			// inside the acquisition, and a free path acquires immediately too — its publish takes
+			// the same per-path mutex, so only a briefly-held mutex delays it, within that budget.
 			const lease = tryAcquireLease(path, "init", ttlMs, now(), cwd, Math.max(deadline - now(), 0));
 			if (lease) return { outcome: "acquired", release: lease.release, adopt: lease.adopt };
 			// The steal race was lost between verdict and create: keep waiting like a live holder.

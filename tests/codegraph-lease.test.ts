@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -259,6 +259,53 @@ test("a stale per-path mutex is stolen by the same liveness rules and released a
 	lease.release();
 	assert.equal(readLeaseVerdict(path, now), "free");
 	assert.equal(existsSync(`${path}.mutex`), false, "the mutex is dropped after the critical section");
+});
+
+test("a free-path acquisition cannot land inside another session's adoption window", (t) => {
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+
+	// Mid-adoption state, materialized: the adopting holder is inside its per-path mutex section
+	// and the no-replace publish has renamed its token out of the path — between that rename and
+	// the link the path reads free, exactly where a second session's acquisition must not land.
+	writeToken(`${path}.mutex`, { pid: process.pid, startedAt: now, expiresAt: now + 60_000 });
+	assert.equal(tryAcquireLease(path, "sync", 120_000, now, undefined, 60), undefined, "no lease is granted beside an in-flight adoption section");
+	assert.equal(existsSync(path), false, "nothing was published into the rename-away window");
+
+	// The section ended and the path is genuinely free again: acquisition proceeds — the window
+	// guard fail-closes attempts, it never wedges the path.
+	rmSync(`${path}.mutex`, { force: true });
+	const lease = tryAcquireLease(path, "sync", 120_000, now);
+	assert.ok(lease, "a genuinely free path acquires once the section is over");
+	lease.release();
+	assert.equal(readLeaseVerdict(path, now), "free");
+});
+
+test("a live successor's token is never exposed as a free path while its displaced record is restored", (t) => {
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+
+	// A releaser stalled past its nonce check has renamed the successor's live token out of the
+	// path and still holds the per-path mutex. A third session arriving between the rename and
+	// the restore must find no acquirable free path.
+	const successor = liveToken(now);
+	const graveyard = `${path}.${randomUUID()}.stale`;
+	writeToken(graveyard, successor);
+	writeToken(`${path}.mutex`, { pid: process.pid, startedAt: now, expiresAt: now + 60_000 });
+	assert.equal(tryAcquireLease(path, "sync", 120_000, now, undefined, 60), undefined, "no acquisition between the rename and the restore");
+	assert.equal(existsSync(path), false, "the third session published nothing over the successor's absence");
+
+	// The releaser's restore completes inside its section: the successor's token is back at the
+	// path byte-for-byte before any later acquisition looks, and that acquisition meets a live
+	// holder — never the free path the displacement momentarily showed.
+	linkSync(graveyard, path);
+	rmSync(graveyard, { force: true });
+	rmSync(`${path}.mutex`, { force: true });
+	assert.equal(readFileSync(path, "utf8"), `${JSON.stringify(successor)}\n`, "the successor's token is restored byte-for-byte");
+	assert.equal(readLeaseVerdict(path, now), "held-live", "the restored successor token holds");
+	assert.equal(tryAcquireLease(path, "sync", 120_000, now), undefined, "a later session meets the restored live token, not a free path");
 });
 
 test("release is bound to its own acquisition: it never removes a newer owner's token", (t) => {
@@ -617,9 +664,13 @@ test("the sync lease TTL outlives daemonlessRefresh's single sync sequence", (t)
 	assert.ok(lease, "a free project acquires");
 	const token = JSON.parse(readFileSync(lockPathFor(cwd, "sync", dir), "utf8")) as { startedAt: number; expiresAt: number };
 	// daemonlessRefresh (readiness.ts) runs no `unlock`: the lease covers exactly one `sync -q`
-	// command, up to SYNC_TIMEOUT_MS plus the command runner's KILL_WAIT_MS (10s, readiness.ts)
-	// of kill grace for a child that refuses to die.
-	const worstCaseMs = SYNC_TIMEOUT_MS + 10_000;
+	// command — up to SYNC_TIMEOUT_MS, then the runner's KILL_ESCALATE_MS (1s, readiness.ts)
+	// before it escalates to SIGKILL and KILL_WAIT_MS (10s, readiness.ts) of grace for a child
+	// that never closes. Both runner delays are module-private in readiness.ts, so they mirror
+	// by value here exactly as the lease module mirrors them for its TTL.
+	const KILL_ESCALATE_MS = 1_000;
+	const KILL_WAIT_MS = 10_000;
+	const worstCaseMs = SYNC_TIMEOUT_MS + KILL_ESCALATE_MS + KILL_WAIT_MS;
 	assert.ok(
 		token.expiresAt - token.startedAt >= worstCaseMs,
 		`the sync TTL (${token.expiresAt - token.startedAt}ms) must cover the ${worstCaseMs}ms single-sync worst case`,

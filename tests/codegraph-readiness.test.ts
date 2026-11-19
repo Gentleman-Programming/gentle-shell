@@ -521,7 +521,24 @@ test("prepareReadiness: an orphaned init token from a dead session does not stop
 	assert.deepEqual(runs, ["init -y"], "the orphaned token is reclaimed and init still runs");
 });
 
-
+test("prepareReadiness: the onStart notice precedes the init run it announces", async (t) => {
+	const cwd = dir(t, "order-init");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const order: string[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		onStart: (action) => order.push(`start:${action}`),
+		run: async (args) => {
+			order.push(`run:${args.join(" ")}`);
+			return true;
+		},
+		warm: async () => {
+			order.push("warm");
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
+	assert.deepEqual(order, ["start:init", "run:init -y", "warm"], "the announcement is emitted before the init run begins, ahead of the lock wait and the warm");
+});
 
 test("prepareReadiness: an unknown index state or a non-project runs nothing", async (t) => {
 	const unknown = dir(t, "unknown");

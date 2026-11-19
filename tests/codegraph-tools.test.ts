@@ -27,6 +27,7 @@ import codeGraphTools, {
 	isWorkspaceProjectRoot,
 	awaitSearchSync,
 	warmNotice,
+	indexStartNotice,
 	SYNC_FRESH_WINDOW_MS,
 	type CodeGraphRunner,
 	type DaemonExplore,
@@ -2843,6 +2844,11 @@ test("warmNotice: every warm outcome carries its one notice - the ready line on 
 	assert.deepEqual(warmNotice({ ok: false }, "/repo"), { text: "CodeGraph warm-up failed in /repo", level: "warning" });
 });
 
+test("indexStartNotice: init announces initialization in the approved wording; sync keeps its line", () => {
+	assert.deepEqual(indexStartNotice("init"), { text: "initializing the current repo for CodeGraph...", level: "info" });
+	assert.deepEqual(indexStartNotice("sync"), { text: "syncing the CodeGraph index...", level: "info" });
+});
+
 test("awaitSearchSync: a failing sync beside a live daemon notifies info, a daemon-less one keeps the warning", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
@@ -2952,4 +2958,137 @@ test("a refresh whose first attempt spent the whole budget ends there: no backof
 	assert.equal(refreshed, true, "the budget-exhausted refresh still settled before the search");
 	assert.deepEqual(budgets, [SYNC_TIMEOUT_MS], "the whole-budget refresh makes exactly one attempt");
 	assert.deepEqual(sleeps, [], "no backoff fits what the first attempt already spent");
+});
+
+/** Drives the REAL session_start wiring end to end: a fake codegraph CLI first on PATH, the
+ * mcp.json exposure armed on a fake io, and a captured ctx.ui.notify — everything else, from
+ * workspace validation through prepareReadiness to the index run and the daemon warm, is the
+ * real path (its cross-session lease tokens are acquired and released per project digest, the
+ * same transient state a real session start writes). POSIX-only: the fake CLI is a shell script. */
+function armSessionStartWiring(t: test.TestContext): {
+	fire: (cwd: string) => {
+		notices: Array<{ text: string; level: string }>;
+		syncCapture: Array<{ text: string; level: string }>;
+		calls: () => string[];
+	};
+} {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+	codeGraphTools({
+		registerTool() { /* the registered tool's shape is covered above */ },
+		on(event, handler) { handlers.set(event, handler); },
+	} as unknown as ExtensionAPI);
+	const sessionStart = handlers.get("session_start") as (event: unknown, ctx: unknown) => void;
+
+	const bin = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-ss-bin-")));
+	const callsLog = join(bin, "calls.log");
+	writeFileSync(join(bin, "codegraph"), [
+		"#!/bin/sh",
+		'printf "%s\\n" "$1" >> "$GENTLE_SS_CALLS"',
+		'case "$1" in',
+		'  init)',
+		'    mkdir -p "$3/.codegraph"',
+		'    printf "index" > "$3/.codegraph/codegraph.db"',
+		"    ;;",
+		"esac",
+		"exit 0",
+	].join("\n"));
+	chmodSync(join(bin, "codegraph"), 0o755);
+
+	const previousPath = process.env.PATH;
+	const previousCalls = process.env.GENTLE_SS_CALLS;
+	const previousChild = process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.GENTLE_SS_CALLS = callsLog;
+	delete process.env.GENTLE_PI_AGENTS_CHILD;
+	armExposureEnsureForTest({ read: () => "{}", write: () => { /* isolated by the fake io */ } });
+	t.after(() => {
+		process.env.PATH = previousPath;
+		if (previousCalls === undefined) delete process.env.GENTLE_SS_CALLS;
+		else process.env.GENTLE_SS_CALLS = previousCalls;
+		if (previousChild === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
+		else process.env.GENTLE_PI_AGENTS_CHILD = previousChild;
+		armExposureEnsureForTest(undefined);
+		rmSync(bin, { recursive: true, force: true });
+	});
+
+	return {
+		fire: (cwd: string) => {
+			const notices: Array<{ text: string; level: string }> = [];
+			const ctx = {
+				cwd,
+				hasUI: true,
+				ui: { notify: (text: string, level: string) => notices.push({ text, level }) },
+			} as unknown as ExtensionContext;
+			sessionStart({ reason: "startup" }, ctx);
+			// onStart fires in prepareReadiness's synchronous section, before any spawn: the
+			// notices captured at handler-return time are exactly what was emitted before the
+			// index run could start.
+			const syncCapture = notices.map((notice) => ({ ...notice }));
+			return {
+				notices,
+				syncCapture,
+				calls: () => (existsSync(callsLog) ? readFileSync(callsLog, "utf8").trim().split("\n") : []),
+			};
+		},
+	};
+}
+
+/** Awaits the wiring's warm tail: the fake serve exits at once, so the adoption poll fails
+ * after its bounded 5s window and the warm-up-failed warning is the flow's last notice. */
+async function awaitWarmTail(notices: Array<{ text: string; level: string }>): Promise<void> {
+	const deadline = Date.now() + 20_000;
+	while (Date.now() < deadline && !notices.some((notice) => /warm-up failed/.test(notice.text))) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+}
+
+test("session_start announces init through the real path before the init run", { timeout: 20_000 }, async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const harness = armSessionStartWiring(t);
+
+	const { notices, syncCapture, calls } = harness.fire(cwd);
+	assert.deepEqual(
+		syncCapture,
+		[{ text: "initializing the current repo for CodeGraph...", level: "info" }],
+		"the init-start notice is emitted at session-start dispatch time, before any spawn",
+	);
+
+	await awaitWarmTail(notices);
+	assert.ok(calls().includes("init"), "the real readiness path ran codegraph init");
+	assert.ok(existsSync(join(cwd, ".codegraph", "codegraph.db")), "the fake init created the database");
+	assert.deepEqual(notices, [
+		{ text: "initializing the current repo for CodeGraph...", level: "info" },
+		{ text: "CodeGraph index created", level: "info" },
+		{ text: "warming up CodeGraph...", level: "info" },
+		{ text: `CodeGraph warm-up failed in ${cwd}`, level: "warning" },
+	]);
+});
+
+test("session_start announces sync through the real path with the existing wording", { timeout: 20_000 }, async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	mkdirSync(join(cwd, ".codegraph"));
+	writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "index");
+	const harness = armSessionStartWiring(t);
+
+	const { notices, syncCapture, calls } = harness.fire(cwd);
+	assert.deepEqual(
+		syncCapture,
+		[{ text: "syncing the CodeGraph index...", level: "info" }],
+		"the sync notice keeps its existing wording and is emitted before the refresh",
+	);
+
+	await awaitWarmTail(notices);
+	assert.ok(calls().includes("sync"), "the real readiness path ran the sync");
+	assert.deepEqual(notices, [
+		{ text: "syncing the CodeGraph index...", level: "info" },
+		{ text: "CodeGraph index synced", level: "info" },
+		{ text: "warming up CodeGraph...", level: "info" },
+		{ text: `CodeGraph warm-up failed in ${cwd}`, level: "warning" },
+	], "the sync branch's notice chain is unchanged by the init wording fix");
 });

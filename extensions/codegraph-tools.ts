@@ -1138,6 +1138,17 @@ export function warmNotice(outcome: WarmUpOutcome, cwd: string): { text: string;
 }
 
 /**
+ * The notify for the index action a session start is about to run: the init line announces
+ * initialization before the first index is built, the sync line keeps its existing text.
+ * Emitted through onStart before the index dispatch runs, so a session that will build or
+ * refresh the index announces it first.
+ */
+export function indexStartNotice(action: "init" | "sync"): { text: string; level: "info" } {
+	if (action === "sync") return { text: "syncing the CodeGraph index...", level: "info" };
+	return { text: "initializing the current repo for CodeGraph...", level: "info" };
+}
+
+/**
  * Awaits the index refresh for `cwd` and returns whether one covered this search: a subagent
  * child or an unindexed workspace never refreshes, and every other search waits for its refresh
  * to settle — a call that arrives while one is in flight awaits that same job — so the query
@@ -1560,12 +1571,13 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 				if (outcome.wedged) daemonSkipUntil.set(workspace, Date.now() + DAEMON_SKIP_MS);
 				return outcome.ok;
 			},
-			onStart: (action) => say(
-				action === "sync"
-					? "syncing the CodeGraph index..."
-					: "creating the CodeGraph index of this project...",
-				"info",
-			),
+			onStart: (action) => {
+				// prepareReadiness reports only a planned action here: "none" returned before this
+				// point, so the notice is mapped for the action that is about to run.
+				if (action === "none") return;
+				const notice = indexStartNotice(action);
+				say(notice.text, notice.level);
+			},
 			onIndexed: (result) => {
 				const notice = indexedNotice({ ...result, stoodDown: seedStoodDown }, ctx.cwd);
 				if (notice) say(notice.text, notice.level);

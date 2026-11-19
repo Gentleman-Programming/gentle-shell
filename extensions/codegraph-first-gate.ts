@@ -94,7 +94,9 @@ const isLeadingAssignment = (text: string): boolean => ASSIGNMENT_WORD.test(text
  *   overall success (a non-error result) proves execution reached the invocation, because a
  *   guard that failed would have left its own failure as the result instead. A subshell's
  *   last command holds the position whenever the subshell ends the list: its status passes
- *   through the closing parenthesis as the status the call reports.
+ *   through the closing parenthesis as the status the call reports. A `!` negation over the
+ *   invocation's pipeline inverts that reported status, so the position never credits then:
+ *   a success is exactly what a skipped or failed invocation produces too.
  * - "never": every other conditional position - after || (a satisfied left side skips the
  *   invocation yet still exits 0), or guarded with commands following (their status, not the
  *   invocation's, becomes the result). Nothing observable separates a skipped invocation from
@@ -120,11 +122,15 @@ function restIsInert(rest: string): boolean {
  * bash command string runs `codegraph query` or `codegraph explore` in an executable command
  * position, and how a completion can prove the invocation ran. Quoted text is masked to
  * filler first, so a separator or command word inside quotes - printf '%s\n' 'note;
- * codegraph query' - is never an execution. At each command position, leading NAME=VALUE
- * assignments are skipped (LC_ALL=C codegraph query ... runs the query, and so does a
- * quoted value - LC_ALL=\"C\" - because only the NAME= prefix must be unquoted), and so is
- * the shell's `command` wrapper (command codegraph query ... runs it, while its lookup form
- * command -v codegraph never credits); init, status, and every other subcommand never match
+ * codegraph query' - is never an execution. At each command position the shell's pipeline
+ * negation is consumed first: bash reads a leading `!` ahead of the simple command's
+ * assignments, so `! codegraph query lease` runs the query and only inverts the status the
+ * call reports - which is why a negated on-success position never credits - while
+ * `LC_ALL=C ! codegraph query lease` runs a command named `!` and no query at all. Leading
+ * NAME=VALUE assignments are skipped next (only the NAME= prefix must be unquoted, so a
+ * quoted value is still an assignment), and then the shell's `command` wrapper (command
+ * codegraph query ... runs it, while its lookup form command -v codegraph never credits).
+ * Init, status, and every other subcommand never match
  * for credit, though runsCodegraph still reports them: every native `codegraph` invocation is
  * an active graph execution, while only query and explore can credit. A separator list (&&,
  * ||) guarding the invocation shrinks the credit to what its position
@@ -145,10 +151,21 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 	// The list conditions of the subshells the current position is nested in, outermost
 	// first: a subshell runs exactly when the enclosing list reached it, so every command
 	// inside stays under the outer guards while its own list's condition is tracked separately.
-	const subshellGuards: Array<"none" | "and" | "or"> = [];
+	// Each frame also holds the negation over the pipeline the subshell itself is a stage of:
+	// `!` inverts the status the closing parenthesis reports, and inside the subshell that
+	// inversion rides every position whose credit depends on that status.
+	const subshellGuards: Array<{ condition: "none" | "and" | "or"; negated: boolean }> = [];
+	// Whether a `!` reserved word negates the current pipeline: negation binds to that pipeline
+	// alone, so a separator, an &&, an ||, or a new subshell starts an unnegated one, while
+	// repeating the word toggles it as the shell's own double negation does.
+	let pipelineNegated = false;
 	const endWord = () => {
-		if (word !== "") words.push({ text: word, quoted: word.includes("\u0000") });
+		if (word === "") return;
+		words.push({ text: word, quoted: word.includes("\u0000") });
 		word = "";
+		// A `!` still in the pipeline's leading position is the negation reserved word, never a
+		// command: a quoted `!` or one after the executable is an ordinary argument.
+		if (words.every((one) => !one.quoted && one.text === "!")) pipelineNegated = !pipelineNegated;
 	};
 	const isListOperator = (ch: string) => ch === ";" || ch === "&" || ch === "|";
 	/** Whether the words of one finished simple command put codegraph query or explore in the
@@ -156,6 +173,11 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 	const creditSegment = (isFinal: boolean) => {
 		if (words.length === 0) return;
 		let at = 0;
+		// `!` is a reserved word, never the executable: `! codegraph query lease` runs the query
+		// and only inverts the status the call reports. Bash reads the pipeline negation ahead of
+		// the simple command's assignments, so a `!` behind one is an ordinary command word -
+		// `LC_ALL=C ! codegraph query lease` runs `!`, not CodeGraph.
+		while (at < words.length && !words[at]!.quoted && words[at]!.text === "!") at++;
 		while (at < words.length && isLeadingAssignment(words[at]!.text)) at++;
 		if (at < words.length && !words[at]!.quoted && words[at]!.text === "command") at++;
 		const executable = words[at];
@@ -167,9 +189,9 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 		) {
 			present = true;
 			let reach: CliQueryCredit;
-			if (listCondition === "or" || subshellGuards.includes("or")) {
+			if (listCondition === "or" || subshellGuards.some((guard) => guard.condition === "or")) {
 				reach = "never";
-			} else if (subshellGuards.includes("and")) {
+			} else if (subshellGuards.some((guard) => guard.condition === "and")) {
 				// The invocation sits inside a subshell an outer && guards: only the whole call's
 				// success can prove the guard let the subshell run, and only when this command is
 				// the final one whose status the call reports.
@@ -177,6 +199,10 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 			} else {
 				reach = listCondition === "none" ? "always" : listCondition === "and" && isFinal ? "on-success" : "never";
 			}
+			// A `!` over the invocation's pipeline - the enclosing subshell's own pipeline, or the
+			// one this command ends - inverts the reported status, so success no longer proves the
+			// invocation ran: only positions that never depend on the status keep their credit.
+			if (reach === "on-success" && (pipelineNegated || subshellGuards.some((guard) => guard.negated))) reach = "never";
 			if (reach === "always" || (reach === "on-success" && credit === "never")) credit = reach;
 		}
 		words.length = 0;
@@ -199,6 +225,9 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 			}
 			i--;
 			operators = operators.replaceAll("\n", "");
+			// A pipeline separator keeps the current pipeline alive, negation included; every
+			// other separator starts a new one, whose `!` is its own.
+			if (operators !== "|" && operators !== "|&") pipelineNegated = false;
 			if (operators === "&&") listCondition = "and";
 			else if (operators === "||") listCondition = "or";
 			else if (operators !== "|" && operators !== "|&") {
@@ -218,6 +247,9 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 			endWord();
 			creditSegment(false);
 			listCondition = "none";
+			// A newline starts another pipeline, exactly as an unconditional separator does: the
+			// `!` in front of the pipeline before it never inverts this one.
+			pipelineNegated = false;
 		} else if (ch === "(" || ch === ")") {
 			endWord();
 			// The words pending at a closing parenthesis are the subshell's last command, and
@@ -226,10 +258,15 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 			// of demoting the invocation to a non-final position.
 			creditSegment(ch === ")" && restIsInert(command.slice(i + 1)));
 			if (ch === "(") {
-				subshellGuards.push(listCondition);
+				// The subshell is a stage of the pipeline being negated, if it is: the frame carries
+				// that inversion into every position inside, and the subshell's own list starts clean.
+				subshellGuards.push({ condition: listCondition, negated: pipelineNegated });
 				listCondition = "none";
+				pipelineNegated = false;
 			} else {
-				listCondition = subshellGuards.pop() ?? "none";
+				const enclosing = subshellGuards.pop();
+				listCondition = enclosing?.condition ?? "none";
+				pipelineNegated = enclosing?.negated ?? false;
 			}
 		} else {
 			word += ch;

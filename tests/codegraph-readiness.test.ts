@@ -620,7 +620,7 @@ test("warmUpDaemon: a vanished cwd resolves false instead of rejecting", async (
 	assert.equal(warmed, false, "an unresolvable cwd resolves false: nothing to warm, and the promise never rejects");
 });
 
-test("warmUpDaemon: a timed-out warm-up kills its spawned child instead of leaking it", async (t) => {
+test("warmUpDaemon: a timed-out warm-up kills its spawned child instead of leaking it", { timeout: 10_000 }, async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
 	const bin = dir(t, "warm-timeout-bin");
 	const pidFile = join(bin, "child.pid");
@@ -644,7 +644,7 @@ test("warmUpDaemon: a timed-out warm-up kills its spawned child instead of leaki
 	assert.equal(processRunning(pid), false, "the timed-out warm-up child is killed before the result, not leaked to hold the daemon lock");
 });
 
-test("warmUpDaemon: a timed-out warm-up whose child ignores SIGTERM is SIGKILLed", async (t) => {
+test("warmUpDaemon: a timed-out warm-up whose child ignores SIGTERM is SIGKILLed", { timeout: 10_000 }, async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
 	const bin = dir(t, "warm-term-ignore-bin");
 	const pidFile = join(bin, "child.pid");

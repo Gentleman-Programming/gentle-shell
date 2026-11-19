@@ -35,7 +35,7 @@ export type SeedOutcome =
 export type SeedSyncReport = boolean | { ok: boolean; removedEntries: boolean };
 
 /** A cold daemon on a network share can need over a minute for its first read. */
-const WARMUP_TIMEOUT_MS = 120_000;
+export const WARMUP_TIMEOUT_MS = 120_000;
 export const SYNC_TIMEOUT_MS = 120_000;
 
 /** One retry after this backoff when a sync beside a live daemon fails: the daemon.log busy windows close by themselves in tens of seconds, well inside the 60s wedged-daemon bypass. */

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { linkSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, linkSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { canonicalRoot } from "./codegraph-canonical.ts";
@@ -196,10 +196,9 @@ export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: s
 		const parsed: unknown = JSON.parse(raw);
 		if (
 			typeof parsed !== "object" || parsed === null ||
-			typeof (parsed as LeaseToken).kind !== "string" ||
-			typeof (parsed as LeaseToken).pid !== "number" ||
-			typeof (parsed as LeaseToken).startedAt !== "number" ||
-			typeof (parsed as LeaseToken).expiresAt !== "number" ||
+			((parsed as LeaseToken).kind !== "init" && (parsed as LeaseToken).kind !== "sync") ||
+			!Number.isInteger((parsed as LeaseToken).pid) || (parsed as LeaseToken).pid <= 0 ||
+			!Number.isFinite((parsed as LeaseToken).startedAt) || !Number.isFinite((parsed as LeaseToken).expiresAt) ||
 			((parsed as LeaseToken).host !== undefined && typeof (parsed as LeaseToken).host !== "string") ||
 			((parsed as LeaseToken).machine !== undefined && typeof (parsed as LeaseToken).machine !== "string")
 		) {
@@ -277,7 +276,8 @@ export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: s
  * linked into place: link never replaces an existing owner's token (its EEXIST loses cleanly),
  * and a crash can leave at most temp litter beside a still-free path, never the empty or partial
  * token at the lease path whose verdict would be "unknown" forever (TTL expiry cannot restore a
- * damaged file).
+ * damaged file). A temp-cleanup failure never overrides the publication's outcome: the caller
+ * keeps its handle when the token was published and the failed-acquisition result when it was not.
  */
 function writeTokenExclusively(path: string, kind: LeaseKind, ttlMs: number, now: number, nonce: string): boolean {
 	const token: LeaseToken = { kind, pid: process.pid, startedAt: now, expiresAt: now + ttlMs, nonce, host: leaseHostIdentity() ?? undefined, machine: leaseMachineIdentity() ?? undefined };
@@ -289,7 +289,17 @@ function writeTokenExclusively(path: string, kind: LeaseKind, ttlMs: number, now
 	} catch {
 		return false; // EEXIST (someone else won) or unwritable: not ours either way
 	} finally {
-		rmSync(temp, { force: true }); // best effort: an unpublished temp is litter, never state
+		dropFile(temp); // best effort: an unpublished temp is litter, never state
+	}
+}
+
+/** Best-effort litter removal: a cleanup failure never converts the operation that produced the
+ * litter into a failure — the state it protected was already published or removed. */
+function dropFile(file: string): void {
+	try {
+		rmSync(file, { force: true });
+	} catch {
+		/* litter at worst: temp names never block a publication, stale names are reclaimed by TTL rules */
 	}
 }
 
@@ -299,11 +309,12 @@ function writeTokenExclusively(path: string, kind: LeaseKind, ttlMs: number, now
  * past its TTL (the TTL is the displacement bound) rewrites nothing on the newer owner's token,
  * and the publish itself is fenced on still owning the per-path mutex: an adopter stalled past
  * the mutex TTL between its checks and the rename never publishes over a newer owner's token.
- * The updated metadata is written whole to a temp file beside the token and renamed over
- * it inside the per-path mutex (the ownership protocol stale recovery and release already
- * serialize on): a process dying mid-write can leave only a complete token behind, never a
- * truncated one, because an "unknown" verdict is fail-closed forever and TTL expiry cannot
- * restore a damaged file.
+ * The updated metadata is written whole to a temp file beside the token and linked into place
+ * inside the per-path mutex (the ownership protocol stale recovery and release already
+ * serialize on), and the link is a no-replace publish gated on the acquisition's nonce: a
+ * process dying mid-write can leave only a complete token behind, never a truncated one, and
+ * an adopter displaced past any of its checks loses cleanly instead of replacing a newer
+ * owner's token.
  */
 function adoptWriterPid(path: string, pid: number, proxy: boolean, now: number = Date.now(), nonce?: string): void {
 	withPathMutex(path, ADOPT_MUTEX_WAIT_MS, (owns) => {
@@ -321,9 +332,34 @@ function adoptWriterPid(path: string, pid: number, proxy: boolean, now: number =
 				// mutex TTL between its nonce check and this publish must not rename its stale adoption
 				// over whatever newer owner retook the path meanwhile.
 				if (!owns()) return undefined;
-				renameSync(temp, path); // same filesystem: the swap is atomic, the token is never half-written
+				// And the publish itself cannot replace a successor's token: the current record is
+				// renamed out and the adoption linked in only when the grabbed record still carries
+				// this acquisition's nonce — an adopter displaced after the fence loses cleanly
+				// instead of clobbering whatever the path belongs to now.
+				const graveyard = `${path}.${randomUUID()}.stale`;
+				try {
+					renameSync(path, graveyard);
+				} catch {
+					return undefined; // nothing at the path: this acquisition no longer owns it
+				}
+				if (readNonce(graveyard) !== nonce) {
+					try {
+						linkSync(graveyard, path); // a successor reclaimed past the checks: restore its token
+					} catch {
+						/* the path was retaken while the record was displaced: it is superseded */
+					}
+					dropFile(graveyard);
+					return undefined;
+				}
+				try {
+					linkSync(temp, path); // no-replace: a successor that retook the empty path wins
+				} catch {
+					dropFile(graveyard);
+					return undefined;
+				}
+				dropFile(graveyard); // this acquisition's superseded record: litter once the adoption is in place
 			} finally {
-				rmSync(temp, { force: true }); // best effort: an unrenamed temp is litter, never state
+				rmSync(temp, { force: true }); // best effort: the temp name goes, the token stays complete
 			}
 		} catch {
 			/* best effort: the trust window only narrows the stale window */
@@ -365,14 +401,23 @@ function mutexPathFor(path: string): string {
 	return `${path}.mutex`;
 }
 
-/** Parses the mutex holder's record; anything unreadable or malformed is undefined. */
-function parseMutex(mutex: string): MutexToken | undefined {
+/** Parses a mutex holder record; anything malformed is undefined. */
+function parseMutexRecord(raw: string): MutexToken | undefined {
 	try {
-		const parsed: unknown = JSON.parse(readFileSync(mutex, "utf8"));
+		const parsed: unknown = JSON.parse(raw);
 		if (typeof parsed !== "object" || parsed === null) return undefined;
 		const token = parsed as MutexToken;
 		if (typeof token.pid !== "number" || typeof token.startedAt !== "number" || typeof token.expiresAt !== "number") return undefined;
 		return token;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Parses the mutex holder's record; anything unreadable or malformed is undefined. */
+function parseMutex(mutex: string): MutexToken | undefined {
+	try {
+		return parseMutexRecord(readFileSync(mutex, "utf8"));
 	} catch {
 		return undefined;
 	}
@@ -429,6 +474,31 @@ function sameMutexIdentity(a: MutexIdentity, b: MutexIdentity): boolean {
 	return a.dev === b.dev && a.ino === b.ino && a.mtimeNs === b.mtimeNs && a.nonce === b.nonce;
 }
 
+/** One observation of the mutex file: the holder record and the filesystem identity come from
+ * the same opened file, so the record a liveness decision is made on and the identity a steal is
+ * bound to can never describe two different files — a replacement published between two separate
+ * reads is never judged by the old record's staleness and then stolen by the new file's identity.
+ * The opened fd pins the observed file even where its path name is replaced or removed. */
+function observeMutex(mutex: string): { token: MutexToken | undefined; identity: MutexIdentity } | undefined {
+	let fd: number | undefined;
+	try {
+		fd = openSync(mutex, "r");
+		const stat = fstatSync(fd, { bigint: true });
+		const token = parseMutexRecord(readFileSync(fd, "utf8"));
+		return { token, identity: { dev: stat.dev, ino: stat.ino, mtimeNs: stat.mtimeNs, nonce: token?.nonce } };
+	} catch {
+		return undefined;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				closeSync(fd);
+			} catch {
+				/* observation only: a failed close never touches state */
+			}
+		}
+	}
+}
+
 /**
  * Stale-mutex recovery that cannot delete a replacement owner's mutex: the removal is a rename
  * into a unique graveyard name, and the renamed file must still be the exact mutex the reclaimer
@@ -464,7 +534,8 @@ function stealStaleMutex(mutex: string, observed: MutexIdentity): void {
  * Runs one critical section on a token path, serialized against every other session's stale
  * recovery and release. A live mutex holder is waited for (bounded — its section is a handful of
  * syscalls); a dead, expired, or damaged-past-TTL one is stolen under the same liveness rules as
- * the tokens themselves — but bound to the exact mutex observed stale, so recovery can never
+ * the tokens themselves — but bound to the exact mutex observed stale (its holder record and
+ * filesystem identity read as one opened file), so recovery can never
  * delete a replacement owner's mutex. The section receives an owns() fence: after a mid-section
  * mutex replacement, every effectful step must re-verify ownership or abort. Returns undefined
  * when the wait budget is spent: fail-closed, the caller skips what it wanted to do.
@@ -485,10 +556,13 @@ function withPathMutex<T>(path: string, waitMs: number, section: (owns: () => bo
 				if (owns()) rmSync(mutex, { force: true }); // best effort: a leftover is stolen by TTL rules
 			}
 		}
-		const holder = parseMutex(mutex);
+		// One observation for both decisions: the holder record the liveness verdict uses and the
+		// identity any steal binds to come from the same opened file (see observeMutex).
+		const observed = observeMutex(mutex);
+		const holder = observed?.token;
 		const blocking =
 			(holder !== undefined && holder.expiresAt > now && processAlive(holder.pid)) ||
-			(holder === undefined && mutexFreshOnDisk(mutex, now));
+			(observed?.token === undefined && mutexFreshOnDisk(mutex, now));
 		if (blocking) {
 			if (now >= deadline) return undefined;
 			sleepSync(MUTEX_POLL_MS);
@@ -499,8 +573,7 @@ function withPathMutex<T>(path: string, waitMs: number, section: (owns: () => bo
 		// bounded by the same wait budget, so a mutex that can never be created (an unwritable or
 		// vanished locks dir) fail-closes the attempt instead of spinning past its deadline.
 		if (now >= deadline) return undefined;
-		const observed = mutexIdentity(mutex);
-		if (observed !== undefined) stealStaleMutex(mutex, observed);
+		if (observed !== undefined) stealStaleMutex(mutex, observed.identity);
 	}
 }
 
@@ -531,14 +604,46 @@ function createLease(path: string, kind: LeaseKind, ttlMs: number, now: number):
 }
 
 /**
+ * Removes the token at `path` only when it still carries `expectedNonce` — the exact record a
+ * check observed — enforced at the filesystem operation itself: the record is renamed out first,
+ * and only a grabbed file whose nonce matches is deleted. A successor's token published after
+ * that check (the checker stalled past its mutex and lease TTLs before acting) is restored with
+ * a no-replace link, never deleted; one whose path was legitimately retaken mid-restore is
+ * superseded litter. A vanished path counts as removed: nothing blocks the exclusive create.
+ */
+function removeTokenRecord(path: string, expectedNonce: string | undefined): boolean {
+	const graveyard = `${path}.${randomUUID()}.stale`;
+	try {
+		renameSync(path, graveyard);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT"; // vanished: the path is clear
+	}
+	const grabbed = readNonce(graveyard);
+	if (grabbed !== expectedNonce) {
+		try {
+			linkSync(graveyard, path); // restore the displaced record: the path's live owner wins
+		} catch {
+			/* the path was retaken while the record was displaced: it is superseded */
+		}
+		dropFile(graveyard);
+		return false;
+	}
+	dropFile(graveyard);
+	return true;
+}
+
+/**
  * Release removes only the token this acquisition wrote: an expired lease whose path was stolen
- * and re-owned never removes the newer owner's token. The check and the remove run inside the
- * same per-path mutex as recovery, so a release racing a reclaimer cannot remove the token the
- * reclaimer just created either. Best effort: an unreachable mutex still leaves the TTL backstop.
+ * and re-owned never removes the newer owner's token — not even when the release itself stalled
+ * between its check and the removal (removeTokenRecord restores the successor's token). The
+ * check and the remove run inside the same per-path mutex as recovery, so a release racing a
+ * reclaimer cannot remove the token the reclaimer just created either. Best effort: an
+ * unreachable mutex still leaves the TTL backstop.
  */
 function releaseOwnToken(path: string, nonce: string): void {
 	withPathMutex(path, MUTEX_WAIT_MS, () => {
-		if (readNonce(path) === nonce) rmSync(path, { force: true });
+		if (readNonce(path) !== nonce) return undefined; // not ours (or gone): remove nothing
+		removeTokenRecord(path, nonce); // and the removal verifies its grab: a token swapped in past the check is restored
 		return undefined;
 	});
 }
@@ -550,7 +655,8 @@ function releaseOwnToken(path: string, nonce: string): void {
  * serialize and re-read the path inside the critical section: the first recovery's fresh token is
  * a live holder to every later reclaimer, never something to remove. The stale-token removal is
  * additionally fenced on still owning the mutex, so a section whose mutex was replaced mid-flight
- * removes nothing at all.
+ * removes nothing at all, and on removing only the exact stale record observed (see
+ * removeTokenRecord), so a successor's token published after the check survives too.
  */
 export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, now: number = Date.now(), cwd?: string, mutexWaitMs: number = MUTEX_WAIT_MS): AcquiredLease | undefined {
 	try {
@@ -567,12 +673,12 @@ export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, no
 		const recheck = readLeaseVerdict(path, now, cwd);
 		if (recheck !== "free" && recheck !== "held-stale") return undefined; // a faster reclaimer owns it now
 		if (recheck === "held-stale") {
+			// Capture the record the recheck judged (before the fence: past it, the path may
+			// already belong to a successor), then fence, then remove only that exact record —
+			// a successor's token published after the check is restored, never deleted.
+			const observed = readNonce(path);
 			if (!owns()) return undefined; // the mutex was replaced mid-section: never remove a newer owner's state
-			try {
-				rmSync(path, { force: true });
-			} catch {
-				return undefined; // cannot clear the stale token: do not write past it
-			}
+			if (!removeTokenRecord(path, observed)) return undefined; // cannot clear exactly the stale token: do not write past it
 		}
 		return createLease(path, kind, ttlMs, now);
 	});
@@ -676,14 +782,16 @@ export async function acquireInitLock(
 	for (;;) {
 		const verdict = readLeaseVerdict(path, now(), cwd);
 		if (verdict === "free" || verdict === "held-stale") {
-			const lease = tryAcquireLease(path, "init", ttlMs, now(), cwd);
-			if (lease) return { outcome: "acquired", nonce: lease.nonce, release: lease.release, adopt: lease.adopt };
-
+			// Contention and polling draw on the remaining wait budget, never their own defaults on
+			// top of it: a stale token beside a live mutex spends at most what is left of waitMs
+			// inside the acquisition, and a free path still acquires immediately.
+			const lease = tryAcquireLease(path, "init", ttlMs, now(), cwd, Math.max(deadline - now(), 0));
+			if (lease) return { outcome: "acquired", release: lease.release, adopt: lease.adopt };
 			// The steal race was lost between verdict and create: keep waiting like a live holder.
 		} else if (verdict === "held-live" && exists(cwd)) {
 			return { outcome: "present" };
 		}
 		if (now() >= deadline) return { outcome: "skipped" };
-		await sleep(pollMs);
+		await sleep(Math.min(pollMs, deadline - now())); // never sleep past the remaining budget
 	}
 }

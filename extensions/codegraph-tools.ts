@@ -327,37 +327,83 @@ export function indexExists(cwd: string): boolean {
 }
 
 /**
- * The git toplevel above a cwd, or undefined outside a repository or on any git error. The bash
- * re-index guard keys on this root, so a session sitting in a subdirectory of an indexed repo
- * still cannot rebuild (and kill) the shared daemon's index at the root. Never throws: the
- * guard stays total — any failure allows the call.
+ * The shell words of a command tail, quote removal applied: whitespace outside quotes ends a
+ * word, quoted stretches stay inside one word, and a backslash outside single quotes makes the
+ * next character literal (inside double quotes only before the characters it really escapes).
+ * A quote or backslash left open at the end leaves only the LAST word unterminated — the
+ * shell would keep reading it — so every word before it is complete.
  */
-function gitTopLevel(cwd: string, gitRun: GitRun = defaultGitRun): string | undefined {
-	try {
-		const root = realpathSync(gitRun(["rev-parse", "--show-toplevel"], cwd));
-		return lstatSync(root).isDirectory() ? root : undefined;
-	} catch {
-		return undefined;
+function shellWords(command: string): { words: string[]; unterminated: boolean } {
+	const words: string[] = [];
+	let word = "";
+	let quote: "'" | '"' | undefined;
+	let escaped = false;
+	for (let index = 0; index < command.length; index += 1) {
+		const char = command[index];
+		if (escaped) {
+			word += char;
+			escaped = false;
+			continue;
+		}
+		if (char === "\\" && quote === undefined) {
+			escaped = true;
+			continue;
+		}
+		if (char === "\\" && quote === '"' && (command[index + 1] === '"' || command[index + 1] === "\\" || command[index + 1] === "$" || command[index + 1] === "`")) {
+			escaped = true;
+			continue;
+		}
+		if (quote !== undefined) {
+			if (char === quote) quote = undefined;
+			else word += char;
+			continue;
+		}
+		if (char === "'" || char === '"') {
+			quote = char;
+			continue;
+		}
+		if (char === " " || char === "\t" || char === "\n") {
+			if (word.length > 0) words.push(word);
+			word = "";
+			continue;
+		}
+		word += char;
 	}
+	if (word.length > 0) words.push(word);
+	return { words, unterminated: quote !== undefined || escaped };
 }
 
 /** The directory a `codegraph index|init` command targets: its positional path argument —
  * the CLI resolves one against the caller's cwd (`init [path]`, `index [path]`) — or the
  * caller's own cwd when the command names none. Flags precede the positional, so only the
- * first non-flag word can be it. A word with an unterminated quote is a form this parser
- * cannot place: it falls back to the caller's cwd, keeping the command judged here rather
- * than silently allowed. */
+ * first non-flag word can be it. The word is read whole — quotes and escapes keep a path with
+ * spaces one argument — and a positional left unterminated by an unclosed quote or backslash
+ * is a form this parser cannot place: it falls back to the caller's cwd, keeping the command
+ * judged here rather than silently allowed. */
 function rebuildTargetDir(rest: string, cwd: string): string {
-	const words = rest.trim().split(/\s+/);
+	const { words, unterminated } = shellWords(rest);
 	for (let index = 2; index < words.length; index += 1) {
 		const word = words[index];
 		if (word.startsWith("-")) continue;
-		const quoted = word.length >= 2 && ((word.startsWith('"') && word.endsWith('"')) || (word.startsWith("'") && word.endsWith("'")));
-		const target = quoted ? word.slice(1, -1) : word;
-		if (target.includes('"') || target.includes("'")) return cwd;
-		return resolve(cwd, target);
+		if (unterminated && index === words.length - 1) return cwd;
+		return resolve(cwd, word);
 	}
 	return cwd;
+}
+
+/** Whether one `codegraph index|init` command would rebuild an existing index, located the way
+ * the CLI itself locates it: `init [path]` resolves its positional (or the caller's cwd)
+ * exactly and never an ancestor — an unindexed directory is a legitimate first init — while
+ * `index` rebuilds the exact target when it is initialized and otherwise the nearest
+ * initialized ancestor, the resolution a bare `codegraph index` performs from the cwd. */
+function rebuildsExistingIndex(verb: "index" | "init", rest: string, cwd: string): boolean {
+	const target = rebuildTargetDir(rest, cwd);
+	if (indexExists(target)) return true;
+	if (verb === "init") return false;
+	for (let current = dirname(target);; current = dirname(current)) {
+		if (indexExists(current)) return true;
+		if (dirname(current) === current) return false;
+	}
 }
 
 /** A full re-index from bash is blocked when an index already exists; this is the reason it gets. */
@@ -415,6 +461,11 @@ function unquoteAssignment(token: string): string {
 	return token.slice(0, equals + 1) + value;
 }
 
+/** A # begins a comment only at the start of a word: after start-of-input or any shell
+ * metacharacter that ends a word. Mid-word (`echo a#b`) it is a literal character, exactly
+ * as Bash reads it. */
+const COMMENT_WORD_BOUNDARY = /[\s;&|()<>]/;
+
 /**
  * The command with its here-document bodies removed: a `<<WORD` operator makes the lines after
  * its own line the input of the command (`cat <<'EOF'` feeds the body to cat), not commands of
@@ -423,6 +474,8 @@ function unquoteAssignment(token: string): string {
  * exactly the word, leading tabs ignored after `<<-` — and scanning continues after it; an
  * unclosed body runs to the end. `<<<` here-strings carry no body lines and stay as they are,
  * and quotes and backslashes outside the operator are respected: `echo "<<"` opens no heredoc.
+ * A comment — a # at the start of a word — runs to the end of its line as comment text: its
+ * quotes and << operators open nothing, exactly as Bash ignores them.
  */
 function stripHeredocBodies(command: string): string {
 	let out = "";
@@ -439,6 +492,15 @@ function stripHeredocBodies(command: string): string {
 		if (char === "\\") {
 			out += command.slice(index, Math.min(index + 2, command.length));
 			index += 2;
+			continue;
+		}
+		if (char === "#" && (index === 0 || COMMENT_WORD_BOUNDARY.test(command[index - 1]))) {
+			// A word-initial # comments out the rest of the line: its quotes and operators are
+			// comment text, so the line is copied whole and scanning resumes on the next line.
+			const lineEnd = command.indexOf("\n", index);
+			const end = lineEnd === -1 ? command.length : lineEnd + 1;
+			out += command.slice(index, end);
+			index = end;
 			continue;
 		}
 		if (char === "<" && command[index + 1] === "<" && command[index + 2] === "<") {
@@ -484,12 +546,14 @@ interface HeredocDelimiter {
  * operator, starting at the line's newline, in the order the operators appear. The bare word
  * ends at whitespace or a shell separator exactly as the shell ends it (`<<EOF; ...` names
  * EOF, then the `;` keeps its command meaning); a quoted word's quotes are stripped, the
- * way the shell derives the delimiter from `<<'EOF'`. */
+ * way the shell derives the delimiter from `<<'EOF'`. A comment on the introducing line
+ * ends the scan: operators named only inside it read no body. */
 function heredocDelimitersOnLine(command: string, from: number, lineEnd: number): HeredocDelimiter[] {
 	const delimiters: HeredocDelimiter[] = [];
 	let index = from;
 	while (index < lineEnd) {
 		const char = command[index];
+		if (char === "#" && COMMENT_WORD_BOUNDARY.test(command[index - 1])) return delimiters;
 		if (char === "'" || char === '"') {
 			const close = command.indexOf(char, index + 1);
 			index = close === -1 ? lineEnd : Math.min(close + 1, lineEnd);
@@ -559,13 +623,23 @@ function endOfHeredocBody(command: string, from: number, delimiter: HeredocDelim
  * Here-document bodies are removed before the scan: a `<<WORD` operator makes the following
  * lines the input of the command, not commands of the list, and scanning resumes after the
  * closing delimiter line.
+ * A comment — a # at the start of a word — is comment text to the end of its line: quotes
+ * and separators inside it open and end nothing, and only its newline still ends the command.
  */
 function shellCommandList(command: string): string[] {
 	const commands: string[] = [];
 	let current = "";
 	let quote: "'" | '"' | undefined;
 	let escaped = false;
+	let comment = false;
 	for (const char of stripHeredocBodies(command)) {
+		// Comment text: a word-initial # runs to the end of the line, and only the newline
+		// that ends it still separates commands.
+		if (comment && char !== "\n") {
+			current += char;
+			continue;
+		}
+		if (comment) comment = false;
 		// A backslash outside single quotes makes the next character literal, so an escaped
 		// quote is content, never a quote toggle; inside single quotes it is literal itself.
 		// A backslash-newline pair, by contrast, is a line continuation the shell removes
@@ -593,6 +667,13 @@ function shellCommandList(command: string): string[] {
 			current += char;
 			continue;
 		}
+		// A word-initial # comments out the rest of the line: quotes and separators inside
+		// the comment are text, and the comment's own newline still ends the command.
+		if (char === "#" && (current.length === 0 || COMMENT_WORD_BOUNDARY.test(current.slice(-1)))) {
+			comment = true;
+			current += char;
+			continue;
+		}
 		if (char === "\n" || char === ";" || char === "&" || char === "|") {
 			commands.push(current);
 			current = "";
@@ -607,16 +688,21 @@ function shellCommandList(command: string): string[] {
 /**
  * The `codegraph index`/`codegraph init` commands of a shell command list — full re-indexes that
  * kill the shared daemon and rebuild the index — each carrying the leading-assignments parse of
- * its own command, so the in-command override is recognized on the rebuild command itself and
- * not on an unrelated earlier command. Every executable command is inspected, not only the
- * first: `cd . && codegraph index .` rebuilds as surely as a bare `codegraph index .`. The word
- * boundary keeps every other subcommand (`codegraph indexer`, `sync`, `query`, `unlock`,
- * `status`) out.
+ * its own command (so the in-command override is recognized on the rebuild command itself, not
+ * on an unrelated earlier command) and its verb, on which the CLI's own target rules key.
+ * Every executable command is inspected, not only the first: `cd . && codegraph index .`
+ * rebuilds as surely as a bare `codegraph index .`. The word boundary keeps every other
+ * subcommand (`codegraph indexer`, `sync`, `query`, `unlock`, `status`) out.
  */
-function codegraphIndexCommands(command: string): { rest: string; allowIndexOverride: boolean }[] {
+function codegraphIndexCommands(command: string): { rest: string; verb: "index" | "init"; allowIndexOverride: boolean }[] {
+	const rebuild = /^codegraph\s+(index|init)\b/;
 	return shellCommandList(command)
-		.map((part) => leadingAssignments(part))
-		.filter((parsed) => /^codegraph\s+(index|init)\b/.test(parsed.rest));
+		.map((part) => {
+			const parsed = leadingAssignments(part);
+			const verb = rebuild.exec(parsed.rest);
+			return verb === null ? undefined : { rest: parsed.rest, verb: verb[1] as "index" | "init", allowIndexOverride: parsed.allowIndexOverride };
+		})
+		.filter((parsed): parsed is { rest: string; verb: "index" | "init"; allowIndexOverride: boolean } => parsed !== undefined);
 }
 
 // CodeGraph writes .codegraph/.gitignore with `*` and `!.gitignore`, so that file
@@ -1383,16 +1469,13 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			// The override must ride EVERY rebuild command: one authorized rebuild never
 			// authorizes the rest of the list (`=1 codegraph index .; codegraph init`).
 			if (rebuilds.every((rebuild) => rebuild.allowIndexOverride)) return undefined;
-			// A rebuild is blocked only at the checkout it would actually rebuild: the CLI takes a
-			// positional project path (`codegraph init /path/to/fresh` initializes THAT checkout,
-			// `init [path]` / `index [path]` in its command surface), so each command is judged at
-			// its own target's git root. A bare `codegraph index`, a target this parser cannot
-			// confidently place, and a target inside this repository all resolve to this repo's
-			// root — every previously blocked form stays blocked.
-			if (!rebuilds.some((rebuild) => {
-				const root = gitTopLevel(rebuildTargetDir(rebuild.rest, ctx.cwd));
-				return root !== undefined && indexExists(root);
-			})) return undefined;
+			// A rebuild is blocked only at the index it would actually rebuild, located the way the
+			// CLI itself locates it: the exact positional target first — an index initialized below
+			// the Git root is rebuilt at its own directory, which the Git root never sees — and for
+			// `index` the nearest initialized ancestor above it, the resolution a bare call performs.
+			// A rebuild carrying its own override is already authorized: it is excluded here, so an
+			// ordinary first init elsewhere in the list never blocks on the authorized sibling's target.
+			if (!rebuilds.some((rebuild) => !rebuild.allowIndexOverride && rebuildsExistingIndex(rebuild.verb, rebuild.rest, ctx.cwd))) return undefined;
 			return { block: true, reason: CODEGRAPH_INDEX_BLOCK_REASON };
 		} catch {
 			return undefined;

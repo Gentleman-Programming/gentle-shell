@@ -1235,26 +1235,84 @@ test("the tool_call guard judges a rebuild at the command's own target, not the 
 	codeGraphTools(pi);
 	const guard = handlers.get("tool_call");
 	assert.ok(typeof guard === "function", "the extension registers a tool_call guard");
-	const indexed = workspace(t);
-	await writeIndex(["init", indexed], { cwd: indexed, maxBuffer: 1 });
-	const fresh = workspace(t);
+	// The fixtures sit under a directory whose name has a space and every positional is
+	// quoted: the target parse must keep each path one shell word, and a spaceless runner
+	// temporary could never expose a half-parsed path.
+	const { indexed, fresh } = await spacedWorkspaces(t);
 	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
 	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
 	t.after(() => {
 		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
 		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
 	});
+	const shellQuoted = (path: string) => "'" + path + "'";
 	const verdict = (command: string) =>
 		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command } }, { cwd: indexed } as ExtensionContext);
 
-	assert.equal(verdict("codegraph init " + fresh), undefined, "a positional target naming another checkout initializes that checkout, not this index");
-	assert.equal(verdict("codegraph index " + fresh), undefined, "the index rebuild form takes the same positional target");
-	assert.equal(verdict("codegraph init -y " + fresh), undefined, "flags come before the positional path");
+	assert.equal(verdict("codegraph init " + shellQuoted(fresh)), undefined, "a positional target naming another checkout initializes that checkout, not this index");
+	assert.equal(verdict("codegraph index " + shellQuoted(fresh)), undefined, "the index rebuild form takes the same positional target");
+	assert.equal(verdict("codegraph init -y " + shellQuoted(fresh)), undefined, "flags come before the positional path");
 	assert.equal((verdict("codegraph init") as { block?: boolean } | undefined)?.block, true, "a bare rebuild still targets the caller's indexed checkout");
-	assert.equal((verdict("codegraph init " + indexed) as { block?: boolean } | undefined)?.block, true, "an explicit this-checkout target is the rebuild the guard exists for");
+	assert.equal((verdict("codegraph init " + shellQuoted(indexed)) as { block?: boolean } | undefined)?.block, true, "an explicit this-checkout target is the rebuild the guard exists for");
 	const nested = join(indexed, "packages", "inner");
 	mkdirSync(nested, { recursive: true });
-	assert.equal((verdict("codegraph index " + nested) as { block?: boolean } | undefined)?.block, true, "a target inside this repo resolves to this repo's index");
+	assert.equal((verdict("codegraph index " + shellQuoted(nested)) as { block?: boolean } | undefined)?.block, true, "a target inside this repo resolves to this repo's initialized index");
+});
+
+test("the guard reads a quoted positional target as one shell word", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	const { fresh } = await spacedWorkspaces(t);
+	// Assembled from char codes: backslash literals are corruption-prone in generated code.
+	const dquote = String.fromCharCode(34);
+	const backslash = String.fromCharCode(92);
+	assert.equal(verdict("codegraph init " + dquote + fresh + dquote), undefined, "a double-quoted path with spaces is one shell word naming the fresh checkout");
+	assert.equal(
+		verdict("codegraph init " + fresh.split(" ").join(backslash + " ")),
+		undefined,
+		"a backslash-escaped space keeps the target one word",
+	);
+	const unterminated = verdict("codegraph init '" + fresh) as { block?: boolean } | undefined;
+	assert.equal(unterminated?.block, true, "an unterminated quote is a form the parser cannot place: it is judged at the caller's indexed checkout");
+});
+
+test("the tool_call guard judges a rebuild by CodeGraph's own target rules, not the Git root", async (t) => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const pi = {
+		registerTool() {
+			/* the registered tool's shape is covered above */
+		},
+		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
+			handlers.set(event, handler);
+		},
+	} as unknown as ExtensionAPI;
+	codeGraphTools(pi);
+	const guard = handlers.get("tool_call");
+	assert.ok(typeof guard === "function", "the extension registers a tool_call guard");
+	// The index lives in a subdirectory and the Git root above it carries none: the CLI
+	// resolves `index [path]` exactly and a bare `index` at the caller's cwd, walking up
+	// for the nearest initialized ancestor — never down or sideways from the Git root.
+	const root = workspace(t);
+	const sub = join(root, "packages", "inner");
+	mkdirSync(sub, { recursive: true });
+	await writeIndex(["init", sub], { cwd: sub, maxBuffer: 1 });
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	const verdictFrom = (cwd: string, command: string) =>
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command } }, { cwd } as ExtensionContext);
+
+	assert.equal((verdictFrom(sub, "codegraph index") as { block?: boolean } | undefined)?.block, true, "a bare index from the initialized subdirectory resolves that subdirectory, not the unindexed Git root");
+	assert.equal((verdictFrom(root, "codegraph index " + sub) as { block?: boolean } | undefined)?.block, true, "an explicit initialized target below the Git root is rebuilt exactly there");
+	assert.equal((verdictFrom(sub, "codegraph init") as { block?: boolean } | undefined)?.block, true, "a bare init from the initialized subdirectory is judged at that same target");
+	assert.equal(verdictFrom(root, "codegraph index"), undefined, "a bare index from the unindexed root finds no initialized ancestor above it: nothing existing is rebuilt");
+	assert.equal(verdictFrom(root, "codegraph init"), undefined, "an init of the unindexed root creates the first index there: no existing index is rebuilt");
+	const nonGit = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-nogit-")));
+	t.after(() => rmSync(nonGit, { recursive: true, force: true }));
+	await writeIndex(["init", nonGit], { cwd: nonGit, maxBuffer: 1 });
+	assert.equal((verdictFrom(root, "codegraph index " + nonGit) as { block?: boolean } | undefined)?.block, true, "an initialized target outside any Git repository is rebuilt exactly there too");
 });
 
 /** The tool_call guard's verdict function over an indexed workspace, with the launch override
@@ -1284,6 +1342,24 @@ async function guardOnIndexedWorkspace(t: test.TestContext): Promise<(command: s
 		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName, input: { command } }, ctx);
 }
 
+/** A pair of Git workspaces under a directory whose name contains a space — the indexed one
+ * carries a written index, the fresh one none. Rebuild-guard tests quote their positional
+ * paths, and the space makes every quote load-bearing: a spaceless runner temporary could
+ * never tell a parsed path from a half-parsed one. */
+async function spacedWorkspaces(t: test.TestContext): Promise<{ indexed: string; fresh: string }> {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-spaced-")));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const under = (name: string): string => {
+		const dir = join(root, name);
+		mkdirSync(dir, { recursive: true });
+		execFileSync("git", ["init", "-b", "main"], { cwd: dir, stdio: "ignore" });
+		return dir;
+	};
+	const indexed = under("indexed checkout");
+	await writeIndex(["init", indexed], { cwd: indexed, maxBuffer: 1 });
+	return { indexed, fresh: under("fresh checkout") };
+}
+
 test("the guard's inline override honors the last GENTLE_CODEGRAPH_ALLOW_INDEX assignment", async (t) => {
 	const verdict = await guardOnIndexedWorkspace(t);
 	const superseded = verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=1 GENTLE_CODEGRAPH_ALLOW_INDEX=0 codegraph index .") as { block?: boolean; reason?: string } | undefined;
@@ -1302,6 +1378,18 @@ test("the guard requires the inline override on every rebuild command in the lis
 		undefined,
 		"a list where every rebuild carries its own override is the deliberate rebuild the override exists for",
 	);
+});
+
+test("a rebuild carrying its own override is excluded from the target check", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	const fresh = workspace(t);
+	assert.equal(
+		verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=1 codegraph index .; codegraph init " + fresh),
+		undefined,
+		"the fresh init carries no override but rebuilds no index: the authorized sibling rebuild pays for itself",
+	);
+	const leaky = verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=1 codegraph index .; codegraph init .") as { block?: boolean } | undefined;
+	assert.equal(leaky?.block, true, "a sibling rebuild without an override still blocks the list at its own indexed target");
 });
 
 test("the guard still detects rebuild commands hidden behind backslash-escaped quotes", async (t) => {
@@ -1366,6 +1454,27 @@ test("the guard does not classify here-document bodies as rebuild commands", asy
 	assert.equal((verdict("cat <<EOF\nbody\nEOF\ncodegraph index .") as { block?: boolean } | undefined)?.block, true, "commands after the closing delimiter are still inspected");
 	assert.equal((verdict("cat <<EOF; codegraph index .\nbody\nEOF") as { block?: boolean } | undefined)?.block, true, "a rebuild after the operator on the introducing line is still detected");
 	assert.equal(verdict("cat <<< codegraph init"), undefined, "a here-string is one word of one command, never split into commands");
+});
+
+test("the guard ignores here-document operators inside Bash comments", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	assert.equal(
+		(verdict("# uses <<EOF\ncodegraph index .") as { block?: boolean } | undefined)?.block,
+		true,
+		"a comment's << opens no here-document: the next line's rebuild still runs and is blocked",
+	);
+	assert.equal(
+		(verdict("# don't <<EOF\ncodegraph index .") as { block?: boolean } | undefined)?.block,
+		true,
+		"quotes inside a comment are comment text: they open no quoted section and hide no rebuild",
+	);
+	assert.equal(
+		(verdict("cat <<EOF # a trailing comment <<X\nbody\nEOF\ncodegraph index .") as { block?: boolean } | undefined)?.block,
+		true,
+		"a second << named only in a trailing comment reads no second body: the rebuild after the closing delimiter is seen",
+	);
+	assert.equal(verdict("echo codegraph # <<EOF"), undefined, "a comment after a non-rebuild command neither hides nor blocks anything");
+	assert.equal(verdict("echo foo#bar <<EOF\ncodegraph index .\nEOF"), undefined, "a # mid-word starts no comment: the here-document body stays the command's input");
 });
 
 function writeCodeGraphPackage(binDir: string, scriptSource = "#!/usr/bin/env node\n"): string {

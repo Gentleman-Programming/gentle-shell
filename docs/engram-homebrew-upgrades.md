@@ -1,0 +1,63 @@
+# Keep Engram available after a Homebrew upgrade
+
+For Linux users who manage Engram with Homebrew. This is a precaution, not a fix: the cause of the reported post-upgrade memory outages is still unknown. It covers only what is specific to Homebrew. How Shell decides whether it may use memory at startup is documented in [Engram startup safety](bundled-install.md#engram-startup-safety).
+
+## Why a Homebrew upgrade may not reach Shell
+
+- `brew upgrade` replaces the `engram` executable on disk. It does not replace an Engram server that is already running.
+- Gentle Shell does not run the `engram` on your `PATH`. It reuses whatever server answers on `127.0.0.1:7437`, and when nothing listens it starts its own bundled core from `~/.gentle-shell/runtime/engram-<version>/`, not Homebrew's.
+
+So after an upgrade, Shell can still be talking to the old Homebrew server, or to its bundled core, while `engram version` in your terminal shows the new one.
+
+## 1. Check which Engram server Shell uses
+
+Run these in a terminal outside Shell:
+
+```bash
+brew list --versions gentleman-programming/tap/engram
+readlink -f "$(brew --prefix gentleman-programming/tap/engram)/bin/engram"
+curl --noproxy '*' --fail --silent --show-error --max-time 3 http://127.0.0.1:7437/health
+```
+
+The first two show the Homebrew version and the path of its executable. The `version` in the `/health` answer is the version of the server actually running, which is the one Shell uses.
+
+To see which executable that server runs from:
+
+```bash
+pid=$(ss -ltnpH 'sport = :7437' | grep -o 'pid=[0-9]*' | head -n1 | cut -d= -f2)
+readlink -f "/proc/$pid/exe"
+```
+
+| Server executable | Meaning |
+|---|---|
+| The Homebrew path from above | Shell uses your upgraded Homebrew Engram. |
+| A different Homebrew `Cellar/engram/<version>` path, or a path ending in `(deleted)` | The server started before the upgrade is still running the old version. |
+| `~/.gentle-shell/runtime/engram-<version>/engram` | Shell started its bundled core. The Homebrew upgrade does not affect it. |
+| Nothing listening | Shell starts its bundled core on the next launch. |
+
+Also run `env | grep '^ENGRAM_'`. If you set `ENGRAM_BIN`, `ENGRAM_URL`, `ENGRAM_PORT` or another explicit Engram setting, Shell does not probe or reuse the default server, and memory stays disabled ([decision table](bundled-install.md#decision)).
+
+## 2. Upgrade and restart with care
+
+Before the upgrade, close Shell and every other Engram client, and make a verified backup of your Engram data using the procedure your Engram version supports. Backups can contain private memories: keep them out of repositories and bug reports.
+
+Upgrade only the Engram formula, not every formula:
+
+```bash
+brew update
+brew upgrade --formula gentleman-programming/tap/engram
+```
+
+Then restart the server the same way it was started: `engram restart` for a daemon (`engram ps` lists it), your service manager for a service, or a new `engram serve` for a server you run by hand. Do not start a second server next to the old one. Run step 1 again: the `/health` version should match the Homebrew version and the executable path should be the new one.
+
+If the server was Shell's bundled core and you want the Homebrew Engram to serve instead, stop that server and start Homebrew's yourself; Shell reuses it on the next launch. A newer Engram may migrate the store. Do not go back to an older Engram on a migrated store; Shell refuses to start its older bundled core on it ([header tripwire](bundled-install.md#decision)).
+
+## 3. Verify memory in a new Shell session
+
+Sessions keep the memory decision made when they started, so open a new interactive Gentle Shell session after the restart.
+
+1. Startup must not show an `Engram memory disabled` notice. If it does, follow [Recovery and setup](bundled-install.md#recovery-and-setup).
+2. Ask the agent to run `echo "$ENGRAM_URL"` in its shell. `http://127.0.0.1:7437` means Shell verified the shared server and uses it. An empty value means memory is disabled for this session.
+3. Ask the agent to search memory for something you know is stored, for example a recent project decision. A result, or an empty result without an error, shows the memory tools reach the server.
+
+If any of these fail, stop. Keep the backup, do not delete the store or bypass the memory guard, and do not run the upgrade again. When you report the problem, include your Linux distribution, the Homebrew version and the `/health` version (not the whole answer), the server executable path from step 1, and the exact startup notice, without tokens, memory contents or environment dumps.

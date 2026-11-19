@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -29,9 +29,9 @@ test("canonicalRoot: one directory in any spelling is one key", (t) => {
 	assert.equal(canonicalRoot(real, "darwin"), canonicalRoot(`${real}//`, "darwin"), "resolve collapses separators before the real path");
 });
 
-test("unfoldRoot: a missing tail keeps the nearest resolvable parent instead of throwing", () => {
-	const base = realpathSync(tmpdir());
-	const missing = join(base, "gentle-codegraph-canonical-missing-tail");
+test("unfoldRoot: a missing tail keeps the nearest resolvable parent instead of throwing", (t) => {
+	const base = realpathSync(dir(t, "missing-tail"));
+	const missing = join(base, "missing");
 	assert.equal(unfoldRoot(missing), missing, "a resolvable parent plus the given tail");
 	assert.equal(unfoldRoot(join(missing, "deeper")), join(missing, "deeper"), "every missing level walks up to the same base");
 });
@@ -41,4 +41,24 @@ test("canonicalRoot on POSIX equals realpath: lock tokens never re-key", (t) => 
 	const real = realpathSync(dir(t, "posix"));
 	assert.equal(canonicalRoot(real), real);
 	assert.equal(canonicalRoot(`${real}/`), real);
+});
+
+test("foldRoot keeps case-distinct directories apart on a case-sensitive tree", (t) => {
+	const base = realpathSync(dir(t, "case"));
+	const repo = join(base, "Repo");
+	mkdirSync(repo);
+	const sibling = join(base, "repo");
+	let siblingCreated = true;
+	try {
+		mkdirSync(sibling);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		siblingCreated = false;
+	}
+	if (!siblingCreated) {
+		assert.equal(canonicalRoot(repo, "win32"), realpathSync(repo).toLowerCase(), "a case-insensitive tree still folds every spelling of one directory to one key");
+		assert.equal(canonicalRoot(join(base, "REPO"), "win32"), canonicalRoot(repo, "win32"), "a differently-cased spelling of one directory shares its key");
+		return;
+	}
+	assert.notEqual(canonicalRoot(repo, "win32"), canonicalRoot(sibling, "win32"), "two checkouts differing only by case keep distinct keys");
 });

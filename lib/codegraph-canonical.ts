@@ -27,11 +27,13 @@ function isDriveRoot(path: string): boolean {
 /** Whether the spelling still resolves to the identity the memo recorded: the alias's own stat
  * follows today's link, so its dev/ino pair matching the recorded target's proves the mapping
  * survived (a retargeted junction or symlink compares unequal); any stat failure simply
- * re-walks, because validation must never throw. */
+ * re-walks, because validation must never throw. The stats are bigint ones: win32 ino is a
+ * 64-bit file ID whose distinct values can round to the same Number, and the cache decision
+ * must differ exactly when the identity does. */
 function stillResolvesTo(alias: string, recorded: string): boolean {
 	try {
-		const aliasStat = statSync(alias);
-		const recordedStat = statSync(recorded);
+		const aliasStat = statSync(alias, { bigint: true });
+		const recordedStat = statSync(recorded, { bigint: true });
 		return aliasStat.dev === recordedStat.dev && aliasStat.ino === recordedStat.ino;
 	} catch {
 		return false;

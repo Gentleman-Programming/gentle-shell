@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
-import { daemonFor, mcpCallRequests, mcpCallText, mcpInitializeRequest, mcpLineReader, mcpReplyKind, projectSpelling } from "./codegraph-daemon.ts";
+import { daemonFor, daemonHealth, mcpCallRequests, mcpCallText, mcpInitializeRequest, mcpLineReader, mcpReplyKind, projectSpelling } from "./codegraph-daemon.ts";
 import type { DaemonInfo } from "./codegraph-daemon.ts";
 import { resolveCodegraphEntry } from "./codegraph-cli-resolve.ts";
 import type { CodegraphEntry } from "./codegraph-cli-resolve.ts";
@@ -221,27 +221,44 @@ export function spawnCodegraph(args: readonly string[], stdio: ReadonlyArray<"pi
 }
 
 
+/** The warm gate's verdict: ok says the daemon is warm, and wedged names the state where the
+ * daemon is alive and holds the daemon lock but never answers — no spawn ran, so nothing was
+ * killed or replaced. */
+export type WarmUpOutcome = { ok: boolean; wedged?: boolean };
+
 /**
  * Makes the project's CodeGraph daemon open its database and start a read worker, so the next real call
  * is fast: talks MCP to `codegraph serve --mcp -p <project>` started from the temp directory (cmd.exe
  * cannot take a UNC working directory), then destroys the pipes and unrefs the child so the server goes
  * on alone as the daemon — it is shared with the user's other sessions, so it is never killed. When a
- * daemon is already alive there is nothing to warm: resolves true without spawning anything. Never
- * rejects; `background` unrefs everything so a warm-up still running never keeps its caller alive.
+ * daemon is already alive there is nothing to warm: the alive short-circuit is probe-verified — one
+ * health check must actually answer before the warm-up resolves true, still with no spawn — and a
+ * wedged daemon resolves { ok: false, wedged: true } with no spawn either, because a fresh serve would
+ * lose the daemon lock to the wedged holder. Never rejects; `background` unrefs everything so a warm-up
+ * still running never keeps its caller alive.
  */
-export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP_TIMEOUT_MS, registryDir?: string): Promise<boolean> {
+export async function warmUpDaemonDetailed(cwd: string, background = false, timeoutMs = WARMUP_TIMEOUT_MS, registryDir?: string, helloTimeoutMs?: number): Promise<WarmUpOutcome> {
 	// A daemon that is already alive is already warm: a second `serve --mcp` cannot take the daemon
 	// lock and only logs "Could not acquire the daemon lock; exiting" (26+ such lines in daemon.log)
-	// before it is reported as a failed warm-up. No spawn, no handshake — it resolves at once.
+	// before it is reported as a failed warm-up. No spawn, no handshake — with the health probe
+	// answered it resolves at once.
 	let daemon: DaemonInfo;
 	try {
 		daemon = daemonFor(cwd, registryDir);
-		if (daemon.alive) return Promise.resolve(true);
+		if (daemon.alive) {
+			const health = await daemonHealth(cwd, registryDir, helloTimeoutMs);
+			if (health === "ok") return { ok: true };
+			// Wedged: the daemon holds the daemon lock and cannot serve, and a fresh serve would
+			// only lose that lock to the wedged holder — no kill, no respawn, an explicit outcome
+			// the caller warns about and bypasses.
+			if (health === "wedged") return { ok: false, wedged: true };
+			// Unreachable: the record is effectively dead — the spawn path below starts a new daemon.
+		}
 	} catch {
 		/* an unreadable registry is no reason to skip the warm-up */
 		daemon = { alive: false, root: undefined };
 	}
-	return new Promise((resolve) => {
+	const ok = await new Promise<boolean>((resolve) => {
 		let settled = false;
 		let timedOut = false;
 		let child: ReturnType<typeof spawn> | undefined;
@@ -319,6 +336,12 @@ export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP
 		child.stdin?.on("error", () => { /* the server exited first */ });
 		send(mcpInitializeRequest(pathToFileURL(project).href));
 	});
+	return { ok };
+}
+
+/** The boolean warm-up contract every existing caller speaks; warmUpDaemonDetailed carries the detail. */
+export function warmUpDaemon(cwd: string, background = false, timeoutMs = WARMUP_TIMEOUT_MS, registryDir?: string): Promise<boolean> {
+	return warmUpDaemonDetailed(cwd, background, timeoutMs, registryDir).then((outcome) => outcome.ok);
 }
 
 // The tri-state index check lives in the lease module now (the init lock waits on it); re-exported

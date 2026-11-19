@@ -383,3 +383,29 @@ export async function exploreViaDaemon(
 		return { status: "unavailable" };
 	}
 }
+
+/** The daemon's health for the warm gate: liveness alone cannot tell a serving daemon from a
+ * wedged one — ok answers a real query, wedged is alive but never answers, and unreachable
+ * means there is no live daemon to ask. */
+export type DaemonHealth = "ok" | "wedged" | "unreachable";
+
+/**
+ * The health check for the warm gate: liveness is not serviceability. A daemon can pass every
+ * registry check — pid running, socket present, connections accepted — and still never answer,
+ * so the gate asks the newest live daemon one real query (the same call the stdio warm-up
+ * makes) and maps the answer: ok serves, silent or timeout is wedged (the daemon holds its
+ * lock and cannot serve), unavailable has nothing to talk to. Reads and connects only: it
+ * never starts anything, kills nothing, and never throws.
+ */
+export async function daemonHealth(cwd: string, registryDir?: string, helloTimeoutMs: number = DAEMON_HELLO_TIMEOUT_MS, probeTimeoutMs: number = 5_000): Promise<DaemonHealth> {
+	try {
+		const sockets = daemonSockets(cwd, registryDir);
+		if (sockets.length === 0) return "unreachable";
+		const outcome = await ask(sockets[0], "codegraph_explore", { query: "main" }, probeTimeoutMs, helloTimeoutMs);
+		if (outcome.status === "ok") return "ok";
+		if (outcome.status === "silent" || outcome.status === "timeout") return "wedged";
+		return "unreachable";
+	} catch {
+		return "unreachable";
+	}
+}

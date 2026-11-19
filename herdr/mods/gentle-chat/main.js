@@ -828,7 +828,7 @@ export default class GentleChat extends View {
       if (!address) return "No Gentle Shell terminal.";
       const busy = terminalFree(this.snap);
       if (busy) return busy;
-      const r = await hc(["keys", address, pasteImageKey()]);
+      const r = await hc(["keys", address, pasteImageKey(this.snap?.identity?.platform)]);
       if (r.code !== 0) return (r.stderr || r.stdout || "hc keys failed").trim();
       this.notice = "Clipboard pasted into the session's draft; it goes with your next message.";
       return null;

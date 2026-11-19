@@ -734,3 +734,17 @@ test("S2: desktop RPC jobs answers and events are byte-identical with the feed l
 		recent: [{ id: "j2", label: "build", status: "exited", startedAt: 2, endedAt: 3, exitCode: 0, elapsedMs: 1 }],
 	});
 });
+
+test("should publish the platform of the agent process in the feed identity", async (t) => {
+	const h = feedHarness(t);
+	await h.start();
+	assert.equal((h.read().identity as { platform?: string }).platform, process.platform);
+});
+
+test("should publish the platform only when it is a non-empty string", () => {
+	const base = fixtureInput().identity;
+	assert.equal(buildDesktopFeedSnapshot(fixtureInput({ identity: { ...base, platform: "linux" } })).identity.platform, "linux");
+	for (const bad of [undefined, "", 7 as unknown as string]) {
+		assert.equal("platform" in buildDesktopFeedSnapshot(fixtureInput({ identity: { ...base, platform: bad } })).identity, false, String(bad));
+	}
+});

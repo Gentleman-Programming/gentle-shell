@@ -290,6 +290,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 					realCwd: session.realCwd,
 					pid: process.pid,
 					ppid: process.ppid,
+					platform: process.platform,
 					startedAt: osStartedAt ?? estimatedStart,
 					...(osStartedAt === undefined ? {} : { startedAtSource: "os" as const }),
 					ancestors: session.ancestors,

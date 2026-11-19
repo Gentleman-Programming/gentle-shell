@@ -15,9 +15,14 @@ export const ELSEWHERE = "This session runs in another terminal";
 
 // Pi's paste-image key is Ctrl+V, or Alt+V on Windows (docs/gentle-shell.md). The composer is a
 // text field, so Ctrl+V typed there pastes text: the Attach button sends this key to the terminal.
-export const isWindowsHost = () => /^[A-Za-z]:|\\/.test(String(home() ?? ""));
-export const pasteImageKey = () => (isWindowsHost() ? "alt+v" : "ctrl+v");
-export const attachTooltip = () => `Attach: paste the clipboard image into the draft (${isWindowsHost() ? "Alt+V" : "Ctrl+V"})`;
+// The key belongs to the runtime of the pane that receives it, so the platform its publisher reports
+// (`identity.platform`, "win32" for a Windows Pi, "linux" for one in WSL) decides; a session that does
+// not report one (an older Gentle Shell) gets the Herdr host's.
+// A Windows home starts with a drive ("C:/Users/x", "C:\Users\x") or is a UNC path.
+export const isWindowsHost = () => /^(?:[A-Za-z]:|\\\\)/.test(String(home() ?? ""));
+const onWindows = (platform) => (typeof platform === "string" && platform ? platform === "win32" : isWindowsHost());
+export const pasteImageKey = (platform) => (onWindows(platform) ? "alt+v" : "ctrl+v");
+export const attachTooltip = (platform) => `Attach: paste the clipboard image into the draft (${onWindows(platform) ? "Alt+V" : "Ctrl+V"})`;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const CLEAR = "#00000000";
 const CLIP = 6000; // characters of a tool's output shown when expanded
@@ -846,7 +851,7 @@ export function composer(v, p, pq) {
     // Attach: the clipboard's image (or files) into the session's draft, as the paste-image key does in the terminal.
     .child(h_flex().id("attach").w(32).h(32).flex_none().items_center().justify_center().rounded(R.sm).text_color(p.muted)
       .cursor_pointer().when(v.busy === "attach", (el) => el.opacity(0.6))
-      .hover((st) => st.bg(p.selected).text_color(p.text)).tooltip(attachTooltip())
+      .hover((st) => st.bg(p.selected).text_color(p.text)).tooltip(attachTooltip(v.snap?.identity?.platform))
       .on_click((_e, cx) => v.attach(cx)).child(icon("clip", 15)))
     .child(div().flex_1().min_w(0).key_context("GentleChatComposer").on_action("gentle_chat_send", (_e, cx) => v.send(cx))
       .on_action("gentle_chat_attach", (_e, cx) => v.attach(cx))

@@ -130,6 +130,8 @@ export interface DesktopFeedIdentity {
 	startedAt?: number;
 	/** "os" when startedAt is the creation time the OS reports for the process, not an estimate from the publisher's clock. */
 	startedAtSource?: "os";
+	/** `process.platform` of the publishing process, so readers pick the key that process understands (paste-image: Alt+V on win32). */
+	platform?: string;
 	/** Best-effort process ancestors above ppid (nearest first), for terminal matching. */
 	ancestors: number[];
 	mode: string;
@@ -356,6 +358,7 @@ export interface DesktopFeedInput {
 		ppid: number;
 		startedAt?: number;
 		startedAtSource?: "os";
+		platform?: string;
 		ancestors: readonly number[];
 		mode: string;
 		agentDir: string;
@@ -640,6 +643,7 @@ export function buildDesktopFeedSnapshot(input: DesktopFeedInput): DesktopFeedSn
 			ppid: identity.ppid,
 			...(Number.isFinite(identity.startedAt) && identity.startedAt! > 0 ? { startedAt: Math.round(identity.startedAt!) } : {}),
 			...(identity.startedAtSource === "os" && Number.isFinite(identity.startedAt) && identity.startedAt! > 0 ? { startedAtSource: "os" as const } : {}),
+			...(typeof identity.platform === "string" && identity.platform ? { platform: clipText(identity.platform, 32) } : {}),
 			ancestors: identity.ancestors.filter((pid) => Number.isInteger(pid) && pid > 0).slice(0, DESKTOP_FEED_LIMITS.ancestors),
 			mode: clipText(identity.mode),
 			agentDir: resolve(identity.agentDir),

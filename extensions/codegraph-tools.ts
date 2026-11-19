@@ -8,7 +8,7 @@ import { resolveCodegraphShimState, type CodegraphShimResolution } from "../lib/
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { acquireInitLock, type InitLockOutcome } from "../lib/codegraph-lease.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
-import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, WARMUP_TIMEOUT_MS, type SearchSyncInput, type IndexState, type IndexAction, type SessionStartReason, warmUpDaemonDetailed } from "../lib/codegraph-readiness.ts";
+import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, WARMUP_TIMEOUT_MS, type SearchSyncInput, type IndexState, type IndexAction, type SessionStartReason, warmUpDaemonDetailed, type WarmUpOutcome } from "../lib/codegraph-readiness.ts";
 import { ensureDirectExposureInAgentHomes, type EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
 
 const CODEGRAPH_OPERATION = {
@@ -1033,6 +1033,11 @@ const daemonSkipUntil = new Map<string, number>();
 /** How long a wedged daemon is bypassed after its post-warm attempt times out. */
 const DAEMON_SKIP_MS = 60_000;
 
+/** The session-start say handle the lazy re-warm ready notice rides: captured when a session
+ * starts so a daemon revived mid-session can announce itself, replaced by every newer session,
+ * and undefined whenever no session through this module ever started - no UI, no announce. */
+let warmNoticeSay: ((text: string, level: "info" | "warning") => void) | undefined;
+
 /**
  * How long a settled pre-query sync keeps a win32 root fresh: consecutive searches inside this
  * window run no `sync -q` of their own — each one is a full CLI startup on Windows (×5 on a
@@ -1121,6 +1126,15 @@ export function indexedNotice(
 		return { text: `codegraph init failed in ${cwd} after ${result.initAttempts - 1} retries; run "codegraph init" manually`, level: "warning" };
 	}
 	return { text: `codegraph ${result.action} failed in ${cwd}`, level: "warning" };
+ * The notify for one settled warm-up: every success - freshly warmed, a racing winner's daemon
+ * the spawn adopted, or a live daemon the health probe already verified so no warm ran - carries
+ * the same ready line, and the wedged and failed outcomes carry their warning. Every
+ * WarmUpOutcome shape maps to exactly one notice, so an emitter never branches on its own.
+ */
+export function warmNotice(outcome: WarmUpOutcome, cwd: string): { text: string; level: "info" | "warning" } {
+	if (outcome.ok) return { text: `CodeGraph ready in ${cwd}`, level: "info" };
+	if (outcome.wedged) return { text: `CodeGraph daemon in ${cwd} is not answering; queries use the CLI fallback for now`, level: "warning" };
+	return { text: `CodeGraph warm-up failed in ${cwd}`, level: "warning" };
 }
 
 /**
@@ -1204,7 +1218,15 @@ export function createCodeGraphTool(
 		// The win32 query path never awaits its warm-up (S9), so there it runs backgrounded — an
 		// unref'ed warm-up cannot keep the session alive; POSIX races its wait, never blocking past it.
 		warm = (project: string, timeoutMs: number) => warmUpDaemon(project, true, timeoutMs),
-		rewarm = (project: string) => maybeRewarm(project),
+		// The lazy re-warm announces only success: a daemon that stays dead is re-warmed by every
+		// query, and failure notices there would be per-query noise the CLI fallback already
+		// answers - one ready line when the daemon is back is the whole message.
+		rewarm = (project: string) => maybeRewarm(project, (daemonProject) => warmUpDaemonDetailed(daemonProject, true).then((outcome) => {
+			if (!outcome.ok) return false;
+			const notice = warmNotice(outcome, project);
+			warmNoticeSay?.(notice.text, notice.level);
+			return true;
+		})),
 		syncRun = runCodegraph,
 		gitRun = defaultGitRun,
 		initLock = acquireInitLock,
@@ -1513,6 +1535,8 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 		// The seed outcome the index notice keys on: main-busy is the benign stand-down whose
 		// ok verdict must not read as a created index (the worktree still has no database).
 		let seedStoodDown = false;
+		// The latest session owns the lazy re-warm's ready notice.
+		warmNoticeSay = say;
 		void prepareReadiness({
 			cwd: ctx.cwd,
 			env: process.env,
@@ -1524,15 +1548,16 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 				if (seeded.outcome === "main-busy") seedStoodDown = true;
 				return seeded;
 			},
+			// The seam is the ready event source: every warm outcome the session can see — freshly
+			// warmed, adopted winner, probe-verified live daemon, wedged, failed — is announced here
+			// exactly once, on the same hasUI-gated channel.
 			warm: async (workspace) => {
 				const outcome = await warmUpDaemonDetailed(workspace);
-				if (outcome.wedged) {
-					// The daemon passed liveness but never answered the probe: it holds the lock and
-					// cannot serve, and a respawn would lose the lock to the wedged holder — name the
-					// state and let the CLI answer queries until the bypass expires.
-					say(`CodeGraph daemon in ${ctx.cwd} is not answering; queries use the CLI fallback for now`, "warning");
-					daemonSkipUntil.set(workspace, Date.now() + DAEMON_SKIP_MS);
-				}
+				const notice = warmNotice(outcome, ctx.cwd);
+				say(notice.text, notice.level);
+				// A wedged daemon holds the lock and cannot serve, and a respawn would lose the lock to
+				// the wedged holder — the CLI answers queries until the bypass expires.
+				if (outcome.wedged) daemonSkipUntil.set(workspace, Date.now() + DAEMON_SKIP_MS);
 				return outcome.ok;
 			},
 			onStart: (action) => say(
@@ -1548,9 +1573,9 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			onWarmStart: () => say("warming up CodeGraph...", "info"),
 		})
 			.then((result) => {
-				if (result.warm === "ok") say("CodeGraph ready", "info");
-				else if (result.warm === "failed") say(`CodeGraph warm-up failed in ${ctx.cwd}`, "warning");
-				else if (result.error !== undefined) say(`CodeGraph readiness failed in ${ctx.cwd}: ${result.error}`, "warning");
+				// The warm verdict's notices already left through the warm seam above; only an
+				// unexpected mid-run exception reaches this tail unheard.
+				if (result.error !== undefined) say(`CodeGraph readiness failed in ${ctx.cwd}: ${result.error}`, "warning");
 			})
 			.catch(() => {
 				/* never surface: the session may already be gone */

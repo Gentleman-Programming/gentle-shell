@@ -12,6 +12,7 @@ import codeGraphTools, {
 	createCodeGraphTool,
 	codeGraphNodeScript,
 	codegraphSyncFailureNotice,
+	indexedNotice,
 	findCodeGraphNodeScriptOnPath,
 	isSameDirectory,
 	isWorkspaceProjectRoot,
@@ -471,6 +472,26 @@ test("CodeGraph tool asks git once per cwd per turn, not once per search", async
 	clearSearchSync();
 	await tool.execute("test", { operation: "query", query: "third" }, undefined, undefined, ctx);
 	assert.equal(gitCalls.length, firstSearch * 2, "a new turn asks git again, exactly once");
+});
+
+test("a cached workspace validation survives only while the checkout keeps its Git root", async (t) => {
+	const cwd = workspace(t);
+	const tool = createCodeGraphTool(async () => ({ stdout: "unused", stderr: "" }), {
+		daemonExplore: daemonOk,
+		rewarm: noRewarm,
+		syncRun: syncNothing,
+	});
+	const ctx = { cwd } as ExtensionContext;
+
+	await tool.execute("test", { operation: "query", query: "first" }, undefined, undefined, ctx);
+
+	// The checkout loses its .git mid-prompt: realpath and the directory check still pass,
+	// so only a revalidated cache can keep the Git-root requirement honest.
+	rmSync(join(cwd, ".git"), { recursive: true, force: true });
+	await assert.rejects(
+		() => tool.execute("test", { operation: "query", query: "second" }, undefined, undefined, ctx),
+		/real Git project root equal to the current workspace/i,
+	);
 });
 
 test("CodeGraph init reports the missing binary distinctly", async (t) => {
@@ -1430,6 +1451,46 @@ test("init rechecks index presence after acquiring a lock another initializer fi
 	assert.equal(releases, 2, "the lock is released however init ends");
 });
 
+test("init rechecks the .codegraph identity under the acquired lease, override included", async (t) => {
+	withoutChildEnv(t);
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	const outside = join(cwd, "outside-index");
+	mkdirSync(outside);
+	let runnerCalls = 0;
+	let releases = 0;
+	// While this init waits on the lease, .codegraph becomes a link to another checkout's
+	// empty index directory: the database reads absent, but initializing would write through
+	// the link into that other checkout.
+	const initLock = async (): Promise<InitLockOutcome> => {
+		symlinkSync(outside, join(cwd, ".codegraph"));
+		return { outcome: "acquired", release: () => { releases += 1; }, adopt: () => {} };
+	};
+	const tool = createCodeGraphTool(async () => {
+		runnerCalls += 1;
+		return { stdout: "indexed", stderr: "" };
+	}, { initLock });
+
+	const refused = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.equal(runnerCalls, 0, "the runner never initializes through a replaced .codegraph link");
+	assert.equal(releases, 1, "the acquired lock is released when init stands down");
+	assert.match(refused.content[0].text, /CodeGraph failed to run/);
+	assert.equal((refused.details as { status?: string }).status, "failed");
+
+	rmSync(join(cwd, ".codegraph"), { force: true });
+	process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = "1";
+	const overrideRefused = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	assert.equal(runnerCalls, 0, "the identity check is independent of the rebuild override");
+	assert.equal(releases, 2, "the override path releases its lock too");
+	assert.match(overrideRefused.content[0].text, /CodeGraph failed to run/);
+});
+
 
 test("the first search of a turn triggers one background sync, later searches none", async (t) => {
 	withoutChildEnv(t);
@@ -1546,6 +1607,29 @@ test("codegraphSyncFailureNotice: beside a live daemon the note is info with the
 		text: "codegraph sync failed in /repo (daemon alive; its file watcher keeps the index fresh) — killed (timeout)",
 		level: "info",
 	});
+});
+
+test("indexedNotice: a main-busy stand-down reports deferred initialization, never a created index", () => {
+	assert.deepEqual(indexedNotice({ action: "init", ok: true }, "/repo"), { text: "CodeGraph index created", level: "info" });
+	assert.deepEqual(indexedNotice({ action: "sync", ok: true }, "/repo"), { text: "CodeGraph index synced", level: "info" });
+	assert.deepEqual(indexedNotice({ action: "init", ok: true, stoodDown: true }, "/repo"), {
+		text: "CodeGraph index creation deferred in /repo: the main checkout is creating its index",
+		level: "info",
+	});
+	assert.deepEqual(
+		indexedNotice({ action: "sync", ok: true, stoodDown: true }, "/repo"),
+		{ text: "CodeGraph index synced", level: "info" },
+		"a sync stand-down keeps its synced line: another session's refresh covered the index",
+	);
+	assert.deepEqual(
+		indexedNotice({ action: "init", ok: false, initAttempts: 4 }, "/repo"),
+		{ text: 'codegraph init failed in /repo after 3 retries; run "codegraph init" manually', level: "warning" },
+	);
+	assert.deepEqual(indexedNotice({ action: "init", ok: false }, "/repo"), { text: "codegraph init failed in /repo", level: "warning" });
+	assert.deepEqual(
+		indexedNotice({ action: "sync", ok: false, daemonAlive: true, exitCode: 1 }, "/repo"),
+		codegraphSyncFailureNotice("/repo", "sync", { daemonAlive: true, exitCode: 1 }),
+	);
 });
 
 test("triggerSearchSync: a failing sync beside a live daemon notifies info, a daemon-less one keeps the warning", async (t) => {

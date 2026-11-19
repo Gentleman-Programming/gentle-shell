@@ -605,6 +605,21 @@ test("warmUpDaemon: a live daemon resolves true without spawning; a dead record 
 	assert.equal(dead, false, "a dead record does not short-circuit: the spawn path ran and failed without codegraph on PATH");
 });
 
+test("warmUpDaemon: a vanished cwd resolves false instead of rejecting", async (t) => {
+	// No registry records and an empty PATH: projectSpelling falls through to realpathSync on a
+	// path that does not exist, so the never-rejects contract is the only thing under test.
+	const emptyBin = dir(t, "warm-vanished-bin");
+	const previousPath = process.env.PATH;
+	process.env.PATH = emptyBin;
+	t.after(() => {
+		process.env.PATH = previousPath;
+	});
+	const registry = dir(t, "warm-vanished-registry");
+	const cwd = join(dir(t, "warm-vanished-parent"), "gone");
+	const warmed = await warmUpDaemon(cwd, false, 5_000, registry);
+	assert.equal(warmed, false, "an unresolvable cwd resolves false: nothing to warm, and the promise never rejects");
+});
+
 test("warmUpDaemon: a timed-out warm-up kills its spawned child instead of leaking it", async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
 	const bin = dir(t, "warm-timeout-bin");

@@ -9,9 +9,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { isWorkspaceProjectRoot } from "../extensions/codegraph-tools.ts";
 import { daemonFor } from "../lib/codegraph-daemon.ts";
 import { clearCodegraphResolveCache } from "../lib/codegraph-cli-resolve.ts";
 import { lockPathFor, readLeaseVerdict } from "../lib/codegraph-lease.ts";
+import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
 import {
 	buildWindowsCommand,
 	childWorktreeNeedsIndex,
@@ -451,6 +453,41 @@ test("prepareReadiness: an init that succeeds warms; a child or reload does noth
 	assert.deepEqual(child, { action: "none", ok: true, warm: "skipped" });
 	assert.deepEqual(childCalls, []);
 });
+
+test("prepareReadiness: a real git project root with no database reaches the session-start init wiring", async (t) => {
+	// S5: an absent .codegraph/codegraph.db at a validated project root must run codegraph init
+	// at parent session start. The production wiring runs for real here: the extension's own
+	// isWorkspaceProjectRoot predicate and the seed dispatch, with only the CLI run observed.
+	const repo = dir(t, "s5-root");
+	git(["init", "-b", "main"], repo);
+	writeFileSync(join(repo, "package.json"), "{}\n");
+	// S5's exact shape: the directory exists, the database file does not.
+	mkdirSync(join(repo, ".codegraph"));
+	const runs: { args: string[]; cwd: string }[] = [];
+	const run = async (args: readonly string[], cwd: string): Promise<boolean> => {
+		runs.push({ args: [...args], cwd });
+		return true;
+	};
+	const warms: string[] = [];
+	const result = await prepareReadiness({
+		cwd: repo,
+		locksDir: dir(t, "s5-root-locks"),
+		env: {},
+		reason: "startup",
+		isProjectRoot: isWorkspaceProjectRoot,
+		run,
+		seed: (workspace) => seedWorktreeIndex({ cwd: workspace, run }),
+		warm: async (workspace) => {
+			warms.push(workspace);
+			return true;
+		},
+	});
+	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
+	assert.deepEqual(runs, [{ args: ["init", "-y"], cwd: repo }]);
+	assert.deepEqual(warms, [repo]);
+	assert.equal(indexState(repo), "absent", "the observed run creates nothing itself");
+});
+
 
 test("prepareReadiness: an unknown index state or a non-project runs nothing", async (t) => {
 	const unknown = dir(t, "unknown");

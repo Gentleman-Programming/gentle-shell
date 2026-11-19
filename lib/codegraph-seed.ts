@@ -1,6 +1,6 @@
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { acquireInitLock, defaultLocksDir, lockPathFor, readLeaseVerdict, type LeaseToken } from "./codegraph-lease.ts";
+import { acquireInitLock, defaultLocksDir, indexState, lockPathFor, readLeaseVerdict, type LeaseToken } from "./codegraph-lease.ts";
 import { linkedWorktreeIdentity, SYNC_TIMEOUT_MS } from "./codegraph-readiness.ts";
 import type { SeedOutcome, SeedSyncReport } from "./codegraph-readiness.ts";
 
@@ -47,12 +47,13 @@ function isFile(path: string): boolean {
 	}
 }
 
-/** The init-lock token's nonce when readable and present — the lease module's private readNonce
- * mirrored here, because the publication fence needs that identity without widening lease.ts's
- * export surface. */
-function leaseNonce(path: string): string | undefined {
+/** The init-lock token's identity when readable and present — the lease module's private readNonce
+ * mirrored and widened with the acquisition timeline the fence binds to, because the seed needs
+ * both without widening lease.ts's export surface. */
+function leaseTokenIdentity(path: string): { nonce?: string; startedAt: number } | undefined {
 	try {
-		return (JSON.parse(readFileSync(path, "utf8")) as LeaseToken).nonce;
+		const token = JSON.parse(readFileSync(path, "utf8")) as LeaseToken;
+		return typeof token.startedAt === "number" ? { nonce: token.nonce, startedAt: token.startedAt } : undefined;
 	} catch {
 		return undefined;
 	}
@@ -128,18 +129,24 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 		importSqlite = () => import("node:sqlite"),
 	} = input;
 	const main = worktreeMainRoot(input.cwd);
-	if (main === undefined || !isFile(join(main, ".codegraph", "codegraph.db"))) return { outcome: "not-seedable" };
-	const targetDir = join(input.cwd, ".codegraph");
-	const targetDb = join(targetDir, "codegraph.db");
-	if (isFile(targetDb)) return { outcome: "target-exists" };
-
+	if (main === undefined) return { outcome: "not-seedable" };
 	const locksDir = input.locksDir ?? defaultLocksDir();
 	// The main checkout's own index creation is the one state with nothing coherent to copy:
-	// a live init lease means the database is being built right now. A live CodeGraph writer,
+	// a live init lease means the database is being built right now — also when it has not
+	// created the database file yet, so the lease is checked before a missing database is
+	// treated as permission to initialize the worktree instead. A live CodeGraph writer,
 	// by contrast, is exactly what the lock-safe snapshot reads through, so it never defers.
 	const mainBusy =
 		readLeaseVerdict(lockPathFor(main, "init", locksDir)) === "held-live";
 	if (mainBusy) return { outcome: "main-busy" };
+	// Tri-state parent probe: only a confirmed-absent main database leaves the worktree to
+	// ordinary init. An unreadable one (access denied, a looping symlink) is unknown — the
+	// seed fails closed instead of initializing past a parent index it could not see.
+	const mainIndex = indexState(main);
+	if (mainIndex !== "present") return { outcome: mainIndex === "unknown" ? "seed-failed" : "not-seedable" };
+	const targetDir = join(input.cwd, ".codegraph");
+	const targetDb = join(targetDir, "codegraph.db");
+	if (isFile(targetDb)) return { outcome: "target-exists" };
 
 	const lock = await acquireInitLock(input.cwd, {
 		locksDir,
@@ -147,9 +154,16 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 	});
 	if (lock.outcome === "present") return { outcome: "target-exists" };
 	if (lock.outcome === "skipped") return { outcome: "deferred" };
-	// This seed's identity for the publication fence below: the nonce of the init-lock token
-	// just acquired — the lease module's owns() pattern (release and adopt are fenced on it too).
-	const heldNonce = leaseNonce(lockPathFor(input.cwd, "init", locksDir));
+	// This seed's identity for the fences below, bound to THIS acquisition rather than to
+	// whichever token sits at the path when the seed next looks — the lease module's owns()
+	// pattern (release and adopt are fenced on it too). The token createLease wrote was
+	// created by this process before acquireInitLock returned, so its startedAt can never
+	// postdate that moment; a successor's token, written only after this lease expired and
+	// was reclaimed, always does — a seed that stalled past its TTL stands down instead of
+	// fencing on the successor's nonce while the successor owns the lease.
+	const acquiredAt = Date.now();
+	const acquiredToken = leaseTokenIdentity(lockPathFor(input.cwd, "init", locksDir));
+	const heldNonce = acquiredToken !== undefined && acquiredToken.startedAt <= acquiredAt ? acquiredToken.nonce : undefined;
 	try {
 		// Re-checked under the lock: another session may have finished while we waited.
 		if (isFile(targetDb)) return { outcome: "target-exists" };
@@ -213,7 +227,7 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 					// The wait before a retry can outlast the init lease, exactly like the
 					// publication fence below: a seed displaced mid-snapshot stands down instead
 					// of paying for another attempt on a lease it no longer holds.
-					if (leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
+					if (leaseTokenIdentity(lockPathFor(input.cwd, "init", locksDir))?.nonce !== heldNonce) {
 						throw new Error("the init lease changed hands while the snapshot waited to retry");
 					}
 				}, isTransientSqliteError);
@@ -238,42 +252,39 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 			// Publication fence, mirroring the lease module's owns() checks: the init lease's TTL is the
 			// hard displacement bound, so this seed can be reclaimed mid-flight — suspended past the
 			// TTL — while another session takes the lease and publishes a newer index into this worktree.
-			// The rename places the staged snapshot over whatever the target holds now, so ownership is
-			// re-verified against the CURRENT token immediately before it: a displaced seed (a
-			// different or unreadable nonce) stands down instead of replacing the newer database, and
-			// the caller falls back to init. The displaced lock's own release() is nonce-fenced and
+			// The publish below never replaces what the target holds, so a displaced seed (a different
+			// or unreadable nonce) stands down before it instead of racing the newer database, and the
+			// caller falls back to init. The displaced lock's own release() is nonce-fenced and
 			// removes nothing.
-			// An unreadable ACQUISITION nonce stands down the same way: undefined === undefined would
+			// An unreadable ACQUISITION identity stands down the same way: undefined === undefined would
 			// otherwise pass the fence and publish over a database this seed can no longer prove it owns.
-			if (heldNonce === undefined || leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
+			if (heldNonce === undefined || leaseTokenIdentity(lockPathFor(input.cwd, "init", locksDir))?.nonce !== heldNonce) {
 				return { outcome: "seed-failed" };
 			}
 			// The standalone snapshot is the only staged file, so the name every consumer
 			// keys on — codegraph.db — appears at its final path only after the copy has
 			// already been validated.
 			try {
+				// Atomic no-replace publish: a hard link from staging (the same directory, so the
+				// same filesystem) lands the validated database at its final name without ever
+				// replacing what is already there — a successor that published while this seed
+				// was stalled in validation keeps its database, because link's EEXIST loses
+				// cleanly instead of overwriting. The staged name itself is dropped with the
+				// staging directory in the finally below.
 				// The wait before a retry can outlast the init lease: ownership is re-verified after
-				// every wait, so a seed displaced mid-publication aborts instead of renaming over
+				// every wait, so a seed displaced mid-publication aborts instead of linking over
 				// the replacement holder's index.
-				await retryTransient(() => renameSync(stagedPath, targetDb), sleep, () => {
-					if (leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
+				await retryTransient(() => linkSync(stagedPath, targetDb), sleep, () => {
+					if (leaseTokenIdentity(lockPathFor(input.cwd, "init", locksDir))?.nonce !== heldNonce) {
 						throw new Error("the init lease changed hands while the publication waited to retry");
 					}
 				});
 			} catch {
-				// A displaced seed removes nothing: once the lease has changed hands, whatever sits
-				// at the final path belongs to the replacement holder, and removing it is that
-				// holder's cleanup, never this seed's.
-				if (leaseNonce(lockPathFor(input.cwd, "init", locksDir)) !== heldNonce) {
-					return { outcome: "seed-failed" };
-				}
-				// A failed placement leaves no index: the database itself was never placed, so
-				// nothing another session accepted is removed here. (A placement failure is the
-				// seed-failed outcome, never a rejection; a final path this seed did not place —
-				// a squatter directory above all — is not ours to remove either.)
-				try {
-					rmSync(targetDb, { force: true });
-				} catch { /* a final path this seed did not place is not ours to remove */ }
+				// A failed publish removes nothing at the final path: the staged database goes with
+				// the staging directory below, and whatever sits at the target now — an independent
+				// publish that landed while validation was pending, or a name this seed never placed
+				// — is not this seed's to remove. A displaced lock's own release() is nonce-fenced and
+				// removes nothing either.
 				return { outcome: "seed-failed" };
 			}
 			return { outcome: "seeded" };

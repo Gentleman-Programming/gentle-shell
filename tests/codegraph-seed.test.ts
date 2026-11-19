@@ -424,6 +424,41 @@ test("a main checkout mid-init defers seeding without touching the worktree", as
 	assert.equal(fileAbsent(join(worktree, ".codegraph")), true, "the worktree is untouched");
 });
 
+test("a live main init lease defers the worktree even before the main database exists", async (t) => {
+	const { main, worktree } = worktreePair(t);
+	const locksDir = mkdtempSync(join(tmpdir(), "gentle-pi-seed-locks-"));
+	t.after(() => rmSync(locksDir, { recursive: true, force: true }));
+	// The main checkout is mid-init and has not created its database yet: the live lease must
+	// stand the worktree down instead of letting the missing database read as a fresh project.
+	rmSync(join(main, ".codegraph", "codegraph.db"));
+	const token = { kind: "init", pid: process.pid, startedAt: Date.now(), expiresAt: Date.now() + 60_000 };
+	writeFileSync(lockPathFor(main, "init", locksDir), JSON.stringify(token) + "\n");
+	const { input, calls } = seedHarness(worktree, { locksDir });
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "main-busy", "a live main init lease stands the worktree down before the missing database is treated as permission to initialize");
+	assert.deepEqual(calls, [], "nothing ran: the worktree does not initialize beside a live main init");
+	assert.equal(fileAbsent(join(worktree, ".codegraph")), true, "the worktree is untouched");
+});
+
+test("an unreadable main index fails closed instead of falling through to init", async (t) => {
+	if (process.platform === "win32") return t.skip("creating symlinks needs privileges on Windows");
+	const { main, worktree } = worktreePair(t);
+	// A self-referential symlink is unreadable without being absent: stat fails with ELOOP,
+	// the same tri-state "unknown" an access-denied parent index produces.
+	const mainDb = join(main, ".codegraph", "codegraph.db");
+	rmSync(mainDb);
+	symlinkSync(mainDb, mainDb);
+	const { input, calls } = seedHarness(worktree);
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed", "an unconfirmable parent index is never permission to initialize");
+	assert.deepEqual(calls, [], "nothing ran: the parent state could not be established");
+	assert.equal(fileAbsent(join(worktree, ".codegraph")), true, "the worktree is untouched");
+});
+
 test("a seed displaced from its init lease before publication never replaces the newer index", async (t) => {
 	if (leaseHostIdentity() === null) {
 		return t.skip("the reclaim fixture needs a host identity: a host-less token (Windows) whose holder pid is alive fails closed to unknown, so the displacement cannot be staged here");
@@ -469,6 +504,25 @@ test("an expired host-less lease whose holder pid is alive is never reclaimable 
 	assert.equal(tryAcquireLease(lockPath, "init", 600_000, Date.now()), undefined, "the reclaim the displacement fixtures rely on is refused for this token shape");
 });
 
+test("an independent publish during validation is never replaced by the seed", async (t) => {
+	const { worktree } = worktreePair(t);
+	const { input } = seedHarness(worktree, {
+		run: async () => {
+			// An independent writer publishes while this seed's validation is still pending.
+			// This seed still owns its init lease, so only the placement itself can protect the
+			// newer database: the publish must refuse to replace an existing target.
+			writeFileSync(join(worktree, ".codegraph", "codegraph.db"), "independent-bytes");
+			return true;
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed", "a target that appeared during validation is never replaced: the publish refuses, it does not win");
+	assert.equal(readFileSync(join(worktree, ".codegraph", "codegraph.db"), "utf8"), "independent-bytes", "the independent publish survives the seed's failed placement");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "no staging leftover and nothing the seed did not place is removed");
+});
+
 test("a seed whose init-lock nonce is unreadable at publication stands down", async (t) => {
 	const { worktree } = worktreePair(t);
 	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-unreadable-"));
@@ -499,6 +553,21 @@ test("a seed whose init-lock nonce is unreadable at publication stands down", as
 
 test("a seed displaced while a transient publication retry waits never publishes over the replacement", async (t) => {
 	if (process.platform === "win32") return t.skip("chmod-based EACCES is a POSIX retry trigger");
+	// chmod only forces the transient failure where the permission really blocks writes: under
+	// CAP_DAC_OVERRIDE (root) the first placement succeeds, the displacement never happens, and
+	// the seed reports success — so probe the chmod and skip when it does not prevent writes.
+	const probeDir = mkdtempSync(join(tmpdir(), "gentle-pi-seed-chmod-probe-"));
+	t.after(() => rmSync(probeDir, { recursive: true, force: true }));
+	chmodSync(probeDir, 0o555);
+	let chmodBlocksWrites = false;
+	try {
+		writeFileSync(join(probeDir, "probe"), "");
+	} catch {
+		chmodBlocksWrites = true;
+	}
+	chmodSync(probeDir, 0o755);
+	rmSync(join(probeDir, "probe"), { force: true });
+	if (!chmodBlocksWrites) return t.skip("chmod 0o555 does not prevent writes in this environment (CAP_DAC_OVERRIDE): the transient publication failure cannot be forced");
 	const { worktree } = worktreePair(t);
 	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-retry-fence-"));
 	t.after(() => rmSync(sandbox, { recursive: true, force: true }));

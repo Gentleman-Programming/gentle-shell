@@ -181,7 +181,9 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		assert.equal(typeof graph.execute, "function", "CodeGraph public handler must be registered");
 		const graphResult = await trace(captures, traces, "CodeGraph init", () => graph.execute("capture", { operation: "init" }, undefined, undefined, { cwd } as never), [
 			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--show-toplevel"] },
-			{ kind: "execFile", command: "codegraph", args: ["init", cwd] },
+			// POSIX still spawns the bare codegraph command; win32 resolves the shim first
+			// (resolver-first precedence) and never attempts the bare spawn.
+			...(process.platform === "win32" ? [] : [{ kind: "execFile" as const, command: "codegraph", args: ["init", cwd] }]),
 			...fallbackCalls,
 			// A successful init keeps .codegraph/ out of git through the local exclude file.
 			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--is-inside-work-tree"] },

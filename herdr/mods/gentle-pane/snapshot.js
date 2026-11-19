@@ -141,7 +141,7 @@ async function windowsStartTimes(pids) {
   }
 }
 
-async function checkWindows(feeds, now) {
+async function checkWindows(feeds) {
   const running = await windowsRunning();
   if (!running) return;
   const stamped = [...new Set(feeds.filter((f) => running.has(f.identity.pid) && positive(f.identity.startedAt)).map((f) => f.identity.pid))];
@@ -150,7 +150,7 @@ async function checkWindows(feeds, now) {
     const { pid, startedAt, startedAtSource } = f.identity;
     let ok = running.has(pid);
     if (ok && positive(startedAt) && starts.has(pid)) ok = sameProcess(startedAt, starts.get(pid), startedAtSource === "os");
-    alive.set(liveKey(f), { ok, at: now });
+    alive.set(liveKey(f), { ok, at: Date.now() }); // the interval starts when the check ends
   }
 }
 
@@ -160,7 +160,7 @@ export async function liveFeeds(feeds) {
   for (const f of feeds) if (positive(f.identity?.pid) && !(now - (alive.get(liveKey(f))?.at ?? 0) < ALIVE_MS)) due.set(liveKey(f), f);
   if (due.size) {
     if (isWindowsHost()) {
-      await checkWindows([...due.values()], now);
+      await checkWindows([...due.values()]);
     } else {
       try {
         // `ps -p` lists the pids that run; it exits 1 when one of them does not.
@@ -168,7 +168,7 @@ export async function liveFeeds(feeds) {
         const r = await exec("ps", ["-o", "pid=", "-p", pids.join(",")], { timeout: 3000 });
         if (r.code === 0 || r.code === 1) {
           const running = new Set(String(r.stdout).split(/\s+/).map(Number).filter(positive));
-          for (const [key, f] of due) alive.set(key, { ok: running.has(f.identity.pid), at: now });
+          for (const [key, f] of due) alive.set(key, { ok: running.has(f.identity.pid), at: Date.now() });
         }
       } catch {
         // no ps: the publisher's own sweep is the only cleanup

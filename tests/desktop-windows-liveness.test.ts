@@ -167,3 +167,22 @@ test("should recheck the creation time after the liveness cache expires even if 
 	clock += 6_000; // past ALIVE_MS
 	assert.deepEqual(await mod.liveFeeds([feed]), []);
 });
+
+test("should start the liveness interval when the check completes, not when it starts", async (t) => {
+	for (const home of [WINDOWS_HOME, "/home/dev"]) {
+		let clock = 1_000_000;
+		t.mock.method(Date, "now", () => clock);
+		const { mod, calls } = await loadSnapshot(t, {
+			home,
+			exec: ({ command }) => {
+				clock += 8_000; // the query itself takes longer than ALIVE_MS
+				return command === "tasklist" ? tasklist(200) : { code: 0, stdout: "  200\n" };
+			},
+		});
+		await mod.liveFeeds([feedFor(200)]);
+		const first = calls.length;
+		await mod.liveFeeds([feedFor(200)]);
+		assert.equal(calls.length, first, `${home}: an immediate second call reuses the result`);
+		(Date.now as unknown as { mock: { restore(): void } }).mock.restore();
+	}
+});

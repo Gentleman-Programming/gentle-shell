@@ -8,7 +8,7 @@ import { resolveCodegraphShimState, type CodegraphShimResolution } from "../lib/
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { acquireInitLock, type InitLockOutcome } from "../lib/codegraph-lease.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
-import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type IndexState, type IndexAction, type SessionStartReason } from "../lib/codegraph-readiness.ts";
+import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, WARMUP_TIMEOUT_MS, type SearchSyncInput, type IndexState, type IndexAction, type SessionStartReason } from "../lib/codegraph-readiness.ts";
 import { ensureDirectExposureInAgentHomes, type EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
 
 const CODEGRAPH_OPERATION = {
@@ -1199,16 +1199,19 @@ export function createCodeGraphTool(
 	runner: CodeGraphRunner = runCodeGraphCommand,
 	{
 		queryTimeoutMs = CODEGRAPH_QUERY_TIMEOUT_MS,
+		daemonAttemptTimeoutMs = DAEMON_ATTEMPT_TIMEOUT_MS,
 		daemonExplore = queryViaDaemon,
 		// The win32 query path never awaits its warm-up (S9), so there it runs backgrounded — an
-		// unref'ed warm-up cannot keep the session alive; POSIX keeps the foreground warm.
-		warm = (project: string, timeoutMs: number) => warmUpDaemon(project, process.platform === "win32", timeoutMs),
+		// unref'ed warm-up cannot keep the session alive; POSIX races its wait, never blocking past it.
+		warm = (project: string, timeoutMs: number) => warmUpDaemon(project, true, timeoutMs),
 		rewarm = (project: string) => maybeRewarm(project),
 		syncRun = runCodegraph,
 		gitRun = defaultGitRun,
 		initLock = acquireInitLock,
 	}: {
 		queryTimeoutMs?: number;
+		/** Caps each daemon attempt and the raced warm-up wait on the query path; the warm itself keeps the full session-start budget. */
+		daemonAttemptTimeoutMs?: number;
 		daemonExplore?: DaemonExplore;
 		/** Warms the daemon between the two query attempts; the default never rejects. */
 		warm?: (cwd: string, timeoutMs: number) => Promise<boolean>;
@@ -1296,7 +1299,7 @@ export function createCodeGraphTool(
 				// run a daemon query whose answer nobody waits for. The shared refresh keeps running
 				// for the callers still awaiting it.
 				if (signal?.aborted) return fail(signal.reason ?? new Error("The operation was aborted"), { syncTriggered });
-				const attempt = () => daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, DAEMON_ATTEMPT_TIMEOUT_MS));
+				const attempt = () => daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, daemonAttemptTimeoutMs));
 				let viaDaemon: DaemonCallResult | undefined;
 				if (Date.now() >= (daemonSkipUntil.get(cwd) ?? 0)) {
 					viaDaemon = await raceWithAbort(signal, attempt()) ?? undefined;
@@ -1307,14 +1310,24 @@ export function createCodeGraphTool(
 						if (process.platform === "win32") {
 							// A daemon-death query must never stack attempt → warm (up to 120 s) → attempt → CLI
 							// (S9): the warm-up runs in the background — the default warm seam passes
-							// background=true on win32, so it never keeps this process alive — and this query
+							// background=true, so it never keeps this process alive — and this query
 							// falls through to the CLI at once, with no second daemon attempt even after a fast
 							// warm failure. The DAEMON_SKIP_MS bypass below still spans the warm-up, so a
 							// background warm that revives the daemon is picked up at the next window.
-							void warm(cwd, DAEMON_ATTEMPT_TIMEOUT_MS).catch(() => { /* best effort */ });
+							void warm(cwd, WARMUP_TIMEOUT_MS).catch(() => { /* best effort */ });
 						} else {
 							// Best-effort warm-up between the two attempts: a daemon that was never started gets one.
-							await raceWithAbort(signal, warm(cwd, DAEMON_ATTEMPT_TIMEOUT_MS).catch(() => { /* best effort */ }));
+														// The warm carries the full session-start budget — a cold daemon on a slow share can outlive
+							// the attempt budget and would be killed mid-handshake at 30 s — while the query still waits
+							// no longer than before: a fast warm wins the race, and a slow one keeps running unref'ed
+							// for the next window to adopt the daemon it leaves behind.
+							await raceWithAbort(signal, Promise.race([
+								warm(cwd, WARMUP_TIMEOUT_MS).catch(() => { /* best effort */ }),
+								new Promise<void>((resolveDelay) => {
+									const delayTimer = setTimeout(resolveDelay, daemonAttemptTimeoutMs);
+									delayTimer.unref?.();
+								}),
+							]));
 							if (!signal?.aborted) viaDaemon = await raceWithAbort(signal, attempt()) ?? undefined;
 						}
 					}

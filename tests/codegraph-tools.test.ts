@@ -11,7 +11,7 @@ import { clearCodegraphResolveCache, resolveCodegraphEntry } from "../lib/codegr
 import { MAX_REPLY_CHARS, resetDaemonRegistryMemo, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import type { InitLockOutcome } from "../lib/codegraph-lease.ts";
 import type { EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
-import { SYNC_RETRY_DELAY_MS, SYNC_TIMEOUT_MS, type IndexState } from "../lib/codegraph-readiness.ts";
+import { SYNC_RETRY_DELAY_MS, SYNC_TIMEOUT_MS, WARMUP_TIMEOUT_MS, type IndexState } from "../lib/codegraph-readiness.ts";
 import codeGraphTools, {
 	armCodegraphEntryResolverForTest,
 	armCodegraphExecForTest,
@@ -2281,6 +2281,46 @@ test("POSIX: every search still refreshes, and the daemon chain keeps its attemp
 	assert.equal(warmCalls, 1);
 	assert.equal(runnerCalls, 1);
 	assert.equal((result.details as { syncTriggered?: boolean }).syncTriggered, true, "the pre-query sync still runs for every search");
+});
+
+test("POSIX: a warm slower than the attempt budget keeps running while the query answers via the CLI", async (t) => {
+	withoutChildEnv(t);
+	withPlatform(t, "linux");
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	let release: (() => void) | undefined;
+	const warmGate = new Promise<boolean>((resolve) => {
+		release = () => resolve(true);
+	});
+	const warmTimeouts: number[] = [];
+	let daemonCalls = 0;
+	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+		daemonExplore: async () => {
+			daemonCalls += 1;
+			return { status: "unavailable" };
+		},
+		rewarm: noRewarm,
+		warm: (_project: string, timeoutMs: number) => {
+			warmTimeouts.push(timeoutMs);
+			return warmGate;
+		},
+		syncRun: syncNothing,
+		daemonAttemptTimeoutMs: 50,
+	});
+	const ctx = { cwd } as ExtensionContext;
+
+	const result = await Promise.race([
+		tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx),
+		new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the query blocked on the warm-up")), 3_000)),
+	]);
+
+	assert.match(result.content[0].text, /cli answer/);
+	assert.equal(daemonCalls, 2, "the second daemon attempt still runs after the raced warm window closes");
+	assert.deepEqual(warmTimeouts, [WARMUP_TIMEOUT_MS], "the warm carries the session-start budget, never the attempt budget");
+	assert.ok(WARMUP_TIMEOUT_MS > 50, "the raced wait window is the attempt budget, not the warm's own");
+
+	release?.();
+	await settled();
 });
 
 test("init runs the CLI with the workspace, never the daemon, and never triggers a sync", async (t) => {

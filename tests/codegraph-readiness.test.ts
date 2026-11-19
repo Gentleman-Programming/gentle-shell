@@ -606,9 +606,10 @@ function wedgedDaemon(t: test.TestContext, project: string): { cwd: string; regi
 }
 
 /** An in-process daemon that answers the whole warm-probe conversation: a hello line on connect,
- * then the initialize and tools/call replies (the daemon suite's fakeDaemon pattern). */
-function speakingDaemon(t: test.TestContext, project: string): { cwd: string; registry: string; ready: Promise<void> } {
-	const registry = dir(t, "warm-speaking-registry");
+ * then the initialize and tools/call replies (the daemon suite's fakeDaemon pattern), bound to a
+ * socket of its own but never registered: when the record appears is the caller's move (the
+ * adoption race needs the winner absent at first). */
+function speakingServer(t: test.TestContext, registry: string): { socketPath: string; ready: Promise<void> } {
 	const socketPath = fakeDaemonSocketPath(process.platform, registry);
 	const hello = JSON.stringify({ codegraph: "1.6.0", protocol: 1 });
 	const initialized = { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "fake", version: "0" } };
@@ -639,8 +640,15 @@ function speakingDaemon(t: test.TestContext, project: string): { cwd: string; re
 	});
 	server.listen(socketPath, () => listening());
 	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
-	fakeRegistryRecord(registry, project, socketPath, process.pid);
-	return { cwd: project, registry, ready };
+	return { socketPath, ready };
+}
+
+/** The registered form the warm-gate tests use: a speaking server plus its registry record. */
+function speakingDaemon(t: test.TestContext, project: string): { cwd: string; registry: string; ready: Promise<void> } {
+	const registry = dir(t, "warm-speaking-registry");
+	const winner = speakingServer(t, registry);
+	fakeRegistryRecord(registry, project, winner.socketPath, process.pid);
+	return { cwd: project, registry, ready: winner.ready };
 }
 
 test("warmUpDaemon: a wedged daemon fails the warm gate instead of resolving true", async (t) => {
@@ -692,6 +700,44 @@ test("warmUpDaemonDetailed: a healthy daemon resolves ok without spawning", asyn
 	const outcome = await warmUpDaemonDetailed(cwd, false, 5_000, daemon.registry);
 	assert.deepEqual(outcome, { ok: true }, "a daemon that answers the probe is warm: no spawn");
 	assert.ok(Date.now() - startedAt < 5_000, "the resolution is immediate");
+});
+
+test("warmUpDaemonDetailed: an early-exiting lock loser adopts the winner's daemon", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	// FM3: two sessions starting with no live daemon both spawn serve --mcp; the daemon-lock
+	// loser exits at once and used to be reported as a failed warm-up while the winner's daemon
+	// was still coming up. The fake bin is the loser (exit 0, no handshake ever); the speaking
+	// server is the winner, registered only after 200ms so the poll must live through the gap.
+	const bin = dir(t, "warm-adopt-bin");
+	writeFileSync(join(bin, "codegraph"), "#!/bin/sh\nexit 0\n");
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	t.after(() => {
+		process.env.PATH = previousPath;
+	});
+	const cwd = dir(t, "warm-adopt");
+	const registry = dir(t, "warm-adopt-registry");
+	const winner = speakingServer(t, registry);
+	await winner.ready;
+	setTimeout(() => fakeRegistryRecord(registry, cwd, winner.socketPath, process.pid), 200);
+	const outcome = await warmUpDaemonDetailed(cwd, false, 5_000, registry);
+	assert.deepEqual(outcome, { ok: true, adopted: true }, "the loser's exit adopts the winner's live daemon instead of reporting a failed warm-up");
+});
+
+test("warmUpDaemonDetailed: a lock loser with no winner inside the adoption window fails", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const bin = dir(t, "warm-adopt-none-bin");
+	writeFileSync(join(bin, "codegraph"), "#!/bin/sh\nexit 0\n");
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	t.after(() => {
+		process.env.PATH = previousPath;
+	});
+	const registry = dir(t, "warm-adopt-none-registry");
+	const outcome = await warmUpDaemonDetailed(dir(t, "warm-adopt-none"), false, 5_000, registry, undefined, 200);
+	assert.deepEqual(outcome, { ok: false }, "nothing appears inside the window: the warm-up fails, without an adopted flag");
 });
 
 test("warmUpDaemon: a live daemon resolves true without spawning; a dead record still spawns", async (t) => {

@@ -221,10 +221,17 @@ export function spawnCodegraph(args: readonly string[], stdio: ReadonlyArray<"pi
 }
 
 
-/** The warm gate's verdict: ok says the daemon is warm, and wedged names the state where the
+/** How long an early-exiting warm-up child waits for another session's daemon to appear: the
+ * lock loser of two racing sessions exits while the winner is still starting. */
+const LOCK_LOSER_ADOPT_MS = 5_000;
+/** How often the lock-loser adoption poll re-reads the daemon registry for the winner. */
+const LOCK_LOSER_POLL_MS = 250;
+
+/** The warm gate's verdict: ok says the daemon is warm, wedged names the state where the
  * daemon is alive and holds the daemon lock but never answers — no spawn ran, so nothing was
- * killed or replaced. */
-export type WarmUpOutcome = { ok: boolean; wedged?: boolean };
+ * killed or replaced — and adopted marks a spawn that lost the daemon lock to a racing
+ * session's winner and settled on that winner's live daemon instead. */
+export type WarmUpOutcome = { ok: boolean; wedged?: boolean; adopted?: boolean };
 
 /**
  * Makes the project's CodeGraph daemon open its database and start a read worker, so the next real call
@@ -234,14 +241,18 @@ export type WarmUpOutcome = { ok: boolean; wedged?: boolean };
  * daemon is already alive there is nothing to warm: the alive short-circuit is probe-verified — one
  * health check must actually answer before the warm-up resolves true, still with no spawn — and a
  * wedged daemon resolves { ok: false, wedged: true } with no spawn either, because a fresh serve would
- * lose the daemon lock to the wedged holder. Never rejects; `background` unrefs everything so a warm-up
- * still running never keeps its caller alive.
+ * lose the daemon lock to the wedged holder. A spawn that loses the daemon lock to a racing session's
+ * winner exits at once — its lock message goes to the daemon's own log (stdio for stderr is "ignore"),
+ * so nothing arriving through the pipes identifies it — and the exit polls the registry for the
+ * winner's live daemon, liveness only (the winner may still be initializing), resolving
+ * { ok: true, adopted: true } when one appears inside the adoption window. Never rejects;
+ * `background` unrefs everything so a warm-up still running never keeps its caller alive.
  */
-export async function warmUpDaemonDetailed(cwd: string, background = false, timeoutMs = WARMUP_TIMEOUT_MS, registryDir?: string, helloTimeoutMs?: number): Promise<WarmUpOutcome> {
+export async function warmUpDaemonDetailed(cwd: string, background = false, timeoutMs = WARMUP_TIMEOUT_MS, registryDir?: string, helloTimeoutMs?: number, adoptWindowMs?: number): Promise<WarmUpOutcome> {
 	// A daemon that is already alive is already warm: a second `serve --mcp` cannot take the daemon
 	// lock and only logs "Could not acquire the daemon lock; exiting" (26+ such lines in daemon.log)
-	// before it is reported as a failed warm-up. No spawn, no handshake — with the health probe
-	// answered it resolves at once.
+	// — the same early exit a racing loser takes below, where the winner's appearance adopts it.
+	// No spawn, no handshake — with the health probe answered it resolves at once.
 	let daemon: DaemonInfo;
 	try {
 		daemon = daemonFor(cwd, registryDir);
@@ -258,27 +269,30 @@ export async function warmUpDaemonDetailed(cwd: string, background = false, time
 		/* an unreadable registry is no reason to skip the warm-up */
 		daemon = { alive: false, root: undefined };
 	}
-	const ok = await new Promise<boolean>((resolve) => {
+	const adoptionWindow = adoptWindowMs ?? LOCK_LOSER_ADOPT_MS;
+	const result = await new Promise<"ok" | "adopted" | "failed">((resolve) => {
 		let settled = false;
 		let timedOut = false;
 		let child: ReturnType<typeof spawn> | undefined;
 		let escalate: ReturnType<typeof setTimeout> | undefined;
-				// An unresolvable cwd — deleted between the readiness pass and here — has no real path to
+		let adoptTimer: ReturnType<typeof setTimeout> | undefined;
+		// An unresolvable cwd — deleted between the readiness pass and here — has no real path to
 		// serve: settle false at once instead of letting realpathSync reject the never-rejects promise.
 		let project: string;
 		try {
 			project = projectSpelling(daemon, cwd);
 		} catch {
-			resolve(false);
+			resolve("failed");
 			return;
 		}
-		const finish = (ok: boolean) => {
+		const settle = (outcome: "ok" | "adopted" | "failed") => {
 			if (settled) return;
-			// A reply that lands after the deadline — while the timed-out child is still being torn
-			// down — settles the missed warm-up as failed, never as a late success.
-			if (timedOut) ok = false;
+			// A settlement that lands after the deadline — while the timed-out child is still being
+			// torn down — settles the missed warm-up as failed, never as a late success.
+			if (timedOut && outcome !== "failed") outcome = "failed";
 			settled = true;
 			clearTimeout(timer);
+			if (adoptTimer !== undefined) clearTimeout(adoptTimer);
 			// An early settlement does not cancel the kill escalation: a child that ignores SIGTERM
 			// must still be SIGKILLed before it can keep holding the daemon lock.
 			if (!timedOut && escalate !== undefined) clearTimeout(escalate);
@@ -286,8 +300,9 @@ export async function warmUpDaemonDetailed(cwd: string, background = false, time
 			try { child?.stdin?.destroy(); } catch { /* already closed */ }
 			try { child?.stdout?.destroy(); } catch { /* already gone */ }
 			child?.unref();
-			resolve(ok);
+			resolve(outcome);
 		};
+		const finish = (ok: boolean) => settle(ok ? "ok" : "failed");
 		// A warm-up that never handshakes is not a daemon: kill it instead of leaking a process
 		// that can hold the daemon lock (the success path above still never kills a live daemon).
 		// A child that handles or ignores SIGTERM is escalated to the unignorable SIGKILL after
@@ -332,11 +347,42 @@ export async function warmUpDaemonDetailed(cwd: string, background = false, time
 		});
 		child.stdout?.on("data", readLines);
 		child.on("error", () => finish(false));
-		child.on("close", () => finish(false));
+		// The lock loser of two racing sessions closes here at once: it lost the daemon lock to
+		// the winner and its lock message went to the daemon's own log (stderr is ignored), so
+		// nothing arriving through these pipes identifies it. Liveness separates that exit from
+		// a real failure: poll the registry for the winner's live daemon — registered, pid
+		// alive, socket present, no health probe, the winner may still be initializing — and
+		// adopt it; nothing appearing inside the adoption window is the failed warm-up of a
+		// child that exited for no better reason.
+		child.on("close", () => {
+			if (settled) return;
+			const deadline = Date.now() + adoptionWindow;
+			const poll = () => {
+				// The overall timeout or another settlement path may have finished between ticks.
+				if (settled) return;
+				let alive = false;
+				try {
+					alive = daemonFor(cwd, registryDir).alive;
+				} catch {
+					/* an unreadable registry holds no winner to adopt */
+				}
+				if (alive) {
+					settle("adopted");
+					return;
+				}
+				if (Date.now() >= deadline) {
+					settle("failed");
+					return;
+				}
+				adoptTimer = setTimeout(poll, LOCK_LOSER_POLL_MS);
+				if (background) adoptTimer.unref?.();
+			};
+			poll();
+		});
 		child.stdin?.on("error", () => { /* the server exited first */ });
 		send(mcpInitializeRequest(pathToFileURL(project).href));
 	});
-	return { ok };
+	return result === "adopted" ? { ok: true, adopted: true } : { ok: result === "ok" };
 }
 
 /** The boolean warm-up contract every existing caller speaks; warmUpDaemonDetailed carries the detail. */

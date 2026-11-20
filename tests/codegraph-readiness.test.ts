@@ -19,6 +19,7 @@ import {
 	runCodegraph,
 	runCodegraphSeedSync,
 	sessionSkipsReadiness,
+	setTreeKillSeamForTests,
 	skipsSession,
 	SYNC_RETRY_DELAY_MS,
 	syncBeforeSearch,
@@ -137,39 +138,90 @@ function processRunning(pid: number): boolean {
 	}
 }
 
+/** How many times the non-Linux settlement probe re-asks `ps` for the pid's state: a probe
+ * spawned on a loaded host can itself fail, which says nothing about the pid, and a process
+ * already answered by the kernel's kill probe must not be reported as a survivor because one
+ * `ps` call did not run. A pid that can still run answers every probe with a live state, so
+ * the retries cost it nothing but a few milliseconds. */
+const SETTLEMENT_STATE_PROBES = 5;
+
 /** Whether a descendant is already dead at the moment the run's result settles — the strict
  * oracle the settlement assertions need, unlike the polled processRunning. A reparented
  * orphan the group SIGKILL killed stays enumerable as a zombie until init reaps it, and a
  * zombie can neither run nor write: gone means ESRCH, or terminated-but-unreaped (state Z
  * from /proc on Linux, from ps elsewhere). A pid that is still executing fails this check. */
-function goneAtSettlement(pid: number): boolean {
+async function goneAtSettlement(pid: number): Promise<boolean> {
 	if (!processRunning(pid)) return true;
 	if (process.platform === "linux") return false;
-	const state = spawnSync("ps", ["-o", "state=", "-p", String(pid)], { timeout: 2_000 });
-	return state.status === 0 && (state.stdout ?? "").toString().trim() === "Z";
+	for (let probe = 0; probe < SETTLEMENT_STATE_PROBES; probe += 1) {
+		const state = spawnSync("ps", ["-o", "state=", "-p", String(pid)], { timeout: 2_000 });
+		const text = (state.stdout ?? "").toString().trim();
+		if (state.status === 0 && text !== "") return text === "Z";
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	return false;
 }
 
-/** Collects the pids a fake command publishes about itself while its run is still in flight.
- * The liveness assertions below sample at settlement — a poll after the result would grant a
- * killed descendant a grace window the assertion is meant to forbid — so the pids must be known
- * before the result lands: a run that settles before its pid files exist fails the startup
- * premise instead of lending the sample a post-settlement wait. */
-async function descendantPids(run: Promise<boolean>, files: readonly string[]): Promise<number[]> {
-	let settled = false;
-	void run.then(() => {
-		settled = true;
-	});
+/** Collects the pids a fake command publishes about itself, and samples each one's liveness
+ * the moment the run settles — through a reaction registered before the polling starts. A
+ * liveness sample taken after the settlement would grant a killed descendant a grace window
+ * the settlement assertions are meant to forbid, and a collector that wakes late can equally
+ * miss a survivor that exits a beat after the result. A run that settles before its pid files
+ * are observable fails the startup premise instead of lending the assertions a post-settlement
+ * wait. */
+async function descendantPids(run: Promise<boolean>, files: readonly string[]): Promise<{ pids: number[]; gone: boolean[] }> {
 	const published = (file: string): number | undefined => {
 		if (!existsSync(file)) return undefined;
 		const pid = Number(readFileSync(file, "utf8").trim());
 		return Number.isInteger(pid) && pid > 0 ? pid : undefined;
 	};
+	let settled = false;
+	const captured = new Map<string, boolean>();
+	const settleSample = async () => {
+		settled = true;
+		for (const file of files) {
+			const pid = published(file);
+			if (pid !== undefined && !captured.has(file)) captured.set(file, await goneAtSettlement(pid));
+		}
+	};
+	const settledRun = run.then(settleSample);
 	const deadline = Date.now() + 3_000;
 	while (!settled && files.some((file) => published(file) === undefined) && Date.now() < deadline) {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
+	await settledRun;
 	assert.ok(files.every((file) => published(file) !== undefined), "the fake command and its descendants published their pids before the run settled");
-	return files.map((file) => published(file)!);
+	assert.ok(files.every((file) => captured.has(file)), "the settlement reaction observed every required pid: a run that settles before its pid files are observable fails the startup premise");
+	return {
+		pids: files.map((file) => published(file)!),
+		gone: files.map((file) => captured.get(file)!),
+	};
+}
+
+/** Kills a fake tree whose real kill a seam diverted away: the spawned command leads its own
+ * process group (detached), so the negative pid reaches the loop's \`sleep\` children as well —
+ * a survivor holding the inherited stdio would keep the runner's process alive after the test
+ * ends, and the settlement assertions deliberately leave the tree running. */
+function killFakeTreePid(pid: number): void {
+	if (!Number.isInteger(pid) || pid <= 0) return;
+	try {
+		process.kill(-pid, "SIGKILL");
+	} catch {
+		/* no such group: the leader already went */
+	}
+	try {
+		process.kill(pid, "SIGKILL");
+	} catch {
+		/* already gone */
+	}
+}
+
+/** Teardown backstop: reads the published pid when the file still exists and delegates. The
+ * body kills the tree itself while the file is provably present — a registered directory
+ * cleanup may already have removed it by hook time. */
+function killFakeTree(pidFile: string): void {
+	if (!existsSync(pidFile)) return;
+	killFakeTreePid(Number(readFileSync(pidFile, "utf8").trim()));
 }
 
 test("indexState: the database file is the index, not the directory", (t) => {
@@ -591,10 +643,10 @@ test("runCodegraph: a timeout kills the command's whole process group, grandchil
 		}
 	});
 	const run = runCodegraph(["sync", "-q"], dir(t, "tree-kill-cwd"), 500);
-	const pids = await descendantPids(run, [pidFile, grandFile]);
+	const { gone } = await descendantPids(run, [pidFile, grandFile]);
 	const ok = await run;
 	assert.equal(ok, false, "the fake command never exits: the run times out");
-	assert.deepEqual(pids.map(goneAtSettlement), [true, true], "the direct child AND its grandchild are already dead when the result settles: the group kill completed before the settlement, and no polling window can absorb a survivor");
+	assert.deepEqual(gone, [true, true], "the direct child AND its grandchild are already dead when the result settles: the group kill completed before the settlement, and no polling window can absorb a survivor");
 });
 
 test("buildWindowsCommand: a UNC project path keeps its backslashes and cmd metacharacters stay inert", () => {
@@ -664,10 +716,10 @@ test("runCodegraph: a SIGTERM-ignoring command is SIGKILLed before the timeout r
 		}
 	});
 	const run = runCodegraph(["sync", "-q"], dir(t, "sigkill-cwd"), 300);
-	const pids = await descendantPids(run, [pidFile, grandFile]);
+	const { gone } = await descendantPids(run, [pidFile, grandFile]);
 	const ok = await run;
 	assert.equal(ok, false, "the ignoring command still reports the timeout");
-	assert.deepEqual(pids.map(goneAtSettlement), [true, true], "the SIGTERM-ignoring tree is already dead when the result settles: the SIGKILL completed before the result was delivered");
+	assert.deepEqual(gone, [true, true], "the SIGTERM-ignoring tree is already dead when the result settles: the SIGKILL completed before the result was delivered");
 });
 
 test("runCodegraph: a command that exits zero after handling the timeout's SIGTERM is still failed", async (t) => {
@@ -1607,3 +1659,52 @@ test("prepareReadiness: a child reload or an indexed worktree still skips entire
 	assert.deepEqual(indexed, { action: "none", ok: true, warm: "skipped" }, "once the index exists the child skips entirely again");
 	assert.deepEqual(indexedCalls, [], "no seed, no sync: the child skips");
 });
+
+test("runCodegraph: a delayed Windows tree kill holds the timeout result until the kill completes", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness; the Windows settlement path itself runs through the kill seam");
+	const bin = dir(t, "winkill-bin");
+	const pidFile = join(bin, "child.pid");
+	// The fake command never exits, so the timeout escalates to the tree kill — whose completion
+	// the seam delays: the result must not settle before that completion, or the caller would
+	// release its index lease while the tree can still run.
+	writeFileSync(join(bin, "codegraph"), "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$FAKE_PIDFILE\"\nwhile :; do sleep 0.2; done\n");
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.FAKE_PIDFILE = pidFile;
+	t.after(() => {
+		process.env.PATH = previousPath;
+		delete process.env.FAKE_PIDFILE;
+		killFakeTree(pidFile);
+	});
+	const kills: number[] = [];
+	const completions: number[] = [];
+	setTreeKillSeamForTests({
+		platform: () => "win32",
+		windowsKill: (_pid, onKilled) => {
+			kills.push(Date.now());
+			setTimeout(() => {
+				completions.push(Date.now());
+				onKilled();
+			}, 400);
+		},
+	});
+	t.after(() => setTreeKillSeamForTests(undefined));
+	const ok = await runCodegraph(["sync", "-q"], dir(t, "winkill-cwd"), 200);
+	const settledAt = Date.now();
+	// The escalation path starts two tree kills (the timeout's and the grace escalation's);
+	// both completions are observed before the assertion so a premature settlement compares
+	// against the latest completion, never a pending one.
+	const completionDeadline = Date.now() + 5_000;
+	while (completions.length < kills.length && Date.now() < completionDeadline) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(completions.length, kills.length, "every delayed tree kill completed");
+	assert.ok(kills.length >= 1, "the timeout escalated to the Windows tree kill");
+	assert.equal(ok, false, "the never-exiting command reports the timeout");
+	assert.ok(settledAt >= completions[completions.length - 1]!, "the result settles only after the Windows tree kill completed, never while it still runs");
+	// The seam diverted the real kill, so the fake tree still runs: end its whole group here,
+	// while the pid file is provably present, or it keeps the runner’s stdio open.
+	killFakeTreePid(Number(readFileSync(pidFile, "utf8").trim()));
+});
+

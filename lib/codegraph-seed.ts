@@ -27,6 +27,11 @@ export interface SeedInput {
 	/** The atomic hard-link publish attempt; injectable so tests can simulate a filesystem
 	 * that refuses hard links and verify that publication fails closed. */
 	link?(existingPath: string, newPath: string): void;
+	/** Receives the seed's phase-timing marker lines (`SEED_SNAPSHOT_MS=<ms>` and
+	 * `SEED_SYNC_MS=<ms>`); injectable so tests can observe them. The default writes one
+	 * stderr line per phase, so a captured session output splits a worktree seed into
+	 * its copy and validating-sync phases on every platform. */
+	log?(line: string): void;
 }
 
 /**
@@ -63,6 +68,22 @@ function leaseTokenIdentity(path: string): { nonce?: string; pid?: number; start
 }
 
 const INDEX_GITIGNORE = "*\n!.gitignore\n";
+
+/** Where the seed's phase-timing markers go by default: one stderr log line each, so a
+ * captured session output carries the phases on every platform. */
+const defaultSeedLog = (line: string): void => {
+	process.stderr.write(line + "\n");
+};
+
+/** Emits one seed phase marker. A marker is pure diagnostics: a sink that throws is
+ * swallowed, never allowed to change the outcome of the seed it measures. */
+function seedMarker(log: (line: string) => void, line: string): void {
+	try {
+		log(line);
+	} catch {
+		/* a marker must never alter the seed's behavior */
+	}
+}
 
 /** Windows antivirus and indexers can hold a just-written file for a moment; these codes pass on a quick retry. */
 const TRANSIENT_CODES = new Set(["EACCES", "EPERM", "EBUSY"]);
@@ -131,6 +152,7 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 		sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		importSqlite = () => import("node:sqlite"),
 		link = linkSync,
+		log = defaultSeedLog,
 	} = input;
 	const main = worktreeMainRoot(input.cwd);
 	if (main === undefined) return { outcome: "not-seedable" };
@@ -195,6 +217,9 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 		try {
 			mkdirSync(stagingIndex);
 			const stagedPath = join(stagingIndex, "codegraph.db");
+			// SEED_SNAPSHOT_MS: the snapshot/copy phase alone (sqlite open, VACUUM INTO, the
+			// standalone conversion), so the phase can be measured apart from the sync.
+			const snapshotStartedAt = Date.now();
 			try {
 				// A lock-safe snapshot instead of a byte copy of live files: VACUUM INTO reads
 				// the main database through its own WAL — a writer mid-commit is the snapshot's
@@ -237,9 +262,15 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 				// a transient IOERR that outlived its retries — leaves no index: staging is
 				// removed whole, so the worktree is exactly as absent as before the seed.
 				return { outcome: "seed-failed" };
+			} finally {
+				seedMarker(log, `SEED_SNAPSHOT_MS=${Date.now() - snapshotStartedAt}`);
 			}
 
+			// SEED_SYNC_MS: the complete validating sync — the injected run, tracked-file
+			// probes and all — so this marker and the snapshot's split the seed end to end.
+			const syncStartedAt = Date.now();
 			const report = await input.run(["sync", "-q"], stagingRoot, SYNC_TIMEOUT_MS);
+			seedMarker(log, `SEED_SYNC_MS=${Date.now() - syncStartedAt}`);
 			// The staging project deliberately has no source files, so a sync that removed
 			// tracked entries emptied the staged index without reconciling anything: exit 0
 			// or not, that report is a failed validation and never a seedable database.

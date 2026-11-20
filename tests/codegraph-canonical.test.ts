@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { canonicalRoot, foldRoot, unfoldRoot } from "../lib/codegraph-canonical.ts";
+import { canonicalRoot, foldRoot, resetCanonicalMemo, unfoldRoot } from "../lib/codegraph-canonical.ts";
 
 /** A backslash without a backslash literal: keeps this file clear of escape-transport mangling. */
 const BS = String.fromCharCode(92);
@@ -61,4 +62,52 @@ test("foldRoot keeps case-distinct directories apart on a case-sensitive tree", 
 		return;
 	}
 	assert.notEqual(canonicalRoot(repo, "win32"), canonicalRoot(sibling, "win32"), "two checkouts differing only by case keep distinct keys");
+});
+
+test("the win32 case-fold memo revalidates the decision when the directory is replaced", async (t) => {
+	const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+	let stats = 0;
+	let statCounting = false;
+	try {
+		const bunTest = (await import("bun:test" as string)) as {
+			mock: { module: (specifier: string, factory: () => unknown) => void };
+		};
+		const previous = fs.statSync;
+		bunTest.mock.module("node:fs", () => ({
+			...fs,
+			statSync: (...args: Parameters<typeof previous>) => {
+				stats += 1;
+				return previous(...args);
+			},
+		}));
+		statCounting = true;
+		t.after(() => {
+			bunTest.mock.module("node:fs", () => fs);
+		});
+	} catch {
+		// bun:test is absent under the node runner, so stat counting is skipped there; the
+		// fresh-lookup equality below still pins the contract on every runner.
+	}
+	const base = realpathSync(dir(t, "replaced"));
+	const repo = join(base, "Repo");
+	mkdirSync(repo);
+	const recorded = foldRoot(repo, "win32");
+
+	stats = 0;
+	assert.equal(foldRoot(repo, "win32"), recorded, "an unchanged directory keeps serving its recorded decision");
+	if (statCounting) assert.equal(stats, 1, "a memo hit revalidates with exactly one stat instead of answering blindly");
+
+	// The checkout is removed and recreated, so the spelling now stats to a different directory
+	// than the one the decision was recorded from.
+	rmSync(repo, { recursive: true, force: true });
+	mkdirSync(join(base, "repo"));
+	stats = 0;
+	const refreshed = foldRoot(repo, "win32");
+	if (statCounting) assert.ok(stats > 0, "the replaced directory's changed identity forces the cached decision to be re-probed");
+	resetCanonicalMemo();
+	assert.equal(foldRoot(repo, "win32"), refreshed, "the cached lookup matches a fresh lookup after the replacement");
+
+	stats = 0;
+	assert.equal(foldRoot(repo, "win32"), refreshed, "the refreshed decision serves the next caller");
+	if (statCounting) assert.equal(stats, 1, "the refreshed entry revalidates with one stat instead of re-probing the tree");
 });

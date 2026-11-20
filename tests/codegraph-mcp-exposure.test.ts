@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
-import { chmodSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import {
+	acquireConfigLock,
 	atomicWriteFile,
 	codegraphMcpPaths,
 	ensureDirectExposure,
 	ensureDirectExposureInAgentHomes,
+	fileIdentity,
+	lockPathFor,
+	releaseConfigLock,
+	takeOverStaleConfigLock,
 	type AtomicFileIo,
 	type EnsureExposureIo,
 } from "../lib/codegraph-mcp-exposure.ts";
@@ -324,4 +329,405 @@ test("atomicWriteFile: a symlinked config keeps receiving updates through the fi
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("ensureDirectExposure: a config another writer has locked is never read or written", () => {
+	const files: Record<string, string> = { "/f": WITH_CODEGRAPH };
+	let reads = 0;
+	let writes = 0;
+	const io: EnsureExposureIo = {
+		read: (path) => {
+			reads += 1;
+			return files[path];
+		},
+		write: (path, text) => {
+			writes += 1;
+			files[path] = text;
+		},
+		acquireLock: () => false,
+		releaseLock: () => {
+			throw new Error("releaseLock must not run without a successful acquire");
+		},
+	};
+	assert.deepEqual(ensureDirectExposure("/f", io), { path: "/f", outcome: "busy" });
+	assert.equal(reads, 0, "the lock is taken before anything is read");
+	assert.equal(writes, 0, "a lock the update cannot take publishes nothing");
+	assert.equal(files["/f"], WITH_CODEGRAPH, "the file is left exactly as it was");
+});
+
+test("ensureDirectExposure: a writer that saves a sibling between the final read and the replacement is serialized, not lost", () => {
+	// The competing writer respects the same lock: it tries to save inside the update's
+	// verify-to-replacement window (hooked at the write itself), is refused while the update
+	// holds the lock, and saves once the holder releases - neither write is lost.
+	const files: Record<string, string> = { "/f": WITH_CODEGRAPH };
+	const held: string[] = [];
+	const deferred: Array<() => void> = [];
+	const competitorSave = () => {
+		const doc = JSON.parse(files["/f"]!) as { mcpServers: { codegraph: object; serena?: { command: string } } };
+		doc.mcpServers.serena = { command: "uvx" };
+		files["/f"] = JSON.stringify(doc, null, 2);
+	};
+	const io: EnsureExposureIo = {
+		read: (path) => files[path],
+		write: (path, text) => {
+			if (!io.acquireLock(path)) deferred.push(competitorSave);
+			files[path] = text;
+		},
+		acquireLock: (path) => {
+			if (held.includes(path)) return false;
+			held.push(path);
+			return true;
+		},
+		releaseLock: (path) => {
+			const at = held.indexOf(path);
+			if (at >= 0) held.splice(at, 1);
+		},
+	};
+	assert.equal(ensureDirectExposure("/f", io).outcome, "added");
+	assert.equal(deferred.length, 1, "the mid-window save was refused while the lock was held");
+	for (const save of deferred) save();
+	const written = JSON.parse(files["/f"]!) as { mcpServers: { codegraph: { exposure: string }; serena: { command: string } } };
+	assert.equal(written.mcpServers.codegraph.exposure, "direct", "the holder's update landed");
+	assert.equal(written.mcpServers.serena.command, "uvx", "the deferred sibling save landed on the updated content: no lost update");
+	assert.deepEqual(held, [], "the lock is released once the update is done");
+});
+
+test("ensureDirectExposure: a holder whose lock was taken over mid-update publishes nothing", () => {
+	const files: Record<string, string> = { "/f": WITH_CODEGRAPH, "/g": WITH_CODEGRAPH };
+	let writes = 0;
+	const io: EnsureExposureIo = {
+		read: (path) => files[path],
+		write: (path, text) => {
+			writes += 1;
+			files[path] = text;
+		},
+		acquireLock: () => true,
+		releaseLock: () => {},
+		ownsLock: (path) => path === "/g",
+	};
+	assert.equal(ensureDirectExposure("/f", io).outcome, "busy", "another writer owns the lock now: exclusive access is unavailable");
+	assert.equal(writes, 0, "the displaced holder publishes nothing");
+	assert.equal(files["/f"], WITH_CODEGRAPH, "the config is left exactly as it was");
+	assert.equal(ensureDirectExposure("/g", io).outcome, "added", "the same io publishes while it still owns its lock");
+	assert.equal(writes, 1);
+});
+
+test("acquireConfigLock and releaseConfigLock: release removes only the lock this acquisition still owns", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-lock-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	const lock = lockPathFor(config);
+	assert.equal(acquireConfigLock(config), true, "a free lock path is acquired");
+	// A stale takeover by another writer between acquire and release: the file at the lock path
+	// now carries the new owner's token.
+	writeFileSync(lock, "1:displaced\n", "utf8");
+	releaseConfigLock(config);
+	assert.equal(readFileSync(lock, "utf8"), "1:displaced\n", "the displaced holder's release leaves the new owner's lock");
+	assert.equal(acquireConfigLock(config), false, "the replacement lock is fresh, so a new contender stands down");
+	rmSync(lock);
+	assert.equal(acquireConfigLock(config), true);
+	releaseConfigLock(config);
+	assert.equal(existsSync(lock), false, "the holder's own lock is removed on release");
+});
+
+test("acquireConfigLock: an abandoned lock is recovered by exactly one of two contenders", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-stale-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	const lock = lockPathFor(config);
+	writeFileSync(lock, "123\n", "utf8");
+	const abandoned = new Date(Date.now() - 60_000);
+	utimesSync(lock, abandoned, abandoned);
+	assert.equal(acquireConfigLock(config), true, "the first contender recovers the abandoned lock");
+	assert.equal(acquireConfigLock(config), false, "the second contender finds the recovered lock fresh and stands down");
+	assert.notEqual(readFileSync(lock, "utf8"), "123\n", "the abandoned owner's file was replaced, not reused");
+	releaseConfigLock(config);
+	assert.equal(existsSync(lock), false);
+	assert.deepEqual(readdirSync(dir), ["mcp.json"], "no takeover claim file is left behind");
+});
+
+test("takeOverStaleConfigLock: a contender whose observation predates a replacement never deletes it", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-preempt-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	const lock = lockPathFor(config);
+	writeFileSync(lock, "9:crashed\n", "utf8");
+	const abandoned = new Date(Date.now() - 60_000);
+	utimesSync(lock, abandoned, abandoned);
+	const observed = { mtimeMs: statSync(lock).mtimeMs, content: readFileSync(lock, "utf8") };
+	// Between this contender's observation and its takeover, another writer recovers the lock -
+	// worst case, its fresh lock carries the very mtime the contender observed.
+	rmSync(lock);
+	writeFileSync(lock, "7:fresh\n", "utf8");
+	utimesSync(lock, new Date(observed.mtimeMs), new Date(observed.mtimeMs));
+	assert.equal(takeOverStaleConfigLock(config, observed), false, "the delayed takeover is refused");
+	assert.equal(readFileSync(lock, "utf8"), "7:fresh\n", "the winner's lock survives the delayed contender");
+	assert.deepEqual(readdirSync(dir).sort(), [".mcp.json.lock", "mcp.json"], "the replacement is restored at the lock path with no leftover claim");
+	// The same takeover proceeds when the path still holds the observed stale identity.
+	assert.equal(takeOverStaleConfigLock(config, { mtimeMs: statSync(lock).mtimeMs, content: readFileSync(lock, "utf8") }), true);
+	assert.equal(existsSync(lock), false, "the genuinely abandoned lock is removed for the next acquisition");
+	assert.deepEqual(readdirSync(dir), ["mcp.json"], "no takeover claim file is left behind");
+});
+
+test("ensureDirectExposure: symlinked configs lock the one destination they share", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-shared-"));
+	try {
+		const shared = join(dir, "shared-mcp.json");
+		writeFileSync(shared, WITH_CODEGRAPH, "utf8");
+		const homes = [join(dir, "home-a"), join(dir, "home-b")];
+		let linked = true;
+		for (const home of homes) {
+			mkdirSync(home);
+			try {
+				symlinkSync(shared, join(home, "mcp.json"));
+			} catch {
+				linked = false;
+			}
+		}
+		if (!linked) {
+			t.skip("symlinks are unavailable on this platform");
+			return;
+		}
+		const resolved = realpathSync(shared);
+		assert.equal(lockPathFor(realpathSync(join(homes[0]!, "mcp.json"))), lockPathFor(resolved), "both links resolve to one lock identity");
+		// While one update holds the destination's lock, an update through the other link
+		// cannot take it: both homes serialize on the file they share.
+		assert.equal(acquireConfigLock(resolved), true);
+		assert.deepEqual(
+			ensureDirectExposure(join(homes[1]!, "mcp.json")),
+			{ path: join(homes[1]!, "mcp.json"), outcome: "busy" },
+			"the shared destination's lock refuses the second link",
+		);
+		assert.equal(readFileSync(shared, "utf8"), WITH_CODEGRAPH, "the refused update wrote nothing");
+		releaseConfigLock(resolved);
+		assert.equal(ensureDirectExposure(join(homes[0]!, "mcp.json")).outcome, "added", "the free shared lock admits the update through either link");
+		const written = JSON.parse(readFileSync(shared, "utf8")) as { mcpServers: { codegraph: { exposure: string } } };
+		assert.equal(written.mcpServers.codegraph.exposure, "direct", "the update landed on the shared file");
+		assert.equal(ensureDirectExposure(join(homes[1]!, "mcp.json")).outcome, "present", "the other link reads the same shared entry");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("releaseConfigLock: a release that resumes after a takeover restores the successor and leaves nothing behind", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-release-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	const lock = lockPathFor(config);
+	assert.equal(acquireConfigLock(config), true);
+	// The takeover a paused holder resumes to: the path now carries the successor's token,
+	// and the release must take the file aside before deciding it is not its own - a plain
+	// read-then-unlink would delete the successor's lock in the resumed instant.
+	writeFileSync(lock, "4321:successor\n", "utf8");
+	releaseConfigLock(config);
+	assert.equal(readFileSync(lock, "utf8"), "4321:successor\n", "the successor's lock survives the delayed release");
+	assert.deepEqual(readdirSync(dir).sort(), [".mcp.json.lock", "mcp.json"], "no release claim file is left behind");
+	assert.deepEqual(readdirSync(dir).sort(), [".mcp.json.lock", "mcp.json"], "no release claim file is left behind");
+});
+
+test("releaseConfigLock: a vanished lock file while the token is still held releases without resurrecting anything", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-vanish-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	const lock = lockPathFor(config);
+	assert.equal(acquireConfigLock(config), true);
+	// The lock file vanishes while this process still owns its acquisition token: the release
+	// takes the missing path aside, its rename fails, and the release returns without
+	// resurrecting any lock or claim file.
+	rmSync(lock);
+	releaseConfigLock(config);
+	assert.equal(existsSync(lock), false, "a vanished lock is not resurrected by its release");
+	assert.deepEqual(readdirSync(dir), ["mcp.json"], "no lock or release claim file is left behind");
+	assert.equal(acquireConfigLock(config), true, "the vanished lock's path is free for the next acquisition");
+	releaseConfigLock(config);
+	assert.equal(existsSync(lock), false, "the fresh release removes its own lock");
+});
+
+test("ensureDirectExposure: an absent agent-directory parent is a missing config, not an error", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-fresh-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const fresh = join(dir, "no-such-home", "mcp.json");
+	assert.deepEqual(ensureDirectExposure(fresh), { path: fresh, outcome: "missing" });
+	assert.equal(existsSync(dirname(fresh)), false, "the absent parent directory is not created");
+	assert.deepEqual(readdirSync(dir), [], "no config, lock, or temporary file appears anywhere");
+});
+
+test("ensureDirectExposureInAgentHomes: a fresh home without agent directories reports missing, not error", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-homes-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const env = { GENTLE_PI_AGENT_HOME: join(dir, "pi"), GENTLE_SHELL_HOME: join(dir, "shell") };
+	const results = ensureDirectExposureInAgentHomes("/h", undefined, env);
+	assert.deepEqual(
+		results.map((result) => result.outcome),
+		["missing", "missing"],
+		"both homes of a never-provisioned home are missing configs",
+	);
+	assert.deepEqual(readdirSync(dir), [], "the update creates no directory, lock, or file");
+});
+
+test("ensureDirectExposure: a resolution failure other than an absent parent is still an error", () => {
+	const denied: NodeJS.ErrnoException = new Error("EACCES: permission denied, realpath '/p/.pi'");
+	denied.code = "EACCES";
+	const io: EnsureExposureIo = {
+		resolve: () => {
+			throw denied;
+		},
+		read: () => undefined,
+		write: () => {},
+	};
+	assert.throws(() => ensureDirectExposure("/p/mcp.json", io), /EACCES/, "a denied parent propagates to the direct caller");
+	const results = ensureDirectExposureInAgentHomes("/h", io, { GENTLE_PI_AGENT_HOME: "/p", GENTLE_SHELL_HOME: "/s" });
+	assert.deepEqual(
+		results.map((result) => result.outcome),
+		["error", "error"],
+		"the multi-home helper isolates the failure as error",
+	);
+});
+
+test("ensureDirectExposure: a locked destination replaced by a symlink is a conflict, never a write through the new link", (t) => {
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-swap-")));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const locked = join(dir, "real-mcp.json");
+	writeFileSync(locked, WITH_CODEGRAPH, "utf8");
+	const other = join(dir, "other-mcp.json");
+	// Identical content on purpose: the verify re-read compares text, so only the destination
+	// identity check can catch a swap to an equally-worded config.
+	writeFileSync(other, WITH_CODEGRAPH, "utf8");
+	try {
+		symlinkSync(other, join(dir, "redirect-mcp.json"));
+	} catch {
+		t.skip("symlinks are unavailable on this platform");
+		return;
+	}
+	let reads = 0;
+	const io: EnsureExposureIo = {
+		resolve: (path) => {
+			try {
+				return realpathSync(path);
+			} catch {
+				return join(realpathSync(dirname(path)), basename(path));
+			}
+		},
+		read: (path) => {
+			reads += 1;
+			if (path === locked && reads === 2) {
+				// The locked file is replaced between the update's two reads: same words, other file.
+				unlinkSync(locked);
+				symlinkSync(other, locked);
+			}
+			return existsSync(path) ? readFileSync(path, "utf8") : undefined;
+		},
+		// The publication shape the io carried before the fix: it re-resolves its destination, so
+		// a substituted symlink redirects the write. With the fix the update must refuse to
+		// publish before this writer ever runs.
+		write: (path, text) => atomicWriteFile(path, text),
+	};
+	assert.equal(ensureDirectExposure(locked, io).outcome, "conflict", "the changed destination is a conflict, not an update");
+	assert.equal(readFileSync(other, "utf8"), WITH_CODEGRAPH, "the other config is never written");
+	assert.ok(lstatSync(locked).isSymbolicLink(), "the substituted symlink is left exactly as it was");
+	assert.ok(!readdirSync(dir).some((name) => name.includes(".tmp-")), "no temporary file is left behind");
+});
+
+test("ensureDirectExposure: an atomic replacement after the verified read is a conflict, never a lost update", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-atomic-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	// An editor's save with different words: the swap lands after the verify re-read compared
+	// text, so only the file identity captured at that read can catch the replacement — the
+	// new file still resolves to the very destination the update locked.
+	const editorSaved = JSON.stringify(
+		{ mcpServers: { codegraph: { command: "codegraph", args: ["serve", "--mcp"], env: { EDITED: "yes" } }, context7: { command: "npx" } } },
+		null,
+		2,
+	);
+	let resolves = 0;
+	let wrote = false;
+	const io: EnsureExposureIo = {
+		resolve: (path) => {
+			resolves += 1;
+			if (resolves === 2) {
+				// The editor's atomic save between the verified read and the publish: a fresh file
+				// is renamed over the config at the same path.
+				const staged = join(dir, ".mcp.json.editor-save");
+				writeFileSync(staged, editorSaved, "utf8");
+				renameSync(staged, config);
+			}
+			try {
+				return realpathSync(path);
+			} catch {
+				return join(realpathSync(dirname(path)), basename(path));
+			}
+		},
+		read: (path) => (existsSync(path) ? readFileSync(path, "utf8") : undefined),
+		identityOf: (path) => fileIdentity(path),
+		write: (path, text) => {
+			wrote = true;
+			atomicWriteFile(path, text);
+		},
+	};
+	assert.equal(ensureDirectExposure(config, io).outcome, "conflict", "the same-path replacement is a conflict, not an update");
+	assert.equal(wrote, false, "nothing was written over the editor's save");
+	assert.equal(readFileSync(config, "utf8"), editorSaved, "the editor's changes survive byte-for-byte");
+});
+
+test("ensureDirectExposure: two unknown file identities are a conflict, never a write through an unproven file", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-unproven-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	// The adapter supplies the identity hook, so the publish must prove it lands on the file the
+	// verified read observed: an identity that is unknown on both sides proves nothing — another
+	// process can move the config aside for the reread and delete it before the publication — and
+	// an unknown observation is a mismatch like any other, never a match by absence.
+	let wrote: string | undefined;
+	const io: EnsureExposureIo = {
+		read: (path) => (existsSync(path) ? readFileSync(path, "utf8") : undefined),
+		identityOf: () => undefined,
+		write: (path, text) => {
+			wrote = path;
+			atomicWriteFile(path, text);
+		},
+	};
+	assert.equal(ensureDirectExposure(config, io).outcome, "conflict", "an unprovable identity is a conflict, not an update");
+	assert.equal(wrote, undefined, "nothing was written through the unknown identity");
+	assert.equal(readFileSync(config, "utf8"), WITH_CODEGRAPH, "the config is left exactly as it was");
+	assert.deepEqual(readdirSync(dir), ["mcp.json"], "the retries leave no temp file or lock behind");
+});
+
+test("ensureDirectExposure: an unknown observation recovers when the retry observes one proven identity", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-recover-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	// The first attempt's verified read observes no identity — a stat that failed transiently — so
+	// that attempt stops short of the publish. The bounded restart must not report that unknown as
+	// a conflict: the next attempt observes the same defined identity at its verified read and at
+	// its publish, and the entry lands on exactly one write.
+	const proven = fileIdentity(config);
+	assert.notEqual(proven, undefined, "the fixture file itself has an identity the retry can prove");
+	let observations = 0;
+	let writes = 0;
+	const io: EnsureExposureIo = {
+		read: (path) => (existsSync(path) ? readFileSync(path, "utf8") : undefined),
+		identityOf: () => {
+			observations += 1;
+			return observations === 1 ? undefined : proven;
+		},
+		write: (path, text) => {
+			writes += 1;
+			atomicWriteFile(path, text);
+		},
+	};
+	assert.equal(ensureDirectExposure(config, io).outcome, "added", "the retry that proves one identity publishes the entry");
+	assert.equal(writes, 1, "exactly one write lands");
+	assert.equal(observations, 4, "the unknown observation and the retry that proves it both ran: one observation pair per attempt, none after the publish");
+	const published = JSON.parse(readFileSync(config, "utf8")) as { mcpServers: { codegraph: { exposure?: string } } };
+	assert.equal(published.mcpServers.codegraph.exposure, "direct", "the published entry carries the direct exposure");
+	assert.deepEqual(readdirSync(dir), ["mcp.json"], "the publish leaves no temp file or lock behind");
 });

@@ -1,57 +1,48 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { builtWebPaths, packedFileList } from "../scripts/verify-package-files.mjs";
 
 const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const towerDir = join(root, "web", "tower");
-const distDir = join(towerDir, "dist");
 
-// Regression for https://github.com/Gentleman-Programming/gentle-shell/pull/3332#issuecomment-7009056293
-// and https://github.com/Gentleman-Programming/gentle-shell/issues/3378:
-// web/tower/.gitignore lists dist/, and npm applies nested ignore files even
-// when package.json `files` whitelists web/tower/dist/. Without a nested
-// .npmignore, `pnpm pack`/`npm pack` succeeds but the tarball has zero entries
-// under package/web/, so `gentle-shell tower` fails on install.
-test("the packed tarball includes the built Tower web app, not just the on-disk build", async () => {
-	const npmignore = join(towerDir, ".npmignore");
-	assert.ok(existsSync(npmignore), "web/tower/.npmignore must exist so pack does not honor web/tower/.gitignore");
-	const rules = readFileSync(npmignore, "utf8").split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "" && !line.startsWith("#"));
-	assert.ok(rules.includes("node_modules/"), "web/tower/.npmignore must keep node_modules/ out of the package");
-	assert.ok(!rules.some((rule) => rule.includes("dist")), "web/tower/.npmignore must not ignore dist/");
-
+// Regression for https://github.com/Gentleman-Programming/gentle-shell/issues/3378
+// (and gentle-ai#6173): web/tower/.gitignore lists dist/, and npm applies nested
+// ignore files even when package.json `files` whitelists web/tower/dist/. Without
+// a nested .npmignore, pack succeeds but ships zero entries under web/tower/dist,
+// so `gentle-shell tower` fails on install. The pack runs in a scratch copy, never
+// in this checkout, so no other test can observe a fake web/tower/dist.
+function scratchPackage({ withNpmignore }: { withNpmignore: boolean }): string {
+	const dir = mkdtempSync(join(tmpdir(), "gentle-pi-tower-pack-"));
 	const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-	assert.ok(Array.isArray(manifest.files) && manifest.files.includes("web/tower/dist/"), "package.json files must whitelist web/tower/dist/");
+	writeFileSync(join(dir, "package.json"), JSON.stringify({ name: manifest.name, version: manifest.version, files: manifest.files }));
+	const tower = join(dir, "web", "tower");
+	mkdirSync(join(tower, "dist", "assets"), { recursive: true });
+	copyFileSync(join(towerDir, ".gitignore"), join(tower, ".gitignore"));
+	if (withNpmignore) copyFileSync(join(towerDir, ".npmignore"), join(tower, ".npmignore"));
+	writeFileSync(join(tower, "dist", "index.html"), "<!doctype html><script type=\"module\" src=\"./assets/index.js\"></script>\n");
+	writeFileSync(join(tower, "dist", "assets", "index.js"), "console.log(\"tower\");\n");
+	mkdirSync(join(tower, "node_modules", "dep"), { recursive: true });
+	writeFileSync(join(tower, "node_modules", "dep", "index.js"), "\n");
+	return dir;
+}
 
-	// Build a minimal dist in place (gitignored) so the pack file list can be
-	// inspected without running the real `build:tower`. Restored afterwards.
-	const indexHtml = "<!doctype html><html><head><script type=\"module\" src=\"./assets/index-regression.js\"></script></head><body></body></html>\n";
-	const assetJs = "console.log(\"tower-regression\");\n";
-	const hadDist = existsSync(join(distDir, "index.html"));
-	const hadAsset = existsSync(join(distDir, "assets", "index-regression.js"));
-	let previousIndex = null;
-	let previousAsset = null;
-	if (hadDist) previousIndex = readFileSync(join(distDir, "index.html"), "utf8");
-	if (hadAsset) previousAsset = readFileSync(join(distDir, "assets", "index-regression.js"), "utf8");
-	mkdirSync(join(distDir, "assets"), { recursive: true });
-	writeFileSync(join(distDir, "index.html"), indexHtml);
-	writeFileSync(join(distDir, "assets", "index-regression.js"), assetJs);
+test("the packed tarball ships the built Tower web app and its assets, never web/tower/node_modules", () => {
+	const dir = scratchPackage({ withNpmignore: true });
 	try {
-		const output = execFileSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
-		const parsed = JSON.parse(output);
-		const entry = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
-		const paths = new Set(entry.files.map((file) => file.path));
-		assert.ok(paths.has("web/tower/dist/index.html"), "packed tarball must contain web/tower/dist/index.html even though web/tower/.gitignore lists dist/");
-		// The referenced JS must ship too: serving index.html alone still leaves Tower broken.
-		assert.ok(paths.has("web/tower/dist/assets/index-regression.js"), "packed tarball must contain the JS referenced by web/tower/dist/index.html");
-	} finally {
-		if (previousIndex === null) rmSync(join(distDir, "index.html"), { force: true });
-		else writeFileSync(join(distDir, "index.html"), previousIndex);
-		if (previousAsset === null) rmSync(join(distDir, "assets", "index-regression.js"), { force: true });
-		else writeFileSync(join(distDir, "assets", "index-regression.js"), previousAsset);
-		try {
-			if (!hadDist && !hadAsset) rmSync(distDir, { recursive: true, force: true });
-		} catch {}
-	}
+		const packed = packedFileList(dir);
+		for (const path of builtWebPaths) assert.ok(packed.has(path), `pack must contain ${path}`);
+		assert.ok(packed.has("web/tower/dist/assets/index.js"), "pack must contain the JS index.html references");
+		assert.ok(![...packed].some((path) => path.startsWith("web/tower/node_modules/")), "pack must not contain web/tower/node_modules");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("the release guard sees what npm packs, not what is on disk: without web/tower/.npmignore dist is excluded", () => {
+	const dir = scratchPackage({ withNpmignore: false });
+	try {
+		const packed = packedFileList(dir);
+		assert.deepEqual(builtWebPaths.filter((path) => packed.has(path)), [], "web/tower/.gitignore alone must exclude dist from the pack list");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });

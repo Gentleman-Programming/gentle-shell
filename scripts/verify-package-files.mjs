@@ -462,7 +462,14 @@ async function main() {
   }
 
   if (process.argv.includes("--with-built-web")) {
-    const packed = packedFileList(root);
+    let packed;
+    try {
+      packed = packedFileList(root);
+    } catch (error) {
+      console.error(`gentle-pi could not list the files npm would pack: ${error.message}`);
+      console.error("\nRefusing to pack/publish without checking the built web app is included.");
+      process.exit(1);
+    }
     const excluded = builtWebPaths.filter((relativePath) => !packed.has(relativePath));
     if (excluded.length > 0) {
       console.error("gentle-pi built web files exist on disk but npm pack excludes them:");

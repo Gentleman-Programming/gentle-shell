@@ -7173,6 +7173,8 @@ async function openProfilesPanelLoop(
 				notices: routingScreenNotices(ctx, file, shown, launch?.name, launch?.modelProfiles, authorityAvailable),
 				switchProfile,
 				prepareCleanup: () => {
+					// Tab switches update selectedName without reopening this panel.
+					const name = selectedName!;
 					const roots = { cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd, home: homedir(), agentHome: resolveGentlePiAgentHome() };
 					const discovered = listDiscoverableAgents(roots.cwd);
 					const known = [...PROVIDER_REVIEW_ROLES.map((name) => ({ name })), ...discovered];
@@ -7201,6 +7203,11 @@ async function openProfilesPanelLoop(
 					if (!rawProfiles || !parsedProfiles || !isRecord(rawProfiles.profiles)) {
 						throw new Error(`Invalid routing file: ${path}`);
 					}
+					// The panel will keep its draft, so only adopt a cleanup result from the same baseline.
+					if (!isDeepStrictEqual(parsedProfiles.file.profiles[name], file.profiles[name])
+						|| readProfileWorkflow(parsedProfiles.file, name).orchestratorMode !== readProfileWorkflow(file, name).orchestratorMode) {
+						throw new Error("The displayed profile changed on disk. Reopen the panel before cleaning up.");
+					}
 					// Normalization is only a candidate/shape validator, never the write payload.
 					const candidates = (raw: Record<string, unknown>) => staleRoutingKeys(normalizeModelConfig(raw) ?? {}, known);
 					const subStores = subFiles.map((sub) => {
@@ -7215,7 +7222,7 @@ async function openProfilesPanelLoop(
 					const keys = [...new Set([...subStores.flatMap((sub) => sub.keys), ...modelKeys,
 						...profileStores.flatMap((profile) => profile.keys)])].sort();
 					return { keys,
-						notices: () => routingScreenNotices(ctx, file, shown, launch?.name, launch?.modelProfiles, authorityAvailable),
+						notices: () => routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles, authorityAvailable),
 						apply: (selected) => {
 						const replacements = new Map<string, Uint8Array>();
 						const add = (input: string, raw: Record<string, unknown>) => {

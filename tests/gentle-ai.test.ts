@@ -3616,6 +3616,29 @@ test("models screen stale cleanup refreshes existing notices after success", asy
 	await fixture.run("gentle:profiles");
 });
 
+test("models screen stale cleanup refreshes notices for the switched profile", async (t) => {
+	const { fixture, writeStore } = cleanupTransactionFixture(t);
+	const entry = { model: "openai/alpha" };
+	writeStore({ team: { abandoned: entry }, sibling: { worker: entry, abandoned: entry, "gentle-ai-worker": entry } }, "team");
+	fixture.onInput((panel) => {
+		assert.equal(shownProfile(panel), "team");
+		const tabs = tabNames(panel);
+		panel.handleInput(tabs.indexOf("sibling") < tabs.indexOf("team") ? "\x1b[D" : "\x1b[C");
+		assert.equal(shownProfile(panel), "sibling");
+		chooseAgent(panel, "worker");
+		chooseEffort(panel, "high");
+		panel.handleInput("x");
+		panel.handleInput("\r");
+		const after = stripAnsi(renderComponent(panel));
+		assert.match(after, /Removed 1 stale routing key\./);
+		assert.match(after, /Profile key "gentle-ai-worker" matches no agent configured in gentle-shell; did you mean worker\?/);
+		assert.doesNotMatch(after, /Profile key "abandoned"/);
+		assert.match(after, /worker\s+openai\/alpha\s+high/, "cleanup preserves an unrelated unsaved edit");
+		panel.handleInput("\x03");
+	});
+	await fixture.run("gentle:profiles");
+});
+
 for (const action of ["confirm", "deselect", "empty", "escape", "nothing"] as const) {
 	test(`models screen stale cleanup: ${action}`, async (t) => {
 		const { fixture, writeStore, storePath } = profilesStoreFixture(t);
@@ -3702,6 +3725,34 @@ function cleanupTransactionFixture(t: test.TestContext) {
 	fixture.tui.terminal.rows = 40;
 	return { ...setup, subPath, userPath, paths, bytes };
 }
+
+test("models screen cleanup transaction rejects a profile changed since the panel opened", async (t) => {
+	const { fixture, storePath, bytes } = cleanupTransactionFixture(t);
+	let external: ReturnType<typeof bytes>;
+	let afterCleanup: ReturnType<typeof bytes>;
+	let feedback = "";
+	let visited = false;
+	fixture.onInput((panel) => {
+		if (visited) return panel.handleInput("\x1b");
+		visited = true;
+		const store = JSON.parse(readFileSync(storePath, "utf8"));
+		store.profiles.team.worker.model = "openai/beta";
+		writeFileSync(storePath, JSON.stringify(store));
+		external = bytes();
+
+		panel.handleInput("x");
+		if (/Clean stale routing keys/.test(renderComponent(panel))) panel.handleInput("\r");
+		feedback = stripAnsi(renderComponent(panel));
+		afterCleanup = bytes();
+		panel.handleInput("u");
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).profiles.team.worker.model, "openai/beta", "Use in this session must not save the stale route back to disk");
+	assert.deepEqual(afterCleanup!, external!, "cleanup preserves all stores byte-for-byte");
+	assert.deepEqual(bytes(), external!, "using the profile still leaves all stores untouched");
+	assert.match(feedback, /Cleanup failed:.*changed on disk/s);
+	assert.doesNotMatch(feedback, /Removed \d+ stale routing/);
+});
 
 for (const boundary of ["prepare", "replace", "replace-then-throw", "absent-then-throw", "restore-error"] as const) {
 	test(`models screen cleanup transaction: ${boundary}`, async (t) => {

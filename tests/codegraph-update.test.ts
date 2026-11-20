@@ -231,23 +231,20 @@ test("detectCodegraphInstallSource: a shim not on PATH is unknown with no furthe
 	assert.deepEqual(calls.map((call) => call.command), ["which"], "no npm work happens without a shim");
 });
 
-test("updateCodegraphToLatest: bun-global runs bun add -g on every platform", async () => {
-	for (const platform of ["darwin", "linux", "win32"] as const) {
-		const { exec, calls } = execByFirstArg({ bun: () => ok("installed @colbymchenry/codegraph@1.6.5") });
-		const run = await updateCodegraphToLatest("bun-global", exec, { platform });
-		assert.deepEqual(run, { ok: true });
-		assert.deepEqual(calls, [{ command: "bun", args: ["add", "-g", `${CODEGRAPH_PACKAGE}@latest`], timeoutMs: UPDATE_TIMEOUT_MS }], `${platform}: bun spawns directly, no .cmd shim`);
-	}
-});
-
-test("updateCodegraphToLatest: npm-global picks the platform's npm spelling", async () => {
-	const posix = execByFirstArg({ npm: () => ok("") });
-	assert.deepEqual(await updateCodegraphToLatest("npm-global", posix.exec, { platform: "darwin" }), { ok: true });
-	assert.deepEqual(posix.calls, [{ command: "npm", args: ["install", "-g", `${CODEGRAPH_PACKAGE}@latest`], timeoutMs: UPDATE_TIMEOUT_MS }]);
+test("updateCodegraphToLatest: each manager updates in its own form on every platform", async () => {
+	const bun = execByFirstArg({ bun: () => ok("") });
+	assert.deepEqual(await updateCodegraphToLatest("bun-global", bun.exec, { platform: "darwin" }), { ok: true });
+	assert.deepEqual(bun.calls, [{ command: "bun", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS }]);
 
 	const windows = execByFirstArg({ "npm.cmd": () => ok("") });
 	assert.deepEqual(await updateCodegraphToLatest("npm-global", windows.exec, { platform: "win32" }), { ok: true });
-	assert.deepEqual(windows.calls, [{ command: "npm.cmd", args: ["install", "-g", `${CODEGRAPH_PACKAGE}@latest`], timeoutMs: UPDATE_TIMEOUT_MS }], "win32 npm goes through its .cmd shim");
+	assert.deepEqual(windows.calls, [{ command: "npm.cmd", args: ["update", "-g", CODEGRAPH_PACKAGE], timeoutMs: UPDATE_TIMEOUT_MS }], "win32 npm goes through its .cmd shim");
+
+	for (const platform of ["darwin", "linux", "win32"] as const) {
+		const pnpm = execByFirstArg({ pnpm: () => ok("") });
+		assert.deepEqual(await updateCodegraphToLatest("pnpm-global", pnpm.exec, { platform }), { ok: true });
+		assert.deepEqual(pnpm.calls, [{ command: "pnpm", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS }], `${platform}: pnpm spawns directly`);
+	}
 });
 
 test("updateCodegraphToLatest: pnpm-global runs the user-directed update form on every platform", async () => {
@@ -307,7 +304,7 @@ test("runCodegraphUpdateCheck: a registry failure fails open with the running ve
 	assert.match(check.reason ?? "", /npm view|registry|latest/i);
 });
 
-test("runCodegraphUpdateCheck: a stale bun-global binary updates, pins the exact version, and verifies", async () => {
+test("runCodegraphUpdateCheck: a stale bun-global binary updates in bun's form and verifies", async () => {
 	clearCodegraphUpdateCaches();
 	const home = "/Users/tester";
 	let binary = "codegraph 1.6.3\n";
@@ -323,7 +320,7 @@ test("runCodegraphUpdateCheck: a stale bun-global binary updates, pins the exact
 	const check = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
 	assert.deepEqual(check, { ran: true, version: "1.6.3", from: "1.6.3", to: "1.6.4" });
 	assert.deepEqual(calls.map((call) => call.command), ["codegraph", "npm", "which", "bun", "codegraph"], "the verify probe re-reads the binary after the update");
-	assert.deepEqual(calls[3]?.args, ["add", "-g", `${CODEGRAPH_PACKAGE}@1.6.4`], "the spec pins the exact target version");
+	assert.deepEqual(calls[3]?.args, ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], "bun updates in its own form");
 });
 
 test("runCodegraphUpdateCheck: an exit-0 no-op update is a reported failure, never ran:true", async () => {

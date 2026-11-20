@@ -64,7 +64,7 @@ function routineRenderContext(overrides: Record<string, unknown> = {}) {
 // tool identity is asserted separately against the actual unmodified frame.
 // A pending call's `running…` row is frame chrome too, asserted separately.
 const TAG = "(?:</?[a-zA-Z]+>)*";
-const CARD_TOP = new RegExp(`^${TAG}╭─ ${TAG}[✿≡$⌕⌖☷✎+]${TAG} (.*?) ${TAG}─+${TAG}(?: .*? )?${TAG}╮${TAG}$`);
+const CARD_TOP = new RegExp(`^${TAG}╭─ ${TAG}\\S{1,2}${TAG} (.*?) ${TAG}─+${TAG}(?: .*? )?${TAG}╮${TAG}$`, "u");
 const CARD_SIDE = new RegExp(`^${TAG}│${TAG} (.*) ${TAG}│${TAG}$`);
 const CARD_BOTTOM = new RegExp(`^${TAG}╰${TAG}─*${TAG}╯${TAG}$`);
 
@@ -197,6 +197,13 @@ function registeredQuietToolsWithResolver(resolveOverride: () => unknown) {
 
 function renderToolResult(tool: any, result: any, options: any, context: Record<string, unknown> = {}): string {
 	return renderToString(tool.renderResult(result, options, passthroughTheme, context));
+}
+
+// A call's heading as the top rule paints it: the mark, the label and the detail,
+// read without the frame. A heading wide enough to stay on one row is drawn at
+// that width, so the text is what the reader sees rather than a wrapped fragment.
+function callCardTitle(tool: any, args: Record<string, unknown>, expanded = false): string {
+	return cardTitle(tool.renderCall(args, passthroughTheme, { args, expanded }).render(160).join("\n"));
 }
 
 function assertGenericBash(tool: any, command: string): void {
@@ -1048,6 +1055,123 @@ test("quiet write expansion preserves failures, partial results and fallback con
 	for (const fallbackContext of [{}, { args: {} }, { args: { content: 42 } }, { args: { content: "" } }]) {
 		assert.equal(renderToolResult(tool, textResult(confirmation), options, fallbackContext), confirmation);
 	}
+});
+
+// A call that touches a skill or an ODD artifact heads as that file instead of as a
+// plain tool row: the same card with the file kind's own name, mark and color, and
+// the range only a read asked for beside the path. A folder that merely contains the
+// word is an ordinary card, and both path separators read the same way.
+test("a skill or an ODD file card heads as that file, and only a read names its line range", () => {
+	const tools = registeredQuietTools();
+	const read = tools.get("read");
+	const skill = { path: "skills/gentle-ai/SKILL.md", offset: 2, limit: 3 };
+	assert.equal(callCardTitle(read, skill), "▤ skill · read skills/gentle-ai/SKILL.md:2-4");
+	// The range is the one the read asked for, wherever in the file it starts.
+	assert.equal(callCardTitle(read, { path: "skills/gentle-ai/SKILL.md", offset: 142, limit: 4 }), "▤ skill · read skills/gentle-ai/SKILL.md:142-145");
+	// A SKILL.md outside a skills folder is an ordinary card, and a Windows path is the same path.
+	assert.equal(callCardTitle(read, { path: "/repo/SKILL.md" }), "≡ read /repo/SKILL.md");
+	assert.equal(callCardTitle(read, { path: "C:\\repo\\skills\\tdd\\SKILL.md" }), "▤ skill · read C:\\repo\\skills\\tdd\\SKILL.md");
+	// A path that merely contains the word is an ordinary card.
+	assert.equal(callCardTitle(read, { path: "lib/skillset/x.ts" }), "≡ read lib/skillset/x.ts");
+	assert.equal(callCardTitle(read, { path: "docs/oddity.md" }), "≡ read docs/oddity.md");
+
+	// A range the call states in a shape the card cannot read is not guessed at, on any
+	// card: half a range would name lines the call never asked for.
+	assert.equal(callCardTitle(read, { path: "lib/x.ts", offset: "2", limit: 3 }), "≡ read lib/x.ts");
+	assert.equal(callCardTitle(read, { path: "lib/x.ts", offset: 0, limit: 2 }), "≡ read lib/x.ts");
+
+	// A skill keeps the read card's colors: only the name and the mark change.
+	const tagged = read.renderCall(skill, statusTheme, { args: skill }).render(160).join("\n");
+	assert.match(tagged, /<toolTitle>▤<\/toolTitle> <toolTitle>skill<\/toolTitle>/);
+	assert.match(tagged, /<accent>skills\/gentle-ai\/SKILL\.md<\/accent><warning>:2-4<\/warning>/);
+	// An ODD artifact wears the theme's own `mdHeading` role, never a status color.
+	const odd = { path: "odd/tasks/x.md" };
+	const oddTagged = read.renderCall(odd, statusTheme, { args: odd }).render(160).join("\n");
+	assert.match(oddTagged, /<mdHeading>📑<\/mdHeading> <mdHeading>odd<\/mdHeading>/);
+	assert.doesNotMatch(oddTagged, /<warning>📑/);
+
+	// Collapsed, an ODD card names the file itself; expanding it states the whole path.
+	const edit = { path: "odd/tasks/feat/design.md", oldText: "a", newText: "b" };
+	assert.equal(callCardTitle(tools.get("edit"), edit), "📑 odd · edit design.md");
+	assert.equal(callCardTitle(tools.get("edit"), edit, true), "📑 odd · edit odd/tasks/feat/design.md");
+	// A write states no file line range: how many lines it writes is not where they land.
+	const write = callCardTitle(tools.get("write"), { path: "odd/tasks/design.md", content: "one\ntwo\nthree" });
+	assert.equal(write, "📑 odd · write design.md");
+	assert.doesNotMatch(write, /:\d/, "a line count never reads as a file line number");
+});
+
+// Markdown is the shape a document is written in, not a property of the folder holding
+// it: an expanded successful read of any `.md` file renders as Markdown, while the
+// collapsed preview, a failure and a non-Markdown file keep exactly the rows they had.
+test("an expanded read of any Markdown file renders as Markdown; every other read keeps its rows", () => {
+	const tools = registeredQuietTools();
+	const source = "## Handoff\n\nSome **bold** text with `code`.";
+	for (const path of ["skills/a/SKILL.md", "odd/work/design.md", "docs/design.md", "README.md", "notes/plan.MD"]) {
+		const expanded = renderToolResult(tools.get("read"), textResult(source), { expanded: true, isPartial: false }, { args: { path } });
+		assert.doesNotMatch(expanded, /## Handoff/, `${path}: the heading renders instead of its source`);
+		assert.match(expanded, /Handoff/);
+		assert.doesNotMatch(expanded, /\*\*/, `${path}: emphasis renders instead of its source`);
+		// Collapsed keeps the raw first rows: the preview is the file, not a render of it.
+		assert.match(renderToolResult(tools.get("read"), textResult(source), { expanded: false, isPartial: false }, { args: { path } }), /## Handoff/, path);
+	}
+	// A file that is not Markdown is the ordinary read output, source included.
+	for (const path of ["skills/a/notes.txt", "lib/x.ts", "odd/work/design.markdown.txt"]) {
+		assert.match(renderToolResult(tools.get("read"), textResult(source), { expanded: true, isPartial: false }, { args: { path } }), /## Handoff/, path);
+	}
+	// A failed read keeps its cause rather than drawing an empty document.
+	const failed = renderToolResult(tools.get("read"), textResult("ENOENT: no such file"), { expanded: true, isPartial: false, isError: true }, { args: { path: "odd/work/missing.md" }, isError: true });
+	assert.match(failed, /ENOENT/);
+});
+
+// The write card draws the content the call carried, because the result only
+// acknowledges the write. Only a Markdown file is rendered: every other file a write
+// touches — a skill's own script or notes included — keeps the text it wrote, verbatim.
+test("an expanded write of a Markdown file renders what it wrote; a skill's other files stay verbatim", () => {
+	const tools = registeredQuietTools();
+	const source = "## Handoff\n\nSome **bold** text with `code`.";
+	const write = (path: string) => renderToolResult(tools.get("write"), textResult("Successfully wrote 44 bytes"), { expanded: true, isPartial: false }, { args: { path, content: source } });
+	for (const path of ["odd/work/design.md", "skills/a/SKILL.md", "docs/design.md", "CHANGELOG.md"]) {
+		const rendered = write(path);
+		assert.doesNotMatch(rendered, /## Handoff/, `${path}: the heading renders instead of its source`);
+		assert.match(rendered, /Handoff/);
+		assert.doesNotMatch(rendered, /\*\*/, `${path}: emphasis renders instead of its source`);
+	}
+	// A skill's file that is not Markdown is echoed as it was written, whatever it is.
+	for (const path of ["skills/a/notes.txt", "skills/a/scripts/run.ts", "lib/x.ts"]) {
+		assert.match(write(path), /## Handoff/, path);
+		assert.match(write(path), /\*\*bold\*\*/, `${path}: the written text is echoed, not rendered`);
+	}
+	// Collapsed keeps the write's own summary, never a rendering of the body.
+	const collapsed = renderToolResult(tools.get("write"), textResult("Successfully wrote 44 bytes"), { expanded: false, isPartial: false }, { args: { path: "odd/work/design.md", content: source } });
+	assert.match(collapsed, /wrote 44 bytes/);
+	assert.doesNotMatch(collapsed, /Handoff/);
+	// A failed write says why, and a write whose call carried no content keeps the
+	// result it has rather than an empty document.
+	const failed = renderToolResult(tools.get("write"), textResult("EACCES: permission denied"), { expanded: true, isPartial: false, isError: true }, { args: { path: "odd/work/design.md", content: source }, isError: true });
+	assert.match(failed, /EACCES/);
+	assert.doesNotMatch(failed, /Handoff/);
+	const empty = renderToolResult(tools.get("write"), textResult("Successfully wrote 0 bytes"), { expanded: true, isPartial: false }, { args: { path: "odd/work/design.md", content: "" } });
+	assert.match(empty, /wrote 0 bytes/);
+});
+
+// An edit's rows are its diff at both expansion levels, whether or not the file is
+// Markdown: the card states no line range of its own, because the diff is where the
+// change actually landed.
+test("a file card keeps the diff an edit applied and the cause a failure states", () => {
+	const tools = registeredQuietTools();
+	const args = { path: "odd/tasks/x.md", oldText: "old", newText: "new" };
+	// The card wears the file's identity and names no range: the diff is where the change landed.
+	assert.equal(callCardTitle(tools.get("edit"), args), "📑 odd · edit x.md");
+	const result = textResult("Applied", { diff: "@@ -1 +1 @@\n-old\n+new" });
+	const expanded = renderToolResult(tools.get("edit"), result, { expanded: true, isPartial: false }, { args });
+	assert.match(expanded, /-old\n\+new/);
+	assert.doesNotMatch(expanded, /## /, "an edit is a diff, not a document");
+	const collapsed = renderToolResult(tools.get("edit"), result, { expanded: false, isPartial: false }, { args });
+	assert.match(collapsed, /✓ \+1 \/ -1/);
+	assert.match(collapsed, /-old\n\+new/);
+	// A failed edit keeps the error it carries instead of a diff.
+	const failed = renderToolResult(tools.get("edit"), textResult("-1 the edit failed"), { expanded: true, isPartial: false, isError: true }, { args: { path: "odd/tasks/x.md" }, isError: true });
+	assert.match(failed, /the edit failed/);
 });
 
 test("quiet tool rendering sanitizes collapsed output and call rows", () => {

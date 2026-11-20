@@ -18,6 +18,7 @@ import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
 import { offerBuiltinCodemodeOptOut, type BuiltinCodemodeOptOutOptions } from "../lib/builtin-codemode-optout.ts";
 import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
+import { FileCardMarkdown, FILE_CARD_IDENTITY, fileCardIdentity, fileCardLineRange, fileCardName, markdownDocumentSource, type FileCardMark } from "../lib/skill-odd-card.ts";
 import {
 	CARD_TONE, cardAwaitingResult, cardBottom, cardInnerWidth, cardLine, cardRunningLine, cardStyle, cardTopRows, floatRows, markCardResult,
 	type CardRowContext, type CardTheme,
@@ -61,6 +62,10 @@ const COLLAPSED_COUNT_LABELS: Partial<Record<QuietToolName, string>> = {
 // minimal: their results stay one expand key away and never add rows to the
 // transcript view.
 const COMMAND_ONLY_TOOLS: ReadonlySet<QuietToolName> = new Set(["read", "bash", "grep", "find", "ls", "edit", "write"]);
+
+// The tools whose call names one file: a skill or an ODD artifact heads as that
+// file instead of as the tool (lib/skill-odd-card.ts owns the classification).
+const FILE_CARD_TOOLS: ReadonlySet<QuietToolName> = new Set(["read", "edit", "write"]);
 
 const COLLAPSED_TAIL_LINE_LIMIT = 10;
 const PREVIEW_LINE_LIMIT = 3;
@@ -464,11 +469,15 @@ export function formatToolResultOutput(
 	return "";
 }
 
+/**
+ * The line range a read card names after the path, in the warm role of the card's
+ * own theme. The range itself comes from the shared file-card helper, so only a read
+ * ever states one and the same unreadable shapes are refused; only the color is the
+ * chat's.
+ */
 function lineRangeSuffix(args: Record<string, unknown>, theme: ThemeLike): string {
-	if (args.offset === undefined && args.limit === undefined) return "";
-	const startLine = typeof args.offset === "number" ? args.offset : 1;
-	const endLine = typeof args.limit === "number" ? startLine + args.limit - 1 : undefined;
-	return theme.fg("warning", `:${startLine}${endLine === undefined ? "" : `-${endLine}`}`);
+	const range = fileCardLineRange("read", args);
+	return range === undefined ? "" : theme.fg("warning", range);
 }
 
 interface ToolRenderContextLike {
@@ -507,6 +516,38 @@ function clipPlain(text: string, width: number): string {
 	let clipped = Array.from(text);
 	while (clipped.length > 0 && visibleWidth(clipped.join("")) > width - 1) clipped = clipped.slice(0, -1);
 	return `${clipped.join("")}…`;
+}
+
+/** The file card a call wears, or undefined when the call names no skill or ODD file. */
+function fileCard(toolName: QuietToolName, args: Record<string, unknown> | undefined): FileCardMark | undefined {
+	return FILE_CARD_TOOLS.has(toolName) ? fileCardIdentity(args?.path) : undefined;
+}
+
+/**
+ * A file card's heading, or undefined for a call that names neither kind: the file
+ * kind's own name and mark, then the tool, the path, and the range only a read asked
+ * for. Collapsed, an ODD card names the file itself, because that row is read at a
+ * glance and the path it sits in is what expanding it is for; expanded it states the
+ * whole path. A skill keeps the read card's own color — only its name and mark change
+ * — while an ODD artifact wears the theme's heading role on its mark and its label,
+ * so the theme decides the color and the card owns none of its own.
+ */
+function fileCardHeading(
+	toolName: QuietToolName,
+	args: Record<string, unknown>,
+	theme: ThemeLike,
+	expanded: boolean,
+): { title: string; glyph: string } | undefined {
+	const card = fileCard(toolName, args);
+	if (card === undefined) return undefined;
+	const painted = (text: string) => theme.fg(card.titleRole, text);
+	const collapsedName = card.identity === FILE_CARD_IDENTITY.ODD && !expanded ? fileCardName(args.path) : "";
+	const path = safeText(collapsedName || shortenPath(args.path) || "...");
+	const range = fileCardLineRange(toolName, args);
+	return {
+		glyph: painted(card.glyph),
+		title: `${painted(theme.bold(card.title))} ${theme.fg("muted", "·")} ${toolName} ${theme.fg("accent", path)}${range === undefined ? "" : theme.fg("warning", range)}`,
+	};
 }
 
 function formatToolCall(toolName: QuietToolName, args: Record<string, unknown>, theme: ThemeLike, summary?: { width: number }): string {
@@ -781,7 +822,15 @@ export function createQuietToolRenderer(
 			const hint = finished ? stripAnsi(keyHint("app.tools.expand", renderContext.expanded === true ? "to collapse" : "to expand")) : undefined;
 			// Minimal collapsed cards fit the call in the top rule; the room leaves the rule's glyph, edges and hint.
 			const summary = renderContext.expanded === true ? undefined : (inner: number) => ({ width: inner - CARD_TOP_CHROME - (hint ? visibleWidth(hint) + 2 : 0) });
-			return new ToolCardTop((inner) => formatToolCall(toolName, callArgs, theme, summary?.(inner)), tone, theme, TOOL_GLYPH[toolName], hint, renderContext);
+			const fileHeading = fileCardHeading(toolName, callArgs, theme, renderContext.expanded === true);
+			return new ToolCardTop(
+				fileHeading === undefined ? (inner) => formatToolCall(toolName, callArgs, theme, summary?.(inner)) : () => fileHeading.title,
+				tone,
+				theme,
+				fileHeading?.glyph ?? TOOL_GLYPH[toolName],
+				hint,
+				renderContext,
+			);
 		},
 		/** Builds the card component for this render pass; collapsed cards delegate to the wrapped-line cache keyed by the tool result object. */
 		renderResult(result, options, theme, context) {
@@ -828,6 +877,14 @@ export function createQuietToolRenderer(
 					{ ...sanitizedRenderContext(renderContext), lastComponent: undefined } as any,
 				), false);
 			}
+			// A Markdown document renders through Pi's own Markdown renderer once the call is
+			// expanded: any `.md` file a read opens, and the `.md` file a write just wrote, drawn
+			// over the content the call carried. The rule lives in the shared file-card module, so
+			// an edit keeps its diff, the collapsed preview stays the file's own first rows, every
+			// other file keeps the plain result it had, and a skill's non-Markdown file is echoed
+			// exactly as it was written.
+			const markdownSource = markdownDocumentSource(toolName, renderContext?.args, text, { expanded: options.expanded, isError });
+			if (markdownSource !== undefined) return carded(() => new FileCardMarkdown(markdownSource, theme), false);
 			let output = formatToolResultOutput(toolName, safeResult, {
 				expanded: options.expanded,
 				isError,

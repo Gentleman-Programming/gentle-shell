@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { retryTransient, seedWorktreeIndex, worktreeMainRoot, type SeedInput } from "../lib/codegraph-seed.ts";
-import { lockPathFor, tryAcquireLease } from "../lib/codegraph-lease.ts";
+import { leaseHostIdentity, lockPathFor, readLeaseVerdict, tryAcquireLease } from "../lib/codegraph-lease.ts";
 
 /** git that fails the test WITH stderr instead of swallowing it. */
 function git(args: readonly string[], cwd: string): void {
@@ -301,6 +301,9 @@ test("a busy main index defers seeding without touching the worktree", async (t)
 });
 
 test("a seed displaced from its init lease before publication never replaces the newer index", async (t) => {
+	if (leaseHostIdentity() === null) {
+		return t.skip("the reclaim fixture needs a host identity: a host-less token (Windows) whose holder pid is alive fails closed to unknown, so the displacement cannot be staged here");
+	}
 	const { worktree } = worktreePair(t);
 	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-fence-"));
 	t.after(() => rmSync(sandbox, { recursive: true, force: true }));
@@ -325,6 +328,21 @@ test("a seed displaced from its init lease before publication never replaces the
 	assert.equal(result.outcome, "seed-failed", "a displaced seed stands down so the caller falls back to init");
 	assert.equal(readFileSync(join(worktree, ".codegraph", "codegraph.db"), "utf8"), "newer-index-bytes", "the newer database the other session published survives");
 	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore", "codegraph.db"], "no staging leftover and no stale seed sidecar is left behind");
+});
+
+test("an expired host-less lease whose holder pid is alive is never reclaimable (the displacement fixtures' platform gate)", (t) => {
+	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-hostless-verdict-"));
+	t.after(() => rmSync(sandbox, { recursive: true, force: true }));
+	// The token shape acquireInitLock writes where no host identity can be derived (win32):
+	// expired past its TTL, holder pid still alive — here this process, exactly the
+	// displacement fixtures' in-process holder. The lease's fail-closed provenance rules
+	// refuse that reclaim on every platform, which is why the displacement fixtures skip
+	// where leaseHostIdentity() is null instead of staging an unreachable displacement.
+	const lockPath = join(sandbox, "hostless.init.json");
+	const token = { kind: "init", pid: process.pid, startedAt: Date.now() - 2_000, expiresAt: Date.now() - 1_000, nonce: "seed-acquisition" };
+	writeFileSync(lockPath, JSON.stringify(token) + "\n");
+	assert.equal(readLeaseVerdict(lockPath, Date.now()), "unknown", "an expired host-less token with a live holder is unknown, never stealable");
+	assert.equal(tryAcquireLease(lockPath, "init", 600_000, Date.now()), undefined, "the reclaim the displacement fixtures rely on is refused for this token shape");
 });
 
 test("retryTransient retries transient codes with backoff and fails others at once", async () => {

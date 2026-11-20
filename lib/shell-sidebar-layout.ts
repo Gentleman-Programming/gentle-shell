@@ -341,7 +341,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			// A carded section renders one indent wider; its body rows drop that indent inside the card.
 			const renderWidth = carded ? panelInnerWidth(theme, contentWidth) + PANEL_ROW_INDENT : contentWidth - RAIL_PADDING * 2;
 			// Live work first, then the session Status sections (design/shell-rework/02-proposal.html).
-			const sections = ["todo", "jobs", "agents", "footer"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
+			const sections = ["todo", "github", "jobs", "agents", "footer"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
 				const component = state.parts.get(key);
 				if (!component) {
 					sectionCache.delete(key);

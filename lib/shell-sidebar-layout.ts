@@ -1,5 +1,5 @@
 import { Container, ScrollView, VStack, truncateToWidth, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { setSidebarHover, sidebarState, type SidebarRail } from "./shell-sidebar.ts";
+import { installContributedSidebar, setSidebarHover, sidebarSectionOrder, sidebarState, type SidebarRail } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
 import { CARD_STYLE, CARD_TONE, cardBottom, cardLine, cardStyle, cardTop, floatRows, paintSurfaceRow, panelInnerWidth, type CardStyle } from "./shell-card.ts";
 import { chromeSurface, PANEL_ROW_INDENT, panelSurfaceOpener, sectionGap } from "./shell-panel.ts";
@@ -80,6 +80,8 @@ type PreparedRail = {
 	themeSignature: string;
 	parts: Array<[string, SidebarRail]>;
 	digests: Array<string | undefined>;
+	/** The section key sequence these lines paint, so an owner reorder in `plugins.json` repaints. */
+	sections: string[];
 	contentWidth: number;
 	active: boolean;
 	lines: string[];
@@ -308,7 +310,15 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			return false;
 		}
 		const style = cardStyle();
+		// Contributed rails join the shared parts map before the layout snapshots it,
+		// so a plugin section is reachable exactly like a built-in part.
+		const contributed = installContributedSidebar(tui);
 		const parts = [...state.parts.entries()];
+		// The section sequence is what paints, and `state.parts` keeps its insertion
+		// order, so an edited `plugins.json` that only reorders owners changes this
+		// list while every part identity and digest stays put. The memo compares it,
+		// or the next frame would paint the previous order.
+		const sectionKeys = sidebarSectionOrder(contributed.keys, state.visibility?.todo !== false);
 		// Digest closures read live session state, so they must be evaluated once
 		// per frame and stored for the next comparison (issue #1681): the sections
 		// loop below reuses this pass instead of calling each digest a second time.
@@ -317,6 +327,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		const unchanged = prepared?.revision === cache.revision &&
 			prepared.width === width && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.density === density() && prepared.surface === chromeSurface() && prepared.cardStyle === style && prepared.root === root && prepared.theme === theme && prepared.themeSignature === signature &&
 			prepared.parts.length === parts.length && prepared.parts.every(([key, part], index) => parts[index]?.[0] === key && parts[index]?.[1] === part) &&
+			prepared.sections.length === sectionKeys.length && prepared.sections.every((key, index) => sectionKeys[index] === key) &&
 			prepared.digests.length === digests.length && prepared.digests.every((digest, index) => digest === digests[index]);
 		if (unchanged) {
 			railLines = prepared.lines;
@@ -340,8 +351,10 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const cardGap = () => (carded && style === CARD_STYLE.FLOAT) || sectionGap(density());
 			// A carded section renders one indent wider; its body rows drop that indent inside the card.
 			const renderWidth = carded ? panelInnerWidth(theme, contentWidth) + PANEL_ROW_INDENT : contentWidth - RAIL_PADDING * 2;
-			// Live work first, then the session Status sections (design/shell-rework/02-proposal.html).
-			const sections = ["todo", "jobs", "agents", "footer"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
+			// Contributed plugin sections follow the session Status sections (design/shell-rework/02-proposal.html):
+			// the owners `plugins.json` names first, in that sequence, and every other
+			// owner after them in registration order.
+			const sections = sectionKeys.map((key) => {
 				const component = state.parts.get(key);
 				if (!component) {
 					sectionCache.delete(key);
@@ -420,7 +433,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const statusPart = state.parts.get("statusbar");
 			const preparedStatusLines = active && statusPart ? [...(statusPart.render(Math.max(0, width)) ?? [])] : [];
 			statusLines = preparedStatusLines.some((line) => line.trim() !== "") ? preparedStatusLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), density: density(), surface: chromeSurface(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0 };
+			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), density: density(), surface: chromeSurface(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, sections: sectionKeys, contentWidth, active, lines: railLines, hits, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0 };
 			state.active = active;
 			return active;
 		} catch {

@@ -1,5 +1,8 @@
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { PanelSummary } from "./shell-panel.ts";
+import { contributionSlot, guard, readContributions } from "./plugin-contract.ts";
+import type { Contribution, ContributionIssue, ContributionReport } from "./plugin-contract.ts";
+import { readPluginOrder, type PluginOrderOptions } from "./plugin-order.ts";
 
 // Store on the terminal, not a module singleton: extension loaders may isolate
 // modules, while Pi keeps this terminal across regular/fullscreen transitions.
@@ -30,6 +33,8 @@ export interface SidebarState {
 	/** Current shell-owned pointer hover; shared across separately loaded extensions. */
 	hover?: { owner: object; clear: () => void };
 	parts: Map<string, SidebarRail>;
+	/** Namespaced keys this terminal installed from plugin contributions, so a later read can retire one. */
+	contributed?: Set<string>;
 }
 
 /** A rail slot in the fullscreen sidebar. */
@@ -128,4 +133,277 @@ export function sidebarStatusBar(tui: TUI, rail: SidebarRail): () => void {
 	return () => {
 		if (state.parts.get("statusbar") === rail) state.parts.delete("statusbar");
 	};
+}
+
+/** Built-in rail sections, in paint order. */
+export const SIDEBAR_SECTION_KEYS = ["todo", "jobs", "agents", "footer"] as const;
+/** Shell slots a contribution may never claim: the rail sections plus the header and status bar. */
+export const SIDEBAR_RESERVED_KEYS: readonly string[] = [...SIDEBAR_SECTION_KEYS, "header", "statusbar"];
+/** A plugin section key is `plugin:<owner>:<name>`; the owner side is the contribution's own owner. */
+const PLUGIN_SECTION_KEY = /^plugin:([^:]+):(.+)$/;
+// One guarded proxy per contributed rail, so the layout memo keeps seeing a stable identity.
+const GUARDED_RAILS = new WeakMap<object, SidebarRail>();
+// Process-wide for the same reason the contribution box is: Pi evaluates every
+// extension with `moduleCache: false`, so `/gentle:plugins` can hold a second
+// instance of this module. A module-local report would be empty there while the
+// sidebar instance holds refusals — a silent blind spot in the audit.
+const CONTRIBUTION_REPORT = Symbol.for("gentle-pi.sidebar-contribution-report/v1");
+
+interface SidebarReportState {
+	skipped: ContributionIssue[];
+	replaced: string[];
+}
+
+function isSidebarReport(value: unknown): value is SidebarReportState {
+	if (typeof value !== "object" || value === null) return false;
+	// SAFETY: only the two array fields the report is built from are read here.
+	const candidate = value as { skipped?: unknown; replaced?: unknown };
+	return Array.isArray(candidate.skipped) && Array.isArray(candidate.replaced);
+}
+
+/** The one report every evaluation of this module shares through its process slot. */
+function sidebarReport(): SidebarReportState {
+	// SAFETY: the symbol index signature is the process-wide slot every evaluation of this module agrees on.
+	const holder = globalThis as unknown as { [key: symbol]: unknown };
+	const current = holder[CONTRIBUTION_REPORT];
+	if (isSidebarReport(current)) return current;
+	const created: SidebarReportState = { skipped: [], replaced: [] };
+	holder[CONTRIBUTION_REPORT] = created;
+	return created;
+}
+
+/** Clear the report in place, so a previous evaluation's reference stays live. */
+function resetSidebarReport(): SidebarReportState {
+	const report = sidebarReport();
+	report.skipped.length = 0;
+	report.replaced.length = 0;
+	return report;
+}
+
+/** What the last contribution install refused, in the contract's own report shape. */
+export function readSidebarContributionReport(): ContributionReport {
+	const report = sidebarReport();
+	return { skipped: report.skipped.map((issue) => ({ ...issue })), replaced: [...report.replaced] };
+}
+
+/**
+ * The rail's section keys: the built-in four first, then contributed keys in
+ * the order this read gave them — the declared owner order first, insertion
+ * order for the owners `plugins.json` does not name. Contributed keys never
+ * displace or reorder a core one.
+ */
+export function sidebarSectionOrder(contributed: readonly string[] = [], todoVisible = true): string[] {
+	const order: string[] = [];
+	for (const key of [...SIDEBAR_SECTION_KEYS, ...contributed]) {
+		if (order.includes(key)) continue;
+		if (key === "todo" && !todoVisible) continue;
+		order.push(key);
+	}
+	return order;
+}
+
+export interface ContributedSidebar {
+	/** Namespaced section keys installed this read, in contribution registration order. */
+	keys: string[];
+	/** Contributions refused for their sidebar key (core collision, missing namespace or no rail). */
+	rejected: ContributionIssue[];
+}
+
+function isSidebarRail(value: unknown): value is SidebarRail {
+	if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+	try {
+		return typeof (value as { render?: unknown }).render === "function";
+	} catch {
+		return false;
+	}
+}
+
+/** Resolve a contribution's sidebar claim, or the issue that refuses it. */
+function contributionSection(contribution: Contribution): { key: string } | { issue: ContributionIssue } | undefined {
+	const section = contribution.sidebar;
+	if (!section) return undefined;
+	// Core keys are read-only: a contribution never replaces or removes one.
+	if (SIDEBAR_RESERVED_KEYS.includes(section.key)) {
+		return { issue: { id: contribution.id, code: "malformed-sidebar", detail: `sidebar key "${section.key}" is read-only for plugins` } };
+	}
+	const match = PLUGIN_SECTION_KEY.exec(section.key);
+	if (!match || match[1] !== contribution.owner) {
+		return { issue: { id: contribution.id, code: "malformed-sidebar", detail: `sidebar key "${section.key}" must be "plugin:${contribution.owner}:<name>"` } };
+	}
+	if (!isSidebarRail(section.rail)) {
+		return { issue: { id: contribution.id, code: "malformed-sidebar", detail: "sidebar rail must render a component" } };
+	}
+	return { key: section.key };
+}
+
+function recordRailFailure(id: string, error: unknown): void {
+	recordRailIssue(id, detailOf(error));
+}
+
+function detailOf(error: unknown): string {
+	try {
+		return error instanceof Error ? error.message : String(error);
+	} catch {
+		return "the rail threw an unreadable error";
+	}
+}
+
+function recordRailIssue(id: string, detail: string): void {
+	const skipped = sidebarReport().skipped;
+	if (skipped.some((issue) => issue.id === id && issue.detail === detail)) return;
+	skipped.push({ id, code: "invalid-contribution", detail });
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+	return (typeof value === "object" || typeof value === "function") && value !== null &&
+		typeof (value as { then?: unknown }).then === "function";
+}
+
+/**
+ * Observe a thenable answer to a synchronous rail slot: the slot cannot paint
+ * it, but its rejection is still this seam's to report and must never surface
+ * as an unhandled rejection.
+ */
+function observeRejection(value: PromiseLike<unknown>, onError: (error: unknown) => void): void {
+	void Promise.resolve(value).catch((error) => {
+		try {
+			onError(error);
+		} catch {
+			// A broken reporter must not escape as an unhandled rejection either.
+		}
+	});
+}
+
+// A plugin rail is foreign code: a throwing render, digest or invalidation must
+// degrade to an empty section and be reported, never take the whole rail down.
+function guardedContributionRail(rail: SidebarRail, id: string): SidebarRail {
+	const cached = GUARDED_RAILS.get(rail as object);
+	if (cached) return cached;
+	const onError = (error: unknown) => recordRailFailure(id, error);
+	const refuse = (detail: string): [] => {
+		recordRailIssue(id, detail);
+		return [];
+	};
+	// A forwarding facade, not a Proxy: a rail may be frozen, and a proxy that
+	// answers a fresh `render` for a non-writable, non-configurable property
+	// throws on the Proxy invariants before any guard runs, which disables the
+	// whole layout. The facade keeps one stable identity and inherits every other
+	// field (`surface`, `cardGroups`, `handleMouse`, …) from the plugin's rail.
+	const wrapped = Object.create(rail) as SidebarRail;
+	Object.defineProperties(wrapped, {
+		render: {
+			enumerable: true,
+			configurable: true,
+			writable: true,
+			value: (width: number): string[] => {
+				const answered: unknown = guard(() => rail.render(width) ?? [], [] as string[], onError);
+				if (isThenable(answered)) {
+					observeRejection(answered, onError);
+					return refuse("rail render answered with a promise, which the synchronous rail cannot paint");
+				}
+				// The layout spreads and measures these rows, so anything but a
+				// synchronous array of strings would throw there and disable the sidebar.
+				if (!Array.isArray(answered) || !answered.every((line) => typeof line === "string")) {
+					return refuse("rail render must answer an array of strings");
+				}
+				return answered;
+			},
+		},
+		invalidate: {
+			enumerable: true,
+			configurable: true,
+			writable: true,
+			value: () => {
+				const answered: unknown = guard(() => rail.invalidate?.(), undefined, onError);
+				if (isThenable(answered)) observeRejection(answered, onError);
+			},
+		},
+		// The layout already survives a throwing digest by treating it as
+		// undefined; record it too, so the audit can say the rail misbehaved.
+		digest: {
+			enumerable: true,
+			configurable: true,
+			writable: true,
+			value: () => {
+				const answered: unknown = guard(() => rail.digest?.(), undefined, onError);
+				// The digest slot is synchronous: a thenable cannot fill it.
+				if (isThenable(answered)) {
+					observeRejection(answered, onError);
+					return undefined;
+				}
+				// Untouched otherwise: a non-string digest already behaved like any other
+				// value the layout compares, so this seam only closes the promise hole.
+				return answered as string | undefined;
+			},
+		},
+	});
+	GUARDED_RAILS.set(rail as object, wrapped);
+	return wrapped;
+}
+
+/**
+ * Whether this box entry declares a `sidebar` payload, which is the only kind
+ * of contribution `plugins.json` can reorder here. The property can be a plugin
+ * getter, so a throw is "no sidebar" for this purpose; the validation already
+ * reports the contribution itself.
+ */
+function declaresSidebar(value: unknown): boolean {
+	if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+	try {
+		return (value as { sidebar?: unknown }).sidebar !== undefined;
+	} catch {
+		return false;
+	}
+}
+
+function boxDeclaresSidebar(store: Map<string, Contribution>): boolean {
+	for (const contribution of store.values()) if (declaresSidebar(contribution)) return true;
+	return false;
+}
+
+/**
+ * Apply every valid contributed rail to the shared `SidebarState.parts` map
+ * before the layout iterates, and return the section keys in the order this
+ * read gave them: the owners the declared order names first, then the rest in
+ * registration order. The map is shared state, so a rail removed from the slot
+ * is retired on the next read; a core key is never installed, replaced or
+ * removed here.
+ *
+ * `plugins.json` is read once per prepare, never cached, so an edit takes
+ * effect on the next frame without a reload. Only a contribution that declares
+ * a sidebar can be reordered by it, so the read is skipped entirely while the
+ * box holds none: an ordinary frame that contributes rows or palette commands
+ * pays no I/O, and the empty box's order and report stay exactly what they are.
+ */
+export function installContributedSidebar(tui: TUI, options: PluginOrderOptions = {}): ContributedSidebar {
+	const report = resetSidebarReport();
+	const result: ContributedSidebar = { keys: [], rejected: report.skipped };
+	if (!tui.terminal) return result;
+	const state = sidebarState(tui);
+	const contributed = state.contributed ??= new Set<string>();
+	const installed = new Set<string>();
+	const contributions = guard(
+		() => readContributions(boxDeclaresSidebar(contributionSlot()) ? { order: readPluginOrder(options).order } : {}),
+		[] as Contribution[],
+		(error) => recordRailFailure("contributions", error),
+	) as Contribution[];
+	for (const contribution of contributions) {
+		const section = contributionSection(contribution);
+		if (!section) continue;
+		if ("issue" in section) {
+			report.skipped.push(section.issue);
+			continue;
+		}
+		state.parts.set(section.key, guardedContributionRail(contribution.sidebar!.rail as SidebarRail, contribution.id));
+		contributed.add(section.key);
+		installed.add(section.key);
+		if (!result.keys.includes(section.key)) result.keys.push(section.key);
+	}
+	// Retire only keys this seam installed; a core part is never in this set.
+	for (const key of [...contributed]) {
+		if (installed.has(key)) continue;
+		state.parts.delete(key);
+		contributed.delete(key);
+	}
+	return result;
 }

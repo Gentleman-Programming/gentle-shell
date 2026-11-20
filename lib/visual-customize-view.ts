@@ -102,7 +102,11 @@ function confirmationHits(hits: PointerHit[], lines: readonly string[], firstRow
 	});
 }
 
-export type CustomizeCategory = "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Notifications" | "Layout" | "Cards" | "Sections" | "Keymaps" | "Profiles" | "Reset";
+export type CustomizeCategory =
+	| "Animations" | "Banner" | "Themes" | "Editor" | "History" | "Notifications" | "Layout" | "Cards" | "Sections" | "Keymaps" | "Profiles" | "Reset"
+	// Open for plugin-contributed categories: the view derives categories from row
+	// order, so an unknown name simply starts its own category after the built-ins.
+	| (string & Record<never, never>);
 
 export interface CustomizeRow {
 	category?: CustomizeCategory;

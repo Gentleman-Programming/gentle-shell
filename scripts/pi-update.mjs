@@ -446,10 +446,44 @@ async function suppliedPiVersion(owner, {platform, adapters, cwd}) {
  }
 }
 
+const MANAGED_INSTALL_SCHEMA = 'gentle-shell-user-install/v1';
+
+/** The Gentle AI installation whose recorded prefix holds the owner's global
+ * group, or null. Gentle AI authenticates that prefix's package graph and
+ * refuses every launch once a package manager changes it (gentle-ai#6045), so
+ * only its own reconfigure may replace Pi there. Candidate roots: the parent of
+ * the launch's GENTLE_PI_CONFIG_HOME (`<root>/config`), then every ancestor of
+ * the group, since a Separate root holds its prefix and npm (`lib/node_modules`)
+ * and pnpm v11 (`global/v11/<group>/node_modules`) nest the group at different
+ * depths. Only a manifest whose recorded Prefix contains the group proves ownership; a
+ * missing manifest or another schema is skipped, but one that exists and
+ * cannot be read or parsed refuses, since it may be exactly that proof.
+ */
+async function managedInstallRoot(owner, {env, adapters, platform = process.platform}) {
+ const {path, key} = pathsFor(platform);
+ const modules = owner.groupRoot;
+ const roots = [];
+ for (let dir = path.dirname(modules); path.dirname(dir) !== dir; dir = path.dirname(dir)) roots.push(dir);
+ const config = env?.GENTLE_PI_CONFIG_HOME;
+ if (typeof config === 'string' && path.isAbsolute(config) && path.basename(config) === 'config') roots.unshift(path.dirname(config));
+ for (const root of roots) {
+  const file = path.join(root, 'installation.json');
+  let manifest;
+  try { manifest = JSON.parse(await optionalFile(adapters.fs, file) ?? 'null'); }
+  catch { throw new Error(`gentle-shell update: ${file} could not be verified, so a Gentle AI installation may own the Pi this launcher runs. Inspect that file before retrying. No installation changed.`); }
+  if (!object(manifest) || manifest.Schema !== MANAGED_INSTALL_SCHEMA || typeof manifest.Prefix !== 'string' || !path.isAbsolute(manifest.Prefix)) continue;
+  const inside = path.relative(key(manifest.Prefix), key(modules));
+  if (inside && !inside.startsWith('..') && !path.isAbsolute(inside)) return root;
+ }
+ return null;
+}
+
 export async function updateSelectedPi(input) {
  let owner;
  try { owner = await resolveUpdateOwner(input); }
  catch (error) { throw error.message?.includes('ownership') ? error : refusal('could not be resolved'); }
+ const managed = owner.groupRoot ? await managedInstallRoot(owner, input) : null;
+ if (managed) throw new Error(`gentle-shell update: Gentle AI installed the Pi this launcher runs at ${managed} and authenticates its package graph, so a direct ${owner.name} install would make that installation refuse every launch. Update Pi there through Gentle AI: run 'gentle-ai shell install' and reconfigure the installation at ${managed}. No installation changed.`);
  if (owner.artifact) {
   try { await input.adapters.fs.realpath(owner.spec); }
   catch { throw new Error(`gentle-shell update: the main-channel build ${owner.spec} is missing, and this unpublished build cannot be reinstalled from the registry; run 'gentle-shell upgrade --channel release' and then 'gentle-shell upgrade --channel main' to rebuild it. No installation changed.`); }

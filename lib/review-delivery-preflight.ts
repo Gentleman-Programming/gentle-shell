@@ -46,7 +46,7 @@ export function deliveryDirectory(cwd: string, directories: readonly string[], p
 /** One fresh check per repository/batch. The existing session registry supplies only a base-ref hint. */
 export async function checkReviewDeliveryPreflight(cwd: string, toolName: string, command: string, cli: NativeReviewCli | null,
 	baseRefFor: (root: string) => string | undefined, declined: (root: string, target: string) => boolean,
-	signal?: AbortSignal, current: () => boolean = () => true): Promise<Denial | undefined> {
+	signal?: AbortSignal, current: () => boolean = () => true, platform: NodeJS.Platform = process.platform): Promise<Denial | undefined> {
 	const actions = recognizeReviewDeliveryActions(command), deliveries = actions.filter(action => action.kind === "delivery");
 	if (!deliveries.length || !cli?.reviewMode) return undefined;
 	if (deliveries.some(delivery => delivery.unresolvedDirectory)) return deny("The delivery repository cannot be resolved from this directory or Git/environment redirect; run delivery inside its repository or use literal cd or git -C.");
@@ -58,7 +58,7 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 		try {
 			const checked: Array<{ root: string; baseRef: string; before: string }> = [];
 			const roots = new Set(deliveries.map(delivery => {
-				const target = deliveryDirectory(cwd, delivery.directories ?? []);
+				const target = deliveryDirectory(cwd, delivery.directories ?? [], platform);
 				return resolveSessionWorktree(target, cwd)?.root ?? target;
 			}));
 			for (const root of roots) {

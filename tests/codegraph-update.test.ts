@@ -5,7 +5,7 @@ import {
 	classifyCodegraphShimPath,
 	clearCodegraphUpdateCaches,
 	CODEGRAPH_PACKAGE,
-	codegraphVersionOutdated,
+	codegraphVersionDiffers,
 	defaultExec,
 	detectCodegraphInstallSource,
 	ensureCodegraphLatest,
@@ -109,62 +109,68 @@ test("latestCodegraphVersion: a failed lookup is undefined and never cached as f
 	assert.equal(await latestCodegraphVersion(unparseable.exec, "darwin"), undefined, "registry output without a triple is not a version");
 });
 
-test("codegraphVersionOutdated: numeric triple compare; garbage or missing never updates", () => {
-	assert.equal(codegraphVersionOutdated("1.6.3", "1.6.4"), true, "a patch behind is stale");
-	assert.equal(codegraphVersionOutdated("1.5.9", "1.6.0"), true, "a minor behind is stale");
-	assert.equal(codegraphVersionOutdated("0.9.9", "1.0.0"), true, "a major behind is stale");
-	assert.equal(codegraphVersionOutdated("1.6.4", "1.6.4"), false, "the same version is not stale");
-	assert.equal(codegraphVersionOutdated("1.7.0", "1.6.10"), false, "numeric fields compare, not strings: 10 > 0");
-	assert.equal(codegraphVersionOutdated("2.0.0", "1.9.9"), false, "ahead is not stale");
-	assert.equal(codegraphVersionOutdated("1.6.4", "1.6.5-beta.1"), true, "a prerelease ahead is still a newer triple");
-	assert.equal(codegraphVersionOutdated("1.7", "1.6.4"), false, "an unparseable installed version never updates");
-	assert.equal(codegraphVersionOutdated("garbage", "1.6.4"), false);
-	assert.equal(codegraphVersionOutdated("1.6.4", "garbage"), false, "an unparseable latest never updates");
-	assert.equal(codegraphVersionOutdated(undefined, "1.6.4"), false);
-	assert.equal(codegraphVersionOutdated("1.6.4", undefined), false);
+test("codegraphVersionDiffers: numeric triple compare; anything but an exact match updates, garbage never does", () => {
+	assert.equal(codegraphVersionDiffers("1.6.3", "1.6.4"), true, "a patch behind differs");
+	assert.equal(codegraphVersionDiffers("1.5.9", "1.6.0"), true, "a minor behind differs");
+	assert.equal(codegraphVersionDiffers("0.9.9", "1.0.0"), true, "a major behind differs");
+	assert.equal(codegraphVersionDiffers("1.6.4", "1.6.4"), false, "the same version is the wanted version");
+	assert.equal(codegraphVersionDiffers("1.7.0", "1.6.10"), true, "numeric fields compare: 1.7.0 differs from 1.6.10");
+	assert.equal(codegraphVersionDiffers("2.0.0", "1.9.9"), true, "ahead of latest still differs: latest is the only version kept");
+	assert.equal(codegraphVersionDiffers("1.6.4", "1.6.5-beta.1"), true, "a prerelease ahead still differs on the triple");
+	assert.equal(codegraphVersionDiffers("1.7", "1.6.4"), false, "an unparseable installed version never updates");
+	assert.equal(codegraphVersionDiffers("garbage", "1.6.4"), false);
+	assert.equal(codegraphVersionDiffers("1.6.4", "garbage"), false, "an unparseable latest never updates");
+	assert.equal(codegraphVersionDiffers(undefined, "1.6.4"), false);
+	assert.equal(codegraphVersionDiffers("1.6.4", undefined), false);
 });
 
 test("classifyCodegraphShimPath: bun-global by the homedir .bun prefix, checked first", () => {
 	// Literal POSIX spellings: the injected platform owns the fixture's separators, never the
 	// host running the suite (join() would spell backslashes on Windows).
-	assert.equal(classifyCodegraphShimPath("/Users/tester/.bun/bin/codegraph", undefined, "/Users/tester", "darwin"), "bun-global");
-	assert.equal(classifyCodegraphShimPath("/home/tester/.bun/bin/codegraph", "/home/tester/.npm-global", "/home/tester", "linux"), "bun-global", "the bun root classifies before npm is even asked");
+	assert.equal(classifyCodegraphShimPath("/Users/tester/.bun/bin/codegraph", {}, "/Users/tester", "darwin"), "bun-global");
+	assert.equal(classifyCodegraphShimPath("/home/tester/.bun/bin/codegraph", { npmPrefix: "/home/tester/.npm-global", pnpmBin: "/home/tester/.pnpm-bin" }, "/home/tester", "linux"), "bun-global", "the bun root classifies before npm or pnpm is even asked");
 });
 
 test("classifyCodegraphShimPath: npm-global under the npm prefix -g directory", () => {
 	const home = homedir();
-	assert.equal(classifyCodegraphShimPath("/usr/local/bin/codegraph", "/usr/local", home, "darwin"), "npm-global");
-	assert.equal(classifyCodegraphShimPath("/opt/homebrew/bin/codegraph", "/opt/homebrew", home, "linux"), "npm-global");
-	assert.equal(classifyCodegraphShimPath("/usr/local/bin/codegraph", undefined, home, "darwin"), "unknown", "no prefix answer: nothing proves npm owns it");
-	assert.equal(classifyCodegraphShimPath("/usr/bin/codegraph", "/usr/local", home, "darwin"), "unknown", "outside both roots is never auto-updated");
-	assert.equal(classifyCodegraphShimPath(undefined, "/usr/local", home, "darwin"), "unknown");
+	assert.equal(classifyCodegraphShimPath("/usr/local/bin/codegraph", { npmPrefix: "/usr/local" }, home, "darwin"), "npm-global");
+	assert.equal(classifyCodegraphShimPath("/opt/homebrew/bin/codegraph", { npmPrefix: "/opt/homebrew" }, home, "linux"), "npm-global");
+	assert.equal(classifyCodegraphShimPath("/usr/local/bin/codegraph", {}, home, "darwin"), "unknown", "no prefix answer: nothing proves npm owns it");
+	assert.equal(classifyCodegraphShimPath("/usr/local/bin/codegraph", { pnpmBin: "/usr/local" }, home, "darwin"), "pnpm-global", "a shim under the pnpm bin dir classifies pnpm-global, whatever the dir is called");
+	assert.equal(classifyCodegraphShimPath("/usr/bin/codegraph", { npmPrefix: "/usr/local" }, home, "darwin"), "unknown", "outside every root is never auto-updated");
+	assert.equal(classifyCodegraphShimPath(undefined, { npmPrefix: "/usr/local" }, home, "darwin"), "unknown");
 });
 
 test("classifyCodegraphShimPath: win32 backslash paths compare case-insensitively across separators", () => {
 	const home = ["C:", "Users", "admin"].join(BS);
-	assert.equal(classifyCodegraphShimPath(["C:", "Users", "admin", ".bun", "bin", "codegraph.exe"].join(BS), undefined, home, "win32"), "bun-global");
-	assert.equal(classifyCodegraphShimPath(["c:", "users", "ADMIN", ".bun", "bin", "codegraph.exe"].join(BS), undefined, home, "win32"), "bun-global", "win32 paths fold case");
+	assert.equal(classifyCodegraphShimPath(["C:", "Users", "admin", ".bun", "bin", "codegraph.exe"].join(BS), {}, home, "win32"), "bun-global");
+	assert.equal(classifyCodegraphShimPath(["c:", "users", "ADMIN", ".bun", "bin", "codegraph.exe"].join(BS), {}, home, "win32"), "bun-global", "win32 paths fold case");
 	assert.equal(
-		classifyCodegraphShimPath(["C:", "Users", "admin", "AppData", "Roaming", "npm", "codegraph.cmd"].join(BS), ["C:", "Users", "admin", "AppData", "Roaming", "npm"].join(BS), home, "win32"),
+		classifyCodegraphShimPath(["C:", "Users", "admin", "AppData", "Roaming", "npm", "codegraph.cmd"].join(BS), { npmPrefix: ["C:", "Users", "admin", "AppData", "Roaming", "npm"].join(BS) }, home, "win32"),
 		"npm-global",
 		"a backslash shim under a backslash prefix is npm-global",
 	);
 	assert.equal(
-		classifyCodegraphShimPath(["C:", "Users", "admin", "AppData", "Roaming", "npm", "codegraph.cmd"].join(BS), ["C:/Users/admin/AppData/Roaming/npm"].join("/"), home, "win32"),
+		classifyCodegraphShimPath(["C:", "Users", "admin", "AppData", "Roaming", "npm", "codegraph.cmd"].join(BS), { npmPrefix: ["C:/Users/admin/AppData/Roaming/npm"].join("/") }, home, "win32"),
 		"npm-global",
 		"forward-slash and backslash spellings of one root still match",
 	);
 	const prefixWithSlash = ["C:", "Users", "admin", "AppData", "Roaming", "npm", ""].join(BS);
 	assert.equal(
-		classifyCodegraphShimPath(["C:", "Users", "admin", "AppData", "Roaming", "npm", "codegraph.cmd"].join(BS), prefixWithSlash, home, "win32"),
+		classifyCodegraphShimPath(["C:", "Users", "admin", "AppData", "Roaming", "npm", "codegraph.cmd"].join(BS), { npmPrefix: prefixWithSlash }, home, "win32"),
 		"npm-global",
 		"a trailing separator on the reported prefix does not double or mismatch",
 	);
 	assert.equal(
-		classifyCodegraphShimPath(["C:", "Tools", "codegraph", "codegraph.exe"].join(BS), ["C:", "Users", "admin", "AppData", "Roaming", "npm"].join(BS), home, "win32"),
+		classifyCodegraphShimPath(["C:", "Users", "admin", "Library", "pnpm", "codegraph.cmd"].join(BS), { pnpmBin: ["C:", "Users", "admin", "Library", "pnpm"].join(BS) }, home, "win32"),
+		"pnpm-global",
+		"a backslash shim under pnpm's global bin is pnpm-global",
+	);
+	assert.equal(
+		classifyCodegraphShimPath(["C:", "Tools", "codegraph", "codegraph.exe"].join(BS), { npmPrefix: ["C:", "Users", "admin", "AppData", "Roaming", "npm"].join(BS) }, home, "win32"),
 		"unknown",
 	);
-	assert.equal(classifyCodegraphShimPath(["C:", "NotBun", "codegraph.exe"].join(BS), undefined, home, "win32"), "unknown", "a prefix like .bun is a directory boundary, not a string prefix");
+	assert.equal(classifyCodegraphShimPath(["C:", "NotBun", "codegraph.exe"].join(BS), {}, home, "win32"), "unknown", "a prefix like .bun is a directory boundary, not a string prefix");
 });
 
 test("detectCodegraphInstallSource: which answers on POSIX and bun skips the npm prefix query", async () => {
@@ -192,15 +198,28 @@ test("detectCodegraphInstallSource: where.exe first hit classifies npm-global on
 	assert.deepEqual(calls.map((call) => call.command), ["where.exe", "npm.cmd"]);
 });
 
+test("detectCodegraphInstallSource: a pnpm shim classifies pnpm-global after npm misses", async () => {
+	const { exec, calls } = execByFirstArg({
+		which: () => ok("/Users/tester/Library/pnpm/bin/codegraph\n"),
+		npm: (args) => (args[0] === "prefix" ? ok("/opt/homebrew\n") : undefined),
+		pnpm: (args) => (args[0] === "bin" ? ok("/Users/tester/Library/pnpm/bin\n") : undefined),
+	});
+	const detected = await detectCodegraphInstallSource(exec, { platform: "darwin", home: "/Users/tester" });
+	assert.equal(detected.source, "pnpm-global");
+	assert.equal(detected.shimPath, "/Users/tester/Library/pnpm/bin/codegraph");
+	assert.deepEqual(calls.map((call) => call.command), ["which", "npm", "pnpm"], "bun misses purely, npm is probed before pnpm");
+});
+
 test("detectCodegraphInstallSource: an npm-prefix query failure leaves the source unknown", async () => {
 	const { exec, calls } = execByFirstArg({
 		which: () => ok("/usr/local/bin/codegraph\n"),
 		npm: () => fail("ENOTFOUND"),
+		pnpm: () => fail("not installed"),
 	});
 	const detected = await detectCodegraphInstallSource(exec, { platform: "darwin", home: homedir() });
 	assert.equal(detected.source, "unknown");
-	assert.match(detected.reason ?? "", /npm prefix/, "the reason names the unprovable root");
-	assert.deepEqual(calls.map((call) => call.command), ["which", "npm"]);
+	assert.match(detected.reason ?? "", /npm prefix -g nor pnpm bin -g/, "the reason names both unprovable roots");
+	assert.deepEqual(calls.map((call) => call.command), ["which", "npm", "pnpm"], "both root probes ran, npm before pnpm");
 });
 
 test("detectCodegraphInstallSource: a shim not on PATH is unknown with no further probes", async () => {
@@ -228,6 +247,15 @@ test("updateCodegraphToLatest: npm-global picks the platform's npm spelling", as
 	const windows = execByFirstArg({ "npm.cmd": () => ok("") });
 	assert.deepEqual(await updateCodegraphToLatest("npm-global", windows.exec, { platform: "win32" }), { ok: true });
 	assert.deepEqual(windows.calls, [{ command: "npm.cmd", args: ["install", "-g", `${CODEGRAPH_PACKAGE}@latest`], timeoutMs: UPDATE_TIMEOUT_MS }], "win32 npm goes through its .cmd shim");
+});
+
+test("updateCodegraphToLatest: pnpm-global runs pnpm add -g on every platform", async () => {
+	for (const platform of ["darwin", "linux", "win32"] as const) {
+		const { exec, calls } = execByFirstArg({ pnpm: () => ok("") });
+		const run = await updateCodegraphToLatest("pnpm-global", exec, { platform });
+		assert.deepEqual(run, { ok: true });
+		assert.deepEqual(calls, [{ command: "pnpm", args: ["add", "-g", `${CODEGRAPH_PACKAGE}@latest`], timeoutMs: UPDATE_TIMEOUT_MS }], `${platform}: pnpm spawns directly`);
+	}
 });
 
 test("updateCodegraphToLatest: an unknown source never spawns an update", async () => {
@@ -303,7 +331,7 @@ test("runCodegraphUpdateCheck: a stale binary on an unknown source never updates
 	assert.equal(check.ran, false);
 	assert.equal(check.version, "1.6.3");
 	assert.match(check.reason ?? "", /unknown/i);
-	assert.deepEqual(calls.map((call) => call.command), ["codegraph", "npm", "which", "npm"], "probes only: version, registry, shim, npm prefix — the update command never ran");
+	assert.deepEqual(calls.map((call) => call.command), ["codegraph", "npm", "which", "npm", "pnpm"], "probes only: version, registry, shim, npm prefix, pnpm bin — the update command never ran");
 });
 
 test("runCodegraphUpdateCheck: a failed update command keeps the current version", async () => {
@@ -360,6 +388,6 @@ test("defaultExec: the production runner executes the real codegraph shim on win
 
 test("CodegraphInstallSource surface: the three-way classification is the whole vocabulary", () => {
 	// The type is a closed union; a compile-time reference pins its members for callers.
-	const sources: CodegraphInstallSource[] = ["bun-global", "npm-global", "unknown"];
-	assert.deepEqual(sources.sort(), ["bun-global", "npm-global", "unknown"]);
+	const sources: CodegraphInstallSource[] = ["bun-global", "npm-global", "pnpm-global", "unknown"];
+	assert.deepEqual(sources.sort(), ["bun-global", "npm-global", "pnpm-global", "unknown"]);
 });

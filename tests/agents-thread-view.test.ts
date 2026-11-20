@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { emptyThread, TASK_EVENT, applyTaskEvent } from "../lib/agents-protocol.ts";
+import { emptyThread, TASK_EVENT, applyTaskEvent, type ToolItem } from "../lib/agents-protocol.ts";
 import { renderThreadItem } from "../lib/agents-thread-view.ts";
+import { CARD_BASH, cardBash, setCardBash } from "../lib/card-bash-policy.ts";
 
 const plainTheme = { fg: (_color: string, text: string) => text };
 const taggedTheme = { fg: (color: string, text: string) => `[${color}]${text}` };
@@ -42,4 +43,20 @@ test("renderThreadItem renders actual sanitized retention markers and error stat
 	assert.equal(lines[1], "[muted]  Output");
 	assert.equal(lines.some((line) => line.includes("…")), true, "the renderer retains the protocol marker rather than inventing one");
 	assert.deepEqual(renderThreadItem({ kind: "unknown" } as never, plainTheme, 30), []);
+});
+
+// The pane draws a plain tool log and has no activity renderer, while the Card
+// bash preference is process-wide: this pins that the preference never leaks an
+// activity glyph, word or role into that log at either level.
+test("renderThreadItem's tool log reads the same under either Card bash preference", (t) => {
+	const previous = cardBash();
+	t.after(() => setCardBash(previous));
+	const item: ToolItem = { kind: "tool", callId: "call", name: "bash", args: { command: "git status" }, output: "clean", running: false, isError: false };
+	setCardBash(CARD_BASH.ACTIVITY);
+	const activity = renderThreadItem(item, taggedTheme, 40);
+	setCardBash(CARD_BASH.OUTPUT);
+	const output = renderThreadItem(item, taggedTheme, 40);
+	assert.deepEqual(output, activity, "the pane's log is the same at both levels");
+	assert.deepEqual(activity, ["[accent]Tool · bash · Complete", "[muted]  Output", "[muted]    clean"]);
+	assert.doesNotMatch(activity.join("\n"), /⌕|exploring|<mdLink>/, "no activity mark, word or role reaches the pane");
 });

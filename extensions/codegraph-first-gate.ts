@@ -17,27 +17,31 @@ const BLOCK_REASON =
 const MEMORY_GATE_OVERRIDE = "GENTLE_CODEGRAPH_MEMORY_GATE";
 
 /**
- * The conservative bash-command sniff that marks a prompt as a workspace search: a command
- * naming rg, grep, fd, find, ag or ack as a standalone word.
- */
-const SEARCH_COMMAND_SNIFF = /\b(?:rg|grep|fd|find|ag|ack)\b/;
-
-/**
- * Replaces every quoted span and escaped character of a bash command string with a neutral
- * filler character (NUL): quoted text and escapes are data, never syntax, so no separator,
- * operator, or command word inside them can be read as an execution. Length and every
- * unquoted character's position are preserved, so the command's structure outside quotes
- * stays exactly where it was.
+ * Replaces every quoted span, escape, and comment of a bash command string with a neutral
+ * filler character (NUL): quoted text, escapes, and comments are data, never syntax, so no
+ * separator, operator, or command word inside them can be read as an execution. Length and
+ * every unquoted character's position are preserved, so the command's structure outside
+ * quotes stays exactly where it was. A comment starts at an unquoted word-start # and runs
+ * to the end of its line.
  */
 function maskQuotedCommandText(command: string): string {
 	const filler = "\u0000";
+	const isWordBreak = (ch: string) =>
+		ch === " " || ch === "\t" || ch === "\r" || ch === "\n" ||
+		ch === ";" || ch === "&" || ch === "|" || ch === "(" || ch === ")";
 	let masked = "";
 	let quote = "";
+	// Whether the next unquoted # would start a comment: true at the string start and after
+	// any word-breaking character, because bash opens a comment only at the start of a word.
+	let wordStart = true;
 	for (let i = 0; i < command.length; i++) {
 		const ch = command[i]!;
 		if (quote === "'") {
 			masked += filler;
-			if (ch === "'") quote = "";
+			if (ch === "'") {
+				quote = "";
+				wordStart = false;
+			}
 		} else if (quote === '"') {
 			masked += filler;
 			if (ch === "\\") {
@@ -45,15 +49,28 @@ function maskQuotedCommandText(command: string): string {
 				masked += filler;
 			} else if (ch === '"') {
 				quote = "";
+				wordStart = false;
 			}
 		} else if (ch === "'" || ch === '"') {
 			quote = ch;
 			masked += filler;
+			wordStart = false;
 		} else if (ch === "\\") {
 			i++;
 			masked += filler + filler;
+			wordStart = false;
+		} else if (ch === "#" && wordStart) {
+			// The comment's text through end of line never executes, so it is all data. The
+			// newline itself stays: the walker still needs it as a command terminator.
+			masked += filler;
+			while (i + 1 < command.length && command[i + 1] !== "\n") {
+				i++;
+				masked += filler;
+			}
+			wordStart = true;
 		} else {
 			masked += ch;
+			wordStart = isWordBreak(ch);
 		}
 	}
 	return masked;
@@ -62,6 +79,11 @@ function maskQuotedCommandText(command: string): string {
 /** A word bash accepts as a temporary environment assignment (NAME=VALUE) ahead of the
  * command it applies to; the value side is whatever one unquoted word can hold. */
 const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/** Whether a masked word is a leading environment assignment: the NAME= prefix must be
+ * unquoted, while the value may quote freely - LC_ALL=\"C\" masks to LC_ALL=\u0000\u0000 and
+ * still prefixes its command, but a quoted name is an argument, never an assignment. */
+const isLeadingAssignment = (text: string): boolean => ASSIGNMENT_WORD.test(text.split("\u0000")[0]!);
 
 /** How a bash-run CLI query or explore can be credited at completion, decided by the position
  * bash runs the invocation in:
@@ -83,16 +105,20 @@ type CliQueryCredit = "always" | "on-success" | "never";
  * position, and how a completion can prove the invocation ran. Quoted text is masked to
  * filler first, so a separator or command word inside quotes - printf '%s\n' 'note;
  * codegraph query' - is never an execution. At each command position, leading NAME=VALUE
- * assignments are skipped (LC_ALL=C codegraph query ... runs the query), and so is the
- * shell's `command` wrapper (command codegraph query ... runs it, while its lookup form
- * command -v codegraph never credits); init, status, and every other subcommand never match.
- * A separator list (&&, ||) guarding the invocation shrinks the credit to what its position
+ * assignments are skipped (LC_ALL=C codegraph query ... runs the query, and so does a
+ * quoted value - LC_ALL=\"C\" - because only the NAME= prefix must be unquoted), and so is
+ * the shell's `command` wrapper (command codegraph query ... runs it, while its lookup form
+ * command -v codegraph never credits); init, status, and every other subcommand never match
+ * for credit, though runsCodegraph still reports them: every native `codegraph` invocation is
+ * an active graph execution, while only query and explore can credit. A separator list (&&,
+ * ||) guarding the invocation shrinks the credit to what its position
  * can prove, per {@link CliQueryCredit}.
  */
-function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryCredit } {
+function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryCredit; runsCodegraph: boolean } {
 	const masked = maskQuotedCommandText(command);
 	let present = false;
 	let credit: CliQueryCredit = "never";
+	let runsCodegraph = false;
 	const words: Array<{ text: string; quoted: boolean }> = [];
 	let word = "";
 	// The condition of the AND-OR list the next command runs under: "none" at the start or
@@ -100,6 +126,10 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 	// subshell boundary keeps the surrounding list's condition - the group runs exactly when
 	// the list reached it.
 	let listCondition: "none" | "and" | "or" = "none";
+	// The list conditions of the subshells the current position is nested in, outermost
+	// first: a subshell runs exactly when the enclosing list reached it, so every command
+	// inside stays under the outer guards while its own list's condition is tracked separately.
+	const subshellGuards: Array<"none" | "and" | "or"> = [];
 	const endWord = () => {
 		if (word !== "") words.push({ text: word, quoted: word.includes("\u0000") });
 		word = "";
@@ -110,16 +140,27 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 	const creditSegment = (isFinal: boolean) => {
 		if (words.length === 0) return;
 		let at = 0;
-		while (at < words.length && !words[at]!.quoted && ASSIGNMENT_WORD.test(words[at]!.text)) at++;
+		while (at < words.length && isLeadingAssignment(words[at]!.text)) at++;
 		if (at < words.length && !words[at]!.quoted && words[at]!.text === "command") at++;
 		const executable = words[at];
 		const subcommand = words[at + 1];
+		if (executable !== undefined && !executable.quoted && executable.text === "codegraph") runsCodegraph = true;
 		if (
 			executable !== undefined && !executable.quoted && executable.text === "codegraph" &&
 			subcommand !== undefined && !subcommand.quoted && (subcommand.text === "query" || subcommand.text === "explore")
 		) {
 			present = true;
-			const reach: CliQueryCredit = listCondition === "none" ? "always" : listCondition === "and" && isFinal ? "on-success" : "never";
+			let reach: CliQueryCredit;
+			if (listCondition === "or" || subshellGuards.includes("or")) {
+				reach = "never";
+			} else if (subshellGuards.includes("and")) {
+				// The invocation sits inside a subshell an outer && guards: only the whole call's
+				// success can prove the guard let the subshell run, and only when this command is
+				// the final one whose status the call reports.
+				reach = isFinal ? "on-success" : "never";
+			} else {
+				reach = listCondition === "none" ? "always" : listCondition === "and" && isFinal ? "on-success" : "never";
+			}
 			if (reach === "always" || (reach === "on-success" && credit === "never")) credit = reach;
 		}
 		words.length = 0;
@@ -142,21 +183,86 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 			}
 			i--;
 			operators = operators.replaceAll("\n", "");
-			listCondition = operators === "&&" ? "and" : operators === "||" ? "or" : "none";
+			if (operators === "&&") listCondition = "and";
+			else if (operators === "||") listCondition = "or";
+			else if (operators !== "|" && operators !== "|&") {
+				// Only the unconditional separators end the list; a pipeline separator keeps the
+				// enclosing list's condition, because every stage of a pipeline runs exactly when
+				// the list reached the pipeline.
+				listCondition = "none";
+			}
 		} else if (ch === "\n") {
+			// A newline with nothing executable after it - only whitespace or a comment through
+			// the end of the string - is the string's terminator, not a separator before another
+			// command: the command before it stays the final one. Breaking leaves any pending
+			// word for the loop's final flush, which credits the final command position.
+			const rest = command.slice(i + 1).replace(/^[\t \r\n]+/, "");
+			if (rest === "" || rest.startsWith("#")) break;
 			endWord();
 			creditSegment(false);
 			listCondition = "none";
 		} else if (ch === "(" || ch === ")") {
 			endWord();
 			creditSegment(false);
+			if (ch === "(") {
+				subshellGuards.push(listCondition);
+				listCondition = "none";
+			} else {
+				listCondition = subshellGuards.pop() ?? "none";
+			}
 		} else {
 			word += ch;
 		}
 	}
 	endWord();
 	creditSegment(true);
-	return { present, credit };
+	return { present, credit, runsCodegraph };
+}
+
+/** The workspace-search tool names whose executable command position marks a bash command
+ * as a workspace search. */
+const SEARCH_COMMANDS = new Set(["rg", "grep", "fd", "find", "ag", "ack"]);
+
+/**
+ * Whether a bash command string runs a workspace-search tool - rg, grep, fd, find, ag or
+ * ack - as the executable of any of its commands: a search name that appears only in quoted
+ * output text (`printf '%s\n' 'find'`) or in a comment names nothing the shell runs, while a
+ * plain or assignment-prefixed `find lib` does. The same masking and word walk the CLI query
+ * analysis uses decide command position, so batch admission and execution-start tracking
+ * answer from one shared check.
+ */
+function bashRunsSearchCommand(command: string): boolean {
+	const masked = maskQuotedCommandText(command);
+	let runs = false;
+	const words: Array<{ text: string; quoted: boolean }> = [];
+	let word = "";
+	const endWord = () => {
+		if (word !== "") words.push({ text: word, quoted: word.includes("\u0000") });
+		word = "";
+	};
+	/** Whether one finished simple command puts a search tool in the executable position. */
+	const checkSegment = () => {
+		if (words.length === 0) return;
+		let at = 0;
+		while (at < words.length && isLeadingAssignment(words[at]!.text)) at++;
+		if (at < words.length && !words[at]!.quoted && words[at]!.text === "command") at++;
+		const executable = words[at];
+		if (executable !== undefined && !executable.quoted && SEARCH_COMMANDS.has(executable.text)) runs = true;
+		words.length = 0;
+	};
+	for (let i = 0; i < masked.length; i++) {
+		const ch = masked[i]!;
+		if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n" ||
+			ch === ";" || ch === "&" || ch === "|" || ch === "(" || ch === ")") {
+			endWord();
+			checkSegment();
+		} else {
+			word += ch;
+		}
+	}
+	endWord();
+	checkSegment();
+	return runs;
 }
 
 /**
@@ -184,14 +290,16 @@ function gateApplies(cwd: unknown): boolean {
  * Per-prompt codegraph-first gate (AGENTS.md Memory ordering), scoped to workspace-search
  * prompts: persistent-memory reads (mem_context, mem_search, mem_get_observation) are blocked
  * once the prompt has searched the workspace — a grep, find or ls tool execution, or a bash
- * command naming rg, grep, fd, find, ag or ack — until a codegraph query or explore has
+ * command running rg, grep, fd, find, ag or ack in an executable command position — until a
+ * codegraph query or explore has
  * finalized in the same user prompt; a graph execution in flight blocks memory reads
  * regardless, so a read never interleaves a live graph call. The CLI query workflow (a
  * bash-run codegraph query or explore) counts as that query or explore, start to end: quoted
  * command text is data, never an execution, while leading shell assignments and the shell's
  * command wrapper still identify the executable, and an invocation whose guard kept execution
  * from reaching it credits nothing. The gate is also batch-aware: an assistant turn whose
- * tool batch mixes a memory read with a graph query or explore never admits the memory read,
+ * tool batch mixes a memory read with a native codegraph call - a query, an explore, an
+ * init, any operation - never admits the memory read,
  * whichever position lists it — a batch's admitted calls run concurrently, so order inside it
  * cannot satisfy the rule — and a batch that mixes the read with a workspace search is
  * refused the same way until credit settles, because admission precedes every execution. A
@@ -219,7 +327,8 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 	// Credit lives in this activation only and expires with every user prompt.
 	let credited = false;
 	// Whether this prompt has searched the workspace: a grep, find or ls tool execution, or a
-	// bash command naming a search tool. The gate bites memory reads only in such prompts.
+	// bash command running a search tool in an executable command position. The gate bites
+	// memory reads only in such prompts.
 	let searchActivity = false;
 	// The graph executions that started but have not finalized: one call's completion must not
 	// credit the prompt while a sibling call is still running, and a graph call that starts after
@@ -230,7 +339,8 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 	// command position can prove are recorded here when the call starts.
 	const queryExploreExecutions = new Map<string, CliQueryCredit>();
 	// Whether the current assistant turn's tool batch mixes a persistent-memory read with a
-	// graph query or explore: such a batch's memory reads are refused at admission, because Pi
+	// native codegraph call on any surface and operation: such a batch's memory reads are
+	// refused at admission, because Pi
 	// runs a batch's admitted calls concurrently — order inside the batch cannot satisfy the
 	// codegraph-first rule.
 	let batchMixesMemoryWithGraph = false;
@@ -251,29 +361,33 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 		}
 		return typeof toolName === "string" && (toolName.endsWith("_query") || toolName.endsWith("_explore"));
 	};
-	/** Whether one assistant tool-call block is a graph query or explore on any credited
-	 * surface: the session tool's operation, a graph tool's MCP proxy name - an unrelated
-	 * *_query tool is not one - or the CLI query workflow through bash. */
-	const isGraphQueryCall = (name: unknown, args: unknown): boolean => {
+	/** Whether one assistant tool-call block is an active graph execution on any surface -
+	 * the same call set the execution-start handler treats as active: the session tool and
+	 * the MCP proxy surface whatever the operation (init included), and the bash-run CLI
+	 * whatever the subcommand. An unrelated *_query tool is not one, and only query and
+	 * explore earn credit - batch mixing tracks every native call because the read may not
+	 * run beside any of them. */
+	const isGraphExecutionCall = (name: unknown, args: unknown): boolean => {
 		if (typeof name !== "string") return false;
-		if (isGraphToolName(name) && isQueryOrExplore(name, args)) return true;
+		if (isGraphToolName(name)) return true;
 		const command = (args as { command?: unknown } | undefined | null)?.command;
-		return name === "bash" && typeof command === "string" && analyzeCliQuery(command).present;
+		return name === "bash" && typeof command === "string" && analyzeCliQuery(command).runsCodegraph;
 	};
 
 	/** Whether one assistant tool-call block is a workspace search: a grep, find or ls tool
-	 * call, or a bash command naming a search tool — the same signals that arm the gate at
-	 * execution start, read here from the batch before Pi runs any of its calls. */
+	 * call, or a bash command running a search tool in an executable command position — the
+	 * same shared check that arms the gate at execution start, read here from the batch
+	 * before Pi runs any of its calls. */
 	const isWorkspaceSearchCall = (name: unknown, args: unknown): boolean => {
 		if (name === "grep" || name === "find" || name === "ls") return true;
 		const command = (args as { command?: unknown } | undefined | null)?.command;
-		return name === "bash" && typeof command === "string" && SEARCH_COMMAND_SNIFF.test(command);
+		return name === "bash" && typeof command === "string" && bashRunsSearchCommand(command);
 	};
 
 	/** The whole tool batch of one assistant turn, read from the turn's own message: Pi
 	 * prepares and executes the batch's calls only after that message ends, so the batch
 	 * composition is known before any tool_call admission. A batch that mixes a memory read
-	 * with a graph query can never satisfy the ordering rule — its calls run concurrently —
+	 * with a native codegraph call can never satisfy the ordering rule — its calls run concurrently —
 	 * so the answer marks every memory read of that turn refused, whichever position lists
 	 * them. A batch that mixes the read with a workspace search is marked the same way,
 	 * because admission runs before any of the batch's calls could arm the gate itself. */
@@ -289,7 +403,7 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 			const call = block as { type?: unknown; name?: unknown; arguments?: unknown } | undefined | null;
 			if (call?.type !== "toolCall" || typeof call.name !== "string") continue;
 			if (MEMORY_READ_TOOLS.has(call.name)) memory = true;
-			else if (isGraphQueryCall(call.name, call.arguments)) graph = true;
+			else if (isGraphExecutionCall(call.name, call.arguments)) graph = true;
 			else if (isWorkspaceSearchCall(call.name, call.arguments)) search = true;
 		}
 		batchMixesMemoryWithGraph = memory && graph;
@@ -356,17 +470,19 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 			} else if (toolName === "bash") {
 				const command = ((event as { args?: { command?: unknown } | undefined | null } | undefined | null)?.args)?.command;
 				if (typeof command === "string") {
-					if (SEARCH_COMMAND_SNIFF.test(command)) searchActivity = true;
+					if (bashRunsSearchCommand(command)) searchActivity = true;
 					// A CLI query or explore through bash is the graph execution AGENTS.md credits for
 					// worktree dispatches: active from its start, credited only in the command
 					// positions whose completion can prove execution reached the invocation, and
 					// never for init, status, or another subcommand.
 					if (typeof toolCallId === "string") {
 						const analysis = analyzeCliQuery(command);
-						if (analysis.present) {
-							activeGraphExecutions.add(toolCallId);
-							if (analysis.credit !== "never") queryExploreExecutions.set(toolCallId, analysis.credit);
-						}
+						// A native codegraph CLI invocation is a graph execution from its start,
+						// whatever the subcommand - init and status included; credit still attaches
+						// only to a query or explore in the command positions whose completion can
+						// prove execution reached the invocation.
+						if (analysis.runsCodegraph) activeGraphExecutions.add(toolCallId);
+						if (analysis.present && analysis.credit !== "never") queryExploreExecutions.set(toolCallId, analysis.credit);
 					}
 				}
 			}

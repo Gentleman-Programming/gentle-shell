@@ -26,6 +26,19 @@ If a subagent reports `skill_resolution`, interpret it as project/user skill res
 
 If any subagent reports a fallback instead of `paths-injected`, treat it as an orchestration gap and correct future delegations by passing exact indexed paths directly.
 
+### Parent execution
+
+When the parent executes work itself that a resolved skill covers (Work
+Routing Ladder tier 1), it follows the same read discipline as a delegated
+subagent: read the exact indexed `SKILL.md` in this session before acting,
+and let the skill's declared `## Output Contract` shape the result, so the
+reply carries the same contract markers applying the skill directly would
+produce. Close with one attribution line naming the applied skill
+(`Skill applied (parent): <name>`); if the indexed path is unreadable,
+proceed unskilled and say so in that line. Never present contract markers or
+attribute a skill without the in-session read. Attribution carries the skill
+name only, never paths.
+
 ## Intent-Driven Skill Discovery
 
 For skill-shaped requests, do not treat injected `<available_skills>` as complete. Use the registry and filesystem only as a discovery aid; do not let a trigger table override the user's concrete request or turn a small request into a larger workflow.

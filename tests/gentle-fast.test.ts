@@ -39,6 +39,21 @@ test("Fast request handling publishes no integration status or response observer
  }
 });
 
+for (const route of [native, legacy]) {
+ for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
+  test(`${route.provider}/${id} rewrites only an explicit profile tier`, () => {
+   const h = harness({ ...route, id });
+   const payload = { input: "hello", service_tier: "flex" };
+   assert.equal(h.request(payload), undefined);
+   h.profile("fast");
+   assert.deepEqual(h.request(payload), { ...payload, service_tier: "priority" });
+   h.profile("standard");
+   assert.deepEqual(h.request(payload), { ...payload, service_tier: "default" });
+   assert.equal(payload.service_tier, "flex");
+  });
+ }
+}
+
 test("profile, model, session and tree changes keep request tier authority", () => {
  const h = harness();
  h.profile("fast"); assert.equal((h.request({}) as any).service_tier, "priority");

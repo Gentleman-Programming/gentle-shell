@@ -1,0 +1,34 @@
+# Desktop RPC: update status (#3337)
+
+Objective: expose the result of the existing Pi / Gentle Shell / extension update checks to Desktop RPC clients, read-only.
+Branch: `feat/desktop-rpc-update-status` from `origin/main`. Delivery: single PR. Test runner: `node --experimental-strip-types --test`.
+
+## Specs
+
+- S1 (issue "Proposed outcome", verbatim): "Expose the result of the check Pi already makes to clients, read-only, for example as a `get_update_status` method or as an `updates` section in `get_snapshot`"
+  - "**Gentle Shell:** current version, latest available and channel (release, main, bundled or managed by gentle-ai), with the command that fits that kind of install."
+  - "**Pi:** current version and latest available."
+  - "**Extensions and packages:** for each one, source, current version, latest available and whether it is pinned."
+  - "When it was checked, honoring `PI_OFFLINE` and the cache."
+  - "Performing the update stays out of scope: the client would show the command, and updating would remain the launcher's job."
+- S2 (maintainer approval comment on #3337, verbatim): "**A dedicated read-only method, not a `get_snapshot` section.** Checking for updates can reach the npm registry, and `get_snapshot` has to stay cheap and local. Proposed: `get_update_status { refresh?: boolean }`."
+  - "Without `refresh`, it answers from the existing cache and does no network work."
+  - "`refresh: true` runs the check. It is bounded by a timeout and honors `PI_OFFLINE`."
+  - "A failed or offline check answers a typed `updates_unavailable` (or reports the item as unknown), never "up to date"."
+- S3 (approval comment, verbatim): "**One source of truth.** The result comes from Pi's own package update check and Gentle Shell's existing channel and version resolution. If Pi does not export that check, we add a seam or ask Pi to expose it rather than copy its logic."
+- S4 (approval comment, verbatim): "**Payload:** for Gentle Shell, Pi and each extension or package: source, current version, latest available, `pinned`, and the install channel. The suggested command is fixed text (for example `gentle-shell update --extensions`). Also included: the time of the check. No paths and no raw command lines."
+- S5 (approval comment, verbatim): "**Out of scope:** running the update. That stays the launcher's job."
+
+## Tasks
+
+- T1 [S1-S5] route: delegated (context backstop: parent context is long after the 8-PR merge train) — status: done (commit 900bef343)
+
+## Log
+
+- L1 (2026-11-17, user, verbatim): "y esto? @Deco | Matías D. H. Te subí un issue a gentle-shell sobre el RPC para implementar el actualizar extensiones, pi, upgrade del canal main: https://github.com/Gentleman-Programming/gentle-shell/issues/3337"
+- L2 (2026-11-17, user, verbatim, approving the proposed adjustments): "ok"
+- L3: Issue #3337 approved with the S2-S5 adjustments (comment 6942417787). Worktree `desktop-rpc-update-status` created from origin/main after the 8 Desktop RPC PRs merged.
+- L4 (2026-11-17, writer, investigation): Pi's `checkForPackageUpdates` is a private method of interactive mode; it constructs the exported `DefaultPackageManager` and calls its public `checkForAvailableUpdates()` (reachable, no copy needed). That check has no cache, returns `[]` under `PI_OFFLINE`, skips local, pinned (exact npm version or git ref), temporary, and not-installed packages, and swallows every per-package lookup failure as "no update"; it returns only `{source, displayName, type, scope}` of updatable packages, never a latest version. Pi's latest-version check (`utils/version-check.js`, pi.dev) is not exported (the package `exports` map exposes only `.` and `./rpc-entry`). Gentle Shell: `latestRelease` and `resolveMainCommit`, `readChannel` are exported from `scripts/main-channel.mjs`; `publishedPi` from `scripts/bundled-install.mjs` (bundled only); the non-bundled Pi lookup `latestPublishedPi` in `scripts/pi-update.mjs` is private and needs a resolved package-manager owner. The only cached update notice is the launcher's `startupReleaseCheck` record in the launcher config (`lib/gentle-shell-startup-update.ts`, bundled startup notice only). No existing resolver identifies a "managed by gentle-ai" install.
+- L5 (2026-11-17, writer, decisions): (a) No script export was needed: every source is imported as-is. The release/main comparison `older` in `main-channel.mjs` is private, so the stable comparison reuses the exported `findStartupUpdate` (fed an in-memory record, no lookup); main uses the runUpgrade rule (version ends with `-main.<sha12>`). (b) Pi `latest` is reported only for a bundled install (`publishedPi`); elsewhere it is `null`/`unknown`, since the only non-bundled lookup needs owner resolution and is private. (c) Package `latest` is always `null` and an unlisted package is `no_update_reported`, never `up_to_date`, because Pi's check reports no versions and conflates failure with no update. (d) Pi's `parseSource` is not in Pi's typed surface; it is called defensively for name/kind/pinned, and a missing parser reports `unknown` rather than re-parsing source text. (e) `gentle-ai-managed` = the running gentle-pi is the `npm:gentle-pi` package Pi installed (Pi's own listing + realpath). (f) Refresh results stay in process memory; the launcher config cache is read, never written (a read must not mutate persisted state). (g) An offline refresh answers every looked-up item `unknown`. (h) Pre-existing drift fixed in surface: the maintainer capabilities pin lacked `get_changes`/`get_change_diff`; the stats capability test's `.at(-1)` became position-independent.
+- L6 (2026-11-17, writer, verification): RED observed for 17 transport tests before wiring the extension (the 4 real-source/helper tests were written after their code). After: `tests/desktop-rpc-updates.test.ts` 21/21 pass; `tests/desktop-rpc*.test.ts` 384/385, the one failure `set_permission_mode persists the default only when explicitly requested` is pre-existing on the base (Windows file mode 0o666 vs 0o600, also failed in the baseline run); maintainer probes "dispatches Desktop RPC" and the new "offline update status" pass; `pnpm run typecheck` 0 diagnostics; `check:runtime-modules` and `verify-package-files` pass. Pending: `tests/desktop-feed{,-actions,-plan-profiles}.test.ts` (they import the extension) showed 3 failures (S2 inbox/outbox, set_permission_mode via feed, rejected actions) before the run was killed for low system memory; not yet compared against the base, so they are unverified, not attributed.
+- L7 (2026-11-17, parent, verification): `tests/desktop-feed.test.ts` and `tests/desktop-feed-actions.test.ts` fail the same 3 test names each on this branch and on main (1c28aa42e); `desktop-feed-plan-profiles` passes on both. The feed failures are pre-existing on Windows, not caused by this change.

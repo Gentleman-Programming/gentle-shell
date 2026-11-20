@@ -672,9 +672,10 @@ export function codegraphSyncFailureNotice(
  * deferral instead of creation, while sync keeps its synced line and an init that produced
  * or confirmed an index keeps the creation line. Failure notices map exactly as the
  * wiring emitted them before the mapping moved here.
+ * A sequence that stopped on an unconfirmed teardown reports that stop instead of the manual init.
  */
 export function indexedNotice(
-	result: { action: IndexAction; ok: boolean; stoodDown?: boolean; daemonAlive?: boolean; exitCode?: number | null; stderrTail?: string; initAttempts?: number },
+	result: { action: IndexAction; ok: boolean; stoodDown?: boolean; daemonAlive?: boolean; exitCode?: number | null; stderrTail?: string; initAttempts?: number; /** Why the init retry sequence stopped early; "teardown-unconfirmed" means a writer of the failed attempt may still be running. */ initStop?: "teardown-unconfirmed" },
 	cwd: string,
 ): { text: string; level: "info" | "warning" } | undefined {
 	// "none" is reported before anything runs and carries no notice of its own.
@@ -685,6 +686,12 @@ export function indexedNotice(
 		return { text: "CodeGraph index created", level: "info" };
 	}
 	if (result.action === "sync") return codegraphSyncFailureNotice(cwd, "sync", result);
+	// A sequence stopped because an attempt's teardown could not be proved gone is not an exhausted
+	// retry sequence: asking for a manual init here would start a second writer beside the one that
+	// may still be writing, so the notice names the unconfirmed stop and the wait instead.
+	if (result.initStop === "teardown-unconfirmed") {
+		return { text: `codegraph init failed in ${cwd}: the previous attempt could not be confirmed stopped, so init was not retried; retry later once no codegraph writer is running`, level: "warning" };
+	}
 	// An init whose silent retries were exhausted is the one failure the user can fix by
 	// hand, so the notice names the action; every other init failure keeps the plain line.
 	if (result.initAttempts !== undefined && result.initAttempts > 1) {

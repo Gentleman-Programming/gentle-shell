@@ -1685,6 +1685,25 @@ test("indexedNotice: a main-busy stand-down reports deferred initialization, nev
 	);
 });
 
+test("indexedNotice: an unconfirmed teardown never offers the manual init while a writer may still run", () => {
+	const notice = indexedNotice({ action: "init", ok: false, initAttempts: 2, initStop: "teardown-unconfirmed" }, "/repo");
+	const unconfirmedTeardown = {
+		text: "codegraph init failed in /repo: the previous attempt could not be confirmed stopped, so init was not retried; retry later once no codegraph writer is running",
+		level: "warning",
+	} as const;
+	assert.deepEqual(notice, unconfirmedTeardown, "the stop reason replaces the exhausted-retry instruction");
+	assert.doesNotMatch(
+		notice?.text ?? "",
+		/run "codegraph init" manually/,
+		"a writer that may still be running is never met by a second one the notice asks for",
+	);
+	assert.deepEqual(
+		indexedNotice({ action: "init", ok: false, initAttempts: 1, initStop: "teardown-unconfirmed" }, "/repo"),
+		unconfirmedTeardown,
+		"the sequence can stop on the first attempt, so the attempt count alone never selects this notice",
+	);
+});
+
 test("triggerSearchSync: a failing sync beside a live daemon notifies info, a daemon-less one keeps the warning", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);

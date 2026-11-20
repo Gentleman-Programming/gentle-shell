@@ -39,7 +39,7 @@ import {
 	type SessionStartReason,
 	type SpawnCodegraphSeam,
 } from "../lib/codegraph-readiness.ts";
-import type { CodegraphUpdateCheck } from "../lib/codegraph-update.ts";
+import type { CodegraphUpdateCheck, InstallOutcome } from "../lib/codegraph-update.ts";
 
 function dir(t: test.TestContext, name: string): string {
 	const cwd = mkdtempSync(join(tmpdir(), `gentle-codegraph-readiness-${name}-`));
@@ -99,6 +99,7 @@ function fakeInput(cwd: string, overrides: Partial<ReadinessInput> = {}): Readin
 		isProjectRoot: () => true,
 		run: async () => true,
 		warm: async () => true,
+		installCheck: noInstallCheck,
 		updateCheck: noUpdateCheck,
 		...overrides,
 	};
@@ -106,6 +107,7 @@ function fakeInput(cwd: string, overrides: Partial<ReadinessInput> = {}): Readin
 
 /** The no-op outcome every hermetic test injects: nothing updated, no version captured. */
 const noUpdateCheck = async (): Promise<CodegraphUpdateCheck> => ({ ran: false });
+const noInstallCheck = async (): Promise<InstallOutcome> => ({ installed: true });
 
 /** An update-check outcome with a captured running-binary version and nothing updated. */
 const currentVersionCheck = (version: string): (() => Promise<CodegraphUpdateCheck>) =>
@@ -485,6 +487,32 @@ test("prepareReadiness: an init that succeeds warms; a child or reload does noth
 	assert.deepEqual(childCalls, []);
 });
 
+test("prepareReadiness: the install seam runs before the update seam and a fresh install inits", async (t) => {
+	const repo = dir(t, "install-first");
+	writeFileSync(join(repo, "package.json"), "{}\n");
+	const order: string[] = [];
+	const result = await prepareReadiness(fakeInput(repo, {
+		installCheck: async () => {
+			order.push("install");
+			return { installed: true, via: "bun" };
+		},
+		updateCheck: async () => {
+			order.push("update");
+			return { ran: false, version: "1.6.4" };
+		},
+		run: async (args) => {
+			order.push(args.join(" "));
+			return true;
+		},
+		warm: async () => {
+			order.push("warm");
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
+	assert.deepEqual(order, ["install", "update", "init -y", "warm"]);
+});
+
 test("prepareReadiness: a real git project root with no database reaches the session-start init wiring", async (t) => {
 	// S5: an absent .codegraph/codegraph.db at a validated project root must run codegraph init
 	// at parent session start. The production wiring runs for real here: the extension's own
@@ -508,6 +536,7 @@ test("prepareReadiness: a real git project root with no database reaches the ses
 		isProjectRoot: isWorkspaceProjectRoot,
 		run,
 		seed: (workspace) => seedWorktreeIndex({ cwd: workspace, run }),
+		installCheck: noInstallCheck,
 		updateCheck: noUpdateCheck,
 		warm: async (workspace) => {
 			warms.push(workspace);
@@ -547,6 +576,7 @@ test("prepareReadiness: an orphaned init token from a dead session does not stop
 		isProjectRoot: isWorkspaceProjectRoot,
 		run,
 		seed: (workspace) => seedWorktreeIndex({ cwd: workspace, run }),
+		installCheck: noInstallCheck,
 		updateCheck: noUpdateCheck,
 		warm: async () => true,
 	});
@@ -2620,6 +2650,7 @@ test("two real sessions racing one fresh project run exactly one init", async (t
 		"    return true;",
 		"  },",
 		"  warm: async () => true,",
+		"  installCheck: async () => ({ installed: true }),",
 		"  updateCheck: async () => ({ ran: false }),",
 		"});",
 	].join("\n") + "\n");
@@ -3215,6 +3246,7 @@ test("prepareReadiness: a successful init or sync stamps the writer version of t
 	const fresh = dir(t, "stamp-init");
 	writeFileSync(join(fresh, "package.json"), "{}\n");
 	const result = await prepareReadiness(fakeInput(fresh, {
+		installCheck: noInstallCheck,
 		updateCheck: currentVersionCheck("1.6.4"),
 	}));
 	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
@@ -3223,6 +3255,7 @@ test("prepareReadiness: a successful init or sync stamps the writer version of t
 	const synced = dir(t, "stamp-sync");
 	writeDb(synced);
 	const syncResult = await prepareReadiness(fakeInput(synced, {
+		installCheck: noInstallCheck,
 		updateCheck: currentVersionCheck("1.6.4"),
 	}));
 	assert.deepEqual(syncResult, { action: "sync", ok: true, warm: "ok" });
@@ -3255,6 +3288,7 @@ test("prepareReadiness: an update this session stops the project daemon, removes
 	const result = await prepareReadiness(fakeInput(cwd, {
 		registryDir: registry,
 		locksDir: locks,
+		installCheck: noInstallCheck,
 		updateCheck: updatedCheck("1.6.3", "1.6.4"),
 		run: async (args) => {
 			runs.push(args.join(" "));
@@ -3292,6 +3326,7 @@ test("prepareReadiness: a stamp matching the running version changes nothing —
 	writeStamp(cwd, "1.6.4");
 	const runs: string[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
+		installCheck: noInstallCheck,
 		updateCheck: currentVersionCheck("1.6.4"),
 		run: async (args) => {
 			runs.push(args.join(" "));
@@ -3311,6 +3346,7 @@ test("prepareReadiness: an index already stamped with the updated version is lef
 	writeStamp(cwd, "1.6.4");
 	const runs: string[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
+		installCheck: noInstallCheck,
 		updateCheck: updatedCheck("1.6.3", "1.6.4"),
 		run: async (args) => {
 			runs.push(args.join(" "));
@@ -3326,6 +3362,7 @@ test("prepareReadiness: a stamp-less legacy index with no update this session is
 	writeDb(cwd);
 	const runs: string[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
+		installCheck: noInstallCheck,
 		updateCheck: currentVersionCheck("1.6.4"),
 		run: async (args) => {
 			runs.push(args.join(" "));
@@ -3344,6 +3381,7 @@ test("prepareReadiness: a failed update check leaves the readiness flow unchange
 	const runs: string[] = [];
 	const events: unknown[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
+		installCheck: noInstallCheck,
 		updateCheck: async () => {
 			throw new Error("npm view exploded");
 		},
@@ -3366,6 +3404,7 @@ test("prepareReadiness: the forced reindex never removes an index this session c
 	const runs: string[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
 		isProjectRoot: () => false,
+		installCheck: noInstallCheck,
 		updateCheck: updatedCheck("1.6.3", "1.6.4"),
 		run: async (args) => {
 			runs.push(args.join(" "));
@@ -3386,6 +3425,7 @@ test("prepareReadiness: a stamp written by an older binary without any update th
 	writeFileSync(join(cwd, "package.json"), "{}\n");
 	const runs: string[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
+		installCheck: noInstallCheck,
 		updateCheck: currentVersionCheck("1.6.4"),
 		run: async (args) => {
 			runs.push(args.join(" "));

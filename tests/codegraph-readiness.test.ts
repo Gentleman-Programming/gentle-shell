@@ -682,9 +682,12 @@ test("runCodegraph: a throwing onInfo sink never swallows the command result", {
 	t.after(() => {
 		process.env.PATH = previousPath;
 	});
+	let sinkCalls = 0;
 	const ok = await runCodegraph(["sync", "-q"], dir(t, "sink-throw-cwd"), 5_000, undefined, () => {
+		sinkCalls += 1;
 		throw new Error("diagnostic sink exploded");
 	});
+	assert.equal(sinkCalls, 1, "the diagnostic sink ran");
 	assert.equal(ok, true, "the command's actual outcome resolves even when its diagnostic callback throws");
 });
 

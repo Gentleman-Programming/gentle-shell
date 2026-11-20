@@ -185,6 +185,22 @@ test("skipsSession: a child or a reload never starts index work", () => {
 	assert.equal(skipsSession({}, "startup"), false);
 });
 
+test("prepareReadiness: seed failure exposes its diagnostic without initializing", async (t) => {
+	const cwd = dir(t, "seed-diagnostic");
+	writeFileSync(join(cwd, "package.json"), "{}");
+	const error = "CodeGraph seed publication requires hard links; use a worktree filesystem that supports hard links.";
+	let runs = 0;
+	let warms = 0;
+	const result = await prepareReadiness(fakeInput(cwd, {
+		seed: async () => ({ outcome: "seed-failed", error }),
+		run: async () => { runs += 1; return true; },
+		warm: async () => { warms += 1; return true; },
+	}));
+	assert.deepEqual(result, { action: "init", ok: false, warm: "skipped", error });
+	assert.equal(runs, 0);
+	assert.equal(warms, 0);
+});
+
 test("prepareReadiness: an existing index is synced and then warmed", async (t) => {
 	const cwd = dir(t, "sync-ok");
 	writeDb(cwd);

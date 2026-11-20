@@ -410,8 +410,10 @@ test("the guard and the verifier preparer share one sensitive-path list (gentle-
 			git("add", "-f", "--", name);
 			git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "x");
 			const out = spawnSync(process.execPath, [fileURLToPath(new URL("../scripts/prepare-verifier.mjs", import.meta.url)), source, scratch, JSON.stringify({ include: [], checks: ["true"] })], { encoding: "utf8" });
-			assert.match(JSON.parse(out.stdout).reason, new RegExp(`^refusing to stage tracked sensitive files: ${name.replace(/[.]/g, "\\.")}\\.`), name);
-			assert.deepEqual(readdirSync(scratch), []);
+			const receipt = JSON.parse(out.stdout);
+			assert.equal(receipt.status, "ready", out.stdout);
+			assert.deepEqual(receipt.skippedSensitive, [name]);
+			assert.equal(existsSync(join(receipt.work, name)), false, name);
 			git("rm", "-q", "--cached", "-f", "--", name);
 			git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "y");
 		}
@@ -421,4 +423,16 @@ test("the guard and the verifier preparer share one sensitive-path list (gentle-
 test("the guard does not see the preparer's JSON plan: the preparer enforces the policy itself (gentle-shell#3401)", async () => {
 	const call = toolCall();
 	assert.equal(await call("bash", { command: `node "$GENTLE_PI_VERIFIER_PREPARER" "$PWD" "$s" '{"include":[".env"],"checks":["true"]}'` }), undefined);
+});
+
+test("auth.json matching is exact for the shared list and the guard's read tool (gentle-shell#3401)", async () => {
+	const { isSensitiveRepositoryPath } = await import("../lib/sensitive-paths.ts"), call = toolCall();
+	for (const path of ["config/auth.json", "AUTH.JSON", "auth.json"]) {
+		assert.equal(isSensitiveRepositoryPath(path), true, path);
+		assert.deepEqual(await call("read", { path }), { block: true, reason: reason(path) }, path);
+	}
+	for (const path of ["oauth.json", "auth.json.example", "src/auth.jsonc", "my-auth.json"]) {
+		assert.equal(isSensitiveRepositoryPath(path), false, path);
+		assert.equal(await call("read", { path }), undefined, path);
+	}
 });

@@ -244,19 +244,39 @@ const refused = (result: ReturnType<ReturnType<typeof fixture>["prepare"]>, reas
 	assert.deepEqual(readdirSync(result.scratch), [], "refusal happens before any clone or copy");
 };
 
-test("#3401 S3: tracked sensitive files are refused even when include does not name them, and the named continuation works", t => {
+test("#3401 S3: tracked sensitive files prepare ready, are skipped, reported, and leave HEAD and status intact", t => {
 	const f = fixture(t);
 	addTracked(f, { ".env": "DUMMY=1\n", "auth.json": "{}\n", "keys/id.pem": "dummy\n" });
 	f.git("commit", "-qm", "track sensitive");
-	const before = f.snapshot();
-	refused(f.prepare([]), "refusing to stage tracked sensitive files: .env, auth.json, keys/id.pem. Run `git rm --cached -- .env auth.json keys/id.pem` and re-run the preparer, or verify without the isolated preparer");
+	const before = f.snapshot(), result = f.prepare([]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.receipt.status, "ready");
+	assert.deepEqual(result.receipt.skippedSensitive, [".env", "auth.json", "keys/id.pem"]);
+	for (const path of [".env", "auth.json", "keys/id.pem"]) assert.equal(existsSync(join(result.work, path)), false, path);
+	assert.equal(result.receipt.head, f.git("rev-parse", "HEAD"));
+	assert.equal(result.receipt.baseline, f.baseline);
+	const work = (...args: string[]) => execFileSync("git", args, { cwd: result.work, env, encoding: "utf8" });
+	assert.equal(work("rev-parse", "HEAD").trim(), result.receipt.head);
+	assert.equal(work("status", "--porcelain", "--untracked-files=no"), execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: f.source, env, encoding: "utf8" }));
 	assert.deepEqual(f.snapshot(), before);
-	f.git("rm", "-q", "--cached", "--", ".env", "auth.json", "keys/id.pem");
-	const ready = f.prepare([]);
-	assert.equal(ready.status, 0, ready.stderr);
-	assert.equal(ready.receipt.status, "ready");
-	assert.equal(existsSync(join(ready.work, ".env")), false);
-	assert.equal(existsSync(join(ready.work, "auth.json")), false);
+});
+
+test("#3401 S3: a repository tracking a fixture key file prepares ready (gentle-pi's own case)", t => {
+	const f = fixture(t);
+	addTracked(f, { "tests/fixtures/x/proxy.key": "dummy\n" });
+	f.git("commit", "-qm", "track fixture key");
+	const result = f.prepare([]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.receipt.status, "ready");
+	assert.deepEqual(result.receipt.skippedSensitive, ["tests/fixtures/x/proxy.key"]);
+	assert.equal(existsSync(join(result.work, "tests/fixtures/x/proxy.key")), false);
+});
+
+test("#3401: an ordinary repository's receipt gains only an empty skippedSensitive", t => {
+	const result = fixture(t).prepare(["selected [x].cjs"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(Object.keys(result.receipt).sort(), ["baseline", "durationMs", "excludedRuntimeArtifacts", "fileCount", "head", "payloadBytes", "probesRun", "skippedSensitive", "status", "work"]);
+	assert.deepEqual(result.receipt.skippedSensitive, []);
 });
 
 test("#3401 S4: a directory in include skips untracked and ignored sensitive files and reports them", t => {
@@ -281,7 +301,7 @@ for (const named of [[".env"], ["sub/.env"], ["sub/secrets"], ["selected [x].cjs
 		mkdirSync(join(f.source, "sub", "secrets"), { recursive: true });
 		for (const path of ["sub/.env", "sub/auth.json", ".env"]) writeFileSync(join(f.source, path), "DUMMY=1\n");
 		const bad = named.filter(path => /\.env$|auth\.json$|secrets$/.test(path)), before = f.snapshot();
-		refused(f.prepare(named), `include names sensitive path: ${bad.join(", ")}. Remove it from include and re-run the preparer, or verify that check without the isolated preparer`);
+		refused(f.prepare(named), `include names sensitive paths: ${JSON.stringify(bad)}. Remove them from include and re-run the preparer, or verify that check without the isolated preparer`);
 		assert.deepEqual(f.snapshot(), before);
 	});
 }

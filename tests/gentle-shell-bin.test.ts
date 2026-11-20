@@ -2999,6 +2999,34 @@ test("--package-root forces a takeover even when settings already declare a matc
 	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
 });
 
+test("--package-root stays silent about the declared skew when an exact pin differs and a stale install remains", (t) => {
+	const f = fixture(t);
+	const piAgentDir = join(f.root, "pi-agent");
+	mkdirSync(piAgentDir, { recursive: true });
+	const settingsPath = join(piAgentDir, "settings.json");
+	const settingsText = JSON.stringify({ packages: ["npm:gentle-pi@4.6.0"] });
+	writeFileSync(settingsPath, settingsText);
+	// The leftovers a failed install leaves behind: they must not be described as
+	// the package pi loads when this launcher takes the package over.
+	const installedDir = join(piAgentDir, "npm", "node_modules", "gentle-pi");
+	mkdirSync(installedDir, { recursive: true });
+	writeFileSync(join(installedDir, "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.6.0" }));
+
+	const forcedRoot = join(f.root, "forced-root");
+	mkdirSync(forcedRoot, { recursive: true });
+
+	const env = { ...f.env, PI_CODING_AGENT_DIR: piAgentDir };
+	const result = run(env, ["--link", "--package-root", forcedRoot], { cwd: f.root });
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stderr, /taking over gentle-pi from npm:gentle-pi/);
+	assert.doesNotMatch(result.stderr, /declares gentle-pi/);
+	assert.doesNotMatch(result.stderr, /loads gentle-pi/);
+
+	const payload = JSON.parse(result.stdout);
+	assert.deepEqual(payload.args, ["--no-extensions", "-e", forcedRoot]);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsText);
+});
+
 test("--package-root forces a takeover even with no gentle-pi declaration at all: --no-extensions and the other packages are still injected", (t) => {
 	const f = fixture(t);
 	const piAgentDir = join(f.root, "pi-agent");

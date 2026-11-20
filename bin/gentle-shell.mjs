@@ -33,6 +33,7 @@ import {
 	buildPiInvocation,
 	checkPiVersion,
 	decideTakeOver,
+	declaredPackageSkewMessage,
 	describeVersion,
 	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
@@ -2253,7 +2254,11 @@ async function main() {
 	if (!versionCheck.ok && !managedSelfUpdate) fail(versionCheck.message, 1);
 
 	if (args.version) {
-		process.stdout.write(`${describeVersion({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home })}\n`);
+		// A link home keeps its own gentle-pi declaration by contract, so the
+		// bundle version alone can hide that pi loads an older package.
+		const versionDeclaration = findGentlePiDeclaration(readJsonIfExists(join(home.dir, "settings.json")), { agentDir: home.dir, readPackageName });
+		const declaredGentlePiVersion = versionDeclaration?.kind === "npm" ? versionDeclaration.version : undefined;
+		process.stdout.write(`${describeVersion({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home, declaredGentlePiVersion })}\n`);
 		process.exit(0);
 	}
 
@@ -2446,6 +2451,21 @@ async function main() {
 			realDeclaredDir,
 			packageRootExplicit: home.mode === "link" && packageRootExplicit,
 		});
+		// Not taking over means pi loads the declared package, which may be an
+		// older gentle-pi than this launcher. Say so once: a silent skew is how a
+		// user believes an upgrade took effect when only the bundle moved.
+		let installedVersion;
+		try {
+			const installedText = readJsonIfExists(join(home.dir, "npm", "node_modules", "gentle-pi", "package.json"));
+			if (installedText !== undefined) {
+				const installedPkg = JSON.parse(installedText);
+				if (typeof installedPkg?.version === "string") installedVersion = installedPkg.version;
+			}
+		} catch {
+			installedVersion = undefined;
+		}
+		const skewMessage = declaredPackageSkewMessage({ declaration, homeDir: home.dir, bundledVersion: ownPackageVersion(), installedVersion, takeOver });
+		if (skewMessage !== undefined) process.stderr.write(skewMessage);
 		if (takeOver) {
 			const skip = declaration ?? { kind: "path", dir: realEffectivePackageRoot };
 			const injections = otherPackageInjections({ settingsText, agentDir: home.dir, skip, isDirectory, realpath: safeRealpath });

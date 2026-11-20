@@ -438,7 +438,7 @@ export function packedFileList(packageRoot) {
   const result = spawnSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], {
     cwd: packageRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, shell: process.platform === "win32",
   });
-  if (result.status !== 0) throw new Error(`npm pack --dry-run failed: ${(result.stderr || "").trim().slice(-2000)}`);
+  if (result.status !== 0) throw new Error(`npm pack --dry-run failed: ${(result.error?.message || result.stderr || "").trim().slice(-2000)}`);
   const parsed = JSON.parse(result.stdout);
   const entry = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
   return new Set(entry.files.map((file) => file.path));

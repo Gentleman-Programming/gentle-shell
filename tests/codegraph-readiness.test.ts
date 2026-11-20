@@ -1045,7 +1045,28 @@ test("warmUpDaemonDetailed: a lock loser never adopts a winner that cannot answe
 	assert.deepEqual(outcome, { ok: false }, "an alive-but-silent winner is the wedged daemon the warm gate already refuses: adoption demands an answer, not liveness");
 });
 
-test("warmUpDaemon: a live daemon resolves true without spawning; a dead record still spawns", async (t) => {
+test("warmUpDaemonDetailed: a spawn that exits non-zero fails fast, not after the adoption window", { timeout: 15_000 }, async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	// The Windows shape on the fake bin: the child spawns fine, cannot find anything to serve,
+	// and exits non-zero without a Node-level error event — cmd.exe's 9009 on an empty PATH.
+	// Only the lock loser's clean exit-0 may wait out the adoption window; any other exit
+	// must fail the warm-up at once.
+	const bin = dir(t, "warm-adopt-nonzero-bin");
+	writeFileSync(join(bin, "codegraph"), "#!/bin/sh\nexit 9\n");
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	t.after(() => {
+		process.env.PATH = previousPath;
+	});
+	const registry = dir(t, "warm-adopt-nonzero-registry");
+	const startedAt = Date.now();
+	const outcome = await warmUpDaemonDetailed(dir(t, "warm-adopt-nonzero"), false, 30_000, registry, undefined, 10_000);
+	assert.deepEqual(outcome, { ok: false }, "a non-zero exit is a failed warm-up, never an ok or adopted one");
+	assert.ok(Date.now() - startedAt < 2_000, `the failure is immediate (took ${Date.now() - startedAt}ms), not the 10s adoption window`);
+});
+
+test("warmUpDaemon: a live daemon resolves true without spawning; a dead record still spawns", { timeout: 10_000 }, async (t) => {
 	// Any spawn would fail: PATH holds nothing but an empty directory, so a true result can only
 	// come from the liveness gate, and a spawn-path result is a fast false.
 	const emptyBin = dir(t, "warm-empty-bin");

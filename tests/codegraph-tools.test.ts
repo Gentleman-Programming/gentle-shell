@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -519,6 +519,29 @@ test("a cached linked-worktree validation dies with the gitdir its .git file nam
 	renameSync(main, join(base, "main-moved"));
 
 	assert.equal(isWorkspaceProjectRoot(linked), false, "the stale cached root is rejected once the .git file's gitdir target is gone");
+});
+
+test("a cached validation dies with a non-regular .git marker instead of reading it", (t) => {
+	if (process.platform === "win32") {
+		t.skip("the FIFO fixture is POSIX-only");
+		return;
+	}
+	const cwd = workspace(t);
+	assert.equal(isWorkspaceProjectRoot(cwd), true, "the workspace validates and caches first");
+
+	// A FIFO replaces the directory marker while a writer holds the pipe ready with a
+	// well-formed gitdir line naming an existing directory: a check that reads the marker
+	// would consume that line and keep the cache alive — and with no writer at all the same
+	// synchronous read would block the whole session.
+	rmSync(join(cwd, ".git"), { recursive: true, force: true });
+	const marker = join(cwd, ".git");
+	execFileSync("mkfifo", [marker]);
+	const gitdir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-gitdir-")));
+	t.after(() => rmSync(gitdir, { recursive: true, force: true }));
+	const writer = spawn("sh", ["-c", 'echo "gitdir: $1" > "$2"', "sh", gitdir, marker]);
+	t.after(() => writer.kill());
+
+	assert.equal(isWorkspaceProjectRoot(cwd), false, "a non-regular marker is not a repository marker, whatever it would say");
 });
 
 test("CodeGraph init reports the missing binary distinctly", async (t) => {

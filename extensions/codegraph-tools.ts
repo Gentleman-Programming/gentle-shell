@@ -222,8 +222,12 @@ function gitRootMarkerPresent(resolved: string): boolean {
 		const markerPath = join(resolved, ".git");
 		if (lstatSync(markerPath).isDirectory()) return true;
 		// A symlinked `.git` resolving to a directory is metadata as well; only a regular file
-		// carries the gitdir pointer the cache must follow.
-		if (statSync(markerPath).isDirectory()) return true;
+		// carries the gitdir pointer the cache must follow — and anything else is rejected
+		// before the read: a FIFO, socket, or device is not a marker Git wrote, and reading
+		// one synchronously could block the whole session on a pipe with no writer.
+		const marker = statSync(markerPath);
+		if (marker.isDirectory()) return true;
+		if (!marker.isFile()) return false;
 		const target = gitdirTarget(resolved);
 		return target !== undefined && statSync(target).isDirectory();
 	} catch {

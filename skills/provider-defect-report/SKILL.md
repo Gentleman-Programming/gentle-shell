@@ -58,4 +58,4 @@ Report observed evidence, not an unconfirmed root cause. Include or reuse saniti
 
 ## References
 
-- `assets/orchestrator-prompts.md` — Lossless Blocking Prompts (native route, fallback, answer validation) used to present the consent envelope.
+- `../../assets/orchestrator-prompts.md` — Lossless Blocking Prompts (native route, fallback, answer validation) used to present the consent envelope.

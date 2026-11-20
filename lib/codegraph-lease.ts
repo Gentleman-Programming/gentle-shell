@@ -153,6 +153,49 @@ function pidLivenessHere(pid: number): "alive" | "dead" | "unproven" {
 	}
 }
 
+/** Reuse scope for ONE composite lease operation (win32 only): an attempt verdicts several
+ * times — the caller's poll, the acquisition's own read, and the in-mutex recheck — and this
+ * memo lets those repeated verdicts share their external observations instead of re-reading
+ * CodeGraph's writer lock and re-probing the same pids per verdict. A memoized "alive" can
+ * only err fail-closed: a holder that died after its probe still verdicts held-live and the
+ * attempt skips, exactly as a just-checked one would; a memoized "dead" pid cannot come back
+ * as the same token's holder within one attempt. The token file itself is always re-read
+ * wherever the protocol re-verdicts, and the memo never outlives its attempt. POSIX builds none. */
+interface LeaseProbeMemo {
+	writerLock: Map<string, boolean>;
+	alive: Map<number, boolean>;
+}
+
+/** A fresh reuse scope for one composite lease operation; the win32 call sites build one, every
+ * other platform none — the lease fast paths are win32-conditional. */
+function newProbeMemo(): LeaseProbeMemo {
+	return { writerLock: new Map(), alive: new Map() };
+}
+
+/** One pid-liveness observation per attempt: the memo's answer when one exists, a fresh probe
+ * otherwise. */
+function probeAlive(memo: LeaseProbeMemo | undefined, pid: number): boolean {
+	if (memo !== undefined) {
+		const cached = memo.alive.get(pid);
+		if (cached !== undefined) return cached;
+	}
+	const alive = processAlive(pid);
+	memo?.alive.set(pid, alive);
+	return alive;
+}
+
+/** One writer-lock observation per attempt: a fresh read answers the same "is CodeGraph writing
+ * here" question every repeated verdict inside the attempt would ask. */
+function probeWritingIndex(memo: LeaseProbeMemo | undefined, cwd: string): boolean {
+	if (memo !== undefined) {
+		const cached = memo.writerLock.get(cwd);
+		if (cached !== undefined) return cached;
+	}
+	const writing = codegraphWritingIndex(cwd);
+	memo?.writerLock.set(cwd, writing);
+	return writing;
+}
+
 /**
  * Reads a token file and judges it. An expired token or a dead holder is stale (stealable) — but
  * only on the host that can prove the holder's pid local (see leaseHostIdentity); anywhere else
@@ -178,10 +221,14 @@ function pidLivenessHere(pid: number): "alive" | "dead" | "unproven" {
  * a different machine, or a legacy token without the machine part, keeps the fail-closed unknown.
  */
 export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: string, hostIdentity?: string | null): LeaseVerdict {
+	return readLeaseVerdictCore(undefined, path, now, cwd, hostIdentity);
+}
+
+function readLeaseVerdictCore(memo: LeaseProbeMemo | undefined, path: string, now: number, cwd?: string, hostIdentity?: string | null): LeaseVerdict {
 	// CodeGraph's own writer lock outranks everything, a missing launcher token included: a live
 	// writer behind a stale-looking token — or behind no token at all — must never be unlocked
 	// under, whatever a later pid or TTL check would say.
-	if (cwd !== undefined && codegraphWritingIndex(cwd)) return "held-live";
+	if (cwd !== undefined && probeWritingIndex(memo, cwd)) return "held-live";
 	// The host identity every pid judgement below resolves against: the platform's own
 	// derivation, or an explicit one a caller hands in for a host that cannot derive one.
 	const host = hostIdentity !== undefined ? hostIdentity : leaseHostIdentity();
@@ -237,7 +284,7 @@ export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: s
 		// An adopted direct writer (a detached init child on POSIX) can outlive its dead launcher while
 		// it has not written codegraph.lock yet: while that child lives, the token stays held — a live
 		// writer is never unlocked under, whatever the TTL or the dead launcher's pid say.
-		if (token.writerProxy !== true && typeof token.writerPid === "number" && token.writerPid > 0 && processAlive(token.writerPid)) return "held-live";
+		if (token.writerProxy !== true && typeof token.writerPid === "number" && token.writerPid > 0 && probeAlive(memo, token.writerPid)) return "held-live";
 	}
 	// Holder pids are judged dead only on the host that wrote the token: with a shared locks dir
 	// (homedir-based), a live holder in another host or container looks dead locally, and stealing
@@ -266,8 +313,8 @@ export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: s
 	// held-live on a coincidental pid match would report another host's refresh as handled —
 	// unknown keeps it fail-closed and unstealable.
 	if (token.host !== undefined && !provablyLocal) return "unknown";
-	if (!provablyLocal) return processAlive(token.pid) ? "held-live" : "unknown";
-	return processAlive(token.pid) ? "held-live" : "held-stale";
+	if (!provablyLocal) return probeAlive(memo, token.pid) ? "held-live" : "unknown";
+	return probeAlive(memo, token.pid) ? "held-live" : "held-stale";
 }
 
 /**
@@ -510,6 +557,10 @@ function sleepSync(ms: number): void {
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/** The async counterpart of sleepSync: the wait slice yields the event loop, so an async caller
+ * is never frozen while it waits out a live mutex holder. */
+const sleepAsync = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** Exclusive create of the mutex file: the only writer of the mutex path wins it. Returns the
  * created mutex's nonce (its creator's proof of ownership), or false when the path is taken. */
 function tryTakeMutex(mutex: string, now: number): string | false {
@@ -603,6 +654,27 @@ function stealStaleMutex(mutex: string, observed: MutexIdentity): void {
 	rmSync(graveyard, { force: true }); // best effort: removes a restored file's extra name, or the superseded record
 }
 
+/** The ownership fence and release rule every critical section runs under, shared by both
+ * waiters: release removes only the mutex this holder created, and never a contender's
+ * replacement — a mutex replaced between the ownership check and a plain removal would
+ * otherwise be lost to the late release, so the rename-verify-restore protocol of
+ * removeTokenRecord removes ours and restores a replacement instead. */
+function sectionFence(mutex: string, mine: string): { owns(): boolean; release(): void } {
+	const owns = (): boolean => parseMutex(mutex)?.nonce === mine;
+	return {
+		owns,
+		release: () => {
+			if (owns()) {
+				try {
+					removeTokenRecord(mutex, mine);
+				} catch {
+					/* best effort: a leftover is stolen by TTL rules */
+				}
+			}
+		},
+	};
+}
+
 /**
  * Runs one critical section on a token path, serialized against every other session's stale
  * recovery and release. A live mutex holder is waited for (bounded — its section is a handful of
@@ -620,21 +692,11 @@ function withPathMutex<T>(path: string, waitMs: number, section: (owns: () => bo
 		const now = Date.now();
 		const mine = tryTakeMutex(mutex, now);
 		if (mine !== false) {
-			const owns = (): boolean => parseMutex(mutex)?.nonce === mine;
+			const fence = sectionFence(mutex, mine);
 			try {
-				return section(owns);
+				return section(fence.owns);
 			} finally {
-				// Release removes only the exact mutex this holder created, verified at the removal
-				// itself: a contender that replaced this holder's expired mutex between the ownership
-				// check and a plain removal would lose its mutex to the late release — the
-				// rename-verify-restore protocol removes ours and restores a replacement instead.
-				if (owns()) {
-					try {
-						removeTokenRecord(mutex, mine);
-					} catch {
-						/* best effort: a leftover is stolen by TTL rules */
-					}
-				}
+				fence.release();
 			}
 		}
 		// One observation for both decisions: the holder record the liveness verdict uses and the
@@ -653,6 +715,48 @@ function withPathMutex<T>(path: string, waitMs: number, section: (owns: () => bo
 		// TTL: steal only the exact mutex observed stale and race the exclusive create again —
 		// bounded by the same wait budget, so a mutex that can never be created (an unwritable or
 		// vanished locks dir) fail-closes the attempt instead of spinning past its deadline.
+		if (now >= deadline) return undefined;
+		if (observed !== undefined) stealStaleMutex(mutex, observed.identity);
+	}
+}
+
+/**
+ * The async twin of withPathMutex for callers that can await: the identical ownership protocol —
+ * exclusive create, owns() fence, one opened-file observation, identity-checked stale steal — but
+ * every wait slice yields the event loop instead of freezing it with Atomics.wait, so a briefly
+ * contended section never blocks the host's timers and I/O for the whole wait budget. A section
+ * may be async; its owns() fence re-verifies ownership after any await exactly as after a
+ * synchronous stretch, and a wait that yielded invalidates whatever observation went stale
+ * across it.
+ */
+async function withPathMutexAsync<T>(path: string, waitMs: number, section: (owns: () => boolean) => T | undefined | Promise<T | undefined>, sleep: (ms: number) => Promise<void> = sleepAsync, invalidate?: () => void): Promise<T | undefined> {
+	const mutex = mutexPathFor(path);
+	const deadline = Date.now() + waitMs;
+	for (;;) {
+		const now = Date.now();
+		const mine = tryTakeMutex(mutex, now);
+		if (mine !== false) {
+			const fence = sectionFence(mutex, mine);
+			try {
+				return await section(fence.owns);
+			} finally {
+				fence.release();
+			}
+		}
+		// One observation for both decisions, exactly as the synchronous waiter: the holder record
+		// the liveness verdict uses and the identity any steal binds to come from the same opened
+		// file (see observeMutex).
+		const observed = observeMutex(mutex);
+		const holder = observed?.token;
+		const blocking =
+			(holder !== undefined && holder.expiresAt > now && processAlive(holder.pid)) ||
+			(observed?.token === undefined && mutexFreshOnDisk(mutex, now));
+		if (blocking) {
+			if (now >= deadline) return undefined;
+			await sleep(MUTEX_POLL_MS);
+			invalidate?.(); // the world may have changed across the await: cached absence is not truth
+			continue;
+		}
 		if (now >= deadline) return undefined;
 		if (observed !== undefined) stealStaleMutex(mutex, observed.identity);
 	}
@@ -759,7 +863,8 @@ export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, no
 	} catch {
 		return undefined; // fail-closed: no locks dir, no coordination, no write
 	}
-	const verdict = readLeaseVerdict(path, now, cwd);
+	const memo = process.platform === "win32" ? newProbeMemo() : undefined;
+	const verdict = readLeaseVerdictCore(memo, path, now, cwd);
 	if (verdict !== "free" && verdict !== "held-stale") return undefined;
 	// The no-replace protocols of adoption, release, and stale recovery rename a record out of
 	// the path before linking its replacement, so the path can read free while its owner's
@@ -773,20 +878,41 @@ export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, no
 	// invisible or refused, and a publication that still lands inside a window opened after
 	// its own scan (a section stalled mid-publish) reverses itself at the publish (see
 	// createLease) instead of surviving beside the record another section still owns.
-	return withPathMutex(path, mutexWaitMs, (owns): AcquiredLease | undefined => {
-		const recheck = readLeaseVerdict(path, now, cwd);
-		if (recheck !== "free" && recheck !== "held-stale") return undefined; // a writer or lease appeared while waiting, or a faster reclaimer owns it now
-		if (displacedRecordHolds(path, now, cwd)) return undefined; // an open rename-away window: never publish beside it
-		if (recheck === "held-stale") {
-			// Capture the record the recheck judged (before the fence: past it, the path may
-			// already belong to a successor), then fence, then remove only that exact record —
-			// a successor's token published after the check is restored, never deleted.
-			const observed = readNonce(path);
-			if (!owns()) return undefined; // the mutex was replaced mid-section: never remove a newer owner's state
-			if (!removeTokenRecord(path, observed)) return undefined; // cannot clear exactly the stale token: do not write past it
-		}
-		return createLease(path, kind, ttlMs, now, cwd);
-	});
+	return withPathMutex(path, mutexWaitMs, (owns) => reclaimStaleToken(path, kind, ttlMs, now, cwd, owns, memo));
+}
+
+/** The acquisition's critical section, shared by the synchronous and the win32 asynchronous arms:
+ * re-verdict inside the mutex (a faster reclaimer, or a writer that appeared while waiting, owns
+ * the path now), refuse to publish beside an open rename-away window, clear the stale token only
+ * while still owning the mutex, then create exclusively. */
+function reclaimStaleToken(path: string, kind: LeaseKind, ttlMs: number, now: number, cwd: string | undefined, owns: () => boolean, memo: LeaseProbeMemo | undefined): AcquiredLease | undefined {
+	const recheck = readLeaseVerdictCore(memo, path, now, cwd);
+	if (recheck !== "free" && recheck !== "held-stale") return undefined; // a writer or lease appeared while waiting, or a faster reclaimer owns it now
+	if (displacedRecordHolds(path, now, cwd)) return undefined; // an open rename-away window: never publish beside it
+	if (recheck === "held-stale") {
+		// Capture the record the recheck judged (before the fence: past it, the path may
+		// already belong to a successor), then fence, then remove only that exact record —
+		// a successor's token published after the check is restored, never deleted.
+		const observed = readNonce(path);
+		if (!owns()) return undefined; // the mutex was replaced mid-section: never remove a newer owner's state
+		if (!removeTokenRecord(path, observed)) return undefined; // cannot clear exactly the stale token: do not write past it
+	}
+	return createLease(path, kind, ttlMs, now, cwd);
+}
+
+/** The acquisition for callers that can await (acquireInitLock's win32 arm): the same verdict,
+ * per-path mutex, and recovery protocol as tryAcquireLease — including the free-path publish
+ * inside the mutex — with the wait yielded to the event loop and one probe memo spanning the
+ * whole attempt. */
+async function tryAcquireLeaseAsync(path: string, kind: LeaseKind, ttlMs: number, now: number, cwd: string | undefined, mutexWaitMs: number, memo: LeaseProbeMemo, sleep: (ms: number) => Promise<void>): Promise<AcquiredLease | undefined> {
+	try {
+		mkdirSync(dirname(path), { recursive: true });
+	} catch {
+		return undefined; // fail-closed: no locks dir, no coordination, no write
+	}
+	const verdict = readLeaseVerdictCore(memo, path, now, cwd);
+	if (verdict !== "free" && verdict !== "held-stale") return undefined;
+	return withPathMutexAsync(path, mutexWaitMs, (owns) => reclaimStaleToken(path, kind, ttlMs, now, cwd, owns, memo), sleep, () => memo.writerLock.clear());
 }
 
 /**
@@ -860,7 +986,10 @@ function indexDatabasePresent(cwd: string): boolean {
 /**
  * The init lock: acquire it, or wait (bounded) for the other session's init to produce the
  * database file. A live holder that has not finished yet and an unknown verdict both end in
- * "skipped" — never a second concurrent init, never a steal of a live holder.
+ * "skipped" — never a second concurrent init, never a steal of a live holder. On win32 a
+ * contended per-path mutex is waited out asynchronously (the event loop keeps serving timers
+ * and I/O) and one attempt shares its writer-lock read and pid probes; every other platform
+ * keeps the synchronous acquisition unchanged.
  */
 export async function acquireInitLock(
 	cwd: string,
@@ -872,6 +1001,10 @@ export async function acquireInitLock(
 		exists?(cwd: string): boolean;
 		now?(): number;
 		sleep?(ms: number): Promise<void>;
+		/** The platform whose lease acquisition paths apply; tests inject "win32" to exercise the
+		 * async mutex wait and verdict reuse off Windows. The default keeps every other platform
+		 * on the synchronous acquisition, byte-identical to before. */
+		platform?: NodeJS.Platform;
 	} = {},
 ): Promise<InitLockOutcome> {
 	const {
@@ -882,17 +1015,24 @@ export async function acquireInitLock(
 		exists = indexDatabasePresent,
 		now = Date.now,
 		sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+		platform = process.platform,
 	} = options;
 	const path = lockPathFor(cwd, "init", locksDir ?? defaultLocksDir());
 	const deadline = now() + waitMs;
 	for (;;) {
-		const verdict = readLeaseVerdict(path, now(), cwd);
+		// win32: one probe memo spans this poll's verdict and the acquisition's own verdicts, and
+		// a contended per-path mutex is waited out asynchronously; every other platform keeps the
+		// synchronous acquisition exactly as it was.
+		const memo = platform === "win32" ? newProbeMemo() : undefined;
+		const verdict = readLeaseVerdictCore(memo, path, now(), cwd);
 		if (verdict === "free" || verdict === "held-stale") {
 			// Contention and polling draw on the remaining wait budget, never their own defaults on
 			// top of it: a stale token beside a live mutex spends at most what is left of waitMs
 			// inside the acquisition, and a free path acquires immediately too — its publish takes
 			// the same per-path mutex, so only a briefly-held mutex delays it, within that budget.
-			const lease = tryAcquireLease(path, "init", ttlMs, now(), cwd, Math.max(deadline - now(), 0));
+			const lease = memo === undefined
+				? tryAcquireLease(path, "init", ttlMs, now(), cwd, Math.max(deadline - now(), 0))
+				: await tryAcquireLeaseAsync(path, "init", ttlMs, now(), cwd, Math.max(deadline - now(), 0), memo, sleep);
 			if (lease) return { outcome: "acquired", nonce: lease.nonce, release: lease.release, adopt: lease.adopt };
 			// The steal race was lost between verdict and create: keep waiting like a live holder.
 		} else if (verdict === "held-live" && exists(cwd)) {

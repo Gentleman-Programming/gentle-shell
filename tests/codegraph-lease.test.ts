@@ -2342,3 +2342,163 @@ test("an external writer installed during proven mutex contention blocks the fre
 	assert.equal(readLeaseVerdict(path, Date.now()), "free");
 	assert.equal(await closed, 0);
 });
+
+/** Wraps process.kill to count signal-0 liveness probes for the given pids: every verdict's pid
+ * probe (holder, adopted writer, writer-lock pid) goes through this one seam, so per-pid probe
+ * counts double as lock-read counts — a writer lock naming a pid triggers exactly one probe per
+ * fresh read. Restored by the caller's finally; the counts stay readable after restore. */
+function countPidProbes(pids: number[]): { probes(pid: number): number; restore(): void } {
+	const counts = new Map<number, number>(pids.map((pid) => [pid, 0]));
+	const original = process.kill;
+	process.kill = ((pid: number, signal?: number | string) => {
+		if (signal === 0 && counts.has(pid)) counts.set(pid, (counts.get(pid) ?? 0) + 1);
+		return original.call(process, pid, signal);
+	}) as typeof process.kill;
+	return {
+		probes: (pid: number) => counts.get(pid) ?? 0,
+		restore: () => {
+			process.kill = original;
+		},
+	};
+}
+
+test("win32: a contended init acquisition waits the per-path mutex out asynchronously — the event loop stays live", async (t) => {
+	const dir = locksDir(t);
+	const cwd = project(t);
+	const path = lockPathFor(cwd, "init", dir);
+	const now = Date.now();
+	// The stale token's recovery is blocked by a live mutex holder, so the acquisition must spend
+	// its whole mutex budget waiting. On win32 that wait yields the event loop between slices; a
+	// synchronous Atomics.wait loop would freeze it, and the 30ms timer could never settle first.
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now, expiresAt: now - 1, host: localHost() });
+	writeToken(`${path}.mutex`, { pid: process.pid, startedAt: now, expiresAt: now + 60_000 });
+	const tokenBytes = readFileSync(path, "utf8");
+	const mutexBytes = readFileSync(`${path}.mutex`, "utf8");
+
+	const loopBeat = new Promise<string>((resolve) => setTimeout(() => resolve("loop"), 30));
+	const acquired = acquireInitLock(cwd, { locksDir: dir, waitMs: 120, pollMs: 50, exists: () => false, platform: "win32" });
+	assert.equal(await Promise.race([acquired.then(() => "acquire"), loopBeat]), "loop", "a 30ms timer settles while the contended acquisition is still waiting");
+	assert.equal((await acquired).outcome, "skipped", "the bounded wait still fails closed beside the live mutex holder");
+	assert.equal(readFileSync(path, "utf8"), tokenBytes, "the stale token is never touched without the mutex");
+	assert.equal(readFileSync(`${path}.mutex`, "utf8"), mutexBytes, "the live holder's mutex is never stolen");
+});
+
+test("win32: an uncontended acquisition is a fast path — the writer lock is read once and the db stat never runs", async (t) => {
+	const dir = locksDir(t);
+	const cwd = project(t);
+	const path = lockPathFor(cwd, "init", dir);
+	// The writer lock names a dead pid: every fresh writer-lock read probes that pid exactly once
+	// while the verdict stays governed by the missing token, so the probe count IS the lock-read
+	// count on the free fast path.
+	const writer = deadPid();
+	mkdirSync(join(cwd, ".codegraph"), { recursive: true });
+	writeFileSync(join(cwd, ".codegraph", "codegraph.lock"), String(writer));
+
+	const counts = countPidProbes([writer]);
+	try {
+		const outcome = await acquireInitLock(cwd, {
+			locksDir: dir,
+			waitMs: 60,
+			pollMs: 5,
+			// The free fast path never reaches the db-exists check; a stat there must throw.
+			exists: () => {
+				throw new Error("the free fast path must not check the database");
+			},
+			platform: "win32",
+		});
+		assert.equal(outcome.outcome, "acquired");
+		if (outcome.outcome === "acquired") outcome.release();
+	} finally {
+		counts.restore();
+	}
+	assert.equal(counts.probes(writer), 1, "one composite acquisition reads the writer lock exactly once, not once per verdict inside it");
+	assert.equal(readLeaseVerdict(path, Date.now()), "free", "release hands the path back");
+	assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".mutex") || name.endsWith(".tmp") || name.endsWith(".stale")), [], "the free fast path never touches the mutex machinery");
+});
+
+test("win32: one composite stale recovery reuses its verdict — the writer lock is read once, the holder pid probed once", async (t) => {
+	const dir = locksDir(t);
+	const cwd = project(t);
+	const path = lockPathFor(cwd, "init", dir);
+	const now = Date.now();
+	const holder = deadPid();
+	const writer = deadPid();
+	// An unexpired local token whose holder is verifiably dead: every verdict probes the holder
+	// pid on its way to held-stale, so both reuse dimensions are observable per verdict.
+	writeToken(path, { kind: "init", pid: holder, startedAt: now, expiresAt: now + 60_000, host: localHost() });
+	mkdirSync(join(cwd, ".codegraph"), { recursive: true });
+	writeFileSync(join(cwd, ".codegraph", "codegraph.lock"), String(writer));
+
+	const counts = countPidProbes([holder, writer]);
+	try {
+		const outcome = await acquireInitLock(cwd, { locksDir: dir, waitMs: 120, pollMs: 50, exists: () => false, platform: "win32" });
+		assert.equal(outcome.outcome, "acquired");
+		if (outcome.outcome === "acquired") outcome.release();
+	} finally {
+		counts.restore();
+	}
+	// Before reuse, one attempt verdicted three times — the poll loop, the acquisition, and the
+	// in-mutex recheck — reading the writer lock and re-probing the holder each time.
+	assert.equal(counts.probes(writer), 1, "the writer lock is read once per composite attempt");
+	assert.equal(counts.probes(holder), 1, "the holder pid is probed once per composite attempt");
+	assert.equal(readLeaseVerdict(path, Date.now()), "free", "release hands the path back");
+	assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".mutex") || name.endsWith(".tmp") || name.endsWith(".stale")), [], "the recovery leaves no mutex or temp litter behind");
+});
+
+test("POSIX passthrough: each verdict still reads the writer lock and probes the holder fresh — the win32 reuse stays off", async (t) => {
+	if (process.platform === "win32") {
+		t.skip("this pins the unchanged POSIX acquisition; win32 runs its own gated paths");
+		return;
+	}
+	const dir = locksDir(t);
+	const cwd = project(t);
+	const path = lockPathFor(cwd, "init", dir);
+	const now = Date.now();
+	const holder = deadPid();
+	const writer = deadPid();
+	// The same shape as the win32 reuse test: an unexpired local token with a dead holder probes
+	// the holder pid on every verdict, so unchanged per-verdict behavior is countable.
+	writeToken(path, { kind: "init", pid: holder, startedAt: now, expiresAt: now + 60_000, host: localHost() });
+	mkdirSync(join(cwd, ".codegraph"), { recursive: true });
+	writeFileSync(join(cwd, ".codegraph", "codegraph.lock"), String(writer));
+
+	const counts = countPidProbes([holder, writer]);
+	try {
+		const outcome = await acquireInitLock(cwd, { locksDir: dir, waitMs: 120, pollMs: 50, exists: () => false });
+		assert.equal(outcome.outcome, "acquired");
+		if (outcome.outcome === "acquired") outcome.release();
+	} finally {
+		counts.restore();
+	}
+	// The unchanged POSIX path: three verdicts in one attempt (poll loop, acquisition, in-mutex
+	// recheck), each with its own fresh writer-lock read and holder probe.
+	assert.equal(counts.probes(writer), 3, "every verdict reads the writer lock fresh");
+	assert.equal(counts.probes(holder), 3, "every verdict probes the holder pid fresh");
+	assert.equal(readLeaseVerdict(path, Date.now()), "free", "the acquisition itself is unchanged");
+});
+
+test("win32: a writer lock that appears during the mutex wait still blocks the stale recovery", async (t) => {
+	const cwd = project(t);
+	const dir = locksDir(t);
+	const path = lockPathFor(cwd, "init", dir);
+	const now = Date.now();
+	const stale = 999_999;
+	writeToken(path, { kind: "init", pid: stale, startedAt: now - 120_000, expiresAt: now - 1, host: localHost() });
+	writeFileSync(`${path}.mutex`, `${JSON.stringify({ pid: process.pid, startedAt: now, expiresAt: now + 60_000, nonce: "live-mutex" })}\n`);
+	let hooked = false;
+	const sleep = (ms: number): Promise<void> =>
+		new Promise((resolve) => {
+			if (!hooked) {
+				hooked = true;
+				// mid-wait: the mutex holder releases and a live CodeGraph writer records its lock
+				rmSync(`${path}.mutex`, { force: true });
+				mkdirSync(join(cwd, ".codegraph"), { recursive: true });
+				writeFileSync(join(cwd, ".codegraph", "codegraph.lock"), String(process.ppid));
+			}
+			setTimeout(resolve, ms);
+		});
+	const outcome = await acquireInitLock(cwd, { locksDir: dir, waitMs: 700, pollMs: 350, exists: () => false, sleep, platform: "win32" });
+	assert.notEqual(outcome.outcome, "acquired", "no lease is granted beside a writer that appeared during the wait");
+	const token = JSON.parse(readFileSync(path, "utf8")) as { pid: number };
+	assert.equal(token.pid, stale, "the stale token is left for a later attempt, never replaced beside a live writer");
+});

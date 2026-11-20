@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
 import { canonicalRoot, foldRoot, resetCanonicalMemo, unfoldRoot } from "../lib/codegraph-canonical.ts";
 
 /** A backslash without a backslash literal: keeps this file clear of escape-transport mangling. */
@@ -64,50 +64,97 @@ test("foldRoot keeps case-distinct directories apart on a case-sensitive tree", 
 	assert.notEqual(canonicalRoot(repo, "win32"), canonicalRoot(sibling, "win32"), "two checkouts differing only by case keep distinct keys");
 });
 
-test("the win32 case-fold memo revalidates the decision when the directory is replaced", async (t) => {
-	const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
-	let stats = 0;
-	let statCounting = false;
-	try {
-		const bunTest = (await import("bun:test" as string)) as {
-			mock: { module: (specifier: string, factory: () => unknown) => void };
-		};
-		const previous = fs.statSync;
-		bunTest.mock.module("node:fs", () => ({
-			...fs,
-			statSync: (...args: Parameters<typeof previous>) => {
-				stats += 1;
-				return previous(...args);
-			},
-		}));
-		statCounting = true;
-		t.after(() => {
-			bunTest.mock.module("node:fs", () => fs);
-		});
-	} catch {
-		// bun:test is absent under the node runner, so stat counting is skipped there; the
-		// fresh-lookup equality below still pins the contract on every runner.
-	}
-	const base = realpathSync(dir(t, "replaced"));
+/** One measured foldRoot call from the worker scenario: the statSync calls the module
+ * made while answering it, and the fold key it returned. */
+interface FoldPhase {
+	name: string;
+	stats: number;
+	result: string;
+}
+
+/** Runs the case-fold memo scenario in a worker thread, measuring every foldRoot call by
+ * the statSync calls it costs. The worker's module registry is fresh, so the module under
+ * test links only after a counting wrapper is installed on require("node:fs"), and its
+ * named-import binding — a link-time snapshot — captures the wrapper. That is the only
+ * runner-portable seam: bun:test mock.module exists only under bun, node:test ships no
+ * module mock, and patching the exports object after the module has linked is invisible
+ * to it on both runners. */
+async function foldMemoPhases(t: test.TestContext): Promise<FoldPhase[]> {
+	const canonicalUrl = new URL("../lib/codegraph-canonical.ts", import.meta.url).href;
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "gentle-codegraph-canonical-fold-")));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
 	const repo = join(base, "Repo");
+	const aside = join(base, "moved-aside");
 	mkdirSync(repo);
-	const recorded = foldRoot(repo, "win32");
+	const workerSource = [
+		"const { parentPort, workerData } = require('node:worker_threads');",
+		"const fs = require('node:fs');",
+		"let stats = 0;",
+		"const previous = fs.statSync;",
+		"fs.statSync = (...args) => { stats += 1; return previous(...args); };",
+		"(async () => {",
+		"	const { foldRoot, resetCanonicalMemo } = await import(" + JSON.stringify(canonicalUrl) + ");",
+		"	const measure = (name) => {",
+		"		const before = stats;",
+		"		const result = foldRoot(workerData.repo, 'win32');",
+		"		return { name, stats: stats - before, result };",
+		"	};",
+		"	const phases = [measure('recorded')];",
+		"	phases.push(measure('unchanged'));",
+		"	fs.renameSync(workerData.repo, workerData.aside);",
+		"	fs.mkdirSync(workerData.repo);",
+		"	phases.push(measure('replaced'));",
+		"	resetCanonicalMemo();",
+		"	phases.push(measure('fresh'));",
+		"	phases.push(measure('served'));",
+		"	parentPort.postMessage(phases);",
+		"})().catch((error) => parentPort.postMessage({ error: String((error && error.stack) || error) }));",
+	].join("\n");
+	return await new Promise<FoldPhase[]>((resolve, reject) => {
+		const worker = new Worker(workerSource, { eval: true, workerData: { repo, aside }, stdout: true, stderr: true });
+		const timer = setTimeout(() => {
+			void worker.terminate();
+			reject(new Error("the fold-memo worker did not report its phases within 10s"));
+		}, 10000);
+		worker.on("message", (message: unknown) => {
+			clearTimeout(timer);
+			void worker.terminate().then(() => {
+				if (!Array.isArray(message)) {
+					reject(new Error("the fold-memo worker failed: " + JSON.stringify(message)));
+					return;
+				}
+				resolve(message as FoldPhase[]);
+			});
+		});
+		worker.on("error", (error) => {
+			clearTimeout(timer);
+			reject(error);
+		});
+	});
+}
 
-	stats = 0;
-	assert.equal(foldRoot(repo, "win32"), recorded, "an unchanged directory keeps serving its recorded decision");
-	if (statCounting) assert.equal(stats, 1, "a memo hit revalidates with exactly one stat instead of answering blindly");
-
-	// The checkout is removed and recreated, so the spelling now stats to a different directory
-	// than the one the decision was recorded from.
-	rmSync(repo, { recursive: true, force: true });
-	mkdirSync(join(base, "repo"));
-	stats = 0;
-	const refreshed = foldRoot(repo, "win32");
-	if (statCounting) assert.ok(stats > 0, "the replaced directory's changed identity forces the cached decision to be re-probed");
-	resetCanonicalMemo();
-	assert.equal(foldRoot(repo, "win32"), refreshed, "the cached lookup matches a fresh lookup after the replacement");
-
-	stats = 0;
-	assert.equal(foldRoot(repo, "win32"), refreshed, "the refreshed decision serves the next caller");
-	if (statCounting) assert.equal(stats, 1, "the refreshed entry revalidates with one stat instead of re-probing the tree");
+test("the win32 case-fold memo revalidates the decision when the directory is replaced", async (t) => {
+	const phases = await foldMemoPhases(t);
+	const byName = new Map(phases.map((phase): [string, FoldPhase] => [phase.name, phase]));
+	const recorded = byName.get("recorded");
+	const unchanged = byName.get("unchanged");
+	const replaced = byName.get("replaced");
+	const fresh = byName.get("fresh");
+	const served = byName.get("served");
+	assert.ok(recorded !== undefined && unchanged !== undefined && replaced !== undefined && fresh !== undefined && served !== undefined, "the worker scenario reports every phase");
+	assert.ok(recorded.stats >= 1, "the first call probes the tree and records the decision");
+	// The control: an unchanged directory serves its recorded decision, revalidated by
+	// exactly one stat — a blind cache would answer with zero, a re-probe with many.
+	assert.equal(unchanged.stats, 1, "a memo hit revalidates with exactly one stat instead of answering blindly");
+	assert.equal(unchanged.result, recorded.result, "an unchanged directory keeps serving its recorded decision");
+	// The checkout is moved aside and recreated at the exact spelling, so the cached key
+	// stats to a different directory than the one the decision was recorded from: the
+	// identity mismatch must force a re-probe. A cache that never revalidates answers
+	// with zero stats — this is the assertion that catches it, under node and bun alike.
+	assert.ok(replaced.stats >= 1, "the replaced directory's changed identity forces the cached decision to be re-probed");
+	assert.ok(fresh.stats >= 1, "the lookup after a memo reset actually probes the tree");
+	assert.equal(replaced.result, fresh.result, "the revalidated cache matches a fresh lookup after the replacement");
+	// The refreshed entry anchors to the new directory and serves like the first one did.
+	assert.equal(served.stats, 1, "the refreshed entry revalidates with one stat instead of re-probing the tree");
+	assert.equal(served.result, replaced.result, "the next caller keeps seeing the revalidated decision");
 });

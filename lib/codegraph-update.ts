@@ -293,12 +293,14 @@ export interface UpdateRun {
 
 /**
  * Updates the package through the detected install source: `bun add -g` for a bun install
- * (bun.exe spawns directly on win32), `pnpm add -g` for a pnpm one (pnpm.exe spawns directly
- * too), `npm install -g` for an npm one (through its `.cmd` shim on win32). The spec pins the
- * EXACT target version when known - a dist-tag (`@latest`) resolves through each manager's
- * metadata cache, and pnpm was observed exiting 0 on a no-op reinstall while its cached
- * latest still said 1.6.3. An unknown source runs nothing, and a failed update reports its
- * reason and keeps the current version running; neither ever throws.
+ * (bun.exe spawns directly on win32), `pnpm update -g <pkg> --latest` for a pnpm one (the
+ * user-directed pnpm update form; pnpm.exe spawns directly too), `npm install -g` for an npm
+ * one (through its `.cmd` shim on win32). The add/install specs pin the EXACT target version
+ * when known - a dist-tag (`@latest`) resolves through the manager's metadata cache, and pnpm
+ * was observed exiting 0 on a no-op reinstall while its cached latest still said 1.6.3 - and
+ * the caller re-probes the binary after any success so a no-op is never reported as one. An
+ * unknown source runs nothing, and a failed update reports its reason and keeps the current
+ * version running; neither ever throws.
  */
 export async function updateCodegraphToLatest(source: CodegraphInstallSource, exec: BoundedExec = defaultExec, opts: { platform?: NodeJS.Platform; version?: string } = {}): Promise<UpdateRun> {
 	const platform = opts.platform ?? process.platform;
@@ -309,7 +311,7 @@ export async function updateCodegraphToLatest(source: CodegraphInstallSource, ex
 	const [command, args] = source === "bun-global"
 		? ["bun", ["add", "-g", target]] as const
 		: source === "pnpm-global"
-			? ["pnpm", ["add", "-g", target]] as const
+			? ["pnpm", ["update", "-g", CODEGRAPH_PACKAGE, "--latest"]] as const
 			: [npmCommand(platform), ["install", "-g", target]] as const;
 	const result = await exec(command, args, UPDATE_TIMEOUT_MS);
 	if (result.ok) return { ok: true };

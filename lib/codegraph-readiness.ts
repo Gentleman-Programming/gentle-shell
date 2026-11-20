@@ -539,18 +539,52 @@ export function syncBeforeSearch(input: SearchSyncInput): void {
 	searchSyncInFlight.set(input.cwd, job);
 }
 
+/** The process view the kill and settlement decisions need: the platform, and the Windows
+ * tree kill whose asynchronous completion a settlement must observe before it lands.
+ * Injectable so the Windows settlement is observable off Windows; the default seam is the
+ * real thing. */
+export interface TreeKillSeam {
+	platform(): NodeJS.Platform;
+	/** Starts the Windows termination of pid's whole tree; onKilled runs exactly once when the
+	 * termination attempt completes, whatever its outcome. */
+	windowsKill(pid: number, onKilled: () => void): void;
+}
+
+const realTreeKillSeam: TreeKillSeam = {
+	platform: () => process.platform,
+	windowsKill: (pid, onKilled) => {
+		execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }, () => {
+			/* already gone: the grace timer reports the failure anyway; windowsHide keeps the kill invisible */
+			onKilled();
+		});
+	},
+};
+
+/** The kill seam tests replace to delay or withhold the Windows tree kill's completion. */
+let treeKillSeamForTests: TreeKillSeam | undefined;
+
+/** Installs the kill seam for tests; undefined restores the real one. */
+export function setTreeKillSeamForTests(seam: TreeKillSeam | undefined): void {
+	treeKillSeamForTests = seam;
+}
+
+const treeKillSeam = (): TreeKillSeam => treeKillSeamForTests ?? realTreeKillSeam;
+
 /**
  * Kills the spawned command and, on Windows, its whole tree. The shell:true spawn there returns the
  * cmd.exe wrapper's pid, and killing only the wrapper would orphan the real codegraph process, which
  * would keep writing the shared index after the failure has already been reported. On POSIX the child
  * is the command itself, so a direct kill reaches it. `signal` (default SIGTERM) feeds the POSIX group
  * and direct kills, so the grace-window escalation can raise it to SIGKILL; Windows taskkill is /F.
+ * The Windows kill is asynchronous: a caller whose settlement must not precede the tree's end passes
+ * `onWindowsKilled` and gates that settlement on it (see waitForKilledGroup).
  */
-function killProcessTree(child: { pid?: number } | undefined, group = false, signal: NodeJS.Signals = "SIGTERM"): void {
+function killProcessTree(child: { pid?: number } | undefined, group = false, signal: NodeJS.Signals = "SIGTERM", onWindowsKilled?: () => void): void {
 	if (child?.pid === undefined) return;
-	if (process.platform === "win32") {
-		execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => {
-			/* already gone: the grace timer reports the failure anyway; windowsHide keeps the kill invisible */
+	const seam = treeKillSeam();
+	if (seam.platform() === "win32") {
+		seam.windowsKill(child.pid, () => {
+			onWindowsKilled?.();
 		});
 		return;
 	}
@@ -581,14 +615,28 @@ const GROUP_GONE_CAP_MS = 2_000;
  * group holds no member that can still run — `kill(-pgid, 0)` rejects exactly then: Darwin
  * already ignores unreaped zombies (which can neither run nor write), while Linux counts
  * them, so the wait there also covers reaping, capped for a PID 1 that never reaps. Windows
- * has no process groups to probe: taskkill /T /F is the whole guarantee there, and the
- * settlement is immediate. */
-function waitForKilledGroup(pgid: number | undefined, capMs: number, isSettled: () => boolean, onGone: () => void): void {
-	if (pgid === undefined || process.platform === "win32") {
+ * has no process groups to probe, and its taskkill /T /F runs asynchronously: the settlement
+ * observes the kill's completion — `windowsKillDone`, wired by the caller from the kill's own
+ * completion callback — and is bounded by the same cap when that result cannot be confirmed,
+ * so a caller never releases its index lease while members of the tree can still run. */
+function waitForKilledGroup(pgid: number | undefined, capMs: number, isSettled: () => boolean, onGone: () => void, windowsKillDone?: () => boolean): void {
+	if (pgid === undefined) {
 		onGone();
 		return;
 	}
 	const deadline = Date.now() + capMs;
+	if (treeKillSeam().platform() === "win32") {
+		const probe = () => {
+			if (isSettled()) return;
+			if ((windowsKillDone?.() ?? true) || Date.now() >= deadline) {
+				onGone();
+				return;
+			}
+			setTimeout(probe, GROUP_GONE_POLL_MS);
+		};
+		probe();
+		return;
+	}
 	const probe = () => {
 		if (isSettled()) return;
 		let gone = false;
@@ -695,11 +743,17 @@ function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: nu
 			// holding the pipe), so the pid can never outlive the result and keep writing an
 			// index no lease covers any more.
 			grace = setTimeout(() => {
-				killProcessTree(child, true, "SIGKILL");
+				// The escalation's kill supersedes the timeout's: its completion is the termination
+				// result the settlement observes on Windows (POSIX needs no such callback — its
+				// probe below is the stronger oracle).
+				let windowsKilled = treeKillSeam().platform() !== "win32";
+				killProcessTree(child, true, "SIGKILL", () => {
+					windowsKilled = true;
+				});
 				grace = setTimeout(() => finish(false), KILL_WAIT_MS);
 				// The cap covers a group that never empties (a PID 1 that never reaps); the wait
 				// settles as soon as the killed group is gone.
-				waitForKilledGroup(child?.pid, KILL_WAIT_MS, () => settled, () => finish(false));
+				waitForKilledGroup(child?.pid, KILL_WAIT_MS, () => settled, () => finish(false), () => windowsKilled);
 			}, KILL_ESCALATE_MS);
 		}, timeoutMs);
 		child?.on("error", () => finish(false));

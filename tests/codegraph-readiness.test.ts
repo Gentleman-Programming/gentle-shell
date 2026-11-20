@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import fsSync from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";import fsSync from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,6 +12,7 @@ import {
 	buildWindowsCommand,
 	childWorktreeNeedsIndex,
 	indexState,
+	killWindowsTree,
 	maybeRewarm,
 	planIndexAction,
 	prepareReadiness,
@@ -145,6 +145,24 @@ function processRunning(pid: number): boolean {
  * the retries cost it nothing but a few milliseconds. */
 const SETTLEMENT_STATE_PROBES = 5;
 
+/** Whether a ps state sample reports a terminated process. The rule is the leading Z: macOS
+ * appends the flag letters the entry carries (ZN, Z+), so an exact Z comparison rejects a real
+ * zombie, and an empty sample is no sample at all. */
+function psStateSaysGone(state: string): boolean {
+	return state.startsWith("Z");
+}
+
+/** The errno of a signal-0 probe on pid, or undefined while the probe still answers. Only
+ * ESRCH is proof the pid is gone: any other failure says nothing about the pid. */
+function signalZeroErrno(pid: number): string | undefined {
+	try {
+		process.kill(pid, 0);
+		return undefined;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code;
+	}
+}
+
 /** Whether a descendant is already dead at the moment the run's result settles — the strict
  * oracle the settlement assertions need, unlike the polled processRunning. A reparented
  * orphan the group SIGKILL killed stays enumerable as a zombie until init reaps it, and a
@@ -156,7 +174,10 @@ async function goneAtSettlement(pid: number): Promise<boolean> {
 	for (let probe = 0; probe < SETTLEMENT_STATE_PROBES; probe += 1) {
 		const state = spawnSync("ps", ["-o", "state=", "-p", String(pid)], { timeout: 2_000 });
 		const text = (state.stdout ?? "").toString().trim();
-		if (state.status === 0 && text !== "") return text === "Z";
+		if (state.status === 0 && text !== "") return psStateSaysGone(text);
+		// An unusable sample says nothing about the pid, but one macOS reaped between the kill probe
+		// and this ps answers ESRCH: the only answer that is proof of death, not noise.
+		if (signalZeroErrno(pid) === "ESRCH") return true;
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 	return false;
@@ -1672,10 +1693,23 @@ test("runCodegraph: a delayed Windows tree kill holds the timeout result until t
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${bin}:${previousPath}`;
 	process.env.FAKE_PIDFILE = pidFile;
+	let treePid: number | undefined;
+	const rememberedPid = (): number | undefined => {
+		if (treePid !== undefined) return treePid;
+		if (!existsSync(pidFile)) return undefined;
+		const pid = Number(readFileSync(pidFile, "utf8").trim());
+		return Number.isInteger(pid) && pid > 0 ? (treePid = pid) : undefined;
+	};
+	const endFakeTree = (): void => {
+		const pid = rememberedPid();
+		if (pid !== undefined) killFakeTreePid(pid);
+	};
 	t.after(() => {
 		process.env.PATH = previousPath;
 		delete process.env.FAKE_PIDFILE;
-		killFakeTree(pidFile);
+		// The pid is remembered on its own: a registered directory cleanup may already have removed
+		// the file by hook time, and a failed assertion must still be able to end the tree.
+		endFakeTree();
 	});
 	const kills: number[] = [];
 	const completions: number[] = [];
@@ -1685,26 +1719,94 @@ test("runCodegraph: a delayed Windows tree kill holds the timeout result until t
 			kills.push(Date.now());
 			setTimeout(() => {
 				completions.push(Date.now());
-				onKilled();
+				onKilled(true);
 			}, 400);
 		},
 	});
 	t.after(() => setTreeKillSeamForTests(undefined));
-	const ok = await runCodegraph(["sync", "-q"], dir(t, "winkill-cwd"), 200);
-	const settledAt = Date.now();
-	// The escalation path starts two tree kills (the timeout's and the grace escalation's);
-	// both completions are observed before the assertion so a premature settlement compares
-	// against the latest completion, never a pending one.
-	const completionDeadline = Date.now() + 5_000;
-	while (completions.length < kills.length && Date.now() < completionDeadline) {
-		await new Promise((resolve) => setTimeout(resolve, 10));
+	try {
+		const ok = await runCodegraph(["sync", "-q"], dir(t, "winkill-cwd"), 200);
+		const settledAt = Date.now();
+		// The escalation path starts two tree kills (the timeout's and the grace escalation's);
+		// both completions are observed before the assertion so a premature settlement compares
+		// against the latest completion, never a pending one.
+		const completionDeadline = Date.now() + 5_000;
+		while (completions.length < kills.length && Date.now() < completionDeadline) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.equal(completions.length, kills.length, "every delayed tree kill completed");
+		assert.ok(kills.length >= 1, "the timeout escalated to the Windows tree kill");
+		assert.equal(ok, false, "the never-exiting command reports the timeout");
+		assert.ok(settledAt >= completions[completions.length - 1]!, "the result settles only after the Windows tree kill completed, never while it still runs");
+	} finally {
+		// The seam diverted the real kill, so the fake tree still runs: end its whole group here,
+		// before the directory cleanup removes its pid file, or a failed assertion would leave it
+		// holding the runner stdio open with nothing left to find it by.
+		endFakeTree();
 	}
-	assert.equal(completions.length, kills.length, "every delayed tree kill completed");
-	assert.ok(kills.length >= 1, "the timeout escalated to the Windows tree kill");
-	assert.equal(ok, false, "the never-exiting command reports the timeout");
-	assert.ok(settledAt >= completions[completions.length - 1]!, "the result settles only after the Windows tree kill completed, never while it still runs");
-	// The seam diverted the real kill, so the fake tree still runs: end its whole group here,
-	// while the pid file is provably present, or it keeps the runner’s stdio open.
-	killFakeTreePid(Number(readFileSync(pidFile, "utf8").trim()));
+});
+
+
+
+test("goneAtSettlement: a zombie state is recognized with or without the flags macOS appends", () => {
+	assert.equal(psStateSaysGone("Z"), true);
+	assert.equal(psStateSaysGone("ZN"), true, "macOS appends flag letters to the state: ZN is still a zombie");
+	assert.equal(psStateSaysGone("Z+"), true);
+	assert.equal(psStateSaysGone("S"), false, "a sleeping process is not gone");
+	assert.equal(psStateSaysGone("SN"), false);
+	assert.equal(psStateSaysGone(""), false, "an unreadable sample proves nothing");
+});
+
+test("goneAtSettlement: only ESRCH proves the probed pid is gone", async (t) => {
+	const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "ignore" });
+	t.after(() => child.kill("SIGKILL"));
+	await new Promise((resolve) => child.once("spawn", resolve));
+	const pid = child.pid;
+	assert.ok(pid !== undefined);
+	assert.equal(signalZeroErrno(pid), undefined, "a live pid answers the signal-0 probe");
+	const exited = new Promise((resolve) => child.once("exit", resolve));
+	child.kill("SIGKILL");
+	await exited;
+	assert.equal(signalZeroErrno(pid), "ESRCH", "the kernel ESRCH is the proof of death, never a probe that could not run");
+});
+
+test("killWindowsTree: a helper that never exits reports an unconfirmed kill within the bound", async (t) => {
+	if (process.platform === "win32") return t.skip("the stand-in helper is a POSIX shell; the real taskkill path runs on the Windows CI lanes");
+	const helpers: ChildProcess[] = [];
+	const outcomes: boolean[] = [];
+	let runningAtSettle: boolean | undefined;
+	let settledAfter = 0;
+	const startedAt = Date.now();
+	killWindowsTree(4_242, (confirmed) => {
+		outcomes.push(confirmed);
+		settledAfter = Date.now() - startedAt;
+		// Sampled inside the callback: the helper is still there, so the reported outcome is the
+		// bounded one and not a termination the helper itself never performed.
+		runningAtSettle = helpers[0]?.exitCode === null && helpers[0]?.signalCode === null;
+	}, {
+		boundMs: 150,
+		// There is no taskkill to wedge off Windows: the injected spawn starts a helper that never
+		// exits under the same stdio policy, the exact shape the bound exists for.
+		spawn: (_file, _args, options) => {
+			const helper = spawn("sh", ["-c", "exec sleep 30"], options);
+			helpers.push(helper);
+			return helper;
+		},
+	});
+	t.after(() => {
+		for (const helper of helpers) {
+			try {
+				helper.kill("SIGKILL");
+			} catch {
+				/* already gone */
+			}
+		}
+	});
+	await new Promise((resolve) => setTimeout(resolve, 400));
+	assert.deepEqual(outcomes, [false], "a helper that never exits reports an unconfirmed kill, exactly once");
+	assert.ok(settledAfter >= 150, "the outcome waits for the bound instead of taking a stall for a completed kill");
+	assert.ok(settledAfter < 400, "the bound is the whole lifetime of the helper: the outcome never waits for it to exit");
+	assert.equal(helpers.length, 1, "one helper per kill");
+	assert.equal(runningAtSettle, true, "the helper was still running when the outcome was reported");
 });
 

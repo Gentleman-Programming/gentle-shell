@@ -32,7 +32,7 @@ const ROLE = {
 	REMOVED: "error",
 	HUNK: "customMessageLabel",
 	KEY: "accent",
-	KEY_TEXT: "dim",
+	KEY_TEXT: "muted",
 	EMPTY: "dim",
 } as const;
 
@@ -50,8 +50,36 @@ const KEYS = [
 	["esc", "close"],
 ] as const;
 
+// The worktree accordion's two modes name their own keys: the file list toggles
+// groups, while diff-only walks files and gives Escape a step back to the list.
+const WORKTREE_KEYS = [
+	["j/k", "select"],
+	["enter", "toggle/open"],
+	["←", "fold"],
+	["ctrl+j/k", "scroll"],
+	["r", "refresh"],
+	["F", "diff only"],
+	["esc", "close"],
+] as const;
+
+const WORKTREE_DIFF_ONLY_KEYS = [
+	["j/k", "file"],
+	["ctrl+j/k", "scroll"],
+	["o", "open"],
+	["r", "refresh"],
+	["F", "files"],
+	["esc", "files"],
+] as const;
+
 function rule(length: number): string {
 	return "─".repeat(Math.max(0, length));
+}
+
+// One footer rule for every changes pane, matching the rest of the shell: the
+// key wears the accent role and its description the muted text role, so a
+// shortcut reads apart from what it does instead of one dim run of prose.
+function keyHints(theme: ChangesViewTheme, keys: ReadonlyArray<readonly [string, string]>): string {
+	return keys.map(([key, label]) => `${theme.fg(ROLE.KEY, key)} ${theme.fg(ROLE.KEY_TEXT, label)}`).join("   ");
 }
 
 export function colorDiff(text: string, theme: ChangesViewTheme): string[] {
@@ -355,9 +383,7 @@ export class WorktreeChangesView {
 				: paintHoverable(theme, `${this.expanded.has(row.tree.root) ? "▾" : "▸"} ${displayText(row.tree.branch ?? "detached")} · ${displayText(basename(row.tree.root))}`, hovered, idleRole);
 			return `${marker} ${text}`;
 		};
-		const keys = theme.fg(ROLE.KEY_TEXT, this.diffOnly
-			? "j/k file   ctrl+j/k scroll   o open   r refresh   F files   esc files"
-			: "j/k select   enter toggle/open   ← fold   ctrl+j/k scroll   r refresh   F diff only   esc close");
+		const keys = keyHints(theme, this.diffOnly ? WORKTREE_DIFF_ONLY_KEYS : WORKTREE_KEYS);
 		this.pointerLayout = pointerLayout(width, height, this.diffOnly);
 		return renderPanes(width, height, theme, `✎ Changes · ${this.trees.length} worktrees`, leftLine, preview, keys, selected?.file, this.diffOnly);
 	}
@@ -554,7 +580,7 @@ export class ChangesView {
 		const theme = this.deps.theme;
 		const rows = this.bodyRows();
 		this.fileScroll = this.clampFileScroll(this.fileScroll, rows);
-		const keys = KEYS.map(([key, label]) => `${theme.fg(ROLE.KEY, key)} ${theme.fg(ROLE.KEY_TEXT, key === "esc" ? (this.deps.backLabel ?? label) : label)}`).join("   ");
+		const keys = keyHints(theme, KEYS.map(([key, label]) => [key, key === "esc" ? (this.deps.backLabel ?? label) : label] as const));
 		this.pointerLayout = pointerLayout(width, rows);
 		return renderPanes(width, rows, theme, `✎ Changes · ${changesSummary(this.model)}`, (row) => this.fileLine(row), this.visibleDiff(rows), keys, this.model.files[this.selected]);
 	}

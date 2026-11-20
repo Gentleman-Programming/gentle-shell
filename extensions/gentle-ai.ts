@@ -1026,6 +1026,20 @@ async function readCurrentTargetIdentityBestEffort(
 	}
 }
 
+// RDD never denies a delivery. A word match is enough: it only decides whether to read STATUS once and show one notice.
+const DELIVERY_VERB = /\bgit\s+push\b|\bgh\s+pr\s+(?:create|merge)\b/;
+const UNREVIEWED_DELIVERY_NOTICE = "RDD: this repository has an unreviewed candidate; review it before delivery.";
+
+async function warnUnreviewedDelivery(nativeReviewCli: NativeReviewCli | null, ctx: ExtensionContext, command: string): Promise<void> {
+	if (!DELIVERY_VERB.test(command) || nativeReviewCli?.targetStatus === undefined || ctx.hasUI !== true) return;
+	try {
+		const signal = AbortSignal.any([AbortSignal.timeout(5_000), ...(ctx.signal ? [ctx.signal] : [])]);
+		if ((await readRddModeStatusOnce(nativeReviewCli, ctx.cwd, signal))?.effective !== "on") return;
+		const status = await nativeReviewCli.targetStatus({ cwd: ctx.cwd, signal });
+		if (status.nextTransition?.kind === "execute" && status.nextTransition.execute.operation === "review.start") ctx.ui.notify(UNREVIEWED_DELIVERY_NOTICE, "warning");
+	} catch { /* a warning never blocks or fails the command */ }
+}
+
 function rddAbortRejection(signal: AbortSignal): Promise<never> {
 	return new Promise((_resolve, reject) => {
 		if (signal.aborted) {
@@ -13464,6 +13478,7 @@ function createGentleAiExtensionForTesting(
 			superYoloActive,
 		);
 		if (commandDenied) return commandDenied;
+		if (primaryToolCall) await warnUnreviewedDelivery(nativeReviewCli, ctx, command);
 		// cost-speed P9: independent of RDD mode; fails open.
 		// It runs BEFORE the epoch recheck below: no await may sit between that recheck and the return.
 		const markerDenied = primaryToolCall ? await checkDeliveryConflictMarkers(ctx.cwd, command, ctx.signal) : undefined;

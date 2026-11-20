@@ -30,7 +30,7 @@ Before building, validate any consequential premise whose failure would invalida
 
 Test-first is the always-on harness principle (test or framework presence alone does not establish applicability); forward this policy, the applicable exact runner and commands (when available), and any exception rationale on every implementation delegation, refresh it on resume, and record observed evidence or the reason for fallback in the feature document.
 
-Run applicable functional checks per task; a TODO checkbox never triggers a review cycle. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch, and native review runs at that work-unit commit or PR slice boundary, not every task update. Checklists grant no approval or receipt and never skip an existing delivery gate.
+Run applicable functional checks per task; a TODO checkbox never triggers a review cycle. The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch, and native review runs at that work-unit commit or PR slice boundary, not every task update. Checklists grant no approval; with RDD on, review the candidate before delivery.
 
 #### Signaling the ODD phase to the Gentle prompt
 

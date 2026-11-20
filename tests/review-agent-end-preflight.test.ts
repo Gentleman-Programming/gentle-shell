@@ -381,16 +381,18 @@ test("agent_end nudges only when the native assessment reports review_due", asyn
 		["high, due", async () => ({ risk: "high", reviewDue: true, reviewDueReason: "high_risk" }), 1],
 		["assessment rejects", async () => { throw new Error("assess failed"); }, 1],
 	] as const) {
+		let assessCalls = 0;
 		const native = {
 			reviewMode: onMode("on"),
 			targetStatus: async () => executeStartStatus(targetIdentity),
-			assess,
+			assess: async () => { assessCalls += 1; return assess(); },
 		} as unknown as NativeReviewCli;
 		const { handlers, sent } = harness(native);
 		const session = ctx(`agent-end-review-due-${label.replace(/\W+/g, "-")}`);
 		await directWrite(handlers, session);
 		await handlers.get("agent_end")!(agentEndEvent, session);
 		assert.equal(sent.length, wantNudges, label);
+		assert.equal(assessCalls, 1, `${label}: native assess is the single due decision`);
 	}
 });
 

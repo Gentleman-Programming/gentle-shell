@@ -719,8 +719,12 @@ function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: nu
 		let timedOut = false;
 		let teardownUnconfirmed = false;
 		// Only a taskkill that reported success proves the tree is gone; every other outcome keeps
-		// this false, so a settlement never claims a teardown nobody confirmed.
+		// this false, so a settlement never claims a teardown nobody confirmed. A confirmation is
+		// final for the run: a later attempt that fails only because an earlier one already removed
+		// the tree must never downgrade a teardown that was proved.
 		let windowsKillConfirmed = treeKillSeam().platform() !== "win32";
+		/** Whether the run's single Windows tree kill attempt is still running. */
+		let windowsKillInFlight = false;
 		let grace: ReturnType<typeof setTimeout> | undefined;
 		let exitCode: number | null | undefined;
 		let stderrTail = "";
@@ -780,26 +784,51 @@ function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: nu
 			const text = stdoutDecoder.write(chunk);
 			stdoutKept = stdoutChars === undefined ? stdoutKept + text : (stdoutKept + text).slice(-stdoutChars);
 		});
+		// Every path that needs the Windows tree gone — the timeout's kill, the grace escalation and
+		// the close-time sweep — starts or joins ONE attempt at a time. taskkill cannot be escalated,
+		// so a second helper beside a running one only races its result into the flag above, and an
+		// attempt that fails because an earlier one already removed the tree must never overwrite the
+		// confirmation that removal proved.
+		const startWindowsKill = (): void => {
+			if (windowsKillConfirmed || windowsKillInFlight) return;
+			windowsKillInFlight = true;
+			killProcessTree(child, true, "SIGKILL", (confirmed) => {
+				windowsKillInFlight = false;
+				if (confirmed) windowsKillConfirmed = true;
+			});
+		};
 		// A failure settlement that also records whether the tree of the timed-out run was proved
 		// gone: an unconfirmed kill must reach the caller, so it never retries beside a writer of
-		// that tree.
+		// that tree. Such a tree may still be alive, so the settlement also drops this process's own
+		// handles to it — the pipes and the child handle alone can hold the launcher open long after
+		// the writer they belong to stopped mattering. Dropping them proves nothing about the
+		// process: the unconfirmed verdict still keeps every caller from retrying beside it.
 		const failWithTeardown = (): void => {
-			if (!windowsKillConfirmed) teardownUnconfirmed = true;
+			if (!windowsKillConfirmed) {
+				teardownUnconfirmed = true;
+				child?.stdout?.destroy();
+				child?.stderr?.destroy();
+				child?.unref();
+			}
 			finish(false);
 		};
 		// One group SIGKILL and the settlement that observes it: a kill the seam confirmed releases
 		// the settlement as soon as the group is empty, while an unconfirmed one (taskkill failed or
-		// stalled) waits the cap and settles through the teardown report above.
+		// stalled) waits the cap and settles through the teardown report above. A settlement that
+		// already landed needs no further kill.
 		const killGroupAndWait = (capMs: number): void => {
-			killProcessTree(child, true, "SIGKILL", (confirmed) => {
-				windowsKillConfirmed = confirmed;
-			});
+			if (settled) return;
+			if (treeKillSeam().platform() === "win32") startWindowsKill();
+			else killProcessTree(child, true, "SIGKILL");
 			waitForKilledGroup(child?.pid, capMs, () => settled, failWithTeardown, () => windowsKillConfirmed);
 		};
 		const timer = setTimeout(() => {
 			// The deadline expired: whatever exit code follows, the run is failed.
 			timedOut = true;
-			killProcessTree(child, true);
+			// Windows takes one taskkill /F attempt here, shared with every later path; POSIX sends
+			// SIGTERM first, so a command that handles it can still close on its own.
+			if (treeKillSeam().platform() === "win32") startWindowsKill();
+			else killProcessTree(child, true);
 			// A killed command may still be closing; report the failure only once the process is
 			// gone — and one that ignored SIGTERM is escalated to the unignorable SIGKILL after a
 			// short grace, not the whole KILL_WAIT_MS, so a stubborn tree cannot delay the result;
@@ -807,8 +836,9 @@ function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: nu
 			// holding the pipe), so the pid can never outlive the result and keep writing an
 			// index no lease covers any more.
 			grace = setTimeout(() => {
-				// The escalation's kill supersedes the timeout's: its completion is the termination
-				// result the settlement observes on Windows (POSIX needs no such callback).
+				// The escalation joins the run's Windows attempt (or starts the one still missing): its
+				// completion is the termination result the settlement observes there, while POSIX needs
+				// no such callback.
 				grace = setTimeout(failWithTeardown, KILL_WAIT_MS);
 				killGroupAndWait(KILL_WAIT_MS);
 			}, KILL_ESCALATE_MS);

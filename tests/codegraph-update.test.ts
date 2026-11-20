@@ -307,18 +307,37 @@ test("runCodegraphUpdateCheck: a registry failure fails open with the running ve
 	assert.match(check.reason ?? "", /npm view|registry|latest/i);
 });
 
-test("runCodegraphUpdateCheck: a stale bun-global binary updates and reports from/to", async () => {
+test("runCodegraphUpdateCheck: a stale bun-global binary updates, pins the exact version, and verifies", async () => {
 	clearCodegraphUpdateCaches();
 	const home = "/Users/tester";
+	let binary = "codegraph 1.6.3\n";
 	const { exec, calls } = execByFirstArg({
+		codegraph: () => ok(binary),
+		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : undefined),
+		which: () => ok(`${home}/.bun/bin/codegraph\n`),
+		bun: () => {
+			binary = "codegraph 1.6.4\n";
+			return ok("");
+		},
+	});
+	const check = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
+	assert.deepEqual(check, { ran: true, version: "1.6.3", from: "1.6.3", to: "1.6.4" });
+	assert.deepEqual(calls.map((call) => call.command), ["codegraph", "npm", "which", "bun", "codegraph"], "the verify probe re-reads the binary after the update");
+	assert.deepEqual(calls[3]?.args, ["add", "-g", `${CODEGRAPH_PACKAGE}@1.6.4`], "the spec pins the exact target version");
+});
+
+test("runCodegraphUpdateCheck: an exit-0 no-op update is a reported failure, never ran:true", async () => {
+	clearCodegraphUpdateCaches();
+	const home = "/Users/tester";
+	const { exec } = execByFirstArg({
 		codegraph: () => ok("codegraph 1.6.3\n"),
 		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : undefined),
 		which: () => ok(`${home}/.bun/bin/codegraph\n`),
 		bun: () => ok(""),
 	});
 	const check = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
-	assert.deepEqual(check, { ran: true, version: "1.6.3", from: "1.6.3", to: "1.6.4" });
-	assert.deepEqual(calls.map((call) => call.command), ["codegraph", "npm", "which", "bun"]);
+	assert.equal(check.ran, false);
+	assert.match(check.reason ?? "", /still reports 1\.6\.3/, "a cached dist-tag no-op is named, not reported as success");
 });
 
 test("runCodegraphUpdateCheck: a stale binary on an unknown source never updates", async () => {
@@ -394,36 +413,41 @@ test("ensureCodegraphInstalled: an installed shim installs nothing", async () =>
 });
 
 test("ensureCodegraphInstalled: a missing codegraph installs through the first available manager", async () => {
+	clearCodegraphUpdateCaches();
 	const { exec, calls } = execByFirstArg({
 		which: () => fail("not found"),
+		npm: (args) => (args[0] === "view" ? ok("1.6.5\n") : undefined),
 		bun: (args) => (args[0] === "--version" ? ok("1.x") : args[0] === "add" ? ok("installed") : undefined),
 	});
 	assert.deepEqual(await ensureCodegraphInstalled(exec, { platform: "darwin" }), { installed: true, via: "bun" });
 	assert.deepEqual(calls, [
 		{ command: "which", args: ["codegraph"], timeoutMs: VERSION_TIMEOUT_MS },
+		{ command: "npm", args: ["view", CODEGRAPH_PACKAGE, "version"], timeoutMs: NPM_VIEW_TIMEOUT_MS },
 		{ command: "bun", args: ["--version"], timeoutMs: VERSION_TIMEOUT_MS },
-		{ command: "bun", args: ["add", "-g", `${CODEGRAPH_PACKAGE}@latest`], timeoutMs: UPDATE_TIMEOUT_MS },
-	]);
+		{ command: "bun", args: ["add", "-g", `${CODEGRAPH_PACKAGE}@1.6.5`], timeoutMs: UPDATE_TIMEOUT_MS },
+	], "the spec pins the exact registry version, never the dist-tag");
 });
 
 test("ensureCodegraphInstalled: bun missing falls to npm; win32 spells npm.cmd", async () => {
+	clearCodegraphUpdateCaches();
 	const { exec, calls } = execByFirstArg({
 		"where.exe": () => fail("not found"),
+		"npm.cmd": (args) => (args[0] === "view" ? ok("1.6.4\n") : args[0] === "--version" ? ok("10.x") : args[0] === "install" ? ok("installed") : undefined),
 		bun: () => fail("ENOENT"),
-		"npm.cmd": (args) => (args[0] === "--version" ? ok("10.x") : args[0] === "install" ? ok("installed") : undefined),
 	});
 	assert.deepEqual(await ensureCodegraphInstalled(exec, { platform: "win32" }), { installed: true, via: "npm" });
-	assert.deepEqual(calls.map((call) => call.command), ["where.exe", "bun", "npm.cmd", "npm.cmd"]);
+	assert.deepEqual(calls.map((call) => call.command), ["where.exe", "npm.cmd", "bun", "npm.cmd", "npm.cmd"]);
 });
 
 test("ensureCodegraphInstalled: a failed install falls through; no manager means a reason", async () => {
+	clearCodegraphUpdateCaches();
 	const fell = execByFirstArg({
 		which: () => fail("not found"),
+		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : args[0] === "--version" ? ok("10.x") : ok("installed")),
 		bun: (args) => (args[0] === "--version" ? ok("1.x") : fail("EACCES")),
-		npm: (args) => (args[0] === "--version" ? ok("10.x") : ok("installed")),
 	});
 	assert.deepEqual(await ensureCodegraphInstalled(fell.exec, { platform: "darwin" }), { installed: true, via: "npm" });
-	const none = execByFirstArg({ which: () => fail("not found"), bun: () => fail("x"), npm: () => fail("x"), pnpm: () => fail("x") });
+	const none = execByFirstArg({ which: () => fail("not found"), npm: () => fail("x"), bun: () => fail("x"), pnpm: () => fail("x") });
 	const outcome = await ensureCodegraphInstalled(none.exec, { platform: "darwin" });
 	assert.equal(outcome.installed, false);
 	assert.match(outcome.reason ?? "", /no available package manager/);

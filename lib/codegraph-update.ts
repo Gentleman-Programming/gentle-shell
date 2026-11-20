@@ -292,22 +292,25 @@ export interface UpdateRun {
 }
 
 /**
- * Updates the package to latest through the detected install source: `bun add -g` for a bun
- * install (bun.exe spawns directly on win32), `pnpm add -g` for a pnpm one (pnpm.exe spawns
- * directly too), `npm install -g` for an npm one (through its `.cmd` shim on win32). An unknown
- * source runs nothing — the reason says why — and a failed update reports its reason and keeps
- * the current version running; neither ever throws.
+ * Updates the package through the detected install source: `bun add -g` for a bun install
+ * (bun.exe spawns directly on win32), `pnpm add -g` for a pnpm one (pnpm.exe spawns directly
+ * too), `npm install -g` for an npm one (through its `.cmd` shim on win32). The spec pins the
+ * EXACT target version when known - a dist-tag (`@latest`) resolves through each manager's
+ * metadata cache, and pnpm was observed exiting 0 on a no-op reinstall while its cached
+ * latest still said 1.6.3. An unknown source runs nothing, and a failed update reports its
+ * reason and keeps the current version running; neither ever throws.
  */
-export async function updateCodegraphToLatest(source: CodegraphInstallSource, exec: BoundedExec = defaultExec, opts: { platform?: NodeJS.Platform } = {}): Promise<UpdateRun> {
+export async function updateCodegraphToLatest(source: CodegraphInstallSource, exec: BoundedExec = defaultExec, opts: { platform?: NodeJS.Platform; version?: string } = {}): Promise<UpdateRun> {
 	const platform = opts.platform ?? process.platform;
 	if (source === "unknown") {
 		return { ok: false, reason: "the codegraph install source is unknown; refusing to auto-update" };
 	}
+	const target = opts.version !== undefined && opts.version.length > 0 ? `${CODEGRAPH_PACKAGE}@${opts.version}` : `${CODEGRAPH_PACKAGE}@latest`;
 	const [command, args] = source === "bun-global"
-		? ["bun", ["add", "-g", `${CODEGRAPH_PACKAGE}@latest`]] as const
+		? ["bun", ["add", "-g", target]] as const
 		: source === "pnpm-global"
-			? ["pnpm", ["add", "-g", `${CODEGRAPH_PACKAGE}@latest`]] as const
-			: [npmCommand(platform), ["install", "-g", `${CODEGRAPH_PACKAGE}@latest`]] as const;
+			? ["pnpm", ["add", "-g", target]] as const
+			: [npmCommand(platform), ["install", "-g", target]] as const;
 	const result = await exec(command, args, UPDATE_TIMEOUT_MS);
 	if (result.ok) return { ok: true };
 	const firstStderrLine = result.stderr.trim().split("\n")[0]?.trim();
@@ -353,8 +356,15 @@ export async function runCodegraphUpdateCheck(exec: BoundedExec = defaultExec, o
 	if (!codegraphVersionDiffers(installed, latest)) return { ran: false, version: installed };
 	const detected = await detectCodegraphInstallSource(exec, { platform, home });
 	if (detected.source === "unknown") return { ran: false, version: installed, reason: detected.reason };
-	const update = await updateCodegraphToLatest(detected.source, exec, { platform });
+	const update = await updateCodegraphToLatest(detected.source, exec, { platform, version: latest });
 	if (!update.ok) return { ran: false, version: installed, reason: update.reason };
+	// A manager can exit 0 without changing anything (a cached dist-tag resolving the already-
+	// installed version): ran:true promises the binary changed, so the running version is probed
+	// once more and a no-op update is reported as the failure it is.
+	const now = await installedCodegraphVersion(exec);
+	if (now !== latest) {
+		return { ran: false, version: now ?? installed, reason: `the update command succeeded but the binary still reports ${now ?? "no version"}` };
+	}
 	return { ran: true, version: installed, from: installed, to: latest };
 }
 
@@ -399,11 +409,15 @@ export async function ensureCodegraphInstalled(exec: BoundedExec = defaultExec, 
 		? await exec("where.exe", ["codegraph"], VERSION_TIMEOUT_MS)
 		: await exec("which", ["codegraph"], VERSION_TIMEOUT_MS);
 	if (located.ok) return { installed: true };
+	// Pin the exact version when the registry probe knows it (the shared, memoized lookup):
+	// a dist-tag spec resolves through the manager's metadata cache, which can be stale.
+	const latest = await latestCodegraphVersion(exec, platform);
+	const spec = latest !== undefined ? `${CODEGRAPH_PACKAGE}@${latest}` : `${CODEGRAPH_PACKAGE}@latest`;
 	for (const manager of ["bun", "npm", "pnpm"] as const) {
 		const command = manager === "npm" ? npmCommand(platform) : manager;
 		const probe = await exec(command, ["--version"], VERSION_TIMEOUT_MS);
 		if (!probe.ok) continue;
-		const args = [manager === "npm" ? "install" : "add", "-g", `${CODEGRAPH_PACKAGE}@latest`];
+		const args = [manager === "npm" ? "install" : "add", "-g", spec];
 		const install = await exec(command, args, UPDATE_TIMEOUT_MS);
 		if (install.ok) return { installed: true, via: manager };
 	}

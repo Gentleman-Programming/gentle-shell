@@ -3146,7 +3146,7 @@ test("INSPECT ambient input with top-level selected-empty stays read-only when s
 	let mutationCalls = 0;
 	const mutationMethods = [
 		"start", "answerConsent", "reclaim", "recover", "abandon",
-		"quarantineLegacy", "reconcileAuthority", "repairLegacyAlias", "repair",
+		"repair",
 		"captureResult", "captureCorrectionPlan", "captureProviderRole", "captureUnachievableLens",
 		"reviewMode",
 	] as const satisfies readonly (keyof NativeReviewCli)[];

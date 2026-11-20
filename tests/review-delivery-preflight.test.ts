@@ -12,6 +12,22 @@ import { recognizeReviewDeliveryActions } from "../lib/destructive-command-guard
 import { ReviewContinuationRegistry } from "../lib/review-continuation-registry.ts";
 import { NativeReviewCliV216, type NativeReviewCli } from "../lib/native-review-cli.ts";
 
+test("gentle-shell#3351: an unresolved delivery directory is denied with a runnable exit, even with RDD off", async () => {
+	const unresolvedMessage = "RDD pre-delivery: The delivery repository cannot be resolved from this directory or Git/environment redirect, so its review mode cannot be checked (a variable, ~, or redirect could name another repository); rerun with a literal path, e.g. `cd <literal path> && git push` or `git -C <absolute path> push`. This delivery command was not run. Review outcomes do not authorize delivery.";
+	let modeReads = 0;
+	const off = { reviewMode: async () => { modeReads++; return { status: { effective: "off" } }; } } as unknown as NativeReviewCli;
+	const check = (command: string) => checkReviewDeliveryPreflight("/session/cwd", "bash", command, off, () => undefined, () => false);
+	for (const command of ['git -C "$VAR" push', "cd ~/x && git push"]) {
+		assert.deepEqual(await check(command), { block: true, reason: unresolvedMessage }, command);
+	}
+	assert.equal(modeReads, 0, "an unresolvable directory never borrows the session's RDD mode");
+	// The suggested exits are runnable: a literal absolute path resolves, so RDD off allows it.
+	for (const command of ["cd /tmp/literal && git push", "git -C /tmp/literal push"]) {
+		assert.equal(await check(command), undefined, command);
+	}
+	assert.equal(modeReads, 2);
+});
+
 test("committed delivery requests pass the real native client validation without an untracked inventory", async t => {
 	const root = mkdtempSync(join(tmpdir(), "review-delivery-native-validation-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -151,7 +167,7 @@ test("repository redirects remain delivery commands but cannot borrow the sessio
 		assert.equal(deliveries[0].unresolvedDirectory, true, command);
 		const result = await checkReviewDeliveryPreflight(process.cwd(), "bash", command, cli, () => "HEAD", () => false);
 		assert.equal(result?.block, true, command);
-		assert.match(result!.reason, /literal cd or git -C/);
+		assert.match(result!.reason, /rerun with a literal path/);
 	}
 	assert.equal(modeCalls, 0, "an unrelated off session repository cannot authorize a redirected target");
 	for (const command of ["env -u GIT_DIR git push", "sudo -C 3 git push", "CI=1 git push", "env CI=1 git push"]) {

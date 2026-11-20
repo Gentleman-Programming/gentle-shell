@@ -49,7 +49,8 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 	signal?: AbortSignal, current: () => boolean = () => true, platform: NodeJS.Platform = process.platform): Promise<Denial | undefined> {
 	const actions = recognizeReviewDeliveryActions(command), deliveries = actions.filter(action => action.kind === "delivery");
 	if (!deliveries.length || !cli?.reviewMode) return undefined;
-	if (deliveries.some(delivery => delivery.unresolvedDirectory)) return deny("The delivery repository cannot be resolved from this directory or Git/environment redirect; run delivery inside its repository or use literal cd or git -C.");
+	// gentle-shell#3351: an unresolvable directory may be another repository, so the session's RDD mode is never borrowed; name a runnable exit.
+	if (deliveries.some(delivery => delivery.unresolvedDirectory)) return deny("The delivery repository cannot be resolved from this directory or Git/environment redirect, so its review mode cannot be checked (a variable, ~, or redirect could name another repository); rerun with a literal path, e.g. `cd <literal path> && git push` or `git -C <absolute path> push`.");
 	if (signal?.aborted || !current()) return deny("Preflight was cancelled or its session changed.");
 	const bounded = AbortSignal.any([AbortSignal.timeout(10_000), ...(signal ? [signal] : [])]);
 	let abort!: () => void;

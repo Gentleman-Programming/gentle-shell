@@ -374,8 +374,15 @@ export async function warmUpDaemonDetailed(cwd: string, background = false, time
 		// answered yet keeps its chances inside the window; one that never answers, like no
 		// winner appearing at all, is the failed warm-up of a child that exited for no better
 		// reason.
-		child.on("close", () => {
+		child.on("close", (code) => {
 			if (settled) return;
+			// A spawn that ran and exited non-zero failed for its own reason — on Windows an
+			// empty PATH still runs cmd.exe, which exits 9009 with no Node-level error event.
+			// Only the lock loser's clean exit-0 shape waits out the adoption window.
+			if (code !== 0) {
+				settle("failed");
+				return;
+			}
 			const deadline = Date.now() + adoptionWindow;
 			const scheduleNext = () => {
 				if (Date.now() >= deadline) {

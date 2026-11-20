@@ -677,6 +677,9 @@ test("the jobs snapshot validator admits the finished-tail statuses", () => {
 	assert.ok(isJobsSidebarSnapshot({ jobs: [{ id: "job-1", label: "Spawn failed", startedAt: 1, status: "failed", endedAt: 60_000, exitCode: null }] }));
 	assert.ok(isJobsSidebarSnapshot({ jobs: [{ id: "job-2", label: "Stopped", startedAt: 1, status: "stopped", endedAt: 2 }] }));
 	assert.equal(isJobsSidebarSnapshot({ jobs: [{ id: "job-3", label: "Bad", startedAt: 1, status: "exploded" }] }), false);
+	for (const explicitLabel of [42, null, {}, [], true]) {
+		assert.equal(isJobsSidebarSnapshot({ jobs: [{ id: "job-4", label: "Bad", explicitLabel, startedAt: 1 }] }), false);
+	}
 });
 
 test("hidden Status leaves only a jobs count in regular bottom and fullscreen header chrome", async (t) => {

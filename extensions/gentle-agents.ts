@@ -71,6 +71,7 @@ import { createRpcActivityPublisher, type RpcActivityPublisher } from "../lib/ag
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { HERDR_BUSY_CHANNEL, nextHerdrBusyAction, type HerdrBusyEmitted } from "../lib/herdr-busy.ts";
+import { HERDR_DESKTOP_TASKS, HERDR_DESKTOP_TASKS_REQUEST, HERDR_DESKTOP_TASK_FINISHED, HERDR_DESKTOP_JOBS, HERDR_DESKTOP_JOB_SETTLED, HERDR_DESKTOP_CONSULT, HERDR_DESKTOP_SEND, HERDR_DESKTOP_INBOUND, type HerdrDesktopInbound, type HerdrDesktopJobSettled } from "../lib/herdr-desktop-events.ts";
 import { AGENTS_GLYPH, agentsCardTone, agentsSpend, agentsSummary, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
 import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
@@ -166,6 +167,8 @@ export const INPUT_PROMPT_GRACE_MS = 2000;
 // after the grace at most this many times in a row, so a permanently broken
 // runtime never retries forever.
 const PARENT_DELIVERY_RETRY_LIMIT = 3;
+// A swallowed wake or aborted delivery may never start a consuming turn.
+const HERDR_INBOUND_TTL_MS = 300_000;
 
 const retiredSddAgent = (name: string): boolean => /^sdd(?:-|$)/.test(name);
 
@@ -1203,6 +1206,92 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// conversation.
 	const completions = createCompletionQueue<TaskRecord>();
 	const messages = createAgentMessageQueue();
+	// Display-only query tracking follows the runner's enqueue/settle hooks, not
+	// the delivery queue: a delivered question still blocks until answered.
+	const herdrQueries = new Map<string, Set<string>>();
+	const emitHerdr = (name: string, data: unknown) => {
+		try { pi.events.emit(name, data); } catch { /* Display must never affect a tool or runner. */ }
+	};
+	// Display-only correlation: idle messages are already in session context;
+	// run-time follow-ups enter it only when Pi emits their custom message_start.
+	type InboundDisplay = { event: Omit<HerdrDesktopInbound, "phase">; state: "held" | "idle" | "queued" | "consumed"; cancel: () => void };
+	const inboundDisplay = new Map<string, InboundDisplay>();
+	const inboundKey = (sessionId: string, peer: string, id: string) => JSON.stringify([sessionId, peer, id]);
+	const inboundDetails = (message: Parameters<ExtensionAPI["sendMessage"]>[0], sessionId: string) => {
+		const details = (message.details as { gentleAgents?: OrchestratorMessageDetails } | undefined)?.gentleAgents;
+		if (message.customType !== AGENTS_ORCHESTRATOR_MESSAGE_TYPE || typeof details?.senderSessionId !== "string"
+			|| typeof details.correlationId !== "string" || details.recipientSessionId !== sessionId) return undefined;
+		return { sessionId, peer: details.senderSessionId, ...(details.senderLabel ? { peerName: details.senderLabel } : {}), id: details.correlationId };
+	};
+	const finishInboundDisplay = (key: string, entry: InboundDisplay) => {
+		try {
+			if (inboundDisplay.get(key) !== entry) return;
+			inboundDisplay.delete(key);
+			try { entry.cancel(); } catch { /* Display timer cleanup is best-effort. */ }
+			emitHerdr(HERDR_DESKTOP_INBOUND, { ...entry.event, phase: "handled" });
+		} catch { /* Display must never affect delivery or lifecycle. */ }
+	};
+	const receiveInboundDisplay = (message: Parameters<ExtensionAPI["sendMessage"]>[0], sessionId: string, state: InboundDisplay["state"]) => {
+		try {
+			const event = inboundDetails(message, sessionId);
+			if (!event) return;
+			const key = inboundKey(sessionId, event.peer, event.id);
+			if (inboundDisplay.has(key)) return;
+			let entry: InboundDisplay;
+			const cancel = deps.schedule(() => finishInboundDisplay(key, entry), HERDR_INBOUND_TTL_MS);
+			entry = { event, state, cancel }; inboundDisplay.set(key, entry);
+			emitHerdr(HERDR_DESKTOP_INBOUND, { ...event, phase: "received" });
+		} catch { /* Display must never affect delivery or lifecycle. */ }
+	};
+	const updateInboundDisplay = (message: Parameters<ExtensionAPI["sendMessage"]>[0], sessionId: string, state: InboundDisplay["state"] | "dropped") => {
+		try {
+			const event = inboundDetails(message, sessionId);
+			if (!event) return;
+			const key = inboundKey(sessionId, event.peer, event.id), entry = inboundDisplay.get(key);
+			if (!entry) return;
+			if (state === "dropped") finishInboundDisplay(key, entry); else entry.state = state;
+		} catch { /* Display must never affect delivery or lifecycle. */ }
+	};
+	const settleInboundDisplay = () => {
+		for (const [key, entry] of inboundDisplay) if (entry.state === "consumed") finishInboundDisplay(key, entry);
+	};
+	let herdrTaskSession: string | undefined;
+	let herdrActiveTasks = new Set<string>();
+	const emitHerdrTasks = (sessionId: string | undefined) => {
+		if (!sessionId) return;
+		try {
+			if (sessionId !== activeSessionId()) return;
+			const all = store.list(sessionId);
+			const previous = herdrTaskSession === sessionId ? herdrActiveTasks : new Set<string>();
+			const tasks = all.filter(task => !isFinished(task.status)).map(task => ({
+				id: task.id, agent: task.agent, label: task.label, explicitLabel: task.explicitLabel, status: task.status,
+				pendingQuery: (herdrQueries.get(task.id)?.size ?? 0) > 0,
+			}));
+			herdrTaskSession = sessionId;
+			herdrActiveTasks = new Set(tasks.map(task => task.id));
+			// Send the terminal edge before the active-only snapshot removes the
+			// record; existing snapshot consumers retain their original contract.
+			for (const task of all) if (previous.has(task.id) && (task.status === "failed" || task.status === "timed_out")) {
+				emitHerdr(HERDR_DESKTOP_TASK_FINISHED, { sessionId, task: {
+					id: task.id, agent: task.agent, label: task.label, explicitLabel: task.explicitLabel, status: task.status, pendingQuery: false,
+				} });
+			}
+			emitHerdr(HERDR_DESKTOP_TASKS, { sessionId, tasks });
+		} catch { /* A stale display observer never affects the owner. */ }
+	};
+	const removeHerdrQuery = (taskId: string, requestId: string) => {
+		const queries = herdrQueries.get(taskId);
+		if (!queries?.delete(requestId)) return;
+		if (queries.size === 0) herdrQueries.delete(taskId);
+		emitHerdrTasks(store.get(taskId)?.parentSessionId);
+	};
+	const unsubscribeHerdrTasks = pi.events.on(HERDR_DESKTOP_TASKS_REQUEST, (value: unknown) => {
+		const sessionId = (value as { sessionId?: unknown } | null)?.sessionId;
+		if (typeof sessionId === "string" && sessionId === activeSessionId()) {
+			emitHerdrTasks(sessionId);
+			emitHerdrJobs(sessionId);
+		}
+	});
 	// A job's exit, or a monitor's line events and harness stop, waiting for
 	// the parent delivery router.
 	type JobNotice = { job: JobRecord; kind: "exit" } | MonitorNotice;
@@ -1220,6 +1309,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		}),
 		onSettled: (job) => settleJob(job),
 	});
+	// Replay the existing registry's running rows on status subscription or
+	// resume; finished sidebar tails cannot contribute a Herdr record.
+	const emitHerdrJobs = (sessionId: string) => {
+		try {
+			const running = jobs.list(sessionId).filter(job => job.status === "running")
+				.sort((a, b) => b.startedAt - a.startedAt)
+				.map(({ id, label, explicitLabel, kind, startedAt }) => ({ id, label, explicitLabel, kind, startedAt }));
+			emitHerdr(HERDR_DESKTOP_JOBS, { sessionId, snapshot: { jobs: running } });
+		} catch { /* Display-only replay. */ }
+	};
 	const monitors = createMonitorController({
 		registry: jobs,
 		schedule: (fn, ms) => deps.schedule(fn, ms),
@@ -1405,6 +1504,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// session_start context is kept for it and dropped at shutdown; a stale
 	// context throws instead of answering, so delivery fails closed.
 	let parentCtx: ExtensionContext | undefined;
+	const ownsInboundDisplay = (ctx: ExtensionContext) => {
+		try { return !!parentCtx && ctx.sessionManager === parentCtx.sessionManager && ctx.sessionManager === sessions && ctx.sessionManager.getSessionId() === activeSessionId(); }
+		catch { return false; }
+	};
 	const helperPermission = new HelperCostPermission(() => parentCtx && activeTransportFor(parentCtx) ? parentCtx : undefined);
 	pi.on("session_before_switch", () => helperPermission.clear());
 	pi.on("session_before_fork", () => helperPermission.clear());
@@ -1656,9 +1759,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (route === "hold") {
 			heldOrchestratorMessages.push({ message, recipientSessionId });
 			armHoldRecheck();
+			receiveInboundDisplay(message, recipientSessionId, "held");
 			return;
 		}
 		sendToParent(message, route, "followUp");
+		receiveInboundDisplay(message, recipientSessionId, route === "idle" ? "idle" : "queued");
 	};
 	const flushOrchestratorMessages = () => {
 		if (heldOrchestratorMessages.length === 0) return;
@@ -1668,8 +1773,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		heldOrchestratorMessages = [];
 		for (const { message, recipientSessionId } of held) {
 			if (activeSessionId() !== recipientSessionId) continue;
-			try { sendToParent(message, route, "followUp"); }
-			catch { /* Best-effort delivery: at most once, even if forwarding fails. */ }
+			try {
+				sendToParent(message, route, "followUp");
+				updateInboundDisplay(message, recipientSessionId, route === "idle" ? "idle" : "queued");
+			} catch {
+				updateInboundDisplay(message, recipientSessionId, "dropped");
+				/* Best-effort delivery: at most once, even if forwarding fails. */
+			}
 		}
 	};
 
@@ -1797,6 +1907,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 
 	// Session changes discard every pending wake and boundary flush.
 	const resetParentDelivery = (ctx: ExtensionContext | undefined) => {
+		herdrTaskSession = undefined; herdrActiveTasks.clear();
 		helperPermission.clear(); // Revoke before dropping old callback authority.
 		parentCtx = ctx;
 		restoreBridgeWakeIdentity(ctx);
@@ -1804,6 +1915,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		parentRunActive = false;
 		wakeOwed = false;
 		heldOrchestratorMessages = [];
+		for (const entry of inboundDisplay.values()) { try { entry.cancel(); } catch { /* Display only. */ } }
+		inboundDisplay.clear();
 		completionsMaybePending = false;
 		endPromptStart();
 		stopHoldRecheck();
@@ -1828,8 +1941,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (sessionId) {
 			try {
 				pi.events.emit(JOBS_SIDEBAR_EVENT, { sessionId, snapshot: { jobs: [
-					...running.map(({ id, label, startedAt }) => ({ id, label, startedAt })),
-					...finished.map(({ id, label, startedAt, status, endedAt, exitCode }) => ({ id, label, startedAt, status, endedAt, exitCode })),
+					...running.map(({ id, label, explicitLabel, kind, startedAt }) => ({ id, label, explicitLabel, kind, startedAt })),
+					...finished.map(({ id, label, explicitLabel, kind, startedAt, status, endedAt, exitCode }) => ({ id, label, explicitLabel, kind, startedAt, status, endedAt, exitCode })),
 				] } });
 			} catch { /* Display only. */ }
 			// Every actual registry change funnels through this refresh, including
@@ -1859,6 +1972,11 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (activeAgentRuns === 0) flushAll();
 	};
 	const settleJob = (job: JobRecord) => {
+		if (job.status !== "running") {
+			const { id, explicitLabel, kind, startedAt, status, endedAt, exitCode } = job;
+			const event: HerdrDesktopJobSettled = { sessionId: job.ownerSessionId, job: { id, explicitLabel, kind, startedAt, status, endedAt, exitCode } };
+			emitHerdr(HERDR_DESKTOP_JOB_SETTLED, event);
+		}
 		// A monitor's pending lines are delivered before its end.
 		if (job.kind === "monitor") monitors.finish(job);
 		queueJobNotice({ job, kind: "exit" });
@@ -1892,9 +2010,10 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const options = event?.systemPromptOptions;
 		if (codemodeReaches(options?.selectedTools) && ["orchestrator_list", "orchestrator_consult", "orchestrator_send_message"].some((name) => options?.selectedTools?.includes(name))) appendSystemPromptOnce(options, COORDINATION_TOOLS_ROUTE);
 	});
-	pi.on("agent_start", () => {
+	pi.on("agent_start", (_event, ctx) => {
 		activeAgentRuns += 1;
 		parentRunActive = true;
+		if (ownsInboundDisplay(ctx)) for (const entry of inboundDisplay.values()) if (entry.state === "idle") entry.state = "consumed";
 		// The run carries everything stored while the parent was idle.
 		wakeOwed = false;
 		endDeliveryRetry();
@@ -1909,7 +2028,13 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		flushAll();
 		lastRunMessages = event?.messages ?? [];
 	});
+	pi.on("message_start", (event, ctx) => {
+		if (!ownsInboundDisplay(ctx) || event.message.role !== "custom") return;
+		const sessionId = activeSessionId();
+		if (sessionId) updateInboundDisplay(event.message, sessionId, "consumed");
+	});
 	pi.on("agent_settled", (event, ctx) => {
+		if (ownsInboundDisplay(ctx)) settleInboundDisplay();
 		parentRunActive = false;
 		endPromptStart();
 		flushAll();
@@ -1918,7 +2043,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// A child's own failures are handled by the parent's runner, never by the child.
 		if (deps.env.GENTLE_PI_AGENTS_CHILD !== "1" && ctx) void orchestratorFallbackFor(ctx).onSettled(messages, { aborted: event?.aborted === true }).catch((error: unknown) => ui?.notify(`Model fallback failed: ${error instanceof Error ? error.message : String(error)}`, "error"));
 	});
-	pi.on("turn_end", () => flushAll());
+	pi.on("turn_end", (_event, ctx) => { if (ownsInboundDisplay(ctx)) settleInboundDisplay(); flushAll(); });
 	pi.on("session_compact", scheduleBoundaryFlush);
 	pi.on("session_compact_failed", scheduleBoundaryFlush);
 	pi.on("session_tree", scheduleBoundaryFlush);
@@ -1954,8 +2079,12 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			try {
 				messages.enqueueQuery(task, requestId, message, deps.now());
 				if (activeAgentRuns === 0) flushMessages(true);
+				const queries = herdrQueries.get(task.id) ?? new Set<string>();
+				queries.add(requestId); herdrQueries.set(task.id, queries);
+				emitHerdrTasks(task.parentSessionId);
 				return true;
 			} catch (error) {
+				removeHerdrQuery(task.id, requestId);
 				messages.expireQuery(task.id, requestId);
 				if (task.mode === AGENT_MODE.TASK && !hadYield) yieldedTaskIds.delete(task.id);
 				throw error;
@@ -1965,6 +2094,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (outcome === "replied") messages.consumeQuery(taskId, requestId);
 			// A busy parent still sees a question that expired in its queue (S15 P9a).
 			else messages.markQueryExpired(taskId, requestId);
+			removeHerdrQuery(taskId, requestId);
 		},
 		onFallback: (task, change) => announceFallback({ agent: task.agent, from: change.from, to: change.to, category: change.category, ...(change.launch ? { launch: true } : {}) }, task.parentSessionId, task.id),
 		onSuccessfulMutation: (task, tool) => {
@@ -2017,6 +2147,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			if (!foreignTask) recordReviewMutation(pi, sessions, root, { source: "subagent", taskId: task.id, toolName: tool.toolName, toolCallId: tool.toolCallId, ...runtimeWriterProfile(task) });
 		},
 		onFinish: (task, observations) => {
+			herdrQueries.delete(task.id);
 			// Completion is the only forwarding opportunity. No pending event, policy
 			// query or promise survives this callback; the receiver drops when busy.
 			const { id, parentSessionId, status } = task;
@@ -2338,6 +2469,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// A status change is worth a frame right away; deltas inside a task are
 	// coalesced so a chatty child cannot flood the terminal.
 	store.subscribeSummary(() => {
+		emitHerdrTasks(activeSessionId());
 		refreshHerdrBusy();
 		publishActivity();
 		if (sidebarTui) invalidateSidebar(sidebarTui);
@@ -3015,32 +3147,38 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 					|| Buffer.byteLength(input.question) > 1024 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(input.question)))
 				|| (input.cursor !== undefined && (typeof input.cursor !== "string" || input.cursor.length > 1024))) throw new Error("Invalid metadata consultation parameters.");
 			const selection = { recipientSessionId: input.recipient_session_id, cursor: input.cursor as string | undefined };
-			const transport = activeTransportFor(ctx);
-			const result = (receipt: MetadataReceipt) => {
-				const output = kind === "metadata" ? receipt : { status: "unavailable", code: receipt.unknowns[0], source: "helper_advice", ownerReply: false, authority: "none" };
-				return text(JSON.stringify(output), { gentleAgents: { senderSessionId: transport?.sessionId, receipt: output } });
-			};
-			if (!transport) return result(unavailableMetadata(selection.recipientSessionId, "not-ready"));
-			const reply = (receipt: unknown) => text(JSON.stringify(receipt), { gentleAgents: { senderSessionId: transport.sessionId, receipt } });
-			if (kind === "revoke-reasoning") {
-				helperPermission.revoke(selection.recipientSessionId);
-				return reply({ status: "revoked", source: "helper_advice", ownerReply: false, authority: "none" });
-			}
+			const consult = { sessionId: ctx.sessionManager.getSessionId() ?? "", target: selection.recipientSessionId, callId: randomUUID() };
+			// Revoking prior reasoning is not a consultation; Herdr Desktop shows nothing for it.
+			const reportsConsult = kind !== "revoke-reasoning";
+			if (reportsConsult) emitHerdr(HERDR_DESKTOP_CONSULT, { ...consult, phase: "start" });
 			try {
-				const activations = await transport.listener.registry.listActivations(transport.sessionId);
-				if (activeTransportFor(ctx) !== transport) return result(unavailableMetadata(selection.recipientSessionId, "source-session-changed"));
-				const receipt = consultPublishedMetadata(agentHome, activations, selection);
-				if (kind === "metadata") return result(receipt);
-				const current = () => activeTransportFor(ctx) === transport && parentCtx?.sessionManager === ctx.sessionManager;
-				const readSource = async () => {
-					const peers = await transport.listener.registry.listActivations(transport.sessionId);
-					return current() ? consultPublishedMetadata(agentHome, peers, selection)
-						: unavailableMetadata(selection.recipientSessionId, "source-session-changed");
+				const transport = activeTransportFor(ctx);
+				const result = (receipt: MetadataReceipt) => {
+					const output = kind === "metadata" ? receipt : { status: "unavailable", code: receipt.unknowns[0], source: "helper_advice", ownerReply: false, authority: "none" };
+					return text(JSON.stringify(output), { gentleAgents: { senderSessionId: transport?.sessionId, receipt: output } });
 				};
-				const advice = await helperPermission.run({ receipt, question: input.question as string, signal: _signal,
-					readSource, isSourceCurrent: () => current() && consultPublishedMetadata(agentHome, activations, selection).digest === receipt.digest });
-				return reply(advice);
-			} catch { return result(unavailableMetadata(selection.recipientSessionId, "discovery-unavailable")); }
+				if (!transport) return result(unavailableMetadata(selection.recipientSessionId, "not-ready"));
+				const reply = (receipt: unknown) => text(JSON.stringify(receipt), { gentleAgents: { senderSessionId: transport.sessionId, receipt } });
+				if (kind === "revoke-reasoning") {
+					helperPermission.revoke(selection.recipientSessionId);
+					return reply({ status: "revoked", source: "helper_advice", ownerReply: false, authority: "none" });
+				}
+				try {
+					const activations = await transport.listener.registry.listActivations(transport.sessionId);
+					if (activeTransportFor(ctx) !== transport) return result(unavailableMetadata(selection.recipientSessionId, "source-session-changed"));
+					const receipt = consultPublishedMetadata(agentHome, activations, selection);
+					if (kind === "metadata") return result(receipt);
+					const current = () => activeTransportFor(ctx) === transport && parentCtx?.sessionManager === ctx.sessionManager;
+					const readSource = async () => {
+						const peers = await transport.listener.registry.listActivations(transport.sessionId);
+						return current() ? consultPublishedMetadata(agentHome, peers, selection)
+							: unavailableMetadata(selection.recipientSessionId, "source-session-changed");
+					};
+					const advice = await helperPermission.run({ receipt, question: input.question as string, signal: _signal,
+						readSource, isSourceCurrent: () => current() && consultPublishedMetadata(agentHome, activations, selection).digest === receipt.digest });
+					return reply(advice);
+				} catch { return result(unavailableMetadata(selection.recipientSessionId, "discovery-unavailable")); }
+			} finally { if (reportsConsult) emitHerdr(HERDR_DESKTOP_CONSULT, { ...consult, phase: "settle" }); }
 		},
 	});
 	pi.registerTool({
@@ -3196,8 +3334,15 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				return text(`Error: ${error instanceof Error ? error.message : String(error)}`, { error: "denied" });
 			}
 			try {
+				// Read the sender label while ctx is live: Pi invalidates it on session replacement.
+				const senderLabel = sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? "");
 				const accepted = await transport.client.sendNotification(recipient, message, { signal, expectedActivation: activation, beforeConnect: () => activeTransportFor(ctx) === transport });
-				return activeTransportFor(ctx) === transport ? text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted", message, reason, senderLabel: sanitizeDisplayLabel(ctx.sessionManager.getSessionName?.() ?? ""), recipientLabel: messagePeerLabel(agentHome, recipient) } }) : text("Error: session messaging is not ready.", { error: "stale" });
+				// The peer already accepted: a replaced transport or stale ctx only suppresses the
+				// display event, never the receipt, or a retry would duplicate the message.
+				let current = false;
+				try { current = activeTransportFor(ctx) === transport; } catch { /* stale ctx: the session was replaced */ }
+				if (current) emitHerdr(HERDR_DESKTOP_SEND, { sessionId: transport.sessionId, target: recipient });
+				return text(`Message ${accepted.id} from ${transport.sessionId} to ${recipient} accepted for delivery; it is not a delivery or read receipt.`, { gentleAgents: { messageId: accepted.id, senderSessionId: transport.sessionId, recipientSessionId: recipient, state: "accepted", message, reason, senderLabel, recipientLabel: messagePeerLabel(agentHome, recipient) } });
 			} catch {
 				return text("Error: session message was not accepted.", { error: "not accepted" });
 			}
@@ -3436,6 +3581,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		presence?.dispose();
 		registryFor(ctx);
 		showWidget(ctx);
+		emitHerdrTasks(activeSessionId());
+		if (activeSessionId()) emitHerdrJobs(activeSessionId()!);
 		// An explicit in-session /resume always brings this session's own
 		// finished subagents back from disk. Pi also reports "startup" (not
 		// "resume") when the CLI is launched directly into an existing session
@@ -3496,6 +3643,8 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		// replaced runtime is never discovered through a stale owner.
 		unsubscribeDesktopJobsService();
 		unsubscribeDesktopAgentsService();
+		unsubscribeHerdrTasks();
+		herdrQueries.clear();
 		completions.dropAll();
 		messages.dropAll();
 		// No stale busy may survive the runtime.

@@ -1180,6 +1180,13 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// gentle-ai.review-integration.capabilities/v2.6 with protocol minor 6.
 	// No new negotiated capability identity is asserted.
 	"4.5.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// The published darwin/arm64 v4.6.0 binary still advertises capabilities/v2.6
+	// (protocol minor 6) under review-integration/v2. The CLI contract artifacts
+	// are unchanged from v4.5.0. Separately, the provider bundle moved from
+	// 1.5.0 to 1.6.0; the published archive (SHA-256
+	// af87572ac591c005941c898957f4084bd3c38e1afe2fe794e2f308be714096a6)
+	// matches Shell's existing 1.6.0 mirror byte-for-byte.
+	"4.6.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 

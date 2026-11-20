@@ -111,7 +111,7 @@ test("a main version marks the release version with the commit", () => {
 	assert.equal(mainVersion("4.0.0", SHELL_SHA), "4.0.0-main.6e7e3a18f794");
 });
 
-test("the Gentle Shell main package is packed from the exact commit without prepack", async () => {
+test("the Gentle Shell main package is packed from the exact commit without prepack, after building Tower", async () => {
 	const s = sandbox();
 	try {
 		const calls: Call[] = [];
@@ -126,9 +126,15 @@ test("the Gentle Shell main package is packed from the exact commit without prep
 			if (argv[0] === "-xzf") {
 				const target = argv[argv.indexOf("-C") + 1];
 				writeFileSync(join(target, "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.0.0",
-					scripts: { prepack: "pnpm test", prepare: "x", postinstall: "node scripts/install-gentle-ai.mjs" } }));
+					scripts: { prepack: "pnpm test", prepare: "x", postinstall: "node scripts/install-gentle-ai.mjs",
+						"build:tower": "cd web/tower && pnpm build" } }));
+			} else if (argv[0] === "run" && argv[1] === "build:tower") {
+				const dist = join(options.cwd!, "web", "tower", "dist");
+				mkdirSync(dist, { recursive: true });
+				writeFileSync(join(dist, "index.html"), "<!doctype html><title>tower</title>");
 			} else {
 				packed = JSON.parse(readFileSync(join(options.cwd!, "package.json"), "utf8"));
+				assert.ok(existsSync(join(options.cwd!, "web", "tower", "dist", "index.html")), "pack sees the Tower build");
 				const destination = argv[argv.indexOf("--pack-destination") + 1];
 				writeFileSync(join(destination, "gentle-pi-4.0.0-main.6e7e3a18f794.tgz"), "tgz");
 			}
@@ -138,15 +144,49 @@ test("the Gentle Shell main package is packed from the exact commit without prep
 		assert.equal(downloaded, `https://codeload.github.com/Gentleman-Programming/gentle-shell/tar.gz/${SHELL_SHA}`);
 		assert.equal(tgz, join(s.home, ".pi", "gentle-ai", "main", "packages", "gentle-pi-4.0.0-main.6e7e3a18f794.tgz"));
 		assert.ok(existsSync(tgz));
-		const pack = calls.find((call) => call.command === "/bin/pnpm");
-		assert.ok(pack);
-		assert.deepEqual(pack.argv.slice(0, 1), ["pack"]);
+		const pnpmCalls = calls.filter((call) => call.command === "/bin/pnpm");
+		assert.deepEqual(pnpmCalls.map((call) => call.argv.slice(0, 2)), [["run", "build:tower"], ["pack", "--pack-destination"]]);
 		assert.ok(packed);
 		assert.equal(packed.version, "4.0.0-main.6e7e3a18f794");
 		assert.equal(packed.scripts.prepack, undefined);
 		assert.equal(packed.scripts.prepare, undefined);
 		assert.equal(packed.scripts.postinstall, "node scripts/install-gentle-ai.mjs");
 		assert.equal(existsSync(join(s.home, ".pi", "gentle-ai", "main", ".source")), false, "the extracted source is removed");
+	} finally { s.cleanup(); }
+});
+
+test("a failed or empty Gentle Tower build refuses to pack the main package", async () => {
+	const s = sandbox();
+	try {
+		const fetch = async () => ({ ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode("archive").buffer });
+		const writeManifest = (argv: string[]) => {
+			writeFileSync(join(argv[argv.indexOf("-C") + 1], "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.0.0",
+				scripts: { "build:tower": "false" } }));
+		};
+		const failed = async (command: string, argv: string[], options: Call["options"]) => {
+			if (argv[0] === "-xzf") {
+				writeManifest(argv);
+				return { code: 0, stdout: "" };
+			}
+			if (argv[0] === "run" && argv[1] === "build:tower") {
+				return { code: 1, stdout: "", stderrTail: "vite: build failed\n" };
+			}
+			assert.fail(`pack must not run after a failed Tower build (${command} ${argv.join(" ")}; cwd=${options.cwd})`);
+		};
+		await assert.rejects(packMainShell({ commit: SHELL_SHA, ctx: s.ctx, fetch, run: failed, pnpm: { command: "/bin/pnpm", prefix: [] }, fs: fsPromises }),
+			(error: MainChannelError) => error.code === "main-shell-tower-build-failed" && error.cause instanceof Error
+				&& error.cause.message === "vite: build failed");
+		const missing = async (command: string, argv: string[], options: Call["options"]) => {
+			if (argv[0] === "-xzf") {
+				writeManifest(argv);
+				return { code: 0, stdout: "" };
+			}
+			if (argv[0] === "run" && argv[1] === "build:tower") return { code: 0, stdout: "ok" };
+			assert.fail(`pack must not run without web/tower/dist (${command} ${argv.join(" ")}; cwd=${options.cwd})`);
+		};
+		await assert.rejects(packMainShell({ commit: SHELL_SHA, ctx: s.ctx, fetch, run: missing, pnpm: { command: "/bin/pnpm", prefix: [] }, fs: fsPromises }),
+			(error: MainChannelError) => error.code === "main-shell-tower-build-failed"
+				&& /web\/tower\/dist\/index\.html/.test(error.message));
 	} finally { s.cleanup(); }
 });
 
@@ -162,6 +202,10 @@ test("on Windows the source archive is extracted by System32's tar.exe by absolu
 				if (argv[0] === "-xzf") {
 					extracts.push(command);
 					writeFileSync(join(argv[argv.indexOf("-C") + 1], "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.0.0" }));
+				} else if (argv[0] === "run" && argv[1] === "build:tower") {
+					const dist = join(options.cwd!, "web", "tower", "dist");
+					mkdirSync(dist, { recursive: true });
+					writeFileSync(join(dist, "index.html"), "<!doctype html><title>tower</title>");
 				} else {
 					writeFileSync(join(argv[argv.indexOf("--pack-destination") + 1], "gentle-pi-4.0.0-main.6e7e3a18f794.tgz"), "tgz");
 					assert.ok(options.cwd);

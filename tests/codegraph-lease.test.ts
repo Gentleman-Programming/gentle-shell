@@ -555,7 +555,15 @@ test("acquireInitLock: free path acquires at once", async (t) => {
 	const outcome = await acquireInitLock(cwd, { locksDir: dir, waitMs: 50, pollMs: 5 });
 	assert.equal(outcome.outcome, "acquired");
 	assert.notEqual(outcome.outcome, "skipped");
-	if (outcome.outcome === "acquired") outcome.release();
+	if (outcome.outcome === "acquired") {
+		const path = lockPathFor(cwd, "init", dir);
+		const token = JSON.parse(readFileSync(path, "utf8")) as { nonce: string };
+		assert.equal(outcome.nonce, token.nonce);
+		outcome.adopt(4242, true);
+		assert.equal((JSON.parse(readFileSync(path, "utf8")) as { nonce: string }).nonce, outcome.nonce);
+		outcome.release();
+		assert.equal(readLeaseVerdict(path), "free");
+	}
 });
 
 test("acquireInitLock: a live holder that finished (db exists) resolves present", async (t) => {

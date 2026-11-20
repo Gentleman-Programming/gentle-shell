@@ -165,9 +165,11 @@ export function gentleAiPiConfigDirOf(env: NodeJS.ProcessEnv, platform: string =
 
 // A variable's non-empty value as a child started with `env` sees it (see
 // gentleAiPiConfigDirOf): case-insensitive on Windows, first in sorted order.
+// Node picks that key before it drops an undefined value, so an undefined
+// first spelling hides the others.
 function childEnvValue(env: NodeJS.ProcessEnv, name: string, platform: string): string | undefined {
 	if (platform !== "win32") return env[name] || undefined;
-	const key = Object.keys(env).filter((candidate) => candidate.toUpperCase() === name && env[candidate] !== undefined).sort()[0];
+	const key = Object.keys(env).filter((candidate) => candidate.toUpperCase() === name).sort()[0];
 	return key === undefined ? undefined : env[key] || undefined;
 }
 

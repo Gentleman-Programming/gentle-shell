@@ -159,6 +159,10 @@ test("an explicit GENTLE_PI_CONFIG_HOME is given to Gentle AI as GENTLE_AI_PI_CO
 	// A config home spelled another way on Windows is the same variable for Gentle AI.
 	const mixed = { Gentle_Pi_Config_Home: "C:\\space\\gentle-ai" };
 	assert.deepEqual(gentleAiIsolationEnv(mixed, { platform: "win32" }), { ...mixed, GENTLE_AI_PI_CONFIG_DIR: "C:\\space\\gentle-ai" });
+	// Node keeps the first spelling in sorted order before it drops an undefined value: the child gets none.
+	const hidden = { GENTLE_PI_CONFIG_HOME: undefined, Gentle_Pi_Config_Home: "C:\\space\\gentle-ai" };
+	assert.equal(gentleAiIsolationEnv(hidden, { platform: "win32" }), hidden);
+	assert.equal(gentleAiPiConfigDirOf({ GENTLE_AI_PI_CONFIG_DIR: undefined, Gentle_Ai_Pi_Config_Dir: "C:\\mine" }, "win32"), undefined);
 	assert.equal(explicitGentleAiPiConfigDir({ GENTLE_PI_CONFIG_HOME: "/space/gentle-ai", Gentle_Ai_Pi_Config_Dir: "/mine" }, "linux"), "/space/gentle-ai", "POSIX names are case-sensitive");
 });
 

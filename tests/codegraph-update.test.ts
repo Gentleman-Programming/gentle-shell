@@ -250,12 +250,12 @@ test("updateCodegraphToLatest: npm-global picks the platform's npm spelling", as
 	assert.deepEqual(windows.calls, [{ command: "npm.cmd", args: ["install", "-g", `${CODEGRAPH_PACKAGE}@latest`], timeoutMs: UPDATE_TIMEOUT_MS }], "win32 npm goes through its .cmd shim");
 });
 
-test("updateCodegraphToLatest: pnpm-global runs pnpm add -g on every platform", async () => {
+test("updateCodegraphToLatest: pnpm-global runs the user-directed update form on every platform", async () => {
 	for (const platform of ["darwin", "linux", "win32"] as const) {
 		const { exec, calls } = execByFirstArg({ pnpm: () => ok("") });
 		const run = await updateCodegraphToLatest("pnpm-global", exec, { platform });
 		assert.deepEqual(run, { ok: true });
-		assert.deepEqual(calls, [{ command: "pnpm", args: ["add", "-g", `${CODEGRAPH_PACKAGE}@latest`], timeoutMs: UPDATE_TIMEOUT_MS }], `${platform}: pnpm spawns directly`);
+		assert.deepEqual(calls, [{ command: "pnpm", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS }], `${platform}: pnpm spawns directly`);
 	}
 });
 

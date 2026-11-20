@@ -3644,3 +3644,36 @@ test("request context rechecks sensitive aliases before selection and consent co
   assert.equal(result.reason, "request-context-sensitive-path", phase); assert.equal(queries, before); assert.equal(answers, 0);
  }
 });
+
+// gentle-shell#3412: a lineage retained with its committed-range projection is
+// bound by that range alone. A status input that carries only an untracked
+// declaration (or nothing) must not be validated against the workspace
+// projection, and the committed range sends no untracked selection flags.
+test("bound STATUS on a committed-only lineage uses the retained range and ignores untracked declarations", async (t) => {
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => candidateViews.cleanupAll());
+	const cwd = repository(t), lineageId = "committed-only-bound";
+	const view = candidateViews.create({ contributorRoot: cwd, baseRef: execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim(), committedOnly: true });
+	candidateViews.retain(view.token, lineageId);
+	const frozen = candidateViews.resolveProjection(lineageId, cwd);
+	const requests: Array<Record<string, unknown>> = [];
+	const native = { targetStatus: async (request: Record<string, unknown>) => { requests.push(request); return status(lineageId); } } as unknown as NativeReviewCli;
+	for (const input of [undefined, "{}", JSON.stringify({ untrackedScope: "exclude" })]) {
+		const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, ...(input === undefined ? {} : { input }) }, cwd, native, undefined, candidateViews);
+		assert.notEqual((result as { outcome?: string }).outcome, "native-status-input-invalid", String(input));
+	}
+	assert.deepEqual(requests, Array.from({ length: 3 }, () => ({ cwd, lineageId, agent: "pi", baseRef: frozen.baseCommit, committedOnly: true })));
+});
+
+test("bound STATUS on a workspace-projection lineage still validates its untracked declaration", async (t) => {
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => candidateViews.cleanupAll());
+	const cwd = repository(t), lineageId = "workspace-bound";
+	const view = candidateViews.create({ contributorRoot: cwd });
+	candidateViews.retain(view.token, lineageId);
+	const native = { targetStatus: async () => status(lineageId) } as unknown as NativeReviewCli;
+	for (const input of ["{}", JSON.stringify({ untrackedScope: "exclude" })]) {
+		const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input }, cwd, native, undefined, candidateViews);
+		assert.deepEqual({ outcome: (result as { outcome?: string }).outcome, reason: (result as { reason?: string }).reason }, { outcome: "native-status-input-invalid", reason: "untracked-selection-invalid" });
+	}
+});

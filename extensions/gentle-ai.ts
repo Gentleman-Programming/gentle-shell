@@ -11978,19 +11978,23 @@ async function executeReviewControllerOperationImpl(
 		if (baseRef !== undefined && !isCanonicalProcessString(baseRef)) return nativeStatusInputRejection("base-ref-invalid");
 		if (baseRef !== undefined && rawStatus?.committedOnly !== true) return nativeStatusInputRejection("committed-only-required");
 		if (baseRef === undefined && rawStatus !== undefined && "committedOnly" in rawStatus) return nativeStatusInputRejection("committed-only-invalid");
-		const untrackedSelection = rawStatus === undefined ? {} : validateNativeStartUntrackedSelection(rawStatus);
+		// gentle-shell#3412: a lineage with a retained committed-range projection is
+		// bound by that range alone (what the runner uses); it never needs, and must
+		// not be validated against, an untracked selection.
+		const retainedCommittedTarget = baseRef === undefined && parameters.lineageId !== undefined && candidateViews?.hasProjection(parameters.lineageId, defaultCwd)
+			? candidateViews.resolveProjection(parameters.lineageId, defaultCwd)
+			: undefined;
+		const committedRangeBound = retainedCommittedTarget?.committedOnly === true;
+		const untrackedSelection = rawStatus === undefined || committedRangeBound ? {} : validateNativeStartUntrackedSelection(rawStatus);
 		if (
-			rawStatus !== undefined &&
+			rawStatus !== undefined && !committedRangeBound &&
 			(untrackedSelection.reason !== undefined || (baseRef === undefined && untrackedSelection.untrackedScope === undefined))
 		) return nativeStatusInputRejection(untrackedSelection.reason ?? "untracked-selection-invalid");
 		const retainedUntrackedSelection = cloneRetainedNativeUntrackedSelection(untrackedSelection);
-		const effectiveUntrackedSelection = rawStatus === undefined && parameters.lineageId !== undefined
+		const effectiveUntrackedSelection = rawStatus === undefined && !committedRangeBound && parameters.lineageId !== undefined
 			? readRetainedNativeUntrackedSelection(retainedUntrackedSelections, defaultCwd, parameters.lineageId)
 			: untrackedSelection;
-		const retainedCommittedTarget = rawStatus === undefined && parameters.lineageId !== undefined && candidateViews?.hasProjection(parameters.lineageId, defaultCwd)
-			? candidateViews.resolveProjection(parameters.lineageId, defaultCwd)
-			: undefined;
-		const effectiveBaseRef = typeof baseRef === "string" ? baseRef : (retainedCommittedTarget?.committedOnly === true ? nativeCommittedRangeSelector(retainedCommittedTarget) : undefined);
+		const effectiveBaseRef = typeof baseRef === "string" ? baseRef : (committedRangeBound ? nativeCommittedRangeSelector(retainedCommittedTarget) : undefined);
 		if (nativeReviewCli?.targetStatus !== undefined) {
 			try {
 				const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, {

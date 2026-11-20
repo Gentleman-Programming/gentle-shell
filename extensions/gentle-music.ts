@@ -3,6 +3,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isOptionalExtensionEnabled } from "../lib/optional-extensions-policy.ts";
 import type { Component } from "@earendil-works/pi-tui";
 import { isChildSession } from "../lib/child-session.ts";
 import { runningBundledPrefix } from "../lib/gentle-shell-bundled.ts";
@@ -279,6 +280,18 @@ export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}
 		return stream ? { stream } : { offer: player };
 	};
 
+	// Keep quit cleanup registered even after disabling and reloading gentle-music,
+	// so any player started earlier by this process still stops when Pi quits.
+	pi.on("session_shutdown", async (event) => {
+		if ((event as { reason?: string }).reason !== "quit" || !usage.used) return;
+		const { stream } = await findPlayer();
+		if (!stream) return;
+		usage.used = false;
+		await runCaptured(spawn, stream.command, [...stream.prefix, "ctl", "stop"], shutdownTimeoutMs);
+	});
+
+	if (!isOptionalExtensionEnabled("gentle-music")) return;
+
 	/** The bundled offer: undefined when declined or failed (after telling the user). */
 	const offerInstall = async (ctx: ExtensionContext, player: BundledMusicPlayer): Promise<GentleStreamCommand | undefined> => {
 		if ((await ctx.ui.confirm(MUSIC_INSTALL_TITLE, MUSIC_INSTALL_OFFER)) !== true) {
@@ -352,15 +365,5 @@ export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}
 			if (request.kind === "ctl") await control(ctx, stream, request.command);
 			else await openTui(ctx, stream, request.mood);
 		},
-	});
-
-	// Quitting Pi stops music it started, so no audio outlives the shell.
-	// Switching or reloading sessions keeps the same process, so the music plays on.
-	pi.on("session_shutdown", async (event) => {
-		if ((event as { reason?: string }).reason !== "quit" || !usage.used) return;
-		const { stream } = await findPlayer();
-		if (!stream) return;
-		usage.used = false;
-		await runCaptured(spawn, stream.command, [...stream.prefix, "ctl", "stop"], shutdownTimeoutMs);
 	});
 }

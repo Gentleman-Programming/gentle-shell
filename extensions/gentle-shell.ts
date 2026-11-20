@@ -43,6 +43,28 @@ import { commandKeymapId, commandKeymapIds, effectiveKey, keymapCommand, keymapL
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PANEL_BUTTON, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, SHELL_PULSE_WATCHDOG_MS, withPromptHint, workingTick, type PromptState } from "../lib/shell-prompt.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
+import {
+	OPTIONAL_EXTENSION_IDS,
+	isOptionalExtensionId,
+	resolveOptionalExtensionsPolicy,
+	writeOptionalExtensionsPolicy,
+	type OptionalExtensionId,
+} from "../lib/optional-extensions-policy.ts";
+import {
+	ODD_OPTIONAL_MODULES,
+	isOddOptionalModule,
+	resolveOddSlimPolicy,
+	writeOddSlimPolicy,
+	type OddOptionalModule,
+} from "../lib/odd-slim-policy.ts";
+import {
+	ALL_BUNDLED_SKILLS,
+	DEFAULT_ENABLED_BUNDLED_SKILLS,
+	isBundledSkillId,
+	resolveBundledSkillsPolicy,
+	writeBundledSkillsPolicy,
+	type BundledSkillId,
+} from "../lib/bundled-skills-policy.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CLAUDE_BRIDGE_PROVIDER, priceBridgeMessage } from "../lib/bridge-cost.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
@@ -3755,6 +3777,252 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
+		},
+	});
+function mergeSetEdits<T extends string>(
+	latest: readonly T[],
+	initial: ReadonlySet<T>,
+	edited: ReadonlySet<T>,
+): T[] {
+	const next = new Set<T>(latest);
+	for (const item of initial) {
+		if (!edited.has(item)) next.delete(item);
+	}
+	for (const item of edited) {
+		if (!initial.has(item)) next.add(item);
+	}
+	return [...next];
+}
+
+	pi.registerCommand("gentle:extensions", {
+		description: "Choose which optional gentle-pi extensions auto-load (status|enable <name>|disable <name>|enable-all|disable-all); no argument opens a menu.",
+		handler: async (args, ctx) => {
+			const trimmed = args.trim();
+			const configHome = gentlePiConfigHome(env);
+			const current = resolveOptionalExtensionsPolicy({ gentlePiConfigHome: configHome });
+			if (!trimmed && ctx.hasUI && typeof ctx.ui.select === "function") {
+				const initial = new Set<OptionalExtensionId>(current.enabled);
+				const selected = new Set<OptionalExtensionId>(current.enabled);
+				let dirty = false;
+				while (true) {
+					const items = [
+						...OPTIONAL_EXTENSION_IDS.map((id) => `${selected.has(id) ? "[x]" : "[ ]"} ${id}`),
+						"enable-all",
+						"disable-all",
+						dirty ? "Save and reload" : "Close",
+					];
+					const choice = await ctx.ui.select("Optional gentle-pi extensions (all disabled by default)", items);
+					if (choice === undefined || choice === "Close") return;
+					if (choice === "Save and reload") {
+						const latest = resolveOptionalExtensionsPolicy({ gentlePiConfigHome: configHome }).enabled;
+						writeOptionalExtensionsPolicy(mergeSetEdits(latest, initial, selected), { gentlePiConfigHome: configHome });
+						await ctx.reload();
+						return;
+					}
+					if (choice === "enable-all") {
+						for (const id of OPTIONAL_EXTENSION_IDS) selected.add(id);
+						dirty = true;
+						continue;
+					}
+					if (choice === "disable-all") {
+						selected.clear();
+						dirty = true;
+						continue;
+					}
+					const id = choice.replace(/^\[[ x]\]\s+/, "");
+					if (isOptionalExtensionId(id)) {
+						if (selected.has(id)) selected.delete(id);
+						else selected.add(id);
+						dirty = true;
+					}
+				}
+			}
+			const [verb, target] = trimmed.split(/\s+/, 2);
+			if (!verb || verb === "status") {
+				ctx.ui.notify(
+					`Optional extensions enabled (${current.enabled.length}/${OPTIONAL_EXTENSION_IDS.length}): ${current.enabled.length ? current.enabled.join(", ") : "none"} (file: ${current.globalFile})`,
+					"info",
+				);
+				return;
+			}
+			if (verb === "enable-all") {
+				writeOptionalExtensionsPolicy(OPTIONAL_EXTENSION_IDS, { gentlePiConfigHome: gentlePiConfigHome(env) });
+				ctx.ui.notify(`Enabled all optional extensions (${OPTIONAL_EXTENSION_IDS.join(", ")}). Run /reload to apply.`, "info");
+				return;
+			}
+			if (verb === "disable-all") {
+				writeOptionalExtensionsPolicy([], { gentlePiConfigHome: gentlePiConfigHome(env) });
+				ctx.ui.notify("Disabled all optional extensions. Run /reload to apply.", "info");
+				return;
+			}
+			if ((verb === "enable" || verb === "disable") && target && isOptionalExtensionId(target)) {
+				const next = new Set<OptionalExtensionId>(current.enabled);
+				if (verb === "enable") next.add(target);
+				else next.delete(target);
+				writeOptionalExtensionsPolicy([...next], { gentlePiConfigHome: gentlePiConfigHome(env) });
+				ctx.ui.notify(`${verb === "enable" ? "Enabled" : "Disabled"} ${target}. Run /reload to apply.`, "info");
+				return;
+			}
+			ctx.ui.notify(
+				`Use /gentle:extensions [status|enable <id>|disable <id>|enable-all|disable-all]. Valid ids: ${OPTIONAL_EXTENSION_IDS.join(", ")}`,
+				"warning",
+			);
+		},
+	});
+	pi.registerCommand("gentle:odd-slim", {
+		description: "Configure ODD-slim mode and choose which optional ODD modules (tracking, verification, 4r-review, judgment-day) load by default.",
+		handler: async (args, ctx) => {
+			const trimmed = args.trim();
+			const configHome = gentlePiConfigHome(env);
+			const current = resolveOddSlimPolicy({ gentlePiConfigHome: configHome }).policy;
+			if (!trimmed && ctx.hasUI && typeof ctx.ui.select === "function") {
+				const initialEnabled = current.enabled;
+				const initialModules = new Set<OddOptionalModule>(current.modules);
+				let enabled = current.enabled;
+				const modules = new Set<OddOptionalModule>(current.modules);
+				let dirty = false;
+				while (true) {
+					const items = [
+						`odd-slim mode: ${enabled ? "ON" : "OFF"} (toggle)`,
+						...ODD_OPTIONAL_MODULES.map((mod) => `${modules.has(mod) ? "[x]" : "[ ]"} ${mod}`),
+						dirty ? "Save" : "Close",
+					];
+					const choice = await ctx.ui.select("ODD-slim configuration", items);
+					if (choice === undefined || choice === "Close") return;
+					if (choice === "Save") {
+						const latest = resolveOddSlimPolicy({ gentlePiConfigHome: configHome }).policy;
+						const nextEnabled = enabled !== initialEnabled ? enabled : latest.enabled;
+						const nextModules = mergeSetEdits(latest.modules, initialModules, modules);
+						writeOddSlimPolicy({ enabled: nextEnabled, modules: nextModules }, { gentlePiConfigHome: configHome });
+						ctx.ui.notify(`ODD-slim: ${nextEnabled ? "on" : "off"}; optional modules: ${nextModules.length ? nextModules.join(", ") : "none"}. Applies on next turn.`, "info");
+						return;
+					}
+					if (choice.startsWith("odd-slim mode:")) {
+						enabled = !enabled;
+						dirty = true;
+						continue;
+					}
+					const mod = choice.replace(/^\[[ x]\]\s+/, "");
+					if (isOddOptionalModule(mod)) {
+						if (modules.has(mod)) modules.delete(mod);
+						else modules.add(mod);
+						dirty = true;
+					}
+				}
+			}
+			const [verb, target] = trimmed.split(/\s+/, 2);
+			if (!verb || verb === "status") {
+				ctx.ui.notify(
+					`ODD-slim: ${current.enabled ? "on" : "off"}; optional modules: ${current.modules.length ? current.modules.join(", ") : "none"}`,
+					"info",
+				);
+				return;
+			}
+			if (verb === "on" || verb === "off") {
+				writeOddSlimPolicy({ enabled: verb === "on", modules: current.modules }, { gentlePiConfigHome: configHome });
+				ctx.ui.notify(`ODD-slim: ${verb}. Applies on next turn.`, "info");
+				return;
+			}
+			if ((verb === "enable" || verb === "disable") && target && isOddOptionalModule(target)) {
+				const next = new Set<OddOptionalModule>(current.modules);
+				if (verb === "enable") next.add(target);
+				else next.delete(target);
+				writeOddSlimPolicy({ enabled: current.enabled, modules: [...next] }, { gentlePiConfigHome: configHome });
+				ctx.ui.notify(`ODD-slim module ${target}: ${verb === "enable" ? "enabled" : "disabled"}. Applies on next turn.`, "info");
+				return;
+			}
+			ctx.ui.notify(
+				`Use /gentle:odd-slim [status|on|off|enable <module>|disable <module>]. Modules: ${ODD_OPTIONAL_MODULES.join(", ")}`,
+				"warning",
+			);
+		},
+	});
+	pi.registerCommand("gentle:skills", {
+		description: "Choose which bundled gentle-pi skills are auto-loaded and indexed (keeps all skills on disk for manual invocation).",
+		handler: async (args, ctx) => {
+			const trimmed = args.trim();
+			const configHome = gentlePiConfigHome(env);
+			const current = resolveBundledSkillsPolicy({ gentlePiConfigHome: configHome });
+			if (!trimmed && ctx.hasUI && typeof ctx.ui.select === "function") {
+				const initial = new Set<BundledSkillId>(current.enabled);
+				const selected = new Set<BundledSkillId>(current.enabled);
+				let dirty = false;
+				while (true) {
+					const items = [
+						...ALL_BUNDLED_SKILLS.map((id) => `${selected.has(id) ? "[x]" : "[ ]"} ${id}`),
+						"defaults",
+						"enable-all",
+						"disable-all",
+						dirty ? "Save" : "Close",
+					];
+					const choice = await ctx.ui.select("Bundled gentle-pi skills to auto-index", items);
+					if (choice === undefined || choice === "Close") return;
+					if (choice === "Save") {
+						const latest = resolveBundledSkillsPolicy({ gentlePiConfigHome: configHome }).enabled;
+						const nextSkills = mergeSetEdits(latest, initial, selected);
+						writeBundledSkillsPolicy(nextSkills, { gentlePiConfigHome: configHome });
+						ctx.ui.notify(`Bundled skills auto-indexed (${nextSkills.length}/${ALL_BUNDLED_SKILLS.length}). Applies on next turn.`, "info");
+						return;
+					}
+					if (choice === "defaults") {
+						selected.clear();
+						for (const id of DEFAULT_ENABLED_BUNDLED_SKILLS) selected.add(id);
+						dirty = true;
+						continue;
+					}
+					if (choice === "enable-all") {
+						for (const id of ALL_BUNDLED_SKILLS) selected.add(id);
+						dirty = true;
+						continue;
+					}
+					if (choice === "disable-all") {
+						selected.clear();
+						dirty = true;
+						continue;
+					}
+					const id = choice.replace(/^\[[ x]\]\s+/, "");
+					if (isBundledSkillId(id)) {
+						if (selected.has(id)) selected.delete(id);
+						else selected.add(id);
+						dirty = true;
+					}
+				}
+			}
+			const [verb, target] = trimmed.split(/\s+/, 2);
+			if (!verb || verb === "status") {
+				ctx.ui.notify(
+					`Bundled skills auto-indexed (${current.enabled.length}/${ALL_BUNDLED_SKILLS.length}): ${current.enabled.length ? current.enabled.join(", ") : "none"}`,
+					"info",
+				);
+				return;
+			}
+			if (verb === "defaults") {
+				writeBundledSkillsPolicy(DEFAULT_ENABLED_BUNDLED_SKILLS, { gentlePiConfigHome: configHome });
+				ctx.ui.notify(`Reset bundled skills to defaults (${DEFAULT_ENABLED_BUNDLED_SKILLS.join(", ")}).`, "info");
+				return;
+			}
+			if (verb === "enable-all") {
+				writeBundledSkillsPolicy(ALL_BUNDLED_SKILLS, { gentlePiConfigHome: configHome });
+				ctx.ui.notify("Enabled auto-indexing for all 15 bundled skills.", "info");
+				return;
+			}
+			if (verb === "disable-all") {
+				writeBundledSkillsPolicy([], { gentlePiConfigHome: configHome });
+				ctx.ui.notify("Disabled auto-indexing for all bundled skills.", "info");
+				return;
+			}
+			if ((verb === "enable" || verb === "disable") && target && isBundledSkillId(target)) {
+				const next = new Set<BundledSkillId>(current.enabled);
+				if (verb === "enable") next.add(target);
+				else next.delete(target);
+				writeBundledSkillsPolicy([...next], { gentlePiConfigHome: configHome });
+				ctx.ui.notify(`${verb === "enable" ? "Enabled" : "Disabled"} auto-indexing for ${target}.`, "info");
+				return;
+			}
+			ctx.ui.notify(
+				`Use /gentle:skills [status|defaults|enable <id>|disable <id>|enable-all|disable-all].`,
+				"warning",
+			);
 		},
 	});
 	// User-owned, like gentle:background-subagents and gentle:review-mode: the

@@ -5,6 +5,8 @@ import { PROFILE_TIER_EVENT, supportsOpenAIFast } from "../lib/openai-fast-tier.
 import { isDeepStrictEqual } from "node:util";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
+import { resolveOddSlimPolicy, type OddSlimPolicy } from "../lib/odd-slim-policy.ts";
+import { filterBundledSystemPromptSkills, type SystemPromptSkillsOptions } from "../lib/bundled-skills-policy.ts";
 import { filterChildSessionContextFiles, type ContextFileOptions } from "../lib/child-context-files.ts";
 import { dataArgumentRanges, recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "../lib/yolo-temp-scratch.ts";
@@ -1527,6 +1529,7 @@ const FULL_DELEGATION_SENTENCE_REPLACEMENTS: ReadonlyArray<readonly [string, str
 const RDD_ONLY_SENTENCES: readonly string[] = [
 	" When RDD is on and native assess returns a tier, that tier wins.",
 	" (assess `escalate` when RDD is on or unknown)",
+	"\n## Gentle AI RDD ownership\n\nWhile RDD is not off, this package injects the mirrored provider-bundle review execution contract; Gentle AI writes nothing into this prompt. Absent that mirrored contract, this package invents no lifecycle instructions.\n",
 	"- An eligible interactive Pi host may resolve `gentle-ai.review-integration.consent/v3` before the envelope reaches the model. Permission: host-owned. If `gentle_review` returns the envelope unresolved, it is still the original provider-owned two-choice contract. Use `ask_user_choice` exactly or relay losslessly and stop. Never add the host action to a decoded or relayed provider envelope.\n",
 	" The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch; native review runs only under the user-owned RDD switch.",
 ];
@@ -1553,6 +1556,32 @@ function projectOddStepsForMode(steps: string, mode: OrchestratorMode): string {
 // tests/orchestrator-budget.test.ts measures; assets/orchestrator.md is
 // sized with that worst case already included. Production still resolves
 // and passes the real line (on/off/unknown) via resolveRddStatusLine.
+const DEFAULT_ODD_SLIM_POLICY: OddSlimPolicy = { enabled: false, modules: [] };
+
+function projectOrchestratorForOddSlim(text: string, oddSlim: OddSlimPolicy): string {
+	if (!oddSlim.enabled) return text;
+	const active = new Set(oddSlim.modules);
+	const lines = text.split("\n");
+	const kept: string[] = [];
+	for (const line of lines) {
+		if (!active.has("tracking") && (line.startsWith("4. **Track**") || line.includes("orchestrator-tracking.md"))) {
+			continue;
+		}
+		if (!active.has("verification") && (line.startsWith("**High risk**:") || line.startsWith("**Risk line**:") || line.startsWith("3. **Verification rule**"))) {
+			continue;
+		}
+		if (!active.has("4r-review") && line.includes("4r-review")) {
+			continue;
+		}
+		if (!active.has("judgment-day") && line.includes("judgment-day")) {
+			continue;
+		}
+		kept.push(line);
+	}
+	const enabledList = oddSlim.modules.length > 0 ? oddSlim.modules.join(", ") : "none";
+	return `${kept.join("\n")}\n\nODD-slim mode: enabled (optional modules: ${enabledList}).`;
+}
+
 const orchestratorPromptCache = new Map<string, string>();
 function getOrchestratorPrompt(
 	cwd: string = process.cwd(),
@@ -1560,6 +1589,7 @@ function getOrchestratorPrompt(
 	rddStatusLine: string = renderRddStatusLine(undefined),
 	hostMode?: string,
 	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
+	oddSlim: OddSlimPolicy = DEFAULT_ODD_SLIM_POLICY,
 ): string {
 	const background: BackgroundSubagentsRendering = {
 		policy: loadBackgroundSubagentsPolicy(cwd),
@@ -1568,10 +1598,11 @@ function getOrchestratorPrompt(
 	};
 	// The workflow mode is part of the key: without it a profile switch would keep
 	// serving the previous profile's rules for the rest of the process.
-	const cacheKey = `${background.policy}:${background.capability}:${background.singleShot}:${rddStatusLine}:${delegationMode}`;
+	const oddSlimKey = oddSlim.enabled ? `slim:${oddSlim.modules.join(",")}` : "full";
+	const cacheKey = `${background.policy}:${background.capability}:${background.singleShot}:${rddStatusLine}:${delegationMode}:${oddSlimKey}`;
 	let prompt = orchestratorPromptCache.get(cacheKey);
 	if (prompt === undefined) {
-		prompt = renderOrchestratorPrompt(ASSETS_DIR, background, rddStatusLine, delegationMode);
+		prompt = renderOrchestratorPrompt(ASSETS_DIR, background, rddStatusLine, delegationMode, oddSlim);
 		orchestratorPromptCache.set(cacheKey, prompt);
 	}
 	return prompt;
@@ -1582,9 +1613,13 @@ function renderOrchestratorPrompt(
 	background: BackgroundSubagentsRendering = DEFAULT_BACKGROUND_SUBAGENTS_RENDERING,
 	rddStatusLine: string = renderRddStatusLine(undefined),
 	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
+	oddSlim: OddSlimPolicy = DEFAULT_ODD_SLIM_POLICY,
 ): string {
 	const backgroundPolicyBlock = `${renderBackgroundSubagentsStatusLine(background)}\n${rddStatusLine}`;
-	return projectForRddState(applyDelegationMode(assetsDir, readFileSync(join(assetsDir, "orchestrator.md"), "utf8"), delegationMode), rddStatusLine)
+	return projectOrchestratorForOddSlim(
+		projectForRddState(applyDelegationMode(assetsDir, readFileSync(join(assetsDir, "orchestrator.md"), "utf8"), delegationMode), rddStatusLine),
+		oddSlim,
+	)
 		.replaceAll("{{GENTLE_PI_ASSETS_ROOT}}", assetsDir)
 		.replaceAll(
 			"{{GENTLE_PI_BACKGROUND_POLICY}}",
@@ -1769,6 +1804,7 @@ function buildGentlePrompt(
 	rddStatusLine: string = renderRddStatusLine(undefined),
 	hostMode?: string,
 	delegationMode: OrchestratorMode = DEFAULT_ORCHESTRATOR_MODE,
+	oddSlim: OddSlimPolicy = DEFAULT_ODD_SLIM_POLICY,
 ): string {
 	// cost-speed-painpoints S5, P14 (PD-57): each persona states its Spanish register once, in its
 	// own bullets, so no second Language line repeats it.
@@ -1816,11 +1852,10 @@ ${projectForRddState(projectOddStepsForMode(oddProtocolSteps(), delegationMode),
 Harness principles:
 - el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
 - Clarify scope, constraints, acceptance criteria, and non-goals when needed for the human to understand the action or to resolve consequential uncertainty. Reuse what is already established; after informed approval, proceed without repeating the clarification unless new consequential uncertainty appears.
-${testFirstPrinciple}
-- When the user asks to stop receipt-driven development, run \`gentle-ai review mode disable\` without arguing, working around it, or proposing alternatives first; never enable it unless the user explicitly asks.
+${testFirstPrinciple}${isRddStatusLineOff(rddStatusLine) ? "" : "\n- When the user asks to stop receipt-driven development, run `gentle-ai review mode disable` without arguing, working around it, or proposing alternatives first; never enable it unless the user explicitly asks."}
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 
-${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode, delegationMode)}${headlessDeliveryNote(hostMode)}`;
+${getOrchestratorPrompt(cwd, activeTools, rddStatusLine, hostMode, delegationMode, oddSlim)}${headlessDeliveryNote(hostMode)}`;
 }
 
 // Bench gate-p53-r1-BS40 x6 run 3: in a headless RPC session the ask-on-risk
@@ -13196,6 +13231,7 @@ function createGentleAiExtensionForTesting(
 					// Enter back restores them. A child or named-agent session keeps the
 					// organic rules: its own instructions are the bounded task it received.
 					isPrimarySession ? resolveSessionDelegationMode(ctx, permissionEnvironment) : DEFAULT_ORCHESTRATOR_MODE,
+					isPrimarySession ? resolveOddSlimPolicy({ gentlePiConfigHome: gentlePiConfigHome(permissionEnvironment) }).policy : DEFAULT_ODD_SLIM_POLICY,
 				)}`;
 		// gentle-pi#560 / gentle-ai#4056, #4057: inject the mirrored provider
 		// contract bundle's review execution contract for the primary session
@@ -13221,6 +13257,11 @@ function createGentleAiExtensionForTesting(
 		// throws and keeps the original files on malformed markers.
 		if (isPrimarySession && gentlePrompt !== "") {
 			filterChildSessionContextFiles(event.systemPromptOptions as ContextFileOptions | undefined);
+			filterBundledSystemPromptSkills(
+				event.systemPromptOptions as SystemPromptSkillsOptions | undefined,
+				join(PACKAGE_ROOT, "skills"),
+				{ gentlePiConfigHome: gentlePiConfigHome(permissionEnvironment) },
+			);
 		}
 		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
 		// and forwards only systemPromptOptions, so the harness is delivered

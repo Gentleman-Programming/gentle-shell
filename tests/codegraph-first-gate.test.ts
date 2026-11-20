@@ -794,13 +794,14 @@ test("(ac) an invocation a failed && guard skips never credits; a list's success
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the satisfied guard's success proves the final query ran");
 	// An error result for that shape is the undecidable one - a failed query behind a
 	// satisfied guard looks exactly like a skipped one - and an || guard stays undecidable
-	// even on success, as does a guarded invocation with commands following it.
+	// even on success, as does a guarded invocation with commands following it. Every guard
+	// in these fixtures can fail, so no result of the call alone proves the query ran.
 	fire(handlers, "before_agent_start", { messageType: "user" });
 	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ac-arm-2", args: { pattern: "symbol" } });
 	for (const [id, command, isError] of [
 		["ac3", "cd /tmp && codegraph query symbol", true],
 		["ac4", "codegraph status -p /wt || codegraph query lease", false],
-		["ac5", "true && codegraph query lease; echo done", false],
+		["ac5", "cd /tmp && codegraph query lease; echo done", false],
 	] as const) {
 		fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: id, args: { command } });
 		fire(handlers, "tool_result", { toolCallId: id, isError });
@@ -893,4 +894,200 @@ test("(ae) a batch that lists a memory read with a workspace search refuses the 
 		{ type: "toolCall", id: "m4", name: "mem_search", arguments: { query: "lease" } },
 	] } });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m4" }), undefined, "a memory-only batch is admitted");
+});
+
+test("(af) command text inside a bash comment is data: an execution named only in a comment never runs", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "af-arm", args: { pattern: "symbol" } });
+	// The semicolon and the query live inside a comment, so bash runs only `true`: no graph
+	// execution ever starts, and a successful completion credits nothing.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "af1", args: { command: "true # note; codegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "af1", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "af1" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a query named only inside a comment never credits",
+	);
+	// The same shape with an uncommented semicolon runs the query for real.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "af2", args: { command: "true; codegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "af2", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "af2" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "an actual command after an uncommented semicolon still credits");
+});
+
+test("(ag) an assignment whose value is quoted still prefixes the executable: the query runs", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	// A fresh, unsearched prompt: the read below can be blocked only by the active graph
+	// execution the query itself is, so the assertion proves the masked assignment value no
+	// longer hides the executable.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ag1", args: { command: "LC_ALL=\"C\" codegraph query lease" } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the quoted-value assignment still identifies the query execution while it runs",
+	);
+	fire(handlers, "tool_result", { toolCallId: "ag1", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ag1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a finalized query behind a quoted-value assignment credits");
+	// A wholly quoted assignment word is data, never an environment prefix: the executable
+	// stays printf and nothing graph-shaped runs.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ag-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ag2", args: { command: "printf '%s\\n' 'LC_ALL=\"C\" codegraph query lease'" } });
+	fire(handlers, "tool_result", { toolCallId: "ag2", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ag2" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a wholly quoted assignment still never credits",
+	);
+});
+
+test("(ah) an && guard guards every stage of the pipeline it introduces", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ah-arm", args: { pattern: "symbol" } });
+	// false fails, so bash skips the whole pipeline: an error result cannot tell a skipped
+	// query from a failed one, so nothing credits.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ah1", args: { command: "false && printf x | codegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "ah1", isError: true });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ah1" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a pipeline an unsatisfied guard skips never credits on error",
+	);
+	// The satisfied guard's overall success proves execution reached the pipeline's final
+	// stage: its status is the status the call reports.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ah2", args: { command: "true && printf x | codegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "ah2", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ah2" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the satisfied guard's pipeline success credits its final query");
+	// A standalone pipeline stays unguarded: any completion proves its last stage ran.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ah3", args: { command: "printf x | codegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "ah3", isError: true });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ah3" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a standalone pipeline's failed final query still ran and credits");
+});
+
+test("(ai) a subshell's commands stay under the outer list's guard", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ai-arm", args: { pattern: "symbol" } });
+	// false fails, so bash skips the whole subshell: the inner semicolon must not dissolve the
+	// outer guard, and the call's result cannot prove the inner query ran.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ai1", args: { command: "false && (true; codegraph query lease)" } });
+	fire(handlers, "tool_result", { toolCallId: "ai1", isError: true });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ai1" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a query inside a subshell an outer guard skipped never credits",
+	);
+	// An unguarded subshell always runs its unconditional inner commands, so its query
+	// credits like any unconditional position - failure included.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ai2", args: { command: "(true; codegraph query lease)" } });
+	fire(handlers, "tool_result", { toolCallId: "ai2", isError: true });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ai2" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "an unguarded subshell credits its executed query, failure included");
+});
+
+test("(aj) a trailing newline terminates the command instead of starting a following one", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "aj-arm", args: { pattern: "symbol" } });
+	// Adding a trailing newline changes nothing bash executes: the query is still the final
+	// command, so the list's success remains the proof it ran.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "aj1", args: { command: "cd /tmp && codegraph query lease\n" } });
+	fire(handlers, "tool_result", { toolCallId: "aj1", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "aj1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a trailing newline keeps the query final, so the successful list credits");
+	// A newline before a real command makes the query non-final: the follower's status is
+	// the call's result, which proves nothing about the query.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "aj-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "aj2", args: { command: "cd /tmp && codegraph query lease\necho done" } });
+	fire(handlers, "tool_result", { toolCallId: "aj2", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "aj2" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a newline before a real following command keeps the query non-final",
+	);
+});
+
+test("(ak) quoted output text is not a workspace search: only a command-position search tool counts", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	// The batch side: a read mixed with a bash call that only prints a search tool's name is
+	// not mixed with a search, so admission passes.
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "m1", name: "mem_search", arguments: { query: "lease" } },
+		{ type: "toolCall", id: "b1", name: "bash", arguments: { command: "printf '%s\\n' 'find'" } },
+	] } });
+	assert.equal(
+		fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m1" }),
+		undefined,
+		"a batch whose bash call only prints a search name does not mix the read with a search",
+	);
+	// The execution-start side: the same printing call never marks the prompt as searched.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "b1", args: { command: "printf '%s\\n' 'find'" } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "b1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "printing a search tool's name never arms the search gate");
+	// A bash call that runs a search tool in command position still arms the gate.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "b2", args: { command: "find lib -name gate.ts" } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a command-position find still arms the gate",
+	);
+	// And a batch that runs the search still refuses a read listed beside it.
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "m2", name: "mem_search", arguments: { query: "lease" } },
+		{ type: "toolCall", id: "b3", name: "bash", arguments: { command: "find lib -name gate.ts" } },
+	] } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m2" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a batch that runs find still refuses the read until credit settles",
+	);
+});
+
+test("(al) a batch that mixes a memory read with any native codegraph call - init included - refuses the read", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	// The session tool running init is an active graph execution, exactly as at execution
+	// start: the read may not be admitted beside it, whichever position lists it.
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "m1", name: "mem_search", arguments: { query: "lease" } },
+		{ type: "toolCall", id: "g1", name: "codegraph", arguments: { operation: "init" } },
+	] } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m1" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the read listed before a native init call is refused by the batch composition",
+	);
+	// The bash-run CLI form of init mixes the batch the same way.
+	fire(handlers, "message_end", { message: { role: "assistant", content: [
+		{ type: "toolCall", id: "b1", name: "bash", arguments: { command: "codegraph init" } },
+		{ type: "toolCall", id: "m2", name: "mem_search", arguments: { query: "lease" } },
+	] } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search", toolCallId: "m2" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a bash-run codegraph init mixes the batch too",
+	);
+	// Init still earns no query credit once it executes.
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "al-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_execution_start", { toolName: "codegraph", toolCallId: "g2", args: { operation: "init" } });
+	fire(handlers, "tool_result", { toolCallId: "g2", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "codegraph", toolCallId: "g2" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"an init completion never credits the window",
+	);
 });

@@ -25,7 +25,7 @@ const ids = (inventory: object) => planPreflight(inventory).actions.map((action:
 
 test("requirements follow repository metadata and native installer pin", () => {
 	const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-	assert.equal(requirements.node, pkg.engines.node.slice(2));
+	assert.equal(requirements.node, pkg.engines.node);
 	assert.equal(requirements.pi, pkg.peerDependencies["@earendil-works/pi-coding-agent"].slice(2));
 	assert.equal(requirements.pnpm, pkg.packageManager.split("@")[1]);
 	assert.equal(requirements.shell, pkg.version);
@@ -515,6 +515,19 @@ test("a bootstrap-only Node next to a persistent pnpm persists Node and npm only
 // An older Node or an incompatible pnpm on the user's PATH: the bootstrap's
 // pinned copy runs the installer (the probe's version) and the probe reports
 // the user's version as `found`. That copy is persisted; the user's stays.
+test("Node follows the supported range: 22.19 or a later 22.x, or 23.6 and newer", () => {
+	for (const version of ["21.99.99", "22.18.9", "23.0.0", "23.3.0", "23.5.9"]) {
+		const plan = planPreflight({ ...installed(), node: tool(version) });
+		assert.equal(plan.tools.node.status, "incompatible", version);
+		assert.deepEqual(plan.blockers, [{ code: "incompatible-tool", tool: "node" }], version);
+		assert.deepEqual(plan.actions, [], version);
+	}
+	for (const version of ["22.19.0", "22.99.99", "23.6.0", "24.22.2", "25.0.0"]) {
+		const plan = planPreflight({ ...installed(), node: tool(version) });
+		assert.deepEqual(plan.tools.node, { status: "reusable", required: "^22.19.0 || >=23.6.0" }, version);
+		assert.deepEqual(plan.blockers, [], version);
+	}
+});
 const runtimeStack = (node: object, pnpm: object) => ({ ...clean(), node, pnpm,
 	globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: true } });
 const pinnedNode = (found?: string) => ({ ...tool("24.21.0"), persistent: false, npm: false, ...(found ? { found } : {}) });
@@ -528,6 +541,41 @@ test("an older Node is left as it is: the pinned Node is persisted alongside ins
 	// The user's persistent pnpm stays; only Node and npm are persisted.
 	assert.deepEqual(updateIds(plan), ["persist-node", "persist-npm", "configure-npm-prefix", ...rest]);
 	assert.deepEqual(updateIds(planPreflight(runtimeStack(pinnedNode("22.18.0"), pinnedPnpm()))), ["persist-node", "persist-package-managers", "configure-npm-prefix", ...rest]);
+});
+test("a Node 23 below 23.6 is left as it is, and a supported 22.x or 23.6 found Node is not replaced", () => {
+	for (const found of ["23.0.0", "23.5.9"]) {
+		assert.deepEqual(planPreflight(runtimeStack(pinnedNode(found), { ...pinnedPnpm(), persistent: true })).tools.node,
+			{ status: "reusable", required: requirements.node, found, version: "24.21.0" }, found);
+	}
+	for (const found of ["22.19.0", "23.6.0"]) {
+		assert.deepEqual(planPreflight(runtimeStack(pinnedNode(found), { ...pinnedPnpm(), persistent: true })).tools.node,
+			{ status: "reusable", required: requirements.node }, found);
+	}
+});
+
+test("preflight carries a different global-bin Node only when it persists Node", () => {
+	const pnpm = pinnedPnpm();
+	for (const found of ["23.5.9", undefined]) {
+		const node = { ...pinnedNode(found), globalBinNode: true };
+		const input = runtimeStack(node, pnpm);
+		const before = structuredClone(input);
+		const plan = planPreflight(input);
+		const original = planPreflight(runtimeStack(pinnedNode(found), pnpm));
+		assert.deepEqual(plan.tools.node, { ...original.tools.node, globalBinNode: true });
+		assert.deepEqual(plan.actions, original.actions);
+		assert.deepEqual(plan.blockers, original.blockers);
+		assert.deepEqual(input, before);
+	}
+	const supported = { ...tool("23.6.0"), persistent: true, npm: true, globalBinNode: true };
+	assert.deepEqual(planPreflight(runtimeStack(supported, pnpm)).tools.node, { status: "reusable", required: requirements.node });
+	// Recovery, updates and blockers do not persist Node and must not change their plans.
+	for (const inventory of [partial({ node: pinnedNode("23.5.9") }),
+		{ ...installed(), node: pinnedNode(), shell: owned("3.9.0"), gentleAi: unchecked, setup: unchecked },
+		{ ...installed(), node: pinnedNode("23.5.9"), shell: owned("3.9.0"), gentleAi: unchecked, setup: unchecked }]) {
+		const original = planPreflight(inventory);
+		assert.equal(original.actions.some((action: { id: string }) => action.id === "persist-node"), false);
+		assert.deepEqual(planPreflight({ ...inventory, node: { ...inventory.node, globalBinNode: true } }), original);
+	}
 });
 
 test("an incompatible pnpm is left as it is: the pinned pnpm is persisted alongside instead of blocking", () => {

@@ -80,7 +80,7 @@ test("comment-writer is context-reactive and neutral by default for Spanish comm
 	for (const regionalDefault of [/\bAcá\b/, /\bagregá\b/, /\bpodés\b/, /\btenés\b/, /\bfijate\b/, /\bdale\b/, /\bquerés\b/i]) {
 		assert.doesNotMatch(skill, regionalDefault);
 	}
-	for (const englishExample of ["Good approach overall", "Approved. The scope is clear", "This PR exceeds the 400-line budget"]) {
+	for (const englishExample of ["Good approach overall", "Approved. The scope is clear", "This PR is large for one review"]) {
 		assert.match(skill, new RegExp(englishExample.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 	}
 });

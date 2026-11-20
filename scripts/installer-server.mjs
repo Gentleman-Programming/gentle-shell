@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
+import { nodeRequirementClauses, nodeRequirementSatisfied } from "./installer-downloads.mjs";
 import { goAcquisition, requirements } from "./installer-preflight.mjs";
 
 // Local wizard host: a dependency-free loopback HTTP server with a fixed route
@@ -248,6 +249,19 @@ const unmanaged = Object.freeze({
 	shell: "Gentle Shell is already installed, but neither pnpm nor npm manages it (a linked source checkout, for example), so this installer cannot update it. Nothing was replaced. Update it the way you installed it, then select Check again.",
 });
 const STABLE = /^v?(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/;
+/** Plain-language requirement: "1.2.0 or newer" for a minimum, and for a Node
+ * range such as ^22.19.0 || >=23.6.0 "22.19.0 or a later 22.x release, or 23.6.0 or newer". */
+function describeRequirement(required) {
+	if (STABLE.test(required)) return `${required} or newer`;
+	const clauses = nodeRequirementClauses(required);
+	if (!clauses) return null;
+	return clauses.map(({ caret, floor }) => caret ? `${floor.join(".")} or a later ${floor[0]}.x release` : `${floor.join(".")} or newer`).join(", or ");
+}
+/** A found version that does not meet a minimum or Node range; false when unknown. */
+function unmet(found, required) {
+	if (STABLE.test(required)) return older(found, required);
+	return STABLE.test(found) && nodeRequirementClauses(required) !== null && !nodeRequirementSatisfied(required, found);
+}
 function older(found, required) {
 	const [a, b] = [STABLE.exec(found), STABLE.exec(required)];
 	if (!a || !b) return false;
@@ -339,10 +353,10 @@ function blockerGuidance(blocker, inventory, plan) {
 	// An older Node left next to the bootstrap's copy is recorded in the plan.
 	const found = plan.tools?.[blocker.tool]?.found ?? inventory?.[blocker.tool]?.version;
 	const required = plan.tools?.[blocker.tool]?.required;
-	if (typeof found !== "string" || typeof required !== "string" || !older(found, required)) return fixed;
+	if (typeof found !== "string" || typeof required !== "string" || !unmet(found, required)) return fixed;
 	const version = found.replace(/^v/, "");
 	const remedy = tool.remedy ? tool.remedy(required) : "Update it";
-	return `${tool.label} ${version} is installed${tool.where}, but this installer needs ${required} or newer. Nothing was replaced. ${remedy}, then select Check again.`;
+	return `${tool.label} ${version} is installed${tool.where}, but this installer needs ${describeRequirement(required)}. Nothing was replaced. ${remedy}, then select Check again.`;
 }
 
 /** An older Pi's update names its found and target versions and the package
@@ -371,23 +385,36 @@ function actionDescription(action, plan) {
 	return actionDescriptions[action.id] ?? "Prepare the installation.";
 }
 
-/** An older Node or incompatible pnpm the plan records as left in place next to
- * the installer's pinned copy: found and pinned versions, from the plan itself.
+/** An unsupported Node or incompatible pnpm beside the installer's pinned copy:
+ * found and pinned versions, and whether persistence replaces the found Node.
  * Nothing promises PATH precedence: a version manager may prepend its own again.
  */
 function alongsideNotes(plan) {
 	const notes = [];
 	const node = plan.tools?.node;
-	if (STABLE.test(node?.found ?? "") && STABLE.test(node.version ?? "")) {
-		notes.push(`Node.js ${node.found} on this computer is older than ${node.required}, so the installer uses its pinned Node.js ${node.version} ` +
-			`and installs it under $PNPM_HOME. Your Node.js ${node.found} is left unchanged.`);
+	const needs = typeof node?.required === "string" ? describeRequirement(node.required) : null;
+	if (STABLE.test(node?.found ?? "") && STABLE.test(node.version ?? "") && needs !== null) {
+		const persisting = plan.actions.some((action) => action.id === "persist-node");
+		const replacing = node.foundInGlobalBin === true && persisting;
+		const foundOnPath = persisting && node.globalBinNode === true ? " found first on PATH" : "";
+		notes.push(replacing
+			? `Node.js ${node.found} on this computer is not a version Gentle Shell supports (it needs ${needs}). ` +
+				`Your Node.js ${node.found} is managed by pnpm under $PNPM_HOME and will be replaced by the pinned Node.js ${node.version}.`
+			: `Node.js ${node.found} on this computer is not a version Gentle Shell supports (it needs ${needs}), so the installer uses its pinned Node.js ${node.version} ` +
+				`and installs it under $PNPM_HOME. Your Node.js ${node.found}${foundOnPath} is left unchanged.`);
 	}
 	const pnpm = plan.tools?.pnpm;
 	if (STABLE.test(pnpm?.found ?? "") && STABLE.test(pnpm.version ?? "")) {
 		notes.push(`pnpm ${pnpm.found} on this computer is not a pnpm ${pnpm.version.split(".")[0]} release this installer can use, ` +
 			`so the installer uses its pinned pnpm ${pnpm.version} and installs it under $PNPM_HOME. Your pnpm ${pnpm.found} is left unchanged.`);
 	}
-	if (notes.length > 0) notes.push("A version manager such as `mise activate` may still put your own versions first on PATH in new terminals.");
+	const hasAlongside = notes.length > 0;
+	const persistNode = plan.actions.find((action) => action.id === "persist-node");
+	if (persistNode && node?.globalBinNode === true && node.foundInGlobalBin !== true) {
+		const pin = STABLE.test(persistNode.version ?? "") ? ` ${persistNode.version}` : "";
+		notes.push(`The Node.js already in $PNPM_HOME will be replaced by the pinned Node.js${pin}.`);
+	}
+	if (hasAlongside) notes.push("A version manager such as `mise activate` may still put your own versions first on PATH in new terminals.");
 	return notes;
 }
 
@@ -494,6 +521,7 @@ function planView(planId, { inventory, plan }) {
 	const changesProfile = ids.includes("setup-global-bin") || (privateHome !== null && inventory?.globalBin?.onPath !== true);
 	let tools = [];
 	const alongside = alongsideNotes(plan);
+	const replacesNode = ids.includes("persist-node") && (plan.tools?.node?.foundInGlobalBin === true || plan.tools?.node?.globalBinNode === true);
 	// A persistent pnpm next to a bootstrap-only Node is kept (persist-npm), never replaced.
 	if (ids.includes("persist-node")) tools = ids.includes("persist-npm") ? ["node", "npm"] : ["node", "npm", "pnpm"];
 	else if (ids.includes("persist-package-managers")) tools = ["npm", "pnpm"];
@@ -528,8 +556,9 @@ function planView(planId, { inventory, plan }) {
 		persistence: {
 			tools,
 			pnpmHome,
+			...(replacesNode ? { replacesNode: true } : {}),
 			description: tools.length > 0
-				? [`${tools.join(", ")} will be installed under $PNPM_HOME (${pnpmHome ?? "pnpm's home directory"}) so new terminals keep working after the temporary installer tools are removed. Existing installations are not replaced.`, ...alongside, ...(unchecked ? [unchecked] : [])].join(" ")
+				? [`${tools.join(", ")} will be installed under $PNPM_HOME (${pnpmHome ?? "pnpm's home directory"}) so new terminals keep working after the temporary installer tools are removed.${replacesNode ? "" : " Existing installations are not replaced."}`, ...alongside, ...(unchecked ? [unchecked] : [])].join(" ")
 				: unchecked ? `No runtime needs to be installed under $PNPM_HOME. ${unchecked}`
 				: "No runtime needs to be installed under $PNPM_HOME; your existing Node.js, npm and pnpm are reused.",
 		},

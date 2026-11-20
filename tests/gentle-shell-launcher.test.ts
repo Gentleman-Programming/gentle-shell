@@ -756,7 +756,7 @@ test("Pi 1.2.0 baseline and host peers follow the open development range policy"
 	const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 	assert.equal(MIN_PI_VERSION, "1.2.0");
 	assert.equal(pkg.peerDependencies["@earendil-works/pi-coding-agent"], ">=1.2.0");
-	assert.equal(pkg.engines.node, ">=22.19.0");
+	assert.equal(pkg.engines.node, "^22.19.0 || >=23.6.0");
 	for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-tui"]) {
 		assert.equal(pkg.peerDependencies[name], "*");
 		assert.equal(pkg.peerDependenciesMeta[name].optional, true);

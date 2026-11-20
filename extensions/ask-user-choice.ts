@@ -3,6 +3,7 @@ import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Input, isKeyRelease, matchesKey, Text, type KeybindingsManager, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { captureChoiceAnswer } from "../lib/auto-permission-answers.ts";
+import { publishChoiceAnswerHandle } from "../lib/desktop-feed-answers.ts";
 import { NativeChoiceList } from "../lib/native-choice-list.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { isInteractiveMode, isInteractiveRpcHost } from "../lib/rpc-host.ts";
@@ -25,10 +26,10 @@ const ChoiceParamsSchema = Type.Object(
 		options: Type.Array(ChoiceOptionSchema, {
 			minItems: 2,
 			maxItems: 4,
-			description: "Two to four ordered closed options",
+			description: "Two to four ordered options",
 		}),
 		allowCustomResponse: Type.Optional(Type.Boolean({
-			description: "Opt in to an Other… free-text response. Never enable for provider-owned consent prompts, maintenance authorizations, or any exact opaque-token decision.",
+			description: "Defaults to true: shows a \"Type your answer\" free-text entry. Set false for provider-owned consent prompts, maintenance authorizations, or any exact opaque-token decision.",
 		})),
 	},
 	{ additionalProperties: false },
@@ -53,8 +54,17 @@ interface ChoiceDetails {
 
 type ChoiceResult = ChoiceSelection | { customResponse: string };
 
+/** Visible label of the free-text entry, shared by the TUI list and the RPC dialog. */
+const CUSTOM_RESPONSE_LABEL = "Type your answer";
+const CUSTOM_RESPONSE_PLACEHOLDER = "Type your answer";
+
+/** Free text is the default; only an explicit `allowCustomResponse: false` closes the choice. */
+function allowsCustomResponse(params: Pick<ChoiceParams, "allowCustomResponse">): boolean {
+	return params.allowCustomResponse !== false;
+}
+
 class CustomResponseEditor extends Container {
-	private readonly input = new Input({ prompt: "> ", placeholder: "Type your response" });
+	private readonly input = new Input({ prompt: "> ", placeholder: CUSTOM_RESPONSE_PLACEHOLDER });
 	private readonly validationText = new Text("", 1, 0);
 	private readonly keybindings: KeybindingsManager | undefined;
 	private readonly onSubmit: (value: string) => void;
@@ -188,26 +198,27 @@ function choiceToolResult(params: ChoiceParams, selection: ChoiceResult | undefi
 	};
 }
 
-/** Label for the opt-in free-text entry appended to the RPC-dialog select options. */
-const OTHER_OPTION_LABEL = "Other…";
-
 /**
  * Interactive-RPC-host fallback: one `ctx.ui.select` over the option labels
- * (plus "Other…" when `allowCustomResponse`), then `ctx.ui.input` for the
- * free-text response. Keeps the exact TUI result shapes; a cancel at either
- * step cancels the choice, matching the TUI Escape key.
+ * (plus "Type your answer" unless `allowCustomResponse` is false), then
+ * `ctx.ui.input` for the free-text response. The dialog returns labels only,
+ * so the free-text entry is omitted when a declared option already uses its
+ * label. Keeps the exact TUI result shapes; a cancel at either step cancels
+ * the choice, matching the TUI Escape key. Typed text is never mapped to an
+ * option value.
  */
 async function askThroughDialogs(
 	ctx: Pick<ExtensionContext, "ui">,
 	params: ChoiceParams,
 ): Promise<ChoiceResult | undefined> {
 	const labels = params.options.map((choiceOption) => choiceOption.label);
-	const dialogOptions = params.allowCustomResponse === true ? [...labels, OTHER_OPTION_LABEL] : labels;
+	const offerCustom = allowsCustomResponse(params) && !labels.includes(CUSTOM_RESPONSE_LABEL);
+	const dialogOptions = offerCustom ? [...labels, CUSTOM_RESPONSE_LABEL] : labels;
 	const picked = await ctx.ui.select(params.question, dialogOptions);
 	if (picked === undefined) return undefined;
-	if (params.allowCustomResponse === true && picked === OTHER_OPTION_LABEL) {
-		const customResponse = await ctx.ui.input(params.question, "Type your response");
-		return customResponse === undefined ? undefined : { customResponse };
+	if (offerCustom && picked === CUSTOM_RESPONSE_LABEL) {
+		const customResponse = await ctx.ui.input(params.question, CUSTOM_RESPONSE_PLACEHOLDER);
+		return customResponse === undefined || customResponse.trim() === "" ? undefined : { customResponse };
 	}
 	const index = params.options.findIndex((choiceOption) => choiceOption.label === picked);
 	const option = params.options[index];
@@ -219,10 +230,15 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 		name: CHOICE_TOOL_NAME,
 		renderShell: "self",
 		label: "Ask User Choice",
-		description: "Ask one single-select question with two to four ordered options. A custom response is available only when allowCustomResponse is explicitly enabled.",
+		description: "Ask one single-select question with two to four ordered options. A \"Type your answer\" free-text entry is shown unless allowCustomResponse is false.",
+		promptSnippet: "Ask one single-select question with 2-4 options plus a default Type your answer entry",
 		promptGuidelines: [
-			"Use ask_user_choice only for one exactly representable single-select question with 2-4 ordered options. Enable allowCustomResponse only when free text is safe and intended.",
-			"Never enable allowCustomResponse for provider-owned consent prompts, maintenance authorizations, or any decision that requires an exact opaque token.",
+			"Use ask_user_choice only when a genuine human decision remains and one single-select question with two to four ordered options represents it exactly; when no genuine human decision remains, execute the authorized work without asking, and a technical decision the agent owns never becomes an ask_user_choice call.",
+			"When ask_user_choice is available for a genuine human decision it represents, use it instead of asking in text.",
+			"ask_user_choice is never a text fallback: text is the route only for a genuinely open clarification or no usable compatible interface.",
+			"Ordinary contextual approval of an action the human already understands needs no ask_user_choice call and stays valid as text, never as a provider-owned consent answer.",
+			"ask_user_choice shows a \"Type your answer\" free-text entry by default, so keep two to four concrete options and never add an Other option.",
+			"Pass allowCustomResponse: false to ask_user_choice for provider-owned consent prompts, maintenance authorizations, or any decision that requires an exact opaque token.",
 		],
 		parameters: ChoiceParamsSchema,
 		executionMode: "sequential",
@@ -250,8 +266,8 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 				description: option.description,
 			}));
 			const customItemId = "choice-custom-response";
-			if (params.allowCustomResponse === true) {
-				items.push({ id: customItemId, label: "Other…", description: "Provide a custom response" });
+			if (allowsCustomResponse(params)) {
+				items.push({ id: customItemId, label: CUSTOM_RESPONSE_LABEL, description: "Answer in your own words" });
 			}
 			let selection: ChoiceResult | undefined;
 			try {
@@ -295,13 +311,15 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 						}
 					};
 					list.onCancel = () => finish(undefined);
+					// Gentle Shell Desktop answers a session outside Herdr app through this list's own finish.
+					publishChoiceAnswerHandle(_toolCallId, params, finish, () => completed);
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 					container.addChild(new Text(theme.fg("accent", theme.bold(params.question)), 1, 0));
 					container.addChild(view);
 					container.addChild(new Text(theme.fg("dim", "↑↓ navigate • Enter select • Esc cancel"), 1, 0));
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 					return container;
-				});
+				}, { blocked: { kind: "question", message: "Choice awaiting input" } });
 			} finally {
 				pi.events.emit(ASK_USER_CHOICE_BLOCKED_EVENT, { active: false });
 			}

@@ -80,7 +80,7 @@ export async function commitSliceReport(cwd: string, git: Git = runGit): Promise
 	}
 	const head = `Commit slice: ${lines} authored changed lines in ${commits} commit${commits === 1 ? "" : "s"} on ${branch} since ${target} (lock files excluded).`;
 	return lines > SLICE_LINES
-		? `${head} Past the ~${SLICE_LINES}-line slice: apply the feature's delivery strategy before the next commit (record the slice boundary in the feature document).`
+		? `${head} Past the ~${SLICE_LINES}-line slice: record the slice boundary in the feature document; choose the delivery shape when publishing.`
 		: `${head} ${SLICE_LINES - lines} lines left before the ~${SLICE_LINES}-line slice.`;
 }
 

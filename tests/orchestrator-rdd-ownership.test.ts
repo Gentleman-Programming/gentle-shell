@@ -6,8 +6,9 @@ import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const ASSETS = join(ROOT, "assets");
+// cost-speed-painpoints S15 P5a (verdict X1): the contract is injected only while RDD is not off.
 const BOUNDARY =
-	"This package injects the mirrored provider-bundle review execution contract into this session's system prompt at start; Gentle AI writes nothing into the Pi system prompt, and this package owns everything else here. Absent that mirrored contract, this package invents no lifecycle instructions.";
+	"While RDD is not off, this package injects the mirrored provider-bundle review execution contract; Gentle AI writes nothing into this prompt. Absent that mirrored contract, this package invents no lifecycle instructions.";
 
 function read(relativePath: string): string {
 	return readFileSync(join(ROOT, relativePath), "utf8");

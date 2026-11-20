@@ -161,7 +161,7 @@ test("discoverAgents merges the four directories with project over global and su
 	assert.deepEqual(agents.map((agent) => `${agent.name}:${agent.description}:${agent.scope}`), ["gentle-ai-explore:Read-only exploration and mapping.:global", "shared:project agents:project"]);
 	assert.equal(errors.length, 1);
 	assert.match(errors[0], /broken\.md/);
-	assert.deepEqual(discoverAgents({ cwd: join(root, "empty"), home: join(root, "nohome") }), { agents: [], errors: [] });
+	assert.deepEqual(discoverAgents({ cwd: join(root, "empty"), home: join(root, "nohome") }), { agents: [], errors: [], notices: [] });
 });
 
 test("profile agent roots isolate global definitions and subagents.json while explicit homes keep their fallback", () => {
@@ -213,6 +213,15 @@ test("parseAgentsConfig resolves the tool-call stall ceiling above the idle sile
 		assert.equal(parseAgentsConfig({ tool_stall_timeout_ms: invalid }, undefined).toolStallTimeoutMs, 30 * 60_000, `invalid tool_stall_timeout_ms ${String(invalid)} must fall back to the default`);
 	}
 	assert.equal(parseAgentsConfig({ stall_timeout_ms: 45 * 60_000, tool_stall_timeout_ms: 1_000 }, undefined).toolStallTimeoutMs, 45 * 60_000, "the tool ceiling must never fall below the idle budget");
+});
+
+test("parseAgentsConfig bounds the delivered child report at 16,384 bytes unless report_max_bytes says otherwise", () => {
+	assert.equal(parseAgentsConfig(undefined, undefined).reportMaxBytes, 16_384);
+	assert.equal(parseAgentsConfig({ report_max_bytes: 8_192 }, undefined).reportMaxBytes, 8_192);
+	assert.equal(parseAgentsConfig({ report_max_bytes: 8_192 }, { report_max_bytes: 32_768 }).reportMaxBytes, 32_768);
+	for (const invalid of ["big", 0, -1, 12.5, null]) {
+		assert.equal(parseAgentsConfig({ report_max_bytes: invalid }, undefined).reportMaxBytes, 16_384, `invalid report_max_bytes ${String(invalid)} must fall back to the default`);
+	}
 });
 
 test("resolveAgentProfile prefers the profile, then the definition, then the defaults", () => {
@@ -403,4 +412,25 @@ test("resolveAgentProfile never resolves through the suggestion mapping", () => 
 	assert.equal(resolved.model?.provider, "openai-codex", "the short key must not route; the agent frontmatter model wins");
 	assert.equal(resolved.source.model, "definition");
 	assert.ok(unmatchedProfileKeys(config.modelProfiles, [worker]).some((entry) => entry.key === "worker" && entry.suggestion === "gentle-ai-worker"), "the same short key is still reported with its suggestion");
+});
+
+// gentle-shell#3386: an unknown frontmatter key was silently dropped.
+test("S5: an unknown frontmatter key warns with the key and the file, and the agent still loads", () => {
+	const home = join(root, "unknown-key-home");
+	const cwd = join(root, "unknown-key-project");
+	mkdirSync(join(cwd, ".pi/agents"), { recursive: true });
+	const file = join(cwd, ".pi/agents/picky.md");
+	writeFileSync(file, "---\nname: picky\ndescription: Picky\nmodel: some/model\nextensions: [pi-btw]\n---\nDo the work");
+	const { agents, errors, notices } = discoverAgents({ cwd, home });
+	assert.deepEqual(agents.map((agent) => agent.name), ["picky"]);
+	assert.deepEqual(errors, []);
+	assert.deepEqual(notices, [`${file}: unknown frontmatter key "extensions" is ignored`]);
+});
+
+test("S5: known frontmatter keys produce no notice", () => {
+	const home = join(root, "known-keys-home");
+	const cwd = join(root, "known-keys-project");
+	mkdirSync(join(cwd, ".pi/agents"), { recursive: true });
+	writeFileSync(join(cwd, ".pi/agents/ok.md"), "---\nname: ok\ndescription: d\nmodel: a/b\nthinking: high\nmode: read\ntools: [read]\n---\nBody");
+	assert.deepEqual(discoverAgents({ cwd, home }).notices, []);
 });

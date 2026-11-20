@@ -366,6 +366,30 @@ test("planModel discloses the PATH change and runtime persistence before consent
 		[[false, true], [false, true]]);
 });
 
+test("the consent screen does not promise no replacements for a pnpm-managed Node", async () => {
+	for (const pi of [{ available: false }, { available: true, version: "0.99.0", usable: true, owner: "pnpm" }]) {
+		const view = await serverPlanView({ node: { available: true, version: "24.21.0", usable: true, persistent: false, npm: false,
+			found: "23.5.9", foundInGlobalBin: true }, pi });
+		const screen = wizard.renderPlan(new FakeDocument(), wizard.planModel(view), { install() {}, reload() {}, close() {} });
+		assert.match(screen.textContent, /Node\.js 23\.5\.9 is managed by pnpm under \$PNPM_HOME and will be replaced by the pinned Node\.js 24\.21\.0/);
+		assert.doesNotMatch(screen.textContent, /left unchanged|Existing installations are not replaced/);
+	}
+	const plain = wizard.renderPlan(new FakeDocument(), wizard.planModel(await serverPlanView()), { install() {}, reload() {}, close() {} });
+	assert.match(plain.textContent, /The installer runs only the steps listed above\. Existing installations are not replaced\./);
+});
+
+test("the consent screen distinguishes an unchanged PATH Node from the destination Node being replaced", async () => {
+	for (const pi of [{ available: false }, { available: true, version: "0.99.0", usable: true, owner: "pnpm" }]) {
+		const view = await serverPlanView({ node: { available: true, version: "24.21.0", usable: true, persistent: false, npm: false,
+			found: "23.5.9", globalBinNode: true }, pi });
+		const screen = wizard.renderPlan(new FakeDocument(), wizard.planModel(view), { install() {}, reload() {}, close() {} });
+		assert.doesNotMatch(screen.textContent, /Existing installations are not replaced/);
+		assert.match(screen.textContent, /Your Node\.js 23\.5\.9 found first on PATH is left unchanged\./);
+		assert.match(screen.textContent, /The Node\.js already in \$PNPM_HOME will be replaced by the pinned Node\.js 24\.21\.0\./);
+		assert.match(screen.textContent, /The installer runs only the steps listed above\./);
+	}
+});
+
 // A missing Git is noted on the review screen, never as a blocker: the plan stays installable.
 test("the review screen notes a missing Git and stays installable", async () => {
 	const model = wizard.planModel(await serverPlanView({ git: { available: false } }));
@@ -422,7 +446,9 @@ test("planModel turns preflight blockers into guidance and offers no install", a
 	assert.equal(model.kind, "blocked");
 	assert.equal(model.blockers.length, 1);
 	assert.equal(model.blockers[0].toolLabel, "Node.js");
-	assert.equal(model.blockers[0].guidance, "Node.js 18.0.0 is installed, but this installer needs 22.19.0 or newer. Nothing was replaced. Update it, then select Check again.");
+	assert.equal(model.blockers[0].guidance, "Node.js 18.0.0 is installed, but this installer needs 22.19.0 or a later 22.x release, or 23.6.0 or newer. Nothing was replaced. Update it, then select Check again.");
+	const node23 = wizard.planModel(await serverPlanView({ node: { available: true, version: "23.3.0", usable: true, persistent: true, npm: true } }));
+	assert.equal(node23.blockers[0].guidance, "Node.js 23.3.0 is installed, but this installer needs 22.19.0 or a later 22.x release, or 23.6.0 or newer. Nothing was replaced. Update it, then select Check again.");
 	for (const code of Object.keys(guidance.blockers)) {
 		const rendered = wizard.planModel({ planId: "p", ready: false, actions: [], blockers: [{ code, tool: "pnpm", guidance: guidance.blockers[code] }],
 			profileChange: { changesProfile: false, binDir: null, description: "x" }, persistence: { tools: [], pnpmHome: null, description: "y" } });

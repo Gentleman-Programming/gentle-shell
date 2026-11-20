@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gentle Shell — The Gentleman Club</title>
+<style>
+:root{
+  --bg:#1a1218;--bg-deep:#000000;--surface:#20161e;--surface-1:#241822;--surface-2:#342230;
+  --border:#342230;--border-soft:#ffffff17;--text:#f6eff3;--text-muted:#a78e9b;--text-faint:#76616b;
+  --accent:#f095c8;--accent-strong:#ff76c3;--accent-soft:#ffb1dd;--success:#b4e7c7;--warning:#e0c27a;--error:#ff718f;--info:#a9c7ee;
+  /* brand neon (channel identity), used only for world signage */
+  --brand-violet:#9146ff;
+  --font-sans:Inter,"SF Pro Text",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:"IosevkaTerm NF","Iosevka Term","JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  --radius-sm:8px;--radius-md:12px;--radius-pill:999px;--glow:0 10px 30px #f095c84d;--ease:cubic-bezier(.4,0,.2,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark}
+body{background:var(--bg-deep);color:var(--text);font:15px/1.5 var(--font-sans);height:100vh;overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+svg#w{display:block;width:100vw;height:100vh;cursor:grab;touch-action:none}
+svg#w.drag{cursor:grabbing}
+.hot{cursor:pointer}
+.hot:focus{outline:none}
+.hot:hover .hl,.hot:focus-visible .hl{opacity:1}
+.hl{opacity:0;transition:opacity .2s var(--ease)}
+
+.top{position:fixed;top:0;left:0;right:0;height:44px;display:flex;align-items:center;gap:14px;padding:0 16px 0 88px;
+  background:linear-gradient(180deg,#000000cc,transparent);pointer-events:none}
+.top > *{pointer-events:auto}
+.brand{display:flex;align-items:center;gap:8px;font-weight:800}
+.seg{display:flex;padding:3px;border-radius:var(--radius-sm);background:#20161ecc;border:1px solid var(--border-soft)}
+.seg button{padding:3px 12px;border-radius:6px;font-size:13px;color:var(--text-muted)}
+.seg button[aria-pressed="true"]{background:var(--surface-2);color:var(--text)}
+.sum{font-size:13.5px;color:var(--text-muted)}
+.sum button{color:var(--warning);font-weight:600}
+.sum button:hover{text-decoration:underline}
+.spacer{flex:1}
+.btn{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:7px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);font-weight:600;font-size:14px;background:#20161ecc}
+.btn:hover{border-color:var(--accent);color:var(--accent-soft)}
+.btn.primary{background:var(--accent);color:var(--bg);border-color:var(--accent);box-shadow:var(--glow)}
+.btn.primary:hover{color:var(--bg)}
+.btn.sm{min-height:30px;padding:3px 12px;font-size:13px}
+
+/* the Gentleman: the guide */
+.guide{position:fixed;left:20px;bottom:20px;display:flex;align-items:flex-end;gap:10px;max-width:420px}
+.gface{width:76px;height:76px;flex:none;border-radius:18px;background:#000000e6;border:1px solid #ff76c366;box-shadow:0 0 24px #ff76c340}
+.say{background:#20161ef2;border:1px solid var(--border);border-radius:14px 14px 14px 4px;padding:12px 14px;font-size:14px}
+.say b{font-weight:600}
+.say .acts{display:flex;gap:12px;margin-top:6px;font-size:13.5px}
+.say .acts button{color:var(--accent);font-weight:600}
+.say .acts button.dim{color:var(--text-muted);font-weight:400}
+
+/* selection card: details only on demand */
+.card{position:fixed;left:50%;bottom:24px;transform:translate(-50%,12px);width:min(540px,calc(100vw - 32px));opacity:0;pointer-events:none;
+  background:#20161ef5;border:1px solid var(--border);border-radius:16px;box-shadow:0 24px 60px #00000073,0 0 40px #f095c81a;padding:16px 18px;transition:.22s var(--ease)}
+.card.open{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+.card-h{display:flex;align-items:center;gap:12px}
+.ico{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;background:#000;border:1px solid var(--border)}
+.card h2{font-size:16px;font-weight:700;line-height:1.2}
+.card .sub{font-size:13px;color:var(--text-muted)}
+.x{margin-left:auto;width:30px;height:30px;border-radius:8px;color:var(--text-muted)}
+.x:hover{background:var(--surface-2);color:var(--text)}
+.card p.msg{margin-top:12px;font-size:15px}
+.acts2{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+details{margin-top:12px;border-top:1px solid var(--border-soft);padding-top:8px}
+summary{list-style:none;cursor:pointer;font-size:13.5px;color:var(--text-muted);display:flex;gap:8px;align-items:center}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸";font-size:11px;transition:transform .2s var(--ease)}
+details[open] summary::before{transform:rotate(90deg)}
+summary:hover{color:var(--text)}
+.kv{display:grid;grid-template-columns:1fr auto;gap:3px 16px;font-size:13px;margin:8px 0 0 19px}
+.kv span:nth-child(odd){color:var(--text-muted)}
+.kv span:nth-child(even){font-family:var(--font-mono);font-size:12.5px}
+
+.zoom{position:fixed;right:16px;bottom:20px;display:grid;gap:4px}
+.zoom button{width:36px;height:36px;border-radius:var(--radius-sm);background:#20161ee6;border:1px solid var(--border);color:var(--text-muted);font-size:16px}
+.zoom button:hover{color:var(--text);border-color:var(--accent)}
+@keyframes bob{50%{transform:translateY(-3px)}}
+.bubble{animation:bob 1.6s var(--ease) infinite}
+@keyframes flick{0%,100%{opacity:1}92%{opacity:1}94%{opacity:.55}96%{opacity:1}}
+.neon{animation:flick 7s linear infinite}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<svg id="w" role="application" aria-label="The Gentleman Club: each room is a project, each person an agent. Drag to look around, scroll to zoom."></svg>
+
+<header class="top">
+  <div class="brand"><svg width="30" height="14" viewBox="-56 -12 112 24" aria-hidden="true"><path id="mlogo" fill="#ff76c3"/></svg>gentle shell</div>
+  <div class="seg" role="group" aria-label="View"><button aria-pressed="true">Club</button><button aria-pressed="false">List</button></div>
+  <div class="sum">4 agents in the club · <button id="go-need">1 needs you</button></div>
+  <div class="spacer"></div>
+  <button class="btn sm">+ New agent</button>
+</header>
+
+<aside class="guide" id="guide" aria-label="The Gentleman, your guide">
+  <svg class="gface" viewBox="0 0 76 76" aria-hidden="true">
+    <defs><filter id="gglow"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+    <g fill="none" stroke="#ff76c3" stroke-width="2.4" stroke-linecap="round" filter="url(#gglow)">
+      <path d="M22 30 Q28 24 34 29"/>            <!-- raised eyebrow -->
+      <path d="M43 31 Q49 30 54 32"/>
+      <circle cx="28" cy="36" r="2" fill="#ff76c3"/><circle cx="48" cy="37" r="2" fill="#ff76c3"/>
+    </g>
+    <g transform="translate(38 51) scale(.42)" filter="url(#gglow)"><path id="mface" fill="#ff76c3"/></g>
+  </svg>
+  <div class="say" id="say">
+    <div><b>Good evening.</b> <span id="say-t">Token refresh fix has a question for you.</span></div>
+    <div class="acts"><button id="say-go">Take me there</button><button class="dim" id="say-later">Later</button></div>
+  </div>
+</aside>
+
+<section class="card" id="card" aria-live="polite" aria-label="Selection">
+  <div class="card-h"><span class="ico" id="c-ico"></span><div><h2 id="c-name"></h2><div class="sub" id="c-sub"></div></div><button class="x" id="c-x" aria-label="Close">✕</button></div>
+  <p class="msg" id="c-msg"></p>
+  <div class="acts2" id="c-acts"></div>
+  <details id="c-more"><summary id="c-sum">Details</summary><div class="kv" id="c-kv"></div></details>
+</section>
+
+<div class="zoom"><button id="zi" aria-label="Zoom in">+</button><button id="zo" aria-label="Zoom out">−</button><button id="zc" aria-label="Center the club">◎</button></div>
+
+<script>
+const NS='http://www.w3.org/2000/svg', svg=document.getElementById('w');
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const T={bg:'#1a1218',deep:'#000000',s:'#20161e',s1:'#241822',s2:'#342230',text:'#f6eff3',muted:'#a78e9b',faint:'#76616b',
+  acc:'#f095c8',neon:'#ff76c3',accS:'#ffb1dd',ok:'#b4e7c7',warn:'#e0c27a',info:'#a9c7ee',vio:'#9146ff'};
+const hx=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16));
+const mix=(a,b,t)=>'#'+hx(a).map((v,i)=>Math.round(v+(hx(b)[i]-v)*t).toString(16).padStart(2,'0')).join('');
+let world;
+const el=(n,a={},p)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);(p||world).appendChild(e);return e};
+const TW=64,TH=32,P=(x,y,z=0)=>[(x-y)*TW/2,(x+y)*TH/2-z],pts=a=>a.map(p=>p.join(',')).join(' ');
+
+// the curly mustache: one half, mirrored
+const half='M0,2 C-6,-6 -20,-9 -32,-3 C-41,2 -46,-2 -47,-8 C-52,-1 -48,9 -36,9 C-24,9 -10,6 0,7 Z';
+const must=`${half} M0,2 C6,-6 20,-9 32,-3 C41,2 46,-2 47,-8 C52,-1 48,9 36,9 C24,9 10,6 0,7 Z`;
+document.getElementById('mlogo').setAttribute('d',must);document.getElementById('mface').setAttribute('d',must);
+
+const defs=document.createElementNS(NS,'defs');svg.appendChild(defs);
+defs.innerHTML=`<filter id="neon" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<radialGradient id="pink"><stop offset="0" stop-color="${T.neon}" stop-opacity=".32"/><stop offset="1" stop-color="${T.neon}" stop-opacity="0"/></radialGradient>
+<radialGradient id="violet"><stop offset="0" stop-color="${T.vio}" stop-opacity=".34"/><stop offset="1" stop-color="${T.vio}" stop-opacity="0"/></radialGradient>
+<radialGradient id="warm"><stop offset="0" stop-color="${T.warn}" stop-opacity=".22"/><stop offset="1" stop-color="${T.warn}" stop-opacity="0"/></radialGradient>`;
+world=document.createElementNS(NS,'g');svg.appendChild(world);
+
+// ---------- floor and walls ----------
+const N=9,H=150;
+for(let y=-N;y<N;y++)for(let x=-N;x<N;x++){
+  const chk=(x+y)&1;
+  el('polygon',{points:pts([P(x,y),P(x+1,y),P(x+1,y+1),P(x,y+1)]),fill:chk?mix(T.s,T.deep,.25):mix(T.s1,T.deep,.15),stroke:mix(T.s,T.deep,.5),'stroke-width':.5});
+}
+// floor edge (front)
+el('polygon',{points:pts([P(-N,N),P(N,N),P(N,N,-10),P(-N,N,-10)]),fill:T.deep});
+el('polygon',{points:pts([P(N,-N),P(N,N),P(N,N,-10),P(N,-N,-10)]),fill:mix(T.s,T.deep,.6)});
+// back walls
+el('polygon',{points:pts([P(-N,-N),P(N,-N),P(N,-N,H),P(-N,-N,H)]),fill:mix(T.s1,T.deep,.12)});
+el('polygon',{points:pts([P(-N,-N),P(-N,N),P(-N,N,H),P(-N,-N,H)]),fill:mix(T.s1,T.deep,.32)});
+// wainscot line
+el('polyline',{points:pts([P(-N,N,34),P(-N,-N,34),P(N,-N,34)]),fill:'none',stroke:mix(T.s2,T.muted,.15),'stroke-width':1.5});
+// light pools from the signs
+const pool=(x,y,g,rx=150)=>{const [px,py]=P(x,y);el('ellipse',{cx:px,cy:py,rx,ry:rx/2,fill:`url(#${g})`})};
+pool(-5.5,-7,'pink');pool(-.5,-7.6,'pink',120);pool(5.5,-7,'violet');pool(-7.5,2.5,'pink',120);pool(-7.5,7.2,'warm',110);pool(6,4.5,'warm',140);
+
+// a sign hung on a back wall: wall 'y' runs along x at y=-N, wall 'x' runs along y at x=-N
+function wallSign(wall,pos,z,build,col){
+  const [px,py]=wall==='y'?P(pos,-N,z):P(-N,pos,z);
+  const g=el('g',{transform:`translate(${px},${py}) matrix(1,${wall==='y'?.5:-.5},0,1,0,0)`,filter:'url(#neon)',class:'neon',stroke:col,fill:'none','stroke-width':3,'stroke-linecap':'round','stroke-linejoin':'round'});
+  build(g);return g;
+}
+const txt=(g,s,x,y,size,col,anchor='middle')=>{const t=el('text',{x,y,'text-anchor':anchor,'font-size':size,'font-weight':800,'font-family':'var(--font-sans)','letter-spacing':'.12em',fill:col,stroke:'none'},g);t.textContent=s;return t};
+// gentle-ai: neon rose
+wallSign('y',-5.5,108,g=>{
+  el('path',{d:'M-70,-6 m-11,0 a11,11 0 1,0 22,0 a7,7 0 1,0 -14,0 a3.5,3.5 0 1,0 7,0'},g);
+  el('path',{d:'M-70,5 L-70,26 M-70,16 q8,-6 12,-1'},g);
+  txt(g,'GENTLE AI',-48,4,20,T.neon,'start');
+  txt(g,'workshop',-48,24,12,T.accS,'start');
+},T.neon);
+// the club sign: the mustache
+wallSign('y',-.4,118,g=>{
+  el('path',{d:must,fill:T.neon,stroke:'none',transform:'scale(.9)'},g);
+  txt(g,'THE GENTLEMAN CLUB',0,34,12,T.accS);
+},T.neon);
+// engram: neon elephant
+wallSign('y',5.6,104,g=>{
+  const e=el('g',{transform:'translate(-92,-28)'},g);
+  el('ellipse',{cx:34,cy:30,rx:24,ry:15},e);el('circle',{cx:60,cy:22,r:11},e);
+  el('ellipse',{cx:55,cy:24,rx:6,ry:9},e);el('path',{d:'M70,24 C78,36 74,48 67,48'},e);
+  el('path',{d:'M20,42 L20,52 M32,44 L32,52 M44,44 L44,52'},e);el('circle',{cx:63,cy:19,r:1.2,fill:T.vio},e);
+  txt(g,'ENGRAM',2,0,20,T.vio,'start');txt(g,'library',2,20,12,mix(T.vio,T.text,.45),'start');
+},T.vio);
+// gentle-pi: on air
+wallSign('x',2.4,104,g=>{
+  el('rect',{x:-58,y:-18,width:116,height:34,rx:8},g);txt(g,'ON AIR',0,6,18,T.neon);
+  txt(g,'gentle-pi studio',0,36,12,T.accS);
+},T.neon);
+// landing: small warm sign
+wallSign('x',7.4,92,g=>{txt(g,'LANDING',0,0,15,T.warn);txt(g,'gentleman-landing',0,18,10,mix(T.warn,T.text,.4))},T.warn);
+
+// ---------- furniture (depth sorted) ----------
+const items=[];
+function box(x,y,w,d,h,col,opt={}){items.push({k:x+w+y+d,draw:()=>{
+  const g=opt.g||el('g');
+  el('polygon',{points:pts([P(x,y+d),P(x+w,y+d),P(x+w,y+d,h),P(x,y+d,h)]),fill:mix(col,T.deep,.4)},g);
+  el('polygon',{points:pts([P(x+w,y),P(x+w,y+d),P(x+w,y+d,h),P(x+w,y,h)]),fill:mix(col,T.deep,.2)},g);
+  el('polygon',{points:pts([P(x,y,h),P(x+w,y,h),P(x+w,y+d,h),P(x,y+d,h)]),fill:col},g);
+  if(opt.after)opt.after(g);
+}})}
+// low partitions between rooms, with a neon strip
+const part=(x,y,w,d,col)=>box(x,y,w,d,16,mix(T.s2,T.deep,.2),{after:g=>{
+  el('polyline',{points:pts([P(x,y+d,16),P(x+w,y+d,16)]),stroke:col,'stroke-width':1.5,opacity:.7},g)}});
+part(-9,-2.6,7,.25,T.neon);part(-2.25,-9,.25,6.4,T.neon);part(1.75,-9,.25,6.4,T.vio);part(2,-2.6,7,.25,T.vio);
+part(-9,5.6,4,.25,T.warn);part(-5.25,-2.4,.25,11.4,T.neon);
+// desks with a glowing screen
+const desk=(x,y,glow=T.neon)=>box(x,y,1.2,.7,22,mix(T.s2,T.muted,.1),{after:g=>{
+  const [a,b]=[P(x+.25,y+.15,22),P(x+.95,y+.15,22)];
+  el('polygon',{points:pts([a,b,[b[0],b[1]-18],[a[0],a[1]-18]]),fill:mix(T.deep,glow,.35),stroke:glow,'stroke-width':1},g)}});
+desk(-7.6,-7.4);desk(-5,-7.4);desk(-7.6,-5);desk(-5,-5);
+desk(-8.3,1.6);desk(-8.3,6.6,T.warn);
+// library shelves (Engram)
+for(let i=0;i<3;i++)box(2.8+i*2,-8.8,1.6,.5,64,mix(T.s2,T.vio,.12),{after:g=>{
+  for(let r=0;r<3;r++)for(let b=0;b<6;b++){const [p]=[P(2.95+i*2+b*.23,-8.3,10+r*18)];
+    el('rect',{x:p[0]-2,y:p[1]-12,width:4,height:12,fill:[T.vio,T.info,T.accS,T.ok][(b+r+i)%4],opacity:.75},g)}}});
+// lounge: sofa, the bar (your tab), the jukebox (music)
+box(-1,3,2.6,.9,16,mix(T.s2,T.neon,.18));box(-1,3,2.6,.3,30,mix(T.s2,T.neon,.22));
+const bar={x:5.4,y:1.2,w:1,d:6};
+items.push({k:bar.x+bar.w+bar.y+bar.d,draw:()=>{
+  const g=el('g',{class:'hot',tabindex:0,role:'button','aria-label':'The bar: your tab and usage'});
+  g.addEventListener('click',e=>{e.stopPropagation();openBar()});g.addEventListener('keydown',e=>{if(e.key==='Enter'){openBar()}});
+  const {x,y,w,d}=bar,h=30,col=mix(T.s2,T.warn,.12);
+  el('polygon',{points:pts([P(x,y+d),P(x+w,y+d),P(x+w,y+d,h),P(x,y+d,h)]),fill:mix(col,T.deep,.4)},g);
+  el('polygon',{points:pts([P(x+w,y),P(x+w,y+d),P(x+w,y+d,h),P(x+w,y,h)]),fill:mix(col,T.deep,.2)},g);
+  el('polygon',{points:pts([P(x,y,h),P(x+w,y,h),P(x+w,y+d,h),P(x,y+d,h)]),fill:col},g);
+  el('polyline',{points:pts([P(x,y,h),P(x,y+d,h)]),stroke:T.warn,'stroke-width':2,filter:'url(#neon)'},g);
+  for(let i=0;i<5;i++){const [px,py]=P(x+.5,y+.6+i*1.1,h);el('rect',{x:px-2,y:py-14,width:4,height:12,rx:1.5,fill:[T.warn,T.accS,T.info][i%3]},g)}
+  const [lx,ly]=P(x+.5,y+d/2,h+46);const t=el('g',{transform:`translate(${lx},${ly})`,class:'hl'},g);
+  el('rect',{x:-70,y:-14,width:140,height:24,rx:6,fill:'#20161ee6',stroke:T.warn},t);
+  const tt=el('text',{y:3,'text-anchor':'middle','font-size':12,fill:T.text,'font-family':'var(--font-mono)'},t);tt.textContent='your tab · $3.12';
+}});
+items.push({k:9,draw:()=>{ // jukebox
+  const g=el('g',{class:'hot',tabindex:0,role:'button','aria-label':'Jukebox: play music while you work'});
+  g.addEventListener('click',e=>{e.stopPropagation();openJuke()});g.addEventListener('keydown',e=>{if(e.key==='Enter')openJuke()});
+  const [px,py]=P(1.6,7.6);
+  el('ellipse',{cx:px,cy:py,rx:60,ry:30,fill:'url(#pink)'},g);
+  el('path',{d:`M${px-16},${py} L${px-16},${py-40} A16,16 0 0 1 ${px+16},${py-40} L${px+16},${py} Z`,fill:mix(T.s2,T.neon,.25),stroke:T.neon,'stroke-width':2,filter:'url(#neon)'},g);
+  for(let i=0;i<3;i++)el('line',{x1:px-9,x2:px+9,y1:py-30+i*8,y2:py-30+i*8,stroke:T.accS,'stroke-width':2},g);
+  const t=el('g',{transform:`translate(${px},${py-70})`,class:'hl'},g);
+  el('rect',{x:-40,y:-14,width:80,height:24,rx:6,fill:'#20161ee6',stroke:T.neon},t);
+  const tt=el('text',{y:3,'text-anchor':'middle','font-size':12,fill:T.text,'font-family':'var(--font-mono)'},t);tt.textContent='jukebox';
+}});
+// hit areas for the rooms' signs
+items.sort((a,b)=>a.k-b.k).forEach(i=>i.draw());
+
+// ---------- agents ----------
+const agents=[
+  {name:'Token refresh fix',room:'gentle-ai',state:'need',x:-6.7,y:-6.3,col:T.neon,
+   msg:'One question: if the refresh request fails, should I retry once and then sign the user out with a message?',
+   acts:[['Yes, retry once','primary'],['Answer differently'],['Open session']],
+   kv:[['Step','3 of 5 · building'],['Changed','1 file · +22 −6'],['Tests','42 passed'],['Cost','$0.42 · 14 min'],['Helpers','explorer, builder']]},
+  {name:'Release notes 4.5.1',room:'gentle-ai',state:'work',x:-4.1,y:-6.3,to:[-4.1,-3.6],col:T.neon,
+   msg:'Checking the draft against the merged pull requests.',acts:[['Open session','primary'],['Stop']],kv:[['Step','4 of 5 · checking'],['Cost','$0.18 · 6 min'],['Context','21%']]},
+  {name:'Sync conflict UI',room:'engram',state:'work',x:3.4,y:-6.6,to:[7.4,-6.6],col:T.vio,
+   msg:'Reading how sync stores conflicts. Found 3 cases so far.',acts:[['Open session','primary'],['Stop']],kv:[['Step','1 of 5 · exploring'],['Cost','$0.09 · 3 min']]},
+  {name:'Herdr status v2',room:'gentle-pi',state:'done',x:-7.2,y:2.8,col:T.accS,
+   msg:'Done. 3 files changed and every test passes. Want to see the changes?',acts:[['Review changes','primary'],['Save as commit']],kv:[['Changed','3 files · +48 −2'],['Tests','18 passed'],['Cost','$0.31 · 11 min']]},
+  {name:'Hero copy',room:'gentleman-landing',state:'work',x:-7.2,y:7.8,to:[-6.2,7.8],col:T.warn,
+   msg:'Writing two options for the headline.',acts:[['Open session','primary'],['Stop']],kv:[['Step','3 of 5 · building'],['Cost','$0.05']]},
+];
+const al=el('g');
+for(const a of agents){
+  a.g=el('g',{class:'hot',tabindex:0,role:'button','aria-label':`${a.name} in ${a.room}: ${{need:'needs you',work:'working',done:'finished'}[a.state]}`},al);
+  el('ellipse',{cx:0,cy:0,rx:11,ry:5.5,fill:T.deep,opacity:.5},a.g);
+  el('ellipse',{class:'hl',cx:0,cy:0,rx:14,ry:7,fill:'none',stroke:T.acc,'stroke-width':2},a.g);
+  el('rect',{x:-6,y:-22,width:12,height:18,rx:5,fill:a.col},a.g);
+  el('circle',{cx:0,cy:-28,r:6,fill:mix(T.text,T.warn,.2)},a.g);
+  el('path',{d:half,transform:'translate(0,-25.5) scale(.11)',fill:T.deep},a.g);
+  el('path',{d:half,transform:'translate(0,-25.5) scale(-.11,.11)',fill:T.deep},a.g);
+  if(a.state!=='work'){
+    const b=el('g',{class:'bubble'},a.g),c=a.state==='need'?T.warn:T.ok;
+    el('circle',{cx:0,cy:-50,r:10,fill:c},b);el('polygon',{points:'-4,-42 4,-42 0,-36',fill:c},b);
+    const t=el('text',{x:0,y:-45.5,'text-anchor':'middle','font-size':13,'font-weight':800,fill:T.bg,'font-family':'var(--font-sans)'},b);t.textContent=a.state==='need'?'?':'✓';
+    if(a.state==='need')el('circle',{cx:0,cy:-50,r:16,fill:'none',stroke:T.warn,'stroke-opacity':.5},b);
+  }else a.spark=el('circle',{cx:9,cy:-15,r:2.5,fill:T.accS},a.g);
+  a.t=Math.random()*6;
+  a.place=()=>{let x=a.x,y=a.y;if(a.to&&!reduce){const k=(Math.sin(a.t)+1)/2;x+=(a.to[0]-a.x)*k;y+=(a.to[1]-a.y)*k}
+    const [px,py]=P(x,y);a.g.setAttribute('transform',`translate(${px},${py})`);if(a.spark)a.spark.setAttribute('opacity',.35+.65*Math.abs(Math.sin(a.t*4)))};
+  a.place();
+  a.g.addEventListener('click',e=>{e.stopPropagation();openAgent(a)});
+  a.g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openAgent(a)}});
+}
+if(!reduce){let l=performance.now();const tick=n=>{const dt=(n-l)/1000;l=n;for(const a of agents){a.t+=dt*.3;a.place()}requestAnimationFrame(tick)};requestAnimationFrame(tick)}
+
+// ---------- cards ----------
+const $=id=>document.getElementById(id),card=$('card'),guide=$('guide');
+function show(o){
+  $('c-ico').innerHTML=o.ico||'';$('c-name').textContent=o.name;$('c-sub').textContent=o.sub;$('c-msg').textContent=o.msg;
+  $('c-acts').innerHTML='';o.acts.forEach(([l,k])=>{const b=document.createElement('button');b.className='btn'+(k?' '+k:'');b.textContent=l;$('c-acts').appendChild(b)});
+  $('c-sum').textContent=o.more||'Details';$('c-kv').innerHTML=o.kv.map(([k,v])=>`<span>${k}</span><span>${v}</span>`).join('');$('c-more').open=false;
+  card.classList.add('open');guide.style.display='none';if(o.at)focusOn(...o.at);
+}
+const dot=c=>`<svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="6" fill="${c}"/></svg>`;
+const openAgent=a=>show({ico:dot(a.col),name:a.name,sub:`${a.room} · ${{need:'needs you',work:'working',done:'finished'}[a.state]}`,msg:a.msg,acts:a.acts,kv:a.kv,at:[a.x,a.y]});
+const openBar=()=>show({ico:dot(T.warn),name:'The bar',sub:'your tab and usage',msg:'This week you spent $3.12 across 31 sessions. Your plan has 64% left until Monday.',
+  acts:[['See full usage','primary'],['Set a weekly limit']],more:'Breakdown',kv:[['Opus 5.5','$2.41 · 412k tokens'],['Sonnet 5.5','$0.58 · 690k tokens'],['Helpers (subagents)','$0.13 · 9 runs'],['Cache hit','71%'],['Busiest day','Thursday']],at:[5.9,4]});
+const openJuke=()=>show({ico:dot(T.neon),name:'Jukebox',sub:'music while you work',msg:'Lo-fi for focus is ready. It pauses by itself when an agent needs you.',
+  acts:[['Play','primary'],['Choose station']],kv:[['Station','lo-fi focus'],['Pause on questions','on']],at:[1.6,7.6]});
+const openLibrary=()=>show({ico:dot(T.vio),name:'Engram library',sub:'what your agents remember',msg:'It learned 3 new things this week. Latest: “Full CLI suite needs more than Go’s 10-minute timeout.”',
+  acts:[['Browse memories','primary'],['Search']],more:'This week',kv:[['Decisions','5'],['Bug fixes','2'],['Preferences','1'],['Waiting for your review','4']],at:[5.5,-6.5]});
+// clickable areas on the walls: library and rooms
+const hit=(wall,pos,z,w,h,fn,label)=>{const [px,py]=wall==='y'?P(pos,-N,z):P(-N,pos,z);
+  const g=el('g',{class:'hot',tabindex:0,role:'button','aria-label':label,transform:`translate(${px},${py}) matrix(1,${wall==='y'?.5:-.5},0,1,0,0)`});
+  el('rect',{x:-w/2,y:-h/2,width:w,height:h,rx:10,fill:'transparent',stroke:T.acc,'stroke-width':2,class:'hl','stroke-dasharray':'4 4'},g);
+  g.addEventListener('click',e=>{e.stopPropagation();fn()});g.addEventListener('keydown',e=>{if(e.key==='Enter')fn()})};
+hit('y',5.6,98,230,90,openLibrary,'Engram library: browse memories');
+const room=(id,n,commits,at)=>()=>show({ico:dot(T.neon),name:id,sub:`${commits} commits · the room grows with them`,msg:`${n} agent${n===1?'':'s'} in this room right now.`,
+  acts:[['+ New agent here','primary'],['Changes'],['Sessions']],kv:[['Commits',String(commits)],['Spent this week','$1.40']],at});
+hit('y',-5.5,106,230,80,room('gentle-ai',2,6058,[-5.5,-5.5]),'gentle-ai workshop');
+hit('x',2.4,100,150,80,room('gentle-pi',1,3253,[-7,2.5]),'gentle-pi studio');
+$('c-x').onclick=()=>{card.classList.remove('open');guide.style.display=''};
+addEventListener('keydown',e=>{if(e.key==='Escape')$('c-x').onclick()});
+svg.addEventListener('click',()=>{if(!moved)$('c-x').onclick()});
+$('go-need').onclick=$('say-go').onclick=()=>openAgent(agents[0]);
+$('say-later').onclick=()=>{$('say-t').textContent='I’ll tap you when something needs you.';$('say-later').remove()};
+
+// ---------- camera ----------
+let vb={x:0,y:0,w:1440,h:900},moved=false,down=null;
+const apply=()=>svg.setAttribute('viewBox',`${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+const fit=()=>{const r=innerWidth/innerHeight;vb.h=820;vb.w=820*r;vb.x=-vb.w/2;vb.y=-vb.h/2-40;apply()};
+function focusOn(x,y){const [px,py]=P(x,y);vb.x=px-vb.w/2;vb.y=py-vb.h/2+80;apply()}
+function zoom(f,cx=vb.x+vb.w/2,cy=vb.y+vb.h/2){const nw=Math.min(2400,Math.max(480,vb.w*f)),k=nw/vb.w;vb.x=cx-(cx-vb.x)*k;vb.y=cy-(cy-vb.y)*k;vb.w=nw;vb.h*=k;apply()}
+svg.addEventListener('pointerdown',e=>{down={x:e.clientX,y:e.clientY,vx:vb.x,vy:vb.y};moved=false;svg.classList.add('drag')});
+addEventListener('pointermove',e=>{if(!down)return;const s=vb.w/innerWidth,dx=e.clientX-down.x,dy=e.clientY-down.y;if(Math.abs(dx)+Math.abs(dy)>4)moved=true;vb.x=down.vx-dx*s;vb.y=down.vy-dy*s;apply()});
+addEventListener('pointerup',()=>{down=null;svg.classList.remove('drag')});
+svg.addEventListener('wheel',e=>{e.preventDefault();zoom(e.deltaY>0?1.1:.9,vb.x+e.clientX*vb.w/innerWidth,vb.y+e.clientY*vb.h/innerHeight)},{passive:false});
+$('zi').onclick=()=>zoom(.85);$('zo').onclick=()=>zoom(1.15);$('zc').onclick=fit;addEventListener('resize',fit);fit();
+if(location.hash==='#bar')openBar();if(location.hash==='#library')openLibrary();if(location.hash==='#ask')openAgent(agents[0]);
+</script>
+</body>
+</html>

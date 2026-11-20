@@ -54,8 +54,11 @@ export function createOutputTail() {
 	const complete: string[] = [];
 	let partial = "";
 	let partialTruncated = false;
+	// Sticky: some output was dropped or shortened, so the tail is not complete.
+	let lost = false;
 	const bound = (line: string, truncated: boolean) => {
 		const cut = line.length > MAX_TAIL_LINE_CHARS;
+		if (cut) lost = true;
 		const kept = cut ? line.slice(-MAX_TAIL_LINE_CHARS) : line;
 		return cut || truncated ? `…${kept}` : kept;
 	};
@@ -66,17 +69,26 @@ export function createOutputTail() {
 			partial = parts.pop() ?? "";
 			for (const [index, part] of parts.entries()) {
 				complete.push(bound(clean(part), index === 0 && partialTruncated));
-				if (complete.length > TAIL_LINES) complete.shift();
+				if (complete.length > TAIL_LINES) {
+					complete.shift();
+					lost = true;
+				}
 				if (index === 0) partialTruncated = false;
 			}
 			if (partial.length > MAX_TAIL_LINE_CHARS) {
 				partial = partial.slice(-MAX_TAIL_LINE_CHARS);
 				partialTruncated = true;
+				lost = true;
 			}
 		},
 		lines(): string[] {
 			const all = partial.length > 0 ? [...complete, bound(clean(partial), partialTruncated)] : [...complete];
+			if (all.length > TAIL_LINES) lost = true;
 			return all.slice(-TAIL_LINES);
+		},
+		/** True once any output was dropped or shortened: the tail is not the whole output. */
+		truncated(): boolean {
+			return lost;
 		},
 	};
 }
@@ -94,6 +106,8 @@ export interface JobRecord {
 	readonly id: string;
 	readonly kind: JobKind;
 	readonly label: string;
+	/** The supplied label only; label itself can fall back to the command. */
+	readonly explicitLabel?: string;
 	readonly command: string;
 	readonly cwd: string;
 	readonly ownerSessionId: string;
@@ -105,6 +119,8 @@ export interface JobRecord {
 	endedAt?: number;
 	/** Last output lines; refreshed until the job ends. */
 	tail: string[];
+	/** True once the tail dropped earlier lines or shortened a line. */
+	tailTruncated?: boolean;
 	/** Monitor only: output lines reported as events so far. */
 	events?: number;
 	/** Monitor only: the mandatory timeout it was started with. */
@@ -152,10 +168,12 @@ export function createJobRegistry(deps: JobRegistryDeps) {
 		}
 		const { operations, commandPrefix } = deps.shell(request.cwd);
 		const id = `job-${++counter}`;
+		const explicitLabel = request.label?.trim() || undefined;
 		const job: JobRecord = {
 			id,
 			kind: request.kind ?? "command",
-			label: request.label?.trim() || request.command,
+			label: explicitLabel || request.command,
+			explicitLabel,
 			command: request.command,
 			cwd: request.cwd,
 			ownerSessionId: request.ownerSessionId,
@@ -190,6 +208,7 @@ export function createJobRegistry(deps: JobRegistryDeps) {
 			if (rest) {
 				tail.push(rest);
 				job.tail = tail.lines();
+				job.tailTruncated = tail.truncated();
 			}
 			emitLines(rest, true);
 		};
@@ -198,6 +217,7 @@ export function createJobRegistry(deps: JobRegistryDeps) {
 			const text = decoder.decode(data, { stream: true });
 			tail.push(text);
 			job.tail = tail.lines();
+			job.tailTruncated = tail.truncated();
 			emitLines(text, false);
 		};
 		const run = operations.exec(execCommand, request.cwd, { onData, signal: abort.signal }).then(

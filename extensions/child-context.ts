@@ -1,14 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { filterChildSessionContextFiles, type ContextFileOptions } from "../lib/child-context-files.ts";
-import { REQUESTED_TOOLS_ENV } from "../lib/agents-runner.ts";
+import { CHILD_SKILLS_CATALOG_ENV, REQUESTED_TOOLS_ENV } from "../lib/agents-runner.ts";
 import { registerCodeGraphTool } from "./codegraph-tools.ts";
 
 // gentle-shell#1587: delegated children drop the orchestrator-only gentle-ai
-// managed blocks from their context files. Gentle Agents passes this file to
-// every child with --extension because children do not load the gentle-pi
-// package in the isolated Gentle Shell home. At startup it also supplies the
-// existing CodeGraph implementation only when explicitly requested and absent
-// (the full package already registers it). Outside a child session it is inert.
+// managed blocks and the engram-protocol memory block from their context files
+// and keep everything else. Gentle Agents passes this file to every child with
+// --extension because children do not load the gentle-pi package in the
+// isolated Gentle Shell home. At startup it also supplies the existing
+// CodeGraph implementation only when explicitly requested and absent (the full
+// package already registers it). Outside a child session it is inert.
 export function createChildContextExtension(env: NodeJS.ProcessEnv = process.env): (pi: ExtensionAPI) => void {
 	return (pi) => {
 		const requested = (env[REQUESTED_TOOLS_ENV] ?? "").split(",").map(name => name.trim());
@@ -22,12 +23,25 @@ export function createChildContextExtension(env: NodeJS.ProcessEnv = process.env
 			// The filtered copies replace contextFiles on the same options object
 			// (pi-claude-bridge rebuilds its prompt from it). This never throws,
 			// keeps the original files on any error or malformed markers, and is
-			// idempotent: already-filtered content has nothing left to remove.
+			// idempotent: already-filtered content has nothing left to remove. The
+			// engram-protocol block goes too, because gentle-engram injects its own
+			// memory protocol every turn; the file on disk keeps it.
 			const options = (event as { systemPromptOptions?: ContextFileOptions | null } | undefined)?.systemPromptOptions;
 			filterChildSessionContextFiles(options);
+			dropSkillsCatalog(event, env);
 			return undefined;
 		});
 	};
+}
+
+// The runner marks the children of the package-owned generic agents, whose
+// parent passes exact skill paths. Emptying the loaded skills in place removes
+// Pi's `<available_skills>` section under every launch form, including skills
+// of a package passed with --extension, which --no-skills keeps.
+function dropSkillsCatalog(event: unknown, env: NodeJS.ProcessEnv): void {
+	if (env[CHILD_SKILLS_CATALOG_ENV] !== "1") return;
+	const skills = (event as { systemPromptOptions?: { skills?: unknown } | null } | undefined)?.systemPromptOptions?.skills;
+	if (Array.isArray(skills)) skills.length = 0;
 }
 
 export default function childContextExtension(pi: ExtensionAPI): void {

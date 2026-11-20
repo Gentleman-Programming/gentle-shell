@@ -13,38 +13,32 @@ export interface NanProviderOptions {
 
 type NanChatModelConfig = Extract<ProviderModelConfig, { type?: "chat" }>;
 
-// Pi requires numeric rates; NaN access is quota-based, so zero avoids inventing per-token pricing.
+// Pi requires numeric rates; NaN does not publish per-token prices. Zero is a placeholder, not a free-price claim.
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
 // Maintained chat subset from https://nan.builders/docs/models.
-// Decimal bounds conservatively interpret the documented 1M/262K/131K labels.
+// Decimal bounds conservatively interpret the documented 1M/262K/131K/393K/64K labels.
 // Pi models text/image inputs only; documented audio/video inputs are not advertised.
-// Reasoning shares max_tokens with the answer: 65,536 leaves answer room after a
-// 32,768 reasoning budget; DeepSeek gets a generous 131,072 output budget: NaN counts reasoning
-// against max_tokens and dense review prompts exceed 16K reasoning tokens (gentle-shell#2840). Qwen 3.8 retains its
-// published 131K output maximum. The remaining 32,768 caps are configured, not NaN-published limits.
-// Pi requires explicit max mappings to offer that level; a null hides a level Pi would otherwise
-// offer, and missing ordinary levels pass through. Each map exposes exactly the efforts NaN's
-// reasoning contract declares and sends only values NaN accepts.
-// GLM 5.3 / GLM 5.3 Flash: low · medium · high · max, fully controllable and without an off.
+// Reasoning and answer share the output budget. DeepSeek Flash uses its exact published
+// 393,216 budget and GLM 5.3 Flash its exact published 131,072 (NaN lowers anything
+// above); Qwen 3.8 Flash retains 131,000 and Gemma 4 and Qwen 3.6 retain 65,536. The
+// November larger models now publish Max answer caps (Kimi K3.1 Pro 1M, Qwen 3.8 Max
+// 131K, DeepSeek V4 Pro 393K, Hy4 64K); glm5.3 publishes no maximum and keeps 32,768.
+// Pi requires explicit xhigh/max mappings to offer those levels; missing ordinary
+// levels pass through. GLM always reasons, while none disables all other models.
 const GLM_THINKING_LEVEL_MAP: NanChatModelConfig["thinkingLevelMap"] = {
-	off: null, minimal: null, xhigh: null, max: "max",
+	off: null, xhigh: "xhigh", max: "max",
 };
-// Qwen 3.6 and Gemma 4 honor none · minimal · low · medium · high · max as depth controls.
-// DeepSeek V4 Flash, Qwen 3.8 Flash, and MiMo accept the same values while NaN manages their
-// depth itself; none disables reasoning only where NaN honors it.
 const EXTENDED_THINKING_LEVEL_MAP: NanChatModelConfig["thinkingLevelMap"] = {
-	off: "none", xhigh: null, max: "max",
+	off: "none", xhigh: "xhigh", max: "max",
+};
+// MiMo accepts minimal and xhigh as aliases for low and max respectively.
+const MIMO_THINKING_LEVEL_MAP: NanChatModelConfig["thinkingLevelMap"] = {
+	off: "none", minimal: "low", xhigh: "max", max: "max",
 };
 
-/**
- * NaN accepts `reasoning_effort` for these models but manages their depth itself, so the selected
- * level never changes it. Qwen 3.6 and Gemma 4 share the extended map yet honor the level as a
- * reasoning budget, so the distinction lives here and the shell labels only these three automatic.
- */
-export const NAN_ADAPTIVE_REASONING_MODEL_IDS: ReadonlySet<string> = new Set([
-	"deepseek-v4-flash", "qwen3.8-flash", "mimo-v2.6-flash",
-]);
+/** @deprecated The old automatic-depth classification is obsolete; efforts can affect depth. */
+export const NAN_ADAPTIVE_REASONING_MODEL_IDS: ReadonlySet<string> = new Set();
 
 export function isNanAdaptiveReasoningModel(model: { provider: string; id: string } | undefined): boolean {
 	return model !== undefined && model.provider === NAN_PROVIDER_ID && NAN_ADAPTIVE_REASONING_MODEL_IDS.has(model.id);
@@ -57,13 +51,13 @@ const CHAT_MODELS: NanChatModelConfig[] = ([
 	},
 	{
 		id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 131_072,
-		// NaN's DeepSeek route enforces this field, not max_completion_tokens.
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 393_216,
+		// Preserve the established field; NaN accepts both fields as a shared reasoning/answer budget.
 		compat: { maxTokensField: "max_tokens" },
 	},
 	{
 		id: "glm5.3-flash", name: "GLM 5.3 Flash", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: GLM_THINKING_LEVEL_MAP,
+		thinkingLevelMap: GLM_THINKING_LEVEL_MAP, maxTokens: 131_072,
 	},
 	{
 		id: "qwen3.8-flash", name: "Qwen 3.8 Flash", input: ["text", "image"], contextWindow: 1_048_576,
@@ -71,7 +65,7 @@ const CHAT_MODELS: NanChatModelConfig[] = ([
 	},
 	{
 		id: "mimo-v2.6-flash", name: "MiMo V2.6 Flash", input: ["text", "image"], contextWindow: 1_000_000,
-		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP,
+		thinkingLevelMap: MIMO_THINKING_LEVEL_MAP,
 	},
 	{
 		id: "gemma4", name: "Gemma 4", input: ["text", "image"], contextWindow: 262_000,
@@ -81,6 +75,22 @@ const CHAT_MODELS: NanChatModelConfig[] = ([
 		id: "qwen3.6", name: "Qwen 3.6", input: ["text", "image"], contextWindow: 262_000,
 		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 65_536,
 	},
+	{
+		id: "kimi-k3.1-pro", name: "Kimi K3.1 Pro", input: ["text", "image"], contextWindow: 1_000_000,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 1_000_000,
+	},
+	{
+		id: "qwen3.8-max", name: "Qwen 3.8 Max", input: ["text", "image"], contextWindow: 1_000_000,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 131_000,
+	},
+	{
+		id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", input: ["text"], contextWindow: 1_000_000,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 393_000,
+	},
+	{
+		id: "hy4", name: "Hy4", input: ["text", "image"], contextWindow: 1_000_000,
+		thinkingLevelMap: EXTENDED_THINKING_LEVEL_MAP, maxTokens: 64_000,
+	},
 ] satisfies Partial<NanChatModelConfig>[]).map((model) => ({
 	...model,
 	api: "openai-completions",
@@ -88,6 +98,9 @@ const CHAT_MODELS: NanChatModelConfig[] = ([
 	cost: ZERO_COST,
 	maxTokens: model.maxTokens ?? 32_768,
 }));
+
+/** The maintained chat catalog's ids; anything else NaN reports (a retired model) is not ours to show. */
+export const NAN_CHAT_MODEL_IDS: ReadonlySet<string> = new Set(CHAT_MODELS.map((model) => model.id));
 
 // The cold/offline baseline declares documented chat support, not key entitlement.
 // A successful live catalog remains authoritative for the credential that fetched it.
@@ -98,7 +111,8 @@ function cloneModel(model: NanChatModelConfig): NanChatModelConfig {
 		...model,
 		input: [...model.input],
 		cost: { ...model.cost },
-		thinkingLevelMap: model.thinkingLevelMap ? { ...model.thinkingLevelMap } : undefined,
+		// structuredClone keeps the declared type: Pi 1.5 types the map `unknown` under strict: false, which a spread rejects.
+		thinkingLevelMap: model.thinkingLevelMap ? structuredClone(model.thinkingLevelMap) : undefined,
 		...(model.compat ? { compat: { ...model.compat } } : {}),
 	};
 }

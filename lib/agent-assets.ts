@@ -56,7 +56,12 @@ function gentlePiAgentHome(): string {
 }
 
 
-interface ManagedAssetsManifest {
+/**
+ * What `readManagedAssetsManifestResult` reports, and the shape the installer
+ * writes. Exported so the Desktop config projection can name the type it filters
+ * without redefining it.
+ */
+export interface ManagedAssetsManifest {
 	schemaVersion: number;
 	assets: Record<string, string>;
 }
@@ -64,7 +69,6 @@ interface ManagedAssetsManifest {
 interface LegacyManagedAssetsManifest extends ManagedAssetsManifest {
 	packageVersion: string;
 }
-
 interface ManagedAssetsLockOwner {
 	schemaVersion: 1;
 	token: string;
@@ -88,7 +92,27 @@ function emptyManagedAssetsManifest(): ManagedAssetsManifest {
 }
 
 function readManagedAssetsManifest(path: string): ManagedAssetsManifest {
-	if (!existsSync(path)) return emptyManagedAssetsManifest();
+	const read = readManagedAssetsManifestResult(path);
+	return read.status === "valid" ? read.manifest : emptyManagedAssetsManifest();
+}
+
+/** Where the installer keeps its ownership manifest for one agent home. */
+export function managedAssetsManifestPath(agentHome: string): string {
+	return join(agentHome, "gentle-ai", MANAGED_ASSETS_MANIFEST);
+}
+
+/**
+ * Read-side status of the manifest, kept apart from the installer's forgiving
+ * reader so a caller can report an absent file separately from one this version
+ * cannot understand. It never writes and never repairs the file.
+ */
+export type ManagedAssetsManifestReadResult =
+	| { status: "missing" }
+	| { status: "invalid" }
+	| { status: "valid"; manifest: ManagedAssetsManifest };
+
+export function readManagedAssetsManifestResult(path: string): ManagedAssetsManifestReadResult {
+	if (!existsSync(path)) return { status: "missing" };
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
 		if (
@@ -96,16 +120,16 @@ function readManagedAssetsManifest(path: string): ManagedAssetsManifest {
 			parsed.schemaVersion !== MANAGED_ASSETS_SCHEMA_VERSION ||
 			!isRecord(parsed.assets)
 		) {
-			return emptyManagedAssetsManifest();
+			return { status: "invalid" };
 		}
 		const assets = Object.fromEntries(
 			Object.entries(parsed.assets).filter(
 				(entry): entry is [string, string] => typeof entry[1] === "string",
 			),
 		);
-		return { schemaVersion: MANAGED_ASSETS_SCHEMA_VERSION, assets };
+		return { status: "valid", manifest: { schemaVersion: MANAGED_ASSETS_SCHEMA_VERSION, assets } };
 	} catch {
-		return emptyManagedAssetsManifest();
+		return { status: "invalid" };
 	}
 }
 

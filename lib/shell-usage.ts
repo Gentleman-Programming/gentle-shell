@@ -1,5 +1,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { parseModelRef } from "./agents-config.ts";
+import { NAN_CHAT_MODEL_IDS } from "./nan-provider.ts";
 import { paintGauge, type GaugePaint } from "./shell-gauge.ts";
 
 // Gentle Shell subscription usage: the rate-limit windows each connected
@@ -132,6 +133,9 @@ const ACTIVE_MARK = "✿";
 // and answered nothing. Generic on purpose: it names no endpoint, key, or
 // account detail, exactly like the other notes here.
 export const USAGE_FETCH_FAILED_NOTE = "fetch failed · r to retry";
+// NaN bills from a shared credit pool its API keys cannot read; the quota
+// endpoint only reports legacy per-model token caps, so the panel says so.
+export const NAN_QUOTA_NOTE = "per-model token quota · not your credit balance";
 
 export interface ActiveProvider {
 	provider: string;
@@ -388,6 +392,8 @@ export function parseNanQuota(payload: unknown, now: number): ProviderUsage {
 			if (!entry || typeof entry !== "object") continue;
 			const model = entry as RawNanModel;
 			if (typeof model.model !== "string" || model.model.length === 0) continue;
+			// The payload still lists retired models; only the maintained catalog is shown.
+			if (!NAN_CHAT_MODEL_IDS.has(model.model)) continue;
 			const allowance = nanEffectiveAllowance(model);
 			// A model that reports no allowance is not drift — the dashboard draws
 			// nothing for it either, and the live payload carries such entries. A metered
@@ -484,6 +490,8 @@ export function groupUsageLimits(limits: readonly UsageLimit[]): UsageLimit[] {
 // The bar follows the model the session is using: exact allowance, then its
 // family, then the account total, then the first limit (which is what every
 // provider without raw numbers keeps using, and what a missing model keeps).
+// NaN stops after the family: its caps are per-model token quota, and a sum of
+// them would read as an account balance it is not.
 export function selectUsageLimit(usage: ProviderUsage, activeModelId?: string): UsageLimit | undefined {
 	if (!activeModelId) return usage.limits[0];
 	const exact = usage.limits.find((limit) => limit.name === activeModelId);
@@ -498,6 +506,7 @@ export function selectUsageLimit(usage: ProviderUsage, activeModelId?: string): 
 			const total = allowanceTotal(`${family}${GROUP_SUFFIX}`, members);
 			if (total) return total;
 		}
+		if (usage.provider === NAN_PROVIDER) return undefined;
 		const account = allowanceTotal(`${usage.provider}${GROUP_SUFFIX}`, usage.limits);
 		if (account) return account;
 	}
@@ -611,6 +620,7 @@ export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, wid
 			const tail = reset.length > 0 ? ` ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, reset)}` : "";
 			lines.push(`  ${theme.fg(ROLE.LABEL, row.name.padEnd(nameWidth))} ${paintMeter(row.window.usedPercent, PANEL_METER_CELLS, theme, paint)} ${theme.fg(ROLE.PERCENT, percent)}${tail}`);
 		}
+		if (usage.provider === NAN_PROVIDER) lines.push(`  ${theme.fg(ROLE.RESET, NAN_QUOTA_NOTE)}`);
 		// A failure after a good snapshot never hides either fact: the last good
 		// snapshot stays on its rows and the failed refresh says so beside it.
 		if (scope?.failed.has(row.provider)) lines.push(`  ${theme.fg(ROLE.RESET, USAGE_FETCH_FAILED_NOTE)}`);

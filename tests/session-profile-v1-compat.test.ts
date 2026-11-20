@@ -235,6 +235,26 @@ test("gap (section 10): after a startup-none clear a pin appears; a reviewer wit
 	assert.deepEqual(replayReviewerRouting("current", transcript), {}, "current keeps no session profile");
 });
 
+test("gap (section 10): at own start the frozen profile's orchestrator feeds provider review roles; v1 without A1 reads the persisted default", (t) => {
+	const agentHome = mkdtempSync(join(tmpdir(), "gentle-pi-v1-frozen-agent-home-"));
+	const previous = process.env.GENTLE_PI_AGENT_HOME;
+	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previous;
+		rmSync(agentHome, { recursive: true, force: true });
+	});
+	writeFileSync(join(agentHome, "settings.json"), JSON.stringify({ defaultProvider: "pidefault", defaultModel: "settings-model" }));
+	const transcript = { records: [], defaults: { profiles, localPin: "team" }, ownStart: true };
+	const current = replayReviewerRouting("current", transcript), v1 = replayReviewerRouting("v1", transcript);
+	assert.deepEqual(current, TEAM, "current keeps the in-memory frozen orchestrator without a startup record");
+	assert.deepEqual(roles(v1), roles(TEAM), "v1 keeps the same pinned role routing");
+	for (const role of ["review-refuter", "review-validator"]) {
+		assert.deepEqual(__testing.reviewHostRelaySelection(role, current), { selection: "openai/gpt-5", routingKey: role });
+		assert.deepEqual(v1ReviewHostRelaySelection(role, v1), { selection: "pidefault/settings-model", routingKey: role });
+	}
+});
+
 test("a startup record's orchestrator feeds the current refuter and validator; a reviewer without A1 falls back to settings.json", (t) => {
 	const agentHome = mkdtempSync(join(tmpdir(), "gentle-pi-v1-agent-home-"));
 	const previous = process.env.GENTLE_PI_AGENT_HOME;

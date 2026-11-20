@@ -12,6 +12,15 @@ const paragraph = (p: string, prefix: string) => {
   assert.ok(text, prefix);
   return text;
 };
+// The body of the module's `## Verifier preparation failure` section.
+const verifierPreparation = () => {
+  const module = read("assets/orchestrator-verification.md");
+  const start = module.indexOf("## Verifier preparation failure\n\n");
+  assert.ok(start >= 0, "verification module keeps its preparation-failure section");
+  const body = module.slice(start + "## Verifier preparation failure\n\n".length);
+  const end = body.indexOf("\n## ");
+  return end < 0 ? body : body.slice(0, end);
+};
 let cwd: string;
 let prior: string | undefined;
 before(() => {
@@ -33,21 +42,29 @@ for (const persona of ["gentleman", "neutral"] as const) {
     test(`S2-S5 delivered recovery is bounded: ${persona}/${mode}`, () => {
       const p = __testing.buildGentlePrompt(persona, join(cwd, "project"), ["read"], `Receipt-driven development: ${mode}`);
       assert.equal(p.split("## Authorized work continuity").length, 2);
-      const setup = paragraph(p, "A failed verifier setup");
+      // cost-speed-painpoints S15 P4: the setup rules live in the verification module, loaded when Verification fires;
+      // the unavailable-verifier rule stays always-on in the mirrored Close step.
+      assert.ok(!p.includes("A failed verifier setup"), "the setup paragraph left the always-on prompt");
+      const setup = paragraph(verifierPreparation(), "A failed verifier setup");
       assert.match(setup, /prerequisite is repaired, the human may explicitly request one new bounded verification attempt/);
       assert.match(setup, /zero tests run; the checks remain unverified/);
-      assert.match(setup, /unavailable verifier remains unavailable; do not retry or escalate it/);
+      assert.match(setup, /self-fix of its own setup error \(one correction in the same verification\) needs no decision/);
+      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*an unavailable verifier or subagent is reported as unavailable, never retried or escalated/);
       for (const guard of ["consent", "a denial", "one-run", "no-retry", "terminal native outcomes", "exhausted native budgets"]) assert.ok(setup.includes(guard), guard);
       assert.match(setup, /no child is active or has an uncertain status/);
       const worker = paragraph(p, "An exhausted worker-local");
-      assert.match(worker, /scope, executor, correction limit and checks/);
-      assert.match(worker, /later explicit human request is separate and remains subject to native authority/);
+      // orchestrator-owns-correction-exhaustion S1/S2: the parent owns the next step and acts on the loop's cause.
+      assert.match(worker, /not the unit; within native authority you own the next step, unasked/);
+      assert.match(worker, /never repeat an attempt or swap executors to dodge limits/);
+      assert.doesNotMatch(worker, /human-controlled|let the human stop/);
+      assert.match(worker, /later explicit requests stay subject to native authority/);
       assert.match(worker, /new session does not reset any limit/);
-      assert.match(worker, /specifically authorized.*actual native authority.*in-scope compilation or implementation/);
-      assert.match(worker, /unavailable proof still blocks completion and delivery/);
+      // harness-continuity T5: the proof boundary moved from this paragraph into the canonical Close.
+      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*proof forbids claiming completion of the affected work, never an independently authorized next step/);
       assert.match(worker, /no child is active or has an uncertain status/);
-      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*never more verification/);
+      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*stop checking only inside an exhausted or denied boundary/);
       assert.doesNotMatch(p, /Stop only for[^\n]*unavailable required proof/);
+      assert.ok(!p.includes("unavailable required proof"), "no rendered prompt stops for unavailable proof");
     });
   }
 }
@@ -67,9 +84,10 @@ test("S3-S5 parsed worker and verifier contracts retain confinement and proof li
   assert.deepEqual(verify.tools, ["read", "grep", "find", "bash", "mcp__codegraph__codegraph_explore"]);
   assert.match(verify.instructions, /Before isolated setup[^\n]*space and inodes/);
   assert.match(verify.instructions, /smaller copy[^\n]*all source, test\/build files, baseline material, and dependencies/);
-  assert.match(verify.instructions, /first inability[^\n]*stop setup/);
+  assert.match(verify.instructions, /deterministic error in a command or environment you constructed[^\n]*exactly one corrected attempt/);
+  assert.match(verify.instructions, /second failure, or at any missing or unavailable prerequisite[^\n]*stop setup/);
   assert.match(verify.instructions, /setup fails before probes[^\n]*zero tests run/);
-  assert.match(verify.instructions, /Do not retry setup or enter repair-helper loops/);
+  assert.match(verify.instructions, /No further setup retries and no repair-helper loops/);
   for (const guard of ["system temp directory", "a symlink into the workspace", "No network, no installs, no writes outside", "NODE_COMPILE_CACHE", "NO_UPDATE_NOTIFIER=1"]) assert.ok(verify.instructions.includes(guard), guard);
 });
 
@@ -80,4 +98,12 @@ test("S2-S5 user recovery docs retain the independent-proof and native-authority
   assert.match(docs, /Missing required proof still blocks completion and delivery/);
   assert.match(docs, /active or uncertain child prevents continuation/);
   assert.match(docs, /explicit one-run\/no-retry limit/);
+  // orchestrator-owns-correction-exhaustion S1/S2: the docs route worker exhaustion to the parent, not the human.
+  const start = docs.indexOf("### Parent continuation after worker correction exhaustion");
+  assert.ok(start >= 0, "docs keep the worker-exhaustion section");
+  const section = docs.slice(start, docs.indexOf("\n## ", start));
+  assert.match(section, /parent decides the next step from the returned evidence, without asking the user/);
+  assert.match(section, /never repeats the same attempt/);
+  assert.match(section, /RED construction/);
+  assert.doesNotMatch(section, /explicit human authorization/);
 });

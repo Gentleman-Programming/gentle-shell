@@ -44,15 +44,15 @@ export const goPinVersion = go.version;
 // checksums.txt and GitHub's asset digests; every archive was downloaded and
 // re-hashed before pinning. GitHub serves the assets from its asset hosts.
 const engram = Object.freeze({
-	version: "3.5.2",
+	version: "3.7.2",
 	redirectHosts: Object.freeze(["objects.githubusercontent.com", "release-assets.githubusercontent.com"]),
 	archives: Object.freeze({
-		"darwin-arm64": ["darwin_arm64.tar.gz", "43d398b2fe3327a4a6436c26b2a17d3285ba80bf2f11a22d0796ea2a7fd2b78c", 7749520],
-		"darwin-x64": ["darwin_amd64.tar.gz", "aea28ebf461a4ea86c52b793c29311539d7123875354ed7411eae982fc82ec87", 8181300],
-		"linux-x64": ["linux_amd64.tar.gz", "106a43ca8f43a27c2c260a6787151c3be6d91c5ed3d5e454e6140527adf92e01", 8064598],
-		"linux-arm64": ["linux_arm64.tar.gz", "b0ba49cf5a7d5af436c9744a9a0d638b3f9ebb2a7321c8736d30e96305c2993c", 7472279],
-		"win32-x64": ["windows_amd64.zip", "ba56a36d37b2da85fcb1581bbdbed9ae1ee690e642aab8dbe1e18209bf264afe", 8272809],
-		"win32-arm64": ["windows_arm64.zip", "df5acc5dd6ee407d484074e570c77a79567c0b8dccf55e25ae25a644c1e7db5f", 7530282],
+		"darwin-arm64": ["darwin_arm64.tar.gz", "f96e08db8f47ca49ebc034eba30e468db81eb56df98f9bf21a73366b510695e4", 8001813],
+		"darwin-x64": ["darwin_amd64.tar.gz", "d35623443a5d85e8f78338cda5d0bb73b2f7ec6217a57e4abb71904a3e0d6287", 8488340],
+		"linux-x64": ["linux_amd64.tar.gz", "8db9d5db1c1574b8b830aac4ffbe86c024014aed6b9a3f0406ac3361a152cdf0", 8365851],
+		"linux-arm64": ["linux_arm64.tar.gz", "cdbbcb68d3e842d3e52e27edccef55e6fe98ce3cdbc90cd79894323b029efb50", 7712574],
+		"win32-x64": ["windows_amd64.zip", "515a716ce966202058d4b9f310626fde72583cfc64ccefbf0dcc81456260089c", 8582764],
+		"win32-arm64": ["windows_arm64.zip", "01e4f5dab2f941cf810d1373e7c6998c014499bee9c2d5783e34da94c70ac7f2", 7780232],
 	}),
 });
 /** The Engram version the bundled install publishes under runtime/. */
@@ -205,6 +205,32 @@ export function compatibleEngine(range, version) {
 		if (actual[index] !== required[index]) return actual[index] > required[index];
 	}
 	return true;
+}
+// The repository's engines.node: clauses `^a.b.c` (a >= 1) or `>=a.b.c` joined by
+// `||`. Anything else is not a supported requirement. pnpm engine evidence keeps
+// using compatibleEngine, which accepts only one lower bound.
+const NODE_CLAUSE = /^(\^|>=)(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+export function nodeRequirementClauses(range) {
+	if (typeof range !== "string") return null;
+	const clauses = [];
+	for (const text of range.trim().split(/\s*\|\|\s*/)) {
+		const match = NODE_CLAUSE.exec(text);
+		const floor = match ? parts(`${match[2]}.${match[3]}.${match[4]}`) : null;
+		if (!floor || (match[1] === "^" && floor[0] === 0)) return null;
+		clauses.push({ caret: match[1] === "^", floor });
+	}
+	return clauses;
+}
+/** Whether a stable Node version meets the repository's engines.node range. */
+export function nodeRequirementSatisfied(range, version) {
+	const clauses = nodeRequirementClauses(range);
+	const actual = parts(version);
+	if (!clauses || !actual) return false;
+	return clauses.some(({ caret, floor }) => {
+		const index = [0, 1, 2].find((i) => actual[i] !== floor[i]);
+		const atLeast = index === undefined || actual[index] > floor[index];
+		return atLeast && (!caret || actual[0] === floor[0]);
+	});
 }
 function stat(path) {
 	try { return lstatSync(path); }
@@ -624,7 +650,7 @@ export async function bootstrap(bundle, suppliedTools, { env = process.env, adap
 	const entry = join(bundle, "bin/gentle-shell-install.mjs");
 	if (!regular(entry)) throw new Error("Future wizard entry is missing");
 	const metadata = JSON.parse(readFileSync(join(bundle, "package.json"), "utf8"));
-	if (!compatibleEngine(metadata.engines?.node, process.versions.node)) throw new Error("Node requirement rejected");
+	if (!nodeRequirementSatisfied(metadata.engines?.node, process.versions.node)) throw new Error("Node requirement rejected");
 	if (metadata.packageManager !== `pnpm@${pnpm.version}`) throw new Error("pnpm acquisition pin differs from repository; update verified descriptors first");
 	let tools = suppliedTools;
 	let created = false;

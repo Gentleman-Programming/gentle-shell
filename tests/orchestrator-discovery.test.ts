@@ -268,3 +268,31 @@ test("duplicate display names do not become routing identities", (t) => {
 		assert.deepEqual(candidates.map(c => c.workspace), ["/repo0", "/repo1"]);
 	} finally { publishers.forEach(publisher => publisher.dispose()); }
 });
+
+test("busy directories paginate so peers beyond the first 128 entries keep their label and curated state (#3185)", (t) => {
+	const profile = fixture(t);
+	// 130 live peers produce 390 presence files (header + activity + discovery each),
+	// far beyond the 128-entry first page. Before #3185 every peer beyond that page
+	// resolved to a bare unknown because discovery only ever read the first page.
+	const peers = Array.from({ length: 130 }, (_, i) => ({ ...peer, sessionId: `peer-${i}` }));
+	const publishers = peers.map((p, i) => PresencePublisher.start({ profile, sessionId: p.sessionId, label: `Peer ${i}`, activity: [] }));
+	try {
+		for (let i = 0; i < peers.length; i++) {
+			publishers[i].updateDiscovery(peers[i], { workspace: `/repo-${i}`, tasks: [], state: {
+				schema: 2, sessionId: peers[i].sessionId, cwd: "/repo", recordedAt: 1, source: "owner-curated",
+				ownerReply: false, authority: "none", state: { objective: "Ship review", work: { area: "Auth" } },
+			} });
+		}
+		assert.equal(listPresence(profile).overflow, true, "fixture must exceed the 128-entry first page");
+		const candidates = discoverOrchestrators(profile, peers);
+		assert.equal(candidates.length, peers.length);
+		for (const [i, candidate] of candidates.entries()) {
+			assert.equal(candidate.label, `Peer ${i}`, `peer-${i} label must survive pagination`);
+			assert.equal(candidate.workspace, `/repo-${i}`, `peer-${i} workspace must survive pagination`);
+		}
+		const stateOnly = discoverOrchestrators(profile, peers, Date.now(), { stateOnly: true });
+		for (const [i, candidate] of stateOnly.entries()) {
+			assert.equal(candidate.statePublished, true, `peer-${i} curated state must survive pagination`);
+		}
+	} finally { publishers.forEach(publisher => publisher.dispose()); }
+});

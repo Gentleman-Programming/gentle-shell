@@ -174,9 +174,21 @@ function summaryValue(value: unknown): string | undefined {
 	return clause.length > 0 && !HASH_PATTERN.test(clause) ? clause : undefined;
 }
 
+// A reviewer-run forecast leads with what will run (the model-run count and
+// the lenses or roles), so the cut at narrow widths drops the outcome first.
+function forecastSummary(envelope: Record<string, unknown>): string | undefined {
+	if (envelope.outcome !== "reviewer-model-run-forecast" || !isJsonObject(envelope.cost_forecast)) return undefined;
+	const runs = envelope.cost_forecast.model_runs;
+	if (typeof runs !== "number" || !Number.isSafeInteger(runs) || runs < 0) return undefined;
+	const listed = [envelope.cost_forecast.lenses, envelope.cost_forecast.roles].find(Array.isArray) ?? [];
+	const names = listed.map(summaryValue).filter((name): name is string => name !== undefined);
+	return [`${runs} model ${runs === 1 ? "run" : "runs"}`, ...(names.length > 0 ? [names.join(", ")] : [])].join(SEPARATOR);
+}
+
 export function summarizeJsonEnvelope(envelope: Record<string, unknown>): string {
 	const scopes = isJsonObject(envelope.result) ? [envelope, envelope.result] : [envelope];
-	const parts: string[] = [];
+	const forecast = forecastSummary(envelope);
+	const parts: string[] = forecast === undefined ? [] : [forecast];
 	for (const group of SUMMARY_FIELD_GROUPS) {
 		const found = scopes.flatMap((scope) => group.map((path) => summaryValue(fieldAt(scope, path)))).find((part) => part !== undefined);
 		if (found !== undefined && !parts.includes(found)) parts.push(found);

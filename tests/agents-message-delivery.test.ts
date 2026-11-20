@@ -104,3 +104,39 @@ test("dropAll clears everything across session reset", () => {
 	assert.equal(queue.pendingCount(), 0);
 	assert.equal(queue.takeDeliverable(1050, "s1", () => true).length, 0);
 });
+
+// S15 P9a: a busy parent may reach its turn boundary after the query expired;
+// the question still reaches it once, marked expired, so a late reply can go.
+const EXPIRED_LINE = "This query expired before it reached you; a reply is delivered to the task as a message.";
+
+test("a query that expires while queued is still delivered once, marked expired", () => {
+	const queue = createAgentMessageQueue();
+	queue.enqueueQuery({ id: "task-1", agent: "scout", parentSessionId: "s1" }, "q1", "Need approval", 1000);
+	queue.markQueryExpired("task-1", "q1");
+	const deliverable = queue.takeDeliverable(1050, "s1", () => true);
+	assert.equal(deliverable.length, 1);
+	assert.equal(deliverable[0]?.content, `Subagent scout asks:\nTask ID: task-1\nRequest ID: q1\nQuestion: Need approval\n${EXPIRED_LINE}`);
+	assert.equal(deliverable[0]?.requestId, "q1");
+	assert.equal((deliverable[0]?.details.gentleAgents as { expired?: boolean }).expired, true);
+	assert.equal(queue.takeDeliverable(1100, "s1", () => true).length, 0, "delivered at most once");
+});
+
+test("an expired queued query is not delivered once its task ended", () => {
+	const queue = createAgentMessageQueue();
+	queue.enqueueQuery({ id: "task-1", agent: "scout", parentSessionId: "s1" }, "q1", "Need approval", 1000);
+	queue.markQueryExpired("task-1", "q1");
+	assert.equal(queue.takeDeliverable(1050, "s1", () => false).length, 0);
+	queue.enqueueQuery({ id: "task-2", agent: "scout", parentSessionId: "s1" }, "q1", "Need approval", 1000);
+	queue.markQueryExpired("task-2", "q1");
+	queue.invalidateTask("task-2");
+	assert.equal(queue.takeDeliverable(1050, "s1", () => true).length, 0);
+});
+
+test("a query the parent already saw is not shown again when it expires", () => {
+	const queue = createAgentMessageQueue();
+	queue.enqueueQuery({ id: "task-1", agent: "scout", parentSessionId: "s1" }, "q1", "Need approval", 1000);
+	assert.equal(queue.takeDeliverable(1050, "s1", () => true).length, 1);
+	queue.markQueryExpired("task-1", "q1");
+	queue.enqueueQuery({ id: "task-1", agent: "scout", parentSessionId: "s1" }, "q1", "Need approval", 1100);
+	assert.equal(queue.takeDeliverable(1200, "s1", () => true).length, 0);
+});

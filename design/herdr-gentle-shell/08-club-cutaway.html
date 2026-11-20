@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gentle Shell — The club, cutaway</title>
+<style>
+:root{
+  --bg:#1a1218;--bg-deep:#000000;--surface:#20161e;--surface-1:#241822;--surface-2:#342230;
+  --border:#342230;--border-soft:#ffffff17;--text:#f6eff3;--text-muted:#a78e9b;--text-faint:#76616b;
+  --accent:#f095c8;--accent-strong:#ff76c3;--accent-soft:#ffb1dd;--success:#b4e7c7;--warning:#e0c27a;--info:#a9c7ee;
+  --brand-violet:#9146ff;--teal:#5ee6e6;
+  --font-mono:"IosevkaTerm NF","Iosevka Term","JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  --font-sans:Inter,"SF Pro Text",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --ease:cubic-bezier(.4,0,.2,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark}
+body{background:#0c0714;color:var(--text);font:14px/1.5 var(--font-mono);height:100vh;overflow:hidden;display:grid;place-items:center}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.stage{position:relative}
+canvas{display:block;image-rendering:pixelated}
+.stage::after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(180deg,#0000001c 0 2px,transparent 2px 4px),radial-gradient(ellipse at center,transparent 60%,#00000090 100%)}
+.px{background:#0c0714e6;border:2px solid #4a2a5e;box-shadow:inset 0 0 0 2px #0c0714,0 0 0 2px #00000080}
+
+/* HUD: only three quiet things */
+.plan{position:absolute;top:16px;left:16px;padding:8px 12px;display:grid;gap:4px;z-index:2}
+.plan .lab{font-size:12px;color:var(--text-muted);letter-spacing:.1em}
+.pips{display:flex;gap:3px}
+.pips i{width:12px;height:16px;background:#2a1640;border:1px solid #4a2a5e}
+.pips i.on{background:var(--teal);border-color:#9ff5f5;box-shadow:0 0 6px #5ee6e680}
+.plan .val{font-size:13px}
+.pause{position:absolute;top:16px;right:16px;padding:8px 14px;font-weight:700;letter-spacing:.12em;z-index:2}
+.pause[aria-pressed="true"]{color:var(--warning);border-color:var(--warning)}
+.crew{position:absolute;left:16px;top:150px;display:grid;gap:6px;z-index:2}
+.mate{display:flex;align-items:center;gap:8px;padding:5px 10px 5px 6px;font-size:12.5px;color:var(--text-muted);min-width:44px}
+.mate:hover,.mate[aria-pressed="true"]{color:var(--text);border-color:var(--accent)}
+.mate .sw{width:14px;height:18px;border:1px solid #000}
+.mate .st{margin-left:auto;font-weight:800}
+.st.need{color:var(--warning)}.st.done{color:var(--success)}.st.work{color:var(--teal)}.st.idle{color:var(--text-faint)}
+
+.tip{position:absolute;pointer-events:none;padding:4px 8px;font-size:12.5px;white-space:nowrap;transform:translate(-50%,-130%);z-index:3;display:none}
+
+/* selection strip: appears only when something is selected */
+.sel{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:none;align-items:center;gap:16px;padding:10px 14px;z-index:2;max-width:calc(100% - 32px)}
+.sel.open{display:flex}
+.sel .nm{font-weight:700}
+.sel .meta{color:var(--text-muted);font-size:12.5px}
+.btn{padding:5px 12px;border:2px solid #4a2a5e;background:#1a0f26;font-weight:700;font-size:13px}
+.btn:hover{border-color:var(--accent);color:var(--accent-soft)}
+.btn.primary{background:var(--accent);color:#1a0f26;border-color:var(--accent-soft)}
+
+/* event: calm centered panel with numbered choices */
+.event{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(560px,calc(100% - 48px));padding:18px 20px;z-index:4;display:none}
+.event.open{display:block}
+.event .from{display:flex;align-items:center;gap:8px;color:var(--warning);font-weight:700;font-size:13px;letter-spacing:.08em}
+.event p{margin:10px 0 12px;font:15px/1.6 var(--font-mono)}
+.event ol{list-style:none;display:grid;gap:2px}
+.event ol button{width:100%;text-align:left;padding:4px 6px;color:var(--teal);font-size:14.5px}
+.event ol button:hover,.event ol button:focus-visible{color:var(--accent-strong);background:#ffffff08;outline:none}
+.event .n{color:var(--text-faint);margin-right:8px}
+.event .rec{color:var(--text-muted);font-size:12px;margin-left:8px}
+.event .ans{margin-top:10px;padding-top:10px;border-top:1px dashed #4a2a5e;color:var(--accent-soft);font-size:14px;display:none}
+.event .ans.show{display:block}
+.dim{position:absolute;inset:0;background:#0c071480;z-index:3;display:none}
+.dim.open{display:block}
+.brand{position:absolute;right:16px;bottom:16px;display:flex;gap:8px;align-items:center;font:800 13px var(--font-sans);color:var(--text-muted);z-index:1}
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+  <canvas id="c" width="320" height="180" aria-label="The club in cutaway: rooms are projects, people are agents."></canvas>
+
+  <div class="plan px" aria-label="Your plan: 64% left this week">
+    <span class="lab">PLAN</span>
+    <span class="pips" id="plan"></span>
+    <span class="val">64% left · resets Monday</span>
+  </div>
+  <button class="pause px" id="pause" aria-pressed="false" title="Pause every agent (Space)">❚❚ PAUSE ALL</button>
+  <nav class="crew" id="crew" aria-label="Your agents"></nav>
+  <div class="tip px" id="tip"></div>
+  <div class="sel px" id="sel" aria-live="polite"></div>
+  <div class="dim" id="dim"></div>
+  <section class="event px" id="event" role="dialog" aria-modal="true" aria-labelledby="ev-from">
+    <div class="from" id="ev-from"></div><p id="ev-text"></p><ol id="ev-ch"></ol><div class="ans" id="ev-ans" aria-live="polite"></div>
+  </section>
+  <div class="brand"><svg width="28" height="12" viewBox="-56 -12 112 24" aria-hidden="true"><path id="ml" fill="#ff76c3"/></svg>gentle shell</div>
+</div>
+
+<script>
+document.getElementById('ml').setAttribute('d','M0,2 C-6,-6 -20,-9 -32,-3 C-41,2 -46,-2 -47,-8 C-52,-1 -48,9 -36,9 C-24,9 -10,6 0,7 Z M0,2 C6,-6 20,-9 32,-3 C41,2 46,-2 47,-8 C52,-1 48,9 36,9 C24,9 10,6 0,7 Z');
+const W=320,H=180,cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const C={neon:'#ff76c3',acc:'#f095c8',accS:'#ffb1dd',ok:'#b4e7c7',warn:'#e0c27a',info:'#a9c7ee',vio:'#9146ff',teal:'#5ee6e6',text:'#f6eff3',hull:'#1a0f26',hull2:'#2a1640',edge:'#4a2a5e'};
+const BY=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]].map(r=>r.map(v=>(v+.5)/16));
+const px=(g,x,y,c)=>{g.fillStyle=c;g.fillRect(x|0,y|0,1,1)},rect=(g,x,y,w,h,c)=>{g.fillStyle=c;g.fillRect(x|0,y|0,w|0,h|0)};
+function dgrad(g,x0,y0,x1,y1,pal){for(let y=y0;y<y1;y++){const t=(y-y0)/(y1-y0)*(pal.length-1),i=Math.min(pal.length-2,t|0),f=t-i;for(let x=x0;x<x1;x++)px(g,x,y,f>BY[y&3][x&3]?pal[i+1]:pal[i])}}
+const rnd=s=>{const v=Math.sin(s*12.9898)*43758.5453;return v-Math.floor(v)};
+const bmp=(g,rows,x,y,c,s=1)=>rows.forEach((r,j)=>[...r].forEach((ch,i)=>{if(ch==='#')rect(g,x+i*s,y+j*s,s,s,c)}));
+function neon(g,rows,x,y,c,s=1){g.globalAlpha=.22;rows.forEach((r,j)=>[...r].forEach((ch,i)=>{if(ch==='#')rect(g,x+i*s-1,y+j*s-1,s+2,s+2,c)}));g.globalAlpha=1;bmp(g,rows,x,y,c,s)}
+const F={A:['010','101','111','101','101'],B:['110','101','110','101','110'],C:['011','100','100','100','011'],D:['110','101','101','101','110'],E:['111','100','110','100','111'],G:['011','100','101','101','011'],I:['111','010','010','010','111'],L:['100','100','100','100','111'],M:['10001','11011','10101','10001','10001'],N:['1001','1101','1011','1001','1001'],O:['010','101','101','101','010'],R:['110','101','110','101','101'],T:['111','010','010','010','010'],U:['101','101','101','101','111'],' ':['00','00','00','00','00']};
+function word(g,s,x,y,c){let cx=x;for(const ch of s){const f=F[ch];neon(g,f.map(r=>r.replace(/1/g,'#').replace(/0/g,'.')),cx,y,c);cx+=f[0].length+1}}
+const MUST=['..#.........#..','.#.##.....##.#.','.#..#######..#.','..##.......##..'];
+
+// ---------- rooms (each a project or a place) ----------
+const rooms=[
+  {id:'gentle-ai',sign:'GENTLE AI',x:44,y:40,w:128,h:54,tint:'#2a1530',col:C.neon,power:3,kind:'work'},
+  {id:'engram',sign:'ENGRAM',x:176,y:40,w:120,h:54,tint:'#1f1640',col:C.vio,power:2,kind:'library'},
+  {id:'gentle-pi',sign:'ON AIR',x:44,y:100,w:76,h:54,tint:'#2a1530',col:C.neon,power:1,kind:'work'},
+  {id:'the bar',sign:'BAR',x:124,y:100,w:106,h:54,tint:'#2a1a22',col:C.warn,power:0,kind:'bar'},
+  {id:'gentleman-landing',sign:'LANDING',x:234,y:100,w:62,h:54,tint:'#22182a',col:C.teal,power:1,kind:'work'},
+];
+const LEVEL=['off','low','medium','high'];
+
+// ---------- static scene ----------
+const bg=document.createElement('canvas');bg.width=W;bg.height=H;const g=bg.getContext('2d');
+dgrad(g,0,0,W,H,['#0c0714','#1b0f3a','#3a1466','#6a1b7a','#a0287e','#d8407e','#ff9e8a']);
+for(let i=0;i<70;i++){const x=rnd(i)*W|0,y=rnd(i+40)*80|0;px(g,x,y,rnd(i+7)>.7?C.teal:'#ffffffb0')}
+// striped sun behind the club, low on the horizon
+for(let y=120;y<H;y++)for(let x=8;x<70;x++){const d=Math.hypot(x-34,y-150);if(d>26)continue;if(y>140&&(y%4)<Math.min(3,(y-140)/5))continue;px(g,x,y,y<136?'#ffe08a':y<150?'#ff9e8a':'#ff6fa8')}
+// neon horizon grid under the club
+g.globalAlpha=.5;for(let i=0;i<5;i++){rect(g,0,162+i*i*1.2,W,1,i%2?C.teal:C.neon)}for(let i=-12;i<=12;i++){for(let y=162;y<H;y++){const k=(y-162)/18;px(g,160+i*14+i*14*k*2.5,y,C.teal)}}g.globalAlpha=1;
+// hull
+rect(g,38,30,264,130,C.hull);rect(g,38,30,264,2,C.edge);rect(g,38,158,264,2,C.edge);rect(g,38,30,2,130,C.edge);rect(g,300,30,2,130,C.edge);
+g.globalAlpha=.3;rect(g,36,28,268,1,C.neon);rect(g,36,161,268,1,C.neon);g.globalAlpha=1;
+rect(g,136,20,68,10,C.hull);rect(g,136,20,68,1,C.edge);neon(g,MUST,155,21,C.neon,2);
+for(const r of rooms){
+  dgrad(g,r.x,r.y,r.x+r.w,r.y+r.h,['#120a1c',r.tint,r.tint]);
+  rect(g,r.x,r.y+r.h-3,r.w,3,'#3a2242');rect(g,r.x,r.y+r.h-3,r.w,1,'#5a3a66');
+  word(g,r.sign,r.x+5,r.y+5,r.col);
+  // light pool under the sign
+  g.globalAlpha=.25;for(let y=r.y+12;y<r.y+r.h-3;y++)for(let x=r.x;x<r.x+44;x++)if(BY[y&3][x&3]<.35*(1-(y-r.y)/r.h))px(g,x,y,r.col);g.globalAlpha=1;
+}
+// doors between rooms
+for(const [x,y] of [[172,72],[120,132],[230,132]])rect(g,x,y,4,19,'#0c0714');
+// furniture
+const desk=(x,y)=>{rect(g,x,y,22,2,'#5a3a66');rect(g,x+2,y+2,2,8,'#3a2242');rect(g,x+18,y+2,2,8,'#3a2242');rect(g,x+6,y-10,11,9,'#3a2242');rect(g,x+7,y-9,9,7,'#000')};
+desk(56,83);desk(104,83);desk(140,83);desk(58,143);desk(250,143);
+for(let y=58;y<=88;y+=10){rect(g,232,y,58,1,'#5a3a66');for(let x=233;x<289;x+=2)if(rnd(x+y)>.25)rect(g,x,y-7+(rnd(x*y)*2|0),1,7-(rnd(x*y)*2|0),[C.vio,C.info,C.accS,C.ok,C.teal][rnd(x+y*7)*5|0])}
+// the bar
+rect(g,150,136,60,3,'#7a5a4a');rect(g,150,139,60,12,'#3a2242');rect(g,150,139,60,1,C.warn);
+[[156,C.ok],[162,C.warn],[168,C.info],[196,C.accS],[202,C.teal]].forEach(([x,c])=>{rect(g,x,129,2,7,c);px(g,x,127,c);px(g,x+1,127,c)});
+// marble bust with the neon mustache, in the bar
+rect(g,214,140,10,11,'#d9d2e6');rect(g,215,134,8,6,'#d9d2e6');rect(g,216,127,6,7,'#eee8f6');rect(g,215,124,8,4,'#d9d2e6');rect(g,216,131,6,1,C.neon);
+// lo-fi plants
+const plant=(x,y)=>{rect(g,x,y,6,6,'#3a2242');for(let k=0;k<5;k++){const a=-1.1+k*.55;for(let r=0;r<7;r++)px(g,x+3+Math.cos(a)*r,y-1-Math.abs(Math.sin(a))*r-r*.3,k%2?'#4f9a7a':'#3f7f68')}};
+plant(160,85);plant(282,145);
+g.globalAlpha=.035;for(let i=0;i<2400;i++)px(g,rnd(i*1.7)*W,rnd(i*3.1)*H,rnd(i)>.5?'#fff':C.teal);g.globalAlpha=1;
+
+// ---------- crew ----------
+const SKIN='#e8b89a';
+const agents=[
+  {id:'a',name:'Token refresh fix',room:'gentle-ai',x:82,fy:93,col:C.acc,state:'need',effort:'high'},
+  {id:'b',name:'Release notes 4.5.1',room:'gentle-ai',x:130,fy:93,col:C.info,state:'work',effort:'medium'},
+  {id:'c',name:'Sync conflict UI',room:'engram',x:206,fy:93,col:C.vio,state:'work',effort:'medium'},
+  {id:'d',name:'Herdr status v2',room:'gentle-pi',x:88,fy:153,col:C.accS,state:'done',effort:'low'},
+  {id:'e',name:'Hero copy',room:'gentleman-landing',x:244,fy:153,col:C.teal,state:'work',effort:'low'},
+];
+function person(o,t,sel){const x=o.x,top=o.fy-20,l=x-3;
+  if(sel){ctx.globalAlpha=.5;rect(ctx,l-2,o.fy,11,1,C.teal);ctx.globalAlpha=1}
+  rect(ctx,l+1,top,5,1,'#2a1b27');rect(ctx,l,top+1,7,2,'#2a1b27');rect(ctx,l+1,top+2,5,4,SKIN);px(ctx,x+1,top+3,'#000');
+  rect(ctx,l+1,top+5,5,1,'#1a0f14');px(ctx,l,top+4,'#1a0f14');px(ctx,l+6,top+4,'#1a0f14');rect(ctx,l+2,top+6,3,1,SKIN);
+  rect(ctx,l,top+7,7,7,o.col);const arm=o.state==='work'&&!paused&&(t|0)%2?1:0;rect(ctx,l+7,top+8+arm,1,5,o.col);rect(ctx,l-1,top+8,1,5,o.col);
+  rect(ctx,l+1,top+14,2,5,'#1a1218');rect(ctx,l+4,top+14,2,5,'#1a1218');rect(ctx,l,o.fy-1,3,1,'#000');rect(ctx,l+4,o.fy-1,3,1,'#000');
+  if(o.state==='need'||o.state==='done'){const by=top-11,c=o.state==='need'?C.warn:C.ok;rect(ctx,x-4,by,9,8,c);rect(ctx,x-3,by-1,7,1,c);rect(ctx,x-3,by+8,7,1,c);px(ctx,x,by+9,c);
+    bmp(ctx,o.state==='need'?['###','..#','.##','...','.#.']:['....#','...#.','#.#..','.#...','.....'],x-(o.state==='need'?1:2),by+1,'#1a0f26')}
+  if(paused&&o.state==='work'){rect(ctx,x-3,top-8,2,5,C.warn);rect(ctx,x+1,top-8,2,5,C.warn)}
+}
+// room power pips (effort for agents in that room)
+const pipBox=(r,i)=>[r.x+r.w-6-(2-i)*6-6,r.y+5,5,4];
+function drawPips(){for(const r of rooms){if(r.kind==='bar')continue;for(let i=0;i<3;i++){const [x,y,w,h]=pipBox(r,i);const on=i<r.power;
+  rect(ctx,x,y,w,h,on?C.teal:'#2a1640');if(on){ctx.globalAlpha=.3;rect(ctx,x-1,y-1,w+2,h+2,C.teal);ctx.globalAlpha=1}}}}
+
+// ---------- state, HUD, interactions ----------
+let paused=false,selected=null,hover=null,t=0;
+const $=id=>document.getElementById(id);
+$('plan').innerHTML=Array.from({length:10},(_,i)=>`<i class="${i<6.4?'on':''}"></i>`).join('');
+const glyph={need:'?',done:'✓',work:'…',idle:'–'};
+function renderCrew(){$('crew').innerHTML='';for(const a of agents){const b=document.createElement('button');b.className='mate px';b.setAttribute('aria-pressed',selected===a);
+  b.setAttribute('aria-label',`${a.name}: ${{need:'needs you',done:'finished',work:'working',idle:'resting'}[a.state]}`);
+  b.innerHTML=`<span class="sw" style="background:${a.col}"></span>${a.name}<span class="st ${a.state}">${glyph[a.state]}</span>`;b.onclick=()=>choose(a);$('crew').appendChild(b)}}
+function select(a){selected=a;renderCrew();const s=$('sel');if(!a){s.classList.remove('open');draw();return}
+  const room=rooms.find(r=>r.id===a.room);
+  s.innerHTML=`<div><div class="nm">${a.name}</div><div class="meta">${a.room} · ${{need:'needs you',done:'finished',work:'working',idle:'resting'}[a.state]} · effort ${a.effort}</div></div>
+    <button class="btn primary">Open session</button>${a.state==='work'?'<button class="btn">Stop</button>':''}${a.state==='done'?'<button class="btn">Review changes</button>':''}`;
+  s.classList.add('open');draw()}
+function choose(a){if(a.state==='need')openEvent(a);else select(a)}
+// events: the agent's question, FTL-style
+const EV={a:{text:'“If the refresh request fails, what should the user see?”',choices:[
+  ['Retry once, then sign them out with a message.','Doing it now.',1,'recommended'],
+  ['Keep retrying quietly.','Fine. I’ll log each retry so a broken server can’t hide.',1],
+  ['What have you changed so far?','One file, session.go: +22 −6. All 42 tests pass.'],
+  ['How much has this cost?','$0.42 in fourteen minutes, with two helpers.'],
+  ['Later.',null,0]]}};
+let evAgent=null;
+function openEvent(a){evAgent=a;const e=EV[a.id];$('ev-from').innerHTML=`<span class="st need">?</span> ${a.name.toUpperCase()} · ${a.room}`;$('ev-text').textContent=e.text;
+  $('ev-ch').innerHTML='';e.choices.forEach(([t,ans,resolve,tag],i)=>{const li=document.createElement('li'),b=document.createElement('button');
+    b.innerHTML=`<span class="n">${i+1}.</span>${t}${tag?`<span class="rec">${tag}</span>`:''}`;b.onclick=()=>answer(i);li.appendChild(b);$('ev-ch').appendChild(li)});
+  $('ev-ans').className='ans';$('event').classList.add('open');$('dim').classList.add('open');$('ev-ch').querySelector('button').focus()}
+function answer(i){const [t,ans,resolve]=EV[evAgent.id].choices[i];
+  if(ans===null){closeEvent();return}
+  $('ev-ans').textContent=ans;$('ev-ans').className='ans show';
+  if(resolve){evAgent.state='work';renderCrew();draw();setTimeout(()=>{closeEvent();select(evAgent)},900)}}
+function closeEvent(){$('event').classList.remove('open');$('dim').classList.remove('open')}
+$('dim').onclick=closeEvent;
+addEventListener('keydown',e=>{if($('event').classList.contains('open')){if(/^[1-9]$/.test(e.key))answer(+e.key-1);if(e.key==='Escape')closeEvent();return}
+  if(e.code==='Space'){e.preventDefault();togglePause()}if(e.key==='Escape')select(null)});
+function togglePause(){paused=!paused;const b=$('pause');b.setAttribute('aria-pressed',paused);b.textContent=paused?'▶ RESUME ALL':'❚❚ PAUSE ALL';draw()}
+$('pause').onclick=togglePause;
+
+// hover + click on the canvas
+const toC=e=>{const r=cv.getBoundingClientRect();return[(e.clientX-r.left)/r.width*W,(e.clientY-r.top)/r.height*H]};
+function hitTest(x,y){
+  for(const a of agents)if(Math.abs(x-a.x)<6&&y>a.fy-32&&y<a.fy+1)return{type:'agent',a};
+  for(const r of rooms){if(r.kind!=='bar')for(let i=0;i<3;i++){const [px_,py,w,h]=pipBox(r,i);if(x>=px_-1&&x<=px_+w&&y>=py-1&&y<=py+h)return{type:'pip',r,i}}
+    if(x>=r.x&&x<=r.x+r.w&&y>=r.y&&y<=r.y+r.h)return{type:'room',r}}
+  return null}
+function label(h){if(!h)return'';if(h.type==='agent')return`${h.a.name} · ${{need:'needs you',done:'finished',work:'working',idle:'resting'}[h.a.state]}`;
+  if(h.type==='pip')return`${h.r.id}: set effort to ${LEVEL[h.i+1]}`;
+  if(h.r.kind==='bar')return'The bar · your tab: $3.12 this week';if(h.r.kind==='library')return'Engram · 3 new memories this week';return`${h.r.id} · effort ${LEVEL[h.r.power]}`}
+cv.addEventListener('mousemove',e=>{const [x,y]=toC(e);hover=hitTest(x,y);const tip=$('tip');
+  if(hover){tip.textContent=label(hover);tip.style.display='block';const r=cv.getBoundingClientRect();tip.style.left=(e.clientX-r.left)+'px';tip.style.top=(e.clientY-r.top)+'px'}else tip.style.display='none';
+  cv.style.cursor=hover?'pointer':'default'});
+cv.addEventListener('mouseleave',()=>{$('tip').style.display='none'});
+cv.addEventListener('click',e=>{const [x,y]=toC(e);const h=hitTest(x,y);if(!h){select(null);return}
+  if(h.type==='agent')choose(h.a);
+  else if(h.type==='pip'){h.r.power=h.r.power===h.i+1?h.i:h.i+1;agents.filter(a=>a.room===h.r.id).forEach(a=>a.effort=LEVEL[Math.max(1,h.r.power)]);if(selected)select(selected);draw()}
+  else if(h.r.kind==='bar'){selected=null;renderCrew();const s=$('sel');s.innerHTML=`<div><div class="nm">The bar</div><div class="meta">$3.12 this week · 31 sessions · cache hit 71%</div></div><button class="btn primary">Full usage</button><button class="btn">Weekly limit</button>`;s.classList.add('open')}
+  else if(h.r.kind==='library'){selected=null;renderCrew();const s=$('sel');s.innerHTML=`<div><div class="nm">Engram library</div><div class="meta">3 new memories · 4 waiting for your review</div></div><button class="btn primary">Browse memories</button>`;s.classList.add('open')}
+  else{selected=null;renderCrew();const n=agents.filter(a=>a.room===h.r.id).length;const s=$('sel');s.innerHTML=`<div><div class="nm">${h.r.id}</div><div class="meta">${n} agent${n===1?'':'s'} · effort ${LEVEL[h.r.power]}</div></div><button class="btn primary">+ New agent here</button><button class="btn">Changes</button>`;s.classList.add('open')}});
+
+// layout + a slow loop (2 fps is enough for typing arms)
+function fit(){const s=Math.min(innerWidth/W,innerHeight/H);cv.style.width=W*s+'px';cv.style.height=H*s+'px'}
+addEventListener('resize',fit);fit();
+function draw(){ctx.drawImage(bg,0,0);
+  for(const [dx,dy] of [[56,83],[104,83],[58,143],[250,143]]){for(let y=0;y<3;y++)rect(ctx,dx+8,dy-8+y*2,paused?2:3+((t+y*2+dx)|0)%5,1,C.neon)}
+  drawPips();agents.slice().sort((a,b)=>a.fy-b.fy).forEach(a=>person(a,t,a===selected))}
+renderCrew();draw();
+if(!reduce)setInterval(()=>{t+=1;draw()},500);
+if(location.hash==='#ask')openEvent(agents[0]);
+</script>
+</body>
+</html>

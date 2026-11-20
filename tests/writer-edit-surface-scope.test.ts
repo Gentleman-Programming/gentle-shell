@@ -25,8 +25,9 @@ import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 // `subagent_run` input shape, because that is the boundary that rejected.
 // ---------------------------------------------------------------------------
 
+// cost-speed P9b: the rule sentence follows the specific problem, once.
 const REJECTION =
-	"Writer tasks must include the exact Markdown heading `## Allowed edit surfaces` with narrow repository-relative paths or narrow globs, one per line. Every non-empty line belongs to the section until the next canonical Markdown heading and must be a valid surface entry. Paths containing whitespace require whole-entry backticks; begin explanatory prose under the next Markdown heading. The parent must derive or map that canonical block from the delegated task and relaunch the writer; do not accept aliases, and do not ask the human to author paths or globs.";
+	"Fix only that section, then relaunch with the rest of the task unchanged, never shortened or re-summarized; derive the surfaces from the task (narrow repository-relative paths or globs, one per line, until the next Markdown heading) and do not ask the human to author paths or globs.";
 
 type ToolCallHandler = (
 	event: { toolName: string; input: unknown },
@@ -68,15 +69,39 @@ async function assertAccepted(input: Record<string, unknown>, message: string) {
 	assert.equal(await dispatchWriter(input), undefined, message);
 }
 
-const RESEND = "Resend the same task text unchanged except for that section; never shorten or re-summarize it.";
-const PROBLEM = /^(?:No `## Allowed edit surfaces` heading was found\.|The section has no entries\.|Repeated sections list different surfaces\.|Line ".+" is not a valid surface entry; move prose under a following Markdown heading\.|Line ".+" is not a valid surface entry; if it is a path, wrap the whole entry in backticks, otherwise move it under a following Markdown heading\.|Entry ".+" is not a narrow repository-relative path; remove absolute paths, `\.\.` segments, root globs, and stray backticks\.)$/;
+// Each entry problem: why it is invalid, then its fix.
+const ENTRY_REASONS = [
+	"is a list marker with no path; put the path after it or delete the line",
+	"contains a control or line-separator character; retype it without that character",
+	"has stray backticks; remove them",
+	"has text outside its backticked path; move that text below another Markdown heading",
+	"lists several paths; put one path per line",
+	"has a label before the path; keep only the path",
+	"is a heading indented 4+ spaces, so it does not end the section; start it at the line start",
+	"is text under a list marker, not a path; move it below another Markdown heading, as a line of its own outside the list",
+	"is not a path; move it below another Markdown heading",
+	"has text after the path; move that text below another Markdown heading",
+	"looks like prose; move it below another Markdown heading",
+	"has spaces outside backticks; if it is one path, wrap the whole entry in backticks, otherwise move it below another Markdown heading",
+	"is absolute or home-relative; use a repository-relative path",
+	"names the whole repository; list only the paths or narrow globs the task edits",
+	"has a `..` segment; use a path inside the repository",
+	"starts with a glob, so it spans the whole repository; start with a directory, for example `src/**/*.ts`",
+	"is not a narrow repository-relative path or glob; use one",
+];
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const PROBLEM = new RegExp(`^(?:${[
+	"No `## Allowed edit surfaces` heading was found; (?:add it with one path per line|\".+\" is close: rename it to exactly `## Allowed edit surfaces`)\\.",
+	escapeRegExp("The `## Allowed edit surfaces` section has no entries; add one path per line before the next heading."),
+	"Repeated `## Allowed edit surfaces` sections disagree on \".+\"; keep one section or list the same entries in each\\.",
+	`Allowed edit surfaces entry ".+" \\(non-empty line \\d+(?: of section \\d+)?\\) (?:${ENTRY_REASONS.map(escapeRegExp).join("|")})\\.(?: \\d+ more invalid lines? follows?\\.)?`,
+].join("|")})$`);
 
-// Every rejection is the canonical text, exactly one concrete problem, and the
-// resend instruction; nothing else (review R3-005).
+// Every rejection is exactly one concrete problem (entry quoted, position, reason, fix)
+// followed once by the rule sentence; nothing else (review R3-005, cost-speed P9b).
 function rejectionProblem(reason: string): string {
-	assert.ok(reason.startsWith(`${REJECTION} `), "canonical rejection prefix");
-	assert.ok(reason.endsWith(` ${RESEND}`), "resend instruction suffix");
-	const problem = reason.slice(REJECTION.length + 1, reason.length - RESEND.length - 1);
+	assert.ok(reason.endsWith(` ${REJECTION}`), "rule sentence suffix");
+	const problem = reason.slice(0, reason.length - REJECTION.length - 1);
 	assert.match(problem, PROBLEM);
 	return problem;
 }
@@ -104,29 +129,36 @@ test("rejection names the offending line and asks for the same task unchanged", 
 		].join("\n"),
 	});
 	assert.equal(result?.block, true);
-	assert.match(result.reason, /Line "Requirements: one parent transaction with ordered allocations\." is not a valid surface entry/);
-	assert.match(result.reason, /Resend the same task text unchanged except for that section; never shorten or re-summarize it\./);
+	assert.equal(rejectionProblem(result.reason), `Allowed edit surfaces entry "Requirements: one parent transaction with ordered allocations." (non-empty line 3) looks like prose; move it below another Markdown heading.`);
+	assert.match(result.reason, /then relaunch with the rest of the task unchanged, never shortened or re-summarized/);
 	const missing = await dispatchWriter({ agent: "gentle-ai-worker", mode: "task", task: "Implement it." });
-	assert.match(missing?.reason ?? "", /No `## Allowed edit surfaces` heading was found\./);
+	assert.equal(rejectionProblem(missing?.reason ?? ""), "No `## Allowed edit surfaces` heading was found; add it with one path per line.");
 });
 
 test("each rejection names its concrete problem, and invalid paths are not called prose", async () => {
 	const problem = async (input: Record<string, unknown>) => rejectionProblem((await dispatchWriter({ agent: "gentle-ai-worker", mode: "task", ...input }))!.reason);
-	assert.equal(await problem({ task: "## Allowed edit surfaces\n\n## Return\nReport" }), "The section has no entries.");
-	assert.equal(await problem({ task: "## Allowed edit surfaces\nsrc/a.ts", context: "## Allowed edit surfaces\nsrc/b.ts" }), "Repeated sections list different surfaces.");
-	for (const path of ["/etc/passwd", "../outside.ts", "src/../../x.ts", "**/*.ts", "src/`odd.ts"]) {
-		assert.equal(await problem({ task: `## Allowed edit surfaces\n- ${path}` }), `Entry "${path}" is not a narrow repository-relative path; remove absolute paths, \`..\` segments, root globs, and stray backticks.`, path);
+	assert.equal(await problem({ task: "## Allowed edit surfaces\n\n## Return\nReport" }), "The `## Allowed edit surfaces` section has no entries; add one path per line before the next heading.");
+	assert.equal(await problem({ task: "## Allowed edit surfaces\nsrc/a.ts", context: "## Allowed edit surfaces\nsrc/b.ts" }), "Repeated `## Allowed edit surfaces` sections disagree on \"src/a.ts\"; keep one section or list the same entries in each.");
+	const entry = (shown: string, why: string) => `Allowed edit surfaces entry "${shown}" (non-empty line 1) ${why}.`;
+	for (const [path, why] of [
+		["/etc/passwd", "is absolute or home-relative; use a repository-relative path"],
+		["../outside.ts", "has a `..` segment; use a path inside the repository"],
+		["src/../../x.ts", "has a `..` segment; use a path inside the repository"],
+		["**/*.ts", "starts with a glob, so it spans the whole repository; start with a directory, for example `src/**/*.ts`"],
+		["src/`odd.ts", "has stray backticks; remove them"],
+	]) {
+		assert.equal(await problem({ task: `## Allowed edit surfaces\n- ${path}` }), entry(`- ${path}`, why), path);
 	}
 	const long = `Then ${"verify every requirement ".repeat(8)}carefully.`;
-	const ambiguous = (shown: string) => `Line "${shown}" is not a valid surface entry; if it is a path, wrap the whole entry in backticks, otherwise move it under a following Markdown heading.`;
-	assert.equal(await problem({ task: `## Allowed edit surfaces\nsrc/a.ts\n${long}` }), ambiguous(`${long.slice(0, 120)}...`));
+	const prose = "looks like prose; move it below another Markdown heading";
+	assert.equal(await problem({ task: `## Allowed edit surfaces\nsrc/a.ts\n${long}` }), `Allowed edit surfaces entry "${long.slice(0, 77)}…" (non-empty line 2) ${prose}.`);
 	// A real path with a space must not be steered out of the section.
-	assert.equal(await problem({ task: "## Allowed edit surfaces\n- docs/with space.md" }), ambiguous("- docs/with space.md"));
+	assert.equal(await problem({ task: "## Allowed edit surfaces\n- docs/with space.md" }), entry("- docs/with space.md", "has spaces outside backticks; if it is one path, wrap the whole entry in backticks, otherwise move it below another Markdown heading"));
 	// Whitespace that stays invalid even when quoted is plain prose.
-	assert.equal(await problem({ task: "## Allowed edit surfaces\n- ~ notes for later" }), `Line "- ~ notes for later" is not a valid surface entry; move prose under a following Markdown heading.`);
+	assert.equal(await problem({ task: "## Allowed edit surfaces\n- ~ notes for later" }), entry("- ~ notes for later", "is not a path; move it below another Markdown heading"));
 	const control = await problem({ task: "## Allowed edit surfaces\nsrc/a\u0007.ts" });
 	assert.doesNotMatch(control, /\u0007/);
-	assert.match(control, /^Entry "src\/a \.ts" is not a narrow repository-relative path/);
+	assert.equal(control, entry("src/a\\u0007.ts", "contains a control or line-separator character; retype it without that character"));
 });
 
 test("task-scoped surfaces are accepted ahead of a deeper heading", async () => {

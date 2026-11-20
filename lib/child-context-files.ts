@@ -2,7 +2,13 @@
 // same context files as the orchestrator, including gentle-ai managed blocks
 // that bind themselves to the orchestrator only. Those blocks cost ~37k prefix
 // tokens per child and give a worker orchestration rules it must not follow.
-// This module removes exactly those blocks and keeps everything else.
+// This module removes exactly those blocks plus the engram-protocol memory
+// block and keeps everything else. The primary session applies the same filter
+// while Gentle Shell injects its own orchestrator prompt and gentle-engram
+// injects its own MEMORY_INSTRUCTIONS (extensions/gentle-ai.ts
+// before_agent_start). Only the injected context is filtered: every file on
+// disk keeps its blocks byte-for-byte for runtimes that read them as workspace
+// files and carry no runtime-injected equivalent (OpenClaw).
 
 export const ORCHESTRATOR_ONLY_MANAGED_BLOCKS = [
 	"orchestrator",
@@ -12,6 +18,15 @@ export const ORCHESTRATOR_ONLY_MANAGED_BLOCKS = [
 ] as const;
 
 export type OrchestratorOnlyManagedBlock = (typeof ORCHESTRATOR_ONLY_MANAGED_BLOCKS)[number];
+
+// gentle-ai's managed memory protocol. Dropped from injected context like an
+// orchestrator-only block, but for a different reason: gentle-engram injects
+// the equivalent instructions every turn, so the loaded copy is a duplicate
+// that only adds session-start ceremony.
+export const ENGRAM_PROTOCOL_MANAGED_BLOCK = "engram-protocol";
+
+// Every managed block this filter removes from an injected context file.
+const DROPPED_MANAGED_BLOCKS: ReadonlySet<string> = new Set([...ORCHESTRATOR_ONLY_MANAGED_BLOCKS, ENGRAM_PROTOCOL_MANAGED_BLOCK]);
 
 export interface ContextFile {
 	path: string;
@@ -36,8 +51,6 @@ export interface ChildContextFilesResult<T extends ContextFile> {
 export interface ContextFileOptions {
 	contextFiles?: ContextFile[];
 }
-
-const REMOVED_NAMES: ReadonlySet<string> = new Set(ORCHESTRATOR_ONLY_MANAGED_BLOCKS);
 
 // A managed marker counts only when it is alone on its line. Inline mentions
 // (prose, inline code) and markers inside fenced code are plain text.
@@ -94,7 +107,7 @@ export function filterOrchestratorOnlyBlocks(content: string): ManagedBlockFilte
 			// A block reopened inside itself is ambiguous: fail safe.
 			if (stack.includes(name)) return unchanged(content);
 			stack.push(name);
-			if (REMOVED_NAMES.has(name)) removedBlocks += 1;
+			if (DROPPED_MANAGED_BLOCKS.has(name)) removedBlocks += 1;
 			lines.push({ text, owner: name });
 			continue;
 		}
@@ -112,7 +125,7 @@ export function filterOrchestratorOnlyBlocks(content: string): ManagedBlockFilte
 	let trailingBlanks = 0;
 	let afterRemoval = false;
 	for (const line of lines) {
-		if (line.owner !== null && REMOVED_NAMES.has(line.owner)) {
+		if (line.owner !== null && DROPPED_MANAGED_BLOCKS.has(line.owner)) {
 			afterRemoval = true;
 			continue;
 		}
@@ -154,7 +167,9 @@ export function filterChildContextFiles<T extends ContextFile>(files: readonly T
 // Replaces contextFiles on the SAME options object: pi-claude-bridge keeps a
 // reference to it and rebuilds its prompt from its contextFiles. Never
 // throws; on any error the original context files stay in place.
-export function filterChildSessionContextFiles(options: ContextFileOptions | null | undefined): ChildContextFilesResult<ContextFile> | null {
+export function filterChildSessionContextFiles(
+	options: ContextFileOptions | null | undefined,
+): ChildContextFilesResult<ContextFile> | null {
 	try {
 		if (!options || !Array.isArray(options.contextFiles)) return null;
 		const result = filterChildContextFiles(options.contextFiles);

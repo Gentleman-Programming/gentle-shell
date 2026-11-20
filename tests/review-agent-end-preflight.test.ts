@@ -19,7 +19,7 @@ function withoutSignal<T>(request: T): T {
 	const { signal: _signal, ...rest } = request as Record<string, unknown>;
 	return rest as T;
 }
-import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
+import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, NativeReviewCliV216, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import type { ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
 // gentle-pi#556 / gentle-ai#4051: with RDD enabled, the agent finished an
@@ -392,6 +392,84 @@ test("agent_end nudges only when the native assessment reports review_due", asyn
 		await handlers.get("agent_end")!(agentEndEvent, session);
 		assert.equal(sent.length, wantNudges, label);
 	}
+});
+
+// The range is a routing hint for a fresh assessment, never a cached verdict.
+for (const outcome of ["not-due", "due", "error", "new-write", "workspace", "race", "assessment-race", "reselect"] as const) {
+	test(`#3163: committed reminder range stays consistent (${outcome})`, async () => {
+		await withSessionStartEnv(async cwd => {
+			const git = (...args: string[]) => childProcess.execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args], { cwd, encoding: "utf8" }).trim();
+			git("add", "."); git("commit", "-qm", "base");
+			const baseRef = git("rev-parse", "HEAD");
+			const requests: Array<Record<string, unknown>> = [];
+			const statusRequests: Array<Record<string, unknown>> = [];
+			let initial = true;
+			let duringAssessment = async () => {};
+			const native = {
+				reviewMode: onMode("on"),
+				targetStatus: async (request: Record<string, unknown>) => { statusRequests.push(withoutSignal(request)); return executeStartStatus(`sha256:${"b".repeat(64)}`); },
+				assess: async (request: Record<string, unknown>) => {
+					requests.push(withoutSignal(request));
+					await duringAssessment();
+					if (!initial && outcome === "error") throw new Error("assessment unavailable");
+					return { risk: "medium", reasons: [], changedPaths: 1, changedLines: 29,
+						candidate: request.baseRef ? { kind: "base-diff", baseRef: request.baseRef, consumed: false } : { kind: "current-changes", consumed: false },
+						reviewDue: !initial && (outcome === "due" || request.baseRef === undefined), reviewDueReason: "under_budget" };
+				},
+			} as unknown as NativeReviewCli;
+			const { handlers, sent, tools } = harness(native);
+			const session = ctx(`3163-${outcome}`, true, cwd);
+			await directWrite(handlers, session);
+			if (outcome === "assessment-race") duringAssessment = async () => { duringAssessment = async () => {}; await directWrite(handlers, session); };
+			await tools.get("gentle_review")!.execute("select", { operation: "assess", input: { baseRef, committedOnly: true } }, undefined, undefined, toolContext(session));
+			if (outcome === "workspace") await tools.get("gentle_review")!.execute("workspace", { operation: "assess" }, undefined, undefined, toolContext(session));
+			if (outcome === "new-write") await directWrite(handlers, session);
+			if (outcome === "reselect") {
+				await directWrite(handlers, session);
+				await tools.get("gentle_review")!.execute("reselect", { operation: "assess", input: { baseRef, committedOnly: true } }, undefined, undefined, toolContext(session));
+			}
+			if (outcome === "race") duringAssessment = async () => { await directWrite(handlers, session); };
+			initial = false;
+			await handlers.get("agent_end")!(agentEndEvent, session);
+			const selected = outcome !== "new-write" && outcome !== "workspace" && outcome !== "assessment-race";
+			assert.equal(requests.at(-1)?.baseRef, selected ? baseRef : undefined, "fresh assessment must use the captured candidate selector");
+			assert.equal(statusRequests.at(-1)?.baseRef, selected ? baseRef : undefined, "STATUS and ASSESS must describe the same projection");
+			assert.equal(statusRequests.at(-1)?.committedOnly, selected ? true : undefined);
+			assert.equal(sent.length, outcome === "not-due" || outcome === "race" || outcome === "reselect" ? 0 : 1);
+			if (sent.length && selected) assert.ok(String(sent[0].message.content).includes(baseRef), "follow-up inspect must retain the offered range");
+		});
+	});
+}
+
+test("#3163: real native assessment keeps a committed range through the registered end hook", { skip: !process.env.GENTLE_AI_DEV_BINARY }, async () => {
+	await withSessionStartEnv(async cwd => {
+		const binary = process.env.GENTLE_AI_DEV_BINARY!;
+		const git = (...args: string[]) => childProcess.execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "core.autocrlf=false", ...args], { cwd, encoding: "utf8" }).trim();
+		git("add", "."); git("commit", "-qm", "base");
+		const baseRef = git("rev-parse", "HEAD");
+		await writeFile(join(cwd, "CLAUDE.md"), Array.from({ length: 29 }, (_, i) => `Documentation line ${i + 1}.`).join("\n") + "\n");
+		git("add", "."); git("commit", "-qm", "documentation");
+		const before = git("status", "--porcelain");
+		const requests: string[][] = [];
+		const client = new NativeReviewCliV216(async request => {
+			requests.push([...request.arguments]);
+			const result = childProcess.spawnSync(binary, [...request.arguments], { cwd: request.cwd, encoding: "utf8", timeout: 15_000 });
+			if (result.error) throw result.error;
+			return { stdout: result.stdout, stderr: result.stderr, exitCode: result.status ?? 1, signal: result.signal, timedOut: false, outputLimitExceeded: false };
+		}, binary);
+		// STATUS supplies a controlled offer; only the assessment process is native.
+		const native = { reviewMode: onMode("on"), targetStatus: async () => executeStartStatus(`sha256:${"b".repeat(64)}`), assess: client.assess.bind(client) } as unknown as NativeReviewCli;
+		const { handlers, sent, tools } = harness(native);
+		const session = ctx("3163-native-assessment", true, cwd);
+		await directWrite(handlers, session);
+		const result = await tools.get("gentle_review")!.execute("select", { operation: "assess", input: { baseRef, committedOnly: true } }, undefined, undefined, toolContext(session));
+		assert.equal((result.details as { reviewDue?: boolean }).reviewDue, false);
+		await handlers.get("agent_end")!(agentEndEvent, session);
+		assert.equal(requests.length, 2);
+		for (const args of requests) { assert.ok(args.includes(baseRef)); assert.ok(args.includes("--committed-only")); }
+		assert.equal(sent.length, 0);
+		assert.equal(git("status", "--porcelain"), before);
+	});
 });
 
 test("agent_end nudges once per target identity and again for a fresh identity", async () => {

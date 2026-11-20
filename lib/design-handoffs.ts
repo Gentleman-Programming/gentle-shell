@@ -252,7 +252,8 @@ export function createDesignHandoffStore(designRoot: string, deps: DesignHandoff
 				const entry = entryOf({
 					...base,
 					status,
-					startedAt: status === "in_progress" ? stamp : base.startedAt,
+					// A repeated in_progress report keeps the first start; taking up a sent or implemented handoff starts it again.
+					startedAt: status === "in_progress" ? (current?.status === "in_progress" ? current.startedAt ?? stamp : stamp) : base.startedAt,
 					implementedAt: status === "implemented" ? stamp : null,
 					note: cleanNote,
 					previewUrl: preview,

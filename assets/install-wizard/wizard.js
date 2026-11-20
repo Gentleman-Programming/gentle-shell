@@ -201,6 +201,7 @@ export function planModel(view) {
 		kind,
 		actions,
 		blockers,
+		...(persistence.replacesNode === true ? { replacesNode: true } : {}),
 		// S6: reused tools in folders another account can change; a notice, never a blocker.
 		notice: typeof view?.sharedFolders?.description === "string" ? text(view.sharedFolders.description) : null,
 		// A missing Git: noted before consent, never a blocker.
@@ -218,7 +219,8 @@ export function planModel(view) {
 				id: "persistence",
 				title: kind === "bundled" ? "Gentle Shell's own runtimes" : "Runtimes under PNPM_HOME",
 				changes: tools.length > 0,
-				state: kind === "bundled" ? `Uses its own ${tools.join(", ")}` : tools.length > 0 ? `Will add ${tools.join(", ")}` : "No change",
+				state: kind === "bundled" ? `Uses its own ${tools.join(", ")}` : tools.length > 0
+					? `Will ${persistence.replacesNode === true ? "install" : "add"} ${tools.join(", ")}` : "No change",
 				text: text(persistence.description),
 				detail: typeof persistence.pnpmHome === "string" ? persistence.pnpmHome : null,
 			},
@@ -529,6 +531,8 @@ export function renderPlan(doc, model, handlers) {
 				? "The installer runs only the steps listed above and updates only Pi, never to an older version."
 				: installingPi
 				? "The installer runs only the steps listed above and adds only Pi. Existing installations are not replaced."
+				: model.replacesNode
+				? "The installer runs only the steps listed above."
 				: piUpdate
 				? "The installer runs only the steps listed above. Existing installations are not replaced, except the older Pi it updates."
 				: "The installer runs only the steps listed above. Existing installations are not replaced."))),

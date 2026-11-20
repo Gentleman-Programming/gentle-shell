@@ -174,8 +174,10 @@ test("64 unique-peer cap is deterministic; whole-row byte omissions account for 
 	const ambiguous = searchPublishedWork(profile, [...peers, { ...peers[65], endpoint: "/duplicate" }], relatedFilter);
 	assert.equal(ambiguous.source?.status, "unavailable");
 	assert.equal(ambiguous.matches.length, 0);
-	// Directory entries, not admitted headers, bound the presence scan.
-	for (let i = 0; i < 130; i++) writeFileSync(join(profile, "gentle-agents", "presence", `overflow-${i}`), "");
+	// Directory entries, not admitted headers, bound the presence scan: only the
+	// TOTAL 4096-entry budget fails closed now — a busy directory past the first
+	// 128-entry page no longer blinds peers (#3185).
+	for (let i = 0; i < 4096; i++) writeFileSync(join(profile, "gentle-agents", "presence", `overflow-${i}`), "");
 	assert.equal(searchPublishedWork(profile, peers).coverage.unknownContext, 64);
 	const rejected = searchPublishedWork(profile, peers, relatedFilter);
 	assert.equal(rejected.source?.reason, "source-context-unavailable");

@@ -14,8 +14,9 @@ function block(name: string, body: string): string {
 }
 
 // Synthetic file shaped like a gentle-ai managed AGENTS.md: unmanaged project
-// text, kept blocks, orchestrator-only blocks, a nested kept block inside
-// agent-routing, and a nested orchestrator-only block inside sdd-orchestrator.
+// text, kept blocks, orchestrator-only blocks, the engram-protocol block, a
+// nested kept block inside agent-routing, and a nested orchestrator-only block
+// inside sdd-orchestrator.
 const REALISTIC_AGENTS_MD = [
 	"# Project conventions",
 	"",
@@ -56,8 +57,6 @@ const EXPECTED_REALISTIC = [
 	"",
 	block("codegraph-guidance", "## CodeGraph\n\nUse CodeGraph first."),
 	"",
-	block("engram-protocol", "## Engram\n\nSave decisions."),
-	"",
 	block("remote-authorization", "## Remote operation authorization\n\nAsk before remote work."),
 	"",
 	"## Local notes",
@@ -80,17 +79,24 @@ test("filters a realistic managed AGENTS.md: nested kept blocks survive, nested 
 	const output = stripOrchestratorOnlyBlocks(REALISTIC_AGENTS_MD);
 	assert.equal(output, EXPECTED_REALISTIC);
 	assert.doesNotMatch(output, /COORDINATOR|sdd-model-assignments|Implementation Routing|4-file rule/);
+	assert.doesNotMatch(output, /gentle-ai:engram-protocol/);
 	assert.match(output, /<!-- gentle-ai:remote-authorization -->\n## Remote operation authorization/);
 });
 
-test("keeps codegraph-guidance, engram-protocol, and unknown managed blocks byte-for-byte", () => {
-	const input = [
+test("drops engram-protocol while codegraph-guidance and unknown managed blocks stay byte-for-byte", () => {
+	const kept = [
+		block("codegraph-guidance", "cg"),
+		block("some-future-block", "future"),
+		"",
+	].join("\n");
+	assert.equal(stripOrchestratorOnlyBlocks(kept), kept);
+	const withEngram = [
 		block("codegraph-guidance", "cg"),
 		block("engram-protocol", "engram\n\n\n\nspacing kept"),
 		block("some-future-block", "future"),
 		"",
 	].join("\n");
-	assert.equal(stripOrchestratorOnlyBlocks(input), input);
+	assert.equal(stripOrchestratorOnlyBlocks(withEngram), kept);
 });
 
 test("unmanaged text before, between, and after removed blocks is preserved byte-for-byte", () => {
@@ -172,7 +178,7 @@ test("filterChildContextFiles returns filtered copies, never mutates inputs, and
 	assert.equal(result.files[1].content, "# Plain\n");
 	assert.equal(result.files[2].content, files[2].content);
 	assert.equal(files[0].content, REALISTIC_AGENTS_MD);
-	assert.equal(result.removedBlocks, 3, "sdd-orchestrator, its nested sdd-model-assignments, and agent-routing");
+	assert.equal(result.removedBlocks, 4, "sdd-orchestrator, its nested sdd-model-assignments, agent-routing, and engram-protocol");
 	assert.equal(result.removedBytes, Buffer.byteLength(REALISTIC_AGENTS_MD) - Buffer.byteLength(EXPECTED_REALISTIC));
 	assert.deepEqual(result.failSafePaths, ["/repo/sub/AGENTS.md"]);
 });
@@ -242,6 +248,56 @@ for (const scenario of ["child", "primary"] as const) {
 		assert.equal(systemPromptOptions.contextFiles, filtered);
 	});
 }
+
+// The engram-protocol block is dropped from every injected context file, at any
+// depth: the file on disk keeps it for runtimes that read it as a workspace
+// file, and gentle-engram injects its own protocol every turn.
+const PROJECT_WITH_ENGRAM = `# Plain\n\n${block("engram-protocol", "project engram")}\n`;
+const PROJECT_WITHOUT_ENGRAM = "# Plain\n";
+
+async function runChildStart(env: NodeJS.ProcessEnv, project: string) {
+	const { handlers } = childContextHandlers(env);
+	const contextFiles = [
+		{ path: "/work/AGENTS.md", content: REALISTIC_AGENTS_MD },
+		{ path: "/work/repo/AGENTS.md", content: project },
+	];
+	const systemPromptOptions = { appendSystemPrompt: "", contextFiles };
+	const event = { systemPrompt: "base", systemPromptOptions };
+	const handler = handlers.get("before_agent_start")!;
+	await handler(event, { cwd: "/work/repo" });
+	return { contextFiles, systemPromptOptions, rerun: () => handler(event, { cwd: "/work/repo" }) };
+}
+
+test("a child drops the engram-protocol block from every loaded file, at any depth", async () => {
+	const { contextFiles, systemPromptOptions, rerun } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, PROJECT_WITH_ENGRAM);
+	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [EXPECTED_REALISTIC, PROJECT_WITHOUT_ENGRAM]);
+	assert.match(systemPromptOptions.contextFiles[0].content, /<!-- gentle-ai:remote-authorization -->\n## Remote operation authorization/);
+	assert.equal(contextFiles[0].content, REALISTIC_AGENTS_MD, "the loaded entries are never mutated");
+	assert.equal(contextFiles[1].content, PROJECT_WITH_ENGRAM, "the loaded entries are never mutated");
+	const filtered = systemPromptOptions.contextFiles;
+	await rerun();
+	assert.equal(systemPromptOptions.contextFiles, filtered, "a repeated turn removes nothing more");
+});
+
+test("a child with no engram-protocol block anywhere still loses nothing else", async () => {
+	const { systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, PROJECT_WITHOUT_ENGRAM);
+	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [EXPECTED_REALISTIC, PROJECT_WITHOUT_ENGRAM]);
+});
+
+test("filterChildContextFiles drops engram-protocol from files at the same level", () => {
+	const result = filterChildContextFiles([
+		{ path: "/work/repo/AGENTS.md", content: PROJECT_WITH_ENGRAM },
+		{ path: "/work/repo/CLAUDE.md", content: PROJECT_WITH_ENGRAM },
+	]);
+	assert.deepEqual(result.files.map((file) => file.content), [PROJECT_WITHOUT_ENGRAM, PROJECT_WITHOUT_ENGRAM]);
+	assert.equal(result.removedBlocks, 2);
+});
+
+test("outside a child session the child-context extension leaves context files untouched", async () => {
+	const { contextFiles, systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "0" }, PROJECT_WITH_ENGRAM);
+	assert.equal(systemPromptOptions.contextFiles, contextFiles);
+	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [REALISTIC_AGENTS_MD, PROJECT_WITH_ENGRAM]);
+});
 
 test("the child-context extension never throws on missing or malformed options", async () => {
 	const { handlers } = childContextHandlers({ GENTLE_PI_AGENTS_CHILD: "1" });

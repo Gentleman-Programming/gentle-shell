@@ -12,6 +12,32 @@ width; waiting questions and errors retain their existing display priority. The
 height-capped card above the editor retains its existing layout. The RPC payload
 carries the task label for hosts to display.
 
+## Delivered report size
+
+A finished child's report enters the parent's context through the background
+completion message and the task-mode `subagent_run` / `subagent_continue`
+result. That delivered copy is capped at `report_max_bytes` UTF-8 bytes
+(`subagents.json`, positive integer, default 16384; an invalid value falls
+back to the default). Over the cap the parent gets the head of the report (up
+to `report_max_bytes`, cut at a line break when one lies within the last 512
+bytes of the cut or a quarter of the cap, whichever is smaller), then one line:
+`Report truncated: the first N and the last T of M bytes were delivered. Call
+subagent_result with task_id <id> for the full text.`, then the end of the
+report: its last bytes, at most 2048, starting at the next line when a line
+break lies within their first 512 bytes. Neither cut falls inside a character.
+The end is kept because a closing summary at the end of a report, which a
+memory provider may read from the delivered text, would otherwise be lost; the
+runtime does not look for or interpret any such block. When the part the head
+leaves out is 2048 bytes or less, the whole report is delivered unchanged, so
+head and end never overlap. A report is never cut when it
+comes from a strict-JSON agent (`jd-*` Judgment Day roles and `review-*` lens
+agents) or when it is one valid JSON object or array, optionally inside one
+fenced block, because a cut would deliver invalid JSON. The
+result details add `reportTruncated: true`, `reportBytes` and
+`reportDeliveredBytes` (N + T) under `gentleAgents`; a report within the cap is
+delivered byte-identical with unchanged details. The stored task, its task
+file and `subagent_result` always keep the full text.
+
 ## Same-profile orchestrator discovery (Refs #1701)
 
 `orchestrator_list` keeps stable raw routing session IDs and adds recorded display

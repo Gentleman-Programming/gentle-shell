@@ -283,13 +283,21 @@ async function executeController(runtime: ParityRuntime, operation: unknown, cwd
 	return response.details as Record<string, unknown>;
 }
 
-function consentNative(cwd: string): { native: NativeReviewCli; starts: { count: number }; answers: string[] } {
-	const consent = decodeReviewConsentV3(captured("consent-v3.captured.json"));
+function consentNative(cwd: string, agent: "claude-code" | "pi" = "claude-code"): { native: NativeReviewCli; starts: { count: number }; answers: string[]; consent: ReturnType<typeof decodeReviewConsentV3> } {
+	const raw = captured("consent-v3.captured.json") as Record<string, unknown>;
+	if (agent === "pi") {
+		raw.agent = agent;
+		for (const choice of raw.choices as Array<Record<string, unknown>>) {
+			choice.invocation = String(choice.invocation).replace(" --consent ", " --agent pi --consent ");
+		}
+	}
+	const consent = decodeReviewConsentV3(raw, agent);
 	const starts = { count: 0 };
 	const answers: string[] = [];
 	return {
 		starts,
 		answers,
+		consent,
 		native: {
 			targetStatus: async () => startStatus(cwd),
 			start: async () => {
@@ -336,6 +344,12 @@ async function beginConsent(runtime: ParityRuntime, cwd: string, sessionId = "pa
 	const blocked = await executeController(runtime, { operation: "start", input: JSON.stringify({ mode: "ordinary" }) }, cwd, sessionId);
 	assert.equal(blocked.outcome, "native-review-consent-required");
 	assert.equal(typeof blocked.consent_binding, "string");
+	const consent = blocked.consent as Record<string, unknown>;
+	if (consent.schema === "gentle-ai.review-integration.consent/v3" && consent.agent === "pi") {
+		assert.equal(consent.consentBinding, blocked.consent_binding);
+	} else {
+		assert.equal(Object.hasOwn(consent, "consentBinding"), false, "other native envelopes remain exact");
+	}
 	return blocked;
 }
 
@@ -439,7 +453,7 @@ test("public gentle:review-mode handler reports current operations, global-off w
 test("public consent relay allows any active session to resolve a live binding, is one-shot, and is candidate-scoped", async (t) => {
 	const cwd = repository(t);
 	const sharedRegistry = new PendingReviewConsentRegistry();
-	const fixture = consentNative(cwd);
+	const fixture = consentNative(cwd, "pi");
 	const first = parityRuntime(fixture.native, { pendingReviewConsentRegistry: sharedRegistry });
 	const second = parityRuntime(fixture.native, { pendingReviewConsentRegistry: sharedRegistry });
 	const sameSession = await beginConsent(first, cwd, "same-session");
@@ -449,8 +463,13 @@ test("public consent relay allows any active session to resolve a live binding, 
 	// gentle-pi#455: a binding is answerable by whichever active Pi session
 	// presents it, not only the session whose START created it.
 	const blockedA = await beginConsent(first, cwd, "session-a");
-	assert.deepEqual(blockedA.consent, decodeReviewConsentV3(captured("consent-v3.captured.json")).raw);
-	const declinedFromOtherSession = await answerConsent(second, cwd, blockedA.consent_binding, "declined", "session-b");
+	const { consentBinding, ...nativeEnvelope } = blockedA.consent as Record<string, unknown>;
+	assert.deepEqual(nativeEnvelope, fixture.consent.raw, "the public copy preserves every native field");
+	assert.notEqual(blockedA.consent, fixture.consent.raw, "the Pi annotation must not mutate the native object");
+	assert.equal(Object.hasOwn(fixture.consent.raw, "consentBinding"), false);
+	assert.doesNotThrow(() => decodeReviewConsentV3(fixture.consent.raw));
+	assert.throws(() => decodeReviewConsentV3(blockedA.consent), /consentBinding/, "the annotated copy is not a native envelope");
+	const declinedFromOtherSession = await answerConsent(second, cwd, consentBinding, "declined", "session-b");
 	assert.equal(declinedFromOtherSession.operation, "answer-consent");
 	assert.equal(declinedFromOtherSession.outcome, "consent-declined-this-candidate");
 	assert.deepEqual(fixture.answers, ["declined", "declined"]);

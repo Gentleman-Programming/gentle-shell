@@ -1,0 +1,14 @@
+{
+  "layout:gentle-shell": {
+    "cmd-k": "mod.open:gentle-palette",
+    "cmd-j": "gentle-status.toggle",
+    "cmd-.": "gentle-status.stop",
+    "cmd-o": "gentle-chat.expand",
+    "cmd-alt-1": "gentle-inspector.tab-changes",
+    "cmd-alt-2": "gentle-inspector.tab-todo",
+    "cmd-alt-3": "gentle-inspector.tab-agents",
+    "cmd-alt-4": "gentle-inspector.tab-jobs",
+    "cmd-alt-5": "gentle-inspector.tab-review",
+    "cmd-alt-6": "gentle-inspector.tab-session"
+  }
+}

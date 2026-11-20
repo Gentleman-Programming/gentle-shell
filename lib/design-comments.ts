@@ -11,6 +11,11 @@ import { extname, join, sep } from "node:path";
 export const DESIGN_COMMENTS_FILE = "comments.json";
 export const MAX_DESIGN_COMMENTS = 500;
 export const DESIGN_COMMENT_LIMITS = Object.freeze({ comment: 2000, selector: 500, excerpt: 300 });
+/** The size a comment was made at (S7): whole CSS px, inclusive. */
+export const DESIGN_VIEWPORT_LIMITS = Object.freeze({ minWidth: 240, maxWidth: 4096, minHeight: 1, maxHeight: 20000 });
+
+/** The longest one-line note: the agent's reply on a resolved comment. */
+export const DESIGN_NOTE_LIMIT = 500;
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const ID = /^[A-Za-z0-9_-]{1,32}$/;
@@ -43,17 +48,61 @@ export type StoredDesignComment = {
 	resolvedAt: string | null;
 	/** `.screenshots/<id>.<ext>`, relative to the design directory; absent when the comment has none. */
 	screenshot?: string;
+	/** Set only when the comment was made at a size other than the artboard's own. */
+	viewport?: DesignViewport;
+	/** The agent's one-line note from resolving the comment; absent when it gave none and cleared on reopen. */
+	resolution?: string;
 };
+
+/** The CSS-px size of the artboard when the comment was made; absent at the artboard's own size. */
+export type DesignViewport = { width: number; height: number };
+
+const VIEWPORT_PRESETS: ReadonlyArray<DesignViewport & { name: string }> = [
+	{ name: "Phone", width: 390, height: 844 },
+	{ name: "Tablet", width: 820, height: 1180 },
+];
+
+/** `Phone 390 × 844`, `Tablet 820 × 1180`, or `<w> × <h>`; the same words the canvas card shows. */
+export function describeViewport(viewport: DesignViewport): string {
+	const size = `${viewport.width} × ${viewport.height}`;
+	const preset = VIEWPORT_PRESETS.find((candidate) => candidate.width === viewport.width && candidate.height === viewport.height);
+	return preset ? `${preset.name} ${size}` : size;
+}
+
+/** Why `value` is not a viewport `{ width, height }` of whole px within the limits, or undefined when it is one. */
+export function viewportProblem(value: unknown): string | undefined {
+	const { minWidth, maxWidth, minHeight, maxHeight } = DESIGN_VIEWPORT_LIMITS;
+	if (!value || typeof value !== "object" || Array.isArray(value)) return "viewport must be an object with width and height";
+	const { width, height } = value as Record<string, unknown>;
+	if (!Number.isInteger(width) || (width as number) < minWidth || (width as number) > maxWidth) return `viewport width must be a whole number from ${minWidth} to ${maxWidth}`;
+	if (!Number.isInteger(height) || (height as number) < minHeight || (height as number) > maxHeight) return `viewport height must be a whole number from ${minHeight} to ${maxHeight}`;
+	return undefined;
+}
+
+/** Why `value` is not a note of at most DESIGN_NOTE_LIMIT characters, or undefined when it is one. */
+export function noteProblem(value: unknown): string | undefined {
+	if (typeof value !== "string") return "note must be a string";
+	if (value.length > DESIGN_NOTE_LIMIT) return `note must have at most ${DESIGN_NOTE_LIMIT} characters`;
+	return undefined;
+}
+
+/**
+ * The one-line resolution note: every line break, with the whitespace around it, becomes one space and the outer
+ * whitespace is trimmed (spaces inside a line are kept); undefined when nothing is left.
+ */
+export function normalizeNote(value: string): string | undefined {
+	return value.split(/[\r\n\u2028\u2029]/).map((line) => line.trim()).filter(Boolean).join(" ") || undefined;
+}
 
 export type DesignCommentsDocument = { version: 1; comments: StoredDesignComment[] };
 
 export type DesignScreenshotInput = { mimeType: string; data: Buffer };
 
-export type DesignCommentInput = { file: string; selector: string; excerpt: string; comment: string; screenshot?: DesignScreenshotInput };
+export type DesignCommentInput = { file: string; selector: string; excerpt: string; comment: string; screenshot?: DesignScreenshotInput; viewport?: DesignViewport };
 
 export type DesignScreenshot = { path: string; mimeType: string; data: Buffer };
 
-export type DesignCommentsErrorCode = "not-found" | "invalid-file" | "invalid-input" | "limit" | "id-exhausted";
+export type DesignCommentsErrorCode = "not-found" | "invalid-file" | "invalid-input" | "limit" | "id-exhausted" | "locked";
 
 export class DesignCommentsError extends Error {
 	readonly code: DesignCommentsErrorCode;
@@ -73,9 +122,12 @@ export interface DesignCommentStore {
 	/** The design's comments; a missing comments.json is an empty document. */
 	read(slug: string): Promise<DesignCommentsDocument>;
 	add(slug: string, input: DesignCommentInput): Promise<StoredDesignComment>;
-	setStatus(slug: string, ids: readonly string[], status: DesignCommentStatus): Promise<{ updated: StoredDesignComment[]; unknown: string[] }>;
+	/** `note` (resolve only) is stored as the comments' `resolution`; reopening clears it. */
+	setStatus(slug: string, ids: readonly string[], status: DesignCommentStatus, options?: { note?: string }): Promise<{ updated: StoredDesignComment[]; unknown: string[] }>;
 	/** Stamps sentAt on comments that have none yet. */
 	markSent(slug: string, ids: readonly string[]): Promise<StoredDesignComment[]>;
+	/** Replaces the text of an open comment, sent or not, and returns the text it had; `locked` when resolved, `not-found` for an unknown id. */
+	setText(slug: string, id: string, text: string): Promise<{ comment: StoredDesignComment; previous: string }>;
 	listOpen(slug: string, file?: string): Promise<StoredDesignComment[]>;
 	/** The screenshot of comment `id`, or undefined when there is no such comment, it has none, or the file is gone. */
 	readScreenshot(slug: string, id: string): Promise<DesignScreenshot | undefined>;
@@ -194,6 +246,7 @@ function inputProblem(input: DesignCommentInput): string | undefined {
 	if (typeof input.selector !== "string" || input.selector.length < 1 || input.selector.length > DESIGN_COMMENT_LIMITS.selector) return `selector must have 1 to ${DESIGN_COMMENT_LIMITS.selector} characters`;
 	if (typeof input.excerpt !== "string" || input.excerpt.length > DESIGN_COMMENT_LIMITS.excerpt) return `excerpt must have at most ${DESIGN_COMMENT_LIMITS.excerpt} characters`;
 	if (typeof input.comment !== "string" || input.comment.length < 1 || input.comment.length > DESIGN_COMMENT_LIMITS.comment) return `comment must have 1 to ${DESIGN_COMMENT_LIMITS.comment} characters`;
+	if (input.viewport !== undefined) return viewportProblem(input.viewport);
 	return undefined;
 }
 
@@ -247,6 +300,10 @@ function parseDocument(raw: string): DesignCommentsDocument {
 		if (item.screenshot !== undefined && (typeof item.screenshot !== "string" || !SCREENSHOT_PATH.test(item.screenshot))) {
 			throw new DesignCommentsError("invalid-file", `${where}.screenshot must be a .screenshots/<id>.<png|jpg|webp|gif> path`);
 		}
+		if (item.resolution !== undefined) {
+			const problem = noteProblem(item.resolution);
+			if (problem) throw new DesignCommentsError("invalid-file", `${where}.resolution: ${problem}`);
+		}
 		const comment: StoredDesignComment = {
 			id: item.id,
 			file: item.file as string,
@@ -259,6 +316,8 @@ function parseDocument(raw: string): DesignCommentsDocument {
 			resolvedAt: item.resolvedAt as string | null,
 		};
 		if (typeof item.screenshot === "string") comment.screenshot = item.screenshot;
+		if (item.viewport !== undefined) comment.viewport = { width: (item.viewport as DesignViewport).width, height: (item.viewport as DesignViewport).height };
+		if (typeof item.resolution === "string") comment.resolution = item.resolution;
 		return comment;
 	});
 	return { version: 1, comments };
@@ -350,6 +409,7 @@ export function createDesignCommentStore(designRoot: string, deps: DesignComment
 					sentAt: null,
 					resolvedAt: null,
 				};
+				if (input.viewport) comment.viewport = { width: input.viewport.width, height: input.viewport.height };
 				let image: string | undefined;
 				if (input.screenshot) {
 					const name = `${id}.${DESIGN_SCREENSHOT_TYPES[input.screenshot.mimeType]}`;
@@ -369,9 +429,14 @@ export function createDesignCommentStore(designRoot: string, deps: DesignComment
 			});
 		},
 
-		async setStatus(slug, ids, status) {
+		async setStatus(slug, ids, status, options) {
 			if (status !== "open" && status !== "resolved") throw new DesignCommentsError("invalid-input", 'status must be "open" or "resolved"');
 			if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) throw new DesignCommentsError("invalid-input", "ids must be an array of strings");
+			if (options?.note !== undefined) {
+				const problem = status === "resolved" ? noteProblem(options.note) : "a note can only accompany resolving a comment";
+				if (problem) throw new DesignCommentsError("invalid-input", problem);
+			}
+			const note = options?.note === undefined ? undefined : normalizeNote(options.note);
 			return mutate(slug, (document) => {
 				const wanted = new Set(ids);
 				const updated: StoredDesignComment[] = [];
@@ -381,6 +446,14 @@ export function createDesignCommentStore(designRoot: string, deps: DesignComment
 					if (comment.status !== status) {
 						comment.status = status;
 						comment.resolvedAt = status === "resolved" ? now().toISOString() : null;
+						write = true;
+					}
+					if (status === "open" && comment.resolution !== undefined) {
+						delete comment.resolution;
+						write = true;
+					}
+					if (note !== undefined && comment.resolution !== note) {
+						comment.resolution = note;
 						write = true;
 					}
 					updated.push(comment);
@@ -400,6 +473,23 @@ export function createDesignCommentStore(designRoot: string, deps: DesignComment
 					updated.push(comment);
 				}
 				return { result: updated, write: updated.length > 0 };
+			});
+		},
+
+		async setText(slug, id, raw) {
+			// Normalized here, like a new comment, so every caller stores the same text.
+			const text = typeof raw === "string" ? raw.replace(/\r\n?/g, "\n").trim() : "";
+			if (text.length < 1 || text.length > DESIGN_COMMENT_LIMITS.comment) {
+				throw new DesignCommentsError("invalid-input", `comment must have 1 to ${DESIGN_COMMENT_LIMITS.comment} characters`);
+			}
+			return mutate(slug, (document) => {
+				const comment = document.comments.find((candidate) => candidate.id === id);
+				if (!comment) throw new DesignCommentsError("not-found", `design/${slug} has no comment ${id}`);
+				// A resolved comment is done; reopen it to change it.
+				if (comment.status !== "open") throw new DesignCommentsError("locked", `comment ${id} is resolved, so its text can no longer change; reopen it first`);
+				const previous = comment.comment;
+				comment.comment = text;
+				return { result: { comment, previous }, write: previous !== text };
 			});
 		},
 

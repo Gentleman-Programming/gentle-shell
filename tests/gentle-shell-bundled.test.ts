@@ -356,8 +356,14 @@ const FIXTURE_CORE = [
 	"if (mode === 'exit') process.exit(1);",
 	"if (mode === 'race') { spawn(process.execPath, [process.argv[1], 'serve'], { env: { ...process.env, FIXTURE_SERVE: 'late' }, detached: true, stdio: 'ignore' }).unref(); process.exit(1); }",
 	`const ready = ${JSON.stringify(JSON.stringify(READY_COMPATIBILITY))};`,
+	// FIXTURE_RUNTIME_CONTRACT optionally stands in for a live GET /runtime-contract
+	// answer (T3): without it the fixture answers 404 there, as before. Computed
+	// inside the request handler, where `request` exists.
 	"setTimeout(() => require('node:http').createServer((request, response) => {",
-	" response.writeHead(request.url === '/compatibility' ? 200 : 404, { 'content-type': 'application/json' }); response.end(request.url === '/compatibility' ? ready : '{}');",
+	" const contractDigest = request.url === '/runtime-contract' ? process.env.FIXTURE_RUNTIME_CONTRACT : undefined;",
+	" const status = request.url === '/compatibility' || contractDigest ? 200 : 404;",
+	" const body = request.url === '/compatibility' ? ready : contractDigest ? JSON.stringify({ contract_id: 'engram.pi-http-runtime/v1', revision: 1, digest: contractDigest }) : '{}';",
+	" response.writeHead(status, { 'content-type': 'application/json' }); response.end(body);",
 	"}).listen(0, '127.0.0.1', function () { const file = process.env.FIXTURE_ENGRAM_PORT_FILE; writeFileSync(file + '.tmp', String(this.address().port)); renameSync(file + '.tmp', file); }),",
 	" mode === 'late' ? 300 : 0);",
 	"setTimeout(() => process.exit(0), 60000);",
@@ -607,6 +613,43 @@ test("a store a newer Engram migrated keeps the server stopped and memory disabl
 	assert.deepEqual(memoryOf(result), ["disabled", prefix.guard, undefined]);
 	assert.match(result.stderr, /memory disabled.*newer Engram/s);
 	assert.deepEqual(prefix.serves(), []);
+});
+
+// T3 (S1, S3, S4): the companion-vs-core contract gate, warn only.
+test("a launch whose companion contract differs from the bundled core warns loudly and still starts memory", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	writeFileSync(join(dirname(prefix.metadata), "runtime-contract.json"),
+		JSON.stringify({ contract_id: "engram.pi-http-runtime/v1", revision: 1, digest: "4bf32703e111162b24073d090bec1c15c9120708587000bf595a07264e768672" }));
+	const result = prefix.run([]);
+	assert.equal(result.status, 0, result.stderr);
+	// Warn only: the shared server still starts and Pi still gets its URL.
+	assert.deepEqual(memoryOf(result), ["allow", prefix.guard, DEFAULT_URL]);
+	assert.match(result.stderr, /contract mismatch/);
+	assert.match(result.stderr, /4bf32703e111162b24073d090bec1c15c9120708587000bf595a07264e768672/);
+	assert.match(result.stderr, new RegExp(engramPinVersion.replaceAll(".", "\\.")));
+	assert.match(result.stderr, /0af9af176928e98562ab1396d3196efe582dd5d1c5d2c5f8f546ab4ed609810f/);
+});
+
+test("a ready shared server whose live runtime contract differs from the companion's file warns, without touching memory", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	writeFileSync(join(dirname(prefix.metadata), "runtime-contract.json"),
+		JSON.stringify({ contract_id: "engram.pi-http-runtime/v1", revision: 1, digest: "0af9af176928e98562ab1396d3196efe582dd5d1c5d2c5f8f546ab4ed609810f" }));
+	const result = prefix.run([], { FIXTURE_RUNTIME_CONTRACT: "4bf32703e111162b24073d090bec1c15c9120708587000bf595a07264e768672" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["allow", prefix.guard, DEFAULT_URL]);
+	assert.match(result.stderr, /contract mismatch/);
+	assert.match(result.stderr, /4bf32703e111162b24073d090bec1c15c9120708587000bf595a07264e768672/);
+	// The digest came from the running server, so the notice names it instead of
+	// attributing that answer to the pinned core version.
+	assert.match(result.stderr, /the running Engram server answers/);
+});
+
+test("a launch without a companion runtime-contract file stays silent about contracts and keeps memory on", { skip: posixHost }, (t) => {
+	const prefix = bundledPrefix(t);
+	const result = prefix.run([]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(memoryOf(result), ["allow", prefix.guard, DEFAULT_URL]);
+	assert.doesNotMatch(result.stderr, /contract/);
 });
 
 function migrationFixture(t: TestContext, outcome = "success") {
@@ -1219,7 +1262,9 @@ function nativeCompanionFixture(t: TestContext) {
 			if (process.env.FIXTURE_PACKAGE_FAIL === '1') { console.error('fixture package install failed'); process.exit(7); }
 			if (!args.includes('gentle-engram@latest')) { console.error('unexpected package spec'); process.exit(8); }
 			const metadata = ${JSON.stringify(prefix.metadata)}; const pkg = JSON.parse(readFileSync(metadata, 'utf8'));
-			pkg.version = process.env.FIXTURE_PACKAGE_LATEST; writeFileSync(metadata, JSON.stringify(pkg));
+			pkg.version = process.env.FIXTURE_PACKAGE_LATEST;
+			if (process.env.FIXTURE_PACKAGE_POLICY === '0') delete pkg.engram;
+			writeFileSync(metadata, JSON.stringify(pkg));
 		} else { console.error('unexpected npm call'); process.exit(9); }
 	`);
 	const run = (args: string[], extra: Record<string, string> = {}) => spawnSync(process.execPath, [prefix.entry, ...args], {
@@ -1255,6 +1300,12 @@ test("native startup notice discovers a newer Shell-managed companion without in
 	assert.equal(fixture.npmCalls().some((args) => args.includes("install")), false);
 });
 
+// The development range admits Pi 1.4.0 and 1.5.x, whose `update --extensions` report differs:
+// 1.4.0 prints "Updated packages"; 1.5.x prints "Updated N package(s):" and one
+// "source from -> to" line per updated package.
+const COMPANION_UPDATED = /^Updated 1 package:\n {2}npm:gentle-engram 0\.4\.2 -> 0\.5\.0$|Updated packages/m;
+const ANY_PACKAGES_UPDATED = /Updated \d+ packages?:|Updated packages/;
+
 test("extension update migrates the old managed companion and propagates failure before succeeding", { skip: posixHost }, (t) => {
 	const fixture = nativeCompanionFixture(t);
 	const other = "npm:other-extension@2.0.0";
@@ -1270,13 +1321,15 @@ test("extension update migrates the old managed companion and propagates failure
 	const failed = fixture.run(["update", "--extensions"], { FIXTURE_PACKAGE_FAIL: "1" });
 	assert.equal(failed.status, 1);
 	assert.match(failed.stderr, /fixture package install failed|exited with code 7/);
-	assert.doesNotMatch(failed.stdout, /Updated packages/);
+	assert.doesNotMatch(failed.stdout, ANY_PACKAGES_UPDATED);
 	assert.equal(readFileSync(fixture.metadata, "utf8"), before);
 	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, ["npm:gentle-engram", other]);
 	const updated = fixture.run(["update", "--extensions"]);
 	assert.equal(updated.status, 0, updated.stderr);
-	assert.match(updated.stdout, /Updated packages/);
-	assert.equal(updated.stderr, "");
+	assert.match(updated.stdout, COMPANION_UPDATED);
+	// T4: the re-verification after the child reports the version it found, and never a failure.
+	assert.match(updated.stderr, /gentle-engram 0\.5\.0 verified after the extensions update/);
+	assert.doesNotMatch(updated.stderr, /could not verify|failed/);
 	assert.equal(JSON.parse(readFileSync(fixture.metadata, "utf8")).version, "0.5.0");
 	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, ["npm:gentle-engram", other]);
 	assert.equal(fixture.npmCalls().filter((args) => args.includes("install") && args.includes("gentle-engram@latest")).length, 2);
@@ -1314,6 +1367,39 @@ test("an unverified legacy companion cannot be reported as an extension-update s
 	assert.equal(readFileSync(fixture.metadata, "utf8"), before);
 	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, packages);
 	assert.deepEqual(fixture.npmCalls(), []);
+});
+
+// T4 (S2, S5): after the pi update --extensions child completes in a bundled,
+// Shell-owned home, the same companion verification as setup and launch runs
+// (the migration un-pinned the source, Pi replaced it with @latest, and nothing
+// else re-verifies), warn only, reporting the version it found.
+test("update --extensions re-verifies the managed companion and reports the version it found", { skip: posixHost }, (t) => {
+	const fixture = nativeCompanionFixture(t);
+	const other = "npm:other-extension@2.0.0";
+	writeFileSync(fixture.settings, JSON.stringify({ packages: ["npm:gentle-engram@0.4.2", other] }));
+	writeFileSync(join(dirname(fixture.metadata), "runtime-contract.json"),
+		JSON.stringify({ contract_id: "engram.pi-http-runtime/v1", revision: 1, digest: "0af9af176928e98562ab1396d3196efe582dd5d1c5d2c5f8f546ab4ed609810f" }));
+	const result = fixture.run(["update", "--extensions"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, COMPANION_UPDATED);
+	assert.equal(JSON.parse(readFileSync(fixture.metadata, "utf8")).version, "0.5.0");
+	assert.match(result.stderr, /gentle-engram 0\.5\.0 verified after the extensions update/);
+	// The matching digest warns nothing, and the selection is kept as Pi left it.
+	assert.doesNotMatch(result.stderr, /contract mismatch/);
+	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, ["npm:gentle-engram", other]);
+});
+
+test("a failed post-update companion verification never turns a successful extensions update into a failure", { skip: posixHost }, (t) => {
+	const fixture = nativeCompanionFixture(t);
+	const packages = ["npm:gentle-engram@0.4.2", "npm:other-extension@2.0.0"];
+	writeFileSync(fixture.settings, JSON.stringify({ packages }));
+	// The fixture update replaces the companion with one that lost its startupPolicy.
+	const result = fixture.run(["update", "--extensions"], { FIXTURE_PACKAGE_POLICY: "0" });
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, COMPANION_UPDATED);
+	assert.match(result.stderr, /engram\.startupPolicy=1/);
+	// Warn only: the selection is preserved, never rewritten or deleted.
+	assert.deepEqual(JSON.parse(readFileSync(fixture.settings, "utf8")).packages, ["npm:gentle-engram", "npm:other-extension@2.0.0"]);
 });
 
 test("companion selections in linked and foreign homes remain untouched", { skip: posixHost }, (t) => {

@@ -1,22 +1,11 @@
 import { execFile } from "node:child_process";
-import { resolve } from "node:path";
-import type { NativeReviewCli } from "./native-review-cli.ts";
+import { posix, win32 } from "node:path";
+import { NATIVE_UNTRACKED_SCOPE, normalizeNativeReviewCwd, type NativeReviewCli } from "./native-review-cli.ts";
 import { recognizeReviewDeliveryActions } from "./destructive-command-guard.ts";
 import { resolveSessionWorktree, worktreeGitEnvironment } from "./session-worktree-registry.ts";
 
 type Denial = { block: true; reason: string };
 const deny = (reason: string): Denial => ({ block: true, reason: `RDD pre-delivery: ${reason} This delivery command was not run. Review outcomes do not authorize delivery.` });
-
-// Git Bash and other MSYS shells hand native binaries POSIX-spelled paths, and the
-// shell normally rewrites them; the preflight reads the raw command text instead, so
-// `resolve` would read `/c/repo` as `C:\c\repo` and every spawn from it fails. WSL's
-// `/mnt/c` spelling is not translated: it never names a Windows drive to Git.
-const MSYS_DRIVE_PATH = /^\/([a-zA-Z])(\/|$)/;
-export function nativeDirectory(directory: string, platform: string = process.platform): string {
-	if (platform !== "win32") return directory;
-	const match = MSYS_DRIVE_PATH.exec(directory);
-	return match === null ? directory : `${match[1].toUpperCase()}:${directory.slice(2) || "/"}`;
-}
 
 // Compare HEAD/base around this read, without retaining a verdict or snapshot.
 async function identity(root: string, baseRef: string): Promise<string | undefined> {
@@ -28,10 +17,36 @@ async function identity(root: string, baseRef: string): Promise<string | undefin
 		}));
 }
 
+/**
+ * gentle-shell#3169: native assess refuses a committed-only range while any
+ * untracked file exists (a PR body written for `gh pr create --body-file`)
+ * unless the untracked inventory is declared. A base-diff snapshot never
+ * includes untracked files, so excluding them leaves the assessed range
+ * unchanged. The digest comes only from native status; without it nothing is
+ * declared and native keeps deciding.
+ */
+export async function committedRangeUntrackedExclusion(cli: Pick<NativeReviewCli, "targetStatus"> | null | undefined, cwd: string, baseRef: string,
+	signal?: AbortSignal): Promise<{ untrackedScope?: typeof NATIVE_UNTRACKED_SCOPE.EXCLUDE; expectedUntrackedInventory?: string }> {
+	if (!cli?.targetStatus) return {};
+	try {
+		const inventory = (await cli.targetStatus({ cwd, baseRef, committedOnly: true, agent: "pi", ...(signal ? { signal } : {}) })).eligibleUntrackedInventory;
+		return typeof inventory === "string" && inventory ? { untrackedScope: NATIVE_UNTRACKED_SCOPE.EXCLUDE, expectedUntrackedInventory: inventory } : {};
+	} catch { return {}; }
+}
+
+/**
+ * gentle-shell#3310: on Windows a git-bash `cd /c/repo` must name C:\repo;
+ * resolving the MSYS form directly yields C:\c\repo and the native spawn fails.
+ */
+export function deliveryDirectory(cwd: string, directories: readonly string[], platform: NodeJS.Platform = process.platform): string {
+	const path = platform === "win32" ? win32 : posix;
+	return directories.reduce((base, directory) => path.resolve(base, normalizeNativeReviewCwd(directory, platform)), cwd);
+}
+
 /** One fresh check per repository/batch. The existing session registry supplies only a base-ref hint. */
 export async function checkReviewDeliveryPreflight(cwd: string, toolName: string, command: string, cli: NativeReviewCli | null,
 	baseRefFor: (root: string) => string | undefined, declined: (root: string, target: string) => boolean,
-	signal?: AbortSignal, current: () => boolean = () => true): Promise<Denial | undefined> {
+	signal?: AbortSignal, current: () => boolean = () => true, platform: NodeJS.Platform = process.platform): Promise<Denial | undefined> {
 	const actions = recognizeReviewDeliveryActions(command), deliveries = actions.filter(action => action.kind === "delivery");
 	if (!deliveries.length || !cli?.reviewMode) return undefined;
 	if (deliveries.some(delivery => delivery.unresolvedDirectory)) return deny("The delivery repository cannot be resolved from this directory or Git/environment redirect; run delivery inside its repository or use literal cd or git -C.");
@@ -43,7 +58,7 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 		try {
 			const checked: Array<{ root: string; baseRef: string; before: string }> = [];
 			const roots = new Set(deliveries.map(delivery => {
-				const target = (delivery.directories ?? []).reduce((base, directory) => resolve(base, nativeDirectory(directory)), cwd);
+				const target = deliveryDirectory(cwd, delivery.directories ?? [], platform);
 				return resolveSessionWorktree(target, cwd)?.root ?? target;
 			}));
 			for (const root of roots) {
@@ -51,13 +66,15 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 				if (bounded.aborted || !current()) return deny("Session changed during preflight; assess again.");
 				if (mode.status.effective === "off") continue;
 				if (mode.status.effective !== "on") return deny("RDD mode is unavailable; resolve it before delivery.");
-				if (toolName !== "bash" || actions.some(action => action.kind === "change")) return deny("Finish candidate-changing commands or background waits separately, then issue delivery so the resulting commits can be assessed.");
+				if (toolName !== "bash" || deliveries.some(delivery => delivery.background) || actions.some(action => action.kind === "change")) return deny("Finish candidate-changing commands or background waits separately, then issue delivery so the resulting commits can be assessed.");
 				const baseRef = baseRefFor(root);
 				if (!baseRef) return deny('Select the actual committed range with gentle_review assess input {"baseRef":"<slice base>","committedOnly":true}.');
 				const before = await identity(root, baseRef);
 				if (!before || !cli.assess) return deny("The selected base or native assessment is unavailable; resolve it before delivery.");
 				if (bounded.aborted || !current()) return deny("Session changed during preflight; assess again.");
-				const assessment = await cli.assess({ cwd: root, baseRef, committedOnly: true, signal: bounded });
+				const untracked = await committedRangeUntrackedExclusion(cli, root, baseRef, bounded);
+				if (bounded.aborted || !current()) return deny("Session changed during preflight; assess again.");
+				const assessment = await cli.assess({ cwd: root, baseRef, committedOnly: true, ...untracked, signal: bounded });
 				if (bounded.aborted || !current()) return deny("Session changed during preflight; assess again.");
 				if (assessment.candidate.kind !== "base-diff" || assessment.candidate.baseRef !== baseRef || typeof assessment.reviewDue !== "boolean") return deny("Native assessment did not confirm the selected committed range.");
 				if (assessment.reviewDue) {

@@ -13,6 +13,8 @@
 // idle using `deliverAs: "steer"`.
 
 export const STALE_NOTIFICATION_MS = 90_000;
+/** Appended to a query that expired before the parent's turn boundary. */
+export const EXPIRED_QUERY_LINE = "This query expired before it reached you; a reply is delivered to the task as a message.";
 
 export type AgentMessageKind = "notification" | "query";
 
@@ -49,6 +51,10 @@ export interface AgentMessageQueue {
 
 	/** Mark a query as expired (timed out or errored). Prevents delivery. */
 	expireQuery(taskId: string, requestId: string): void;
+
+	/** A query that timed out: one the parent never saw is still delivered once,
+	 * marked expired, so a late reply can reach the task; otherwise like expireQuery. */
+	markQueryExpired(taskId: string, requestId: string): void;
 
 	/** Invalidate all pending messages (notifications and queries) for a settled or cancelled task. */
 	invalidateTask(taskId: string): void;
@@ -137,6 +143,17 @@ export function createAgentMessageQueue(): AgentMessageQueue {
 			const key = queryKey(taskId, requestId);
 			expiredQueries.add(key);
 			pending = pending.filter((msg) => !(msg.kind === "query" && msg.taskId === taskId && msg.requestId === requestId));
+		},
+
+		markQueryExpired(taskId, requestId) {
+			const queued = pending.find((msg) => msg.kind === "query" && msg.taskId === taskId && msg.requestId === requestId);
+			if (!queued) {
+				expiredQueries.add(queryKey(taskId, requestId));
+				return;
+			}
+			if (queued.details.gentleAgents && (queued.details.gentleAgents as { expired?: boolean }).expired) return;
+			queued.content = `${queued.content}\n${EXPIRED_QUERY_LINE}`;
+			queued.details = { gentleAgents: { ...(queued.details.gentleAgents as Record<string, unknown>), expired: true } };
 		},
 
 		invalidateTask(taskId) {

@@ -25,6 +25,7 @@ import type { Api, AssistantMessage, Context, Model, ProviderEnv, ProviderHeader
 import type { completeSimple } from "@earendil-works/pi-ai/compat";
 import { SAFE_MODEL_ID_PATTERN, type ServiceTier } from "./model-routing-authority.ts";
 import { applyOpenAITier, supportsOpenAIFast } from "./openai-fast-tier.ts";
+import { readReviewerStream, type ReviewerStream, type ReviewerProgressObserver } from "./reviewer-stream.ts";
 
 // ---------------------------------------------------------------------------
 // Registry seam — a structural subset of pi's live ModelRegistry
@@ -40,11 +41,12 @@ import { applyOpenAITier, supportsOpenAIFast } from "./openai-fast-tier.ts";
 
 /**
  * The single method this module needs from a resolved provider. pi's
- * `Provider.streamSimple` returns an `AssistantMessageEventStream`; only its
- * `result()` is consumed here, so the seam asks for nothing more.
+ * `Provider.streamSimple` returns an `AssistantMessageEventStream`. Observe
+ * content activity when iterable; result-only compatibility seams retain the
+ * overall deadline without inventing stream progress.
  */
 export interface InProcessReviewerProvider {
-	streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): { result(): Promise<AssistantMessage> };
+	streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): ReviewerStream;
 }
 
 export interface InProcessReviewerRegistry {
@@ -70,6 +72,20 @@ export const INPROCESS_REVIEWER_FAILURE = {
 } as const;
 export type InProcessReviewerFailureCode = (typeof INPROCESS_REVIEWER_FAILURE)[keyof typeof INPROCESS_REVIEWER_FAILURE];
 
+// gentle-ai#6095: an empty completion has more than one cause, and only the
+// completion itself carries the facts that tell them apart. Attributing it
+// generically ("reviewer produced no text") pushed the diagnosis onto whoever
+// read the transcript next: the recorded model id, stop reason and usage split
+// stayed uninterpreted, so six relay runs had to be correlated by hand before
+// a single model's reasoning budget was visible as the cause. Each cause below
+// names what actually went wrong and what can be done about it. Nothing here
+// infers a candidate defect: a generation failure is not a review finding.
+export const INPROCESS_REVIEWER_EMPTY_OUTPUT_CAUSE = {
+	REASONING_EXHAUSTED_OUTPUT_BUDGET: "reasoning-exhausted-output-budget",
+	EMPTY_COMPLETION: "empty-completion",
+} as const;
+export type InProcessReviewerEmptyOutputCause = (typeof INPROCESS_REVIEWER_EMPTY_OUTPUT_CAUSE)[keyof typeof INPROCESS_REVIEWER_EMPTY_OUTPUT_CAUSE];
+
 export interface InProcessReviewerRequest {
 	/** "provider/id" from models.json routing; already validated by SAFE_MODEL_ID_PATTERN upstream, re-validated here. */
 	readonly selection: string;
@@ -81,6 +97,8 @@ export interface InProcessReviewerRequest {
 	/** Frozen Go-materialized prompt bytes, submitted verbatim as the one user message. */
 	readonly prompt: Buffer;
 	readonly timeoutMs: number;
+	readonly firstOutputTimeoutMs?: number;
+	readonly idleTimeoutMs?: number;
 	readonly signal?: AbortSignal;
 	/**
 	 * The live pi session id, threaded from the extension context. Pi's main
@@ -105,6 +123,7 @@ export interface InProcessReviewerDeps {
 	readonly now?: () => number;
 	/** Host-only facts, including on thrown auth errors. Never awaited; observer failure is non-authoritative. */
 	readonly onEvidence?: (evidence: Record<string, unknown>) => void | Promise<void>;
+	readonly onProgress?: ReviewerProgressObserver;
 }
 
 // No existing bound covers the reviewer's completion text: the child this
@@ -159,6 +178,58 @@ function isTextContent(part: { type?: unknown }): part is TextContent {
 	return part.type === "text";
 }
 
+/** A counter the completion actually reported, or undefined; never a calculated one. */
+function reportedCounter(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * Attribute an empty completion from the facts the completion itself reported.
+ * Two shapes are attributable today (gentle-ai#6095):
+ *
+ * - `stopReason: "length"` whose output budget was consumed by reasoning. This
+ *   is deterministic for the routed model, not an incident: a lens routed to a
+ *   model that spends the whole ceiling thinking cannot ever emit a verdict.
+ * - `stopReason: "stop"` that reported zero output tokens: the provider
+ *   returned no completion at all.
+ *
+ * Every other empty shape stays unattributed — the host has no evidence to
+ * name a cause, and inventing one would be worse than the generic refusal.
+ * Exported so the vocabulary is asserted directly, not only through prose.
+ */
+export function classifyEmptyOutput(assistant: Pick<AssistantMessage, "stopReason" | "usage">): InProcessReviewerEmptyOutputCause | undefined {
+	const output = reportedCounter(assistant.usage?.output);
+	const reasoning = reportedCounter(assistant.usage?.reasoning);
+	if (assistant.stopReason === "length" && output !== undefined && output > 0 && reasoning !== undefined && reasoning > 0 && reasoning >= output) {
+		return INPROCESS_REVIEWER_EMPTY_OUTPUT_CAUSE.REASONING_EXHAUSTED_OUTPUT_BUDGET;
+	}
+	if (assistant.stopReason === "stop" && output === 0) {
+		return INPROCESS_REVIEWER_EMPTY_OUTPUT_CAUSE.EMPTY_COMPLETION;
+	}
+	return undefined;
+}
+
+/**
+ * Names the attributed cause, the model or provider response responsible for
+ * it, the facts the completion reported, and the remedy that fits this cause.
+ * The closing sentence is deliberate: an empty generation is a transport
+ * outcome, never a candidate issue, and this message is what a blocked capture
+ * returns as its `reason`.
+ */
+function emptyOutputRefusalMessage(cause: InProcessReviewerEmptyOutputCause, routingKey: string, reviewerModel: string, assistant: AssistantMessage): string {
+	const output = reportedCounter(assistant.usage?.output);
+	const reasoning = reportedCounter(assistant.usage?.reasoning);
+	const facts = [
+		`stopReason: ${assistant.stopReason}`,
+		...(output === undefined ? [] : [`output: ${output}`]),
+		...(reasoning === undefined ? [] : [`reasoning: ${reasoning}`]),
+	].join("; ");
+	if (cause === INPROCESS_REVIEWER_EMPTY_OUTPUT_CAUSE.REASONING_EXHAUSTED_OUTPUT_BUDGET) {
+		return `Reviewer model ${reviewerModel} exhausted its ${output}-token output budget on reasoning before emitting a verdict for ${routingKey} (${facts}). Route this lens to a reviewer model with a sufficient output ceiling, raise the output budget, or reduce reasoning. No candidate issue is inferred from this generation failure.`;
+	}
+	return `The provider returned no completion for ${routingKey} from reviewer model ${reviewerModel} (${facts}). Retry the slot. No candidate issue is inferred from this generation failure.`;
+}
+
 /** Completion diagnostics are facts only; never copy provider text, errors, or payloads. */
 function completionEvidence(model: Model<Api>, assistant: AssistantMessage): Record<string, unknown> {
 	const evidence: Record<string, unknown> = { reviewerModel: `${model.provider}/${model.id}`.slice(0, 512) };
@@ -166,7 +237,8 @@ function completionEvidence(model: Model<Api>, assistant: AssistantMessage): Rec
 		evidence.stopReason = assistant.stopReason;
 	}
 	const addCounter = (target: Record<string, number>, key: string, value: unknown) => {
-		if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) target[key] = value;
+		const counter = reportedCounter(value);
+		if (counter !== undefined) target[key] = counter;
 	};
 	const usage: Record<string, number> = {};
 	for (const key of ["input", "output", "reasoning", "cacheRead", "cacheWrite", "totalTokens"] as const) {
@@ -252,6 +324,13 @@ function reviewerDeadline(request: InProcessReviewerRequest) {
 	return {
 		signal: controller.signal,
 		failure,
+		timeout(phase: "first-output" | "stream-idle", limitMs: number) {
+			if (failure() !== undefined) return;
+			refusal = refuse(INPROCESS_REVIEWER_FAILURE.TIMED_OUT,
+				`Reviewer ${request.routingKey} exceeded its ${limitMs}ms ${phase} bound; no result was admitted.`,
+				{ timeoutPhase: phase, streamTimeoutMs: limitMs });
+			controller.abort(new DOMException("Reviewer stream stalled", "TimeoutError"));
+		},
 		wait<T>(start: () => Promise<T>): Promise<T> {
 			return new Promise<T>((resolve, reject) => {
 				if (failure() !== undefined) { reject(interrupted); return; }
@@ -460,14 +539,16 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 					: {}),
 			};
 
-			// `SimpleStreamOptions` is identical on both paths; only the return shape
-			// differs (an event stream versus a promise), hence `.result()` — which is
-			// exactly what pi-ai's own compat layer does with the same stream.
+			// Observe the composed SDK stream while retaining the original result.
+			// The promise-only compatibility seam has only the overall deadline.
 			let assistant: AssistantMessage;
 			try {
 				assistant = await deadline.wait(() => {
 					phase = "completion"; completionStarted = performance.now();
-					return provider === undefined ? deps.complete(requestModel, context, options) : provider.streamSimple(requestModel, context, options).result();
+					return provider === undefined ? deps.complete(requestModel, context, options) : readReviewerStream(provider.streamSimple(requestModel, context, options), {
+						routingKey: request.routingKey, firstOutputTimeoutMs: request.firstOutputTimeoutMs, idleTimeoutMs: request.idleTimeoutMs,
+						wait: deadline.wait, timeout: deadline.timeout, onProgress: deps.onProgress,
+					});
 				});
 				resolvedAssistant = assistant;
 			} catch (error) {
@@ -503,10 +584,13 @@ export async function runInProcessReviewer(request: InProcessReviewerRequest, de
 			const text = assistant.content.filter(isTextContent).map((part) => part.text).join("");
 			if (text.length === 0) {
 				const stopReason = ["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"].includes(assistant.stopReason) ? assistant.stopReason : undefined;
-				return finish(refuse(
-					INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT,
-					`Reviewer produced no text for ${request.routingKey} (stopReason: ${stopReason ?? "unknown"}).`,
-				));
+				const cause = classifyEmptyOutput(assistant);
+				// An attributed cause keeps the same failure code and the same evidence
+				// facts; it adds the interpretation (as `cause`) and replaces only the
+				// message, so no other empty shape changes its refusal.
+				return finish(cause === undefined
+					? refuse(INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT, `Reviewer produced no text for ${request.routingKey} (stopReason: ${stopReason ?? "unknown"}).`)
+					: refuse(INPROCESS_REVIEWER_FAILURE.EMPTY_OUTPUT, emptyOutputRefusalMessage(cause, request.routingKey, `${model.provider}/${model.id}`, assistant), { cause }));
 			}
 
 			const textBytes = Buffer.byteLength(text, "utf8");

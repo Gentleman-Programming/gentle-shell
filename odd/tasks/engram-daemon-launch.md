@@ -1,0 +1,37 @@
+# Engram daemon launch in gentle-shell
+
+Fix the gentle-shell side of Gentleman-Programming/engram#2346: Shell spawns its bundled engram core directly (`engram serve`, detached), which is invisible to `engram ps/stop/logs/restart`. Launch the daemon lifecycle (`engram run -d`) when the core supports it (>= 3.7.0), keep the legacy spawn otherwise, and bump the bundled core pin 3.5.2 -> 3.7.0. Repo: `C:/Users/devel/dev/gentle-shell`, branch `feat/engram-daemon-launch`.
+
+## Specs
+
+S1 — "Los nuevos comandos para manejar engram no funcionan si engram ya fue cargado por gentle-shell. La única forma para que funcionen por ahora, es corriendo engram previo a gentle-shell. Una mejor opción sería que gentle-shell utilizara estos nuevos comandos para cargar engram version >= 3.7.0, y de la forma antigua para versiones anteriores a esta. También engram serve podría quedar como fallback de los comandos daemon."
+
+S2 — "tenemos que hacer el fix del lado de gemtle-shell, engram lo hace otro de los maintainers"
+
+S3 — User decision (this session): pin bump 3.5.2 -> 3.7.0 + daemon launch in ONE PR ("Sí: bump + daemon, un PR"); workspace: fresh clone, location chosen by agent (`C:/Users/devel/dev/gentle-shell`).
+
+S4 — Fix scope is gentle-shell only; engram side is another maintainer's work (from S2): no changes to the engram repo are part of this feature.
+
+S5 — Upstream reference (issue engram#2346, user-relayed): a Shell-managed server must be "manageable through the standard daemon verbs, shipping a current core release". Daemon verbs only manage the pidfile-tracked daemon started by `engram run -d`, never a `serve` process (engram `cmd/engram/daemon_verbs.go:17-20`).
+
+## Tasks
+
+T1 — [S3] Baseline: fresh clone of main at `C:/Users/devel/dev/gentle-shell`, branch `feat/engram-daemon-launch`; confirm pin 3.5.2 (`scripts/installer-downloads.mjs:47`) and `startSharedEngram` (`bin/gentle-shell.mjs:242`) match the installed 4.7.0 tree. DONE (verified).
+T2 — [S3, S5] Bump engram pin 3.5.2 -> 3.7.0 in `scripts/installer-downloads.mjs`: update version, and all six archive tuples (sha256 + size) from the v3.7.0 release `checksums.txt`, cross-checked against GitHub API asset digests, and re-hashed from downloaded archives. DONE — commit `22ab693d3`.
+T3 — [S1, S5] Version gate: >= 3.7.0 semver comparison helper in `lib/gentle-shell-bundled.ts` (base pattern: `outdatedServerVersion`), RED tests first in `tests/engram-safety.test.ts`. DONE — RED observed, GREEN (engram-safety 27 pass / 0 fail); commit `6b3f1da76` (also carries the `BUNDLED_ENGRAM_SCHEMA` "3.7.0" entry and the regenerated runtime mirror).
+T4 — [S1, S5] `startSharedEngram` (`bin/gentle-shell.mjs`): core >= 3.7.0 -> `engram run -d` (daemon lifecycle, visible to ps/stop/logs/restart); failure falls back to detached `serve` (current behavior); core < 3.7.0 -> current detached `serve`. Keep probe/`ENGRAM_URL` policy and env sanitization unchanged. GREEN tests. DONE — commit `6b3f1da76`; typecheck 0 diagnostics.
+T5 — [S2] Full test suite: provider-contract PASS, runtime-harness PASS, unit-tests stage investigated via branch-vs-base differential (Log L9).
+T6 — [S3] Conventional work-unit commits on `feat/engram-daemon-launch` (~400-line slices), then close. Push/PR is the user's call.
+T7 — [S2] Update the docs that describe the pinned core and the startup path (docs/bundled-install.md, docs/readme-reference.md): pin 3.7.0, daemon-first launch, schema provenance v3.7.0. DONE — commit `6b3f1da76`.
+T8 — [S1, S2] Functional verification with the real 3.7.0 binary: `engram version`, isolated-home `engram run -d` answering `/compatibility`, daemon verbs (`ps`, `stop`) see and stop it, and the legacy `serve` still answers the same contract. DONE — see Log L8.
+
+## Log
+
+L1 — (verbatim, user) "revisa esto que me pasaron: Los nuevos comandos para manejar engram no funcionan si engram ya fue cargado por gentle-shell. La única forma para que funcionen por ahora, es corriendo engram previo a gentle-shell. Una mejor opción sería que gentle-shell utilizara estos nuevos comandos para cargar engram version >= 3.7.0, y de la forma antigua para versiones anteriores a esta. También engram serve podría quedar como fallback de los comandos daemon." (The promised "información de los problemas que genera Engram 3.5.2 - 3.7.0" never arrived in-channel; upstream issue engram#2346 + gentle-shell#3015 were located instead and serve as evidence.)
+L2 — (user) "ok, hay issue en alguno de los repos?" -> found engram#2346 (open) and gentle-shell#3015 (open) as the exact upstream reports.
+L3 — (user) "tenemos que hacer el fix del lado de gemtle-shell, engram lo hace otro de los maintainers" -> scope = gentle-shell side only.
+L4 — (user decisions) Pin bump + daemon in one PR; fresh clone; location `C:/Users/devel/dev/gentle-shell`.
+L5 — Pin bump applied to scripts/installer-downloads.mjs (version 3.7.0 + six sha256/size tuples) from release checksums.txt, cross-checked against GitHub API asset digests; local re-hash of all six archives running. Engram mirror pending: no memory tools available in this session (consistent with upstream gentle-shell#3015 symptom).
+L6 — Version gate landed: comparator refactored (`canonicalVersion`/`compareVersion`), `ENGRAM_DAEMON_LIFECYCLE_MIN_VERSION`, `engramSupportsDaemonLifecycle`, `engramSpawnArgs` exported from lib/gentle-shell-bundled.ts; `BUNDLED_ENGRAM_SCHEMA` adds `"3.7.0": 1` (schemaVersion = 1 verified at the local v3.7.0-12 tree, internal/store/store.go:1270). RED observed (bundledEngramSchema("3.7.0") === undefined), then GREEN: engram-safety 27 pass / 0 fail; focused combined run 44 pass / 0 fail / 54 skipped (skips environmental, pending baseline comparison). runtime/gentle-shell-bundled.mjs regenerated via scripts/build-runtime-modules.mjs --write.
+L7 — bin/gentle-shell.mjs `startSharedEngram` now launches `run -d` for daemon-lifecycle cores (wrapper await bounded at 16 s, readiness through the same /compatibility contract, fallback to legacy detached `serve` otherwise); older cores unchanged. Docs updated (T7). Typecheck pending pnpm install (job running).
+L8 — T8 functional verification with the real 3.7.0 binary (isolated home, task instance stopped afterwards; the user's own 3.7.0 server on 7437 untouched): `engram version` -> `engram 3.7.0` (the exact string ensureEngram's publish check requires); `run -d` -> exit 0, daemon visible to `ps` ("running (pid …) on port …", version-skew line) and `logs`, and `stop` -> exit 0 then "not running"; daemon and legacy `serve` both answer the exact `/compatibility` ready contract Shell reuses on (`startup-verified-store-v1`, `active_reuse_authorized: true`, revision 1, source active, 32-hex ids); `ps` does not track a `serve` process, confirming why the legacy spawn is invisible to the verbs; `serve` takes no `-p` flag (env `ENGRAM_PORT` works — Shell's sanitized env uses the default endpoint anyway). Port-conflict behavior observed directly: `run -d` against the user's occupied 7437 exits non-zero ("already owned by a different or legacy instance") — the convergence probe in `startEngramDaemon` then sees a compatible listening server and Shell reuses it, same as the serve path converges. Pin hashes: all six archives re-hashed locally, byte-for-byte equal to the pinned tuples. Typecheck: 0 diagnostics (pnpm postinstall for gentle-ai failed on this machine, unrelated to the change).

@@ -34,6 +34,7 @@ import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integra
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { cardBody, cardTitle, cardTone } from "./gentle-card-text.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
+import { beginDesktopProfileApply, endDesktopProfileApply } from "../lib/desktop-rpc-profiles.ts";
 
 initTheme("dark");
 
@@ -80,7 +81,7 @@ function renderComponent(component: { render(width: number): string[] }): string
 	return component.render(120).map((line) => line.replace(/[ \t]+$/g, "")).join("\n");
 }
 
-function registeredGentleTools(): Map<string, any> {
+function registeredGentleTools(processEnv?: NodeJS.ProcessEnv): Map<string, any> {
 	const tools = new Map<string, any>();
 	const pi = {
 		on() {},
@@ -89,7 +90,7 @@ function registeredGentleTools(): Map<string, any> {
 			tools.set(tool.name, tool);
 		},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
+	createGentleAiExtension({ nativeReviewCli: null, ...(processEnv === undefined ? {} : { processEnv }) })(pi);
 	return tools;
 }
 
@@ -244,12 +245,15 @@ test("missing package-local binaries give a direct recovery without attributing 
 });
 
 test("registered Gentle Review tools render reusable rose lifecycle call rows", () => {
-	const tools = registeredGentleTools();
+	// An explicit empty environment, so an inherited child or opt-out variable
+	// cannot drop gentle_review_run from the registered family this test lists.
+	const tools = registeredGentleTools({});
 	const cases = [
 		["gentle_review", { operation: "status" }, "status"],
 		["gentle_review", { operation: "future-operation", secret: "/private" }, ""],
 		["gentle_review_scope", {}, "scope"],
 		["gentle_review_capture_group", {}, "capture group"],
+		["gentle_review_run", { lineageId: "lineage-id" }, "run"],
 		[
 			"gentle_review_capture",
 			{
@@ -1888,7 +1892,7 @@ test(`${channel} emits only a private, balanced Herdr projection`, () => {
 		registerTool() {},
 	} as unknown as ExtensionAPI;
 	createGentleAiExtension({ nativeReviewCli: null })(pi);
-	const privateHostDiscovery = new Set(["gentle:yolo:host-ui", "gentle:rdd:host-ui"]);
+	const privateHostDiscovery = new Set(["gentle:yolo:host-ui", "gentle:rdd:host-ui", "gentle:desktop:profiles-service", "gentle:desktop:review-service"]);
 	for (const channel of privateHostDiscovery) assert.equal(eventHandlers.has(channel), true);
 	assert.deepEqual([...eventHandlers.keys()].filter(name => !privateHostDiscovery.has(name)).sort(), [
 		"gentle-pi:ask-user-choice:blocked", "gentle-pi:ask-user-question:blocked", "rpiv:ask-user:blocked",
@@ -4334,23 +4338,32 @@ test("reviewer routing follows the profile the session froze at startup, not lat
 	assert.equal(__testing.reviewHostRelaySelection("risk", __testing.readReviewerModelConfig(fixture.root, undefined)).selection, "nan/flash");
 });
 
-test("provider review roles fall back to the session profile orchestrator before the persisted default", (t) => {
-	const { writeStore, writeSettings } = profilesStoreFixture(t);
-	writeStore({ sol: {} }, "sol");
+test("A3 provider review roles keep the explicit session binding ahead of the frozen orchestrator", (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({ sol: { orchestrator: { model: "openai/frozen" } } }, "sol");
 	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	freezeSessionProfileAtOwnStart({ sessionId: "bound-session", cwd: fixture.root, configHome: fixture.configHome });
 	bindSessionProfile("bound-session", "sol", { orchestrator: { model: "openai/sol", thinking: "high" }, "review-validator": { model: "openai/validator" } });
-	const routing = __testing.readReviewerModelConfig(process.cwd(), "bound-session");
+	const routing = __testing.readReviewerModelConfig(fixture.root, "bound-session");
 	assert.deepEqual(__testing.reviewHostRelaySelection("review-refuter", routing), { selection: "openai/sol", thinking: "high", routingKey: "review-refuter" });
 	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "openai/validator");
 	assert.deepEqual(__testing.reviewHostRelaySelection("risk", routing), { routingKey: "review-risk" }, "lens roles stay fail-closed");
 	assert.equal(__testing.reviewHostRelaySelection("review-refuter", {}).selection, "nan/flash", "without a session orchestrator the persisted default still applies");
+	bindSessionProfile("bound-session", "sol", {});
+	const withoutOrchestrator = __testing.readReviewerModelConfig(fixture.root, "bound-session");
+	for (const role of ["review-refuter", "review-validator"]) {
+		assert.equal(__testing.reviewHostRelaySelection(role, withoutOrchestrator).selection, "nan/flash", "an explicit binding never borrows the old frozen orchestrator");
+	}
 });
 
-test("provider review roles skip the orchestrator fallback for an inherited profile", (t) => {
+test("A3 documented divergence: provider review roles skip the orchestrator fallback on resume without a startup record", (t) => {
 	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
-	// Inherited routing drops the orchestrator key, so only Use in this session feeds the fallback.
+	// #2863: a resume without a startup record cannot recover the original orchestrator.
+	// Matrak's record PR closes this remaining divergence; this is not an own start.
 	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { model: "openai/sol-risk" } } }, "sol");
 	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
 	freezeSessionProfileAtStartup({ sessionId: "inherited-session", cwd: fixture.root, configHome: fixture.configHome });
@@ -4359,21 +4372,71 @@ test("provider review roles skip the orchestrator fallback for an inherited prof
 	assert.equal(__testing.reviewHostRelaySelection("review-refuter", routing).selection, "nan/flash");
 });
 
-// gentle-shell#2742, section 8: only a startup record carries the orchestrator;
-// a freeze at the session's own start knows the definition but records nothing.
-test("provider review roles skip the orchestrator fallback for a profile frozen at the session's own start", (t) => {
+// #2863: A3 closes the own-start in-memory half; resume still needs a record.
+for (const role of ["review-refuter", "review-validator"]) {
+	test(`A3 ${role} uses the orchestrator frozen at the session's own start`, (t) => {
+		const { fixture, storePath, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+		resetFrozenInheritedProfilesForTesting();
+		t.after(() => resetFrozenInheritedProfilesForTesting());
+		const orchestrator = { model: "openai/sol", thinking: "medium", tier: "fast" };
+		writeStore({ sol: { orchestrator, "review-risk": { model: "openai/sol-risk" } } }, "sol");
+		writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+		freezeSessionProfileAtOwnStart({ sessionId: "own-start-session", cwd: fixture.root, configHome: fixture.configHome });
+		writeStore({ sol: { orchestrator: { model: "openai/later" } } }, "sol");
+		const beforeStore = readFileSync(storePath, "utf8");
+		const beforeSettings = readFileSync(settingsPath, "utf8");
+		const routing = __testing.readReviewerModelConfig(fixture.root, "own-start-session");
+		assert.deepEqual(__testing.reviewHostRelaySelection(role, routing), { selection: "openai/sol", thinking: "medium", routingKey: role });
+		assert.deepEqual(routing.orchestrator, orchestrator, "the full frozen entry survives later profile edits");
+		assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/sol-risk");
+		assert.equal(readFileSync(storePath, "utf8"), beforeStore);
+		assert.equal(readFileSync(settingsPath, "utf8"), beforeSettings);
+	});
+}
+
+test("A3 a frozen profile without an orchestrator keeps the settings.json reviewer fallback", (t) => {
 	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
-	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { model: "openai/sol-risk" } } }, "sol");
-	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
-	freezeSessionProfileAtOwnStart({ sessionId: "own-start-session", cwd: fixture.root, configHome: fixture.configHome });
-	const routing = __testing.readReviewerModelConfig(fixture.root, "own-start-session");
-	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "openai/sol-risk");
-	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "nan/flash");
+	writeStore({ sol: { "review-risk": { model: "openai/sol-risk" } } }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash", defaultThinkingLevel: "low" });
+	freezeSessionProfileAtOwnStart({ sessionId: "no-orchestrator-session", cwd: fixture.root, configHome: fixture.configHome });
+	const routing = __testing.readReviewerModelConfig(fixture.root, "no-orchestrator-session");
+	for (const role of ["review-refuter", "review-validator"]) {
+		assert.deepEqual(__testing.reviewHostRelaySelection(role, routing), { selection: "nan/flash", thinking: "low", routingKey: role });
+	}
 });
 
-test("provider review roles skip the orchestrator fallback for a repository pin", (t) => {
+test("A3 a profile without an orchestrator clears a stale materialized reviewer fallback at own start", (t) => {
+	const { fixture, settingsPath, writeStore, writeSettings } = profilesStoreFixture(t);
+	writeStore({ sol: { "review-risk": { model: "openai/sol-risk" } } }, "sol");
+	writeSettings({ defaultProvider: "openai", defaultModel: "current", defaultThinkingLevel: "low" });
+	writeFileSync(fixture.globalPath, JSON.stringify({ orchestrator: { model: "openai/stale", tier: "fast" } }));
+	const beforeModels = readFileSync(fixture.globalPath, "utf8");
+	const beforeSettings = readFileSync(settingsPath, "utf8");
+
+	freezeSessionProfileAtOwnStart({ sessionId: "stale-orchestrator-session", cwd: fixture.root, configHome: fixture.configHome });
+	const routing = __testing.readReviewerModelConfig(fixture.root, "stale-orchestrator-session");
+	const roles = ["review-refuter", "review-validator"];
+	const selections = roles.map((role) => __testing.reviewHostRelaySelection(role, routing));
+	assert.equal(readFileSync(fixture.globalPath, "utf8"), beforeModels);
+	assert.equal(readFileSync(settingsPath, "utf8"), beforeSettings);
+	assert.deepEqual(selections, roles.map((role) => ({ selection: "openai/current", thinking: "low", routingKey: role })));
+});
+
+test("A3 frozen orchestrator never fills an unconfigured lens model", (t) => {
+	const { fixture, writeStore, writeSettings } = profilesStoreFixture(t);
+	resetFrozenInheritedProfilesForTesting();
+	t.after(() => resetFrozenInheritedProfilesForTesting());
+	writeStore({ sol: { orchestrator: { model: "openai/sol" }, "review-risk": { thinking: "high" } } }, "sol");
+	writeSettings({ defaultProvider: "nan", defaultModel: "flash" });
+	freezeSessionProfileAtOwnStart({ sessionId: "lens-session", cwd: fixture.root, configHome: fixture.configHome });
+	const routing = __testing.readReviewerModelConfig(fixture.root, "lens-session");
+	assert.deepEqual(__testing.reviewHostRelaySelection("risk", routing), { thinking: "high", routingKey: "review-risk" });
+	assert.deepEqual(__testing.reviewHostRelaySelection("reliability", routing), { routingKey: "review-reliability" });
+});
+
+test("A3 provider review roles still skip the orchestrator fallback for a repository pin", (t) => {
 	const { fixture, writeStore, writeSettings, localPinPath, writePin } = profilesStoreFixture(t);
 	resetFrozenInheritedProfilesForTesting();
 	t.after(() => resetFrozenInheritedProfilesForTesting());
@@ -5092,6 +5155,112 @@ test("a keeps the legacy global apply semantics", async (t) => {
 	await __testing.runProfilesPanelAction(ctx, live, storePath, file, { type: "apply-global", name: "team", config: file.profiles["team"] }, {});
 	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).active, "team", "the global store claims the profile");
 	assert.ok(existsSync(fixture.globalPath), "the global routing is materialized");
+});
+
+function desktopApplyHarness(t: test.TestContext) {
+	const store = profilesStoreFixture(t);
+	const ctx = {
+		cwd: store.fixture.root,
+		hasUI: true,
+		ui: { notify() { throw new Error("the screen UI is never used by a Desktop apply"); }, confirm: async () => { throw new Error("the screen UI is never used by a Desktop apply"); } },
+		sessionManager: { getSessionId: () => "session-desktop" },
+	} as unknown as ExtensionContext;
+	const live = { setModel: async () => true, setThinkingLevel() {}, getThinkingLevel(): ThinkingLevel { return "medium"; } };
+	return { ...store, ctx, live };
+}
+
+test("Desktop apply_profile default asks the screen's own confirmation and writes nothing without its token", async (t) => {
+	const h = desktopApplyHarness(t);
+	h.writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	// A readable, empty global routing makes the screen list the concrete diff.
+	writeFileSync(h.fixture.globalPath, "{}\n");
+	const storeBefore = readFileSync(h.storePath, "utf8");
+	const asked = await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default" });
+	assert.equal(asked.status, "confirmation_required");
+	assert.ok(asked.status === "confirmation_required");
+	assert.equal(asked.title, 'Apply profile "team"?');
+	assert.match(asked.message, /worker: openai\/alpha \(added\)/);
+	assert.match(asked.confirmation, /^[0-9a-f]{64}$/);
+	assert.equal(readFileSync(h.storePath, "utf8"), storeBefore, "asking writes nothing");
+	assert.equal(readFileSync(h.fixture.globalPath, "utf8"), "{}\n", "asking writes no routing");
+
+	const wrong = await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default", confirmation: "0".repeat(64) });
+	assert.deepEqual(wrong, asked, "a wrong token asks again with the same text");
+	assert.equal(readFileSync(h.storePath, "utf8"), storeBefore);
+	assert.equal(readFileSync(h.fixture.globalPath, "utf8"), "{}\n");
+
+	const applied = await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default", confirmation: asked.confirmation });
+	assert.equal(applied.status, "applied");
+	assert.ok(applied.status === "applied");
+	assert.match(applied.notes.at(-1)?.text ?? "", /applied profile "team"/);
+	assert.equal(applied.notes.at(-1)?.level, "info");
+	assert.equal(JSON.parse(readFileSync(h.storePath, "utf8")).active, "team", "the store claims the profile");
+	assert.match(readFileSync(h.fixture.globalPath, "utf8"), /openai\/alpha/, "the global routing is materialized");
+});
+
+test("Desktop apply_profile refuses a token for a diff that changed since it was shown", async (t) => {
+	const h = desktopApplyHarness(t);
+	h.writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	const asked = await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default" });
+	assert.ok(asked.status === "confirmation_required");
+	h.writeStore({ team: { worker: { model: "openai/beta" } }, old: {} }, "old");
+	const storeBefore = readFileSync(h.storePath, "utf8");
+	const stale = await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default", confirmation: asked.confirmation });
+	assert.ok(stale.status === "confirmation_required", "the changed diff is shown again");
+	// Without a readable routing the screen's text does not list routes, so the
+	// token must also bind the profile itself for an edit to ask again.
+	assert.notEqual(stale.confirmation, asked.confirmation);
+	assert.equal(readFileSync(h.storePath, "utf8"), storeBefore, "a stale token writes nothing");
+	assert.equal(existsSync(h.fixture.globalPath), false);
+});
+
+test("Desktop apply_profile names an unknown profile and writes nothing", async (t) => {
+	const h = desktopApplyHarness(t);
+	h.writeStore({ team: { worker: { model: "openai/alpha" } } }, undefined);
+	const storeBefore = readFileSync(h.storePath, "utf8");
+	assert.deepEqual(await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "missing", mode: "default" }), { status: "unknown_profile" });
+	assert.deepEqual(await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "missing", mode: "session" }), { status: "unknown_profile" });
+	assert.equal(readFileSync(h.storePath, "utf8"), storeBefore);
+	assert.equal(existsSync(h.fixture.globalPath), false);
+});
+
+test("Desktop apply_profile session binds through the screen's path and writes nothing shared", async (t) => {
+	const h = desktopApplyHarness(t);
+	h.writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	const storeBefore = readFileSync(h.storePath, "utf8");
+	const manager = profileActionManager(h.fixture.root);
+	const ctx = { cwd: h.fixture.root, hasUI: true, ui: {}, sessionManager: manager } as unknown as ExtensionContext;
+	const bound = await __testing.applyDesktopProfile(ctx, h.live, { profile: "team", mode: "session" });
+	assert.equal(bound.status, "applied");
+	assert.equal(readSessionProfileBinding(manager.getSessionId())?.name, "team");
+	assert.equal(readFileSync(h.storePath, "utf8"), storeBefore, "the store is untouched");
+	assert.equal(existsSync(h.fixture.globalPath), false, "no global routing is written");
+});
+
+test("the screen's Make default waits for a running Desktop apply instead of racing it", async (t) => {
+	const { fixture, storePath, writeStore } = profilesStoreFixture(t);
+	writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	const storeBefore = readFileSync(storePath, "utf8");
+	assert.equal(beginDesktopProfileApply(), true);
+	t.after(() => endDesktopProfileApply());
+	let asked = false;
+	fixture.onConfirm(async () => { asked = true; return true; });
+	applyOnce(fixture, "team");
+	await fixture.run("gentle:profiles");
+	assert.equal(asked, false, "nothing is asked while another apply runs");
+	assert.equal(readFileSync(storePath, "utf8"), storeBefore, "the store is untouched");
+	assert.equal(existsSync(fixture.globalPath), false, "no routing is written");
+	assert.equal(beginDesktopProfileApply(), false, "the screen never releases a gate it did not take");
+});
+
+test("Desktop apply_profile runs one apply at a time", async (t) => {
+	const h = desktopApplyHarness(t);
+	h.writeStore({ team: { worker: { model: "openai/alpha" } }, old: {} }, "old");
+	const first = __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default" });
+	const second = __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default" });
+	assert.deepEqual(await second, { status: "busy" });
+	assert.equal((await first).status, "confirmation_required");
+	assert.equal((await __testing.applyDesktopProfile(h.ctx, h.live, { profile: "team", mode: "default" })).status, "confirmation_required", "the gate reopens");
 });
 
 test("Enter with a winning pin binds the session and never touches the pin layers", async (t) => {

@@ -48,7 +48,14 @@ try {
 	assert.equal(registrations.length, 1);
 	const { provider } = registrations[0];
 	assert.equal(provider.id, "nan");
-	const model = provider.getModels().find(m => m.id === "deepseek-v4-flash");
+	const effortCase = {
+		"kimi-high": { id: "kimi-k3.1-pro", effort: "high", expected: "high" },
+		"deepseek-pro-max": { id: "deepseek-v4-pro", effort: "max", expected: "max" },
+		"hy4-off": { id: "hy4", effort: "off", expected: "none" },
+		"hy4-high": { id: "hy4", effort: "high", expected: "high" },
+	}[scenario];
+	const modelId = effortCase?.id ?? "deepseek-v4-flash";
+	const model = provider.getModels().find(m => m.id === modelId);
 	assert.ok(model);
 	const fakeFetch = async (input, init) => {
 		requests++;
@@ -56,8 +63,14 @@ try {
 		assert.equal(url, "https://api.nan.builders/v1/chat/completions");
 		assert.equal(init.method, "POST");
 		const body = JSON.parse(init.body);
-		assert.equal(body.model, "deepseek-v4-flash");
+		assert.equal(body.model, modelId);
 		assert.equal(body.stream, true);
+		if (effortCase) {
+			assert.equal(body.reasoning_effort, effortCase.expected);
+			assert.equal(Object.hasOwn(body, "thinking"), false);
+			assert.equal(body.max_completion_tokens, 16);
+			assert.equal(Object.hasOwn(body, "max_tokens"), false);
+		}
 		if (scenario === "http-error") {
 			return new Response(JSON.stringify({ error: { message: "synthetic unavailable" } }), {
 				status: 503, headers: { "content-type": "application/json" },
@@ -90,6 +103,7 @@ try {
 		} }] });
 	const stream = provider.streamSimple(model, { messages }, {
 		apiKey: "synthetic-key", fetch: fakeFetch, maxRetries: 0, maxTokens: 16, timeoutMs: 5000,
+		...(effortCase ? { reasoning: effortCase.effort } : {}),
 	});
 	const events = [];
 	for await (const event of stream) events.push(event);
@@ -132,7 +146,7 @@ try {
 `;
 
 for (const cache of ["default filesystem-cache env", "JITI_FS_CACHE=false"] as const) {
-	for (const scenario of ["text", "http-error", "tool"] as const) {
+	for (const scenario of ["text", "http-error", "tool", "kimi-high", "deepseek-pro-max", "hy4-off", "hy4-high"] as const) {
 		test(`NaN real loader → ${scenario} stream (${sdkLayout} SDK, cache ${cache})`, { timeout: 30_000 }, async (t) => {
 			const workspace = await mkdtemp(join(tmpdir(), "nan-runtime-test-"));
 			try {

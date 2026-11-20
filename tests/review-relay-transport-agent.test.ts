@@ -404,7 +404,9 @@ test("public empty-output report preserves only safe in-process completion facts
 	assert.ok(Number(durationMs) >= Number(authDurationMs));
 	assert.ok(Number(durationMs) >= Number(completionDurationMs));
 	assert.deepEqual(facts, {
-		phase: "completion", provider: "nan", reviewerModel: "nan/deepseek-v4-flash", stopReason: "length", usage: { output: 64, reasoning: 64 },
+		phase: "completion", provider: "nan", reviewerModel: "nan/deepseek-v4-flash", stopReason: "length",
+		cause: "reasoning-exhausted-output-budget",
+		usage: { output: 64, reasoning: 64 },
 		content: { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0, thinkingChars: 16 },
 	});
 	assert.doesNotMatch(JSON.stringify(result), /PRIVATE|errorMessage|unknown|authorization/);
@@ -547,6 +549,31 @@ test("ordinary STATUS inspection uses the Pi public collect-binding route", asyn
 });
 
 type CaptureTool = Parameters<ExtensionAPI["registerTool"]>[0];
+
+for (const grouped of [false, true]) {
+	for (const phase of ["first-output", "stream-idle"] as const) {
+		test(`#2676: ${grouped ? "grouped" : "single"} ${phase} recovery names the actual stream limit`, async t => {
+			t.after(() => { __testing.setReviewHostRelayRunnerForTesting(); __testing.setReviewHostRelayGroupRunnersForTesting(); });
+			const cwd = repository(t), lineageId = "stream-timeout-recovery";
+			const inputs = [groupInput(lineageId, "review-risk", 0), groupInput(lineageId, "review-resilience", 1)];
+			const status = grouped ? groupStatus(lineageId, inputs) : recoveredStatus(lineageId, true);
+			const { native } = queueNative([status, status, status, status]);
+			const fail = async () => { throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.PI_TIMED_OUT, "pi", "controlled stream timeout", {
+				elapsedMs: 120001, timeoutMs: 900000, timedOut: true, reviewerEvidence: { timeoutPhase: phase, streamTimeoutMs: 120000 },
+			}); };
+			__testing.setReviewHostRelayRunnerForTesting(fail);
+			__testing.setReviewHostRelayGroupRunnersForTesting(fail);
+			const result = grouped ? await __testing.executeReviewCaptureGroupOperation(
+				{ lineageId, collectBindings: inputs.map(input => JSON.stringify(input)), reviewerRunAcknowledged: true }, cwd, native, undefined, new CandidateViewRegistry(),
+			) : await runCapture(cwd, native, lineageId);
+			assert.equal(result.outcome, "pi-host-relay-timeout");
+			assert.match(String(result.next_action), new RegExp(phase === "first-output" ? "GENTLE_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS" : "GENTLE_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS"));
+			assert.match(String(result.next_action), /120000ms/);
+			assert.match(String(result.next_action), /fresh STATUS/);
+			assert.doesNotMatch(String(result.next_action), /GENTLE_PI_REVIEW_RELAY_PI_TIMEOUT_MS|900000ms/);
+		});
+	}
+}
 
 for (const grouped of [false, true]) {
 	for (const preference of ["sse", "websocket", "websocket-cached", "auto", "unset", "older-api"] as const) {

@@ -202,6 +202,7 @@ test("an older Node on the user's PATH is left as it is: the bootstrap's Node is
 	assert.equal(node.version, "24.21.0");
 	assert.equal(node.persistent, false);
 	assert.equal(node.found, "22.18.0");
+	assert.equal(node.foundInGlobalBin, undefined);
 	// A current user Node is reused as before, and an older one without a bootstrap copy is reported as it is.
 	const current = probes({ files: [...userNode.files, ...bootstrapNode.files], realpaths: userNode.realpaths, texts: userNode.texts,
 		results: { ...userNode.results, [`${TOOLS_NODE} --version`]: { code: 0, stdout: "v24.21.0\n" } } });
@@ -212,6 +213,151 @@ test("an older Node on the user's PATH is left as it is: the bootstrap's Node is
 	const stale = probes({ files: [...userNode.files, ...bootstrapNode.files], realpaths: userNode.realpaths, texts: userNode.texts,
 		results: { ...older, [`${TOOLS_NODE} --version`]: { code: 0, stdout: "v22.0.0\n" } } });
 	assert.equal((await stale.probes.node()).found, undefined);
+});
+
+test("a user Node 23 below 23.6 is swapped for the bootstrap's Node; 22.19 and 23.6 are reused", async () => {
+	const withUser = (version: string) => probes({ files: [...userNode.files, ...bootstrapNode.files], realpaths: { ...userNode.realpaths, ...bootstrapNode.realpaths },
+		texts: { ...userNode.texts, ...bootstrapNode.texts }, results: { ...userNode.results, [`${USER_NODE} --version`]: { code: 0, stdout: `v${version}\n` },
+			[`${TOOLS_NODE} --version`]: { code: 0, stdout: "v24.21.0\n" }, [`${TOOLS_NODE} ${USER_NPM_CLI} --version`]: { code: 0, stdout: "10.9.2\n" } } });
+	for (const version of ["23.0.0", "23.5.9"]) {
+		const node = await withUser(version).probes.node();
+		assert.equal(node.version, "24.21.0", version);
+		assert.equal(node.found, version);
+	}
+	for (const version of ["22.19.0", "23.6.0"]) {
+		const node = await withUser(version).probes.node();
+		assert.equal(node.version, version);
+		assert.equal(node.persistent, true, version);
+		assert.equal(node.found, undefined, version);
+	}
+});
+
+test("the swapped Node records when the found executable is in pnpm's global bin on POSIX and Windows", async () => {
+	const cases = [
+		{ platform: "linux", env: { HOME, PNPM_HOME, PATH: `${TOOLS}/node/bin:${BIN}:/usr/bin` },
+			own: `${BIN}/node`, bootstrap: TOOLS_NODE },
+		{ platform: "win32", env: { LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local", PNPM_HOME: "C:\\Users\\u\\pnpm",
+			Path: "C:\\Users\\u\\.gentle-shell-bootstrap-tools.1\\node;c:\\users\\U\\PNPM\\bin", PATHEXT: ".EXE" },
+			own: "c:\\users\\U\\PNPM\\bin\\node.exe", bootstrap: "C:\\Users\\u\\.gentle-shell-bootstrap-tools.1\\node\\node.exe" },
+	];
+	for (const { platform, env, own, bootstrap } of cases) {
+		for (const version of ["23.5.9", "22.18.0"]) {
+			const h = probes({ platform, env, files: [own, bootstrap], results: {
+				[`${own} --version`]: { code: 0, stdout: `v${version}\n` },
+				[`${bootstrap} --version`]: { code: 0, stdout: "v24.21.0\n" },
+			} });
+			const node = await h.probes.node();
+			assert.equal(node.found, version, platform);
+			assert.equal(node.foundInGlobalBin, true, platform);
+		}
+		const supported = probes({ platform, env, files: [own, bootstrap], results: {
+			[`${own} --version`]: { code: 0, stdout: "v23.6.0\n" },
+			[`${bootstrap} --version`]: { code: 0, stdout: "v24.21.0\n" },
+		} });
+		assert.deepEqual(await supported.probes.node(), { available: true, version: "23.6.0", usable: true, persistent: true, npm: false }, platform);
+	}
+});
+
+for (const platform of ["linux", "win32"]) {
+	test(`${platform}: a swapped PATH Node records a different Node at the global-bin destination`, async () => {
+		const windows = platform === "win32";
+		const bin = windows ? "C:\\Users\\u\\pnpm\\bin" : BIN;
+		const bootstrap = windows ? "C:\\Users\\u\\.gentle-shell-bootstrap-tools.1\\node\\node.exe" : TOOLS_NODE;
+		const own = windows ? "C:\\System\\node.exe" : USER_NODE;
+		const destination = windows ? `${bin}\\node.exe` : `${bin}/node`;
+		const env = windows
+			? { PNPM_HOME: "C:\\Users\\u\\pnpm", Path: `C:\\Users\\u\\.gentle-shell-bootstrap-tools.1\\node;C:\\System;${bin}`, PATHEXT: ".CMD;.COM;.EXE;.BAT" }
+			: { HOME, PNPM_HOME, PATH: `${TOOLS}/node/bin:/usr/bin:${bin}` };
+		const h = probes({ platform, env, files: [own, bootstrap, destination, ...(windows ? [`${bin}\\node.cmd`] : [])], results: {
+			[`${own} --version`]: { code: 0, stdout: "v23.5.9\n" },
+			[`${bootstrap} --version`]: { code: 0, stdout: "v24.21.0\n" },
+		} });
+		assert.deepEqual(await h.probes.node(), { available: true, version: "24.21.0", usable: true, persistent: false, npm: false,
+			found: "23.5.9", globalBinNode: true });
+		assert.deepEqual(h.unexpected, []);
+		assert.equal(h.calls.some((call) => call.command === destination), false);
+	});
+}
+
+test("a destination Node is recorded without reading its version", async () => {
+	for (const result of [{ code: 1 }, { code: 0, timedOut: true, stdout: "v20.19.0" },
+		{ code: 0, truncated: true, stdout: "v20.19.0" }, { code: 0, stdout: "v20.19.0-rc.1" }, () => { throw new Error("unreadable"); }]) {
+		const destination = `${BIN}/node`;
+		const h = probes({ env: { HOME, PNPM_HOME, PATH: `${TOOLS}/node/bin:/usr/bin:${BIN}` }, files: [USER_NODE, TOOLS_NODE, destination], results: {
+			[`${USER_NODE} --version`]: { code: 0, stdout: "v23.5.9\n" },
+			[`${TOOLS_NODE} --version`]: { code: 0, stdout: "v24.21.0\n" }, [`${destination} --version`]: result,
+		} });
+		assert.deepEqual(await h.probes.node(), { available: true, version: "24.21.0", usable: true, persistent: false, npm: false,
+			found: "23.5.9", globalBinNode: true });
+		assert.equal(h.calls.some((call) => call.command === destination), false);
+		assert.deepEqual(h.unexpected, []);
+	}
+});
+
+test("Windows neither runs nor walks a destination Node", async () => {
+	const bin = "C:\\Users\\u\\pnpm\\bin";
+	const own = "C:\\System\\node.exe";
+	const bootstrap = "C:\\Users\\u\\.gentle-shell-bootstrap-tools.1\\node\\node.exe";
+	const destination = `${bin}\\node.exe`;
+	const walked: string[] = [];
+	const h = probes({ platform: "win32", env: { PNPM_HOME: "C:\\Users\\u\\pnpm",
+		Path: `C:\\Users\\u\\.gentle-shell-bootstrap-tools.1\\node;C:\\System;${bin}`, PATHEXT: ".EXE" },
+		files: [own, bootstrap, destination], storage: (file) => { walked.push(file); throw new Error("untrusted"); }, results: {
+			[`${own} --version`]: { code: 0, stdout: "v23.5.9\n" },
+			[`${bootstrap} --version`]: { code: 0, stdout: "v24.21.0\n" },
+		} });
+	assert.deepEqual(await h.probes.node(), { available: true, version: "24.21.0", usable: true, persistent: false, npm: false,
+		found: "23.5.9", globalBinNode: true });
+	assert.deepEqual(walked, []);
+	assert.equal(h.calls.some((call) => call.command === destination), false);
+	assert.deepEqual(h.unexpected, []);
+});
+
+test("a bootstrap-only Node records a global-bin destination even when that bin is not on PATH", async () => {
+	const destination = `${BIN}/node`;
+	const h = probes({ env: { HOME, PNPM_HOME, PATH: `${TOOLS}/node/bin:/usr/bin` }, files: [TOOLS_NODE, destination], results: {
+		[`${TOOLS_NODE} --version`]: { code: 0, stdout: "v24.21.0\n" },
+	} });
+	assert.deepEqual(await h.probes.node(), { available: true, version: "24.21.0", usable: true, persistent: false, npm: false,
+		globalBinNode: true });
+	assert.equal(h.calls.some((call) => call.command === destination), false);
+	assert.deepEqual(h.unexpected, []);
+});
+
+test("a supported PATH Node is reused without probing another Node at the destination", async () => {
+	const destination = `${BIN}/node`;
+	const h = probes({ env: { HOME, PNPM_HOME, PATH: `${TOOLS}/node/bin:/usr/bin:${BIN}` }, files: [USER_NODE, TOOLS_NODE, destination],
+		results: { [`${USER_NODE} --version`]: { code: 0, stdout: "v23.6.0\n" } } });
+	assert.deepEqual(await h.probes.node(), { available: true, version: "23.6.0", usable: true, persistent: true, npm: false });
+	assert.equal(h.calls.some((call) => call.command === destination), false);
+	assert.deepEqual(h.unexpected, []);
+});
+
+test("a swapped Node reached through a directory alias keeps its pnpm global-bin provenance", async () => {
+	const windowsBin = "C:\\Users\\u\\pnpm\\bin";
+	const cases = [
+		{ platform: "linux", bin: BIN, alias: `${HOME}/pnpm-link/bin`, bootstrap: TOOLS_NODE,
+			env: { HOME, PNPM_HOME, PATH: `${TOOLS}/node/bin:${HOME}/pnpm-link/bin:/usr/bin` },
+			realBin: BIN, realAlias: BIN, separator: "/" },
+		{ platform: "win32", bin: windowsBin, alias: "C:\\Users\\u\\pnpm-link\\bin",
+			bootstrap: "C:\\Users\\u\\.gentle-shell-bootstrap-tools.1\\node\\node.exe",
+			env: { PNPM_HOME: "C:\\Users\\u\\pnpm", Path: "C:\\Users\\u\\.gentle-shell-bootstrap-tools.1\\node;C:\\Users\\u\\pnpm-link\\bin", PATHEXT: ".EXE" },
+			realBin: "C:\\Users\\u\\pnpm\\bin", realAlias: "c:\\users\\U\\PNPM\\BIN", separator: "\\" },
+	];
+	for (const { platform, bin, alias, bootstrap, env, realBin, realAlias, separator } of cases) {
+		const own = `${alias}${separator}node${platform === "win32" ? ".exe" : ""}`;
+		for (const version of ["23.5.9", "22.18.0"]) {
+			const destination = `${bin}${separator}node${platform === "win32" ? ".exe" : ""}`;
+			const h = probes({ platform, env, files: [own, bootstrap, destination], dirs: [alias, bin], realpaths: {
+				[alias]: realAlias, [bin]: realBin, [own]: `${bin}${separator}..${separator}runtime${separator}node`,
+			}, results: {
+				[`${own} --version`]: { code: 0, stdout: `v${version}\n` },
+				[`${bootstrap} --version`]: { code: 0, stdout: "v24.21.0\n" },
+			} });
+			assert.deepEqual(await h.probes.node(), { available: true, version: "24.21.0", usable: true, persistent: false,
+				npm: false, found: version, foundInGlobalBin: true }, `${platform} ${version}`);
+		}
+	}
 });
 
 test("node absent, unparseable, failing, timed out or truncated", async () => {

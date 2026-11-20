@@ -89,8 +89,15 @@ type UsageLike = {
  * a reading with room releases it. A full window whose reset already passed
  * is a stale reading and blocks nothing; a spent limit with no reset time at
  * all waits the usual exhausted time. A model's own failures stay.
+ * NaN's reading is advisory: it reports legacy per-model token caps while
+ * billing from a shared credit pool, so it never cools anything down; NaN's
+ * real quota errors still do, through `mark`.
  */
 export function syncUsageCooldown(usage: UsageLike, cooldown: ModelCooldown, now: number): void {
+	if (ADVISORY_USAGE_PROVIDERS.has(usage.provider)) {
+		cooldown.clearProvider(usage.provider);
+		return;
+	}
 	const spentUntil = (limit: UsageLike["limits"][number]): number | undefined => {
 		const full = limit.windows.filter((window) => limit.limitReached || window.usedPercent >= 100);
 		if (!limit.limitReached && full.length === 0) return undefined;
@@ -115,6 +122,8 @@ export function syncUsageCooldown(usage: UsageLike, cooldown: ModelCooldown, now
 }
 
 const SAFE_MODEL_NAME = /^[A-Za-z0-9._~:@+%-]+$/;
+// Kept local so the agents runner never loads the shell's usage module.
+const ADVISORY_USAGE_PROVIDERS: ReadonlySet<string> = new Set(["nan"]);
 
 const SHARED = Symbol.for("gentle-pi.model-fallback.cooldown");
 /** One registry per process: the orchestrator and the agents runner share what ran out. */

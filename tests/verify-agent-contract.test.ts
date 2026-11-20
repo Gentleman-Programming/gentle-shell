@@ -65,11 +65,12 @@ test("T11.5: verify distinguishes unit exclusions from unmet spec items", () => 
 	assert.ok(verify.includes("verdict per `S#`"), "the feature-document verdict per S# must stay");
 });
 
-test("T11.6: verify leaves its probes as regression tests the writer commits", () => {
+// Cost-speed P8 C2: the writer adds the probes; the parent owns git and commits them only when a commit is authorized (P16).
+test("T11.6: verify leaves its probes as regression tests the writer adds and the parent commits", () => {
 	containsAll(checklistItem(6), [
 		"regression tests",
 		"the project's test suite",
-		"the writer to commit",
+		"the writer, who adds them; the parent commits them only when a commit is authorized, otherwise they stay uncommitted",
 		"you never write them",
 	], "durable probe item");
 });
@@ -87,4 +88,21 @@ test("T11: probes stay inside the authorized commands or the scratch copy, and v
 	], "verify agent");
 	const tools = verify.split("---")[1] ?? "";
 	assert.ok(!/\n {2}- (edit|write)\n/.test(tools), "verify must not gain edit or write tools");
+});
+
+test("gentle-shell#3082: verification inputs bind to named commits, not live files", () => {
+	containsAll(verify, [
+		"Bind verification inputs to the commits the parent named (baseline and candidate), not to live workspace files",
+		"report a preparation failure naming the path and both versions",
+		"mutable progress bookkeeping (task documents, receipts, trackers) is never source drift",
+		"never verify the live copy silently instead",
+	], "input identity boundary");
+});
+
+test("gentle-shell#3082: a safety-guard denial is reportable evidence in the handoff", () => {
+	containsAll(verify, [
+		"A safety-guard denial is not an infrastructure failure",
+		"rule and blocked path, sanitized of secret contents",
+		"mark that probe unverified",
+	], "denial evidence handoff");
 });

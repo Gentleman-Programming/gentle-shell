@@ -317,6 +317,20 @@ export async function updateCodegraphToLatest(source: CodegraphInstallSource, ex
 	return { ok: false, reason: firstStderrLine !== undefined && firstStderrLine.length > 0 ? firstStderrLine : `${command} ${args.join(" ")} failed` };
 }
 
+/** One exact-version install: the universal form when a manager's update command no-ops. */
+async function installCodegraphExact(source: CodegraphInstallSource, version: string, exec: BoundedExec, platform: NodeJS.Platform): Promise<UpdateRun> {
+	const spec = `${CODEGRAPH_PACKAGE}@${version}`;
+	const [command, args] = source === "bun-global"
+		? ["bun", ["add", "-g", spec]] as const
+		: source === "pnpm-global"
+			? ["pnpm", ["add", "-g", spec]] as const
+			: [npmCommand(platform), ["install", "-g", spec]] as const;
+	const result = await exec(command, args, UPDATE_TIMEOUT_MS);
+	if (result.ok) return { ok: true };
+	const firstStderrLine = result.stderr.trim().split("\n")[0]?.trim();
+	return { ok: false, reason: firstStderrLine !== undefined && firstStderrLine.length > 0 ? firstStderrLine : `${command} ${args.join(" ")} failed` };
+}
+
 /** What the once-per-process update check concluded. */
 export interface CodegraphUpdateCheck {
 	/** An update ran and succeeded this process; the binary changed underneath every index. */
@@ -357,13 +371,18 @@ export async function runCodegraphUpdateCheck(exec: BoundedExec = defaultExec, o
 	const detected = await detectCodegraphInstallSource(exec, { platform, home });
 	if (detected.source === "unknown") return { ran: false, version: installed, reason: detected.reason };
 	const update = await updateCodegraphToLatest(detected.source, exec, { platform });
-	if (!update.ok) return { ran: false, version: installed, reason: update.reason };
-	// A manager can exit 0 without changing anything (a cached dist-tag resolving the already-
-	// installed version): ran:true promises the binary changed, so the running version is probed
-	// once more and a no-op update is reported as the failure it is.
+	if (update.ok) {
+		const now = await installedCodegraphVersion(exec);
+		if (now === latest) return { ran: true, version: installed, from: installed, to: latest };
+	}
+	// The manager's own update form can exit 0 without changing anything (pnpm 12 answers
+	// "Already up to date" against a newer registry latest): one exact-version install is the
+	// universal second chance, and the final probe decides whether anything really ran.
+	const fallback = await installCodegraphExact(detected.source, latest, exec, platform);
+	if (!fallback.ok) return { ran: false, version: installed, reason: fallback.reason };
 	const now = await installedCodegraphVersion(exec);
 	if (now !== latest) {
-		return { ran: false, version: now ?? installed, reason: `the update command succeeded but the binary still reports ${now ?? "no version"}` };
+		return { ran: false, version: now ?? installed, reason: `the update succeeded but the binary still reports ${now ?? "no version"}` };
 	}
 	return { ran: true, version: installed, from: installed, to: latest };
 }

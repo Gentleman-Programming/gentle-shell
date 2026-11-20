@@ -323,7 +323,27 @@ test("runCodegraphUpdateCheck: a stale bun-global binary updates in bun's form a
 	assert.deepEqual(calls[3]?.args, ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], "bun updates in its own form");
 });
 
-test("runCodegraphUpdateCheck: an exit-0 no-op update is a reported failure, never ran:true", async () => {
+test("runCodegraphUpdateCheck: an exit-0 no-op is rescued by the exact-version install, or reported", async () => {
+	clearCodegraphUpdateCaches();
+	const home = "/Users/tester";
+	let binary = "codegraph 1.6.3\n";
+	const { exec, calls } = execByFirstArg({
+		codegraph: () => ok(binary),
+		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : undefined),
+		which: () => ok(`${home}/.bun/bin/codegraph\n`),
+		bun: (args) => {
+			// The update form no-ops (pnpm 12's shape); only the exact-version install changes it.
+			if (args[0] === "add") binary = "codegraph 1.6.4\n";
+			return ok("");
+		},
+	});
+	const check = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
+	assert.deepEqual(check, { ran: true, version: "1.6.3", from: "1.6.3", to: "1.6.4" }, "the fallback install rescues a no-op update");
+	assert.deepEqual(calls.map((call) => call.command), ["codegraph", "npm", "which", "bun", "codegraph", "bun", "codegraph"], "update, verify, fallback install, final verify");
+	assert.deepEqual(calls[5]?.args, ["add", "-g", `${CODEGRAPH_PACKAGE}@1.6.4`], "the fallback pins the exact version");
+});
+
+test("runCodegraphUpdateCheck: a no-op even the fallback cannot fix is a reported failure, never ran:true", async () => {
 	clearCodegraphUpdateCaches();
 	const home = "/Users/tester";
 	const { exec } = execByFirstArg({
@@ -334,7 +354,7 @@ test("runCodegraphUpdateCheck: an exit-0 no-op update is a reported failure, nev
 	});
 	const check = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
 	assert.equal(check.ran, false);
-	assert.match(check.reason ?? "", /still reports 1\.6\.3/, "a cached dist-tag no-op is named, not reported as success");
+	assert.match(check.reason ?? "", /still reports 1\.6\.3/, "a no-op through both forms is named, never reported as success");
 });
 
 test("runCodegraphUpdateCheck: a stale binary on an unknown source never updates", async () => {

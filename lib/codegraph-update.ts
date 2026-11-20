@@ -173,18 +173,20 @@ function parseVersionTriple(version: string): [number, number, number] | undefin
 	return triple.every(Number.isInteger) ? [...triple] : undefined;
 }
 
-/** Whether `installed` is older than `latest`, comparing numeric triples field by field ("1.6.10"
- * beats "1.6.9"). Either side unparseable or missing answers false: garbage never updates. */
-export function codegraphVersionOutdated(installed: string | undefined, latest: string | undefined): boolean {
+/** Whether `installed` differs from `latest` (numeric triples, field by field): anything but
+ * an exact match — older OR newer — means the binary is not the latest version; the update
+ * brings it back to latest. Either side unparseable or missing answers false: garbage never
+ * updates. */
+export function codegraphVersionDiffers(installed: string | undefined, latest: string | undefined): boolean {
 	if (installed === undefined || latest === undefined) return false;
 	const a = parseVersionTriple(installed);
 	const b = parseVersionTriple(latest);
 	if (a === undefined || b === undefined) return false;
-	return a[0] < b[0] || (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && a[2] < b[2])));
+	return a[0] !== b[0] || a[1] !== b[1] || a[2] !== b[2];
 }
 
 /** How codegraph was installed, as far as the shim's own location proves it. */
-export type CodegraphInstallSource = "bun-global" | "npm-global" | "unknown";
+export type CodegraphInstallSource = "bun-global" | "pnpm-global" | "npm-global" | "unknown";
 
 /** One path spelled with one separator, case-folded on win32 only, no trailing separator. */
 function normalizePathForCompare(path: string, platform: NodeJS.Platform): string {
@@ -205,21 +207,29 @@ function pathUnder(path: string, dir: string, platform: NodeJS.Platform): boolea
 	return normalizedPath === normalizedDir || normalizedPath.startsWith(normalizedDir + separator);
 }
 
+/** The global roots a shim path can be classified against: pnpm's global bin dir and npm's
+ * global prefix, both probed lazily by the detector and never guessed here. */
+export interface ShimClassificationRoots {
+	pnpmBin?: string;
+	npmPrefix?: string;
+}
+
 /**
- * Classifies a resolved codegraph shim path against the two roots gentle-shell can update
- * through: the user's bun global root (`<homedir>/.bun`, where `bun add -g` placed the shim) or
- * the directory `npm prefix -g` reports (where npm's global shims live). The bun root is
- * decided first — a bun install shadows any npm one on PATH — and anything else is "unknown",
- * which never auto-updates: an unprovable owner is reported, never guessed. Pure so both
- * platform families classify identically off their own hosts.
+ * Classifies a resolved codegraph shim path (from `which`/`where.exe`) against the three roots
+ * gentle-shell can update through: the user's bun global root (`<homedir>/.bun`, where `bun add
+ * -g` placed the shim), the directory `npm prefix -g` reports, or pnpm's global bin dir
+ * (`pnpm bin -g`). The first matching root wins — a bun install shadows any other on PATH — and
+ * anything else is "unknown", which never auto-updates: an unprovable owner is reported, never
+ * guessed. Pure so both platform families classify identically off their own hosts.
  */
-export function classifyCodegraphShimPath(shimPath: string | undefined, npmPrefix: string | undefined, home: string, platform: NodeJS.Platform): CodegraphInstallSource {
+export function classifyCodegraphShimPath(shimPath: string | undefined, roots: ShimClassificationRoots, home: string, platform: NodeJS.Platform): CodegraphInstallSource {
 	if (shimPath === undefined || shimPath.length === 0) return "unknown";
 	// The injected platform owns the separator: node:path's join() would spell the root with the
 	// HOST's separators and misclassify a cross-platform fixture (or any non-native spelling).
 	const bunRoot = `${home}${platform === "win32" ? BS : "/"}.bun`;
 	if (pathUnder(shimPath, bunRoot, platform)) return "bun-global";
-	if (npmPrefix !== undefined && npmPrefix.length > 0 && pathUnder(shimPath, npmPrefix, platform)) return "npm-global";
+	if (roots.npmPrefix !== undefined && roots.npmPrefix.length > 0 && pathUnder(shimPath, roots.npmPrefix, platform)) return "npm-global";
+	if (roots.pnpmBin !== undefined && roots.pnpmBin.length > 0 && pathUnder(shimPath, roots.pnpmBin, platform)) return "pnpm-global";
 	return "unknown";
 }
 
@@ -238,9 +248,10 @@ export interface InstallSourceDetection {
 
 /**
  * Resolves the codegraph shim the current PATH would run (`which` on POSIX, `where.exe`'s first
- * hit on win32) and classifies it: bun-global, npm-global, or unknown. The one `npm prefix
- * -g` probe is deferred until the bun root fails to classify, so a bun install never spawns
- * npm. Never throws; every failure is an unknown source with its reason.
+ * hit on win32) and classifies it: bun-global, npm-global, pnpm-global, or unknown. The npm
+ * and pnpm root probes are deferred in that order - bun, npm, pnpm - until the pure bun check
+ * fails, so a bun install never spawns either. Never throws; every failure is an unknown
+ * source with its reason.
  */
 export async function detectCodegraphInstallSource(exec: BoundedExec = defaultExec, opts: { platform?: NodeJS.Platform; home?: string } = {}): Promise<InstallSourceDetection> {
 	const platform = opts.platform ?? process.platform;
@@ -253,17 +264,25 @@ export async function detectCodegraphInstallSource(exec: BoundedExec = defaultEx
 	if (shimPath === undefined || shimPath.length === 0) {
 		return { source: "unknown", reason: "the codegraph shim location was empty; its install source is unknown" };
 	}
-	if (classifyCodegraphShimPath(shimPath, undefined, home, platform) === "bun-global") {
+	if (classifyCodegraphShimPath(shimPath, {}, home, platform) === "bun-global") {
 		return { source: "bun-global", shimPath };
 	}
 	let npmPrefix: string | undefined;
 	const prefix = await exec(npmCommand(platform), ["prefix", "-g"], VERSION_TIMEOUT_MS);
 	if (prefix.ok) npmPrefix = prefix.stdout.trim().split(/\r?\n/)[0]?.trim();
-	if (classifyCodegraphShimPath(shimPath, npmPrefix, home, platform) === "npm-global") {
+	if (npmPrefix !== undefined && classifyCodegraphShimPath(shimPath, { npmPrefix }, home, platform) === "npm-global") {
 		return { source: "npm-global", shimPath };
 	}
+	let pnpmBin: string | undefined;
+	const pnpmBinResult = await exec("pnpm", ["bin", "-g"], VERSION_TIMEOUT_MS);
+	// pnpm prints a project-manager warning to stderr on this call; only stdout names the dir.
+	if (pnpmBinResult.ok) pnpmBin = pnpmBinResult.stdout.trim().split(/\r?\n/)[0]?.trim();
+	if (pnpmBin !== undefined && classifyCodegraphShimPath(shimPath, { npmPrefix, pnpmBin }, home, platform) === "pnpm-global") {
+		return { source: "pnpm-global", shimPath };
+	}
+	if (npmPrefix === undefined && pnpmBin === undefined) return { source: "unknown", shimPath, reason: "neither npm prefix -g nor pnpm bin -g was available; the codegraph install source is unknown" };
 	if (npmPrefix === undefined) return { source: "unknown", shimPath, reason: "npm prefix -g was unavailable; the codegraph install source is unknown" };
-	return { source: "unknown", shimPath, reason: `the codegraph shim (${shimPath}) is under neither <homedir>/.bun nor the npm global prefix (${npmPrefix}); its install source is unknown` };
+	return { source: "unknown", shimPath, reason: `the codegraph shim (${shimPath}) is under none of <homedir>/.bun, the npm global prefix, or the pnpm global bin; its install source is unknown` };
 }
 
 export interface UpdateRun {
@@ -274,9 +293,10 @@ export interface UpdateRun {
 
 /**
  * Updates the package to latest through the detected install source: `bun add -g` for a bun
- * install (bun.exe spawns directly on win32), `npm install -g` for an npm one (through its
- * `.cmd` shim on win32). An unknown source runs nothing — the reason says why — and a failed
- * update reports its reason and keeps the current version running; neither ever throws.
+ * install (bun.exe spawns directly on win32), `pnpm add -g` for a pnpm one (pnpm.exe spawns
+ * directly too), `npm install -g` for an npm one (through its `.cmd` shim on win32). An unknown
+ * source runs nothing — the reason says why — and a failed update reports its reason and keeps
+ * the current version running; neither ever throws.
  */
 export async function updateCodegraphToLatest(source: CodegraphInstallSource, exec: BoundedExec = defaultExec, opts: { platform?: NodeJS.Platform } = {}): Promise<UpdateRun> {
 	const platform = opts.platform ?? process.platform;
@@ -285,7 +305,9 @@ export async function updateCodegraphToLatest(source: CodegraphInstallSource, ex
 	}
 	const [command, args] = source === "bun-global"
 		? ["bun", ["add", "-g", `${CODEGRAPH_PACKAGE}@latest`]] as const
-		: [npmCommand(platform), ["install", "-g", `${CODEGRAPH_PACKAGE}@latest`]] as const;
+		: source === "pnpm-global"
+			? ["pnpm", ["add", "-g", `${CODEGRAPH_PACKAGE}@latest`]] as const
+			: [npmCommand(platform), ["install", "-g", `${CODEGRAPH_PACKAGE}@latest`]] as const;
 	const result = await exec(command, args, UPDATE_TIMEOUT_MS);
 	if (result.ok) return { ok: true };
 	const firstStderrLine = result.stderr.trim().split("\n")[0]?.trim();
@@ -328,7 +350,7 @@ export async function runCodegraphUpdateCheck(exec: BoundedExec = defaultExec, o
 	if (installed === undefined) return { ran: false, reason: "the running codegraph version is unavailable; the update check was skipped" };
 	const latest = await latestCodegraphVersion(exec, platform);
 	if (latest === undefined) return { ran: false, version: installed, reason: "the npm registry latest for codegraph is unavailable; the update check was skipped" };
-	if (!codegraphVersionOutdated(installed, latest)) return { ran: false, version: installed };
+	if (!codegraphVersionDiffers(installed, latest)) return { ran: false, version: installed };
 	const detected = await detectCodegraphInstallSource(exec, { platform, home });
 	if (detected.source === "unknown") return { ran: false, version: installed, reason: detected.reason };
 	const update = await updateCodegraphToLatest(detected.source, exec, { platform });

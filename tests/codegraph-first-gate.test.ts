@@ -1091,3 +1091,66 @@ test("(al) a batch that mixes a memory read with any native codegraph call - ini
 		"an init completion never credits the window",
 	);
 });
+
+test("(am) a terminal query inside a guarded subshell credits on the call's success; skipped and followed shapes stay uncredited", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "am-arm", args: { pattern: "symbol" } });
+	// true satisfies the guard, so bash runs the subshell and the query is its last command:
+	// the call's own non-error status is that query's status, so the success proves it ran.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "am1", args: { command: "true && (codegraph query lease)" } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the guarded subshell query is a graph execution while it runs",
+	);
+	fire(handlers, "tool_result", { toolCallId: "am1", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "am1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a successful terminal query inside a guarded subshell credits");
+	// false fails, so bash skips the whole subshell: the error result is exactly what a
+	// skipped group and a failed one share, and neither may credit.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "am-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "am2", args: { command: "false && (codegraph query lease)" } });
+	fire(handlers, "tool_result", { toolCallId: "am2", isError: true });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "am2" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a guarded subshell the guard skipped never credits",
+	);
+	// A command after the closing parenthesis takes over the call's status, so the call's
+	// success proves nothing about the query inside the group.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "am-arm-3", args: { pattern: "symbol" } });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "am3", args: { command: "true && (codegraph query lease); echo done" } });
+	fire(handlers, "tool_result", { toolCallId: "am3", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "am3" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a guarded subshell query followed by another command never credits",
+	);
+});
+
+test("(an) the trailing scan passes comment lines: a command after them uncredits; only comments and blanks keep the query final", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "an-arm", args: { pattern: "symbol" } });
+	// false fails, so bash skips the query; the comment ends at its own newline and true
+	// runs, so the call's non-error status is true's, never the skipped query's.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "an1", args: { command: "false && codegraph query lease\n# note\ntrue" } });
+	fire(handlers, "tool_result", { toolCallId: "an1", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "an1" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a query skipped before a comment line and a real command never credits",
+	);
+	// Comment and blank lines alone execute nothing, so the query stays the final command
+	// and the satisfied list's success still proves it ran.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "an2", args: { command: "cd /tmp && codegraph query lease\n# note\n\n" } });
+	fire(handlers, "tool_result", { toolCallId: "an2", isError: false });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "an2" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a rest of only comment and blank lines keeps the query final, so success credits");
+});

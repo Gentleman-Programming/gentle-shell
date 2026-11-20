@@ -2026,7 +2026,7 @@ function decodeUnachievableLensSlot(value         , label        )              
 // ---------------------------------------------------------------------------
 
 const ELIGIBLE_ACTIONS = ["stop", "review.start", "review.recover", "review.repair"]         ;
-const FORBIDDEN_ACTIONS = ["review.abandon", "review.invalidate", "review.reclaim", "review.reconcile-authority-batch", "review.recover", "review.repair", "review.start"]         ;
+const FORBIDDEN_ACTIONS = ["review.abandon", "review.invalidate", "review.quarantine-legacy", "review.reclaim", "review.reconcile-authority", "review.reconcile-authority-batch", "review.recover", "review.repair", "review.start"]         ;
 
 function decodeEligibility(value         , label        )       {
 	const eligibility = exactRecord(value, label, ["allowed_actions", "forbidden_actions"]);

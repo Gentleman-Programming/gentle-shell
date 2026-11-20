@@ -2025,7 +2025,7 @@ function decodeUnachievableLensSlot(value: unknown, label: string): ReviewUnachi
 // ---------------------------------------------------------------------------
 
 const ELIGIBLE_ACTIONS = ["stop", "review.start", "review.recover", "review.repair"] as const;
-const FORBIDDEN_ACTIONS = ["review.abandon", "review.invalidate", "review.reclaim", "review.reconcile-authority-batch", "review.recover", "review.repair", "review.start"] as const;
+const FORBIDDEN_ACTIONS = ["review.abandon", "review.invalidate", "review.quarantine-legacy", "review.reclaim", "review.reconcile-authority", "review.reconcile-authority-batch", "review.recover", "review.repair", "review.start"] as const;
 
 function decodeEligibility(value: unknown, label: string): void {
 	const eligibility = exactRecord(value, label, ["allowed_actions", "forbidden_actions"]);

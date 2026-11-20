@@ -126,6 +126,23 @@ function deriveMachineIdentity(): string | null {
 }
 
 /**
+ * Tri-state pid probe for host-less reclaims: ESRCH alone confirms death in this namespace,
+ * EPERM confirms existence under another user, and any other failure proves nothing — the
+ * caller keeps its fail-closed verdict instead of treating the lookup as proof of death.
+ */
+function pidLivenessHere(pid: number): "alive" | "dead" | "unproven" {
+	try {
+		process.kill(pid, 0);
+		return "alive";
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "EPERM") return "alive";
+		if (code === "ESRCH") return "dead";
+		return "unproven";
+	}
+}
+
+/**
  * Reads a token file and judges it. An expired token or a dead holder is stale (stealable) — but
  * only on the host that can prove the holder's pid local (see leaseHostIdentity); anywhere else
  * the verdict is unknown. A damaged or unreadable file is unknown too, and unknown is fail-closed:
@@ -140,10 +157,11 @@ function deriveMachineIdentity(): string | null {
  * hard displacement bound for a token whose host identity matches this one: it is reclaimed even
  * while its local holder's pid still lives (a wedged holder must not keep the lease forever);
  * the displaced holder's own state changes stay nonce-fenced in release() and adopt(). A
- * host-less expired token never reclaims a live holder — without identity the holder may still
- * be starting its writer — and a foreign holder is never a live local refresh either: both keep
- * the fail-closed unknown, and the wedge a dead session leaves behind still never outlives its
- * TTL. A token from an earlier boot of this machine (its
+ * host-less expired token is reclaimed only on a reader that itself cannot derive identity
+ * (nowhere else can a host-less holder be placed inside the reader's PID namespace) and only
+ * once its holder pid is confirmed ESRCH-dead here; any other host-less expired verdict, and
+ * any inconclusive probe, fail-closes to unknown — on the identity-less reader (the platform
+ * such tokens come from) a dead session's orphan still never outlives its TTL. A token from an earlier boot of this machine (its
  * machine-stable identity matches, its boot-scoped identity does not) has no pid left to probe —
  * they died with that boot — so it expires into reclaimable stale instead of an unknown wedge;
  * a different machine, or a legacy token without the machine part, keeps the fail-closed unknown.
@@ -214,12 +232,20 @@ export function readLeaseVerdict(path: string, now: number = Date.now(), cwd?: s
 	// liveness without ever granting a dead verdict it cannot prove.
 	const provablyLocal = token.host !== undefined ? token.host === host : host === null;
 	if (token.expiresAt <= now) {
-		// A host-less expired token is never reclaimed while its holder pid still lives here:
-		// without identity the holder may still be starting its writer — on any host, identity
-		// or not — so a live holder fail-closes to unknown. The TTL still bounds the wedge: a
-		// dead holder's orphan never outlives it.
-		if (token.host === undefined && processAlive(token.pid)) return "unknown";
-		return provablyLocal ? "held-stale" : "unknown";
+		// A host-less expired token needs local PID provenance before its holder pid means
+		// anything: two PID namespaces can share one locks directory, and the only reader that
+		// can place a host-less holder in its own namespace is one of the identity-less kind the
+		// token came from (host === null). An identity-capable reader fail-closes to unknown
+		// whatever a local probe says, and within the provable scope only a confirmed ESRCH is
+		// death — an inconclusive lookup never marks the lease stale (the writer checks above
+		// already cleared its writer, and within this provable scope the TTL still bounds the
+		// wedge a dead session leaves).
+		if (token.host === undefined) {
+			if (!provablyLocal) return "unknown";
+			return pidLivenessHere(token.pid) === "dead" ? "held-stale" : "unknown";
+		}
+		if (provablyLocal) return "held-stale";
+		return "unknown";
 	}
 	// A foreign holder is never a live local refresh either: its pid means nothing here, and
 	// held-live on a coincidental pid match would report another host's refresh as handled —

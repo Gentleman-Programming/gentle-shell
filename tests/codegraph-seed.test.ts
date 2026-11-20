@@ -263,6 +263,48 @@ test("seedWorktreeIndex: an exit-0 sync that preserved tracked entries publishes
 	assert.deepEqual(markerNotes(join(worktree, ".codegraph", "codegraph.db")), ["committed"]);
 });
 
+test("seedWorktreeIndex: SEED_SNAPSHOT_MS and SEED_SYNC_MS marker lines bracket the two phases", async (t) => {
+	const { worktree } = worktreePair(t);
+	const lines: string[] = [];
+	const { input } = seedHarness(worktree, { log: (line) => { lines.push(line); } });
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seeded");
+	assert.equal(lines.length, 2, `exactly the two phase markers, got: ${lines.join(" | ")}`);
+	assert.match(lines[0], /^SEED_SNAPSHOT_MS=\d+$/, "the snapshot phase ends with its marker");
+	assert.match(lines[1], /^SEED_SYNC_MS=\d+$/, "the validating sync follows, its marker after the phase");
+});
+
+test("a throwing marker sink never changes the seed's outcome", async (t) => {
+	const { worktree } = worktreePair(t);
+	const { input, calls } = seedHarness(worktree, { log: () => { throw new Error("marker sink down"); } });
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seeded", "markers are pure log lines: a broken sink cannot fail the seed");
+	assert.deepEqual(calls, ["sync -q"], "the validating sync ran exactly once, exactly as before");
+	assert.deepEqual(markerNotes(join(worktree, ".codegraph", "codegraph.db")), ["committed"], "the snapshot still publishes");
+});
+
+test("a failed snapshot still reports its phase and never starts the validating sync", async (t) => {
+	const { worktree } = worktreePair(t);
+	const lines: string[] = [];
+	const { input, calls } = seedHarness(worktree, {
+		log: (line) => { lines.push(line); },
+		importSqlite: async () => {
+			throw new Error("node:sqlite unavailable");
+		},
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed");
+	assert.equal(lines.length, 1, "only the snapshot phase ever ran");
+	assert.match(lines[0], /^SEED_SNAPSHOT_MS=\d+$/, "the snapshot phase reports its duration even when it fails");
+	assert.deepEqual(calls, [], "the validating sync never started");
+});
+
 test("seedWorktreeIndex: two real sessions seeding one worktree copy exactly once", async (t) => {
 	const { worktree } = worktreePair(t);
 	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-race-"));
@@ -832,4 +874,21 @@ test("retryTransient retries transient codes with backoff and fails others at on
 		}, sleep));
 	assert.equal(enosys, 1, "non-transient codes fail on the first attempt");
 	assert.deepEqual(sleeps, [50, 100], "no sleep was spent on the non-transient code");
+});
+
+test("a validating sync that fails validation still reports both phases and publishes nothing", async (t) => {
+	const { worktree } = worktreePair(t);
+	const lines: string[] = [];
+	const { input } = seedHarness(worktree, {
+		log: (line) => { lines.push(line); },
+		run: async () => ({ ok: true, removedEntries: true }),
+	});
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed", "a sync that removed tracked entries fails the seed");
+	assert.equal(lines.length, 2, "both phases ran, so both markers fired");
+	assert.match(lines[0], /^SEED_SNAPSHOT_MS=\d+$/, "snapshot marker format");
+	assert.match(lines[1], /^SEED_SYNC_MS=\d+$/, "the sync marker fires even when validation fails");
+	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "a failed validation publishes nothing");
 });

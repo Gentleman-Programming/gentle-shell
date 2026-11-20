@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { resolve } from "node:path";
-import { NATIVE_UNTRACKED_SCOPE, type NativeReviewCli } from "./native-review-cli.ts";
+import { posix, win32 } from "node:path";
+import { NATIVE_UNTRACKED_SCOPE, normalizeNativeReviewCwd, type NativeReviewCli } from "./native-review-cli.ts";
 import { recognizeReviewDeliveryActions } from "./destructive-command-guard.ts";
 import { resolveSessionWorktree, worktreeGitEnvironment } from "./session-worktree-registry.ts";
 
@@ -34,10 +34,19 @@ export async function committedRangeUntrackedExclusion(cli: Pick<NativeReviewCli
 	} catch { return {}; }
 }
 
+/**
+ * gentle-shell#3310: on Windows a git-bash `cd /c/repo` must name C:\repo;
+ * resolving the MSYS form directly yields C:\c\repo and the native spawn fails.
+ */
+export function deliveryDirectory(cwd: string, directories: readonly string[], platform: NodeJS.Platform = process.platform): string {
+	const path = platform === "win32" ? win32 : posix;
+	return directories.reduce((base, directory) => path.resolve(base, normalizeNativeReviewCwd(directory, platform)), cwd);
+}
+
 /** One fresh check per repository/batch. The existing session registry supplies only a base-ref hint. */
 export async function checkReviewDeliveryPreflight(cwd: string, toolName: string, command: string, cli: NativeReviewCli | null,
 	baseRefFor: (root: string) => string | undefined, declined: (root: string, target: string) => boolean,
-	signal?: AbortSignal, current: () => boolean = () => true): Promise<Denial | undefined> {
+	signal?: AbortSignal, current: () => boolean = () => true, platform: NodeJS.Platform = process.platform): Promise<Denial | undefined> {
 	const actions = recognizeReviewDeliveryActions(command), deliveries = actions.filter(action => action.kind === "delivery");
 	if (!deliveries.length || !cli?.reviewMode) return undefined;
 	if (deliveries.some(delivery => delivery.unresolvedDirectory)) return deny("The delivery repository cannot be resolved from this directory or Git/environment redirect; run delivery inside its repository or use literal cd or git -C.");
@@ -49,7 +58,7 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 		try {
 			const checked: Array<{ root: string; baseRef: string; before: string }> = [];
 			const roots = new Set(deliveries.map(delivery => {
-				const target = (delivery.directories ?? []).reduce((base, directory) => resolve(base, directory), cwd);
+				const target = deliveryDirectory(cwd, delivery.directories ?? [], platform);
 				return resolveSessionWorktree(target, cwd)?.root ?? target;
 			}));
 			for (const root of roots) {

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import { checkReviewDeliveryPreflight } from "../lib/review-delivery-preflight.ts";
+import { checkReviewDeliveryPreflight, deliveryDirectory } from "../lib/review-delivery-preflight.ts";
 import { recognizeReviewDeliveryActions } from "../lib/destructive-command-guard.ts";
 import { ReviewContinuationRegistry } from "../lib/review-continuation-registry.ts";
 import { NativeReviewCliV216, type NativeReviewCli } from "../lib/native-review-cli.ts";
@@ -459,4 +459,20 @@ test("#3169: the real native client sends the exclusion flags with the status in
 	assert.equal(result?.block, true);
 	assert.match(result!.reason, /Session changed during preflight/);
 	assert.equal(assessArgs.length, 0, "no assessment runs after the session changed");
+});
+
+test("#3310: git-bash drive directories resolve to the real Windows repository before preflight", () => {
+	assert.equal(deliveryDirectory("C:\\Users\\dev", ["/c/xampp/htdocs/myrepo"], "win32"), "C:\\xampp\\htdocs\\myrepo");
+	assert.equal(deliveryDirectory("D:\\work", ["/d/path/repo", "sub"], "win32"), "D:\\path\\repo\\sub");
+	assert.equal(deliveryDirectory("C:\\work", ["repo"], "win32"), "C:\\work\\repo");
+	assert.equal(deliveryDirectory("/home/dev", ["/c/repo"], "linux"), "/c/repo");
+	assert.equal(deliveryDirectory("/home/dev", [], "linux"), "/home/dev");
+});
+
+test("#3310: the preflight entry point hands the native client the real Windows directory for a git-bash cd", async () => {
+	const seen: string[] = [];
+	const cli = { reviewMode: async (request: { cwd: string }) => { seen.push(request.cwd); return { status: { effective: "off" } }; } } as unknown as NativeReviewCli;
+	const denied = await checkReviewDeliveryPreflight("C:\\Users\\dev", "bash", "cd /c/work/repo && git push", cli, () => undefined, () => false, undefined, () => true, "win32");
+	assert.equal(denied, undefined);
+	assert.deepEqual(seen, ["C:\\work\\repo"]);
 });

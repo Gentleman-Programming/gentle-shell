@@ -1,6 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 /** A backslash without a backslash literal, so this file never mangles in tool transport. */
@@ -120,8 +119,12 @@ function runBounded(command: string, args: readonly string[], timeoutMs: number,
 	});
 }
 
-const defaultExec: BoundedExec = (command, args, timeoutMs) => {
-	if (process.platform === "win32" && command.toLowerCase().endsWith(".cmd")) {
+/** The production BoundedExec: business code speaks platform-neutral commands; this runner
+ * alone owns the win32 translations — npm's `.cmd` shim and the codegraph shim itself both run
+ * through one cmd.exe-quoted line, because Node cannot spawn a `.cmd` without a shell on win32
+ * (a plain "codegraph" spawn would ENOENT and the whole check would silently fail open). */
+export const defaultExec: BoundedExec = (command, args, timeoutMs) => {
+	if (process.platform === "win32" && (command === "codegraph" || command.toLowerCase().endsWith(".cmd"))) {
 		return runBounded([command, ...args.map(quoteForCmd)].join(" "), [], timeoutMs, true);
 	}
 	return runBounded(command, args, timeoutMs, false);
@@ -212,7 +215,10 @@ function pathUnder(path: string, dir: string, platform: NodeJS.Platform): boolea
  */
 export function classifyCodegraphShimPath(shimPath: string | undefined, npmPrefix: string | undefined, home: string, platform: NodeJS.Platform): CodegraphInstallSource {
 	if (shimPath === undefined || shimPath.length === 0) return "unknown";
-	if (pathUnder(shimPath, join(home, ".bun"), platform)) return "bun-global";
+	// The injected platform owns the separator: node:path's join() would spell the root with the
+	// HOST's separators and misclassify a cross-platform fixture (or any non-native spelling).
+	const bunRoot = `${home}${platform === "win32" ? BS : "/"}.bun`;
+	if (pathUnder(shimPath, bunRoot, platform)) return "bun-global";
 	if (npmPrefix !== undefined && npmPrefix.length > 0 && pathUnder(shimPath, npmPrefix, platform)) return "npm-global";
 	return "unknown";
 }

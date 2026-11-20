@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import {
 	classifyCodegraphShimPath,
 	clearCodegraphUpdateCaches,
 	CODEGRAPH_PACKAGE,
 	codegraphVersionOutdated,
+	defaultExec,
 	detectCodegraphInstallSource,
 	ensureCodegraphLatest,
 	installedCodegraphVersion,
@@ -84,13 +84,13 @@ test("latestCodegraphVersion: npm view output parsed, cached for the process, ca
 			return undefined;
 		},
 	});
-	assert.equal(await latestCodegraphVersion(exec), "1.6.5");
-	assert.equal(await latestCodegraphVersion(exec), "1.6.5", "the second call is served from the process cache");
+	assert.equal(await latestCodegraphVersion(exec, "darwin"), "1.6.5");
+	assert.equal(await latestCodegraphVersion(exec, "darwin"), "1.6.5", "the second call is served from the process cache");
 	assert.equal(viewCount, 1);
 	assert.deepEqual(calls, [{ command: "npm", args: ["view", CODEGRAPH_PACKAGE, "version"], timeoutMs: NPM_VIEW_TIMEOUT_MS }]);
 
 	clearCodegraphUpdateCaches();
-	assert.equal(await latestCodegraphVersion(exec), "1.6.5");
+	assert.equal(await latestCodegraphVersion(exec, "darwin"), "1.6.5");
 	assert.equal(viewCount, 2, "the cleared cache makes the next call probe again");
 });
 
@@ -100,13 +100,13 @@ test("latestCodegraphVersion: a failed lookup is undefined and never cached as f
 	const { exec } = execByFirstArg({
 		npm: () => (failing ? fail("ENOTFOUND registry") : ok("1.6.5\n")),
 	});
-	assert.equal(await latestCodegraphVersion(exec), undefined, "an offline registry lookup is undefined: the check skips");
+	assert.equal(await latestCodegraphVersion(exec, "darwin"), undefined, "an offline registry lookup is undefined: the check skips");
 	failing = false;
-	assert.equal(await latestCodegraphVersion(exec), "1.6.5", "a failure is not memoized: the next lookup can succeed");
+	assert.equal(await latestCodegraphVersion(exec, "darwin"), "1.6.5", "a failure is not memoized: the next lookup can succeed");
 
 	clearCodegraphUpdateCaches();
 	const unparseable = execByFirstArg({ npm: () => ok("latest: soon") });
-	assert.equal(await latestCodegraphVersion(unparseable.exec), undefined, "registry output without a triple is not a version");
+	assert.equal(await latestCodegraphVersion(unparseable.exec, "darwin"), undefined, "registry output without a triple is not a version");
 });
 
 test("codegraphVersionOutdated: numeric triple compare; garbage or missing never updates", () => {
@@ -125,9 +125,10 @@ test("codegraphVersionOutdated: numeric triple compare; garbage or missing never
 });
 
 test("classifyCodegraphShimPath: bun-global by the homedir .bun prefix, checked first", () => {
-	const home = homedir();
-	assert.equal(classifyCodegraphShimPath(join(home, ".bun", "bin", "codegraph"), undefined, home, "darwin"), "bun-global");
-	assert.equal(classifyCodegraphShimPath(join(home, ".bun", "bin", "codegraph"), join(home, ".npm-global"), home, "linux"), "bun-global", "the bun root classifies before npm is even asked");
+	// Literal POSIX spellings: the injected platform owns the fixture's separators, never the
+	// host running the suite (join() would spell backslashes on Windows).
+	assert.equal(classifyCodegraphShimPath("/Users/tester/.bun/bin/codegraph", undefined, "/Users/tester", "darwin"), "bun-global");
+	assert.equal(classifyCodegraphShimPath("/home/tester/.bun/bin/codegraph", "/home/tester/.npm-global", "/home/tester", "linux"), "bun-global", "the bun root classifies before npm is even asked");
 });
 
 test("classifyCodegraphShimPath: npm-global under the npm prefix -g directory", () => {
@@ -167,8 +168,8 @@ test("classifyCodegraphShimPath: win32 backslash paths compare case-insensitivel
 });
 
 test("detectCodegraphInstallSource: which answers on POSIX and bun skips the npm prefix query", async () => {
-	const home = homedir();
-	const shim = join(home, ".bun", "bin", "codegraph");
+	const home = "/Users/tester";
+	const shim = `${home}/.bun/bin/codegraph`;
 	const { exec, calls } = execByFirstArg({ which: () => ok(`${shim}\n`) });
 	const detected = await detectCodegraphInstallSource(exec, { platform: "darwin", home });
 	assert.equal(detected.source, "bun-global");
@@ -279,11 +280,11 @@ test("runCodegraphUpdateCheck: a registry failure fails open with the running ve
 
 test("runCodegraphUpdateCheck: a stale bun-global binary updates and reports from/to", async () => {
 	clearCodegraphUpdateCaches();
-	const home = homedir();
+	const home = "/Users/tester";
 	const { exec, calls } = execByFirstArg({
 		codegraph: () => ok("codegraph 1.6.3\n"),
 		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : undefined),
-		which: () => ok(`${join(home, ".bun", "bin", "codegraph")}\n`),
+		which: () => ok(`${home}/.bun/bin/codegraph\n`),
 		bun: () => ok(""),
 	});
 	const check = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
@@ -307,11 +308,11 @@ test("runCodegraphUpdateCheck: a stale binary on an unknown source never updates
 
 test("runCodegraphUpdateCheck: a failed update command keeps the current version", async () => {
 	clearCodegraphUpdateCaches();
-	const home = homedir();
+	const home = "/Users/tester";
 	const { exec } = execByFirstArg({
 		codegraph: () => ok("1.6.3\n"),
 		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : undefined),
-		which: () => ok(`${join(home, ".bun", "bin", "codegraph")}\n`),
+		which: () => ok(`${home}/.bun/bin/codegraph\n`),
 		bun: () => fail("EACCES: permission denied"),
 	});
 	const check = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
@@ -348,6 +349,13 @@ test("ensureCodegraphLatest: a rejecting exec never rejects the check", async ()
 	const check = await ensureCodegraphLatest(exec, { platform: "darwin", home: homedir() });
 	assert.equal(check.ran, false);
 	assert.equal(check.version, undefined);
+});
+
+test("defaultExec: the production runner executes the real codegraph shim on win32", { timeout: 30_000 }, async (t) => {
+	if (process.platform !== "win32") return t.skip("win32 real-shim harness");
+	const result = await defaultExec("codegraph", ["--version"], VERSION_TIMEOUT_MS);
+	assert.equal(result.ok, true, `the shim path must resolve on win32: stderr=${result.stderr.slice(0, 200)}`);
+	assert.match(result.stdout, /\d+\.\d+\.\d+/, "the real binary answers with a version");
 });
 
 test("CodegraphInstallSource surface: the three-way classification is the whole vocabulary", () => {

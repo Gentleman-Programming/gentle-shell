@@ -13283,10 +13283,10 @@ function createGentleAiExtensionForTesting(
 		// Another concurrent end or ACK may already have consumed this prefix.
 		if (!pendingReviewMutation(ctx.sessionManager, root, mutation)) return;
 		if (status.nextTransition?.kind !== "execute" || status.nextTransition.execute.operation !== "review.start") return;
-		// verify-always-rdd-high S2: automatic review is for high risk only, so a
-		// candidate the native assessment reports not review_due earns no nudge.
-		// An assessment that cannot answer, or an older binary without
-		// review_due, keeps the nudge.
+		// rdd-simplification T2: native `assess.review_due` is the only due decision.
+		// STATUS above supplies the offer and target identity, never due-ness. Only
+		// an explicit false suppresses the nudge; an assessment that cannot answer,
+		// or an older binary without review_due, keeps the nudge (fail closed).
 		if (nativeReviewCli.assess !== undefined) {
 			let reviewDue: boolean | undefined;
 			try { reviewDue = (await nativeReviewCli.assess({ cwd: root, ...selector })).reviewDue; }

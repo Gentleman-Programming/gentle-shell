@@ -92,12 +92,28 @@ const isLeadingAssignment = (text: string): boolean => ASSIGNMENT_WORD.test(text
  *   any result, failure included, credits.
  * - "on-success": the final command of an && list - the one conditional position whose
  *   overall success (a non-error result) proves execution reached the invocation, because a
- *   guard that failed would have left its own failure as the result instead.
+ *   guard that failed would have left its own failure as the result instead. A subshell's
+ *   last command holds the position whenever the subshell ends the list: its status passes
+ *   through the closing parenthesis as the status the call reports.
  * - "never": every other conditional position - after || (a satisfied left side skips the
  *   invocation yet still exits 0), or guarded with commands following (their status, not the
  *   invocation's, becomes the result). Nothing observable separates a skipped invocation from
  *   a failed one, so none credits. */
 type CliQueryCredit = "always" | "on-success" | "never";
+
+/** Whether the rest of a command string after an unquoted newline or closing parenthesis
+ * holds no executable command: every remaining line is blank or a whole-line comment. A
+ * comment runs from its word-start # to its own newline, so a command on any later line
+ * still executes and only the full scan, not the first comment line, can declare the rest
+ * inert. No open quote can hide inside the scan either: a comment line never opens one, so
+ * the first non-comment line starts a real command whenever one follows. */
+function restIsInert(rest: string): boolean {
+	for (const line of rest.split("\n")) {
+		const stripped = line.replace(/^[ \t\r]*/, "");
+		if (stripped !== "" && !stripped.startsWith("#")) return false;
+	}
+	return true;
+}
 
 /**
  * The quote-aware command analysis behind the CLI query workflow AGENTS.md credits: whether a
@@ -192,18 +208,23 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 				listCondition = "none";
 			}
 		} else if (ch === "\n") {
-			// A newline with nothing executable after it - only whitespace or a comment through
-			// the end of the string - is the string's terminator, not a separator before another
-			// command: the command before it stays the final one. Breaking leaves any pending
-			// word for the loop's final flush, which credits the final command position.
-			const rest = command.slice(i + 1).replace(/^[\t \r\n]+/, "");
-			if (rest === "" || rest.startsWith("#")) break;
+			// A newline with nothing executable after it - only blank or comment lines through
+			// the end of the string, on however many lines follow - is the string's terminator,
+			// not a separator before another command: a comment ends at its own newline, so any
+			// command after it still runs, and only the full remaining scan can leave the
+			// command before the newline the final one. Breaking leaves any pending word for
+			// the loop's final flush, which credits the final command position.
+			if (restIsInert(command.slice(i + 1))) break;
 			endWord();
 			creditSegment(false);
 			listCondition = "none";
 		} else if (ch === "(" || ch === ")") {
 			endWord();
-			creditSegment(false);
+			// The words pending at a closing parenthesis are the subshell's last command, and
+			// when nothing executable follows the parenthesis either, that command's status is
+			// the one the whole call reports: the flush keeps terminal-command status instead
+			// of demoting the invocation to a non-final position.
+			creditSegment(ch === ")" && restIsInert(command.slice(i + 1)));
 			if (ch === "(") {
 				subshellGuards.push(listCondition);
 				listCondition = "none";

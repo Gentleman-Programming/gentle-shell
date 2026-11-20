@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -492,6 +492,33 @@ test("a cached workspace validation survives only while the checkout keeps its G
 		() => tool.execute("test", { operation: "query", query: "second" }, undefined, undefined, ctx),
 		/real Git project root equal to the current workspace/i,
 	);
+});
+
+test("a cached linked-worktree validation dies with the gitdir its .git file names", (t) => {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-wtbase-")));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const git = (args: readonly string[], at: string): void => {
+		execFileSync("git", args, { cwd: at, stdio: "ignore" });
+	};
+	const main = join(base, "main");
+	mkdirSync(main);
+	git(["init", "-b", "main"], main);
+	git(["config", "user.email", "codegraph-test@example.com"], main);
+	git(["config", "user.name", "codegraph-test"], main);
+	writeFileSync(join(main, "file.txt"), "content");
+	git(["add", "."], main);
+	git(["commit", "-m", "seed"], main);
+	const linked = join(base, "linked");
+	git(["worktree", "add", linked, "-b", "worktree-branch"], main);
+
+	assert.equal(isWorkspaceProjectRoot(linked), true, "the linked worktree validates and caches as a project root");
+
+	// The main checkout moves away: the worktree's .git file survives, but the gitdir it names
+	// is gone — a cache hit that trusts the file's presence alone dispatches into a
+	// non-repository.
+	renameSync(main, join(base, "main-moved"));
+
+	assert.equal(isWorkspaceProjectRoot(linked), false, "the stale cached root is rejected once the .git file's gitdir target is gone");
 });
 
 test("CodeGraph init reports the missing binary distinctly", async (t) => {
@@ -1469,7 +1496,10 @@ test("init rechecks the .codegraph identity under the acquired lease, override i
 	// empty index directory: the database reads absent, but initializing would write through
 	// the link into that other checkout.
 	const initLock = async (): Promise<InitLockOutcome> => {
-		symlinkSync(outside, join(cwd, ".codegraph"));
+		// A directory junction: a runner that cannot create directory symlinks can still create
+		// one, so the fixture reaches the post-lock refusal instead of throwing before initLock
+		// returns an acquired lease. Node ignores the type argument on POSIX.
+		symlinkSync(outside, join(cwd, ".codegraph"), "junction");
 		return { outcome: "acquired", release: () => { releases += 1; }, adopt: () => {} };
 	};
 	const tool = createCodeGraphTool(async () => {

@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
@@ -198,15 +198,34 @@ function tmpForGuard(): string {
 /** Workspaces whose guard already passed this prompt: git is asked once per cwd per prompt. */
 const workspaceVerified = new Set<string>();
 
+/** The metadata directory a worktree-style `.git` file names, resolved the way Git reads it:
+ * an absolute gitdir is taken as it is written, a relative one resolves against the `.git`
+ * file's own directory. Anything without a gitdir line is not a metadata pointer. */
+function gitdirTarget(resolved: string): string | undefined {
+	const raw = readFileSync(join(resolved, ".git"), "utf8");
+	const match = /^gitdir:[ \t]*(.+)\r?$/m.exec(raw);
+	if (!match) return undefined;
+	const target = match[1].trim();
+	return isAbsolute(target) ? target : resolve(resolved, target);
+}
+
 /** Whether a validated workspace still carries its repository marker: a Git toplevel always
  * holds `.git` — a directory, or the file a linked worktree or submodule writes — so a
- * cached validation survives only while that marker does. An env-driven GIT_DIR repository
- * without the marker simply re-validates on every call: one extra git run, never a wrong
- * cache hit. */
+ * cached validation survives only while that marker does. A `.git` FILE names its metadata
+ * directory through `gitdir:`, and that target can move independently of the worktree (the
+ * main checkout a linked worktree was created from can be renamed away while the worktree's
+ * `.git` file survives), so the file counts as a marker only while the metadata it names
+ * still exists. An env-driven GIT_DIR repository without the marker simply re-validates on
+ * every call: one extra git run, never a wrong cache hit. */
 function gitRootMarkerPresent(resolved: string): boolean {
 	try {
-		lstatSync(join(resolved, ".git"));
-		return true;
+		const markerPath = join(resolved, ".git");
+		if (lstatSync(markerPath).isDirectory()) return true;
+		// A symlinked `.git` resolving to a directory is metadata as well; only a regular file
+		// carries the gitdir pointer the cache must follow.
+		if (statSync(markerPath).isDirectory()) return true;
+		const target = gitdirTarget(resolved);
+		return target !== undefined && statSync(target).isDirectory();
 	} catch {
 		return false;
 	}

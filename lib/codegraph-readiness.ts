@@ -9,7 +9,7 @@ import { daemonFor, daemonHealth, liveDaemons, mcpCallRequests, mcpCallText, mcp
 import type { DaemonInfo } from "./codegraph-daemon.ts";
 import { resolveCodegraphEntry } from "./codegraph-cli-resolve.ts";
 import type { CodegraphEntry } from "./codegraph-cli-resolve.ts";
-import { ensureCodegraphLatest, type CodegraphUpdateCheck } from "./codegraph-update.ts";
+import { ensureCodegraphInstalled, ensureCodegraphLatest, type CodegraphUpdateCheck, type InstallOutcome } from "./codegraph-update.ts";
 import { acquireInitLock, codegraphWritingIndex, indexState, syncLeaseHeldLive, tryAcquireSyncLease, type IndexState } from "./codegraph-lease.ts";
 import { resolveSessionWorktree, type WorktreeIdentity } from "./session-worktree-registry.ts";
 
@@ -595,6 +595,9 @@ export interface ReadinessInput {
 	/** Runs the codegraph update check before the index is planned; the default runs it once per
 	 * process through the detected install source and fails open on every step. */
 	updateCheck?(): Promise<CodegraphUpdateCheck>;
+	/** Whether codegraph is installed at all; the default installs it once through the first
+	 * available manager (bun, npm, pnpm) when the PATH holds none. */
+	installCheck?(): Promise<InstallOutcome>;
 	onStart?(action: IndexAction): void;
 	onIndexed?(result: {
 		action: IndexAction;
@@ -640,6 +643,15 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			if (sessionSkipsReadiness(input.env, input.reason, input.cwd)) return { action: "none", ok: true, warm: "skipped" };
 			const childWorktree = input.env[CHILD_ENV] === "1";
 
+			// The install seam: when the PATH holds no codegraph at all, one install attempt
+			// through the first available manager (bun, npm, pnpm) runs before anything else —
+			// a fresh install is already latest, so the update check below no-ops and the init
+			// path builds the first index. Fail-open: an uninstallable codegraph changes nothing.
+			try {
+				await (input.installCheck ?? ensureCodegraphInstalled)();
+			} catch {
+				/* fail open: the update check's version probe reports the absence */
+			}
 			// The update seam: once per process, before the index is planned, the running codegraph
 			// binary is compared against the registry latest and updated through its install source
 			// (S1-S4/S6). Every step fails open — a failed probe, an unavailable registry, an unknown

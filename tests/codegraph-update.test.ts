@@ -8,6 +8,7 @@ import {
 	codegraphVersionDiffers,
 	defaultExec,
 	detectCodegraphInstallSource,
+	ensureCodegraphInstalled,
 	ensureCodegraphLatest,
 	installedCodegraphVersion,
 	latestCodegraphVersion,
@@ -384,6 +385,48 @@ test("defaultExec: the production runner executes the real codegraph shim on win
 	const result = await defaultExec("codegraph", ["--version"], VERSION_TIMEOUT_MS);
 	assert.equal(result.ok, true, `the shim path must resolve on win32: stderr=${result.stderr.slice(0, 200)}`);
 	assert.match(result.stdout, /\d+\.\d+\.\d+/, "the real binary answers with a version");
+});
+
+test("ensureCodegraphInstalled: an installed shim installs nothing", async () => {
+	const { exec, calls } = execByFirstArg({ which: () => ok("/Users/tester/.bun/bin/codegraph\n") });
+	assert.deepEqual(await ensureCodegraphInstalled(exec, { platform: "darwin" }), { installed: true });
+	assert.deepEqual(calls.map((call) => call.command), ["which"]);
+});
+
+test("ensureCodegraphInstalled: a missing codegraph installs through the first available manager", async () => {
+	const { exec, calls } = execByFirstArg({
+		which: () => fail("not found"),
+		bun: (args) => (args[0] === "--version" ? ok("1.x") : args[0] === "add" ? ok("installed") : undefined),
+	});
+	assert.deepEqual(await ensureCodegraphInstalled(exec, { platform: "darwin" }), { installed: true, via: "bun" });
+	assert.deepEqual(calls, [
+		{ command: "which", args: ["codegraph"], timeoutMs: VERSION_TIMEOUT_MS },
+		{ command: "bun", args: ["--version"], timeoutMs: VERSION_TIMEOUT_MS },
+		{ command: "bun", args: ["add", "-g", `${CODEGRAPH_PACKAGE}@latest`], timeoutMs: UPDATE_TIMEOUT_MS },
+	]);
+});
+
+test("ensureCodegraphInstalled: bun missing falls to npm; win32 spells npm.cmd", async () => {
+	const { exec, calls } = execByFirstArg({
+		"where.exe": () => fail("not found"),
+		bun: () => fail("ENOENT"),
+		"npm.cmd": (args) => (args[0] === "--version" ? ok("10.x") : args[0] === "install" ? ok("installed") : undefined),
+	});
+	assert.deepEqual(await ensureCodegraphInstalled(exec, { platform: "win32" }), { installed: true, via: "npm" });
+	assert.deepEqual(calls.map((call) => call.command), ["where.exe", "bun", "npm.cmd", "npm.cmd"]);
+});
+
+test("ensureCodegraphInstalled: a failed install falls through; no manager means a reason", async () => {
+	const fell = execByFirstArg({
+		which: () => fail("not found"),
+		bun: (args) => (args[0] === "--version" ? ok("1.x") : fail("EACCES")),
+		npm: (args) => (args[0] === "--version" ? ok("10.x") : ok("installed")),
+	});
+	assert.deepEqual(await ensureCodegraphInstalled(fell.exec, { platform: "darwin" }), { installed: true, via: "npm" });
+	const none = execByFirstArg({ which: () => fail("not found"), bun: () => fail("x"), npm: () => fail("x"), pnpm: () => fail("x") });
+	const outcome = await ensureCodegraphInstalled(none.exec, { platform: "darwin" });
+	assert.equal(outcome.installed, false);
+	assert.match(outcome.reason ?? "", /no available package manager/);
 });
 
 test("CodegraphInstallSource surface: the three-way classification is the whole vocabulary", () => {

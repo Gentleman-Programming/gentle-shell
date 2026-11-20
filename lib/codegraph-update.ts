@@ -370,3 +370,42 @@ export function ensureCodegraphLatest(exec: BoundedExec = defaultExec, opts: { p
 	}
 	return checkMemo;
 }
+
+/** The managers a fresh install may go through, in try order. */
+export type CodegraphInstallManager = "bun" | "npm" | "pnpm";
+
+/** What the install-if-missing check concluded. */
+export interface InstallOutcome {
+	/** The PATH resolves a codegraph shim (or one was just installed). */
+	installed: boolean;
+	/** The manager this call installed through; present only after a fresh install. */
+	via?: CodegraphInstallManager;
+	/** Why nothing installed, for the caller's report; absent on success or when already installed. */
+	reason?: string;
+}
+
+/**
+ * Whether the current PATH resolves a codegraph shim (`which` on POSIX, `where.exe` on win32),
+ * and when it does not, one install attempt through the first available manager - bun, npm,
+ * pnpm, the same order update detection classifies in. A manager counts as available when its
+ * own --version probe answers; a failed install falls through to the next manager. A fresh
+ * install is already the registry latest, so the update check that follows no-ops and the init
+ * path builds the first index. Every failure fails open: a session that cannot install keeps
+ * running exactly as before, the reason says what happened.
+ */
+export async function ensureCodegraphInstalled(exec: BoundedExec = defaultExec, opts: { platform?: NodeJS.Platform } = {}): Promise<InstallOutcome> {
+	const platform = opts.platform ?? process.platform;
+	const located = platform === "win32"
+		? await exec("where.exe", ["codegraph"], VERSION_TIMEOUT_MS)
+		: await exec("which", ["codegraph"], VERSION_TIMEOUT_MS);
+	if (located.ok) return { installed: true };
+	for (const manager of ["bun", "npm", "pnpm"] as const) {
+		const command = manager === "npm" ? npmCommand(platform) : manager;
+		const probe = await exec(command, ["--version"], VERSION_TIMEOUT_MS);
+		if (!probe.ok) continue;
+		const args = [manager === "npm" ? "install" : "add", "-g", `${CODEGRAPH_PACKAGE}@latest`];
+		const install = await exec(command, args, UPDATE_TIMEOUT_MS);
+		if (install.ok) return { installed: true, via: manager };
+	}
+	return { installed: false, reason: "no available package manager (bun, npm, pnpm) could install codegraph" };
+}

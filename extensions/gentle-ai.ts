@@ -713,6 +713,70 @@ function judgmentDaySeverityRejection(...values: unknown[]): string | undefined 
 	return undefined;
 }
 
+const JUDGMENT_DAY_ROW_SHAPE_DIAGNOSTIC = (index: number) =>
+	`Frozen finding row ${index} is not canonical: it must be one JSON object per line with exactly the fields ${JUDGMENT_DAY_FROZEN_ROW_FIELDS.join(", ")}, lens \`judgment-day\`, severity BLOCKER or CRITICAL, status_at_freeze \`open\`, and non-empty text fields.`;
+
+function isCanonicalJudgmentDayFrozenRow(row: unknown): row is Record<string, unknown> {
+	return isRecord(row) && Object.keys(row).length === JUDGMENT_DAY_FROZEN_ROW_FIELDS.length &&
+		JUDGMENT_DAY_FROZEN_ROW_FIELDS.every((field) => field in row) &&
+		isNonEmptyJudgmentDayFrozenField(row.id) && JUDGMENT_DAY_SEVERE_ID_ENTRY.test(`- \`${row.id}\``) &&
+		row.lens === "judgment-day" && isNonEmptyJudgmentDayFrozenField(row.location) &&
+		(row.severity === "BLOCKER" || row.severity === "CRITICAL") && row.status_at_freeze === "open" &&
+		isNonEmptyJudgmentDayFrozenField(row.evidence_class) && isNonEmptyJudgmentDayFrozenField(row.evidence_claim);
+}
+
+/** One line per failed clause; read-only explanation, never changes admission. */
+function judgmentDayClauseDiagnostics(...values: unknown[]): string[] {
+	const lines: string[] = [];
+	const bodiesOf = (heading: string) => values.flatMap((value) => canonicalJudgmentDaySectionBodies(value, heading));
+	if (!hasCanonicalJudgmentDayFixSectionOrder(...values)) {
+		lines.push(`Dispatch sections are missing, duplicated, malformed or out of order; required exact headings in order: ${JUDGMENT_DAY_FIX_SECTION_HEADINGS.map((heading) => `\`${heading}\``).join(", ")}.`);
+	}
+	const activation = bodiesOf(JUDGMENT_DAY_ACTIVATION_HEADING);
+	if (activation.length === 1 && !(activation[0]!.length === 1 && activation[0]![0] === JUDGMENT_DAY_ACTIVATION_SENTENCE)) {
+		lines.push(`The \`${JUDGMENT_DAY_ACTIVATION_HEADING}\` section must contain only \`${JUDGMENT_DAY_ACTIVATION_SENTENCE}\`.`);
+	}
+	const idBodies = bodiesOf(JUDGMENT_DAY_AUTHORIZED_SEVERE_IDS_HEADING);
+	const idEntries = idBodies.length === 1 ? idBodies[0]! : undefined;
+	const authorizedIds = idEntries ? canonicalJudgmentDaySevereIds(idEntries) : undefined;
+	if (idEntries) {
+		const invalid = idEntries.filter((entry) => !JUDGMENT_DAY_SEVERE_ID_ENTRY.test(entry));
+		if (invalid.length > 0) {
+			const shown = invalid.map((entry) => `\`${entry.replace(/^- `?|`$/g, "").slice(0, 64)}\``).join(", ");
+			lines.push(`Invalid authorized ID(s) ${shown}: IDs must match \`JD-[A-Z][A-Z0-9]*-\\d+\` (the lens-letter segment is mandatory), for example \`JD-A-001\`.`);
+		} else if (authorizedIds === undefined) {
+			lines.push("Authorized IDs must be a non-empty list of unique IDs.");
+		}
+	}
+	const batch = bodiesOf(JUDGMENT_DAY_CORRECTION_BATCH_HEADING);
+	const declaredHash = batch.length === 1 ? canonicalJudgmentDayCorrectionBatchHash(batch[0]!) : undefined;
+	if (batch.length === 1 && declaredHash === undefined) {
+		lines.push(`The \`${JUDGMENT_DAY_CORRECTION_BATCH_HEADING}\` section must be exactly \`Round: 1 of 2.\` or \`Round: 2 of 2.\` followed by \`Frozen ledger SHA-256: \\\`<64 lowercase hex>\\\`\`.`);
+	}
+	const rowBodies = bodiesOf(JUDGMENT_DAY_FROZEN_FINDING_ROWS_HEADING);
+	if (rowBodies.length !== 1) return lines;
+	let rowsUsable = true;
+	const parsedRows: unknown[] = [];
+	rowBodies[0]!.forEach((entry, index) => {
+		let row: unknown;
+		try { row = JSON.parse(entry); } catch { row = undefined; }
+		parsedRows.push(row);
+		if (!isCanonicalJudgmentDayFrozenRow(row)) {
+			rowsUsable = false;
+			lines.push(JUDGMENT_DAY_ROW_SHAPE_DIAGNOSTIC(index + 1));
+		}
+	});
+	if (!rowsUsable || authorizedIds === undefined) return lines;
+	const rowIds = parsedRows.map((row) => String((row as Record<string, unknown>).id));
+	const parsed = parseCanonicalJudgmentDayFrozenRows(rowBodies[0]!, authorizedIds);
+	if (parsed === undefined) {
+		lines.push(`Authorized IDs (${authorizedIds.join(", ")}) must equal the BLOCKER/CRITICAL open frozen row IDs (${rowIds.join(", ")}) in the same order, one row per ID, no duplicates.`);
+	} else if (declaredHash !== undefined && declaredHash !== canonicalHash(parsed)) {
+		lines.push(`Frozen ledger SHA-256 mismatch: declared \`${declaredHash}\`, expected \`${canonicalHash(parsed)}\`. The digest is the lowercase SHA-256 of the canonical JSON (compact, sorted keys) of the parsed frozen rows ARRAY of this dispatch, not of the row text and not of the full ledger.`);
+	}
+	return lines;
+}
+
 function rejectInvalidJudgmentDayFixDispatch(input: unknown): { block: true; reason: string } | undefined {
 	if (!isRecord(input) || !hasJudgmentDayFixAgentReference(input)) return undefined;
 	if (
@@ -724,7 +788,9 @@ function rejectInvalidJudgmentDayFixDispatch(input: unknown): { block: true; rea
 		return undefined;
 	}
 	const severityIssue = judgmentDaySeverityRejection(input.task, input.context);
-	return { block: true, reason: severityIssue ? `${severityIssue} ${JUDGMENT_DAY_FIX_DISPATCH_REJECTION}` : JUDGMENT_DAY_FIX_DISPATCH_REJECTION };
+	const generic = severityIssue ? `${severityIssue} ${JUDGMENT_DAY_FIX_DISPATCH_REJECTION}` : JUDGMENT_DAY_FIX_DISPATCH_REJECTION;
+	const clauses = judgmentDayClauseDiagnostics(input.task, input.context);
+	return { block: true, reason: clauses.length > 0 ? [generic, ...clauses].join("\n") : generic };
 }
 
 /**

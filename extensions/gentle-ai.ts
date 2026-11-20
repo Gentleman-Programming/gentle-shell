@@ -1031,7 +1031,8 @@ const DELIVERY_VERB = /\bgit\s+push\b|\bgh\s+pr\s+(?:create|merge)\b/;
 const UNREVIEWED_DELIVERY_NOTICE = "RDD: this repository has an unreviewed candidate; review it before delivery.";
 
 async function warnUnreviewedDelivery(nativeReviewCli: NativeReviewCli | null, ctx: ExtensionContext, command: string): Promise<void> {
-	if (!DELIVERY_VERB.test(command) || nativeReviewCli?.targetStatus === undefined || ctx.hasUI !== true) return;
+	// Outside a Git worktree, reading review state would initialize Git there; a warning must never mutate.
+	if (!DELIVERY_VERB.test(command) || nativeReviewCli?.targetStatus === undefined || ctx.hasUI !== true || !resolveSessionWorktree(ctx.cwd, ctx.cwd)) return;
 	try {
 		const signal = AbortSignal.any([AbortSignal.timeout(5_000), ...(ctx.signal ? [ctx.signal] : [])]);
 		if ((await readRddModeStatusOnce(nativeReviewCli, ctx.cwd, signal))?.effective !== "on") return;

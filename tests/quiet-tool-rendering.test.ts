@@ -1212,6 +1212,141 @@ test("quiet tool rendering bounds completed previews, errors, and edit/write sum
 	assert.doesNotMatch(write, /body/);
 });
 
+test("an edit card colors only the rows its diff added or removed", () => {
+	// The diff pi's edit tool reports is one row per changed or shown line, each
+	// opening with the mark that says which it is. The card paints the added rows in
+	// the theme's added role and the removed rows in its removed role, at both
+	// expansion levels, while its own summary keeps the role it always had and a
+	// context row, a patch file header and a hunk header are never read as changes.
+	const tools = registeredQuietTools();
+	const edit = tools.get("edit");
+	const context = routineRenderContext({ args: { path: "lib/x.ts", edits: [] }, isPartial: false });
+	const diff = ["--- a/lib/x.ts", "+++ b/lib/x.ts", "@@ -1,2 +1,2 @@", "-1 const b = 2;", "+1 const b = 3;", " 1 const a = 1;"];
+	const result = textResult("Applied", { diff: diff.join("\n") });
+
+	assert.deepEqual(renderLines(edit.renderResult(result, { expanded: true, isPartial: false }, statusTheme, context)), [
+		"<toolOutput>--- a/lib/x.ts</toolOutput>",
+		"<toolOutput>+++ b/lib/x.ts</toolOutput>",
+		"<toolOutput>@@ -1,2 +1,2 @@</toolOutput>",
+		"<toolDiffRemoved>-1 const b = 2;</toolDiffRemoved>",
+		"<toolDiffAdded>+1 const b = 3;</toolDiffAdded>",
+		"<toolOutput> 1 const a = 1;</toolOutput>",
+	]);
+	// Collapsed keeps its concise summary and the changed rows it previewed, now
+	// told apart by the same two roles.
+	assert.deepEqual(renderLines(edit.renderResult(result, { expanded: false, isPartial: false }, statusTheme, context)), [
+		"<muted>✓ +1 / -1</muted>",
+		"<muted>--- a/lib/x.ts</muted>",
+		"<muted>+++ b/lib/x.ts</muted>",
+	]);
+	const changedOnly = textResult("Applied", { diff: ["@@ -1,2 +1,2 @@", "-1 const b = 2;", "+1 const b = 3;", " 1 const a = 1;"].join("\n") });
+	assert.deepEqual(renderLines(edit.renderResult(changedOnly, { expanded: false, isPartial: false }, statusTheme, context)), [
+		"<muted>✓ +1 / -1</muted>",
+		"<toolDiffRemoved>-1 const b = 2;</toolDiffRemoved>",
+		"<toolDiffAdded>+1 const b = 3;</toolDiffAdded>",
+	]);
+});
+
+test("a result that is not an edit's diff keeps one role at both expansion levels", () => {
+	// Only the edit card reads the diff's marks. Every other result — and an edit
+	// that failed, whose rows are its error rather than a diff — is painted in the
+	// one role it always was, even when its text happens to open with `+` or `-`.
+	const tools = registeredQuietTools();
+	const text = "-1 not a diff\n+2 still text";
+	const cases = [
+		["read", { path: "lib/x.ts" }, textResult(text)],
+		["write", { path: "lib/x.ts", content: text }, textResult("Successfully wrote 21 bytes")],
+		["grep", { pattern: "x", path: "lib" }, textResult(text)],
+		["bash", { command: "printf output" }, textResult(text)],
+	] as const;
+	for (const [toolName, args, result] of cases) {
+		const tool = tools.get(toolName);
+		for (const expanded of [true, false]) {
+			const rows = renderLines(tool.renderResult(result, { expanded, isPartial: false }, statusTheme, routineRenderContext({ args, isPartial: false })));
+			assert.doesNotMatch(rows.join("\n"), /toolDiff(?:Added|Removed)/, `${toolName} expanded=${expanded}`);
+			assert.ok(rows.some((row) => row.length > 0), `${toolName} expanded=${expanded} draws its rows`);
+		}
+	}
+	const failed = renderLines(tools.get("edit").renderResult(
+		textResult("-1 the edit failed"),
+		{ expanded: true, isPartial: false, isError: true },
+		statusTheme,
+		routineRenderContext({ args: { path: "lib/x.ts" }, isPartial: false, isError: true }),
+	));
+	assert.doesNotMatch(failed.join("\n"), /toolDiff(?:Added|Removed)/, "a failed edit keeps its error in the error role");
+	assert.match(failed.join("\n"), /<error>-1 the edit failed<\/error>/);
+	// A streamed partial result is drawn by the card's own progress branch, which
+	// never reads the diff, so an edit in progress keeps one role too.
+	const partial = renderLines(tools.get("edit").renderResult(
+		textResult("-1 still streaming"),
+		{ expanded: true, isPartial: true },
+		statusTheme,
+		routineRenderContext({ args: { path: "lib/x.ts" }, isPartial: true }),
+	));
+	assert.doesNotMatch(partial.join("\n"), /toolDiff(?:Added|Removed)/, "an edit in progress keeps its progress roles");
+	assert.match(partial.join("\n"), /<muted>-1 still streaming<\/muted>/);
+});
+
+test("a colored edit row keeps its own role on every row it wraps to at a narrow width", () => {
+	// The roles are painted per row before the card wraps it, so a long added row
+	// stays green on each row it continues to and a long removed row stays red — and
+	// every drawn row still fits the width it was given.
+	const paint = (role: string) => ({ toolDiffAdded: "\x1b[32m", toolDiffRemoved: "\x1b[31m", toolOutput: "\x1b[37m", muted: "\x1b[2m" })[role] ?? "\x1b[39m";
+	const ansiTheme = { ...passthroughTheme, fg: (role: string, text: string) => `${paint(role)}${text}\x1b[0m` };
+	const tools = registeredQuietTools();
+	const line = "x".repeat(60);
+	const diff = [`-1 ${line}`, `+2 ${line}`, " 3 tail"].join("\n");
+	const width = 24;
+	const rows = frameLines(tools.get("edit").renderResult(
+		textResult("Applied", { diff }),
+		{ expanded: true, isPartial: false },
+		ansiTheme,
+		routineRenderContext({ args: { path: "lib/x.ts" }, isPartial: false }),
+	), width);
+	assert.ok(rows.length > 3, "the long rows wrap onto more rows than the diff has lines");
+	for (const row of rows) assert.ok(visibleWidth(row) <= width, `"${stripAnsi(row)}" fits ${width}`);
+	assert.ok(rows.filter((row) => row.includes("\x1b[32m")).length > 1, "an added row stays added on every row it wraps to");
+	assert.ok(rows.filter((row) => row.includes("\x1b[31m")).length > 1, "a removed row stays removed on every row it wraps to");
+	assert.ok(rows.some((row) => row.includes("\x1b[37m")), "a context row keeps the role the card already used");
+});
+
+test("a float edit card keeps its own tone behind every colored diff row", () => {
+	// The float style paints a tone background behind each row and re-arms it after
+	// any reset the row carries. A diff row now carries its own color reset, so the
+	// card must re-open the background after it rather than lose it mid-row.
+	const floatDiffTheme = {
+		bold(value: string) {
+			return value;
+		},
+		fg(role: string, value: string) {
+			const color = ({ toolDiffAdded: "\x1b[32m", toolDiffRemoved: "\x1b[31m", toolOutput: "\x1b[37m" })[role] ?? "\x1b[39m";
+			return `${color}${value}\x1b[0m`;
+		},
+		bg(_role: string, value: string) {
+			return `\x1b[48;5;22m${value}\x1b[49m`;
+		},
+	};
+	const tools = registeredQuietTools();
+	const context = routineRenderContext({ args: { path: "lib/x.ts", edits: [] }, isPartial: false });
+	const width = 40;
+	const rows = withFloatCards(() => tools.get("edit").renderResult(
+		textResult("Applied", { diff: "-1 removed row\n+1 added row\n 1 context row" }),
+		{ expanded: true, isPartial: false },
+		floatDiffTheme,
+		context,
+	).render(width));
+	for (const row of rows) {
+		assert.ok(row.startsWith(" \x1b[48;5;22m"), `background opens the row: ${JSON.stringify(row)}`);
+		assert.ok(row.endsWith("\x1b[49m "), `background closes the row: ${JSON.stringify(row)}`);
+		assert.equal(visibleWidth(row), width);
+	}
+	const body = rows.filter((row) => /\x1b\[(?:31|32|37)m/.test(row));
+	assert.ok(body.some((row) => row.includes("\x1b[31m-1 removed row")), "the removed row keeps its theme role");
+	assert.ok(body.some((row) => row.includes("\x1b[32m+1 added row")), "the added row keeps its theme role");
+	assert.ok(body.some((row) => row.includes("\x1b[37m 1 context row")), "the context row keeps the card's role");
+	assert.deepEqual(body.map(stripAnsi).map((row) => row.trim()), ["▎ -1 removed row", "▎ +1 added row", "▎  1 context row"]);
+});
+
 test("quiet tool rendering preserves complete expanded text and delegates sanitized image reads", () => {
 	const tools = registeredQuietTools();
 	const expanded = renderToolResult(tools.get("bash"), textResult("first\nsecond\nthird\nfourth\nsafe\x1b]52;c;Y2xpcGJvYXJk\x07done"), { expanded: true, isPartial: false }, { args: { command: "printf safe" } });

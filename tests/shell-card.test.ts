@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
-	CARD_STYLE, CARD_TONE, cardAwaitingResult, cardRunningLine, cardStyle, cardTopRows, headingFits, markCardResult, panelExtraRows, panelHeaderRow, renderCard, setCardStyle,
+	CARD_STYLE, CARD_TONE, cardAwaitingResult, cardRunningLine, cardStyle, cardTopRows, diffRowRole, diffRows, headingFits, markCardResult, panelExtraRows, panelHeaderRow, renderCard, setCardStyle,
 	type Card, type CardStyle, type CardTone,
 } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
@@ -492,6 +492,42 @@ test("a call card awaits its result until pi finishes the row or a result render
 	}
 	assert.equal(cardRunningLine(CARD_TONE.WARNING, plainTheme, 20), `│ running…${" ".repeat(8)} │`);
 	for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8]) assert.ok(visibleWidth(cardRunningLine(CARD_TONE.WARNING, plainTheme, width)) <= width);
+});
+
+test("a diff paints its added rows green and its removed rows red, and leaves every other row alone", () => {
+	// An edit's diff carries three marks: `+` is a row the edit added, `-` is one it
+	// removed, and everything else — context, the patch's own file headers and a
+	// hunk header — is not a change and keeps the role the card already paints it in.
+	const diff = ["@@ -1,2 +1,2 @@", "-1 const b = 2;", "+1 const b = 3;", " 1 const a = 1;", "--- a/lib/x.ts", "+++ b/lib/x.ts"].join("\n");
+	assert.deepEqual(diffRows(diff, taggedTheme, "muted").split("\n"), [
+		"<muted>@@ -1,2 +1,2 @@</muted>",
+		"<toolDiffRemoved>-1 const b = 2;</toolDiffRemoved>",
+		"<toolDiffAdded>+1 const b = 3;</toolDiffAdded>",
+		"<muted> 1 const a = 1;</muted>",
+		"<muted>--- a/lib/x.ts</muted>",
+		"<muted>+++ b/lib/x.ts</muted>",
+	]);
+	// A caller with no base role keeps the non-diff rows exactly as they arrived,
+	// so a card that painted its own rows does not gain a second opinion.
+	assert.deepEqual(diffRows("context\n+added", taggedTheme).split("\n"), ["context", "<toolDiffAdded>+added</toolDiffAdded>"]);
+	// Nothing to paint is nothing, never a role left open around an empty row.
+	assert.equal(diffRows("", taggedTheme, "muted"), "");
+	// The decision is one row at a time and never needs a theme to answer.
+	assert.equal(diffRowRole("+1 added"), "toolDiffAdded");
+	assert.equal(diffRowRole("-1 removed"), "toolDiffRemoved");
+	assert.equal(diffRowRole(" 1 context"), undefined);
+	assert.equal(diffRowRole("+++ b/lib/x.ts"), undefined);
+	assert.equal(diffRowRole("--- a/lib/x.ts"), undefined);
+	assert.equal(diffRowRole("@@ -1,2 +1,2 @@"), undefined);
+	assert.equal(diffRowRole("+"), "toolDiffAdded", "an empty added row is still an added row");
+	assert.equal(diffRowRole(""), undefined);
+	// Only the row's own first column is a mark: a context row that carries a mark
+	// further in is still context, not a change.
+	assert.equal(diffRowRole(" 1 +2 const c = 4;"), undefined);
+	assert.deepEqual(diffRows(" 1 +2 context\n-1 removed", taggedTheme, "toolOutput").split("\n"), [
+		"<toolOutput> 1 +2 context</toolOutput>",
+		"<toolDiffRemoved>-1 removed</toolDiffRemoved>",
+	]);
 });
 
 test("headingFits says whether a composed subtitle still leaves room for the key hint", () => {

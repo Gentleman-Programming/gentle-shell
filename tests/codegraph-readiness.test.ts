@@ -137,6 +137,41 @@ function processRunning(pid: number): boolean {
 	}
 }
 
+/** Whether a descendant is already dead at the moment the run's result settles — the strict
+ * oracle the settlement assertions need, unlike the polled processRunning. A reparented
+ * orphan the group SIGKILL killed stays enumerable as a zombie until init reaps it, and a
+ * zombie can neither run nor write: gone means ESRCH, or terminated-but-unreaped (state Z
+ * from /proc on Linux, from ps elsewhere). A pid that is still executing fails this check. */
+function goneAtSettlement(pid: number): boolean {
+	if (!processRunning(pid)) return true;
+	if (process.platform === "linux") return false;
+	const state = spawnSync("ps", ["-o", "state=", "-p", String(pid)], { timeout: 2_000 });
+	return state.status === 0 && (state.stdout ?? "").toString().trim() === "Z";
+}
+
+/** Collects the pids a fake command publishes about itself while its run is still in flight.
+ * The liveness assertions below sample at settlement — a poll after the result would grant a
+ * killed descendant a grace window the assertion is meant to forbid — so the pids must be known
+ * before the result lands: a run that settles before its pid files exist fails the startup
+ * premise instead of lending the sample a post-settlement wait. */
+async function descendantPids(run: Promise<boolean>, files: readonly string[]): Promise<number[]> {
+	let settled = false;
+	void run.then(() => {
+		settled = true;
+	});
+	const published = (file: string): number | undefined => {
+		if (!existsSync(file)) return undefined;
+		const pid = Number(readFileSync(file, "utf8").trim());
+		return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+	};
+	const deadline = Date.now() + 3_000;
+	while (!settled && files.some((file) => published(file) === undefined) && Date.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.ok(files.every((file) => published(file) !== undefined), "the fake command and its descendants published their pids before the run settled");
+	return files.map((file) => published(file)!);
+}
+
 test("indexState: the database file is the index, not the directory", (t) => {
 	const present = dir(t, "present");
 	writeDb(present);
@@ -555,15 +590,11 @@ test("runCodegraph: a timeout kills the command's whole process group, grandchil
 			}
 		}
 	});
-	const ok = await runCodegraph(["sync", "-q"], dir(t, "tree-kill-cwd"), 500);
+	const run = runCodegraph(["sync", "-q"], dir(t, "tree-kill-cwd"), 500);
+	const pids = await descendantPids(run, [pidFile, grandFile]);
+	const ok = await run;
 	assert.equal(ok, false, "the fake command never exits: the run times out");
-	const fileDeadline = Date.now() + 3_000;
-	while ((!existsSync(pidFile) || !existsSync(grandFile)) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
-	assert.ok(existsSync(pidFile) && existsSync(grandFile), "the fake command and its grandchild started");
-	const pids = [Number(readFileSync(pidFile, "utf8").trim()), Number(readFileSync(grandFile, "utf8").trim())];
-	const deadline = Date.now() + 3_000;
-	while (pids.some(processRunning) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.deepEqual(pids.map(processRunning), [false, false], "the direct child AND its grandchild die with the group kill");
+	assert.deepEqual(pids.map(goneAtSettlement), [true, true], "the direct child AND its grandchild are already dead when the result settles: the group kill completed before the settlement, and no polling window can absorb a survivor");
 });
 
 test("buildWindowsCommand: a UNC project path keeps its backslashes and cmd metacharacters stay inert", () => {
@@ -632,15 +663,11 @@ test("runCodegraph: a SIGTERM-ignoring command is SIGKILLed before the timeout r
 			}
 		}
 	});
-	const ok = await runCodegraph(["sync", "-q"], dir(t, "sigkill-cwd"), 300);
+	const run = runCodegraph(["sync", "-q"], dir(t, "sigkill-cwd"), 300);
+	const pids = await descendantPids(run, [pidFile, grandFile]);
+	const ok = await run;
 	assert.equal(ok, false, "the ignoring command still reports the timeout");
-	const fileDeadline = Date.now() + 3_000;
-	while ((!existsSync(pidFile) || !existsSync(grandFile)) && Date.now() < fileDeadline) await new Promise((resolve) => setTimeout(resolve, 25));
-	assert.ok(existsSync(pidFile) && existsSync(grandFile), "the fake command and its grandchild started");
-	const pids = [Number(readFileSync(pidFile, "utf8").trim()), Number(readFileSync(grandFile, "utf8").trim())];
-	const deadline = Date.now() + 3_000;
-	while (pids.some(processRunning) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-	assert.deepEqual(pids.map(processRunning), [false, false], "the SIGTERM-ignoring tree is SIGKILLed before the result is delivered");
+	assert.deepEqual(pids.map(goneAtSettlement), [true, true], "the SIGTERM-ignoring tree is already dead when the result settles: the SIGKILL completed before the result was delivered");
 });
 
 test("runCodegraph: a command that exits zero after handling the timeout's SIGTERM is still failed", async (t) => {

@@ -569,6 +569,40 @@ function killProcessTree(child: { pid?: number } | undefined, group = false, sig
 	}
 }
 
+/** How often a settled result re-probes a killed process group for its last member. */
+const GROUP_GONE_POLL_MS = 20;
+/** How long a settlement waits after the group SIGKILL for the last group member to be gone.
+ * Members normally vanish within a poll tick; a PID 1 that never reaps orphans keeps dead
+ * members enumerable forever, so the wait is capped, never unbounded. */
+const GROUP_GONE_CAP_MS = 2_000;
+
+/** SIGKILL delivery and orphan reaping lag the kill that sent them: a group kill that returned
+ * has marked its members, not removed them. Holds the caller's settlement until the killed
+ * group holds no member that can still run — `kill(-pgid, 0)` rejects exactly then: Darwin
+ * already ignores unreaped zombies (which can neither run nor write), while Linux counts
+ * them, so the wait there also covers reaping, capped for a PID 1 that never reaps. Windows
+ * has no process groups to probe: taskkill /T /F is the whole guarantee there, and the
+ * settlement is immediate. */
+function waitForKilledGroup(pgid: number | undefined, capMs: number, isSettled: () => boolean, onGone: () => void): void {
+	if (pgid === undefined || process.platform === "win32") {
+		onGone();
+		return;
+	}
+	const deadline = Date.now() + capMs;
+	const probe = () => {
+		if (isSettled()) return;
+		let gone = false;
+		try {
+			process.kill(-pgid, 0);
+		} catch {
+			gone = true;
+		}
+		if (gone || Date.now() >= deadline) onGone();
+		else setTimeout(probe, GROUP_GONE_POLL_MS);
+	};
+	probe();
+}
+
 /** One codegraph command run's captured result: the ok verdict, the exit code, the bounded
  * stderr tail, and the captured stdout — whole when the caller asked for an unbounded capture
  * (the seed's tracked-file listing parses JSON a 2,000-character tail could truncate). */
@@ -583,8 +617,9 @@ interface CommandRun {
  * Runs the codegraph CLI with fixed arguments for the project in `cwd`, from the temp directory with the
  * project as the last argument spelled as its daemon registered it (another spelling starts another
  * daemon). On Windows the npm `.cmd` shim needs a shell. A timeout kills the child and only reports the
- * failure once that process is gone: its pid must not outlive the result — and the timeout is recorded
- * when it fires, so a command that handles the kill signal and still exits 0 is reported as failed.
+ * failure once that process and its killed group are gone: no pid of the run can outlive the
+ * result, not even in the window between a sent SIGKILL and its landing. The timeout is
+ * recorded when it fires, so a command that handles the kill signal and still exits 0 is reported as failed.
  */
 function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: number, opts: { stdoutChars?: number; onSpawn?: (pid: number, proxy: boolean) => void; onInfo?: (info: CodegraphCommandInfo) => void }): Promise<CommandRun> {
 	return new Promise((resolve) => {
@@ -662,6 +697,9 @@ function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: nu
 			grace = setTimeout(() => {
 				killProcessTree(child, true, "SIGKILL");
 				grace = setTimeout(() => finish(false), KILL_WAIT_MS);
+				// The cap covers a group that never empties (a PID 1 that never reaps); the wait
+				// settles as soon as the killed group is gone.
+				waitForKilledGroup(child?.pid, KILL_WAIT_MS, () => settled, () => finish(false));
 			}, KILL_ESCALATE_MS);
 		}, timeoutMs);
 		child?.on("error", () => finish(false));

@@ -230,7 +230,7 @@ test("P9: pushes are not checked", async t => {
 	for (const command of ["git push", "git push origin main", "git push origin HEAD", "git push -u origin main"]) assert.equal(await hook(root)(command), undefined, command);
 });
 
-test("P9 preservation: a clean commit passes and RDD preflight denials keep their text and precedence", async t => {
+test("P9 preservation: a clean commit passes and a delivery is never denied by RDD, whatever the mode", async t => {
 	const { scratch, repo } = fixture(t);
 	const { root, git, write } = repo("repo");
 	write("app.txt", "changed\n"); git("add", ".");
@@ -240,8 +240,7 @@ test("P9 preservation: a clean commit passes and RDD preflight denials keep thei
 	git("remote", "add", "origin", remote); git("commit", "-qm", "clean"); git("push", "-q", "-u", "origin", "main");
 	write("conflict.txt", CONFLICT); git("add", "."); git("commit", "-qm", "markers");
 	const result = await hook(root, { mode: "on" })("git push origin HEAD");
-	assert.equal(result?.block, true);
-	assert.match(result!.reason!, /^RDD pre-delivery: Select the actual committed range/, "the RDD denial runs first and is unchanged");
+	assert.equal(result, undefined, "a push is never denied by RDD");
 	assert.equal(await hook(root, { mode: "off" })("git status && echo 'git commit'"), undefined, "non-delivery commands are untouched");
 });
 

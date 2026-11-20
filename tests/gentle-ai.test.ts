@@ -1572,59 +1572,6 @@ test("models screen lists configuration problems under the profile name without 
 	assert.ok(!plain.some((line) => line.includes("…")));
 });
 
-test("#2997: due-review workflow preflight precedes delivery while commits and ordinary command safety remain independent", async () => {
-	type ToolCallHandler = (
-		event: { toolName: string; input: unknown },
-		ctx: ExtensionContext,
-	) => Promise<ToolCallEventResult | undefined>;
-	const commands = [
-		"git commit -m relay",
-		"git push origin feature/relay",
-		"gh pr create --base main --head feature/relay",
-		"gh release create v1.2.3",
-		"git status && git commit -m relay",
-		"env SAFE=1 git push origin feature/relay",
-		"sh -c 'gh pr create --base main --head feature/relay'",
-		"sh -c 'gh release create v1.2.3'",
-	] as const;
-	const modes = [
-		{ label: "no native CLI", nativeReviewCli: null },
-		{ label: "RDD off", nativeReviewCli: { reviewMode: async () => ({ status: { effective: "off" } }) } },
-		{ label: "RDD on", nativeReviewCli: { reviewMode: async () => ({ status: { effective: "on" } }) } },
-		{ label: "mode failure", nativeReviewCli: { reviewMode: async () => { throw new Error("mode unavailable"); } } },
-	] as const;
-
-	for (const mode of modes) {
-		const handlers = new Map<string, ToolCallHandler>();
-		const pi = {
-			on(name: string, handler: ToolCallHandler) {
-				handlers.set(name, handler);
-			},
-			events: { emit() {} },
-			registerCommand() {},
-			registerTool() {},
-		} as unknown as ExtensionAPI;
-		createGentleAiExtension({ nativeReviewCli: mode.nativeReviewCli as never })(pi);
-		const toolCall = handlers.get("tool_call");
-		assert.equal(typeof toolCall, "function", mode.label);
-		const ctx = {
-			cwd: process.cwd(),
-			hasUI: true,
-			ui: { confirm: async () => true },
-		} as unknown as ExtensionContext;
-
-		for (const command of commands) {
-			const result = await toolCall!({ toolName: "bash", input: { command } }, ctx);
-			const deliveryCommands: readonly string[] = [commands[1], commands[2], commands[5], commands[6]];
-			const delivery = deliveryCommands.includes(command);
-			if (delivery && (mode.label === "RDD on" || mode.label === "mode failure")) {
-				assert.equal(result?.block, true, `${mode.label}: ${command}`);
-				assert.match(result?.reason ?? "", /RDD pre-delivery/);
-			} else assert.equal(result, undefined, `${mode.label}: ${command}`);
-		}
-	}
-});
-
 test("guarded command confirmation emits a generic correlated permission lifecycle", async () => {
 	type ToolCallHandler = (
 		event: { toolName: string; input: unknown },

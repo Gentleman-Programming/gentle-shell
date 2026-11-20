@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statfsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isSensitiveRepositoryPath } from "../runtime/sensitive-paths.mjs";
 
 const started = performance.now(), MAX_BYTES = 256 * 1024 * 1024, MAX_FILES = 20_000, MAX_MS = 60_000;
 let plan, scratch, payloadBytes = 0;
@@ -45,7 +46,12 @@ try {
 	if (names(staged).some(entry => !/^100(644|755) [a-f0-9]+ 0\t/.test(entry))) fail("unsupported index: links, submodules or conflicts");
 	if (names(git(source, ["ls-files", "-v", "-z"])).some(entry => !entry.startsWith("H "))) fail("unsupported index flags: sparse or assume-unchanged entries");
 	const tracked = names(git(source, ["ls-files", "-z"]));
-	const files = new Map(), missing = [], excludedRuntimeArtifacts = [];
+	// The tool guard's sensitive-path policy governs staging too; refuse before any clone or copy.
+	const trackedSensitive = tracked.filter(isSensitiveRepositoryPath);
+	if (trackedSensitive.length) fail(`refusing to stage tracked sensitive files: ${trackedSensitive.join(", ")}. Run \`git rm --cached -- ${trackedSensitive.join(" ")}\` and re-run the preparer, or verify without the isolated preparer`);
+	const namedSensitive = plan.include.filter(path => typeof path === "string" && isSensitiveRepositoryPath(path));
+	if (namedSensitive.length) fail(`include names sensitive path: ${namedSensitive.join(", ")}. Remove it from include and re-run the preparer, or verify that check without the isolated preparer`);
+	const files = new Map(), missing = [], excludedRuntimeArtifacts = [], skippedSensitive = [];
 	function resolveInput(path) {
 		remaining();
 		if (typeof path !== "string" || !path || path.includes("\\") || path.split("/").some(part => !part || part === "." || part === ".." || part.toLowerCase() === ".git") || isAbsolute(path)) fail("unsupported input path: use literal repository-relative paths outside .git");
@@ -62,7 +68,10 @@ try {
 		if (!stat) { if (required) fail(`required input missing: ${path}`); missing.push(path); return; }
 		if (stat.isDirectory()) {
 			if (!required) fail("unsupported tracked file replaced by directory; no implicit untracked expansion");
-			for (const entry of readdirSync(absolute)) collect(`${path}/${entry}`, true);
+			for (const entry of readdirSync(absolute).sort()) {
+				if (isSensitiveRepositoryPath(`${path}/${entry}`)) skippedSensitive.push(`${path}/${entry}`);
+				else collect(`${path}/${entry}`, true);
+			}
 			return;
 		}
 		if (!stat.isFile()) fail(`unsupported required runtime artifact: ${path}`);
@@ -99,7 +108,7 @@ try {
 		[...files.values()].some(file => hash(readFileSync(file.absolute)) !== file.digest) || missing.some(path => statAt(join(source, path)))) fail("source/index changed or copied index differs; no probes permitted");
 	remaining();
 	console.log(JSON.stringify({ status: "ready", work, head, baseline: plan.baseline ?? head, fileCount: files.size, payloadBytes,
-		durationMs: performance.now() - started, excludedRuntimeArtifacts, probesRun: 0 }));
+		durationMs: performance.now() - started, excludedRuntimeArtifacts, skippedSensitive, probesRun: 0 }));
 } catch (error) {
 	console.log(JSON.stringify({ status: "setup-failed", scratch, reason: error instanceof Error ? error.message : String(error),
 		probesRun: 0, unrunChecks: Array.isArray(plan?.checks) ? plan.checks : [], payloadBytes, durationMs: performance.now() - started }));

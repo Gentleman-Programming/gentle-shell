@@ -311,6 +311,39 @@ test("a token from another host or PID namespace is never judged dead locally: u
 	}
 });
 
+test("an expired identity-less token with dead holder and writer pids needs a provenance scope: stale only where one exists", (t) => {
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+	const dead = deadPid();
+
+	// The orphan shape diagnosed on 2026-11-19: an init token whose session and spawned init
+	// child both died, written by a launcher that recorded no host identity, long past its
+	// TTL. Where the reader itself cannot derive identity (the platform such launchers run
+	// on), its dead pids are local proof and the wedge is recovered; an identity-capable
+	// reader cannot place a host-less holder inside its own PID namespace — two namespaces
+	// can share one locks directory — so it fail-closes instead of guessing the pids dead.
+	writeToken(path, { kind: "init", pid: dead, startedAt: now - 600_000, expiresAt: now - 1, nonce: "orphan", writerPid: dead, writerProxy: false, writerPidAt: now - 600_000 });
+	assert.equal(readLeaseVerdict(path, now, undefined, null), "held-stale", "a null-identity reader reclaims the dead-pid orphan");
+	if (localHostIdentity() !== null) {
+		assert.equal(readLeaseVerdict(path, now), "unknown", "an identity-capable reader never guesses a host-less holder dead");
+		assert.equal(tryAcquireLease(path, "init", 600_000, now), undefined, "and the path is never stolen past it");
+	}
+
+	// The live-writer check stays strictly ahead of expiry: a live adopted writer holds
+	// whatever the token shape says, expired or not, provenance or not.
+	writeToken(path, { kind: "init", pid: dead, startedAt: now - 600_000, expiresAt: now - 1, nonce: "orphan", writerPid: process.pid, writerProxy: false, writerPidAt: now - 600_000 });
+	assert.equal(readLeaseVerdict(path, now), "held-live", "a live writer is never raced, whatever the token shape");
+	assert.equal(tryAcquireLease(path, "init", 600_000, now), undefined);
+
+	// Provenance still decides everywhere else: the same dead pids with a foreign host keep
+	// the fail-closed unknown - this host cannot judge another host's pids at all.
+	const foreign = "linux:01234567-89ab-cdef-0123-456789abcdef:pid:[1]";
+	writeToken(path, { kind: "init", pid: dead, startedAt: now - 600_000, expiresAt: now - 1, nonce: "orphan", host: foreign, writerPid: dead, writerProxy: false, writerPidAt: now - 600_000 });
+	assert.equal(readLeaseVerdict(path, now), "unknown", "a foreign host token is never stolen from this host");
+	assert.equal(tryAcquireLease(path, "init", 600_000, now), undefined);
+});
+
 test("an earlier-boot token of this machine is reclaimable stale once expired: the reboot wedge is bounded", (t) => {
 	const host = localHostIdentity();
 	const machine = localMachineIdentity();
@@ -980,5 +1013,33 @@ test("an expired host-less token needs a dead holder: a live holder is never rec
 		writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now - 1, host });
 		assert.equal(readLeaseVerdict(path, now), "held-stale", "an expired matching-host token is displaced even while its holder lives");
 	}
+});
+
+
+test("a host-less expired token is reclaimed only with local PID provenance and a confirmed death", (t) => {
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+
+	// Two PID namespaces can share one locks directory: a host-less token from the other
+	// namespace names pids that do not exist here, and a local ESRCH on such a pid proves
+	// nothing about its holder. A reader that can derive its own identity can never place a
+	// host-less holder inside its own namespace, so the expired verdict fail-closes whatever
+	// a local probe says — even a dead-looking pid must not hand the lease over.
+	const host = localHostIdentity();
+	if (host !== null) {
+		writeToken(path, { kind: "init", pid: deadPid(), startedAt: now - 120_000, expiresAt: now - 1 });
+		assert.equal(readLeaseVerdict(path, now), "unknown", "an identity-capable reader never reclaims a host-less token, dead-looking pid included");
+		assert.equal(tryAcquireLease(path, "sync", 120_000, now), undefined, "and the path is never stolen past it");
+		writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now - 1 });
+		assert.equal(readLeaseVerdict(path, now), "unknown", "a live holder stays fail-closed exactly as before");
+	}
+
+	// The one provable scope for a host-less holder is a reader of the same identity-less kind:
+	// there the reclaim still stands — but only on a death the reader's own namespace confirms.
+	writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: now - 1 });
+	assert.equal(readLeaseVerdict(path, now, undefined, null), "unknown", "a live holder on a null-identity host is never reclaimed past its TTL");
+	writeToken(path, { kind: "init", pid: deadPid(), startedAt: now - 120_000, expiresAt: now - 1 });
+	assert.equal(readLeaseVerdict(path, now, undefined, null), "held-stale", "a confirmed local death keeps the null-identity reclaim");
 });
 

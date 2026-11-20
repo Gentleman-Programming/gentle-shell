@@ -11,7 +11,6 @@ import { defaultTempScratchFs, isTempScratchRemoval, type TempScratchFs } from "
 import { SHELL_COMMAND_TOOLS } from "../lib/background-jobs.ts";
 import { evaluateDeliveredTestTool } from "../lib/delivered-test-lint.ts";
 import { commitSliceToolResult } from "../lib/commit-slice-signal.ts";
-import { checkReviewDeliveryPreflight, committedRangeUntrackedExclusion } from "../lib/review-delivery-preflight.ts";
 import { withReviewerProgress } from "../lib/reviewer-stream.ts";
 import { checkDeliveryConflictMarkers } from "../lib/delivery-conflict-markers.ts";
 import { appendContextBackstopNotice, createContextBackstopSignal, createThrottledContextMeasure } from "../lib/context-backstop.ts";
@@ -270,6 +269,7 @@ import {
 	NATIVE_REVIEW_MODE_OPERATION,
 	NATIVE_REVIEW_MODE_SOURCE,
 	NATIVE_REVIEW_RECONCILE_ANOMALIES,
+	committedRangeUntrackedExclusion,
 	type NativeReviewCli,
 	type NativeIntendedUntrackedSelectionSubmission,
 	type NativeReviewAcknowledgeApprovedOutcome,
@@ -1024,6 +1024,21 @@ async function readCurrentTargetIdentityBestEffort(
 	} catch {
 		return undefined;
 	}
+}
+
+// RDD never denies a delivery. A word match is enough: it only decides whether to read STATUS once and show one notice.
+const DELIVERY_VERB = /\bgit\s+push\b|\bgh\s+pr\s+(?:create|merge)\b/;
+const UNREVIEWED_DELIVERY_NOTICE = "RDD: this repository has an unreviewed candidate; review it before delivery.";
+
+async function warnUnreviewedDelivery(nativeReviewCli: NativeReviewCli | null, ctx: ExtensionContext, command: string): Promise<void> {
+	// Outside a Git worktree, reading review state would initialize Git there; a warning must never mutate.
+	if (!DELIVERY_VERB.test(command) || nativeReviewCli?.targetStatus === undefined || ctx.hasUI !== true || !resolveSessionWorktree(ctx.cwd, ctx.cwd)) return;
+	try {
+		const signal = AbortSignal.any([AbortSignal.timeout(5_000), ...(ctx.signal ? [ctx.signal] : [])]);
+		if ((await readRddModeStatusOnce(nativeReviewCli, ctx.cwd, signal))?.effective !== "on") return;
+		const status = await nativeReviewCli.targetStatus({ cwd: ctx.cwd, signal });
+		if (status.nextTransition?.kind === "execute" && status.nextTransition.execute.operation === "review.start") ctx.ui.notify(UNREVIEWED_DELIVERY_NOTICE, "warning");
+	} catch { /* a warning never blocks or fails the command */ }
 }
 
 function rddAbortRejection(signal: AbortSignal): Promise<never> {
@@ -13464,18 +13479,12 @@ function createGentleAiExtensionForTesting(
 			superYoloActive,
 		);
 		if (commandDenied) return commandDenied;
-		// Check after any command-authorization dialog, so the human's wait
-		// cannot leave an earlier candidate assessment stale at execution.
-		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey), deliveryEpoch = reminderEpoch;
-		const deliveryDenied = await checkReviewDeliveryPreflight(ctx.cwd, event.toolName, command, nativeReviewCli,
-			root => processRetainedNativeStatusSelections.get(sessionKey)?.readCommittedRange(root),
-			(root, target) => readNativeReviewOutcome(root, target) === "declined", ctx.signal,
-			() => deliveryEpoch === reminderEpoch && modeEpoch === yolo.epoch() && pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey) === sessionKey);
-		// cost-speed P9: after the RDD preflight (its denials win unchanged), independent of RDD mode; fails open.
+		if (primaryToolCall) await warnUnreviewedDelivery(nativeReviewCli, ctx, command);
+		// cost-speed P9: independent of RDD mode; fails open.
 		// It runs BEFORE the epoch recheck below: no await may sit between that recheck and the return.
-		const markerDenied = !deliveryDenied && primaryToolCall ? await checkDeliveryConflictMarkers(ctx.cwd, command, ctx.signal) : undefined;
+		const markerDenied = primaryToolCall ? await checkDeliveryConflictMarkers(ctx.cwd, command, ctx.signal) : undefined;
 		if (primaryToolCall && modeEpoch !== yolo.epoch()) return { block: true, reason: "Permission mode changed during delivery preflight. This action was not run; retry under the current mode." };
-		return deliveryDenied ?? markerDenied;
+		return markerDenied;
 	});
 
 	for (const owner of ["delegation", "review"] as const) {

@@ -2863,3 +2863,19 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 export function createNativeReviewCli(adapter?: ExecFileAdapter, executable: string | (() => string) = resolveGentleAiBinary): NativeReviewCli {
 	return new NativeReviewCliV216(adapter ?? createNodeExecFileAdapter(), executable);
 }
+
+/**
+ * gentle-shell#3169: native assess refuses a committed-only range while any
+ * untracked file exists unless the untracked inventory is declared. A base-diff
+ * snapshot never includes untracked files, so excluding them leaves the
+ * assessed range unchanged. The digest comes only from native status; without
+ * it nothing is declared and native keeps deciding.
+ */
+export async function committedRangeUntrackedExclusion(cli: Pick<NativeReviewCli, "targetStatus"> | null | undefined, cwd: string, baseRef: string,
+	signal?: AbortSignal): Promise<{ untrackedScope?: typeof NATIVE_UNTRACKED_SCOPE.EXCLUDE; expectedUntrackedInventory?: string }> {
+	if (!cli?.targetStatus) return {};
+	try {
+		const inventory = (await cli.targetStatus({ cwd, baseRef, committedOnly: true, agent: "pi", ...(signal ? { signal } : {}) })).eligibleUntrackedInventory;
+		return typeof inventory === "string" && inventory ? { untrackedScope: NATIVE_UNTRACKED_SCOPE.EXCLUDE, expectedUntrackedInventory: inventory } : {};
+	} catch { return {}; }
+}

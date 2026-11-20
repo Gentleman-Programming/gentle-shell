@@ -1,3 +1,4 @@
+import { matchesSensitivePathPattern } from "../lib/sensitive-paths.ts";
 import { emptyFallbacksFile, fallbacksFilePath, followProfileRename, readFallbacksFile, setChain, writeFallbacksFile, type FallbackStep } from "../lib/model-fallback-store.ts";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { PROFILE_TIER_EVENT, supportsOpenAIFast } from "../lib/openai-fast-tier.ts";
@@ -2256,17 +2257,6 @@ const PATH_INPUT_KEYS = new Set([
 	"filePath",
 	"filePaths",
 ]);
-const SENSITIVE_PATH_PATTERNS: RegExp[] = [
-	/(^|\/)\.ssh(?:\/|$)/,
-	/(^|\/)\.credentials(?:\/|$)/,
-	/(^|\/)library\/keychains(?:\/|$)/,
-	/(^|\/)\.aws\/credentials$/,
-	/(^|\/)\.config\/gh\/hosts\.ya?ml$/,
-	/(^|\/)secrets(?:\/|$)/,
-	/(^|\/)\.env(?:$|[./_-])/,
-	/(^|\/)\.(?:envrc|netrc)(?:$|\/)/,
-	/\.(?:pem|key|p12|pfx)$/,
-];
 
 const JUDGMENT_DAY_AGENT_NAMES = [
 	"jd-judge-a",
@@ -2415,7 +2405,7 @@ function isDesktopActionPath(value: string, env: NodeJS.ProcessEnv, cwd?: string
 
 function isSensitivePath(value: string, env: NodeJS.ProcessEnv = process.env, cwd?: string): boolean {
 	const normalized = normalizePolicyPath(value);
-	return SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(normalized)) || isDesktopActionPath(value, env, cwd);
+	return matchesSensitivePathPattern(normalized) || isDesktopActionPath(value, env, cwd);
 }
 
 // A shell word can carry a path after `=`: `--target-directory=$HOME/...` or

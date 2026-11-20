@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
@@ -491,4 +491,20 @@ test("#3310: the preflight entry point hands the native client the real Windows 
 	const denied = await checkReviewDeliveryPreflight("C:\\Users\\dev", "bash", "cd /c/work/repo && git push", cli, () => undefined, () => false, undefined, () => true, "win32");
 	assert.equal(denied, undefined);
 	assert.deepEqual(seen, ["C:\\work\\repo"]);
+});
+
+test("#3271: an unexpected native failure names a bounded cause and a runnable exit", async () => {
+	const exit = "retry the delivery, or turn RDD off for this clone with 'gentle-ai review mode disable --scope clone'";
+	const tail = " This delivery command was not run. Review outcomes do not authorize delivery.";
+	const fail = (error: unknown) => checkReviewDeliveryPreflight("/work/repo", "bash", "git push origin HEAD",
+		{ reviewMode: async () => { throw error; } } as unknown as NativeReviewCli, () => "base", () => false);
+	const enoent = Object.assign(new Error("spawn gentle-ai ENOENT"), { code: "ENOENT" });
+	assert.deepEqual(await fail(enoent), { block: true, reason: `RDD pre-delivery: Native preflight is unavailable (ENOENT: spawn gentle-ai ENOENT); ${exit}.${tail}` });
+	const timeout = Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+	assert.deepEqual(await fail(timeout), { block: true, reason: `RDD pre-delivery: Native preflight is unavailable (TimeoutError: The operation was aborted due to timeout); ${exit}.${tail}` });
+	const noisy = Object.assign(new Error(`failed at ${homedir()}/secret/bin\nat stack line\n${"x".repeat(500)}`), { code: "EACCES" });
+	const reason = (await fail(noisy))!.reason;
+	assert.ok(!reason.includes(homedir()) && !reason.includes("at stack line") && !reason.includes("x".repeat(200)), "no home path, extra lines, or unbounded text");
+	assert.match(reason, /^RDD pre-delivery: Native preflight is unavailable \(EACCES: failed at ~\/secret\/bin\); retry the delivery/);
+	assert.equal((await fail("plain string"))?.reason, `RDD pre-delivery: Native preflight is unavailable (plain string); ${exit}.${tail}`);
 });

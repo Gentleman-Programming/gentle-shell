@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
 import { NATIVE_UNTRACKED_SCOPE, normalizeNativeReviewCwd, type NativeReviewCli } from "./native-review-cli.ts";
 import { recognizeReviewDeliveryActions } from "./destructive-command-guard.ts";
@@ -6,6 +7,16 @@ import { resolveSessionWorktree, worktreeGitEnvironment } from "./session-worktr
 
 type Denial = { block: true; reason: string };
 const deny = (reason: string): Denial => ({ block: true, reason: `RDD pre-delivery: ${reason} This delivery command was not run. Review outcomes do not authorize delivery.` });
+
+/** gentle-shell#3271: a single-line, bounded failure cause (code or name plus first message line) with the home directory elided. */
+function preflightCause(error: unknown): string {
+	const record = typeof error === "object" && error !== null ? error as { code?: unknown; name?: unknown; message?: unknown } : undefined;
+	const label = typeof record?.code === "string" && record.code ? record.code : typeof record?.name === "string" && record.name ? record.name : "";
+	const message = String(record && "message" in record ? record.message : error).split(/\r?\n/, 1)[0]!.trim();
+	const home = homedir();
+	const text = (label ? `${label}: ${message}` : message).split(home).join("~");
+	return text.length > 120 ? `${text.slice(0, 119)}…` : text;
+}
 
 // Compare HEAD/base around this read, without retaining a verdict or snapshot.
 async function identity(root: string, baseRef: string): Promise<string | undefined> {
@@ -88,7 +99,7 @@ export async function checkReviewDeliveryPreflight(cwd: string, toolName: string
 				if (bounded.aborted || !current() || baseRefFor(root) !== baseRef || await identity(root, baseRef) !== before || !current()) return deny("The range or session changed during preflight; assess again.");
 			}
 			return undefined;
-		} catch { return deny("Native preflight is unavailable; resolve it before delivery."); }
+		} catch (error) { return deny(`Native preflight is unavailable (${preflightCause(error)}); retry the delivery, or turn RDD off for this clone with 'gentle-ai review mode disable --scope clone'.`); }
 	};
 	try { return await Promise.race([run(), expired]); }
 	finally { bounded.removeEventListener("abort", abort); }

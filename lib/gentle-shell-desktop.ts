@@ -1139,6 +1139,28 @@ export function desktopAgentDir(ctx: DesktopContext): string {
 	return join(ctx.home, ".pi", "agent");
 }
 
+// What the mods actually read: one snapshot per publishing session under
+// <agent home>/desktop/sessions. No file means no session in the window, whatever else is right.
+export function feedStatusLine(agentDir: string, now: number = Date.now()): string {
+	const dir = join(agentDir, "desktop", "sessions");
+	let files: string[] = [];
+	try {
+		files = readdirSync(dir).filter((name) => name.endsWith(".json"));
+	} catch {
+		return `  Feed: none at ${dir}; start a session with gentle-shell and the window will see it`;
+	}
+	if (files.length === 0) return `  Feed: none at ${dir}; start a session with gentle-shell and the window will see it`;
+	let newest = 0;
+	for (const name of files) {
+		try {
+			const at = statSync(join(dir, name)).mtimeMs;
+			if (at > newest) newest = at;
+		} catch {}
+	}
+	const age = newest === 0 ? "unknown age" : `${Math.max(0, Math.round((now - newest) / 1000))}s old`;
+	return `  Feed: ${files.length} session snapshot${files.length === 1 ? "" : "s"} in ${dir} (newest ${age})`;
+}
+
 // A separate install keeps its agent outside the homes the mods read, so the window
 // shows "No Gentle Shell session here" until that home is listed. Report it, read-only.
 export function rootsStatusLine(paths: DesktopPaths, home: string, agentDir: string): string | undefined {
@@ -1168,6 +1190,7 @@ function printStatus(ctx: DesktopContext, paths: DesktopPaths, assets: Assets | 
 	ctx.io.out(`  Herdr home: ${paths.herdrHome}`);
 	const rootsLine = rootsStatusLine(paths, ctx.home, desktopAgentDir(ctx));
 	if (rootsLine !== undefined) ctx.io.out(rootsLine);
+	ctx.io.out(feedStatusLine(desktopAgentDir(ctx)));
 	ctx.io.out(existsSync(paths.layoutFile) ? `  Layout ${DESKTOP_LAYOUT}: installed at ${paths.layoutFile}` : `  Layout ${DESKTOP_LAYOUT}: not installed`);
 	const themes = "mods" in assets ? assets.themes : [];
 	if (themes.length > 0) {

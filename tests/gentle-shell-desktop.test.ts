@@ -414,6 +414,7 @@ test("--status prints versions and what is installed", async (t) => {
 		"  Gentle Shell: 9.9.9",
 		`  Herdr app: not installed (needs ${HERDR_APP_VERSION} or newer)`,
 		`  Herdr home: ${f.herdrHome}`,
+		`  Feed: none at ${f.home}/.pi/agent/desktop/sessions; start a session with gentle-shell and the window will see it`,
 		"  Layout gentle-shell: not installed",
 		"  Mods: none installed (ships gentle-a, gentle-b)",
 		"  Window: not running",
@@ -428,6 +429,7 @@ test("--status prints versions and what is installed", async (t) => {
 		"  Gentle Shell: 9.9.9",
 		`  Herdr app: ${HERDR_APP_VERSION} at ${join(f.bin, "herdr-app")} (needs ${HERDR_APP_VERSION} or newer)`,
 		`  Herdr home: ${f.herdrHome}`,
+		`  Feed: none at ${f.home}/.pi/agent/desktop/sessions; start a session with gentle-shell and the window will see it`,
 		`  Layout gentle-shell: installed at ${join(f.herdrHome, "layouts", "gentle-shell.json")}`,
 		`  Mods: gentle-a, gentle-b installed in ${join(f.herdrHome, "mods")}`,
 		"  Window: running, layout main",
@@ -948,4 +950,17 @@ test("--status accepts an agent home listed in the roots file", async (t) => {
 	assert.ok(line !== undefined, f.out.join("\n"));
 	assert.match(line ?? "", /listed in .*gentle-shell-roots\.json/);
 	assert.doesNotMatch(line ?? "", /is not listed/);
+});
+
+test("--status reports a feed it can read", async (t) => {
+	const f = fixture(t);
+	const agent = join(f.home, "agent");
+	const dir = join(agent, "desktop", "sessions");
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "session-a.json"), "{}\n");
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Feed: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	assert.match(line ?? "", /1 session snapshot in .*desktop\/sessions \(newest \d+s old\)/);
 });

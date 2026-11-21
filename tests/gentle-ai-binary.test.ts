@@ -324,7 +324,7 @@ verifiedBinaryTest("production native client never invokes a global gentle-ai ex
 
 	await assert.rejects(
 		() => createNativeReviewCli(adapter, () => resolveGentleAiBinary(packageRoot, process.platform)).targetStatus!({ cwd: packageRoot, lineageId: "review-status-fixture" }),
-		/schema incompatible/,
+		/status\/v3 is older than the supported v9 \(gentle-ai v4\.6\.0\)/,
 	);
 	assert.deepEqual(calls, [binaryPath]);
 	assert.ok(calls.every((file) => file !== "gentle-ai"));

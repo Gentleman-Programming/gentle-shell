@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension, isDesktopActionPathOn } from "../extensions/gentle-ai.ts";
@@ -382,3 +384,55 @@ for (const [label, options] of surfaceModes) {
 		assert.equal(subagent?.reason?.includes("execution-surface") ?? false, false, "subagent_run is never classified as a surface escalation");
 	});
 }
+
+// gentle-shell#3401: auth.json (Pi provider credentials) is sensitive like .env.
+test("auth.json is denied like .env for file tools and shell words (gentle-shell#3401)", async () => {
+	const call = toolCall();
+	for (const path of ["auth.json", "sub/auth.json", "/home/u/.pi/agent/auth.json"]) {
+		assert.deepEqual(await call("read", { path }), { block: true, reason: reason(path) }, path);
+	}
+	assert.deepEqual(await call("bash", { command: "cat auth.json" }), { block: true, reason: reason("auth.json") });
+	for (const path of ["oauth-client.json", "auth.json.md", "author.json"]) assert.equal(await call("read", { path }), undefined, path);
+});
+
+test("the guard and the verifier preparer share one sensitive-path list (gentle-shell#3401)", async () => {
+	const lib = await import("../lib/sensitive-paths.ts"), runtime = await import("../runtime/sensitive-paths.mjs");
+	assert.deepEqual(runtime.SENSITIVE_PATH_PATTERNS.map(String), lib.SENSITIVE_PATH_PATTERNS.map(String));
+	const call = toolCall(), root = mkdtempSync(join(tmpdir(), "gentle-3401-parity-"));
+	try {
+		for (const name of [".env", "auth.json", "keys/id.pem", "secrets/token.txt"]) {
+			assert.deepEqual(await call("read", { path: name }), { block: true, reason: reason(name) }, name);
+			const source = join(root, "src"), scratch = mkdtempSync(join(root, "s-"));
+			const git = (...args: string[]) => execFileSync("git", args, { cwd: source, encoding: "utf8" });
+			mkdirSync(join(source, name, ".."), { recursive: true });
+			if (!existsSync(join(source, ".git"))) git("init", "-q");
+			writeFileSync(join(source, name), "DUMMY=1\n");
+			git("add", "-f", "--", name);
+			git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "x");
+			const out = spawnSync(process.execPath, [fileURLToPath(new URL("../scripts/prepare-verifier.mjs", import.meta.url)), source, scratch, JSON.stringify({ include: [], checks: ["true"] })], { encoding: "utf8" });
+			const receipt = JSON.parse(out.stdout);
+			assert.equal(receipt.status, "ready", out.stdout);
+			assert.deepEqual(receipt.skippedSensitive, [name]);
+			assert.equal(existsSync(join(receipt.work, name)), false, name);
+			git("rm", "-q", "--cached", "-f", "--", name);
+			git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "y");
+		}
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the guard does not see the preparer's JSON plan: the preparer enforces the policy itself (gentle-shell#3401)", async () => {
+	const call = toolCall();
+	assert.equal(await call("bash", { command: `node "$GENTLE_PI_VERIFIER_PREPARER" "$PWD" "$s" '{"include":[".env"],"checks":["true"]}'` }), undefined);
+});
+
+test("auth.json matching is exact for the shared list and the guard's read tool (gentle-shell#3401)", async () => {
+	const { isSensitiveRepositoryPath } = await import("../lib/sensitive-paths.ts"), call = toolCall();
+	for (const path of ["config/auth.json", "AUTH.JSON", "auth.json"]) {
+		assert.equal(isSensitiveRepositoryPath(path), true, path);
+		assert.deepEqual(await call("read", { path }), { block: true, reason: reason(path) }, path);
+	}
+	for (const path of ["oauth.json", "auth.json.example", "src/auth.jsonc", "my-auth.json"]) {
+		assert.equal(isSensitiveRepositoryPath(path), false, path);
+		assert.equal(await call("read", { path }), undefined, path);
+	}
+});

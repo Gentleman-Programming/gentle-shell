@@ -426,9 +426,9 @@ async function run() {
 	assert.ok(tools.has("gentle_review"), "missing registered bounded review controller tool");
 	assert.ok(tools.has("gentle_review_scope"), "missing registered bounded review scope tool");
 	assert.deepEqual(
-		tools.get("gentle_review").parameters.properties.operation.enum.filter((operation) => operation.includes("supersession") || operation === "supersede" || operation === "reconcile-authority"),
-		["reconcile-authority"],
-		"runtime controller must expose only native authority reconciliation",
+		tools.get("gentle_review").parameters.properties.operation.enum.filter((operation) => operation.includes("supersession") || operation === "supersede" || operation.includes("reconcile")),
+		[],
+		"runtime controller must not expose supersession or authority reconciliation",
 	);
 
 	for (const entry of await readdir(join(ROOT, "assets", "agents"))) {

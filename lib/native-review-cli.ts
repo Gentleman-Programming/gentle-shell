@@ -8,6 +8,7 @@ import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } 
 import { decodeReviewAssessmentV1, type ReviewAssessmentV1 } from "./review-risk-assessment.ts";
 import {
 	REVIEW_INTEGRATION_CONTRACT,
+	ReviewNativeContractTooOldError,
 	decodeReviewAcknowledgedV1,
 	decodeReviewCapabilitiesV2,
 	decodeReviewConsentV2,
@@ -60,9 +61,6 @@ export const NATIVE_REVIEW_OPERATION = {
 	RECLAIM: "review/reclaim",
 	RECOVER: "review/recover",
 	ABANDON: "review/abandon",
-	QUARANTINE_LEGACY: "review/quarantine-legacy",
-	RECONCILE_AUTHORITY: "review/reconcile-authority",
-	REPAIR_LEGACY_ALIAS: "review/repair-legacy-alias",
 	MODE: "review/mode",
 	ASSESS: "review/assess",
 	REPAIR: "review/repair",
@@ -104,9 +102,6 @@ export interface NativeReviewCli {
 	reclaim?(request: NativeReviewReclaimRequest): Promise<NativeReviewRecoveryResult>;
 	recover?(request: NativeReviewRecoverRequest): Promise<NativeReviewRecoveryResult>;
 	abandon?(request: NativeReviewAbandonRequest): Promise<NativeReviewRecoveryResult>;
-	quarantineLegacy?(request: NativeReviewLegacyQuarantineRequest): Promise<NativeReviewRecoveryResult>;
-	reconcileAuthority?(request: NativeReviewReconcileAuthorityRequest): Promise<NativeReviewRecoveryResult>;
-	repairLegacyAlias?(request: NativeReviewLegacyAliasRepairRequest): Promise<NativeReviewRecoveryResult>;
 	repair?(request: NativeReviewRepairRequest): Promise<ReviewRepairV2>;
 	captureResult?(request: NativeReviewCaptureResultRequest): Promise<NativeReviewCaptureResultOutcome>;
 	captureCorrectionPlan?(request: NativeReviewCorrectionPlanCaptureRequest): Promise<ReviewLastEventClosureV1>;
@@ -270,21 +265,6 @@ export interface NativeReviewRecoverRequest {
 	signal?: AbortSignal;
 }
 
-export const NATIVE_REVIEW_LEGACY_QUARANTINE = {
-	DIAGNOSTIC: "historical findings freeze changed unrelated transaction state",
-	DISPOSITION: "quarantine-malformed-freeze-event",
-} as const;
-
-export const NATIVE_REVIEW_RECONCILE_ANOMALIES = {
-	COMBINED: "unchanged_target,malformed_recovery_authorization",
-} as const;
-
-export const NATIVE_REVIEW_LEGACY_ALIAS_REPAIR = {
-	DIAGNOSTIC: "unsupported historical v1 operation alias",
-	DISPOSITION: "quarantine-approved-historical-alias",
-} as const;
-export type NativeReviewReconcileAnomalies = (typeof NATIVE_REVIEW_RECONCILE_ANOMALIES)[keyof typeof NATIVE_REVIEW_RECONCILE_ANOMALIES];
-
 export const NATIVE_REVIEW_ABANDON_REASONS = ["operator_disposition", "retired_schema"] as const;
 export type NativeReviewAbandonReason = (typeof NATIVE_REVIEW_ABANDON_REASONS)[number];
 
@@ -305,52 +285,13 @@ export interface NativeReviewAbandonRequest {
 	signal?: AbortSignal;
 }
 
-export interface NativeReviewLegacyQuarantineRequest {
-	cwd: string;
-	repository: string;
-	lineage: string;
-	expectedRevision: string;
-	diagnostic: (typeof NATIVE_REVIEW_LEGACY_QUARANTINE)["DIAGNOSTIC"];
-	disposition: (typeof NATIVE_REVIEW_LEGACY_QUARANTINE)["DISPOSITION"];
-	actor: string;
-	reason: string;
-	maintainerAuthorization: string;
-	signal?: AbortSignal;
-}
-
-export interface NativeReviewReconcileAuthorityRequest {
-	cwd: string;
-	predecessorLineage: string;
-	expectedPredecessorRevision: string;
-	successorLineage: string;
-	expectedSuccessorRevision: string;
-	actor: string;
-	reason: string;
-	anomalies?: NativeReviewReconcileAnomalies;
-	maintainerAuthorization: string;
-	signal?: AbortSignal;
-}
-
-export interface NativeReviewLegacyAliasRepairRequest {
-	cwd: string;
-	repository: string;
-	lineage: string;
-	expectedRevision: string;
-	diagnostic: (typeof NATIVE_REVIEW_LEGACY_ALIAS_REPAIR)["DIAGNOSTIC"];
-	disposition: (typeof NATIVE_REVIEW_LEGACY_ALIAS_REPAIR)["DISPOSITION"];
-	actor: string;
-	reason: string;
-	maintainerAuthorization: string;
-	signal?: AbortSignal;
-}
-
 /** Raw audited native record; Pi relays it verbatim and never reinterprets it. */
 export interface NativeReviewRecoveryResult { record: Record<string, unknown>; }
 
 // Net-new negotiated `review.repair` (contract v2). `repair(request)` always
 // runs a `--mode preflight` first; only an eligible assessment is ever
 // executed, using the exact provider_inputs that assessment published — Pi's
-// own NATIVE_REVIEW_LEGACY_ALIAS_REPAIR constants are never a source, only a
+// own constants are never a source, only a
 // disagreement check (Design Decision #6, migrate-review-integration-v2).
 export interface NativeReviewRepairRequest {
 	cwd: string;
@@ -488,57 +429,6 @@ export interface NativeReviewUnachievableLensCaptureArtifact {
 // gentle-pi#638 fail-open capability gate: `review capture-unachievable` is younger than every released binary pinned in NATIVE_CLI_CONTRACTS, so the verb is gated invocation-adjacent instead of by a capability row. An older binary renders Go's exact `unknown review command "capture-unachievable"` refusal (internal/cli/review_facade.go) on stderr with no stdout, so the invocation rejects before any decode and the captured diagnostics are the only place that text survives. Every other failure -- a typed binding-mismatch refusal, a timeout, a decode failure -- is a real outcome the caller must surface, never a capability signal. Duck-typed on purpose: the classifier must survive a duplicated module instance exactly like the error it inspects.
 const NATIVE_REVIEW_UNKNOWN_UNACHIEVABLE_VERB_REFUSAL = /unknown review command "capture-unachievable"/;
 
-// A provider older than START lens selection refuses the STATUS preflight
-// flags with this exact typed preflight cause, before reading the repository.
-const NATIVE_REVIEW_UNKNOWN_LENS_FLAG_CAUSE = /^flag provided but not defined: -lenses(?:-reason)?$/;
-
-// A provider older than gentle-ai#6088 refuses the STATUS opt-in with this
-// exact typed preflight cause, before reading the repository.
-const NATIVE_REVIEW_UNKNOWN_NON_BLOCKING_FLAG_CAUSE = /^flag provided but not defined: -non-blocking-findings$/;
-
-/** Reports a not-started STATUS refusal caused only by an unknown --non-blocking-findings flag. */
-function isNativeReviewNonBlockingFindingsUnsupported(error: unknown): boolean {
-	if (!(error instanceof NativeReviewIntegrationError)) return false;
-	const failure = error.failureEnvelope;
-	return failure.code === "invalid_request" && failure.mutationOutcome === "not_started" &&
-		typeof failure.cause === "string" && NATIVE_REVIEW_UNKNOWN_NON_BLOCKING_FLAG_CAUSE.test(failure.cause);
-}
-
-// Provider binaries (executable path to its sha256) that refused
-// --non-blocking-findings in this process. A replaced binary at the same path
-// has another digest and is asked again. Never a capability claim.
-const nonBlockingFindingsRefusals = new Map<string, string>();
-
-function nonBlockingFindingsRefused(executable: string): boolean {
-	const digest = nonBlockingFindingsRefusals.get(executable);
-	if (digest === undefined) return false;
-	try {
-		return binaryDigest(executable) === digest;
-	} catch {
-		return false;
-	}
-}
-
-function nonBlockingExecutableDigest(executable: string): string | undefined {
-	try { return binaryDigest(executable); } catch { return undefined; }
-}
-
-function rememberNonBlockingFindingsRefusal(executable: string, digest: string | undefined): void {
-	// An old in-flight refusal must neither label a replacement unsupported
-	// nor erase a newer request's cache entry when identity cannot be read.
-	if (digest !== undefined && nonBlockingExecutableDigest(executable) === digest) {
-		nonBlockingFindingsRefusals.set(executable, digest);
-	}
-}
-
-/** Reports a not-started STATUS refusal caused only by an unknown --lenses flag. */
-export function isNativeReviewLensSelectionUnsupported(error: unknown): boolean {
-	if (!(error instanceof NativeReviewIntegrationError)) return false;
-	const failure = error.failureEnvelope;
-	return failure.code === "invalid_request" && failure.mutationOutcome === "not_started" &&
-		typeof failure.cause === "string" && NATIVE_REVIEW_UNKNOWN_LENS_FLAG_CAUSE.test(failure.cause);
-}
-
 function nativeLensSelectionArguments(request: NativeLensSelectionRequest): readonly string[] {
 	if (request.lenses === undefined && request.lensesReason === undefined) return [];
 	if (request.lenses === undefined || request.lenses.length === 0 || request.lensesReason === undefined) throw new TypeError("Native lens selection requires lenses and lensesReason together");
@@ -640,9 +530,9 @@ export interface NativeTargetStatusRequest extends NativeUntrackedSelectionReque
 	/**
 	 * Ask the provider for the opt-in `non_blocking_findings` of a compact
 	 * correction_required or escalated authority (`--non-blocking-findings`,
-	 * gentle-ai#6088). Sent only on this client's own contracted STATUS. A
-	 * provider that refuses the unknown flag is asked once more without it, and
-	 * that binary is not sent the flag again in this process.
+	 * gentle-ai#6088). Sent only on this client's own contracted STATUS. The
+	 * minimum supported provider (gentle-ai v4.6.0) always understands the flag,
+	 * so a refusal of it is an ordinary failure and is never retried.
 	 */
 	nonBlockingFindings?: true;
 	signal?: AbortSignal;
@@ -918,14 +808,14 @@ const NATIVE_START_ACTION_VALUES = Object.values(NATIVE_START_ACTION);
 const ORGANIC_PARITY_DARK = { mode: false, riskEvidence: false, hint: false, delivery: false } as const;
 
 export const NATIVE_CLI_CONTRACTS = Object.freeze({
-	"2.1.4": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: false, inventory: false, reclaim: false, recover: false, abandon: false, quarantineLegacy: false, reconcileAuthority: false, repairLegacyAlias: false, ...ORGANIC_PARITY_DARK }),
-	"2.1.5": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: false, recover: false, abandon: false, quarantineLegacy: false, reconcileAuthority: false, repairLegacyAlias: false, ...ORGANIC_PARITY_DARK }),
-	"2.1.6": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: false, recover: false, abandon: false, quarantineLegacy: false, reconcileAuthority: false, repairLegacyAlias: false, ...ORGANIC_PARITY_DARK }),
-	"2.1.7": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: false, recover: false, abandon: false, quarantineLegacy: false, reconcileAuthority: false, repairLegacyAlias: false, ...ORGANIC_PARITY_DARK }),
-	"2.1.8": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: false, quarantineLegacy: false, reconcileAuthority: true, repairLegacyAlias: false, ...ORGANIC_PARITY_DARK }),
-	"2.1.9": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: false, ...ORGANIC_PARITY_DARK }),
-	"2.1.10": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, ...ORGANIC_PARITY_DARK }),
-	"2.1.11": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, ...ORGANIC_PARITY_DARK }),
+	"2.1.4": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: false, inventory: false, reclaim: false, recover: false, abandon: false, ...ORGANIC_PARITY_DARK }),
+	"2.1.5": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: false, recover: false, abandon: false, ...ORGANIC_PARITY_DARK }),
+	"2.1.6": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: false, recover: false, abandon: false, ...ORGANIC_PARITY_DARK }),
+	"2.1.7": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: false, recover: false, abandon: false, ...ORGANIC_PARITY_DARK }),
+	"2.1.8": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: false, ...ORGANIC_PARITY_DARK }),
+	"2.1.9": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, ...ORGANIC_PARITY_DARK }),
+	"2.1.10": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, ...ORGANIC_PARITY_DARK }),
+	"2.1.11": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, ...ORGANIC_PARITY_DARK }),
 	// First capability-true row, paired with the triple pin bump in this same
 	// commit as Design Decision #1 requires.
 	//
@@ -946,7 +836,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// needs the negotiated start envelope extended upstream, which moves a
 	// byte-pinned fixture and therefore belongs to a gentle-ai release, not to
 	// a Pi capability flip.
-	"2.2.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.2.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// 2.2.1 repeats 2.2.0 because the wire did not move for the lane Pi speaks.
 	// v2.2.1 advertises capabilities/v1.5 (protocol minor 5) on
 	// review-integration/v1, but the negotiated start envelope is still the
@@ -954,16 +844,16 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// they are dark on 2.2.0. The release does publish a second contract,
 	// review-integration/v2, whose `start/v3` carries base/candidate trees --
 	// but Pi does not negotiate it yet, and a row must describe the lane in use.
-	"2.2.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.2.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// 2.2.2 repeats 2.2.1 for the same reason, confirmed against the released
 	// v2.2.2 binary rather than assumed: on review-integration/v1 it still
 	// advertises capabilities/v1.5 and the negotiated start envelope is still
 	// the closed `start/v2`, so riskEvidence and hint still cannot arrive.
-	"2.2.2": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.2.2": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// Ground-truthed against the released v2.2.3 binary: the v2 lane remains
 	// protocol 2.0 with the same operation set and closed START fields consumed
 	// by Pi, so the existing capability columns are unchanged.
-	"2.2.3": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.2.3": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// Ground-truthed against the released v2.4.0 binary: the v2 lane advertises
 	// capabilities/v2.2 and answers status/v5 and consent/v3, all of which the
 	// existing decoders already read, and the START envelope Pi consumes is
@@ -973,7 +863,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// envelope reports, not whether it reports it. v2.2.4 and v2.3.0 shipped
 	// while Pi stayed on 2.2.3; they were never pinned or probed, so they get
 	// no row.
-	"2.4.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.4.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// Ground-truthed by driving the exact v2.5.0-rc.3 tagged build through the
 	// gentle-ai-bench driven journey corpus (exit 0), which exercises the
 	// start/status/capture/validate/mode/delivery lifecycles Pi consumes. The
@@ -982,7 +872,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// fields Pi consumes are unchanged, so the columns match the 2.4.0 row.
 	// riskEvidence and hint stay dark: still not proven to reach the
 	// negotiated path Pi reads.
-	"2.5.0-rc.3": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.5.0-rc.3": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// Ground-truthed against the published v2.5.0 binary installed from its
 	// signed archive: `review capabilities` on the v2 lane advertises
 	// capabilities/v2.4 (protocol minor 4) and answers status/v6, consent/v3,
@@ -990,7 +880,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// The closed fields Pi consumes did not change between rc.3 and stable, so
 	// the columns match the 2.5.0-rc.3 row. riskEvidence and hint stay dark:
 	// still not proven to reach the negotiated START path Pi reads.
-	"2.5.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.5.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// Ground-truthed against the published v2.6.0 binary installed from its
 	// signed archive: `review capabilities` on the v2 lane advertises
 	// capabilities/v2.5 (protocol minor 5) and answers status/v7, consent/v3,
@@ -1005,7 +895,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// proven to reach the negotiated START path Pi reads. The closed fields Pi
 	// consumes did not change between 2.5.0 and 2.6.0, so the columns match
 	// the 2.5.0 row.
-	"2.6.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.6.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// Ground-truthed against the published v2.7.0 binary installed from its
 	// signed archive: `review capabilities` on the v2 lane still advertises
 	// capabilities/v2.5 (protocol minor 5) and answers status/v7, consent/v3,
@@ -1017,19 +907,19 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// they have on every row since 2.2.0: still not proven to reach the
 	// negotiated START path Pi reads. The closed fields Pi consumes did not
 	// change between 2.6.0 and 2.7.0, so the columns match the 2.6.0 row.
-	"2.7.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.7.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// Ground-truthed against the published v2.8.0 linux/amd64 binary from its
 	// signed release archive. The v2 lane still advertises capabilities/v2.5
 	// (protocol minor 5) with status/v7, consent/v3, and start/v4 schemas.
 	// The closed fields Pi consumes did not change between 2.7.0 and 2.8.0,
 	// so this row repeats 2.7.0. riskEvidence and hint remain dark because
 	// neither is proven to reach the negotiated START path Pi consumes.
-	"2.8.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.8.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v2.8.1 only changed runtime telemetry model attribution (gentle-ai#4536);
 	// the closed fields Pi consumes did not change between 2.8.0 and 2.8.1, so
 	// this row repeats 2.8.0 exactly. riskEvidence and hint remain dark
 	// because neither is proven to reach the negotiated START path Pi consumes.
-	"2.8.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.8.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v2.8.2 shipped OpenCode SDD preflight plugin fixes, community-tools RTK
 	// acquisition, and Claude Code Stop telemetry. The provider contract semver
 	// stays 1.2.0; the same pin re-mirrors bundle bytes that had drifted under
@@ -1038,7 +928,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// those touch the closed START/STATUS fields this row negotiates, so it
 	// repeats 2.8.1 exactly. riskEvidence and hint remain dark because neither
 	// is proven to reach the negotiated START path Pi consumes.
-	"2.8.2": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.8.2": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v2.9.0 shipped RTK opt-in Community Tool integration (#4560, installer/
 	// sync/TUI only), SDD attempt-ledger fixes (#4564, #4567, #4569 — the
 	// remediation pointer is now decided by chain equality before shape, and
@@ -1051,7 +941,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// this row negotiates, so it repeats 2.8.2 exactly. riskEvidence and hint
 	// remain dark because neither is proven to reach the negotiated START
 	// path Pi consumes.
-	"2.9.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.9.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v2.9.1 shipped restoring compatible OpenCode review consent (#4584) and
 	// deriving Claude Code SDD dispatch authority from the session transcript
 	// (#4575, #4551). Ground-truthed by diffing contracts/review-integration/v2
@@ -1060,7 +950,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// the closed START/STATUS fields this row negotiates, so it repeats 2.9.0
 	// exactly. riskEvidence and hint remain dark because neither is proven to
 	// reach the negotiated START path Pi consumes.
-	"2.9.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"2.9.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v3.0.0 shipped ODD as the orchestrator's mandatory default protocol and
 	// integrated the simplified SDD workflow into it (gentle-ai #4642, #4644),
 	// with the provider contract byte-frozen at 1.2.0. Ground-truthed by
@@ -1070,7 +960,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// the closed START/STATUS fields this row negotiates, so it repeats 2.9.1
 	// exactly. riskEvidence and hint remain dark because neither is proven to
 	// reach the negotiated START path Pi consumes.
-	"3.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"3.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v3.0.1 moved the Go module path to github.com/gentleman-programming/gentle-ai/v3
 	// with no contract change (gentle-ai #4683). Ground-truthed by diffing
 	// contracts/review-integration/v2 and contracts/review-provider-contract
@@ -1078,7 +968,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// bytes changed. This row repeats 3.0.0 (and 2.9.1) exactly. riskEvidence
 	// and hint remain dark because neither is proven to reach the negotiated
 	// START path Pi consumes.
-	"3.0.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"3.0.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v3.1.0 changed the ODD orchestrator contract only (gentle-ai #4714).
 	// Ground-truthed by diffing contracts/review-integration/v2 and
 	// contracts/review-provider-contract between the v3.0.2 and v3.1.0 tags
@@ -1087,7 +977,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// this row negotiates, so it repeats 3.0.1 exactly. riskEvidence and hint
 	// remain dark because neither is proven to reach the negotiated START
 	// path Pi consumes.
-	"3.1.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"3.1.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v3.2.1 changed the ODD orchestrator contract only (gentle-ai #4714
 	// follow-up). Ground-truthed by diffing contracts/review-integration/v2 and
 	// contracts/review-provider-contract between the v3.1.0 and v3.2.1 tags
@@ -1096,7 +986,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// this row negotiates, so it repeats 3.1.0 exactly. riskEvidence and hint
 	// remain dark because neither is proven to reach the negotiated START
 	// path Pi consumes.
-	"3.2.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"3.2.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v3.4.0 (gentle-pi never pinned the intervening v3.3.0 tag, so it gets no
 	// row here) added capabilities/v2.6 and status/v8-v9, and extended
 	// `review assess` with review_due/review_due_reason/next_transition
@@ -1110,65 +1000,65 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// fields this row negotiates, so it repeats 3.2.1 exactly. riskEvidence
 	// and hint remain dark because neither is proven to reach the negotiated
 	// START path Pi consumes.
-	"3.4.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"3.4.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v3.5.0 repeats 3.4.0: the published provider contract bundle is
 	// byte-identical at 1.2.0, both binaries advertise capabilities/v2.6
 	// with only build-identity differences, and no review-integration schema
 	// changed. The v2 preflight failure identity fix does not change the
 	// closed START/STATUS fields this row negotiates. riskEvidence and hint
 	// remain dark; neither is proven to reach Pi's negotiated START path.
-	"3.5.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"3.5.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v3.6.0 repeats 3.5.0: the published provider contract bundle is
 	// byte-identical at 1.2.0, both binaries advertise capabilities/v2.6
 	// with only build-identity differences, and no review-integration schema
 	// changed between the v3.5.0 and v3.6.0 tags. riskEvidence and hint
 	// remain dark; neither is proven to reach Pi's negotiated START path.
-	"3.6.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"3.6.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v3.6.1 repeats 3.6.0: published provider-contract archives are byte-identical
 	// (SHA-256 547b68e172cc87aa297309d61624e5fc2c24d407a494b53eeb5a2b053904352c).
 	// The published v3.6.1 binary advertises capabilities/v2.6, and the tag diff
 	// changes no review-integration schema or capability source. riskEvidence and
 	// hint remain dark because neither is proven in Pi's negotiated START path.
-	"3.6.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"3.6.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v3.7.0 repeats 3.6.1: the published provider-contract tar remains SHA-256
 	// 547b68e172cc87aa297309d61624e5fc2c24d407a494b53eeb5a2b053904352c
 	// at contract 1.2.0. No new negotiated capability is asserted.
-	"3.7.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"3.7.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v4.0.0 repeats 3.7.0: the published provider-contract tar remains SHA-256
 	// 547b68e172cc87aa297309d61624e5fc2c24d407a494b53eeb5a2b053904352c
 	// at contract 1.2.0, and the published binary still advertises
 	// capabilities/v2.6 under review-integration/v2. The Go module path moved
 	// to /v4 without a review-integration/v2 change. No new negotiated
 	// capability is asserted.
-	"4.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"4.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v4.1.1 repeats 4.0.0: the published binary still advertises
 	// capabilities/v2.6 under review-integration/v2. The provider contract moved
 	// from 1.2.0 to 1.3.0 (additive agent lens selection, gentle-ai#5348), with
 	// published tarball SHA-256
 	// b04b6b75d1a446c942a816fbf92932d16f8c3d3001f93159dee2a92bbf2ebe44.
 	// No new negotiated capability identity is asserted.
-	"4.1.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"4.1.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v4.2.0 repeats 4.1.1: the published binary still advertises
 	// capabilities/v2.6 under review-integration/v2. The provider contract moved
 	// from 1.3.0 to 1.4.0 (routing/pi.md, gentle-ai#5536), with published
 	// tarball SHA-256
 	// 9d2927a84ba9a596f69029e3f854b16f86ca4c8b32cc5d63683764ccf2fb394b.
 	// No new negotiated capability identity is asserted.
-	"4.2.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"4.2.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v4.3.1 repeats 4.2.0: the published binary still advertises
 	// capabilities/v2.6 under review-integration/v2, and the provider contract
 	// stays at 1.4.0, with published tarball SHA-256
 	// 58450471280aeb357443d6a28c819132d8c8eb78dd25b12bac64296b2f8c27c2.
 	// The v4.3.0 tag has no release and is never pinned.
 	// No new negotiated capability identity is asserted.
-	"4.3.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"4.3.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v4.4.0 repeats 4.3.1: the published binary still advertises
 	// capabilities/v2.6 under review-integration/v2 with the same capabilities
 	// payload apart from build identity, and the provider contract stays at
 	// 1.4.0, with published tarball SHA-256
 	// 58450471280aeb357443d6a28c819132d8c8eb78dd25b12bac64296b2f8c27c2.
 	// No new negotiated capability identity is asserted.
-	"4.4.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"4.4.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v4.5.0 repeats 4.4.0: the published binary still advertises
 	// capabilities/v2.6 (protocol minor 6) under review-integration/v2, and the
 	// provider contract moved from 1.4.0 to 1.5.0 additively (one stop reason,
@@ -1178,14 +1068,14 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// on the released darwin/arm64 v4.5.0 binary reports schema
 	// gentle-ai.review-integration.capabilities/v2.6 with protocol minor 6.
 	// No new negotiated capability identity is asserted.
-	"4.5.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"4.5.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// The published darwin/arm64 v4.6.0 binary still advertises capabilities/v2.6
 	// (protocol minor 6) under review-integration/v2. The CLI contract artifacts
 	// are unchanged from v4.5.0. Separately, the provider bundle moved from
 	// 1.5.0 to 1.6.0; the published archive (SHA-256
 	// af87572ac591c005941c898957f4084bd3c38e1afe2fe794e2f308be714096a6)
 	// matches Shell's existing 1.6.0 mirror byte-for-byte.
-	"4.6.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, quarantineLegacy: true, reconcileAuthority: true, repairLegacyAlias: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	"4.6.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 export interface NativeReviewProcessDiagnostics {
@@ -1425,12 +1315,6 @@ function decodeNativeMaintenanceResult(value: unknown, expectedOperation: Native
 	if (body.operation !== expectedOperation) throw new Error("wrong native maintenance discriminator");
 	return { record: object(body.record) };
 }
-function decodeLegacyReconcileAudit(value: unknown): NativeReviewRecoveryResult {
-	const record = exactObject(value, ["schema", "predecessor_lineage", "successor_lineage", "outcome"]);
-	if (record.schema !== "gentle-ai.review-reconcile-audit/v1") throw new Error("wrong legacy reconcile audit schema");
-	for (const field of ["predecessor_lineage", "successor_lineage", "outcome"]) requiredString(record[field]);
-	return { record };
-}
 // Unimplemented next_transition.execute.operation values must never reach
 // argv synthesis. Checked against the raw pre-decode body so an operation
 // gentle-pi does not implement (e.g. a future `dispose-result`) fails with a
@@ -1449,7 +1333,11 @@ function assertSupportedNextTransitionOperation(body: Record<string, unknown>): 
 	}
 }
 function decode<T>(operation: NativeReviewOperation, mutating: boolean, callback: () => T, diagnostics = nativeProcessDiagnostics(operation, NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE)): T {
-	try { return measureStatusSync("decode", callback); } catch (error) { if (error instanceof NativeReviewCliError) throw error; throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE, operation, true, mutating, "native response is schema incompatible", { ...diagnostics, error_code: NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE }); }
+	try { return measureStatusSync("decode", callback); } catch (error) {
+		if (error instanceof NativeReviewCliError) throw error;
+		// An older-than-pinned native contract names the minimum instead of an opaque schema failure.
+		if (error instanceof ReviewNativeContractTooOldError) throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, operation, true, mutating, error.message, { ...diagnostics, error_code: NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE });
+		throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE, operation, true, mutating, "native response is schema incompatible", { ...diagnostics, error_code: NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE }); }
 }
 function decodeReviewStartResponse(value: unknown): ReviewStartV3 | ReviewStartV4 {
 	const body = object(value);
@@ -1747,7 +1635,7 @@ class NativeReviewPlainCli {
 		if (result.outputLimitExceeded) throw nativeError(NATIVE_REVIEW_ERROR_CODE.OUTPUT_LIMIT, operation, mutating, "native process output exceeded limit", result, true, undefined, this.maxBufferBytes);
 		if (result.timedOut) throw nativeError(NATIVE_REVIEW_ERROR_CODE.TIMEOUT, operation, mutating, "native process timed out", result);
 		if (result.signal) throw nativeError(NATIVE_REVIEW_ERROR_CODE.SIGNAL, operation, mutating, "native process was signalled", result);
-		const maintenancePartialFailure = new Set<NativeReviewOperation>([NATIVE_REVIEW_OPERATION.ABANDON, NATIVE_REVIEW_OPERATION.QUARANTINE_LEGACY, NATIVE_REVIEW_OPERATION.RECONCILE_AUTHORITY, NATIVE_REVIEW_OPERATION.REPAIR_LEGACY_ALIAS]).has(operation) && result.exitCode !== 0;
+		const maintenancePartialFailure = new Set<NativeReviewOperation>([NATIVE_REVIEW_OPERATION.ABANDON]).has(operation) && result.exitCode !== 0;
 		const toleratedNotice = stderrIsTolerated(result.stderr, toleratedStderr);
 		if (result.exitCode !== 0 && !maintenancePartialFailure) throw nativeError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, operation, mutating, "native process failed", result);
 		if (result.stderr.trim().length > 0 && !maintenancePartialFailure && !toleratedNotice) throw nativeError(NATIVE_REVIEW_ERROR_CODE.UNEXPECTED_STDERR, operation, mutating, "native process wrote stderr", result);
@@ -1843,79 +1731,6 @@ class NativeReviewPlainCli {
 		if (execution.exitCode !== 0) throw nativeError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, NATIVE_REVIEW_OPERATION.ABANDON, true, "native authority abandonment partially failed", execution.process, true, result.record);
 		return result;
 	}
-
-	async quarantineLegacy(request: NativeReviewLegacyQuarantineRequest): Promise<NativeReviewRecoveryResult> {
-		for (const [name, value] of [["repository", request.repository], ["lineage", request.lineage], ["expectedRevision", request.expectedRevision], ["actor", request.actor], ["reason", request.reason]] as const) {
-			if (!isCanonicalProcessString(value)) throw new TypeError(`Native QUARANTINE_LEGACY ${name} must be a non-empty, trimmed, NUL-free string`);
-		}
-		if (request.diagnostic !== NATIVE_REVIEW_LEGACY_QUARANTINE.DIAGNOSTIC || request.disposition !== NATIVE_REVIEW_LEGACY_QUARANTINE.DISPOSITION) throw new TypeError("Native QUARANTINE_LEGACY supports only the published malformed freeze-findings diagnostic and disposition");
-		if (request.maintainerAuthorization !== nativeReviewLegacyQuarantineAuthorization(request)) throw new TypeError("Native QUARANTINE_LEGACY maintainerAuthorization must match the exact repository, lineage, revision, diagnostic, disposition, actor, and reason binding");
-		const execution = await this.execute(NATIVE_REVIEW_OPERATION.QUARANTINE_LEGACY, request.cwd, [
-			"review", "quarantine-legacy", "--cwd", request.cwd,
-			"--lineage", request.lineage,
-			"--expected-revision", request.expectedRevision,
-			"--diagnostic", request.diagnostic,
-			"--disposition", request.disposition,
-			"--actor", request.actor,
-			"--reason", request.reason,
-			"--maintainer-authorization", request.maintainerAuthorization,
-		], true, request.signal);
-		const result = decode(NATIVE_REVIEW_OPERATION.QUARANTINE_LEGACY, true, () => decodeNativeMaintenanceResult(execution.body, NATIVE_REVIEW_OPERATION.QUARANTINE_LEGACY));
-		if (execution.exitCode !== 0) throw nativeError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, NATIVE_REVIEW_OPERATION.QUARANTINE_LEGACY, true, "native legacy quarantine partially failed", execution.process, true, result.record);
-		return result;
-	}
-
-	async reconcileAuthority(request: NativeReviewReconcileAuthorityRequest): Promise<NativeReviewRecoveryResult> {
-		for (const [name, value] of [
-			["predecessorLineage", request.predecessorLineage],
-			["expectedPredecessorRevision", request.expectedPredecessorRevision],
-			["successorLineage", request.successorLineage],
-			["expectedSuccessorRevision", request.expectedSuccessorRevision],
-			["actor", request.actor],
-			["reason", request.reason],
-		] as const) {
-			if (!isCanonicalProcessString(value)) throw new TypeError(`Native RECONCILE_AUTHORITY ${name} must be a non-empty, trimmed, NUL-free string`);
-		}
-		if (request.anomalies !== undefined && request.anomalies !== NATIVE_REVIEW_RECONCILE_ANOMALIES.COMBINED) throw new TypeError("Native RECONCILE_AUTHORITY anomalies must use the published unchanged_target,malformed_recovery_authorization ordering");
-		const expectedAuthorization = nativeReviewReconcileAuthorization(request);
-		if (request.maintainerAuthorization !== expectedAuthorization) {
-			throw new TypeError("Native RECONCILE_AUTHORITY maintainerAuthorization must match the exact target and revision binding");
-		}
-		const execution = await this.execute(NATIVE_REVIEW_OPERATION.RECONCILE_AUTHORITY, request.cwd, [
-			"review", "reconcile-authority", "--cwd", request.cwd,
-			"--predecessor-lineage", request.predecessorLineage,
-			"--expected-predecessor-revision", request.expectedPredecessorRevision,
-			"--successor-lineage", request.successorLineage,
-			"--expected-successor-revision", request.expectedSuccessorRevision,
-			"--actor", request.actor,
-			"--reason", request.reason,
-			"--maintainer-authorization", request.maintainerAuthorization,
-		], true, request.signal);
-		const result = decode(NATIVE_REVIEW_OPERATION.RECONCILE_AUTHORITY, true, () => decodeNativeMaintenanceResult(execution.body, NATIVE_REVIEW_OPERATION.RECONCILE_AUTHORITY));
-		if (execution.exitCode !== 0) throw nativeError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, NATIVE_REVIEW_OPERATION.RECONCILE_AUTHORITY, true, "native authority reconciliation partially failed", execution.process, true, result.record);
-		return result;
-	}
-
-	async repairLegacyAlias(request: NativeReviewLegacyAliasRepairRequest): Promise<NativeReviewRecoveryResult> {
-		for (const [name, value] of [["repository", request.repository], ["lineage", request.lineage], ["expectedRevision", request.expectedRevision], ["actor", request.actor], ["reason", request.reason]] as const) {
-			if (!isCanonicalProcessString(value)) throw new TypeError(`Native REPAIR_LEGACY_ALIAS ${name} must be a non-empty, trimmed, NUL-free string`);
-		}
-		if (request.diagnostic !== NATIVE_REVIEW_LEGACY_ALIAS_REPAIR.DIAGNOSTIC || request.disposition !== NATIVE_REVIEW_LEGACY_ALIAS_REPAIR.DISPOSITION) throw new TypeError("Native REPAIR_LEGACY_ALIAS supports only the published historical alias diagnostic and disposition");
-		if (request.maintainerAuthorization !== nativeReviewLegacyAliasRepairAuthorization(request)) throw new TypeError("Native REPAIR_LEGACY_ALIAS maintainerAuthorization must match the exact repository, lineage, revision, diagnostic, disposition, actor, and reason binding");
-		const execution = await this.execute(NATIVE_REVIEW_OPERATION.REPAIR_LEGACY_ALIAS, request.cwd, [
-			"review", "repair-legacy-alias", "--cwd", request.cwd,
-			"--lineage", request.lineage,
-			"--expected-revision", request.expectedRevision,
-			"--diagnostic", request.diagnostic,
-			"--disposition", request.disposition,
-			"--actor", request.actor,
-			"--reason", request.reason,
-			"--maintainer-authorization", request.maintainerAuthorization,
-		], true, request.signal);
-		const result = decode(NATIVE_REVIEW_OPERATION.REPAIR_LEGACY_ALIAS, true, () => decodeNativeMaintenanceResult(execution.body, NATIVE_REVIEW_OPERATION.REPAIR_LEGACY_ALIAS));
-		if (execution.exitCode !== 0) throw nativeError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, NATIVE_REVIEW_OPERATION.REPAIR_LEGACY_ALIAS, true, "native historical alias repair partially failed", execution.process, true, result.record);
-		return result;
-	}
 }
 
 export function nativeReviewAbandonAuthorization(request: Pick<NativeReviewAbandonRequest, "lineage" | "expectedRevision" | "snapshotIdentity" | "capturedLensResults" | "findingsPresent" | "actor" | "reason">): string {
@@ -1936,19 +1751,6 @@ export function nativeReviewAbandonAuthorization(request: Pick<NativeReviewAband
 		`captured_lens_results=${request.capturedLensResults.join(",")}`,
 		`findings_present=${request.findingsPresent}`,
 		`actor=${request.actor.trim()}`,
-	].join("\n");
-}
-
-export function nativeReviewLegacyQuarantineAuthorization(request: Pick<NativeReviewLegacyQuarantineRequest, "repository" | "lineage" | "expectedRevision" | "diagnostic" | "disposition" | "actor" | "reason">): string {
-	return [
-		"gentle-ai.review-legacy-quarantine-authorization/v1",
-		`repository=${request.repository}`,
-		`lineage=${request.lineage}`,
-		`revision=${request.expectedRevision}`,
-		`diagnostic=${request.diagnostic}`,
-		`disposition=${request.disposition}`,
-		`actor=${request.actor}`,
-		`reason=${request.reason}`,
 	].join("\n");
 }
 
@@ -1975,32 +1777,6 @@ export function nativeReviewRecoverAuthorization(request: Pick<NativeReviewRecov
 		`target_identity=${request.targetIdentity}`,
 		`actor=${request.actor.trim()}`,
 		`reason=${request.reason.trim()}`,
-	].join("\n");
-}
-
-export function nativeReviewReconcileAuthorization(request: Pick<NativeReviewReconcileAuthorityRequest, "predecessorLineage" | "expectedPredecessorRevision" | "successorLineage" | "expectedSuccessorRevision" | "actor" | "reason" | "anomalies">): string {
-	return [
-		"gentle-ai.review-reconcile-authorization/v1",
-		`predecessor_lineage=${request.predecessorLineage}`,
-		`predecessor_revision=${request.expectedPredecessorRevision}`,
-		`successor_lineage=${request.successorLineage}`,
-		`successor_revision=${request.expectedSuccessorRevision}`,
-		`actor=${request.actor}`,
-		`reason=${request.reason}`,
-		...(request.anomalies === NATIVE_REVIEW_RECONCILE_ANOMALIES.COMBINED ? [`anomalies=${request.anomalies}`] : []),
-	].join("\n");
-}
-
-export function nativeReviewLegacyAliasRepairAuthorization(request: Pick<NativeReviewLegacyAliasRepairRequest, "repository" | "lineage" | "expectedRevision" | "diagnostic" | "disposition" | "actor" | "reason">): string {
-	return [
-		"gentle-ai.review-legacy-alias-repair-authorization/v1",
-		`repository=${request.repository}`,
-		`lineage=${request.lineage}`,
-		`revision=${request.expectedRevision}`,
-		`diagnostic=${request.diagnostic}`,
-		`disposition=${request.disposition}`,
-		`actor=${request.actor}`,
-		`reason=${request.reason}`,
 	].join("\n");
 }
 
@@ -2384,15 +2160,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		const lensSelection = request.lenses === undefined && request.lensesReason === undefined
 			? {}
 			: { lenses: request.lenses, lensesReason: request.lensesReason };
-		let status: ReviewStatusV3;
-		try {
-			status = await this.targetStatus({ ...statusRequest, ...lensSelection });
-		} catch (error) {
-			// Phase A: a provider that predates lens selection still reviews,
-			// with the tier default, instead of refusing the candidate.
-			if (Object.keys(lensSelection).length === 0 || !isNativeReviewLensSelectionUnsupported(error)) throw error;
-			status = await this.targetStatus(statusRequest);
-		}
+		const status: ReviewStatusV3 = await this.targetStatus({ ...statusRequest, ...lensSelection });
 		const transition = status.nextTransition?.kind === "execute" && status.nextTransition.execute?.operation === "review.start"
 			? status.nextTransition.execute
 			: undefined;
@@ -2559,11 +2327,9 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			}
 		}
 		// The opt-in rides only this client's own contracted STATUS, never a
-		// provider-issued selection submission.
-		const nonBlockingExecutable = request.nonBlockingFindings === true && submittedTokens === undefined
-			? contextExecutable ?? measureStatusSync("resolution", () => this.executablePath(NATIVE_REVIEW_OPERATION.STATUS, false))
-			: undefined;
-		const statusArguments = (nonBlockingFindings: boolean) => submittedTokens === undefined ? [
+		// provider-issued selection submission. gentle-ai v4.6.0 (the minimum
+		// supported binary) always understands --non-blocking-findings.
+		const statusArguments = submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
 			"--projection", request.projection ?? "workspace",
 			...nativeUntrackedSelectionArguments(selection),
@@ -2572,24 +2338,12 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			...nativeLensSelectionArguments(request),
 			...requestContextArguments,
-			...(nonBlockingFindings ? ["--non-blocking-findings"] : []),
+			...(request.nonBlockingFindings === true ? ["--non-blocking-findings"] : []),
 			"--next-transition",
 		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments];
-		const executable = nonBlockingExecutable ?? contextExecutable;
-		const run = (nonBlockingFindings: boolean) => executable === undefined
-			? this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments(nonBlockingFindings), false, request.signal)
-			: this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments(nonBlockingFindings), false, request.signal, executable);
-		const sendNonBlocking = nonBlockingExecutable !== undefined && !nonBlockingFindingsRefused(nonBlockingExecutable);
-		const nonBlockingDigest = sendNonBlocking ? nonBlockingExecutableDigest(nonBlockingExecutable!) : undefined;
-		let execution: NegotiatedExecution;
-		try {
-			execution = await run(sendNonBlocking);
-		} catch (error) {
-			// Only the unknown-flag refusal falls back, once; every other failure is the caller's.
-			if (!sendNonBlocking || !isNativeReviewNonBlockingFindingsUnsupported(error)) throw error;
-			rememberNonBlockingFindingsRefusal(nonBlockingExecutable!, nonBlockingDigest);
-			execution = await run(false);
-		}
+		const execution: NegotiatedExecution = contextExecutable === undefined
+			? await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal)
+			: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);
 		measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
 		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));
 	}
@@ -2846,20 +2600,24 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 	abandon(request: NativeReviewAbandonRequest): Promise<NativeReviewRecoveryResult> {
 		return this.plain.abandon(request);
 	}
-
-	quarantineLegacy(request: NativeReviewLegacyQuarantineRequest): Promise<NativeReviewRecoveryResult> {
-		return this.plain.quarantineLegacy(request);
-	}
-
-	reconcileAuthority(request: NativeReviewReconcileAuthorityRequest): Promise<NativeReviewRecoveryResult> {
-		return this.plain.reconcileAuthority(request);
-	}
-
-	repairLegacyAlias(request: NativeReviewLegacyAliasRepairRequest): Promise<NativeReviewRecoveryResult> {
-		return this.plain.repairLegacyAlias(request);
-	}
 }
 
 export function createNativeReviewCli(adapter?: ExecFileAdapter, executable: string | (() => string) = resolveGentleAiBinary): NativeReviewCli {
 	return new NativeReviewCliV216(adapter ?? createNodeExecFileAdapter(), executable);
+}
+
+/**
+ * gentle-shell#3169: native assess refuses a committed-only range while any
+ * untracked file exists unless the untracked inventory is declared. A base-diff
+ * snapshot never includes untracked files, so excluding them leaves the
+ * assessed range unchanged. The digest comes only from native status; without
+ * it nothing is declared and native keeps deciding.
+ */
+export async function committedRangeUntrackedExclusion(cli: Pick<NativeReviewCli, "targetStatus"> | null | undefined, cwd: string, baseRef: string,
+	signal?: AbortSignal): Promise<{ untrackedScope?: typeof NATIVE_UNTRACKED_SCOPE.EXCLUDE; expectedUntrackedInventory?: string }> {
+	if (!cli?.targetStatus) return {};
+	try {
+		const inventory = (await cli.targetStatus({ cwd, baseRef, committedOnly: true, agent: "pi", ...(signal ? { signal } : {}) })).eligibleUntrackedInventory;
+		return typeof inventory === "string" && inventory ? { untrackedScope: NATIVE_UNTRACKED_SCOPE.EXCLUDE, expectedUntrackedInventory: inventory } : {};
+	} catch { return {}; }
 }

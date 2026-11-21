@@ -21,7 +21,7 @@ Do not create a skill for a one-off task, generic documentation, or rules that b
 
 ## Hard Rules
 
-- Follow `docs/skill-style-guide.md` as the normative source for skill structure and style.
+- Follow `../../docs/skill-style-guide.md` as the normative source for skill structure and style.
 - A skill is an LLM runtime contract, not human-facing docs.
 - Keep `SKILL.md` concise: target 180–450 tokens, max 1000.
 - Use imperative instructions and concrete gates; avoid tutorials and background prose.
@@ -43,7 +43,7 @@ Do not create a skill for a one-off task, generic documentation, or rules that b
 
 ## Execution Steps
 
-1. Read `docs/skill-style-guide.md` before creating or updating skills.
+1. Read `../../docs/skill-style-guide.md` before creating or updating skills.
 2. Inspect existing skills and confirm the new skill does not duplicate one.
 3. Choose a kebab-case skill name that matches the user-facing trigger.
 4. Create or update this structure:
@@ -82,5 +82,5 @@ Return:
 
 ## References
 
-- `docs/skill-style-guide.md` — normative LLM-first skill style guide.
-- `skills/skill-registry/SKILL.md` — registry refresh and indexing contract.
+- `../../docs/skill-style-guide.md` — normative LLM-first skill style guide.
+- `../skill-registry/SKILL.md` — registry refresh and indexing contract.

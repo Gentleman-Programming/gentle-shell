@@ -810,7 +810,9 @@ publishes main builds, so main is built on this computer
      path, never a `tar` from PATH: Git for Windows' MSYS tar in `usr\bin` reads
      a `D:\…` archive path as a remote host and fails with `Cannot connect to D:
      resolve failed`), sets its version to `<version>-main.<sha12>`, removes `prepack` and `prepare`
-     (which would run the full test suite), packs it with `pnpm pack` into
+     (which would run the full test suite), runs `pnpm run build:tower` so the
+     packed tarball includes `web/tower/dist` (otherwise `gentle-shell tower`
+     fails on a main-channel install), packs it with `pnpm pack` into
      `<config home>/main/packages/`, runs `pnpm add -g <tgz> --allow-build=gentle-pi`
      and requires `pnpm list -g` to report that exact version under PNPM_HOME,
      with a Pi at least the minimum beside it.

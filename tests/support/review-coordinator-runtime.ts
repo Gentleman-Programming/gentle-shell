@@ -6,6 +6,7 @@ import { createGentleAiExtension, __testing } from "../../extensions/gentle-ai.t
 import { decodeReviewStatusV3, type ReviewCollectInputV3, type ReviewStatusV3 } from "../../lib/review-integration-v2.ts";
 import type { NativeReviewCli } from "../../lib/native-review-cli.ts";
 import { runReviewHostRelayReviewerGroup, type ReviewHostRelayPreparationRunner, type ReviewHostRelayRequest } from "../../lib/review-host-relay.ts";
+import { statusV9 } from "./status-v9.ts";
 
 type Body = Record<string, any>;
 export interface CoordinatorRuntimeOptions {
@@ -62,7 +63,7 @@ const GROUP_LENSES = ["review-risk", "review-reliability"] as const;
 export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coordinator", options: CoordinatorRuntimeOptions = {}) {
 	cwd = realpathSync(cwd);
 	const scenario = options.scenario ?? "single";
-	const raw = JSON.parse(readFileSync(new URL("../fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
+	const raw = statusV9(JSON.parse(readFileSync(new URL("../fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8")));
 	raw.action = "stop";
 	const reviewing = decodeReviewStatusV3(raw);
 	const lineage = reviewing.authority!.lineageId!;

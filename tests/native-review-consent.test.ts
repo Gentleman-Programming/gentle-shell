@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { GENTLE_AI_VERSION } from "../lib/gentle-ai-binary.ts";
+import { capabilitiesV26 } from "./support/capabilities-v26.ts";
+import { statusV9 } from "./support/status-v9.ts";
 import {
 	NativeReviewCliV216,
 	NativeReviewConsentBindingError,
@@ -17,13 +19,13 @@ const fixture = <T = Record<string, unknown>>(name: string): T => JSON.parse(rea
 const executableDigest = "dcc846103b16d365eaeeb9d7f289c23fc4f2897f23def1cb3fe7f05557b64705";
 
 function capabilities(): Record<string, unknown> {
-	const value = fixture<Record<string, unknown>>("capabilities.fixture.json");
+	const value = capabilitiesV26(fixture<Record<string, unknown>>("capabilities.fixture.json"));
 	(value.package as Record<string, unknown>).version = GENTLE_AI_VERSION;
 	return value;
 }
 
 function unrelatedStatus(targetIdentity: string): Record<string, unknown> {
-	const status = fixture<Record<string, unknown>>("status.fixture.json");
+	const status = statusV9(fixture<Record<string, unknown>>("status.fixture.json"));
 	status.applicability = "unrelated";
 	delete status.receipt;
 	status.action = "start";
@@ -73,7 +75,7 @@ function queuedAdapter(outputs: readonly Record<string, unknown>[]): { adapter: 
 	// V216 no longer probes capabilities before negotiated STATUS. Keep the
 	// historical queue construction below, but discard only its obsolete probe
 	// response so every remaining entry binds the current invocation.
-	const queue = outputs.filter((body) => body.schema !== "gentle-ai.review-integration.capabilities/v2");
+	const queue = outputs.filter((body) => body.schema !== "gentle-ai.review-integration.capabilities/v2.6");
 	const calls: Array<readonly string[]> = [];
 	return {
 		calls,

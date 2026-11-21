@@ -143,7 +143,7 @@ test("assumption challenge and task checks do not activate or duplicate native r
 		// P5b (C5): the injected contract governs how a review starts, runs, and gets consent; tracking keeps the
 		// commit-boundary rules mirrored from routing/pi.md, which the rendered prompt carries nowhere else.
 		"When RDD is enabled, the injected Gentle AI contract governs native review start, execution and consent; this module adds only assessment and commit boundaries.",
-		"A not-due `passive` commit needs no review and the boundary advances; `under_budget` stays pending in the slice until a later commit reaches the budget.",
+		"A not-due `passive` commit needs no review and the boundary advances; `under_budget` stays pending in the slice and never triggers review by itself.",
 		"lower the tier or infer low risk",
 		"When RDD is disabled, do not start or prompt for RDD",
 	]);

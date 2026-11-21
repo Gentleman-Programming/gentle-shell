@@ -19,6 +19,7 @@ import { createSessionProfileBind, createSessionProfileClear, createSessionProfi
 import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { resetFrozenInheritedProfilesForTesting, resolveSessionProfile, sessionProfileRoutingAt } from "../lib/session-profile-freeze.ts";
+import { statusV9 } from "./support/status-v9.ts";
 
 // One-slot capture routing: the host relay runs only when the selected
 // provider-returned collect input carries the --materialize token. Every
@@ -82,7 +83,7 @@ function relayCollectInput(lineageId: string, lens: ReviewArtifactSubjectV2["len
 }
 
 function capturedGroupedStatus(lineageId: string, authorityRevision = SHA): ReviewStatusV3 {
-	const raw = JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8")) as Record<string, unknown>;
+	const raw = statusV9(JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"))) as Record<string, unknown>;
 	// The captured binary's forward-only `finalize` action is not accepted by
 	// this checked-out decoder; retain the v5 capture and normalize only that
 	// unrelated routing action before decoding its provider-owned group.

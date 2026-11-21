@@ -818,7 +818,7 @@ The names are short because Unix socket paths created under `TMPDIR` are limited
 
 ### Review authority recovery and reset safety
 
-Legacy pre-graph authority is never migrated. `gentle_review inspect` reports an exact repository-bound destructive reset challenge for legacy corruption; after that fresh interactive authorization, RESET routes to the audited native `gentle-ai review reclaim` operation and RECOVER routes to native `gentle-ai review recover`, so every destructive transition is executed and audited by the native authority store. Native inputs the request did not carry return a `native-input-required` envelope instead of being invented. Existing graph-v1 ordinary lineages remain readable and gate-validatable but are read-only; Judgment Day remains mutable on graph-v1.
+Legacy pre-graph authority is not supported: its directories must be removed by hand, as the refusal names them. After fresh interactive authorization, RESET routes to the audited native `gentle-ai review reclaim` operation (lineage, actor, reason) and RECOVER routes to native `gentle-ai review recover`, so every destructive transition is executed and audited by the native authority store. Native inputs the request did not carry return a `native-input-required` envelope instead of being invented. Existing graph-v1 ordinary lineages remain readable and gate-validatable but are read-only; Judgment Day remains mutable on graph-v1.
 
 `gentle_review abandon` remains an explicit maintenance route. For `abandon` the caller supplies only lineage, actor, and reason (`operator_disposition` or `retired_schema`). Free-text reasons are rejected locally with both accepted values before any inventory read, approval prompt, or native launch. For a valid reason, Pi freshly reads the native authority inventory, locates the single eligible compact-v2 entry for that lineage, derives its revision, snapshot identity, and discarded-work summary, and displays the exact eight-line `gentle-ai.review-abandon-authorization/v2` binding for fresh interactive approval; inventory-derived fields supplied by the caller are rejected, and the native CLI re-derives non-terminal compact-v2 eligibility and the exact discarded work before accepting it. It requires fresh interactive approval and fails closed headlessly.
 
@@ -937,7 +937,7 @@ Compact ordinary has five states: `reviewing`, `correction_required`, `validatin
 
 The validator cannot change claims, add findings, request fixes, launch actors, or request another attempt. A failed correction escalates instead of opening another review budget.
 
-Compact authority uses content-derived CAS under the Git common directory. Exact retries are idempotent; stale/semantic retries, terminal mutation, and same-lineage graph-v1/compact-v2 ambiguity fail closed.
+Compact authority uses content-derived CAS under the Git common directory. Exact retries are idempotent; stale/semantic retries, and terminal mutation fail closed.
 
 Trust boundary: The local orchestrator and same-user process are trusted to execute selected actors and submit their exact outputs. Native code owns scope, risk, IDs, canonicalization, state, receipts, and gates, and rejects malformed or inconsistent results structurally and causally. Malicious same-user host/process authenticity is a non-goal because that actor can replace the extension or mutate local authority; externally trusted attestation would require a separately privileged signer/service and is not claimed.
 

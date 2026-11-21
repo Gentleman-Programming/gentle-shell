@@ -143,35 +143,6 @@ test("native authority inventory remains a strict read-only maintenance surface"
 	assert.deepEqual(queue.calls[0]?.arguments, ["review", "status", "--cwd", process.cwd()]);
 });
 
-test("negotiated repair replays only provider-published inputs after a strict preflight", async () => {
-	const preflight = JSON.parse(readFileSync(join(process.cwd(), "contracts", "review-integration", "v1", "fixtures", "repair-preflight.fixture.json"), "utf8")) as Record<string, unknown>;
-	preflight.schema = "gentle-ai.review-integration.repair/v2";
-	preflight.contract = "gentle-ai.review-integration/v2";
-	const execute = structuredClone(preflight) as Record<string, unknown>;
-	execute.mode = "execute";
-	delete execute.provider_inputs;
-	execute.required_inputs = [];
-	execute.execution = {
-		status: "committed",
-		class: "legacy_v1_historical_alias",
-		lineage_id: "historical-alias",
-		revision: `sha256:${"1".repeat(64)}`,
-		chain_identity: `sha256:${"2".repeat(64)}`,
-		cause: "unsupported_historical_v1_operation_alias",
-		disposition: "quarantine-approved-historical-alias",
-		assessment_digest: `sha256:${"3".repeat(64)}`,
-		request_digest: `sha256:${"4".repeat(64)}`,
-		record_identity: `sha256:${"5".repeat(64)}`,
-	};
-	const queue = queuedAdapter([{ stdout: JSON.stringify(preflight) }, { stdout: JSON.stringify(execute) }]);
-	const result = await client(queue.adapter).repair({ cwd: "/repo", actor: "maintainer", reason: "repair alias", maintainerAuthorization: "approved" });
-	assert.equal(result.execution?.status, "committed");
-	assert.deepEqual(queue.calls.map((call) => call.arguments.slice(0, 8)), [
-		["review", "repair", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--mode", "preflight"],
-		["review", "repair", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--mode", "execute"],
-	]);
-});
-
 test("native recovery operations reject malformed canonical inputs before a process can mutate", async () => {
 	const queue = queuedAdapter([]);
 	await assert.rejects(() => client(queue.adapter).recover({
@@ -519,17 +490,22 @@ test("destructive maintenance remains UI-gated and derives authorization at the 
 		reclaim: async (request: Record<string, unknown>) => { calls.push(request); return { record: { schema: "gentle-ai.review-reclaim-audit/v1" } }; },
 	} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli;
 	const controller = registeredController(native);
-	const reset = { operation: "reset", input: JSON.stringify({ repositoryId: "repo", commonDirHash: "a".repeat(64), inventoryHash: "b".repeat(64), confirmation: "DESTROY REVIEW AUTHORITY repo", lineage: "stuck", actor: "maintainer", reason: "incomplete" }) };
+	const reset = { operation: "reset", input: JSON.stringify({ lineage: "stuck", actor: "maintainer", reason: "incomplete" }) };
 	await assert.rejects(controller.execute("headless", reset, undefined, undefined, { ...interactiveContext(true), hasUI: false } as ExtensionContext), /interactive Pi UI.*fails closed/i);
 	await assert.rejects(controller.execute("declined", reset, undefined, undefined, interactiveContext(false)), /not explicitly authorized/);
-	const approved = await controller.execute("approved", reset, undefined, undefined, interactiveContext(true));
+	assert.equal(calls.length, 0, "a headless or declined RESET never reaches native reclaim");
+	const prompts: string[] = [];
+	const recording = { ...interactiveContext(true), ui: { ...interactiveContext(true).ui, confirm: async (title: string, body: string) => { prompts.push(`${title}\n${body}`); return true; } } } as ExtensionContext;
+	const approved = await controller.execute("approved", reset, undefined, undefined, recording);
+	assert.equal(prompts.length, 1);
+	assert.match(prompts[0]!, /Lineage: stuck/);
+	assert.match(prompts[0]!, /Lineage: stuck\nActor: maintainer\nReason: incomplete/);
+	assert.doesNotMatch(prompts[0]!, /challenge|Repository:/);
+	const legacyOnly = await controller.execute("legacy-only", { operation: "reset", input: JSON.stringify({ repositoryId: "r", commonDirHash: "a", inventoryHash: "b", confirmation: "c" }) }, undefined, undefined, recording);
+	assert.equal((legacyOnly.details as { outcome?: string }).outcome, "native-input-required");
 	assert.equal((approved.details as { mutation_outcome?: string }).mutation_outcome, "committed");
 	assert.equal(calls.length, 1);
 	assert.equal(calls[0]?.lineage, "stuck");
-	await assert.rejects(
-		controller.execute("missing-challenge", { operation: "reset", input: JSON.stringify({ commonDirHash: "a".repeat(64), inventoryHash: "b".repeat(64), confirmation: "DESTROY REVIEW AUTHORITY repo", lineage: "stuck", actor: "maintainer", reason: "incomplete" }) }, undefined, undefined, interactiveContext(true)),
-		/requires an exact string repositoryId/,
-	);
 
 });
 

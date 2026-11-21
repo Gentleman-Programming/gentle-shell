@@ -512,6 +512,15 @@ export { indexState, type IndexState } from "./codegraph-lease.ts";
 export type IndexAction = "sync" | "init" | "none";
 export type SessionStartReason = "startup" | "reload" | "new" | "resume" | "fork";
 
+/** The `.codegraph` shape stat safeIndexDirectory verdicts on; injectable for the same
+ * runner-portability reason as the lease module's index database stat seam. */
+let indexDirLstat: typeof lstatSync = lstatSync;
+
+/** Sets a test replacement for the `.codegraph` shape stat; undefined restores the real one. */
+export function setIndexDirLstatForTests(impl: typeof lstatSync | undefined): void {
+	indexDirLstat = impl ?? lstatSync;
+}
+
 /** Whether `cwd`'s `.codegraph` is safe for an automatic refresh or initialization: a regular
  * directory, or no `.codegraph` at all. A symlinked one is another checkout's index — the same
  * shape the explicit tool refuses — and CodeGraph itself follows the link, so an automatic sync,
@@ -519,7 +528,7 @@ export type SessionStartReason = "startup" | "reload" | "new" | "resume" | "fork
  * init -y would create the other checkout's database through the link. */
 function safeIndexDirectory(cwd: string): boolean {
 	try {
-		const index = lstatSync(join(cwd, ".codegraph"));
+		const index = indexDirLstat(join(cwd, ".codegraph"));
 		return !index.isSymbolicLink() && index.isDirectory();
 	} catch (error) {
 		// Only a confirmed absence is safe; any other stat failure — permissions, an unreadable
@@ -1488,6 +1497,15 @@ function isSeedStagingRoot(cwd: string): boolean {
  * session's time and staging space on files no validating sync ever reads. */
 const STAGING_COPY_SKIP = new Set(["node_modules", ".git"]);
 
+/** The recursive staging copy the share fallback runs; injectable so tests can hold it
+ * mid-flight and observe its event-loop responsiveness on every runner. */
+let stagingCopy: typeof cp = cp;
+
+/** Sets a test replacement for the staging copy; undefined restores the real one. */
+export function setStagingCopyForTests(impl: typeof cp | undefined): void {
+	stagingCopy = impl ?? cp;
+}
+
 /** Makes the staging project see the target worktree's real sources: one link per top-level
  * entry, everything except `.codegraph` (the staged copy lives there). The scanner follows the
  * links, so the validating sync reconciles the staged index against the worktree's own files
@@ -1510,7 +1528,7 @@ async function materializeStagingSources(worktree: string, stagingRoot: string):
 			try {
 				await symlink(target, staged, process.platform === "win32" ? "junction" : undefined);
 			} catch {
-				await cp(target, staged, { recursive: true, filter: (source) => !STAGING_COPY_SKIP.has(basename(source)) });
+				await stagingCopy(target, staged, { recursive: true, filter: (source) => !STAGING_COPY_SKIP.has(basename(source)) });
 			}
 		} else if (entry.isFile()) {
 			try {

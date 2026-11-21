@@ -1021,9 +1021,19 @@ export type InitLockOutcome =
  */
 export type IndexState = "present" | "absent" | "unknown";
 
+/** The database stat indexState verdicts on. Injected by tests to force stat outcomes on every
+ * runner: node's builtin mocks rebind named imports but bun's do not, so this seam — not a
+ * builtin patch — is the portable way to simulate an unreadable or mid-race index. */
+let indexDbStat: typeof statSync = statSync;
+
+/** Sets a test replacement for the index database stat; undefined restores the real one. */
+export function setIndexDbStatForTests(impl: typeof statSync | undefined): void {
+	indexDbStat = impl ?? statSync;
+}
+
 export function indexState(cwd: string): IndexState {
 	try {
-		return statSync(join(cwd, ".codegraph", "codegraph.db")).isFile() ? "present" : "absent";
+		return indexDbStat(join(cwd, ".codegraph", "codegraph.db")).isFile() ? "present" : "absent";
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unknown";
 	}

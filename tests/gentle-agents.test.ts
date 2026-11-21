@@ -8251,12 +8251,21 @@ test("a job notice survives session switching and is delivered only to its owner
 	const { ctx: other } = fakeContext();
 	Object.assign(other.sessionManager, { getSessionId: () => "s2" });
 	const notices = () => sent.filter((entry) => entry.message.customType === "gentle-jobs.notice");
+	// The finished sidebar entry rides queueJobNotice itself, so it is the
+	// observable proof that the exit notice is queued for its owner.
+	const snapshots: Array<{ sessionId: string; snapshot: { jobs: Array<{ id: string; label: string; startedAt: number; status?: string }> } }> = [];
+	pi.events.on("gentle-ai:jobs-sidebar", (value) => { snapshots.push(value as typeof snapshots[number]); });
+	const noticeQueued = () => snapshots.some((entry) => entry.snapshot.jobs.some((job) => job.id === "job-1" && job.status === "exited"));
 	try {
 		await fire("session_start", owner);
 		await fire("agent_start", owner);
 		await tools.get("bash_background")!.execute("b1", { command: "make build", label: "owner job" }, undefined, undefined, owner);
 		jobs.runs[0]!.exit(0);
-		await jobIo();
+		// The retention checks below mean anything only while the exit notice is
+		// already queued for the owner: confirm it before the session switch, so
+		// an implementation that drops queued notices on a switch cannot pass by
+		// queuing the notice only after the resume instead.
+		await eventually(noticeQueued, "the owner's exit notice must be queued before the session switch");
 		assert.equal(notices().length, 0, "the busy owner holds the exit notice");
 
 		await fire("session_start", other, { reason: "new" });
@@ -8265,8 +8274,19 @@ test("a job notice survives session switching and is delivered only to its owner
 		assert.equal(notices().length, 0, "the inactive owner's notice is never delivered to another session");
 
 		await fire("session_start", owner, { reason: "resume" });
+		// The owner's run ended while its session was away: settle it, because a
+		// notice queued after the last boundary is flushed by queueJobNotice itself
+		// only while no agent run is active (the busy-parent test below keeps its
+		// run and fires its own turn boundaries instead).
+		await fire("agent_end", owner);
+		await fire("agent_settled", owner);
 		await fire("turn_end", owner);
-		await eventually(() => notices().length === 1, "resuming the owner delivers its retained notice");
+		// The retained notice lands when the job log closes, which can outlast the resume boundary
+		// under load (the busy-parent test below allows the same); give it a wider bounded window.
+		for (let attempt = 0; attempt < 400 && notices().length === 0; attempt++) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		assert.equal(notices().length, 1, "resuming the owner delivers its retained notice");
 		assert.match(String(notices()[0]!.message.content), /job-1 \(\"owner job\"\) exited with code 0/);
 		await fire("turn_end", owner);
 		assert.equal(notices().length, 1, "the retained notice is delivered exactly once");

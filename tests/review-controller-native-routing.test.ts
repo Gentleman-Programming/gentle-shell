@@ -3779,3 +3779,30 @@ test("retained committed lineage: {} and exclude-with-digest equal the omitted-i
 	assert.deepEqual(await run("{}"), omitted);
 	assert.deepEqual(await run(JSON.stringify({ untrackedScope: "exclude", expectedUntrackedInventory: SHA })), omitted);
 });
+
+// gentle-shell#3424 follow-up A1: an older-than-pinned native contract must
+// reach the tool result with its exact actionable message, not a generic
+// native-operation-failed / native-status-unsupported remediation.
+const STATUS_V8_TOO_OLD = "gentle-ai native review status/v8 is older than the supported v9 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override";
+const CAPABILITIES_V25_TOO_OLD = "gentle-ai native review capabilities/v2.5 is older than the supported v2.6 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override";
+const tooOldNative = (message: string) => ({
+	targetStatus: async () => { throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, "review/status", true, false, message, { operation: "review/status", error_code: NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, timed_out: false, output_limit_exceeded: false }); },
+}) as unknown as NativeReviewCli;
+
+test("STATUS surfaces the exact status/v8 too-old message as the remediation", async () => {
+	const result = await __testing.executeReviewControllerOperation({ operation: "status" }, process.cwd(), tooOldNative(STATUS_V8_TOO_OLD));
+	assert.equal(result.status, "blocked");
+	assert.equal(result.reason, STATUS_V8_TOO_OLD);
+});
+
+test("INSPECT surfaces the exact capabilities/v2.5 too-old message as the remediation", async () => {
+	const result = await __testing.executeReviewControllerOperation({ operation: "inspect" }, process.cwd(), tooOldNative(CAPABILITIES_V25_TOO_OLD));
+	assert.equal(result.status, "blocked");
+	assert.equal(result.reason, CAPABILITIES_V25_TOO_OLD);
+});
+
+test("a version-incompatible error with a foreign message never leaks it as remediation", async () => {
+	const result = await __testing.executeReviewControllerOperation({ operation: "status" }, process.cwd(), tooOldNative("/Users/someone/private/path is broken"));
+	assert.equal("reason" in result, false);
+	assert.equal(JSON.stringify(result).includes("/Users/someone"), false);
+});

@@ -162,6 +162,18 @@ function capabilitiesTooOldMessage(schema: string): string {
 export function reviewStatusTooOldMessage(schema: string): string {
 	return `gentle-ai native review ${schema.slice("gentle-ai.review-integration.".length)} is older than the supported v9 (gentle-ai ${REVIEW_MINIMUM_NATIVE_VERSION}); update gentle-ai or remove the dev-binary override`;
 }
+// The exact too-old messages above carry no paths or provider text, so a
+// decoded version-incompatible error may relay one verbatim as remediation.
+// Anything else (including a forged message) is never relayed.
+export function reviewContractTooOldRemediation(message: unknown): string | undefined {
+	if (typeof message !== "string") return undefined;
+	const schemas = /^gentle-ai native review (?:(status)\/v(\d{1,3})|(capabilities)\/v(\d{1,3}\.\d{1,3})) is older than/.exec(message);
+	if (schemas === null) return undefined;
+	const expected = schemas[1] !== undefined
+		? reviewStatusTooOldMessage(`gentle-ai.review-integration.status/v${schemas[2]}`)
+		: capabilitiesTooOldMessage(`gentle-ai.review-integration.capabilities/v${schemas[4]}`);
+	return expected === message ? message : undefined;
+}
 const FEATURE_NAMES = Object.freeze([
 	"start_request_context",
 	"start_options_preflight",

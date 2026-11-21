@@ -2401,7 +2401,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 						const host = (sidebarTui ?? tui) as TUI;
 						const rows = Math.max(4, (host.terminal?.rows ?? 24) - SHEET_RESERVED_ROWS);
 						const state = sidebarState(host);
-						const parts = new Map([...state.parts].filter(([key]) => key !== "todo" || state.visibility?.todo !== false));
+						const parts = new Map([...state.parts].filter(([key]) => key !== "todo" || state.visibility?.todo !== false).map(([key, rail]): [string, { render(width: number): string[] }] => [key, { render: (w: number) => [...rail.render(w)] }]));
 						const sheet = renderPanelSheet(parts, theme, width, { rows, scrollTop, backHovered });
 						maxScroll = sheet.maxScroll;
 						scrollTop = Math.min(scrollTop, maxScroll);

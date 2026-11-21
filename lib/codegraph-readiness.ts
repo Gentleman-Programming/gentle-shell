@@ -105,7 +105,13 @@ async function runSyncWithRetry(
 	// budget would still start a real child and run its whole timeout cleanup for nothing —
 	// the first failure stands.
 	if (deadline - Date.now() <= 0) return false;
-	return attempt(Math.max(deadline - Date.now(), 0));
+	// A `.codegraph` that became a link during the backoff is another checkout's index by now —
+	// the same directory a fresh refresh would refuse — so the retry must not lower the guard
+	// the first attempt ran under.
+	if (!safeIndexDirectory(cwd)) return false;
+	const remaining = deadline - Date.now();
+	if (remaining <= 0) return false;
+	return attempt(remaining);
 }
 
 type DaemonlessRefresh =
@@ -156,6 +162,12 @@ export const INIT_RETRY_COUNT = 3;
 const KILL_WAIT_MS = 10_000;
 /** Grace a timed-out command gets to obey SIGTERM before the unignorable SIGKILL ends its tree. */
 const KILL_ESCALATE_MS = 1_000;
+/** The init lease must outlive every attempt the held-lock retry loop can spend: each attempt
+ * draws its full INIT_TIMEOUT_MS and, when it times out, the runner's SIGKILL grace and kill
+ * wait before the next one starts. A lease covering only a single attempt expires mid-sequence
+ * and a retry would spawn its `init -y` under a lock another session has lawfully reclaimed —
+ * the sequence's bounded worst case is therefore the lease TTL. */
+const INIT_LOCK_SEQUENCE_TTL_MS = (INIT_RETRY_COUNT + 1) * (INIT_TIMEOUT_MS + KILL_ESCALATE_MS + KILL_WAIT_MS);
 /** The environment variable a subagent child carries; children never start an index operation of their own. */
 export const CHILD_ENV = "GENTLE_PI_AGENTS_CHILD";
 /** One of these next to a `.git` is what makes a directory a project worth indexing automatically. */
@@ -234,7 +246,8 @@ const LOCK_LOSER_POLL_MS = 250;
 /** The warm gate's verdict: ok says the daemon is warm, wedged names the state where the
  * daemon is alive and holds the daemon lock but never answers — no spawn ran, so nothing was
  * killed or replaced — and adopted marks a spawn that lost the daemon lock to a racing
- * session's winner and settled on that winner's live daemon instead. */
+ * session's winner and settled on that winner's daemon once it verified an answer, never on
+ * liveness alone. */
 export type WarmUpOutcome = { ok: boolean; wedged?: boolean; adopted?: boolean };
 
 /**
@@ -248,8 +261,9 @@ export type WarmUpOutcome = { ok: boolean; wedged?: boolean; adopted?: boolean }
  * lose the daemon lock to the wedged holder. A spawn that loses the daemon lock to a racing session's
  * winner exits at once — its lock message goes to the daemon's own log (stdio for stderr is "ignore"),
  * so nothing arriving through the pipes identifies it — and the exit polls the registry for the
- * winner's live daemon, liveness only (the winner may still be initializing), resolving
- * { ok: true, adopted: true } when one appears inside the adoption window. Never rejects;
+ * winner's live daemon, a candidate until one real health probe answers — the same verification
+ * the alive short-circuit demands — resolving { ok: true, adopted: true } only for a winner that
+ * actually serves inside the adoption window. Never rejects;
  * `background` unrefs everything so a warm-up still running never keeps its caller alive.
  */
 export async function warmUpDaemonDetailed(cwd: string, background = false, timeoutMs = WARMUP_TIMEOUT_MS, registryDir?: string, helloTimeoutMs?: number, adoptWindowMs?: number): Promise<WarmUpOutcome> {
@@ -355,31 +369,62 @@ export async function warmUpDaemonDetailed(cwd: string, background = false, time
 		// the winner and its lock message went to the daemon's own log (stderr is ignored), so
 		// nothing arriving through these pipes identifies it. Liveness separates that exit from
 		// a real failure: poll the registry for the winner's live daemon — registered, pid
-		// alive, socket present, no health probe, the winner may still be initializing — and
-		// adopt it; nothing appearing inside the adoption window is the failed warm-up of a
-		// child that exited for no better reason.
+		// alive, socket present — and treat it as a candidate the same health probe as the alive
+		// short-circuit must confirm before the adoption settles. A winner that has not
+		// answered yet keeps its chances inside the window; one that never answers, like no
+		// winner appearing at all, is the failed warm-up of a child that exited for no better
+		// reason.
 		child.on("close", () => {
 			if (settled) return;
 			const deadline = Date.now() + adoptionWindow;
-			const poll = () => {
-				// The overall timeout or another settlement path may have finished between ticks.
-				if (settled) return;
-				let alive = false;
-				try {
-					alive = daemonFor(cwd, registryDir).alive;
-				} catch {
-					/* an unreadable registry holds no winner to adopt */
-				}
-				if (alive) {
-					settle("adopted");
-					return;
-				}
+			const scheduleNext = () => {
 				if (Date.now() >= deadline) {
 					settle("failed");
 					return;
 				}
 				adoptTimer = setTimeout(poll, LOCK_LOSER_POLL_MS);
 				if (background) adoptTimer.unref?.();
+			};
+			const poll = () => {
+				// The overall timeout or another settlement path may have finished between ticks.
+				if (settled) return;
+				if (Date.now() >= deadline) {
+					settle("failed");
+					return;
+				}
+				let alive = false;
+				try {
+					alive = daemonFor(cwd, registryDir, undefined, deadline).alive;
+				} catch {
+					/* an unreadable registry holds no winner to adopt */
+				}
+				const remaining = deadline - Date.now();
+				if (remaining <= 0) {
+					settle("failed");
+					return;
+				}
+				if (alive) {
+					// The winner is a candidate, not a verdict: liveness alone would adopt a wedged
+					// winner — the same daemon the warm gate at the start of this call reports as
+					// wedged. One real answer adopts it; anything else keeps polling for a winner
+					// that can actually serve, within the remaining window the overall timeout caps.
+					void daemonHealth(cwd, registryDir, helloTimeoutMs, remaining).then(
+						(health) => {
+							if (settled) return;
+							if (health === "ok" && Date.now() < deadline) {
+								settle("adopted");
+								return;
+							}
+							scheduleNext();
+						},
+						() => {
+							if (settled) return;
+							scheduleNext();
+						},
+					);
+					return;
+				}
+				scheduleNext();
 			};
 			poll();
 		});
@@ -410,8 +455,11 @@ function safeIndexDirectory(cwd: string): boolean {
 	try {
 		const index = lstatSync(join(cwd, ".codegraph"));
 		return !index.isSymbolicLink() && index.isDirectory();
-	} catch {
-		return true; // absent: the tri-state indexState reports that its own way
+	} catch (error) {
+		// Only a confirmed absence is safe; any other stat failure — permissions, an unreadable
+		// parent — proves nothing about what `.codegraph` is, and the refresh fails closed instead
+		// of writing into a directory it could not see.
+		return (error as NodeJS.ErrnoException).code === "ENOENT";
 	}
 }
 
@@ -495,7 +543,17 @@ export interface ReadinessInput {
 	/** Warms the daemon; true when it worked. */
 	warm(cwd: string): Promise<boolean>;
 	onStart?(action: IndexAction): void;
-	onIndexed?(result: { action: IndexAction; ok: boolean; daemonAlive?: boolean; exitCode?: number | null; stderrTail?: string; /** How many `codegraph init` runs the held-lock loop attempted (one initial plus silent retries); present only when that loop ran. */ initAttempts?: number }): void;
+	onIndexed?(result: {
+		action: IndexAction;
+		ok: boolean;
+		daemonAlive?: boolean;
+		exitCode?: number | null;
+		stderrTail?: string;
+		/** How many `codegraph init` runs the held-lock loop attempted (one initial plus silent retries); present only when that loop ran. */
+		initAttempts?: number;
+		/** Why the held-lock loop stopped short of a success: "teardown-unconfirmed" means an attempt's tree could not be proved gone, so the sequence ended beside a possible writer instead of running out its retries. */
+		initStop?: "teardown-unconfirmed";
+	}): void;
 	onWarmStart?(): void;
 }
 
@@ -539,6 +597,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			let standDown = false;
 			let alive = false;
 			let initAttempts: number | undefined;
+			let initStop: "teardown-unconfirmed" | undefined;
 			if (action === "sync") {
 			// A live daemon holds the writer lock and its index is never stale: a CLI `sync -q` coexists
 			// with it (daemon.log auto-syncs) — "if an index exists, do not re-index — only sync". Without
@@ -587,6 +646,8 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 					const lock = await acquireInitLock(input.cwd, {
 						locksDir: input.locksDir,
 						waitMs: input.initLockWaitMs,
+						// The lease covers the whole bounded retry sequence the loop below may run.
+						ttlMs: INIT_LOCK_SEQUENCE_TTL_MS,
 					});
 					if (lock.outcome === "acquired") {
 						try {
@@ -606,11 +667,23 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 								// semantics (no retry, the error surfaces). Unlike the sync retry, every
 								// attempt draws its own full INIT_TIMEOUT_MS budget: a legitimately slow
 								// first index must not eat the retries' time.
+								// An attempt whose teardown could not be confirmed is the one exception: it ends the
+								// sequence, because a silent retry would start a second init beside a writer of the
+								// timed-out attempt that may still be running.
 								const adoptChild = (pid: number, proxy: boolean): void => lock.adopt(pid, proxy);
 								ok = false;
 								for (let attempt = 1; attempt <= INIT_RETRY_COUNT + 1 && !ok; attempt += 1) {
 									initAttempts = attempt;
-									ok = await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS, adoptChild);
+									let teardownUnconfirmed = false;
+									ok = await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS, adoptChild, (info) => {
+										teardownUnconfirmed = info.teardownUnconfirmed === true;
+									});
+									// A failure the loop does not retry past the first teardown it could not confirm: a retry
+									// starts a second init beside a writer of the timed-out attempt that may still be running.
+									if (!ok && teardownUnconfirmed) {
+										initStop = "teardown-unconfirmed";
+										break;
+									}
 								}
 							}
 							else ok = false;
@@ -622,7 +695,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 					}
 				}
 			}
-			try { input.onIndexed?.(action === "sync" ? { action, ok, daemonAlive: alive, ...(syncInfo.get() ?? {}) } : { action, ok, ...(initAttempts === undefined ? {} : { initAttempts }) }); } catch { /* never worth stopping the warm-up */ }
+			try { input.onIndexed?.(action === "sync" ? { action, ok, daemonAlive: alive, ...(syncInfo.get() ?? {}) } : { action, ok, ...(initAttempts === undefined ? {} : { initAttempts }), ...(initStop === undefined ? {} : { initStop }) }); } catch { /* never worth stopping the warm-up */ }
 			// A child that just seeded or initialised its own worktree never warms a daemon: it must
 			// not reach for the parent-shared project daemon at session start, and maybeRewarm
 			// already covers its queries lazily.
@@ -1028,14 +1101,14 @@ function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: nu
 			// the close itself sends the group SIGKILL — a group with no remaining members rejects
 			// the signal, and killProcessTree's existing catch ignores that.
 			if (timedOut) {
-				// One attempt per run: the close-time sweep joins the timeout attempt (or starts the
-				// missing one) and holds the result until the killed tree has no member still running.
+				// The SIGKILL is sent, not awaited: hold the result until the killed group holds
+				// no member that can still run, so no straggler can outlive the settlement.
 				killGroupAndWait(GROUP_GONE_CAP_MS);
 				return;
 			}
 			// A zero exit code counts only when the deadline did not expire first: a command that
 			// handles the timeout's SIGTERM and exits 0 was still interrupted by the timeout.
-			finish(!timedOut && code === 0);
+			finish(code === 0);
 		});
 	});
 }

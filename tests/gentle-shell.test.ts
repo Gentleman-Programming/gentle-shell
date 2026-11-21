@@ -7462,7 +7462,7 @@ async function mobilePlacementFixture(t: TestContext, headerPlacement: "top" | "
 	root[node]();
 	const state = sidebarState(tui as unknown as TUI);
 	const widget = (ui.widgets.get("gentle-shell-below-input-header") as () => SidebarRail)();
-	const banner = (yoloBannerContent("tui", SUPER_YOLO_STATUS_TEXT) as (tui: TUI) => { render(width: number): string[] })(tui as unknown as TUI);
+	const banner = (yoloBannerContent("tui", SUPER_YOLO_STATUS_TEXT) as (tui: TUI) => { render(width: number): readonly string[] })(tui as unknown as TUI);
 	const layoutRows = () => {
 		const layout = root[node]() as unknown as { entries?: Array<{ component: { render(width: number): string[] } }> };
 		return (layout.entries ?? []).map(({ component }) => component.render(columns).map(stripAnsi).join("\n"));
@@ -7488,7 +7488,7 @@ async function checkMobilePanel(f: Awaited<ReturnType<typeof mobilePlacementFixt
 	await new Promise((resolve) => setImmediate(resolve));
 }
 
-function checkMobileBar(f: Awaited<ReturnType<typeof mobilePlacementFixture>>, rows: string[], width: number) {
+function checkMobileBar(f: Awaited<ReturnType<typeof mobilePlacementFixture>>, rows: readonly string[], width: number) {
 	const text = rows.map(stripAnsi).join("\n");
 	assert.match(text, /main/);
 	assert.match(text, /💥 SUPER-YOLO/);

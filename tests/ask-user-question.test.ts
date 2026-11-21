@@ -555,7 +555,7 @@ for (const multiSelect of [false, true]) {
 				const component = factory(tui, hoverTheme, {}, (value) => {
 					completions.push(value);
 					resolve(value);
-				}) as Component;
+				}) as unknown as Component;
 				editor.addChild(component);
 				tui.setFocus(component);
 			}) },

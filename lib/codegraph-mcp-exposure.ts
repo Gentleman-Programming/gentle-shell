@@ -44,7 +44,8 @@ export type ExposureOutcome =
 	 * replaced mid-update, or the destination was replaced while the replacement was being
 	 * staged; nothing was written. */
 	| "conflict"
-	/** No verifiable syntax-preserving insertion of the field exists for this document;
+	/** No verifiable syntax-preserving insertion of the field exists for this document — a
+	 * splice that cannot be placed or verified, or nesting deeper than the scan's limit;
 	 * nothing is written, so unrelated values are never reformatted or corrupted. */
 	| "unpreservable"
 	/** Another writer holds the config lock; the update did not run and nothing was written. */
@@ -74,7 +75,8 @@ export interface EnsureExposureIo {
 	/** Always called exactly once after an acquire that returned true. */
 	releaseLock?(path: string): void;
 	/** Whether the lock acquired for `path` still belongs to this update's own acquisition;
-	 * checked immediately before the publish so a holder displaced by a stale takeover
+	 * checked after the splice is prepared and again inside the staged replacement's final
+	 * checks, so a holder displaced by a stale takeover at any point before the rename
 	 * publishes nothing. Absent means the io cannot verify ownership and the publish is
 	 * unguarded by it. */
 	ownsLock?(path: string): boolean;
@@ -92,6 +94,13 @@ const NEW_CONFIG_MODE = 0o644;
 
 /** How many times the whole read-modify-write restarts when a concurrent writer changes the file mid-update. */
 const MAX_UPDATE_ATTEMPTS = 3;
+
+/** How deep the insertion scan and its semantic verification may nest. JSON.parse accepts
+ * nesting far deeper than a recursive traversal can walk without exhausting the stack, so a
+ * document beyond this limit is reported unpreservable — its file untouched — instead of
+ * surfacing a generic error. Real configs sit a handful of levels deep; the limit only ever
+ * rejects pathological nesting. */
+const MAX_JSON_DEPTH = 128;
 
 /**
  * The single-file replacement steps behind {@link defaultIo}'s write. The whole update is
@@ -165,6 +174,16 @@ class DestinationReplacedError extends Error {
 	}
 }
 
+/** The refusal a staged replacement throws when the config lock was displaced while the
+ * replacement was being staged: publishing under a lock this update no longer owns would race
+ * the new holder's own read-modify-write, so the caller abandons the staged text and reports
+ * the config as busy instead. */
+class LockDisplacedError extends Error {
+	constructor() {
+		super("the config lock was displaced while the replacement was staged");
+	}
+}
+
 /**
  * {@link atomicWriteFile}'s replacement steps for an already-resolved destination: the rename
  * lands on the destination itself without resolving it again, so a symlink substituted for the
@@ -173,9 +192,11 @@ class DestinationReplacedError extends Error {
  * cannot copy — the destination's permission bits are preserved exactly, and the renamed-in
  * file is always a regular file. With `expectedIdentity`, the destination is verified one
  * last time after the staging and before the rename, so a file saved while the staging was
- * in progress is refused instead of replaced.
+ * in progress is refused instead of replaced. A `verify` hook runs as the last check before
+ * the rename and aborts the replacement — by throwing, like an identity mismatch — when the
+ * caller's own coordination state changed while the replacement was being staged.
  */
-function writeResolvedFile(target: string, text: string, io: AtomicFileIo, expectedIdentity?: string): void {
+function writeResolvedFile(target: string, text: string, io: AtomicFileIo, expectedIdentity?: string, verify?: () => void): void {
 	const mode = io.modeOf(target) ?? NEW_CONFIG_MODE;
 	const temp = join(dirname(target), `.${basename(target)}.tmp-${randomUUID()}`);
 	try {
@@ -183,6 +204,7 @@ function writeResolvedFile(target: string, text: string, io: AtomicFileIo, expec
 		if (expectedIdentity !== undefined && io.identityOf !== undefined && io.identityOf(target) !== expectedIdentity) {
 			throw new DestinationReplacedError();
 		}
+		verify?.();
 		io.rename(temp, target);
 	} finally {
 		try {
@@ -420,7 +442,9 @@ export function fileIdentity(path: string): string | undefined {
 	}
 }
 
-const defaultIo: EnsureExposureIo = {
+/** The production io over the real filesystem and the config-lock protocol; exported so the
+ * suite can wrap its steps and drive the interleavings the lock and staging guards exist for. */
+export const defaultIo: EnsureExposureIo = {
 	resolve: (path) => fsIo.resolve(path),
 	read: (path) => (existsSync(path) ? readFileSync(path, "utf8") : undefined),
 	identityOf: (path) => fileIdentity(path),
@@ -428,8 +452,13 @@ const defaultIo: EnsureExposureIo = {
 	// path the lock and every read address — so the write must not resolve it again: a symlink
 	// substituted for the final component after resolution would redirect the publish. The
 	// expected identity travels into the staged replacement, whose rename is refused when the
-	// destination changed while the replacement was being written.
-	write: (path, text, expectedIdentity) => writeResolvedFile(path, text, fsIo, expectedIdentity),
+	// destination changed while the replacement was being written. Lock ownership joins those
+	// staged final checks: a holder displaced while the replacement was being staged must fail
+	// the rename itself, not only the check that ran before the staging began.
+	write: (path, text, expectedIdentity) =>
+		writeResolvedFile(path, text, fsIo, expectedIdentity, () => {
+			if (!ownsConfigLock(path)) throw new LockDisplacedError();
+		}),
 	acquireLock: (path) => acquireConfigLock(path),
 	releaseLock: (path) => releaseConfigLock(path),
 	ownsLock: (path) => ownsConfigLock(path),
@@ -443,7 +472,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * Where `"exposure": "direct"` can be inserted into the `mcpServers.codegraph` entry of a
  * verified mcp.json text: just inside the entry object's opening brace. The scan is purely
  * positional — values are never rebuilt — and follows JSON.parse's last-occurrence rule for
- * duplicate keys, so the entry it locates is the entry the update validated.
+ * duplicate keys, so the entry it locates is the entry the update validated. A document
+ * nested deeper than {@link MAX_JSON_DEPTH} is not traversed: its caller reports the splice
+ * unpreservable rather than risk the recursive walk exhausting the stack.
  */
 function codegraphEntryInsertion(text: string): { at: number; emptyEntry: boolean } | undefined {
 	type ValueKind = "object" | "other";
@@ -488,10 +519,11 @@ function codegraphEntryInsertion(text: string): { at: number; emptyEntry: boolea
 		return undefined;
 	};
 	const numberOrLiteral = /(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/y;
-	const scanValue = (): ValueKind | undefined => {
+	const scanValue = (depth: number): ValueKind | undefined => {
+		if (depth > MAX_JSON_DEPTH) return undefined;
 		whitespace();
 		const char = text[at];
-		if (char === "{") return scanObject() === undefined ? undefined : "object";
+		if (char === "{") return scanObject(depth) === undefined ? undefined : "object";
 		if (char === "[") {
 			at += 1;
 			whitespace();
@@ -500,7 +532,7 @@ function codegraphEntryInsertion(text: string): { at: number; emptyEntry: boolea
 				return "other";
 			}
 			for (;;) {
-				if (scanValue() === undefined) return undefined;
+				if (scanValue(depth + 1) === undefined) return undefined;
 				whitespace();
 				if (text[at] === ",") {
 					at += 1;
@@ -520,7 +552,7 @@ function codegraphEntryInsertion(text: string): { at: number; emptyEntry: boolea
 		at += literal[0].length;
 		return "other";
 	};
-	const scanObject = (): Property[] | undefined => {
+	const scanObject = (depth: number): Property[] | undefined => {
 		at += 1; // the opening brace the caller verified
 		const properties: Property[] = [];
 		whitespace();
@@ -537,7 +569,7 @@ function codegraphEntryInsertion(text: string): { at: number; emptyEntry: boolea
 			at += 1;
 			whitespace();
 			const valueStart = at;
-			const kind = scanValue();
+			const kind = scanValue(depth + 1);
 			if (kind === undefined) return undefined;
 			properties.push({ key, valueStart, kind });
 			whitespace();
@@ -554,12 +586,12 @@ function codegraphEntryInsertion(text: string): { at: number; emptyEntry: boolea
 	};
 	whitespace();
 	if (text[at] !== "{") return undefined;
-	const root = scanObject();
+	const root = scanObject(0);
 	if (root === undefined) return undefined;
 	const servers = root.findLast((property) => property.key === "mcpServers" && property.kind === "object");
 	if (servers === undefined) return undefined;
 	at = servers.valueStart;
-	const serversObject = scanObject();
+	const serversObject = scanObject(1); // the depth a root property's value occupies
 	if (serversObject === undefined) return undefined;
 	const entry = serversObject.findLast((property) => property.key === "codegraph" && property.kind === "object");
 	if (entry === undefined) return undefined;
@@ -571,12 +603,23 @@ function codegraphEntryInsertion(text: string): { at: number; emptyEntry: boolea
 
 /** A parse-order-free rendering for verifying that a textual edit changed exactly the intended
  * field: every object's keys are sorted, so two documents with the same values compare equal
- * regardless of key order. */
-function canonicalJson(value: unknown): string {
-	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+ * regardless of key order. A value nested beyond {@link MAX_JSON_DEPTH} renders as undefined,
+ * so the verification fails closed instead of exhausting the stack. */
+function canonicalJson(value: unknown, depth = 0): string | undefined {
+	if (depth > MAX_JSON_DEPTH) return undefined;
+	if (Array.isArray(value)) {
+		const items = value.map((item) => canonicalJson(item, depth + 1));
+		if (items.includes(undefined)) return undefined;
+		return `[${items.join(",")}]`;
+	}
 	if (isPlainObject(value)) {
 		const keys = Object.keys(value).sort();
-		return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+		const entries = keys.map((key) => {
+			const rendered = canonicalJson(value[key], depth + 1);
+			return rendered === undefined ? undefined : `${JSON.stringify(key)}:${rendered}`;
+		});
+		if (entries.includes(undefined)) return undefined;
+		return `{${entries.join(",")}}`;
 	}
 	return JSON.stringify(value) ?? "null";
 }
@@ -600,7 +643,9 @@ function publishExposureText(raw: string, expected: Record<string, unknown>): st
 	} catch {
 		return undefined;
 	}
-	if (canonicalJson(reparsed) !== canonicalJson(expected)) return undefined;
+	const rendered = canonicalJson(reparsed);
+	const wanted = canonicalJson(expected);
+	if (rendered === undefined || wanted === undefined || rendered !== wanted) return undefined;
 	return spliced.endsWith("\n") ? spliced : `${spliced}\n`;
 }
 
@@ -680,9 +725,6 @@ export function ensureDirectExposure(path: string, io: EnsureExposureIo = defaul
 				continue; // a concurrent writer changed the file: restart from its current content
 			}
 			entry.exposure = "direct";
-			// A lock taken over mid-update means another writer owns the config now: publish
-			// nothing rather than write under a lock that is no longer this update's own.
-			if (io.acquireLock !== undefined && io.ownsLock !== undefined && !io.ownsLock(target)) return { path, outcome: "busy" };
 			// The publish lands only on the destination the update locked: if the file there was
 			// replaced after the lock — by a symlink to another config or any other substitution
 			// — re-resolving it no longer names the locked destination, and writing would land
@@ -715,9 +757,17 @@ export function ensureDirectExposure(path: string, io: EnsureExposureIo = defaul
 			// publishes nothing.
 			const published = publishExposureText(raw, doc);
 			if (published === undefined) return { path, outcome: "unpreservable" };
+			// Lock ownership is verified after the splice is prepared — the preparation is exactly
+			// the window in which a paused holder can be displaced by a stale takeover while the
+			// identity checks still pass, because the successor has not written the config — and
+			// once more inside the staged replacement itself (see defaultIo.write): a lock this
+			// update no longer owns means another writer owns the config now, so nothing is
+			// published under it.
+			if (io.acquireLock !== undefined && io.ownsLock !== undefined && !io.ownsLock(target)) return { path, outcome: "busy" };
 			try {
 				io.write(target, published, verifiedIdentity);
 			} catch (error) {
+				if (error instanceof LockDisplacedError) return { path, outcome: "busy" };
 				if (error instanceof DestinationReplacedError) {
 					if (attempt >= MAX_UPDATE_ATTEMPTS) return { path, outcome: "conflict" };
 					continue; // a save landed while the replacement was staged: restart from it

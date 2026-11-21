@@ -3754,6 +3754,31 @@ test("models screen cleanup transaction rejects a profile changed since the pane
 	assert.doesNotMatch(feedback, /Removed \d+ stale routing/);
 });
 
+test("models screen cleanup transaction rejects a key whose agent appeared after the card opened", async (t) => {
+	const { fixture, bytes } = cleanupTransactionFixture(t);
+	const before = bytes();
+	let afterCleanup: ReturnType<typeof bytes>;
+	let feedback = "";
+	let visited = false;
+	fixture.onInput((panel) => {
+		if (visited) return panel.handleInput("\x1b");
+		visited = true;
+		panel.handleInput("x");
+		assert.match(stripAnsi(renderComponent(panel)), /abandoned/, "abandoned starts as a stale candidate");
+		const agentPath = join(fixture.root, ".pi", "agents", "abandoned.md");
+		fs.mkdirSync(dirname(agentPath), { recursive: true });
+		writeFileSync(agentPath, "---\nname: abandoned\ndescription: Worker\n---\nbody\n");
+		if (/Clean stale routing keys/.test(renderComponent(panel))) panel.handleInput("\r");
+		feedback = stripAnsi(renderComponent(panel));
+		afterCleanup = bytes();
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.deepEqual(afterCleanup!, before, "cleanup preserves all stores byte-for-byte");
+	assert.match(feedback, /Cleanup failed:.*no longer stale: abandoned/s);
+	assert.doesNotMatch(feedback, /Removed \d+ stale routing/);
+});
+
 for (const boundary of ["prepare", "replace", "replace-then-throw", "absent-then-throw", "restore-error"] as const) {
 	test(`models screen cleanup transaction: ${boundary}`, async (t) => {
 		const { fixture, storePath, paths, bytes } = cleanupTransactionFixture(t);

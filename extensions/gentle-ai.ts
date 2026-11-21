@@ -7209,7 +7209,7 @@ async function openProfilesPanelLoop(
 						throw new Error("The displayed profile changed on disk. Reopen the panel before cleaning up.");
 					}
 					// Normalization is only a candidate/shape validator, never the write payload.
-					const candidates = (raw: Record<string, unknown>) => staleRoutingKeys(normalizeModelConfig(raw) ?? {}, known);
+					const candidates = (raw: Record<string, unknown>, inventory = known) => staleRoutingKeys(normalizeModelConfig(raw) ?? {}, inventory);
 					const subStores = subFiles.map((sub) => {
 						const routes = isRecord(sub.raw?.model_profiles) ? sub.raw.model_profiles : {};
 						return { ...sub, routes, keys: candidates(routes) };
@@ -7224,6 +7224,14 @@ async function openProfilesPanelLoop(
 					return { keys,
 						notices: () => routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles, authorityAvailable),
 						apply: (selected) => {
+						// Agent definitions can appear while the card is open; judge the selection again.
+						const inventory = [...PROVIDER_REVIEW_ROLES.map((name) => ({ name })), ...listDiscoverableAgents(roots.cwd)];
+						const stillStale = new Set([...subStores.map((sub) => sub.routes), models, ...profileStores.map((profile) => profile.routes)]
+							.flatMap((routes) => candidates(routes, inventory)));
+						const revived = selected.filter((key) => !stillStale.has(key));
+						if (revived.length > 0) {
+							throw new Error(`Agent definitions changed; no longer stale: ${revived.join(", ")}. Reopen the panel before cleaning up.`);
+						}
 						const replacements = new Map<string, Uint8Array>();
 						const add = (input: string, raw: Record<string, unknown>) => {
 							replacements.set(input, Buffer.from(`${JSON.stringify(raw, null, 2)}\n`));

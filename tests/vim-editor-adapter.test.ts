@@ -828,3 +828,13 @@ test("visual highlight spans wraps and treats collapsed paste as one selection u
   assert.ok(lines.filter((line) => line.includes("\x1b[7m")).length > 1);
   assert.equal(e.getExpandedText(), "z".repeat(1001) + " following long words");
 });
+
+test("unaudited 1.6.x metadata fails closed in the bundled host and the adapter", (t) => {
+  for (const v of ["1.6.1", "1.6.0-rc.1", "1.7.0"]) assert.equal(resolveVimRuntime(fabricatedPiCli(t, v), bundledAgent!.CustomEditor), undefined, v);
+  assert.equal(resolveVimRuntime(fabricatedPiCli(t, "1.6.0", "1.6.0", "1.5.2"), bundledAgent!.CustomEditor), undefined);
+  for (const v of ["1.6.1", "1.6.0-rc.1", "1.7.0"]) {
+    const e = editor(); e.setText("abcd"); (e as unknown as { focused: boolean }).focused = true; const frame = e.render(12);
+    assert.throws(() => createVimEditorAdapter(e, v), /unsupported/i, v);
+    assert.deepEqual(e.render(12), frame); assert.equal(e.getText(), "abcd");
+  }
+});

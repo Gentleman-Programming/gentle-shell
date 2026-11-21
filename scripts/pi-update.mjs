@@ -476,7 +476,7 @@ export async function updateSelectedPi(input) {
   // error line in either stream wins over a stderr warning, stderr's on a tie.
   const output = [result?.stdout, result?.stderrTail].filter(text => typeof text === 'string').join('\n');
   const detail = setupErrorDetail(output, input.home, input.platform);
-  throw new Error(`gentle-shell update: ${owner.name} (${[owner.command, ...owner.prefix].join(' ')}) could not install ${owner.sourceRoot ? `${PI}@${latest}` : spec}${detail ? `\n${detail}` : ''}`);
+  throw new Error(`gentle-shell update: ${owner.name} (${[owner.command, ...owner.prefix].join(' ')}) could not install ${owner.sourceRoot ? [`${PI}@${latest}`, ...siblingSpecs].join(', ') : spec}${detail ? `\n${detail}` : ''}`);
  }
  if (owner.sourceRoot) {
   const {path, key} = pathsFor(input.platform ?? process.platform);

@@ -271,6 +271,8 @@ export default class GentleChat extends View {
     // S14: a terminal on another machine. Its session file and snapshot are on that machine and the
     // desktop feed reads this computer's, so nothing is read (a local file of the same folder would
     // be another session): the empty state says where it runs, the Terminal shows it.
+    // A remote terminal renders its own state: clear a foreign flag left by the previous session.
+    if (this.foreign) { this.foreign = false; cx.notify(); }
     if (machineOf(address)) return;
     // The snapshot names the exact session file; a terminal without one falls back to its folder.
     const exact = s.feed?.identity?.sessionFile;

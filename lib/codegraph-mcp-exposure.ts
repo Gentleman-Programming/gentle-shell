@@ -26,7 +26,9 @@ export function codegraphMcpPaths(home: string = homedir(), env: NodeJS.ProcessE
 }
 
 export type ExposureOutcome =
-	/** The field was absent; the file was rewritten with `"exposure": "direct"` on the entry. */
+	/** The field was absent; the file was rewritten with `"exposure": "direct"` spliced into the
+	 * entry, preserving every other byte of the document — a missing trailing newline is the
+	 * only addition. */
 	| "added"
 	/** The entry already has an `exposure` field; the file was not written. */
 	| "present"
@@ -38,8 +40,13 @@ export type ExposureOutcome =
 	| "no-server"
 	/** The update itself failed (an unreadable or unwritable file); that path is left as it was. */
 	| "error"
-	/** The file changed under the update on every bounded retry, or the locked destination was replaced mid-update; nothing was written. */
+	/** The file changed under the update on every bounded retry, the locked destination was
+	 * replaced mid-update, or the destination was replaced while the replacement was being
+	 * staged; nothing was written. */
 	| "conflict"
+	/** No verifiable syntax-preserving insertion of the field exists for this document;
+	 * nothing is written, so unrelated values are never reformatted or corrupted. */
+	| "unpreservable"
 	/** Another writer holds the config lock; the update did not run and nothing was written. */
 	| "busy";
 
@@ -56,7 +63,11 @@ export interface EnsureExposureIo {
 	resolve?(path: string): string;
 	/** The file's current text, or undefined when it does not exist. */
 	read(path: string): string | undefined;
-	write(path: string, text: string): void;
+	/** Replaces the file's whole content. `expectedIdentity`, when defined, is the file identity
+	 * the verified read captured: a write that stages its text before the replacement must
+	 * verify the destination still carries that identity at the replacement itself and refuse
+	 * (by throwing) when it does not, so a save landing during the staging is never overwritten. */
+	write(path: string, text: string, expectedIdentity?: string): void;
 	/** Takes the config's exclusive lock for the whole read-modify-write, false when another
 	 * writer holds it; absent means this io cannot coordinate and the update runs unguarded. */
 	acquireLock?(path: string): boolean;
@@ -98,6 +109,10 @@ export interface AtomicFileIo {
 	rename(from: string, to: string): void;
 	/** Removes a leftover temporary file; only ever called best-effort after success or failure. */
 	remove(path: string): void;
+	/** The destination's identity at publication time, or undefined when it cannot be observed;
+	 * a guarded replacement refuses its rename when this no longer matches the identity the
+	 * update verified. */
+	identityOf?(path: string): string | undefined;
 }
 
 const fsIo: AtomicFileIo = {
@@ -122,6 +137,7 @@ const fsIo: AtomicFileIo = {
 	},
 	rename: renameSync,
 	remove: unlinkSync,
+	identityOf: fileIdentity,
 };
 
 /**
@@ -131,10 +147,22 @@ const fsIo: AtomicFileIo = {
  * destination. A replacement that fails part-way therefore leaves the original file untouched,
  * sibling entries included when it is an mcp.json. A symlinked destination keeps receiving
  * updates through the file it points at, the destination's permission bits are preserved
- * exactly, and the renamed-in file is always a regular file.
+ * exactly, and the renamed-in file is always a regular file. When `expectedIdentity` is given
+ * and the io can observe identities, the rename is additionally refused — by throwing — if
+ * the destination's identity changed while the replacement was being staged, so the final
+ * rename never discards a save the caller did not read.
  */
-export function atomicWriteFile(path: string, text: string, io: AtomicFileIo = fsIo): void {
-	writeResolvedFile(io.resolve(path), text, io);
+export function atomicWriteFile(path: string, text: string, io: AtomicFileIo = fsIo, expectedIdentity?: string): void {
+	writeResolvedFile(io.resolve(path), text, io, expectedIdentity);
+}
+
+/** The refusal a staged replacement throws when the destination is no longer the file the
+ * update verified: publishing would overwrite a concurrent save, so the caller abandons the
+ * staged text and restarts from the saved file instead. */
+class DestinationReplacedError extends Error {
+	constructor() {
+		super("the destination was replaced while the replacement was staged");
+	}
 }
 
 /**
@@ -143,13 +171,18 @@ export function atomicWriteFile(path: string, text: string, io: AtomicFileIo = f
  * final component after resolution cannot redirect the write to another file. The temporary
  * file lives in the destination's own directory — the same filesystem, so the final rename
  * cannot copy — the destination's permission bits are preserved exactly, and the renamed-in
- * file is always a regular file.
+ * file is always a regular file. With `expectedIdentity`, the destination is verified one
+ * last time after the staging and before the rename, so a file saved while the staging was
+ * in progress is refused instead of replaced.
  */
-function writeResolvedFile(target: string, text: string, io: AtomicFileIo): void {
+function writeResolvedFile(target: string, text: string, io: AtomicFileIo, expectedIdentity?: string): void {
 	const mode = io.modeOf(target) ?? NEW_CONFIG_MODE;
 	const temp = join(dirname(target), `.${basename(target)}.tmp-${randomUUID()}`);
 	try {
 		io.writeExclusive(temp, text, mode);
+		if (expectedIdentity !== undefined && io.identityOf !== undefined && io.identityOf(target) !== expectedIdentity) {
+			throw new DestinationReplacedError();
+		}
 		io.rename(temp, target);
 	} finally {
 		try {
@@ -163,6 +196,12 @@ function writeResolvedFile(target: string, text: string, io: AtomicFileIo): void
 /** Whether the error is a plain absent-path failure, as opposed to permissions or other I/O. */
 function isEnoent(error: unknown): boolean {
 	return typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+/** Whether the error says the destination path is already occupied, as opposed to a
+ * filesystem refusing the link operation outright. */
+function isEexist(error: unknown): boolean {
+	return typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "EEXIST";
 }
 
 /** How old the lock file may be before a holder that crashed without releasing is considered gone. */
@@ -201,6 +240,16 @@ interface LockObservation {
 	content: string;
 }
 
+/** The lock-protocol steps injectable so the suite can drive restore failures and takeover
+ * interleavings deterministically; every default is the real filesystem operation. */
+export interface ConfigLockHooks {
+	/** The hard-link restore a displaced record attempts when the lock path may be free. */
+	link?(from: string, to: string): void;
+	/** Runs after the release observed the moved file's content, while the lock path is still
+	 * empty — exactly the takeover window the take-aside protocol must survive. */
+	afterObserved?(observed: string | undefined): void;
+}
+
 /**
  * The stale-recovery step of the lock acquisition, exported with the observation injectable so
  * the suite can drive the preempted-contender window deterministically. The takeover renames the
@@ -211,7 +260,7 @@ interface LockObservation {
  * contender cannot delete the winner's lock and double-acquire. An observed lock younger than
  * LOCK_MAX_AGE_MS never gets past the staleness check at all.
  */
-export function takeOverStaleConfigLock(configPath: string, observed?: LockObservation): boolean {
+export function takeOverStaleConfigLock(configPath: string, observed?: LockObservation, hooks?: ConfigLockHooks): boolean {
 	const lockPath = lockPathFor(configPath);
 	if (observed === undefined) {
 		try {
@@ -225,6 +274,7 @@ export function takeOverStaleConfigLock(configPath: string, observed?: LockObser
 	}
 	if (Date.now() - observed.mtimeMs < LOCK_MAX_AGE_MS) return false;
 	let claim: string | undefined;
+	let keepClaim = false;
 	try {
 		claim = join(dirname(lockPath), "." + basename(lockPath) + ".stale-" + randomUUID());
 		renameSync(lockPath, claim);
@@ -240,16 +290,20 @@ export function takeOverStaleConfigLock(configPath: string, observed?: LockObser
 			// free, and if another owner already took it the displaced lock is dropped - its
 			// holder detects the loss through the ownership check before publishing.
 			try {
-				linkSync(claim, lockPath);
-			} catch {
-				/* a new owner holds the path: the replacement cannot be restored */
+				(hooks?.link ?? linkSync)(claim, lockPath);
+			} catch (error) {
+				// Only an occupied path proves a live owner took the replacement's place; any other
+				// refusal says nothing about the path, and deleting the moved record would destroy
+				// the only copy. It stays beside the lock, recoverable, while the displaced holder
+				// still detects the loss through the ownership check before publishing.
+				if (!isEexist(error)) keepClaim = true;
 			}
 			return false;
 		}
 	} catch {
 		return false;
 	} finally {
-		if (claim !== undefined) {
+		if (claim !== undefined && !keepClaim) {
 			try {
 				unlinkSync(claim);
 			} catch {
@@ -293,14 +347,18 @@ export function acquireConfigLock(configPath: string): boolean {
  * path, unless a new owner already holds it, in which case the displaced token is dropped and
  * its holder detects the loss through the ownership check before publishing. No read-then-
  * unlink sequence remains anywhere in the release, so no gap opens for a takeover to slip
- * into between the two.
+ * into between the two. Only a refusal proving the path occupied (EEXIST) drops the displaced
+ * record; a filesystem that refuses the restore outright leaves the moved record beside the
+ * lock, recoverable, because deleting it would destroy the only copy while nothing proves a
+ * new owner took the path.
  */
-export function releaseConfigLock(configPath: string): void {
+export function releaseConfigLock(configPath: string, hooks?: ConfigLockHooks): void {
 	const lockPath = lockPathFor(configPath);
 	const token = heldLocks.get(lockPath);
 	heldLocks.delete(lockPath);
 	if (token === undefined) return;
 	let claim: string | undefined;
+	let keepClaim = false;
 	try {
 		claim = join(dirname(lockPath), "." + basename(lockPath) + ".release-" + randomUUID());
 		renameSync(lockPath, claim);
@@ -308,7 +366,9 @@ export function releaseConfigLock(configPath: string): void {
 		return; // the lock path is already gone: there is nothing to release
 	}
 	try {
-		if (readLockContent(claim) === token) {
+		const observed = readLockContent(claim);
+		hooks?.afterObserved?.(observed);
+		if (observed === token) {
 			try {
 				unlinkSync(claim);
 			} catch {
@@ -320,15 +380,20 @@ export function releaseConfigLock(configPath: string): void {
 		// at the path without overwriting anyone — the hard link recreates the path only while
 		// it is free — and drop the displaced token when a new owner already holds the path.
 		try {
-			linkSync(claim, lockPath);
-		} catch {
-			/* a new owner holds the path: the displaced lock cannot be restored */
+			(hooks?.link ?? linkSync)(claim, lockPath);
+		} catch (error) {
+			// Only an occupied path proves a new owner holds it; any other refusal cannot, so
+			// the successor's only record stays beside the lock, recoverable, and its holder
+			// still detects the displacement through the ownership check before publishing.
+			if (!isEexist(error)) keepClaim = true;
 		}
 	} finally {
-		try {
-			unlinkSync(claim);
-		} catch {
-			/* consumed by the deletion above, restored by the link, or never created */
+		if (!keepClaim) {
+			try {
+				unlinkSync(claim);
+			} catch {
+				/* consumed by the deletion above, restored by the link, or never created */
+			}
 		}
 	}
 }
@@ -361,8 +426,10 @@ const defaultIo: EnsureExposureIo = {
 	identityOf: (path) => fileIdentity(path),
 	// io.write always receives the destination ensureDirectExposure already resolved — the same
 	// path the lock and every read address — so the write must not resolve it again: a symlink
-	// substituted for the final component after resolution would redirect the publish.
-	write: (path, text) => writeResolvedFile(path, text, fsIo),
+	// substituted for the final component after resolution would redirect the publish. The
+	// expected identity travels into the staged replacement, whose rename is refused when the
+	// destination changed while the replacement was being written.
+	write: (path, text, expectedIdentity) => writeResolvedFile(path, text, fsIo, expectedIdentity),
 	acquireLock: (path) => acquireConfigLock(path),
 	releaseLock: (path) => releaseConfigLock(path),
 	ownsLock: (path) => ownsConfigLock(path),
@@ -373,16 +440,186 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Where `"exposure": "direct"` can be inserted into the `mcpServers.codegraph` entry of a
+ * verified mcp.json text: just inside the entry object's opening brace. The scan is purely
+ * positional — values are never rebuilt — and follows JSON.parse's last-occurrence rule for
+ * duplicate keys, so the entry it locates is the entry the update validated.
+ */
+function codegraphEntryInsertion(text: string): { at: number; emptyEntry: boolean } | undefined {
+	type ValueKind = "object" | "other";
+	interface Property {
+		key: string;
+		valueStart: number;
+		kind: ValueKind;
+	}
+	let at = 0;
+	const whitespace = () => {
+		while (at < text.length && /\s/.test(text[at]!)) at += 1;
+	};
+	const escapes: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+	const scanString = (): string | undefined => {
+		if (text[at] !== "\"") return undefined;
+		at += 1;
+		let value = "";
+		while (at < text.length) {
+			const char = text[at]!;
+			if (char === "\"") {
+				at += 1;
+				return value;
+			}
+			if (char !== "\\") {
+				value += char;
+				at += 1;
+				continue;
+			}
+			const escape = text[at + 1];
+			if (escape === undefined) return undefined;
+			if (escape in escapes) {
+				value += escapes[escape]!;
+				at += 2;
+				continue;
+			}
+			if (escape !== "u") return undefined;
+			const hex = text.slice(at + 2, at + 6);
+			if (!/^[0-9a-fA-F]{4}$/.test(hex)) return undefined;
+			value += String.fromCharCode(Number.parseInt(hex, 16));
+			at += 6;
+		}
+		return undefined;
+	};
+	const numberOrLiteral = /(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/y;
+	const scanValue = (): ValueKind | undefined => {
+		whitespace();
+		const char = text[at];
+		if (char === "{") return scanObject() === undefined ? undefined : "object";
+		if (char === "[") {
+			at += 1;
+			whitespace();
+			if (text[at] === "]") {
+				at += 1;
+				return "other";
+			}
+			for (;;) {
+				if (scanValue() === undefined) return undefined;
+				whitespace();
+				if (text[at] === ",") {
+					at += 1;
+					continue;
+				}
+				if (text[at] === "]") {
+					at += 1;
+					return "other";
+				}
+				return undefined;
+			}
+		}
+		if (char === "\"") return scanString() === undefined ? undefined : "other";
+		numberOrLiteral.lastIndex = at;
+		const literal = numberOrLiteral.exec(text);
+		if (literal === null || literal[0] === "") return undefined;
+		at += literal[0].length;
+		return "other";
+	};
+	const scanObject = (): Property[] | undefined => {
+		at += 1; // the opening brace the caller verified
+		const properties: Property[] = [];
+		whitespace();
+		if (text[at] === "}") {
+			at += 1;
+			return properties;
+		}
+		for (;;) {
+			whitespace();
+			const key = scanString();
+			if (key === undefined) return undefined;
+			whitespace();
+			if (text[at] !== ":") return undefined;
+			at += 1;
+			whitespace();
+			const valueStart = at;
+			const kind = scanValue();
+			if (kind === undefined) return undefined;
+			properties.push({ key, valueStart, kind });
+			whitespace();
+			if (text[at] === ",") {
+				at += 1;
+				continue;
+			}
+			if (text[at] === "}") {
+				at += 1;
+				return properties;
+			}
+			return undefined;
+		}
+	};
+	whitespace();
+	if (text[at] !== "{") return undefined;
+	const root = scanObject();
+	if (root === undefined) return undefined;
+	const servers = root.findLast((property) => property.key === "mcpServers" && property.kind === "object");
+	if (servers === undefined) return undefined;
+	at = servers.valueStart;
+	const serversObject = scanObject();
+	if (serversObject === undefined) return undefined;
+	const entry = serversObject.findLast((property) => property.key === "codegraph" && property.kind === "object");
+	if (entry === undefined) return undefined;
+	const insertAt = entry.valueStart + 1;
+	let after = insertAt;
+	while (after < text.length && /\s/.test(text[after]!)) after += 1;
+	return { at: insertAt, emptyEntry: text[after] === "}" };
+}
+
+/** A parse-order-free rendering for verifying that a textual edit changed exactly the intended
+ * field: every object's keys are sorted, so two documents with the same values compare equal
+ * regardless of key order. */
+function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (isPlainObject(value)) {
+		const keys = Object.keys(value).sort();
+		return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+	}
+	return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * The `"added"` publish's text: `"exposure": "direct"` spliced into the verified text right
+ * inside the codegraph entry, leaving every other byte of the document — formatting, key order,
+ * and JSON number spellings a parse-and-restringify would corrupt — exactly as the verified
+ * read saw it, with a trailing newline added only when the document lacks one. The splice is
+ * verified semantically against the parsed document it was computed from: an edit that changed
+ * anything but the one field (or one that could not be placed at all) publishes nothing.
+ */
+function publishExposureText(raw: string, expected: Record<string, unknown>): string | undefined {
+	const insertion = codegraphEntryInsertion(raw);
+	if (insertion === undefined) return undefined;
+	const field = insertion.emptyEntry ? `"exposure": "direct"` : `"exposure": "direct", `;
+	const spliced = raw.slice(0, insertion.at) + field + raw.slice(insertion.at);
+	let reparsed: unknown;
+	try {
+		reparsed = JSON.parse(spliced);
+	} catch {
+		return undefined;
+	}
+	if (canonicalJson(reparsed) !== canonicalJson(expected)) return undefined;
+	return spliced.endsWith("\n") ? spliced : `${spliced}\n`;
+}
+
+/**
  * Adds `"exposure": "direct"` to the `codegraph` server entry of one mcp.json, only when the
  * field is absent. Every other key, server, and value in the document is preserved; the file
- * is rewritten only on the `"added"` outcome, as two-space-indented JSON with a trailing
- * newline. Best effort by contract: a missing or unparseable file is reported and never
+ * is rewritten only on the `"added"` outcome, as a syntax-preserving splice of the field into
+ * the verified text — every other byte of the document survives as read, including JSON number
+ * spellings that a parse-and-restringify would corrupt, and a missing trailing newline is the
+ * only addition; a document whose field cannot be spliced and verified is reported as
+ * `"unpreservable"` and left unwritten. Best effort by contract: a missing or unparseable file is reported and never
  * written, and an entry the caller did not configure is never invented. The publish also
  * refuses to clobber a concurrent writer: the file is re-read and compared with the text the
  * update was computed from immediately before the write, and any change discards that write
  * and restarts the whole read-modify-write from the file's current content — an atomic rename
  * prevents partial writes, not lost updates. The restart is bounded; a file that keeps
- * changing across every attempt is reported as `"conflict"` and left unwritten. The whole
+ * changing across every attempt is reported as `"conflict"` and left unwritten — and so is a
+ * save that lands while the replacement itself is being staged: the staged text is abandoned
+ * before the rename and the restart re-applies the field onto the saved file. The whole
  * update also runs under an exclusive lock beside the config when the io provides one, so two
  * coordinated writers serialize instead of racing through that window; a lock the update
  * cannot take is reported as `"busy"`, again with nothing written - and so is a lock the update
@@ -471,7 +708,22 @@ export function ensureDirectExposure(path: string, io: EnsureExposureIo = defaul
 				// makes that a match, so the update refuses it at once.
 				if (observedIdentity !== verifiedIdentity) return { path, outcome: "conflict" };
 			}
-			io.write(target, `${JSON.stringify(doc, null, 2)}\n`);
+			// The publish is a splice of the verified text, never a re-serialization: JSON.parse maps
+			// an integer beyond Number's exact range onto the nearest double, so a stringified rebuild
+			// would silently rewrite a sibling value like 9007199254740993 as 9007199254740992. Only
+			// the inserted field is new text, and a splice that cannot be placed and verified
+			// publishes nothing.
+			const published = publishExposureText(raw, doc);
+			if (published === undefined) return { path, outcome: "unpreservable" };
+			try {
+				io.write(target, published, verifiedIdentity);
+			} catch (error) {
+				if (error instanceof DestinationReplacedError) {
+					if (attempt >= MAX_UPDATE_ATTEMPTS) return { path, outcome: "conflict" };
+					continue; // a save landed while the replacement was staged: restart from it
+				}
+				throw error;
+			}
 			return { path, outcome: "added" };
 		}
 	} finally {

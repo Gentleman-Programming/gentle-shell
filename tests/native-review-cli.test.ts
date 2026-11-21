@@ -703,23 +703,15 @@ test("native START preflights the agent lens selection through STATUS", async ()
 	]);
 });
 
-test("native START falls back to the tier default when the provider predates lens selection", async () => {
-	const tokens = [
-		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
-		"--projection=workspace", "--agent=pi", "--consent=relay",
-	];
-	const queue = queuedAdapter([
-		{ stdout: JSON.stringify(LENS_SELECTION_UNSUPPORTED_FAILURE), exitCode: 1 },
-		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
-		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
-	]);
-	const result = await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk"], lensesReason: "changes token parsing" });
-	assert.equal(result.action, "closed");
+test("native START no longer falls back when the provider refuses lens selection: the refusal surfaces and STATUS is not retried", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(LENS_SELECTION_UNSUPPORTED_FAILURE), exitCode: 1 }]);
+	await assert.rejects(
+		() => client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk"], lensesReason: "changes token parsing" }),
+		(error: unknown) => error instanceof NativeReviewIntegrationError && error.failureEnvelope.cause === LENS_SELECTION_UNSUPPORTED_FAILURE.cause,
+	);
 	assert.deepEqual(queue.calls.map((call) => call.arguments), [
 		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi",
 			"--lenses", "review-risk", "--lenses-reason", "changes token parsing", "--next-transition"],
-		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi", "--next-transition"],
-		["review", "start", ...tokens],
 	]);
 });
 

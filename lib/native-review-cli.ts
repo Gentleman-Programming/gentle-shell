@@ -429,57 +429,6 @@ export interface NativeReviewUnachievableLensCaptureArtifact {
 // gentle-pi#638 fail-open capability gate: `review capture-unachievable` is younger than every released binary pinned in NATIVE_CLI_CONTRACTS, so the verb is gated invocation-adjacent instead of by a capability row. An older binary renders Go's exact `unknown review command "capture-unachievable"` refusal (internal/cli/review_facade.go) on stderr with no stdout, so the invocation rejects before any decode and the captured diagnostics are the only place that text survives. Every other failure -- a typed binding-mismatch refusal, a timeout, a decode failure -- is a real outcome the caller must surface, never a capability signal. Duck-typed on purpose: the classifier must survive a duplicated module instance exactly like the error it inspects.
 const NATIVE_REVIEW_UNKNOWN_UNACHIEVABLE_VERB_REFUSAL = /unknown review command "capture-unachievable"/;
 
-// A provider older than START lens selection refuses the STATUS preflight
-// flags with this exact typed preflight cause, before reading the repository.
-const NATIVE_REVIEW_UNKNOWN_LENS_FLAG_CAUSE = /^flag provided but not defined: -lenses(?:-reason)?$/;
-
-// A provider older than gentle-ai#6088 refuses the STATUS opt-in with this
-// exact typed preflight cause, before reading the repository.
-const NATIVE_REVIEW_UNKNOWN_NON_BLOCKING_FLAG_CAUSE = /^flag provided but not defined: -non-blocking-findings$/;
-
-/** Reports a not-started STATUS refusal caused only by an unknown --non-blocking-findings flag. */
-function isNativeReviewNonBlockingFindingsUnsupported(error: unknown): boolean {
-	if (!(error instanceof NativeReviewIntegrationError)) return false;
-	const failure = error.failureEnvelope;
-	return failure.code === "invalid_request" && failure.mutationOutcome === "not_started" &&
-		typeof failure.cause === "string" && NATIVE_REVIEW_UNKNOWN_NON_BLOCKING_FLAG_CAUSE.test(failure.cause);
-}
-
-// Provider binaries (executable path to its sha256) that refused
-// --non-blocking-findings in this process. A replaced binary at the same path
-// has another digest and is asked again. Never a capability claim.
-const nonBlockingFindingsRefusals = new Map<string, string>();
-
-function nonBlockingFindingsRefused(executable: string): boolean {
-	const digest = nonBlockingFindingsRefusals.get(executable);
-	if (digest === undefined) return false;
-	try {
-		return binaryDigest(executable) === digest;
-	} catch {
-		return false;
-	}
-}
-
-function nonBlockingExecutableDigest(executable: string): string | undefined {
-	try { return binaryDigest(executable); } catch { return undefined; }
-}
-
-function rememberNonBlockingFindingsRefusal(executable: string, digest: string | undefined): void {
-	// An old in-flight refusal must neither label a replacement unsupported
-	// nor erase a newer request's cache entry when identity cannot be read.
-	if (digest !== undefined && nonBlockingExecutableDigest(executable) === digest) {
-		nonBlockingFindingsRefusals.set(executable, digest);
-	}
-}
-
-/** Reports a not-started STATUS refusal caused only by an unknown --lenses flag. */
-export function isNativeReviewLensSelectionUnsupported(error: unknown): boolean {
-	if (!(error instanceof NativeReviewIntegrationError)) return false;
-	const failure = error.failureEnvelope;
-	return failure.code === "invalid_request" && failure.mutationOutcome === "not_started" &&
-		typeof failure.cause === "string" && NATIVE_REVIEW_UNKNOWN_LENS_FLAG_CAUSE.test(failure.cause);
-}
-
 function nativeLensSelectionArguments(request: NativeLensSelectionRequest): readonly string[] {
 	if (request.lenses === undefined && request.lensesReason === undefined) return [];
 	if (request.lenses === undefined || request.lenses.length === 0 || request.lensesReason === undefined) throw new TypeError("Native lens selection requires lenses and lensesReason together");
@@ -581,9 +530,9 @@ export interface NativeTargetStatusRequest extends NativeUntrackedSelectionReque
 	/**
 	 * Ask the provider for the opt-in `non_blocking_findings` of a compact
 	 * correction_required or escalated authority (`--non-blocking-findings`,
-	 * gentle-ai#6088). Sent only on this client's own contracted STATUS. A
-	 * provider that refuses the unknown flag is asked once more without it, and
-	 * that binary is not sent the flag again in this process.
+	 * gentle-ai#6088). Sent only on this client's own contracted STATUS. The
+	 * minimum supported provider (gentle-ai v4.6.0) always understands the flag,
+	 * so a refusal of it is an ordinary failure and is never retried.
 	 */
 	nonBlockingFindings?: true;
 	signal?: AbortSignal;
@@ -2211,15 +2160,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		const lensSelection = request.lenses === undefined && request.lensesReason === undefined
 			? {}
 			: { lenses: request.lenses, lensesReason: request.lensesReason };
-		let status: ReviewStatusV3;
-		try {
-			status = await this.targetStatus({ ...statusRequest, ...lensSelection });
-		} catch (error) {
-			// Phase A: a provider that predates lens selection still reviews,
-			// with the tier default, instead of refusing the candidate.
-			if (Object.keys(lensSelection).length === 0 || !isNativeReviewLensSelectionUnsupported(error)) throw error;
-			status = await this.targetStatus(statusRequest);
-		}
+		const status: ReviewStatusV3 = await this.targetStatus({ ...statusRequest, ...lensSelection });
 		const transition = status.nextTransition?.kind === "execute" && status.nextTransition.execute?.operation === "review.start"
 			? status.nextTransition.execute
 			: undefined;
@@ -2386,11 +2327,9 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			}
 		}
 		// The opt-in rides only this client's own contracted STATUS, never a
-		// provider-issued selection submission.
-		const nonBlockingExecutable = request.nonBlockingFindings === true && submittedTokens === undefined
-			? contextExecutable ?? measureStatusSync("resolution", () => this.executablePath(NATIVE_REVIEW_OPERATION.STATUS, false))
-			: undefined;
-		const statusArguments = (nonBlockingFindings: boolean) => submittedTokens === undefined ? [
+		// provider-issued selection submission. gentle-ai v4.6.0 (the minimum
+		// supported binary) always understands --non-blocking-findings.
+		const statusArguments = submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
 			"--projection", request.projection ?? "workspace",
 			...nativeUntrackedSelectionArguments(selection),
@@ -2399,24 +2338,12 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			...nativeLensSelectionArguments(request),
 			...requestContextArguments,
-			...(nonBlockingFindings ? ["--non-blocking-findings"] : []),
+			...(request.nonBlockingFindings === true ? ["--non-blocking-findings"] : []),
 			"--next-transition",
 		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments];
-		const executable = nonBlockingExecutable ?? contextExecutable;
-		const run = (nonBlockingFindings: boolean) => executable === undefined
-			? this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments(nonBlockingFindings), false, request.signal)
-			: this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments(nonBlockingFindings), false, request.signal, executable);
-		const sendNonBlocking = nonBlockingExecutable !== undefined && !nonBlockingFindingsRefused(nonBlockingExecutable);
-		const nonBlockingDigest = sendNonBlocking ? nonBlockingExecutableDigest(nonBlockingExecutable!) : undefined;
-		let execution: NegotiatedExecution;
-		try {
-			execution = await run(sendNonBlocking);
-		} catch (error) {
-			// Only the unknown-flag refusal falls back, once; every other failure is the caller's.
-			if (!sendNonBlocking || !isNativeReviewNonBlockingFindingsUnsupported(error)) throw error;
-			rememberNonBlockingFindingsRefusal(nonBlockingExecutable!, nonBlockingDigest);
-			execution = await run(false);
-		}
+		const execution: NegotiatedExecution = contextExecutable === undefined
+			? await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal)
+			: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);
 		measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
 		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));
 	}

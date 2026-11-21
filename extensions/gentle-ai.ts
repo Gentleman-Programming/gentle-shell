@@ -10275,13 +10275,16 @@ async function negotiatedStatusForHostTransport(
 	request: NativeTargetStatusRequest,
 	retainedSelections: ReviewContinuationRegistry,
 	canonicalRetentionRoot = request.cwd,
+	// gentle-shell#3412: a probe is side-effect free: it neither caches a
+	// transport refusal nor syncs retained selections (the caller decides).
+	probe = false,
 ): Promise<NegotiatedHostTransportStatus> {
 	const provider = nativeReviewCli as unknown as object;
 	const remembered = reviewTransportRefusalByProvider.get(provider);
 	if (remembered !== undefined) return { transport: remembered };
 	try {
 		const status = await nativeReviewCli.targetStatus!({ ...request, agent: REVIEW_HOST_AGENT });
-		syncRetainedNativeStatusSelections(retainedSelections, canonicalRetentionRoot, status, request.baseRef);
+		if (!probe) syncRetainedNativeStatusSelections(retainedSelections, canonicalRetentionRoot, status, request.baseRef);
 		return { status };
 	} catch (error) {
 		const code = error instanceof NativeReviewIntegrationError ? error.failureEnvelope.code : undefined;
@@ -10289,7 +10292,7 @@ async function negotiatedStatusForHostTransport(
 		// other failure remains an error for the caller's normal error path.
 		if (code === undefined || !REVIEW_TRANSPORT_REFUSAL_CODES.has(code)) throw error;
 		const transport: ReviewTransportRefusal = { supported: false, code, message: error.message };
-		reviewTransportRefusalByProvider.set(provider, transport);
+		if (!probe) reviewTransportRefusalByProvider.set(provider, transport);
 		return { transport };
 	}
 }
@@ -12016,7 +12019,8 @@ async function executeReviewControllerOperationImpl(
 					// bounds them and drops the raw set from its nested record.
 					...nonBlockingFindingsForRun(),
 					...(signal === undefined ? {} : { signal }),
-				}, retainedUntrackedSelections, defaultCwd);
+				}, retainedUntrackedSelections, defaultCwd, probeCommittedRange);
+				if (probeCommittedRange && negotiated.transport !== undefined) return nativeStatusInputRejection(workspaceRefusal!);
 				if (negotiated.transport !== undefined) {
 					return {
 						...hostTransportUnavailable(parameters.operation, negotiated.transport),
@@ -12024,10 +12028,10 @@ async function executeReviewControllerOperationImpl(
 					};
 				}
 				const status = negotiated.status!;
-				if (
-					probeCommittedRange &&
-					!(status.applicability === "current_target" && status.authority?.lineageId === parameters.lineageId && status.projection.kind === "base-diff")
-				) return nativeStatusInputRejection(workspaceRefusal!);
+				if (probeCommittedRange) {
+					if (!(status.applicability === "current_target" && status.authority?.lineageId === parameters.lineageId && status.projection.kind === "base-diff")) return nativeStatusInputRejection(workspaceRefusal!);
+					syncRetainedNativeStatusSelections(retainedUntrackedSelections, defaultCwd, status, effectiveBaseRef);
+				}
 				if (
 					retainedUntrackedSelection !== undefined &&
 					parameters.lineageId !== undefined &&

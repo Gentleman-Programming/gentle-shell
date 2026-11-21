@@ -11,7 +11,7 @@ import { setWindowsAclAuthorityForTesting } from "../lib/review-candidate-view-o
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension, PendingReviewConsentRegistry } from "../extensions/gentle-ai.ts";
 import { CandidateViewError, CandidateViewRegistry } from "../lib/review-candidate-view.ts";
-import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, NativeReviewConsentRequiredError, type NativeReviewCli } from "../lib/native-review-cli.ts";
+import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, NativeReviewConsentRequiredError, NativeReviewIntegrationError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewLastEventClosureV1, decodeReviewConsentV3, decodeReviewStatusV3, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
 // Coordination tests use fixture authority; real Windows ACL coverage lives
@@ -3726,4 +3726,55 @@ test("fresh-session bound STATUS {} on an unretained workspace lineage keeps the
 	const native = { targetStatus: async () => status(lineageId) } as unknown as NativeReviewCli;
 	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input: "{}" }, cwd, native, undefined, candidateViews);
 	assert.deepEqual({ outcome: (result as { outcome?: string }).outcome, reason: (result as { reason?: string }).reason }, { outcome: "native-status-input-invalid", reason: "untracked-selection-invalid" });
+});
+
+// gentle-shell#3412 (probe side effects): the fresh-session probe must keep the
+// untracked refusal on any non-success outcome and never cache a transport refusal.
+const probeRefusal = { outcome: "native-status-input-invalid", reason: "untracked-selection-invalid" };
+const probeOutcome = (result: unknown) => ({ outcome: (result as { outcome?: string }).outcome, reason: (result as { reason?: string }).reason });
+
+test("fresh-session probe keeps the untracked refusal when the provider refuses transport, and does not cache it", async (t) => {
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => candidateViews.cleanupAll());
+	const cwd = repository(t), lineageId = "probe-transport";
+	let calls = 0;
+	const refusal = new NativeReviewIntegrationError({
+		schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2", operation: "status", phase: "preflight",
+		code: "immutable_review_transport_unsupported", message: "transport unsupported", mutationOutcome: "none", authorityApplicability: "unknown",
+		retrySafe: false, replayability: "none", requiredInputs: [], nextAction: "none",
+	} as never);
+	assert.equal(refusal.failureEnvelope.code, "immutable_review_transport_unsupported");
+	const native = { targetStatus: async () => { calls += 1; throw refusal; } } as unknown as NativeReviewCli;
+	__testing.clearReviewTransportProbeForTesting(native);
+	t.after(() => __testing.clearReviewTransportProbeForTesting(native));
+	for (const input of ["{}", JSON.stringify({ untrackedScope: "exclude" }), "{}"]) {
+		const before = calls;
+		const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input }, cwd, native, undefined, candidateViews);
+		assert.deepEqual(probeOutcome(result), probeRefusal, input);
+		assert.equal(calls, before + 1, `native is called again: ${input}`);
+	}
+});
+
+test("fresh-session probe keeps the untracked refusal on a plain native throw", async (t) => {
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => candidateViews.cleanupAll());
+	const cwd = repository(t), lineageId = "probe-throw";
+	const native = { targetStatus: async () => { throw new Error("boom"); } } as unknown as NativeReviewCli;
+	for (const input of ["{}", JSON.stringify({ untrackedScope: "exclude" })]) {
+		const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input }, cwd, native, undefined, candidateViews);
+		assert.deepEqual(probeOutcome(result), probeRefusal, input);
+	}
+});
+
+test("retained committed lineage: {} and exclude-with-digest equal the omitted-input result", async (t) => {
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => candidateViews.cleanupAll());
+	const cwd = repository(t), lineageId = "committed-equal";
+	const view = candidateViews.create({ contributorRoot: cwd, baseRef: execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim(), committedOnly: true });
+	candidateViews.retain(view.token, lineageId);
+	const native = { targetStatus: async () => committedStatus(lineageId) } as unknown as NativeReviewCli;
+	const run = (input?: string) => __testing.executeReviewControllerOperation({ operation: "status", lineageId, ...(input === undefined ? {} : { input }) }, cwd, native, undefined, candidateViews);
+	const omitted = await run();
+	assert.deepEqual(await run("{}"), omitted);
+	assert.deepEqual(await run(JSON.stringify({ untrackedScope: "exclude", expectedUntrackedInventory: SHA })), omitted);
 });

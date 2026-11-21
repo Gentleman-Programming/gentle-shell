@@ -198,6 +198,8 @@ The notification sums the reported usage of assistant messages in that run. TPS 
 
 An old manually installed `tps.ts` (for example, `.pi/extensions/tps.ts`) may produce duplicate notifications alongside the bundled extension. Disable or remove that manual copy yourself if you do not want both; Gentle Shell does not delete it.
 
+The notification can be turned off in `/gentle:customize` under **Notifications**, with the `TPS usage notification` rows: the preference persists in the gentle-pi config home as `tps.json` (schema `gentle-pi.tps/v1`, `enabled` boolean, default enabled) and applies from the next agent run without a reload. A missing, malformed or unreadable file keeps notifying, and an explicit toggle in the card replaces a malformed file.
+
 ## Audio notifications
 
 Audio is off by default. `/gentle:customize` → **Notifications** shows audio controls directly in the same customization modal, separate from visual settings and profiles: global enable/disable, three independent type groups (**Success**, **Error**, **Attention**) that each own a builtin tone or a validated absolute local WAV, per-event exceptions folded behind **Advanced**, explicit preview, and process mute/resume. Enter cycles a type/event sound; `f` edits its local WAV path inline and `p` previews it. Preview does not enable or save automatic audio. Invalid/unreadable configuration requires fresh explicit replacement confirmation. RPC (including interactive hosts) and children remain silent. Linux/macOS listening and manual lifecycle verification are pending; Windows audio is unavailable. See [sound notifications](sound-notifications.md) for the complete schema, defaults, file security, retention costs and manual matrix.

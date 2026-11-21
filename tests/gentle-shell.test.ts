@@ -32,6 +32,7 @@ import { DEFAULT_VISUAL_SETTINGS, DENSITY, VISUAL_PRESET, VISUAL_SCHEMA, resolve
 import { resolveAnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapturePolicy, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
+import { resolveTpsSettings } from "../lib/tps-policy.ts";
 import { HERDR_TASK_SUMMARY_CHANGED, resolveHerdrTaskSummarySettings, writeHerdrTaskSummarySettings } from "../lib/herdr-task-summary-policy.ts";
 import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import { readBannerConfig } from "../extensions/startup-banner.ts";
@@ -3616,6 +3617,28 @@ test("customize History rows persist prompt history capture and keep stored hist
 	await new Promise<void>(resolve => setImmediate(resolve));
 	assert.equal(resolveHistoryCapturePolicy({ gentlePiConfigHome: home }).policy, "off");
 	assert.match(ui.notices.at(-1)!, /stored history is kept/i);
+	ui.overlayView!.handleInput("\x1b"); await pending;
+});
+
+test("customize Notifications rows persist the TPS usage notification toggle", async (t) => {
+	const home = scopedDoubleEscCancelConfigHome(t);
+	const { pi, commands } = fakePi();
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home });
+	const { ctx, ui, overlayReady } = fakeContext();
+	const pending = commands.get("gentle:customize")!.handler("", ctx);
+	await overlayReady;
+	// Missing policy file: enabled is the default, so OFF is offered and nothing is written yet.
+	assert.ok(findCustomizeRow(ui, "TPS usage notification: OFF"));
+	assert.equal(existsSync(join(home, "tps.json")), false, "highlighting never applies");
+	await customizeAction(ui, "TPS usage notification: OFF");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveTpsSettings({ gentlePiConfigHome: home }).settings.enabled, false);
+	assert.match(ui.notices.at(-1)!, /TPS usage notification: off/i);
+	assert.ok(findCustomizeRow(ui, "TPS usage notification: OFF (current)"));
+	await customizeAction(ui, "TPS usage notification: ON");
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(resolveTpsSettings({ gentlePiConfigHome: home }).settings.enabled, true);
+	assert.match(ui.notices.at(-1)!, /TPS usage notification: on/i);
 	ui.overlayView!.handleInput("\x1b"); await pending;
 });
 

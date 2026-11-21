@@ -54,7 +54,7 @@ export function resolveTpsSettings(options: { gentlePiConfigHome?: string } = {}
 			? { settings: structuredClone(DEFAULT_TPS_SETTINGS), source: "global_file", malformed: true, readError: false, globalFile }
 			: { settings, source: "global_file", malformed: false, readError: false, globalFile };
 	} catch (error) {
-		const missing = record(error) && (error as NodeJS.ErrnoException).code === "ENOENT";
+		const missing = typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 		if (missing) return { settings: structuredClone(DEFAULT_TPS_SETTINGS), source: "default", malformed: false, readError: false, globalFile };
 		return { settings: structuredClone(DEFAULT_TPS_SETTINGS), source: "global_file", malformed: false, readError: true, globalFile };
 	}

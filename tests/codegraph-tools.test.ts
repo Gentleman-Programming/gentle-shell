@@ -1556,7 +1556,7 @@ test("Windows launcher passes command metacharacters as one literal argv value",
 	withoutChildEnv(t);
 	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-bin-")));
 	t.after(() => rmSync(binDir, { recursive: true, force: true }));
-	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+	const entryScript = writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
 	// A workspace path carrying a literal metacharacter: "&" splits a command under any
 	// shell reinterpretation, so the child receiving the path as ONE argv value is the
 	// no-shell proof the test title names.
@@ -1575,6 +1575,11 @@ test("Windows launcher passes command metacharacters as one literal argv value",
 	const previousPlatform = process.platform;
 	Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
 	t.after(() => Object.defineProperty(process, "platform", { configurable: true, value: previousPlatform }));
+	// The pinned entry keeps the real process boundary under test on every host: the resolver
+	// answers process.execPath + the fixture's npm-shim.js, so no CodeGraph installation is
+	// needed and the handcrafted .cmd's rejection cannot skip the spawn.
+	const restoreResolver = armCodegraphEntryResolverForTest(() => ({ status: "entry", entry: { node: process.execPath, script: entryScript } }));
+	t.after(restoreResolver);
 
 	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute(
 		"test",

@@ -931,7 +931,12 @@ function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: nu
 			// can exit on the kill signal and close its stdio before the grace escalation fires, so
 			// the close itself sends the group SIGKILL — a group with no remaining members rejects
 			// the signal, and killProcessTree's existing catch ignores that.
-			if (timedOut) killProcessTree(child, true, "SIGKILL");
+			if (timedOut) {
+				// One attempt per run: the close-time sweep joins the timeout attempt (or starts the
+				// missing one) and holds the result until the killed tree has no member still running.
+				killGroupAndWait(GROUP_GONE_CAP_MS);
+				return;
+			}
 			// A zero exit code counts only when the deadline did not expire first: a command that
 			// handles the timeout's SIGTERM and exits 0 was still interrupted by the timeout.
 			finish(!timedOut && code === 0);

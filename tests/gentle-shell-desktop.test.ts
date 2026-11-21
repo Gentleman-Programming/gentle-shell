@@ -925,3 +925,27 @@ test("chat feed: hideThinkingBlock follows pi's settings merge (project over age
 	assert.equal(hideThinkingFrom(null, null), false);
 	assert.equal(hideThinkingFrom("{not json", '{"hideThinkingBlock":"yes"}'), false);
 });
+
+test("--status reports an agent home the mods cannot read", async (t) => {
+	const f = fixture(t);
+	const agent = join(f.home, "elsewhere", "agent");
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	assert.match(line ?? "", /is not listed in .*gentle-shell-roots\.json/);
+	assert.match(line ?? "", /add \{"roots": \["/);
+});
+
+test("--status accepts an agent home listed in the roots file", async (t) => {
+	const f = fixture(t);
+	const agent = join(f.home, "elsewhere", "agent");
+	mkdirSync(f.herdrHome, { recursive: true });
+	writeFileSync(join(f.herdrHome, "gentle-shell-roots.json"), `${JSON.stringify({ roots: [agent] }, null, 2)}\n`);
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	assert.match(line ?? "", /listed in .*gentle-shell-roots\.json/);
+	assert.doesNotMatch(line ?? "", /is not listed/);
+});

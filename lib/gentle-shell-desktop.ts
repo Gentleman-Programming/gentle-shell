@@ -163,6 +163,7 @@ export interface DesktopPaths {
 	originals: string;
 	localBin: string;
 	keysFile: string;
+	rootsFile: string;
 	keysError: string;
 	keysBackup: string;
 	keysOriginal: string;
@@ -190,6 +191,7 @@ export function desktopPaths(env: Record<string, string | undefined>, home: stri
 		localBin: join(home, ".local", "bin"),
 		// One keys.json on every OS; only Herdr's built-in defaults differ (keys.macos.json on macOS).
 		keysFile: join(herdrHome, "keys.json"),
+		rootsFile: join(herdrHome, "gentle-shell-roots.json"),
 		keysError: join(herdrHome, "keys.error"),
 		keysBackup: join(stateDir, "keys-backup.json"),
 		keysOriginal: join(stateDir, "originals", "keys.json"),
@@ -1120,6 +1122,39 @@ async function openDesktop(ctx: DesktopContext, paths: DesktopPaths, app: string
 
 // --- commands ----------------------------------------------------------------------
 
+// The agent homes Gentle Shell Desktop's mods read without being told
+// (docs/desktop-feed.md, "where readers look").
+const knownRoots = (home: string): string[] => [join(home, ".gentle-shell", "agent"), join(home, ".pi", "agent")];
+
+// The agent home this install runs its sessions in: an explicit override, else the
+// Agent a separate install recorded in installation.json, else Pi's default.
+export function desktopAgentDir(ctx: DesktopContext): string {
+	const explicit = ctx.env.GENTLE_PI_AGENT_HOME || ctx.env.PI_CODING_AGENT_DIR;
+	if (explicit) return explicit;
+	try {
+		const installRoot = join(ctx.packageRoot, "..", "..", "..", "..");
+		const agent = JSON.parse(readFileSync(join(installRoot, "installation.json"), "utf8"))?.Agent;
+		if (typeof agent === "string" && agent.length > 0) return agent;
+	} catch {}
+	return join(ctx.home, ".pi", "agent");
+}
+
+// A separate install keeps its agent outside the homes the mods read, so the window
+// shows "No Gentle Shell session here" until that home is listed. Report it, read-only.
+export function rootsStatusLine(paths: DesktopPaths, home: string, agentDir: string): string | undefined {
+	if (knownRoots(home).includes(agentDir)) return undefined;
+	let listed: string[] = [];
+	try {
+		const parsed = JSON.parse(readFileSync(paths.rootsFile, "utf8"));
+		const roots = Array.isArray(parsed) ? parsed : parsed?.roots;
+		if (Array.isArray(roots)) listed = roots.filter((root: unknown): root is string => typeof root === "string");
+	} catch {}
+	const expanded = listed.map((root) => (root === "~" ? home : root.startsWith("~/") ? join(home, root.slice(2)) : root));
+	return expanded.includes(agentDir)
+		? `  Roots: ${agentDir} listed in ${paths.rootsFile}`
+		: `  Roots: ${agentDir} is not listed in ${paths.rootsFile}, so the mods cannot read that agent home; add {"roots": ["${agentDir}"]}`;
+}
+
 function printStatus(ctx: DesktopContext, paths: DesktopPaths, assets: Assets | { error: string }, release: HerdrAppRelease): number {
 	const app = detectApp(ctx);
 	const shipped = "mods" in assets ? assets.mods : [];
@@ -1131,6 +1166,8 @@ function printStatus(ctx: DesktopContext, paths: DesktopPaths, assets: Assets | 
 	ctx.io.out(`  Gentle Shell: ${ctx.shellVersion}`);
 	ctx.io.out(app ? `  Herdr app: ${app.version ?? "unknown version"} at ${app.path} (${needs})` : `  Herdr app: not installed (${needs})`);
 	ctx.io.out(`  Herdr home: ${paths.herdrHome}`);
+	const rootsLine = rootsStatusLine(paths, ctx.home, desktopAgentDir(ctx));
+	if (rootsLine !== undefined) ctx.io.out(rootsLine);
 	ctx.io.out(existsSync(paths.layoutFile) ? `  Layout ${DESKTOP_LAYOUT}: installed at ${paths.layoutFile}` : `  Layout ${DESKTOP_LAYOUT}: not installed`);
 	const themes = "mods" in assets ? assets.themes : [];
 	if (themes.length > 0) {

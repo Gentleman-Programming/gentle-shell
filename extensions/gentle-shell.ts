@@ -3511,6 +3511,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// applies from the next run without reload. Fail open keeps a broken file
 			// notifying like today; an explicit toggle here replaces that file.
 			const tpsPolicy = () => resolveTpsSettings({ gentlePiConfigHome: doubleEscCancelConfigHome });
+			category = "Notifications";
 			for (const enabled of [true, false] as const) rows.push({
 				category,
 				label: () => `TPS usage notification: ${enabled ? "ON" : "OFF"}${tpsPolicy().settings.enabled === enabled ? " (current)" : ""}`,

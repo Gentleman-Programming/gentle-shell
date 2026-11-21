@@ -700,6 +700,207 @@ test("ensureDirectExposure: two unknown file identities are a conflict, never a 
 	assert.deepEqual(readdirSync(dir), ["mcp.json"], "the retries leave no temp file or lock behind");
 });
 
+test("atomicWriteFile: a destination replaced while the replacement is staged is not published", () => {
+	// Staging the replacement text is the whole window between the update's final pre-publish
+	// verification and the rename: a destination whose identity changed while the temporary file
+	// was written must refuse the rename, not publish a document computed from the earlier read.
+	const dest = "/home/.pi/agent/mcp.json";
+	const savedByEditor = '{\n  "saved": "by editor"\n}';
+	const files: Record<string, string> = { [dest]: WITH_CODEGRAPH };
+	const identities = new Map<string, string>([[dest, "dev:1:1:20"]]);
+	let renames = 0;
+	const io: AtomicFileIo = {
+		resolve: (path) => path,
+		modeOf: () => 0o644,
+		identityOf: (path) => identities.get(path),
+		writeExclusive: (path, text) => {
+			files[path] = text;
+			if (path.includes(".tmp-")) {
+				// the concurrent atomic save lands while the replacement text is being staged
+				files[dest] = savedByEditor;
+				identities.set(dest, "dev:2:2:20");
+			}
+		},
+		rename: (from, to) => {
+			renames += 1;
+			files[to] = files[from]!;
+			delete files[from];
+		},
+		remove: (path) => {
+			delete files[path];
+		},
+	};
+	assert.throws(() => atomicWriteFile(dest, "{}\n", io, "dev:1:1:20"), /was replaced while the replacement was staged/);
+	assert.equal(renames, 0, "the staged replacement never renames over the newer save");
+	assert.equal(files[dest], savedByEditor, "the concurrent save survives at the destination");
+	assert.deepEqual(Object.keys(files), [dest], "the abandoned temporary file is cleaned up");
+});
+
+test("ensureDirectExposure: an editor's save while the replacement is staged survives and the update restarts onto it", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-stage-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	// The editor's save lands after the update's final pre-publish checks, while the replacement
+	// text is being staged: the publication must refuse the rename and the bounded restart must
+	// re-apply the field on top of the editor's content instead of discarding it.
+	const editorSaved = JSON.stringify(
+		{ mcpServers: { codegraph: { command: "codegraph", args: ["serve", "--mcp"], env: { EDITED: "yes" } }, context7: { command: "npx" } } },
+		null,
+		2,
+	);
+	let publishes = 0;
+	const io: EnsureExposureIo = {
+		read: (path) => (existsSync(path) ? readFileSync(path, "utf8") : undefined),
+		identityOf: (path) => fileIdentity(path),
+		write: (path, text, expectedIdentity) => {
+			publishes += 1;
+			if (publishes === 1) {
+				const staged = join(dir, ".editor-save");
+				writeFileSync(staged, editorSaved, "utf8");
+				renameSync(staged, path);
+			}
+			atomicWriteFile(path, text, undefined, expectedIdentity);
+		},
+	};
+	assert.equal(ensureDirectExposure(config, io).outcome, "added", "the restart publishes onto the editor's content");
+	assert.equal(publishes, 2, "the refused publication is followed by exactly one restart");
+	const final = JSON.parse(readFileSync(config, "utf8")) as { mcpServers: { codegraph: { exposure: string; env: { EDITED: string } } } };
+	assert.equal(final.mcpServers.codegraph.env.EDITED, "yes", "the editor's save is not discarded");
+	assert.equal(final.mcpServers.codegraph.exposure, "direct", "the field still lands on the saved content");
+});
+
+test("ensureDirectExposure: the publish preserves every sibling byte, including JSON numbers a restringify would corrupt", () => {
+	const raw = '{"mcpServers":{"codegraph":{"command":"codegraph","args":["serve","--mcp"]},"telemetry":{"sessionId":9007199254740993,"scale":1e2,"signed":-0.5,"count":0}}}\n';
+	const { io, writes } = harness({ "/f": raw });
+	assert.equal(ensureDirectExposure("/f", io).outcome, "added");
+	const text = writes.get("/f")!;
+	assert.ok(text.includes('"sessionId":9007199254740993'), "the unsafe integer keeps its exact spelling");
+	assert.ok(text.includes('"scale":1e2'), "exponent spellings are not normalized");
+	assert.ok(text.includes('"signed":-0.5'), "negative fractions keep their sign");
+	assert.equal(
+		text,
+		'{"mcpServers":{"codegraph":{"exposure": "direct", "command":"codegraph","args":["serve","--mcp"]},"telemetry":{"sessionId":9007199254740993,"scale":1e2,"signed":-0.5,"count":0}}}\n',
+		"the document is the verified text with the field spliced in and nothing else changed",
+	);
+	const written = JSON.parse(text) as { mcpServers: { codegraph: { exposure: string }; telemetry: { scale: number } } };
+	assert.equal(written.mcpServers.codegraph.exposure, "direct");
+	assert.equal(written.mcpServers.telemetry.scale, 100, "the exponent literal still parses to its value");
+});
+
+test("ensureDirectExposure: the splice reaches the codegraph entry alone, past decoys and escapes, and formats an empty entry", () => {
+	{
+		// Key-shaped words inside string values, a sibling server's own "codegraph" property,
+		// and escaped quotes must not divert the insertion from the real entry.
+		const raw = '{"mcpServers":{"codegraph":{"command":"codegraph","note":"quote \\" brace } mcpServers"},"sibling":{"codegraph":{"nested":true}},"last":1}}\n';
+		const { io, writes } = harness({ "/f": raw });
+		assert.equal(ensureDirectExposure("/f", io).outcome, "added");
+		assert.equal(
+			writes.get("/f"),
+			'{"mcpServers":{"codegraph":{"exposure": "direct", "command":"codegraph","note":"quote \\" brace } mcpServers"},"sibling":{"codegraph":{"nested":true}},"last":1}}\n',
+			"only the codegraph entry receives the field, byte-for-byte otherwise",
+		);
+		const written = JSON.parse(writes.get("/f")!) as { mcpServers: Record<string, unknown> };
+		assert.deepEqual(written.mcpServers["sibling"], { codegraph: { nested: true } }, "the sibling server is untouched");
+		assert.equal(written.mcpServers["last"], 1);
+	}
+	{
+		// An empty entry object takes the field alone, and a document without a trailing newline
+		// gains exactly that one byte.
+		const { io, writes } = harness({ "/f": '{"mcpServers":{"codegraph":{}}}' });
+		assert.equal(ensureDirectExposure("/f", io).outcome, "added");
+		assert.equal(writes.get("/f"), '{"mcpServers":{"codegraph":{"exposure": "direct"}}}\n');
+	}
+});
+
+test("takeOverStaleConfigLock: a restore the filesystem refuses keeps the displaced record recoverable", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-takeover-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	const lock = lockPathFor(config);
+	writeFileSync(lock, "9:crashed\n", "utf8");
+	const abandoned = new Date(Date.now() - 60_000);
+	utimesSync(lock, abandoned, abandoned);
+	const observed = { mtimeMs: statSync(lock).mtimeMs, content: readFileSync(lock, "utf8") };
+	// Between the observation and the takeover another writer recovered the lock; when the
+	// filesystem then refuses the hard-link restore outright, the moved record — the successor's
+	// only copy — must stay on disk instead of being deleted as if the path were occupied.
+	writeFileSync(lock, "7:fresh\n", "utf8");
+	const refused = new Error("EPERM: operation not permitted") as NodeJS.ErrnoException;
+	refused.code = "EPERM";
+	assert.equal(takeOverStaleConfigLock(config, observed, { link: () => {
+		throw refused;
+	} }), false);
+	const leftovers = readdirSync(dir).filter((name) => name.startsWith(`.${basename(lock)}.stale-`));
+	assert.equal(leftovers.length, 1, "the displaced record survives beside the lock");
+	assert.equal(readFileSync(join(dir, leftovers[0]!), "utf8"), "7:fresh\n", "the retained claim is the successor's record");
+	assert.equal(existsSync(lock), false, "the unresolvable lock path is left empty rather than guessed at");
+});
+
+test("releaseConfigLock: a restore the filesystem refuses keeps the successor's record recoverable", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-release-refused-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	const lock = lockPathFor(config);
+	assert.equal(acquireConfigLock(config), true);
+	writeFileSync(lock, "4321:successor\n", "utf8"); // the takeover a paused holder resumes to
+	const refused = new Error("EPERM: operation not permitted") as NodeJS.ErrnoException;
+	refused.code = "EPERM";
+	releaseConfigLock(config, { link: () => {
+		throw refused;
+	} });
+	const leftovers = readdirSync(dir).filter((name) => name.startsWith(`.${basename(lock)}.release-`));
+	assert.equal(leftovers.length, 1, "the successor's only record is not deleted by the failed restore");
+	assert.equal(readFileSync(join(dir, leftovers[0]!), "utf8"), "4321:successor\n");
+	assert.equal(existsSync(lock), false, "the unresolvable path stays empty rather than guessed at");
+});
+
+test("releaseConfigLock: a path a newcomer already re-acquired keeps the newcomer and drops the displaced record", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-occupied-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	const lock = lockPathFor(config);
+	assert.equal(acquireConfigLock(config), true);
+	writeFileSync(lock, "4321:successor\n", "utf8");
+	const occupied = new Error("EEXIST: file already exists") as NodeJS.ErrnoException;
+	occupied.code = "EEXIST";
+	releaseConfigLock(config, {
+		link: (from, to) => {
+			// the newcomer acquires the emptied path before the restore attempt lands
+			writeFileSync(to, "5:newcomer\n", "utf8");
+			throw occupied;
+		},
+	});
+	assert.equal(readFileSync(lock, "utf8"), "5:newcomer\n", "the new owner's lock is untouched");
+	assert.deepEqual(readdirSync(dir).sort(), [".mcp.json.lock", "mcp.json"], "the displaced record is dropped with no leftover claim");
+});
+
+test("releaseConfigLock: a successor that acquires inside the release window keeps its lock", (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-window-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	const lock = lockPathFor(config);
+	assert.equal(acquireConfigLock(config), true);
+	// The interleaving the take-aside protocol exists for: the release has already renamed its
+	// own record aside and observed it, the lock path is empty, and a successor acquires right
+	// then — before the release removes what it moved. A read-then-unlink implementation would
+	// delete the successor's lock here; the claim protocol must leave it intact.
+	let observedOwn: string | undefined;
+	releaseConfigLock(config, {
+		afterObserved: (observed) => {
+			observedOwn = observed;
+			writeFileSync(lock, "7:successor\n", "utf8");
+		},
+	});
+	assert.match(observedOwn ?? "", /^\d+:/, "the release observed its own moved token");
+	assert.equal(readFileSync(lock, "utf8"), "7:successor\n", "the successor's token survives the release");
+	assert.deepEqual(readdirSync(dir).sort(), [".mcp.json.lock", "mcp.json"], "the release claim is removed with no leftovers");
+});
+
 test("ensureDirectExposure: an unknown observation recovers when the retry observes one proven identity", (t) => {
 	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-recover-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));

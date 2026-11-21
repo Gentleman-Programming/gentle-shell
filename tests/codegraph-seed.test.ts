@@ -39,6 +39,23 @@ function worktreePair(t: test.TestContext): { main: string; worktree: string } {
 	return { main, worktree };
 }
 
+/** A main checkout whose Git metadata lives in --separate-git-dir storage, plus a linked
+ * worktree of it: the shape whose common directory sits outside the main checkout. With
+ * attachWorktreeConfig, core.worktree names the checkout back — the pointer submodules
+ * keep — so the main checkout stays discoverable from the linked worktree. */
+function separateGitDirPair(t: test.TestContext, attachWorktreeConfig = true): { main: string; worktree: string } {
+	const base = mkdtempSync(join(tmpdir(), "gentle-pi-seed-separate-"));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const main = join(base, "main");
+	git(["init", `--separate-git-dir=${join(base, "git-storage")}`, "-b", "main", main], base);
+	if (attachWorktreeConfig) git(["config", "core.worktree", main], main);
+	git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "fixture"], main);
+	const worktree = join(base, "linked");
+	git(["worktree", "add", "-b", "feature", worktree], main);
+	writeDb(main);
+	return { main, worktree };
+}
+
 function writeDb(root: string): void {
 	mkdirSync(join(root, ".codegraph"), { recursive: true });
 	const db = new DatabaseSync(join(root, ".codegraph", "codegraph.db"));
@@ -109,6 +126,18 @@ test("worktreeMainRoot: the linked worktree resolves to its main checkout, the m
 	const { main, worktree } = worktreePair(t);
 	assert.equal(worktreeMainRoot(worktree), realpathSync(main), "a linked worktree's main is the common dir's root");
 	assert.equal(worktreeMainRoot(main), undefined, "the main checkout itself has no seeding source");
+});
+
+test("worktreeMainRoot: --separate-git-dir storage resolves the main checkout from the worktree list", (t) => {
+	const { main, worktree } = separateGitDirPair(t);
+	assert.equal(worktreeMainRoot(worktree), realpathSync(main), "the main working tree comes from Git's metadata, not the common dir's parent");
+	assert.equal(worktreeMainRoot(main), undefined, "a main checkout whose .git file points at separate storage is still the main, never a linked worktree");
+});
+
+test("worktreeMainRoot: --separate-git-dir without core.worktree fails closed instead of probing the metadata parent", (t) => {
+	const { main, worktree } = separateGitDirPair(t, false);
+	assert.equal(worktreeMainRoot(worktree), undefined, "no pointer names the main checkout, so no directory is probed on a guess");
+	assert.equal(worktreeMainRoot(main), undefined, "a main checkout whose .git file points at separate storage is still the main, never a linked worktree");
 });
 
 test("seedWorktreeIndex: not-seedable for a main checkout or a worktree without a main index", async (t) => {
@@ -206,6 +235,59 @@ test("seedWorktreeIndex: symlinked destinations never receive or redirect seed w
 	const redirected = await seedWorktreeIndex(seedHarness(worktree).input);
 	assert.equal(redirected.outcome, "seed-failed", "a symlinked index directory is not seeded: fail-closed");
 	assert.deepEqual(readdirSync(elsewhere), [], "nothing is ever written through the symlinked index directory");
+});
+
+test("a .codegraph symlink at seed entry is rejected before target-exists acceptance", async (t) => {
+	if (process.platform === "win32") return t.skip("creating symlinks needs privileges on Windows");
+	const { main, worktree } = worktreePair(t);
+	// The link makes stat find the main checkout's database: exactly the index whose
+	// acceptance as target-exists would hand readiness another checkout's database to warm.
+	symlinkSync(main, join(worktree, ".codegraph"), "dir");
+	const { input, calls } = seedHarness(worktree);
+
+	const result = await seedWorktreeIndex(input);
+
+	assert.equal(result.outcome, "seed-failed", "a database reached through a linked destination is another checkout's index: fail closed");
+	assert.deepEqual(calls, [], "no snapshot and no validating sync ran");
+});
+
+test("an index published by the waited-on session in a real .codegraph directory is accepted", async (t) => {
+	const { worktree } = worktreePair(t);
+	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-present-real-"));
+	t.after(() => rmSync(sandbox, { recursive: true, force: true }));
+	const locksDir = sandbox;
+	writeFileSync(lockPathFor(worktree, "init", locksDir), JSON.stringify({ kind: "init", pid: process.pid, startedAt: Date.now(), expiresAt: Date.now() + 60_000 }) + "\n");
+	const { input, calls } = seedHarness(worktree, { locksDir, initLockWaitMs: 5_000 });
+	// The seed's synchronous prefix has run: it is parked polling the held init lock, where
+	// the stat-based exists() probe decides that the other session's init finished.
+	const pending = seedWorktreeIndex(input);
+	writeDb(worktree);
+
+	const result = await pending;
+
+	assert.equal(result.outcome, "target-exists", "a database published into a real .codegraph directory while the seed waited is accepted, never re-seeded");
+	assert.deepEqual(calls, [], "no snapshot and no validating sync ran");
+});
+
+test("a database found through a swapped-in .codegraph link after lock acquisition is never accepted", async (t) => {
+	if (process.platform === "win32") return t.skip("creating symlinks needs privileges on Windows");
+	const { main, worktree } = worktreePair(t);
+	const sandbox = mkdtempSync(join(tmpdir(), "gentle-pi-seed-link-acquired-"));
+	t.after(() => rmSync(sandbox, { recursive: true, force: true }));
+	const locksDir = sandbox;
+	const lockPath = lockPathFor(worktree, "init", locksDir);
+	writeFileSync(lockPath, JSON.stringify({ kind: "init", pid: process.pid, startedAt: Date.now(), expiresAt: Date.now() + 60_000 }) + "\n");
+	const { input, calls } = seedHarness(worktree, { locksDir, initLockWaitMs: 5_000 });
+	// Parked in the lock wait; the destination then becomes a link to an indexed checkout
+	// and the lease goes free, so the seed acquires and re-checks the destination itself.
+	const pending = seedWorktreeIndex(input);
+	symlinkSync(main, join(worktree, ".codegraph"), "dir");
+	rmSync(lockPath);
+
+	const result = await pending;
+
+	assert.equal(result.outcome, "seed-failed", "the post-acquisition database probe is re-validated against the destination: a link is never target-exists");
+	assert.deepEqual(calls, [], "no snapshot and no validating sync ran");
 });
 
 test("a failed validating sync leaves no published codegraph.db", async (t) => {
@@ -339,6 +421,9 @@ test("seedWorktreeIndex: two real sessions seeding one worktree copy exactly onc
 	assert.deepEqual(codes, [0, 0]);
 	const lines = readFileSync(log, "utf8").trim().split("\n").filter((line) => line.length > 0);
 	assert.equal(lines.length, 1, `exactly one seed ran, got: ${lines.join(" | ")}`);
+	// A log line written before publication is not an index: the race's winner must leave a
+	// readable database carrying the committed fixture row, or the copy never happened.
+	assert.deepEqual(markerNotes(join(worktree, ".codegraph", "codegraph.db")), ["committed"], "the winner published a readable database with the committed fixture row");
 });
 
 test("a busy main writer still seeds through a lock-safe snapshot", async (t) => {
@@ -891,4 +976,20 @@ test("a validating sync that fails validation still reports both phases and publ
 	assert.match(lines[0], /^SEED_SNAPSHOT_MS=\d+$/, "snapshot marker format");
 	assert.match(lines[1], /^SEED_SYNC_MS=\d+$/, "the sync marker fires even when validation fails");
 	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "a failed validation publishes nothing");
+});
+
+test("a rejecting validating sync still reports its phase, cleans up, and rejects", async (t) => {
+	const { worktree } = worktreePair(t);
+	const lines: string[] = [];
+	const { input } = seedHarness(worktree, {
+		log: (line) => { lines.push(line); },
+		run: async () => { throw new Error("sync runner crashed"); },
+	});
+
+	await assert.rejects(() => seedWorktreeIndex(input), /sync runner crashed/, "a runner rejection stays a rejection to the caller");
+	assert.equal(lines.length, 2, "both phases ran, so both markers fired");
+	assert.match(lines[0], /^SEED_SNAPSHOT_MS=\d+$/, "snapshot marker format");
+	assert.match(lines[1], /^SEED_SYNC_MS=\d+$/, "the sync marker fires even when the runner rejects");
+	assert.equal(fileAbsent(join(worktree, ".codegraph", "codegraph.db")), true, "nothing is published from a rejected validation");
+	assert.deepEqual(readdirSync(join(worktree, ".codegraph")).sort(), [".gitignore"], "staging is cleaned even on rejection");
 });

@@ -1,8 +1,10 @@
-import { linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { acquireInitLock, defaultLocksDir, indexState, lockPathFor, readLeaseVerdict, type LeaseToken } from "./codegraph-lease.ts";
 import { linkedWorktreeIdentity, SYNC_TIMEOUT_MS } from "./codegraph-readiness.ts";
 import type { SeedOutcome, SeedSyncReport } from "./codegraph-readiness.ts";
+import { worktreeGitEnvironment } from "./session-worktree-registry.ts";
 
 // SeedOutcome and SeedSyncReport are defined in codegraph-readiness.ts (moved there to break
 // the readiness/seed type cycle) and re-exported here for existing seed-side importers.
@@ -44,13 +46,65 @@ export function worktreeMainRoot(cwd: string): string | undefined {
 	// The probe is readiness's linkedWorktreeIdentity: seed already value-imports from readiness
 	// (SYNC_TIMEOUT_MS), so it reuses the probe over that same one-way edge.
 	const identity = linkedWorktreeIdentity(cwd);
-	return identity === undefined ? undefined : dirname(identity.commonDir);
+	if (identity === undefined) return undefined;
+	// The main working tree comes from Git's own metadata, never from dirname(commonDir): with
+	// --separate-git-dir the common directory lives outside the main checkout, and the seed
+	// would probe its parent for the index — silently degrading every linked worktree of
+	// such a checkout to ordinary init instead of seeding.
+	const main = mainWorktreeFromList(cwd, identity.commonDir);
+	if (main === undefined) return undefined;
+	// The `.git`-file probe above cannot tell a linked worktree from a main checkout whose
+	// `.git` file points at a separate common directory; the resolved main working tree can:
+	// when it is this directory itself, there is no main checkout above it to seed from.
+	return main === identity.root ? undefined : main;
+}
+
+/** The main working tree's path: the first entry of `git worktree list --porcelain`, or
+ * undefined when Git cannot answer. When the listing names the common directory itself
+ * (--separate-git-dir storage: Git has no working tree to list there), the main checkout,
+ * when one is attached, is named by core.worktree — absolute, or relative to the git dir,
+ * exactly as submodules attach theirs — and without that pointer no main checkout can be
+ * proven, so nothing is probed on a guess. Same child-process contract as the session
+ * worktree resolver: optional locks off, no inherited GIT_* routing, five-second timeout. */
+function mainWorktreeFromList(cwd: string, commonDir: string): string | undefined {
+	try {
+		const run = (args: readonly string[]) => execFileSync("git", ["--no-optional-locks", "-C", cwd, ...args], {
+			encoding: "utf8",
+			timeout: 5000,
+			stdio: ["ignore", "pipe", "pipe"],
+			shell: false,
+			windowsHide: true,
+			env: worktreeGitEnvironment(),
+		});
+		const first = String(run(["worktree", "list", "--porcelain"])).split(/\r?\n/).find((line) => line.startsWith("worktree "));
+		if (first === undefined) return undefined;
+		const listed = realpathSync(first.slice("worktree ".length));
+		if (listed !== commonDir) return listed;
+		const configured = String(run(["config", "core.worktree"])).replace(/\r?\n$/, "");
+		return configured === "" ? undefined : realpathSync(isAbsolute(configured) ? configured : resolve(commonDir, configured));
+	} catch {
+		return undefined;
+	}
 }
 
 function isFile(path: string): boolean {
 	try {
 		return statSync(path).isFile();
 	} catch {
+		return false;
+	}
+}
+
+/** True when the `.codegraph` destination cannot be this worktree's own index directory: a
+ * symlink — the entry another checkout's index is reached through — or any non-directory.
+ * Only a confirmed absence passes; any other stat failure throws so the seed fails closed on
+ * a destination it could not see. */
+function unsafeIndexDestination(targetDir: string): boolean {
+	try {
+		const target = lstatSync(targetDir);
+		return target.isSymbolicLink() || !target.isDirectory();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		return false;
 	}
 }
@@ -172,13 +226,21 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 	if (mainIndex !== "present") return { outcome: mainIndex === "unknown" ? "seed-failed" : "not-seedable" };
 	const targetDir = join(input.cwd, ".codegraph");
 	const targetDb = join(targetDir, "codegraph.db");
+	// Every `target-exists` acceptance validates the destination first: stat follows a linked
+	// `.codegraph`, and the database found through it is another checkout's index.
+	if (unsafeIndexDestination(targetDir)) return { outcome: "seed-failed" };
 	if (isFile(targetDb)) return { outcome: "target-exists" };
 
 	const lock = await acquireInitLock(input.cwd, {
 		locksDir,
 		waitMs: input.initLockWaitMs,
 	});
-	if (lock.outcome === "present") return { outcome: "target-exists" };
+	if (lock.outcome === "present") {
+		// The lock's exists() probe stats through whatever `.codegraph` is now, so its
+		// "finished" database counts only while the destination is still a real directory.
+		if (unsafeIndexDestination(targetDir)) return { outcome: "seed-failed" };
+		return { outcome: "target-exists" };
+	}
 	if (lock.outcome === "skipped") return { outcome: "deferred" };
 	// Bind every fence to the acquisition, not a successor observed after suspension.
 	const heldNonce = lock.nonce;
@@ -188,17 +250,12 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 		return heldNonce !== undefined && nonce === heldNonce;
 	};
 	try {
-		// Re-checked under the lock: another session may have finished while we waited.
+		// Re-checked under the lock: another session may have finished while we waited — or
+		// planted a link at the destination. The destination is checked first because stat
+		// through a link would report that other checkout's database as this worktree's own,
+		// and a linked directory would redirect every seed write outside the worktree.
+		if (unsafeIndexDestination(targetDir)) return { outcome: "seed-failed" };
 		if (isFile(targetDb)) return { outcome: "target-exists" };
-
-		// A symlinked index directory would redirect every seed write outside the worktree,
-		// so it is rejected before anything is written through it.
-		try {
-			const target = lstatSync(targetDir);
-			if (target.isSymbolicLink() || !target.isDirectory()) return { outcome: "seed-failed" };
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-		}
 		mkdirSync(targetDir, { recursive: true });
 		// Exclusive creation: an existing .gitignore — a regular file or a planted symlink —
 		// is never truncated or followed, so the write cannot land outside the index directory.
@@ -269,8 +326,14 @@ export async function seedWorktreeIndex(input: SeedInput): Promise<{ outcome: Se
 			// SEED_SYNC_MS: the complete validating sync — the injected run, tracked-file
 			// probes and all — so this marker and the snapshot's split the seed end to end.
 			const syncStartedAt = Date.now();
-			const report = await input.run(["sync", "-q"], stagingRoot, SYNC_TIMEOUT_MS);
-			seedMarker(log, `SEED_SYNC_MS=${Date.now() - syncStartedAt}`);
+			let report: SeedSyncReport;
+			try {
+				report = await input.run(["sync", "-q"], stagingRoot, SYNC_TIMEOUT_MS);
+			} finally {
+				// Emitted on rejection too: the runner was started, so its phase is as observable
+				// as a failed snapshot's, while the rejection itself still propagates unchanged.
+				seedMarker(log, `SEED_SYNC_MS=${Date.now() - syncStartedAt}`);
+			}
 			// The staging project deliberately has no source files, so a sync that removed
 			// tracked entries emptied the staged index without reconciling anything: exit 0
 			// or not, that report is a failed validation and never a seedable database.

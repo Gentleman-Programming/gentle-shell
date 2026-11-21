@@ -109,28 +109,10 @@ function fakeInput(cwd: string, overrides: Partial<ReadinessInput> = {}): Readin
 const noUpdateCheck = async (): Promise<CodegraphUpdateCheck> => ({ ran: false });
 const noInstallCheck = async (): Promise<InstallOutcome> => ({ installed: true });
 
-/** An update-check outcome with a captured running-binary version and nothing updated. */
-const currentVersionCheck = (version: string): (() => Promise<CodegraphUpdateCheck>) =>
-	async () => ({ ran: false, version });
-
-/** The outcome a session that just updated 1.6.3 to 1.6.4 reports. */
+/** The outcome a session whose update check ran reports; equal from/to is a check that
+ * ran without changing the binary version. */
 const updatedCheck = (from: string, to: string): (() => Promise<CodegraphUpdateCheck>) =>
 	async () => ({ ran: true, version: from, from, to });
-
-/** Writes the index stamp exactly as the readiness path does, for fixture setup. */
-function writeStamp(cwd: string, version: string): void {
-	mkdirSync(join(cwd, ".codegraph"), { recursive: true });
-	writeFileSync(join(cwd, ".codegraph", "writer-version"), version);
-}
-
-/** Reads the index stamp a finished readiness pass leaves behind. */
-function readStamp(cwd: string): string | undefined {
-	try {
-		return readFileSync(join(cwd, ".codegraph", "writer-version"), "utf8");
-	} catch {
-		return undefined;
-	}
-}
 
 /** Lets a detached background job settle before its effects are asserted. */
 function settled(): Promise<void> {
@@ -3242,33 +3224,15 @@ test("spawnCodegraph: POSIX spawns the plain argument vector and never consults 
 	assert.equal(recorded.resolutions, 0, "S11: the resolver is consulted on win32 only");
 	assert.deepEqual(recorded.calls, [{ command: "codegraph", args: ["sync", "-q"], options: { cwd: tmpdir(), env: process.env, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] } }]);
 });
-test("prepareReadiness: a successful init or sync stamps the writer version of the binary that ran it", async (t) => {
-	const fresh = dir(t, "stamp-init");
-	writeFileSync(join(fresh, "package.json"), "{}\n");
-	const result = await prepareReadiness(fakeInput(fresh, {
-		installCheck: noInstallCheck,
-		updateCheck: currentVersionCheck("1.6.4"),
-	}));
-	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
-	assert.equal(readStamp(fresh), "1.6.4", "the init path stamps the captured running-binary version");
-
-	const synced = dir(t, "stamp-sync");
-	writeDb(synced);
-	const syncResult = await prepareReadiness(fakeInput(synced, {
-		installCheck: noInstallCheck,
-		updateCheck: currentVersionCheck("1.6.4"),
-	}));
-	assert.deepEqual(syncResult, { action: "sync", ok: true, warm: "ok" });
-	assert.equal(readStamp(synced), "1.6.4", "the sync path stamps the captured running-binary version too");
-});
-
-test("prepareReadiness: an update this session stops the project daemon, removes only the database, and re-inits under the init lock", async (t) => {
+test("prepareReadiness: an update this session stops the project daemon, removes the whole .codegraph folder, and re-inits under the init lock", async (t) => {
 	const cwd = dir(t, "update-reindex");
 	writeDb(cwd);
-	writeStamp(cwd, "1.6.3");
+	// A second artifact beside the database: whole-folder removal takes it too, so its absence
+	// at init time proves the folder — not just codegraph.db — was removed.
+	writeFileSync(join(cwd, ".codegraph", "daemon.log"), "old daemon log");
 	writeFileSync(join(cwd, "package.json"), "{}\n");
 	// A live daemon for the project: a real child process registered beside a present socket, the
-	// shape liveDaemons answers true for — the update must stop it before the database is removed.
+	// shape liveDaemons answers true for — the update must stop it before the folder is removed.
 	const registry = dir(t, "update-reindex-registry");
 	const socket = join(registry, "live.sock");
 	writeFileSync(socket, "");
@@ -3284,6 +3248,7 @@ test("prepareReadiness: an update this session stops the project daemon, removes
 	const locks = dir(t, "update-reindex-locks");
 	const runs: string[] = [];
 	const lockHeldByUs: boolean[] = [];
+	const folderGoneAtInit: boolean[] = [];
 	const events: unknown[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
 		registryDir: registry,
@@ -3293,8 +3258,10 @@ test("prepareReadiness: an update this session stops the project daemon, removes
 		run: async (args) => {
 			runs.push(args.join(" "));
 			if (args[0] === "init") {
+				folderGoneAtInit.push(!existsSync(join(cwd, ".codegraph")));
 				const token = JSON.parse(readFileSync(lockPathFor(cwd, "init", locks), "utf8")) as { pid: number };
 				lockHeldByUs.push(token.pid === process.pid);
+				mkdirSync(join(cwd, ".codegraph"), { recursive: true });
 				writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "index");
 			}
 			return true;
@@ -3304,8 +3271,8 @@ test("prepareReadiness: an update this session stops the project daemon, removes
 	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" }, "the forced reindex is an ordinary init for the rest of the flow");
 	assert.deepEqual(runs, ["init -y"], "no sync on the removed index: the re-init is the only command");
 	assert.deepEqual(lockHeldByUs, [true], "the re-init runs through the held init lock, never beside it");
-	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "index", "the rebuilt database replaced the removed one");
-	assert.equal(readStamp(cwd), "1.6.4", "the rebuilt index carries the new binary's stamp");
+	assert.deepEqual(folderGoneAtInit, [true], "the whole .codegraph folder — not only the database — is gone when the re-init starts");
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "index", "the rebuilt database replaced the removed folder");
 	assert.deepEqual(events, [{ action: "init", ok: true, initAttempts: 1, update: { from: "1.6.3", to: "1.6.4" } }], "the onIndexed report says the reindex came from an update");
 	const deadline = Date.now() + 3_000;
 	let daemonAlive = true;
@@ -3317,62 +3284,28 @@ test("prepareReadiness: an update this session stops the project daemon, removes
 			daemonAlive = false;
 		}
 	}
-	assert.equal(daemonAlive, false, "the project's live daemon was stopped before the database was removed (win file locks)");
+	assert.equal(daemonAlive, false, "the project daemon was stopped before the folder was removed (win file locks)");
 });
 
-test("prepareReadiness: a stamp matching the running version changes nothing — sync as before", async (t) => {
-	const cwd = dir(t, "stamp-match");
+test("prepareReadiness: an update check that ran without changing the binary version leaves everything alone", async (t) => {
+	const cwd = dir(t, "update-unchanged");
 	writeDb(cwd);
-	writeStamp(cwd, "1.6.4");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
 	const runs: string[] = [];
+	const events: unknown[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
 		installCheck: noInstallCheck,
-		updateCheck: currentVersionCheck("1.6.4"),
+		updateCheck: updatedCheck("1.6.4", "1.6.4"),
 		run: async (args) => {
 			runs.push(args.join(" "));
 			return true;
 		},
+		onIndexed: (report) => events.push({ ...report }),
 	}));
-	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
-	assert.deepEqual(runs, ["sync -q"], "an up-to-date stamp reindexes nothing: the ordinary sync runs");
-	assert.equal(readStamp(cwd), "1.6.4");
-});
-
-test("prepareReadiness: an index already stamped with the updated version is left alone", async (t) => {
-	// The second session after an update: the first session's reindex stamped the new version, so
-	// this session's check (memoized ran=true) must not remove and re-init the rebuilt index.
-	const cwd = dir(t, "stamp-second-session");
-	writeDb(cwd);
-	writeStamp(cwd, "1.6.4");
-	const runs: string[] = [];
-	const result = await prepareReadiness(fakeInput(cwd, {
-		installCheck: noInstallCheck,
-		updateCheck: updatedCheck("1.6.3", "1.6.4"),
-		run: async (args) => {
-			runs.push(args.join(" "));
-			return true;
-		},
-	}));
-	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
-	assert.deepEqual(runs, ["sync -q"], "the stamp the reindex wrote ends the forced reindexing");
-});
-
-test("prepareReadiness: a stamp-less legacy index with no update this session is left alone", async (t) => {
-	const cwd = dir(t, "stamp-legacy");
-	writeDb(cwd);
-	const runs: string[] = [];
-	const result = await prepareReadiness(fakeInput(cwd, {
-		installCheck: noInstallCheck,
-		updateCheck: currentVersionCheck("1.6.4"),
-		run: async (args) => {
-			runs.push(args.join(" "));
-			return true;
-		},
-	}));
-	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" });
-	assert.deepEqual(runs, ["sync -q"], "no update ran: a missing stamp never reindexes");
-	assert.equal(indexState(cwd), "present", "the legacy index is untouched");
-	assert.equal(readStamp(cwd), "1.6.4", "its next successful sync adopts it into stamping");
+	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" }, "an update that moved nothing reindexes nothing: the ordinary sync runs");
+	assert.deepEqual(runs, ["sync -q"]);
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "index", "nothing was deleted from the index folder");
+	assert.deepEqual(events, [{ action: "sync", ok: true, daemonAlive: false }], "no update rides the report");
 });
 
 test("prepareReadiness: a failed update check leaves the readiness flow unchanged", async (t) => {
@@ -3393,14 +3326,13 @@ test("prepareReadiness: a failed update check leaves the readiness flow unchange
 	}));
 	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" }, "a rejecting check fails open: the readiness outcome is unchanged");
 	assert.deepEqual(runs, ["sync -q"]);
-	assert.equal(readStamp(cwd), undefined, "no version was captured: nothing is stamped");
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "index", "the failed check deletes nothing");
 	assert.deepEqual(events, [{ action: "sync", ok: true, daemonAlive: false }], "no update rides the report");
 });
 
 test("prepareReadiness: the forced reindex never removes an index this session cannot rebuild", async (t) => {
 	const cwd = dir(t, "update-no-rebuild");
 	writeDb(cwd);
-	writeStamp(cwd, "1.6.3");
 	const runs: string[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
 		isProjectRoot: () => false,
@@ -3412,28 +3344,6 @@ test("prepareReadiness: the forced reindex never removes an index this session c
 		},
 	}));
 	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" }, "a non-root keeps its present index: the plan stays sync");
-	assert.deepEqual(runs, ["sync -q"], "the stale database is never removed when no init would follow");
+	assert.deepEqual(runs, ["sync -q"], "the index folder is never removed when no init would follow");
 	assert.equal(indexState(cwd), "present");
-});
-
-test("prepareReadiness: a stamp written by an older binary without any update this session still reindexes", async (t) => {
-	// The previous session updated the binary and died before reindexing (or the stamp drifted in
-	// any other way): a readable stamp that names a different version marks the index stale.
-	const cwd = dir(t, "stamp-mismatch");
-	writeDb(cwd);
-	writeStamp(cwd, "1.6.3");
-	writeFileSync(join(cwd, "package.json"), "{}\n");
-	const runs: string[] = [];
-	const result = await prepareReadiness(fakeInput(cwd, {
-		installCheck: noInstallCheck,
-		updateCheck: currentVersionCheck("1.6.4"),
-		run: async (args) => {
-			runs.push(args.join(" "));
-			if (args[0] === "init") writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "index");
-			return true;
-		},
-	}));
-	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
-	assert.deepEqual(runs, ["init -y"], "the mismatched stamp forces the re-init under the lock");
-	assert.equal(readStamp(cwd), "1.6.4");
 });

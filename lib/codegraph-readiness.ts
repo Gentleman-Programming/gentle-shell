@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, rmSync } from "node:fs";
 import { copyFile, cp, link, readdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -520,36 +520,10 @@ export function sessionSkipsReadiness(env: Record<string, string | undefined>, r
 	return false; // reload and the child case returned above; skipsSession can only see the negative
 }
 
-/** The file inside .codegraph that records the version of the binary whose init or sync last
- * wrote this index; a stamp naming a version other than the running binary marks the index
- * stale and forces a reindex (S6: the running binary is version truth, never the package manifest). */
-const WRITER_VERSION_FILE = "writer-version";
-
-/** The stamp's version text, or undefined when it is missing or unreadable. */
-function readWriterVersion(cwd: string): string | undefined {
-	try {
-		const stamped = readFileSync(join(cwd, ".codegraph", WRITER_VERSION_FILE), "utf8").trim();
-		return stamped.length > 0 ? stamped : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/** Writes the stamp with the running-binary version captured this session; best effort and
- * fail-open — an unwritable index directory skips stamping and never fails the readiness pass. */
-function writeWriterVersion(cwd: string, version: string): void {
-	try {
-		mkdirSync(join(cwd, ".codegraph"), { recursive: true });
-		writeFileSync(join(cwd, ".codegraph", WRITER_VERSION_FILE), version);
-	} catch {
-		/* the stamp is advisory: nothing readiness-shaped depends on it */
-	}
-}
-
 /** Stops the project's live daemons by their registry records: after a binary update the old
  * daemon keeps the old database open (a Windows file lock) and serves the old formats, so the
  * forced reindex removes them first. Best effort — a daemon that cannot be stopped leaves the
- * database removal to fail open in the caller. */
+ * folder removal to fail open in the caller. */
 function stopProjectDaemons(cwd: string, registryDir?: string): void {
 	try {
 		for (const daemon of liveDaemons(cwd, registryDir)) {
@@ -662,32 +636,25 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			} catch {
 				update = { ran: false };
 			}
-			// The version this pass writes indexes under: the captured running-binary version, or
-			// the version just updated to. Undefined when even the version probe failed — and then
-			// nothing below stamps or reindexes anything.
-			const writerVersion = update.ran ? update.to : update.version;
+			// A successful update that actually changed the binary version forces one rebuild of
+			// this project's index: the old binary's on-disk formats can outlive the binary, so the
+			// whole .codegraph folder is removed and the ordinary init path below rebuilds it under
+			// the init lock. The check's own from/to is the only trigger — no stamp is read or
+			// written — so a check that ran without moving the version deletes nothing. Both guards
+			// stay: only an index this session could rebuild (planIndexAction answers "init" for an
+			// absent one) is ever removed, and the project's daemons are stopped first — the old
+			// daemon holds the old database open (a Windows file lock) and serves the old formats.
 			let reindexed: { from: string; to: string } | undefined;
-			if (writerVersion !== undefined) {
-				try {
-					if (indexState(input.cwd) === "present") {
-						const stamped = readWriterVersion(input.cwd);
-						// A readable stamp naming another version marks the index stale; a missing or
-						// unreadable stamp is stale only right after an update — a legacy index with no
-						// update this session is left alone, not reindexed every session.
-						const stale = update.ran ? stamped !== writerVersion : stamped !== undefined && stamped !== writerVersion;
-						if (stale && planIndexAction(input.cwd, "absent", input.isProjectRoot) === "init") {
-							// The old binary's daemon holds the old database open and its formats can
-							// outlive the binary: stop the project's daemons, remove ONLY the regenerated
-							// index artifact, and let the init path below rebuild under the init lock. An
-							// index this session could not rebuild (no markers, not a root) is never removed.
-							stopProjectDaemons(input.cwd, input.registryDir);
-							rmSync(join(input.cwd, ".codegraph", "codegraph.db"), { force: true });
-							reindexed = { from: update.ran ? update.from ?? writerVersion : stamped ?? writerVersion, to: writerVersion };
-						}
-					}
-				} catch {
-					/* fail open: the stale index keeps its plan and the ordinary sync runs */
+			try {
+				if (update.ran && update.from !== undefined && update.to !== undefined && update.from !== update.to
+					&& indexState(input.cwd) === "present"
+					&& planIndexAction(input.cwd, "absent", input.isProjectRoot) === "init") {
+					stopProjectDaemons(input.cwd, input.registryDir);
+					rmSync(join(input.cwd, ".codegraph"), { recursive: true, force: true });
+					reindexed = { from: update.from, to: update.to };
 				}
+			} catch {
+				/* fail open: the existing index keeps its plan and the ordinary sync runs */
 			}
 			const action = planIndexAction(input.cwd, indexState(input.cwd), input.isProjectRoot);
 			if (action === "none") return { action, ok: true, warm: "skipped" };
@@ -800,10 +767,6 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 					}
 				}
 			}
-			// A successful init or sync ran with this session's captured binary version: stamp it, so
-			// the next session can tell an index the running binary wrote from one it did not. A
-			// stand-down (another session owns the moment) ran nothing here and stamps nothing.
-			if (writerVersion !== undefined && ok && !standDown) writeWriterVersion(input.cwd, writerVersion);
 			try { input.onIndexed?.(action === "sync" ? { action, ok, daemonAlive: alive, ...(syncInfo.get() ?? {}), ...(reindexed === undefined ? {} : { update: reindexed }) } : { action, ok, ...(initAttempts === undefined ? {} : { initAttempts }), ...(initStop === undefined ? {} : { initStop }), ...(reindexed === undefined ? {} : { update: reindexed }) }); } catch { /* never worth stopping the warm-up */ }
 			// A child that just seeded or initialised its own worktree never warms a daemon: it must
 			// not reach for the parent-shared project daemon at session start, and maybeRewarm

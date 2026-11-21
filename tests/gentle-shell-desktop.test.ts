@@ -935,8 +935,8 @@ test("--status reports an agent home the mods cannot read", async (t) => {
 	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
 	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
 	assert.ok(line !== undefined, f.out.join("\n"));
-	assert.match(line ?? "", /is not listed in .*gentle-shell-roots\.json/);
-	assert.match(line ?? "", /add \{"roots": \["/);
+	assert.match(line ?? "", /is not read by the mods/);
+	assert.match(line ?? "", /add \["/);
 });
 
 test("--status accepts an agent home listed in the roots file", async (t) => {
@@ -977,7 +977,7 @@ test("--status reads the agent home a separate install recorded", async (t) => {
 	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: "" } }), 0);
 	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
 	assert.ok(line !== undefined, f.out.join("\n"));
-	assert.match(line ?? "", new RegExp(`Roots: ${agent} is not listed`));
+	assert.match(line ?? "", new RegExp(`Roots: ${agent} is not read by the mods`));
 });
 
 test("--status treats a trailing separator as the same agent home", async (t) => {

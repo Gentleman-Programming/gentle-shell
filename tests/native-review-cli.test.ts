@@ -579,33 +579,45 @@ test("START discovers capabilities before forwarding the explicit request file u
  assert.deepEqual(host.calls[2].arguments, ["review", "start", ...tokens]);
 });
 
-test("START forwards the agent escalation only in the STATUS preflight and runs the provider START unchanged", async () => {
+const ESCALATE_BASE = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + TARGET, "--projection=workspace", "--agent=pi", "--consent=relay"];
+const ESCALATE_TOKENS = [...ESCALATE_BASE, "--escalate-item=3", "--escalate-reason=touches the auth boundary"];
+const escalateFlags = (arguments_: readonly string[]) => arguments_.filter((token) => token.startsWith("--escalate"));
+
+test("START sends the escalation only to a second STATUS after a fresh START is offered and runs the provider START unchanged", async () => {
  const escalate = { item: 3 as const, reason: "touches the auth boundary" };
- const tokens = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + TARGET, "--projection=workspace", "--agent=pi", "--consent=relay", "--escalate-item=3", "--escalate-reason=touches the auth boundary"];
  const queue = queuedAdapter([
-  { stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
+  { stdout: JSON.stringify(negotiatedStartStatus(TARGET, ESCALATE_BASE)) },
+  { stdout: JSON.stringify(negotiatedStartStatus(TARGET, ESCALATE_TOKENS)) },
   { stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
  ]);
  await client(queue.adapter).start({ cwd: "/repo", escalate });
- const status = queue.calls[0].arguments;
- assert.deepEqual(status.slice(-5), ["--escalate-item", "3", "--escalate-reason", "touches the auth boundary", "--next-transition"]);
- assert.equal(status.filter((token) => token === "--escalate-item").length, 1);
- assert.equal(status.filter((token) => token === "--escalate-reason").length, 1);
- assert.equal(status.at(-1), "--next-transition");
- assert.deepEqual(queue.calls[1].arguments, ["review", "start", ...tokens]);
+ assert.equal(queue.calls.length, 3);
+ assert.deepEqual(escalateFlags(queue.calls[0].arguments), [], "the first STATUS never carries the escalation");
+ assert.deepEqual(queue.calls[1].arguments.slice(-5), ["--escalate-item", "3", "--escalate-reason", "touches the auth boundary", "--next-transition"]);
+ assert.deepEqual(queue.calls[1].arguments.filter((token) => token !== "--escalate-item" && token !== "3" && token !== "--escalate-reason" && token !== "touches the auth boundary"), queue.calls[0].arguments);
+ assert.deepEqual(queue.calls[2].arguments, ["review", "start", ...ESCALATE_TOKENS]);
 });
 
-test("START without escalate keeps its STATUS argv free of escalation flags and rejects a START that drops the escalation", async () => {
- const plain = queuedAdapter([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + TARGET, "--projection=workspace", "--agent=pi", "--consent=relay"])) }, { stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) }]);
+test("a STATUS whose next transition is not a fresh START never receives the escalation", async () => {
+ const queue = queuedAdapter([{ stdout: JSON.stringify(currentStatusFixture()) }]);
+ const status = await client(queue.adapter).targetStatus({ cwd: "/repo", escalate: { item: 3, reason: "r" } });
+ assert.ok(status.targetIdentity !== undefined);
+ assert.equal(queue.calls.length, 1);
+ assert.deepEqual(escalateFlags(queue.calls[0].arguments), []);
+});
+
+test("START without escalate issues one STATUS free of escalation flags; a START that drops the escalation is rejected", async () => {
+ const plain = queuedAdapter([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, ESCALATE_BASE)) }, { stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) }]);
  await client(plain.adapter).start({ cwd: "/repo" });
- assert.equal(plain.calls[0].arguments.some((token) => token.startsWith("--escalate")), false);
- const dropped = queuedAdapter([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + TARGET, "--projection=workspace", "--agent=pi", "--consent=relay"])) }]);
+ assert.equal(plain.calls.length, 2);
+ assert.deepEqual(escalateFlags(plain.calls[0].arguments), []);
+ const dropped = queuedAdapter([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, ESCALATE_BASE)) }, { stdout: JSON.stringify(negotiatedStartStatus(TARGET, ESCALATE_BASE)) }]);
  await assert.rejects(client(dropped.adapter).start({ cwd: "/repo", escalate: { item: 3, reason: "r" } }), /did not retain the agent escalation/);
- assert.equal(dropped.calls.length, 1);
+ assert.equal(dropped.calls.length, 2);
 });
 
 test("an invalid escalate is rejected before any native call", async () => {
- for (const escalate of [{ item: 9, reason: "x" }, { item: 2, reason: "" }, { item: 2, reason: "é".repeat(251) }]) {
+ for (const escalate of [{ item: 9, reason: "x" }, { item: 2, reason: "" }, { item: 2, reason: "é".repeat(251) }, { item: 2, reason: "a\nb" }]) {
   const queue = queuedAdapter([]);
   await assert.rejects(client(queue.adapter).targetStatus({ cwd: "/repo", escalate: escalate as never }), /escalate/);
   await assert.rejects(client(queue.adapter).start({ cwd: "/repo", escalate: escalate as never }), /escalate/);

@@ -154,3 +154,10 @@ test("decodeAgentRiskEscalation measures the reason in UTF-8 bytes, as native as
 	assert.throws(() => decodeAgentRiskEscalation({ item: 4, reason: "á".repeat(251) }), /at most 500 UTF-8 bytes/);
 	assert.throws(() => decodeAgentRiskEscalation({ item: 4, reason: "x".repeat(501) }), /at most 500 UTF-8 bytes/);
 });
+
+test("decodeAgentRiskEscalation rejects a multi-line or control-character reason as not one line", () => {
+	for (const reason of ["a\nb", "a\r\nb", "a\tb", "a\u0000b", "a\u007fb", "a\u0085b", "a\u2028b", "a\u2029b", "\u001bx"]) {
+		assert.throws(() => decodeAgentRiskEscalation({ item: 2, reason }), /escalate reason must be one line/, JSON.stringify(reason));
+	}
+	assert.deepEqual({ ...decodeAgentRiskEscalation({ item: 2, reason: "one line, ünïcode ✓" }) }, { item: 2, reason: "one line, ünïcode ✓" });
+});

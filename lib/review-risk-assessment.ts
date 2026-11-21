@@ -273,6 +273,12 @@ export function decodeAgentRiskEscalation(value: unknown): AgentRiskEscalation {
 	if (typeof reason !== "string" || reason.trim() === "" || new TextEncoder().encode(reason).length > AGENT_RISK_ESCALATION_REASON_MAX) {
 		throw new Error(`escalate reason must be a non-empty string of at most ${AGENT_RISK_ESCALATION_REASON_MAX} UTF-8 bytes`);
 	}
+	// The reason is documented as one line and rides a native argv and a consent
+	// invocation: a newline (or any other control or line separator, tabs
+	// included) would break the provider's consent envelope.
+	if (/[\u0000-\u001f\u007f\u0085\u2028\u2029]/.test(reason)) {
+		throw new Error("escalate reason must be one line: no newline, tab or other control characters");
+	}
 	return Object.freeze({ item: item as HighRiskItem, reason });
 }
 

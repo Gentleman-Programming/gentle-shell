@@ -1809,13 +1809,15 @@ export class NativeReviewIntegrationError extends Error {
 export class NativeReviewConsentRequiredError extends Error {
 	         consent                       ;
 	         requestContextPath         ;
+	         escalate                      ;
 	         launchAttempted = true;
 	         mutationOutcome = "none";
-	constructor(consent                       , requestContextPath         ) {
+	constructor(consent                       , requestContextPath         , escalate                      ) {
 		super(consent.headline);
 		this.name = "NativeReviewConsentRequiredError";
 		this.consent = consent;
 		this.requestContextPath = requestContextPath;
+		if (escalate !== undefined) this.escalate = escalate;
 	}
 }
 
@@ -1949,6 +1951,12 @@ function consentInvocationArguments(request                                  )  
 	if (request.requestContextPath !== undefined) {
 		const values = arguments_.flatMap((token, index) => token === "--request-context" ? [arguments_[index + 1]] : token.startsWith("--request-context=") ? [token.slice("--request-context=".length)] : []);
 		if (values.length !== 1 || values[0] !== request.requestContextPath) throw new NativeReviewConsentBindingError("consent-invocation-request-context-changed", "Native consent invocation did not retain the requested context file");
+	}
+	if (request.escalate !== undefined) {
+		const escalation = decodeAgentRiskEscalation(request.escalate);
+		const items = tokenFlagValues(arguments_, "--escalate-item");
+		const reasons = tokenFlagValues(arguments_, "--escalate-reason");
+		if (items.length !== 1 || items[0] !== String(escalation.item) || reasons.length !== 1 || reasons[0] !== escalation.reason) throw new NativeReviewConsentBindingError("consent-invocation-escalate-changed", "Native consent invocation did not retain the agent escalation");
 	}
 	if (exactConsentOption(arguments_, "--contract") !== REVIEW_INTEGRATION_CONTRACT) throw new NativeReviewConsentBindingError("consent-invocation-contract-changed", "Native consent invocation contract changed");
 	const providerCwd = exactConsentOption(arguments_, "--cwd");
@@ -2212,7 +2220,10 @@ export class NativeReviewCliV216                            {
 			if (request.requestContextPath !== undefined) {
 				for (const choice of consent.choices) consentInvocationArguments({ cwd: request.cwd, consent, answer: choice.answer, requestContextPath: request.requestContextPath });
 			}
-			throw new NativeReviewConsentRequiredError(consent, request.requestContextPath);
+			if (request.escalate !== undefined) {
+				for (const choice of consent.choices) consentInvocationArguments({ cwd: request.cwd, consent, answer: choice.answer, escalate: request.escalate });
+			}
+			throw new NativeReviewConsentRequiredError(consent, request.requestContextPath, request.escalate);
 		}
 		const result = decode(NATIVE_REVIEW_OPERATION.START, true, () => decodeReviewStartResponse(execution.body));
 		if (request.lineageId !== undefined && result.lineageId !== request.lineageId) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, true, "native start lineage mismatch");
@@ -2344,7 +2355,7 @@ export class NativeReviewCliV216                            {
 		// The opt-in rides only this client's own contracted STATUS, never a
 		// provider-issued selection submission. gentle-ai v4.6.0 (the minimum
 		// supported binary) always understands --non-blocking-findings.
-		const statusArguments = submittedTokens === undefined ? [
+		const statusArgumentsWith = (escalation                   ) => submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
 			"--projection", request.projection ?? "workspace",
 			...nativeUntrackedSelectionArguments(selection),
@@ -2353,15 +2364,25 @@ export class NativeReviewCliV216                            {
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			...nativeLensSelectionArguments(request),
 			...requestContextArguments,
-			...escalateArguments,
+			...escalation,
 			...(request.nonBlockingFindings === true ? ["--non-blocking-findings"] : []),
 			"--next-transition",
-		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments, ...escalateArguments];
-		const execution                      = contextExecutable === undefined
-			? await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal)
-			: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);
-		measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
-		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));
+		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments, ...escalation];
+		const observe = async (statusArguments                   )                          => {
+			const execution                      = contextExecutable === undefined
+				? await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal)
+				: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);
+			measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
+			return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));
+		};
+		const status = await observe(statusArgumentsWith([]));
+		// The provider accepts --escalate-item/--escalate-reason on STATUS only to
+		// preflight a fresh START and refuses them in any other state. So the
+		// escalation never rides the first STATUS: only when that STATUS offers a
+		// fresh START is the same STATUS repeated once with it, and the
+		// provider-issued START tokens it returns are used unmodified.
+		if (escalateArguments.length === 0 || status.nextTransition?.kind !== "execute" || status.nextTransition.execute.operation !== "review.start") return status;
+		return await observe(statusArgumentsWith(escalateArguments));
 	}
 
 	// `review capture-evidence`: the evidence-first correction lifecycle's

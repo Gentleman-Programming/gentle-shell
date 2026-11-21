@@ -258,12 +258,12 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  const drive = async (): Promise<Body> => {
  let details: Body;
  if (lineage === undefined) {
-  // The same escalate reaches assess, inspect and START so the frozen tier and consent read high.
+  // The same escalate reaches assess and START (never inspect: the provider accepts it only on a fresh-START preflight) so the frozen tier and consent read high.
   const assessInput = input.escalate === undefined ? selectorInput : { input: JSON.stringify({ ...selector, escalate: input.escalate }) };
   const assessment = await invoke("gentle_review", { operation: "assess", ...assessInput });
   if (assessment.reviewDue === false && input.requestContextPath !== undefined) return finish("request-context-requires-fresh-review", assessment);
   if (assessment.reviewDue !== true) return finish(assessment.reviewDue === false ? "not-due" : "assessment-unavailable", assessment);
-  details = await invoke("gentle_review", { operation: "inspect", ...assessInput,
+  details = await invoke("gentle_review", { operation: "inspect", ...selectorInput,
    ...(input.untrackedScope === undefined ? {} : { untrackedScope: input.untrackedScope }),
    ...(input.intendedUntracked === undefined ? {} : { intendedUntracked: input.intendedUntracked }) });
  } else details = await status();

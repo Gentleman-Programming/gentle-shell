@@ -463,18 +463,28 @@ test("gentle_review_run forwards escalate to native assess and proceeds past not
 	} finally { runtime.close(); }
 });
 
-test("gentle_review_run carries escalate into the native STATUS preflight and START; without it neither carries one", async () => {
+test("gentle_review_run never sends the escalation to a host STATUS; over an existing lineage it behaves exactly like without it", async () => {
 	const escalate = { item: 3, reason: "touches the auth boundary" };
-	for (const withEscalate of [true, false]) {
-		const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { mediumAssess: true, hasUI: false });
+	const outcomes: unknown[] = [];
+	for (const extra of [{}, { escalate }]) {
+		const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false });
 		try {
-			await runtime.invoke("gentle_review_run", withEscalate ? { escalate } : {}).catch(() => undefined);
-			const statuses = runtime.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => (entry.request as { escalate?: unknown }).escalate);
-			if (withEscalate) {
-				assert.deepEqual(statuses.filter((value) => value !== undefined), [escalate], "the inspect STATUS preflight carries the escalation exactly once");
-				} else for (const value of statuses) assert.equal(value, undefined);
+			const result = await runtime.invoke("gentle_review_run", extra) as { details?: { outcome?: string }; outcome?: string };
+			outcomes.push(result.details?.outcome ?? result.outcome);
+			for (const entry of runtime.nativeRequests.filter((request) => request.operation === "target-status")) assert.equal("escalate" in (entry.request as object), false, "no host STATUS carries the escalation");
 		} finally { runtime.close(); }
 	}
+	assert.equal(outcomes[1], outcomes[0]);
+	assert.notEqual(outcomes[0], "blocked");
+});
+
+test("gentle_review_run with a due escalation sends it to assess and START only, never to a host STATUS", async () => {
+	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { mediumAssess: true, hasUI: false });
+	try {
+		await runtime.invoke("gentle_review_run", { escalate: { item: 3, reason: "touches the auth boundary" } }).catch(() => undefined);
+		assert.ok(runtime.nativeRequests.some((entry) => entry.operation === "assess" && (entry.request as { escalate?: unknown }).escalate !== undefined));
+		for (const entry of runtime.nativeRequests.filter((request) => request.operation === "target-status")) assert.equal("escalate" in (entry.request as object), false, "no host STATUS carries the escalation");
+	} finally { runtime.close(); }
 });
 
 test("gentle_review_run without escalate keeps a medium candidate not-due", async () => {
@@ -490,7 +500,7 @@ test("gentle_review_run without escalate keeps a medium candidate not-due", asyn
 test("gentle_review_run rejects an invalid escalate before any native call", async () => {
 	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { mediumAssess: true, hasUI: false });
 	try {
-		for (const escalate of [{ item: 7, reason: "x" }, { item: 2, reason: "  " }, { item: 2, reason: "é".repeat(251) }, { item: 2 }, "high"]) {
+		for (const escalate of [{ item: 7, reason: "x" }, { item: 2, reason: "  " }, { item: 2, reason: "é".repeat(251) }, { item: 2, reason: "two\nlines" }, { item: 2, reason: "tab\there" }, { item: 2 }, "high"]) {
 			await assert.rejects(Promise.resolve().then(() => runtime.invoke("gentle_review_run", { escalate })), /escalate/);
 		}
 		assert.deepEqual(runtime.nativeRequests.filter((entry) => entry.operation === "assess"), []);

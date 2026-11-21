@@ -22,6 +22,7 @@ import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRep
 import { sameMessageToolCalls } from "../lib/writer-batch-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
 import { VERIFIER_SETTLE_REMINDER_TYPE, createVerifierSettleReminders, finalAssistantText } from "../lib/verifier-settle-reminder.ts";
+import { trackCodexTurnContinuation } from "../lib/codex-turn-continuation.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { snapshotReviewStartContext } from "../lib/review-start-context.ts";
@@ -13186,20 +13187,22 @@ function createGentleAiExtensionForTesting(
 	// gets one visible reminder and one continuation per user prompt. Earlier proposed entries are kept. The incoming
 	// `canContinue` is false for a completed run (its last message is the assistant's); Pi re-validates the continuation
 	// after the appended reminder, so it is not a precondition here.
+	const codexFallback = trackCodexTurnContinuation(pi);
 	pi.on("agent_before_settle", (event, ctx) => {
-		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
-		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
-		if ((verifierSettleNamedRuns.get(sessionKey) ?? 0) > 0) return undefined;
-		if (event.outcome !== "completed") return undefined;
-		const reminder = verifierSettleReminders.beforeSettle(
-			sessionKey,
-			finalAssistantText(event.context.contextMessages),
-		);
-		if (reminder === undefined) return undefined;
-		return {
-			entries: [...event.entries, { type: "custom_message", customType: VERIFIER_SETTLE_REMINDER_TYPE, content: reminder, display: true }],
-			continue: true,
-		};
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") {
+			const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+			if ((verifierSettleNamedRuns.get(sessionKey) ?? 0) <= 0 && event.outcome === "completed") {
+				const reminder = verifierSettleReminders.beforeSettle(
+					sessionKey,
+					finalAssistantText(event.context.contextMessages),
+				);
+				if (reminder !== undefined) return {
+					entries: [...event.entries, { type: "custom_message", customType: VERIFIER_SETTLE_REMINDER_TYPE, content: reminder, display: true }],
+					continue: true,
+				};
+			}
+		}
+		return codexFallback(event, ctx);
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {

@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import gentleTps from "../extensions/gentle-tps.ts";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { writeTpsSettings } from "../lib/tps-policy.ts";
 
 type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number };
 
@@ -119,5 +123,58 @@ test("a new start replaces the previous start time", (t) => {
 	h.start(1_000);
 	h.start(3_000);
 	h.end(4_000, [assistant(smallUsage)]);
+	assert.deepEqual(h.notifications, [{ message: smallNotification, type: "info" }]);
+});
+
+function withConfigHome(t: test.TestContext): string {
+	const previous = process.env.GENTLE_PI_CONFIG_HOME;
+	const home = mkdtempSync(join(tmpdir(), "tps-gate-"));
+	process.env.GENTLE_PI_CONFIG_HOME = home;
+	t.after(() => {
+		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
+		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		rmSync(home, { recursive: true, force: true });
+	});
+	return home;
+}
+
+test("a disabled policy suppresses the end-of-run notification", (t) => {
+	const home = withConfigHome(t);
+	writeTpsSettings({ enabled: false }, { gentlePiConfigHome: home });
+	const h = harness(t);
+	h.start(0);
+	h.end(1_000, [assistant(smallUsage)]);
+	assert.deepEqual(h.notifications, []);
+});
+
+test("the policy is reread every run: a later flip applies without reload", (t) => {
+	const home = withConfigHome(t);
+	const h = harness(t);
+	h.start(0);
+	h.end(1_000, [assistant(smallUsage)]);
+	assert.deepEqual(h.notifications, [{ message: smallNotification, type: "info" }]);
+	writeTpsSettings({ enabled: false }, { gentlePiConfigHome: home });
+	h.notifications.length = 0;
+	h.start(2_000);
+	h.end(3_000, [assistant(smallUsage)]);
+	assert.deepEqual(h.notifications, []);
+	writeTpsSettings({ enabled: true }, { gentlePiConfigHome: home });
+	h.start(4_000);
+	h.end(5_000, [assistant(smallUsage)]);
+	assert.deepEqual(h.notifications, [{ message: smallNotification, type: "info" }]);
+});
+
+test("a missing or malformed policy keeps the notification (fail open)", (t) => {
+	const home = withConfigHome(t);
+	const h = harness(t);
+	// Missing file
+	h.start(0);
+	h.end(1_000, [assistant(smallUsage)]);
+	assert.deepEqual(h.notifications, [{ message: smallNotification, type: "info" }]);
+	h.notifications.length = 0;
+	// Malformed file
+	writeFileSync(join(home, "tps.json"), "{oops", "utf8");
+	h.start(2_000);
+	h.end(3_000, [assistant(smallUsage)]);
 	assert.deepEqual(h.notifications, [{ message: smallNotification, type: "info" }]);
 });

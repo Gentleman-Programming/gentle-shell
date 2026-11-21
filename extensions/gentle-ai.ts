@@ -147,7 +147,7 @@ import {
 	type ProfilePinSource,
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
-import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { clearSessionProfileBinding, readSessionProfileBinding, readSessionProfileStartupNone } from "../lib/session-profile-binding.ts";
 import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection, type SessionProfileLifecycleManager } from "../lib/session-profile-integration.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority, requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
@@ -7300,6 +7300,32 @@ function startupStateText(startup: SessionProfileStartupState): string {
  * Follow mode has no startup state, so a startup record gets a legacy clear
  * (section 6). The live orchestrator and every shared default stay untouched.
  */
+/**
+ * Desktop `clear_profile_binding`: the same owner action as `/gentle:profiles
+ * clear`, behind the apply gate, with its notices recorded instead of shown.
+ * The outcome is read from the binding store, not from notice text: a change
+ * is `cleared`, a warning without a change is `not_cleared`, else `unchanged`.
+ */
+async function clearDesktopSessionProfile(context: ExtensionContext): Promise<{ status: "cleared" | "unchanged" | "not_cleared" | "busy" }> {
+	if (!beginDesktopProfileApply()) return { status: "busy" };
+	try {
+		const sessionId = context.sessionManager?.getSessionId?.();
+		const state = () => (typeof sessionId === "string" ? JSON.stringify([readSessionProfileBinding(sessionId) ?? null, readSessionProfileStartupNone(sessionId)]) : "");
+		const before = state();
+		let warned = false;
+		const ui = Object.create(context.ui, {
+			notify: { value: (_message: string, type?: "info" | "warning" | "error") => { if (type === "warning" || type === "error") warned = true; } },
+		});
+		await handleProfilesClear(Object.create(context, { ui: { value: ui, enumerable: true } }) as ExtensionContext);
+		if (state() !== before) return { status: "cleared" };
+		return { status: warned ? "not_cleared" : "unchanged" };
+	} catch {
+		return { status: "not_cleared" };
+	} finally {
+		endDesktopProfileApply();
+	}
+}
+
 async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 	const sessionId = ctx.sessionManager?.getSessionId?.();
 	if (typeof sessionId !== "string" || sessionId.length === 0) {
@@ -13396,6 +13422,7 @@ function createGentleAiExtensionForTesting(
 			request.respond({
 				schema: DESKTOP_PROFILES_SERVICE_SCHEMA,
 				apply: (applyRequest) => (disposed ? Promise.resolve({ status: "not_applied", notes: [] }) : applyDesktopProfile(ctx, pi, applyRequest)),
+				clear: () => (disposed ? Promise.resolve({ status: "not_cleared" as const }) : clearDesktopSessionProfile(ctx)),
 				dispose: () => {
 					disposed = true;
 				},

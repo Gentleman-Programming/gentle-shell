@@ -62,8 +62,8 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status"],
-  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "session_snapshot"]
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "get_profile_binding", "clear_profile_binding"],
+  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "session_snapshot"]
 }
 ```
 
@@ -1378,6 +1378,34 @@ Success:
 
 No absolute path, raw package source, registry URL, token, command line, or lookup output crosses the wire. A failed lookup is reported as `unknown`, never by its message. Running an update is out of scope: the client shows the command, and the launcher runs it. `updates_unavailable` answers only when the session is not bound or was replaced during the read, or a source fails unexpectedly.
 
+### `get_profile_binding`
+
+Reads which profile this session routes its subagents with, through the same rule launches, the status bar, and `/gentle:profiles` use (`resolveSessionProfile`). A binding chosen in the terminal, restored on resume, or inherited at the session's start is reported exactly as a launch would apply it. Params must be an empty object. It has no side effects and emits no event.
+
+```json
+{ "ok": true, "data": { "kind": "explicit", "profile": "fast", "origin": "session" } }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `explicit` (chosen for this session), `inherited` (the profile the session started with), `follow` (follows the shared layers live, `GENTLE_PI_PROFILE_FOLLOW`), or `live` (a child session reading the layers). |
+| `profile` | The profile name, or `null` for the routing without a profile. |
+| `origin` | `session` for an explicit choice; otherwise the layer that supplied it: `local` (the clone pin), `repo` (the repository declaration), or `global`; `null` without a profile. |
+
+Errors: `invalid_request` (any param) and `profiles_unavailable` (no session id or working directory).
+
+### `clear_profile_binding`
+
+Runs `/gentle:profiles clear` for this session: the session goes back to the profile it started with, or to the routing without a session profile. Params must be an empty object. It takes the profile apply slot, so it never runs during an `apply_profile`.
+
+```json
+{ "ok": true, "data": { "status": "cleared", "changed": true, "binding": { "kind": "inherited", "profile": null, "origin": null } } }
+```
+
+`status` is `cleared` when the binding store changed, `unchanged` when there was nothing to clear, and `not_cleared` when the owner refused (for example an unreadable session record); the owner's notices are not forwarded. `binding` is the state after the call, and `changed` says whether it differs from before. A change also emits `profile_binding_changed` with `source: "desktop"`, after the response. Errors: `invalid_request`, `profile_apply_busy` while an apply runs, and `profiles_unavailable` when no owner answers or the owner predates this method.
+
+Publishing a profile to the repository is not a separate method: it is the repository pin, written with `set_config` on `pins` with `{ "source": "repo", "profile": "<name>" }` (and `profile: null` to unpublish).
+
 ## Responses
 
 Success:
@@ -1706,6 +1734,14 @@ Carries the session sections whose content changed since the last `session_snaps
 
 It is emitted when the feed publishes, on the feed's own tiers: within 16 ms for urgent state (an open or answered question, the permission mode, an idle/working/blocked transition, a held prompt), otherwise after a 250 ms debounce, and at most once per second while the session is busy. A flush that changes nothing emits nothing, and a section is included only when its content changed; a job's `elapsedMs`, which moves on every flush, is not a change (derive it from `startedAt`). A client that needs the whole state reads `get_snapshot` with `sections` after connecting or after a sequence gap. Advertised only while the feed seam is wired.
 
+### `profile_binding_changed`
+
+Emitted when this session's profile binding changes: a `clear_profile_binding` (`source: "desktop"`), or any other write to the binding store for this session (`source: "external"`): the `/gentle:profiles` screen, an `apply_profile` in session mode, or a resume restoring the record. The data is the new `get_profile_binding` answer plus `source`. Writes for other sessions and writes that leave the answer unchanged emit nothing.
+
+```json
+{ "event": "profile_binding_changed", "data": { "kind": "explicit", "profile": "fast", "origin": "session", "source": "external" } }
+```
+
 ### `review_mode_changed`
 
 Follows a confirmed `set_review_mode` whose re-read state differs from the state the confirmation was computed from, after the response line.
@@ -1801,7 +1837,8 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 ## Profiles limits
 
 - **One owner, no second apply.** `apply_profile` reaches the `/gentle:profiles` owner in `extensions/gentle-ai.ts` through a defensive, versioned owner-service adapter, like the usage and design seams. The owner runs the screen's own **Use in this session** and **Make default** actions with a UI that records notices and answers confirmations only with a matching token. It never opens a dialog in Pi.
-- **Apply only.** This slice has one method and one event. Creating, editing, or deleting profiles stays `set_config` on the `profiles` store; pins stay `set_config` on `pins`.
+- **Apply, binding, and clear.** `apply_profile` and its `profile_applied` event, plus `get_profile_binding`, `clear_profile_binding`, and `profile_binding_changed`. Creating, editing, or deleting profiles stays `set_config` on the `profiles` store; pins, including publishing a profile to the repository, stay `set_config` on `pins`.
+- **One rule for the binding.** `get_profile_binding` and the event read `resolveSessionProfile`, the rule launches use, so they never disagree with a launch. The event follows the in-process binding store; a binding changed by another Pi process is not observed.
 - **Confirmation is Desktop's job.** The token binds an apply to the title and message that were shown and to the exact saved profile; it is not a proof that a person saw them.
 - **Truthful absence.** When the owning extension is not loaded, `apply_profile` answers `profiles_unavailable` rather than inventing an outcome.
 

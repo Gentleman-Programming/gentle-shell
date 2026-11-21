@@ -380,7 +380,7 @@ test("the Desktop transport advertises the review methods and event", async (t) 
 	const at = data.methods.indexOf("get_review_mode");
 	assert.notEqual(at, -1);
 	assert.deepEqual(data.methods.slice(at, at + 2), ["get_review_mode", "set_review_mode"]);
-	assert.equal(data.events.at(-1), "review_mode_changed");
+	assert.deepEqual(data.events.slice(-2), ["review_mode_changed", "profile_binding_changed"]);
 });
 
 test("get_review_mode answers review_unavailable through the transport without an owner extension", async (t) => {

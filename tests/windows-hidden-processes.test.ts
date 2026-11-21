@@ -167,6 +167,15 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		const scratch = await import(`../lib/session-scratch.ts${query}`);
 		const skills = await import(`../extensions/skill-registry.ts${query}`);
 
+		// The init route is parent-session-owned: a runner itself flagged as a subagent child
+		// (GENTLE_PI_AGENTS_CHILD=1) would be refused before any CLI call, so the fixture clears
+		// the inherited flag and runs as a parent session, keeping the real default runner under test.
+		const previousChildFlag = process.env.GENTLE_PI_AGENTS_CHILD;
+		delete process.env.GENTLE_PI_AGENTS_CHILD;
+		t.after(() => {
+			if (previousChildFlag === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
+			else process.env.GENTLE_PI_AGENTS_CHILD = previousChildFlag;
+		});
 		const traces: Trace[] = [];
 		const graph = codegraph.createCodeGraphTool();
 		assert.equal(typeof graph.execute, "function", "CodeGraph public handler must be registered");

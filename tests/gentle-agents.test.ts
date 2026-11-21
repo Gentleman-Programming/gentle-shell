@@ -8265,8 +8265,19 @@ test("a job notice survives session switching and is delivered only to its owner
 		assert.equal(notices().length, 0, "the inactive owner's notice is never delivered to another session");
 
 		await fire("session_start", owner, { reason: "resume" });
+		// The owner's run ended while its session was away: settle it, because a
+		// notice queued after the last boundary is flushed by queueJobNotice itself
+		// only while no agent run is active (the busy-parent test below keeps its
+		// run and fires its own turn boundaries instead).
+		await fire("agent_end", owner);
+		await fire("agent_settled", owner);
 		await fire("turn_end", owner);
-		await eventually(() => notices().length === 1, "resuming the owner delivers its retained notice");
+		// The retained notice lands when the job log closes, which can outlast the resume boundary
+		// under load (the busy-parent test below allows the same); give it a wider bounded window.
+		for (let attempt = 0; attempt < 400 && notices().length === 0; attempt++) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		assert.equal(notices().length, 1, "resuming the owner delivers its retained notice");
 		assert.match(String(notices()[0]!.message.content), /job-1 \(\"owner job\"\) exited with code 0/);
 		await fire("turn_end", owner);
 		assert.equal(notices().length, 1, "the retained notice is delivered exactly once");

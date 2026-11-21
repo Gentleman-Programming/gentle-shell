@@ -384,19 +384,25 @@ test("resolveCodegraphEntry: a rewritten Node selection fails closed behind the 
  * invocation and the stock guard, but the IF branch — the one that runs when node.exe sits
  * beside the shim — selects the bare node. */
 const swappedSelection = (): readonly string[] => [
-	'IF EXIST "%dp0%\node.exe" (',
+	'IF EXIST "%dp0%' + BS + 'node.exe" (',
 	'  SET "_prog=node"',
 	') ELSE (',
-	'  SET "_prog=%dp0%\node.exe"',
+	'  SET "_prog=%dp0%' + BS + 'node.exe"',
 	')',
 ];
 
 test("resolveCodegraphShimState: a swapped Node selection behind the stock invocation stays unproven", () => {
 	clearCodegraphResolveCache();
+	const text = npmCmdShim(SCRIPT_REL, modernTail, swappedSelection());
+	// The fixture must carry the stock guard and both stock assignment spellings as single
+	// lines: only then does the rejection asserted below exercise branch validation, not the
+	// guard check an embedded newline would trip first.
+	assert.ok(text.includes('IF EXIST "%dp0%' + BS + 'node.exe" ('), "the stock one-line guard is intact");
+	assert.ok(text.includes('SET "_prog=%dp0%' + BS + 'node.exe"'), "the beside-shim assignment is one line");
 	const { io } = fakeWorld({
 		path: BIN,
 		files: [
-			[[BIN, "codegraph.cmd"].join(BS), npmCmdShim(SCRIPT_REL, modernTail, swappedSelection())],
+			[[BIN, "codegraph.cmd"].join(BS), text],
 			[NODE_EXE, ""],
 			[SCRIPT, "cli"],
 		],

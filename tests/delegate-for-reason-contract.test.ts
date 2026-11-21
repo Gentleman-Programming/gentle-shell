@@ -117,7 +117,7 @@ test("T24/L49: configured per-agent model routing still applies to writers launc
 test("AC4: verification stays risk-gated and the writer reasons never include risk", () => {
 	assert.ok(
 		core.includes(
-			"3. **Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `gentle-ai-verify`; else inline; runtime admission, gates/overengineering: `orchestrator-verification.md`.",
+			"3. **Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `gentle-ai-verify`; else inline; see `orchestrator-verification.md`. RDD on: `escalate` makes review due.",
 		),
 		"core Verification rule changed",
 	);

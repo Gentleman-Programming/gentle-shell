@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, posix, win32 } from "node:path";
 import { promisify } from "node:util";
 import { binaryDigest, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.mjs";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.mjs";
-import { decodeReviewAssessmentV1,                         } from "./review-risk-assessment.mjs";
+import { decodeAgentRiskEscalation, decodeReviewAssessmentV1,                                                   } from "./review-risk-assessment.mjs";
 import {
 	REVIEW_INTEGRATION_CONTRACT,
 	ReviewNativeContractTooOldError,
@@ -165,6 +165,9 @@ export const NATIVE_REVIEW_MODE_SCOPE = {
 // explicit `committedOnly` acknowledgement, exactly like Native START's
 // baseRef/committedOnly pairing, because both select a committed range
 // instead of the ambient working tree.
+
+
+
 
 
 
@@ -2531,11 +2534,12 @@ export class NativeReviewCliV216                            {
 		if (request.baseRef !== undefined && !isCanonicalProcessString(request.baseRef)) throw new TypeError("Native ASSESS baseRef must be a non-empty, trimmed, NUL-free string");
 		if (request.baseRef !== undefined && request.committedOnly !== true) throw new TypeError("Native ASSESS baseRef requires explicit committedOnly acknowledgement");
 		if (request.baseRef === undefined && request.committedOnly !== undefined) throw new TypeError("Native ASSESS committedOnly requires an explicit baseRef");
+		const escalation = request.escalate === undefined ? undefined : decodeAgentRiskEscalation(request.escalate);
 		const cwd = await canonicalNativeReviewCwd(request.cwd);
 		const execution = await this.invoke(
 			NATIVE_REVIEW_OPERATION.ASSESS,
 			cwd,
-			["review", "assess", "--cwd", cwd, ...(request.baseRef === undefined ? [] : ["--base-ref", request.baseRef, "--committed-only"]), ...nativeUntrackedSelectionArguments(selection), "--json"],
+			["review", "assess", "--cwd", cwd, ...(request.baseRef === undefined ? [] : ["--base-ref", request.baseRef, "--committed-only"]), ...nativeUntrackedSelectionArguments(selection), ...(escalation === undefined ? [] : ["--escalate-item", String(escalation.item), "--escalate-reason", escalation.reason]), "--json"],
 			false,
 			request.signal,
 			this.executablePath(NATIVE_REVIEW_OPERATION.ASSESS, false),

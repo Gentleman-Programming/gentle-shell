@@ -108,7 +108,7 @@ At 140 columns or wider, fullscreen with the split header draws an IDE inside th
                                                              └ job-1
  ─ ✿ waiting for input ───────────────── INSERT ─        ▾ AGENTS              3 running · 1 waiting
  › type, or / for commands                                 …
- main ±3 │ SUPER-YOLO     gpt-5.5 · medium · claude (session) │ ctx ▰▰▰▰▱▱▱▱ 45% │ $9.49 sub │ usage · alt+u
+ main ±3 │ SUPER-YOLO     gpt-5.5 · medium · claude (session) │ ctx ▰▰▰▰▱▱▱▱ 45% (133k to compact) │ $9.49 sub │ usage · alt+u
 ```
 
 - **Title row.** The project name and path once, and the session name on the right; when space runs out the path gives way first. The effective agent profile (with its source suffix, `claude (session)`) follows the model and effort in the status bar (`claude-opus-5-5 · high · claude (session)`), giving way before the usage does, and opens the rail's Stats section (`profile claude (session)`); Integrations no longer lists it. On a phone with split selected, the title row carries the model, effort and profile, since the narrow status bar leaves them out.
@@ -125,10 +125,10 @@ At 140 columns or wider, fullscreen with the split header draws an IDE inside th
 The regular-mode compact bar replaces pi's three-line footer with a single line of segments:
 
 ```text
-✿ gentle shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub ⟡ MCP: 3 servers enabled        Release notes
+✿ gentle shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▱▱▱▱ 45% (133k to compact) ⟡ $9.49 sub ⟡ MCP: 3 servers enabled        Release notes
 ```
 
-- Context is a gauge, not a number. It turns amber at 80% and red at 95%; after compaction it shows `?%` until the next response.
+- The `ctx` gauge shows the percentage of the model's context window used (amber at 80%, red at 95%) and, when space permits, the estimated tokens left before auto-compaction. The estimate subtracts Pi's effective reserve for the active model (model override, ordinary setting, then 16,384) from the window, then subtracts current usage. At or above that boundary it shows `0 to compact`; Pi's threshold check triggers only above the boundary. `compact off` means auto-compaction is disabled. `? to compact` means the estimate is unavailable, such as after compaction when usage shows `?%` until the next response.
 - Cost carries `sub` when the active model runs on a subscription login.
 - `pi-claude-bridge` records every turn at $0, so a `claude-bridge` turn is priced at the Anthropic list price of the same model when it ends. The cost (shown with `sub`), the Stats section and `/gentle:stats` then show what those tokens would cost on the API, not what the subscription bills. Subagents price their `claude-bridge` turns the same way, so the Stats `agents` row adds them to subagents on other providers. Sessions recorded before this stay at $0.
 - Statuses other extensions publish through `setStatus` are appended as trailing segments; the session name sits at the right edge.

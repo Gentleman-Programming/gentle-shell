@@ -10,9 +10,9 @@ const BS = String.fromCharCode(92);
 /** One unfolded form per resolved spelling, win32 only: every realpathSync.native on a UNC path
  * is an SMB round-trip chain, so the daemon registry, the lease paths and the workspace guard pay
  * it once per spelling instead of per call. Each hit is revalidated with metadata stats
- * before use — the alias identity and the canonicality of the recorded target — so a mapping
- * can never outlive the alias it was recorded from, nor a recorded target that became an
- * alias. POSIX never touches it. */
+ * before use — the alias identity and the canonicality of the recorded path and every
+ * ancestor below its root — so a mapping can never outlive the alias it was recorded from,
+ * nor a recorded path, or an ancestor of it, that became an alias. POSIX never touches it. */
 const unfoldedMemo = new Map<string, string>();
 
 /** One cached case-fold decision anchored to the base directory's identity at record time: a
@@ -46,17 +46,43 @@ function isDriveRoot(path: string): boolean {
  * re-walks, because validation must never throw. The recorded path must also still be
  * canonical, not a link itself: a target moved away and replaced by a junction to its new
  * home leaves both stats following that junction and comparing equal, yet the recorded
- * spelling is an alias now and a re-walk must pick up the new home. The stats are bigint
- * ones: win32 ino is a 64-bit file ID whose distinct values can round to the same Number,
- * and the cache decision must differ exactly when the identity does. */
+ * spelling is an alias now and a re-walk must pick up the new home. The same holds for any
+ * ancestor: a parent flipped to a junction keeps both stats reaching the same directory
+ * through it while the recorded spelling becomes an alias to the junction's target, so
+ * every ancestor below the root must lstat as a real directory too (see hasLinkedAncestor).
+ * The stats are bigint ones: win32 ino is a 64-bit file ID whose distinct values can round
+ * to the same Number, and the cache decision must differ exactly when the identity does. */
 function stillResolvesTo(alias: string, recorded: string): boolean {
 	try {
 		const aliasStat = statSync(alias, { bigint: true });
 		const recordedStat = statSync(recorded, { bigint: true });
 		if (aliasStat.dev !== recordedStat.dev || aliasStat.ino !== recordedStat.ino) return false;
-		return !lstatSync(recorded, { bigint: true }).isSymbolicLink();
+		if (lstatSync(recorded, { bigint: true }).isSymbolicLink()) return false;
+		return !hasLinkedAncestor(recorded);
 	} catch {
 		return false;
+	}
+}
+
+/** Whether any ancestor of the recorded path, from its parent up to but excluding the root,
+ * is a symlink or junction. An ancestor flipped to a link leaves both identity stats of
+ * stillResolvesTo reaching the same directory through it, yet the recorded spelling is an
+ * alias to the link's target now and must not be served as canonical; a fresh lookup through
+ * the target would record a different key for the same checkout, splitting leases and daemon
+ * identity. Runs only after the recorded path itself fully resolved, so every ancestor
+ * exists and the walk is a bounded chain of metadata lstats; an lstat failure still counts
+ * as linked, because validation must prove canonicality, never assume it. */
+function hasLinkedAncestor(path: string): boolean {
+	let current = dirname(path);
+	for (;;) {
+		const parent = dirname(current);
+		if (parent === current) return false;
+		try {
+			if (lstatSync(current, { bigint: true }).isSymbolicLink()) return true;
+		} catch {
+			return true;
+		}
+		current = parent;
 	}
 }
 

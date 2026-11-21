@@ -12,6 +12,7 @@ const sources = [
 	"review-integration-v2",
 	"review-risk-assessment",
 	"native-review-cli",
+	"win32-taskkill",
 	"status-timing-diagnostics",
 	"telemetry-trigger",
 	"child-package-injection",

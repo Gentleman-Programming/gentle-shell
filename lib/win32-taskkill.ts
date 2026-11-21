@@ -1,0 +1,9 @@
+import { win32 } from "node:path";
+
+// A bare "taskkill" resolves from the current directory before PATH on
+// Windows, so a repository shipping its own taskkill.exe would run on any
+// abort. Always use the System32 binary, from System32 itself.
+export function windowsTaskkillPath(env: NodeJS.ProcessEnv = process.env): string {
+	const systemRoot = env.SystemRoot || env.windir;
+	return win32.join(systemRoot && win32.isAbsolute(systemRoot) ? systemRoot : "C:\\Windows", "System32", "taskkill.exe");
+}

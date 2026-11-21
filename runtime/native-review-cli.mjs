@@ -34,6 +34,7 @@ import {
 } from "./review-integration-v2.mjs";
 
 import { observeNativeStatus, measureStatusSync, measureStatusAsync } from "./status-timing-diagnostics.mjs";
+import { windowsTaskkillPath } from "./win32-taskkill.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -1134,13 +1135,11 @@ export function gentleAiProcessEnvironment(base                    = process.env
 
 
 
-// A bare "taskkill" resolves from the current directory before PATH on
-// Windows, so a repository shipping its own taskkill.exe would run on any
-// abort. Always use the System32 binary, from System32 itself.
-export function windowsTaskkillPath(env                    = process.env)         {
-	const systemRoot = env.SystemRoot || env.windir;
-	return win32.join(systemRoot && win32.isAbsolute(systemRoot) ? systemRoot : "C:\\Windows", "System32", "taskkill.exe");
-}
+// A bare "taskkill" resolves from the current directory before PATH on Windows, so a repository
+// shipping its own taskkill.exe would run on any abort. The System32 path now lives in
+// ./win32-taskkill.ts so every kill site — this adapter and the codegraph runners — shares one
+// copy; re-exported here for the existing importers.
+export { windowsTaskkillPath };
 
 // taskkill walks the tree from a live parent, so it must run before the
 // parent dies; Node's own abort/timeout kill would orphan the git children.

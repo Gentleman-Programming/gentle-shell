@@ -1626,7 +1626,6 @@ test("init rechecks the .codegraph identity under the acquired lease, override i
 	assert.match(overrideRefused.content[0].text, /CodeGraph failed to run/);
 });
 
-
 test("every search awaits its refresh before the query runs", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);

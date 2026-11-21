@@ -16,8 +16,9 @@ export interface CodegraphEntry {
 
 /** What the resolution proved about the first `codegraph.cmd` cmd.exe would run: a proven
  * direct-spawn entry; a first shim that exists but cannot be proven (rejected — its
- * invocation carries something a direct spawn cannot reproduce, so a consumer must keep the
- * shim's own spawn and never substitute another target for it); or no shim on PATH at all
+ * invocation carries something a direct spawn cannot reproduce, or a same-directory
+ * codegraph.exe takes precedence for bare `codegraph`, so a consumer must keep the shim's
+ * own spawn and never substitute another target for it); or no shim on PATH at all
  * (miss). */
 export type CodegraphShimResolution =
 	| { status: "entry"; entry: CodegraphEntry }
@@ -111,19 +112,44 @@ function parseCmdShim(text: string, shimDir: string, exists: (path: string) => b
 	if (!text.includes("SET dp0=%~dp0")) return null;
 	if (!text.includes('IF EXIST "%dp0%' + BS + 'node.exe"')) return null;
 	// The Node selection behind %_prog% must be npm's own, not merely present: exactly the
-	// quoted beside-shim assignment, exactly the quoted bare-node assignment, and no other
-	// mention of _prog beyond an invocation line (one carrying both "%_prog%" and %*, proven
-	// token for token below). A wrapper that keeps the IF EXIST guard and the stock
-	// invocation but rewrites either assignment — or adds one after the block — picks an
-	// executable the direct spawn would not reproduce.
+	// quoted beside-shim assignment inside the IF EXIST branch, exactly the quoted bare-node
+	// assignment inside the ELSE branch, and no other mention of _prog beyond an invocation
+	// line (one carrying both "%_prog%" and %*, proven token for token below). A wrapper
+	// that keeps the IF EXIST guard and the stock invocation but rewrites either assignment,
+	// trades the two branches, or adds an assignment outside its own branch picks an
+	// executable the direct spawn would not reproduce — the IF branch selecting the bare
+	// node while a colocated node.exe exists, or the reverse — so each stock line counts
+	// only inside its own branch.
+	const ifBranchOpen = 'IF EXIST "%dp0%' + BS + 'node.exe" (';
+	const elseBranchOpen = ") ELSE (";
+	const branchClose = ")";
 	let besideShimAssignments = 0;
 	let bareNodeAssignments = 0;
+	let branch: "before-if" | "if" | "else" | "closed" = "before-if";
 	for (const line of text.split(/\r?\n/)) {
-		if (!line.includes("_prog")) continue;
 		const trimmed = line.trim();
-		if (trimmed === 'SET "_prog=%dp0%' + BS + 'node.exe"') besideShimAssignments += 1;
-		else if (trimmed === 'SET "_prog=node"') bareNodeAssignments += 1;
-		else if (!(line.includes('"%_prog%"') && line.includes("%*"))) return null;
+		if (branch === "before-if" && trimmed === ifBranchOpen) {
+			branch = "if";
+			continue;
+		}
+		if (branch === "if" && trimmed === elseBranchOpen) {
+			branch = "else";
+			continue;
+		}
+		if (branch === "else" && trimmed === branchClose) {
+			branch = "closed";
+			continue;
+		}
+		if (!line.includes("_prog")) continue;
+		if (trimmed === 'SET "_prog=%dp0%' + BS + 'node.exe"') {
+			if (branch !== "if") return null;
+			besideShimAssignments += 1;
+		} else if (trimmed === 'SET "_prog=node"') {
+			if (branch !== "else") return null;
+			bareNodeAssignments += 1;
+		} else if (!(line.includes('"%_prog%"') && line.includes("%*"))) {
+			return null;
+		}
 	}
 	if (besideShimAssignments !== 1 || bareNodeAssignments !== 1) return null;
 	// Exactly one invocation line may exist, and it must be the one supported shape token for
@@ -161,6 +187,12 @@ function resolveCodegraphEntryWith(io: ResolveCodegraphIo): CodegraphShimResolut
 		// the first hit: an unprovable first shim is a REJECTED resolution (the caller keeps the
 		// shim's own spawn) rather than a silent divergence to a different installation.
 		if (!io.exists(shimPath)) continue;
+		// Bare `codegraph` resolves a same-directory codegraph.exe first under the default
+		// PATHEXT order, so a shim beside one is not the command that actually runs: reporting
+		// its entry would spawn a script the shim spawn never reaches. Rejected — the caller
+		// keeps the bare spawn, which runs the executable — never a miss: a shim does exist on
+		// PATH, and no later directory's .cmd can run while this executable shadows it.
+		if (io.exists(shimDir + BS + "codegraph.exe")) return { status: "rejected" };
 		try {
 			const parsed = parseCmdShim(io.read(shimPath), shimDir, io.exists);
 			return parsed === null ? { status: "rejected" } : { status: "entry", entry: parsed };

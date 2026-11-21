@@ -10,6 +10,7 @@ import { acquireInitLock, type InitLockOutcome } from "../lib/codegraph-lease.ts
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
 import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, warmUpDaemonDetailed, WARMUP_TIMEOUT_MS, type SearchSyncInput, type IndexState, type IndexAction, type SessionStartReason, type WarmUpOutcome } from "../lib/codegraph-readiness.ts";
 import { ensureDirectExposureInAgentHomes, type EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
+import type { CodegraphUpdateCheck, InstallOutcome } from "../lib/codegraph-update.ts";
 
 const CODEGRAPH_OPERATION = {
 	INIT: "init",
@@ -204,8 +205,20 @@ function tmpForGuard(): string {
 	return (realTmp ??= realpathOrSelf(tmpdir()));
 }
 
-/** Workspaces whose guard already passed this prompt: git is asked once per cwd per prompt. */
-const workspaceVerified = new Set<string>();
+/** The filesystem identity one cached validation is bound to: the device and inode of a Git
+ * metadata directory plus its creation time — a directory replaced wholesale is always a new
+ * identity (an inode number can be reused by the replacement; the creation time cannot), while
+ * writes inside the directory change none of the three. */
+interface GitMetadataIdentity {
+	dev: number;
+	ino: number;
+	birthtimeMs: number;
+}
+
+/** Workspaces whose guard already passed this prompt, bound to the Git metadata identity the
+ * validation observed: git is asked once per cwd per prompt, and only while that exact
+ * metadata directory survives. */
+const workspaceVerified = new Map<string, GitMetadataIdentity>();
 
 /** The metadata directory a worktree-style `.git` file names, resolved the way Git reads it:
  * an absolute gitdir is taken as it is written, a relative one resolves against the `.git`
@@ -218,29 +231,34 @@ function gitdirTarget(resolved: string): string | undefined {
 	return isAbsolute(target) ? target : resolve(resolved, target);
 }
 
-/** Whether a validated workspace still carries its repository marker: a Git toplevel always
- * holds `.git` — a directory, or the file a linked worktree or submodule writes — so a
- * cached validation survives only while that marker does. A `.git` FILE names its metadata
- * directory through `gitdir:`, and that target can move independently of the worktree (the
- * main checkout a linked worktree was created from can be renamed away while the worktree's
- * `.git` file survives), so the file counts as a marker only while the metadata it names
- * still exists. An env-driven GIT_DIR repository without the marker simply re-validates on
- * every call: one extra git run, never a wrong cache hit. */
-function gitRootMarkerPresent(resolved: string): boolean {
+/** The identity of a directory as a cache key: device, inode, and creation time together. */
+function directoryIdentity(stat: { dev: number; ino: number; birthtimeMs: number }): GitMetadataIdentity {
+	return { dev: stat.dev, ino: stat.ino, birthtimeMs: stat.birthtimeMs };
+}
+
+function sameGitMetadataIdentity(a: GitMetadataIdentity, b: GitMetadataIdentity): boolean {
+	return a.dev === b.dev && a.ino === b.ino && a.birthtimeMs === b.birthtimeMs;
+}
+
+/** The Git metadata identity a workspace root validates against: the `.git` directory itself
+ * — a directory, or the target a linked worktree's or submodule's `.git` FILE names through
+ * `gitdir:`, resolved the way Git reads it and counted by the identity of the metadata
+ * directory it names, because that target can move or be replaced independently of the
+ * worktree's own `.git` file. A symlinked `.git` resolving to a directory is metadata as
+ * well; anything else — a missing marker, or a FIFO, socket, or device, which is not a
+ * marker Git wrote and would block the whole session if read — has no identity, and a
+ * repository without one is never cached: it re-validates on every call, one extra git run,
+ * never a wrong cache hit. */
+function gitRootMetadataIdentity(resolved: string): GitMetadataIdentity | undefined {
 	try {
-		const markerPath = join(resolved, ".git");
-		if (lstatSync(markerPath).isDirectory()) return true;
-		// A symlinked `.git` resolving to a directory is metadata as well; only a regular file
-		// carries the gitdir pointer the cache must follow — and anything else is rejected
-		// before the read: a FIFO, socket, or device is not a marker Git wrote, and reading
-		// one synchronously could block the whole session on a pipe with no writer.
-		const marker = statSync(markerPath);
-		if (marker.isDirectory()) return true;
-		if (!marker.isFile()) return false;
+		const marker = statSync(join(resolved, ".git"));
+		if (marker.isDirectory()) return directoryIdentity(marker);
+		// Only a regular file carries the gitdir pointer the cache must follow.
+		if (!marker.isFile()) return undefined;
 		const target = gitdirTarget(resolved);
-		return target !== undefined && statSync(target).isDirectory();
+		return target === undefined ? undefined : directoryIdentity(statSync(target));
 	} catch {
-		return false;
+		return undefined;
 	}
 }
 
@@ -252,10 +270,14 @@ function resolveWorkspaceCwd(cwd: string, gitRun: GitRun = defaultGitRun): strin
 	if (resolved === homeForGuard() || resolved === tmpForGuard()) {
 		throw new Error("CodeGraph requires a real Git project root equal to the current workspace, not HOME or a temporary directory.");
 	}
-	if (workspaceVerified.has(resolved)) {
-		// The cache holds only while the repository identity does: a checkout that lost its
-		// .git mid-prompt re-runs the full root check instead of dispatching into a non-repository.
-		if (gitRootMarkerPresent(resolved)) return resolved;
+	const verifiedIdentity = workspaceVerified.get(resolved);
+	if (verifiedIdentity !== undefined) {
+		// The cache holds only while the repository's metadata identity does: a checkout whose
+		// .git was replaced mid-prompt — even by a fresh empty directory, which still passes a
+		// marker-existence check — re-runs the full root check instead of dispatching into a
+		// non-repository.
+		const identity = gitRootMetadataIdentity(resolved);
+		if (identity !== undefined && sameGitMetadataIdentity(identity, verifiedIdentity)) return resolved;
 		workspaceVerified.delete(resolved);
 	}
 	try {
@@ -263,7 +285,10 @@ function resolveWorkspaceCwd(cwd: string, gitRun: GitRun = defaultGitRun): strin
 		if (!isSameDirectory(root, resolved)) {
 			throw gitRootRequiredError(resolved, "git toplevel", root);
 		}
-		workspaceVerified.add(resolved);
+		// A repository without a metadata identity (an env-driven GIT_DIR setup) is never
+		// cached: it re-validates on every call.
+		const identity = gitRootMetadataIdentity(resolved);
+		if (identity !== undefined) workspaceVerified.set(resolved, identity);
 		return resolved;
 	} catch (error) {
 		if (error instanceof Error && /real Git project root/.test(error.message)) throw error;
@@ -732,6 +757,14 @@ function shellCommandList(command: string): ShellListCommand[] {
 				operator = "|&";
 				continue;
 			}
+			// A newline directly behind a pending && or || continues the list: the shell waits for
+			// the next command, so the operator survives into the part that follows instead of being
+			// pushed as the empty part the final filter drops — a command the operator would skip
+			// must not come back as unconditionally reachable. Newlines behind every other
+			// separator, and every newline with a command before it, still separate commands.
+			if (char === "\n" && current === "" && (operator === "&&" || operator === "||")) {
+				continue;
+			}
 			commands.push({ text: current, operator });
 			// A doubled & or | is one operator (`&&`, `||`), never two separators — but only
 			// when the two characters are adjacent in the input: a command between them means
@@ -893,6 +926,14 @@ function codegraphIndexCommands(command: string, startCwd: string): RebuildComma
 		// rebuilds an index, or replaces the last executed status.
 		const executed = states.filter((state) => branchRuns(pipeline.operator, state.verdict) !== false);
 		const next = states.filter((state) => branchRuns(pipeline.operator, state.verdict) === false);
+		for (const state of states) {
+			if (branchRuns(pipeline.operator, state.verdict) !== undefined) continue;
+			// An unknown previous verdict leaves both branches possible: the skipped copy keeps
+			// the directory and carries the status the skip itself implies — the previous command
+			// failed behind a skipped && and succeeded behind a skipped || — so the branch a later
+			// operator selects for stays tracked instead of being recorded as unreachable.
+			addState(next, { dir: state.dir, verdict: pipeline.operator === "&&" ? false : true });
+		}
 		// Every stage starts in the parent shell's directory - a cd inside a stage moves that
 		// stage's own subshell - so each rebuild of the pipeline is judged there.
 		if (executed.length > 0) {
@@ -1041,17 +1082,49 @@ function isEnoent(error: unknown): boolean {
 	);
 }
 
-/** Find `codegraph.cmd` shims in Windows PATH order. */
-function* codeGraphCmdPathsOnPath(): Iterable<string> {
+/** The directories of the Windows PATH in order, quoted entries unquoted the way the PATH
+ * scans here read them. */
+function* windowsPathDirectories(): Generator<string> {
 	const pathEnv = process.env.Path ?? process.env.PATH ?? "";
 	for (const entry of pathEnv.split(";")) {
 		const dir = entry.length >= 2 && entry.startsWith('"') && entry.endsWith('"')
 			? entry.slice(1, -1)
 			: entry;
 		if (!dir) continue;
+		yield dir;
+	}
+}
+
+/** Find `codegraph.cmd` shims in Windows PATH order. */
+function* codeGraphCmdPathsOnPath(): Iterable<string> {
+	for (const dir of windowsPathDirectories()) {
 		const candidate = join(dir, "codegraph.cmd");
 		if (existsSync(candidate)) yield candidate;
 	}
+}
+
+/** The first native `codegraph.exe` on the Windows PATH with its directory's position, so a
+ * native install can be compared against the first shim directory by PATH order: the shell
+ * runs the first matching executable whatever its form, and a native install in an earlier
+ * directory must outrank every npm shim behind it. */
+function firstCodegraphNativeExecutableOnPath(): { path: string; dirIndex: number } | undefined {
+	let dirIndex = 0;
+	for (const dir of windowsPathDirectories()) {
+		const candidate = join(dir, "codegraph.exe");
+		if (existsSync(candidate)) return { path: candidate, dirIndex };
+		dirIndex += 1;
+	}
+	return undefined;
+}
+
+/** The position of the first `codegraph.cmd` shim directory on the Windows PATH. */
+function firstCodegraphCmdDirectoryIndexOnPath(): number | undefined {
+	let dirIndex = 0;
+	for (const dir of windowsPathDirectories()) {
+		if (existsSync(join(dir, "codegraph.cmd"))) return dirIndex;
+		dirIndex += 1;
+	}
+	return undefined;
 }
 
 /**
@@ -1149,16 +1222,37 @@ function execFileObserving(
 	onSpawn?: (pid: number, proxy: boolean) => void,
 ): Promise<{ stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
+		let closed = false;
+		const afterClose: Array<() => void> = [];
+		const onceClosed = (settle: () => void): void => {
+			if (closed) settle();
+			else afterClose.push(settle);
+		};
 		const child = execFile(command, args, options, (error: Error | null, stdout: string, stderr: string) => {
-			if (error !== null) {
-				// The same result properties the promisified form's rejection carries.
-				(error as { stdout?: string }).stdout = stdout;
-				(error as { stderr?: string }).stderr = stderr;
-				reject(error);
-				return;
-			}
-			resolve({ stdout, stderr });
+			const settle = (): void => {
+				if (error !== null) {
+					// The same result properties the promisified form's rejection carries.
+					(error as { stdout?: string }).stdout = stdout;
+					(error as { stderr?: string }).stderr = stderr;
+					reject(error);
+					return;
+				}
+				resolve({ stdout, stderr });
+			};
+			// An abort can invoke this callback through the error handler while the child is still
+			// tearing down (Node 24): a caller holding a lease on the run must not treat the early
+			// rejection as the writer being gone, so a failure with a spawned child settles only at
+			// that child's confirmed close. A spawn that never created a child — an abort that
+			// predated it, a missing binary — settles at once.
+			if (error !== null && child?.pid !== undefined) onceClosed(settle);
+			else settle();
 		});
+		if (child !== undefined) {
+			child.on("close", () => {
+				closed = true;
+				for (const settle of afterClose.splice(0)) settle();
+			});
+		}
 		if (onSpawn !== undefined && child?.pid !== undefined) {
 			try {
 				onSpawn(child.pid, process.platform === "win32");
@@ -1193,6 +1287,22 @@ const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 		// resort: whatever a runtime can exec there only ever answers after the provable,
 		// faster paths had their chance, so node, bun, and whatever comes next behave alike.
 		let unavailableError: unknown = codegraphNotFound();
+		// The first matching executable on PATH wins, whatever its form: a native codegraph.exe
+		// in an earlier directory outranks every npm shim behind it — running the shim there would
+		// answer with a different binary than the shell would. Only a native executable with no
+		// earlier shim directory preempts the proven resolution cascade below; a genuine spawn
+		// failure for it falls back into that cascade exactly like an entry that ENOENTed.
+		const nativeExecutable = firstCodegraphNativeExecutableOnPath();
+		const firstShimDirIndex = firstCodegraphCmdDirectoryIndexOnPath();
+		if (nativeExecutable !== undefined && (firstShimDirIndex === undefined || nativeExecutable.dirIndex < firstShimDirIndex)) {
+			try {
+				const result = await exec(nativeExecutable.path, [...args], runOptions);
+				return { stdout: result.stdout, stderr: result.stderr };
+			} catch (innerError) {
+				if (!isEnoent(innerError)) throw innerError;
+				unavailableError = innerError;
+			}
+		}
 		const resolution = codegraphEntryResolver();
 		if (resolution.status === "entry") {
 			try {
@@ -1318,10 +1428,25 @@ export const SYNC_FRESH_WINDOW_MS = 60_000;
 
 /**
  * The canonical roots (resolveWorkspaceCwd already realpath'ed them) whose last pre-query sync
- * settled without failure, and when. Purely time-based — a new user prompt does not reset it:
- * the index does not go stale at a prompt boundary. Win32 only (S4/S11).
+ * settled without failure, and when — bound to the generation of the index that sync served,
+ * the `.codegraph` directory's filesystem identity: a sync writes inside that directory, but a
+ * rebuild replaces it wholesale, and freshness paid against one generation must never serve a
+ * different one. Still not reset at a prompt boundary — the index does not go stale there.
+ * Win32 only (S4/S11).
  */
-const syncFreshAt = new Map<string, number>();
+const syncFreshAt = new Map<string, { at: number; generation: string }>();
+
+/** The generation identity of a workspace's index: the `.codegraph` directory's device, inode,
+ * and creation time — stable while the index it holds is synced, new after any wholesale
+ * replacement of the directory. */
+function indexGeneration(cwd: string): string | undefined {
+	try {
+		const stat = statSync(join(cwd, ".codegraph"));
+		return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+	} catch {
+		return undefined;
+	}
+}
 
 /**
  * One tracked refresh per cwd on win32: only the call that created the underlying job observes
@@ -1469,7 +1594,7 @@ export async function awaitSearchSync(cwd: string, ctx: ExtensionContext, run: S
 	// POSIX keeps its refresh-before-every-search flow exactly as it is (S11).
 	const windowed = process.platform === "win32";
 	const freshAt = syncFreshAt.get(cwd);
-	if (windowed && freshAt !== undefined && Date.now() - freshAt < SYNC_FRESH_WINDOW_MS) return false;
+	if (windowed && freshAt !== undefined && Date.now() - freshAt.at < SYNC_FRESH_WINDOW_MS && freshAt.generation === indexGeneration(cwd)) return false;
 	if (windowed) {
 		const running = searchSyncOutcome.get(cwd);
 		// A joined in-flight refresh covers this search like one's own — and its creating call
@@ -1480,6 +1605,9 @@ export async function awaitSearchSync(cwd: string, ctx: ExtensionContext, run: S
 		}
 	}
 	let failed = false;
+	// The generation this refresh runs against, captured before it starts: a completion whose
+	// index was replaced mid-run answered the old generation and must buy no freshness.
+	const observedGeneration = windowed ? indexGeneration(cwd) : undefined;
 	// Whether THIS session's refresh actually ran a sync: a lease held by another session
 	// ("held-live") or CodeGraph's own writing lock makes the refresh run nothing here and
 	// report no failure — an outcome this session never confirmed must not open the
@@ -1508,12 +1636,13 @@ export async function awaitSearchSync(cwd: string, ctx: ExtensionContext, run: S
 			},
 		});
 		if (windowed) {
-			// Only a refresh this session ran to a settled, unfailed sync buys freshness; a
-			// failure never does, and neither does an outcome that ran nothing here (the holder's
-			// verdict is unconfirmed) — both clear any older mark so the very next search
-			// refreshes again.
-			if (failed || !ran) syncFreshAt.delete(cwd);
-			else syncFreshAt.set(cwd, Date.now());
+			// Only a refresh this session ran to a settled, unfailed sync buys freshness, and only
+			// while the index it synced is still the one on disk: a failure never does, an outcome
+			// that ran nothing here (the holder's verdict is unconfirmed) does not, and a replaced
+			// generation — swapped mid-run or after it — invalidates the window instead of opening
+			// one for an index this session never confirmed.
+			if (failed || !ran || observedGeneration === undefined || observedGeneration !== indexGeneration(cwd)) syncFreshAt.delete(cwd);
+			else syncFreshAt.set(cwd, { at: Date.now(), generation: observedGeneration });
 		}
 	})();
 	if (windowed) searchSyncOutcome.set(cwd, job);
@@ -1558,6 +1687,7 @@ export function createCodeGraphTool(
 		syncRun = runCodegraph,
 		gitRun = defaultGitRun,
 		initLock = acquireInitLock,
+		awaitedRetryWarm,
 	}: {
 		queryTimeoutMs?: number;
 		/** Caps each daemon attempt and the raced warm-up wait on the query path; the warm itself keeps the full session-start budget. */
@@ -1573,6 +1703,12 @@ export function createCodeGraphTool(
 		gitRun?: GitRun;
 		/** Acquires the cross-session init lock around the explicit init operation; injected in tests. */
 		initLock?: (cwd: string) => Promise<InitLockOutcome>;
+		/** Whether the query retry path awaits its warm-up between the two daemon attempts
+		 * instead of backgrounding it; the default follows the platform (awaited on POSIX,
+		 * backgrounded on win32). Injected so tests can pin the retry policy without pinning
+		 * process.platform, which daemon discovery must keep reading natively — a pinned platform
+		 * would blind the Windows pipe probe to the endpoint it must recognize. */
+		awaitedRetryWarm?: boolean;
 	} = {},
 ) {
 	return {
@@ -1657,7 +1793,10 @@ export function createCodeGraphTool(
 					// abort once, so a listener registered on an already-aborted signal never fires, and the
 					// warm-up could otherwise consume its whole budget after the cancellation.
 					if (viaDaemon?.status !== "ok" && !signal?.aborted) {
-						if (process.platform === "win32") {
+						// The retry policy — awaited raced warm or backgrounded warm — is injected separately
+						// from the platform so tests can pin it without changing what daemon discovery reads.
+						const awaitedWarm = awaitedRetryWarm ?? process.platform !== "win32";
+						if (!awaitedWarm) {
 							// A daemon-death query must never stack attempt → warm (up to 120 s) → attempt → CLI
 							// (S9): the warm-up runs in the background — the default warm seam passes
 							// background=true, so it never keeps this process alive — and this query
@@ -1810,6 +1949,21 @@ export function armExposureEnsureForTest(io: EnsureExposureIo | undefined): void
 	exposureEnsured = false;
 }
 
+/** Readiness checks the session-start wiring passes to prepareReadiness: undefined means the
+ * real install and update checks. A test seam so startup fixtures never run real package
+ * operations or registry probes; production never arms it. */
+let readinessChecks: { installCheck?: () => Promise<InstallOutcome>; updateCheck?: () => Promise<CodegraphUpdateCheck> } | undefined;
+
+/** Test seam for the session-start readiness checks: arms the install and update checks the
+ * next session starts run with and returns the restore. Exercised only by the test suite. */
+export function armReadinessChecksForTest(checks: typeof readinessChecks): () => void {
+	const previous = readinessChecks;
+	readinessChecks = checks;
+	return () => {
+		readinessChecks = previous;
+	};
+}
+
 function ensureExposureOnce(): void {
 	// Subagent children never patch user config; the parent session owns it once.
 	if (exposureEnsured || process.env[CHILD_ENV] === "1") return;
@@ -1871,6 +2025,10 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 		// window has already said its result, and a stale "initializing..." after that would lie).
 		let said = false;
 		const say = (text: string, level: "info" | "warning") => {
+			if (say !== warmNoticeSay) return;
+			// The latest session owns every notice this wiring emits, the same ownership the lazy
+			// warm path checks: a superseded session's late completion — its deferred start line,
+			// its index result — is discarded instead of replacing the newer session's status.
 			said = true;
 			if (ctx.hasUI) ctx.ui.notify(text, level);
 		};
@@ -1884,6 +2042,10 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			env: process.env,
 			reason: reason as SessionStartReason,
 			isProjectRoot: isWorkspaceProjectRoot,
+			// The armed test seam replaces the install and update checks wholesale; unset keys
+			// keep the real ones.
+			...(readinessChecks?.installCheck !== undefined ? { installCheck: readinessChecks.installCheck } : {}),
+			...(readinessChecks?.updateCheck !== undefined ? { updateCheck: readinessChecks.updateCheck } : {}),
 			run: runCodegraph,
 			seed: async (workspace) => {
 				const seeded = await seedWorktreeIndex({ cwd: workspace, run: runCodegraphSeedSync });

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { NativeReviewCliV216, NativeReviewIntegrationError, type ExecFileAdapter } from "../lib/native-review-cli.ts";
+import { statusV9 } from "./support/status-v9.ts";
 
 // odd/tasks/review-one-call.md T11 (S5), L18: contracted STATUS asks for the
 // non-blocking findings (gentle-ai#6088) only when the caller requests them; a
@@ -20,7 +21,7 @@ function binary(content = `fixture-${binaries}`): string {
 	return path;
 }
 
-const statusBody = JSON.parse(readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", "status-v5.captured.json"), "utf8"));
+const statusBody = statusV9(JSON.parse(readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", "status-v5.captured.json"), "utf8")));
 const refusal = (cause: string) => ({
 	schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2", operation: "review.status", phase: "preflight",
 	code: "invalid_request", message: "The negotiated review request is invalid.", mutation_outcome: "not_started", authority_applicability: "not_evaluated",

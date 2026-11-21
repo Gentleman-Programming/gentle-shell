@@ -1807,15 +1807,13 @@ export function decodeReviewManagedAssetsContinuationV1(value: unknown, label: s
 	return { operation, command, ...(agent === undefined ? {} : { agent }), ...(staleAssets === undefined ? {} : { staleAssets }) };
 }
 
-export function decodeReviewNextTransitionV3(value: unknown, options: { v5?: boolean; v6?: boolean; v9?: boolean } = {}): ReviewNextTransitionV3 {
-	// v9 (gentle-ai's next contract, ahead of the currently-released v8) is
-	// the only rung this sub-decoder distinguishes beyond v6: v7 and v8 add
-	// nothing to next_transition/collect-input decoding (v8 only extended the
-	// reviewer-result transition for OpenCode provider tasks at the top
-	// status level), so they decode on the exact v6 surface here.
+export function decodeReviewNextTransitionV3(value: unknown, options: { v9?: boolean } = {}): ReviewNextTransitionV3 {
+	// status/v9 (the only supported status identity) selects the full
+	// next_transition surface; without it the embedded START/v4 transition is
+	// decoded on its own closed v3 surface.
 	const v9 = options.v9 === true;
-	const v6 = options.v6 === true || v9;
-	const v5 = options.v5 === true || v6;
+	const v6 = v9;
+	const v5 = v9;
 	const transition = exactRecord(value, "next_transition", ["kind", "reason_code"], ["execute", "collect", ...(v5 ? ["correction_request"] : []), "continuation", "unachievable_lens_slots"]);
 	const kind = enumeration(transition.kind, ["execute", "collect", "stop"] as const, "next_transition.kind");
 	const reasonCode = text(transition.reason_code, "next_transition.reason_code", { minimum: 1, pattern: /^[a-z0-9_]+$/ });
@@ -1983,32 +1981,19 @@ function decodeEligibility(value: unknown, label: string): void {
 // ---------------------------------------------------------------------------
 
 export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
-	// Additive forward acceptance: status/v5 (gentle-ai main; ground-truthed
-	// against a live capture and the vendored status-v5.schema.json) is the v3
-	// key set plus the optional forecast and the v5-only next_transition
-	// surfaces. status/v6 adds the intended-untracked selection; status/v7
-	// (gentle-ai v2.6.0, advertised through capabilities/v2.5 alongside v6)
-	// adds optional `eligible_untracked_inventory` and escalation metadata,
-	// so it is decoded on the v6 surface. status/v8 (gentle-ai main, PR #4765;
-	// the current released contract) only extended the reviewer-result
-	// transition for OpenCode provider tasks -- no new top-level key -- so it
-	// decodes on the exact v7 surface too. status/v9 (the sibling gentle-ai
-	// branch's contract, ahead of the released v8) adds nothing at this top
-	// level either: its one addition is the host-mediated role `submission`
-	// on a next_transition.collect input (gentle-pi#311 P3), gated on v9 in
-	// decodeCollectInput, not here. Its one top-level key is the opt-in
-	// `non_blocking_findings` (gentle-ai#6088), decoded below. v3 keeps
-	// rejecting every v5/v6/v7/v8/v9-only field.
+	// Only status/v9 (gentle-ai v4.6.0, the minimum supported native binary)
+	// decodes. An older status identity is refused with an actionable message
+	// before any structural check, so an old binary never surfaces an opaque
+	// "not allowed"/"unsupported" decode error. v9 is the full surface: the
+	// forecast, receipt, repository context, validation request, eligible
+	// untracked inventory, escalation, and opt-in non_blocking_findings keys.
 	const schema = typeof value === "object" && value !== null ? (value as Record<string, unknown>).schema : undefined;
-	const v9 = schema === "gentle-ai.review-integration.status/v9";
-	const v8 = v9 || schema === "gentle-ai.review-integration.status/v8";
-	const v7 = v8 || schema === "gentle-ai.review-integration.status/v7";
-	const v6 = v7 || schema === "gentle-ai.review-integration.status/v6";
-	const v5 = v6 || schema === "gentle-ai.review-integration.status/v5";
+	const older = typeof schema === "string" ? /^gentle-ai\.review-integration\.status\/v([0-9]+)$/.exec(schema) : null;
+	if (older !== null && Number(older[1]) < 9) throw new ReviewNativeContractTooOldError(reviewStatusTooOldMessage(schema as string));
 	const body = exactRecord(value, "status", [
 		"schema", "contract", "operation", "applicability", "action", "replayability", "target_identity", "projection", "repair", "candidates",
-	], ["authority", "frozen", "action_disposition", "eligibility", "next_transition", "authority_target_identity", ...(v5 ? ["receipt", "forecast", "repository_context", "validation_request"] : []), ...(v7 ? ["eligible_untracked_inventory", "escalation"] : []), ...(v9 ? ["non_blocking_findings"] : [])]);
-	requireIdentity(body, v9 ? "gentle-ai.review-integration.status/v9" : v8 ? "gentle-ai.review-integration.status/v8" : v7 ? "gentle-ai.review-integration.status/v7" : v6 ? "gentle-ai.review-integration.status/v6" : v5 ? "gentle-ai.review-integration.status/v5" : "gentle-ai.review-integration.status/v3", REVIEW_INTEGRATION_OPERATION.STATUS);
+	], ["authority", "frozen", "action_disposition", "eligibility", "next_transition", "authority_target_identity", "receipt", "forecast", "repository_context", "validation_request", "eligible_untracked_inventory", "escalation", "non_blocking_findings"]);
+	requireIdentity(body, REVIEW_MINIMUM_STATUS_IDENTITY, REVIEW_INTEGRATION_OPERATION.STATUS);
 
 	const applicability = enumeration(body.applicability, ["current_target", "unrelated", "ambiguous", "corrupted"] as const, "status.applicability");
 	let receipt: ReviewStatusReceiptV1 | undefined;
@@ -2056,8 +2041,8 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 	if (action === "recover" && actionDisposition === undefined) throw new TypeError("recover status requires action_disposition");
 	if (action !== "recover" && actionDisposition !== undefined) throw new TypeError("status.action_disposition is only valid for the recover action");
 	if (body.eligibility !== undefined) decodeEligibility(body.eligibility, "status.eligibility");
-	const nextTransition = body.next_transition === undefined ? undefined : decodeReviewNextTransitionV3(body.next_transition, { v5, v6, v9 });
-	const validationRequest = v5 && body.validation_request !== undefined
+	const nextTransition = body.next_transition === undefined ? undefined : decodeReviewNextTransitionV3(body.next_transition, { v9: true });
+	const validationRequest = body.validation_request !== undefined
 		? decodeReviewTargetedValidationRequestV1(body.validation_request, "status.validation_request")
 		: undefined;
 	if (validationRequest !== undefined) {
@@ -2069,7 +2054,7 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 	}
 	// status/v5 dependentRequired: a forecast previews the transition head, so
 	// it can only accompany an actual next_transition.
-	const forecast = v5 && body.forecast !== undefined ? decodeReviewForecastV1(body.forecast) : undefined;
+	const forecast = body.forecast !== undefined ? decodeReviewForecastV1(body.forecast) : undefined;
 	if (forecast !== undefined && nextTransition === undefined) throw new TypeError("status.forecast requires status.next_transition");
 	const replayability = enumeration(body.replayability, Object.values(REVIEW_REPLAYABILITY), "status.replayability");
 
@@ -2100,7 +2085,7 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 	// published. Absent on the `staged` projection, which never resolves an
 	// inventory, so it stays structurally optional rather than a required v7
 	// field.
-	const eligibleUntrackedInventory = v7 && body.eligible_untracked_inventory !== undefined
+	const eligibleUntrackedInventory = body.eligible_untracked_inventory !== undefined
 		? sha256(body.eligible_untracked_inventory, "status.eligible_untracked_inventory")
 		: undefined;
 

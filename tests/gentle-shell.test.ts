@@ -43,6 +43,7 @@ import { CARD_CONTENT, cardContent, resolveCardContent, setCardContent, writeCar
 import { claimNotificationOwner } from "../lib/notification-service.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS } from "../lib/notification-policy.ts";
 import { SUPER_YOLO_STATUS_TEXT, yoloBannerContent } from "../lib/yolo-session-policy.ts";
+import { statusV9 } from "./support/status-v9.ts";
 
 
 // Vim fixtures claim the installed pi-tui release, which the adapter gate
@@ -486,7 +487,7 @@ async function reviewSidebarHarness() {
 	ctx.cwd = process.cwd();
 	let sessionId = "shell-session";
 	ctx.sessionManager.getSessionId = () => sessionId;
-	const raw = JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
+	const raw = statusV9(JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8")));
 	raw.action = "stop";
 	raw.projection.paths = ["src/fresh.ts"];
 	const status = decodeReviewStatusV3(raw);

@@ -9,6 +9,7 @@ import {
 	StatusTimingDiagnostics, observeNativeStatus, measureStatusSync, measureStatusAsync, measureStatusSidebar,
 } from "../lib/status-timing-diagnostics.ts";
 import { NativeReviewCliV216, createNodeExecFileAdapter, type ExecFileAdapter, type ExecFileRequest } from "../lib/native-review-cli.ts";
+import { statusV9 } from "./support/status-v9.ts";
 
 function context() {
 	let id = "private-session";
@@ -34,7 +35,7 @@ function summary(timing: StatusTimingDiagnostics, host: ReturnType<typeof contex
 	};
 }
 
-const statusBytes = readFileSync(join(process.cwd(), "tests/fixtures/devbinary/status-v5.captured.json"), "utf8");
+const statusBytes = JSON.stringify(statusV9(JSON.parse(readFileSync(join(process.cwd(), "tests/fixtures/devbinary/status-v5.captured.json"), "utf8"))));
 
 test("disabled diagnostics do not consult the clock or alter protocol, invocations, or deadlines", async () => {
 	const host = context();

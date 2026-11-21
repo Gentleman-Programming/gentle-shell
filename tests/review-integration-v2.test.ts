@@ -19,6 +19,7 @@ import {
 	decodeReviewTargetedValidationRequestV1,
 } from "../lib/review-integration-v2.ts";
 import { capabilitiesV26 } from "./support/capabilities-v26.ts";
+import { statusV9 } from "./support/status-v9.ts";
 
 const fixtureRoot = join(process.cwd(), "contracts", "review-integration", "v2", "fixtures");
 const devFixtureRoot = join(process.cwd(), "tests", "fixtures", "devbinary");
@@ -153,10 +154,10 @@ test("start/v3 transports the published selected_lenses wire contract without Pi
 	assert.throws(() => decodeReviewStartV3(invalidLensesRequired), /lenses_required/);
 });
 
-test("historical status fixture with a receipt is rejected after receipt retirement", () => {
+test("historical status fixture with a receipt is refused as older than the supported status/v9", () => {
 	// This archived fixture is pinned for schema-rejection coverage only. Its
 	// bytes retain the retired receipt surface and must never regain authority.
-	assert.throws(() => decodeReviewStatusV3(fixture("status.fixture.json")), /receipt.*not allowed/);
+	assert.throws(() => decodeReviewStatusV3(fixture("status.fixture.json")), /status\/v3 is older than the supported v9/);
 });
 
 test("projection enforces every required property and rejects additional keys", () => {
@@ -841,7 +842,7 @@ test("next_transition decodes the self-contained provider role capture vectors s
 		}] },
 	});
 
-	const decodeRoleTransition = (value: unknown) => decodeReviewNextTransitionV3(value, { v5: true });
+	const decodeRoleTransition = (value: unknown) => decodeReviewNextTransitionV3(value, { v9: true });
 	const refuter = roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/refuter/v1");
 	const decodedRefuter = decodeRoleTransition(refuter);
 	assert.equal(decodedRefuter.collect?.inputs[0]?.captureOperation, "review.capture-refuter");
@@ -851,11 +852,11 @@ test("next_transition decodes the self-contained provider role capture vectors s
 		() => decodeRoleTransition(roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/reviewer/v1")),
 		/schema must be https:\/\/gentle-ai\.dev\/schema\/review\/refuter\/v1/,
 	);
-	// This fixture decodes on the v5 surface only (no v9): a submission
-	// descriptor on a role input is rejected for lacking the v9 provider
-	// contract, before the materialize/execute discriminator is even read.
+	// Outside the status/v9 surface (the embedded START/v4 transition) a
+	// submission descriptor on a role input is rejected for lacking the v9
+	// provider contract, before the materialize/execute discriminator is read.
 	assert.throws(
-		() => decodeRoleTransition(roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/refuter/v1", {
+		() => decodeReviewNextTransitionV3(roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/refuter/v1", {
 			submission: { operation_token: "capture-refuter", argument_tokens: ["--input={{value}}"], values: [{ slot: "{{value}}", domain: "artifact-path", substitution_location: 0 }] },
 		})),
 		/submission requires the v9 provider contract/,
@@ -913,11 +914,10 @@ test("next_transition decodes the v9 host-mediated provider role submission form
 		substitutionLocation: materializeArguments.length,
 	}]);
 
-	// The exact same payload under v8 (or any earlier non-v9 rung) is
-	// rejected: v8 only extended the reviewer-result transition for OpenCode
-	// provider tasks and never renders a role submission descriptor.
+	// Outside the status/v9 surface (the embedded START/v4 transition) the same
+	// payload is still rejected: only status/v9 renders a role submission.
 	assert.throws(
-		() => decodeReviewNextTransitionV3(refuter, { v6: true }),
+		() => decodeReviewNextTransitionV3(refuter),
 		/submission requires the v9 provider contract/,
 	);
 
@@ -1037,7 +1037,7 @@ test("v5 targeted-validator collect inputs carry the exact provider-owned valida
 		validation_request: validationRequest,
 	};
 	const transition = { kind: "collect" as const, reason_code: "targeted_validation_required", collect: { inputs: [input] } };
-	const decoded = decodeReviewNextTransitionV3(transition, { v5: true });
+	const decoded = decodeReviewNextTransitionV3(transition, { v9: true });
 	const decodedRequest = decoded.collect?.inputs[0]?.validationRequest;
 	assert.equal(decodedRequest?.requestHash, requestHash);
 	assert.equal(decodedRequest?.correctionTargetIdentity, correctionTargetIdentity);
@@ -1085,42 +1085,35 @@ test("v5 targeted-validator collect inputs carry the exact provider-owned valida
 	}]);
 	assert.equal(decodedHostMediated.collect?.inputs[0]?.validationRequest?.requestHash, requestHash);
 
-	// The identical v8 surface (v6/v7/v8 all decode collect inputs alike)
-	// rejects the same host-mediated submission: only v9 renders it.
-	assert.throws(
-		() => decodeReviewNextTransitionV3(hostMediatedTransition, { v6: true }),
-		/submission requires the v9 provider contract/,
-	);
-
 	const missingRequest = clone(transition);
 	delete (missingRequest.collect.inputs[0] as JsonObject).validation_request;
-	assert.throws(() => decodeReviewNextTransitionV3(missingRequest, { v5: true }), /validation_request is required/);
+	assert.throws(() => decodeReviewNextTransitionV3(missingRequest, { v9: true }), /validation_request is required/);
 
 	const mismatchedRequestHash = clone(transition);
 	((mismatchedRequestHash.collect.inputs[0] as JsonObject).validation_request as JsonObject).request_hash = `sha256:${"0".repeat(64)}`;
-	assert.throws(() => decodeReviewNextTransitionV3(mismatchedRequestHash, { v5: true }), /request-hash/);
+	assert.throws(() => decodeReviewNextTransitionV3(mismatchedRequestHash, { v9: true }), /request-hash/);
 
 	const refuter = clone(transition);
 	const refuterInput = refuter.collect.inputs[0] as JsonObject;
 	refuterInput.name = "provider_refuter";
 	refuterInput.schema = "https://gentle-ai.dev/schema/review/refuter/v1";
 	refuterInput.capture_operation = "review.capture-refuter";
-	assert.throws(() => decodeReviewNextTransitionV3(refuter, { v5: true }), /validation_request.*targeted-validator/);
+	assert.throws(() => decodeReviewNextTransitionV3(refuter, { v9: true }), /validation_request.*targeted-validator/);
 
 	const malformedRequest = clone(transition);
 	((malformedRequest.collect.inputs[0] as JsonObject).validation_request as JsonObject).unadvertised = true;
-	assert.throws(() => decodeReviewNextTransitionV3(malformedRequest, { v5: true }), /not allowed/);
+	assert.throws(() => decodeReviewNextTransitionV3(malformedRequest, { v9: true }), /not allowed/);
 
 	const emptyPolicyRequest = clone(transition);
 	((emptyPolicyRequest.collect.inputs[0] as JsonObject).validation_request as JsonObject).policy_content = "";
-	assert.equal(decodeReviewNextTransitionV3(emptyPolicyRequest, { v5: true }).collect?.inputs[0]?.validationRequest?.policyContent, "");
+	assert.equal(decodeReviewNextTransitionV3(emptyPolicyRequest, { v9: true }).collect?.inputs[0]?.validationRequest?.policyContent, "");
 	const malformedPolicyRequest = clone(transition);
 	((malformedPolicyRequest.collect.inputs[0] as JsonObject).validation_request as JsonObject).policy_content = null;
-	assert.throws(() => decodeReviewNextTransitionV3(malformedPolicyRequest, { v5: true }), /policy_content/);
+	assert.throws(() => decodeReviewNextTransitionV3(malformedPolicyRequest, { v9: true }), /policy_content/);
 });
 
 test("status.frozen carries the optional frozen manifest digest", () => {
-	const current = devFixture<JsonObject>("status-v5-repository-context.captured.json");
+	const current = statusV9(devFixture<JsonObject>("status-v5-repository-context.captured.json"));
 	delete current.receipt;
 	if (current.action === "finalize") {
 		current.action = "stop";
@@ -1143,18 +1136,18 @@ test("a capture-result collect input decodes without changed_path_manifest, whic
 	const inputs = ((transition.collect as JsonObject | undefined)?.inputs ?? []) as JsonObject[];
 	const captureInput = inputs.find((input) => input.capture_operation === "review.capture-result");
 	assert.ok(captureInput, "the status fixture carries a capture-result collect input");
-	assert.doesNotThrow(() => decodeReviewNextTransitionV3(transition, { v5: true, v6: true }), "with the manifest");
+	assert.doesNotThrow(() => decodeReviewNextTransitionV3(transition, { v9: true }), "with the manifest");
 	delete captureInput.changed_path_manifest;
-	const decoded = decodeReviewNextTransitionV3(transition, { v5: true, v6: true });
+	const decoded = decodeReviewNextTransitionV3(transition, { v9: true });
 	const decodedInput = decoded.collect?.inputs.find((input) => input.captureOperation === "review.capture-result");
 	assert.ok(decodedInput?.artifactSubject?.changedPathManifestSha256, "the digest on the artifact subject is the binding");
 	assert.equal(decodedInput?.changedPathManifest, undefined);
 	delete captureInput.artifact_subject;
-	assert.throws(() => decodeReviewNextTransitionV3(transition, { v5: true, v6: true }), /requires artifact_subject, base_tree, and candidate_tree/);
+	assert.throws(() => decodeReviewNextTransitionV3(transition, { v9: true }), /requires artifact_subject, base_tree, and candidate_tree/);
 });
 
 test("status enforces authority/frozen/receipt conditionals and decodes the required repair field", () => {
-	const current = devFixture<JsonObject>("status-v5-repository-context.captured.json");
+	const current = statusV9(devFixture<JsonObject>("status-v5-repository-context.captured.json"));
 	delete current.receipt;
 	if (current.action === "finalize") {
 		current.action = "stop";

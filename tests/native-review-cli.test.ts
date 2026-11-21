@@ -27,6 +27,7 @@ import {
 } from "../lib/native-review-cli.ts";
 import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
 import { capabilitiesV26 } from "./support/capabilities-v26.ts";
+import { statusV9 } from "./support/status-v9.ts";
 
 const fixture = (name: string): Record<string, unknown> => JSON.parse(
 	readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", name), "utf8"),
@@ -177,8 +178,21 @@ test("scoped native mode surfaces stderr, exit, and malformed responses without 
 	}
 });
 
-test("negotiated STATUS accepts the pinned v5 receipt before routing its transition", async () => {
-	const status = fixture("status-v5.captured.json");
+test("negotiated STATUS refuses an older status envelope with the actionable minimum-version error", async () => {
+ for (const version of [5, 8]) {
+  const older = fixture("status-v5.captured.json");
+  older.schema = `gentle-ai.review-integration.status/v${version}`;
+  const queue = queuedAdapter([{ stdout: JSON.stringify(older) }]);
+  await assert.rejects(client(queue.adapter).targetStatus({ cwd: "/repo", lineageId: "review-status-fixture", agent: "pi" }), (error: any) => {
+   assert.equal(error.code, "version-incompatible");
+   assert.equal(error.message, `gentle-ai native review status/v${version} is older than the supported v9 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override`);
+   return true;
+  });
+ }
+});
+
+test("negotiated STATUS accepts the pinned status/v9 receipt before routing its transition", async () => {
+	const status = statusV9(fixture("status-v5.captured.json"));
 	const queue = queuedAdapter([{ stdout: JSON.stringify(status) }]);
 	const result = await client(queue.adapter).targetStatus({ cwd: "/repo", lineageId: "review-status-fixture", agent: "pi" });
 	assert.deepEqual(result.receipt, { status: "not_applicable" });
@@ -385,7 +399,7 @@ test("malformed closure output remains a typed schema failure and never authoriz
 });
 
 function currentStatusFixture(): Record<string, unknown> {
-	return fixture("status-v5.captured.json");
+	return statusV9(fixture("status-v5.captured.json"));
 }
 
 function negotiatedStartStatus(targetIdentity: string, tokens: readonly string[]): Record<string, unknown> {
@@ -1306,7 +1320,7 @@ test("acknowledge-approved decodes the captured review-acknowledged/v1 burn enve
 test("acknowledge-approved fails closed on a foreign, drifted, or mismatched success body", async () => {
 	const raw = JSON.parse(readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", "review-acknowledged-v1.captured.json"), "utf8")) as Record<string, unknown>;
 	const bodies: Array<[string, string, { lineageId: string; targetIdentity: string; revision: string }]> = [
-		["a STATUS envelope", JSON.stringify(fixture("status-v5.captured.json")), ACKNOWLEDGED_BINDING],
+		["a STATUS envelope", JSON.stringify(statusV9(fixture("status-v5.captured.json"))), ACKNOWLEDGED_BINDING],
 		["a last-event closure", JSON.stringify(fixture("last-event-capture-result-approved.captured.json")), ACKNOWLEDGED_BINDING],
 		["an envelope with an unknown field", JSON.stringify({ ...raw, receipt: {} }), ACKNOWLEDGED_BINDING],
 		["an envelope naming another lineage", JSON.stringify(raw), { ...ACKNOWLEDGED_BINDING, lineageId: "review-other" }],

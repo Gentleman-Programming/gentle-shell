@@ -10,6 +10,7 @@ const root = resolve(process.env.PROBE_ROOT ?? process.cwd());
 const entry = process.env.PROBE_FLAVOR === "typescript" ? "lib/native-review-cli.ts" : "runtime/native-review-cli.mjs";
 const { NativeReviewCliV216, NativeReviewIntegrationError, NativeReviewCliError, createNodeExecFileAdapter } = await import(pathToFileURL(join(root, entry)).href);
 const status = JSON.parse(readFileSync(join(root, "tests/fixtures/devbinary/status-v5.captured.json"), "utf8"));
+status.schema = "gentle-ai.review-integration.status/v9";
 const FLAG = "--non-blocking-findings";
 const refusal = { schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2", operation: "review.status", phase: "preflight", code: "invalid_request", message: "The negotiated review request is invalid.", mutation_outcome: "not_started", authority_applicability: "not_evaluated", retry_safe: true, replayability: "not_replayable", required_inputs: [], next_action: "correct_request", cause: "flag provided but not defined: -non-blocking-findings" };
 const result = (body = status, exitCode = 0, extra = {}) => ({ stdout: JSON.stringify(body), stderr: "", exitCode, signal: null, timedOut: false, outputLimitExceeded: false, ...extra });

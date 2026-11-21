@@ -19,6 +19,7 @@ import {
 	ReviewNativeContractTooOldError,
 } from "../lib/review-integration-v2.ts";
 import { capabilitiesV26 } from "./support/capabilities-v26.ts";
+import { statusV9 } from "./support/status-v9.ts";
 import { NativeReviewCliV216, type ExecFileAdapter } from "../lib/native-review-cli.ts";
 
 const DEV_FIXTURES = join(process.cwd(), "tests", "fixtures", "devbinary");
@@ -34,7 +35,7 @@ function fixture(root: string, name: string): unknown {
 }
 
 function currentStatusFixture(name: string): Record<string, unknown> {
-	const body = structuredClone(fixture(DEV_FIXTURES, name)) as Record<string, unknown>;
+	const body = statusV9(structuredClone(fixture(DEV_FIXTURES, name)) as Record<string, unknown>);
 	if (body.action === "finalize") {
 		body.action = "stop";
 		const transition = body.next_transition as Record<string, unknown> | undefined;
@@ -50,7 +51,7 @@ function initialIntendedUntrackedStatusV6(): JsonObject {
 	const body = currentStatusFixture("status-v5.captured.json");
 	const projection = body.projection as JsonObject;
 	const schema = "gentle-ai.review-intended-untracked-selection/v1";
-	body.schema = "gentle-ai.review-integration.status/v6";
+	body.schema = "gentle-ai.review-integration.status/v9";
 	body.forecast = {
 		horizon: "partial", steps: [{ step: 1, kind: "collect", reason_code: "intended_untracked_selection_required", description: "initial intended-untracked selection required" }],
 	};
@@ -80,10 +81,11 @@ test("captured capabilities derived to the supported capabilities/v2.6 retain th
 	assert.equal(capabilities.schemas.has("gentle-ai.review-integration.status/v6"), true);
 });
 
-test("historical v3 FINALIZE status remains rejected without rewriting fixture bytes", () => {
+test("historical v3 status is refused as older than the supported v9 without rewriting fixture bytes", () => {
 	assert.throws(
 		() => decodeReviewStatusV3(fixture(V2_FIXTURES, "status.fixture.json")),
-		/receipt|finalize|status/i,
+		(error: unknown) => error instanceof ReviewNativeContractTooOldError
+			&& error.message === "gentle-ai native review status/v3 is older than the supported v9 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override",
 	);
 });
 
@@ -137,13 +139,6 @@ test("captured v5 STATUS preserves its provider forecast and collect binding", (
 	assert.equal(decoded.forecast?.horizon, "partial");
 	assert.equal(decoded.nextTransition?.kind, "collect");
 	assert.equal(decoded.nextTransition?.collect?.inputs[0]?.captureOperation, "external.select_base_ref");
-});
-
-test("v3 status identity rejects v5-only forecast fields", () => {
-	const body = currentStatusFixture("status-v5.captured.json");
-	body.schema = "gentle-ai.review-integration.status/v3";
-	delete body.receipt;
-	assert.throws(() => decodeReviewStatusV3(body), /forecast/);
 });
 
 test("captured v5 STATUS retains its opaque repository context reference", () => {
@@ -207,14 +202,6 @@ test("nonuniform role capture closures retain their exact upstream operation ide
 	assert.equal(decodeReviewLastEventClosureV1(fixture(DEV_FIXTURES, "last-event-capture-validation-approved.captured.json")).operation, "review/capture-validation");
 });
 
-test("a status/v3 payload never carries a top-level repository context", () => {
-	const body = currentStatusFixture("status-v5-repository-context.captured.json");
-	body.schema = "gentle-ai.review-integration.status/v3";
-	delete body.receipt;
-	delete body.forecast;
-	assert.throws(() => decodeReviewStatusV3(body), /repository_context/);
-});
-
 test("a v5 forecast requires the next transition and a coherent horizon", () => {
 	const orphanForecast = currentStatusFixture("status-v5.captured.json");
 	delete orphanForecast.next_transition;
@@ -240,25 +227,6 @@ test("a v5 provider role task input decodes and is confined to external.run_prov
 	const missing = clone(body);
 	delete ((((missing.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[])[0]!).provider_task;
 	assert.throws(() => decodeReviewStatusV3(missing), /provider_task/);
-});
-
-test("the v3 identity keeps rejecting the singular capture-result value form", () => {
-	const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
-	body.schema = "gentle-ai.review-integration.status/v3";
-	delete body.receipt;
-	delete body.forecast;
-	delete body.repository_context;
-	assert.throws(() => decodeReviewStatusV3(body), /values is required/);
-});
-
-test("the v3 next transition keeps rejecting every v5-only surface", () => {
-	const v5 = currentStatusFixture("status-v5.captured.json");
-	v5.schema = "gentle-ai.review-integration.status/v3";
-	delete v5.receipt;
-	delete v5.forecast;
-	const transition = v5.next_transition as JsonObject;
-	transition.correction_request = { schema: "gentle-ai.review-correction-plan-request/v1", request_hash: sha("a") };
-	assert.throws(() => decodeReviewStatusV3(v5), /not allowed|correction_request/);
 });
 
 test("consent/v3 keeps every v2 semantic guard and rejects agents outside the fixed runtime contract", () => {
@@ -365,29 +333,32 @@ test("capabilities older than v2.6 are refused with the actionable minimum-versi
 	assert.throws(() => decodeReviewCapabilitiesV2(unknown, CAPTURED_DIGEST), (error: unknown) => error instanceof TypeError && !(error instanceof ReviewNativeContractTooOldError) && /schema/.test(error.message));
 });
 
-// status/v8 (gentle-ai main, PR #4765; the current released contract) only
-// extended the reviewer-result transition for OpenCode provider tasks -- no
-// new top-level key -- so it decodes on the exact v7 surface: same optional
-// eligible_untracked_inventory digest, same rejection of a v6 envelope
-// carrying it. status/v9 (the sibling gentle-ai branch's contract, ahead of
-// the released v8) adds nothing new at the top level either; its one
-// addition -- the host-mediated role submission -- lives in
-// next_transition.collect.inputs and is covered by
-// tests/review-integration-v2.test.ts's "v9 host-mediated" tests.
-test("status/v8 and status/v9 decode with their exact identity on the v7 surface", () => {
-	const v8 = initialIntendedUntrackedStatusV6();
-	v8.schema = "gentle-ai.review-integration.status/v8";
-	v8.eligible_untracked_inventory = sha("e");
-	const decodedV8 = decodeReviewStatusV3(v8);
-	assert.equal(decodedV8.raw.schema, "gentle-ai.review-integration.status/v8");
-	assert.equal(decodedV8.eligibleUntrackedInventory, sha("e"));
-
+// status/v9 (gentle-ai v4.6.0) is the only supported status identity; its
+// host-mediated role submission lives in next_transition.collect.inputs and is
+// covered by tests/review-integration-v2.test.ts's "v9 host-mediated" tests.
+test("status/v9 decodes with its exact identity and the eligible untracked inventory", () => {
 	const v9 = initialIntendedUntrackedStatusV6();
-	v9.schema = "gentle-ai.review-integration.status/v9";
 	v9.eligible_untracked_inventory = sha("e");
-	const decodedV9 = decodeReviewStatusV3(v9);
-	assert.equal(decodedV9.raw.schema, "gentle-ai.review-integration.status/v9");
-	assert.equal(decodedV9.eligibleUntrackedInventory, sha("e"));
+	const decoded = decodeReviewStatusV3(v9);
+	assert.equal(decoded.raw.schema, "gentle-ai.review-integration.status/v9");
+	assert.equal(decoded.eligibleUntrackedInventory, sha("e"));
+});
+
+test("status older than v9 is refused with the actionable minimum-version message", () => {
+	for (const version of [3, 5, 6, 7, 8]) {
+		const older = initialIntendedUntrackedStatusV6();
+		older.schema = `gentle-ai.review-integration.status/v${version}`;
+		assert.throws(
+			() => decodeReviewStatusV3(older),
+			(error: unknown) => error instanceof ReviewNativeContractTooOldError
+				&& error.message === `gentle-ai native review status/v${version} is older than the supported v9 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override`,
+			`status/v${version}`,
+		);
+	}
+	// An identity that is not an older status minor stays an ordinary schema error.
+	const unknown = initialIntendedUntrackedStatusV6();
+	unknown.schema = "gentle-ai.review-integration.status/v10";
+	assert.throws(() => decodeReviewStatusV3(unknown), (error: unknown) => error instanceof TypeError && !(error instanceof ReviewNativeContractTooOldError) && /schema/.test(error.message));
 });
 
 test("status/v6 decodes and enforces the intended-untracked selection submission", () => {
@@ -418,10 +389,6 @@ test("status/v6 decodes and enforces the intended-untracked selection submission
 		mutate(submission(body));
 		assert.throws(() => decodeReviewStatusV3(body), pattern, name);
 	}
-	const v5 = initialIntendedUntrackedStatusV6();
-	v5.schema = "gentle-ai.review-integration.status/v5";
-	assert.throws(() => decodeReviewStatusV3(v5), /submission/);
-
 	const collectInput = (body: JsonObject) => (((body.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[])[0]!;
 	const artifactSubject = { schema: "gentle-ai.review-artifact-subject/v2", subject_hash: sha("a"), lineage_id: "review-test", authority_revision: sha("b"), target_identity: sha("c"), base_tree: "a".repeat(40), candidate_tree: "b".repeat(40), changed_path_manifest_sha256: sha("d"), lens: "review-risk", selected_order: 0 };
 	const incompatibleCaptures: ReadonlyArray<readonly [string, JsonObject]> = [
@@ -853,7 +820,7 @@ test("review-acknowledged/v1 is disjoint from every prior captured identity in b
 // last-event-closure.schema.json#/properties/escalation (not a live capture).
 function escalatedStatusV7(): JsonObject {
 	const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
-	body.schema = "gentle-ai.review-integration.status/v7";
+	body.schema = "gentle-ai.review-integration.status/v9";
 	(body.authority as JsonObject).state = "escalated";
 	body.action = "stop";
 	body.replayability = "manual_action_required";
@@ -887,9 +854,6 @@ test("v7 escalation strictly decodes all causes and optional refuter evidence", 
 	}
 	for (const refuter_outcomes of [null, undefined, {}, [null], [{}], [{ finding_id: "R1", outcome: "future", proof: "proof" }], [{ finding_id: "", outcome: "refuted", proof: "proof" }], [{ finding_id: "R1", outcome: "refuted", proof: "" }], [{ finding_id: "R1", outcome: "refuted", proof: "proof", extra: true }]]) {
 		assert.throws(() => decodeReviewStatusV3({ ...escalatedStatusV7(), escalation: { cause: "missing_refuter_outcome", finding_ids: ["R1"], refuter_outcomes } }), /refuter_outcomes/);
-	}
-	for (const version of [3, 5, 6]) {
-		assert.throws(() => decodeReviewStatusV3({ ...escalatedStatusV7(), schema: `gentle-ai.review-integration.status/v${version}` }), /not allowed/);
 	}
 });
 

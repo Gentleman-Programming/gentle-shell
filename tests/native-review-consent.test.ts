@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { GENTLE_AI_VERSION } from "../lib/gentle-ai-binary.ts";
 import { capabilitiesV26 } from "./support/capabilities-v26.ts";
+import { statusV9 } from "./support/status-v9.ts";
 import {
 	NativeReviewCliV216,
 	NativeReviewConsentBindingError,
@@ -24,7 +25,7 @@ function capabilities(): Record<string, unknown> {
 }
 
 function unrelatedStatus(targetIdentity: string): Record<string, unknown> {
-	const status = fixture<Record<string, unknown>>("status.fixture.json");
+	const status = statusV9(fixture<Record<string, unknown>>("status.fixture.json"));
 	status.applicability = "unrelated";
 	delete status.receipt;
 	status.action = "start";

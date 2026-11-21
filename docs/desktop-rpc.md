@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status"],
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "get_status"],
   "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "session_snapshot"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), and [Updates limits](#updates-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The package-status slice advertises exactly its one read method and no event; `/gentle:doctor` stays terminal-only. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), and [Status limits](#status-limits).
 
 ### `get_snapshot`
 
@@ -1378,6 +1378,48 @@ Success:
 
 No absolute path, raw package source, registry URL, token, command line, or lookup output crosses the wire. A failed lookup is reported as `unknown`, never by its message. Running an update is out of scope: the client shows the command, and the launcher runs it. `updates_unavailable` answers only when the session is not bound or was replaced during the read, or a source fails unexpectedly.
 
+### `get_status`
+
+Reads the facts `/gentle:status` prints for this session's project, through the status owner in `extensions/gentle-ai.ts` (a versioned owner service, like review). Params must be an empty object; any key is `invalid_request`, and a malformed request never reaches the owner. It has no side effects and emits no event.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-95", "method": "get_status", "params": {} }
+```
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-95",
+  "ok": true,
+  "data": {
+    "package": "active",
+    "odd": "active",
+    "persona": "gentleman",
+    "devBinary": { "state": "inactive", "sha256Prefix": null },
+    "assets": {
+      "delegation": { "stale": 0, "userOverrides": 1, "activeAgentOverrides": 0 },
+      "review": { "stale": 0, "userOverrides": 0, "activeAgentOverrides": 0 }
+    },
+    "modelConfig": { "global": "present", "routing": "valid" },
+    "severity": "info"
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `persona` | The persona in effect: the project `persona.json` wins over the global one; `gentleman` by default. |
+| `devBinary` | The `gentle-ai` dev-binary override: `inactive`, `active` (with the first 16 hex characters of its SHA-256), or `invalid` (declared but unusable). The binary is never run, so no version is reported; `/gentle:status` shows it. |
+| `assets.<owner>.stale` | Managed `delegation` or `review` assets missing from the agent home or different from the packaged copy. `/gentle:install-<owner> --force` refreshes them. |
+| `assets.<owner>.userOverrides` | Installed files the user replaced; preserved, not drift. |
+| `assets.<owner>.activeAgentOverrides` | Active non-builtin agents that shadow package agents of that owner. |
+| `modelConfig.global` | Whether the global `models.json` exists. |
+| `modelConfig.routing` | The saved model routing: `missing`, `invalid`, or `valid`. Per-agent routing is read with `get_config` (`models`). |
+| `severity` | `warning` exactly when `/gentle:status` warns: invalid routing, an active or invalid dev binary, stale assets, or active agent overrides. |
+
+No path, command hint, or display text crosses the wire. `status_unavailable` answers when the session is not bound or was replaced during the read, no owner answers (for example inside a subagent process), or the owner's answer fails validation or throws; its message never carries the failure text.
+
 ## Responses
 
 Success:
@@ -1864,6 +1906,14 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **Gaps stated.** Pi's latest version is known only in a bundled install. Package `latest` is always `null`. A git package has no `current`. `gentle-ai-managed` is detected only when the running gentle-pi is the `npm:gentle-pi` package Pi installed.
 - **Read only, no event.** This slice has exactly one method and no event, and it never runs an update.
 
+## Status limits
+
+- **One source of truth.** The owner computes every field with the same helpers `/gentle:status` uses (`readPersonaMode`, the package asset audit, `resolveGentleAiDevBinaryOverride`, `readModelRoutingAuthorityAsync`); the bridge only validates and projects.
+- **No doctor.** `/gentle:doctor` is interactive and can repair things; it stays in the terminal.
+- **No spawn.** The dev-binary override is resolved but never executed, so `get_status` never waits on a process.
+- **Cost.** The asset audit reads every managed asset file; read on demand, do not poll.
+- **Read only, no event.**
+
 ## Verification
 
 ```sh
@@ -1884,6 +1934,7 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-review.test.ts \
   tests/desktop-rpc-stats.test.ts \
   tests/desktop-rpc-updates.test.ts \
+  tests/desktop-rpc-status.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 

@@ -116,6 +116,20 @@ test("the win32 fold re-walks when the recorded target itself becomes an alias",
 	assert.equal(canonicalRoot(moved, "win32"), movedKey, "an unchanged canonical target keeps serving its key");
 });
 
+test("the win32 fold re-walks when an ancestor of the recorded path becomes a link", (t) => {
+	const base = dir(t, "ancestor-link");
+	const a = join(base, "a");
+	const moved = join(base, "moved");
+	mkdirSync(join(a, "repo"), { recursive: true });
+	const keyBeforeMove = canonicalRoot(join(a, "repo"), "win32");
+	renameSync(a, moved);
+	linkDir(moved, a);
+	const movedKey = canonicalRoot(join(moved, "repo"), "win32");
+	assert.notEqual(movedKey, keyBeforeMove, "the moved spelling is a different key than the pre-move one");
+	assert.equal(canonicalRoot(join(a, "repo"), "win32"), movedKey, "a link replacing an ancestor re-walks to the link's target instead of the stale cached path");
+	assert.equal(canonicalRoot(join(a, "repo"), "win32"), movedKey, "the refreshed mapping serves the next caller");
+});
+
 test("foldRoot keeps case-distinct directories apart on a case-sensitive tree", (t) => {
 	const base = realpathSync(dir(t, "case"));
 	const repo = join(base, "Repo");
@@ -221,9 +235,11 @@ test("the win32 case-fold memo revalidates the decision when the directory is re
 	assert.equal(unchanged.result, recorded.result, "an unchanged directory keeps serving its recorded decision");
 	// The checkout is moved aside and recreated at the exact spelling, so the cached key
 	// stats to a different directory than the one the decision was recorded from: the
-	// identity mismatch must force a re-probe. A cache that never revalidates answers
-	// with zero stats — this is the assertion that catches it, under node and bun alike.
-	assert.ok(replaced.stats >= 1, "the replaced directory's changed identity forces the cached decision to be re-probed");
+	// identity mismatch must force a full re-probe. A cache that revalidates but ignores
+	// the changed identity spends exactly the one stat of the unchanged control and still
+	// answers from the stale entry, so only a re-probe — more stats than that control —
+	// proves the replacement's decision was actually re-recorded.
+	assert.ok(replaced.stats > unchanged.stats, "the replaced directory's changed identity forces a re-probe costing more than the unchanged control's single stat");
 	assert.ok(fresh.stats >= 1, "the lookup after a memo reset actually probes the tree");
 	assert.equal(replaced.result, fresh.result, "the revalidated cache matches a fresh lookup after the replacement");
 	// The refreshed entry anchors to the new directory and serves like the first one did.

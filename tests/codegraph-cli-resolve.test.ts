@@ -14,7 +14,19 @@ const SCRIPT = [BIN, SCRIPT_REL].join(BS);
 /** One npm cmd-shim's text. `tail` is the final invocation line: the modern cmd-shim ships the
  * `endLocal & goto #_undefined_#` form (npm 9+), older npm the plain line — both invoke
  * `%_prog%` with one quoted `%dp0%`-anchored script and forward `%*`. */
-function npmCmdShim(scriptRel: string, tail: (rel: string) => string): string {
+/** The stock npm selection block: node.exe beside the shim in the IF branch, the bare node
+ * otherwise. A shim that trades those two assignments selects a different executable behind
+ * the same invocation line, which is what the swapped-selection test below pins. */
+const stockSelection = (): readonly string[] => [
+		'IF EXIST "%dp0%' + BS + 'node.exe" (',
+		'  SET "_prog=%dp0%' + BS + 'node.exe"',
+		") ELSE (",
+		'  SET "_prog=node"',
+		"  SET PATHEXT=%PATHEXT:;.JS;=;%",
+		")",
+];
+
+function npmCmdShim(scriptRel: string, tail: (rel: string) => string, selection: readonly string[] = stockSelection()): string {
 	return [
 		"@ECHO off",
 		"GOTO start",
@@ -25,12 +37,7 @@ function npmCmdShim(scriptRel: string, tail: (rel: string) => string): string {
 		"SETLOCAL",
 		"CALL :find_dp0",
 		"",
-		'IF EXIST "%dp0%' + BS + 'node.exe" (',
-		'  SET "_prog=%dp0%' + BS + 'node.exe"',
-		") ELSE (",
-		'  SET "_prog=node"',
-		"  SET PATHEXT=%PATHEXT:;.JS;=;%",
-		")",
+		...selection,
 		"",
 		tail(scriptRel),
 	].join("\n");
@@ -372,3 +379,59 @@ test("resolveCodegraphEntry: a rewritten Node selection fails closed behind the 
 		assert.equal(resolveCodegraphEntry(io), null, `${name}: an unproven Node selection keeps the cmd.exe fallback`);
 	}
 });
+
+/** A shim whose two SET lines trade branches: one assignment of each shape, the stock
+ * invocation and the stock guard, but the IF branch — the one that runs when node.exe sits
+ * beside the shim — selects the bare node. */
+const swappedSelection = (): readonly string[] => [
+	'IF EXIST "%dp0%\node.exe" (',
+	'  SET "_prog=node"',
+	') ELSE (',
+	'  SET "_prog=%dp0%\node.exe"',
+	')',
+];
+
+test("resolveCodegraphShimState: a swapped Node selection behind the stock invocation stays unproven", () => {
+	clearCodegraphResolveCache();
+	const { io } = fakeWorld({
+		path: BIN,
+		files: [
+			[[BIN, "codegraph.cmd"].join(BS), npmCmdShim(SCRIPT_REL, modernTail, swappedSelection())],
+			[NODE_EXE, ""],
+			[SCRIPT, "cli"],
+		],
+	});
+	// A proven entry would spawn the colocated executable; this shape runs the bare node and
+	// must keep the cmd.exe fallback deciding.
+	assert.deepEqual(resolveCodegraphShimState(io), { status: "rejected" });
+});
+
+test("resolveCodegraphShimState: the stock selection behind the same invocation stays proven", () => {
+	clearCodegraphResolveCache();
+	const { io } = fakeWorld({
+		path: BIN,
+		files: [
+			[[BIN, "codegraph.cmd"].join(BS), npmCmdShim(SCRIPT_REL, modernTail)],
+			[NODE_EXE, ""],
+			[SCRIPT, "cli"],
+		],
+	});
+	assert.deepEqual(resolveCodegraphShimState(io), { status: "entry", entry: { node: NODE_EXE, script: SCRIPT } });
+});
+
+test("resolveCodegraphShimState: a colocated codegraph.exe preempts the shim and is never bypassed", () => {
+	clearCodegraphResolveCache();
+	const { io } = fakeWorld({
+		path: BIN,
+		files: [
+			[[BIN, "codegraph.cmd"].join(BS), npmCmdShim(SCRIPT_REL, modernTail)],
+			[[BIN, "codegraph.exe"].join(BS), ""],
+			[NODE_EXE, ""],
+			[SCRIPT, "cli"],
+		],
+	});
+	// A bare `codegraph` resolves codegraph.exe first under the default PATHEXT order, so the
+	// .cmd is not what actually runs and must not be reported as a proven entry.
+	assert.deepEqual(resolveCodegraphShimState(io), { status: "rejected" });
+});
+

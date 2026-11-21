@@ -34,7 +34,7 @@ Every spec quotes the accepted proposal (assistant message accepted by the user 
 - T1 [S0-S2] profile binding read + event, `publish_profile`, `clear_profile_binding` — worktree `desktop-rpc-profile-binding` — route: delegated — status: pending
 - T2 [S0,S3] background-subagents policy read/write + event — worktree `desktop-rpc-background-subagents` — route: delegated — status: pending
 - T3 [S0,S4] persona, notifications, banner, theme config stores — worktree `desktop-rpc-settings-stores` — route: delegated — status: pending
-- T4 [S0,S5] persisted default in `get_permission_mode` — worktree `desktop-rpc-permission-default` — route: inline (small) — status: pending
+- T4 [S0,S5] persisted default in `get_permission_mode` — worktree `desktop-rpc-permission-default` — route: none — status: dropped (already shipped, L6)
 - T5 [S0,S6] `get_auth_status` + `reload_credentials` — worktree `desktop-rpc-auth-status` — Risk: item 2 (credentials) — route: delegated + independent verify — status: pending
 - T6 [S0,S7] subagent progress event — worktree `desktop-rpc-subagent-progress` — route: delegated — status: pending
 - T7 [S0,S8] agent definitions list + default orchestrator — worktree `desktop-rpc-agent-definitions` — route: delegated — status: pending
@@ -49,3 +49,5 @@ Every spec quotes the accepted proposal (assistant message accepted by the user 
 - L3 (user, verbatim): "evalua si realmente es bueno sumarlos  o si los dejamos fuera" / "ok dale y los demas que sí recomendas sumar cuales son?"
 - L4 (user, verbatim, accepting the 11-item proposal and the proposed clone location): "ok hacelos"
 - L5: the existing clone `C:\Users\devel\dev\gentle-shell` holds another branch (`fix/engram-companion-integrity`) and stays untouched; work happens in worktrees under `C:\Users\devel\dev\gentle-shell-worktrees`, following the per-area precedent of the earlier Desktop RPC PRs. Delivery stays at local commits because push/PR were not authorized and `gh` is not authenticated.
+- L6 (parent, evidence): S5 is already satisfied on `origin/main`: `get_permission_mode` answers `{ mode, default_mode }` (`docs/desktop-rpc.md`), so gpui's file read is only its legacy fallback. T4 dropped; no worktree used.
+- L7 (parent, Windows baseline at 04523ca57): `node --experimental-strip-types --test tests/desktop-rpc*.test.ts` gives 385 tests, 382 pass, 3 fail, all pre-existing and Windows-specific: "a link in the worktree never serves the content outside the root it points at", "a junction to the git dir inside the root is never served", and the default-persist test in tests/desktop-rpc-permissions.test.ts (file mode 0o666 vs 0o600). Workers must not count these as regressions.

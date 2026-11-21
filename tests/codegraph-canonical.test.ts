@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -20,6 +21,24 @@ function dir(t: test.TestContext, name: string): string {
  * link stays exercised there. */
 function linkDir(target: string, path: string): void {
 	symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
+}
+
+/** Counts the native realpaths behind unfoldRoot — exactly one per filesystem walk — so memo
+ * reuse is asserted instead of assumed: a memo hit answers with zero further walks. The
+ * counter sits on the shared builtin function object, so the module under test sees it. */
+function countNativeRealpaths(t: test.TestContext): { walks: () => number } {
+	const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+	const previous = fs.realpathSync.native;
+	let calls = 0;
+	const counting = (...args: Parameters<typeof previous>) => {
+		calls += 1;
+		return previous(...args);
+	};
+	fs.realpathSync.native = counting as typeof fs.realpathSync.native;
+	t.after(() => {
+		fs.realpathSync.native = previous;
+	});
+	return { walks: () => calls };
 }
 
 test("foldRoot: win32 lowercases and strips every trailing separator except a bare drive root", () => {
@@ -51,6 +70,52 @@ test("canonicalRoot on POSIX equals realpath: lock tokens never re-key", (t) => 
 	assert.equal(canonicalRoot(`${real}/`), real);
 });
 
+test("the win32 fold memoizes one unfold per spelling while the mapping stays valid", (t) => {
+	const walks = countNativeRealpaths(t);
+	const base = dir(t, "memo");
+	const first = join(base, "first");
+	const second = join(base, "second");
+	mkdirSync(first);
+	mkdirSync(second);
+	const link = join(base, "link");
+	linkDir(first, link);
+	const firstKey = canonicalRoot(first, "win32");
+	const afterFirst = walks.walks();
+	assert.equal(afterFirst, 1, "one filesystem walk per unseen spelling");
+	assert.equal(canonicalRoot(link, "win32"), firstKey, "a linked spelling folds to the key of its target");
+	assert.equal(walks.walks(), afterFirst + 1, "the linked spelling costs exactly one walk of its own");
+	assert.equal(canonicalRoot(`${link}//`, "win32"), firstKey, "a separator spelling resolves to the same memo entry");
+	assert.equal(canonicalRoot(first, "win32"), firstKey, "an already-seen spelling keeps its key");
+	assert.equal(walks.walks(), afterFirst + 1, "a memo hit answers without another walk");
+	rmSync(link);
+	linkDir(second, link);
+	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "a retargeted link is revalidated instead of reusing the stale mapping");
+	const afterRetarget = walks.walks();
+	assert.equal(afterRetarget, afterFirst + 3, "the flipped spelling and the fresh target each walk once more");
+	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "the refreshed mapping serves the next caller");
+	assert.equal(walks.walks(), afterRetarget, "the refreshed mapping is memoized too");
+	resetCanonicalMemo();
+	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "after the reset the new target is read fresh");
+	assert.ok(walks.walks() > afterRetarget, "the reset discards the memo and walks again");
+});
+
+test("the win32 fold re-walks when the recorded target itself becomes an alias", (t) => {
+	const base = dir(t, "recorded-alias");
+	const first = join(base, "first");
+	const moved = join(base, "moved");
+	mkdirSync(first);
+	const link = join(base, "link");
+	linkDir(first, link);
+	const firstKey = canonicalRoot(first, "win32");
+	assert.equal(canonicalRoot(link, "win32"), firstKey, "the linked spelling memoizes against the recorded target");
+	renameSync(first, moved);
+	linkDir(moved, first);
+	const movedKey = canonicalRoot(moved, "win32");
+	assert.equal(canonicalRoot(link, "win32"), movedKey, "a junction replacing the recorded target re-walks instead of returning the stale target");
+	assert.equal(canonicalRoot(first, "win32"), movedKey, "the replaced spelling itself follows the junction to the new home");
+	assert.equal(canonicalRoot(moved, "win32"), movedKey, "an unchanged canonical target keeps serving its key");
+});
+
 test("foldRoot keeps case-distinct directories apart on a case-sensitive tree", (t) => {
 	const base = realpathSync(dir(t, "case"));
 	const repo = join(base, "Repo");
@@ -78,42 +143,6 @@ interface FoldPhase {
 	stats: number;
 	result: string;
 }
-
-test("the win32 fold memoizes one unfold per spelling while the mapping stays valid", (t) => {
-	const base = dir(t, "memo");
-	const first = join(base, "first");
-	const second = join(base, "second");
-	mkdirSync(first);
-	mkdirSync(second);
-	const link = join(base, "link");
-	linkDir(first, link);
-	const firstKey = canonicalRoot(first, "win32");
-	assert.equal(canonicalRoot(link, "win32"), firstKey, "a linked spelling folds to the key of its target");
-	assert.equal(canonicalRoot(`${link}//`, "win32"), firstKey, "a separator spelling resolves to the same memo entry");
-	rmSync(link);
-	linkDir(second, link);
-	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "a retargeted link is revalidated instead of reusing the stale mapping");
-	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "the refreshed mapping serves the next caller");
-	resetCanonicalMemo();
-	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "after the reset the new target is read fresh");
-});
-
-test("off Windows every call reads the filesystem and never diverges from the revalidated fold", (t) => {
-	const base = dir(t, "passthrough");
-	const first = join(base, "first");
-	const second = join(base, "second");
-	mkdirSync(first);
-	mkdirSync(second);
-	const link = join(base, "link");
-	linkDir(first, link);
-	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(first, "win32"), "the linked spelling folds to the key of its target");
-	rmSync(link);
-	linkDir(second, link);
-	assert.equal(canonicalRoot(link, "darwin"), canonicalRoot(second, "darwin"), "off Windows the flipped link is read fresh on every call");
-	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "the win32 fold revalidates the flipped link instead of serving the stale mapping");
-	resetCanonicalMemo();
-	assert.equal(canonicalRoot(link, "darwin"), canonicalRoot(second, "darwin"), "unchanged after a memo reset it never needed");
-});
 
 /** Runs the case-fold memo scenario in a worker thread, measuring every foldRoot call by
  * the statSync calls it costs. The worker's module registry is fresh, so the module under
@@ -200,4 +229,36 @@ test("the win32 case-fold memo revalidates the decision when the directory is re
 	// The refreshed entry anchors to the new directory and serves like the first one did.
 	assert.equal(served.stats, 1, "the refreshed entry revalidates with one stat instead of re-probing the tree");
 	assert.equal(served.result, replaced.result, "the next caller keeps seeing the revalidated decision");
+});
+
+test("off Windows every call reads the filesystem and never diverges from the revalidated fold", (t) => {
+	const base = dir(t, "passthrough");
+	const first = join(base, "first");
+	const second = join(base, "second");
+	mkdirSync(first);
+	mkdirSync(second);
+	const link = join(base, "link");
+	linkDir(first, link);
+	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(first, "win32"), "the linked spelling folds to the key of its target");
+	rmSync(link);
+	linkDir(second, link);
+	assert.equal(canonicalRoot(link, "darwin"), canonicalRoot(second, "darwin"), "off Windows the flipped link is read fresh on every call");
+	assert.equal(canonicalRoot(link, "win32"), canonicalRoot(second, "win32"), "the win32 fold revalidates the flipped link instead of serving the stale mapping");
+	resetCanonicalMemo();
+	assert.equal(canonicalRoot(link, "darwin"), canonicalRoot(second, "darwin"), "unchanged after a memo reset it never needed");
+});
+
+test("the default platform never memoizes on a POSIX host", (t) => {
+	if (process.platform === "win32") return;
+	const base = dir(t, "default");
+	const first = join(base, "first");
+	const second = join(base, "second");
+	mkdirSync(first);
+	mkdirSync(second);
+	const link = join(base, "link");
+	symlinkSync(first, link);
+	assert.equal(unfoldRoot(link), realpathSync(first), "the default call resolves the link");
+	rmSync(link);
+	symlinkSync(second, link);
+	assert.equal(unfoldRoot(link), realpathSync(second), "the default call chain reads the flip fresh, memo or not");
 });

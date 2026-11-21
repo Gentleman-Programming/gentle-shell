@@ -1,4 +1,4 @@
-import { realpathSync, statSync, type BigIntStats } from "node:fs";
+import { lstatSync, realpathSync, statSync, type BigIntStats } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 /** The platform whose path rules apply; tests inject "win32" to exercise folding off Windows. */
@@ -9,14 +9,30 @@ const BS = String.fromCharCode(92);
 
 /** One unfolded form per resolved spelling, win32 only: every realpathSync.native on a UNC path
  * is an SMB round-trip chain, so the daemon registry, the lease paths and the workspace guard pay
- * it once per spelling instead of per call. Each hit is revalidated with two metadata stats
- * before use, so a mapping can never outlive the alias it was recorded from. POSIX never
- * touches it. */
+ * it once per spelling instead of per call. Each hit is revalidated with metadata stats
+ * before use — the alias identity and the canonicality of the recorded target — so a mapping
+ * can never outlive the alias it was recorded from, nor a recorded target that became an
+ * alias. POSIX never touches it. */
 const unfoldedMemo = new Map<string, string>();
 
-/** Tests reset the memo so a fixture rewritten between calls is read again; production never calls it. */
+/** One cached case-fold decision anchored to the base directory's identity at record time: a
+ * hit is honored only while the spelling still stats to the recorded dev/ino pair, so a
+ * checkout removed and recreated — the only way a tree's case sensitivity can change, since
+ * Windows flips it per empty directory — re-probes instead of folding with the replaced
+ * tree's answer. The identity is absent when the base did not resolve at record time, so
+ * every hit of an unresolvable spelling re-probes until it does. */
+interface CaseFoldEntry {
+	folds: boolean;
+	dev?: bigint;
+	ino?: bigint;
+}
+
+const caseFoldMemo = new Map<string, CaseFoldEntry>();
+
+/** Tests reset the memos so a fixture rewritten between calls is read again; production never calls it. */
 export function resetCanonicalMemo(): void {
 	unfoldedMemo.clear();
+	caseFoldMemo.clear();
 }
 
 /** A bare drive root (`C:` plus one separator): its separator IS the path, so folding keeps it. */
@@ -27,14 +43,18 @@ function isDriveRoot(path: string): boolean {
 /** Whether the spelling still resolves to the identity the memo recorded: the alias's own stat
  * follows today's link, so its dev/ino pair matching the recorded target's proves the mapping
  * survived (a retargeted junction or symlink compares unequal); any stat failure simply
- * re-walks, because validation must never throw. The stats are bigint ones: win32 ino is a
- * 64-bit file ID whose distinct values can round to the same Number, and the cache decision
- * must differ exactly when the identity does. */
+ * re-walks, because validation must never throw. The recorded path must also still be
+ * canonical, not a link itself: a target moved away and replaced by a junction to its new
+ * home leaves both stats following that junction and comparing equal, yet the recorded
+ * spelling is an alias now and a re-walk must pick up the new home. The stats are bigint
+ * ones: win32 ino is a 64-bit file ID whose distinct values can round to the same Number,
+ * and the cache decision must differ exactly when the identity does. */
 function stillResolvesTo(alias: string, recorded: string): boolean {
 	try {
 		const aliasStat = statSync(alias, { bigint: true });
 		const recordedStat = statSync(recorded, { bigint: true });
-		return aliasStat.dev === recordedStat.dev && aliasStat.ino === recordedStat.ino;
+		if (aliasStat.dev !== recordedStat.dev || aliasStat.ino !== recordedStat.ino) return false;
+		return !lstatSync(recorded, { bigint: true }).isSymbolicLink();
 	} catch {
 		return false;
 	}
@@ -73,25 +93,6 @@ export function unfoldRoot(path: string, platform: CanonicalPlatform = process.p
 	const unfolded = unfoldRootOnce(path);
 	unfoldedMemo.set(key, unfolded);
 	return unfolded;
-}
-
-/** One cached case-fold decision anchored to the base directory's identity at record time: a
- * hit is honored only while the spelling still stats to the recorded dev/ino pair, so a
- * checkout removed and recreated — the only way a tree's case sensitivity can change, since
- * Windows flips it per empty directory — re-probes instead of folding with the replaced
- * tree's answer. The identity is absent when the base did not resolve at record time, so
- * every hit of an unresolvable spelling re-probes until it does. */
-interface CaseFoldEntry {
-	folds: boolean;
-	dev?: bigint;
-	ino?: bigint;
-}
-
-const caseFoldMemo = new Map<string, CaseFoldEntry>();
-
-/** Tests reset the memo so a fixture rewritten between calls is read again; production never calls it. */
-export function resetCanonicalMemo(): void {
-	caseFoldMemo.clear();
 }
 
 /** One path component with every cased letter swapped, or undefined when it carries no case. */
@@ -177,6 +178,7 @@ function win32FoldsCase(path: string): boolean {
 	caseFoldMemo.set(path, { folds, dev, ino });
 	return folds;
 }
+
 /** Folds one real path into one comparison key: on Windows a case-insensitive tree lowercases
  * and drops trailing separators, while a case-sensitive Windows directory keeps its on-disk
  * casing so distinct checkouts stay distinct keys; off Windows the path passes through. */

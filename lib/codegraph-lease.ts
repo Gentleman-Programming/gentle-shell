@@ -813,7 +813,7 @@ export async function acquireInitLock(
 			// inside the acquisition, and a free path acquires immediately too — its publish takes
 			// the same per-path mutex, so only a briefly-held mutex delays it, within that budget.
 			const lease = tryAcquireLease(path, "init", ttlMs, now(), cwd, Math.max(deadline - now(), 0));
-			if (lease) return { outcome: "acquired", release: lease.release, adopt: lease.adopt };
+			if (lease) return { outcome: "acquired", nonce: lease.nonce, release: lease.release, adopt: lease.adopt };
 			// The steal race was lost between verdict and create: keep waiting like a live holder.
 		} else if (verdict === "held-live" && exists(cwd)) {
 			return { outcome: "present" };

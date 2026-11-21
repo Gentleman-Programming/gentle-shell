@@ -180,6 +180,13 @@ import {
 	type DesktopReviewService,
 } from "../lib/desktop-rpc-review.ts";
 import {
+	globalPersonaPath,
+	projectPersonaPath,
+	resolvePersonaMode,
+	writePersonaMode as writePersonaModeFiles,
+	type PersonaMode as PersonaConfigMode,
+} from "../lib/persona-config.ts";
+import {
 	REVIEW_HOST_RELAY_FAILURE,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_ENV,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS,
@@ -1720,7 +1727,7 @@ async function pathExists(path: string): Promise<boolean> {
 	}
 }
 
-type PersonaMode = "gentleman" | "neutral";
+type PersonaMode = PersonaConfigMode;
 
 const PERSONA_OPTIONS = ["gentleman", "neutral"] as const;
 
@@ -3096,42 +3103,22 @@ function secondaryMergeSourcePath(cwd: string, target: CurrentProfileTarget | un
 	return target !== undefined ? modelConfigPath(cwd) : legacyProjectModelConfigPath(cwd);
 }
 
+// The persona files have one owner, lib/persona-config.ts, shared with the
+// Desktop `persona` config store.
 function projectPersonaConfigPath(cwd: string): string {
-	return join(cwd, ".pi", "gentle-ai", "persona.json");
+	return projectPersonaPath(cwd);
 }
 
 function personaConfigPath(_cwd: string): string {
-	return join(gentleAiConfigHome(), "persona.json");
-}
-
-function readPersonaFile(path: string): PersonaMode | undefined {
-	if (!existsSync(path)) return undefined;
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-		if (!isRecord(parsed)) return undefined;
-		return parsed.mode === "neutral" ? "neutral" : "gentleman";
-	} catch {
-		return undefined;
-	}
+	return globalPersonaPath(gentleAiConfigHome());
 }
 
 function readPersonaMode(cwd: string): PersonaMode {
-	return (
-		readPersonaFile(projectPersonaConfigPath(cwd)) ??
-		readPersonaFile(personaConfigPath(cwd)) ??
-		"gentleman"
-	);
+	return resolvePersonaMode(cwd, gentleAiConfigHome());
 }
 
 function writePersonaMode(cwd: string, mode: PersonaMode): string[] {
-	const paths = [personaConfigPath(cwd)];
-	const projectPath = projectPersonaConfigPath(cwd);
-	if (existsSync(projectPath)) paths.push(projectPath);
-	for (const path of paths) {
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, `${JSON.stringify({ mode }, null, 2)}\n`);
-	}
-	return paths;
+	return writePersonaModeFiles(cwd, gentleAiConfigHome(), mode);
 }
 
 // A pinned or active profile is a complete routing snapshot, so while the

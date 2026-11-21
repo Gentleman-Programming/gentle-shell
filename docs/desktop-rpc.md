@@ -85,7 +85,10 @@ Returns the current event sequence and a bounded state projection:
         { "store": "profile_fallbacks", "scope": "global", "readOnly": false, "status": "missing", "revision": "sha256:3c11…" },
         { "store": "subagents", "scope": "global+project", "readOnly": true, "status": "ok", "revision": "sha256:77be…" },
         { "store": "pins", "scope": "local+repo", "readOnly": false, "status": "ok", "revision": "sha256:0d19…" },
-        { "store": "managed_assets", "scope": "global", "readOnly": true, "status": "ok", "revision": "sha256:be05…" }
+        { "store": "managed_assets", "scope": "global", "readOnly": true, "status": "ok", "revision": "sha256:be05…" },
+        { "store": "persona", "scope": "global+project", "readOnly": false, "status": "ok", "revision": "sha256:41aa…" },
+        { "store": "banner", "scope": "global", "readOnly": false, "status": "missing", "revision": "sha256:9c02…" },
+        { "store": "notifications", "scope": "global", "readOnly": false, "status": "ok", "revision": "sha256:d317…" }
       ]
     }
   }
@@ -191,7 +194,7 @@ Success:
 | --- | --- |
 | `store` | The store identifier that was read. |
 | `scope` | Which owner layers this store is assembled from: `global`, `global+project`, or `local+repo`. |
-| `readOnly` | `false` for the three authoritative stores (`profiles`, `profile_fallbacks`, `pins`); `true` for the three derived or installer-owned stores (`models`, `subagents`, `managed_assets`). |
+| `readOnly` | `false` for the six writable stores (`profiles`, `profile_fallbacks`, `pins`, `persona`, `banner`, `notifications`); `true` for the three derived or installer-owned stores (`models`, `subagents`, `managed_assets`). |
 | `status` | `ok` (normalized content follows), `missing` (no layer produced content because no layer file exists), or `invalid` (layers exist but none of them produced content). See [Layer semantics](#layer-semantics). |
 | `revision` | Opaque read-time digest of the canonical normalized content. See [Revision limits](#revision-limits). |
 | `value` | Normalized owner content, present when the store produced one. Absent when a layer is missing or invalid. |
@@ -202,7 +205,10 @@ Success:
 
 `status` answers for the store; `layers` answers for each file it is assembled from. For a merged store the two are different questions:
 
-- `profiles`, `profile_fallbacks`, and `managed_assets` have one layer, so `status` is that layer's status.
+- `profiles`, `profile_fallbacks`, `managed_assets`, `banner`, and `notifications` have one layer, so `status` is that layer's status.
+- `persona` has a `global` layer (`persona.json` in the Gentle config home) and a `project` layer (`<cwd>/.pi/gentle-ai/persona.json`); `value` is `{ "mode": "gentleman" | "neutral" }`, the mode in effect (the project layer wins), exactly as the prompt build resolves it.
+- `banner` is `{ showRose, showTextLogo, color }` from `banner.json`; a file that is not exactly that is `invalid`, never repaired by a read.
+- `notifications` is the owner's validated `notifications.json` without its `schema` key. Every `file:` sound is replaced by the marker `"file"`, so no sound path crosses the wire.
 - `subagents` mirrors the runtime reader: a layer that cannot be parsed is skipped and the remaining layer still merges. `status` is `ok` as soon as one layer is usable, and `layers` still names the broken one.
 - `models` keeps the owner's merge rule, which rejects the saved routing when a layer it reads is malformed; there `status` is `invalid` even if the other layer is fine.
 - `missing` means every layer file is absent. `invalid` means layer files exist but none produced content; in that case the owner would fall back to its own defaults, which are not the content of this store, so no `value` is returned.
@@ -412,7 +418,7 @@ A layer whose file currently reads `invalid` is likewise a valid target for a se
 The checks below run in this order, and the first one that fails answers the request. Nothing is read or written after a rejection.
 
 1. **Envelope** (`invalid_request`): exactly the keys `store`, `data`, and `expectedRevision`; `store` must be a string; `data` must be present. A request missing `data` is malformed whatever store or revision it names, so this check comes before the store rules — a `models` write without `data` is `invalid_request`, not `read_only`. Store contents are not looked at here.
-2. **Store identity** (`unknown_store`): the string must be one of the six store identifiers.
+2. **Store identity** (`unknown_store`): the string must be one of the nine store identifiers.
 3. **Mutability** (`read_only`): `models`, `subagents`, and `managed_assets` are rejected before their `data` is inspected or their revision is compared, so any payload gets the same answer.
 4. **Usable revision** (`revision_conflict`): `expectedRevision` must be a non-empty string. Absent, empty, and non-string tokens are all "the client did not prove it saw the current state", and this is decided before the payload is validated.
 5. **Session roots** (`config_unavailable`): the bound session must have a working directory.
@@ -1728,7 +1734,8 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 ## Configuration limits
 
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
-- **Bounded write surface.** `set_config` exists only for `profiles`, `profile_fallbacks`, and `pins`, and only as a whole-store replacement, one explicitly selected pin layer, or the explicit clear of one pin layer (`profile: null`). There is no generic physical-file target, no patch operation, no setter for `models`, `subagents`, or `managed_assets`, no way to clear both layers in one request, and no profile application or materialization: a profile write stores the definition, it does not apply it, and nothing else is rewritten as a side effect.
+- **Settings stores.** `persona` takes `{ "mode": "gentleman" | "neutral" }` and writes like `/gentle:persona`: the global file, plus the project file only when it already exists, so a project override never silently outranks the change (its `writeRevision` covers both layers, and a project file is never created). `banner` takes exactly `{ showRose, showTextLogo, color }`. `notifications` takes the settings as read: an event may keep the `"file"` marker only where its current sound is a file, which keeps that file; a new `file:` path is `invalid_data`, because the Desktop never sees one. All three write atomically, and none waits for a profile apply (`profile_apply_busy` applies only to the profile stores). Telemetry and the Pi theme are not config stores here: telemetry is a consent switch, and Pi persists its theme through an asynchronous settings queue and exports no list of installed themes to validate against.
+- **Bounded write surface.** `set_config` exists only for `profiles`, `profile_fallbacks`, `pins`, and the settings stores above, and only as a whole-store replacement, one explicitly selected pin layer, or the explicit clear of one pin layer (`profile: null`). There is no generic physical-file target, no patch operation, no setter for `models`, `subagents`, or `managed_assets`, no way to clear both layers in one request, and no profile application or materialization: a profile write stores the definition, it does not apply it, and nothing else is rewritten as a side effect.
 - **Read-only rationale.** `models` and `subagents` are derived: the owners write them when a profile is applied or a route is materialized, so a Desktop write would fight that writer and leave the runtime and the store disagreeing. `managed_assets` is the installer's ownership manifest with hashes it verifies on install, so a client write would silently disable ownership checks. Only the stores whose owners accept validated writes report `readOnly: false`, and that flag describes the store's owner capability, which now matches this slice's write surface.
 - **No-op means no write.** Sending the content a store already holds, or clearing a pin layer that has no file, is answered with `changed: false`, no rewrite, no mtime churn, no removal, and no event, so a client can safely reconcile by re-sending what it read.
 - **Per-process guard, not a transaction.** The `expectedRevision` check and the owner's atomic rename happen in one synchronous step, so concurrent Desktop requests in one process cannot both commit from the same revision. Across processes there is no lock: another `pi` process, `/gentle:profiles`, or the installer can write between the check and the rename, and this contract cannot detect that. Treat `expectedRevision` as conflict detection, not as mutual exclusion.

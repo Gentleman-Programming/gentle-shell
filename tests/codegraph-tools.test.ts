@@ -16,6 +16,7 @@ import codeGraphTools, {
 	armCodegraphEntryResolverForTest,
 	armCodegraphExecForTest,
 	armExposureEnsureForTest,
+	armReadinessChecksForTest,
 	armIndexStateForTest,
 	armStartupDaemonSkipForTest,
 	clearSearchWindow,
@@ -277,29 +278,87 @@ test("CodeGraph init is never bounded by the query timeout; only the user's sign
 	assert.deepEqual(init.content, [{ type: "text", text: "indexed" }]);
 	assert.equal(initSignal, undefined);
 });
+test("an aborted init settles only after its writer process is confirmed gone", async (t) => {
+	withoutChildEnv(t);
+	if (process.platform === "win32") {
+		t.skip("the fake CLI is a POSIX shell script");
+		return;
+	}
+	// A fake CLI that survives SIGTERM for a visible moment: the abort's early rejection
+	// (the execFile callback can fire while the child still runs) must not settle the init
+	// call — whatever holds the writer's lease would release it beside a live writer.
+	const bin = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-writer-bin-")));
+	const log = join(bin, "writer.log");
+	writeFileSync(join(bin, "codegraph"), [
+		"#!/bin/sh",
+		`echo started >> "${log}"`,
+		`trap 'sleep 0.3; echo gone >> "${log}"; exit 143' TERM`,
+		"while :; do sleep 0.05; done",
+		"",
+	].join("\n"));
+	chmodSync(join(bin, "codegraph"), 0o755);
+	t.after(() => rmSync(bin, { recursive: true, force: true }));
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath ?? ""}`;
+	t.after(() => {
+		if (previousPath === undefined) delete process.env.PATH;
+		else process.env.PATH = previousPath;
+	});
+
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	const user = new AbortController();
+	const init = createCodeGraphTool(undefined, { initLock: lockAcquired }).execute("test", { operation: "init" }, user.signal, undefined, ctx);
+	// The writer is provably up before the abort lands.
+	for (let spin = 0; spin < 200 && !existsSync(log); spin += 1) await settled();
+	user.abort();
+	const result = await init;
+	assert.match(result.content[0].text, /CodeGraph failed to run/);
+	assert.equal(
+		readFileSync(log, "utf8").trim().split("\n").pop(),
+		"gone",
+		"the writer's confirmed exit preceded the init call's settlement",
+	);
+});
 
 test("a hung CLI query fallback is bounded by the query timeout, not the user's patience (#1901)", async (t) => {
 	const cwd = workspace(t);
 	const ctx = { cwd } as ExtensionContext;
-	// Behaves like execFile: settles only when its signal aborts, then rejects with AbortError.
+	// Behaves like execFile: settles only when its signal aborts, then rejects with AbortError —
+	// and records the fallback's own lifecycle, so the bounds below prove the fallback ran
+	// and was aborted, not just that execute failed fast.
+	let fallbackStartedAt: number | undefined;
+	let abortSeenAt: number | undefined;
 	const hanging: CodeGraphRunner = (_args, options) => new Promise((_resolve, reject) => {
-		options.signal?.addEventListener("abort", () => reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" })), { once: true });
+		fallbackStartedAt = Date.now();
+		options.signal?.addEventListener("abort", () => {
+			abortSeenAt = Date.now();
+			reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }));
+		}, { once: true });
 	});
 	// The caller eventually aborts, so an unbounded RED run fails the elapsed assertion instead of hanging.
 	const caller = new AbortController();
-	setTimeout(() => caller.abort(), 2_000);
+	const callerTimer = setTimeout(() => caller.abort(), 2_000);
 	const started = Date.now();
-	const result = await createCodeGraphTool(hanging, {
+	const search = createCodeGraphTool(hanging, {
 		queryTimeoutMs: 50,
 		daemonExplore: async () => ({ status: "timeout" as const }),
 		warm: async () => false,
 		rewarm: noRewarm,
 		syncRun: syncNothing,
 	}).execute("test", { operation: "query", query: "symbol" }, caller.signal, undefined, ctx);
+	let result: Awaited<typeof search>;
+	try {
+		result = await search;
+	} finally {
+		clearTimeout(callerTimer);
+	}
 	const elapsed = Date.now() - started;
 	assert.match(result.content[0].text, /CodeGraph failed to run/);
 	assert.equal((result.details as { status?: string }).status, "failed");
 	assert.ok(elapsed < 500, `the hung CLI fallback must be bounded by the query timeout, took ${elapsed} ms`);
+	assert.ok(fallbackStartedAt !== undefined && fallbackStartedAt - started < 2_000, "the CLI fallback actually started before the caller's deadline");
+	assert.ok(abortSeenAt !== undefined && abortSeenAt - started < 2_000, "the CLI fallback received its abort signal before the caller's deadline");
 });
 
 test("a caller-aborted search stops paying for daemon attempts instead of running out the budget", async (t) => {
@@ -656,6 +715,28 @@ test("a cached workspace validation survives only while the checkout keeps its G
 		/real Git project root equal to the current workspace/i,
 	);
 });
+test("a cached workspace validation dies with a replaced .git directory, even an empty one", async (t) => {
+	const cwd = workspace(t);
+	const tool = createCodeGraphTool(async () => ({ stdout: "unused", stderr: "" }), {
+		daemonExplore: daemonOk,
+		rewarm: noRewarm,
+		syncRun: syncNothing,
+	});
+	const ctx = { cwd } as ExtensionContext;
+
+	await tool.execute("test", { operation: "query", query: "first" }, undefined, undefined, ctx);
+
+	// The whole .git directory is replaced by a fresh empty one mid-prompt: the marker
+	// still exists as a directory, but it is no longer the repository the validation ran
+	// against — a cache keyed on the marker's existence alone dispatches into a
+	// non-repository.
+	rmSync(join(cwd, ".git"), { recursive: true, force: true });
+	mkdirSync(join(cwd, ".git"));
+	await assert.rejects(
+		() => tool.execute("test", { operation: "query", query: "second" }, undefined, undefined, ctx),
+		/real Git project root equal to the current workspace/i,
+	);
+});
 
 test("a cached linked-worktree validation dies with the gitdir its .git file names", (t) => {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-wtbase-")));
@@ -670,7 +751,7 @@ test("a cached linked-worktree validation dies with the gitdir its .git file nam
 	git(["config", "user.name", "codegraph-test"], main);
 	writeFileSync(join(main, "file.txt"), "content");
 	git(["add", "."], main);
-	git(["commit", "-m", "seed"], main);
+	git(["-c", "commit.gpgsign=false", "commit", "-m", "seed"], main);
 	const linked = join(base, "linked");
 	git(["worktree", "add", linked, "-b", "worktree-branch"], main);
 
@@ -1003,21 +1084,45 @@ test("session_start ensures direct mcp exposure once per process, and a child se
 	};
 	t.after(() => armExposureEnsureForTest(undefined));
 
+	// Two distinct fixture agent homes: the read/write counts below hold only while the Pi
+	// agent home and the Gentle Shell home resolve to different directories — a runner
+	// environment that maps both overrides onto one directory collapses the two mcp.json
+	// targets into one update.
+	const piAgentHome = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-pihome-")));
+	const shellAgentHome = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-shellhome-")));
+	t.after(() => {
+		rmSync(piAgentHome, { recursive: true, force: true });
+		rmSync(shellAgentHome, { recursive: true, force: true });
+	});
+	const previousPiAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const previousShellAgentHome = process.env.GENTLE_SHELL_HOME;
+	process.env.GENTLE_PI_AGENT_HOME = piAgentHome;
+	process.env.GENTLE_SHELL_HOME = shellAgentHome;
+	t.after(() => {
+		if (previousPiAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
+		else process.env.GENTLE_PI_AGENT_HOME = previousPiAgentHome;
+		if (previousShellAgentHome === undefined) delete process.env.GENTLE_SHELL_HOME;
+		else process.env.GENTLE_SHELL_HOME = previousShellAgentHome;
+	});
+
 	// One armed spy spans both phases: re-arming between them resets the once-per-process
 	// flag and would hide a child session that incorrectly consumed the parent's only
 	// exposure attempt — with one spy, the parent counts prove the child consumed nothing.
 	const exposure = exposureIo();
 	armExposureEnsureForTest(exposure.io);
+	// "reload" is the readiness-skipping event: the hook exists for the exposure ensure,
+	// and a "startup" event would run the real install and update checks in the background
+	// before readiness decides anything about this workspace.
 	process.env.GENTLE_PI_AGENTS_CHILD = "1";
-	sessionStart({ reason: "startup" }, ctx);
-	sessionStart({ reason: "startup" }, ctx);
+	sessionStart({ reason: "reload" }, ctx);
+	sessionStart({ reason: "reload" }, ctx);
 	assert.equal(exposure.reads.length, 0, "a child session never reads an agent mcp.json");
 	delete process.env.GENTLE_PI_AGENTS_CHILD;
 
 	// The parent session ensures exactly once against the SAME armed state: the first parent
 	// start performs the only update attempt and the second is a per-process no-op.
-	sessionStart({ reason: "startup" }, ctx);
-	sessionStart({ reason: "startup" }, ctx);
+	sessionStart({ reason: "reload" }, ctx);
+	sessionStart({ reason: "reload" }, ctx);
 	assert.equal(exposure.reads.length, 4, "each agent-home mcp.json is read once per update attempt (initial read plus the pre-publish re-verify)");
 	assert.equal(exposure.writes.length, 2, "each agent-home mcp.json is written exactly once");
 });
@@ -1080,6 +1185,68 @@ test("win32: searches inside the sync freshness window pay one sync; an expired 
 	const third = await tool.execute("test", { operation: "query", query: "three" }, undefined, undefined, ctx);
 	assert.equal((third.details as { syncTriggered?: boolean }).syncTriggered, true, "the expired window refreshes again");
 	assert.deepEqual(calls, [["sync", "-q"], ["sync", "-q"]]);
+});
+test("win32: an index replaced inside the freshness window is refreshed again, not served by the old generation", async (t) => {
+	withoutChildEnv(t);
+	withPlatform(t, "win32");
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	const calls: string[][] = [];
+	const syncRun = async (args: readonly string[]): Promise<boolean> => {
+		calls.push([...args]);
+		return true;
+	};
+	const tool = createCodeGraphTool(async () => ({ stdout: "cli", stderr: "" }), {
+		daemonExplore: daemonOk,
+		rewarm: noRewarm,
+		syncRun,
+	});
+	const ctx = { cwd } as ExtensionContext;
+
+	await tool.execute("test", { operation: "query", query: "one" }, undefined, undefined, ctx);
+
+	// The index is rebuilt wholesale mid-prompt (a readiness reindex after an update, an
+	// explicit override rebuild): the new .codegraph directory is a different generation,
+	// and freshness paid against the replaced one must not serve it.
+	rmSync(join(cwd, ".codegraph"), { recursive: true, force: true });
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	const second = await tool.execute("test", { operation: "query", query: "two" }, undefined, undefined, ctx);
+	assert.equal((second.details as { syncTriggered?: boolean }).syncTriggered, true, "the search over the replaced index refreshes it again");
+	assert.deepEqual(calls, [["sync", "-q"], ["sync", "-q"]], "the replaced generation's settled sync buys no window");
+});
+
+test("win32: a sync settling after its index was replaced buys no freshness window", async (t) => {
+	withoutChildEnv(t);
+	withPlatform(t, "win32");
+	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	const noDaemon = { registryDir: join(cwd, "no-registry") };
+	let release: (() => void) | undefined;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const held = async (): Promise<boolean> => {
+		await gate;
+		return true;
+	};
+	const ctx = { cwd } as ExtensionContext;
+
+	const inFlight = awaitSearchSync(cwd, ctx, held, noDaemon);
+	await settled();
+	// The index directory is replaced wholesale while the sync is still settling: whatever
+	// that sync wrote answered the old generation.
+	rmSync(join(cwd, ".codegraph"), { recursive: true, force: true });
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
+	release?.();
+	assert.equal(await inFlight, true, "the replaced-generation sync still covered the search it served");
+
+	let runs = 0;
+	const counting = async (): Promise<boolean> => {
+		runs += 1;
+		return true;
+	};
+	assert.equal(await awaitSearchSync(cwd, ctx, counting, noDaemon), true, "the next search refreshes: the obsolete completion opened no window");
+	assert.equal(runs, 1, "exactly one more sync ran");
 });
 
 test("win32: a failed sync never marks the window fresh; the next search refreshes again", async (t) => {
@@ -1848,6 +2015,32 @@ test("the guard strips shell line continuations before locating rebuild commands
 	const quoted = verdict("echo 'foo " + continuation + "bar'; codegraph index .") as { block?: boolean; reason?: string } | undefined;
 	assert.equal(quoted?.block, true, "a backslash-newline inside single quotes stays content: the rebuild after the separator is still detected");
 });
+test("the guard keeps a pending operator across a continuation newline", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	const newline = String.fromCharCode(10);
+	assert.equal(
+		verdict("false &&" + newline + "codegraph init ."),
+		undefined,
+		"an init behind a provably-failed command never runs: the continuation newline keeps the && and the rebuild stays out of the walk",
+	);
+	assert.equal(
+		verdict("true ||" + newline + "codegraph init ."),
+		undefined,
+		"an init behind a provably-skipped || branch never runs either: the continuation newline keeps the ||",
+	);
+	const ran = verdict("true &&" + newline + "codegraph init .") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(ran?.block, true, "an init behind a provably-run && branch runs: the continuation newline changes reachability, never the operator");
+	assert.match(ran?.reason ?? "", /an index already exists/);
+});
+
+test("the guard keeps both outcomes of an unknown command for the branches behind it", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	const reachable = verdict("make build && true || codegraph init .") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(reachable?.block, true, "the init behind || can run (the unknown command may fail and skip the && stage): it is blocked");
+	assert.match(reachable?.reason ?? "", /an index already exists/);
+	const maybe = verdict("make build && codegraph init .") as { block?: boolean } | undefined;
+	assert.equal(maybe?.block, true, "an init behind && after an unknown command can run too: still blocked");
+});
 
 test("the guard keeps literal quotes inside quoted override values", async (t) => {
 	const verdict = await guardOnIndexedWorkspace(t);
@@ -2033,6 +2226,27 @@ function writePwdGitShim(binDir: string): void {
 	chmodSync(join(binDir, "git"), 0o755);
 }
 
+/** Two fixture bin directories in Windows PATH order without breaking real spawns: the
+ * Windows scans read env.Path (";"-joined, the fixture order under test), while real
+ * process spawning keeps working — native Windows appends the host PATH after the
+ * fixtures, POSIX keeps its own host PATH untouched for git and the test seam stubs
+ * every codegraph spawn. */
+function withWindowsOrderedBins(t: test.TestContext, nativeDir: string, shimDir: string): void {
+	const previousPath = process.env.PATH;
+	const previousWindowsPath = process.env.Path;
+	if (process.platform === "win32") {
+		process.env.Path = `${nativeDir};${shimDir};${previousWindowsPath ?? previousPath ?? ""}`;
+		process.env.PATH = process.env.Path;
+	} else {
+		process.env.Path = `${nativeDir};${shimDir}`;
+	}
+	t.after(() => {
+		if (previousPath === undefined) delete process.env.PATH;
+		else process.env.PATH = previousPath;
+		if (previousWindowsPath === undefined) delete process.env.Path;
+		else process.env.Path = previousWindowsPath;
+	});
+}
 /** A bin dir whose two spawn targets answer differently, so which path ran is one observable
  * string: the package-scan target (npm-shim.js) prints scan:<argv>, while the direct-entry
  * target (dist/cli.js, the file T1's resolver proves) prints direct:<argv>. */
@@ -2122,7 +2336,15 @@ test("win32: a rejected first shim never falls through to the package scan", asy
 	// Windows filesystem to see the shim at all; the lib suite pins the rejection itself.
 	const restore = armCodegraphEntryResolverForTest(() => ({ status: "rejected" }));
 	t.after(restore);
-
+	// The bare spawn is stubbed too: withWindowsPath keeps the host PATH after the fixture
+	// directory, so a host-installed codegraph.exe must never actually run — the seam
+	// records the attempted commands and answers the runtime-level miss itself.
+	const attempts: string[] = [];
+	const restoreExec = armCodegraphExecForTest((async (file: string) => {
+		attempts.push(file);
+		throw Object.assign(new Error("spawn codegraph ENOENT"), { code: "ENOENT" });
+	}) as unknown as Parameters<typeof armCodegraphExecForTest>[0]);
+	t.after(restoreExec);
 
 	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute(
 	"test",
@@ -2136,6 +2358,85 @@ test("win32: a rejected first shim never falls through to the package scan", asy
 	// bare spawn, which stays a runtime-level miss nothing turns into an answer.
 	assert.match(result.content[0].text, /CodeGraph is unavailable/);
 	assert.equal((result.details as { status?: string }).status, "unavailable");
+	assert.deepEqual(attempts, ["codegraph"], "the rejected shim ends the cascade at the bare codegraph spawn, which stays a miss");
+});
+test("win32: the first matching executable on PATH wins — a native codegraph.exe over a later npm shim", async (t) => {
+	withoutChildEnv(t);
+	const nativeDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-native-bin-")));
+	const shimDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-later-shim-bin-")));
+	t.after(() => rmSync(nativeDir, { recursive: true, force: true }));
+	t.after(() => rmSync(shimDir, { recursive: true, force: true }));
+	// A native install and an npm shim that would answer differently: which binary runs
+	// must follow PATH order, not the cascade's shape. The exec seam answers, so no
+	// fixture binary ever executes on any host.
+	writeFileSync(join(nativeDir, "codegraph.exe"), "native-binary-placeholder\n");
+	const script = writeCodeGraphPackage(shimDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+	const cwd = workspace(t);
+	withWindowsOrderedBins(t, nativeDir, shimDir);
+	withPlatform(t, "win32");
+	clearCodegraphResolveCache();
+	t.after(() => clearCodegraphResolveCache());
+	const restore = armCodegraphEntryResolverForTest(() => ({
+		status: "entry",
+		entry: { node: process.execPath, script },
+	}));
+	t.after(restore);
+	const attempts: string[] = [];
+	const restoreExec = armCodegraphExecForTest((async (file: string) => {
+		attempts.push(file);
+		return { stdout: "answered", stderr: "" };
+	}) as unknown as Parameters<typeof armCodegraphExecForTest>[0]);
+	t.after(restoreExec);
+
+	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute(
+		"test",
+		{ operation: "init" },
+		undefined,
+		undefined,
+		{ cwd } as ExtensionContext,
+	);
+	assert.equal(result.content[0].text, "answered");
+	assert.deepEqual(attempts, [join(nativeDir, "codegraph.exe")], "the earlier native executable serves the command; the npm shim behind it never runs");
+});
+
+test("win32: a valid npm shim in an earlier directory still outranks a later native codegraph.exe", async (t) => {
+	withoutChildEnv(t);
+	const nativeDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-later-native-bin-")));
+	const shimDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-shim-bin-")));
+	t.after(() => rmSync(nativeDir, { recursive: true, force: true }));
+	t.after(() => rmSync(shimDir, { recursive: true, force: true }));
+	writeFileSync(join(nativeDir, "codegraph.exe"), "native-binary-placeholder\n");
+	const script = writeCodeGraphPackage(shimDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+	const cwd = workspace(t);
+	withWindowsOrderedBins(t, shimDir, nativeDir);
+	withPlatform(t, "win32");
+	clearCodegraphResolveCache();
+	t.after(() => clearCodegraphResolveCache());
+	const restore = armCodegraphEntryResolverForTest(() => ({
+		status: "entry",
+		entry: { node: process.execPath, script },
+	}));
+	t.after(restore);
+	const attempts: string[] = [];
+	const restoreExec = armCodegraphExecForTest((async (file: string) => {
+		attempts.push(file);
+		return { stdout: "answered", stderr: "" };
+	}) as unknown as Parameters<typeof armCodegraphExecForTest>[0]);
+	t.after(restoreExec);
+
+	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute(
+		"test",
+		{ operation: "init" },
+		undefined,
+		undefined,
+		{ cwd } as ExtensionContext,
+	);
+	assert.equal(result.content[0].text, "answered");
+	assert.deepEqual(
+		attempts,
+		[process.execPath],
+		"the earlier shim's resolved entry serves the command; the later native executable never preempts it",
+	);
 });
 
 test("win32: a genuine miss keeps the cascade: no shim, no scan anchor, unavailable", async (t) => {
@@ -2284,15 +2585,20 @@ test("CodeGraph init keeps the whole .codegraph index out of git through the loc
 	const cwd = workspace(t);
 	writeFileSync(join(cwd, "tracked.txt"), "tracked\n");
 	execFileSync("git", ["add", "tracked.txt"], { cwd });
-	const tool = createCodeGraphTool(writeIndex, { initLock: lockAcquired });
+	const tool = createCodeGraphTool(writeIndex, { initLock: lockAcquired, daemonExplore: daemonOk, rewarm: noRewarm, syncRun: syncNothing });
 	const ctx = { cwd } as ExtensionContext;
 
 	const first = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
-	const second = await tool.execute("test", { operation: "init" }, undefined, undefined, ctx);
+	// The idempotence witness is a real second SUCCESSFUL operation: a second init would
+	// refuse to rebuild the index the first created, and its refusal still reports the
+	// exclude as present. A query through the injected daemon succeeds against the same
+	// exclude state, so a duplicate append would fail it.
+	const second = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx);
 
 	assert.deepEqual(first.content, [{ type: "text", text: "indexed" }]);
+	assert.equal(second.content[0].text, "daemon answer");
 	assert.equal(gitOutput(cwd, "status", "--porcelain", "--untracked-files=all"), "A  tracked.txt");
-	assert.deepEqual(excludeLines(cwd), [".codegraph/"], "exactly one exclude line after repeated init");
+	assert.deepEqual(excludeLines(cwd), [".codegraph/"], "exactly one exclude line after init and a second successful operation");
 	assert.equal(existsSync(join(cwd, ".gitignore")), false, "never creates or edits a tracked .gitignore");
 	assert.deepEqual((first.details as { localExclude?: unknown }).localExclude, { status: "added", path: excludeFile(cwd) });
 	assert.deepEqual((second.details as { localExclude?: unknown }).localExclude, { status: "present", path: excludeFile(cwd) });
@@ -2916,7 +3222,10 @@ test("a query retry that warms a daemon announces the same ready line as the laz
 	t.after(() => rmSync(nonProject, { recursive: true, force: true }));
 	armExposureEnsureForTest({ read: () => "{}", write: () => { /* isolated by the fake io */ } });
 	t.after(() => armExposureEnsureForTest(undefined));
-	sessionStart({ reason: "startup" }, {
+	// "reload" is the readiness-skipping event: the hook exists to capture the ready-notice
+	// say handle, and a "startup" event would run the real install and update checks in
+	// the background even for a non-project workspace.
+	sessionStart({ reason: "reload" }, {
 		cwd: nonProject,
 		hasUI: true,
 		ui: { notify: (text: string, level: string) => notices.push({ text, level }) },
@@ -2947,11 +3256,14 @@ test("a query retry that warms a daemon announces the same ready line as the laz
 	});
 	resetDaemonRegistryMemo();
 
-	withPlatform(t, "linux");
+	// The awaited retry flow is pinned through the tool, not process.platform: daemon
+	// discovery must keep the native platform's endpoint probe — a pinned platform would
+	// blind the Windows pipe probe to the fixture it must recognize.
 	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
 		daemonExplore: async () => ({ status: "unavailable" as const }),
 		rewarm: noRewarm,
 		syncRun: syncNothing,
+		awaitedRetryWarm: true,
 		// warm stays at its default: the adapter under test.
 	});
 
@@ -3000,7 +3312,9 @@ test("a retry warm-up's ready notice never rides a session that started after it
 	// Session A starts first and will start the warm-up; session B starts while it is pending.
 	const noticesA: Array<{ text: string; level: string }> = [];
 	const noticesB: Array<{ text: string; level: string }> = [];
-	sessionStart({ reason: "startup" }, {
+	// "reload" keeps readiness — and its real install and update checks — out of A's
+	// start; capturing the say handle happens before readiness either way.
+	sessionStart({ reason: "reload" }, {
 		cwd: nonProject("a"),
 		hasUI: true,
 		ui: { notify: (text: string, level: string) => noticesA.push({ text, level }) },
@@ -3052,11 +3366,14 @@ test("a retry warm-up's ready notice never rides a session that started after it
 	});
 	resetDaemonRegistryMemo();
 
-	withPlatform(t, "linux");
+	// The awaited retry flow is pinned through the tool, not process.platform: daemon
+	// discovery must keep the native platform's endpoint probe — a pinned platform would
+	// blind the Windows pipe probe to the fixture it must recognize.
 	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
 		daemonExplore: async () => ({ status: "unavailable" as const }),
 		rewarm: noRewarm,
 		syncRun: syncNothing,
+		awaitedRetryWarm: true,
 		// warm stays at its default: the session-bound notice delivery is the code under test.
 	});
 
@@ -3078,7 +3395,9 @@ test("a retry warm-up's ready notice never rides a session that started after it
 		// the daemon saw the warm-up's initialize request — a timer could fire before the warm-up
 		// reached the daemon and leave the assertions below vacuous.
 		await withinDeadline(initializeArrived);
-		sessionStart({ reason: "startup" }, {
+		// "reload" keeps readiness out of B's start too; the say-handle replacement this
+		// test drives happens before readiness either way.
+		sessionStart({ reason: "reload" }, {
 			cwd: nonProject("b"),
 			hasUI: true,
 			ui: { notify: (text: string, level: string) => noticesB.push({ text, level }) },
@@ -3104,6 +3423,33 @@ test("a retry warm-up's ready notice never rides a session that started after it
 	assert.ok(!noticesA.some((notice) => /CodeGraph ready/.test(notice.text)), "a superseded session's completion notice is discarded, not re-routed");
 	assert.ok(!noticesB.some((notice) => /warm-up failed|not answering/.test(notice.text)), "no failure notice leaks either");
 	await settled();
+});
+test("a superseded session's index notices are discarded, not delivered through the older session", { timeout: 30_000 }, async (t) => {
+	withoutChildEnv(t);
+	const wiring = armSessionStartWiring(t);
+	// Session A: an indexed workspace whose readiness runs the fake-CLI sync that settles
+	// long after session B has replaced the notice owner.
+	const indexed = workspace(t);
+	await writeIndex(["init", indexed], { cwd: indexed, maxBuffer: 1 });
+	const a = wiring.fire(indexed);
+	const fresh = workspace(t);
+	// planIndexAction initialises a fresh project only when it carries a marker file.
+	writeFileSync(join(fresh, "package.json"), "{}\n");
+	const b = wiring.fire(fresh);
+
+	// The deferred start line lands after the fixture's index flow settles its first
+	// steps; both waits stay generous the way the wiring tests' own waits are.
+	await untilNotice(b.notices, /initializing current repo/, 20_000);
+	await untilNotice(b.notices, /CodeGraph index created/, 20_000);
+	// A's sync (started microseconds before B's init, same fake-CLI delay) has settled
+	// by the time B's creation notice is in; the settles absorb the callback turn.
+	for (let settle = 0; settle < 5; settle += 1) await settled();
+	assert.equal(
+		a.notices.length,
+		0,
+		"the superseded session's deferred start line and index completion are discarded while the newer session owns the say handle",
+	);
+	await awaitWarmTail(b.notices);
 });
 
 test("init runs the CLI with the workspace, never the daemon, and never triggers a sync", async (t) => {
@@ -3411,38 +3757,48 @@ test("every search awaits its refresh before the query runs", async (t) => {
 	const ctx = { cwd } as ExtensionContext;
 
 	const first = tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, ctx);
-	await settled();
-	assert.deepEqual(events, ["sync-start"], "the query waits behind its refresh");
+	try {
+		// The first refresh must have STARTED before its gate is released: a fixed sleep
+		// races the scheduler, and an assertion that runs before the entry leaves a gate the
+		// failed test never releases — the refresh then parks on a gate nothing opens. The
+		// spin is bounded, so a refresh that never starts still fails.
+		for (let spin = 0; spin < 200 && events.length < 1; spin += 1) await settled();
+		assert.deepEqual(events, ["sync-start"], "the query waits behind its refresh");
 
-	gates[0]?.();
-	const settledFirst = await first;
-	assert.equal((settledFirst.details as { syncTriggered?: boolean }).syncTriggered, true);
-	assert.deepEqual(events, ["sync-start", "sync-end", "query"], "the query runs only after the refresh settled");
+		gates[0]?.();
+		const settledFirst = await first;
+		assert.equal((settledFirst.details as { syncTriggered?: boolean }).syncTriggered, true);
+		assert.deepEqual(events, ["sync-start", "sync-end", "query"], "the query runs only after the refresh settled");
 
-	const second = tool.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, ctx);
-	if (process.platform !== "win32") {
-		// The POSIX second refresh must have STARTED before its gate is released: a fixed
-		// sleep races the scheduler, and releasing a gate that does not exist yet would leave
-		// the refresh holding a gate nothing ever opens — the await below then never settles.
-		for (let spin = 0; spin < 200 && gates.length < 2; spin += 1) await settled();
-		gates[1]?.();
-	}
-	await Promise.race([
-		second,
-		new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the second search never settled")), 3_000)),
-	]);
-	if (process.platform === "win32") {
-		assert.deepEqual(
-			events,
-			["sync-start", "sync-end", "query", "query"],
-			"win32 serves the second search from the first's settled sync inside the freshness window (S11)",
-		);
-	} else {
-		assert.deepEqual(
-			events,
-			["sync-start", "sync-end", "query", "sync-start", "sync-end", "query"],
-			"every search refreshes again, with no per-prompt gate",
-		);
+		const second = tool.execute("test", { operation: "explore", query: "symbol" }, undefined, undefined, ctx);
+		if (process.platform !== "win32") {
+			// The POSIX second refresh must have STARTED before its gate is released: a fixed
+			// sleep races the scheduler, and releasing a gate that does not exist yet would leave
+			// the refresh holding a gate nothing ever opens — the await below then never settles.
+			for (let spin = 0; spin < 200 && gates.length < 2; spin += 1) await settled();
+			gates[1]?.();
+		}
+		await Promise.race([
+			second,
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the second search never settled")), 3_000)),
+		]);
+		if (process.platform === "win32") {
+			assert.deepEqual(
+				events,
+				["sync-start", "sync-end", "query", "query"],
+				"win32 serves the second search from the first's settled sync inside the freshness window (S11)",
+			);
+		} else {
+			assert.deepEqual(
+				events,
+				["sync-start", "sync-end", "query", "sync-start", "sync-end", "query"],
+				"every search refreshes again, with no per-prompt gate",
+			);
+		}
+	} finally {
+		// Every exit path releases every gate the fixtures created: a failed assertion must
+		// not park a refresh on a gate nothing ever opens.
+		for (const gate of gates) gate();
 	}
 });
 
@@ -3793,6 +4149,14 @@ function armSessionStartWiring(t: test.TestContext): {
 	process.env.PATH = `${bin}:${previousPath}`;
 	process.env.GENTLE_SS_CALLS = callsLog;
 	delete process.env.GENTLE_PI_AGENTS_CHILD;
+	// The startup fixtures' install and update checks are no-ops: the wiring under test is
+	// the index and notice flow, and the real registry probe's latency (or an offline
+	// runner's unreachable registry) must never gate it.
+	const restoreChecks = armReadinessChecksForTest({
+		installCheck: async () => ({ installed: true }),
+		updateCheck: async () => ({ ran: false }),
+	});
+	t.after(restoreChecks);
 	armExposureEnsureForTest({ read: () => "{}", write: () => { /* isolated by the fake io */ } });
 	t.after(() => {
 		process.env.PATH = previousPath;

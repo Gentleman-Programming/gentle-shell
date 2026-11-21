@@ -1575,9 +1575,11 @@ test("(aw) a pending && or || guard survives blank and comment lines", (t) => {
 
 test("(ba) a here-document delimiter word spans adjacent quoted and unquoted segments", (t) => {
 	const handlers = installGate(t);
+	// The in-flight assertion needs an unsearched prompt: a completed search would block
+	// mem_search before ba1 even starts, so the block below can owe itself only to the gate
+	// marking the Bash query active.
 	fire(handlers, "before_agent_start", { messageType: "user" });
-	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ba-arm", args: { pattern: "symbol" } });
-	fire(handlers, "tool_result", { toolCallId: "ba-arm" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the unsearched prompt passes before the call");
 	// Bash removes each segment's quoting and concatenates the segments, so <<'E'OF terminates
 	// its body at EOF: the body is stdin data, while the query after it is a real command.
 	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ba1", args: { command: "cat <<'E'OF\ncodegraph query lease\nEOF\ncodegraph query lease" } });
@@ -1588,6 +1590,20 @@ test("(ba) a here-document delimiter word spans adjacent quoted and unquoted seg
 	);
 	fire(handlers, "tool_result", { toolCallId: "ba1", isError: false, structuredContent: { exit_code: 0 } });
 	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ba1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the read passes again once the execution finalizes");
+	// A separate searched prompt verifies the credit itself: the read can pass below only
+	// through the trailing query's own post-execution credit.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ba-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "ba-arm" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the searched prompt blocks the read before any credit",
+	);
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ba1b", args: { command: "cat <<'E'OF\ncodegraph query lease\nEOF\ncodegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "ba1b", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ba1b" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a query after a split-delimiter body still credits");
 	// The body's own query stays data: the same shape without a trailing real command credits nothing.
 	fire(handlers, "before_agent_start", { messageType: "user" });
@@ -1770,5 +1786,224 @@ test("(be) a foreground query that started and timed out still credits; a pre-sp
 		fire(handlers, "tool_call", { toolName: "mem_search" }),
 		{ block: true, reason: BLOCK_REASON },
 		"an aborted call proves no attempted query",
+	);
+});
+
+test("(bf) every heredoc on a command line queues in declaration order; unquoted bodies keep only their expansions live", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bf-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bf-arm" });
+	// Bash reads both declared bodies back to back - AA's first, then BB's - so a query line
+	// anywhere inside either body is stdin data the shell never executes; the same holds for
+	// a lone unquoted body's plain text and for the text around one of its substitutions.
+	for (const [id, command] of [
+		["bf1", "cat <<'A'A <<BB\nfirst body\nAA\ncodegraph query lease\nBB"],
+		["bf2", "cat <<BB\ncodegraph query lease\nBB"],
+		["bf3", "cat <<BB\n$(echo done) codegraph query lease\nBB"],
+	] as const) {
+		fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: id, args: { command } });
+		fire(handlers, "tool_result", { toolCallId: id, isError: false, structuredContent: { exit_code: 0 } });
+		fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: id });
+		assert.deepEqual(
+			fire(handlers, "tool_call", { toolName: "mem_search" }),
+			{ block: true, reason: BLOCK_REASON },
+			`${id}: plain here-document body text is data, never a credited query`,
+		);
+	}
+	// The command after both declared bodies still runs and still credits.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bf4", args: { command: "cat <<'A'A <<BB\nfirst body\nAA\nsecond body\nBB\ncodegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "bf4", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bf4" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a query after both declared bodies still credits");
+	// A command substitution inside an unquoted body runs while bash reads the body, so it
+	// credits like any other execution; quoted text inside the substitution stays data.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bf-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bf-arm-2" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bf5", args: { command: "cat <<BB\n$(codegraph query lease)\nBB" } });
+	fire(handlers, "tool_result", { toolCallId: "bf5", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bf5" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a substitution inside an unquoted body runs the query, so it credits");
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bf-arm-3", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bf-arm-3" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bf6", args: { command: "cat <<BB\n$(echo 'x; codegraph query lease')\nBB" } });
+	fire(handlers, "tool_result", { toolCallId: "bf6", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bf6" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a query named only inside a substitution's quoted argument never credits",
+	);
+	// The search classifier shares the body masking: a plain body search never arms the
+	// prompt, while a substitution search runs and arms it.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bf7", args: { command: "cat <<BB\nrg -n lease lib\nBB" } });
+	fire(handlers, "tool_result", { toolCallId: "bf7", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bf7" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a search named only in an unquoted body never arms the gate");
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bf8", args: { command: "cat <<BB\n$(rg -n lease lib)\nBB" } });
+	fire(handlers, "tool_result", { toolCallId: "bf8", isError: true, structuredContent: { exit_code: 1 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bf8" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a substitution search inside an unquoted body arms the gate",
+	);
+});
+
+test("(bg) a double-quoted delimiter keeps a backslash literal before an ordinary character", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bg-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bg-arm" });
+	// Bash's terminator for <<"E\q" is the literal E\q, so a body line that reads Eq is still
+	// body data and the query line under it never runs.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bg1", args: { command: "cat <<\"E\\q\"\nEq\ncodegraph query lease\nE\\q" } });
+	fire(handlers, "tool_result", { toolCallId: "bg1", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bg1" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the Eq line is body data inside the E\\q-terminated body, so its query never credits",
+	);
+	// The masker's own terminator is E\q too, so the body closes there and the real command
+	// after it still runs and credits.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bg-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bg-arm-2" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bg2", args: { command: "cat <<\"E\\q\"\nbody\nE\\q\ncodegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "bg2", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bg2" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the command after the E\\q terminator still credits");
+	// A backslash before a character double quotes treat specially still disappears during
+	// quote removal: <<"E\"F" names E"F and its body stays data.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bg-arm-3", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bg-arm-3" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bg3", args: { command: "cat <<\"E\\\"F\"\ncodegraph query lease\nE\"F" } });
+	fire(handlers, "tool_result", { toolCallId: "bg3", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bg3" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a backslash before a special character still disappears, and that body stays data",
+	);
+});
+
+test("(bh) an explicitly quoted empty here-document delimiter terminates at the first blank line", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bh-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bh-arm" });
+	// cat <<'' reads its body until a blank line, so the query line inside the body is stdin
+	// data the shell never runs and the completed call credits nothing.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bh1", args: { command: "cat <<''\ncodegraph query lease\n\n" } });
+	fire(handlers, "tool_result", { toolCallId: "bh1", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bh1" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a query inside an empty-delimiter body is stdin data and never credits",
+	);
+	// The blank line ends the body, and a real command after it still runs and credits.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bh-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bh-arm-2" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bh2", args: { command: "cat <<''\ncodegraph query lease\n\ncodegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "bh2", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bh2" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the command after the blank-line terminator still credits");
+});
+
+test("(bi) a guarded exit that runs - or that no result can decide - withholds credit from every later command", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bi-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bi-arm" });
+	// true satisfies the guard and false fails under ||, so both exits run and the shell ends
+	// before the query; an unknown guard (cd) and a negated one (! false succeeds) leave the
+	// ran-and-skipped paths indistinguishable, which no result can ever separate.
+	for (const [id, command] of [
+		["bi1", "true && exit 0; codegraph query lease"],
+		["bi2", "false || exit 0; codegraph query lease"],
+		["bi3", "cd /tmp && exit 0; codegraph query lease"],
+		["bi4", "! false && exit 0; codegraph query lease"],
+	] as const) {
+		fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: id, args: { command } });
+		fire(handlers, "tool_result", { toolCallId: id, isError: false, structuredContent: { exit_code: 0 } });
+		fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: id });
+		assert.deepEqual(
+			fire(handlers, "tool_call", { toolName: "mem_search" }),
+			{ block: true, reason: BLOCK_REASON },
+			`${id}: the exit ran or cannot be told from running, so the later query never credits`,
+		);
+	}
+	// An exit inside a pipeline piece runs forked even when its guard is satisfied: the
+	// outer shell continues, and the query still credits.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bi-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bi-arm-2" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bi5", args: { command: "true && exit 0 | cat; codegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "bi5", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bi5" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a forked pipeline exit ends only the pipeline, so the query still credits");
+});
+
+test("(bj) a bash timeout proves only the first command started, so later queries and searches never credit or arm from it", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bj-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bj-arm" });
+	const timeoutResult = (id: string, command: string) => ({
+		toolCallId: id,
+		input: { command, timeout: 1 },
+		content: [{ type: "text", text: "Command timed out after 1 seconds" }],
+		isError: true,
+	});
+	// sleep still holds the shell when pi's timeout lands, so a query in a later command
+	// position never started: the report proves the shell, not the query.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bj1", args: { command: "sleep 5; codegraph query lease" } });
+	fire(handlers, "tool_result", timeoutResult("bj1", "sleep 5; codegraph query lease"));
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bj1" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a timeout over a shell still inside sleep proves no query started",
+	);
+	// A leading query started with the shell itself: the timeout can only have landed later.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bj2", args: { command: "codegraph query lease; sleep 5" } });
+	fire(handlers, "tool_result", timeoutResult("bj2", "codegraph query lease; sleep 5"));
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bj2" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the first command position started with the shell, so the timed-out attempt credits");
+	// A guarded query stays undecidable from a timeout: whether the guard passed is exactly
+	// what the report cannot say.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bj-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bj-arm-2" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bj3", args: { command: "cd /tmp && codegraph query lease" } });
+	fire(handlers, "tool_result", timeoutResult("bj3", "cd /tmp && codegraph query lease"));
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bj3" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a guarded query is not the first command, so the timeout proves nothing about it",
+	);
+	// The search marker needs the same command-specific evidence: rg behind sleep never ran,
+	// so the prompt stays ungated and its memory reads pass.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bj4", args: { command: "sleep 5; rg -n lease lib" } });
+	fire(handlers, "tool_result", timeoutResult("bj4", "sleep 5; rg -n lease lib"));
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bj4" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a search that never started does not arm the gate");
+	// A leading search started with the shell, so its timeout still arms the prompt.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bj5", args: { command: "rg -n lease lib; sleep 5" } });
+	fire(handlers, "tool_result", timeoutResult("bj5", "rg -n lease lib; sleep 5"));
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bj5" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a leading search started with the shell, so its timeout still arms the gate",
 	);
 });

@@ -499,7 +499,10 @@ test("destructive maintenance remains UI-gated and derives authorization at the 
 	const approved = await controller.execute("approved", reset, undefined, undefined, recording);
 	assert.equal(prompts.length, 1);
 	assert.match(prompts[0]!, /Lineage: stuck/);
-	assert.match(prompts[0]!, /Reason: incomplete/);
+	assert.match(prompts[0]!, /Lineage: stuck\nActor: maintainer\nReason: incomplete/);
+	assert.doesNotMatch(prompts[0]!, /challenge|Repository:/);
+	const legacyOnly = await controller.execute("legacy-only", { operation: "reset", input: JSON.stringify({ repositoryId: "r", commonDirHash: "a", inventoryHash: "b", confirmation: "c" }) }, undefined, undefined, recording);
+	assert.equal((legacyOnly.details as { outcome?: string }).outcome, "native-input-required");
 	assert.equal((approved.details as { mutation_outcome?: string }).mutation_outcome, "committed");
 	assert.equal(calls.length, 1);
 	assert.equal(calls[0]?.lineage, "stuck");

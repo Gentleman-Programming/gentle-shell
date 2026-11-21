@@ -1405,7 +1405,7 @@ Lists the providers this session knows models for, and whether each has credenti
 | `type` | `oauth` (a sign-in) or `api_key` when configured, otherwise `null`. |
 | `source` | Where Pi found them: `stored` (Pi's credential store), `runtime`, `environment`, `models_json` (a key or a command in `models.json`; which one is not said), or `extension` (a provider extension's fallback). `null` when not configured. |
 
-The registry's status label (an environment variable name or a command) never crosses, nor any value.
+The registry's status label (an environment variable name or a command) never crosses, nor any value. Errors: `invalid_request` (any param), and `auth_unavailable` (no registry in this session, or the registry read failed).
 
 ### `reload_credentials`
 

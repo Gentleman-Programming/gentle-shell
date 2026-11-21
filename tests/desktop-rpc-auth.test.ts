@@ -201,3 +201,31 @@ test("the projection bounds the provider list and skips ids that are not plain n
 	assert.equal(result.truncated, true);
 	assert.equal(result.providers.some((row) => row.provider === "../etc" || row.provider === "a b"), false);
 });
+
+// ---- Independent verification follow-ups (L27) ----
+
+test("a reset during a reload drops the answer", async (t) => {
+	let release: () => void = () => {};
+	const fake = fakeRegistry({ refresh: () => new Promise((resolve) => { release = () => resolve({ aborted: false, errors: new Map() }); }) });
+	const app = harness(t, fake.registry);
+	const pending = app.invoke("r-reset", "reload_credentials");
+	await new Promise((resolve) => setImmediate(resolve));
+	await app.shutdown();
+	release();
+	await pending;
+	assert.equal(app.widgets.some((line) => JSON.parse(line).ok === true), false);
+});
+
+test("an environment label never crosses and repeated reads never refresh", async (t) => {
+	const fake = fakeRegistry({ configured: { anthropic: { source: "environment", label: "ANTHROPIC_API_KEY" } } });
+	const app = harness(t, fake.registry);
+	for (let i = 0; i < 3; i++) await app.invoke(`g${i}`, "get_auth_status");
+	assert.deepEqual(fake.calls.refresh, []);
+	assert.equal(app.widgets.some((line) => line.includes("ANTHROPIC_API_KEY")), false);
+	assert.deepEqual(app.last().data.providers[0], { provider: "anthropic", displayName: "Anthropic", configured: true, type: "api_key", source: "environment" });
+});
+
+test("an unknown source is null and a throwing display name falls back to the id", () => {
+	const result = projectAuthStatus({ getAll: () => [{ provider: "x" }], getProviderAuthStatus: () => ({ configured: true, source: "configured provider" }), getProviderDisplayName: () => { throw new Error("boom"); }, isUsingOAuth: () => false, refresh: async () => ({ aborted: false, errors: new Map() }) });
+	assert.deepEqual(result.providers, [{ provider: "x", displayName: "x", configured: true, type: "api_key", source: null }]);
+});

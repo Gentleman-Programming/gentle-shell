@@ -266,6 +266,7 @@ export default class GentleChat extends View {
       cx.notify();
     }
     if (address !== this.address) { this.address = address; cx.notify(); }
+    if (!s && this.foreign) { this.foreign = false; cx.notify(); }
     if (!s) return;
     // S14: a terminal on another machine. Its session file and snapshot are on that machine and the
     // desktop feed reads this computer's, so nothing is read (a local file of the same folder would
@@ -394,7 +395,7 @@ export default class GentleChat extends View {
           const paths = await watchFolder(dir);
           if (this.watched !== dir) break;
           const file = this.file;
-          if (this.foreign) return; // nothing to read: the empty state already says why
+          if (this.foreign) { this.watched = null; return; } // nothing to read: the empty state already says why
           if (!file || typeof this.snap?.identity?.sessionFile !== "string") { await this.refreshNow(cx); continue; }
           const name = file.slice(file.lastIndexOf("/") + 1);
           if (!Array.isArray(paths) || paths.some((p) => p === file || p === dir || String(p).endsWith(`/${name}`))) await this.load(cx);
@@ -923,6 +924,13 @@ export default class GentleChat extends View {
       const busy = live && (live.status === "working" || live.status === "waiting");
       if (working || busy) rows.push(lane(stateLabel(p, "work", busy ? live.label : "Working")));
     }
+    // A foreign session can still have a status row; the explanation has to appear anyway.
+    if (this.foreign && rows.length > 0) {
+      const [title, about] = this.foreignText();
+      rows.push(lane(v_flex().id("foreign").flex_none().self_center().items_center().px(28).py(24).gap(4)
+        .child(div().text_size(14).font_semibold().text_color(p.text).child(title))
+        .child(div().text_size(12.5).text_color(p.muted).text_center().child(about))));
+    }
     const empty = !rows.length;
     // Pinned to the newest entry: new items pin it, scrolling up unpins it. scroll_to_item
     // reveals a child with the least scroll, so the target is a 1px sentinel after the last row,
@@ -956,12 +964,21 @@ export default class GentleChat extends View {
 
   // No conversation yet (the artboard has no such state): a calm block in the middle of the
   // log, in the design's type: the mark in faint, a 14px semibold line, a 12.5px muted line.
+  // The same words in the empty state and above any status row: a feed with no Pi session file
+  // cannot be read here, and where the session runs changes what the person can do about it.
+  foreignText() {
+    const where = this.address
+      ? "This view can only show its Terminal (⌘J)."
+      : "Open its terminal where it runs to follow the conversation.";
+    return ["No transcript for this session", `It publishes a desktop feed but no Pi session file. ${where}`];
+  }
+
   empty(p) {
     const machine = machineOf(this.address);
     const [title, about] = machine
       ? [`Runs on ${machine}`, `Herdr shows its state and its Terminal (⌘J). Its conversation and desktop feed stay on ${machine}: this window reads this computer's.`]
       : this.foreign
-      ? ["No transcript for this session", "It publishes a desktop feed but no Pi session file, so this view can only show its Terminal (⌘J)."]
+      ? this.foreignText()
       : !this.key
       ? ["No Gentle Shell session", "Start one with + in the tab bar, or run gentle-shell in a terminal."]
       : !this.file

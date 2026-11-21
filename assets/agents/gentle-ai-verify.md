@@ -6,6 +6,7 @@ tools:
   - grep
   - find
   - bash
+  - codemode
   - mcp__codegraph__codegraph_explore
 ---
 

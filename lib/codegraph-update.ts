@@ -1,6 +1,8 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
+import { win32 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { windowsTaskkillPath } from "./win32-taskkill.ts";
 
 /** A backslash without a backslash literal, so this file never mangles in tool transport. */
 const BS = String.fromCharCode(92);
@@ -37,9 +39,12 @@ const KILL_ESCALATE_MS = 1_000;
 function killChild(child: ChildProcess | undefined, signal: NodeJS.Signals = "SIGTERM"): void {
 	if (child?.pid === undefined) return;
 	if (process.platform === "win32") {
-		// The tree kill is async; the direct kill bounds the shell wrapper at once.
+		// The tree kill is async; the direct kill bounds the shell wrapper at once. The
+		// absolute System32 binary, spawned from System32 itself: a bare "taskkill" would
+		// resolve from the current directory before PATH and vanish on a broken PATH.
 		child.kill();
-		execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => {
+		const taskkill = windowsTaskkillPath();
+		execFile(taskkill, ["/pid", String(child.pid), "/T", "/F"], { cwd: win32.dirname(taskkill), windowsHide: true }, () => {
 			/* already gone: the kill-wait cap reports the timeout anyway */
 		});
 		return;

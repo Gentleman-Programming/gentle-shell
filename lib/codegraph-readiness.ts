@@ -2,7 +2,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { existsSync, lstatSync, realpathSync, rmSync } from "node:fs";
 import { copyFile, cp, link, readdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, win32 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 import { daemonFor, daemonHealth, liveDaemons, mcpCallRequests, mcpCallText, mcpInitializeRequest, mcpLineReader, mcpReplyKind, projectSpelling } from "./codegraph-daemon.ts";
@@ -10,6 +10,7 @@ import type { DaemonInfo } from "./codegraph-daemon.ts";
 import { resolveCodegraphEntry } from "./codegraph-cli-resolve.ts";
 import type { CodegraphEntry } from "./codegraph-cli-resolve.ts";
 import { ensureCodegraphInstalled, ensureCodegraphLatest, type CodegraphUpdateCheck, type InstallOutcome } from "./codegraph-update.ts";
+import { windowsTaskkillPath } from "./win32-taskkill.ts";
 import { acquireInitLock, codegraphWritingIndex, indexState, syncLeaseHeldLive, tryAcquireSyncLease, type IndexState } from "./codegraph-lease.ts";
 import { resolveSessionWorktree, type WorktreeIdentity } from "./session-worktree-registry.ts";
 
@@ -880,7 +881,7 @@ const TASKKILL_BOUND_MS = 10_000;
 
 /** The spawn the Windows tree kill starts taskkill through; injectable so a test can drive a
  * helper that never exits through the real adapter. */
-export type TaskkillSpawn = (file: string, args: readonly string[], options: { stdio: "ignore"; windowsHide: true }) => ChildProcess;
+export type TaskkillSpawn = (file: string, args: readonly string[], options: { cwd: string; stdio: "ignore"; windowsHide: true }) => ChildProcess;
 
 /**
  * Terminates one process tree through taskkill and reports the outcome exactly once: true only
@@ -904,8 +905,12 @@ export function killWindowsTree(pid: number, onKilled: (confirmed: boolean) => v
 	};
 	try {
 		// stdio "ignore": taskkill's output was never read, and pipes a stalled helper
-		// would otherwise hold this process open after every settlement has landed.
-		const child = start("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+		// would otherwise hold this process open after every settlement has landed. The
+		// absolute System32 binary, spawned from System32 itself: a bare "taskkill" would
+		// resolve from the current directory before PATH — a repository shipping its own
+		// taskkill.exe would run — and would not resolve at all on a broken PATH.
+		const taskkill = windowsTaskkillPath();
+		const child = start(taskkill, ["/pid", String(pid), "/T", "/F"], { cwd: win32.dirname(taskkill), stdio: "ignore", windowsHide: true });
 		child.on("error", () => settle(false));
 		child.on("exit", (code) => settle(code === 0));
 		timer = setTimeout(() => settle(false), bound);

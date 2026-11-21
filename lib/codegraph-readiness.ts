@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { existsSync, lstatSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { copyFile, cp, link, readdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, win32 } from "node:path";
@@ -13,6 +13,7 @@ import { ensureCodegraphInstalled, ensureCodegraphLatest, type CodegraphUpdateCh
 import { windowsTaskkillPath } from "./win32-taskkill.ts";
 import { acquireInitLock, codegraphWritingIndex, indexState, syncLeaseHeldLive, tryAcquireSyncLease, type IndexState } from "./codegraph-lease.ts";
 import { resolveSessionWorktree, type WorktreeIdentity } from "./session-worktree-registry.ts";
+import { canonicalRoot } from "./codegraph-canonical.ts";
 
 /** What happened when a worktree asked to be seeded from its main checkout. */
 export type SeedOutcome =
@@ -137,14 +138,28 @@ async function daemonlessRefresh(cwd: string, opts: { run: CodegraphRun; locksDi
 		// token is nobody's refresh and must not silently disable it forever.
 		return syncLeaseHeldLive(cwd, opts.locksDir) ? { kind: "held-live" } : { kind: "lease-blocked" };
 	}
+	let teardownUnconfirmed = false;
+	let writerPid: number | undefined;
 	try {
 		// The sync child is adopted onto the lease: the detached child can outlive this launcher before
 		// it creates codegraph.lock, and its recorded pid keeps the verdict held-live — a live writer
 		// is never raced, the same hook acquireInitLock gives its init child.
-		const adoptChild = (pid: number, proxy: boolean): void => lease.adopt(pid, proxy);
-		return { kind: "done", synced: await opts.run(["sync", "-q"], cwd, SYNC_TIMEOUT_MS, adoptChild, opts.sink) };
+		const adoptChild = (pid: number, proxy: boolean): void => {
+			writerPid = pid;
+			lease.adopt(pid, proxy);
+		};
+		const synced = await opts.run(["sync", "-q"], cwd, SYNC_TIMEOUT_MS, adoptChild, (info) => {
+			// The sink feeds the caller and the hold decision below alike: a teardown nobody could
+			// confirm must keep this lease past the refresh itself.
+			if (info.teardownUnconfirmed === true) teardownUnconfirmed = true;
+			opts.sink?.(info);
+		});
+		return { kind: "done", synced };
 	} finally {
-		lease.release();
+		// An unconfirmed teardown never releases here: the writer may still be running, and the
+		// held token — with the adopted pid — fences other sessions until the recovery proves it gone.
+		if (teardownUnconfirmed) holdLeaseUntilWriterGone(lease, writerPid, SYNC_LEASE_TTL_MS);
+		else lease.release();
 	}
 }
 
@@ -153,6 +168,36 @@ async function daemonlessRefresh(cwd: string, opts: { run: CodegraphRun; locksDi
 function daemonlessOk(outcome: DaemonlessRefresh): boolean {
 	if (outcome.kind === "done") return outcome.synced;
 	return outcome.kind === "writing" || outcome.kind === "held-live";
+}
+
+/** A lease whose command run could not confirm its writer's teardown stays held: releasing it
+ * would let another session start a competing write beside a writer that may still be running.
+ * The token already carries the adopted writer pid, so the fence holds cross-session while the
+ * writer lives; this recovery probes that pid and releases the lease as soon as ESRCH proves
+ * the writer gone — nothing less is proof. A writer with no reported pid, or one that never
+ * dies, keeps the fence until the lease TTL displaces it, the same bound every wedged holder
+ * answers to, so the probe chain also stops there instead of running forever. */
+function holdLeaseUntilWriterGone(lease: { release(): void }, pid: number | undefined, ttlMs: number): void {
+	if (pid === undefined) return;
+	const deadline = Date.now() + ttlMs;
+	const probe = (): void => {
+		let gone = false;
+		try {
+			process.kill(pid, 0);
+		} catch (error) {
+			gone = (error as NodeJS.ErrnoException).code === "ESRCH";
+		}
+		if (gone) {
+			lease.release();
+			return;
+		}
+		if (Date.now() >= deadline) return; // past the TTL the on-disk token's displacement ends the fence
+		const timer = setTimeout(probe, TEARDOWN_RECOVERY_POLL_MS);
+		// The probe chain must never keep a quitting session alive: the unref'd timer lets the
+		// process go, and the cross-session fence survives it on disk.
+		if (typeof timer === "object" && typeof timer.unref === "function") timer.unref();
+	};
+	probe();
 }
 
 const INIT_TIMEOUT_MS = 600_000;
@@ -170,6 +215,12 @@ const KILL_ESCALATE_MS = 1_000;
  * and a retry would spawn its `init -y` under a lock another session has lawfully reclaimed —
  * the sequence's bounded worst case is therefore the lease TTL. */
 const INIT_LOCK_SEQUENCE_TTL_MS = (INIT_RETRY_COUNT + 1) * (INIT_TIMEOUT_MS + KILL_ESCALATE_MS + KILL_WAIT_MS);
+/** Mirrors the sync lease TTL from lib/codegraph-lease.ts (which value-imports this module, so
+ * the canonical constant cannot be imported back): the bound after which an unconfirmed
+ * teardown's held sync lease is displaced however the recovery probe answered. */
+const SYNC_LEASE_TTL_MS = 300_000;
+/** How often an unconfirmed-teardown recovery re-probes the adopted writer pid. */
+const TEARDOWN_RECOVERY_POLL_MS = 250;
 /** The environment variable a subagent child carries; children never start an index operation of their own. */
 export const CHILD_ENV = "GENTLE_PI_AGENTS_CHILD";
 /** One of these next to a `.git` is what makes a directory a project worth indexing automatically. */
@@ -521,19 +572,82 @@ export function sessionSkipsReadiness(env: Record<string, string | undefined>, r
 	return false; // reload and the child case returned above; skipsSession can only see the negative
 }
 
-/** Stops the project's live daemons by their registry records: after a binary update the old
- * daemon keeps the old database open (a Windows file lock) and serves the old formats, so the
- * forced reindex removes them first. Best effort — a daemon that cannot be stopped leaves the
- * folder removal to fail open in the caller. */
-function stopProjectDaemons(cwd: string, registryDir?: string): void {
+/** How long the forced reindex waits after signalling the project's daemons for their exit:
+ * a daemon obeying SIGTERM slowly still holds the old database open (a Windows file lock)
+ * while it lives, so the removal must not start under it; a daemon beyond the bound loses to
+ * the removal's existing fail-open. */
+const DAEMON_STOP_WAIT_MS = 3_000;
+/** How often the daemon stop wait re-probes a signalled daemon's pid. */
+const DAEMON_STOP_POLL_MS = 50;
+
+/** Signals the project's live daemons by their registry records and waits, bounded, for their
+ * exit: after a binary update the old daemon keeps the old database open (a Windows file
+ * lock) and serves the old formats, so the forced reindex stops them before the index folder
+ * is touched — a daemon that obeys SIGTERM slowly is gone by then, and one that cannot be
+ * stopped within the bound loses to the removal's fail-open. */
+async function stopProjectDaemons(cwd: string, registryDir?: string): Promise<void> {
+	const pids: number[] = [];
 	try {
 		for (const daemon of liveDaemons(cwd, registryDir)) {
 			// Group kill, like every other daemon-tree kill here: a detached daemon leads its own
 			// process group, and one without a group falls through to the direct kill inside.
-			if (daemon.pid !== undefined) killProcessTree({ pid: daemon.pid }, true);
+			if (daemon.pid !== undefined) {
+				killProcessTree({ pid: daemon.pid }, true);
+				pids.push(daemon.pid);
+			}
 		}
 	} catch {
 		/* no registry or an unreadable one: there was nothing to stop */
+	}
+	const deadline = Date.now() + DAEMON_STOP_WAIT_MS;
+	while (pids.length > 0 && Date.now() < deadline) {
+		await defaultSyncSleep(DAEMON_STOP_POLL_MS);
+		const alive = pids.filter((pid) => {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch {
+				return false;
+			}
+		});
+		pids.splice(0, pids.length, ...alive);
+	}
+}
+
+/** The backup name the forced reindex renames the old index folder aside to: recoverable
+ * until the replacement index exists, dropped the moment it does. */
+const REINDEX_BACKUP = ".codegraph.pre-update-reindex";
+
+/** The process-lifetime record of forced reindexes that already completed, keyed by canonical
+ * project and the update's from/to: the once-per-process update check replays the same result
+ * on every later readiness pass, and without this record each pass would delete and rebuild
+ * the same rebuilt index again. */
+const rebuiltProjects = new Set<string>();
+
+const rebuildKey = (cwd: string, from: string, to: string): string => `${canonicalRoot(cwd)}\0${from}\0${to}`;
+
+/** Whether this project already completed the forced rebuild for this exact update result. */
+function rebuildCompletedFor(cwd: string, from: string, to: string): boolean {
+	return rebuiltProjects.has(rebuildKey(cwd, from, to));
+}
+
+/** Settles the forced reindex's backup the moment the readiness pass ends: a replacement
+ * index in place drops the backup and records the rebuild complete for this project and
+ * update result, and a pass that ends without one restores the old folder — the update
+ * reindexes another day, and a failed rebuild never counts as completed. Best effort: a
+ * backup that can neither drop nor restore stays on disk, recoverable by hand. */
+function settleForcedReindex(cwd: string, pending: { backup: string; from: string; to: string } | undefined): void {
+	if (pending === undefined) return;
+	const indexDir = join(cwd, ".codegraph");
+	try {
+		if (existsSync(indexDir)) {
+			rmSync(pending.backup, { recursive: true, force: true });
+			rebuiltProjects.add(rebuildKey(cwd, pending.from, pending.to));
+		} else {
+			renameSync(pending.backup, indexDir);
+		}
+	} catch {
+		/* best effort: the backup stays beside the index, recoverable by hand */
 	}
 }
 
@@ -573,6 +687,10 @@ export interface ReadinessInput {
 	/** Whether codegraph is installed at all; the default installs it once through the first
 	 * available manager (bun, npm, pnpm) when the PATH holds none. */
 	installCheck?(): Promise<InstallOutcome>;
+	/** The spawn view the forced reindex's replacement preflight consults — the platform and the
+	 * win32 shim resolver decide whether the actual replacement init invocation is spawnable.
+	 * The default is the real seam. */
+	spawnSeam?: SpawnCodegraphSeam;
 	onStart?(action: IndexAction): void;
 	onIndexed?(result: {
 		action: IndexAction;
@@ -609,6 +727,10 @@ const inFlight = new Map<string, Promise<ReadinessResult>>();
 export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult> {
 	const existing = inFlight.get(input.cwd);
 	if (existing) return existing;
+
+	// The forced reindex's renamed-aside old index, set the moment the update branch removes
+	// the folder and settled once the pass ends (see the registered finally below).
+	let pendingReindex: { backup: string; from: string; to: string } | undefined;
 	const started = (async (): Promise<ReadinessResult> => {
 		try {
 			// The narrowed gate: reload always skips, an ordinary child skips unless its cwd is its
@@ -650,9 +772,27 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 				if (update.ran && update.from !== undefined && update.to !== undefined && update.from !== update.to
 					&& indexState(input.cwd) === "present"
 					&& planIndexAction(input.cwd, "absent", input.isProjectRoot) === "init") {
-					stopProjectDaemons(input.cwd, input.registryDir);
-					rmSync(join(input.cwd, ".codegraph"), { recursive: true, force: true });
-					reindexed = { from: update.from, to: update.to };
+					// The child gate read "absent" before the update check; an index that exists here was
+					// published by another session while this child waited, and it is that session's to
+					// own: the child stands down before the destructive branch, leaving the seed-or-init
+					// exception to worktrees that are still unindexed.
+					if (childWorktree) return { action: "none", ok: true, warm: "skipped" };
+					// A rebuild this process already completed is not repeated: the update check's
+					// process-lifetime memo replays the same from/to on every later pass. The replacement
+					// invocation must also be spawnable — a Windows project path the cmd.exe fallback
+					// refuses (a literal percent) could never rebuild, so the index keeps its plan and
+					// the ordinary sync runs instead.
+					if (!rebuildCompletedFor(input.cwd, update.from, update.to)
+						&& !replacementInitRefused(input.cwd, input.spawnSeam ?? realSpawnSeam)) {
+						await stopProjectDaemons(input.cwd, input.registryDir);
+						// The old folder is renamed aside, not deleted: it stays recoverable until the
+						// replacement index exists, and settleForcedReindex restores it when the pass
+						// ends without one.
+						const backup = join(input.cwd, REINDEX_BACKUP);
+						renameSync(join(input.cwd, ".codegraph"), backup);
+						pendingReindex = { backup, from: update.from, to: update.to };
+						reindexed = { from: update.from, to: update.to };
+					}
 				}
 			} catch {
 				/* fail open: the existing index keeps its plan and the ordinary sync runs */
@@ -723,6 +863,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 						ttlMs: INIT_LOCK_SEQUENCE_TTL_MS,
 					});
 					if (lock.outcome === "acquired") {
+						let unconfirmedWriterPid: number | undefined;
 						try {
 							// The post-lock recheck is tri-state explicit: only a confirmed absence may
 							// initialize. "present" means another init finished while this one waited;
@@ -743,7 +884,10 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 								// An attempt whose teardown could not be confirmed is the one exception: it ends the
 								// sequence, because a silent retry would start a second init beside a writer of the
 								// timed-out attempt that may still be running.
-								const adoptChild = (pid: number, proxy: boolean): void => lock.adopt(pid, proxy);
+							const adoptChild = (pid: number, proxy: boolean): void => {
+								unconfirmedWriterPid = pid;
+								lock.adopt(pid, proxy);
+							};
 								ok = false;
 								for (let attempt = 1; attempt <= INIT_RETRY_COUNT + 1 && !ok; attempt += 1) {
 									initAttempts = attempt;
@@ -761,7 +905,11 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 							}
 							else ok = false;
 						} finally {
-							lock.release();
+							// An unconfirmed teardown keeps the lease held — its writer may still be running —
+							// and the recovery releases it only once that writer is verified gone; every
+							// other ending releases immediately.
+							if (initStop === "teardown-unconfirmed") holdLeaseUntilWriterGone(lock, unconfirmedWriterPid, INIT_LOCK_SEQUENCE_TTL_MS);
+							else lock.release();
 						}
 					} else {
 						ok = lock.outcome === "present";
@@ -793,6 +941,11 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 	// the settled promise would then stay cached for the rest of the process.
 	const registered = started.finally(() => {
 		inFlight.delete(input.cwd);
+
+		// Every exit of the pass funnels here: the forced reindex's backup is dropped behind a
+		// replacement index or restored when the pass ends without one, whichever way the flow
+		// returned (or threw — the catch above turns that into a result first, this settle still runs).
+		settleForcedReindex(input.cwd, pendingReindex);
 	});
 	inFlight.set(input.cwd, registered);
 	return registered;
@@ -1030,6 +1183,38 @@ interface CommandRun {
 	stdout: string;
 }
 
+/** The argument vector one codegraph command runs for `cwd`: the fixed args plus the project
+ * spelling its daemon registered (another spelling starts another daemon), or the real path
+ * when no daemon answers. The runner and the update reindex's replacement preflight share
+ * it, so the preflight judges exactly the invocation the replacement init would run. */
+function codegraphProjectArgs(args: readonly string[], cwd: string): string[] {
+	let project: string;
+	try {
+		project = projectSpelling(daemonFor(cwd), cwd);
+	} catch {
+		/* not alive: no registry, so the command simply runs for the real project path */
+		project = realpathSync(cwd);
+	}
+	return [...args, project];
+}
+
+/** Whether the spawn would refuse the replacement init's invocation for `cwd`: on Windows an
+ * unresolvable .cmd shim falls back to one cmd.exe command line, which cannot carry a
+ * literal percent — the project argument would expand into a different project, so the
+ * reindex must keep the existing index instead of removing it for a replacement that can
+ * never run. A resolved shim (a direct argument vector) and every other platform carry
+ * the path verbatim. */
+function replacementInitRefused(cwd: string, seam: SpawnCodegraphSeam): boolean {
+	if (seam.platform() !== "win32") return false;
+	if (seam.resolveEntry() !== null) return false;
+	try {
+		buildWindowsCommand(codegraphProjectArgs(["init", "-y"], cwd));
+		return false;
+	} catch {
+		return true;
+	}
+}
+
 /**
  * Runs the codegraph CLI with fixed arguments for the project in `cwd`, from the temp directory with the
  * project as the last argument spelled as its daemon registered it (another spelling starts another
@@ -1073,14 +1258,7 @@ function runCodegraphCommand(args: readonly string[], cwd: string, timeoutMs: nu
 		};
 		let child: ReturnType<typeof spawn> | undefined;
 		try {
-			let project: string;
-			try {
-				project = projectSpelling(daemonFor(cwd), cwd);
-			} catch {
-				/* not alive: no registry, so the command simply runs for the real project path */
-				project = realpathSync(cwd);
-			}
-			child = spawnCodegraph([...args, project], ["ignore", "pipe", "pipe"]);
+			child = spawnCodegraph(codegraphProjectArgs(args, cwd), ["ignore", "pipe", "pipe"]);
 		} catch (error) {
 			// A refused spawn — cmd.exe cannot carry a literal percent through the .cmd shim — is
 			// a diagnosable failure, not a silent one: the sink sees why no command ran.

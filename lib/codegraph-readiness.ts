@@ -443,6 +443,7 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 							// report — never a green light to initialize.
 							const rechecked = indexState(input.cwd);
 							if (rechecked === "present") ok = true;
+							else if (rechecked === "absent") ok = await input.run(["init", "-y"], input.cwd, INIT_TIMEOUT_MS, (pid, proxy) => lock.adopt(pid, proxy));
 							else ok = false;
 						} finally {
 							lock.release();

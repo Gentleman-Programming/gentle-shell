@@ -34,6 +34,7 @@ import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { fakeChild } from "./agents-fake-child.ts";
 import { PROFILE_TIER_EVENT } from "../lib/openai-fast-tier.ts";
 import { readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { discoverDesktopProfilesService } from "../lib/desktop-rpc-profiles.ts";
 import { SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { localProfilePinPath, repoProfileDeclarationPath, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { readFrozenDefaultOrchestrator, readFrozenInheritedProfile, resolveSessionProfile, sessionProfileRoutingAt } from "../lib/session-profile-freeze.ts";
@@ -907,3 +908,21 @@ test("A2 clear of an invalid newest entry in a new session writes the startup pr
  assert.match(f.notices.at(-1)?.text ?? "", /cleared the unreadable session profile record \(persisted in this session\)\. New launches go back to the profile this session started with, "live"/);
  assert.equal(f.binding()?.origin, "global");
 });
+
+// Desktop clear_profile_binding through the real owner (gentle-shell-gpui parity, T1, L32).
+for (const active of ["live", undefined] as const)
+	test(`Desktop clear through the real owner matches the terminal clear (${active ?? "none"})`, async (t) => {
+		const f = await fixture(t, false, false, active);
+		f.manager.appendMessage({ role: "user", content: "first", timestamp: 2 });
+		await f.enter("team");
+		const notices = f.notices.length;
+		const svc = await discoverDesktopProfilesService(f.api(), f.runtime.session.extensionRunner.createCommandContext());
+		assert.ok(svc && typeof svc.clear === "function");
+		assert.deepEqual(await svc.clear!(), { status: "cleared" });
+		const startup = active === undefined ? "none" : { origin: "global", name: active, modelProfiles: f.profiles[active] };
+		assert.deepEqual(data(f.family().at(-1)), startup === "none" ? { kind: "clear", startup } : { kind: "bind", ...startup });
+		assert.equal(f.notices.length, notices, "no notice forwarded");
+		assert.deepEqual(await svc.clear!(), { status: "unchanged" });
+		svc.dispose();
+		assert.deepEqual(await svc.clear!(), { status: "not_cleared" });
+	});

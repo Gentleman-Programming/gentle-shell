@@ -1380,7 +1380,7 @@ No absolute path, raw package source, registry URL, token, command line, or look
 
 ### `get_profile_binding`
 
-Reads which profile this session routes its subagents with, through the same rule launches, the status bar, and `/gentle:profiles` use (`resolveSessionProfile`). A binding chosen in the terminal, restored on resume, or inherited at the session's start is reported exactly as a launch would apply it. Params must be an empty object. It has no side effects and emits no event.
+Reads which profile this session routes its subagents with, through the same rule launches, the status bar, and `/gentle:profiles` use (`resolveSessionProfile`). A binding chosen in the terminal, restored on resume, or inherited at the session's start is reported exactly as a launch would apply it. Params must be an empty object. It writes nothing and emits no event; like the status bar and the Desktop feed, the read can freeze the inherited profile of a session that has not frozen it yet, which is the same freeze its first launch would do.
 
 ```json
 { "ok": true, "data": { "kind": "explicit", "profile": "fast", "origin": "session" } }
@@ -1402,7 +1402,7 @@ Runs `/gentle:profiles clear` for this session: the session goes back to the pro
 { "ok": true, "data": { "status": "cleared", "changed": true, "binding": { "kind": "inherited", "profile": null, "origin": null } } }
 ```
 
-`status` is `cleared` when the binding store changed, `unchanged` when there was nothing to clear, and `not_cleared` when the owner refused (for example an unreadable session record); the owner's notices are not forwarded. `binding` is the state after the call, and `changed` says whether it differs from before. A change also emits `profile_binding_changed` with `source: "desktop"`, after the response. Errors: `invalid_request`, `profile_apply_busy` while an apply runs, and `profiles_unavailable` when no owner answers or the owner predates this method.
+`status` is `not_cleared` whenever the owner warned (for example an unreadable session record or unavailable profile authority), even if the binding moved; otherwise `cleared` when the binding store changed and `unchanged` when there was nothing to clear. The owner's notices are not forwarded. A binding written elsewhere while the clear runs is folded into the one `desktop` event. `binding` is the state after the call, and `changed` says whether it differs from before. A change also emits `profile_binding_changed` with `source: "desktop"`, after the response. Errors: `invalid_request`, `profile_apply_busy` while an apply runs, and `profiles_unavailable` when no owner answers or the owner predates this method.
 
 Publishing a profile to the repository is not a separate method: it is the repository pin, written with `set_config` on `pins` with `{ "source": "repo", "profile": "<name>" }` (and `profile: null` to unpublish).
 

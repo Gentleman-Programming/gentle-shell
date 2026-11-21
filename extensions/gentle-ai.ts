@@ -7293,18 +7293,11 @@ function startupStateText(startup: SessionProfileStartupState): string {
 }
 
 /**
- * `/gentle:profiles clear`: go back to the startup state when it is known
- * (gentle-shell#2742, section 3), else append a legacy clear record, and publish
- * only the returned state. Never-bound, already-cleared and startup sessions
- * write nothing; an unreadable record is the recovery case and is replaced.
- * Follow mode has no startup state, so a startup record gets a legacy clear
- * (section 6). The live orchestrator and every shared default stay untouched.
- */
-/**
  * Desktop `clear_profile_binding`: the same owner action as `/gentle:profiles
  * clear`, behind the apply gate, with its notices recorded instead of shown.
- * The outcome is read from the binding store, not from notice text: a change
- * is `cleared`, a warning without a change is `not_cleared`, else `unchanged`.
+ * The outcome is read from the binding store, not from notice text: any
+ * owner warning is `not_cleared` (even when the store moved, as after a failed
+ * append), a change is `cleared`, else `unchanged`.
  */
 async function clearDesktopSessionProfile(context: ExtensionContext): Promise<{ status: "cleared" | "unchanged" | "not_cleared" | "busy" }> {
 	if (!beginDesktopProfileApply()) return { status: "busy" };
@@ -7317,8 +7310,8 @@ async function clearDesktopSessionProfile(context: ExtensionContext): Promise<{ 
 			notify: { value: (_message: string, type?: "info" | "warning" | "error") => { if (type === "warning" || type === "error") warned = true; } },
 		});
 		await handleProfilesClear(Object.create(context, { ui: { value: ui, enumerable: true } }) as ExtensionContext);
-		if (state() !== before) return { status: "cleared" };
-		return { status: warned ? "not_cleared" : "unchanged" };
+		if (warned) return { status: "not_cleared" };
+		return { status: state() !== before ? "cleared" : "unchanged" };
 	} catch {
 		return { status: "not_cleared" };
 	} finally {
@@ -7326,6 +7319,14 @@ async function clearDesktopSessionProfile(context: ExtensionContext): Promise<{ 
 	}
 }
 
+/**
+ * `/gentle:profiles clear`: go back to the startup state when it is known
+ * (gentle-shell#2742, section 3), else append a legacy clear record, and publish
+ * only the returned state. Never-bound, already-cleared and startup sessions
+ * write nothing; an unreadable record is the recovery case and is replaced.
+ * Follow mode has no startup state, so a startup record gets a legacy clear
+ * (section 6). The live orchestrator and every shared default stay untouched.
+ */
 async function handleProfilesClear(ctx: ExtensionContext): Promise<void> {
 	const sessionId = ctx.sessionManager?.getSessionId?.();
 	if (typeof sessionId !== "string" || sessionId.length === 0) {

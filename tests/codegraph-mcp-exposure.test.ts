@@ -7,6 +7,7 @@ import {
 	acquireConfigLock,
 	atomicWriteFile,
 	codegraphMcpPaths,
+	defaultIo,
 	ensureDirectExposure,
 	ensureDirectExposureInAgentHomes,
 	fileIdentity,
@@ -931,4 +932,81 @@ test("ensureDirectExposure: an unknown observation recovers when the retry obser
 	const published = JSON.parse(readFileSync(config, "utf8")) as { mcpServers: { codegraph: { exposure?: string } } };
 	assert.equal(published.mcpServers.codegraph.exposure, "direct", "the published entry carries the direct exposure");
 	assert.deepEqual(readdirSync(dir), ["mcp.json"], "the publish leaves no temp file or lock behind");
+});
+
+test("ensureDirectExposure: a sibling nested beyond the scan limit is unpreservable, never an error", () => {
+	// JSON.parse accepts nesting far deeper than any recursive scan can traverse without
+	// exhausting the stack, so a valid config with a pathologically nested sibling value must be
+	// reported unpreservable — the file untouched — instead of surfacing a generic error.
+	const nest = (depth: number) => "[".repeat(depth) + "]".repeat(depth);
+	const deep = `{"mcpServers":{"codegraph":{"command":"codegraph"},"telemetry":${nest(200)}}}`;
+	const { io, files, writes } = harness({ "/f": deep });
+	assert.equal(ensureDirectExposure("/f", io).outcome, "unpreservable", "the scan declines to traverse beyond its depth limit");
+	assert.equal(writes.size, 0, "nothing is published for a document the scan cannot traverse");
+	assert.equal(files["/f"], deep, "the config is left exactly as it was");
+});
+
+test("ensureDirectExposure: deep-but-supported nesting still publishes the byte-preserving splice", () => {
+	// The depth limit only ever rejects pathological nesting: a document well within it keeps
+	// the byte-preserving publish, the exact spelling of the nested sibling included.
+	const nest = (depth: number) => "[".repeat(depth) + "]".repeat(depth);
+	const raw = `{"mcpServers":{"codegraph":{"command":"codegraph"},"telemetry":${nest(100)}}}\n`;
+	const { io, writes } = harness({ "/f": raw });
+	assert.equal(ensureDirectExposure("/f", io).outcome, "added", "nesting within the limit stays eligible");
+	assert.equal(
+		writes.get("/f"),
+		`{"mcpServers":{"codegraph":{"exposure": "direct", "command":"codegraph"},"telemetry":${nest(100)}}}\n`,
+		"every nested byte survives exactly as read",
+	);
+});
+
+test("ensureDirectExposure: a lock takeover during the splice preparation publishes nothing", () => {
+	// The holder is displaced after every file check has passed — the final identity observation
+	// still matches because the successor has not written the config yet — exactly while the
+	// splice is being prepared: the ownership check must run after that preparation, or the
+	// displaced holder publishes under the successor's lock.
+	const files: Record<string, string> = { "/f": WITH_CODEGRAPH };
+	let observations = 0;
+	let displaced = false;
+	let writes = 0;
+	const io: EnsureExposureIo = {
+		read: (path) => files[path],
+		identityOf: () => {
+			observations += 1;
+			if (observations === 2) displaced = true; // the takeover lands mid-update, between the checks
+			return "dev:1:1"; // the successor holds the lock but has not touched the config
+		},
+		write: (path, text) => {
+			writes += 1;
+			files[path] = text;
+		},
+		acquireLock: () => true,
+		releaseLock: () => {},
+		ownsLock: () => !displaced,
+	};
+	assert.equal(ensureDirectExposure("/f", io).outcome, "busy", "a lock the update no longer owns publishes nothing");
+	assert.equal(writes, 0, "the displaced holder never writes");
+	assert.equal(files["/f"], WITH_CODEGRAPH, "the config is left exactly as it was");
+});
+
+test("ensureDirectExposure: a takeover while the replacement is staged refuses the publish", (t) => {
+	// Ownership joins the staged replacement's final checks beside the identity: the takeover
+	// lands after the update's own pre-publish ownership check, while the replacement text is
+	// being staged, and the rename itself must refuse to publish under the successor's lock.
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-staged-takeover-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	const lock = lockPathFor(config);
+	const io: EnsureExposureIo = {
+		...defaultIo,
+		write: (path, text, expectedIdentity) => {
+			writeFileSync(lock, "4321:successor\n", "utf8"); // the takeover, mid-staging
+			defaultIo.write(path, text, expectedIdentity);
+		},
+	};
+	assert.equal(ensureDirectExposure(config, io).outcome, "busy", "the staged replacement refuses to publish under the successor's lock");
+	assert.equal(readFileSync(config, "utf8"), WITH_CODEGRAPH, "the config is left exactly as it was");
+	assert.equal(readFileSync(lock, "utf8"), "4321:successor\n", "the successor's lock survives the refused publish and the displaced release");
+	assert.ok(!readdirSync(dir).some((name) => name.includes(".tmp-")), "the abandoned replacement leaves no temporary file");
 });

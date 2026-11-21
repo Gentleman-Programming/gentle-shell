@@ -490,17 +490,19 @@ test("destructive maintenance remains UI-gated and derives authorization at the 
 		reclaim: async (request: Record<string, unknown>) => { calls.push(request); return { record: { schema: "gentle-ai.review-reclaim-audit/v1" } }; },
 	} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli;
 	const controller = registeredController(native);
-	const reset = { operation: "reset", input: JSON.stringify({ repositoryId: "repo", commonDirHash: "a".repeat(64), inventoryHash: "b".repeat(64), confirmation: "DESTROY REVIEW AUTHORITY repo", lineage: "stuck", actor: "maintainer", reason: "incomplete" }) };
+	const reset = { operation: "reset", input: JSON.stringify({ lineage: "stuck", actor: "maintainer", reason: "incomplete" }) };
 	await assert.rejects(controller.execute("headless", reset, undefined, undefined, { ...interactiveContext(true), hasUI: false } as ExtensionContext), /interactive Pi UI.*fails closed/i);
 	await assert.rejects(controller.execute("declined", reset, undefined, undefined, interactiveContext(false)), /not explicitly authorized/);
-	const approved = await controller.execute("approved", reset, undefined, undefined, interactiveContext(true));
+	assert.equal(calls.length, 0, "a headless or declined RESET never reaches native reclaim");
+	const prompts: string[] = [];
+	const recording = { ...interactiveContext(true), ui: { ...interactiveContext(true).ui, confirm: async (title: string, body: string) => { prompts.push(`${title}\n${body}`); return true; } } } as ExtensionContext;
+	const approved = await controller.execute("approved", reset, undefined, undefined, recording);
+	assert.equal(prompts.length, 1);
+	assert.match(prompts[0]!, /Lineage: stuck/);
+	assert.match(prompts[0]!, /Reason: incomplete/);
 	assert.equal((approved.details as { mutation_outcome?: string }).mutation_outcome, "committed");
 	assert.equal(calls.length, 1);
 	assert.equal(calls[0]?.lineage, "stuck");
-	await assert.rejects(
-		controller.execute("missing-challenge", { operation: "reset", input: JSON.stringify({ commonDirHash: "a".repeat(64), inventoryHash: "b".repeat(64), confirmation: "DESTROY REVIEW AUTHORITY repo", lineage: "stuck", actor: "maintainer", reason: "incomplete" }) }, undefined, undefined, interactiveContext(true)),
-		/requires an exact string repositoryId/,
-	);
 
 });
 

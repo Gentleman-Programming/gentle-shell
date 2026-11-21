@@ -7499,7 +7499,7 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 		},
 		input: {
 			type: "string",
-			description: "A JSON object or serialized object string for START/ASSESS/answer-consent/abandon/STATUS; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"} plus the agent lens selection {\"lenses\":[...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus). answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. For Pi v3 use consent.consentBinding; otherwise use top-level consent_binding. Both are Pi-minted, never a lineage id. An explicit baseRef requires committedOnly: true and requests a committed range; baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, and escalate. The escalate is {\"item\":N,\"reason\":\"...\"} with item an integer from 1 to 6 and a non-empty reason of at most 500 UTF-8 bytes; any other shape is rejected, and omitting it means no escalation. A valid escalate is forwarded to native assess, which makes native review due. Ordinary provider capture belongs only to gentle_review_capture. Legacy controller input remains separate.",
+			description: "A JSON object or serialized object string for START/ASSESS/answer-consent/abandon/STATUS; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"} plus the agent lens selection {\"lenses\":[...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus). answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. For Pi v3 use consent.consentBinding; otherwise use top-level consent_binding. Both are Pi-minted, never a lineage id. An explicit baseRef requires committedOnly: true and requests a committed range; baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, and escalate. The escalate is {\"item\":N,\"reason\":\"...\"} with item an integer from 1 to 6 and a non-empty reason of at most 500 UTF-8 bytes; any other shape is rejected, and omitting it means no escalation. A valid escalate is forwarded to native assess, which makes native review due. Ordinary START accepts the same escalate (one line) and freezes it so the tier and consent read high; INSPECT does not take it. Ordinary provider capture belongs only to gentle_review_capture. Legacy controller input remains separate.",
 		},
 		outputPath: { type: "string", description: "Retired; ignored." },
 		inputPath: { type: "string", description: "Repository-local input file for the retired legacy controller flow." },
@@ -8728,7 +8728,7 @@ function nativeStartRejection(reason: string, field?: string): Record<string, un
 							? "native-start-committed-only-required"
 							: reason === "committed-only-invalid"
 								? "native-start-committed-only-invalid"
-								: reason === "unknown-field" || reason === "focus-invalid" || reason === "lenses-invalid" || reason === "untracked-selection-invalid" || reason === "provider-base-offer-invalid" || reason === "provider-base-tree-mismatch"
+								: reason === "unknown-field" || reason === "escalate-invalid" || reason === "focus-invalid" || reason === "lenses-invalid" || reason === "untracked-selection-invalid" || reason === "provider-base-offer-invalid" || reason === "provider-base-tree-mismatch"
 									? "native-start-input-invalid"
 									: "native-start-policy-path-invalid",
 		reason,
@@ -8780,6 +8780,7 @@ interface PendingReviewConsent {
 	untrackedSelection?: RetainedNativeUntrackedSelection;
 	consent: ReviewConsentEnvelope;
 	requestContextPath?: string;
+	escalate?: AgentRiskEscalation;
 	consentDigest: string;
 }
 
@@ -11528,6 +11529,7 @@ async function executeReviewControllerOperationImpl(
 			const answered = await nativeReviewCli.answerConsent({
 				cwd: pending.authorityCwd,
 				...(pending.requestContextPath === undefined ? {} : { requestContextPath: pending.requestContextPath }),
+				...(pending.escalate === undefined ? {} : { escalate: pending.escalate }),
 				consent: pending.consent,
 				answer: input.answer,
 				...(signal === undefined ? {} : { signal }),
@@ -11598,8 +11600,13 @@ async function executeReviewControllerOperationImpl(
 		assertSupportedReviewStartMode(rawStart.mode);
 		if (rawStart.mode === REVIEW_MODE.ORDINARY) {
 			if ("policyHash" in rawStart) return nativeStartRejection("legacy-policy-hash-unsupported");
-			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "requestContextPath", "focus", "lenses", "lensesReason", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
+			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "requestContextPath", "focus", "lenses", "lensesReason", "escalate", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
 			if (unknownField !== undefined) return nativeStartRejection("unknown-field", unknownField);
+			let escalateContext: { escalate?: AgentRiskEscalation } = {};
+			if (rawStart.escalate !== undefined) {
+				try { escalateContext = { escalate: decodeAgentRiskEscalation(rawStart.escalate) }; }
+				catch { return nativeStartRejection("escalate-invalid"); }
+			}
 			if (rawStart.requestContextPath !== undefined && !isCanonicalProcessString(rawStart.requestContextPath)) return nativeStartRejection("request-context-invalid");
 			const requestContext: { requestContextPath?: string } = {};
 			if (rawStart.requestContextPath !== undefined) {
@@ -11618,7 +11625,7 @@ async function executeReviewControllerOperationImpl(
 				? {}
 				: validateNativeStartPolicyPath(defaultCwd, rawStart.policyPath);
 			if (policy.reason !== undefined) return nativeStartRejection(policy.reason);
-			const startContext = snapshotReviewStartContext({ ...requestContext, ...lensSelection, ...(isNativeStartFocus(focus) ? { focus } : {}), ...(policy.policyPath === undefined ? {} : { policyPath: policy.policyPath }) });
+			const startContext = snapshotReviewStartContext({ ...requestContext, ...escalateContext, ...lensSelection, ...(isNativeStartFocus(focus) ? { focus } : {}), ...(policy.policyPath === undefined ? {} : { policyPath: policy.policyPath }) });
 			const baseRef = rawStart.baseRef;
 			if (baseRef !== undefined && !isCanonicalProcessString(baseRef)) return nativeStartRejection("base-ref-invalid");
 			if (baseRef !== undefined && rawStart.committedOnly !== true) return nativeStartRejection("committed-only-required");
@@ -11848,6 +11855,7 @@ async function executeReviewControllerOperationImpl(
 							...(retainedUntrackedSelection === undefined ? {} : { untrackedSelection: retainedUntrackedSelection }),
 							consent: error.consent,
 							...requestContext,
+							...escalateContext,
 							consentDigest,
 						};
 						pendingReviewConsentRegistry.add(pendingReviewConsentSession, pending);
@@ -12781,7 +12789,7 @@ function createGentleAiExtensionForTesting(
 					lineageId: { type: "string" }, lenses: { type: "array", minItems: 1, maxItems: 4, items: { type: "string", enum: ["risk", "resilience", "readability", "reliability"] } },
 					lensesReason: { type: "string" }, requestContextPath: { type: "string" }, untrackedScope: { type: "string", enum: ["exclude", "select"] },
 					intendedUntracked: { type: "array", items: { type: "string" } },
-					escalate: { type: "object", additionalProperties: false, required: ["item", "reason"], description: "Pass the same escalate you named on assess so the run's assessment reflects it and makes review due: {item: integer 1-6 high-risk item, reason: non-empty, at most 500 UTF-8 bytes}. Ignored on resume with lineageId.", properties: { item: { type: "integer", minimum: 1, maximum: 6 }, reason: { type: "string", minLength: 1 } } },
+					escalate: { type: "object", additionalProperties: false, required: ["item", "reason"], description: "Pass the same escalate you named on assess so the run's assessment and START reflect it and make review due: {item: integer 1-6 high-risk item, reason: one line, non-empty, at most 500 UTF-8 bytes}. Ignored on resume with lineageId.", properties: { item: { type: "integer", minimum: 1, maximum: 6 }, reason: { type: "string", minLength: 1 } } },
 				},
 			},
 			executionMode: "sequential",

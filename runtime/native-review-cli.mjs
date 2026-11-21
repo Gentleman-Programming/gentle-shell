@@ -471,6 +471,26 @@ function nativeRequestContextArguments(request                               )  
 	return ["--request-context", request.requestContextPath];
 }
 
+/**
+ * gentle-ai#6203: the agent escalation rides the contracted STATUS preflight
+ * (`--escalate-item/--escalate-reason`) so the provider-issued START carries it;
+ * Pi never appends it to a provider-issued START vector.
+ */
+
+
+
+
+function nativeEscalateArguments(request                         )                    {
+	if (request.escalate === undefined) return [];
+	const escalation = decodeAgentRiskEscalation(request.escalate);
+	return ["--escalate-item", String(escalation.item), "--escalate-reason", escalation.reason];
+}
+
+/** Every value the tokens give `--flag` (separate or `--flag=value` form). */
+function tokenFlagValues(tokens                   , flag        )           {
+	return tokens.flatMap((token, index) => token === flag ? [tokens[index + 1] ?? ""] : token.startsWith(`${flag}=`) ? [token.slice(flag.length + 1)] : []);
+}
+
 
 
 
@@ -1789,13 +1809,15 @@ export class NativeReviewIntegrationError extends Error {
 export class NativeReviewConsentRequiredError extends Error {
 	         consent                       ;
 	         requestContextPath         ;
+	         escalate                      ;
 	         launchAttempted = true;
 	         mutationOutcome = "none";
-	constructor(consent                       , requestContextPath         ) {
+	constructor(consent                       , requestContextPath         , escalate                      ) {
 		super(consent.headline);
 		this.name = "NativeReviewConsentRequiredError";
 		this.consent = consent;
 		this.requestContextPath = requestContextPath;
+		if (escalate !== undefined) this.escalate = escalate;
 	}
 }
 
@@ -1929,6 +1951,12 @@ function consentInvocationArguments(request                                  )  
 	if (request.requestContextPath !== undefined) {
 		const values = arguments_.flatMap((token, index) => token === "--request-context" ? [arguments_[index + 1]] : token.startsWith("--request-context=") ? [token.slice("--request-context=".length)] : []);
 		if (values.length !== 1 || values[0] !== request.requestContextPath) throw new NativeReviewConsentBindingError("consent-invocation-request-context-changed", "Native consent invocation did not retain the requested context file");
+	}
+	if (request.escalate !== undefined) {
+		const escalation = decodeAgentRiskEscalation(request.escalate);
+		const items = tokenFlagValues(arguments_, "--escalate-item");
+		const reasons = tokenFlagValues(arguments_, "--escalate-reason");
+		if (items.length !== 1 || items[0] !== String(escalation.item) || reasons.length !== 1 || reasons[0] !== escalation.reason) throw new NativeReviewConsentBindingError("consent-invocation-escalate-changed", "Native consent invocation did not retain the agent escalation");
 	}
 	if (exactConsentOption(arguments_, "--contract") !== REVIEW_INTEGRATION_CONTRACT) throw new NativeReviewConsentBindingError("consent-invocation-contract-changed", "Native consent invocation contract changed");
 	const providerCwd = exactConsentOption(arguments_, "--cwd");
@@ -2136,6 +2164,7 @@ export class NativeReviewCliV216                            {
 		const statusRequest                            = {
 			cwd: request.cwd,
 			...(request.requestContextPath === undefined ? {} : { requestContextPath: request.requestContextPath }),
+			...(request.escalate === undefined ? {} : { escalate: request.escalate }),
 			projection,
 			...(request.baseRef === undefined ? {} : { baseRef: request.baseRef, committedOnly: true }),
 			...(request.lineageId === undefined ? {} : { lineageId: request.lineageId }),
@@ -2165,6 +2194,12 @@ export class NativeReviewCliV216                            {
 			const values = transitionTokens.flatMap((token, index) => token === "--request-context" ? [transitionTokens[index + 1]] : token.startsWith("--request-context=") ? [token.slice("--request-context=".length)] : []);
 			if (values.length !== 1 || values[0] !== request.requestContextPath) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, false, "native START transition did not retain the requested context file", undefined, false);
 		}
+		if (request.escalate !== undefined) {
+			const escalation = decodeAgentRiskEscalation(request.escalate);
+			const items = tokenFlagValues(transitionTokens, "--escalate-item");
+			const reasons = tokenFlagValues(transitionTokens, "--escalate-reason");
+			if (items.length !== 1 || items[0] !== String(escalation.item) || reasons.length !== 1 || reasons[0] !== escalation.reason) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, false, "native START transition did not retain the agent escalation", undefined, false);
+		}
 		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.START, request.cwd, ["review", "start", ...transitionTokens], true, request.signal);
 		// A negotiated v2 START may answer a consent question (action:
 		// "consent_required") instead of `start/v3` when the provider needs an
@@ -2185,7 +2220,10 @@ export class NativeReviewCliV216                            {
 			if (request.requestContextPath !== undefined) {
 				for (const choice of consent.choices) consentInvocationArguments({ cwd: request.cwd, consent, answer: choice.answer, requestContextPath: request.requestContextPath });
 			}
-			throw new NativeReviewConsentRequiredError(consent, request.requestContextPath);
+			if (request.escalate !== undefined) {
+				for (const choice of consent.choices) consentInvocationArguments({ cwd: request.cwd, consent, answer: choice.answer, escalate: request.escalate });
+			}
+			throw new NativeReviewConsentRequiredError(consent, request.requestContextPath, request.escalate);
 		}
 		const result = decode(NATIVE_REVIEW_OPERATION.START, true, () => decodeReviewStartResponse(execution.body));
 		if (request.lineageId !== undefined && result.lineageId !== request.lineageId) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, true, "native start lineage mismatch");
@@ -2258,6 +2296,7 @@ export class NativeReviewCliV216                            {
 		// Validate locally before discovery; never probe support by sending an
 		// unknown flag or retrying the review without its requested intent.
 		const requestContextArguments = nativeRequestContextArguments(request);
+		const escalateArguments = nativeEscalateArguments(request);
 		if (request.baseRef !== undefined && !isCanonicalProcessString(request.baseRef)) throw new TypeError("Native STATUS baseRef must be a non-empty, trimmed, NUL-free string");
 		if (request.baseRef !== undefined && request.committedOnly !== true) throw new TypeError("Native STATUS baseRef requires explicit committedOnly acknowledgement");
 		if (request.baseRef === undefined && request.committedOnly !== undefined) throw new TypeError("Native STATUS committedOnly requires an explicit baseRef");
@@ -2316,7 +2355,7 @@ export class NativeReviewCliV216                            {
 		// The opt-in rides only this client's own contracted STATUS, never a
 		// provider-issued selection submission. gentle-ai v4.6.0 (the minimum
 		// supported binary) always understands --non-blocking-findings.
-		const statusArguments = submittedTokens === undefined ? [
+		const statusArgumentsWith = (escalation                   ) => submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
 			"--projection", request.projection ?? "workspace",
 			...nativeUntrackedSelectionArguments(selection),
@@ -2325,14 +2364,25 @@ export class NativeReviewCliV216                            {
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			...nativeLensSelectionArguments(request),
 			...requestContextArguments,
+			...escalation,
 			...(request.nonBlockingFindings === true ? ["--non-blocking-findings"] : []),
 			"--next-transition",
-		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments];
-		const execution                      = contextExecutable === undefined
-			? await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal)
-			: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);
-		measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
-		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));
+		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments, ...escalation];
+		const observe = async (statusArguments                   )                          => {
+			const execution                      = contextExecutable === undefined
+				? await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal)
+				: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);
+			measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
+			return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));
+		};
+		const status = await observe(statusArgumentsWith([]));
+		// The provider accepts --escalate-item/--escalate-reason on STATUS only to
+		// preflight a fresh START and refuses them in any other state. So the
+		// escalation never rides the first STATUS: only when that STATUS offers a
+		// fresh START is the same STATUS repeated once with it, and the
+		// provider-issued START tokens it returns are used unmodified.
+		if (escalateArguments.length === 0 || status.nextTransition?.kind !== "execute" || status.nextTransition.execute.operation !== "review.start") return status;
+		return await observe(statusArgumentsWith(escalateArguments));
 	}
 
 	// `review capture-evidence`: the evidence-first correction lifecycle's

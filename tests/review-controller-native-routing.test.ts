@@ -3531,6 +3531,44 @@ test("request context survives unrelated untracked selection and its START conti
  assert.equal(starts[0].requestContextPath, context);
 });
 
+test("START with escalate and eligible untracked files still stops for the selection, then carries the escalate only in the native START", async (t) => {
+ const escalate = { item: 2, reason: "changes the auth boundary" };
+ for (const withEscalate of [false, true]) {
+  const { cwd, eligible, initial, target } = untrackedStopFixture(t);
+  const retained = new Map(), starts: Array<Record<string, unknown>> = [], statuses: Array<Record<string, unknown>> = [];
+  // Like the provider: an escalation is refused on any STATUS that does not offer a fresh START.
+  const native = { targetStatus: async (request: Record<string, unknown>) => {
+    statuses.push(request);
+    const status = "intendedUntrackedSelection" in request ? target : initial;
+    if (request.escalate !== undefined && status.nextTransition?.kind !== "execute") throw new Error("invalid_request: --escalate-item can only preflight a fresh START");
+    return status; },
+   start: async (request: Record<string, unknown>) => { starts.push(request); return { lineageId: "escalated-selected", state: "reviewing", riskLevel: "high", selectedLenses: [], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false, riskReasons: [], raw: {} }; }
+  } as unknown as NativeReviewCli;
+  const run = (parameters: Record<string, unknown>) => __testing.executeReviewControllerOperation(parameters, cwd, native, undefined, undefined, undefined, retained);
+  const stopped = await run({ operation: "start", input: JSON.stringify({ mode: "ordinary", ...(withEscalate ? { escalate } : {}) }) });
+  assert.equal(typeof stopped.selectionBinding, "string", JSON.stringify(stopped));
+  await run({ operation: "select-intended-untracked", selectionBinding: stopped.selectionBinding, intendedUntracked: [eligible] });
+  assert.equal(starts.length, 1);
+  assert.deepEqual(starts[0].escalate, withEscalate ? escalate : undefined);
+  for (const request of statuses) assert.equal("escalate" in request, false, "the host's own STATUS preflights never carry the escalation");
+  if (!withEscalate) assert.equal("escalate" in starts[0]!, false);
+ }
+});
+
+test("START rejects an invalid escalate as native-start-input-invalid before any native call", async (t) => {
+ const { cwd, initial } = untrackedStopFixture(t);
+ let calls = 0;
+ const native = { targetStatus: async () => { calls++; return initial; }, start: async () => { calls++; throw new Error("must not start"); } } as unknown as NativeReviewCli;
+ for (const bad of [{ item: 9, reason: "x" }, { item: 2, reason: "" }, { item: 2, reason: "é".repeat(251) }, { item: 2, reason: "x", extra: 1 }, { item: 2, reason: "a\nb" }]) {
+  const rejected = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify({ mode: "ordinary", escalate: bad }) }, cwd, native);
+  assert.equal(rejected.outcome, "native-start-input-invalid", JSON.stringify(rejected));
+  assert.equal(rejected.status, "blocked");
+  assert.equal(rejected.reason, "escalate-invalid");
+  assert.equal(rejected.mutation_performed, false);
+ }
+ assert.equal(calls, 0);
+});
+
 test("START options survive intended-untracked continuation with and without request context", async t => {
  for (const withContext of [false, true]) for (const selection of ["lenses", "focus"]) for (const includeFile of [false, true]) await t.test(`${selection}, context=${withContext}, include=${includeFile}`, async t => {
   const { cwd, eligible, initial, target } = untrackedStopFixture(t);

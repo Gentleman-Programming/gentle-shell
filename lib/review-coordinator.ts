@@ -258,6 +258,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  const drive = async (): Promise<Body> => {
  let details: Body;
  if (lineage === undefined) {
+  // The same escalate reaches assess and START (never inspect: the provider accepts it only on a fresh-START preflight) so the frozen tier and consent read high.
   const assessInput = input.escalate === undefined ? selectorInput : { input: JSON.stringify({ ...selector, escalate: input.escalate }) };
   const assessment = await invoke("gentle_review", { operation: "assess", ...assessInput });
   if (assessment.reviewDue === false && input.requestContextPath !== undefined) return finish("request-context-requires-fresh-review", assessment);
@@ -295,6 +296,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
     started = true;
     details = await invoke("gentle_review", { operation: "start", input: JSON.stringify({ mode: "ordinary", ...selector,
      ...(input.requestContextPath === undefined ? {} : { requestContextPath: input.requestContextPath }),
+     ...(input.escalate === undefined ? {} : { escalate: input.escalate }),
      ...(input.lenses === undefined ? {} : { lenses: input.lenses, lensesReason: input.lensesReason }) }) });
     if (details.outcome === "native-review-consent-required") return finish("consent-required", details);
     const issued = record(details.result).lineage_id;

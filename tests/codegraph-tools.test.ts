@@ -26,6 +26,7 @@ import codeGraphTools, {
 	findCodeGraphNodeScriptOnPath,
 	isSameDirectory,
 	isWorkspaceProjectRoot,
+	rebuildTargetDirForTest,
 	awaitSearchSync,
 	warmNotice,
 	indexStartNotice,
@@ -1520,6 +1521,51 @@ test("the guard reads a quoted positional target as one shell word", async (t) =
 	);
 	const unterminated = verdict("codegraph init '" + fresh) as { block?: boolean } | undefined;
 	assert.equal(unterminated?.block, true, "an unterminated quote is a form the parser cannot place: it is judged at the caller's indexed checkout");
+});
+
+test("the rebuild target parse keeps a win32 path's separators and reads it as absolute", () => {
+	// Assembled from char codes: backslash literals are corruption-prone in generated source.
+	const backslash = String.fromCharCode(92);
+	const winPath = (...parts: string[]): string => parts.join(backslash);
+	const targetOf = (positional: string) => rebuildTargetDirForTest("codegraph index " + positional, undefined, "win32");
+
+	const drive = winPath("C:", "Users", "me", "proj", "packages", "inner");
+	assert.equal(targetOf(drive), drive, "an unquoted drive-absolute target keeps every separator and is placed without a caller directory");
+	const unc = winPath("", "", "srv", "sh", "p");
+	assert.equal(targetOf(unc), unc, "a UNC target is absolute on its own");
+	const rooted = winPath("", "pkg", "inner");
+	assert.equal(targetOf(rooted), rooted, "a target rooted to the current drive is absolute");
+	assert.equal(targetOf("C:" + "inner"), undefined, "a drive-relative target is not absolute, and no caller directory leaves it unplaceable");
+});
+
+test("the rebuild target parse keeps POSIX escapes and quoted spaces intact on both path flavors", () => {
+	// Assembled from char codes: backslash and quote literals are corruption-prone in source.
+	const backslash = String.fromCharCode(92);
+	const dquote = String.fromCharCode(34);
+	const escapedSpace = "/tmp/a" + backslash + " b/c";
+	assert.equal(
+		rebuildTargetDirForTest("codegraph index " + escapedSpace, undefined, "linux"),
+		"/tmp/a b/c",
+		"POSIX still reads a backslash as an escape: an escaped space keeps the target one word",
+	);
+	const posixQuoted = "/tmp/a b/c";
+	assert.equal(
+		rebuildTargetDirForTest("codegraph init " + dquote + posixQuoted + dquote, undefined, "linux"),
+		posixQuoted,
+		"a double-quoted POSIX path with spaces is one shell word",
+	);
+	const winQuoted = "C:" + backslash + "Program Files" + backslash + "Gentle App";
+	assert.equal(
+		rebuildTargetDirForTest("codegraph init " + dquote + winQuoted + dquote, undefined, "win32"),
+		winQuoted,
+		"a double-quoted Windows path with spaces is one shell word and stays absolute",
+	);
+	const winUnquoted = "C:" + backslash + "Users" + backslash + "me";
+	assert.equal(
+		rebuildTargetDirForTest("codegraph index " + winUnquoted, undefined, "linux"),
+		undefined,
+		"the same unquoted tail parsed as POSIX stays a relative word: the POSIX escape is unchanged",
+	);
 });
 
 test("the tool_call guard judges a rebuild by CodeGraph's own target rules, not the Git root", async (t) => {

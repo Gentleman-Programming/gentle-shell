@@ -355,10 +355,15 @@ export function indexExists(cwd: string): boolean {
  * The shell words of a command tail, quote removal applied: whitespace outside quotes ends a
  * word, quoted stretches stay inside one word, and a backslash outside single quotes makes the
  * next character literal (inside double quotes only before the characters it really escapes).
+ * The path flavor decides whether an unquoted backslash escapes at all: a POSIX shell eats it,
+ * while a Windows path separator is a literal character, so an unquoted drive-absolute target
+ * keeps its separators instead of collapsing into one long name. Quoting and whitespace split
+ * a word identically on both flavors, double quotes included.
  * A quote or backslash left open at the end leaves only the LAST word unterminated — the
  * shell would keep reading it — so every word before it is complete.
  */
-function shellWords(command: string): { words: string[]; unterminated: boolean } {
+function shellWords(command: string, platform: NodeJS.Platform = process.platform): { words: string[]; unterminated: boolean } {
+	const backslashEscapes = platform !== "win32";
 	const words: string[] = [];
 	let word = "";
 	let quote: "'" | '"' | undefined;
@@ -370,7 +375,7 @@ function shellWords(command: string): { words: string[]; unterminated: boolean }
 			escaped = false;
 			continue;
 		}
-		if (char === "\\" && quote === undefined) {
+		if (char === "\\" && backslashEscapes && quote === undefined) {
 			escaped = true;
 			continue;
 		}
@@ -404,18 +409,38 @@ function shellWords(command: string): { words: string[]; unterminated: boolean }
  * first non-flag word can be it. The word is read whole — quotes and escapes keep a path with
  * spaces one argument — and a positional left unterminated by an unclosed quote or backslash
  * is a form this parser cannot place: it falls back to the caller's cwd, keeping the command
- * judged here rather than silently allowed. A caller's cwd this walk could not determine leaves a relative positional equally unplaceable; only an absolute one still pins a target. */
-function rebuildTargetDir(rest: string, cwd: string | undefined): string | undefined {
-	const { words, unterminated } = shellWords(rest);
+ * judged here rather than silently allowed. A caller's cwd this walk could not determine leaves a relative positional equally unplaceable; only an absolute one still pins a target. The path flavor decides what counts as absolute and whether a backslash escapes a character. */
+function rebuildTargetDir(rest: string, cwd: string | undefined, platform: NodeJS.Platform = process.platform): string | undefined {
+	const { words, unterminated } = shellWords(rest, platform);
 	for (let index = 2; index < words.length; index += 1) {
 		const word = words[index];
 		if (word.startsWith("-")) continue;
 		if (unterminated && index === words.length - 1) return cwd;
 		// An absolute positional names its target whatever directory the command runs in; a
 		// relative one is placed by that directory, and no directory leaves it unplaceable.
-		return isAbsolute(word) ? word : cwd === undefined ? undefined : resolve(cwd, word);
+		return isAbsoluteTarget(word, platform) ? word : cwd === undefined ? undefined : resolve(cwd, word);
 	}
 	return cwd;
+}
+
+/**
+ * Whether a parsed positional names an absolute target on the given path flavor, decided from
+ * the word's own spelling rather than the host's node:path — so the guard places a command the
+ * same way whichever platform parses it, and a Windows target is recognized on a POSIX runner.
+ * POSIX holds one root (`/…`); Windows holds a drive-absolute path (`C:\…`, `C:/…`), a path
+ * rooted to the current drive (`\…`, `/…`), and through that same root rule a UNC share
+ * (`\\server\share\…`). A drive-relative `C:…` is not absolute on Windows, exactly as a bare
+ * `…` is not on POSIX. */
+function isAbsoluteTarget(word: string, platform: NodeJS.Platform): boolean {
+	if (platform !== "win32") return word.startsWith("/");
+	return /^[A-Za-z]:[\\/]/.test(word) || /^[\\/]/.test(word);
+}
+
+/** The rebuild target of one command tail with the path flavor named by the caller instead of
+ * read from the host: the seam that pins the Windows parsing rules on a POSIX runner. The
+ * production path is rebuildTargetDir, which reads process.platform the same way. */
+export function rebuildTargetDirForTest(rest: string, cwd: string | undefined, platform: NodeJS.Platform): string | undefined {
+	return rebuildTargetDir(rest, cwd, platform);
 }
 
 /** Whether one `codegraph index|init` command would rebuild an existing index, located the way

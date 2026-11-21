@@ -26,6 +26,7 @@ import {
 	type NativeTargetStatusRequest,
 } from "../lib/native-review-cli.ts";
 import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
+import { capabilitiesV26 } from "./support/capabilities-v26.ts";
 
 const fixture = (name: string): Record<string, unknown> => JSON.parse(
 	readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", name), "utf8"),
@@ -544,7 +545,7 @@ const LENS_SELECTION_UNSUPPORTED_FAILURE = {
 };
 
 function contextClient(responses: QueuedResult[], features = ["start_request_context", "start_options_preflight"], executable = join(process.cwd(), "package.json")) {
- const capabilities = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ const capabilities = capabilitiesV26(JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8")));
  capabilities.executable.sha256 = "sha256:" + createHash("sha256").update(readFileSync(executable)).digest("hex");
  capabilities.features.optional.push(...features.map(name => ({ name, supported: true, requires: [] })));
  const queue = queuedAdapter([{ stdout: JSON.stringify(capabilities) }, ...responses]);
@@ -575,7 +576,7 @@ test("request context invalidates capabilities when executable bytes change", as
  t.after(() => rmSync(directory, { recursive: true, force: true }));
  const executable = join(directory, "native");
  writeFileSync(executable, "first executable");
- const replacementCapabilities = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ const replacementCapabilities = capabilitiesV26(JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8")));
  replacementCapabilities.executable.sha256 = "sha256:" + createHash("sha256").update("replacement executable").digest("hex");
  const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) }, { stdout: JSON.stringify(replacementCapabilities) }], undefined, executable);
  await host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" });
@@ -583,6 +584,19 @@ test("request context invalidates capabilities when executable bytes change", as
  // The old capability result cannot authorize a STATUS with the replacement.
  await assert.rejects(host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
  assert.deepEqual(host.calls.map(call => call.arguments[1]), ["capabilities", "status", "capabilities"]);
+});
+
+test("request context refuses an older capabilities advertisement with the actionable minimum-version error", async () => {
+ const older = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ const executable = join(process.cwd(), "package.json");
+ older.schema = "gentle-ai.review-integration.capabilities/v2.5";
+ older.executable.sha256 = "sha256:" + createHash("sha256").update(readFileSync(executable)).digest("hex");
+ const queue = queuedAdapter([{ stdout: JSON.stringify(older) }]);
+ await assert.rejects(new NativeReviewCliV216(queue.adapter, executable).targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }), (error: any) => {
+  assert.equal(error.code, "version-incompatible");
+  assert.equal(error.message, "gentle-ai native review capabilities/v2.5 is older than the supported v2.6 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override");
+  return true;
+ });
 });
 
 test("request context never caches malformed capability discovery", async () => {

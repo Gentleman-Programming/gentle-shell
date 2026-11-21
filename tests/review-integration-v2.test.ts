@@ -18,10 +18,12 @@ import {
 	decodeReviewStatusV3,
 	decodeReviewTargetedValidationRequestV1,
 } from "../lib/review-integration-v2.ts";
+import { capabilitiesV26 } from "./support/capabilities-v26.ts";
 
 const fixtureRoot = join(process.cwd(), "contracts", "review-integration", "v2", "fixtures");
 const devFixtureRoot = join(process.cwd(), "tests", "fixtures", "devbinary");
 const fixture = <T = unknown>(name: string): T => JSON.parse(readFileSync(join(fixtureRoot, name), "utf8")) as T;
+const capabilitiesFixture = <T = Record<string, unknown>>(): T => capabilitiesV26(fixture<Record<string, unknown>>("capabilities.fixture.json")) as T;
 const devFixture = <T = unknown>(name: string): T => JSON.parse(readFileSync(join(devFixtureRoot, name), "utf8")) as T;
 const executableDigest = "dcc846103b16d365eaeeb9d7f289c23fc4f2897f23def1cb3fe7f05557b64705";
 const digest = `sha256:${"a".repeat(64)}`;
@@ -60,13 +62,13 @@ function assertAdditionalProperty(decoder: Decoder, source: JsonObject, path: re
 }
 
 test("current review integration fixtures decode", () => {
-	assert.equal(decodeReviewCapabilitiesV2(fixture("capabilities.fixture.json"), executableDigest).contract, REVIEW_INTEGRATION_CONTRACT);
+	assert.equal(decodeReviewCapabilitiesV2(capabilitiesFixture(), executableDigest).contract, REVIEW_INTEGRATION_CONTRACT);
 	assert.equal(decodeReviewStartV3(fixture("start.fixture.json")).riskLevel, "high");
 	assert.equal(decodeReviewConsentV2(fixture("consent.fixture.json")).action, "consent_required");
 });
 
 test("capabilities enforce every required top-level and nested property", () => {
-	const source = fixture<JsonObject>("capabilities.fixture.json");
+	const source = capabilitiesFixture<JsonObject>();
 	const decode: Decoder = (value) => decodeReviewCapabilitiesV2(value, executableDigest);
 	assertRequired(decode, source, ["schema", "contract", "protocol", "package", "build", "executable", "operations", "gates", "projections", "schemas", "features", "compatibility"]);
 	assertNestedRequired(decode, source, ["protocol"], ["major", "minor"]);
@@ -78,7 +80,7 @@ test("capabilities enforce every required top-level and nested property", () => 
 });
 
 test("capabilities reject additional properties at every exact object boundary", () => {
-	const source = fixture<JsonObject>("capabilities.fixture.json");
+	const source = capabilitiesFixture<JsonObject>();
 	const decode: Decoder = (value) => decodeReviewCapabilitiesV2(value, executableDigest);
 	for (const path of [[], ["protocol"], ["package"], ["build"], ["executable"], ["features"], ["compatibility"], ["compatibility", "legacy_window"]] as const) {
 		assertAdditionalProperty(decode, source, path);
@@ -86,7 +88,7 @@ test("capabilities reject additional properties at every exact object boundary",
 });
 
 test("capabilities reject an incompatible protocol identity", () => {
-	const source = fixture<JsonObject>("capabilities.fixture.json");
+	const source = capabilitiesFixture<JsonObject>();
 	const decode: Decoder = (value) => decodeReviewCapabilitiesV2(value, executableDigest);
 	const wrongMajor = clone(source);
 	(wrongMajor.protocol as JsonObject).major = 1;
@@ -290,7 +292,7 @@ test("repair execute-without-execution is rejected", () => {
 });
 
 test("capabilities enforce the exact mandatory feature set while accepting a superset of advertised operations", () => {
-	const source = fixture<JsonObject>("capabilities.fixture.json");
+	const source = capabilitiesFixture<JsonObject>();
 	const decode = (value: unknown) => decodeReviewCapabilitiesV2(value, executableDigest);
 	const decoded = decode(source) as { mandatoryFeatures: ReadonlySet<string>; operations: ReadonlySet<string> };
 	assert.equal(decoded.mandatoryFeatures.has("compact_v2_authority"), true);
@@ -316,7 +318,7 @@ test("capabilities enforce the exact mandatory feature set while accepting a sup
 });
 
 test("capabilities gates and projections accept an additive superset beyond the required floor", () => {
-	const source = fixture<JsonObject>("capabilities.fixture.json");
+	const source = capabilitiesFixture<JsonObject>();
 	const decode = (value: unknown) => decodeReviewCapabilitiesV2(value, executableDigest);
 
 	const extraGate = clone(source);
@@ -339,7 +341,7 @@ test("capabilities gates and projections accept an additive superset beyond the 
 });
 
 test("capabilities gates and projections still enforce the required floor", () => {
-	const source = fixture<JsonObject>("capabilities.fixture.json");
+	const source = capabilitiesFixture<JsonObject>();
 	const decode = (value: unknown) => decodeReviewCapabilitiesV2(value, executableDigest);
 
 	const missingGate = clone(source);
@@ -1192,7 +1194,7 @@ test("next_transition.execute.binding stays open, as its schema declares no prop
 });
 
  test("capabilities retain request-context and START preflight features only when supported", () => {
- const source = fixture<any>("capabilities.fixture.json");
+ const source = capabilitiesFixture<any>();
  source.features.optional.push({ name: "start_request_context", supported: true, requires: [] }, { name: "start_options_preflight", supported: false, requires: [] });
  const result = decodeReviewCapabilitiesV2(source, executableDigest);
  assert.equal(result.optionalFeatures.has("start_request_context"), true);

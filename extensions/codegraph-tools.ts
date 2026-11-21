@@ -1352,19 +1352,19 @@ const runCodeGraphCommand: CodeGraphRunner = async (args, options) => {
 const DAEMON_ATTEMPT_TIMEOUT_MS = 30_000;
 
 /** One daemon query attempt: undefined or a miss means "use the CLI path". */
-export type DaemonExplore = (cwd: string, parameters: CodeGraphToolParameters, timeoutMs: number) => Promise<DaemonCallResult | undefined>;
+export type DaemonExplore = (cwd: string, parameters: CodeGraphToolParameters, timeoutMs: number, registryDir?: string) => Promise<DaemonCallResult | undefined>;
 
 /** The daemon's registered MCP tools, with their natural arguments: codegraph_search — the
  * CLI query's socket name; the daemon's dispatch has no codegraph_query case, so that name
  * answers "Unknown tool" and the query could never ride the socket — and codegraph_explore.
  * Both stay callable unlisted, but only these two names are sent. */
-async function queryViaDaemon(cwd: string, parameters: CodeGraphToolParameters, timeoutMs: number): Promise<DaemonCallResult | undefined> {
+async function queryViaDaemon(cwd: string, parameters: CodeGraphToolParameters, timeoutMs: number, registryDir?: string): Promise<DaemonCallResult | undefined> {
 	try {
 		const query = requireQuery(parameters.query);
 		const limit = resolveLimit(parameters.limit);
 		return parameters.operation === CODEGRAPH_OPERATION.QUERY
-			? await exploreViaDaemon(cwd, "codegraph_search", { query, limit }, timeoutMs)
-			: await exploreViaDaemon(cwd, "codegraph_explore", { query, maxFiles: limit }, timeoutMs);
+			? await exploreViaDaemon(cwd, "codegraph_search", { query, limit }, timeoutMs, registryDir)
+			: await exploreViaDaemon(cwd, "codegraph_explore", { query, maxFiles: limit }, timeoutMs, registryDir);
 	} catch {
 		return undefined;
 	}
@@ -1667,7 +1667,7 @@ export function createCodeGraphTool(
 		// silent: the query path is best effort and already falls back to the CLI.
 		warm = (project: string, timeoutMs: number) => {
 			const say = warmNoticeSay;
-			return warmUpDaemon(project, true, timeoutMs).then((warmed) => {
+			return warmUpDaemon(project, true, timeoutMs, registryDir).then((warmed) => {
 				if (!warmed) return false;
 				sayWarmNotice(say, { ok: true }, project);
 				return true;
@@ -1678,16 +1678,17 @@ export function createCodeGraphTool(
 		// answers - one ready line when the daemon is back is the whole message.
 		rewarm = (project: string) => maybeRewarm(project, (daemonProject) => {
 			const say = warmNoticeSay;
-			return warmUpDaemonDetailed(daemonProject, true).then((outcome) => {
+			return warmUpDaemonDetailed(daemonProject, true, undefined, registryDir).then((outcome) => {
 				if (!outcome.ok) return false;
 				sayWarmNotice(say, outcome, project);
 				return true;
 			});
-		}),
+		}, registryDir),
 		syncRun = runCodegraph,
 		gitRun = defaultGitRun,
 		initLock = acquireInitLock,
 		awaitedRetryWarm,
+		registryDir,
 	}: {
 		queryTimeoutMs?: number;
 		/** Caps each daemon attempt and the raced warm-up wait on the query path; the warm itself keeps the full session-start budget. */
@@ -1709,6 +1710,10 @@ export function createCodeGraphTool(
 		 * process.platform, which daemon discovery must keep reading natively — a pinned platform
 		 * would blind the Windows pipe probe to the endpoint it must recognize. */
 		awaitedRetryWarm?: boolean;
+		/** The directory daemon discovery reads the registry from, threaded to every registry read
+		 * this tool drives (daemon attempts, retry and lazy warm-ups, pre-query sync); undefined
+		 * keeps the daemon module's own homedir() default. */
+		registryDir?: string;
 	} = {},
 ) {
 	return {
@@ -1778,14 +1783,14 @@ export function createCodeGraphTool(
 				// One indexExists per query serves the sync gate and the result paths below; a daemon
 				// that answers ok confirms the same fact.
 				const indexed = indexExists(cwd);
-				const syncTriggered = (await raceWithAbort(signal, awaitSearchSync(cwd, ctx, syncRun, { indexed }))) ?? false;
+				const syncTriggered = (await raceWithAbort(signal, awaitSearchSync(cwd, ctx, syncRun, { indexed, registryDir }))) ?? false;
 
 				// A cancellation that landed during the sync wait ends the search here: raceWithAbort
 				// abandons only the WAIT, so evaluating the attempt below would still open a socket and
 				// run a daemon query whose answer nobody waits for. The shared refresh keeps running
 				// for the callers still awaiting it.
 				if (signal?.aborted) return fail(signal.reason ?? new Error("The operation was aborted"), { syncTriggered });
-				const attempt = () => daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, daemonAttemptTimeoutMs));
+				const attempt = () => daemonExplore(cwd, parameters, Math.min(queryTimeoutMs, daemonAttemptTimeoutMs), registryDir);
 				let viaDaemon: DaemonCallResult | undefined;
 				if (Date.now() >= (daemonSkipUntil.get(cwd) ?? 0)) {
 					viaDaemon = await raceWithAbort(signal, attempt()) ?? undefined;

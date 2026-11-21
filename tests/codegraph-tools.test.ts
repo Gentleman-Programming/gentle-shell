@@ -960,23 +960,14 @@ test("the default query path speaks codegraph_search over the socket: the name t
 	await new Promise<void>((resolve) => server.listen(socketPath, () => resolve()));
 	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
 	writeFileSync(join(registryDir, "record.json"), JSON.stringify({ root: cwd, socketPath, startedAt: 1, pid: process.pid }));
-	// The daemon registry is found through homedir(), which follows HOME on POSIX and
-	// USERPROFILE on Windows — both pointed at the fixture home for this test.
-	const previousHome = process.env.HOME;
-	const previousProfile = process.env.USERPROFILE;
-	process.env.HOME = home;
-	process.env.USERPROFILE = home;
-	t.after(() => {
-		if (previousHome === undefined) delete process.env.HOME;
-		else process.env.HOME = previousHome;
-		if (previousProfile === undefined) delete process.env.USERPROFILE;
-		else process.env.USERPROFILE = previousProfile;
-		resetDaemonRegistryMemo();
-	});
+	// The registry dir rides the tool option: a runner that snapshots homedir() at process
+	// start never sees a HOME redirect made inside the test.
+	t.after(() => resetDaemonRegistryMemo());
 	resetDaemonRegistryMemo();
 
 	// daemonExplore left at its default: the production queryViaDaemon is the code under test.
 	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+		registryDir,
 		rewarm: noRewarm,
 		warm: async () => true,
 		syncRun: syncNothing,
@@ -3243,23 +3234,16 @@ test("a query retry that warms a daemon announces the same ready line as the laz
 	await new Promise<void>((resolve) => server.listen(socketPath, () => resolve()));
 	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
 	writeFileSync(join(registryDir, "record.json"), JSON.stringify({ root: cwd, socketPath, startedAt: 1, pid: process.pid }));
-	const previousHome = process.env.HOME;
-	const previousProfile = process.env.USERPROFILE;
-	process.env.HOME = home;
-	process.env.USERPROFILE = home;
-	t.after(() => {
-		if (previousHome === undefined) delete process.env.HOME;
-		else process.env.HOME = previousHome;
-		if (previousProfile === undefined) delete process.env.USERPROFILE;
-		else process.env.USERPROFILE = previousProfile;
-		resetDaemonRegistryMemo();
-	});
+	// The registry dir rides the tool option: a runner that snapshots homedir() at process
+	// start never sees a HOME redirect made inside the test.
+	t.after(() => resetDaemonRegistryMemo());
 	resetDaemonRegistryMemo();
 
 	// The awaited retry flow is pinned through the tool, not process.platform: daemon
 	// discovery must keep the native platform's endpoint probe — a pinned platform would
 	// blind the Windows pipe probe to the fixture it must recognize.
 	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+		registryDir,
 		daemonExplore: async () => ({ status: "unavailable" as const }),
 		rewarm: noRewarm,
 		syncRun: syncNothing,
@@ -3353,23 +3337,16 @@ test("a retry warm-up's ready notice never rides a session that started after it
 	await new Promise<void>((resolve) => server.listen(socketPath, () => resolve()));
 	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
 	writeFileSync(join(registryDir, "record.json"), JSON.stringify({ root: cwd, socketPath, startedAt: 1, pid: process.pid }));
-	const previousHome = process.env.HOME;
-	const previousProfile = process.env.USERPROFILE;
-	process.env.HOME = home;
-	process.env.USERPROFILE = home;
-	t.after(() => {
-		if (previousHome === undefined) delete process.env.HOME;
-		else process.env.HOME = previousHome;
-		if (previousProfile === undefined) delete process.env.USERPROFILE;
-		else process.env.USERPROFILE = previousProfile;
-		resetDaemonRegistryMemo();
-	});
+	// The registry dir rides the tool option: a runner that snapshots homedir() at process
+	// start never sees a HOME redirect made inside the test.
+	t.after(() => resetDaemonRegistryMemo());
 	resetDaemonRegistryMemo();
 
 	// The awaited retry flow is pinned through the tool, not process.platform: daemon
 	// discovery must keep the native platform's endpoint probe — a pinned platform would
 	// blind the Windows pipe probe to the fixture it must recognize.
 	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+		registryDir,
 		daemonExplore: async () => ({ status: "unavailable" as const }),
 		rewarm: noRewarm,
 		syncRun: syncNothing,

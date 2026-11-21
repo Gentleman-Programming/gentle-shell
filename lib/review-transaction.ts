@@ -5,8 +5,6 @@ import { isAbsolute, join, resolve } from "node:path";
 import { ReviewMutationLockV1, type ReviewLockPlatformAdapterV1 } from "./review-lock.ts";
 import { ReviewGraphObjectStoreV1 } from "./review-object-store.ts";
 
-// Pre-graph review authority layout; no longer supported.
-const PRE_GRAPH_LEGACY_ROOTS = ["lineages", "locks", "legacy-evidence", "migration", "migration-operations"] as const;
 import { createReviewEventV1 } from "./review-graph-schema.ts";
 import {
 	resolveRepositoryAuthorityV1,
@@ -62,6 +60,9 @@ import {
 	type JudgmentDayFixInput,
 	type JudgmentDayRejudgmentInput,
 } from "./review-policy-judgment-day.ts";
+
+// Pre-graph review authority layout; no longer supported.
+const PRE_GRAPH_LEGACY_ROOTS = ["lineages", "locks", "legacy-evidence", "migration", "migration-operations"] as const;
 
 export const REVIEW_PHASE = {
 	STARTED: "started",

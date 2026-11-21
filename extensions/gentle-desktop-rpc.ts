@@ -37,6 +37,8 @@ import { DESKTOP_STATS_EVENTS, DESKTOP_STATS_METHODS } from "../lib/desktop-rpc-
 import { DesktopStatsBridge } from "../lib/desktop-stats-service.ts";
 import { DESKTOP_UPDATES_EVENTS, DESKTOP_UPDATES_METHODS } from "../lib/desktop-rpc-updates.ts";
 import { DesktopUpdatesBridge, type UpdateSourcesFactory } from "../lib/desktop-updates-service.ts";
+import { DESKTOP_BACKGROUND_SUBAGENTS_EVENTS, DESKTOP_BACKGROUND_SUBAGENTS_METHODS } from "../lib/desktop-rpc-background-subagents.ts";
+import { DesktopBackgroundSubagentsBridge } from "../lib/desktop-background-subagents-service.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import type { DesktopChangeTimers, DesktopDirectoryWatch } from "../lib/desktop-rpc-config-watch.ts";
 
@@ -107,6 +109,7 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		...(options.updateSources === undefined ? {} : { sources: options.updateSources }),
 		...(options.updateTimeoutMs === undefined ? {} : { timeoutMs: options.updateTimeoutMs }),
 	});
+	const backgroundSubagents = new DesktopBackgroundSubagentsBridge(pi);
 	const domain: DesktopRpcDomain = (method, params) => {
 		const sessionsOutcome = sessionList.handle(method, params, dispatchingRequestId);
 		if (sessionsOutcome !== undefined) return sessionsOutcome;
@@ -135,12 +138,14 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 			if (reviewOutcome !== undefined) return reviewOutcome;
 			const statsOutcome = await stats.handle(method, params);
 			if (statsOutcome !== undefined) return statsOutcome;
+			const backgroundOutcome = await backgroundSubagents.handle(method, params);
+			if (backgroundOutcome !== undefined) return backgroundOutcome;
 			return updates.handle(method, params);
 		})();
 	};
-	const events = [...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS, ...DESKTOP_SESSIONS_EVENTS, ...DESKTOP_CHANGES_EVENTS, ...DESKTOP_REVIEW_EVENTS, ...DESKTOP_STATS_EVENTS, ...DESKTOP_UPDATES_EVENTS];
+	const events = [...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS, ...DESKTOP_SESSIONS_EVENTS, ...DESKTOP_CHANGES_EVENTS, ...DESKTOP_REVIEW_EVENTS, ...DESKTOP_STATS_EVENTS, ...DESKTOP_UPDATES_EVENTS, ...DESKTOP_BACKGROUND_SUBAGENTS_EVENTS];
 	const router = new DesktopRpcRouter(
-		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_PROFILES_METHODS, ...DESKTOP_AGENTS_METHODS, ...DESKTOP_SESSIONS_METHODS, ...DESKTOP_CHANGES_METHODS, ...DESKTOP_REVIEW_METHODS, ...DESKTOP_STATS_METHODS, ...DESKTOP_UPDATES_METHODS],
+		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_PROFILES_METHODS, ...DESKTOP_AGENTS_METHODS, ...DESKTOP_SESSIONS_METHODS, ...DESKTOP_CHANGES_METHODS, ...DESKTOP_REVIEW_METHODS, ...DESKTOP_STATS_METHODS, ...DESKTOP_UPDATES_METHODS, ...DESKTOP_BACKGROUND_SUBAGENTS_METHODS],
 		// `session_snapshot` is advertised only while the feed owner seam is wired.
 		() => (sessions.wired ? [...events, ...DESKTOP_SESSION_EVENTS] : events),
 		() => config.snapshotState(),
@@ -167,6 +172,7 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		review.reset();
 		stats.reset();
 		updates.reset();
+		backgroundSubagents.reset();
 		router.stop();
 		activePublish = undefined;
 		retiredPublish = undefined;
@@ -234,6 +240,7 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		review.reset();
 		stats.reset();
 		updates.reset();
+		backgroundSubagents.reset();
 		router.stop();
 	});
 
@@ -263,6 +270,7 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 			review.attach(ctx);
 			stats.attach(ctx);
 			updates.attach(ctx);
+			backgroundSubagents.attach(ctx);
 			dispatchingRequestId = desktopRequestId(args);
 			let pending: void | Promise<void>;
 			try {

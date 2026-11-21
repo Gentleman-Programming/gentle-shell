@@ -272,15 +272,12 @@ test("updateCodegraphToLatest: each manager updates in its own form on every pla
 		assert.deepEqual(await updateCodegraphToLatest("pnpm-global", pnpm.exec, { platform }), { ok: true });
 		assert.deepEqual(pnpm.calls, [{ command: "pnpm", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS }], `${platform}: the pnpm binary spawns directly`);
 	}
-	const windowsPnpm = execByFirstArg({
-		"where.exe": (args) => (args[0] === "pnpm.cmd" ? ok(["C:", "pnpm", "pnpm.cmd"].join(BS) + "\r\n") : undefined),
-		"pnpm.cmd": () => ok(""),
-	});
+	const windowsPnpm = execByFirstArg({ "pnpm.cmd": () => ok("") });
 	assert.deepEqual(await updateCodegraphToLatest("pnpm-global", windowsPnpm.exec, { platform: "win32" }), { ok: true });
 	assert.deepEqual(windowsPnpm.calls, [
-		{ command: "where.exe", args: ["pnpm.cmd"], timeoutMs: VERSION_TIMEOUT_MS },
+		{ command: "where.exe", args: ["pnpm"], timeoutMs: VERSION_TIMEOUT_MS },
 		{ command: "pnpm.cmd", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS },
-	], "win32 resolves the .cmd shim once, then updates through it");
+	], "win32 probes the bare name first; unanswered, the .cmd spelling stands and runs shell-handled");
 });
 
 test("updateCodegraphToLatest: pnpm-global runs the user-directed update form on every platform", async () => {
@@ -292,8 +289,8 @@ test("updateCodegraphToLatest: pnpm-global runs the user-directed update form on
 	}
 	const windows = execByFirstArg({ "pnpm.cmd": () => ok("") });
 	assert.deepEqual(await updateCodegraphToLatest("pnpm-global", windows.exec, { platform: "win32" }), { ok: true });
-	assert.deepEqual(windows.calls.map((call) => call.command), ["where.exe", "where.exe", "pnpm.cmd"], "when neither probe answers, the .cmd spelling stands and the update runs through it exactly as before");
-	assert.deepEqual(windows.calls[2], { command: "pnpm.cmd", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS });
+	assert.deepEqual(windows.calls.map((call) => call.command), ["where.exe", "pnpm.cmd"], "when the bare-name probe cannot answer, the .cmd spelling stands and the update runs through it exactly as before");
+	assert.deepEqual(windows.calls[1], { command: "pnpm.cmd", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS });
 });
 
 test("updateCodegraphToLatest: an unknown source never spawns an update", async () => {
@@ -680,7 +677,6 @@ test("detectCodegraphInstallSource: a native win32 pnpm executable is resolved a
 	const { exec, calls } = execByFirstArg({
 		"where.exe": (args) => (args[0] === "codegraph"
 			? ok([pnpmBin, "codegraph.cmd"].join(BS) + "\r\n")
-			: args[0] === "pnpm.cmd" ? fail("no batch shim on this PATH")
 			: args[0] === "pnpm" ? ok(native + "\r\n")
 			: undefined),
 		[native]: (args) => (args[0] === "bin" ? ok(pnpmBin + "\n") : undefined),
@@ -689,19 +685,19 @@ test("detectCodegraphInstallSource: a native win32 pnpm executable is resolved a
 	assert.equal(detected.source, "pnpm-global", "a native pnpm entry still proves the pnpm root");
 	const binCall = calls.find((call) => call.args[0] === "bin");
 	assert.equal(binCall?.command, native, "bin -g runs the resolved native entry, not a forced .cmd spelling");
-	assert.deepEqual(calls.map((call) => call.command), ["where.exe", "npm.cmd", "where.exe", "where.exe", native], "the shim, the npm prefix, then the pnpm entry resolution before bin -g");
+	assert.deepEqual(calls.map((call) => call.command), ["where.exe", "npm.cmd", "where.exe", native], "the shim, the npm prefix, then one bare-name probe resolves the native entry before bin -g");
 });
 
 test("updateCodegraphToLatest: a native win32 pnpm executable updates directly", async () => {
 	const native = ["C:", "Users", "admin", "AppData", "Local", "pnpm", "pnpm.exe"].join(BS);
 	const { exec, calls } = execByFirstArg({
-		"where.exe": (args) => (args[0] === "pnpm.cmd" ? fail("no batch shim") : args[0] === "pnpm" ? ok(native + "\r\n") : undefined),
+		"where.exe": (args) => (args[0] === "pnpm" ? ok(native + "\r\n") : undefined),
 		[native]: () => ok(""),
 	});
 	const run = await updateCodegraphToLatest("pnpm-global", exec, { platform: "win32" });
 	assert.deepEqual(run, { ok: true });
-	assert.deepEqual(calls.map((call) => call.command), ["where.exe", "where.exe", native], "pnpm.cmd is probed first, then the native entry, then the update runs through it");
-	assert.deepEqual(calls[2], { command: native, args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS });
+	assert.deepEqual(calls.map((call) => call.command), ["where.exe", native], "one bare-name probe resolves the PATH-first native entry, then the update runs through it");
+	assert.deepEqual(calls[1], { command: native, args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS });
 });
 
 test("ensureCodegraphInstalled: a native win32 pnpm executable installs through it", async () => {
@@ -783,3 +779,198 @@ test("ensureCodegraphInstalled: an ordinary confirmed failure keeps the retry pa
 	clearCodegraphUpdateCaches();
 });
 
+
+test("detectCodegraphInstallSource: win32 PATH order resolves the earlier native pnpm over a later .cmd", async () => {
+	const home = ["C:", "Users", "admin"].join(BS);
+	const standalone = ["C:", "Tools", "pnpm"].join(BS);
+	const native = [standalone, "pnpm.exe"].join(BS);
+	const lateShim = ["C:", "Users", "admin", "AppData", "Roaming", "npm", "pnpm.cmd"].join(BS);
+	const { exec, calls } = execByFirstArg({
+		"where.exe": (args) => (args[0] === "codegraph"
+			? ok([standalone, "codegraph.cmd"].join(BS) + "\r\n")
+			: args[0] === "pnpm"
+				? ok(native + "\r\n" + lateShim + "\r\n")
+				: ok(lateShim + "\r\n")),
+		"npm.cmd": () => fail("prefix unavailable"),
+		[native]: (args) => (args[0] === "bin" ? ok(standalone + "\n") : undefined),
+		"pnpm.cmd": () => fail("the later directory's shim must never run"),
+	});
+	const detected = await detectCodegraphInstallSource(exec, { platform: "win32", home });
+	assert.equal(detected.source, "pnpm-global", "the effective entry — the earlier PATH directory's native pnpm — proves the pnpm root");
+	const binCall = calls.find((call) => call.args[0] === "bin");
+	assert.equal(binCall?.command, native, "bin -g runs the PATH-first native entry, not the later shim");
+	assert.ok(!calls.some((call) => call.command === "pnpm.cmd"), "the later directory's shim never spawns");
+});
+
+test("updateCodegraphToLatest: win32 PATH order runs the first pnpm entry, never a later shim", async () => {
+	const standalone = ["C:", "Tools", "pnpm"].join(BS);
+	const native = [standalone, "pnpm.exe"].join(BS);
+	const lateShim = ["C:", "Users", "admin", "AppData", "Roaming", "npm", "pnpm.cmd"].join(BS);
+	const { exec, calls } = execByFirstArg({
+		"where.exe": (args) => (args[0] === "pnpm"
+			? ok(native + "\r\n" + lateShim + "\r\n")
+			: ok(lateShim + "\r\n")),
+		[native]: () => ok(""),
+		"pnpm.cmd": () => fail("the later directory's shim must never run"),
+	});
+	const run = await updateCodegraphToLatest("pnpm-global", exec, { platform: "win32" });
+	assert.deepEqual(run, { ok: true });
+	assert.deepEqual(calls, [
+		{ command: "where.exe", args: ["pnpm"], timeoutMs: VERSION_TIMEOUT_MS },
+		{ command: native, args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS },
+	], "one bare-name probe resolves the PATH-order entry and the update runs through it alone");
+});
+
+test("detectCodegraphInstallSource: a PATH-order .cmd hit runs through its full path", async () => {
+	const home = ["C:", "Users", "admin"].join(BS);
+	const pnpmBin = ["C:", "Users", "admin", "AppData", "Local", "pnpm"].join(BS);
+	const shim = [pnpmBin, "pnpm.cmd"].join(BS);
+	const { exec, calls } = execByFirstArg({
+		"where.exe": (args) => (args[0] === "codegraph"
+			? ok([pnpmBin, "codegraph.cmd"].join(BS) + "\r\n")
+			: ok(shim + "\r\n")),
+		"npm.cmd": () => fail("prefix unavailable"),
+		[shim]: (args) => (args[0] === "bin" ? ok(pnpmBin + "\n") : undefined),
+		"pnpm.cmd": () => fail("a bare spelling would bypass the selected entry"),
+	});
+	const detected = await detectCodegraphInstallSource(exec, { platform: "win32", home });
+	assert.equal(detected.source, "pnpm-global");
+	const binCall = calls.find((call) => call.args[0] === "bin");
+	assert.equal(binCall?.command, shim, "bin -g runs the selected .cmd entry by its full path — the spelling the shell-handled spawn takes");
+});
+
+test("runCodegraphUpdateCheck: a deferred fallback transition settles on the next pass and reports from/to", async () => {
+	clearCodegraphUpdateCaches();
+	const home = "/Users/tester";
+	let binary = "codegraph 1.6.3\n";
+	const { exec, calls } = execByFirstArg({
+		codegraph: () => ok(binary),
+		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : undefined),
+		which: () => ok(home + "/.bun/bin/codegraph\n"),
+		bun: (args) => {
+			// The exact-version install's worker replaces the binary and then outlives the
+			// timeout's teardown proof: the transition lands only after the tree settles.
+			if (args[0] === "update") return fail("exited 1");
+			binary = "codegraph 1.6.4\n";
+			return { ...fail("timed out"), teardownUnconfirmed: true };
+		},
+	});
+	const deferred = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
+	assert.equal(deferred.ran, false, "the pass beside a possibly-surviving installer stays silent");
+	const settled = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
+	assert.deepEqual(settled, { ran: true, version: "1.6.3", from: "1.6.3", to: "1.6.4" }, "the next pass reports the transition the deferred installer completed");
+	assert.deepEqual(calls.slice(5).map((call) => call.command), ["codegraph"], "the settle re-probe reads the binary only — no installer, no registry call (memoized)");
+	clearCodegraphUpdateCaches();
+});
+
+test("runCodegraphUpdateCheck: a deferred update-teardown transition settles on the next pass too", async () => {
+	clearCodegraphUpdateCaches();
+	const home = "/Users/tester";
+	let binary = "codegraph 1.6.3\n";
+	const { exec, calls } = execByFirstArg({
+		codegraph: () => ok(binary),
+		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : undefined),
+		which: () => ok(home + "/.bun/bin/codegraph\n"),
+		bun: () => {
+			binary = "codegraph 1.6.4\n";
+			return { ...fail("timed out"), teardownUnconfirmed: true };
+		},
+	});
+	const deferred = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
+	assert.equal(deferred.ran, false, "no fallback install may race the possibly-surviving update tree");
+	const settled = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
+	assert.deepEqual(settled, { ran: true, version: "1.6.3", from: "1.6.3", to: "1.6.4" }, "an update-form timeout recovers exactly like the fallback's");
+	assert.ok(!calls.slice(4).some((call) => call.command === "bun"), "the settle path starts no further manager command");
+	clearCodegraphUpdateCaches();
+});
+
+test("ensureCodegraphLatest: a deferred transition is not memoized away — later passes re-probe and report", async () => {
+	clearCodegraphUpdateCaches();
+	const home = "/Users/tester";
+	let binary = "codegraph 1.6.3\n";
+	let probes = 0;
+	const { exec } = execByFirstArg({
+		codegraph: () => {
+			probes += 1;
+			return ok(binary);
+		},
+		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : undefined),
+		which: () => ok(home + "/.bun/bin/codegraph\n"),
+		bun: (args) => {
+			if (args[0] === "update") return fail("exited 1");
+			binary = "codegraph 1.6.4\n";
+			return { ...fail("timed out"), teardownUnconfirmed: true };
+		},
+	});
+	const deferred = await ensureCodegraphLatest(exec, { platform: "darwin", home });
+	assert.equal(deferred.ran, false, "the deferred pass suppresses the rebuild beside the possibly-surviving installer");
+	const settled = await ensureCodegraphLatest(exec, { platform: "darwin", home });
+	assert.deepEqual(settled, { ran: true, version: "1.6.3", from: "1.6.3", to: "1.6.4" }, "the memo no longer buries the transition: the next pass observes the settled binary");
+	assert.equal(probes, 2, "one version probe per check: the deferred pass and its settle re-probe");
+	const replay = await ensureCodegraphLatest(exec, { platform: "darwin", home });
+	assert.equal(replay, settled, "the settled transition replays to every later pass: readiness's rebuild guard keys on it");
+	assert.equal(probes, 2, "the settled outcome memoizes like any other: no third probe");
+	clearCodegraphUpdateCaches();
+});
+
+test("ensureCodegraphLatest: an unsettled transition keeps re-probing and never starts an installer", async () => {
+	clearCodegraphUpdateCaches();
+	const home = "/Users/tester";
+	let probes = 0;
+	const { exec, calls } = execByFirstArg({
+		codegraph: () => {
+			probes += 1;
+			return ok("codegraph 1.6.3\n");
+		},
+		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : undefined),
+		which: () => ok(home + "/.bun/bin/codegraph\n"),
+		bun: (args) => (args[0] === "update" ? fail("exited 1") : { ...fail("timed out"), teardownUnconfirmed: true }),
+	});
+	const first = await ensureCodegraphLatest(exec, { platform: "darwin", home });
+	assert.equal(first.ran, false);
+	assert.match(first.reason ?? "", /could not be confirmed/);
+	const second = await ensureCodegraphLatest(exec, { platform: "darwin", home });
+	assert.equal(second.ran, false, "a binary the deferred installer never reached stays unreported");
+	assert.match(second.reason ?? "", /in flight/, "the reason says the deferred update has not settled");
+	assert.equal(probes, 2, "the unresolved outcome is not memoized: the next pass re-probed");
+	const third = await ensureCodegraphLatest(exec, { platform: "darwin", home });
+	assert.equal(third.ran, false);
+	assert.equal(probes, 3, "each later pass re-probes until the binary settles");
+	assert.ok(!calls.slice(5).some((call) => call.command === "bun"), "no manager command ever runs again beside the unresolved tree");
+	clearCodegraphUpdateCaches();
+});
+
+test("defaultExec: a confirmed group exit carries no unconfirmed-teardown flag", { timeout: 30_000 }, async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX process-group teardown harness");
+	const scratch = mkdtempSync(join(tmpdir(), "codegraph-teardown-clean-"));
+	try {
+		const workerPidFile = join(scratch, "worker.pid");
+		// No TERM trap: the worker obeys the timeout's SIGTERM and dies with the group, so the
+		// group empties and the teardown confirms — the control that earns the flag's absence.
+		const leaderScript = [
+			"sh -c \"exec sleep 5\" > /dev/null 2>&1 < /dev/null &",
+			`echo $! > "${workerPidFile}"`,
+			"wait",
+		].join("\n");
+		const result = await defaultExec("sh", ["-c", leaderScript], 500);
+		const workerPid = Number.parseInt(readFileSync(workerPidFile, "utf8").trim(), 10);
+		assert.ok(Number.isInteger(workerPid) && workerPid > 0, "the leader records its worker before waiting");
+		let workerAlive = true;
+		try {
+			process.kill(workerPid, 0);
+		} catch {
+			workerAlive = false;
+		}
+		assert.equal(workerAlive, false, "the control's group really disappeared");
+		assert.equal(result.ok, false, "a timed-out run is still a failure");
+		assert.equal(result.teardownUnconfirmed, undefined, "a confirmed group exit carries no flag: a later installer may start");
+	} finally {
+		try {
+			const pid = Number.parseInt(readFileSync(join(scratch, "worker.pid"), "utf8").trim(), 10);
+			if (Number.isInteger(pid) && pid > 0) {
+				try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+			}
+		} catch { /* no pid file: nothing left to clean */ }
+		rmSync(scratch, { recursive: true, force: true });
+	}
+});

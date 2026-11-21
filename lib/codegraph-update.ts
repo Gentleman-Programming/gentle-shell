@@ -353,19 +353,18 @@ function npmCommand(platform: NodeJS.Platform): string {
 	return platform === "win32" ? "npm.cmd" : "npm";
 }
 
-/** pnpm's runnable entry for this PATH. POSIX always runs the bare "pnpm". On win32 pnpm
- * ships either as npm's "pnpm.cmd" batch shim or as its own native executable with no
- * ".cmd" beside it (pnpm's standalone installer): the ".cmd" spelling is confirmed through
- * where.exe first and runs through the shell-handled spawn, else the first "where.exe
- * pnpm" hit — a native executable the plain spawn runs directly. When neither probe
- * answers, the ".cmd" spelling stands and the run fails exactly as before. */
+/** pnpm's runnable entry for this PATH. POSIX always runs the bare "pnpm". On win32 the
+ * bare-name probe decides: where.exe resolves "pnpm" the way a shell would — every PATHEXT
+ * extension, PATH directories in order — so its first hit is the entry a command line
+ * actually runs, and an earlier directory's pnpm.exe wins over a later directory's
+ * pnpm.cmd, which a shim-only probe could never see. The selected entry runs as itself: a
+ * ".cmd" path through the shell-handled spawn, a native executable directly. When the bare
+ * probe cannot answer, the ".cmd" spelling stands and the run fails exactly as before. */
 async function resolvePnpmCommand(exec: BoundedExec, platform: NodeJS.Platform): Promise<string> {
 	if (platform !== "win32") return "pnpm";
-	const cmdShim = await exec("where.exe", ["pnpm.cmd"], VERSION_TIMEOUT_MS);
-	if (cmdShim.ok) return "pnpm.cmd";
-	const native = await exec("where.exe", ["pnpm"], VERSION_TIMEOUT_MS);
-	if (native.ok) {
-		const entry = native.stdout.trim().split(/\r?\n/)[0]?.trim();
+	const effective = await exec("where.exe", ["pnpm"], VERSION_TIMEOUT_MS);
+	if (effective.ok) {
+		const entry = effective.stdout.trim().split(/\r?\n/)[0]?.trim();
 		if (entry !== undefined && entry.length > 0) return entry;
 	}
 	return "pnpm.cmd";
@@ -491,15 +490,23 @@ export interface CodegraphUpdateCheck {
 	reason?: string;
 }
 
-/** The process-lifetime memo of the whole update check: one check per process, shared outcome. */
+/** The process-lifetime memo of the whole update check: one check per process, shared
+ * outcome — except while a deferred transition is unresolved, when the memo drops after
+ * each pass so the next pass re-probes (see ensureCodegraphLatest). */
 let checkMemo: Promise<CodegraphUpdateCheck> | undefined;
 
-/** Drops the process-lifetime memos (the registry lookup, the whole-check memo, and any
- * settled fresh-install attempt's slot); tests only. */
+/** The version a timed-out update started from, held while its possibly-surviving installer
+ * runs: later passes re-probe the binary against it — never starting another installer —
+ * and the first observed change reports to readiness as the update's transition. */
+let pendingUpdateFrom: string | undefined;
+
+/** Drops the process-lifetime memos (the registry lookup, the whole-check memo, any settled
+ * fresh-install attempt's slot, and any deferred transition); tests only. */
 export function clearCodegraphUpdateCaches(): void {
 	latestMemo = undefined;
 	checkMemo = undefined;
 	installMemo = undefined;
+	pendingUpdateFrom = undefined;
 }
 
 /**
@@ -512,6 +519,26 @@ export function clearCodegraphUpdateCaches(): void {
 export async function runCodegraphUpdateCheck(exec: BoundedExec = defaultExec, opts: { platform?: NodeJS.Platform; home?: string } = {}): Promise<CodegraphUpdateCheck> {
 	const platform = opts.platform ?? process.platform;
 	const home = opts.home ?? homedir();
+	// A transition deferred by an unconfirmed teardown settles on a later pass: the binary is
+	// re-probed — no installer may start beside the tree whose exit was never confirmed — and
+	// the first observed change reports to readiness exactly like a check that ran the update.
+	if (pendingUpdateFrom !== undefined) {
+		const now = await installedCodegraphVersion(exec);
+		if (now !== undefined && now !== pendingUpdateFrom) {
+			const from = pendingUpdateFrom;
+			pendingUpdateFrom = undefined;
+			const latest = await latestCodegraphVersion(exec, platform);
+			if (latest === undefined || now === latest) return { ran: true, version: from, from, to: now };
+			return { ran: true, version: from, from, to: now, reason: `the deferred update settled at ${now}, not the registry latest ${latest}` };
+		}
+		return {
+			ran: false,
+			version: now ?? pendingUpdateFrom,
+			reason: now === undefined
+				? "a deferred codegraph update is still in flight; the binary version is unavailable"
+				: `a deferred codegraph update is still in flight; the binary still reports ${now}`,
+		};
+	}
 	const installed = await installedCodegraphVersion(exec);
 	if (installed === undefined) return { ran: false, reason: "the running codegraph version is unavailable; the update check was skipped" };
 	const latest = await latestCodegraphVersion(exec, platform);
@@ -528,6 +555,7 @@ export async function runCodegraphUpdateCheck(exec: BoundedExec = defaultExec, o
 	// by the fallback install in the same pass: a surviving installer may still be mutating
 	// the global package underneath.
 	if (update.teardownUnconfirmed) {
+		pendingUpdateFrom = installed;
 		return { ran: false, version: installed, reason: "the timed-out update's process tree could not be confirmed gone; the exact-version fallback was skipped" };
 	}
 	// The manager's own update form can exit 0 without changing anything (pnpm 12 answers
@@ -539,6 +567,7 @@ export async function runCodegraphUpdateCheck(exec: BoundedExec = defaultExec, o
 	// readiness must never move the old index beside it — a later check, with the tree
 	// confirmed gone, reports what the binary actually settled at.
 	if (fallback.teardownUnconfirmed) {
+		pendingUpdateFrom = installed;
 		return { ran: false, version: installed, reason: "the timed-out exact-version install's process tree could not be confirmed gone; the observed binary transition is deferred to a later check" };
 	}
 	// A nonzero exit does not prove the executable unchanged — the first attempt can replace
@@ -570,12 +599,23 @@ export async function runCodegraphUpdateCheck(exec: BoundedExec = defaultExec, o
 /**
  * The once-per-process entry the session-start readiness seam calls: the first call runs the
  * check and every later call shares its outcome — one `codegraph --version`, one registry
- * lookup, and at most one update per process. A check that throws (a rejecting exec) resolves
- * { ran: false }, never rejecting: readiness must never fail over the updater.
+ * lookup, and at most one update per process. The one exception is a transition deferred by
+ * an unconfirmed teardown: its outcome is shared only with concurrent callers, and later
+ * calls re-probe the binary until the deferred change settles and reports. A check that
+ * throws (a rejecting exec) resolves { ran: false }, never rejecting: readiness must never
+ * fail over the updater.
  */
 export function ensureCodegraphLatest(exec: BoundedExec = defaultExec, opts: { platform?: NodeJS.Platform; home?: string } = {}): Promise<CodegraphUpdateCheck> {
 	if (checkMemo === undefined) {
-		checkMemo = runCodegraphUpdateCheck(exec, opts).catch((): CodegraphUpdateCheck => ({ ran: false, reason: "the codegraph update check failed unexpectedly" }));
+		checkMemo = runCodegraphUpdateCheck(exec, opts)
+			.catch((): CodegraphUpdateCheck => ({ ran: false, reason: "the codegraph update check failed unexpectedly" }))
+			.then((outcome) => {
+				// A deferred transition is not this process's final answer: while it stays
+				// unresolved the memo drops after each pass, so a later readiness pass re-probes
+				// the binary and reports the change the deferred installer eventually made.
+				if (pendingUpdateFrom !== undefined) checkMemo = undefined;
+				return outcome;
+			});
 	}
 	return checkMemo;
 }

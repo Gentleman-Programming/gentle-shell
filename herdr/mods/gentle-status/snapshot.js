@@ -305,8 +305,10 @@ export function pickedKey() {
 }
 
 // The session the window is about: the picked one (see selectSession), else the focused Gentle
-// Shell terminal's, else one in the shown tab, else the last one shown (`last`, a session key),
-// else a Herdr one, else the newest snapshot. Mirrors targetTerminal for Herdr terminals.
+// Shell terminal's, else one in the shown tab. A shown Herdr tab with no Gentle Shell session shows
+// none: a Herdr tab or space was chosen, so the window follows it instead of keeping another
+// session. Only with no focused tab: the last one shown (`last`, a session key), else a Herdr one,
+// else the newest snapshot.
 export function targetSession(feeds, last) {
   const all = allSessions(feeds);
   const picked = pickedKey();
@@ -315,8 +317,9 @@ export function targetSession(feeds, last) {
   const f = focused();
   const byAddr = (a) => (a ? all.find((s) => s.terminal?.address === a) : undefined);
   const inTab = agents().filter((a) => isGentle(a.app) && a.tab === f?.tab);
-  return byAddr(f?.agent) ?? byAddr(f?.terminal) ?? byAddr(inTab[0]?.address)
-    ?? (last ? all.find((s) => s.key === last) : undefined) ?? all.find((s) => s.terminal) ?? all[0] ?? null;
+  const here = byAddr(f?.agent) ?? byAddr(f?.terminal) ?? byAddr(inTab[0]?.address);
+  if (here || f?.tab) return here ?? null;
+  return (last ? all.find((s) => s.key === last) : undefined) ?? all.find((s) => s.terminal) ?? all[0] ?? null;
 }
 
 // The Gentle Shell terminal the window is about: the focused one, else one in the shown tab,

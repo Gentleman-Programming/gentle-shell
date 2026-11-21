@@ -8149,6 +8149,18 @@ function nativeStatusFailed(operation: ReviewControllerOperation, error: unknown
 	const contextRefusal = nativeRequestContextRefusal(operation, error, facts);
 	if (contextRefusal !== undefined) return contextRefusal;
 	const cliError = facts.cli;
+	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.LEGACY_AUTHORITY_UNSUPPORTED) {
+		return {
+			operation,
+			status: "blocked",
+			outcome: "native-status-legacy-authority-unsupported",
+			mutation_performed: false,
+			inventory_complete: false,
+			reason: error instanceof Error ? error.message : "legacy-v1 review authority is no longer supported",
+			next_action: "store-reset-and-start-new-review",
+			remediation_command: "gentle-ai review store-reset --cwd <repo>",
+		};
+	}
 	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE) return nativeStatusUnsupported(operation, nativeContractTooOldReason(error, facts));
 	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING) return nativeStatusPackageBinaryMissing(operation, cliError.diagnostics);
 	const timedOut = nativeReadOnlyStatusTimedOut(operation, error, facts);
@@ -11338,10 +11350,7 @@ async function executeReviewControllerOperationImpl(
 		}
 		clearRetainedNativeStatusSelectionsOnTerminal(retainedUntrackedSelections, defaultCwd, status.authority?.lineageId, status.authority?.state); retainNativeCaptureRoutes(retainedUntrackedSelections, defaultCwd, status, frozenTarget?.committedOnly === true ? nativeCommittedRangeSelector(frozenTarget) : undefined);
 		if (status.authority?.version === "compact-v2") return { operation: parameters.operation, repaired: false, compact_authority: "immutable-untouched", status: mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined) };
-		if (status.authority?.version !== "legacy-v1") return mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
-		const store = ReviewTransactionStore.forRepository(defaultCwd);
-		store.repairCurrentAuthority();
-		return { operation: parameters.operation, repaired: true };
+		return mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.ACKNOWLEDGE_APPROVED) {
 		const controllerOnlyInput = ["changeName", "idempotencyKey", "transition", "input", "outputPath", "inputPath", "operationId", "lineageIds", "acknowledgeUntrustedBundleSource"]

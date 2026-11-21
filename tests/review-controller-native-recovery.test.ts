@@ -695,3 +695,18 @@ test("removed recovery verbs are refused as unsupported operations, never routed
 	for (const operation of ["reset", "recover", "abandon", "repair"]) assert.ok(published.includes(operation), `${operation} must remain published`);
 	for (const operation of ["recover-lock", "quarantine-legacy", "reconcile-authority", "repair-legacy-alias"]) assert.ok(!published.includes(operation), `${operation} must not be published`);
 });
+
+test("REPAIR surfaces the single legacy-v1 store-reset message and never repairs", async () => {
+	const { NativeReviewCliError, NATIVE_REVIEW_ERROR_CODE, NATIVE_REVIEW_OPERATION } = await import("../lib/native-review-cli.ts");
+	const { LEGACY_V1_AUTHORITY_REFUSAL } = await import("../lib/review-integration-v2.ts");
+	const native = {
+		targetStatus: async () => { throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.LEGACY_AUTHORITY_UNSUPPORTED, NATIVE_REVIEW_OPERATION.STATUS, true, false, LEGACY_V1_AUTHORITY_REFUSAL); },
+	} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli;
+	const result = await __testing.executeReviewControllerOperation({ operation: "repair", lineageId: "legacy" }, process.cwd(), native, undefined, undefined, interactiveContext(true));
+	assert.equal(result.status, "blocked");
+	assert.equal(result.outcome, "native-status-legacy-authority-unsupported");
+	assert.equal(result.reason, "legacy-v1 review authority is no longer supported; run: gentle-ai review store-reset --cwd <repo> (or remove the legacy store) and start a new review");
+	assert.equal(result.remediation_command, "gentle-ai review store-reset --cwd <repo>");
+	assert.equal(result.mutation_performed, false);
+	assert.equal(result.repaired, undefined);
+});

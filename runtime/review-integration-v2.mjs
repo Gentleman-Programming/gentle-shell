@@ -48,6 +48,9 @@ export const REVIEW_PROJECTION_KIND = {
 }         ;
 
 
+/** Legacy review authority is no longer supported; status refuses it with this single actionable message. */
+export const LEGACY_V1_AUTHORITY_REFUSAL = "legacy-v1 review authority is no longer supported; run: gentle-ai review store-reset --cwd <repo> (or remove the legacy store) and start a new review";
+
 export const REVIEW_AUTHORITY_VERSION = {
 	COMPACT_V2: "compact-v2",
 	LEGACY_V1: "legacy-v1",
@@ -120,6 +123,14 @@ export class ReviewNativeContractTooOldError extends TypeError {
 	constructor(message        ) {
 		super(message);
 		this.name = "ReviewNativeContractTooOldError";
+	}
+}
+
+// Distinct from a schema mismatch so the single store-reset message survives to the tool result.
+export class ReviewLegacyAuthorityUnsupportedError extends TypeError {
+	constructor(message        ) {
+		super(message);
+		this.name = "ReviewLegacyAuthorityUnsupportedError";
 	}
 }
 
@@ -2032,8 +2043,9 @@ export function decodeReviewStatusV3(value         )                 {
 	let authority                                     ;
 	if (body.authority !== undefined) {
 		const source = exactRecord(body.authority, "status.authority", ["version", "lineage_id", "state", "generation", "revision"]);
+		if (source.version === REVIEW_AUTHORITY_VERSION.LEGACY_V1) throw new ReviewLegacyAuthorityUnsupportedError(LEGACY_V1_AUTHORITY_REFUSAL);
 		authority = {
-			version: enumeration(source.version, Object.values(REVIEW_AUTHORITY_VERSION), "status.authority.version"),
+			version: enumeration(source.version, [REVIEW_AUTHORITY_VERSION.COMPACT_V2]         , "status.authority.version"),
 			lineageId: lineage(source.lineage_id, "status.authority.lineage_id"),
 			state: nonempty(source.state, "status.authority.state"),
 			generation: integer(source.generation, "status.authority.generation", 1),
@@ -2056,10 +2068,6 @@ export function decodeReviewStatusV3(value         )                 {
 		};
 	}
 	if (authority?.version === REVIEW_AUTHORITY_VERSION.COMPACT_V2 && frozen === undefined) throw new TypeError("compact-v2 status requires frozen metadata");
-	if (authority?.version === REVIEW_AUTHORITY_VERSION.LEGACY_V1 && (frozen !== undefined || body.authority_target_identity !== undefined)) throw new TypeError("legacy status cannot expose frozen metadata or authority_target_identity");
-	if (authority?.version === REVIEW_AUTHORITY_VERSION.LEGACY_V1 && receipt !== undefined && receipt.status !== "expected_missing" && receipt.status !== "present") {
-		throw new TypeError("legacy status receipt is incompatible");
-	}
 
 	const action = enumeration(body.action, STATUS_ACTIONS, "status.action");
 	const actionDisposition = body.action_disposition === undefined ? undefined : enumeration(body.action_disposition, Object.values(REVIEW_STATUS_ACTION_DISPOSITION), "status.action_disposition");

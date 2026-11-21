@@ -148,3 +148,9 @@ test("gentle_review assess: an escalation over a native high is what adds the ve
 	assert.equal(plan.agentEscalation.applied, true, "without the escalation the plan would be medium");
 	assert.equal(plan.plan.independentVerifier, true);
 });
+
+test("decodeAgentRiskEscalation measures the reason in UTF-8 bytes, as native assess does", () => {
+	assert.equal(decodeAgentRiskEscalation({ item: 4, reason: "á".repeat(250) }).reason.length, 250);
+	assert.throws(() => decodeAgentRiskEscalation({ item: 4, reason: "á".repeat(251) }), /at most 500 UTF-8 bytes/);
+	assert.throws(() => decodeAgentRiskEscalation({ item: 4, reason: "x".repeat(501) }), /at most 500 UTF-8 bytes/);
+});

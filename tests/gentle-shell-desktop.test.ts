@@ -987,3 +987,40 @@ test("--status treats a trailing separator as the same agent home", async (t) =>
 	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: `${agent}/` } }), 0);
 	assert.equal(f.out.some((entry) => entry.startsWith("  Roots: ")), false, f.out.join("\n"));
 });
+
+test("--status stops at the eight roots the mods read", async (t) => {
+	const f = fixture(t);
+	const agent = join(f.home, "agent");
+	const custom = Array.from({ length: 7 }, (_, i) => join(f.home, `root-${i}`));
+	mkdirSync(f.herdrHome, { recursive: true });
+	writeFileSync(join(f.herdrHome, "gentle-shell-roots.json"), `${JSON.stringify({ roots: [...custom, agent] }, null, 2)}\n`);
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	// Two defaults plus six customs fill the eight slots: adding the ninth does not help.
+	assert.match(line ?? "", /the first 8 roots are taken/);
+	assert.match(line ?? "", /move it into the first 8|remove an earlier one/);
+});
+
+test("--status ignores non-absolute entries when counting the limit", async (t) => {
+	const f = fixture(t);
+	const agent = join(f.home, "agent");
+	mkdirSync(f.herdrHome, { recursive: true });
+	writeFileSync(join(f.herdrHome, "gentle-shell-roots.json"), `${JSON.stringify({ roots: ["relative/one", "  ", agent] })}\n`);
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	assert.match(line ?? "", /listed in .*gentle-shell-roots\.json/);
+});
+
+test("--status escapes the suggested entry as JSON", async (t) => {
+	const f = fixture(t);
+	const agent = "C:\\\\Users\\\\Ada\\\\agent";
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	assert.ok((line ?? "").includes('["C:\\\\\\\\Users\\\\\\\\Ada\\\\\\\\agent"]'), line ?? "");
+});

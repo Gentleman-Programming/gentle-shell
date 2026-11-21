@@ -1129,6 +1129,7 @@ async function openDesktop(ctx                , paths              , app        
 const trimSlashes = (path        )         => path.replace(/[\\/]+$/, "") || path;
 // snapshot.js keeps at most eight agent homes after the two defaults.
 const MOD_ROOTS = 8;
+const isAbsolutePath = (path        )          => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
 const knownRoots = (home        )           => [join(home, ".gentle-shell", "agent"), join(home, ".pi", "agent")];
 
 // The agent home this install runs its sessions in: an explicit override, else the
@@ -1170,8 +1171,9 @@ export function feedStatusLine(agentDir        , now         = Date.now())      
 // shows "No Gentle Shell session here" until that home is listed. Report it, read-only.
 export function rootsStatusLine(paths              , home        , agentDir        )                     {
 	if (knownRoots(home).includes(trimSlashes(agentDir))) return undefined;
-	// The mods read this exact path: they ignore HERDR_APP_HOME and XDG_CONFIG_HOME, and they stop
-	// at MAX_ROOTS after the two defaults, so a root past that is listed but never read.
+	// The mods read this exact path: they ignore HERDR_APP_HOME and XDG_CONFIG_HOME. They also
+	// trim, drop non-absolute entries and keep at most MOD_ROOTS homes after the two defaults, so
+	// this check has to filter in the same order or it warns about a root that is read.
 	const file = join(home, ".config", "herdr-app", "gentle-shell-roots.json");
 	let listed           = [];
 	try {
@@ -1179,8 +1181,11 @@ export function rootsStatusLine(paths              , home        , agentDir     
 		const roots = Array.isArray(parsed) ? parsed : parsed?.roots;
 		if (Array.isArray(roots)) listed = roots.filter((root         )                 => typeof root === "string");
 	} catch {}
-	const expanded = listed.map((root) => trimSlashes(root === "~" ? home : root.startsWith("~/") ? join(home, root.slice(2)) : root));
-	const order = [...knownRoots(home).map(trimSlashes), ...expanded];
+	const expanded = listed
+		.map((root) => root.trim())
+		.filter((root) => root.length > 0)
+		.map((root) => (root === "~" ? home : root.startsWith("~/") ? join(home, root.slice(2)) : root));
+	const order = [...knownRoots(home).map(trimSlashes), ...expanded.map(trimSlashes)].filter(isAbsolutePath);
 	const seen = new Set        ();
 	const read           = [];
 	for (const root of order) {
@@ -1190,7 +1195,10 @@ export function rootsStatusLine(paths              , home        , agentDir     
 	}
 	if (read.slice(0, MOD_ROOTS).includes(trimSlashes(agentDir))) return `  Roots: ${agentDir} listed in ${file}`;
 	const entry = JSON.stringify([agentDir]);
-	return `  Roots: ${agentDir} is not read by the mods; add ${entry} to ${file} (they read the first ${MOD_ROOTS} roots)`;
+	if (read.length >= MOD_ROOTS) {
+		return `  Roots: ${agentDir} is not read by the mods: the first ${MOD_ROOTS} roots are taken, so adding it does not help; move it into the first ${MOD_ROOTS} in ${file} or remove an earlier one`;
+	}
+	return `  Roots: ${agentDir} is not read by the mods; add ${entry} to ${file}`;
 }
 
 function printStatus(ctx                , paths              , assets                            , release                 )         {

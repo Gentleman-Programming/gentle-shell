@@ -13,6 +13,7 @@ import { __testing, createGentleAiExtension, PendingReviewConsentRegistry } from
 import { CandidateViewError, CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, NativeReviewConsentRequiredError, NativeReviewIntegrationError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewLastEventClosureV1, decodeReviewConsentV3, decodeReviewStatusV3, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
+import { statusV9 } from "./support/status-v9.ts";
 
 // Coordination tests use fixture authority; real Windows ACL coverage lives
 // in review-candidate-view.test.ts, in a separate test process.
@@ -3433,7 +3434,7 @@ test("controller forwards AbortSignal and retains typed native diagnostics witho
 // roughly 28k characters per call and again on every blocked retry. The
 // consumed projection is collectBindings; the raw inputs are the duplicate.
 function fourLensCollectStatus(): { raw: Record<string, unknown>; lenses: readonly string[] } {
-	const captured = JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8")) as Record<string, unknown>;
+	const captured = statusV9(JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"))) as Record<string, unknown>;
 	const nextTransition = captured.next_transition as { collect: { inputs: Array<Record<string, unknown>> } };
 	const template = nextTransition.collect.inputs[0]!;
 	const lenses = ["review-risk", "review-readability", "review-reliability", "review-resilience"] as const;

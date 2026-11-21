@@ -8,6 +8,7 @@ import { __testing } from "../extensions/gentle-ai.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NATIVE_REVIEW_OPERATION, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import { statusV9 } from "./support/status-v9.ts";
 
 function toolContext(context: ExtensionContext): ExtensionToolContext {
 	return {
@@ -146,7 +147,7 @@ test("nested raw workspaceRoot loses only display correlation against canonical 
 });
 
 test("real facade STATUS binding retains sidebar scope through capture forecast", async () => {
-	const raw = JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
+	const raw = statusV9(JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8")));
 	raw.action = "stop";
 	const status = decodeReviewStatusV3(raw);
 	const lineageId = status.authority!.lineageId;

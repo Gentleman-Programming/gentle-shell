@@ -4,7 +4,9 @@ import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { ReviewMutationLockV1, type ReviewLockPlatformAdapterV1 } from "./review-lock.ts";
 import { ReviewGraphObjectStoreV1 } from "./review-object-store.ts";
-import { assertNoLegacyReviewAuthorityV1 } from "./review-legacy-detector.ts";
+
+// Pre-graph review authority layout; no longer supported.
+const PRE_GRAPH_LEGACY_ROOTS = ["lineages", "locks", "legacy-evidence", "migration", "migration-operations"] as const;
 import { createReviewEventV1 } from "./review-graph-schema.ts";
 import {
 	resolveRepositoryAuthorityV1,
@@ -1177,7 +1179,8 @@ export class ReviewTransactionStore {
 		options: Pick<ReviewTransactionStoreOptions, "faultInjector" | "mutationLockPlatform"> = {},
 	): ReviewTransactionStore {
 		const authority = resolveRepositoryAuthorityV1(cwd);
-		assertNoLegacyReviewAuthorityV1(cwd);
+		const legacy = PRE_GRAPH_LEGACY_ROOTS.map((name) => join(authority.store_root, name)).filter((path) => existsSync(path));
+		if (legacy.length > 0) throw new Error(`legacy review authority data is no longer supported; remove these directories to continue: ${legacy.join(", ")}`);
 		return new ReviewTransactionStore({ faultInjector: options.faultInjector, mutationLockPlatform: options.mutationLockPlatform ?? mutationLockPlatformForTesting }, authority, cwd);
 	}
 

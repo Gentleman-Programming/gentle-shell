@@ -1681,9 +1681,11 @@ test("killWindowsTree: a helper that never exits reports an unconfirmed kill wit
 	}, {
 		boundMs: 150,
 		// There is no taskkill to wedge off Windows: the injected spawn starts a helper that never
-		// exits under the same stdio policy, the exact shape the bound exists for.
+		// exits under the same stdio policy, the exact shape the bound exists for. The real
+		// helper's System32 cwd is production hardening, not part of the wedge contract, so the
+		// stand-in keeps the test's own working directory.
 		spawn: (_file, _args, options) => {
-			const helper = spawn("sh", ["-c", "exec sleep 30"], options);
+			const helper = spawn("sh", ["-c", "exec sleep 30"], { ...options, cwd: undefined });
 			helpers.push(helper);
 			return helper;
 		},

@@ -33,6 +33,7 @@ import {
 } from "./review-integration-v2.ts";
 
 import { observeNativeStatus, measureStatusSync, measureStatusAsync } from "./status-timing-diagnostics.ts";
+import { windowsTaskkillPath } from "./win32-taskkill.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -1147,13 +1148,11 @@ export type ProcessTreeKiller = (pid: number) => void;
 
 type TreeKillSpawn = (file: string, args: readonly string[], options: { cwd: string; stdio: "ignore"; windowsHide: true }) => { on(event: "error", listener: () => void): unknown };
 
-// A bare "taskkill" resolves from the current directory before PATH on
-// Windows, so a repository shipping its own taskkill.exe would run on any
-// abort. Always use the System32 binary, from System32 itself.
-export function windowsTaskkillPath(env: NodeJS.ProcessEnv = process.env): string {
-	const systemRoot = env.SystemRoot || env.windir;
-	return win32.join(systemRoot && win32.isAbsolute(systemRoot) ? systemRoot : "C:\\Windows", "System32", "taskkill.exe");
-}
+// A bare "taskkill" resolves from the current directory before PATH on Windows, so a repository
+// shipping its own taskkill.exe would run on any abort. The System32 path now lives in
+// ./win32-taskkill.ts so every kill site — this adapter and the codegraph runners — shares one
+// copy; re-exported here for the existing importers.
+export { windowsTaskkillPath };
 
 // taskkill walks the tree from a live parent, so it must run before the
 // parent dies; Node's own abort/timeout kill would orphan the git children.

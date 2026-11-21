@@ -302,6 +302,72 @@ test("buildShellBarModel shortens the home directory and hides effort for non-re
 	assert.equal(built.branch, null);
 });
 
+test("the context gauge uses the active model's reserve, then the ordinary reserve, then Pi's default", () => {
+	const { pi } = fakePi();
+	const { ctx } = fakeContext();
+	const model = ctx.model!;
+	ctx.getContextUsage = () => ({ contextWindow: 1_048_576, tokens: 524_288, percent: 50 });
+	Object.assign(ctx.sessionManager, { getLeafId: () => "same-leaf" });
+	let compaction: ReturnType<ExtensionAPI["getSettings"]>["compaction"] = {
+		reserveTokens: 209_715,
+		modelOverrides: { [`${model.provider}/${model.id}`]: { reserveTokens: 419_430 } },
+	};
+	pi.getSettings = () => ({ compaction });
+	const memo = createFooterStatusMemo({
+		pi, ctx, footerData: { getGitBranch: () => null, getExtensionStatuses: () => new Map(),
+			getAvailableProviderCount: () => 1, onBranchChange: () => () => {} },
+		usage: () => undefined, profile: () => undefined, jobs: () => undefined, review: () => undefined,
+		tracker: () => ({ model: { files: [], added: 0, deleted: 0, digest: "empty" } as never, unbornRoots: [] }),
+		visualSettings: () => undefined, cardStyle: () => undefined,
+	});
+	const context = () => renderShellBar(memo.model(), plainTheme, 160)[0].split(" ⟡ ").find(segment => segment.startsWith("ctx "));
+	assert.equal(context(), "ctx ▰▰▰▰▱▱▱▱ 50% (105k to compact)");
+	// Same model ID, different provider: the override no longer applies.
+	ctx.model = { ...model, provider: "openai" };
+	assert.equal(context(), "ctx ▰▰▰▰▱▱▱▱ 50% (315k to compact)");
+	compaction = { modelOverrides: { [`${ctx.model.provider}/${ctx.model.id}`]: { keepRecentTokens: 33_000 } } };
+	assert.equal(context(), "ctx ▰▰▰▰▱▱▱▱ 50% (508k to compact)");
+	compaction = { ...compaction, enabled: false };
+	assert.equal(context(), "ctx ▰▰▰▰▱▱▱▱ 50% (compact off)");
+});
+
+test("invalid or unreadable compaction settings leave the context gauge usable without guessing a threshold", () => {
+	const { pi } = fakePi();
+	const { ctx } = fakeContext();
+	const footerData = { getGitBranch: () => null, getExtensionStatuses: () => new Map(),
+		getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	const modelKey = `${ctx.model!.provider}/${ctx.model!.id}`;
+	const context = () => renderShellBar(buildShellBarModel(pi, ctx, footerData), plainTheme, 160)[0].split(" ⟡ ").find(segment => segment.startsWith("ctx "));
+	for (const compaction of [
+		{ reserveTokens: -1, modelOverrides: { [modelKey]: { reserveTokens: 4000 } } },
+		{ reserveTokens: 4000, modelOverrides: { [modelKey]: { reserveTokens: 1.5 } } },
+		{ reserveTokens: 4000, modelOverrides: { [modelKey]: { keepRecentTokens: "bad" } } },
+		{ modelOverrides: { [modelKey]: null } },
+		{ enabled: "false" },
+	]) {
+		pi.getSettings = () => ({ compaction } as ReturnType<ExtensionAPI["getSettings"]>);
+		assert.equal(context(), "ctx ▰▰▰▰▱▱▱▱ 45% (? to compact)");
+	}
+	pi.getSettings = () => { throw new Error("settings unavailable"); };
+	assert.equal(context(), "ctx ▰▰▰▰▱▱▱▱ 45% (? to compact)");
+});
+
+test("the context gauge clamps headroom to zero at and above Pi's strict compaction boundary", () => {
+	const { pi } = fakePi();
+	pi.getSettings = () => ({ compaction: { reserveTokens: 419_430 } });
+	const { ctx } = fakeContext();
+	const footerData = { getGitBranch: () => null, getExtensionStatuses: () => new Map(),
+		getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
+	for (const [tokens, remaining] of [[629_145, 1], [629_146, 0], [629_147, 0]]) {
+		ctx.getContextUsage = () => ({ contextWindow: 1_048_576, tokens, percent: tokens / 1_048_576 * 100 });
+		const context = renderShellBar(buildShellBarModel(pi, ctx, footerData), plainTheme, 160)[0].split(" ⟡ ").find(segment => segment.startsWith("ctx "));
+		assert.equal(context, `ctx ▰▰▰▰▰▱▱▱ 60% (${remaining} to compact)`);
+	}
+	ctx.getContextUsage = () => ({ contextWindow: 1_048_576, tokens: null, percent: null });
+	const afterCompaction = renderShellBar(buildShellBarModel(pi, ctx, footerData), plainTheme, 160)[0];
+	assert.match(afterCompaction, /ctx ▱▱▱▱▱▱▱▱ \?% \(\? to compact\)/);
+});
+
 test("NaN and non-NaN shell bars show selected effort and refresh the memo on changes", () => {
 	const { pi } = fakePi();
 	const { ctx } = fakeContext();

@@ -295,9 +295,16 @@ test("renderShellBar keeps its own zero-window contract independent of the sideb
 	assert.match(renderShellBar(model({ usage }), plainTheme, 200)[0], /codex 5h ▱▱▱▱▱▱▱▱ 0% · week 0%$/);
 });
 
-test("renderShellBar shows an unknown context as a question mark after compaction", () => {
-	const [line] = renderShellBar(model({ contextPercent: null }), plainTheme, 160);
-	assert.match(line, /ctx ▱▱▱▱▱▱▱▱ \?%/);
+test("context bars distinguish unknown usage after compaction from disabled auto-compaction", () => {
+	for (const [headroom, label] of [[null, "? to compact"], ["off", "compact off"]] as const) {
+		const data = model({ contextPercent: null, contextHeadroom: headroom });
+		const [line] = renderShellBar(data, plainTheme, 160);
+		assert.ok(line.includes(`ctx ▱▱▱▱▱▱▱▱ ?% (${label})`), line);
+		const header = renderShellHeaderBar(buildShellHeaderModel(data), plainTheme, 160).text;
+		assert.ok(header.includes(`ctx ▱▱▱▱▱▱▱▱ ?% (${label})`), header);
+		const minimal = renderShellStatusBar(data, plainTheme, 160, undefined, { ...DEFAULT_VISUAL_SETTINGS, density: "minimal" }).rows.join("\n");
+		assert.ok(minimal.includes(`ctx ?% (${label})`), minimal);
+	}
 });
 
 test("renderShellBar right-aligns the session name when it fits", () => {

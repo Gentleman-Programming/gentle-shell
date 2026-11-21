@@ -8,7 +8,7 @@ import { updateSelectedPi } from '../scripts/pi-update.mjs';
 const PI = '@earendil-works/pi-coding-agent';
 const CLI = 'dist/bundle/cli.js';
 
-async function fixture(t: any, options: {manager?: string, locks?: string[], workspace?: boolean, range?: string, mismatch?: boolean, managerVersion?: string, fail?: boolean, unreadable?: boolean, unlink?: boolean, installedSource?: boolean, configOnly?: boolean, multipleProjects?: boolean, latest?: string, excludeOutput?: string, piDependencies?: Record<string, unknown>, manifestView?: {code: number, stdout: string}, siblingDependencies?: Record<string, Record<string, unknown>>} = {}) {
+async function fixture(t: any, options: {directSiblings?: Record<string, string>, manager?: string, locks?: string[], workspace?: boolean, range?: string, mismatch?: boolean, managerVersion?: string, fail?: boolean, unreadable?: boolean, unlink?: boolean, installedSource?: boolean, configOnly?: boolean, multipleProjects?: boolean, latest?: string, excludeOutput?: string, piDependencies?: Record<string, unknown>, manifestView?: {code: number, stdout: string}, siblingDependencies?: Record<string, Record<string, unknown>>} = {}) {
  const temp = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'pi-source-')));
  t.after(() => fs.rm(temp, {recursive: true, force: true}));
  const root = join(temp, 'checkout');
@@ -17,7 +17,7 @@ async function fixture(t: any, options: {manager?: string, locks?: string[], wor
  const peer = join(root, 'node_modules', PI);
  const manager = options.manager ?? 'pnpm';
  const lock = manager === 'npm' ? 'package-lock.json' : 'pnpm-lock.yaml';
- const manifest = JSON.stringify({name: 'gentle-pi', version: '4.4.0', packageManager: `${manager}@11.1.1`, devDependencies: {[PI]: options.range ?? '^1.0.0'}});
+ const manifest = JSON.stringify({name: 'gentle-pi', version: '4.4.0', packageManager: `${manager}@11.1.1`, devDependencies: {[PI]: options.range ?? '^1.0.0', ...options.directSiblings}});
  await fs.mkdir(join(root, '.git'), {recursive: true});
  await fs.mkdir(modules, {recursive: true});
  await fs.mkdir(join(peer, 'dist', 'bundle'), {recursive: true});
@@ -113,6 +113,19 @@ const DEPENDENCIES = {'@earendil-works/pi-ai':'2.0.0', '@earendil-works/pi-tui':
 // Pi 1.5.2's pi-ai pins pi-schema and pi-telemetry, which Pi itself does not list.
 const SIBLINGS = {'@earendil-works/pi-ai@2.0.0':{'@earendil-works/pi-schema':'2.0.0', '@earendil-works/pi-telemetry':'2.0.0', openai:'7.19.0'},
  '@earendil-works/pi-tui@2.0.0':{'@earendil-works/pi-ai':'2.0.0', marked:'18.0.11'}, '@earendil-works/pi-schema@2.0.0':{}, '@earendil-works/pi-telemetry@2.0.0':{'@earendil-works/pi-ranged':'^2.0.0'}};
+
+// A source Shell that also depends directly on Pi's exact siblings (pi-ai,
+// pi-tui) moves them with Pi, so one copy of each remains instead of the old
+// root copy beside Pi's nested new one. Siblings it does not declare stay out.
+for (const manager of ['pnpm', 'npm']) test(`source ${manager} moves the Shell's direct Pi siblings to the exact versions the selected Pi pins`, async t => {
+ const f = await fixture(t, {manager, latest:'2.0.0', piDependencies:DEPENDENCIES, siblingDependencies:SIBLINGS, directSiblings:{'@earendil-works/pi-ai':'>=1.2.0', '@earendil-works/pi-tui':'>=1.2.0', chalk:'^5.0.0'}});
+ assert.equal(await updateSelectedPi(f.input), 0);
+ const specs = f.updates[0].args.filter(arg => arg.startsWith('@earendil-works/'));
+ assert.deepEqual(specs, [`${PI}@2.0.0`, '@earendil-works/pi-ai@2.0.0', '@earendil-works/pi-tui@2.0.0']);
+ assert.equal(f.updates.length, 1);
+ assert.ok(f.updates[0].args.includes('--no-save'));
+ assert.equal((await f.snapshot()).manifest, f.before.manifest);
+});
 
 test('source pnpm also exempts only the Pi-scope packages the selected Pi pins exactly, transitively', async t => {
  const f = await fixture(t, {configOnly:true, latest:'2.0.0', piDependencies:DEPENDENCIES, siblingDependencies:SIBLINGS});

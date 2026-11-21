@@ -661,9 +661,11 @@ function rebuildCompletedFor(cwd: string, from: string, to: string): boolean {
  * completed. A partial directory (no database in it) settles nothing: the backup keeps the
  * only proven-good copy beside files a possibly-live writer owns, nothing is removed or
  * restored, and the unmarked transition stays eligible for a later pass — which retires the
- * orphaned backup here once its own confirmed replacement exists. Best effort: a backup that
- * can neither drop nor restore stays on disk, recoverable by hand. */
-function settleForcedReindex(cwd: string, pending: { backup: string; from: string; to: string } | undefined, update: CodegraphUpdateCheck): void {
+ * orphaned backup here once its own confirmed replacement exists and no live sync-lease fence
+ * owns the project (a fence held right now belongs to a reindex still in flight: its backup
+ * is not this pass's to retire). Best effort: a backup that can neither drop nor restore
+ * stays on disk, recoverable by hand. */
+function settleForcedReindex(cwd: string, pending: { backup: string; from: string; to: string } | undefined, update: CodegraphUpdateCheck, sweepOrphans: boolean): void {
 	const indexDir = join(cwd, ".codegraph");
 	const backup = pending?.backup ?? join(cwd, REINDEX_BACKUP);
 	const transition = update.ran && update.from !== undefined && update.to !== undefined && update.from !== update.to
@@ -671,7 +673,10 @@ function settleForcedReindex(cwd: string, pending: { backup: string; from: strin
 		: undefined;
 	try {
 		if (indexState(cwd) === "present") {
-			const retiredBackup = existsSync(backup);
+			// The orphan sweep is fenced: a pass that moved nothing may retire a name-found
+			// backup only when no live fence owns the project — a present index beside another
+			// pass's in-flight reindex is that pass's replacement, not this pass's orphan.
+			const retiredBackup = (pending !== undefined || sweepOrphans) && existsSync(backup);
 			if (retiredBackup) rmSync(backup, { recursive: true, force: true });
 			// The transition is recorded only when this pass moved the index aside (pending) or
 			// retired an orphaned backup beside the confirmed replacement: a present index alone
@@ -728,6 +733,11 @@ export interface ReadinessInput {
 	 * win32 shim resolver decide whether the actual replacement init invocation is spawnable.
 	 * The default is the real seam. */
 	spawnSeam?: SpawnCodegraphSeam;
+	/** Runs at the forced reindex's move boundary — immediately before the old index folder is
+	 * renamed aside, with every fence the move needs already held — so a caller can sample the
+	 * fencing at the exact moment the old index leaves its path. Observational only: it can
+	 * neither veto nor delay the move. */
+	onReindexMoveAside?(): void;
 	onStart?(action: IndexAction): void;
 	onIndexed?(result: {
 		action: IndexAction;
@@ -778,6 +788,11 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 		// that a restore or retirement of the backup would land underneath. Undefined when no
 		// forced reindex moved anything — the plain init path acquires and disposes its own lock.
 		let reindexLock: InitLeaseHandle | undefined;
+	// The sync-lease fence the forced reindex takes beside the init lease: the init lease
+	// alone does not exclude a daemonless refresh, so the same lease every refresh speaks
+	// fences the move — held from just before the old index moves aside until the backup
+	// settles in the finally below, so no refresh is dispatched underneath the sequence.
+	let reindexFence: { release(): void } | undefined;
 		let initStop: "teardown-unconfirmed" | undefined;
 		let unconfirmedWriterPid: number | undefined;
 		let unconfirmedWriterProxy = false;
@@ -855,28 +870,52 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 							// Another session owns index creation right now: its init decides what the
 							// project's index becomes — nothing is removed under it.
 						} else {
-							const stopped = await stopProjectDaemons(input.cwd, input.registryDir);
-							// Rechecked under the lease: the index may have changed hands while this
-							// session waited for the lock.
-							if (stopped.confirmed
-								&& indexState(input.cwd) === "present"
-								&& planIndexAction(input.cwd, "absent", input.isProjectRoot) === "init") {
-								// The old folder is renamed aside, not deleted: it stays recoverable until
-								// the replacement index exists, and settleForcedReindex restores it when
-								// the pass ends without one.
-								const backup = join(input.cwd, REINDEX_BACKUP);
-								renameSync(join(input.cwd, ".codegraph"), backup);
-								pendingReindex = { backup, from: update.from, to: update.to };
-								reindexed = { from: update.from, to: update.to };
-								reindexLock = lock;
-							} else {
-								// A daemon nobody could prove gone still holds the old database open (a
-								// Windows file lock) and serves the old formats: the forced rebuild is
-								// skipped this pass, the index keeps its original path, and a later pass
-								// retries once shutdown is provable.
+							// The init lease does not fence daemonless refreshes — those run under the
+							// separate sync lease, and one dispatched a moment ago may not have created
+							// CodeGraph's writer lock yet, so the rechecks below could pass with a sync
+							// already writing the folder about to move. The reindex takes the SAME lease
+							// as its fence before anything moves: an unacquirable one means a refresh
+							// owns the project right now (or the token is unreadable and nobody can say
+							// whose it is), and the rebuild waits for a later pass. Held until the
+							// backup settles in the pass finally, the fence also keeps a fresh refresh
+							// from being dispatched underneath the restore.
+							const fence = tryAcquireSyncLease(input.cwd, input.locksDir, INIT_LOCK_SEQUENCE_TTL_MS);
+							if (fence === undefined) {
+								// A daemonless refresh (or an unreadable sync lease) owns the project:
+								// the forced rebuild is skipped this pass, the index keeps its original
+								// path, and a later pass retries once no refresh holds the lease.
 								lock.release();
+							} else {
+								reindexFence = fence;
+								const stopped = await stopProjectDaemons(input.cwd, input.registryDir);
+								// Rechecked under the lease: the index may have changed hands while this
+								// session waited for the lock.
+								if (stopped.confirmed
+									&& indexState(input.cwd) === "present"
+									&& planIndexAction(input.cwd, "absent", input.isProjectRoot) === "init") {
+										// The lease is adopted before the rename: a rename that throws (a nonempty
+										// directory squats the backup path) still reaches the pass finally, which
+										// releases the handle instead of parking it held until its TTL.
+										reindexLock = lock;
+										// The old folder is renamed aside, not deleted: it stays recoverable until
+										// the replacement index exists, and settleForcedReindex restores it when
+										// the pass ends without one.
+										const backup = join(input.cwd, REINDEX_BACKUP);
+										try { input.onReindexMoveAside?.(); } catch { /* never worth stopping the reindex */ }
+										renameSync(join(input.cwd, ".codegraph"), backup);
+										pendingReindex = { backup, from: update.from, to: update.to };
+										reindexed = { from: update.from, to: update.to };
+									} else {
+										// A daemon nobody could prove gone still holds the old database open (a
+										// Windows file lock) and serves the old formats: the forced rebuild is
+										// skipped this pass, the index keeps its original path, and a later pass
+										// retries once shutdown is provable.
+										reindexFence.release();
+										reindexFence = undefined;
+										lock.release();
+									}
+								}
 							}
-						}
 					}
 				}
 			} catch {
@@ -1032,14 +1071,37 @@ export function prepareReadiness(input: ReadinessInput): Promise<ReadinessResult
 			// Every exit of the pass funnels here: the forced reindex's backup is dropped behind a
 			// CONFIRMED replacement index or restored when the pass ends without one, whichever way
 			// the flow returned (or threw — the catch above turns that into a result first, this
-			// settle still runs) — and only once the backup is settled is the reindex's init lease
-			// disposed: released, or held onto an unconfirmed writer until its recovery or the TTL
-			// ends the fence. A session acquiring the lease next can never watch the backup land
-			// underneath its own init.
-			settleForcedReindex(input.cwd, pendingReindex, update);
-			if (reindexLock !== undefined) {
-				if (initStop === "teardown-unconfirmed") holdLeaseUntilWriterGone(reindexLock, unconfirmedWriterPid, INIT_LOCK_SEQUENCE_TTL_MS, unconfirmedWriterProxy);
-				else reindexLock.release();
+			// settle still runs) — and only once the backup is settled are the reindex's fences
+			// disposed: the init lease released (or held onto an unconfirmed writer until its
+			// recovery or the TTL ends the fence) and the sync-lease fence dropped after it. A
+			// session acquiring either lease next can never watch the backup land underneath it.
+			// The one deferral: a replacement init whose teardown nobody confirmed may still have a
+			// running writer — settling then, restoring the old index above all, would hand that
+			// writer the path it may still write. A probeable writer defers the whole settlement
+			// to its proved death; an unprobeable one (no pid, or a cmd.exe proxy) can never be
+			// proved stopped, so the backup stays beside the index recoverable by hand, both
+			// fences age out at their TTLs, and a later pass rebuilds and sweeps the orphan.
+			const heldReindex = reindexLock;
+			const heldFence = reindexFence;
+			const settleReindex = (): void => {
+				// The orphan sweep gate: a backup found by name (this pass moved nothing) is
+				// retirable only when no LIVE fence owns the project — a live fence this pass does
+				// not hold belongs to another pass's in-flight reindex, whose backup this pass
+				// must leave untouched. This pass's own fence excludes every other owner already.
+				settleForcedReindex(input.cwd, pendingReindex, update, pendingReindex !== undefined || heldFence !== undefined || !syncLeaseHeldLive(input.cwd, input.locksDir));
+				heldReindex?.release();
+				heldFence?.release();
+			};
+			if (initStop === "teardown-unconfirmed" && heldReindex !== undefined && unconfirmedWriterPid !== undefined && !unconfirmedWriterProxy) {
+				// The settlement rides the recovery: only the writer's ESRCH both settles the
+				// backup and releases the fences, never a timeout of the waiting itself.
+				holdLeaseUntilWriterGone({ release: settleReindex }, unconfirmedWriterPid, INIT_LOCK_SEQUENCE_TTL_MS, false);
+			} else if (initStop === "teardown-unconfirmed" && heldReindex !== undefined) {
+				// Nothing can prove this writer stopped, so nothing settles in this pass — the
+				// call is the fence's own TTL-bound no-op for an unprobeable pid.
+				holdLeaseUntilWriterGone(heldReindex, unconfirmedWriterPid, INIT_LOCK_SEQUENCE_TTL_MS, unconfirmedWriterProxy);
+			} else {
+				settleReindex();
 			}
 		}
 	})();

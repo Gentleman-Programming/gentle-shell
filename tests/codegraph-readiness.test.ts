@@ -11,7 +11,7 @@ import test from "node:test";
 import { isWorkspaceProjectRoot } from "../extensions/codegraph-tools.ts";
 import { daemonFor, setPipeProbeForTests } from "../lib/codegraph-daemon.ts";
 import { clearCodegraphResolveCache } from "../lib/codegraph-cli-resolve.ts";
-import { acquireInitLock, leaseHostIdentity, lockPathFor, readLeaseVerdict, setIndexDbStatForTests } from "../lib/codegraph-lease.ts";
+import { acquireInitLock, leaseHostIdentity, lockPathFor, readLeaseVerdict, setIndexDbStatForTests, tryAcquireSyncLease } from "../lib/codegraph-lease.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
 import {
 	buildWindowsCommand,
@@ -3754,10 +3754,13 @@ test("prepareReadiness: an unconfirmed daemon shutdown keeps the index at its or
 	const registry = dir(t, "update-daemon-unconfirmed-registry");
 	const socket = join(registry, "live.sock");
 	writeFileSync(socket, "");
-	// The daemon ignores SIGTERM outright and records readiness once it is running: the stop wait
-	// can never prove it gone, so the removal must not start under the lock it holds.
+	// The daemon records readiness once it is running and holds the database open for its whole
+	// life; the tree-kill seam below reports its Windows termination unconfirmed on every
+	// platform, so the stop wait can never prove it gone — a SIGTERM-ignoring fixture would
+	// really exit under a confirmed taskkill /T /F on Windows and hand the wait a shutdown this
+	// test must not accept.
 	const daemonReady = join(registry, "daemon.ready");
-	const daemonChild = spawn(process.execPath, ["-e", "const fs = require('node:fs'); fs.openSync(process.env.FAKE_DB, 'r'); process.on('SIGTERM', () => {}); fs.writeFileSync(process.env.FAKE_READY, 'x'); setInterval(() => {}, 1 << 30);"], { stdio: "ignore", env: { ...process.env, FAKE_DB: join(cwd, ".codegraph", "codegraph.db"), FAKE_READY: daemonReady } });
+	const daemonChild = spawn(process.execPath, ["-e", "const fs = require('node:fs'); fs.openSync(process.env.FAKE_DB, 'r'); fs.writeFileSync(process.env.FAKE_READY, 'x'); setInterval(() => {}, 1 << 30);"], { stdio: "ignore", env: { ...process.env, FAKE_DB: join(cwd, ".codegraph", "codegraph.db"), FAKE_READY: daemonReady } });
 	t.after(() => {
 		try {
 			process.kill(daemonChild.pid, "SIGKILL");
@@ -3771,6 +3774,15 @@ test("prepareReadiness: an unconfirmed daemon shutdown keeps the index at its or
 		await new Promise((resolve) => setTimeout(resolve, 25));
 	}
 	assert.ok(existsSync(daemonReady), "the stubborn daemon opened the database and is running before the update runs");
+	// The unconfirmed Windows tree kill: the seam routes the stop through it, answers
+	// unconfirmed, and delivers no signal at all — the daemon keeps running on every host, so
+	// the stop wait ends unproven instead of the taskkill-confirmed exit a real Windows run
+	// would give this fixture.
+	setTreeKillSeamForTests({
+		platform: () => "win32",
+		windowsKill: (_pid, onKilled) => onKilled(false),
+	});
+	t.after(() => setTreeKillSeamForTests(undefined));
 	const runs: string[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
 		registryDir: registry,
@@ -3900,10 +3912,19 @@ test("prepareReadiness: the forced reindex holds the init lease from before the 
 	let seedCalled = false;
 	let leaseTakenAtSeed = false;
 	let leaseTakenAtWarm = false;
+	let moveAsideSawIndex = false;
+	let leaseVerdictAtMoveAside = "never-sampled";
 	const result = await prepareReadiness(fakeInput(cwd, {
 		locksDir: locks,
 		installCheck: noInstallCheck,
 		updateCheck: updatedCheck("1.6.3", "1.6.4"),
+		onReindexMoveAside: () => {
+			// The move boundary: the old index must still sit at its path, and the init lease
+			// the pass took before moving anything must fence a racing session's acquisition
+			// right here — sampled through the same verdict the lease itself answers to.
+			moveAsideSawIndex = indexState(cwd) === "present";
+			leaseVerdictAtMoveAside = readLeaseVerdict(lockPathFor(cwd, "init", locks));
+		},
 		seed: async () => {
 			seedCalled = true;
 			// A racing session inside the seed window: it sees the emptied path and takes the init
@@ -3934,12 +3955,159 @@ test("prepareReadiness: the forced reindex holds the init lease from before the 
 			return true;
 		},
 	}));
+	assert.equal(moveAsideSawIndex, true, "the boundary probe fired while the old index still sat at its path: it samples the rename, not its aftermath");
+	assert.equal(leaseVerdictAtMoveAside, "held-live", "the init lease is already held at the move boundary: a rename before its acquisition cannot pass this test");
 	assert.equal(seedCalled, false, "no seed path runs under the reindex lease: it would re-acquire the init lock this pass already holds");
 	assert.equal(leaseTakenAtSeed, false, "the move-aside is fenced: the init lease exists before the old index leaves the path");
 	assert.equal(leaseTakenAtWarm, false, "the backup settles while the lease still fences: no init can start underneath the settlement");
 	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
 	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "index");
 	assert.equal(existsSync(join(cwd, ".codegraph.pre-update-reindex")), false, "the settled rebuild left no backup behind");
+});
+
+test("prepareReadiness: a reload never retires a reindex backup another pass still owns", async (t) => {
+	const cwd = dir(t, "reindex-sweep-fence");
+	// Process A's mid-flight forced reindex: the replacement database already exists, the old
+	// index waits in the backup, and A's sync-lease fence still holds the project — the reload
+	// below must touch neither path.
+	mkdirSync(join(cwd, ".codegraph"), { recursive: true });
+	writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "rebuilt");
+	mkdirSync(join(cwd, ".codegraph.pre-update-reindex"), { recursive: true });
+	writeFileSync(join(cwd, ".codegraph.pre-update-reindex", "codegraph.db"), "old-index");
+	const locks = dir(t, "reindex-sweep-fence-locks");
+	const fence = tryAcquireSyncLease(cwd, locks);
+	assert.ok(fence !== undefined, "the stand-in reindex fence holds the project");
+	const first = await prepareReadiness(fakeInput(cwd, { locksDir: locks, reason: "reload" }));
+	assert.deepEqual(first, { action: "none", ok: true, warm: "skipped" }, "the reload skips as ever");
+	assert.equal(readFileSync(join(cwd, ".codegraph.pre-update-reindex", "codegraph.db"), "utf8"), "old-index", "the reload left the owner's backup in place: a pass that holds no fence retires nothing");
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "rebuilt", "the replacement the owner is building keeps its path");
+	// The owner exited: no live fence owns the project any more, so the same sweep retires the
+	// orphaned backup beside the confirmed replacement — the crash-recovery path.
+	fence.release();
+	const second = await prepareReadiness(fakeInput(cwd, { locksDir: locks, reason: "reload" }));
+	assert.deepEqual(second, { action: "none", ok: true, warm: "skipped" });
+	assert.equal(existsSync(join(cwd, ".codegraph.pre-update-reindex")), false, "with no live fence the backup is an orphan and the sweep retires it");
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "rebuilt", "the confirmed replacement keeps its bytes through the sweep");
+});
+
+test("prepareReadiness: an in-flight daemonless refresh defers the forced reindex instead of moving the index under it", async (t) => {
+	const cwd = dir(t, "update-refresh-fence");
+	writeDb(cwd);
+	writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "old-index");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const locks = dir(t, "update-refresh-fence-locks");
+	// Session B's daemonless refresh: the sync lease is held with its sync child already
+	// dispatched and no CodeGraph writer lock created yet — the exact window where nothing may
+	// move the index folder out from under the running sync.
+	const refresh = tryAcquireSyncLease(cwd, locks);
+	assert.ok(refresh !== undefined, "the stand-in refresh holds the sync lease");
+	const update = updatedCheck("1.6.3", "1.6.4");
+	const runs: string[] = [];
+	const first = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		installCheck: noInstallCheck,
+		updateCheck: update,
+		run: async (args) => {
+			runs.push(args.join(" "));
+			return true;
+		},
+	}));
+	assert.deepEqual(first, { action: "sync", ok: true, warm: "skipped" }, "the rebuild deferred: the live refresh reads as held-live and the warm-up stands down");
+	assert.deepEqual(runs, [], "nothing ran under the refresh: no replacement init, no competing sync");
+	assert.equal(existsSync(join(cwd, ".codegraph.pre-update-reindex")), false, "the index was never moved aside while the refresh was in flight");
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "old-index", "the old index bytes are untouched");
+	// The refresh ended: no refresh owns the project, and the rebuild the update asked for runs.
+	refresh.release();
+	const second = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		installCheck: noInstallCheck,
+		updateCheck: update,
+		run: async (args) => {
+			runs.push(args.join(" "));
+			if (args[0] === "init") {
+				mkdirSync(join(cwd, ".codegraph"), { recursive: true });
+				writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "index");
+			}
+			return true;
+		},
+	}));
+	assert.deepEqual(second, { action: "init", ok: true, warm: "ok" }, "with no refresh owning the project the forced rebuild proceeds");
+	assert.deepEqual(runs, ["init -y"], "the deferred rebuild ran exactly its replacement init");
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "index", "the rebuilt database replaced the old index");
+	assert.equal(existsSync(join(cwd, ".codegraph.pre-update-reindex")), false, "the completed rebuild settled its backup away");
+});
+
+test("prepareReadiness: a failed move-aside releases the init lease instead of parking it to its TTL", async (t) => {
+	const cwd = dir(t, "update-move-failed");
+	writeDb(cwd);
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const locks = dir(t, "update-move-failed-locks");
+	// A nonempty directory already squats the backup path: renameSync refuses to move the old
+	// index over it (ENOTEMPTY), so the forced reindex fails mid-branch AFTER taking the lease.
+	mkdirSync(join(cwd, ".codegraph.pre-update-reindex"), { recursive: true });
+	writeFileSync(join(cwd, ".codegraph.pre-update-reindex", "stale-copy"), "left by hand");
+	const runs: string[] = [];
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		installCheck: noInstallCheck,
+		updateCheck: updatedCheck("1.6.3", "1.6.4"),
+		run: async (args) => {
+			runs.push(args.join(" "));
+			return true;
+		},
+	}));
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "init", locks)), "free", "the lease the failed move took is released by the pass finally, not parked until its TTL");
+	assert.deepEqual(result, { action: "sync", ok: true, warm: "skipped" }, "the failed move fails open onto the ordinary plan; the pass's own fence stands its refresh down");
+	assert.deepEqual(runs, [], "no command ran: the rename moved nothing and the refresh deferred");
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "index", "the old index bytes never moved");
+	assert.equal(existsSync(join(cwd, ".codegraph.pre-update-reindex", "stale-copy")), false, "this pass held the fence, so its own sweep still retired the stale squatter beside the confirmed index");
+});
+
+test("prepareReadiness: an unconfirmed replacement-init teardown defers the backup settlement until the writer is proved gone", async (t) => {
+	const cwd = dir(t, "update-restore-unconfirmed");
+	writeDb(cwd);
+	writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "old-index");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const locks = dir(t, "update-restore-unconfirmed-locks");
+	// The replacement init times out with an unconfirmed teardown and a reported writer pid that
+	// stays alive: until its death is proved, restoring the backup would hand a possibly-live
+	// writer the index path back underneath it.
+	const writer = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { stdio: "ignore" });
+	t.after(() => {
+		try {
+			process.kill(writer.pid, "SIGKILL");
+		} catch {
+			/* already gone */
+		}
+	});
+	assert.ok(writer.pid !== undefined, "the stand-in writer spawned");
+	const writerPid = writer.pid as number;
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		installCheck: noInstallCheck,
+		updateCheck: updatedCheck("1.6.3", "1.6.4"),
+		run: async (_args, _cwd, _timeoutMs, onSpawn, onInfo) => {
+			onSpawn?.(writerPid, false);
+			onInfo?.({ ok: false, teardownUnconfirmed: true });
+			return false;
+		},
+	}));
+	assert.deepEqual(result, { action: "init", ok: false, warm: "skipped" }, "the unconfirmed teardown ends the retry sequence as a failure");
+	assert.equal(existsSync(join(cwd, ".codegraph", "codegraph.db")), false, "no restore landed while the writer may still run: the index path stays empty");
+	assert.ok(existsSync(join(cwd, ".codegraph.pre-update-reindex")), "the backup waits beside the index until recovery proves the writer gone");
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "init", locks)), "held-live", "the init fence holds the project for as long as the writer lives");
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "held-live", "the sync-lease fence keeps refreshes out for the same span");
+	// The writer's proved death is the settlement trigger: once ESRCH answers, the deferred
+	// settlement restores the old index and releases both fences.
+	process.kill(writerPid, "SIGKILL");
+	const deadline = Date.now() + 5_000;
+	while (!existsSync(join(cwd, ".codegraph", "codegraph.db")) && Date.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "old-index", "the deferred settlement restored the old index once the writer was proved gone");
+	assert.equal(existsSync(join(cwd, ".codegraph.pre-update-reindex")), false, "the restore consumed its backup: no orphaned copy stays behind");
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "init", locks)), "free", "the init fence released with the settlement");
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "free", "the sync-lease fence released with the settlement");
 });
 
 test("prepareReadiness: an unconfirmed install teardown leaves the update check alone", async (t) => {

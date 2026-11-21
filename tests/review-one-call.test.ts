@@ -500,7 +500,7 @@ test("gentle_review_run without escalate keeps a medium candidate not-due", asyn
 test("gentle_review_run rejects an invalid escalate before any native call", async () => {
 	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { mediumAssess: true, hasUI: false });
 	try {
-		for (const escalate of [{ item: 7, reason: "x" }, { item: 2, reason: "  " }, { item: 2, reason: "é".repeat(251) }, { item: 2, reason: "two\nlines" }, { item: 2, reason: "tab\there" }, { item: 2 }, "high"]) {
+		for (const escalate of [{ item: 7, reason: "x" }, { item: 2, reason: "  " }, { item: 2, reason: "é".repeat(251) }, { item: 2, reason: "two\nlines" }, { item: 2 }, "high"]) {
 			await assert.rejects(Promise.resolve().then(() => runtime.invoke("gentle_review_run", { escalate })), /escalate/);
 		}
 		assert.deepEqual(runtime.nativeRequests.filter((entry) => entry.operation === "assess"), []);

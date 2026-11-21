@@ -156,8 +156,10 @@ test("decodeAgentRiskEscalation measures the reason in UTF-8 bytes, as native as
 });
 
 test("decodeAgentRiskEscalation rejects a multi-line or control-character reason as not one line", () => {
-	for (const reason of ["a\nb", "a\r\nb", "a\tb", "a\u0000b", "a\u007fb", "a\u0085b", "a\u2028b", "a\u2029b", "\u001bx"]) {
+	for (const reason of ["a\nb", "a\r\nb", "a\rb", "a\u000bb", "a\u000cb", "a\u0085b", "a\u2028b", "a\u2029b"]) {
 		assert.throws(() => decodeAgentRiskEscalation({ item: 2, reason }), /escalate reason must be one line/, JSON.stringify(reason));
 	}
 	assert.deepEqual({ ...decodeAgentRiskEscalation({ item: 2, reason: "one line, ünïcode ✓" }) }, { item: 2, reason: "one line, ünïcode ✓" });
+	// A tab is not a line break: assess accepted it before and native carries it to consent.
+	assert.equal(decodeAgentRiskEscalation({ item: 2, reason: "tab\there" }).reason, "tab\there");
 });

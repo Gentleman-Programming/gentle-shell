@@ -538,6 +538,13 @@ test("swapping the probe layer starts with an empty cache", (t) => {
 });
 
 test("the real probe worker settles through the shared cell on both outcomes", async (t) => {
+	// bun's Windows named-pipe support is the gap here, not the worker: the pipe this fixture binds
+	// in-process cannot be bound and probed through bun on Windows, and the socketPresent seam
+	// siblings above pin the probe-to-presence mapping this test would cover on every runtime.
+	const bunVersion = (process.versions as { bun?: string }).bun;
+	if (process.platform === "win32" && bunVersion !== undefined) {
+		return t.skip("bun on Windows cannot bind and probe a named pipe in-process (bun win32 named-pipe gap); the mapping is covered by the seam siblings");
+	}
 	// The pipe-shaped name is relative, so both the listener and the probe worker resolve it against
 	// the working directory: a short temporary one keeps the bind inside the platform's socket path
 	// length limit.

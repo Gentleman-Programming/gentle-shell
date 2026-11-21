@@ -2110,11 +2110,35 @@ function writeCodeGraphPackage(binDir: string, scriptSource = "#!/usr/bin/env no
 	return scriptTarget;
 }
 
+/** Whether a PATH directory exposes a CodeGraph installation in any form the launcher cascade
+ * consults: a native executable, a .cmd/.bat/.ps1 shim, or the npm package behind a shim. */
+function exposesCodeGraphInstall(dir: string): boolean {
+	if (["codegraph.exe", "codegraph.cmd", "codegraph.bat", "codegraph.ps1"].some((name) => existsSync(join(dir, name)))) return true;
+	return existsSync(join(dir, "node_modules", "@colbymchenry", "codegraph"));
+}
+
+/** The host PATH without a single directory a CodeGraph installation could be resolved from, so
+ * the fixture directory is the only place the cascade can find one. Every other directory stays:
+ * the fixtures keep the host PATH on win32 because their shims are POSIX shell scripts there, and
+ * the real `git` spawn every execute makes has to keep resolving from it. */
+function hostPathWithoutCodeGraph(source: string): string {
+	return source
+		.split(";")
+		.map((entry) => entry.trim().replace(/^"/, "").replace(/"$/, ""))
+		.filter((entry) => entry.length > 0 && !exposesCodeGraphInstall(entry))
+		.join(";");
+}
+
 function withWindowsPath(t: test.TestContext, path: string): void {
 	const previousPath = process.env.PATH;
 	const previousWindowsPath = process.env.Path;
+	// POSIX keeps the fixture entries as the whole PATH. win32 cannot clobber it outright — the
+	// fixture shims are POSIX shell scripts and `git` must keep resolving — so the host PATH is
+	// appended only after every directory a host-installed CodeGraph could be resolved from is
+	// dropped: a native codegraph.exe or npm shim left behind would preempt or outrank the entry
+	// a fixture arms, which is exactly what these fixtures assert cannot happen.
 	const windowsPath = process.platform === "win32"
-		? `${path};${previousWindowsPath ?? previousPath ?? ""}`
+		? [path, hostPathWithoutCodeGraph(previousWindowsPath ?? previousPath ?? "")].filter((entry) => entry.length > 0).join(";")
 		: path;
 	process.env.Path = windowsPath;
 	process.env.PATH = windowsPath;
@@ -2519,8 +2543,12 @@ test("win32: a genuine non-ENOENT failure from the resolver entry surfaces as fa
 	const restoreResolver = armCodegraphEntryResolverForTest(() => ({ status: "entry", entry: { node: process.execPath, script: entryScript } }));
 	t.after(restoreResolver);
 	let scanRan = false;
-	const restoreExec = armCodegraphExecForTest((async (_file: string, args: readonly string[]) => {
-		if (String(args[0]).endsWith("direct-entry.js")) throw Object.assign(new Error("codegraph exited with status 1"), { code: 1 });
+	const restoreExec = armCodegraphExecForTest((async (file: string, args: readonly string[]) => {
+		// The armed entry is the one exact pair the resolver hands the cascade: the runtime and the
+		// fixture script. Any other spawn — the package scan, the bare codegraph, or a host
+		// codegraph.exe the machine still exposes — is a fall-through past the entry, counted as
+		// one before the runtime-level miss is answered.
+		if (file === process.execPath && String(args[0]) === entryScript) throw Object.assign(new Error("codegraph exited with status 1"), { code: 1 });
 		scanRan = true;
 		throw Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" });
 	}) as unknown as Parameters<typeof armCodegraphExecForTest>[0]);
@@ -3402,6 +3430,7 @@ test("a retry warm-up's ready notice never rides a session that started after it
 	await settled();
 });
 test("a superseded session's index notices are discarded, not delivered through the older session", { timeout: 30_000 }, async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
 	withoutChildEnv(t);
 	const wiring = armSessionStartWiring(t);
 	// Session A: an indexed workspace whose readiness runs the fake-CLI sync that settles

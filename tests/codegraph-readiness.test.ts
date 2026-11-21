@@ -3595,6 +3595,10 @@ test("prepareReadiness: the update reindex restores the old index when the repla
 });
 
 test("prepareReadiness: a delayed daemon shutdown delays the removal until the daemon is gone", async (t) => {
+	// The fixture's daemon obeys SIGTERM only after 400ms and the flow has to wait that out. win32
+	// stops a daemon tree with taskkill /F instead: a forced kill leaves no signal window, the
+	// daemon dies at once, and the measured wait this test asserts can never happen there.
+	if (process.platform === "win32") return t.skip("win32 stops a daemon tree with taskkill /F: a forced kill leaves no SIGTERM window for the delayed-shutdown fixture");
 	const cwd = dir(t, "update-delayed-daemon");
 	writeDb(cwd);
 	writeFileSync(join(cwd, "package.json"), "{}\n");

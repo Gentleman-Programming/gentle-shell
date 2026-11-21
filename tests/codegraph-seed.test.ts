@@ -242,7 +242,8 @@ test("a .codegraph symlink at seed entry is rejected before target-exists accept
 	const { main, worktree } = worktreePair(t);
 	// The link makes stat find the main checkout's database: exactly the index whose
 	// acceptance as target-exists would hand readiness another checkout's database to warm.
-	symlinkSync(main, join(worktree, ".codegraph"), "dir");
+	symlinkSync(join(main, ".codegraph"), join(worktree, ".codegraph"), "dir");
+	assert.deepEqual(markerNotes(join(worktree, ".codegraph", "codegraph.db")), ["committed"], "the main database is reachable through the link, so the refusal below is about the link itself");
 	const { input, calls } = seedHarness(worktree);
 
 	const result = await seedWorktreeIndex(input);
@@ -281,7 +282,8 @@ test("a database found through a swapped-in .codegraph link after lock acquisiti
 	// Parked in the lock wait; the destination then becomes a link to an indexed checkout
 	// and the lease goes free, so the seed acquires and re-checks the destination itself.
 	const pending = seedWorktreeIndex(input);
-	symlinkSync(main, join(worktree, ".codegraph"), "dir");
+	symlinkSync(join(main, ".codegraph"), join(worktree, ".codegraph"), "dir");
+	assert.deepEqual(markerNotes(join(worktree, ".codegraph", "codegraph.db")), ["committed"], "the main database is reachable through the swapped-in link, so the refusal below is about the link itself");
 	rmSync(lockPath);
 
 	const result = await pending;

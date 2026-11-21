@@ -30,32 +30,36 @@ const ok = (stdout: string, stderr = ""): ExecResult => ({ ok: true, stdout, std
 const fail = (stderr = "failed"): ExecResult => ({ ok: false, stdout: "", stderr });
 
 /** One scripted BoundedExec: every call is recorded and answered by the handler; an undefined
- * answer fails the call, so a test that does not expect an exec observes it loudly. */
-function scriptedExec(handler: (command: string, args: readonly string[]) => ExecResult | undefined): {
+ * answer fails the call, so a test that does not expect an exec observes it loudly. A handler
+ * may return a promise to hold a call open (concurrency fixtures gate it on their own signal). */
+function scriptedExec(handler: (command: string, args: readonly string[]) => ExecResult | Promise<ExecResult> | undefined): {
 	exec: BoundedExec;
 	calls: Array<{ command: string; args: string[]; timeoutMs: number }>;
 } {
 	const calls: Array<{ command: string; args: string[]; timeoutMs: number }> = [];
 	const exec: BoundedExec = async (command, args, timeoutMs) => {
 		calls.push({ command, args: [...args], timeoutMs });
-		return handler(command, args) ?? fail("unexpected exec");
+		return (await handler(command, args)) ?? fail("unexpected exec");
 	};
 	return { exec, calls };
 }
 
 /** Answers by first argument ("codegraph" -> version probe, "npm"/"npm.cmd" -> registry work). */
-function execByFirstArg(map: Record<string, (args: readonly string[]) => ExecResult | undefined>): {
+function execByFirstArg(map: Record<string, (args: readonly string[]) => ExecResult | Promise<ExecResult> | undefined>): {
 	exec: BoundedExec;
 	calls: Array<{ command: string; args: string[]; timeoutMs: number }>;
 } {
 	return scriptedExec((command, args) => map[command]?.(args));
 }
 
-test("parseCodegraphVersion: the first dotted triple of the running binary's output", () => {
+test("parseCodegraphVersion: the first full version identifier, prerelease suffix included", () => {
 	assert.equal(parseCodegraphVersion("1.6.4\n"), "1.6.4");
 	assert.equal(parseCodegraphVersion("codegraph 1.6.4\n"), "1.6.4");
 	assert.equal(parseCodegraphVersion("codegraph/1.6.4 darwin-arm64 node v22\n"), "1.6.4");
-	assert.equal(parseCodegraphVersion("codegraph 1.6.4-beta.2\n"), "1.6.4");
+	assert.equal(parseCodegraphVersion("codegraph 1.6.4-beta.2\n"), "1.6.4-beta.2", "the suffix is part of the identifier, never dropped noise");
+	assert.equal(parseCodegraphVersion("1.6.5-rc.1\n"), "1.6.5-rc.1");
+	assert.equal(parseCodegraphVersion("1.6.4-\n"), undefined, "an empty suffix is malformed output, not a plain triple");
+	assert.equal(parseCodegraphVersion("1.6.4-!!\n"), undefined, "an unspellable suffix is malformed output: fail open");
 	assert.equal(parseCodegraphVersion(""), undefined);
 	assert.equal(parseCodegraphVersion("codegraph\n"), undefined);
 	assert.equal(parseCodegraphVersion("not a version at all"), undefined);
@@ -117,7 +121,11 @@ test("codegraphVersionDiffers: numeric triple compare; anything but an exact mat
 	assert.equal(codegraphVersionDiffers("1.6.4", "1.6.4"), false, "the same version is the wanted version");
 	assert.equal(codegraphVersionDiffers("1.7.0", "1.6.10"), true, "numeric fields compare: 1.7.0 differs from 1.6.10");
 	assert.equal(codegraphVersionDiffers("2.0.0", "1.9.9"), true, "ahead of latest still differs: latest is the only version kept");
-	assert.equal(codegraphVersionDiffers("1.6.4", "1.6.5-beta.1"), true, "a prerelease ahead still differs on the triple");
+	assert.equal(codegraphVersionDiffers("1.6.4", "1.6.5-beta.1"), true, "a prerelease ahead still differs");
+	assert.equal(codegraphVersionDiffers("1.6.4-beta.2", "1.6.4"), true, "a prerelease behind the stable release differs: the stable release is the wanted version");
+	assert.equal(codegraphVersionDiffers("1.6.4-beta.2", "1.6.4-beta.2"), false, "the same prerelease is the wanted version");
+	assert.equal(codegraphVersionDiffers("1.6.4-beta.1", "1.6.4-beta.2"), true, "different suffixes differ even on an equal triple");
+	assert.equal(codegraphVersionDiffers("1.6.4-", "1.6.4"), false, "a malformed version never updates");
 	assert.equal(codegraphVersionDiffers("1.7", "1.6.4"), false, "an unparseable installed version never updates");
 	assert.equal(codegraphVersionDiffers("garbage", "1.6.4"), false);
 	assert.equal(codegraphVersionDiffers("1.6.4", "garbage"), false, "an unparseable latest never updates");
@@ -211,6 +219,20 @@ test("detectCodegraphInstallSource: a pnpm shim classifies pnpm-global after npm
 	assert.deepEqual(calls.map((call) => call.command), ["which", "npm", "pnpm"], "bun misses purely, npm is probed before pnpm");
 });
 
+test("detectCodegraphInstallSource: win32 probes pnpm through its .cmd shim", async () => {
+	const home = ["C:", "Users", "admin"].join(BS);
+	const pnpmBin = ["C:", "Users", "admin", "AppData", "Local", "pnpm"].join(BS);
+	const { exec, calls } = execByFirstArg({
+		"where.exe": () => ok([pnpmBin, "codegraph.cmd"].join(BS) + "\r\n"),
+		"npm.cmd": () => fail("prefix unavailable"),
+		"pnpm.cmd": (args) => (args[0] === "bin" ? ok(pnpmBin + "\n") : undefined),
+	});
+	const detected = await detectCodegraphInstallSource(exec, { platform: "win32", home });
+	assert.equal(detected.source, "pnpm-global");
+	assert.equal(detected.shimPath, [pnpmBin, "codegraph.cmd"].join(BS));
+	assert.deepEqual(calls.map((call) => call.command), ["where.exe", "npm.cmd", "pnpm.cmd"], "the global-bin probe runs the shim spelling bare pnpm resolves on win32");
+});
+
 test("detectCodegraphInstallSource: an npm-prefix query failure leaves the source unknown", async () => {
 	const { exec, calls } = execByFirstArg({
 		which: () => ok("/usr/local/bin/codegraph\n"),
@@ -240,20 +262,26 @@ test("updateCodegraphToLatest: each manager updates in its own form on every pla
 	assert.deepEqual(await updateCodegraphToLatest("npm-global", windows.exec, { platform: "win32" }), { ok: true });
 	assert.deepEqual(windows.calls, [{ command: "npm.cmd", args: ["update", "-g", CODEGRAPH_PACKAGE], timeoutMs: UPDATE_TIMEOUT_MS }], "win32 npm goes through its .cmd shim");
 
-	for (const platform of ["darwin", "linux", "win32"] as const) {
+	for (const platform of ["darwin", "linux"] as const) {
 		const pnpm = execByFirstArg({ pnpm: () => ok("") });
 		assert.deepEqual(await updateCodegraphToLatest("pnpm-global", pnpm.exec, { platform }), { ok: true });
-		assert.deepEqual(pnpm.calls, [{ command: "pnpm", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS }], `${platform}: pnpm spawns directly`);
+		assert.deepEqual(pnpm.calls, [{ command: "pnpm", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS }], `${platform}: the pnpm binary spawns directly`);
 	}
+	const windowsPnpm = execByFirstArg({ "pnpm.cmd": () => ok("") });
+	assert.deepEqual(await updateCodegraphToLatest("pnpm-global", windowsPnpm.exec, { platform: "win32" }), { ok: true });
+	assert.deepEqual(windowsPnpm.calls, [{ command: "pnpm.cmd", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS }], "win32 pnpm runs through its .cmd shim");
 });
 
 test("updateCodegraphToLatest: pnpm-global runs the user-directed update form on every platform", async () => {
-	for (const platform of ["darwin", "linux", "win32"] as const) {
+	for (const platform of ["darwin", "linux"] as const) {
 		const { exec, calls } = execByFirstArg({ pnpm: () => ok("") });
 		const run = await updateCodegraphToLatest("pnpm-global", exec, { platform });
 		assert.deepEqual(run, { ok: true });
-		assert.deepEqual(calls, [{ command: "pnpm", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS }], `${platform}: pnpm spawns directly`);
+		assert.deepEqual(calls, [{ command: "pnpm", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS }], `${platform}: the pnpm binary spawns directly`);
 	}
+	const windows = execByFirstArg({ "pnpm.cmd": () => ok("") });
+	assert.deepEqual(await updateCodegraphToLatest("pnpm-global", windows.exec, { platform: "win32" }), { ok: true });
+	assert.deepEqual(windows.calls, [{ command: "pnpm.cmd", args: ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], timeoutMs: UPDATE_TIMEOUT_MS }], "win32 pnpm answers as pnpm.cmd, the shim bare pnpm resolves");
 });
 
 test("updateCodegraphToLatest: an unknown source never spawns an update", async () => {
@@ -323,6 +351,24 @@ test("runCodegraphUpdateCheck: a stale bun-global binary updates in bun's form a
 	assert.deepEqual(calls[3]?.args, ["update", "-g", CODEGRAPH_PACKAGE, "--latest"], "bun updates in its own form");
 });
 
+test("runCodegraphUpdateCheck: a prerelease running binary is not masked off the stable release", async () => {
+	clearCodegraphUpdateCaches();
+	const home = "/Users/tester";
+	let binary = "codegraph 1.6.4-beta.2\n";
+	const { exec, calls } = execByFirstArg({
+		codegraph: () => ok(binary),
+		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : undefined),
+		which: () => ok(`${home}/.bun/bin/codegraph\n`),
+		bun: () => {
+			binary = "codegraph 1.6.4\n";
+			return ok("");
+		},
+	});
+	const check = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
+	assert.deepEqual(check, { ran: true, version: "1.6.4-beta.2", from: "1.6.4-beta.2", to: "1.6.4" }, "the stable release is reached: the suffix no longer collapses both probes onto one triple");
+	assert.deepEqual(calls.map((call) => call.command), ["codegraph", "npm", "which", "bun", "codegraph"], "update, verify: the verify probe observes the full new identifier");
+});
+
 test("runCodegraphUpdateCheck: an exit-0 no-op is rescued by the exact-version install, or reported", async () => {
 	clearCodegraphUpdateCaches();
 	const home = "/Users/tester";
@@ -386,6 +432,41 @@ test("runCodegraphUpdateCheck: a failed update command keeps the current version
 	assert.match(check.reason ?? "", /EACCES/);
 });
 
+test("runCodegraphUpdateCheck: an unconfirmed teardown of a timed-out update never starts the fallback install", async () => {
+	clearCodegraphUpdateCaches();
+	const home = "/Users/tester";
+	const { exec, calls } = execByFirstArg({
+		codegraph: () => ok("1.6.3\n"),
+		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : undefined),
+		which: () => ok(`${home}/.bun/bin/codegraph\n`),
+		bun: (args) => (args[0] === "update" ? { ...fail("timed out"), teardownUnconfirmed: true } : undefined),
+	});
+	const check = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
+	assert.equal(check.ran, false);
+	assert.equal(check.version, "1.6.3");
+	assert.match(check.reason ?? "", /could not be confirmed/, "the reason names the surviving process tree");
+	assert.deepEqual(calls.map((call) => call.command), ["codegraph", "npm", "which", "bun"], "no exact-version install may race a possibly-surviving installer");
+});
+
+test("runCodegraphUpdateCheck: a failed attempt that still changed the binary reports the transition", async () => {
+	clearCodegraphUpdateCaches();
+	const home = "/Users/tester";
+	let binary = "codegraph 1.6.3\n";
+	const { exec, calls } = execByFirstArg({
+		codegraph: () => ok(binary),
+		npm: (args) => (args[0] === "view" ? ok("1.6.5\n") : undefined),
+		which: () => ok(`${home}/.bun/bin/codegraph\n`),
+		bun: (args) => {
+			if (args[0] === "update") binary = "codegraph 1.6.4\n";
+			return fail("exited 1");
+		},
+	});
+	const check = await runCodegraphUpdateCheck(exec, { platform: "darwin", home });
+	assert.deepEqual(check, { ran: true, version: "1.6.3", from: "1.6.3", to: "1.6.4", reason: check.reason }, "a nonzero exit does not prove the executable unchanged: the transition is the report");
+	assert.match(check.reason ?? "", /1\.6\.4/, "the reason names the observed transition");
+	assert.deepEqual(calls.map((call) => call.command), ["codegraph", "npm", "which", "bun", "bun", "codegraph"], "the final probe re-reads the binary after the failed fallback");
+});
+
 test("ensureCodegraphLatest: the check runs once per process until the cache is cleared", async () => {
 	clearCodegraphUpdateCaches();
 	let probes = 0;
@@ -418,6 +499,11 @@ test("ensureCodegraphLatest: a rejecting exec never rejects the check", async ()
 
 test("defaultExec: the production runner executes the real codegraph shim on win32", { timeout: 30_000 }, async (t) => {
 	if (process.platform !== "win32") return t.skip("win32 real-shim harness");
+	// Skip exactly when the shim is absent — the same availability probe the install-source
+	// detection uses — so a Windows checkout without a global codegraph skips instead of
+	// failing, while the assertions stay untouched whenever the shim is present.
+	const located = await defaultExec("where.exe", ["codegraph"], VERSION_TIMEOUT_MS);
+	if (!located.ok || located.stdout.trim().length === 0) return t.skip("win32 real-shim harness: no codegraph on PATH");
 	const result = await defaultExec("codegraph", ["--version"], VERSION_TIMEOUT_MS);
 	assert.equal(result.ok, true, `the shim path must resolve on win32: stderr=${result.stderr.slice(0, 200)}`);
 	assert.match(result.stdout, /\d+\.\d+\.\d+/, "the real binary answers with a version");
@@ -468,6 +554,61 @@ test("ensureCodegraphInstalled: a failed install falls through; no manager means
 	const outcome = await ensureCodegraphInstalled(none.exec, { platform: "darwin" });
 	assert.equal(outcome.installed, false);
 	assert.match(outcome.reason ?? "", /no available package manager/);
+});
+
+test("ensureCodegraphInstalled: an unconfirmed teardown stops the manager fall-through", async () => {
+	clearCodegraphUpdateCaches();
+	const { exec, calls } = execByFirstArg({
+		which: () => fail("not found"),
+		npm: (args) => (args[0] === "view" ? ok("1.6.4\n") : undefined),
+		bun: (args) => (args[0] === "--version" ? ok("1.x") : { ...fail("timed out"), teardownUnconfirmed: true }),
+	});
+	const outcome = await ensureCodegraphInstalled(exec, { platform: "darwin" });
+	assert.equal(outcome.installed, false);
+	assert.match(outcome.reason ?? "", /could not be confirmed/, "the reason names the surviving process tree");
+	assert.deepEqual(calls.map((call) => call.command), ["which", "npm", "bun", "bun"], "no second manager may start beside a possibly-surviving install");
+});
+
+test("ensureCodegraphInstalled: one in-flight fresh install is shared across concurrent callers", async () => {
+	clearCodegraphUpdateCaches();
+	let addCalls = 0;
+	let onPath = false;
+	const releases: Array<() => void> = [];
+	const { exec } = execByFirstArg({
+		which: () => (onPath ? ok("/Users/tester/.bun/bin/codegraph\n") : fail("not found")),
+		npm: (args) => (args[0] === "view" ? ok("1.6.5\n") : undefined),
+		bun: (args) => {
+			if (args[0] === "--version") return ok("1.x");
+			if (args[0] === "add") {
+				addCalls += 1;
+				return new Promise<ExecResult>((resolve) => {
+					releases.push(() => resolve(ok("installed")));
+				});
+			}
+			return undefined;
+		},
+	});
+	const first = ensureCodegraphInstalled(exec, { platform: "darwin" });
+	const second = ensureCodegraphInstalled(exec, { platform: "darwin" });
+	await new Promise((resolve) => setImmediate(resolve));
+	for (const release of releases) release();
+	assert.deepEqual(await first, { installed: true, via: "bun" });
+	assert.deepEqual(await second, { installed: true, via: "bun" }, "the second caller rides the first caller's install, it never starts its own");
+	assert.equal(addCalls, 1, "one global install serves every concurrent readiness pass");
+	onPath = true;
+	assert.deepEqual(await ensureCodegraphInstalled(exec, { platform: "darwin" }), { installed: true }, "a settled install is not memoized: the next call re-probes PATH");
+	assert.equal(addCalls, 1, "the re-probe finds the shim and installs nothing");
+});
+
+test("ensureCodegraphInstalled: a prerelease registry latest keeps its suffix in the pinned spec", async () => {
+	clearCodegraphUpdateCaches();
+	const { exec, calls } = execByFirstArg({
+		which: () => fail("not found"),
+		npm: (args) => (args[0] === "view" ? ok("1.6.5-rc.1\n") : undefined),
+		bun: (args) => (args[0] === "--version" ? ok("1.x") : args[0] === "add" ? ok("installed") : undefined),
+	});
+	assert.deepEqual(await ensureCodegraphInstalled(exec, { platform: "darwin" }), { installed: true, via: "bun" });
+	assert.deepEqual(calls[3]?.args, ["add", "-g", `${CODEGRAPH_PACKAGE}@1.6.5-rc.1`], "the spec pins the exact prerelease, suffix included");
 });
 
 test("CodegraphInstallSource surface: the three-way classification is the whole vocabulary", () => {

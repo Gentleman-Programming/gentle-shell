@@ -309,6 +309,7 @@ import {
 	type ReviewLastEventClosureBinding,
 	type ReviewLastEventClosureV1,
 	type ReviewStatusV3,
+	reviewContractTooOldRemediation,
 } from "../lib/review-integration-v2.ts";
 import { reconcileUnknownReviewLastEventCapture } from "../lib/review-last-event-controller.ts";
 import { registerYoloSessionPolicy, updateYoloPrompt } from "../lib/yolo-session-policy.ts";
@@ -8079,13 +8080,14 @@ async function resolveReviewModeGate(
 // re-establishes negotiated STATUS for this session's Pi host identity.
 const NATIVE_STATUS_UNSUPPORTED_REMEDIATION_COMMAND = "gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition";
 
-function nativeStatusUnsupported(operation: ReviewControllerOperation): Record<string, unknown> {
+function nativeStatusUnsupported(operation: ReviewControllerOperation, reason?: string): Record<string, unknown> {
 	return {
 		operation,
 		status: "blocked",
 		outcome: "native-status-unsupported",
 		...(operation === REVIEW_CONTROLLER_OPERATION.START ? nativeStartPreAuthorityRejection() : { mutation_performed: false }),
 		inventory_complete: false,
+		...(reason === undefined ? {} : { reason }),
 		next_action: "check-native-provider-capabilities",
 		remediation_command: NATIVE_STATUS_UNSUPPORTED_REMEDIATION_COMMAND,
 		evidence: {
@@ -8135,12 +8137,19 @@ function nativeRequestContextRefusal(operation: string, error: unknown, facts = 
 		next_action: "use-provider-with-request-context-capabilities" };
 }
 
+// The exact "older than the supported vN" message of a decoded
+// version-incompatible error is path-free, so it is the user-facing remediation.
+function nativeContractTooOldReason(error: unknown, facts = readReviewFailureFacts(error)): string | undefined {
+	if (facts.cli?.code !== NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE || !isRecord(error)) return undefined;
+	return reviewContractTooOldRemediation(error.message);
+}
+
 function nativeStatusFailed(operation: ReviewControllerOperation, error: unknown): Record<string, unknown> {
 	const facts = readReviewFailureFacts(error);
 	const contextRefusal = nativeRequestContextRefusal(operation, error, facts);
 	if (contextRefusal !== undefined) return contextRefusal;
 	const cliError = facts.cli;
-	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE) return nativeStatusUnsupported(operation);
+	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE) return nativeStatusUnsupported(operation, nativeContractTooOldReason(error, facts));
 	if (cliError?.code === NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING) return nativeStatusPackageBinaryMissing(operation, cliError.diagnostics);
 	const timedOut = nativeReadOnlyStatusTimedOut(operation, error, facts);
 	if (timedOut !== undefined) return timedOut;
@@ -9204,6 +9213,7 @@ function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_r
 	}
 	const mutationOutcome = facts.mutationOutcome;
 	const nativeCliError = facts.cli;
+	const tooOldReason = nativeContractTooOldReason(error, facts);
 	if (nativeCliError?.code === NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING) return nativeStatusPackageBinaryMissing(operation, nativeCliError.diagnostics);
 	const nativeDiagnostics = nativeCliError?.diagnostics;
 	// Target-status probes use the adapter's review/status diagnostic domain.
@@ -9222,6 +9232,7 @@ function nativeOperationFailure(operation: ReviewControllerOperation | "gentle_r
 		operation,
 		status: "blocked",
 		outcome: "native-operation-failed",
+		...(tooOldReason === undefined ? {} : { reason: tooOldReason }),
 		...(operation === REVIEW_CONTROLLER_OPERATION.START && mutationOutcome === "none"
 			? nativeStartPreAuthorityRejection()
 			: mutationOutcome === "none"

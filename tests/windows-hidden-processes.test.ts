@@ -199,7 +199,14 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 			else process.env.GENTLE_PI_AGENTS_CHILD = previousChildFlag;
 		});
 		const traces: Trace[] = [];
-		const graph = codegraph.createCodeGraphTool();
+		// The init lock is injected as already acquired: the real acquireInitLock derives this
+		// host's lease identity (/usr/sbin/sysctl and /usr/sbin/ioreg on macOS) on its first use,
+		// and those execFileSync probes belong to the lease, not to the CodeGraph route under
+		// test — they never run on win32 and carry no windowsHide concern. The CodeGraph runner
+		// stays at its default so the real spawn boundaries remain under test.
+		const graph = codegraph.createCodeGraphTool(undefined, {
+			initLock: async () => ({ outcome: "acquired", nonce: "windows-hidden-fixture", release: () => {}, adopt: () => {} }),
+		});
 		assert.equal(typeof graph.execute, "function", "CodeGraph public handler must be registered");
 		const graphResult = await trace(captures, traces, "CodeGraph init", () => graph.execute("capture", { operation: "init" }, undefined, undefined, { cwd } as never), [
 			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--show-toplevel"] },

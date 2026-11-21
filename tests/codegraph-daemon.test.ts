@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,14 +25,21 @@ interface FakeDaemon {
 	connections: () => number;
 }
 
+/** POSIX bind root for the fake daemon's socket: always short, so a long TMPDIR cannot push the
+ * fixture path past the platform's Unix socket path limit (~104 bytes on macOS, 108 on Linux). */
+const POSIX_SOCKET_ROOT = "/tmp";
+
 /**
  * The path the fake daemon binds: a unique \\.\pipe\ name on Windows — an IPC path there must live
  * in the pipe namespace or server.listen fails and daemon.ready never resolves, the same pipe
- * handling lib/codegraph-daemon.ts speaks — and the socket file next to the registry elsewhere.
+ * handling lib/codegraph-daemon.ts speaks — and a socket file under a short temporary root of its
+ * own elsewhere, because the mkdtemp home next to the registry grows with TMPDIR.
  */
-function fakeDaemonSocketPath(platform: NodeJS.Platform, home: string): string {
+function fakeDaemonSocketPath(t: test.TestContext, platform: NodeJS.Platform): string {
 	if (platform === "win32") return `\\\\.\\pipe\\gentle-shell-codegraph-daemon-${randomUUID()}`;
-	return join(home, "daemon.sock");
+	const shortHome = mkdtempSync(join(POSIX_SOCKET_ROOT, "cg-daemon-"));
+	t.after(() => rmSync(shortHome, { recursive: true, force: true }));
+	return join(shortHome, "daemon.sock");
 }
 
 /**
@@ -58,7 +65,7 @@ function fakeDaemon(
 	const home = dir(t, "home");
 	const registryDir = options.registryDir ?? join(home, ".codegraph", "daemons");
 	mkdirSync(registryDir, { recursive: true });
-	const socketPath = fakeDaemonSocketPath(process.platform, home);
+	const socketPath = fakeDaemonSocketPath(t, process.platform);
 	let resolveReady: () => void = () => {};
 	let rejectReady: (error: Error) => void = () => {};
 	const ready = new Promise<void>((resolve, reject) => {
@@ -108,14 +115,28 @@ test("exploreViaDaemon answers through the daemon socket without spawning a proc
 	assert.deepEqual(result, { status: "ok", text: "daemon answer" });
 });
 
-test("the fake daemon binds a unique Windows named pipe and a socket file elsewhere", (t) => {
-	const home = dir(t, "socket-path");
-	const pipe = fakeDaemonSocketPath("win32", home);
+test("the fake daemon binds a unique Windows named pipe and a short socket path elsewhere", (t) => {
+	const pipe = fakeDaemonSocketPath(t, "win32");
 	assert.ok(pipe.startsWith("\\\\.\\pipe\\"), "a Windows IPC path must live in the \\\\.\\pipe\\ namespace");
-	assert.ok(!pipe.includes(home), "the pipe name carries no filesystem path");
-	assert.notEqual(pipe, fakeDaemonSocketPath("win32", home), "every daemon binds its own pipe");
-	assert.equal(fakeDaemonSocketPath("darwin", home), join(home, "daemon.sock"), "other platforms keep the socket file next to the registry");
-	assert.equal(fakeDaemonSocketPath("linux", home), join(home, "daemon.sock"));
+	assert.ok(!pipe.includes(POSIX_SOCKET_ROOT), "the pipe name carries no filesystem path");
+	assert.notEqual(pipe, fakeDaemonSocketPath(t, "win32"), "every daemon binds its own pipe");
+	// However long TMPDIR is, the POSIX bind path stays far inside the Unix socket path budget
+	// (~104 bytes on macOS, 108 on Linux): the fixture binds under a short root of its own instead
+	// of the mkdtemp home, whose length follows TMPDIR and once pushed daemon.ready into rejecting
+	// before any query reached the client code.
+	const longTmp = mkdtempSync(join(tmpdir(), "gentle-codegraph-daemon-long-tmpdir-" + "pad-".repeat(10)));
+	t.after(() => rmSync(longTmp, { recursive: true, force: true }));
+	const previousTmpdir = process.env.TMPDIR;
+	process.env.TMPDIR = longTmp;
+	t.after(() => {
+		if (previousTmpdir === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = previousTmpdir;
+	});
+	const posix = fakeDaemonSocketPath(t, "darwin");
+	assert.ok(posix.startsWith(join(POSIX_SOCKET_ROOT, "cg-daemon-")), "the socket binds under the fixture's short root");
+	assert.ok(posix.endsWith("daemon.sock"), "other platforms keep the socket file name");
+	assert.ok(posix.length <= 92, `the bind path stays short under any TMPDIR (got ${posix.length} bytes)`);
+	assert.equal(fakeDaemonSocketPath(t, "linux").endsWith("daemon.sock"), true);
 });
 
 test("exploreViaDaemon treats a protocol mismatch or a broken reply as unavailable", async (t) => {
@@ -330,6 +351,33 @@ test("registeredDaemons reads the registry once per project per window", (t) => 
 	assert.equal(fresh[0]?.startedAt, 2, "after the reset the mutated record is read again");
 });
 
+test("a memoized registry match is rechecked against its root before it is returned", (t) => {
+	const home = dir(t, "junction");
+	const checkoutA = join(home, "checkout-a");
+	const checkoutB = join(home, "checkout-b");
+	const junction = join(home, "junction");
+	mkdirSync(checkoutA);
+	mkdirSync(checkoutB);
+	symlinkSync(checkoutA, junction);
+	const registry = dir(t, "junction-registry");
+	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: junction, socketPath: join(registry, "daemon.sock"), startedAt: 1, pid: process.pid }));
+	assert.equal(registeredDaemons(checkoutA, registry).length, 1, "a junction to checkout A answers for checkout A");
+	rmSync(junction);
+	symlinkSync(checkoutB, junction);
+	// The registry file did not change, so the memo key cannot either: only rechecking the cached
+	// record's canonical root catches a junction that moved to checkout B inside the window.
+	assert.equal(registeredDaemons(checkoutA, registry).length, 0, "the retargeted junction stops answering for checkout A inside the memo window");
+});
+
+test("a spent discovery deadline reads and canonicalizes no record at all", (t) => {
+	const project = dir(t, "spent-scan");
+	const registry = dir(t, "spent-scan-registry");
+	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: project, socketPath: join(registry, "daemon.sock"), startedAt: 1, pid: process.pid }));
+	assert.deepEqual(registeredDaemons(project, registry, process.platform, Date.now() - 1), [], "discovery inside a spent query budget answers promptly with no candidates");
+	// The prompt empty answer is partial, not a verdict: a later undated read still finds the record.
+	assert.equal(registeredDaemons(project, registry).length, 1);
+});
+
 test("registry roots in any separator spelling match the project", async (t) => {
 	const project = dir(t, "spelling");
 	const daemon = fakeDaemon(t, `${project}//`, HELLO, INITIALIZED, ANSWER);
@@ -352,6 +400,20 @@ test("liveDaemons keeps only the records whose pid is alive and socket present",
 	writeFileSync(join(registry, "two.json"), JSON.stringify({ root: project, socketPath: deadSocket, startedAt: 3, pid: exited.pid }));
 	writeFileSync(join(registry, "three.json"), JSON.stringify({ root: project, socketPath: join(registry, "gone.sock"), startedAt: 1, pid: process.pid }));
 	assert.deepEqual(liveDaemons(project, registry).map((entry) => entry.socketPath), [liveSocket], "a dead pid and a missing socket file are not live daemons");
+});
+
+test("a registry record whose pid is not a positive integer is never a live daemon", (t) => {
+	const project = dir(t, "pid-shape");
+	const registry = dir(t, "pid-shape-registry");
+	const socket = join(registry, "daemon.sock");
+	writeFileSync(socket, "");
+	writeFileSync(join(registry, "zero.json"), JSON.stringify({ root: project, socketPath: socket, startedAt: 3, pid: 0 }));
+	writeFileSync(join(registry, "group.json"), JSON.stringify({ root: project, socketPath: socket, startedAt: 2, pid: -1 }));
+	// pid 0 passes signal 0 on POSIX — it addresses the caller's own process group, exactly the
+	// spelling a shutdown path must never signal — so such a record must not read as a live daemon.
+	assert.deepEqual(liveDaemons(project, registry).map((entry) => entry.socketPath), [], "pid 0 and a negative pid are process-group spellings, not daemons");
+	writeFileSync(join(registry, "real.json"), JSON.stringify({ root: project, socketPath: socket, startedAt: 1, pid: process.pid }));
+	assert.deepEqual(liveDaemons(project, registry).map((entry) => entry.socketPath), [socket], "a positive pid keeps reading as live");
 });
 
 test("mcpLineReader buffers chunks, skips empty and unparseable lines, stops on a truthy reply", () => {
@@ -573,4 +635,36 @@ test("mcpLineReader applies one frame measure whether the newline shares the chu
 	assert.equal(read('{"id":2}  '), false, "the same padded frame is buffered while its newline is pending");
 	assert.equal(read("\n"), false, "and dispatches when the newline follows separately");
 	assert.deepEqual(replies, [{ id: 2 }], "the split arrival dispatches the same padded frame");
+});
+
+test("mcpLineReader bounds a completed frame's padding like a pending one", () => {
+	// '{"id":2}' is 8 characters; the cap is 9. The reply content fits — only its padding crosses
+	// the cap — and the same bytes must live or die identically whichever chunk carries the newline.
+	const pending = mcpLineReader(() => false, 9);
+	assert.equal(pending('{"id":2}' + " ".repeat(10)), true, "the padded frame pending its newline answers overflow in whitespace alone");
+	const complete = mcpLineReader(() => false, 9);
+	assert.equal(complete('{"id":2}' + " ".repeat(10) + "\n"), true, "the same padded frame with its newline is a runaway too, not a dispatched reply");
+	// Short padding — under the cap on its own — stays valid in both layouts.
+	const replies: Array<McpReply | undefined> = [];
+	const accepted = mcpLineReader((message) => {
+		replies.push(message);
+		return false;
+	}, 9);
+	assert.equal(accepted('{"id":2}' + " ".repeat(8)), false, "content and padding each under the cap stay pending");
+	assert.equal(accepted("\n"), false);
+	assert.deepEqual(replies, [{ id: 2 }], "the short padding dispatches when its newline follows separately");
+	assert.equal(accepted('{"id":3}' + " ".repeat(8) + "\n"), false);
+	assert.deepEqual(replies, [{ id: 2 }, { id: 3 }], "and in one chunk alike");
+});
+
+test("mcpLineReader dispatches every frame of a multi-frame chunk under the cap", () => {
+	const replies: Array<McpReply | undefined> = [];
+	const read = mcpLineReader((message) => {
+		replies.push(message);
+		return false;
+	}, 9);
+	// Two frames each under the cap ride one chunk whose combined length crosses it: the cap
+	// measures frames, not chunks, so both replies dispatch.
+	assert.equal(read('{"id":1}\n{"id":2}\n'), false);
+	assert.deepEqual(replies, [{ id: 1 }, { id: 2 }]);
 });

@@ -123,3 +123,14 @@ test("native fullscreen interaction preserves Container geometry and SelectList 
 	assert.equal(click?.handled, true);
 	assert.deepEqual(selected, ["second", "second"]);
 });
+
+test("native fullscreen interaction ignores mouse events without finite geometry", () => {
+	const seen: string[] = [];
+	const interaction = createNativeFullscreenInteraction({
+		keyboardTarget: new Text("x", 0, 0),
+		requestRender() {},
+		mouseObserver: { beforeMouse: () => seen.push("before"), afterMouse: () => seen.push("after") },
+	});
+	assert.equal(interaction.handleMouse({ type: "click" } as unknown as TuiMouseEvent), undefined);
+	assert.deepEqual(seen, [], "a malformed event is not observed");
+});

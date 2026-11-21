@@ -653,9 +653,7 @@ function planBannerWrite(data: unknown, root: DesktopConfigRoots, expected: stri
 function planNotificationsWrite(data: unknown, root: DesktopConfigRoots, expected: string): WritePlan {
 	const current = readNotificationsFile(root);
 	const currentValue = current.status === "valid" ? current.settings : undefined;
-	const writeRevision = configWriteRevision("notifications", "global", current.status === "valid" ? "ok" : current.status, currentValue);
-	const conflict = revisionConflict(expected, writeRevision);
-	if (conflict) return { error: conflict };
+	// Payload first, then the revision, in the documented order every store follows.
 	if (!isRecordValue(data) || !isRecordValue(data.audio) || !isRecordValue(data.audio.events)) return { error: INVALID_DATA };
 	const events: Record<string, unknown> = {};
 	for (const [event, sound] of Object.entries(data.audio.events)) {
@@ -670,6 +668,9 @@ function planNotificationsWrite(data: unknown, root: DesktopConfigRoots, expecte
 	}
 	const settings = { ...data, audio: { ...data.audio, events } };
 	if (!isNotificationSettings(settings)) return { error: INVALID_DATA };
+	const writeRevision = configWriteRevision("notifications", "global", current.status === "valid" ? "ok" : current.status, currentValue);
+	const conflict = revisionConflict(expected, writeRevision);
+	if (conflict) return { error: conflict };
 	const changed = currentValue === undefined || canonicalJson(currentValue) !== canonicalJson(settings);
 	return { target: "global", writeRevision, changed, write: () => { writeNotificationSettings(settings, { gentlePiConfigHome: root.configHome }); } };
 }

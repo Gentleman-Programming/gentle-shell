@@ -171,3 +171,40 @@ test("settings writes do not wait for a profile apply", async (t) => {
 	assert.equal((await e.write("banner", { showRose: true, showTextLogo: false, color: "green" })).ok, true);
 	assert.equal((await e.write("persona", { mode: "neutral" })).ok, true);
 });
+
+// ---- Independent verification follow-ups (L30) ----
+
+test("notifications validate data before the revision", async (t) => {
+	const e = env(t);
+	const stale = await e.revision("notifications");
+	notificationsFile(e, { ...structuredClone(DEFAULT_NOTIFICATION_SETTINGS), enabled: true });
+	const bad = structuredClone(DEFAULT_NOTIFICATION_SETTINGS) as any;
+	bad.audio.minimumIntervalMs = -5;
+	assert.equal((await e.write("notifications", bad, stale)).error?.code, "invalid_data");
+});
+
+test("only the profile stores wait for an apply", async (t) => {
+	const e = env(t);
+	assert.ok(beginDesktopProfileApply());
+	t.after(endDesktopProfileApply);
+	const settings = structuredClone(DEFAULT_NOTIFICATION_SETTINGS) as any;
+	settings.enabled = true;
+	assert.equal((await e.write("notifications", settings)).ok, true);
+	for (const [store, data] of [["profiles", {}], ["profile_fallbacks", {}], ["pins", { source: "repo", profile: null }]] as const) {
+		assert.equal(((await e.bridge.handle("set_config", { store, data, expectedRevision: "sha256:x" })) as any).error?.code, "profile_apply_busy");
+	}
+});
+
+test("a file marker never moves a file sound to another event", async (t) => {
+	const e = env(t);
+	const [first, second] = NOTIFICATION_EVENTS;
+	const settings = structuredClone(DEFAULT_NOTIFICATION_SETTINGS) as any;
+	settings.audio.events[first!] = FILE_SOUND;
+	notificationsFile(e, settings);
+	const path = join(e.configHome, "notifications.json");
+	const before = readFileSync(path, "utf8");
+	const value = (await e.read("notifications")).value;
+	value.audio.events[second!] = "file";
+	assert.equal((await e.write("notifications", value)).error?.code, "invalid_data");
+	assert.equal(readFileSync(path, "utf8"), before);
+});

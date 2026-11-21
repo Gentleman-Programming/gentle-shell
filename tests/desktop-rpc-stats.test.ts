@@ -179,8 +179,9 @@ test("get_usage_stats defaults to the last 7 days of the current project", async
 		scope: "project",
 		totals: { sessions: 1, messages: 2, inputTokens: 110, outputTokens: 55, cacheReadTokens: 1000, cacheWriteTokens: 200, totalTokens: 1365, cost: 0.51 },
 		byModel: [{ model: "claude-opus-5-5", messages: 2, tokens: 1365, cost: 0.51, share: 1 }],
-		byDay: [{ day: localDay("2026-10-09T12:00:00.000Z"), tokens: 1365 }],
-		truncated: { byModel: false, byDay: false },
+		byDay: [{ day: localDay("2026-10-09T12:00:00.000Z"), tokens: 1365, cost: 0.51 }],
+		byProvider: [{ provider: "test-provider", messages: 2, tokens: 1365, cost: 0.51, share: 1 }],
+		truncated: { byModel: false, byDay: false, byProvider: false },
 	});
 });
 
@@ -199,29 +200,30 @@ test("get_usage_stats honors range and scope exactly like aggregateStats, with p
 			{ model: "claude-opus-5-5", messages: 2, tokens: 1365, cost: 0.51, share: 1365 / 2665 },
 			{ model: "gpt-5.5", messages: 2, tokens: 1300, cost: 1.25, share: 1300 / 2665 },
 		],
-		byDay: [{ day: localDay("2026-09-20T12:00:00.000Z"), tokens: 1000 }, { day: localDay("2026-10-08T12:00:00.000Z"), tokens: 300 }, { day: localDay("2026-10-09T12:00:00.000Z"), tokens: 1365 }],
+		byDay: [{ day: localDay("2026-09-20T12:00:00.000Z"), tokens: 1000, cost: 1 }, { day: localDay("2026-10-08T12:00:00.000Z"), tokens: 300, cost: 0.25 }, { day: localDay("2026-10-09T12:00:00.000Z"), tokens: 1365, cost: 0.51 }],
+		byProvider: [{ provider: "test-provider", messages: 4, tokens: 2665, cost: 1.76, share: 1 }],
 		byProject: [
 			{ name: "alpha", sessions: 2, messages: 3, tokens: 2365, cost: 1.51 },
 			{ name: "beta", sessions: 1, messages: 1, tokens: 300, cost: 0.25 },
 		],
-		truncated: { byModel: false, byDay: false, byProject: false },
+		truncated: { byModel: false, byDay: false, byProvider: false, byProject: false },
 	});
 
 	assert.equal(all.data.range, "all");
 	assert.equal(all.data.totals.sessions, 4);
 	assert.equal(all.data.totals.totalTokens, 2675);
-	assert.deepEqual(all.data.byDay[0], { day: localDay("2025-01-01T12:00:00.000Z"), tokens: 10 });
+	assert.deepEqual(all.data.byDay[0], { day: localDay("2025-01-01T12:00:00.000Z"), tokens: 10, cost: 0 });
 	assert.deepEqual(all.data.byProject.map((project: { name: string; sessions: number }) => [project.name, project.sessions]), [["alpha", 3], ["beta", 1]]);
 
 	// Project scope never carries a project breakdown.
 	assert.equal(allProject.data.scope, "project");
 	assert.equal(allProject.data.totals.sessions, 3);
 	assert.equal("byProject" in allProject.data, false);
-	assert.deepEqual(allProject.data.truncated, { byModel: false, byDay: false });
+	assert.deepEqual(allProject.data.truncated, { byModel: false, byDay: false, byProvider: false });
 
 	// No path, session id, or message text ever reaches the wire.
 	const wire = app.widgets.join("\n");
-	for (const secret of ["/home/devel", "secret/", "s-alpha", "s-beta", "secret prompt text", "secret answer text", "test-provider"]) {
+	for (const secret of ["/home/devel", "secret/", "s-alpha", "s-beta", "secret prompt text", "secret answer text"]) {
 		assert.equal(wire.includes(secret), false, secret);
 	}
 });
@@ -246,7 +248,7 @@ test("get_usage_stats bounds models, days, and projects and flags truncation whi
 	assert.equal(data.byModel.length, 50);
 	assert.equal(data.byDay.length, 400);
 	assert.equal(data.byProject.length, 50);
-	assert.deepEqual(data.truncated, { byModel: true, byDay: true, byProject: true });
+	assert.deepEqual(data.truncated, { byModel: true, byDay: true, byProvider: false, byProject: true });
 	// The most recent days are kept, oldest first; the largest project leads.
 	assert.equal(data.byDay.at(-1).day, localDayKey(NOW));
 	assert.equal(data.byDay[0].day, localDayKey(NOW - 399 * DAY_MS));

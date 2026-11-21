@@ -991,12 +991,13 @@ Success:
       { "model": "claude-opus-5-5", "messages": 2, "tokens": 1365, "cost": 0.51, "share": 0.512 },
       { "model": "gpt-5.5", "messages": 2, "tokens": 1300, "cost": 1.25, "share": 0.488 }
     ],
-    "byDay": [{ "day": "2026-09-20", "tokens": 1000 }, { "day": "2026-10-08", "tokens": 300 }, { "day": "2026-10-09", "tokens": 1365 }],
+    "byDay": [{ "day": "2026-09-20", "tokens": 1000, "cost": 1 }, { "day": "2026-10-08", "tokens": 300, "cost": 0.25 }, { "day": "2026-10-09", "tokens": 1365, "cost": 0.51 }],
+    "byProvider": [{ "provider": "anthropic", "messages": 4, "tokens": 2665, "cost": 1.76, "share": 1 }],
     "byProject": [
       { "name": "alpha", "sessions": 2, "messages": 3, "tokens": 2365, "cost": 1.51 },
       { "name": "beta", "sessions": 1, "messages": 1, "tokens": 300, "cost": 0.25 }
     ],
-    "truncated": { "byModel": false, "byDay": false, "byProject": false }
+    "truncated": { "byModel": false, "byDay": false, "byProvider": false, "byProject": false }
   }
 }
 ```
@@ -1005,11 +1006,12 @@ Success:
 | --- | --- |
 | `totals` | Sessions with at least one assistant usage record in range, those records (`messages`), their token counts, `totalTokens` (each record's own total, or the sum of its parts when it has none), and `cost` in the provider's currency units. Totals always cover the whole range, even when an array below is truncated. |
 | `byModel` | One row per model id, largest `tokens` first; `share` is the model's fraction of `totals.totalTokens`. At most 50 rows. |
-| `byDay` | Tokens per local calendar day (`YYYY-MM-DD`) with any usage, oldest first. At most 400 rows: the most recent days are kept. |
+| `byDay` | Tokens and cost per local calendar day (`YYYY-MM-DD`) with any usage, oldest first. At most 400 rows: the most recent days are kept. |
+| `byProvider` | One row per provider id (as Pi records it on each assistant message, `unknown` when missing), largest `tokens` first; `share` is the provider's fraction of `totals.totalTokens`. At most 50 rows. |
 | `byProject` | Present only for `scope: "all"`. One row per working directory, shown by its display name (the last path segment, never the path), largest `tokens` first. Two directories with the same last segment stay two rows. At most 50 rows. |
 | `truncated` | `true` for each array that had more rows than its bound. `byProject` appears only with `byProject`. |
 
-Model ids and project names longer than 128 characters are cut. No session id, path, provider, prompt, or message text ever crosses the wire. The panel's other figures (streaks, most active day, longest session) are not part of this answer. When no sessions root can be read, or the stats owner is not loaded, the answer is `stats_unavailable` — never a fabricated zero.
+Model ids, provider ids, and project names longer than 128 characters are cut. No session id, path, prompt, or message text ever crosses the wire. The panel's other figures (streaks, most active day, longest session) are not part of this answer. When no sessions root can be read, or the stats owner is not loaded, the answer is `stats_unavailable` — never a fabricated zero.
 
 ### `apply_profile`
 
@@ -1850,7 +1852,7 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **One owner, one loader, one aggregation.** `get_usage_stats` reaches the `/gentle:stats` owner in `extensions/gentle-stats.ts` through a defensive, versioned owner-service adapter, the stats analogue of the jobs seam. The owner reads the same sessions roots as the panel (the active home and the user's original Pi home) with the panel's own loader instance, so both share one size/mtime cache: an unchanged session file is never re-read. Totals, models, and days come from the panel's `aggregateStats` with the requested range and scope; each project row is that same aggregation scoped to one project. There is no second parser, cache, or store.
 - **Shared in-flight load.** The loader answers concurrent loads of the same roots with one in-flight scan, so overlapping Desktop requests (or a request while the panel is loading) read the history once. The scan is asynchronous and streams files line by line; nothing is persisted.
 - **Read only, no event.** This slice has exactly one method and no event. History changes as sessions run; a client re-reads when it wants fresh numbers.
-- **Safe, bounded projection.** The wire carries counts, token sums, costs, model ids, day keys, and project display names only. Arrays are capped (models 50, days 400, projects 50) with a `truncated` flag per array; totals stay complete. A session's id, path, provider, or message text never crosses, and a raw read failure is answered with the fixed `stats_unavailable` message.
+- **Safe, bounded projection.** The wire carries counts, token sums, costs, model ids, provider ids, day keys, and project display names only. Arrays are capped (models 50, days 400, providers 50, projects 50) with a `truncated` flag per array; totals stay complete. A session's id, path, provider, or message text never crosses, and a raw read failure is answered with the fixed `stats_unavailable` message.
 - **Truthful absence.** When no sessions root can be read, or the owner is not loaded, the answer is `stats_unavailable`. A readable root with no usage answers zeros, which is the truth.
 - **Same numbers as the panel, including its gaps.** Records the panel counts are counted here too: an assistant record with zero usage still counts as a message (see #1921). This slice does not change what the aggregation counts.
 

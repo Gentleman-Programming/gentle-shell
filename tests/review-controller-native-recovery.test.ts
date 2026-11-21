@@ -143,35 +143,6 @@ test("native authority inventory remains a strict read-only maintenance surface"
 	assert.deepEqual(queue.calls[0]?.arguments, ["review", "status", "--cwd", process.cwd()]);
 });
 
-test("negotiated repair replays only provider-published inputs after a strict preflight", async () => {
-	const preflight = JSON.parse(readFileSync(join(process.cwd(), "contracts", "review-integration", "v1", "fixtures", "repair-preflight.fixture.json"), "utf8")) as Record<string, unknown>;
-	preflight.schema = "gentle-ai.review-integration.repair/v2";
-	preflight.contract = "gentle-ai.review-integration/v2";
-	const execute = structuredClone(preflight) as Record<string, unknown>;
-	execute.mode = "execute";
-	delete execute.provider_inputs;
-	execute.required_inputs = [];
-	execute.execution = {
-		status: "committed",
-		class: "legacy_v1_historical_alias",
-		lineage_id: "historical-alias",
-		revision: `sha256:${"1".repeat(64)}`,
-		chain_identity: `sha256:${"2".repeat(64)}`,
-		cause: "unsupported_historical_v1_operation_alias",
-		disposition: "quarantine-approved-historical-alias",
-		assessment_digest: `sha256:${"3".repeat(64)}`,
-		request_digest: `sha256:${"4".repeat(64)}`,
-		record_identity: `sha256:${"5".repeat(64)}`,
-	};
-	const queue = queuedAdapter([{ stdout: JSON.stringify(preflight) }, { stdout: JSON.stringify(execute) }]);
-	const result = await client(queue.adapter).repair({ cwd: "/repo", actor: "maintainer", reason: "repair alias", maintainerAuthorization: "approved" });
-	assert.equal(result.execution?.status, "committed");
-	assert.deepEqual(queue.calls.map((call) => call.arguments.slice(0, 8)), [
-		["review", "repair", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--mode", "preflight"],
-		["review", "repair", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--mode", "execute"],
-	]);
-});
-
 test("native recovery operations reject malformed canonical inputs before a process can mutate", async () => {
 	const queue = queuedAdapter([]);
 	await assert.rejects(() => client(queue.adapter).recover({

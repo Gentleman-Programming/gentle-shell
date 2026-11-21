@@ -714,20 +714,27 @@ export function renderShellBar(model: ShellBarModel, theme: ShellBarTheme, width
 	let segments = buildSegments(model, theme, presentation, paint);
 	const right = model.sessionName ? theme.fg(ROLE.SESSION, model.sessionName) : undefined;
 
+	const withSessionName = (line: string): string[] | undefined => {
+		if (!right) return;
+		const padding = width - visibleWidth(line) - visibleWidth(right);
+		if (padding >= RIGHT_PADDING) return [line + " ".repeat(padding) + right];
+	};
 	let left = joinSegments(segments, theme);
-	if (right && visibleWidth(left) + RIGHT_PADDING + visibleWidth(right) <= width) {
-		const padding = " ".repeat(width - visibleWidth(left) - visibleWidth(right));
-		return [left + padding + right];
-	}
+	const named = withSessionName(left);
+	if (named) return named;
 
+	const tooWide = visibleWidth(left) > width;
+	const compact = model.contextHeadroom !== undefined && (right || tooWide) ? { ...model, contextHeadroom: undefined } : model;
+	if (compact !== model) {
+		const bareSegments = buildSegments(compact, theme, presentation, paint);
+		const bareLeft = joinSegments(bareSegments, theme);
+		const bareNamed = withSessionName(bareLeft);
+		if (bareNamed) return bareNamed;
+		if (tooWide) { segments = bareSegments; left = bareLeft; }
+	}
 	if (visibleWidth(left) > width) {
-		const compact = model.contextHeadroom === undefined ? model : { ...model, contextHeadroom: undefined };
-		segments = buildSegments(compact, theme, presentation, paint);
+		segments = buildSegments(compactModel(compact), theme, presentation);
 		left = joinSegments(segments, theme);
-		if (visibleWidth(left) > width) {
-			segments = buildSegments(compactModel(compact), theme, presentation);
-			left = joinSegments(segments, theme);
-		}
 	}
 	while (segments.length > 1 && visibleWidth(left) > width) {
 		segments.pop();

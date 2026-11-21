@@ -313,6 +313,17 @@ test("renderShellBar right-aligns the session name when it fits", () => {
 	assert.match(line, /Release notes$/);
 });
 
+test("renderShellBar drops only compaction detail when that makes room for the session name", () => {
+	const data = model({ cwd: "~/work/gentle-pi", branch: "main", modelId: "gpt-5.5", effort: "medium", sessionName: "Review",
+		contextPercent: 59, contextWindow: 1_048_576, contextHeadroom: 12_146, costTotal: 0, subscription: false });
+	const left = "✿ gentle shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▰▱▱▱ 59%";
+	assert.deepEqual([94, 98, 120].map(width => renderShellBar(data, plainTheme, width)[0]), [
+		left + " ⟡ $0.000   Review",
+		left + " ⟡ $0.000       Review",
+		left + " (12k to compact) ⟡ $0.000" + " ".repeat(12) + "Review",
+	]);
+});
+
 test("renderShellBar appends extension statuses as trailing segments", () => {
 	const [line] = renderShellBar(model({ statuses: ["🔌 MCP: 3 servers\tenabled"] }), plainTheme, 160);
 	assert.match(line, /⟡ 🔌 MCP: 3 servers enabled$/);

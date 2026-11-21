@@ -277,7 +277,13 @@ export default class GentleChat extends View {
     // The snapshot names the exact session file; a terminal without one falls back to its folder.
     const exact = s.feed?.identity?.sessionFile;
     const foreign = Boolean(s.feed) && !hasTranscript(s.feed.identity);
-    if (foreign !== this.foreign) { this.foreign = foreign; cx.notify(); }
+    if (foreign !== this.foreign) {
+      this.foreign = foreign;
+      // The same key can turn foreign (a feed that stops naming a Pi session file): drop the
+      // transcript read earlier, or it would sit beside the notice that we cannot read it.
+      if (foreign) { this.dir = null; this.reset(null); }
+      cx.notify();
+    }
     const where = typeof exact === "string" && exact.endsWith(".jsonl")
       ? { dir: exact.slice(0, Math.max(exact.lastIndexOf("/"), exact.lastIndexOf("\\"))), file: exact, feed: s.feed }
       : foreign ? null : s.terminal ? await sessionFileFor(s.terminal, this.real, this.wantFeeds) : null;

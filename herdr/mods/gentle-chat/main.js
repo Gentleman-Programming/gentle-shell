@@ -21,7 +21,7 @@ import { agents, props, layout, hc, run, setShared, shared, theme, watchFolder, 
 import { readFile } from "fs/promises";
 import { sessionFileFor, readAfter, readTail, utf8 } from "./session.js";
 import { FeedSource, allSessions, targetSession, machineOf, liveState } from "./snapshot.js";
-import { createFeed, ingest, hideThinkingFrom } from "./feed.js";
+import { createFeed, ingest, hideThinkingFrom, hasTranscript } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
 import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, PERM, ELSEWHERE } from "./ui.js";
 import { sendAction, errorText, safeKeys, terminalFree, tuiCommand, showTerminal, confirm, confirmed, readSnapshot } from "./actions.js";
@@ -95,6 +95,9 @@ export default class GentleChat extends View {
     this.requesting = false;
     this.settingsDirs = new Set(); // the folders of the shown session's settings files, watched
     this.real = new Map(); // cwd -> real path, for sessionFileFor
+    // A session that publishes a feed without a Pi session file (another agent): there is no
+    // transcript this view can read, and falling back to the folder would show a different one.
+    this.foreign = false;
     this.open = new Map(); // row id -> open, when flipped from its default (S11: per row, kept across reads)
     this.hunkAt = new Map(); // diff card id -> shown hunk
     this.kept = new Map(); // session file -> { open, hunkAt } of a session shown before
@@ -270,9 +273,11 @@ export default class GentleChat extends View {
     if (machineOf(address)) return;
     // The snapshot names the exact session file; a terminal without one falls back to its folder.
     const exact = s.feed?.identity?.sessionFile;
+    const foreign = Boolean(s.feed) && !hasTranscript(s.feed.identity);
+    if (foreign !== this.foreign) { this.foreign = foreign; cx.notify(); }
     const where = typeof exact === "string" && exact.endsWith(".jsonl")
       ? { dir: exact.slice(0, Math.max(exact.lastIndexOf("/"), exact.lastIndexOf("\\"))), file: exact, feed: s.feed }
-      : s.terminal ? await sessionFileFor(s.terminal, this.real, this.wantFeeds) : null;
+      : foreign ? null : s.terminal ? await sessionFileFor(s.terminal, this.real, this.wantFeeds) : null;
     if (this.key !== key) return;
     if (this.setSnap(where?.feed ?? s.feed ?? null)) cx.notify();
     if (this.settingsOf !== key) await this.readSettings(s, cx);
@@ -389,6 +394,7 @@ export default class GentleChat extends View {
           const paths = await watchFolder(dir);
           if (this.watched !== dir) break;
           const file = this.file;
+          if (this.foreign) return; // nothing to read: the empty state already says why
           if (!file || typeof this.snap?.identity?.sessionFile !== "string") { await this.refreshNow(cx); continue; }
           const name = file.slice(file.lastIndexOf("/") + 1);
           if (!Array.isArray(paths) || paths.some((p) => p === file || p === dir || String(p).endsWith(`/${name}`))) await this.load(cx);
@@ -954,6 +960,8 @@ export default class GentleChat extends View {
     const machine = machineOf(this.address);
     const [title, about] = machine
       ? [`Runs on ${machine}`, `Herdr shows its state and its Terminal (⌘J). Its conversation and desktop feed stay on ${machine}: this window reads this computer's.`]
+      : this.foreign
+      ? ["No transcript for this session", "It publishes a desktop feed but no Pi session file, so this view can only show its Terminal (⌘J)."]
       : !this.key
       ? ["No Gentle Shell session", "Start one with + in the tab bar, or run gentle-shell in a terminal."]
       : !this.file

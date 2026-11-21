@@ -687,6 +687,10 @@ test("acquireInitLock: free path acquires at once", async (t) => {
 	if (outcome.outcome === "acquired") {
 		const path = lockPathFor(cwd, "init", dir);
 		const token = JSON.parse(readFileSync(path, "utf8")) as { nonce: string };
+		// Both nonce equalities below pass vacuously when both sides are undefined: prove the
+		// acquired nonce is a nonempty string first — the shape every downstream nonce fence
+		// (publication, adoption, release) requires of a real acquisition.
+		assert.ok(typeof outcome.nonce === "string" && outcome.nonce.length > 0, "the acquired lease carries a nonempty nonce");
 		assert.equal(outcome.nonce, token.nonce);
 		outcome.adopt(4242, true);
 		assert.equal((JSON.parse(readFileSync(path, "utf8")) as { nonce: string }).nonce, outcome.nonce);
@@ -1089,8 +1093,15 @@ test("malformed lease fields stay unknown even when expired: unsupported kind, n
 
 	writeToken(path, { kind: "init", pid: process.pid, startedAt: Number.NaN, expiresAt: now - 1, host: localHost() });
 	assert.equal(readLeaseVerdict(path, now), "unknown", "a NaN startedAt is unknown");
-	writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: Number.POSITIVE_INFINITY, host: localHost() });
-	assert.equal(readLeaseVerdict(path, now), "unknown", "a non-finite expiry is unknown, never held forever");
+	// JSON.stringify maps Infinity to null, so the non-finite case is written as raw JSON whose
+	// 1e400 literal parses back as the number Infinity — a null expiry is its own case below,
+	// and a validator that rejects null while accepting infinite numbers must fail this one.
+	const host = localHost();
+	const hostField = host === undefined ? "" : `,"host":"${host}"`;
+	writeFileSync(path, `{"kind":"init","pid":${process.pid},"startedAt":${now - 120_000},"expiresAt":1e400${hostField}}\n`);
+	assert.equal(readLeaseVerdict(path, now), "unknown", "an expiry parsed as Infinity is unknown, never held forever");
+	writeToken(path, { kind: "init", pid: process.pid, startedAt: now - 120_000, expiresAt: null, host: localHost() });
+	assert.equal(readLeaseVerdict(path, now), "unknown", "a null expiry is its own unknown case, separate from the infinite one");
 
 	// A well-formed expired token keeps its recovery verdict exactly as before.
 	writeToken(path, { kind: "sync", pid: deadPid(), startedAt: now - 120_000, expiresAt: now - 1, host: localHost() });
@@ -2262,18 +2273,76 @@ test("a third acquirer beside a displaced live token fail-closes: two lease hand
 	renameSync(path, sidecar);
 	const third = tryAcquireLease(path, "sync", 120_000, Date.now());
 	assert.equal(third, undefined, "no lease is granted beside a displaced live record");
-	assert.equal(existsSync(path), false, "the third acquirer published nothing into the window");
-	assert.equal(readFileSync(sidecar, "utf8"), holderBytes, "the displaced record is untouched");
-
-	// The stalled reclaimer's restore completes: the holder's token is back at the path and
-	// still holds — the third acquirer must meet the live holder, not a free path.
-	linkSync(sidecar, path);
-	rmSync(sidecar);
+	// The refusing acquisition recovers the verified-live record onto the empty path instead
+	// of leaving it wedging the path beside itself: the no-replace link cannot replace a
+	// current owner, the holder's lease is effective again at its canonical name, and the
+	// stalled section's own restore is no longer the only way back — never orphaned, never
+	// doubled. (A window whose section is still in flight keeps its mutex, so an acquisition
+	// there fails at the wait and the record stays beside the path, as the restore-window
+	// test above pins.)
+	assert.equal(readFileSync(path, "utf8"), holderBytes, "the displaced live record is restored onto the path byte-for-byte");
+	assert.equal(existsSync(sidecar), false, "the recovery consumed the sidecar name");
 	assert.equal(tryAcquireLease(path, "sync", 120_000, Date.now()), undefined, "the restored live token refuses a second lease");
 
 	writeFileSync(done, "");
 	assert.equal(await closed, 0);
 	assert.equal(readLeaseVerdict(path, Date.now()), "free", "the holder released cleanly");
+});
+
+test("release recovers a lease left at its sidecar path: its own strand goes, another lease's stays", (t) => {
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+	const lease = tryAcquireLease(path, "sync", 120_000, now);
+	assert.ok(lease, "the free path acquires");
+
+	// The transient double-link failure the adoption window can leave behind, materialized:
+	// both the publish link and its restore lost, so this acquisition's live token survives
+	// only at its `.stale` sidecar beside an empty path — where release() must still find it
+	// by nonce instead of leaving acquisitions wedged on it until its TTL.
+	const sidecar = `${path}.${randomUUID()}.stale`;
+	renameSync(path, sidecar);
+	const foreign = `${path}.${randomUUID()}.stale`;
+	const foreignToken = liveToken(now);
+	writeToken(foreign, foreignToken);
+	lease.release();
+	assert.equal(existsSync(sidecar), false, "release removed its own stranded record");
+	assert.equal(existsSync(foreign), true, "another lease's stranded record is never touched");
+	assert.equal(readFileSync(foreign, "utf8"), `${JSON.stringify(foreignToken)}\n`, "the foreign sidecar is byte-for-byte untouched");
+
+	// Nothing of this acquisition wedges the path: once the foreign record is explained (its
+	// own holder's lifecycle or cleanup), the path acquires again.
+	rmSync(foreign, { force: true });
+	const fresh = tryAcquireLease(path, "sync", 120_000, now);
+	assert.ok(fresh, "the path is not wedged past the cleanup");
+	fresh.release();
+	assert.equal(readLeaseVerdict(path, now), "free");
+});
+
+test("an acquisition restores a verified-live displaced record instead of wedging the path beside it", (t) => {
+	const dir = locksDir(t);
+	const path = join(dir, "token.json");
+	const now = Date.now();
+
+	// A live holder's record stranded at its sidecar beside an empty path: acquisitions must
+	// refuse it (fail-closed), but refusing is not enough — the verified-live record is the
+	// path's own lease, and recovering it onto the empty path un-wedges every later verdict
+	// and release without ever handing the lease to the refusing session.
+	const sidecar = `${path}.${randomUUID()}.stale`;
+	writeToken(sidecar, liveToken(now));
+	assert.equal(tryAcquireLease(path, "sync", 120_000, now), undefined, "no lease is granted beside the displaced live record");
+	assert.equal(existsSync(sidecar), false, "the live record was recovered onto the path, not left beside it");
+	assert.equal(readLeaseVerdict(path, now), "held-live", "the recovered record holds at its canonical path");
+	assert.equal(tryAcquireLease(path, "sync", 120_000, now), undefined, "the restored live token still refuses the next acquisition");
+
+	// An unexplained (unknown) sidecar keeps the fail-closed refusal without being restored:
+	// liveness cannot be proven, so the record stays exactly where it was for its TTL.
+	const cryptic = `${path}.${randomUUID()}.stale`;
+	rmSync(path);
+	writeFileSync(cryptic, "{not json");
+	assert.equal(tryAcquireLease(path, "sync", 120_000, now), undefined, "an unexplained displaced record still fail-closes");
+	assert.equal(existsSync(cryptic), true, "the unproven record is left for its TTL, not restored or dropped");
+	assert.equal(existsSync(path), false, "nothing was published beside it");
 });
 
 test("an external writer installed during proven mutex contention blocks the free-path publish", async (t) => {
@@ -2341,6 +2410,81 @@ test("an external writer installed during proven mutex contention blocks the fre
 	lease.release();
 	assert.equal(readLeaseVerdict(path, Date.now()), "free");
 	assert.equal(await closed, 0);
+});
+
+test("win32 sync acquisition: a writer lock installed during the mutex wait invalidates the memoized writer observation", async (t) => {
+	const dir = locksDir(t);
+	const cwd = project(t);
+	const path = join(dir, "token.json");
+	const mutex = `${path}.mutex`;
+	const now = Date.now();
+	// A stale token whose reclamation contends on a live mutex — exactly the acquisition a
+	// daemonless sync makes on win32, where one attempt memoizes its writer-lock read across
+	// the whole composite verdict sequence.
+	writeToken(path, { kind: "sync", pid: deadPid(), startedAt: now - 120_000, expiresAt: now - 1, host: localHost() });
+	writeToken(mutex, { pid: process.pid, startedAt: now, expiresAt: now + 60_000, nonce: randomUUID() });
+	const staleBytes = readFileSync(path, "utf8");
+	mkdirSync(join(cwd, ".codegraph"), { recursive: true });
+
+	const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-lease-syncmemo-")));
+	t.after(() => rmSync(sandbox, { recursive: true, force: true }));
+	const started = join(sandbox, "started");
+	const marker = join(sandbox, "result");
+	const script = join(sandbox, "child.mjs");
+	// Atomics.wait is the seam sleepSync slices on, reachable only inside a contended per-path
+	// mutex wait — after the pre-wait verdict already cached writer=false. The first slice
+	// installs a live CodeGraph writer (this child's own pid, confirmed live right there) and
+	// releases the mutex, so the section the child then enters re-verdicts with the writer
+	// recorded: the cached observation must not survive the wait it slept through.
+	writeFileSync(script, [
+		'import { rmSync, writeFileSync } from "node:fs";',
+		"const [libHref, tokenPath, cwd, started, marker, mutex] = process.argv.slice(2);",
+		"const realWait = Atomics.wait;",
+		"let sliced = false;",
+		"Atomics.wait = (...args) => {",
+			"if (!sliced) {",
+				"sliced = true;",
+				"process.kill(process.pid, 0); // the recorded writer pid is this live child's own",
+				"writeFileSync(cwd + \"/.codegraph/codegraph.lock\", String(process.pid));",
+				"rmSync(mutex, { force: true }); // the holder releases mid-wait",
+			"}",
+			"return realWait(...args);",
+		"};",
+		"const { tryAcquireLease } = await import(libHref);",
+		"writeFileSync(started, \"\");", // after the import: the verdict runs next, inside this tick
+		"const lease = tryAcquireLease(tokenPath, \"sync\", 60_000, Date.now(), cwd, 5_000, \"win32\");",
+		"writeFileSync(marker, lease ? \"acquired\" : \"lost\");",
+	].join("\n") + "\n");
+	const libHref = new URL("../lib/codegraph-lease.ts", import.meta.url).href;
+	const child = spawn(process.execPath, ["--experimental-strip-types", script, libHref, path, cwd, started, marker, mutex], { stdio: "ignore" });
+	t.after(() => {
+		try {
+			child.kill();
+		} catch {
+			/* already gone */
+		}
+	});
+	const closed = new Promise<number>((resolve) => {
+		child.on("close", (code: number | null) => resolve(code ?? -1));
+	});
+	await waitForFileContents(started, "", "the child never started its acquisition");
+	const markerDeadline = Date.now() + 10_000;
+	while (!existsSync(marker)) {
+		if (Date.now() >= markerDeadline) assert.fail("the child never reported its acquisition result");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	assert.equal(readFileSync(marker, "utf8"), "lost", "the acquisition must refuse the stale recovery beside the writer the wait missed");
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.lock"), "utf8"), String(child.pid), "the writer installed during the wait is the child's own live pid");
+	assert.equal(readFileSync(path, "utf8"), staleBytes, "the stale token is never replaced beside the writer the wait missed");
+	assert.equal(await closed, 0);
+
+	// With the writer gone the memo has nothing to hide: the same stale token is reclaimed.
+	rmSync(join(cwd, ".codegraph", "codegraph.lock"), { force: true });
+	const lease = tryAcquireLease(path, "sync", 120_000, Date.now(), cwd);
+	assert.ok(lease, "with the writer gone, the recovery acquires");
+	lease.release();
+	assert.equal(readLeaseVerdict(path, Date.now()), "free");
+	assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".mutex") || name.endsWith(".tmp") || name.endsWith(".stale")), [], "no mutex, temp, or stale litter is left behind");
 });
 
 /** Wraps process.kill to count signal-0 liveness probes for the given pids: every verdict's pid
@@ -2477,28 +2621,60 @@ test("POSIX passthrough: each verdict still reads the writer lock and probes the
 	assert.equal(readLeaseVerdict(path, Date.now()), "free", "the acquisition itself is unchanged");
 });
 
-test("win32: a writer lock that appears during the mutex wait still blocks the stale recovery", async (t) => {
+test("win32: a writer lock installed on the mutex-wait path still blocks the stale recovery", async (t) => {
 	const cwd = project(t);
 	const dir = locksDir(t);
 	const path = lockPathFor(cwd, "init", dir);
+	const mutex = `${path}.mutex`;
 	const now = Date.now();
 	const stale = 999_999;
 	writeToken(path, { kind: "init", pid: stale, startedAt: now - 120_000, expiresAt: now - 1, host: localHost() });
-	writeFileSync(`${path}.mutex`, `${JSON.stringify({ pid: process.pid, startedAt: now, expiresAt: now + 60_000, nonce: "live-mutex" })}\n`);
+	writeToken(mutex, { pid: process.pid, startedAt: now, expiresAt: now + 60_000, nonce: "live-mutex" });
+	// The writer pid the hook records is this test's own process — owned, and confirmed live
+	// before the hook can install it, so the block below is never a dead-pid artifact.
+	process.kill(process.pid, 0);
+	// MUTEX_POLL_MS mirrored by value (module-private in the lease module): the mutex wait
+	// slices at 5ms while the outer poll sleeps pollMs (350ms), so the slice length plus the
+	// mutex still standing is what proves the hook fired on the mutex-wait path itself — never
+	// on an outer poll between attempts, and never without the wait being reached at all.
+	const MUTEX_POLL_MS = 5;
 	let hooked = false;
+	let mutexWaitSlice = false;
 	const sleep = (ms: number): Promise<void> =>
 		new Promise((resolve) => {
 			if (!hooked) {
 				hooked = true;
+				mutexWaitSlice = ms === MUTEX_POLL_MS && existsSync(mutex);
 				// mid-wait: the mutex holder releases and a live CodeGraph writer records its lock
-				rmSync(`${path}.mutex`, { force: true });
+				rmSync(mutex, { force: true });
 				mkdirSync(join(cwd, ".codegraph"), { recursive: true });
-				writeFileSync(join(cwd, ".codegraph", "codegraph.lock"), String(process.ppid));
+				writeFileSync(join(cwd, ".codegraph", "codegraph.lock"), String(process.pid));
 			}
 			setTimeout(resolve, ms);
 		});
 	const outcome = await acquireInitLock(cwd, { locksDir: dir, waitMs: 700, pollMs: 350, exists: () => false, sleep, platform: "win32" });
+	assert.ok(hooked, "the injected wait was reached at all");
+	assert.ok(mutexWaitSlice, "the writer was installed from the mutex-wait slice, never an outer poll");
 	assert.notEqual(outcome.outcome, "acquired", "no lease is granted beside a writer that appeared during the wait");
 	const token = JSON.parse(readFileSync(path, "utf8")) as { pid: number };
 	assert.equal(token.pid, stale, "the stale token is left for a later attempt, never replaced beside a live writer");
+
+	// No-writer control on the same fixture: the hook releases the mutex alone, and the
+	// acquisition must complete — the block above is attributable to the writer alone.
+	rmSync(join(cwd, ".codegraph", "codegraph.lock"), { force: true });
+	writeToken(path, { kind: "init", pid: stale, startedAt: now - 120_000, expiresAt: now - 1, host: localHost() });
+	writeToken(mutex, { pid: process.pid, startedAt: Date.now(), expiresAt: Date.now() + 60_000, nonce: "live-mutex" });
+	let controlHooked = false;
+	const controlSleep = (ms: number): Promise<void> =>
+		new Promise((resolve) => {
+			if (!controlHooked) {
+				controlHooked = true;
+				rmSync(mutex, { force: true });
+			}
+			setTimeout(resolve, ms);
+		});
+	const control = await acquireInitLock(cwd, { locksDir: dir, waitMs: 700, pollMs: 350, exists: () => false, sleep: controlSleep, platform: "win32" });
+	assert.ok(controlHooked, "the control reached its injected wait");
+	assert.equal(control.outcome, "acquired", "with the mutex released and no writer, the same fixture acquires");
+	if (control.outcome === "acquired") control.release();
 });

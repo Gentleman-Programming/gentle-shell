@@ -412,6 +412,14 @@ function displacedRecordHolds(path: string, now: number, cwd?: string): boolean 
 			dropFile(sidecar); // abandoned litter: nothing live can still restore it
 			continue;
 		}
+		if (verdict === "held-live") {
+			// A verified-live record stranded beside an empty path is the path's own lease,
+			// recoverable: every caller of this check holds the per-path mutex, and the
+			// no-replace link cannot replace a current owner, so restoring it un-wedges later
+			// verdicts and releases without ever handing the lease to the refusing session. An
+			// unexplained record keeps its fail-closed refusal exactly as before.
+			restoreDisplacedRecord(sidecar, path);
+		}
 		holds = true; // held-live or unknown: the displaced record may still be restored
 	}
 	return holds;
@@ -683,9 +691,11 @@ function sectionFence(mutex: string, mine: string): { owns(): boolean; release()
  * filesystem identity read as one opened file), so recovery can never
  * delete a replacement owner's mutex. The section receives an owns() fence: after a mid-section
  * mutex replacement, every effectful step must re-verify ownership or abort. Returns undefined
- * when the wait budget is spent: fail-closed, the caller skips what it wanted to do.
+ * when the wait budget is spent: fail-closed, the caller skips what it wanted to do. A wait
+ * that slept calls the optional invalidate hook — the sync twin of the async arm's callback —
+ * so observations cached before the wait (the win32 writer-lock memo) never outlive it.
  */
-function withPathMutex<T>(path: string, waitMs: number, section: (owns: () => boolean) => T | undefined): T | undefined {
+function withPathMutex<T>(path: string, waitMs: number, section: (owns: () => boolean) => T | undefined, invalidate?: () => void): T | undefined {
 	const mutex = mutexPathFor(path);
 	const deadline = Date.now() + waitMs;
 	for (;;) {
@@ -709,6 +719,7 @@ function withPathMutex<T>(path: string, waitMs: number, section: (owns: () => bo
 		if (blocking) {
 			if (now >= deadline) return undefined;
 			sleepSync(MUTEX_POLL_MS);
+			invalidate?.(); // the world may have changed across the slice: cached absence is not truth
 			continue;
 		}
 		// Vanished (the holder released between our create and read), or stale/damaged past its
@@ -831,15 +842,43 @@ function removeTokenRecord(path: string, expectedNonce: string | undefined): boo
  * and re-owned never removes the newer owner's token — not even when the release itself stalled
  * between its check and the removal (removeTokenRecord restores the successor's token). The
  * check and the remove run inside the same per-path mutex as recovery, so a release racing a
- * reclaimer cannot remove the token the reclaimer just created either. Best effort: an
- * unreachable mutex still leaves the TTL backstop.
+ * reclaimer cannot remove the token the reclaimer just created either. A record of this
+ * acquisition stranded at a sidecar by a transient link failure is removed by nonce too —
+ * release never leaves its own lease wedging the path. Best effort: an unreachable mutex
+ * still leaves the TTL backstop.
  */
 function releaseOwnToken(path: string, nonce: string): void {
 	withPathMutex(path, MUTEX_WAIT_MS, () => {
-		if (readNonce(path) !== nonce) return undefined; // not ours (or gone): remove nothing
-		removeTokenRecord(path, nonce); // and the removal verifies its grab: a token swapped in past the check is restored
+		if (readNonce(path) === nonce) {
+			removeTokenRecord(path, nonce); // and the removal verifies its grab: a token swapped in past the check is restored
+		}
+		// A record of this acquisition can also sit stranded at a sidecar — the adoption's
+		// publish and restore links both lost to a transient failure, or the removal's own
+		// best-effort drop defeated by an unwritable window. Release owns that record by nonce
+		// and removes it there too, so nothing of this acquisition wedges the path past its
+		// lifetime; another lease's sidecar never matches this nonce and stays untouched.
+		removeSidecarsOfNonce(path, nonce);
 		return undefined;
 	});
+}
+
+/** Removes every sidecar record of `path` carrying this acquisition's nonce: the exact record
+ * it published, wherever a transient link failure stranded it. Nonce-fenced like every
+ * effectful step — another holder's or a successor's stranded record never matches this nonce
+ * and is never touched. */
+function removeSidecarsOfNonce(path: string, nonce: string): void {
+	const dir = dirname(path);
+	const base = basename(path);
+	let names: string[];
+	try {
+		names = readdirSync(dir);
+	} catch {
+		return; // cannot scan: the TTL backstop still bounds whatever is stranded
+	}
+	for (const name of names) {
+		if (!name.startsWith(`${base}.`) || !STALE_SIDECAR.test(name.slice(base.length))) continue;
+		if (readNonce(join(dir, name)) === nonce) dropFile(join(dir, name));
+	}
 }
 
 /**
@@ -855,15 +894,18 @@ function releaseOwnToken(path: string, nonce: string): void {
  * removeTokenRecord), so a successor's token published after the check survives too. A displaced
  * record another section may still restore (see displacedRecordHolds) fail-closes the attempt,
  * and the free path publishes inside the same per-path mutex, so those rename-away windows never
- * read as acquirable free paths to a conforming session.
+ * read as acquirable free paths to a conforming session. The final parameter selects the
+ * platform whose acquisition paths apply (the win32 probe memo): tests inject "win32" to
+ * exercise that reuse off Windows; the default keeps every other platform unmemoized,
+ * byte-identical to before.
  */
-export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, now: number = Date.now(), cwd?: string, mutexWaitMs: number = MUTEX_WAIT_MS): AcquiredLease | undefined {
+export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, now: number = Date.now(), cwd?: string, mutexWaitMs: number = MUTEX_WAIT_MS, platform: NodeJS.Platform = process.platform): AcquiredLease | undefined {
 	try {
 		mkdirSync(dirname(path), { recursive: true });
 	} catch {
 		return undefined; // fail-closed: no locks dir, no coordination, no write
 	}
-	const memo = process.platform === "win32" ? newProbeMemo() : undefined;
+	const memo = platform === "win32" ? newProbeMemo() : undefined;
 	const verdict = readLeaseVerdictCore(memo, path, now, cwd);
 	if (verdict !== "free" && verdict !== "held-stale") return undefined;
 	// The no-replace protocols of adoption, release, and stale recovery rename a record out of
@@ -878,7 +920,16 @@ export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, no
 	// invisible or refused, and a publication that still lands inside a window opened after
 	// its own scan (a section stalled mid-publish) reverses itself at the publish (see
 	// createLease) instead of surviving beside the record another section still owns.
-	return withPathMutex(path, mutexWaitMs, (owns) => reclaimStaleToken(path, kind, ttlMs, now, cwd, owns, memo));
+	// A wait that slept invalidates the memoized writer-lock observation, mirroring the async
+	// arm: the verdict before the mutex wait cached writer=false, and a CodeGraph writer that
+	// started during the wait must meet a fresh read at the in-mutex recheck — an uncontended
+	// acquisition never waits, so its one observation is kept and the fast path stays fast.
+	return withPathMutex(
+		path,
+		mutexWaitMs,
+		(owns) => reclaimStaleToken(path, kind, ttlMs, now, cwd, owns, memo),
+		memo === undefined ? undefined : () => memo.writerLock.clear(),
+	);
 }
 
 /** The acquisition's critical section, shared by the synchronous and the win32 asynchronous arms:

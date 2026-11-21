@@ -514,7 +514,6 @@ test("socketPresent spends a caller's deadline instead of the full probe budget"
 	const probe = seen[0];
 	assert.ok(probe !== undefined && probe.timeoutMs > 0 && probe.timeoutMs <= 20, "the probe got the leftover, never the full 250ms");
 });
-
 test("daemonFor on win32 lives through the probe and the memoized canonical fold", (t) => {
 	const project = dir(t, "win32-fold");
 	const registry = dir(t, "win32-fold-registry");

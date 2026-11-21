@@ -92,52 +92,77 @@ export type PipeProbeOutcome = "open" | "refused" | "inconclusive";
  * the given budget. Injectable so the tests can fake the net/socket layer. */
 export type PipeProbe = (pipePath: string, timeoutMs: number) => PipeProbeOutcome;
 
-/** The probe's worker side as plain JavaScript, so it needs no compiled file: the connect runs on the
- * worker's own event loop while the calling thread waits on the shared cell, the first outcome lands
- * there (1 open, 2 refused, 3 anything else), and destroying the socket lets the worker's loop drain.
- * ECONNREFUSED and ENOENT are the no-listener spellings for a Windows pipe name; a busy or protected
- * pipe stays inconclusive. */
+/** The probe worker's source as plain JavaScript, so it needs no compiled file: one persistent
+ * worker serves every probe by message — each message carries its own pipe path, budget, and
+ * shared cell — and the connect runs on the worker's own event loop while the calling thread
+ * waits on that cell for the outcome or the deadline. The first outcome lands there (1 open,
+ * 2 refused, 3 anything else), and destroying the socket leaves the worker ready for the next
+ * message. ECONNREFUSED and ENOENT are the no-listener spellings for a Windows pipe name; a
+ * busy or protected pipe stays inconclusive. */
 const PROBE_WORKER_SOURCE = `
-const { workerData } = require("node:worker_threads");
+const { parentPort } = require("node:worker_threads");
 const net = require("node:net");
-const state = workerData.state;
-const report = (code) => {
-	if (Atomics.compareExchange(state, 0, 0, code) !== 0) return;
-	Atomics.notify(state, 0);
-};
-const socket = net.createConnection(workerData.pipePath);
-socket.once("connect", () => {
-	socket.destroy();
-	report(1);
+parentPort.on("message", ({ pipePath, timeoutMs, state }) => {
+	const report = (code) => {
+		if (Atomics.compareExchange(state, 0, 0, code) !== 0) return;
+		Atomics.notify(state, 0);
+	};
+	const socket = net.createConnection(pipePath);
+	socket.once("connect", () => {
+		socket.destroy();
+		report(1);
+	});
+	socket.once("error", (error) => {
+		socket.destroy();
+		report(error && (error.code === "ECONNREFUSED" || error.code === "ENOENT") ? 2 : 3);
+	});
+	setTimeout(() => {
+		socket.destroy();
+		report(3);
+	}, timeoutMs).unref();
 });
-socket.once("error", (error) => {
-	socket.destroy();
-	report(error && (error.code === "ECONNREFUSED" || error.code === "ENOENT") ? 2 : 3);
-});
-setTimeout(() => {
-	socket.destroy();
-	report(3);
-}, workerData.timeoutMs).unref();
 `;
 
-/** One probe of the daemon's own pipe: a worker owns the event loop the async connect needs while
- * this thread waits on the shared cell for the outcome or the deadline, so the check answers within
- * the probe budget instead of enumerating every named pipe on the machine. A worker that never
- * starts or never reports is inconclusive, never absent. Exported for the real-worker tests, which
- * assert the raw outcome before socketPresent maps it; production reaches it only through pipeProbe. */
+/** The process's one probe worker, built on the first probe and reused for every later one: no
+ * thread spawn or terminate per check. Unref'd, so a live worker never keeps the process alive,
+ * and cleared by the exit hook when it dies, so the next probe builds a fresh one. Probes are
+ * single-flight — every caller of connectProbe is synchronous, so the thread is blocked inside
+ * the wait — which is what makes one shared worker safe. */
+let probeWorker: Worker | undefined;
+
+function probeWorkerFor(): Worker {
+	if (probeWorker === undefined) {
+		const worker = new Worker(PROBE_WORKER_SOURCE, { eval: true });
+		// An asynchronous worker failure — a thread that never starts, a worker-side throw — arrives
+		// as an 'error' event rather than a throw from the constructor, and an unhandled one takes
+		// the whole host down. The listener only keeps the event from escaping: the exit hook clears
+		// the reference so the next probe builds a fresh worker, and an in-flight probe falls back
+		// to its deadline inconclusive through the shared cell staying 0.
+		worker.on("error", () => {});
+		worker.unref();
+		worker.once("exit", () => {
+			if (probeWorker === worker) probeWorker = undefined;
+		});
+		probeWorker = worker;
+	}
+	return probeWorker;
+}
+
+/** One probe of the daemon's own pipe: the shared worker owns the event loop the async connect
+ * needs while this thread waits on the shared cell for the outcome or the deadline, so the check
+ * answers within the probe budget instead of enumerating every named pipe on the machine. A
+ * worker that never starts, dies mid-probe (the cell stays 0 until the deadline), or never
+ * reports is inconclusive, never absent. Exported for the real-worker tests, which assert the raw
+ * outcome before socketPresent maps it; production reaches it only through pipeProbe. */
 export function connectProbe(pipePath: string, timeoutMs: number): PipeProbeOutcome {
 	const state = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 	try {
-		const worker = new Worker(PROBE_WORKER_SOURCE, { eval: true, workerData: { pipePath, timeoutMs, state } });
-		// An asynchronous worker failure — a thread that never starts, a worker-side throw — arrives
-		// as an 'error' event rather than a throw from the constructor, and an unhandled one takes the
-		// whole host down. A worker that never reports is already an inconclusive probe, so the
-		// listener only keeps the event from escaping; the shared cell keeps answering for the
-		// workers that complete normally.
-		worker.on("error", () => {});
+		probeWorkerFor().postMessage({ pipePath, timeoutMs, state });
 		Atomics.wait(state, 0, 0, Math.max(1, timeoutMs));
-		void worker.terminate();
 	} catch {
+		// A worker that cannot be built or messaged is inconclusive, never absent; dropping the
+		// reference (the exit hook guards identity) makes the next probe build a fresh one.
+		probeWorker = undefined;
 		return "inconclusive";
 	}
 	const code = Atomics.load(state, 0);
@@ -147,10 +172,14 @@ export function connectProbe(pipePath: string, timeoutMs: number): PipeProbeOutc
 let pipeProbe: PipeProbe = connectProbe;
 
 /** Tests swap in a fake net/socket layer and restore the real probe with undefined; a swap clears
- * the remembered positives so every fake starts from an empty cache. Production never calls it. */
+ * the remembered positives so every fake starts from an empty cache, and tears down the shared
+ * probe worker so a fake never shares a thread with a real one. Production never calls it. */
 export function setPipeProbeForTests(probe: PipeProbe | undefined): void {
 	pipeProbe = probe ?? connectProbe;
 	pipeProbeMemo.clear();
+	const worker = probeWorker;
+	probeWorker = undefined;
+	if (worker !== undefined) void worker.terminate();
 }
 
 /**

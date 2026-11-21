@@ -36,6 +36,8 @@ const MAX_STREAM_CHARS = 8_000;
 const KILL_WAIT_MS = 10_000;
 /** Grace a timed-out command gets to obey SIGTERM before the unignorable SIGKILL ends it. */
 const KILL_ESCALATE_MS = 1_000;
+/** How often a timed-out POSIX teardown re-probes the process group for confirmed emptiness. */
+const TEARDOWN_POLL_MS = 250;
 
 /** Kills a whole POSIX process group: runBounded spawns plain commands in their own group
  * precisely so a timeout takes the installer's descendants too, not only the manager PID
@@ -45,6 +47,17 @@ function killProcessGroup(pid: number, signal: NodeJS.Signals): void {
 		process.kill(-pid, signal);
 	} catch {
 		/* the group is already gone */
+	}
+}
+
+/** Whether a POSIX process group is provably empty: only ESRCH answers for gone — EPERM
+ * means a live group this user may not signal, which is survival, not exit. */
+function processGroupGone(pid: number): boolean {
+	try {
+		process.kill(-pid, 0);
+		return false;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ESRCH";
 	}
 }
 
@@ -74,7 +87,10 @@ function quoteForCmd(part: string): string {
  * grace, KILL_ESCALATE_MS + KILL_WAIT_MS the absolute cap) before the failed result is
  * reported — a teardown that cannot confirm exit resolves the run marked
  * teardownUnconfirmed, so callers refuse to start another install beside a possibly-
- * surviving tree. On win32 a `.cmd` command is a batch shim Node refuses to
+ * surviving tree — and after the deadline the leader's own close proves nothing about the
+ * tree: a worker with its own stdio can outlive the close, so confirmation waits for the
+ * process group to prove empty (POSIX) or for taskkill to confirm the tree (win32), and
+ * only that ever marks teardown confirmed. On win32 a `.cmd` command is a batch shim Node refuses to
  * spawn without a shell, so its fixed argument vector becomes one cmd.exe-quoted command line
  * through shell:true (the repo's codegraph spawn pattern); every other command spawns as a
  * plain argument vector. Never throws: a refused spawn or an internal error is ok:false with
@@ -89,6 +105,7 @@ function runBounded(command: string, args: readonly string[], timeoutMs: number,
 		let child: ChildProcess | undefined;
 		let escalate: ReturnType<typeof setTimeout> | undefined;
 		let teardownCap: ReturnType<typeof setTimeout> | undefined;
+		let teardownPoll: ReturnType<typeof setInterval> | undefined;
 		let teardownConfirmed = false;
 		const finish = (ok: boolean) => {
 			if (settled) return;
@@ -96,12 +113,31 @@ function runBounded(command: string, args: readonly string[], timeoutMs: number,
 			clearTimeout(timer);
 			if (escalate !== undefined) clearTimeout(escalate);
 			if (teardownCap !== undefined) clearTimeout(teardownCap);
+			if (teardownPoll !== undefined) clearInterval(teardownPoll);
 			resolve({
 				ok,
 				stdout: stdoutKept,
 				stderr: stderrKept,
 				...(timedOut && !teardownConfirmed ? { teardownUnconfirmed: true } : {}),
 			});
+		};
+		// Confirms a timed-out POSIX teardown by probing the process group: the leader's close
+		// proves nothing about a worker that ignores SIGTERM, so confirmation waits for the
+		// group to empty (the scheduled SIGKILL escalation empties it) and the teardown cap
+		// reports the run unconfirmed when proof never arrives.
+		const confirmTeardownWhenGroupGone = (pid: number): void => {
+			if (processGroupGone(pid)) {
+				teardownConfirmed = true;
+				finish(false);
+				return;
+			}
+			if (teardownPoll !== undefined) return;
+			teardownPoll = setInterval(() => {
+				if (processGroupGone(pid)) {
+					teardownConfirmed = true;
+					finish(false);
+				}
+			}, TEARDOWN_POLL_MS);
 		};
 		let timer: ReturnType<typeof setTimeout>;
 		try {
@@ -135,8 +171,14 @@ function runBounded(command: string, args: readonly string[], timeoutMs: number,
 			}
 			if (process.platform === "win32") {
 				killWindowsTree(child.pid, (confirmed) => {
-					if (confirmed) teardownConfirmed = true;
-					else child?.kill();
+					if (!confirmed) {
+						child?.kill();
+						return;
+					}
+					// taskkill's clean exit is the tree's own confirmation, and the leader's close may
+					// already have fired — so the confirmation also settles the run.
+					teardownConfirmed = true;
+					finish(false);
 				});
 			} else {
 				killProcessGroup(child.pid, "SIGTERM");
@@ -157,10 +199,25 @@ function runBounded(command: string, args: readonly string[], timeoutMs: number,
 			finish(false);
 		});
 		child.on("close", (code: number | null) => {
-			// The tree's own exit — confirmed teardown when the deadline expired first; a zero
-			// exit counts only when the deadline did not.
-			if (timedOut) teardownConfirmed = true;
-			finish(!timedOut && code === 0);
+			if (!timedOut) {
+				finish(code === 0);
+				return;
+			}
+			// The leader's close after the deadline proves only the leader exited — a worker
+			// ignoring SIGTERM, or win32 taskkill still walking the tree, keeps the tree alive.
+			// Confirmation comes independently: the group-gone probe on POSIX, taskkill's
+			// result on win32; the teardown cap bounds the wait and reports the run unconfirmed
+			// when proof never arrives.
+			const pid = child?.pid;
+			if (pid === undefined) {
+				finish(false);
+				return;
+			}
+			if (process.platform === "win32") {
+				if (teardownConfirmed) finish(false);
+				return;
+			}
+			confirmTeardownWhenGroupGone(pid);
 		});
 	});
 }
@@ -180,14 +237,22 @@ export const defaultExec: BoundedExec = (command, args, timeoutMs) => {
  * prerelease suffix ("1.6.4", "1.6.4-beta.2"); build metadata never appears in the probes. */
 const VERSION_IDENTIFIER = /(\d+\.\d+\.\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?/;
 
+/** A character that can continue a version identifier past a match: digits, letters, the
+ * dot between suffix segments, or the prerelease hyphen. */
+const VERSION_CONTINUATION = /[0-9A-Za-z.-]/;
+
 /** The first full version identifier in the text — triple and prerelease suffix whole — or
  * undefined when there is none. A suffix the pattern cannot spell ("1.6.4-!!") leaves the
- * version half-described, which is unparseable: the updater never guesses at a version it
+ * version half-described, which is unparseable, and so does any identifier character
+ * continuing the match ("1.6.4-beta.!"): the updater never guesses at a version it
  * cannot reproduce verbatim in a pinned install spec. */
 export function parseCodegraphVersion(stdout: string): string | undefined {
 	const match = VERSION_IDENTIFIER.exec(stdout);
 	if (match === null) return undefined;
-	if (stdout.charAt(match.index + match[0].length) === "-") return undefined;
+	// The whole token, never a valid prefix of a longer one: any identifier character right
+	// after the match means the source spelled a version the pattern cannot reproduce
+	// ("1.6.4-beta.!"), and a truncated pick would pin a version nobody reported.
+	if (VERSION_CONTINUATION.test(stdout.charAt(match.index + match[0].length))) return undefined;
 	return match[0];
 }
 
@@ -288,10 +353,22 @@ function npmCommand(platform: NodeJS.Platform): string {
 	return platform === "win32" ? "npm.cmd" : "npm";
 }
 
-/** pnpm's command spelling, npm's rule exactly: on win32 a bare `pnpm` is a `.cmd` batch
- * shim Node cannot spawn shell-free (bun ships a native exe that spawns directly). */
-function pnpmCommand(platform: NodeJS.Platform): string {
-	return platform === "win32" ? "pnpm.cmd" : "pnpm";
+/** pnpm's runnable entry for this PATH. POSIX always runs the bare "pnpm". On win32 pnpm
+ * ships either as npm's "pnpm.cmd" batch shim or as its own native executable with no
+ * ".cmd" beside it (pnpm's standalone installer): the ".cmd" spelling is confirmed through
+ * where.exe first and runs through the shell-handled spawn, else the first "where.exe
+ * pnpm" hit — a native executable the plain spawn runs directly. When neither probe
+ * answers, the ".cmd" spelling stands and the run fails exactly as before. */
+async function resolvePnpmCommand(exec: BoundedExec, platform: NodeJS.Platform): Promise<string> {
+	if (platform !== "win32") return "pnpm";
+	const cmdShim = await exec("where.exe", ["pnpm.cmd"], VERSION_TIMEOUT_MS);
+	if (cmdShim.ok) return "pnpm.cmd";
+	const native = await exec("where.exe", ["pnpm"], VERSION_TIMEOUT_MS);
+	if (native.ok) {
+		const entry = native.stdout.trim().split(/\r?\n/)[0]?.trim();
+		if (entry !== undefined && entry.length > 0) return entry;
+	}
+	return "pnpm.cmd";
 }
 
 export interface InstallSourceDetection {
@@ -330,7 +407,8 @@ export async function detectCodegraphInstallSource(exec: BoundedExec = defaultEx
 		return { source: "npm-global", shimPath };
 	}
 	let pnpmBin: string | undefined;
-	const pnpmBinResult = await exec(pnpmCommand(platform), ["bin", "-g"], VERSION_TIMEOUT_MS);
+	const pnpmEntry = await resolvePnpmCommand(exec, platform);
+	const pnpmBinResult = await exec(pnpmEntry, ["bin", "-g"], VERSION_TIMEOUT_MS);
 	// pnpm prints a project-manager warning to stderr on this call; only stdout names the dir.
 	if (pnpmBinResult.ok) pnpmBin = pnpmBinResult.stdout.trim().split(/\r?\n/)[0]?.trim();
 	if (pnpmBin !== undefined && classifyCodegraphShimPath(shimPath, { npmPrefix, pnpmBin }, home, platform) === "pnpm-global") {
@@ -378,22 +456,24 @@ export async function updateCodegraphToLatest(source: CodegraphInstallSource, ex
 	if (source === "unknown") {
 		return { ok: false, reason: "the codegraph install source is unknown; refusing to auto-update" };
 	}
-	const [command, args] = source === "bun-global"
-		? ["bun", ["update", "-g", CODEGRAPH_PACKAGE, "--latest"]] as const
+	const command = source === "bun-global"
+		? "bun"
 		: source === "pnpm-global"
-			? [pnpmCommand(platform), ["update", "-g", CODEGRAPH_PACKAGE, "--latest"]] as const
-			: [npmCommand(platform), ["update", "-g", CODEGRAPH_PACKAGE]] as const;
+			? await resolvePnpmCommand(exec, platform)
+			: npmCommand(platform);
+	const args = ["update", "-g", CODEGRAPH_PACKAGE, ...(source === "npm-global" ? [] : ["--latest"])];
 	return updateRunFromResult(await exec(command, args, UPDATE_TIMEOUT_MS), command, args);
 }
 
 /** One exact-version install: the universal form when a manager's update command no-ops. */
 async function installCodegraphExact(source: CodegraphInstallSource, version: string, exec: BoundedExec, platform: NodeJS.Platform): Promise<UpdateRun> {
 	const spec = `${CODEGRAPH_PACKAGE}@${version}`;
-	const [command, args] = source === "bun-global"
-		? ["bun", ["add", "-g", spec]] as const
+	const command = source === "bun-global"
+		? "bun"
 		: source === "pnpm-global"
-			? [pnpmCommand(platform), ["add", "-g", spec]] as const
-			: [npmCommand(platform), ["install", "-g", spec]] as const;
+			? await resolvePnpmCommand(exec, platform)
+			: npmCommand(platform);
+	const args = [source === "npm-global" ? "install" : "add", "-g", spec];
 	return updateRunFromResult(await exec(command, args, UPDATE_TIMEOUT_MS), command, args);
 }
 
@@ -454,6 +534,13 @@ export async function runCodegraphUpdateCheck(exec: BoundedExec = defaultExec, o
 	// "Already up to date" against a newer registry latest): one exact-version install is the
 	// universal second chance, and the final probe decides whether anything really ran.
 	const fallback = await installCodegraphExact(detected.source, latest, exec, platform);
+	// A timed-out fallback whose teardown is unconfirmed defers the whole transition report:
+	// the final probe could observe a binary the surviving installer is still replacing, and
+	// readiness must never move the old index beside it — a later check, with the tree
+	// confirmed gone, reports what the binary actually settled at.
+	if (fallback.teardownUnconfirmed) {
+		return { ran: false, version: installed, reason: "the timed-out exact-version install's process tree could not be confirmed gone; the observed binary transition is deferred to a later check" };
+	}
 	// A nonzero exit does not prove the executable unchanged — the first attempt can replace
 	// the binary and still fail — so the final probe reports the observed binary transition
 	// independently of the registry target: a changed binary always reaches the caller's
@@ -504,6 +591,9 @@ export interface InstallOutcome {
 	via?: CodegraphInstallManager;
 	/** Why nothing installed, for the caller's report; absent on success or when already installed. */
 	reason?: string;
+	/** A timed-out install whose tree teardown could not confirm exit: the caller must not
+	 * start another install — or update — beside a possibly-surviving one. */
+	teardownUnconfirmed?: boolean;
 }
 
 /**
@@ -515,15 +605,26 @@ export interface InstallOutcome {
  * path builds the first index. Every failure fails open: a session that cannot install keeps
  * running exactly as before, the reason says what happened.
  */
-/** The in-flight fresh-install attempt: concurrent readiness passes — different roots, one
- * global package — join the same run instead of racing a second installer; dropped when it
- * settles, so a later startup retries after a failure instead of inheriting it. */
+/** The in-flight — or fenced — fresh-install attempt: concurrent readiness passes, different
+ * roots but one global package, join the same run instead of racing a second installer.
+ * Dropped when it settles without an unconfirmed teardown, so a later startup retries after
+ * a failure instead of inheriting it; an unconfirmed-teardown outcome stays memoized as an
+ * install fence for the rest of the process. */
 let installMemo: Promise<InstallOutcome> | undefined;
 
 export function ensureCodegraphInstalled(exec: BoundedExec = defaultExec, opts: { platform?: NodeJS.Platform } = {}): Promise<InstallOutcome> {
 	if (installMemo === undefined) {
-		installMemo = runCodegraphInstallCheck(exec, opts).finally(() => {
+		installMemo = runCodegraphInstallCheck(exec, opts).then((outcome) => {
+			// An unconfirmed-teardown outcome stays memoized as an install fence: every later
+			// readiness pass in this process shares it instead of starting another installer
+			// beside a possibly-surviving tree, and the next process — with the tree gone —
+			// retries fresh. Confirmed outcomes keep the memo dropped, so ordinary failures
+			// retry exactly as before.
+			if (!outcome.teardownUnconfirmed) installMemo = undefined;
+			return outcome;
+		}, (error) => {
 			installMemo = undefined;
+			throw error;
 		});
 	}
 	return installMemo;
@@ -540,7 +641,7 @@ async function runCodegraphInstallCheck(exec: BoundedExec, opts: { platform?: No
 	const latest = await latestCodegraphVersion(exec, platform);
 	const spec = latest !== undefined ? `${CODEGRAPH_PACKAGE}@${latest}` : `${CODEGRAPH_PACKAGE}@latest`;
 	for (const manager of ["bun", "npm", "pnpm"] as const) {
-		const command = manager === "npm" ? npmCommand(platform) : manager === "pnpm" ? pnpmCommand(platform) : manager;
+		const command = manager === "npm" ? npmCommand(platform) : manager === "pnpm" ? await resolvePnpmCommand(exec, platform) : manager;
 		const probe = await exec(command, ["--version"], VERSION_TIMEOUT_MS);
 		if (!probe.ok) continue;
 		const args = [manager === "npm" ? "install" : "add", "-g", spec];
@@ -550,7 +651,7 @@ async function runCodegraphInstallCheck(exec: BoundedExec, opts: { platform?: No
 		// another manager in the same pass: a surviving installer could still be mutating the
 		// global package a second one would race.
 		if (install.teardownUnconfirmed) {
-			return { installed: false, reason: `a timed-out ${command} install's process tree could not be confirmed gone; no further manager was tried` };
+			return { installed: false, reason: `a timed-out ${command} install's process tree could not be confirmed gone; no further manager was tried`, teardownUnconfirmed: true };
 		}
 	}
 	return { installed: false, reason: "no available package manager (bun, npm, pnpm) could install codegraph" };

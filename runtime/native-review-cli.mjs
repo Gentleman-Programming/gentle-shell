@@ -16,13 +16,11 @@ import {
 	decodeReviewConsentV3,
 	decodeReviewFailureV2,
 	decodeReviewLastEventClosureV1,
-	decodeReviewRepairV2,
 	decodeReviewResultArtifactV2,
 	decodeReviewStartV3,
 	decodeReviewStartV4,
 	decodeReviewStatusV3,
 	intendedUntrackedSubmissionCarriesTarget,
-
 
 
 
@@ -64,7 +62,6 @@ export const NATIVE_REVIEW_OPERATION = {
 	ABANDON: "review/abandon",
 	MODE: "review/mode",
 	ASSESS: "review/assess",
-	REPAIR: "review/repair",
 	CAPTURE_RESULT: "review/capture-result",
 	CAPTURE_CORRECTION_PLAN: "review/capture-correction-plan",
 	CAPTURE_PROVIDER_ROLE: "review/capture-provider-role",
@@ -89,7 +86,6 @@ export const NATIVE_REVIEW_ERROR_CODE = {
 	PACKAGE_BINARY_MISSING: "package-local-binary-missing",
 	UNSUPPORTED_TRANSITION_OPERATION: "unsupported-transition-operation",
 }         ;
-
 
 
 
@@ -287,19 +283,6 @@ export function isNativeReviewAbandonReason(value         )                     
 
 
 /** Raw audited native record; Pi relays it verbatim and never reinterprets it. */
-
-
-// Net-new negotiated `review.repair` (contract v2). `repair(request)` always
-// runs a `--mode preflight` first; only an eligible assessment is ever
-// executed, using the exact provider_inputs that assessment published — Pi's
-// own constants are never a source, only a
-// disagreement check (Design Decision #6, migrate-review-integration-v2).
-
-
-
-
-
-
 
 
 // `capture-result` is an additive headless command, NOT a negotiated
@@ -2347,34 +2330,6 @@ export class NativeReviewCliV216                            {
 			: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);
 		measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
 		return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));
-	}
-
-	// Net-new negotiated `review.repair`: preflight first, execute only when
-	// the assessment is eligible, using exactly the provider_inputs that
-	// preflight published (Design Decision #6, migrate-review-integration-v2).
-	// Argv shape beyond --mode is inferred from provider_inputs' own field
-	// names — no repair/v2 fixture is mirrored upstream to ground-truth it
-	// against (design.md Open Questions); this is a documented risk.
-	async repair(request                           )                          {
-		const preflightExecution = await this.negotiated(NATIVE_REVIEW_OPERATION.REPAIR, request.cwd, [
-			"review", "repair", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd, "--mode", "preflight",
-		], false, request.signal);
-		const preflight = decode(NATIVE_REVIEW_OPERATION.REPAIR, false, () => decodeReviewRepairV2(preflightExecution.body));
-		if (preflight.mode !== "preflight") throw new Error("wrong repair preflight discriminator");
-		if (preflight.assessment.status !== "eligible" || preflight.providerInputs === undefined) return preflight;
-		const providerInputs = preflight.providerInputs;
-		const executeExecution = await this.negotiated(NATIVE_REVIEW_OPERATION.REPAIR, request.cwd, [
-			"review", "repair", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd, "--mode", "execute",
-			"--lineage", providerInputs.lineageId,
-			"--expected-revision", providerInputs.expectedRevision,
-			"--cause", providerInputs.cause,
-			"--disposition", providerInputs.disposition,
-			"--repository-binding", providerInputs.repositoryBinding,
-			"--actor", request.actor,
-			"--reason", request.reason,
-			"--maintainer-authorization", request.maintainerAuthorization,
-		], true, request.signal);
-		return decode(NATIVE_REVIEW_OPERATION.REPAIR, true, () => decodeReviewRepairV2(executeExecution.body));
 	}
 
 	// `review capture-evidence`: the evidence-first correction lifecycle's

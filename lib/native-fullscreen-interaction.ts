@@ -26,6 +26,9 @@ export class NativeFullscreenInteraction extends Container {
 	}
 
 	override handleMouse(event: TuiMouseEvent) {
+		// Newer pi-tui containers lay out children at event.width; a malformed
+		// event without finite geometry cannot target anything, so ignore it.
+		if (!Number.isFinite(event.width) || !Number.isFinite(event.height) || !Number.isFinite(event.y)) return undefined;
 		this.options.mouseObserver?.beforeMouse(event);
 		try {
 			return super.handleMouse(event);

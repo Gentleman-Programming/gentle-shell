@@ -481,12 +481,12 @@ test("(t) the search-signal matrix: only a prompt that searched the workspace is
 		["a grep tool execution", { toolName: "grep", toolCallId: "q1", args: { pattern: "symbol" } }],
 		["a find tool execution", { toolName: "find", toolCallId: "q2", args: { pattern: "*.ts" } }],
 		["an ls tool execution", { toolName: "ls", toolCallId: "q3", args: { path: "lib" } }],
-		["a bash rg command", { toolName: "bash", toolCallId: "q4", args: { command: "rg -n toolName lib" } }],
-		["a bash grep command", { toolName: "bash", toolCallId: "q5", args: { command: "grep -rn toolName src" } }],
-		["a bash fd command", { toolName: "bash", toolCallId: "q6", args: { command: "fd codegraph-first-gate" } }],
-		["a bash find command", { toolName: "bash", toolCallId: "q7", args: { command: "find lib -name gate.ts" } }],
-		["a bash ag command", { toolName: "bash", toolCallId: "q8", args: { command: "ag toolName extensions" } }],
-		["a bash ack command", { toolName: "bash", toolCallId: "q9", args: { command: "ack toolName extensions" } }],
+		["a bash rg command", { toolName: "bash", toolCallId: "q4", args: { command: "rg -n toolName lib" }, structuredContent: { exit_code: 1 } }],
+		["a bash grep command", { toolName: "bash", toolCallId: "q5", args: { command: "grep -rn toolName src" }, structuredContent: { exit_code: 1 } }],
+		["a bash fd command", { toolName: "bash", toolCallId: "q6", args: { command: "fd codegraph-first-gate" }, structuredContent: { exit_code: 0 } }],
+		["a bash find command", { toolName: "bash", toolCallId: "q7", args: { command: "find lib -name gate.ts" }, structuredContent: { exit_code: 0 } }],
+		["a bash ag command", { toolName: "bash", toolCallId: "q8", args: { command: "ag toolName extensions" }, structuredContent: { exit_code: 1 } }],
+		["a bash ack command", { toolName: "bash", toolCallId: "q9", args: { command: "ack toolName extensions" }, structuredContent: { exit_code: 1 } }],
 	];
 	for (const [label, event] of signals) {
 		const handlers = installGate(t);
@@ -494,7 +494,7 @@ test("(t) the search-signal matrix: only a prompt that searched the workspace is
 		assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, `${label}: the prompt has not searched yet, so the read passes`);
 		fire(handlers, "tool_execution_start", event);
 		assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, `${label}: a started but unconfirmed search has not searched yet either`);
-		fire(handlers, "tool_result", { toolCallId: (event as { toolCallId?: unknown }).toolCallId });
+		fire(handlers, "tool_result", { toolCallId: (event as { toolCallId?: unknown }).toolCallId, ...(event.structuredContent === undefined ? {} : { structuredContent: event.structuredContent }) });
 		assert.deepEqual(fire(handlers, "tool_call", { toolName: "mem_search" }), {
 			block: true,
 			reason: BLOCK_REASON,
@@ -1571,4 +1571,204 @@ test("(aw) a pending && or || guard survives blank and comment lines", (t) => {
 	fire(handlers, "tool_result", { toolCallId: "aw4", isError: true, structuredContent: { exit_code: 1 } });
 	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "aw4" });
 	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a newline after a completed command still starts an unguarded list");
+});
+
+test("(ba) a here-document delimiter word spans adjacent quoted and unquoted segments", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ba-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "ba-arm" });
+	// Bash removes each segment's quoting and concatenates the segments, so <<'E'OF terminates
+	// its body at EOF: the body is stdin data, while the query after it is a real command.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ba1", args: { command: "cat <<'E'OF\ncodegraph query lease\nEOF\ncodegraph query lease" } });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"the query after the split-delimiter body is a graph execution while it runs",
+	);
+	fire(handlers, "tool_result", { toolCallId: "ba1", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ba1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a query after a split-delimiter body still credits");
+	// The body's own query stays data: the same shape without a trailing real command credits nothing.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "ba-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "ba-arm-2" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ba2", args: { command: "cat <<'E'OF\ncodegraph query lease\nEOF" } });
+	fire(handlers, "tool_result", { toolCallId: "ba2", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ba2" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a query named only inside a split-delimiter body never credits",
+	);
+	// The search classifier shares the delimiter scan: a search after the double-quoted split
+	// body still arms the prompt-level marker.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ba3", args: { command: "cat <<\"E\"OF\nbody\nEOF\nrg -n lease lib" } });
+	fire(handlers, "tool_result", { toolCallId: "ba3", isError: true, structuredContent: { exit_code: 1 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ba3" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a search after a double-quoted split-delimiter body arms the gate",
+	);
+	// The tab-stripping operator form resumes after its tab-indented terminator too.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "ba4", args: { command: "cat <<-'E'OF\nbody\n\tEOF\ncodegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "ba4", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "ba4" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the tab-stripping split form resumes after its tab-indented terminator");
+});
+
+test("(bb) a masked quoted word completes a pending && / || operand, while a comment line does not", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bb-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bb-arm" });
+	// 'false' is the right-hand command of the || list, so the list is complete: the next
+	// line's query is an unconditional command the call's own result proves was reached.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bb1", args: { command: "true || 'false'\ncodegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "bb1", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bb1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a quoted word completes the guarded list, leaving the next command unguarded");
+	// A trailing comment is not a word: the || keeps waiting for its operand, and true
+	// satisfied the left side, so bash never reaches the query.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bb-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bb-arm-2" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bb2", args: { command: "true ||\n# note\ncodegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "bb2", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bb2" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a comment line leaves the pending operand pending, so the query stays guarded",
+	);
+	// A word merging quoted and unquoted text is a word too.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bb-arm-3", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bb-arm-3" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bb3", args: { command: "true || 'fa'lse\ncodegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "bb3", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bb3" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a part-quoted word completes the operand as well");
+});
+
+test("(bc) an exit a guard skipped does not end the shell; an unconditional one still does", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bc-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bc-arm" });
+	// false fails, so bash never runs exit: the following query is reached, and its own
+	// success is the status the call reports.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bc1", args: { command: "false && exit 0; codegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "bc1", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bc1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the query after a skipped && exit ran, so it credits");
+	// || guards the exit the same way: true succeeds, so the exit never runs.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bc-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bc-arm-2" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bc2", args: { command: "true || exit 0; codegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "bc2", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bc2" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the query after a skipped || exit ran, so it credits");
+	// An unconditional exit still leaves nothing after it reachable: the guard rule above
+	// narrows the suppression to exits a condition skipped, never to this shape.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bc-arm-3", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bc-arm-3" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bc3", args: { command: "exit 0; codegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "bc3", isError: false, structuredContent: { exit_code: 0 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bc3" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a command position after an unconditional exit is still unreachable, so it never credits",
+	);
+});
+
+test("(bd) a bash search the tool rejected before spawning never arms the gate", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	// Pi's Bash tool rejects a negative timeout before it spawns anything and still emits a
+	// tool_result, whose text is its own validation error: no shell ran, so the prompt has
+	// not searched the workspace.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bd1", args: { command: "rg -n lease lib", timeout: -1 } });
+	fire(handlers, "tool_result", {
+		toolCallId: "bd1",
+		input: { command: "rg -n lease lib", timeout: -1 },
+		content: [{ type: "text", text: "Invalid timeout: must be a finite number of seconds" }],
+		isError: true,
+	});
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bd1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "a search the shell never ran does not arm the gate");
+	// An ordinary nonzero search result is a shell that did run, and still arms the gate.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "bd2", args: { command: "rg -n lease lib" } });
+	fire(handlers, "tool_result", { toolCallId: "bd2", isError: true, structuredContent: { exit_code: 1 } });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "bd2" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a nonzero search result still arms the gate",
+	);
+	// A native search tool needs no shell evidence: its own result is the execution.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "bd3", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "bd3" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a native search still arms the gate from its plain result",
+	);
+});
+
+test("(be) a foreground query that started and timed out still credits; a pre-spawn rejection does not", (t) => {
+	const handlers = installGate(t);
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "be-arm", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "be-arm" });
+	// Pi's Bash tool reports a timeout by throwing after the shell spawned, so the result
+	// carries no structuredContent.exit_code - but the tool's own timeout report is evidence
+	// the invocation was attempted, and a failed attempt counts.
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "be1", args: { command: "codegraph query lease", timeout: 1 } });
+	fire(handlers, "tool_result", {
+		toolCallId: "be1",
+		input: { command: "codegraph query lease", timeout: 1 },
+		content: [{ type: "text", text: "Command timed out after 1 seconds" }],
+		isError: true,
+	});
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "be1" });
+	assert.equal(fire(handlers, "tool_call", { toolName: "mem_search" }), undefined, "the timed-out foreground query was attempted, so it credits");
+	// A pre-spawn rejection is not an attempt: the result text is the tool's own validation
+	// error, and the input never reached a shell.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "be-arm-2", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "be-arm-2" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "be2", args: { command: "codegraph query lease", timeout: -1 } });
+	fire(handlers, "tool_result", {
+		toolCallId: "be2",
+		input: { command: "codegraph query lease", timeout: -1 },
+		content: [{ type: "text", text: "Invalid timeout: must be a finite number of seconds" }],
+		isError: true,
+	});
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "be2" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"a query the tool rejected before spawning never credits",
+	);
+	// Nor does any other thrown shell-less error: only the tool's timeout report proves a
+	// shell had already spawned.
+	fire(handlers, "before_agent_start", { messageType: "user" });
+	fire(handlers, "tool_execution_start", { toolName: "grep", toolCallId: "be-arm-3", args: { pattern: "symbol" } });
+	fire(handlers, "tool_result", { toolCallId: "be-arm-3" });
+	fire(handlers, "tool_execution_start", { toolName: "bash", toolCallId: "be3", args: { command: "codegraph query lease" } });
+	fire(handlers, "tool_result", { toolCallId: "be3", content: [{ type: "text", text: "Command aborted" }], isError: true });
+	fire(handlers, "tool_execution_end", { toolName: "bash", toolCallId: "be3" });
+	assert.deepEqual(
+		fire(handlers, "tool_call", { toolName: "mem_search" }),
+		{ block: true, reason: BLOCK_REASON },
+		"an aborted call proves no attempted query",
+	);
 });

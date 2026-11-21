@@ -17,16 +17,18 @@ const BLOCK_REASON =
 const MEMORY_GATE_OVERRIDE = "GENTLE_CODEGRAPH_MEMORY_GATE";
 
 /**
- * Replaces every quoted span, escape, and comment of a bash command string with a neutral
- * filler character (NUL): quoted text, escapes, and comments are data, never syntax, so no
- * separator, operator, or command word inside them can be read as an execution. Length and
- * every unquoted character's position are preserved, so the command's structure outside
- * quotes stays exactly where it was. A comment starts at an unquoted word-start # and runs
- * to the end of its line. A quoted here-document (<<'D', <<"D", <<-'D', <<-"D") contributes
- * its body too: the lines from the operator's newline through the line that equals the
- * delimiter are the reading command's stdin, never syntax, so they are all filler. Only the
- * newline ending the final delimiter line stays live, so parsing resumes right after the
- * body at a fresh command position.
+ * Replaces every quoted span, escape, comment, and here-document body of a bash command
+ * string with a neutral filler: a quoted span or escape is data inside a word, so it becomes
+ * a NUL byte that keeps the word a word, while comment text and a here-document's delimiter
+ * and body are no word at all and become MASKED_NON_WORD, which the word walkers skip.
+ * Either way no separator, operator, or command word inside them can be read as an execution.
+ * Length and every unquoted character's position are preserved, so the command's structure
+ * outside quotes stays exactly where it was. A comment starts at an unquoted word-start #
+ * and runs to the end of its line. A quoted here-document (<<'D', <<"D", <<-'D', <<-"D")
+ * contributes its body too: the lines from the operator's newline through the line that
+ * equals the delimiter are the reading command's stdin, never syntax, so they are all
+ * filler. Only the newline ending the final delimiter line stays live, so parsing resumes
+ * right after the body at a fresh command position.
  */
 function maskQuotedCommandText(command: string): string {
 	const filler = "\u0000";
@@ -70,16 +72,18 @@ function maskQuotedCommandText(command: string): string {
 		} else if (ch === "#" && wordStart) {
 			// The comment's text through end of line never executes, so it is all data. The
 			// newline itself stays: the walker still needs it as a command terminator.
-			masked += filler;
+			masked += MASKED_NON_WORD;
 			while (i + 1 < command.length && command[i + 1] !== "\n") {
 				i++;
-				masked += filler;
+				masked += MASKED_NON_WORD;
 			}
 			wordStart = true;
 		} else if (ch === "<" && command[i + 1] === "<") {
-			// A quoted here-document operator: the operator itself, and anything piped after it
-			// on the same line, stay live syntax, while the quoted delimiter word is data. An
-			// unquoted delimiter is left untouched - only quoted delimiters are literal.
+			// A here-document operator: the operator itself, and anything piped after it on the
+			// same line, stay live syntax, while a quoted delimiter word is data. Bash applies
+			// quote removal to the whole word and concatenates its segments, so <<'E'OF and
+			// <<E'OF' both name EOF; only a word holding a quoted segment keeps its body literal,
+			// and an unquoted delimiter is left untouched because bash still expands that body.
 			masked += "<<";
 			i++;
 			let stripTabs = false;
@@ -92,32 +96,25 @@ function maskQuotedCommandText(command: string): string {
 				masked += command[i + 1]!;
 				i++;
 			}
-			const delimiterQuote = command[i + 1];
-			if (delimiterQuote === "'" || delimiterQuote === '"') {
-				let j = i + 2;
-				let delimiter = "";
-				while (j < command.length && command[j] !== delimiterQuote && command[j] !== "\n") {
-					delimiter += command[j]!;
-					j++;
-				}
-				if (j < command.length && command[j] === delimiterQuote) {
-					heredocs.push({ delimiter, stripTabs });
-					for (let k = i + 1; k <= j; k++) masked += filler;
-					i = j;
-					wordStart = false;
-				}
+			const delimiterWord = readHeredocDelimiterWord(command, i + 1);
+			if (delimiterWord !== undefined && delimiterWord.quoted) {
+				heredocs.push({ delimiter: delimiterWord.delimiter, stripTabs });
+				// The whole word is data, so its masked span runs to where the word ends.
+				for (let k = i + 1; k < delimiterWord.end; k++) masked += MASKED_NON_WORD;
+				i = delimiterWord.end - 1;
+				wordStart = false;
 			}
 		} else if (ch === "\n" && heredocs.length > 0) {
 			// The here-document bodies start after this newline: every line through the one that
 			// equals the pending delimiter is stdin data, so the whole region is filler. An input
 			// that ends before a terminator has simply consumed its rest as data.
-			masked += filler;
+			masked += MASKED_NON_WORD;
 			while (heredocs.length > 0 && i + 1 < command.length) {
 				let lineEnd = command.indexOf("\n", i + 1);
 				const terminated = lineEnd !== -1;
 				if (lineEnd === -1) lineEnd = command.length;
 				const line = command.slice(i + 1, lineEnd);
-				for (let k = i + 1; k < lineEnd; k++) masked += filler;
+				for (let k = i + 1; k < lineEnd; k++) masked += MASKED_NON_WORD;
 				const pending = heredocs[0]!;
 				const candidate = pending.stripTabs ? line.replace(/^\t+/, "") : line;
 				const terminator = candidate === pending.delimiter;
@@ -129,7 +126,7 @@ function maskQuotedCommandText(command: string): string {
 						i = lineEnd - 1;
 						break;
 					}
-					masked += filler;
+					masked += MASKED_NON_WORD;
 					i = lineEnd;
 					continue;
 				}
@@ -150,6 +147,67 @@ function maskQuotedCommandText(command: string): string {
 		}
 	}
 	return masked;
+}
+
+/** The masked byte for text that can never be part of a command word: a comment's text and
+ * a here-document's delimiter and body. The command word walkers skip it entirely, which is
+ * what keeps a masked quoted word an operand while a comment or a body reads as no word. */
+const MASKED_NON_WORD = "\u0001";
+
+/** The characters that end a here-document delimiter word: whitespace and every shell
+ * metacharacter that starts a new token. */
+const HEREDOC_WORD_BREAK = new Set([" ", "\t", "\r", "\n", ";", "&", "|", "(", ")", "<", ">"]);
+
+/**
+ * Reads the here-document delimiter word starting at `from` and applies bash's quote removal
+ * to it, returning the delimiter bash will match, the offset just past the word, and whether
+ * any segment was quoted. Quoting is per segment - bash concatenates adjacent quoted and
+ * unquoted segments into one word - so <<'E'OF, <<E'OF', and <<"E"OF all name EOF. A word
+ * with no quoted segment is left undefined, because bash still expands that body and only a
+ * literal one is data. An unterminated quote or a trailing escape yields undefined too: the
+ * shell rejects such a word, so there is no body it could delimit.
+ */
+function readHeredocDelimiterWord(
+	command: string,
+	from: number,
+): { delimiter: string; end: number; quoted: boolean } | undefined {
+	let delimiter = "";
+	let quoted = false;
+	let i = from;
+	while (i < command.length && !HEREDOC_WORD_BREAK.has(command[i]!)) {
+		const ch = command[i]!;
+		if (ch === "'") {
+			quoted = true;
+			i++;
+			while (i < command.length && command[i] !== "'" && command[i] !== "\n") delimiter += command[i++]!;
+			if (command[i] !== "'") return undefined;
+			i++;
+		} else if (ch === '"') {
+			quoted = true;
+			i++;
+			while (i < command.length && command[i] !== '"' && command[i] !== "\n") {
+				if (command[i] === "\\") {
+					i++;
+					if (i >= command.length || command[i] === "\n") return undefined;
+				}
+				delimiter += command[i++]!;
+			}
+			if (command[i] !== '"') return undefined;
+			i++;
+		} else if (ch === "\\") {
+			// A backslash-escaped character quotes that one character, which is already enough
+			// to keep the body literal.
+			quoted = true;
+			i++;
+			if (i >= command.length || command[i] === "\n") return undefined;
+			delimiter += command[i++]!;
+		} else {
+			delimiter += ch;
+			i++;
+		}
+	}
+	if (delimiter === "") return undefined;
+	return { delimiter, end: i, quoted };
 }
 
 /** A word bash accepts as a temporary environment assignment (NAME=VALUE) ahead of the
@@ -253,9 +311,11 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 	const endWord = () => {
 		if (word === "") return;
 		words.push({ text: word, quoted: word.includes("\u0000") });
-		// A word holding any unmasked character is a real token: a pending operator, if one is
-		// open, has found the operand it guards, so later newlines end completed lists.
-		if (word.split("").some((one) => one !== "\u0000")) pendingOperand = false;
+		// Every finished word is a real token - a wholly quoted one included, because the mask
+		// keeps its span a word - so a pending operator has found the operand it guards and
+		// later newlines end completed lists. Comment text and here-document bodies never reach
+		// here: they are masked as no word at all.
+		pendingOperand = false;
 		word = "";
 		// A `!` still in the pipeline's leading position is the negation reserved word, never a
 		// command: a quoted `!` or one after the executable is an ordinary argument.
@@ -278,7 +338,9 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 		const subcommand = words[at + 1];
 		// A top-level exit ends the shell itself; the separator that follows this segment
 		// decides whether it really does, because a pipeline or background piece runs forked.
-		segmentExitsShell = executable !== undefined && !executable.quoted && executable.text === "exit" && subshellGuards.length === 0;
+		// An exit a condition guards may never run at all - `false && exit 0` skips it - so
+		// only an unconditional one can prove nothing after it is reached.
+		segmentExitsShell = executable !== undefined && !executable.quoted && executable.text === "exit" && subshellGuards.length === 0 && listCondition === "none";
 		if (executable !== undefined && !executable.quoted && executable.text === "codegraph") runsCodegraph = true;
 		if (
 			executable !== undefined && !executable.quoted && executable.text === "codegraph" &&
@@ -309,6 +371,11 @@ function analyzeCliQuery(command: string): { present: boolean; credit: CliQueryC
 	};
 	for (let i = 0; i < masked.length; i++) {
 		const ch = masked[i]!;
+		if (ch === MASKED_NON_WORD) {
+			// Comment text and here-document bodies carry no command word: they neither extend
+			// the word being read nor complete a pending operand.
+			continue;
+		}
 		if (ch === "\u0000") {
 			word += ch;
 		} else if (ch === " " || ch === "\t" || ch === "\r") {
@@ -431,6 +498,10 @@ function bashRunsSearchCommand(command: string): boolean {
 	};
 	for (let i = 0; i < masked.length; i++) {
 		const ch = masked[i]!;
+		if (ch === MASKED_NON_WORD) {
+			// Comment text and here-document bodies carry no command word.
+			continue;
+		}
 		if (ch === " " || ch === "\t" || ch === "\r") {
 			// A blank ends a word, not the simple command: the negation and assignment prefixes
 			// ahead of the executable are judgeable only once a separator - or the string's end
@@ -469,13 +540,27 @@ function gateApplies(cwd: unknown): boolean {
 	}
 }
 
-/** Whether a bash tool result proves a shell actually ran: the built-in Bash tool reports
- * the spawned shell's exit status as structuredContent.exit_code - nonzero exits carry it too
- * - while a result for input the tool rejected before spawning (schema-valid but invalid,
- * like a negative timeout) carries no structured content at all. */
-function bashResultRanShell(event: unknown): boolean {
+/** How pi's Bash tool reports a timeout: it throws the command's output followed by this
+ * status line, so the thrown error's message carries the marker the tool itself produces. */
+const BASH_TIMEOUT_REPORT = /Command timed out after [\d.]+ seconds/;
+
+/** Whether a bash tool result proves the shell was attempted - it ran, or it started and was
+ * killed. The built-in Bash tool reports the spawned shell's exit status as
+ * structuredContent.exit_code, nonzero exits included, so a number there is direct proof. A
+ * result without it is a call the tool failed by throwing, and only one of those proves a
+ * shell had already spawned: the tool's own timeout report, because pi validates its input
+ * before spawning anything and reports a timeout only for a shell it started. Every other
+ * thrown error - a rejected timeout, a missing working directory, an abort - may have failed
+ * before the shell existed, so it proves no attempt. */
+function bashResultProvesAttempt(event: unknown): boolean {
 	const structured = (event as { structuredContent?: unknown } | undefined | null)?.structuredContent;
-	return typeof (structured as { exit_code?: unknown } | undefined | null)?.exit_code === "number";
+	if (typeof (structured as { exit_code?: unknown } | undefined | null)?.exit_code === "number") return true;
+	const content = (event as { content?: unknown } | undefined | null)?.content;
+	if (!Array.isArray(content)) return false;
+	return content.some((block) => {
+		const text = (block as { type?: unknown; text?: unknown } | null | undefined)?.text;
+		return typeof text === "string" && BASH_TIMEOUT_REPORT.test(text);
+	});
 }
 
 /**
@@ -503,9 +588,11 @@ function bashResultRanShell(event: unknown): boolean {
  * only for calls Pi really executed — start and end events alone never credit, because Pi
  * also emits those for calls it fails without executing — and an executed query or explore
  * counts however it ended, failure included. Prompt-level search activity is confirmed the
- * same way, and a bash-run CLI query additionally needs the Bash result's
- * structuredContent.exit_code — the evidence a shell actually spawned — so a tool error
- * thrown before any shell ran proves no attempted query. Like the prompt's search-activity marker, credit
+ * same way, and a bash-run CLI query or search additionally needs the Bash result's
+ * structuredContent.exit_code — the evidence a shell actually spawned — unless the result
+ * carries the tool's own timeout report, which only a shell it had already started can
+ * produce, so a timed-out foreground attempt still credits while a tool error thrown before
+ * any shell ran proves no attempt. Like the prompt's search-activity marker, credit
  * expires with every new user prompt, whether that prompt
  * starts a run or is delivered as steering or a queued follow-up inside a running loop;
  * credit applies only to a fully settled window:
@@ -533,13 +620,14 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 	// The query/explore executions pending their post-execution confirmation, by call id: the
 	// result and end events carry no arguments, so the requested operation, the credit its
 	// command position can prove, and whether a bash call sourced it (a bash-sourced result
-	// must also prove a shell ran) are recorded here when the call starts.
+	// must also prove the shell was attempted) are recorded here when the call starts.
 	const queryExploreExecutions = new Map<string, { credit: CliQueryCredit; fromBash: boolean }>();
-	// The search calls that started but have not been confirmed executed: Pi also emits start
-	// (and end) events for calls a truncated response failed without running, so the
-	// prompt-level search marker waits for the post-execution result only an executed call
-	// produces.
-	const pendingSearchExecutions = new Set<string>();
+	// The search calls that started but have not been confirmed attempted, by call id: Pi also
+	// emits start (and end) events for calls a truncated response failed without running, so
+	// the prompt-level search marker waits for the post-execution result only an attempted
+	// call produces. A bash-carried search also needs that result to prove a shell was
+	// attempted at all, which is why its surface is recorded here when the call starts.
+	const pendingSearchExecutions = new Map<string, { fromBash: boolean }>();
 	// Whether the current assistant turn's tool batch mixes a persistent-memory read with a
 	// native codegraph call on any surface and operation: such a batch's memory reads are
 	// refused at admission, because Pi
@@ -672,12 +760,12 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 			// also emits start events for calls it never executes; a hostile or malformed payload
 			// never throws.
 			if (toolName === "grep" || toolName === "find" || toolName === "ls") {
-				if (typeof toolCallId === "string") pendingSearchExecutions.add(toolCallId);
+				if (typeof toolCallId === "string") pendingSearchExecutions.set(toolCallId, { fromBash: false });
 			} else if (toolName === "bash") {
 				const command = ((event as { args?: { command?: unknown } | undefined | null } | undefined | null)?.args)?.command;
 				if (typeof command === "string") {
 					if (typeof toolCallId === "string") {
-						if (bashRunsSearchCommand(command)) pendingSearchExecutions.add(toolCallId);
+						if (bashRunsSearchCommand(command)) pendingSearchExecutions.set(toolCallId, { fromBash: true });
 						// A CLI query or explore through bash is the graph execution AGENTS.md credits for
 						// worktree dispatches: active from its start, credited only in the command
 						// positions whose completion can prove execution reached the invocation, and
@@ -736,14 +824,19 @@ export default function codegraphFirstGate(pi: ExtensionAPI): void {
 				// with no such content - no shell, no attempted query. Nonzero exits carry it too,
 				// so a foreground attempt the analysis proves was reached still credits, failure
 				// included.
-				const ranShell = !pending.fromBash || bashResultRanShell(event);
+				const ranShell = !pending.fromBash || bashResultProvesAttempt(event);
 				if (ranShell && !(pending.credit === "on-success" && (event as { isError?: unknown }).isError === true)) credited = true;
 			}
-			// The post-execution result is also the only confirmation a listed search really
-			// ran: it, not the start event, arms the prompt-level search marker. The separate
+			// The post-execution result is also the only confirmation a listed search was really
+			// attempted: it, not the start event, arms the prompt-level search marker, and a
+			// bash-carried search needs it to prove a shell was attempted at all. The separate
 			// batch check still covers reads admitted beside a sibling search before either
 			// call runs.
-			if (pendingSearchExecutions.delete(toolCallId)) searchActivity = true;
+			const pendingSearch = pendingSearchExecutions.get(toolCallId);
+			if (pendingSearch !== undefined) {
+				pendingSearchExecutions.delete(toolCallId);
+				if (!pendingSearch.fromBash || bashResultProvesAttempt(event)) searchActivity = true;
+			}
 		} catch {
 			/* a hostile payload must never break the host */
 		}

@@ -249,7 +249,7 @@ function fakeContext(tui: { requestRender(): void } = fakeTui, confirmResult: (t
 		const factory = widgets.get("gentle-agents");
 		return factory ? factory(tui, plainTheme).render(72).map(stripAnsi) : undefined;
 	};
-	const widgetComponent = () => widgets.get("gentle-agents")?.(tui, plainTheme) as Component | undefined;
+	const widgetComponent = () => widgets.get("gentle-agents")?.(tui, plainTheme) as unknown as Component | undefined;
 	return { ctx, widget, widgetComponent, widgets, dialogs, overlays, customCompletions, customOptions };
 }
 

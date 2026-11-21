@@ -154,7 +154,7 @@ class ChoiceModeView extends Container {
 		return this.editing ? undefined : this.list.handleMouse(event);
 	}
 
-	override render(width: number): string[] {
+	override render(width: number): readonly string[] {
 		return (this.editing ? this.editor : this.list).render(width);
 	}
 }

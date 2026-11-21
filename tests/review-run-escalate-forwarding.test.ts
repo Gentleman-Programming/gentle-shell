@@ -21,11 +21,25 @@ test("resume with lineageId ignores escalate exactly like resume without it", as
 	assert.equal(JSON.stringify(runs[1]!.calls).includes("escalate"), false);
 });
 
-test("baseRef + escalate forwards both in assess input; inspect stays selector-only", async () => {
+test("baseRef + escalate forwards both to assess and inspect input", async () => {
 	const r = recorder((_tool, parameters) => parameters.operation === "assess" ? { reviewDue: true } : { failure: { code: "stop" } });
 	await runReviewCoordinator({ baseRef: "main", committedOnly: true, escalate }, r.deps as never);
 	assert.deepEqual(JSON.parse(String(r.calls[0]!.parameters.input)), { baseRef: "main", committedOnly: true, escalate });
-	assert.deepEqual(JSON.parse(String(r.calls[1]!.parameters.input)), { baseRef: "main", committedOnly: true });
+	assert.deepEqual(JSON.parse(String(r.calls[1]!.parameters.input)), { baseRef: "main", committedOnly: true, escalate });
+});
+
+test("a fresh START carries the escalate; without escalate inspect and START input are unchanged", async () => {
+	const reply = (_tool: ReviewCoordinatorTool, parameters: Body): Body => parameters.operation === "assess" ? { reviewDue: true }
+		: parameters.operation === "inspect" ? { result: { next_transition: { kind: "execute", execute: { operation: "review.start" } } } } : { failure: { code: "stop" } };
+	const withEscalate = recorder(reply);
+	await runReviewCoordinator({ escalate }, withEscalate.deps as never);
+	const start = withEscalate.calls.find((c) => c.parameters.operation === "start")!;
+	assert.deepEqual(JSON.parse(String(start.parameters.input)), { mode: "ordinary", escalate });
+	assert.deepEqual(JSON.parse(String(withEscalate.calls.find((c) => c.parameters.operation === "inspect")!.parameters.input)), { escalate });
+	const without = recorder(reply);
+	await runReviewCoordinator({}, without.deps as never);
+	assert.deepEqual(JSON.parse(String(without.calls.find((c) => c.parameters.operation === "start")!.parameters.input)), { mode: "ordinary" });
+	assert.equal(without.calls.find((c) => c.parameters.operation === "inspect")!.parameters.input, undefined);
 });
 
 test("an invalid escalate is rejected even with lineageId, before any call", async () => {

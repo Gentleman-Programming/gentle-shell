@@ -463,6 +463,20 @@ test("gentle_review_run forwards escalate to native assess and proceeds past not
 	} finally { runtime.close(); }
 });
 
+test("gentle_review_run carries escalate into the native STATUS preflight and START; without it neither carries one", async () => {
+	const escalate = { item: 3, reason: "touches the auth boundary" };
+	for (const withEscalate of [true, false]) {
+		const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { mediumAssess: true, hasUI: false });
+		try {
+			await runtime.invoke("gentle_review_run", withEscalate ? { escalate } : {}).catch(() => undefined);
+			const statuses = runtime.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => (entry.request as { escalate?: unknown }).escalate);
+			if (withEscalate) {
+				assert.deepEqual(statuses.filter((value) => value !== undefined), [escalate], "the inspect STATUS preflight carries the escalation exactly once");
+				} else for (const value of statuses) assert.equal(value, undefined);
+		} finally { runtime.close(); }
+	}
+});
+
 test("gentle_review_run without escalate keeps a medium candidate not-due", async () => {
 	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { mediumAssess: true, hasUI: false });
 	try {

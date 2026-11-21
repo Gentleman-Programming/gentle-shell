@@ -470,7 +470,27 @@ function nativeRequestContextArguments(request: NativeRequestContextSelection): 
 	return ["--request-context", request.requestContextPath];
 }
 
-export interface NativeStartRequest extends NativeUntrackedSelectionRequest, NativeLensSelectionRequest, NativeRequestContextSelection {
+/**
+ * gentle-ai#6203: the agent escalation rides the contracted STATUS preflight
+ * (`--escalate-item/--escalate-reason`) so the provider-issued START carries it;
+ * Pi never appends it to a provider-issued START vector.
+ */
+interface NativeEscalateSelection {
+	escalate?: AgentRiskEscalation;
+}
+
+function nativeEscalateArguments(request: NativeEscalateSelection): readonly string[] {
+	if (request.escalate === undefined) return [];
+	const escalation = decodeAgentRiskEscalation(request.escalate);
+	return ["--escalate-item", String(escalation.item), "--escalate-reason", escalation.reason];
+}
+
+/** Every value the tokens give `--flag` (separate or `--flag=value` form). */
+function tokenFlagValues(tokens: readonly string[], flag: string): string[] {
+	return tokens.flatMap((token, index) => token === flag ? [tokens[index + 1] ?? ""] : token.startsWith(`${flag}=`) ? [token.slice(flag.length + 1)] : []);
+}
+
+export interface NativeStartRequest extends NativeUntrackedSelectionRequest, NativeLensSelectionRequest, NativeRequestContextSelection, NativeEscalateSelection {
 	cwd: string;
 	baseRef?: string;
 	committedOnly?: boolean;
@@ -497,7 +517,7 @@ export interface NativeReviewConsentDeclinedResult {
 export interface NativeReviewConsentStartedResult { kind: "started"; start: NativeStartResult; }
 export type NativeReviewConsentAnswerResult = NativeReviewConsentStartedResult | NativeReviewConsentDeclinedResult;
 export interface NativeReviewStatusRequest { cwd: string; signal?: AbortSignal; }
-export interface NativeTargetStatusRequest extends NativeUntrackedSelectionRequest, NativeLensSelectionRequest, NativeRequestContextSelection {
+export interface NativeTargetStatusRequest extends NativeUntrackedSelectionRequest, NativeLensSelectionRequest, NativeRequestContextSelection, NativeEscalateSelection {
 	cwd: string;
 	lineageId?: string;
 	baseRef?: string;
@@ -2135,6 +2155,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		const statusRequest: NativeTargetStatusRequest = {
 			cwd: request.cwd,
 			...(request.requestContextPath === undefined ? {} : { requestContextPath: request.requestContextPath }),
+			...(request.escalate === undefined ? {} : { escalate: request.escalate }),
 			projection,
 			...(request.baseRef === undefined ? {} : { baseRef: request.baseRef, committedOnly: true }),
 			...(request.lineageId === undefined ? {} : { lineageId: request.lineageId }),
@@ -2163,6 +2184,12 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		if (request.requestContextPath !== undefined) {
 			const values = transitionTokens.flatMap((token, index) => token === "--request-context" ? [transitionTokens[index + 1]] : token.startsWith("--request-context=") ? [token.slice("--request-context=".length)] : []);
 			if (values.length !== 1 || values[0] !== request.requestContextPath) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, false, "native START transition did not retain the requested context file", undefined, false);
+		}
+		if (request.escalate !== undefined) {
+			const escalation = decodeAgentRiskEscalation(request.escalate);
+			const items = tokenFlagValues(transitionTokens, "--escalate-item");
+			const reasons = tokenFlagValues(transitionTokens, "--escalate-reason");
+			if (items.length !== 1 || items[0] !== String(escalation.item) || reasons.length !== 1 || reasons[0] !== escalation.reason) throw nativeError(NATIVE_REVIEW_ERROR_CODE.IDENTITY_MISMATCH, NATIVE_REVIEW_OPERATION.START, false, "native START transition did not retain the agent escalation", undefined, false);
 		}
 		const execution = await this.negotiated(NATIVE_REVIEW_OPERATION.START, request.cwd, ["review", "start", ...transitionTokens], true, request.signal);
 		// A negotiated v2 START may answer a consent question (action:
@@ -2257,6 +2284,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		// Validate locally before discovery; never probe support by sending an
 		// unknown flag or retrying the review without its requested intent.
 		const requestContextArguments = nativeRequestContextArguments(request);
+		const escalateArguments = nativeEscalateArguments(request);
 		if (request.baseRef !== undefined && !isCanonicalProcessString(request.baseRef)) throw new TypeError("Native STATUS baseRef must be a non-empty, trimmed, NUL-free string");
 		if (request.baseRef !== undefined && request.committedOnly !== true) throw new TypeError("Native STATUS baseRef requires explicit committedOnly acknowledgement");
 		if (request.baseRef === undefined && request.committedOnly !== undefined) throw new TypeError("Native STATUS committedOnly requires an explicit baseRef");
@@ -2324,9 +2352,10 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...(request.agent === undefined ? [] : ["--agent", request.agent]),
 			...nativeLensSelectionArguments(request),
 			...requestContextArguments,
+			...escalateArguments,
 			...(request.nonBlockingFindings === true ? ["--non-blocking-findings"] : []),
 			"--next-transition",
-		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments];
+		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments, ...escalateArguments];
 		const execution: NegotiatedExecution = contextExecutable === undefined
 			? await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal)
 			: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);

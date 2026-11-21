@@ -115,11 +115,15 @@ test("exploreViaDaemon answers through the daemon socket without spawning a proc
 	assert.deepEqual(result, { status: "ok", text: "daemon answer" });
 });
 
-test("the fake daemon binds a unique Windows named pipe and a short socket path elsewhere", (t) => {
+test("the fake daemon binds a unique Windows named pipe", (t) => {
 	const pipe = fakeDaemonSocketPath(t, "win32");
 	assert.ok(pipe.startsWith("\\\\.\\pipe\\"), "a Windows IPC path must live in the \\\\.\\pipe\\ namespace");
 	assert.ok(!pipe.includes(POSIX_SOCKET_ROOT), "the pipe name carries no filesystem path");
 	assert.notEqual(pipe, fakeDaemonSocketPath(t, "win32"), "every daemon binds its own pipe");
+});
+
+test("the fake daemon binds a short socket path on POSIX hosts however long TMPDIR is", (t) => {
+	if (process.platform === "win32") return t.skip("the POSIX socket fixture needs a root-level /tmp directory, which a Windows host does not have");
 	// However long TMPDIR is, the POSIX bind path stays far inside the Unix socket path budget
 	// (~104 bytes on macOS, 108 on Linux): the fixture binds under a short root of its own instead
 	// of the mkdtemp home, whose length follows TMPDIR and once pushed daemon.ready into rejecting
@@ -351,6 +355,13 @@ test("registeredDaemons reads the registry once per project per window", (t) => 
 	assert.equal(fresh[0]?.startedAt, 2, "after the reset the mutated record is read again");
 });
 
+/** A directory link every host can create: a junction on Windows, where an ordinary directory
+ * symlink needs Developer Mode or elevation, an ordinary symlink on POSIX so retargeting the
+ * link stays exercised there. */
+function linkDir(target: string, path: string): void {
+	symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
+}
+
 test("a memoized registry match is rechecked against its root before it is returned", (t) => {
 	const home = dir(t, "junction");
 	const checkoutA = join(home, "checkout-a");
@@ -358,12 +369,12 @@ test("a memoized registry match is rechecked against its root before it is retur
 	const junction = join(home, "junction");
 	mkdirSync(checkoutA);
 	mkdirSync(checkoutB);
-	symlinkSync(checkoutA, junction);
+	linkDir(checkoutA, junction);
 	const registry = dir(t, "junction-registry");
 	writeFileSync(join(registry, "record.json"), JSON.stringify({ root: junction, socketPath: join(registry, "daemon.sock"), startedAt: 1, pid: process.pid }));
 	assert.equal(registeredDaemons(checkoutA, registry).length, 1, "a junction to checkout A answers for checkout A");
 	rmSync(junction);
-	symlinkSync(checkoutB, junction);
+	linkDir(checkoutB, junction);
 	// The registry file did not change, so the memo key cannot either: only rechecking the cached
 	// record's canonical root catches a junction that moved to checkout B inside the window.
 	assert.equal(registeredDaemons(checkoutA, registry).length, 0, "the retargeted junction stops answering for checkout A inside the memo window");

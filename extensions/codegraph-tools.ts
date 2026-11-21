@@ -1407,7 +1407,7 @@ function sayWarmNotice(
  */
 export function indexStartNotice(action: "init" | "sync"): { text: string; level: "info" } {
 	if (action === "sync") return { text: "syncing the CodeGraph index...", level: "info" };
-	return { text: "initializing the current repo for CodeGraph...", level: "info" };
+	return { text: "initializing current repo for CodeGraph...", level: "info" };
 }
 
 /**

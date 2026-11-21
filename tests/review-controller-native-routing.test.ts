@@ -3677,3 +3677,53 @@ test("bound STATUS on a workspace-projection lineage still validates its untrack
 		assert.deepEqual({ outcome: (result as { outcome?: string }).outcome, reason: (result as { reason?: string }).reason }, { outcome: "native-status-input-invalid", reason: "untracked-selection-invalid" });
 	}
 });
+
+function committedStatus(lineageId: string): ReviewStatusV3 {
+	const committed = status(lineageId);
+	(committed.projection as { kind: string; projection: string }).kind = "base-diff";
+	(committed.projection as { kind: string; projection: string }).projection = "committed";
+	return committed;
+}
+
+test("fresh-session bound STATUS {} and exclude resolve an unretained committed-only lineage through its own binding", async (t) => {
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => candidateViews.cleanupAll());
+	const cwd = repository(t), lineageId = "committed-fresh";
+	const requests: Array<Record<string, unknown>> = [];
+	const native = { targetStatus: async (request: Record<string, unknown>) => { requests.push(request); return committedStatus(lineageId); } } as unknown as NativeReviewCli;
+	for (const input of ["{}", JSON.stringify({ untrackedScope: "exclude" })]) {
+		const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input }, cwd, native, undefined, candidateViews);
+		assert.notEqual((result as { outcome?: string }).outcome, "native-status-input-invalid", input);
+	}
+	assert.equal(requests.length, 2);
+	for (const request of requests) { assert.equal(request.lineageId, lineageId); assert.equal("untrackedScope" in request, false); assert.equal("baseRef" in request, false); }
+});
+
+test("retained committed-only lineage still rejects malformed untracked declarations without native calls", async (t) => {
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => candidateViews.cleanupAll());
+	const cwd = repository(t), lineageId = "committed-malformed";
+	const view = candidateViews.create({ contributorRoot: cwd, baseRef: execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim(), committedOnly: true });
+	candidateViews.retain(view.token, lineageId);
+	let calls = 0;
+	const native = { targetStatus: async () => { calls += 1; return status(lineageId); } } as unknown as NativeReviewCli;
+	for (const body of [
+		{ untrackedScope: "include" },
+		{ untrackedScope: "bogus" },
+		{ untrackedScope: "select", expectedUntrackedInventory: SHA, intendedUntracked: ["../x"] },
+		{ untrackedScope: "select", intendedUntracked: ["a.ts"] },
+	]) {
+		const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input: JSON.stringify(body) }, cwd, native, undefined, candidateViews);
+		assert.deepEqual({ outcome: (result as { outcome?: string }).outcome, reason: (result as { reason?: string }).reason }, { outcome: "native-status-input-invalid", reason: "untracked-selection-invalid" }, JSON.stringify(body));
+	}
+	assert.equal(calls, 0);
+});
+
+test("fresh-session bound STATUS {} on an unretained workspace lineage keeps the untracked-selection refusal", async (t) => {
+	const candidateViews = new CandidateViewRegistry();
+	t.after(() => candidateViews.cleanupAll());
+	const cwd = repository(t), lineageId = "workspace-fresh";
+	const native = { targetStatus: async () => status(lineageId) } as unknown as NativeReviewCli;
+	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input: "{}" }, cwd, native, undefined, candidateViews);
+	assert.deepEqual({ outcome: (result as { outcome?: string }).outcome, reason: (result as { reason?: string }).reason }, { outcome: "native-status-input-invalid", reason: "untracked-selection-invalid" });
+});

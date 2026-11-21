@@ -8632,7 +8632,7 @@ function isNativeStartUntrackedPath(value: unknown): value is string {
 		&& value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
 
-function validateNativeStartUntrackedSelection(value: Record<string, unknown>): NativeStartUntrackedSelection {
+function validateNativeStartUntrackedSelection(value: Record<string, unknown>, digestOptional = false): NativeStartUntrackedSelection {
 	const declared = "untrackedScope" in value || "expectedUntrackedInventory" in value || "intendedUntracked" in value;
 	if (!declared) return {};
 	const scope = value.untrackedScope;
@@ -8640,7 +8640,7 @@ function validateNativeStartUntrackedSelection(value: Record<string, unknown>): 
 	const intendedUntracked = value.intendedUntracked;
 	if (
 		(scope !== NATIVE_START_UNTRACKED_SCOPE.EXCLUDE && scope !== NATIVE_START_UNTRACKED_SCOPE.SELECT) ||
-		!isCanonicalProcessString(expectedUntrackedInventory) ||
+		(!isCanonicalProcessString(expectedUntrackedInventory) && !(digestOptional && scope === NATIVE_START_UNTRACKED_SCOPE.EXCLUDE && expectedUntrackedInventory === undefined)) ||
 		(intendedUntracked !== undefined && (!Array.isArray(intendedUntracked) || intendedUntracked.some((path) => !isNativeStartUntrackedPath(path) || intendedUntracked.indexOf(path) !== intendedUntracked.lastIndexOf(path))))
 	) return { reason: "untracked-selection-invalid" };
 	const paths = Array.isArray(intendedUntracked) ? intendedUntracked : [];
@@ -8648,7 +8648,7 @@ function validateNativeStartUntrackedSelection(value: Record<string, unknown>): 
 	if (scope === NATIVE_START_UNTRACKED_SCOPE.SELECT && paths.length === 0) return { reason: "untracked-selection-invalid" };
 	return {
 		untrackedScope: scope,
-		expectedUntrackedInventory,
+		expectedUntrackedInventory: expectedUntrackedInventory as string,
 		intendedUntracked: [...paths],
 	};
 }
@@ -11985,11 +11985,21 @@ async function executeReviewControllerOperationImpl(
 			? candidateViews.resolveProjection(parameters.lineageId, defaultCwd)
 			: undefined;
 		const committedRangeBound = retainedCommittedTarget?.committedOnly === true;
-		const untrackedSelection = rawStatus === undefined || committedRangeBound ? {} : validateNativeStartUntrackedSelection(rawStatus);
-		if (
-			rawStatus !== undefined && !committedRangeBound &&
-			(untrackedSelection.reason !== undefined || (baseRef === undefined && untrackedSelection.untrackedScope === undefined))
-		) return nativeStatusInputRejection(untrackedSelection.reason ?? "untracked-selection-invalid");
+		// A committed range waives the declaration, not its shape: a malformed
+		// declaration is still refused, and a valid one is never forwarded.
+		const shapeSelection = rawStatus === undefined ? {} : validateNativeStartUntrackedSelection(rawStatus, true);
+		let untrackedSelection = rawStatus === undefined || committedRangeBound ? {} : validateNativeStartUntrackedSelection(rawStatus);
+		const workspaceRefusal = rawStatus !== undefined && (untrackedSelection.reason !== undefined || (baseRef === undefined && untrackedSelection.untrackedScope === undefined))
+			? (untrackedSelection.reason ?? "untracked-selection-invalid")
+			: undefined;
+		if (committedRangeBound && shapeSelection.reason !== undefined) return nativeStatusInputRejection(shapeSelection.reason);
+		// gentle-shell#3412: with no retained projection (fresh session), a
+		// well-formed but incomplete declaration may still belong to a committed
+		// lineage; the lineage-only STATUS below decides, else the refusal stands.
+		const probeCommittedRange = !committedRangeBound && workspaceRefusal !== undefined && shapeSelection.reason === undefined && baseRef === undefined &&
+			parameters.lineageId !== undefined && !candidateViews?.hasProjection(parameters.lineageId, defaultCwd);
+		if (workspaceRefusal !== undefined && !committedRangeBound && !probeCommittedRange) return nativeStatusInputRejection(workspaceRefusal);
+		if (probeCommittedRange) untrackedSelection = {};
 		const retainedUntrackedSelection = cloneRetainedNativeUntrackedSelection(untrackedSelection);
 		const effectiveUntrackedSelection = rawStatus === undefined && !committedRangeBound && parameters.lineageId !== undefined
 			? readRetainedNativeUntrackedSelection(retainedUntrackedSelections, defaultCwd, parameters.lineageId)
@@ -12015,6 +12025,10 @@ async function executeReviewControllerOperationImpl(
 				}
 				const status = negotiated.status!;
 				if (
+					probeCommittedRange &&
+					!(status.applicability === "current_target" && status.authority?.lineageId === parameters.lineageId && status.projection.kind === "base-diff")
+				) return nativeStatusInputRejection(workspaceRefusal!);
+				if (
 					retainedUntrackedSelection !== undefined &&
 					parameters.lineageId !== undefined &&
 					status.applicability === "current_target" &&
@@ -12024,6 +12038,7 @@ async function executeReviewControllerOperationImpl(
 				hydrateDispatchBindingFromStatus(candidateViews, defaultCwd, status);
 				return { ...mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined), ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
 			} catch (error) {
+				if (probeCommittedRange) return nativeStatusInputRejection(workspaceRefusal!);
 				return nativeReadOnlyStatusTimedOut(parameters.operation, error) ?? nativeOperationFailure(parameters.operation, error);
 			}
 		}

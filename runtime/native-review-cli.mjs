@@ -9,7 +9,6 @@ import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } 
 import { decodeReviewAssessmentV1,                         } from "./review-risk-assessment.mjs";
 import {
 	REVIEW_INTEGRATION_CONTRACT,
-	ReviewLegacyAuthorityUnsupportedError,
 	ReviewNativeContractTooOldError,
 	decodeReviewAcknowledgedV1,
 	decodeReviewCapabilitiesV2,
@@ -86,7 +85,6 @@ export const NATIVE_REVIEW_ERROR_CODE = {
 	SCHEMA_INCOMPATIBLE: "schema-incompatible",
 	IDENTITY_MISMATCH: "identity-mismatch",
 	VERSION_INCOMPATIBLE: "version-incompatible",
-	LEGACY_AUTHORITY_UNSUPPORTED: "legacy-authority-unsupported",
 	CANCELLED: "cancelled",
 	PACKAGE_BINARY_MISSING: "package-local-binary-missing",
 	UNSUPPORTED_TRANSITION_OPERATION: "unsupported-transition-operation",
@@ -1338,7 +1336,6 @@ function assertSupportedNextTransitionOperation(body                         )  
 function decode   (operation                       , mutating         , callback         , diagnostics = nativeProcessDiagnostics(operation, NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE))    {
 	try { return measureStatusSync("decode", callback); } catch (error) {
 		if (error instanceof NativeReviewCliError) throw error;
-		if (error instanceof ReviewLegacyAuthorityUnsupportedError) throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.LEGACY_AUTHORITY_UNSUPPORTED, operation, true, mutating, error.message, { ...diagnostics, error_code: NATIVE_REVIEW_ERROR_CODE.LEGACY_AUTHORITY_UNSUPPORTED });
 		// An older-than-pinned native contract names the minimum instead of an opaque schema failure.
 		if (error instanceof ReviewNativeContractTooOldError) throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, operation, true, mutating, error.message, { ...diagnostics, error_code: NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE });
 		throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE, operation, true, mutating, "native response is schema incompatible", { ...diagnostics, error_code: NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE }); }

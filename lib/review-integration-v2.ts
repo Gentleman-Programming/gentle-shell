@@ -47,9 +47,6 @@ export const REVIEW_PROJECTION_KIND = {
 } as const;
 export type ReviewProjectionKind = (typeof REVIEW_PROJECTION_KIND)[keyof typeof REVIEW_PROJECTION_KIND];
 
-/** Legacy review authority is no longer supported; status refuses it with this single actionable message. */
-export const LEGACY_V1_AUTHORITY_REFUSAL = "legacy-v1 review authority is no longer supported; run: gentle-ai review store-reset --cwd <repo> (or remove the legacy store) and start a new review";
-
 export const REVIEW_AUTHORITY_VERSION = {
 	COMPACT_V2: "compact-v2",
 	LEGACY_V1: "legacy-v1",
@@ -122,14 +119,6 @@ export class ReviewNativeContractTooOldError extends TypeError {
 	constructor(message: string) {
 		super(message);
 		this.name = "ReviewNativeContractTooOldError";
-	}
-}
-
-// Distinct from a schema mismatch so the single store-reset message survives to the tool result.
-export class ReviewLegacyAuthorityUnsupportedError extends TypeError {
-	constructor(message: string) {
-		super(message);
-		this.name = "ReviewLegacyAuthorityUnsupportedError";
 	}
 }
 
@@ -2042,7 +2031,6 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 	let authority: ReviewStatusAuthorityV1 | undefined;
 	if (body.authority !== undefined) {
 		const source = exactRecord(body.authority, "status.authority", ["version", "lineage_id", "state", "generation", "revision"]);
-		if (source.version === REVIEW_AUTHORITY_VERSION.LEGACY_V1) throw new ReviewLegacyAuthorityUnsupportedError(LEGACY_V1_AUTHORITY_REFUSAL);
 		authority = {
 			version: enumeration(source.version, [REVIEW_AUTHORITY_VERSION.COMPACT_V2] as const, "status.authority.version"),
 			lineageId: lineage(source.lineage_id, "status.authority.lineage_id"),

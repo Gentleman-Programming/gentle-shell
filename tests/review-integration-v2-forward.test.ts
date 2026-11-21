@@ -103,17 +103,12 @@ test("v5 STATUS rejects malformed receipt status, identity, and extra fields", (
 	assert.throws(() => decodeReviewStatusV3(extra), /status\.receipt\.unexpected is not allowed/);
 });
 
-test("legacy-v1 STATUS authority is refused with the single store-reset message", () => {
+test("non compact-v2 STATUS authority fails the ordinary strict decode", () => {
 	const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
 	(body.authority as JsonObject).version = "legacy-v1";
 	delete body.frozen;
 	delete body.authority_target_identity;
-	assert.throws(
-		() => decodeReviewStatusV3(body),
-		(error: unknown) => error instanceof TypeError && error.message === "legacy-v1 review authority is no longer supported; run: gentle-ai review store-reset --cwd <repo> (or remove the legacy store) and start a new review",
-	);
-	// Normal compact-v2 status is unchanged.
-	assert.equal(decodeReviewStatusV3(currentStatusFixture("status-v5-capture-result-submission.captured.json")).authority?.version, "compact-v2");
+	assert.throws(() => decodeReviewStatusV3(body), /status\.authority\.version/);
 });
 
 test("captured terminal closure decodes without a compatibility status projection", () => {

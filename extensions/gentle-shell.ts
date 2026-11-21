@@ -35,6 +35,7 @@ import { NATIVE_REVIEW_MODE_SOURCE } from "../lib/native-review-cli.ts";
 import { VisualCustomizeView, type CustomizeCategory, type CustomizeRow, type ProfileActions } from "../lib/visual-customize-view.ts";
 import { deleteVisualProfile, getVisualProfile, listVisualProfiles, resetVisualProfiles, saveVisualProfile } from "../lib/visual-profiles.ts";
 import { gaugePaintFor } from "../lib/gauge-theme.ts";
+import { isTokenCount, readCompactionThreshold } from "../lib/compaction-threshold.ts";
 import type { GaugePaint } from "../lib/shell-gauge.ts";
 import { sourcePalettePreview } from "../lib/theme-customization.ts";
 import { applyVisualPreset, CHROME_SURFACE, DEFAULT_VISUAL_SETTINGS, DENSITY, HEADER_PLACEMENT, STATUS_PLACEMENT, VISUAL_PRESET, VISUAL_SECTION_KEYS, resolveVisualSettings, visualPresetOf, writeVisualSettings, type VisualPreset } from "../lib/visual-customization-policy.ts";
@@ -356,6 +357,12 @@ function sessionStats(ctx: ExtensionContext): ShellSessionStats {
 	return stats;
 }
 
+function contextHeadroom(pi: ExtensionAPI, model: ExtensionContext["model"], usage: ShellSessionStats["usage"]): ShellBarModel["contextHeadroom"] {
+	const threshold = readCompactionThreshold(pi, model, usage?.contextWindow ?? model?.contextWindow);
+	if (typeof threshold !== "number") return threshold;
+	return isTokenCount(usage?.tokens) ? Math.max(0, threshold - usage.tokens) : null;
+}
+
 export function buildShellBarModel(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -386,6 +393,7 @@ export function buildShellBarModel(
 		effort: model?.reasoning ? pi.getThinkingLevel() : undefined,
 		contextPercent: usage?.percent ?? null,
 		contextWindow: usage?.contextWindow ?? model?.contextWindow ?? 0,
+		contextHeadroom: contextHeadroom(pi, model, usage),
 		costTotal,
 		// claude-bridge runs on a Claude subscription without a Pi OAuth credential.
 		subscription: model ? model.provider === CLAUDE_BRIDGE_PROVIDER || ctx.modelRegistry.isUsingOAuth(model) : false,
@@ -424,15 +432,15 @@ export function createFooterStatusMemo(deps: FooterStatusMemoDeps): { key(): str
 	let cache: { key: string; model: ShellBarModel } | undefined;
 	const key = (): string => {
 		const statsKey = sessionStatsKey(ctx);
+		const stats = sessionStats(ctx);
 		const model = ctx.model;
 		return JSON.stringify([
-			// Session statistics identity by value: without leaf identity the
-			// computed stats ride the key, so those hosts keep exactly the pre-memo
-			// digest honesty. The model rides its value pieces (id, contextWindow,
-			// effort lookup, OAuth state) because that is all buildShellBarModel
-			// reads — serializing the model object itself would bloat every digest.
-			statsKey ? [statsKey[0], statsKey[1], statsKey[2]] : sessionStats(ctx),
+			// Without leaf identity, use the computed stats by value. Keep the
+			// live compaction setting in the key even when the session is idle.
+			statsKey ? [statsKey[0], statsKey[1], statsKey[2]] : stats,
+			contextHeadroom(pi, model, stats.usage),
 			model?.id ?? null,
+			model?.provider ?? null,
 			model?.contextWindow ?? null,
 			model?.reasoning ? pi.getThinkingLevel() : undefined,
 			model ? ctx.modelRegistry.isUsingOAuth(model) : false,

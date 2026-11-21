@@ -77,6 +77,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Text, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { resolveGentlePiAgentHome, gentlePiConfigHome } from "../lib/agent-home.ts";
+import { readPersonaMode as readSharedPersonaMode } from "../lib/persona-mode.ts";
 import {
 	BACKGROUND_SUBAGENTS_FILE,
 	BACKGROUND_SUBAGENTS_SCHEMA,
@@ -3106,23 +3107,10 @@ function personaConfigPath(_cwd: string): string {
 	return join(gentleAiConfigHome(), "persona.json");
 }
 
-function readPersonaFile(path: string): PersonaMode | undefined {
-	if (!existsSync(path)) return undefined;
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-		if (!isRecord(parsed)) return undefined;
-		return parsed.mode === "neutral" ? "neutral" : "gentleman";
-	} catch {
-		return undefined;
-	}
-}
-
+// The resolution (project file, then the global one, then "gentleman") lives in
+// lib/persona-mode.ts, shared with the desktop feed.
 function readPersonaMode(cwd: string): PersonaMode {
-	return (
-		readPersonaFile(projectPersonaConfigPath(cwd)) ??
-		readPersonaFile(personaConfigPath(cwd)) ??
-		"gentleman"
-	);
+	return readSharedPersonaMode(cwd);
 }
 
 function writePersonaMode(cwd: string, mode: PersonaMode): string[] {

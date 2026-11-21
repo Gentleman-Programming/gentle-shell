@@ -35,9 +35,82 @@ export function desktopFeedGitRunner(root: string, env: NodeJS.ProcessEnv = proc
 
 export type ParentOf = (pid: number) => Promise<number | undefined>;
 
-/** `ps -o ppid=` for one pid; undefined when unknown (Windows, exited, no ps). */
-export const psParentOf: ParentOf = (pid) => new Promise((resolve) => {
-	if (process.platform === "win32") { resolve(undefined); return; }
+/** One `pid,ppid` pair per line, as the Windows process-table script prints them; other lines are ignored. */
+export function parseProcessTable(stdout: string): Map<number, number> {
+	const table = new Map<number, number>();
+	for (const line of stdout.split(/\r?\n/)) {
+		const match = /^(\d+),(\d+)$/.exec(line.trim());
+		if (match) table.set(Number(match[1]), Number(match[2]));
+	}
+	return table;
+}
+
+const WINDOWS_TABLE_TIMEOUT_MS = 8000;
+const WINDOWS_TABLE_MAX_BUFFER = 4 * 1024 * 1024;
+const WINDOWS_TABLE_TTL_MS = 5000;
+const WINDOWS_TABLE_SCRIPT = 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId),$($_.ParentProcessId)" }';
+
+/** The whole Windows process table as text; undefined when PowerShell is missing, fails or times out. */
+function readWindowsProcessTable(): Promise<string | undefined> {
+	return new Promise((resolve) => {
+		try {
+			execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_TABLE_SCRIPT], { encoding: "utf8", windowsHide: true, timeout: WINDOWS_TABLE_TIMEOUT_MS, maxBuffer: WINDOWS_TABLE_MAX_BUFFER }, (error, stdout) => {
+				resolve(error ? undefined : String(stdout));
+			});
+		} catch {
+			resolve(undefined);
+		}
+	});
+}
+
+/**
+ * Parent lookup for Windows, which has no `ps`: one process-table read answers every hop of a walk
+ * and is reused for `ttlMs`, so climbing eight levels costs one PowerShell start, not eight.
+ * An unreadable table answers undefined for every pid.
+ */
+export function createWindowsParentOf(
+	read: () => Promise<string | undefined> = readWindowsProcessTable,
+	ttlMs = WINDOWS_TABLE_TTL_MS,
+	now: () => number = Date.now,
+): ParentOf {
+	// An in-flight read is shared however long it takes; the TTL starts when a read completes, so a
+	// slow PowerShell start is not repeated by every hop of the walk.
+	let cached: { doneAt: number | undefined; table: Promise<Map<number, number>> } | undefined;
+	return async (pid) => {
+		if (!cached || (cached.doneAt !== undefined && now() - cached.doneAt > ttlMs)) {
+			const entry: { doneAt: number | undefined; table: Promise<Map<number, number>> } = { doneAt: undefined, table: Promise.resolve(new Map()) };
+			entry.table = read()
+				.then((text) => (text === undefined ? new Map<number, number>() : parseProcessTable(text)), () => new Map<number, number>())
+				.then((table) => { entry.doneAt = now(); return table; });
+			cached = entry;
+		}
+		const parent = (await cached.table).get(pid);
+		return parent !== undefined && parent > 1 ? parent : undefined;
+	};
+}
+
+const WINDOWS_START_TIMEOUT_MS = 8000;
+
+/** The OS creation time of `pid` (epoch ms, as the readers compute it); undefined off Windows or when unreadable. */
+export function readProcessStartMs(pid: number = process.pid): Promise<number | undefined> {
+	if (process.platform !== "win32" || !Number.isInteger(pid) || pid <= 0) return Promise.resolve(undefined);
+	const script = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { [int64](($p.CreationDate.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds) }`;
+	return new Promise((resolve) => {
+		try {
+			execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: WINDOWS_START_TIMEOUT_MS }, (error, stdout) => {
+				const ms = error ? Number.NaN : Number.parseInt(String(stdout).trim(), 10);
+				resolve(Number.isFinite(ms) && ms > 0 ? ms : undefined);
+			});
+		} catch {
+			resolve(undefined);
+		}
+	});
+}
+
+const windowsParentOf = createWindowsParentOf();
+
+/** `ps -o ppid=` for one pid, or the process table on Windows; undefined when unknown (exited, no ps). */
+export const psParentOf: ParentOf = (pid) => process.platform === "win32" ? windowsParentOf(pid) : new Promise((resolve) => {
 	try {
 		execFile("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 2000, windowsHide: true }, (error, stdout) => {
 			const parent = error ? Number.NaN : Number.parseInt(String(stdout).trim(), 10);

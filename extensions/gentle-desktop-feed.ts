@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveGentlePiAgentHome } from "../lib/agent-home.ts";
+import { readPersonaMode, type PersonaMode } from "../lib/persona-mode.ts";
 import { CLAUDE_BRIDGE_PROVIDER } from "../lib/bridge-cost.ts";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
 import {
@@ -24,7 +25,7 @@ import { createDesktopFeedStore, sweepDesktopFeedOrphans, type DesktopFeedStore 
 import { answerableFromDesktop, createDesktopActionInbox, DESKTOP_ACTION_LIMITS, createDesktopActivityTimeline, providerDecisionIn, questionShape, sweepDesktopActionOrphans, watchDesktopActionInbox, type DesktopActionInbox, type DesktopActionQuestion, type DesktopActivityTimeline } from "../lib/desktop-feed-actions.ts";
 import { askAnswerHandle } from "../lib/desktop-feed-answers.ts";
 import { DesktopPermissionBridge } from "../lib/desktop-rpc-permissions.ts";
-import { createDesktopFeedProfileReader, createUntrackedLineCounter, desktopFeedGitRunner, processAncestors, psParentOf, type DesktopFeedProfile, type ParentOf, type UntrackedLineCounter } from "../lib/desktop-feed-sources.ts";
+import { createDesktopFeedProfileReader, createUntrackedLineCounter, desktopFeedGitRunner, processAncestors, psParentOf, readProcessStartMs, type DesktopFeedProfile, type ParentOf, type UntrackedLineCounter } from "../lib/desktop-feed-sources.ts";
 import { DesktopAgentsBridge } from "../lib/desktop-agents-service.ts";
 import { DesktopJobsBridge } from "../lib/desktop-jobs-service.ts";
 import { DesktopUsageBridge } from "../lib/desktop-usage-service.ts";
@@ -71,7 +72,11 @@ export interface DesktopFeedOptions {
 	store?: (agentDir: string, sessionId: string) => DesktopFeedStore;
 	git?: (root: string) => GitRunner;
 	parentOf?: ParentOf;
+	/** The OS creation time of this process (epoch ms); undefined when unknown. Defaults to the Windows lookup. */
+	processStart?: () => Promise<number | undefined>;
 	profile?: (cwd: string, sessionId: string | undefined) => DesktopFeedProfile;
+	/** The persona for a session cwd; defaults to the persona.json resolution the TUI uses. */
+	persona?: (cwd: string) => PersonaMode | undefined;
 	realpath?: (path: string) => string | undefined;
 	rootExists?: (root: string) => boolean;
 	sweep?: (agentDir: string, keep: string) => void;
@@ -82,6 +87,11 @@ export interface DesktopFeedOptions {
 }
 
 const SUBSCRIPTION_PROVIDERS = new Set([CLAUDE_BRIDGE_PROVIDER]);
+
+// A persona that cannot be read leaves the feed field null instead of failing the snapshot.
+function safePersona(read: (cwd: string) => PersonaMode | undefined, cwd: string): PersonaMode | undefined {
+	try { return read(cwd); } catch { return undefined; }
+}
 
 function permissionDetail(mode: string): string | undefined {
 	const text = mode === "yolo" ? YOLO_STATUS_TEXT : mode === "super-yolo" ? SUPER_YOLO_STATUS_TEXT : undefined;
@@ -186,9 +196,14 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 		if (env.GENTLE_PI_AGENTS_CHILD === "1" || env.PI_PROGRAM_STATUS_APP !== "gentle-shell") return;
 		const agentDir = options.agentDir ?? resolveGentlePiAgentHome(env);
 		const now = options.now ?? Date.now;
+		// When this agent process started, so readers can tell it from a process that reused its pid.
+		const estimatedStart = Math.round(now() - process.uptime() * 1000);
+		// On Windows the OS creation time replaces the estimate once read, so readers can compare exactly.
+		let osStartedAt: number | undefined;
 		const timers = options.timers ?? realDesktopFeedTimers;
 		const gitFor = options.git ?? ((root: string) => desktopFeedGitRunner(root, env));
 		const readProfile = options.profile ?? createDesktopFeedProfileReader(env);
+		const readPersona = options.persona ?? ((cwd: string) => readPersonaMode(cwd, env));
 		const rootExists = options.rootExists ?? ((root: string) => { try { return realpathSync(root) !== ""; } catch { return false; } });
 		const realpath = options.realpath ?? ((path: string) => { try { return realpathSync.native(path); } catch { return undefined; } });
 		const activityClock = options.activityClock ?? Date.now;
@@ -275,6 +290,9 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 					realCwd: session.realCwd,
 					pid: process.pid,
 					ppid: process.ppid,
+					platform: process.platform,
+					startedAt: osStartedAt ?? estimatedStart,
+					...(osStartedAt === undefined ? {} : { startedAtSource: "os" as const }),
 					ancestors: session.ancestors,
 					mode: ctx.mode,
 					agentDir,
@@ -285,6 +303,7 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				thinkingLevel,
 				subscription,
 				profile: session.profile,
+				persona: safePersona(readPersona, ctx.cwd),
 				context: context ? { percent: context.percent, tokens: context.tokens, contextWindow: context.contextWindow } : undefined,
 				usage: session.usage,
 				usageProviders: session.usageProviders,
@@ -524,6 +543,11 @@ export function createDesktopFeedExtension(options: DesktopFeedOptions = {}) {
 				try { unobserve = adapter.observe(() => refreshPermission(session)); } catch { /* read once */ }
 				session.yolo = { adapter, unobserve };
 				refreshPermission(session);
+			}, () => undefined);
+			void (options.processStart ?? (() => readProcessStartMs()))().then((ms) => {
+				if (!current(session) || ms === undefined || ms === osStartedAt) return;
+				osStartedAt = ms;
+				schedule();
 			}, () => undefined);
 			void processAncestors(process.ppid, DESKTOP_FEED_LIMITS.ancestors, options.parentOf ?? psParentOf).then((ancestors) => {
 				if (!current(session) || ancestors.length === 0) return;

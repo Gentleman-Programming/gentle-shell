@@ -143,7 +143,29 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		t.after(() => rmSync(fallbackRoot!, { recursive: true, force: true }));
 		const packageRoot = join(fallbackRoot, "node_modules", "@colbymchenry", "codegraph");
 		mkdirSync(packageRoot, { recursive: true });
-		writeFileSync(join(fallbackRoot, "codegraph.cmd"), "@ECHO off\n");
+		// A genuine npm cmd-shim (canonical shape, plain tail): the resolver accepts its
+		// invocation, resolves the bare node beside it, and init takes the direct resolver
+		// route. A rejected shim must not fall through to the package scan beside it.
+		const shimBS = "\\";
+		writeFileSync(join(fallbackRoot, "codegraph.cmd"), [
+			'@ECHO off',
+			'GOTO start',
+			':find_dp0',
+			'SET dp0=%~dp0',
+			'EXIT /b',
+			':start',
+			'SETLOCAL',
+			'CALL :find_dp0',
+			'',
+			'IF EXIST "%dp0%' + shimBS + 'node.exe" (',
+			'  SET "_prog=%dp0%' + shimBS + 'node.exe"',
+			') ELSE (',
+			'  SET "_prog=node"',
+			'  SET PATHEXT=%PATHEXT:;.JS;=;%',
+			')',
+			'',
+			'"%_prog%"  "%dp0%' + shimBS + 'node_modules' + shimBS + '@colbymchenry' + shimBS + 'codegraph' + shimBS + 'entry.js" %*',
+		].join("\n"));
 		writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ bin: { codegraph: "entry.js" } }));
 		writeFileSync(join(packageRoot, "entry.js"), "// fixture entry\n");
 		const previousPath = process.env.Path;
@@ -152,7 +174,7 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		t.after(() => { if (previousUpperPath === undefined) delete process.env.PATH; else process.env.PATH = previousUpperPath; });
 		process.env.Path = fallbackRoot;
 		process.env.PATH = fallbackRoot;
-		fallbackCalls = [{ kind: "execFile", command: process.execPath, args: [join(fallbackRoot, "node_modules", "@colbymchenry", "codegraph", "entry.js"), "init", cwd] }];
+		fallbackCalls = [{ kind: "execFile", command: "node", args: [join(fallbackRoot, "node_modules", "@colbymchenry", "codegraph", "entry.js"), "init", cwd] }];
 	}
 	// The fixed query prevents accidental cache misses from becoming a fake proof.
 		const query = "?windows-hidden-contract";
@@ -167,12 +189,23 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		const scratch = await import(`../lib/session-scratch.ts${query}`);
 		const skills = await import(`../extensions/skill-registry.ts${query}`);
 
+		// The init route is parent-session-owned: a runner itself flagged as a subagent child
+		// (GENTLE_PI_AGENTS_CHILD=1) would be refused before any CLI call, so the fixture clears
+		// the inherited flag and runs as a parent session, keeping the real default runner under test.
+		const previousChildFlag = process.env.GENTLE_PI_AGENTS_CHILD;
+		delete process.env.GENTLE_PI_AGENTS_CHILD;
+		t.after(() => {
+			if (previousChildFlag === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
+			else process.env.GENTLE_PI_AGENTS_CHILD = previousChildFlag;
+		});
 		const traces: Trace[] = [];
 		const graph = codegraph.createCodeGraphTool();
 		assert.equal(typeof graph.execute, "function", "CodeGraph public handler must be registered");
 		const graphResult = await trace(captures, traces, "CodeGraph init", () => graph.execute("capture", { operation: "init" }, undefined, undefined, { cwd } as never), [
 			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--show-toplevel"] },
-			{ kind: "execFile", command: "codegraph", args: ["init", cwd] },
+			// POSIX still spawns the bare codegraph command; win32 resolves the shim first
+			// (resolver-first precedence) and never attempts the bare spawn.
+			...(process.platform === "win32" ? [] : [{ kind: "execFile" as const, command: "codegraph", args: ["init", cwd] }]),
 			...fallbackCalls,
 			// A successful init keeps .codegraph/ out of git through the local exclude file.
 			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--is-inside-work-tree"] },

@@ -67,8 +67,10 @@ export interface EnsureExposureIo {
 	/** Replaces the file's whole content. `expectedIdentity`, when defined, is the file identity
 	 * the verified read captured: a write that stages its text before the replacement must
 	 * verify the destination still carries that identity at the replacement itself and refuse
-	 * (by throwing) when it does not, so a save landing during the staging is never overwritten. */
-	write(path: string, text: string, expectedIdentity?: string): void;
+	 * (by throwing) when it does not, so a save landing during the staging is never overwritten.
+	 * `hooks`, when the caller supplied any, are the publish's own interleaving points: a write
+	 * that stages its text runs `afterStaging` between the staging and its final checks. */
+	write(path: string, text: string, expectedIdentity?: string, hooks?: PublishHooks): void;
 	/** Takes the config's exclusive lock for the whole read-modify-write, false when another
 	 * writer holds it; absent means this io cannot coordinate and the update runs unguarded. */
 	acquireLock?(path: string): boolean;
@@ -87,6 +89,20 @@ export interface EnsureExposureIo {
 	 * destination and no symlink moved. Absent means this io cannot observe identities and the
 	 * publish is guarded by path identity alone. */
 	identityOf?(path: string): string | undefined;
+}
+
+/** Interleaving points inside the publish, injectable so the suite can drive a concurrent lock
+ * takeover at the exact boundary each ownership check guards; every hook is optional and the
+ * publish runs unchanged without them. */
+export interface PublishHooks {
+	/** Runs after the splice's insertion scan has located the field's position and before the
+	 * spliced text is built and verified — inside the preparation, past every check that ran
+	 * before the preparation began. */
+	duringSplicePreparation?(): void;
+	/** Runs after the staged replacement's text is written but before the replacement's final
+	 * checks — inside the staging window, past any check at the write's entry. `target` is the
+	 * resolved destination the replacement renames over. */
+	afterStaging?(target: string): void;
 }
 
 /** Mode used when the update creates a config file because none existed yet. */
@@ -195,12 +211,14 @@ class LockDisplacedError extends Error {
  * in progress is refused instead of replaced. A `verify` hook runs as the last check before
  * the rename and aborts the replacement — by throwing, like an identity mismatch — when the
  * caller's own coordination state changed while the replacement was being staged.
+ * `hooks.afterStaging`, when supplied, runs between the staging and those final checks.
  */
-function writeResolvedFile(target: string, text: string, io: AtomicFileIo, expectedIdentity?: string, verify?: () => void): void {
+function writeResolvedFile(target: string, text: string, io: AtomicFileIo, expectedIdentity?: string, verify?: () => void, hooks?: PublishHooks): void {
 	const mode = io.modeOf(target) ?? NEW_CONFIG_MODE;
 	const temp = join(dirname(target), `.${basename(target)}.tmp-${randomUUID()}`);
 	try {
 		io.writeExclusive(temp, text, mode);
+		hooks?.afterStaging?.(target);
 		if (expectedIdentity !== undefined && io.identityOf !== undefined && io.identityOf(target) !== expectedIdentity) {
 			throw new DestinationReplacedError();
 		}
@@ -455,10 +473,10 @@ export const defaultIo: EnsureExposureIo = {
 	// destination changed while the replacement was being written. Lock ownership joins those
 	// staged final checks: a holder displaced while the replacement was being staged must fail
 	// the rename itself, not only the check that ran before the staging began.
-	write: (path, text, expectedIdentity) =>
+	write: (path, text, expectedIdentity, hooks) =>
 		writeResolvedFile(path, text, fsIo, expectedIdentity, () => {
 			if (!ownsConfigLock(path)) throw new LockDisplacedError();
-		}),
+		}, hooks),
 	acquireLock: (path) => acquireConfigLock(path),
 	releaseLock: (path) => releaseConfigLock(path),
 	ownsLock: (path) => ownsConfigLock(path),
@@ -630,11 +648,14 @@ function canonicalJson(value: unknown, depth = 0): string | undefined {
  * and JSON number spellings a parse-and-restringify would corrupt — exactly as the verified
  * read saw it, with a trailing newline added only when the document lacks one. The splice is
  * verified semantically against the parsed document it was computed from: an edit that changed
- * anything but the one field (or one that could not be placed at all) publishes nothing.
+ * anything but the one field (or one that could not be placed at all) publishes nothing. A
+ * `hooks.duringSplicePreparation` call, when supplied, runs inside that preparation, after the
+ * insertion scan has located the field's position.
  */
-function publishExposureText(raw: string, expected: Record<string, unknown>): string | undefined {
+function publishExposureText(raw: string, expected: Record<string, unknown>, hooks?: PublishHooks): string | undefined {
 	const insertion = codegraphEntryInsertion(raw);
 	if (insertion === undefined) return undefined;
+	hooks?.duringSplicePreparation?.();
 	const field = insertion.emptyEntry ? `"exposure": "direct"` : `"exposure": "direct", `;
 	const spliced = raw.slice(0, insertion.at) + field + raw.slice(insertion.at);
 	let reparsed: unknown;
@@ -678,9 +699,12 @@ function publishExposureText(raw: string, expected: Record<string, unknown>): st
  * been replaced, so the update never writes through a link it did not lock — and refuses the
  * same way when the file there is no longer the exact file the verified read observed (an
  * editor's atomic same-path save), so a later write can never discard it; an identity the io
- * can no longer observe at all is the same refusal, never a match by absence.
+ * can no longer observe at all is the same refusal, never a match by absence. The optional
+ * `hooks` are interleaving points inside the publish, injectable so the suite can drive a
+ * concurrent lock takeover at the exact boundary each ownership check guards; a caller that
+ * passes none gets the publish unchanged.
  */
-export function ensureDirectExposure(path: string, io: EnsureExposureIo = defaultIo): EnsureExposureResult {
+export function ensureDirectExposure(path: string, io: EnsureExposureIo = defaultIo, hooks?: PublishHooks): EnsureExposureResult {
 	// The lock, the reads, and the publish all address the destination a write itself resolves
 	// to: two mcp.json symlinks to one shared file must contend on one lock, or their updates
 	// race through exactly the window the lock exists to serialize. The caller's own path is
@@ -755,7 +779,7 @@ export function ensureDirectExposure(path: string, io: EnsureExposureIo = defaul
 			// would silently rewrite a sibling value like 9007199254740993 as 9007199254740992. Only
 			// the inserted field is new text, and a splice that cannot be placed and verified
 			// publishes nothing.
-			const published = publishExposureText(raw, doc);
+			const published = publishExposureText(raw, doc, hooks);
 			if (published === undefined) return { path, outcome: "unpreservable" };
 			// Lock ownership is verified after the splice is prepared — the preparation is exactly
 			// the window in which a paused holder can be displaced by a stale takeover while the
@@ -765,7 +789,7 @@ export function ensureDirectExposure(path: string, io: EnsureExposureIo = defaul
 			// published under it.
 			if (io.acquireLock !== undefined && io.ownsLock !== undefined && !io.ownsLock(target)) return { path, outcome: "busy" };
 			try {
-				io.write(target, published, verifiedIdentity);
+				io.write(target, published, verifiedIdentity, hooks);
 			} catch (error) {
 				if (error instanceof LockDisplacedError) return { path, outcome: "busy" };
 				if (error instanceof DestinationReplacedError) {

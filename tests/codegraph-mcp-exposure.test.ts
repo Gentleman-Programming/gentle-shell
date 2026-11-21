@@ -16,6 +16,7 @@ import {
 	takeOverStaleConfigLock,
 	type AtomicFileIo,
 	type EnsureExposureIo,
+	type PublishHooks,
 } from "../lib/codegraph-mcp-exposure.ts";
 
 /** In-memory io: the config files a test starts with, and every write it saw. */
@@ -960,11 +961,11 @@ test("ensureDirectExposure: deep-but-supported nesting still publishes the byte-
 	);
 });
 
-test("ensureDirectExposure: a lock takeover during the splice preparation publishes nothing", () => {
-	// The holder is displaced after every file check has passed — the final identity observation
-	// still matches because the successor has not written the config yet — exactly while the
-	// splice is being prepared: the ownership check must run after that preparation, or the
-	// displaced holder publishes under the successor's lock.
+test("ensureDirectExposure: a lock takeover between the identity checks and the splice preparation publishes nothing", () => {
+	// The control for the mid-preparation case below: the holder is displaced after every file
+	// check has passed — the final identity observation still matches because the successor has
+	// not written the config yet — but before the splice's preparation begins, so any ownership
+	// check from the pre-publish one onward catches it.
 	const files: Record<string, string> = { "/f": WITH_CODEGRAPH };
 	let observations = 0;
 	let displaced = false;
@@ -989,10 +990,40 @@ test("ensureDirectExposure: a lock takeover during the splice preparation publis
 	assert.equal(files["/f"], WITH_CODEGRAPH, "the config is left exactly as it was");
 });
 
-test("ensureDirectExposure: a takeover while the replacement is staged refuses the publish", (t) => {
-	// Ownership joins the staged replacement's final checks beside the identity: the takeover
-	// lands after the update's own pre-publish ownership check, while the replacement text is
-	// being staged, and the rename itself must refuse to publish under the successor's lock.
+test("ensureDirectExposure: a takeover injected during the splice preparation publishes nothing", () => {
+	// The seam runs inside the preparation itself, after the insertion scan has located the
+	// field's position: every check that already ran — including an ownership check misplaced
+	// immediately before the preparation — still saw the lock held, so only a check placed
+	// after the preparation can refuse this publish.
+	const files: Record<string, string> = { "/f": WITH_CODEGRAPH };
+	let displaced = false;
+	let writes = 0;
+	const io: EnsureExposureIo = {
+		read: (path) => files[path],
+		write: (path, text) => {
+			writes += 1;
+			files[path] = text;
+		},
+		acquireLock: () => true,
+		releaseLock: () => {},
+		ownsLock: () => !displaced,
+	};
+	const hooks: PublishHooks = {
+		duringSplicePreparation: () => {
+			displaced = true; // the takeover lands mid-preparation, past every earlier check
+		},
+	};
+	assert.equal(ensureDirectExposure("/f", io, hooks).outcome, "busy", "a lock the update no longer owns publishes nothing");
+	assert.equal(writes, 0, "the displaced holder never writes");
+	assert.equal(files["/f"], WITH_CODEGRAPH, "the config is left exactly as it was");
+});
+
+test("ensureDirectExposure: a takeover at the staged write's entry refuses the publish", (t) => {
+	// The control for the mid-staging case below: the takeover lands after the update's own
+	// pre-publish ownership check, at the entry of the staged write before any staging has
+	// happened, so any ownership check from the write's entry onward catches it — including the
+	// staged replacement's own final checks, which must refuse to publish under the successor's
+	// lock.
 	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-staged-takeover-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const config = join(dir, "mcp.json");
@@ -1001,7 +1032,7 @@ test("ensureDirectExposure: a takeover while the replacement is staged refuses t
 	const io: EnsureExposureIo = {
 		...defaultIo,
 		write: (path, text, expectedIdentity) => {
-			writeFileSync(lock, "4321:successor\n", "utf8"); // the takeover, mid-staging
+			writeFileSync(lock, "4321:successor\n", "utf8"); // the takeover, at the write's entry
 			defaultIo.write(path, text, expectedIdentity);
 		},
 	};
@@ -1009,4 +1040,24 @@ test("ensureDirectExposure: a takeover while the replacement is staged refuses t
 	assert.equal(readFileSync(config, "utf8"), WITH_CODEGRAPH, "the config is left exactly as it was");
 	assert.equal(readFileSync(lock, "utf8"), "4321:successor\n", "the successor's lock survives the refused publish and the displaced release");
 	assert.ok(!readdirSync(dir).some((name) => name.includes(".tmp-")), "the abandoned replacement leaves no temporary file");
+});
+
+test("ensureDirectExposure: a takeover injected after the staging refuses the publish", (t) => {
+	// The seam runs after the replacement's text is staged and before the replacement's final
+	// checks, so an ownership check at the write's entry has already passed: only the checks
+	// inside the staged replacement can refuse this rename.
+	const dir = mkdtempSync(join(tmpdir(), "codegraph-mcp-exposure-staged-window-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const config = join(dir, "mcp.json");
+	writeFileSync(config, WITH_CODEGRAPH, "utf8");
+	const lock = lockPathFor(config);
+	const hooks: PublishHooks = {
+		afterStaging: () => {
+			writeFileSync(lock, "4321:successor\n", "utf8"); // the takeover, between staging and the final checks
+		},
+	};
+	assert.equal(ensureDirectExposure(config, defaultIo, hooks).outcome, "busy", "the staged replacement refuses to publish under the successor's lock");
+	assert.equal(readFileSync(config, "utf8"), WITH_CODEGRAPH, "the config is left exactly as it was");
+	assert.equal(readFileSync(lock, "utf8"), "4321:successor\n", "the successor's lock survives the refused publish and the displaced release");
+	assert.deepEqual(readdirSync(dir).sort(), [".mcp.json.lock", "mcp.json"], "the abandoned replacement leaves no temporary or claim files");
 });

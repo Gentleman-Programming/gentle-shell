@@ -1312,7 +1312,7 @@ test("prepareReadiness: a linked worktree is seeded instead of initialized", asy
 	assert.deepEqual(calls, ["warm"], "no init ran: the seed produced the index");
 });
 
-test("prepareReadiness: seed outcomes target-exists, deferred, and the fall-backs", async (t) => {
+test("prepareReadiness: seed outcomes target-exists, deferred, seed-failed, and not-seedable", async (t) => {
 	const exists = dir(t, "seed-exists");
 	writeFileSync(join(exists, "package.json"), "{}\n");
 	const existsCalls: string[] = [];
@@ -1343,22 +1343,32 @@ test("prepareReadiness: seed outcomes target-exists, deferred, and the fall-back
 	assert.deepEqual(deferredResult, { action: "init", ok: false, warm: "skipped" }, "another session owns creation: fail closed");
 	assert.deepEqual(deferredCalls, [], "deferred runs neither init nor warm");
 
-	for (const outcome of ["seed-failed", "not-seedable"] as const) {
-		const fresh = dir(t, `seed-${outcome}`);
-		writeFileSync(join(fresh, "package.json"), "{}\n");
-		const calls: string[] = []
-		const result = await prepareReadiness(fakeInput(fresh, {
-			seed: async () => ({ outcome }),
-			run: async (args) => {
-				calls.push(`run:${args.join(" ")}`);
-				return true;
-			},
-		}));
-		assert.deepEqual(result, { action: "init", ok: true, warm: "ok" }, `${outcome} falls back to init`);
-		assert.deepEqual(calls, ["run:init -y"], `${outcome} runs the ordinary init`);
-	}
-});
+	const failed = dir(t, "seed-seed-failed");
+	writeFileSync(join(failed, "package.json"), "{}\n");
+	const failedCalls: string[] = [];
+	const failedResult = await prepareReadiness(fakeInput(failed, {
+		seed: async () => ({ outcome: "seed-failed" }),
+		run: async (args) => {
+			failedCalls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+	}));
+	assert.deepEqual(failedResult, { action: "init", ok: false, warm: "skipped" }, "a failed copy of an existing parent index never falls back to init");
+	assert.deepEqual(failedCalls, [], "AGENTS.md: a worktree with a parent index is never initialized");
 
+	const notSeedable = dir(t, "seed-not-seedable");
+	writeFileSync(join(notSeedable, "package.json"), "{}\n");
+	const notSeedableCalls: string[] = [];
+	const notSeedableResult = await prepareReadiness(fakeInput(notSeedable, {
+		seed: async () => ({ outcome: "not-seedable" }),
+		run: async (args) => {
+			notSeedableCalls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+	}));
+	assert.deepEqual(notSeedableResult, { action: "init", ok: true, warm: "ok" }, "no parent index means a fresh project: init is its path");
+	assert.deepEqual(notSeedableCalls, ["run:init -y"], "the ordinary init still runs");
+});
 test("two real sessions racing one fresh project run exactly one init", async (t) => {
 	const cwd = dir(t, "init-race");
 	writeFileSync(join(cwd, "package.json"), "{}\n");

@@ -450,3 +450,35 @@ test("S6: START consent returns consent-required without a UI and when the human
 		assert.equal(prompts, hasUI ? 1 : 0, `${label}: the consent dialog is shown only with a UI`);
 	}
 });
+
+test("gentle_review_run forwards escalate to native assess and proceeds past not-due", async () => {
+	const cwd = scratchRepo();
+	const escalate = { item: 3, reason: "touches the auth boundary" };
+	const runtime = createCoordinatorRuntime(cwd, "coordinator", { mediumAssess: true, hasUI: false });
+	try {
+		const result = await runtime.invoke("gentle_review_run", { escalate });
+		assert.notEqual((result as { details?: { outcome?: string } }).details?.outcome ?? (result as { outcome?: string }).outcome, "not-due");
+		const assess = runtime.nativeRequests.find((entry) => entry.operation === "assess")!.request as { escalate?: unknown };
+		assert.deepEqual(assess.escalate, escalate);
+	} finally { runtime.close(); }
+});
+
+test("gentle_review_run without escalate keeps a medium candidate not-due", async () => {
+	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { mediumAssess: true, hasUI: false });
+	try {
+		const result = await runtime.invoke("gentle_review_run", {}) as { details?: { outcome?: string }; outcome?: string };
+		assert.equal(result.details?.outcome ?? result.outcome, "not-due");
+		const assess = runtime.nativeRequests.find((entry) => entry.operation === "assess")!.request as { escalate?: unknown };
+		assert.equal(assess.escalate, undefined);
+	} finally { runtime.close(); }
+});
+
+test("gentle_review_run rejects an invalid escalate before any native call", async () => {
+	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { mediumAssess: true, hasUI: false });
+	try {
+		for (const escalate of [{ item: 7, reason: "x" }, { item: 2, reason: "  " }, { item: 2, reason: "é".repeat(251) }, { item: 2 }, "high"]) {
+			await assert.rejects(Promise.resolve().then(() => runtime.invoke("gentle_review_run", { escalate })), /escalate/);
+		}
+		assert.deepEqual(runtime.nativeRequests.filter((entry) => entry.operation === "assess"), []);
+	} finally { runtime.close(); }
+});

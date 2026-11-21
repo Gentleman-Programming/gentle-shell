@@ -103,21 +103,12 @@ test("v5 STATUS rejects malformed receipt status, identity, and extra fields", (
 	assert.throws(() => decodeReviewStatusV3(extra), /status\.receipt\.unexpected is not allowed/);
 });
 
-test("legacy-v1 v5 STATUS accepts only its two compatible receipt states", () => {
-	const legacyStatus = (status: string, identity?: string): JsonObject => {
-		const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
-		(body.authority as JsonObject).version = "legacy-v1";
-		body.receipt = { status, ...(identity === undefined ? {} : { identity }) };
-		delete body.frozen;
-		delete body.authority_target_identity;
-		return body;
-	};
-
-	assert.deepEqual(decodeReviewStatusV3(legacyStatus("expected_missing")).receipt, { status: "expected_missing" });
-	assert.deepEqual(decodeReviewStatusV3(legacyStatus("present", sha("a"))).receipt, { status: "present", identity: sha("a") });
-	for (const status of ["publication_pending", "not_applicable"]) {
-		assert.throws(() => decodeReviewStatusV3(legacyStatus(status)), /legacy status receipt is incompatible/);
-	}
+test("non compact-v2 STATUS authority fails the ordinary strict decode", () => {
+	const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
+	(body.authority as JsonObject).version = "legacy-v1";
+	delete body.frozen;
+	delete body.authority_target_identity;
+	assert.throws(() => decodeReviewStatusV3(body), /status\.authority\.version/);
 });
 
 test("captured terminal closure decodes without a compatibility status projection", () => {

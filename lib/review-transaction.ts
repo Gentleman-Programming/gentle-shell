@@ -1185,10 +1185,6 @@ export class ReviewTransactionStore {
 		return this.#graphStore.readCurrent();
 	}
 
-	repairCurrentAuthority(): void {
-		this.withLock("authority-repair", () => this.#graphStore.repairCurrentPointers());
-	}
-
 	create(
 		initialState: ReviewStateV1,
 		idempotencyKey: string,

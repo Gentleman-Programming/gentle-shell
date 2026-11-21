@@ -3588,7 +3588,7 @@ test("warmNotice: every warm outcome carries its one notice - the ready line on 
 });
 
 test("indexStartNotice: init announces initialization in the approved wording; sync keeps its line", () => {
-	assert.deepEqual(indexStartNotice("init"), { text: "initializing the current repo for CodeGraph...", level: "info" });
+	assert.deepEqual(indexStartNotice("init"), { text: "initializing current repo for CodeGraph...", level: "info" });
 	assert.deepEqual(indexStartNotice("sync"), { text: "syncing the CodeGraph index...", level: "info" });
 });
 
@@ -3857,10 +3857,10 @@ test("session_start defers the init start notice past the notify window and says
 		"nothing is said at dispatch time: the start say is deferred past the session_start notify window so the TUI paints it",
 	);
 
-	await untilNotice(notices, /initializing the current repo for CodeGraph/, 5_000);
+	await untilNotice(notices, /initializing current repo for CodeGraph/, 5_000);
 	assert.ok(calls().includes("init"), "the real readiness path ran codegraph init while the deferred say was pending");
 	assert.equal(
-		notices.filter((notice) => notice.text === "initializing the current repo for CodeGraph...").length,
+		notices.filter((notice) => notice.text === "initializing current repo for CodeGraph...").length,
 		1,
 		"the deferred start say emits exactly once with the approved wording",
 	);
@@ -3868,7 +3868,7 @@ test("session_start defers the init start notice past the notify window and says
 	await awaitWarmTail(notices);
 	assert.ok(existsSync(join(cwd, ".codegraph", "codegraph.db")), "the fake init created the database");
 	assert.deepEqual(notices, [
-		{ text: "initializing the current repo for CodeGraph...", level: "info" },
+		{ text: "initializing current repo for CodeGraph...", level: "info" },
 		{ text: "CodeGraph index created", level: "info" },
 		{ text: "warming up CodeGraph...", level: "info" },
 		{ text: `CodeGraph warm-up failed in ${cwd}`, level: "warning" },
@@ -3922,7 +3922,7 @@ test("session_start tells the user to run init manually after the silent retries
 	const { notices, calls } = harness.fire(cwd);
 	await untilNotice(notices, /run "codegraph init" manually/, 10_000);
 	assert.deepEqual(notices, [
-		{ text: "initializing the current repo for CodeGraph...", level: "info" },
+		{ text: "initializing current repo for CodeGraph...", level: "info" },
 		{ text: `codegraph init failed in ${cwd} after 3 retries; run "codegraph init" manually`, level: "warning" },
 	], "the exhaustion notice names the manual action and the retry count after the start line");
 	assert.equal(

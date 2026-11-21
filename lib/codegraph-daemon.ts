@@ -34,8 +34,12 @@ export function resetDaemonRegistryMemo(): void {
 
 /** Exported for the tests that read the registry directly; daemonFor and liveDaemonSockets call it in production. */
 /** Daemons registered for `root` in any spelling, newest first. Reads the registry only; starts nothing.
- * The platform picks the fold: on win32 both spellings compare through the process-lifetime canonical memo. */
-export function registeredDaemons(root: string, registryDir: string = join(homedir(), ".codegraph", "daemons"), platform: NodeJS.Platform = process.platform): RegisteredDaemon[] {
+ * The platform picks the fold: on win32 both spellings compare through the process-lifetime canonical memo.
+ * A memoized answer is returned only while every cached record still canonicalizes to `root`: a junction
+ * retargeted to another checkout without its registry file changing must stop answering for the old one.
+ * An optional deadline — a query budget the socket probes share — stops the scan between records and
+ * answers with what was found so far; a deadline-stopped scan is partial and is never memoized. */
+export function registeredDaemons(root: string, registryDir: string = join(homedir(), ".codegraph", "daemons"), platform: NodeJS.Platform = process.platform, deadlineAt?: number): RegisteredDaemon[] {
 	let files: string[];
 	try {
 		files = readdirSync(registryDir).filter((file) => file.endsWith(".json"));
@@ -45,9 +49,18 @@ export function registeredDaemons(root: string, registryDir: string = join(homed
 	const wanted = canonicalRoot(root, platform);
 	// The listing is fresh on every call: a record that appeared or vanished changes it and busts the memo.
 	const key = `${registryDir}|${wanted}|${platform}|${files.join(",")}`;
-	if (registryMemo !== undefined && registryMemo.key === key && Date.now() - registryMemo.at < REGISTRY_MEMO_MS) return registryMemo.daemons;
+	// The memo is trusted only while its records still resolve to `root`: a junction that moved to
+	// another checkout keeps its registry file name and content, so only this recheck — not the
+	// key — can catch that the cached match no longer belongs to this root.
+	if (registryMemo !== undefined && registryMemo.key === key && Date.now() - registryMemo.at < REGISTRY_MEMO_MS && registryMemo.daemons.every((entry) => canonicalRoot(entry.root, platform) === wanted)) {
+		return registryMemo.daemons;
+	}
 	const found: RegisteredDaemon[] = [];
 	for (const file of files) {
+		// The query budget covers discovery too: once the deadline is spent no further record is
+		// read or canonicalized, and the partial answer is never memoized — a later undated read
+		// still scans every record.
+		if (deadlineAt !== undefined && deadlineAt - Date.now() <= 0) return found;
 		try {
 			const entry = JSON.parse(readFileSync(join(registryDir, file), "utf8"));
 			if (typeof entry.root !== "string" || typeof entry.socketPath !== "string" || canonicalRoot(entry.root, platform) !== wanted) continue;
@@ -55,7 +68,7 @@ export function registeredDaemons(root: string, registryDir: string = join(homed
 				root: entry.root,
 				socketPath: entry.socketPath,
 				startedAt: typeof entry.startedAt === "number" ? entry.startedAt : 0,
-				pid: typeof entry.pid === "number" ? entry.pid : undefined,
+				pid: recordPid(entry.pid),
 			});
 		} catch {
 			/* a damaged record is not a daemon */
@@ -63,6 +76,16 @@ export function registeredDaemons(root: string, registryDir: string = join(homed
 	}
 	registryMemo = { key, at: Date.now(), daemons: found };
 	return found.sort((a, b) => b.startedAt - a.startedAt);
+}
+
+/** The pids a registry record may carry: a positive integer inside the range any supported platform
+ * assigns. pid 0 and negative pids are process-group spellings under signal 0 — processAlive(0)
+ * answers for the caller's own process group — so a record carrying one must never reach a liveness
+ * check or a shutdown signal. */
+const MAX_RECORD_PID = 4_194_304; // the highest pid Linux's pid_max can assign; every other platform stays below it.
+
+function recordPid(pid: unknown): number | undefined {
+	return typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid <= MAX_RECORD_PID ? pid : undefined;
 }
 
 /** Whether a process with this pid exists; signal 0 only checks. EPERM means it exists under another user.
@@ -237,9 +260,10 @@ export function projectSpelling(daemon: DaemonInfo | undefined, cwd: string): st
 
 /** The project's live daemon sockets, newest first, discovered one candidate at a time: each pipe
  * probe runs only when the walk reaches that candidate, so a daemon is queried before an older
- * candidate's probe can spend the shared deadline. An optional deadline bounds each probe. */
+ * candidate's probe can spend the shared deadline. An optional deadline bounds the registry scan
+ * behind the walk and each probe it spends. */
 function* liveDaemonSockets(cwd: string, registryDir: string | undefined, deadlineAt?: number): Generator<string> {
-	for (const entry of registeredDaemons(cwd, registryDir)) {
+	for (const entry of registeredDaemons(cwd, registryDir, process.platform, deadlineAt)) {
 		if (daemonIsLive(entry, process.platform, deadlineAt)) yield entry.socketPath;
 	}
 }
@@ -323,9 +347,10 @@ export function mcpReplyKind(message: McpReply): McpReplyKind | undefined {
  * hands each parsed reply to `onReply` — undefined marks a line `parseMcpReply` rejects; each conversation
  * decides what that means. A truthy return from `onReply` stops the scan for the rest of the chunk, the
  * data handler's `return`. The chunk handler itself answers true when one frame grew past
- * `maxBufferChars` — a complete line past it in trimmed content, the unfinished remainder past it
- * in trimmed content or in surrounding whitespace alone — the runaway guard the socket
- * conversation finishes on; a frame just under the cap keeps its reply even when blank lines pad
+ * `maxBufferChars` — content past it, or surrounding whitespace alone past it, the same measure for
+ * a complete frame and for the unfinished remainder, so a padded reply lives or dies identically
+ * whichever chunk its newline arrives in — the runaway guard the socket conversation finishes on;
+ * a frame with content and padding each under the cap keeps its reply even when blank lines pad
  * out the chunk that carried it.
  */
 export function mcpLineReader(onReply: (message: McpReply | undefined) => boolean | void, maxBufferChars: number = Number.POSITIVE_INFINITY): (chunk: string | Buffer) => boolean {
@@ -336,19 +361,18 @@ export function mcpLineReader(onReply: (message: McpReply | undefined) => boolea
 	const decoder = new StringDecoder("utf8");
 	return (chunk: string | Buffer) => {
 		buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
-		// The cap measures each frame on its own with one size rule regardless of chunk boundaries:
-		// a frame's size is its trimmed content, so a padded frame just under the cap dispatches
-		// identically whether its newline arrived with the frame or follows separately. The
-		// whitespace around the unfinished remainder is still not free memory — the buffer itself
-		// is what the cap guards — so a remainder whose surrounding whitespace alone crosses the
-		// cap answers overflow, keeping the raw buffer bounded while the newline is pending. One
-		// oversized frame, complete or partial, is the runaway the guard answers true for, and
-		// separate blank lines belong to no frame and never count toward any limit.
+		// One measure for every frame, complete or pending: content past the cap or surrounding
+		// whitespace alone past it — never the two summed, so short padding stays valid — and the
+		// same rule whichever chunk the newline arrives in, so a padded reply is accepted or
+		// rejected identically in both layouts. The pending remainder's whitespace is not free
+		// memory either — the same cap bounds it — and an empty line belongs to no frame, so any
+		// run of blank lines dispatches without growing any frame's measure.
 		let newline: number;
 		while ((newline = buffer.indexOf("\n")) >= 0) {
-			const line = buffer.slice(0, newline).trim();
+			const frame = buffer.slice(0, newline);
 			buffer = buffer.slice(newline + 1);
-			if (line.length > maxBufferChars) return true;
+			const line = frame.trim();
+			if (line.length > maxBufferChars || frame.length - line.length > maxBufferChars) return true;
 			if (line.length === 0) continue;
 			if (onReply(parseMcpReply(line))) return false;
 		}

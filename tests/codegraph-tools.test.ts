@@ -7,9 +7,9 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { clearCodegraphResolveCache, resolveCodegraphEntry } from "../lib/codegraph-cli-resolve.ts";
+import { clearCodegraphResolveCache, resolveCodegraphShimState } from "../lib/codegraph-cli-resolve.ts";
 import { MAX_REPLY_CHARS, resetDaemonRegistryMemo, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
-import type { InitLockOutcome } from "../lib/codegraph-lease.ts";
+import { leaseHostIdentity, leaseMachineIdentity, lockPathFor, type InitLockOutcome } from "../lib/codegraph-lease.ts";
 import type { EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
 import { SYNC_RETRY_DELAY_MS, SYNC_TIMEOUT_MS, WARMUP_TIMEOUT_MS, type IndexState } from "../lib/codegraph-readiness.ts";
 import codeGraphTools, {
@@ -17,18 +17,20 @@ import codeGraphTools, {
 	armCodegraphExecForTest,
 	armExposureEnsureForTest,
 	armIndexStateForTest,
+	armStartupDaemonSkipForTest,
 	clearSearchWindow,
 	createCodeGraphTool,
 	codeGraphNodeScript,
 	codegraphSyncFailureNotice,
-	indexedNotice,
 	findCodeGraphNodeScriptOnPath,
 	isSameDirectory,
 	isWorkspaceProjectRoot,
 	awaitSearchSync,
 	warmNotice,
 	indexStartNotice,
+	indexedNotice,
 	SYNC_FRESH_WINDOW_MS,
+	DAEMON_SKIP_MS,
 	type CodeGraphRunner,
 	type DaemonExplore,
 } from "../extensions/codegraph-tools.ts";
@@ -75,6 +77,63 @@ function withPlatform(t: test.TestContext, platform: string): void {
 	const previous = process.platform;
 	Object.defineProperty(process, "platform", { configurable: true, value: platform });
 	t.after(() => Object.defineProperty(process, "platform", { configurable: true, value: previous }));
+}
+
+/** The endpoint a test daemon binds on the native platform: on Windows the daemon's IPC is a
+ * named pipe, not a filesystem socket, so the fixture asks the platform before binding —
+ * withPlatform cannot change what an already-listening server answers on. */
+function nativeSocketPath(home: string): string {
+	// The Windows named-pipe prefix built from char codes: a backslash-dense literal is
+	// corruption-prone in generated source.
+	const backslash = String.fromCharCode(92);
+	const pipePrefix = backslash + backslash + "." + backslash + "pipe" + backslash;
+	return process.platform === "win32"
+		? pipePrefix + "gentle-shell-codegraph-" + randomUUID()
+		: join(home, "daemon.sock");
+}
+
+/** A fake daemon socket server answering initialize and tools/call like the real daemon.
+ * `initializeDelayMs` holds the initialize reply back so a test can interleave work (a newer
+ * session starting) while a warm-up against the socket is still pending. The optional
+ * handshake holds the initialize reply until the test releases it: onInitialize fires when
+ * that request arrives, onCall when the client sends its first post-initialize request. */
+interface DaemonServerHandshake {
+	onInitialize?: () => void;
+	releaseInitialize?: Promise<void>;
+	onCall?: () => void;
+}
+
+function fakeDaemonServer(initializeDelayMs = 0, handshake: DaemonServerHandshake = {}): net.Server {
+	return net.createServer((socket) => {
+		socket.on("error", () => {});
+		socket.write(JSON.stringify({ codegraph: "1.6.0", protocol: 1 }) + "\n");
+		let buffer = "";
+		socket.on("data", (chunk: Buffer) => {
+			buffer += chunk.toString("utf8");
+			let newline: number;
+			while ((newline = buffer.indexOf("\n")) >= 0) {
+				const line = buffer.slice(0, newline).trim();
+				buffer = buffer.slice(newline + 1);
+				if (line.length === 0) continue;
+				const message = JSON.parse(line) as { id?: number; method?: string };
+				const reply = (result: unknown): void => {
+					socket.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\n");
+				};
+				if (message.method === "initialize") {
+					const greeting = { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "fake", version: "0" } };
+					handshake.onInitialize?.();
+					if (handshake.releaseInitialize) void handshake.releaseInitialize.then(() => reply(greeting));
+					else if (initializeDelayMs === 0) reply(greeting);
+					else setTimeout(() => reply(greeting), initializeDelayMs);
+					continue;
+				}
+				if (message.method === "tools/call") {
+					handshake.onCall?.();
+					reply({ content: [{ type: "text", text: "daemon answer" }], isError: false });
+				}
+			}
+		});
+	});
 }
 
 test("CodeGraph tool rejects non-project, nested-project, HOME, and temporary workspaces before init", async (t) => {
@@ -315,33 +374,65 @@ test("a daemon attempt the caller aborts mid-flight is discarded without paying 
 	assert.equal((result.details as { status?: string }).status, "failed");
 });
 test("a cancellation that lands during the sync wait never starts the first daemon attempt", async (t) => {
+	withoutChildEnv(t);
 	const cwd = workspace(t);
+	await writeIndex(["init", cwd], { cwd, maxBuffer: 1 });
 	const ctx = { cwd } as ExtensionContext;
 	let attempts = 0;
 	let runnerCalls = 0;
-	const caller = new AbortController();
-	// The abort fires between the search's entry check and its first daemon attempt: the
-	// re-warm runs before the sync wait, so this seam cancels after entry but before the
-	// attempt — the exact window where a discarded answer would still open a socket.
+	let refreshStarted: (() => void) | undefined;
+	const started = new Promise<void>((resolve) => {
+		refreshStarted = resolve;
+	});
+	let release: (() => void) | undefined;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
 	const tool = createCodeGraphTool(async () => {
 		runnerCalls += 1;
 		return { stdout: "cli answer", stderr: "" };
 	}, {
 		daemonExplore: async () => {
 			attempts += 1;
-			return { status: "ok" as const, text: "daemon answer" };
+			return { status: "ok", text: "daemon answer" };
 		},
-		rewarm: () => {
-			caller.abort();
-		},
+		rewarm: noRewarm,
 		warm: async () => true,
-		syncRun: syncNothing,
+		// A gated refresh over a real index: the abort below lands while the sync is still in
+		// flight, not before it starts.
+		syncRun: async () => {
+			refreshStarted?.();
+			await gate;
+			return true;
+		},
 	});
-	const result = await tool.execute("test", { operation: "query", query: "symbol" }, caller.signal, undefined, ctx);
-	assert.equal(attempts, 0, "a cancelled search must not open a daemon socket whose answer nobody waits for");
-	assert.equal(runnerCalls, 0, "a cancelled search must not pay for the CLI fallback");
-	assert.match(result.content[0].text, /CodeGraph failed to run/);
-	assert.equal((result.details as { status?: string }).status, "failed");
+	const caller = new AbortController();
+
+	const search = tool.execute("test", { operation: "query", query: "symbol" }, caller.signal, undefined, ctx);
+	// The deadline bounds the whole sequence, awaiting the refresh start included: a regression
+	// that never calls syncRun cannot park the test at `await started` before any deadline exists.
+	let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<never>((_, reject) => {
+		deadlineTimer = setTimeout(() => reject(new Error("the refresh never started or the aborted search never returned")), 3_000);
+	});
+	try {
+		await Promise.race([started, deadline]);
+		caller.abort();
+		const result = await Promise.race([search, deadline]);
+		assert.equal(attempts, 0, "a search cancelled mid-refresh must not open a daemon socket whose answer nobody waits for");
+		assert.equal(runnerCalls, 0, "a search cancelled mid-refresh must not pay for the CLI fallback");
+		assert.match(result.content[0].text, /CodeGraph failed to run/);
+		assert.equal((result.details as { status?: string }).status, "failed");
+	} finally {
+		// The gate is released on every exit — success, timeout, or assertion failure — and the
+		// deadline is cleared: a settled race never leaves a referenced timer behind.
+		clearTimeout(deadlineTimer);
+		release?.();
+		// The abandoned search settles against the released gate; a deadline that fired first
+		// must not turn its eventual rejection into an unhandled one.
+		void search.catch(() => { /* already reported by the deadline or the assertions */ });
+		await settled();
+	}
 });
 
 test("an already-aborted caller returns the abort failure before the re-warm, background sync, and first daemon attempt", async (t) => {
@@ -754,13 +845,9 @@ test("the default query path speaks codegraph_search over the socket: the name t
 	t.after(() => rmSync(home, { recursive: true, force: true }));
 	const registryDir = join(home, ".codegraph", "daemons");
 	mkdirSync(registryDir, { recursive: true });
-	// The Windows named-pipe prefix built from char codes: a backslash-dense literal is
-	// corruption-prone in generated source.
-	const backslash = String.fromCharCode(92);
-	const pipePrefix = backslash + backslash + "." + backslash + "pipe" + backslash;
-	const socketPath = process.platform === "win32"
-		? pipePrefix + "gentle-shell-codegraph-search-" + randomUUID()
-		: join(home, "daemon.sock");
+	// The endpoint binds on the native platform: on Windows the daemon IPC is a named pipe,
+	// not a filesystem socket, so the fixture asks the platform before binding.
+	const socketPath = nativeSocketPath(home);
 	const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
 	const server = net.createServer((socket) => {
 		socket.on("error", () => {});
@@ -1362,6 +1449,332 @@ async function spacedWorkspaces(t: test.TestContext): Promise<{ indexed: string;
 	return { indexed, fresh: under("fresh checkout") };
 }
 
+test("the tool_call guard judges a rebuild from the directory the command list changed into", async (t) => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	codeGraphTools({
+		registerTool() { /* the registered tool's shape is covered above */ },
+		on(event, handler) { handlers.set(event, handler); },
+	} as unknown as ExtensionAPI);
+	const guard = handlers.get("tool_call");
+	const { indexed, fresh } = await spacedWorkspaces(t);
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	const verdictFrom = (cwd: string, command: string) =>
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command } }, { cwd } as ExtensionContext);
+	const shellQuoted = (path: string) => "'" + path + "'";
+
+	assert.equal(verdictFrom(indexed, "cd " + shellQuoted(fresh) + " && codegraph init"), undefined, "an init run inside the unindexed sibling is that sibling's legitimate first init");
+	assert.equal(verdictFrom(indexed, "cd " + shellQuoted(fresh) + " && codegraph index"), undefined, "the index form finds no initialized target at or above the sibling either");
+	const reversed = verdictFrom(fresh, "cd " + shellQuoted(indexed) + " && codegraph init") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(reversed?.block, true, "an init run inside the indexed sibling would rebuild its index");
+	assert.match(reversed?.reason ?? "", /an index already exists/);
+	const unknowable = verdictFrom(fresh, "cd $TARGET && codegraph init") as { block?: boolean } | undefined;
+	assert.equal(unknowable?.block, true, "a cd this walk cannot follow never leaves the caller's directory as proof the target is unindexed");
+	assert.equal(verdictFrom(fresh, "cd $TARGET && GENTLE_CODEGRAPH_ALLOW_INDEX=1 codegraph init"), undefined, "the override on the rebuild itself still authorizes it");
+});
+
+test("the guard treats cd - as a directory change it cannot name", async (t) => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	codeGraphTools({
+		registerTool() { /* the registered tool's shape is covered above */ },
+		on(event, handler) { handlers.set(event, handler); },
+	} as unknown as ExtensionAPI);
+	const guard = handlers.get("tool_call");
+	const indexed = workspace(t);
+	await writeIndex(["init", indexed], { cwd: indexed, maxBuffer: 1 });
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	const verdictFrom = (command: string) =>
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command } }, { cwd: indexed } as ExtensionContext);
+
+	// `cd -` means OLDPWD — a directory this walk cannot establish, never a child spelled "-":
+	// an unknown directory never proves the target unindexed, so the rebuild is blocked.
+	const verdict = verdictFrom("cd - && codegraph init") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(verdict?.block, true, "an OLDPWD cd leaves the rebuild's directory unknowable, not a child spelled -");
+	assert.match(verdict?.reason ?? "", /an index already exists/);
+});
+
+test("the guard keeps the caller's directory when a conditional list skips its cd", async (t) => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	codeGraphTools({
+		registerTool() { /* the registered tool's shape is covered above */ },
+		on(event, handler) { handlers.set(event, handler); },
+	} as unknown as ExtensionAPI);
+	const guard = handlers.get("tool_call");
+	const { indexed, fresh } = await spacedWorkspaces(t);
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	const verdictFrom = (cwd: string, command: string) =>
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command } }, { cwd } as ExtensionContext);
+	const destination = "'" + indexed + "'";
+
+	// An OR list whose left command certainly succeeds skips its cd: the init runs in the
+	// caller's fresh checkout, and the skipped destination must not block that first init.
+	assert.equal(verdictFrom(fresh, "true || cd " + destination + " && codegraph init"), undefined, "a skipped branch's destination is not the effective directory of the rebuild");
+	// The branch that does run is still judged at its destination.
+	const runs = verdictFrom(fresh, "false || cd " + destination + " && codegraph init") as { block?: boolean } | undefined;
+	assert.equal(runs?.block, true, "a cd its branch reaches still moves the rebuild's directory");
+	// An AND list whose left command certainly fails skips its cd — and the guarded rebuild with it.
+	assert.equal(verdictFrom(fresh, "false && cd " + destination + " && codegraph init"), undefined, "a cd its branch skips moves nothing");
+	// A branch this walk cannot evaluate leaves the directory unknowable, never the destination.
+	const unknowable = verdictFrom(fresh, "grep -q x file || cd " + destination + " && codegraph init") as { block?: boolean } | undefined;
+	assert.equal(unknowable?.block, true, "an unknowable branch never proves the rebuild unindexed");
+	// The unconditional form is unchanged.
+	const unconditional = verdictFrom(fresh, "cd " + destination + " && codegraph init") as { block?: boolean } | undefined;
+	assert.equal(unconditional?.block, true, "the successful cd && form still judges the destination");
+});
+
+test("the guard judges a cd's failure path too, because a cd can fail and leave the shell where it was", async (t) => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	codeGraphTools({
+		registerTool() { /* the registered tool's shape is covered above */ },
+		on(event, handler) { handlers.set(event, handler); },
+	} as unknown as ExtensionAPI);
+	const guard = handlers.get("tool_call");
+	const { indexed, fresh } = await spacedWorkspaces(t);
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	const verdictFrom = (cwd: string, command: string) =>
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command } }, { cwd } as ExtensionContext);
+	const shellQuoted = (path: string) => "'" + path + "'";
+	// A destination that is not there when the guard runs: whether it appears (or is created
+	// by an earlier command) before the cd runs is beyond this walk, so neither outcome is
+	// disproven and both paths stay live.
+	const missing = join(fresh, "missing checkout");
+
+	// The cd fails at run time, so bash stays in the caller's checkout and runs the ||
+	// fallback there: an indexed caller is never proven safe by the missing destination.
+	const fallback = verdictFrom(indexed, "cd " + shellQuoted(missing) + " || codegraph init") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(fallback?.block, true, "a cd that fails leaves the shell in the indexed checkout, where the || fallback rebuilds it");
+	assert.match(fallback?.reason ?? "", /an index already exists/);
+	// An unconditional separator reaches the next command on both paths - the destination when
+	// the cd succeeded, the caller's checkout when it failed - so both are judged.
+	const separated = verdictFrom(indexed, "cd " + shellQuoted(missing) + "; codegraph init") as { block?: boolean } | undefined;
+	assert.equal(separated?.block, true, "a semicolon-reached rebuild is judged in every directory the cd can leave the shell in");
+	// The same failed cd in an unindexed caller leaves the fallback a legitimate first init.
+	assert.equal(verdictFrom(fresh, "cd " + shellQuoted(missing) + " || codegraph init"), undefined, "a failed cd keeps the shell in the unindexed checkout, so its fallback init is that checkout's first");
+	// A || fallback behind a cd that does succeed never runs at all, and the failure path it
+	// would owe is the caller's own unindexed checkout.
+	assert.equal(verdictFrom(fresh, "cd " + shellQuoted(indexed) + " || codegraph init"), undefined, "the || fallback of a successful cd runs only in the caller's checkout, which holds no index here");
+	// The && continuation runs only behind a cd that succeeded, so it is judged at the
+	// destination alone: a missing destination still holds no index.
+	assert.equal(verdictFrom(indexed, "cd " + shellQuoted(missing) + " && codegraph init"), undefined, "a cd that could fail never runs its && rebuild in the caller's checkout");
+	// A cd into a fresh checkout that does succeed keeps judging (and allowing) its own init.
+	assert.equal(verdictFrom(indexed, "cd " + shellQuoted(fresh) + " && codegraph init"), undefined, "a successful directory change into a fresh checkout still authorizes the first init there");
+});
+
+test("the guard keeps a pipeline's status unknowable unless every stage agrees", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+
+	// Without pipefail the last stage's success is the pipeline's status; with it the earlier
+	// failure decides. Both readings are live, so the || fallback is reachable and the indexed
+	// checkout behind it must be checked.
+	const mixed = verdict("false | true || codegraph init") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(mixed?.block, true, "a pipeline whose stages disagree has no provable status, so its || branch is reachable");
+	assert.match(mixed?.reason ?? "", /an index already exists/);
+	// A pipeline whose every stage holds the same status reports it under either reading, so
+	// the branch behind it stays provably unreachable.
+	assert.equal(verdict("true | true || codegraph init"), undefined, "an all-successful pipeline fails nowhere, so its || branch never runs");
+	// Standalone commands keep pruning by their own certain status.
+	assert.equal(verdict("true || codegraph init"), undefined, "a certain success still makes its || branch unreachable");
+	const reached = verdict("false || codegraph init") as { block?: boolean } | undefined;
+	assert.equal(reached?.block, true, "a certain failure still makes its || branch reach the rebuild");
+});
+
+/** The tool_call guard's verdict function over a spaced indexed/fresh checkout pair, with the
+ * launch override cleared for the test's lifetime: the callers the pipeline and branch tests
+ * judge a command list against. */
+async function guardVerdicts(t: test.TestContext): Promise<{
+	verdictFrom: (cwd: string, command: string) => unknown;
+	indexed: string;
+	fresh: string;
+}> {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	codeGraphTools({
+		registerTool() { /* the registered tool's shape is covered above */ },
+		on(event, handler) { handlers.set(event, handler); },
+	} as unknown as ExtensionAPI);
+	const guard = handlers.get("tool_call");
+	const { indexed, fresh } = await spacedWorkspaces(t);
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	return {
+		indexed,
+		fresh,
+		verdictFrom: (cwd, command) =>
+			(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command } }, { cwd } as ExtensionContext),
+	};
+}
+
+test("the guard reads an adjacent |& as one pipeline separator", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+
+	// `|&` pipes stderr into the next stage as well, so the stages are one pipeline: its first
+	// stage certainly fails, no other reading proves the group's status, and the || continuation
+	// therefore runs in the indexed checkout.
+	const piped = verdict("false |& true | true || codegraph init") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(piped?.block, true, "a stage joined by |& belongs to the same pipeline, whose failure reaches the || continuation");
+	assert.match(piped?.reason ?? "", /an index already exists/);
+	// The two-stage form folds the same way.
+	const direct = verdict("false |& true || codegraph init") as { block?: boolean } | undefined;
+	assert.equal(direct?.block, true, "an adjacent |& folds both stages, so the failed first stage keeps the group's status unproven");
+	// A lone & is still a background separator: the second true is a command of its own, and
+	// its certain success makes the || branch unreachable.
+	assert.equal(verdict("true & true || codegraph init"), undefined, "a separate background separator never joins a pipeline");
+});
+
+test("the guard decides a pipeline's reachability once, not stage by stage", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+
+	// false fails, so the shell skips the whole && pipeline: none of its stages runs, and the
+	// init joined to it by | never reaches any directory.
+	assert.equal(verdict("false && true | codegraph init"), undefined, "a skipped pipeline runs none of its stages, whatever separator joins them");
+	// A pipeline whose guard this walk cannot evaluate is still judged in full.
+	const reached = verdict("grep -q x file && true | codegraph init") as { block?: boolean } | undefined;
+	assert.equal(reached?.block, true, "an unknowable guard leaves the whole pipeline running, so its rebuild is judged");
+});
+
+test("the guard keeps a pipeline stage's cd out of the parent shell's directory", async (t) => {
+	const { verdictFrom, indexed, fresh } = await guardVerdicts(t);
+	const shellQuoted = (path: string) => "'" + path + "'";
+
+	// Every stage of a pipeline runs in its own subshell, so without lastpipe the cd of the
+	// last stage never moves the parent: the && init still runs in the indexed caller.
+	const piped = verdictFrom(indexed, "true | cd " + shellQuoted(fresh) + " && codegraph init") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(piped?.block, true, "a cd inside a pipeline stage leaves the parent's indexed directory in place for the && rebuild");
+	assert.match(piped?.reason ?? "", /an index already exists/);
+	// A command outside any pipeline is the parent shell itself, so its cd still moves it.
+	assert.equal(verdictFrom(indexed, "cd " + shellQuoted(fresh) + " && codegraph init"), undefined, "a cd outside a pipeline still moves the parent shell");
+	// With lastpipe the stage's cd can reach the parent, so the destination stays a possible
+	// directory for the continuation rather than being dropped.
+	const lastpipe = verdictFrom(fresh, "true | cd " + shellQuoted(indexed) + " && codegraph init") as { block?: boolean } | undefined;
+	assert.equal(lastpipe?.block, true, "a last-stage cd that lastpipe applies in the parent keeps the destination live");
+});
+
+test("the guard carries a skipped branch's directory and status forward", async (t) => {
+	const { verdictFrom, indexed, fresh } = await guardVerdicts(t);
+	const shellQuoted = (path: string) => "'" + path + "'";
+	const missing = join(fresh, "missing checkout");
+
+	// The cd fails at run time, so its && continuation never runs and the shell stays in the
+	// indexed caller for the unconditional init after the semicolon.
+	const skipped = verdictFrom(indexed, "cd " + shellQuoted(missing) + " && true; codegraph init") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(skipped?.block, true, "a skipped && command leaves the failed cd's directory live for the command after it");
+	assert.match(skipped?.reason ?? "", /an index already exists/);
+	// The skipped state keeps its own directory instead of inheriting the branch destination.
+	const destination = verdictFrom(indexed, "cd " + shellQuoted(fresh) + " && true; codegraph init") as { block?: boolean } | undefined;
+	assert.equal(destination?.block, true, "the cd's failure path keeps the indexed caller reachable for the unconditional init");
+	// The && continuation alone still runs at the destination only, which holds no index.
+	assert.equal(verdictFrom(indexed, "cd " + shellQuoted(missing) + " && codegraph init"), undefined, "a cd that could fail never runs its && rebuild in the caller's checkout");
+});
+
+test("the guard forms a conditional operator only from adjacent separators", async (t) => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	codeGraphTools({
+		registerTool() { /* the registered tool's shape is covered above */ },
+		on(event, handler) { handlers.set(event, handler); },
+	} as unknown as ExtensionAPI);
+	const guard = handlers.get("tool_call");
+	const { indexed, fresh } = await spacedWorkspaces(t);
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	const verdictFrom = (cwd: string, command: string) =>
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command } }, { cwd } as ExtensionContext);
+	const shellQuoted = (path: string) => "'" + path + "'";
+
+	// Two background separators with a command between them are two separate `&`: the second
+	// one introduces the cd, which runs unconditionally, and the init lands in the fresh
+	// checkout behind the genuinely adjacent `&&` at the end of the list.
+	assert.equal(
+		verdictFrom(indexed, "true & false & cd " + shellQuoted(fresh) + " && codegraph init"),
+		undefined,
+		"the second & of `& cmd &` never combines with the first into &&",
+	);
+	// Control: a genuinely adjacent && still gates the branch — the cd runs behind the
+	// certainly-failed false and the init is judged at the indexed destination.
+	const gated = verdictFrom(fresh, "false || cd " + shellQuoted(indexed) + " && codegraph init") as { block?: boolean } | undefined;
+	assert.equal(gated?.block, true, "an adjacent && after a running cd still forms the conditional");
+});
+
+test("a rebuild the walker proves unreachable never reaches the guard", async (t) => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	codeGraphTools({
+		registerTool() { /* the registered tool's shape is covered above */ },
+		on(event, handler) { handlers.set(event, handler); },
+	} as unknown as ExtensionAPI);
+	const guard = handlers.get("tool_call");
+	const { indexed } = await spacedWorkspaces(t);
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	const verdictFrom = (cwd: string, command: string) =>
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command } }, { cwd } as ExtensionContext);
+
+	// A rebuild its branch provably skips never runs, so it is not the caller's rebuild.
+	assert.equal(verdictFrom(indexed, "false && codegraph init"), undefined, "an init behind a certainly-failed command cannot run");
+	// A branch this walk cannot evaluate stays checked: the rebuild may still run.
+	const unknownBranch = verdictFrom(indexed, "grep -q x file && codegraph init") as { block?: boolean } | undefined;
+	assert.equal(unknownBranch?.block, true, "an unknowable branch never proves the rebuild unindexed");
+});
+
+test("the walker carries the last executed status past a branch the shell skips", async (t) => {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	codeGraphTools({
+		registerTool() { /* the registered tool's shape is covered above */ },
+		on(event, handler) { handlers.set(event, handler); },
+	} as unknown as ExtensionAPI);
+	const guard = handlers.get("tool_call");
+	const { indexed, fresh } = await spacedWorkspaces(t);
+	const previousOverride = process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+	t.after(() => {
+		if (previousOverride === undefined) delete process.env.GENTLE_CODEGRAPH_ALLOW_INDEX;
+		else process.env.GENTLE_CODEGRAPH_ALLOW_INDEX = previousOverride;
+	});
+	const verdictFrom = (cwd: string, command: string) =>
+		(guard as (event: unknown, ctx: unknown) => unknown)({ toolName: "bash", input: { command } }, { cwd } as ExtensionContext);
+	const shellQuoted = (path: string) => "'" + path + "'";
+
+	// The skipped false keeps the success of the true before it: the cd and the init both
+	// run, and the first init in the fresh checkout must not be judged at the indexed caller.
+	assert.equal(
+		verdictFrom(indexed, "true || false && cd " + shellQuoted(fresh) + " && codegraph init"),
+		undefined,
+		"a skipped command's status never gates the branch after it",
+	);
+	// The same walk with the indexed destination: the cd runs there and the init is blocked.
+	const atIndexed = verdictFrom(fresh, "true || false && cd " + shellQuoted(indexed) + " && codegraph init") as { block?: boolean; reason?: string } | undefined;
+	assert.equal(atIndexed?.block, true, "the cd the skipped branch leaves running still moves the rebuild");
+	assert.match(atIndexed?.reason ?? "", /an index already exists/);
+});
+
 test("the guard's inline override honors the last GENTLE_CODEGRAPH_ALLOW_INDEX assignment", async (t) => {
 	const verdict = await guardOnIndexedWorkspace(t);
 	const superseded = verdict("GENTLE_CODEGRAPH_ALLOW_INDEX=1 GENTLE_CODEGRAPH_ALLOW_INDEX=0 codegraph index .") as { block?: boolean; reason?: string } | undefined;
@@ -1477,6 +1890,20 @@ test("the guard ignores here-document operators inside Bash comments", async (t)
 	);
 	assert.equal(verdict("echo codegraph # <<EOF"), undefined, "a comment after a non-rebuild command neither hides nor blocks anything");
 	assert.equal(verdict("echo foo#bar <<EOF\ncodegraph index .\nEOF"), undefined, "a # mid-word starts no comment: the here-document body stays the command's input");
+});
+
+test("the guard keeps an escaped space inside the word: # after it starts no comment", async (t) => {
+	const verdict = await guardOnIndexedWorkspace(t);
+	// Assembled from char codes: a backslash-before-space literal is corruption-prone in generated code.
+	const escapedSpace = String.fromCharCode(92) + " ";
+	const newline = String.fromCharCode(10);
+	// The escaped space keeps the word open, so the # after it is a literal argument and the
+	// <<'EOF' operator is real: the body's example rebuild is the command's input, never a command.
+	const escaped = verdict("cat foo" + escapedSpace + "#note <<'EOF'" + newline + "codegraph index ." + newline + "EOF");
+	assert.equal(escaped, undefined, "an escaped space is not a comment boundary: the here-document body stays data");
+	// The unescaped form is a real comment: its << opens nothing, so the next line's rebuild is a command.
+	const commented = verdict("cat foo #note <<'EOF'" + newline + "codegraph index ." + newline + "EOF") as { block?: boolean } | undefined;
+	assert.equal(commented?.block, true, "a real comment's operator opens nothing: the following rebuild runs and is blocked");
 });
 
 function writeCodeGraphPackage(binDir: string, scriptSource = "#!/usr/bin/env node\n"): string {
@@ -1715,9 +2142,9 @@ test("win32: a genuine miss keeps the cascade: no shim, no scan anchor, unavaila
 	withoutChildEnv(t);
 	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-miss-bin-")));
 	t.after(() => rmSync(binDir, { recursive: true, force: true }));
-	// The package without its shim: no codegraph.cmd anywhere on PATH, so the resolution is
-	// a genuine miss (nothing was rejected) and the per-call scan keeps its turn, finding no
-	// anchor to expand.
+	// The package without its shim: no codegraph.cmd anywhere on the fixture PATH, so the
+	// resolution is a genuine miss (nothing was rejected) and the per-call scan keeps its
+	// turn, finding no anchor to expand.
 	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
 	rmSync(join(binDir, "codegraph.cmd"));
 	writePwdGitShim(binDir);
@@ -1726,7 +2153,21 @@ test("win32: a genuine miss keeps the cascade: no shim, no scan anchor, unavaila
 	withPlatform(t, "win32");
 	clearCodegraphResolveCache();
 	t.after(() => clearCodegraphResolveCache());
-	assert.equal(resolveCodegraphEntry(), null, "no shim on PATH resolves to nothing");
+	// The miss is asserted on an isolated PATH a developer's installed shim can never
+	// enter, so the assertion means the same thing on every host.
+	assert.equal(
+		resolveCodegraphShimState({ platform: () => "win32", pathEnv: () => binDir, exists: (path) => existsSync(path), read: (path) => readFileSync(path, "utf8") }).status,
+		"miss",
+		"no shim on the isolated PATH resolves to a miss",
+	);
+	// The exec seam records every spawn the cascade attempts without ever launching an
+	// executable a host PATH could still expose.
+	let attempts = 0;
+	const restoreExec = armCodegraphExecForTest((async () => {
+		attempts += 1;
+		throw Object.assign(new Error("spawn codegraph ENOENT"), { code: "ENOENT" });
+	}) as unknown as Parameters<typeof armCodegraphExecForTest>[0]);
+	t.after(restoreExec);
 
 	const result = await createCodeGraphTool(undefined, { initLock: lockAcquired }).execute(
 	"test",
@@ -1737,6 +2178,7 @@ test("win32: a genuine miss keeps the cascade: no shim, no scan anchor, unavaila
 	);
 	assert.match(result.content[0].text, /CodeGraph is unavailable/);
 	assert.equal((result.details as { status?: string }).status, "unavailable");
+	assert.ok(attempts >= 1, "the cascade did attempt its spawns; the armed seam launched nothing");
 });
 
 test("POSIX: a bare-codegraph ENOENT stays unavailable — no resolver consultation, no package scan", async (t) => {
@@ -2097,6 +2539,140 @@ test("a failed daemon chain skips the daemon for the rest of the turn", async (t
 	assert.equal(runnerCalls, 3);
 });
 
+test("a startup wedge verdict survives the first prompt boundary until its own expiry", async (t) => {
+	const cwd = workspace(t);
+	const restore = armStartupDaemonSkipForTest(cwd);
+	t.after(restore);
+	let attempts = 0;
+	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+		daemonExplore: async () => {
+			attempts += 1;
+			return { status: "ok", text: "daemon answer" };
+		},
+		rewarm: noRewarm,
+		syncRun: syncNothing,
+	});
+
+	// What before_agent_start fires between the startup detection and the first search: the
+	// startup's verdict is kept, only prompt-scoped failures reset.
+	clearSearchWindow();
+	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
+
+	assert.deepEqual(result.content, [{ type: "text", text: "cli answer" }]);
+	assert.equal(attempts, 0, "the startup's CLI bypass still spans the first search after the boundary");
+});
+
+test("a startup wedge recorded through a symlink spelling still bypasses the daemon", async (t) => {
+	const root = workspace(t);
+	const holder = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-skip-alias-")));
+	t.after(() => rmSync(holder, { recursive: true, force: true }));
+	const alias = join(holder, "root");
+	symlinkSync(root, alias, "junction");
+	t.after(() => rmSync(alias, { force: true }));
+	const restore = armStartupDaemonSkipForTest(alias);
+	t.after(restore);
+	let attempts = 0;
+	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+		daemonExplore: async () => {
+			attempts += 1;
+			return { status: "ok", text: "daemon answer" };
+		},
+		rewarm: noRewarm,
+		syncRun: syncNothing,
+	});
+
+	const result = await tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd: alias } as ExtensionContext);
+
+	assert.deepEqual(result.content, [{ type: "text", text: "cli answer" }]);
+	assert.equal(attempts, 0, "the verdict is recorded under the same canonical key the query reads");
+});
+
+test("an older search's daemon failure never demotes an unexpired startup bypass", async (t) => {
+	withPlatform(t, "linux");
+	const cwd = workspace(t);
+	const ctx = { cwd } as ExtensionContext;
+	let attempts = 0;
+	// The first attempt is in flight when session start records the wedge: a search that
+	// started before startup can only publish its failure afterward. The started signal is
+	// what guarantees that ordering — execute() yields at its first await, so arming without
+	// it would land before the attempt ever began.
+	let releaseAttempt: (() => void) | undefined;
+	const inFlight = new Promise<DaemonCallResult>((resolve) => {
+		releaseAttempt = () => resolve({ status: "unavailable" });
+	});
+	let attemptStarted: (() => void) | undefined;
+	const firstAttemptInFlight = new Promise<void>((resolve) => {
+		attemptStarted = resolve;
+	});
+	const daemonExplore: DaemonExplore = async () => {
+		attempts += 1;
+		if (attempts === 1) {
+			attemptStarted?.();
+			return inFlight;
+		}
+		return { status: "unavailable" };
+	};
+	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+		daemonExplore,
+		rewarm: noRewarm,
+		warm: async () => true,
+		syncRun: syncNothing,
+	});
+
+	const search = tool.execute("test", { operation: "query", query: "old" }, undefined, undefined, ctx);
+	await firstAttemptInFlight;
+	const restore = armStartupDaemonSkipForTest(cwd);
+	t.after(restore);
+	releaseAttempt?.();
+	const result = await search;
+	assert.match(result.content[0].text, /cli answer/);
+	assert.equal(attempts, 2, "the older search ran its full attempt-warm-attempt chain");
+
+	// What before_agent_start fires between the startup detection and the next search: an
+	// unexpired startup verdict is kept, not demoted to a prompt-scoped failure.
+	clearSearchWindow();
+	const next = await tool.execute("test", { operation: "query", query: "new" }, undefined, undefined, ctx);
+	assert.match(next.content[0].text, /cli answer/);
+	assert.equal(attempts, 2, "the next search runs no daemon attempt after the older search published its failure");
+});
+
+test("an expired startup bypass makes way for a fresh prompt-scoped one in the same prompt", async (t) => {
+	withPlatform(t, "linux");
+	const cwd = workspace(t);
+	const restore = armStartupDaemonSkipForTest(cwd);
+	t.after(restore);
+	// The startup verdict's own clock runs out mid-prompt: the frozen now advances past the
+	// deadline without the prompt boundary that would otherwise clear the entry.
+	let now = Date.now();
+	const realNow = Date.now;
+	Date.now = () => now;
+	t.after(() => {
+		Date.now = realNow;
+	});
+	let attempts = 0;
+	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+		daemonExplore: async () => {
+			attempts += 1;
+			return { status: "unavailable" as const };
+		},
+		rewarm: noRewarm,
+		warm: async () => true,
+		syncRun: syncNothing,
+	});
+
+	now += DAEMON_SKIP_MS + 1;
+	const first = await tool.execute("test", { operation: "query", query: "first" }, undefined, undefined, { cwd } as ExtensionContext);
+	assert.match(first.content[0].text, /cli answer/);
+	assert.equal(attempts, 2, "the expired entry lets the search run the full chain again");
+
+	// The chain's failure must re-arm the bypass for the rest of the prompt: a later search
+	// answers through the CLI without paying attempt, warm-up, and attempt again.
+	const second = await tool.execute("test", { operation: "query", query: "second" }, undefined, undefined, { cwd } as ExtensionContext);
+	assert.match(second.content[0].text, /cli answer/);
+	assert.equal((second.details as { viaDaemon?: boolean }).viaDaemon, false);
+	assert.equal(attempts, 2, "an expired startup entry no longer blocks the prompt-scoped bypass");
+});
+
 test("when the daemon and the CLI both fail, the search reports the standard failure", async (t) => {
 	const cwd = workspace(t);
 	const daemonDown: DaemonExplore = async () => ({ status: "unavailable" });
@@ -2325,6 +2901,211 @@ test("POSIX: a warm slower than the attempt budget keeps running while the query
 	await settled();
 });
 
+test("a query retry that warms a daemon announces the same ready line as the lazy re-warm", async (t) => {
+	withoutChildEnv(t);
+	// The session_start wiring owns the ready-notice say handle: a non-project session
+	// start captures it while readiness plans nothing.
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+	codeGraphTools({
+		registerTool() { /* the registered tool's shape is covered above */ },
+		on(event, handler) { handlers.set(event, handler); },
+	} as unknown as ExtensionAPI);
+	const sessionStart = handlers.get("session_start") as (event: unknown, ctx: unknown) => void;
+	const notices: Array<{ text: string; level: string }> = [];
+	const nonProject = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-notice-")));
+	t.after(() => rmSync(nonProject, { recursive: true, force: true }));
+	armExposureEnsureForTest({ read: () => "{}", write: () => { /* isolated by the fake io */ } });
+	t.after(() => armExposureEnsureForTest(undefined));
+	sessionStart({ reason: "startup" }, {
+		cwd: nonProject,
+		hasUI: true,
+		ui: { notify: (text: string, level: string) => notices.push({ text, level }) },
+	} as unknown as ExtensionContext);
+
+	// A live, answering daemon: the query retry's default warm resolves ok through the
+	// health probe without spawning anything.
+	const cwd = workspace(t);
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-warmhome-")));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const registryDir = join(home, ".codegraph", "daemons");
+	mkdirSync(registryDir, { recursive: true });
+	const socketPath = nativeSocketPath(home);
+	const server = fakeDaemonServer();
+	await new Promise<void>((resolve) => server.listen(socketPath, () => resolve()));
+	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+	writeFileSync(join(registryDir, "record.json"), JSON.stringify({ root: cwd, socketPath, startedAt: 1, pid: process.pid }));
+	const previousHome = process.env.HOME;
+	const previousProfile = process.env.USERPROFILE;
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		if (previousProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = previousProfile;
+		resetDaemonRegistryMemo();
+	});
+	resetDaemonRegistryMemo();
+
+	withPlatform(t, "linux");
+	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+		daemonExplore: async () => ({ status: "unavailable" as const }),
+		rewarm: noRewarm,
+		syncRun: syncNothing,
+		// warm stays at its default: the adapter under test.
+	});
+
+	// The deadline is cleared when the race settles — either side winning leaves no referenced
+	// timer behind to keep the test worker alive.
+	const search = tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
+	let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+	let result: Awaited<typeof search>;
+	try {
+		result = await Promise.race([
+			search,
+			new Promise<never>((_, reject) => {
+				deadlineTimer = setTimeout(() => reject(new Error("the query never settled")), 20_000);
+			}),
+		]);
+	} finally {
+		clearTimeout(deadlineTimer);
+	}
+
+	assert.match(result.content[0].text, /cli answer/);
+	assert.ok(
+		notices.some((notice) => notice.text === "CodeGraph ready in " + cwd && notice.level === "info"),
+		"the retry warm's success rides the same ready notice as the lazy re-warm",
+	);
+	assert.ok(
+		!notices.some((notice) => /warm-up failed|not answering/.test(notice.text)),
+		"a best-effort query retry never emits failure notices",
+	);
+});
+
+test("a retry warm-up's ready notice never rides a session that started after it", async (t) => {
+	withoutChildEnv(t);
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+	codeGraphTools({
+		registerTool() { /* the registered tool's shape is covered above */ },
+		on(event, handler) { handlers.set(event, handler); },
+	} as unknown as ExtensionAPI);
+	const sessionStart = handlers.get("session_start") as (event: unknown, ctx: unknown) => void;
+	armExposureEnsureForTest({ read: () => "{}", write: () => { /* isolated by the fake io */ } });
+	t.after(() => armExposureEnsureForTest(undefined));
+	const nonProject = (name: string): string => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-notice-" + name + "-")));
+		t.after(() => rmSync(dir, { recursive: true, force: true }));
+		return dir;
+	};
+	// Session A starts first and will start the warm-up; session B starts while it is pending.
+	const noticesA: Array<{ text: string; level: string }> = [];
+	const noticesB: Array<{ text: string; level: string }> = [];
+	sessionStart({ reason: "startup" }, {
+		cwd: nonProject("a"),
+		hasUI: true,
+		ui: { notify: (text: string, level: string) => noticesA.push({ text, level }) },
+	} as unknown as ExtensionContext);
+
+	// A live, answering daemon whose initialize reply is held until the test releases it:
+	// session B starts while the warm-up is provably pending, and the release then lets the
+	// warm-up succeed.
+	const cwd = workspace(t);
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-warmhome-b-")));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const registryDir = join(home, ".codegraph", "daemons");
+	mkdirSync(registryDir, { recursive: true });
+	const socketPath = nativeSocketPath(home);
+	let initializeSeen: (() => void) | undefined;
+	const initializeArrived = new Promise<void>((resolve) => {
+		initializeSeen = resolve;
+	});
+	let callSeen: (() => void) | undefined;
+	const callArrived = new Promise<void>((resolve) => {
+		callSeen = resolve;
+	});
+	let releaseInitialize: (() => void) | undefined;
+	const initializeHeld = new Promise<void>((resolve) => {
+		releaseInitialize = resolve;
+	});
+	const server = fakeDaemonServer(0, {
+		onInitialize: () => initializeSeen?.(),
+		releaseInitialize: initializeHeld,
+		onCall: () => callSeen?.(),
+	});
+	// Every accepted connection, so a failing assertion can drop them: the fixture's close hook
+	// waits for open sockets, and the held reply's own socket stays open until it is released.
+	const sockets: net.Socket[] = [];
+	server.on("connection", (socket) => sockets.push(socket));
+	await new Promise<void>((resolve) => server.listen(socketPath, () => resolve()));
+	t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+	writeFileSync(join(registryDir, "record.json"), JSON.stringify({ root: cwd, socketPath, startedAt: 1, pid: process.pid }));
+	const previousHome = process.env.HOME;
+	const previousProfile = process.env.USERPROFILE;
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		if (previousProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = previousProfile;
+		resetDaemonRegistryMemo();
+	});
+	resetDaemonRegistryMemo();
+
+	withPlatform(t, "linux");
+	const tool = createCodeGraphTool(async () => ({ stdout: "cli answer", stderr: "" }), {
+		daemonExplore: async () => ({ status: "unavailable" as const }),
+		rewarm: noRewarm,
+		syncRun: syncNothing,
+		// warm stays at its default: the session-bound notice delivery is the code under test.
+	});
+
+	const search = tool.execute("test", { operation: "query", query: "symbol" }, undefined, undefined, { cwd } as ExtensionContext);
+	// One deadline covers both handshake waits and the search itself: a warm-up that never
+	// sends its initialize request, or a client that initializes and never calls, would
+	// otherwise park this test forever - before the old search-only deadline even existed -
+	// with the fixture server still listening. It stays under the runner's own per-test limit
+	// so this report wins the race against a runtime timeout, whose rejection lands on
+	// whichever test runs next.
+	let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<never>((_, reject) => {
+		deadlineTimer = setTimeout(() => reject(new Error("the warm-up handshake and the query never settled")), 4_000);
+	});
+	const withinDeadline = <T>(work: Promise<T>): Promise<T> => Promise.race([work, deadline]);
+	try {
+		// B's start lands while the retry warm-up is provably pending: the first daemon attempt
+		// settles at once, the warm then holds on the initialize reply, and B starts only after
+		// the daemon saw the warm-up's initialize request — a timer could fire before the warm-up
+		// reached the daemon and leave the assertions below vacuous.
+		await withinDeadline(initializeArrived);
+		sessionStart({ reason: "startup" }, {
+			cwd: nonProject("b"),
+			hasUI: true,
+			ui: { notify: (text: string, level: string) => noticesB.push({ text, level }) },
+		} as unknown as ExtensionContext);
+		// The held reply goes out only after B replaced A; the warm-up then completes its
+		// handshake, and its post-initialize request is the proof it succeeded.
+		releaseInitialize?.();
+		await withinDeadline(callArrived);
+		const result = await withinDeadline(search);
+		assert.match(result.content[0].text, /cli answer/);
+	} finally {
+		// Every exit path — a timed-out handshake, a failed assertion — releases the held reply
+		// and drops the fixture's sockets, so a regression is reported instead of hanging the run.
+		clearTimeout(deadlineTimer);
+		releaseInitialize?.();
+		for (const socket of sockets) socket.destroy();
+	}
+
+	// The negative assertions are about a warm-up that provably succeeded — the fixture saw
+	// its post-initialize request after session B had replaced A — so the discarded ready
+	// notice was real, not a warm-up that never reached the daemon behind a quiet fallback.
+	assert.ok(!noticesB.some((notice) => /CodeGraph ready/.test(notice.text)), "a newer session never receives another session's ready notice");
+	assert.ok(!noticesA.some((notice) => /CodeGraph ready/.test(notice.text)), "a superseded session's completion notice is discarded, not re-routed");
+	assert.ok(!noticesB.some((notice) => /warm-up failed|not answering/.test(notice.text)), "no failure notice leaks either");
+	await settled();
+});
+
 test("init runs the CLI with the workspace, never the daemon, and never triggers a sync", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
@@ -2418,14 +3199,18 @@ test("the default runner reports the real spawned child to the init lease", asyn
 	withoutChildEnv(t);
 	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-adopt-bin-")));
 	t.after(() => rmSync(binDir, { recursive: true, force: true }));
-	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+	const entryScript = writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
 	writePwdGitShim(binDir);
 	const cwd = workspace(t);
 	withWindowsPath(t, binDir);
 	withPlatform(t, "win32");
-	clearCodegraphResolveCache();
-	t.after(() => clearCodegraphResolveCache());
 	const adopted: Array<[number, boolean]> = [];
+	// The pinned entry keeps the real process boundary under test on every host: the resolver
+	// answers process.execPath + the fixture's npm-shim.js, so no CodeGraph installation is
+	// needed and the handcrafted .cmd's rejection cannot skip the spawn.
+	const restoreResolver = armCodegraphEntryResolverForTest(() => ({ status: "entry", entry: { node: process.execPath, script: entryScript } }));
+	t.after(restoreResolver);
+
 	const tool = createCodeGraphTool(undefined, {
 		initLock: async () => ({
 			outcome: "acquired" as const,
@@ -2517,6 +3302,7 @@ test("init rechecks index presence after acquiring a lock another initializer fi
 	assert.equal(releases, 2, "the lock is released however init ends");
 });
 
+
 test("init rechecks the .codegraph identity under the acquired lease, override included", async (t) => {
 	withoutChildEnv(t);
 	const cwd = workspace(t);
@@ -2559,7 +3345,6 @@ test("init rechecks the .codegraph identity under the acquired lease, override i
 	assert.equal(releases, 2, "the override path releases its lock too");
 	assert.match(overrideRefused.content[0].text, /CodeGraph failed to run/);
 });
-
 
 test("init after an acquired lock runs only for an absent index: unknown stands down unless overridden", async (t) => {
 	// The init refusal under test is the lock-ordered stand-down, not the subagent-child refusal:
@@ -2792,6 +3577,21 @@ test("codegraphSyncFailureNotice: beside a live daemon the note is info with the
 	});
 });
 
+test("warmNotice: every warm outcome carries its one notice - the ready line on any ok, wedged and failure warnings otherwise", () => {
+	assert.deepEqual(warmNotice({ ok: true }, "/repo"), { text: "CodeGraph ready in /repo", level: "info" });
+	assert.deepEqual(warmNotice({ ok: true, adopted: true }, "/repo"), { text: "CodeGraph ready in /repo", level: "info" });
+	assert.deepEqual(warmNotice({ ok: false, wedged: true }, "/repo"), {
+		text: "CodeGraph daemon in /repo is not answering; queries use the CLI fallback for now",
+		level: "warning",
+	});
+	assert.deepEqual(warmNotice({ ok: false }, "/repo"), { text: "CodeGraph warm-up failed in /repo", level: "warning" });
+});
+
+test("indexStartNotice: init announces initialization in the approved wording; sync keeps its line", () => {
+	assert.deepEqual(indexStartNotice("init"), { text: "initializing the current repo for CodeGraph...", level: "info" });
+	assert.deepEqual(indexStartNotice("sync"), { text: "syncing the CodeGraph index...", level: "info" });
+});
+
 test("indexedNotice: a main-busy stand-down reports deferred initialization, never a created index", () => {
 	assert.deepEqual(indexedNotice({ action: "init", ok: true }, "/repo"), { text: "CodeGraph index created", level: "info" });
 	assert.deepEqual(indexedNotice({ action: "sync", ok: true }, "/repo"), { text: "CodeGraph index synced", level: "info" });
@@ -2832,21 +3632,6 @@ test("indexedNotice: an unconfirmed teardown never offers the manual init while 
 		unconfirmedTeardown,
 		"the sequence can stop on the first attempt, so the attempt count alone never selects this notice",
 	);
-});
-
-test("warmNotice: every warm outcome carries its one notice - the ready line on any ok, wedged and failure warnings otherwise", () => {
-	assert.deepEqual(warmNotice({ ok: true }, "/repo"), { text: "CodeGraph ready in /repo", level: "info" });
-	assert.deepEqual(warmNotice({ ok: true, adopted: true }, "/repo"), { text: "CodeGraph ready in /repo", level: "info" });
-	assert.deepEqual(warmNotice({ ok: false, wedged: true }, "/repo"), {
-		text: "CodeGraph daemon in /repo is not answering; queries use the CLI fallback for now",
-		level: "warning",
-	});
-	assert.deepEqual(warmNotice({ ok: false }, "/repo"), { text: "CodeGraph warm-up failed in /repo", level: "warning" });
-});
-
-test("indexStartNotice: init announces initialization in the approved wording; sync keeps its line", () => {
-	assert.deepEqual(indexStartNotice("init"), { text: "initializing the current repo for CodeGraph...", level: "info" });
-	assert.deepEqual(indexStartNotice("sync"), { text: "syncing the CodeGraph index...", level: "info" });
 });
 
 test("awaitSearchSync: a failing sync beside a live daemon notifies info, a daemon-less one keeps the warning", async (t) => {
@@ -3146,4 +3931,56 @@ test("session_start tells the user to run init manually after the silent retries
 		"one initial run plus three silent retries through the real session-start path",
 	);
 	assert.ok(!existsSync(join(cwd, ".codegraph", "codegraph.db")), "the failing init created no database");
+});
+
+test("session_start reports a main-busy seed stand-down as deferred initialization", { timeout: 20_000 }, async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	withoutChildEnv(t);
+	// A linked worktree whose main checkout holds a live init lease: the seed stands down
+	// with main-busy (ok, nothing copied), and the notice must report deferral, not creation.
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-busyhome-")));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const previousHome = process.env.HOME;
+	const previousProfile = process.env.USERPROFILE;
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		if (previousProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = previousProfile;
+	});
+	const base = join(home, "repos");
+	mkdirSync(base);
+	const main = join(base, "main");
+	mkdirSync(main);
+	execFileSync("git", ["init", "-b", "main"], { cwd: main, stdio: "ignore" });
+	execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "fixture"], { cwd: main, stdio: "ignore" });
+	const linked = join(base, "linked");
+	execFileSync("git", ["worktree", "add", "-b", "feature", linked], { cwd: main, stdio: "ignore" });
+	writeFileSync(join(linked, "package.json"), "{}\n");
+	// The main checkout's init lease, held live by this process: the fixture token carries
+	// the real host and machine identities so the verdict reads held-live on any host.
+	const now = Date.now();
+	const host = leaseHostIdentity();
+	const machine = leaseMachineIdentity();
+	mkdirSync(join(home, ".codegraph", "locks"), { recursive: true });
+	writeFileSync(lockPathFor(main, "init"), JSON.stringify({
+		kind: "init",
+		pid: process.pid,
+		startedAt: now,
+		expiresAt: now + 600_000,
+		nonce: "main-busy-fixture",
+		...(host === null ? {} : { host }),
+		...(machine === null ? {} : { machine }),
+	}));
+
+	const harness = armSessionStartWiring(t);
+	const { notices, calls } = harness.fire(linked);
+	await untilNotice(notices, /CodeGraph index creation deferred/, 10_000);
+	assert.ok(!notices.some((notice) => notice.text === "CodeGraph index created"), "the stand-down never claims a created index");
+	assert.ok(!notices.some((notice) => /warming up CodeGraph/.test(notice.text)), "a stand-down warms nothing");
+	assert.ok(!calls().includes("init"), "no init runs: the main checkout owns index creation right now");
+	assert.equal(existsSync(join(linked, ".codegraph", "codegraph.db")), false, "the worktree still has no database");
+	await settled();
 });

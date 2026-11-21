@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, fstatSync, linkSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { canonicalRoot } from "./codegraph-canonical.ts";
 import { processAlive } from "./codegraph-daemon.ts";
 
@@ -303,6 +303,73 @@ function dropFile(file: string): void {
 	}
 }
 
+/** How long a restore that met a publication at the path retries its no-replace link inside
+ * the section: the publisher's own post-publication scan (createLease) reverses a lease that
+ * landed beside a live displaced record within a handful of syscalls, so a brief bounded retry
+ * recovers the displaced lease right after that reversal instead of leaving an empty path
+ * beside the record — the wedge where release() finds no token and later acquisitions
+ * fail-closed on the sidecar until it expires. An occupant that survives the budget is a
+ * legitimate owner; the record stays recoverable beside it exactly as before. */
+const RESTORE_RECOVERY_MS = 250;
+
+/** Puts a displaced record back at its path. Every caller holds the per-path mutex, so a
+ * conforming session can never occupy the empty path here — a restore that loses to EEXIST met
+ * a publisher whose own section had already lost the mutex (its validations died with it), and
+ * any other failure (I/O, permission, a dangling reference) proves nothing about who owns the
+ * path either way: the record stays beside it as a recoverable file in both cases — the
+ * abandoned-record cleanup and the TTL bound how long it can sit there — instead of being
+ * deleted out from under a holder that may still be starting its writer. A caller that hands a
+ * recovery budget retries the no-replace link while EEXIST persists: the publication occupying
+ * the path reverses itself within a handful of syscalls when it landed beside this very record
+ * (its own scan demands it), and the retry that succeeds then re-occupies the path with the
+ * displaced lease without ever replacing a surviving owner. */
+function restoreDisplacedRecord(graveyard: string, path: string, recoveryMs: number = 0): void {
+	const deadline = Date.now() + recoveryMs;
+	for (;;) {
+		try {
+			linkSync(graveyard, path);
+		} catch (error) {
+			// Only EEXIST — a publication occupying the path — can resolve itself; every other
+			// failure proves nothing about ownership and never improves by retrying.
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST" || Date.now() >= deadline) return;
+			sleepSync(MUTEX_POLL_MS);
+			continue;
+		}
+		dropFile(graveyard); // restored: the extra name goes
+		return;
+	}
+}
+
+/** Token records a displaced section left beside the path (`<name>.<uuid>.stale`): a section
+ * whose mutex expired mid-restore can still put them back, so a live or unknown one beside a
+ * free-looking path marks an open rename-away window — publishing into it could hand one lease
+ * to two sessions. Abandoned ones (stale by every rule, or already gone) are litter and go; the
+ * mutex's own graveyard names (`.mutex.` inside) never match this shape. */
+const STALE_SIDECAR = /^\.[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.stale$/;
+
+function displacedRecordHolds(path: string, now: number, cwd?: string): boolean {
+	const dir = dirname(path);
+	const base = basename(path);
+	let names: string[];
+	try {
+		names = readdirSync(dir);
+	} catch {
+		return true; // cannot even look for displaced records: fail-closed
+	}
+	let holds = false;
+	for (const name of names) {
+		if (!name.startsWith(`${base}.`) || !STALE_SIDECAR.test(name.slice(base.length))) continue;
+		const sidecar = join(dir, name);
+		const verdict = readLeaseVerdict(sidecar, now, cwd);
+		if (verdict === "free" || verdict === "held-stale") {
+			dropFile(sidecar); // abandoned litter: nothing live can still restore it
+			continue;
+		}
+		holds = true; // held-live or unknown: the displaced record may still be restored
+	}
+	return holds;
+}
+
 /**
  * Records the spawned writer pid on this holder's token, best effort: only our own token is ever
  * touched — the holder pid AND this acquisition's nonce must still match, so a holder displaced
@@ -316,7 +383,8 @@ function dropFile(file: string): void {
  * an adopter displaced past any of its checks loses cleanly instead of replacing a newer
  * owner's token. A publish that fails after the rename restores the displaced original
  * first, so a failed best-effort update leaves the original lease effective instead of
- * deleting it.
+ * deleting it; when the restore itself fails — for any reason, a landed publication
+ * included — the displaced record stays recoverable beside the path instead of being dropped.
  */
 function adoptWriterPid(path: string, pid: number, proxy: boolean, now: number = Date.now(), nonce?: string): void {
 	withPathMutex(path, ADOPT_MUTEX_WAIT_MS, (owns) => {
@@ -345,32 +413,26 @@ function adoptWriterPid(path: string, pid: number, proxy: boolean, now: number =
 					return undefined; // nothing at the path: this acquisition no longer owns it
 				}
 				if (readNonce(graveyard) !== nonce) {
-					try {
-						linkSync(graveyard, path); // a successor reclaimed past the checks: restore its token
-					} catch {
-						/* the path was retaken while the record was displaced: it is superseded */
-					}
-					dropFile(graveyard);
+					// a successor reclaimed past the checks: restore its token
+					restoreDisplacedRecord(graveyard, path);
 					return undefined;
 				}
 				try {
 					linkSync(temp, path); // no-replace: a successor that retook the empty path wins
 				} catch {
 					// The publish failed: restore the displaced original before anything else — a
-					// best-effort metadata update must never delete the lease it updated. Only a record
-					// whose path was legitimately retaken mid-window (the restore loses to EEXIST) is
-					// superseded litter.
-					try {
-						linkSync(graveyard, path);
-					} catch {
-						/* the path was retaken while the record was displaced: it is superseded */
-					}
-					dropFile(graveyard);
+					// best-effort metadata update must never delete the lease it updated. A restore
+					// that cannot be explained by a retaken path keeps the record recoverable beside it,
+					// and the bounded recovery retries the restore while the publication that took the
+					// path may still reverse itself (see restoreDisplacedRecord) — so the shape where
+					// both links lose to one publication ends with the lease back at the path, never
+					// with an empty path beside a live record.
+					restoreDisplacedRecord(graveyard, path, RESTORE_RECOVERY_MS);
 					return undefined;
 				}
 				dropFile(graveyard); // this acquisition's superseded record: litter once the adoption is in place
 			} finally {
-				rmSync(temp, { force: true }); // best effort: the temp name goes, the token stays complete
+				dropFile(temp); // best effort: an unpublished temp is litter, never state
 			}
 		} catch {
 			/* best effort: the trust window only narrows the stale window */
@@ -562,9 +624,17 @@ function withPathMutex<T>(path: string, waitMs: number, section: (owns: () => bo
 			try {
 				return section(owns);
 			} finally {
-				// Release only the mutex this holder created: after a mid-section replacement the
-				// path belongs to whoever retook it, and its mutex is never removed here.
-				if (owns()) rmSync(mutex, { force: true }); // best effort: a leftover is stolen by TTL rules
+				// Release removes only the exact mutex this holder created, verified at the removal
+				// itself: a contender that replaced this holder's expired mutex between the ownership
+				// check and a plain removal would lose its mutex to the late release — the
+				// rename-verify-restore protocol removes ours and restores a replacement instead.
+				if (owns()) {
+					try {
+						removeTokenRecord(mutex, mine);
+					} catch {
+						/* best effort: a leftover is stolen by TTL rules */
+					}
+				}
 			}
 		}
 		// One observation for both decisions: the holder record the liveness verdict uses and the
@@ -601,12 +671,21 @@ function readNonce(path: string): string | undefined {
  * Creates the token exclusively and binds release to this acquisition's nonce. The read-back is
  * defense in depth against a doubly-stolen mutex: if the token at the path is not the one this
  * acquisition just wrote, a concurrent reclaimer raced past the serialization — yield the path
- * and remove nothing (the newer owner's token stays).
+ * and remove nothing (the newer owner's token stays). The publish is then re-examined against
+ * open rename-away windows: the section's earlier scan cannot see a window that opened after
+ * it (a section can stall between its scan and its publish link), so the scan repeats bound to
+ * the landed publication — one that landed beside a displaced record another section may still
+ * restore is reversed (nonce-fenced removal, so nothing else is touched) and the acquisition
+ * fails closed, because keeping it could hand one lease to two sessions.
  */
-function createLease(path: string, kind: LeaseKind, ttlMs: number, now: number): AcquiredLease | undefined {
+function createLease(path: string, kind: LeaseKind, ttlMs: number, now: number, cwd?: string): AcquiredLease | undefined {
 	const nonce = randomUUID();
 	if (!writeTokenExclusively(path, kind, ttlMs, now, nonce)) return undefined;
 	if (readNonce(path) !== nonce) return undefined;
+	if (displacedRecordHolds(path, now, cwd)) {
+		removeTokenRecord(path, nonce); // reverse this publication: never keep a lease beside an open window
+		return undefined;
+	}
 	return {
 		nonce,
 		release: () => releaseOwnToken(path, nonce),
@@ -619,8 +698,9 @@ function createLease(path: string, kind: LeaseKind, ttlMs: number, now: number):
  * check observed — enforced at the filesystem operation itself: the record is renamed out first,
  * and only a grabbed file whose nonce matches is deleted. A successor's token published after
  * that check (the checker stalled past its mutex and lease TTLs before acting) is restored with
- * a no-replace link, never deleted; one whose path was legitimately retaken mid-restore is
- * superseded litter. The restore cannot lose the path to a conforming session either — the
+ * a no-replace link, never deleted; a restore that fails — a landed publication or any
+ * unexplained failure — keeps the record recoverable beside the path. The restore cannot lose
+ * the path to a conforming session either — the
  * free-path acquisition serializes on the same per-path mutex, so a displaced live record is
  * never absent to acquisition while its section holds. A vanished path counts as removed:
  * nothing blocks the exclusive create.
@@ -634,12 +714,8 @@ function removeTokenRecord(path: string, expectedNonce: string | undefined): boo
 	}
 	const grabbed = readNonce(graveyard);
 	if (grabbed !== expectedNonce) {
-		try {
-			linkSync(graveyard, path); // restore the displaced record: the path's live owner wins
-		} catch {
-			/* the path was retaken while the record was displaced: it is superseded */
-		}
-		dropFile(graveyard);
+		// restore the displaced record: the path's live owner wins
+		restoreDisplacedRecord(graveyard, path);
 		return false;
 	}
 	dropFile(graveyard);
@@ -664,15 +740,18 @@ function releaseOwnToken(path: string, nonce: string): void {
 
 /**
  * Acquires a free or stale path exclusively; a live or unknown holder, an unwritable locks dir,
- * or a lost steal race returns undefined — the caller then skips what it wanted to do. The stale
- * path's read/remove/create sequence runs inside the per-path mutex, so concurrent reclaimers
+ * or a lost steal race returns undefined — the caller then skips what it wanted to do. Both
+ * branches run inside the per-path mutex and re-verify inside the section: the verdict was
+ * taken before the mutex wait, so a lease or an external CodeGraph writer that appeared while
+ * this caller waited meets the recheck instead of being published over. Concurrent reclaimers
  * serialize and re-read the path inside the critical section: the first recovery's fresh token is
  * a live holder to every later reclaimer, never something to remove. The stale-token removal is
  * additionally fenced on still owning the mutex, so a section whose mutex was replaced mid-flight
  * removes nothing at all, and on removing only the exact stale record observed (see
- * removeTokenRecord), so a successor's token published after the check survives too. The free
- * path publishes inside the same per-path mutex, so those rename-away windows never read as
- * acquirable free paths to a conforming session.
+ * removeTokenRecord), so a successor's token published after the check survives too. A displaced
+ * record another section may still restore (see displacedRecordHolds) fail-closes the attempt,
+ * and the free path publishes inside the same per-path mutex, so those rename-away windows never
+ * read as acquirable free paths to a conforming session.
  */
 export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, now: number = Date.now(), cwd?: string, mutexWaitMs: number = MUTEX_WAIT_MS): AcquiredLease | undefined {
 	try {
@@ -682,21 +761,22 @@ export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, no
 	}
 	const verdict = readLeaseVerdict(path, now, cwd);
 	if (verdict !== "free" && verdict !== "held-stale") return undefined;
-	if (verdict === "free") {
-		// The no-replace protocols of adoption, release, and stale recovery rename a record out of
-		// the path before linking its replacement, so the path can read free while its owner's
-		// section is still in flight. The free-path publish takes the same per-path mutex those
-		// sections hold: an acquisition that skipped it could land inside that window, and the
-		// section's restore would then lose the path to it and drop a live holder's record as
-		// superseded litter. The exclusive create still decides ownership; the mutex only makes
-		// the window invisible to acquisition.
-		return withPathMutex(path, mutexWaitMs, () => createLease(path, kind, ttlMs, now));
-	}
-	// held-stale: the remove/create sequence needs serializing against every other reclaimer and
-	// every release — the exclusive create alone does not protect it.
+	// The no-replace protocols of adoption, release, and stale recovery rename a record out of
+	// the path before linking its replacement, so the path can read free while its owner's
+	// section is still in flight. Both branches publish inside the same per-path mutex those
+	// sections hold — an acquisition that skipped it could land inside that window — and
+	// re-verify inside the section: the verdict was taken before the mutex wait, so a lease or
+	// an external CodeGraph writer that appeared while this caller waited meets the recheck,
+	// and a displaced record another (since-displaced) section may still restore fail-closes
+	// the attempt, because publishing beside it could hand one lease to two sessions. The
+	// exclusive create still decides ownership; the mutex and the rechecks make those windows
+	// invisible or refused, and a publication that still lands inside a window opened after
+	// its own scan (a section stalled mid-publish) reverses itself at the publish (see
+	// createLease) instead of surviving beside the record another section still owns.
 	return withPathMutex(path, mutexWaitMs, (owns): AcquiredLease | undefined => {
 		const recheck = readLeaseVerdict(path, now, cwd);
-		if (recheck !== "free" && recheck !== "held-stale") return undefined; // a faster reclaimer owns it now
+		if (recheck !== "free" && recheck !== "held-stale") return undefined; // a writer or lease appeared while waiting, or a faster reclaimer owns it now
+		if (displacedRecordHolds(path, now, cwd)) return undefined; // an open rename-away window: never publish beside it
 		if (recheck === "held-stale") {
 			// Capture the record the recheck judged (before the fence: past it, the path may
 			// already belong to a successor), then fence, then remove only that exact record —
@@ -705,7 +785,7 @@ export function tryAcquireLease(path: string, kind: LeaseKind, ttlMs: number, no
 			if (!owns()) return undefined; // the mutex was replaced mid-section: never remove a newer owner's state
 			if (!removeTokenRecord(path, observed)) return undefined; // cannot clear exactly the stale token: do not write past it
 		}
-		return createLease(path, kind, ttlMs, now);
+		return createLease(path, kind, ttlMs, now, cwd);
 	});
 }
 

@@ -8,7 +8,7 @@ import { resolveCodegraphShimState, type CodegraphShimResolution } from "../lib/
 import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib/codegraph-daemon.ts";
 import { acquireInitLock, type InitLockOutcome } from "../lib/codegraph-lease.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
-import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, WARMUP_TIMEOUT_MS, type SearchSyncInput, type IndexState, type IndexAction, type SessionStartReason, warmUpDaemonDetailed, type WarmUpOutcome } from "../lib/codegraph-readiness.ts";
+import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, warmUpDaemonDetailed, WARMUP_TIMEOUT_MS, type SearchSyncInput, type IndexState, type IndexAction, type SessionStartReason, type WarmUpOutcome } from "../lib/codegraph-readiness.ts";
 import { ensureDirectExposureInAgentHomes, type EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
 
 const CODEGRAPH_OPERATION = {
@@ -379,14 +379,16 @@ function shellWords(command: string): { words: string[]; unterminated: boolean }
  * first non-flag word can be it. The word is read whole — quotes and escapes keep a path with
  * spaces one argument — and a positional left unterminated by an unclosed quote or backslash
  * is a form this parser cannot place: it falls back to the caller's cwd, keeping the command
- * judged here rather than silently allowed. */
-function rebuildTargetDir(rest: string, cwd: string): string {
+ * judged here rather than silently allowed. A caller's cwd this walk could not determine leaves a relative positional equally unplaceable; only an absolute one still pins a target. */
+function rebuildTargetDir(rest: string, cwd: string | undefined): string | undefined {
 	const { words, unterminated } = shellWords(rest);
 	for (let index = 2; index < words.length; index += 1) {
 		const word = words[index];
 		if (word.startsWith("-")) continue;
 		if (unterminated && index === words.length - 1) return cwd;
-		return resolve(cwd, word);
+		// An absolute positional names its target whatever directory the command runs in; a
+		// relative one is placed by that directory, and no directory leaves it unplaceable.
+		return isAbsolute(word) ? word : cwd === undefined ? undefined : resolve(cwd, word);
 	}
 	return cwd;
 }
@@ -395,15 +397,22 @@ function rebuildTargetDir(rest: string, cwd: string): string {
  * the CLI itself locates it: `init [path]` resolves its positional (or the caller's cwd)
  * exactly and never an ancestor — an unindexed directory is a legitimate first init — while
  * `index` rebuilds the exact target when it is initialized and otherwise the nearest
- * initialized ancestor, the resolution a bare `codegraph index` performs from the cwd. */
-function rebuildsExistingIndex(verb: "index" | "init", rest: string, cwd: string): boolean {
-	const target = rebuildTargetDir(rest, cwd);
-	if (indexExists(target)) return true;
-	if (verb === "init") return false;
-	for (let current = dirname(target);; current = dirname(current)) {
-		if (indexExists(current)) return true;
-		if (dirname(current) === current) return false;
-	}
+ * initialized ancestor, the resolution a bare `codegraph index` performs from the cwd. A rebuild whose working directory this walk could not determine counts as a rebuild: the original directory is never proof the target is unindexed. */
+function rebuildsExistingIndex(verb: "index" | "init", rest: string, cwds: ReadonlyArray<CwdPath>): boolean {
+	// A target this walk cannot place is never proof that nothing existing is rebuilt: the
+	// unknown directory the command runs in may hold the index the rebuild would kill. Every
+	// directory the command can run in is judged, so a branch that left two paths live is
+	// blocked when either of them holds an index.
+	return cwds.some((cwd) => {
+		const target = rebuildTargetDir(rest, cwd);
+		if (target === undefined) return true;
+		if (indexExists(target)) return true;
+		if (verb === "init") return false;
+		for (let current = dirname(target);; current = dirname(current)) {
+			if (indexExists(current)) return true;
+			if (dirname(current) === current) return false;
+		}
+	});
 }
 
 /** A full re-index from bash is blocked when an index already exists; this is the reason it gets. */
@@ -462,8 +471,10 @@ function unquoteAssignment(token: string): string {
 }
 
 /** A # begins a comment only at the start of a word: after start-of-input or any shell
- * metacharacter that ends a word. Mid-word (`echo a#b`) it is a literal character, exactly
- * as Bash reads it. */
+ * metacharacter that ends a word. Mid-word (`echo a#b`, or right after an escaped space —
+ * `cat foo\ #note` keeps the # inside the word) it is a literal character, exactly as Bash
+ * reads it. The passes below track the word start through their scan instead of testing the
+ * previous raw character, which cannot tell an escaped space from one that ends a word. */
 const COMMENT_WORD_BOUNDARY = /[\s;&|()<>]/;
 
 /**
@@ -480,6 +491,10 @@ const COMMENT_WORD_BOUNDARY = /[\s;&|()<>]/;
 function stripHeredocBodies(command: string): string {
 	let out = "";
 	let index = 0;
+	// Whether the next character starts a shell word — the state a comment's # needs,
+	// tracked through the scan instead of re-derived from the previous raw character: an
+	// escaped space (`cat foo\ #note`) does not end the word, so a # after it is a literal.
+	let wordStart = true;
 	while (index < command.length) {
 		const char = command[index];
 		if (char === "'" || char === '"') {
@@ -487,25 +502,31 @@ function stripHeredocBodies(command: string): string {
 			const end = close === -1 ? command.length : close + 1;
 			out += command.slice(index, end);
 			index = end;
+			wordStart = false;
 			continue;
 		}
 		if (char === "\\") {
 			out += command.slice(index, Math.min(index + 2, command.length));
 			index += 2;
+			// The escaped character is word content; a backslash-newline continuation is
+			// transparent instead — the word (or the empty input before it) keeps its state.
+			if (command[index - 1] !== "\n") wordStart = false;
 			continue;
 		}
-		if (char === "#" && (index === 0 || COMMENT_WORD_BOUNDARY.test(command[index - 1]))) {
+		if (char === "#" && wordStart) {
 			// A word-initial # comments out the rest of the line: its quotes and operators are
 			// comment text, so the line is copied whole and scanning resumes on the next line.
 			const lineEnd = command.indexOf("\n", index);
 			const end = lineEnd === -1 ? command.length : lineEnd + 1;
 			out += command.slice(index, end);
 			index = end;
+			wordStart = true;
 			continue;
 		}
 		if (char === "<" && command[index + 1] === "<" && command[index + 2] === "<") {
 			out += "<<<";
 			index += 3;
+			wordStart = true;
 			continue;
 		}
 		if (char === "<" && command[index + 1] === "<") {
@@ -520,6 +541,7 @@ function stripHeredocBodies(command: string): string {
 				// `<<` with no delimiter word: a syntax error, copied as plain content.
 				out += "<<";
 				index += 2;
+				wordStart = true;
 				continue;
 			}
 			out += command.slice(index, lineEnd + 1);
@@ -527,10 +549,12 @@ function stripHeredocBodies(command: string): string {
 			for (const delimiter of delimiters) {
 				index = endOfHeredocBody(command, index, delimiter);
 			}
+			wordStart = true;
 			continue;
 		}
 		out += char;
 		index += 1;
+		wordStart = COMMENT_WORD_BOUNDARY.test(char);
 	}
 	return out;
 }
@@ -551,20 +575,26 @@ interface HeredocDelimiter {
 function heredocDelimitersOnLine(command: string, from: number, lineEnd: number): HeredocDelimiter[] {
 	const delimiters: HeredocDelimiter[] = [];
 	let index = from;
+	// The same word-start state the outer passes track: a # after an escaped space is a
+	// literal inside the word, not the comment that would end the delimiter scan.
+	let wordStart = true;
 	while (index < lineEnd) {
 		const char = command[index];
-		if (char === "#" && COMMENT_WORD_BOUNDARY.test(command[index - 1])) return delimiters;
+		if (char === "#" && wordStart) return delimiters;
 		if (char === "'" || char === '"') {
 			const close = command.indexOf(char, index + 1);
 			index = close === -1 ? lineEnd : Math.min(close + 1, lineEnd);
+			wordStart = false;
 			continue;
 		}
 		if (char === "\\") {
+			if (command[index + 1] !== "\n") wordStart = false;
 			index += 2;
 			continue;
 		}
 		if (char === "<" && command[index + 1] === "<" && command[index + 2] === "<") {
 			index += 3;
+			wordStart = true;
 			continue;
 		}
 		if (char === "<" && command[index + 1] === "<") {
@@ -592,9 +622,11 @@ function heredocDelimitersOnLine(command: string, from: number, lineEnd: number)
 			}
 			delimiters.push({ word, stripTabs });
 			index = cursor;
+			wordStart = false;
 			continue;
 		}
 		index += 1;
+		wordStart = COMMENT_WORD_BOUNDARY.test(char);
 	}
 	return delimiters;
 }
@@ -613,6 +645,13 @@ function endOfHeredocBody(command: string, from: number, delimiter: HeredocDelim
 	}
 }
 
+/** One executable command of a shell command list with the operator that introduced it: the
+ * separator between it and the previous command, or "" for the first command. */
+interface ShellListCommand {
+	text: string;
+	operator: string;
+}
+
 /**
  * The executable commands of a shell command list: an unquoted `&&`, `||`, `|`, `;`, `&`, or
  * newline ends one command and starts the next, while quotes keep a separator as content — an
@@ -625,13 +664,22 @@ function endOfHeredocBody(command: string, from: number, delimiter: HeredocDelim
  * closing delimiter line.
  * A comment — a # at the start of a word — is comment text to the end of its line: quotes
  * and separators inside it open and end nothing, and only its newline still ends the command.
+ * Each command carries the operator that introduced it, so a conditional list's branches can
+ * be told apart: a command after `&&` runs only behind a success, one after `||` only behind
+ * a failure.
  */
-function shellCommandList(command: string): string[] {
-	const commands: string[] = [];
+function shellCommandList(command: string): ShellListCommand[] {
+	const commands: ShellListCommand[] = [];
 	let current = "";
 	let quote: "'" | '"' | undefined;
 	let escaped = false;
 	let comment = false;
+	// The word-start state the comment boundary needs, tracked instead of re-derived from
+	// the last raw character: an escaped space keeps the word open, so a # after it is literal.
+	let wordStart = true;
+	// The separator that introduced the command being accumulated: "" for the first command,
+	// one character for `;` `&` `|` and newline, two for the doubled `&&` and `||`.
+	let operator = "";
 	for (const char of stripHeredocBodies(command)) {
 		// Comment text: a word-initial # runs to the end of the line, and only the newline
 		// that ends it still separates commands.
@@ -649,6 +697,7 @@ function shellCommandList(command: string): string[] {
 			if (char !== "\n") {
 				current += "\\";
 				current += char;
+				wordStart = false;
 			}
 			escaped = false;
 			continue;
@@ -665,24 +714,40 @@ function shellCommandList(command: string): string[] {
 		if (char === '"' || char === "'") {
 			quote = char;
 			current += char;
+			wordStart = false;
 			continue;
 		}
 		// A word-initial # comments out the rest of the line: quotes and separators inside
 		// the comment are text, and the comment's own newline still ends the command.
-		if (char === "#" && (current.length === 0 || COMMENT_WORD_BOUNDARY.test(current.slice(-1)))) {
+		if (char === "#" && wordStart) {
 			comment = true;
 			current += char;
 			continue;
 		}
 		if (char === "\n" || char === ";" || char === "&" || char === "|") {
-			commands.push(current);
+			// An adjacent |& is one pipeline separator that pipes stderr as well: the & following
+			// an unquoted | with no command between them continues the pipeline instead of
+			// starting a background command of its own.
+			if (char === "&" && current === "" && operator === "|") {
+				operator = "|&";
+				continue;
+			}
+			commands.push({ text: current, operator });
+			// A doubled & or | is one operator (`&&`, `||`), never two separators — but only
+			// when the two characters are adjacent in the input: a command between them means
+			// the previous separator introduced that command and this one stands alone
+			// (`true & false & cd x` runs the cd behind the second &, not behind &&).
+			const doubled = current === "" && operator === char;
 			current = "";
+			wordStart = true;
+			operator = doubled && (char === "&" || char === "|") ? operator + char : char;
 			continue;
 		}
 		current += char;
+		wordStart = COMMENT_WORD_BOUNDARY.test(char);
 	}
-	commands.push(current);
-	return commands.filter((part) => part.trim().length > 0);
+	commands.push({ text: current, operator });
+	return commands.filter((part) => part.text.trim().length > 0);
 }
 
 /**
@@ -692,17 +757,185 @@ function shellCommandList(command: string): string[] {
  * on an unrelated earlier command) and its verb, on which the CLI's own target rules key.
  * Every executable command is inspected, not only the first: `cd . && codegraph index .`
  * rebuilds as surely as a bare `codegraph index .`. The word boundary keeps every other
- * subcommand (`codegraph indexer`, `sync`, `query`, `unlock`, `status`) out.
+ * subcommand (`codegraph indexer`, `sync`, `query`, `unlock`, `status`) out. Each rebuild also
+ * carries the directories its position in the list can run in, one per path this walk still
+ * follows: every `cd` the list can follow moves them on the path where it succeeds while a
+ * failed one leaves them untouched, conditional branches keep both outcomes with the status
+ * each left behind, a pipeline decides reachability once for all of its stages, and any form
+ * that can move the working directory unseen leaves them unresolvable.
  */
-function codegraphIndexCommands(command: string): { rest: string; verb: "index" | "init"; allowIndexOverride: boolean }[] {
+/** The directory after one `cd` command a flat list can follow: exactly one literal
+ * argument — quote removal applied, no variable, tilde, or substitution, no extra words
+ * the shell refuses — moves the tracked directory exactly as the shell resolves it (an
+ * absolute path resets it, a relative one composes onto it); every other form, a bare
+ * `cd` to HOME, `cd -`, or a substituted target, leaves a directory this walk cannot name. */
+function cdTargetDir(rest: string, cwd: string | undefined): string | undefined {
+	const { words } = shellWords(rest.slice(2).trim());
+	if (words.length !== 1) return undefined;
+	const word = words[0] ?? "";
+	if (/[$~(`]/.test(word)) return undefined;
+	// `cd -` means OLDPWD: a directory this walk cannot establish, never a child spelled "-".
+	if (word === "-") return undefined;
+	if (isAbsolute(word)) return word;
+	return cwd === undefined ? undefined : resolve(cwd, word);
+}
+
+/** A directory a command can run in: the caller's cwd moved by every `cd` the list can
+ * follow, or undefined when a form this walk cannot follow may have moved the shell somewhere
+ * it cannot name. */
+type CwdPath = string | undefined;
+
+/** One rebuild command of a shell list, with the working-directory state at its position. */
+interface RebuildCommand {
+	rest: string;
+	verb: "index" | "init";
+	allowIndexOverride: boolean;
+	/** Every directory the command can run in — one entry per path through the list this walk
+	 * still follows, and a single undefined entry when a form it cannot read may have moved the
+	 * shell somewhere it cannot name. */
+	cwds: ReadonlyArray<CwdPath>;
+}
+
+/** One state the shell can be in at a position of the list: the directory it is in, and the
+ * status its last executed command left - which decides whether the following `&&` or `||`
+ * branch runs. A command the shell provably skips leaves the state exactly as it was. */
+interface CwdState {
+	dir: CwdPath;
+	verdict: boolean | undefined;
+}
+
+/** A list that keeps branching past this many live states is no longer a walk this guard can
+ * place commands in: one unresolvable entry stands for every state it could reach. */
+const MAX_TRACKED_STATES = 4;
+
+/** Records one live state, without duplicates: two paths that reach the same directory with the
+ * same status are one state, and past {@link MAX_TRACKED_STATES} branches the walk can no longer
+ * name them, so one unknown entry stands for every state the list could reach. */
+function addState(states: CwdState[], state: CwdState): void {
+	if (states.some((one) => one.dir === state.dir && one.verdict === state.verdict)) return;
+	states.push(state);
+	if (states.length > MAX_TRACKED_STATES) states.splice(0, states.length, { dir: undefined, verdict: undefined });
+}
+
+/** Whether an operator joins two stages of one pipeline: `|` and `|&` both keep the pipeline
+ * alive, while every other separator starts a new one. */
+function isPipelineOperator(operator: string): boolean {
+	return operator === "|" || operator === "|&";
+}
+
+/** Whether one command of a list is a `cd`: the word alone, or followed by its arguments. */
+function isCdCommand(rest: string): boolean {
+	return rest === "cd" || rest.startsWith("cd ") || rest.startsWith("cd\t");
+}
+
+/** Commands that can move the working directory outside a literal `cd`: a leading
+ * subshell or substitution runs directory changes of its own, and eval, sourcing, the
+ * builtin and command wrappers, and the directory stack all move it in forms this walk
+ * cannot read. */
+const UNTRACKABLE_CWD_COMMAND = /^[$`]|^\(|^(?:eval|source|builtin|command|pushd|popd)\b|^\.\s/;
+
+/** Whether one command of a list certainly succeeds or certainly fails, as far as this walk
+ * can tell: only the constant-status builtins settle their branch; anything else — and
+ * anything this walk reads as a directory-moving form — is unknowable. */
+function staticExitStatus(rest: string): boolean | undefined {
+	const command = rest.trim();
+	if (command === "true") return true;
+	if (command === "false") return false;
+	return undefined;
+}
+
+/** The status a pipeline certainly reports, or undefined when this walk cannot prove it: without
+ * pipefail the last stage's status is the pipeline's, while pipefail fails the pipeline as soon
+ * as any stage fails, so only a pipeline whose stages all hold the same constant status reports
+ * that status under both readings. */
+function pipelineExitStatus(stageStatuses: ReadonlyArray<boolean | undefined>): boolean | undefined {
+	const first = stageStatuses[0];
+	return first !== undefined && stageStatuses.every((status) => status === first) ? first : undefined;
+}
+
+/** Whether a cd joined by `operator` runs, given the previous command's known verdict: the
+ * list start and the unconditional operators always run, `&&` runs only behind a success
+ * and `||` only behind a failure, and an unknowable verdict leaves the branch unknowable. */
+function branchRuns(operator: string, previousVerdict: boolean | undefined): boolean | undefined {
+	if (operator !== "&&" && operator !== "||") return true;
+	if (previousVerdict === undefined) return undefined;
+	return operator === "&&" ? previousVerdict : !previousVerdict;
+}
+
+function codegraphIndexCommands(command: string, startCwd: string): RebuildCommand[] {
 	const rebuild = /^codegraph\s+(index|init)\b/;
-	return shellCommandList(command)
-		.map((part) => {
-			const parsed = leadingAssignments(part);
-			const verb = rebuild.exec(parsed.rest);
-			return verb === null ? undefined : { rest: parsed.rest, verb: verb[1] as "index" | "init", allowIndexOverride: parsed.allowIndexOverride };
-		})
-		.filter((parsed): parsed is { rest: string; verb: "index" | "init"; allowIndexOverride: boolean } => parsed !== undefined);
+	const rebuilds: RebuildCommand[] = [];
+	const parts = shellCommandList(command);
+	const stageStatuses = parts.map((part) => staticExitStatus(leadingAssignments(part.text).rest));
+	// The pipelines of the list, each with the operator that introduced it and the status it
+	// certainly reports: a stage joined by | or |& belongs to the pipeline before it, and the
+	// shell reaches, skips, or reports the group as one - a later stage's success alone never
+	// stands for a pipeline whose earlier stage may have failed under pipefail.
+	const pipelines: Array<{ operator: string; stages: string[]; status: boolean | undefined }> = [];
+	for (let index = 0; index < parts.length;) {
+		const start = index;
+		while (index + 1 < parts.length && isPipelineOperator(parts[index + 1]!.operator)) index += 1;
+		pipelines.push({
+			operator: parts[start]!.operator,
+			stages: parts.slice(start, index + 1).map((part) => part.text),
+			status: pipelineExitStatus(stageStatuses.slice(start, index + 1)),
+		});
+		index += 1;
+	}
+	// The states the shell can be in when the next pipeline runs, one per path this walk still
+	// follows and starting at the caller's cwd: a pipeline the shell provably skips passes every
+	// state through untouched, while a pipeline it runs applies its own effects to the states
+	// that ran it only.
+	let states: CwdState[] = [{ dir: startCwd, verdict: true }];
+	for (const pipeline of pipelines) {
+		// Reachability is decided once for the whole pipeline: the shell reaches it or skips it as
+		// one, so a skipped group runs none of its stages - none of them moves a directory,
+		// rebuilds an index, or replaces the last executed status.
+		const executed = states.filter((state) => branchRuns(pipeline.operator, state.verdict) !== false);
+		const next = states.filter((state) => branchRuns(pipeline.operator, state.verdict) === false);
+		// Every stage starts in the parent shell's directory - a cd inside a stage moves that
+		// stage's own subshell - so each rebuild of the pipeline is judged there.
+		if (executed.length > 0) {
+			for (const stage of pipeline.stages) {
+				const parsed = leadingAssignments(stage);
+				const verb = rebuild.exec(parsed.rest);
+				if (verb !== null) {
+					rebuilds.push({ rest: parsed.rest, verb: verb[1] as "index" | "init", allowIndexOverride: parsed.allowIndexOverride, cwds: executed.map((state) => state.dir) });
+				}
+			}
+		}
+		const lastStage = leadingAssignments(pipeline.stages[pipeline.stages.length - 1]!).rest;
+		for (const state of executed) {
+			if (pipeline.stages.length > 1) {
+				// A stage of a pipeline runs in its own subshell, so nothing it does to its own
+				// directory reaches the parent shell - except the last stage's cd when the lastpipe
+				// option puts that stage in the parent, which keeps both directories possible for
+				// the commands after it.
+				addState(next, { dir: state.dir, verdict: pipeline.status });
+				if (isCdCommand(lastStage)) addState(next, { dir: cdTargetDir(lastStage, state.dir), verdict: pipeline.status });
+				else if (UNTRACKABLE_CWD_COMMAND.test(lastStage)) addState(next, { dir: undefined, verdict: pipeline.status });
+				continue;
+			}
+			if (isCdCommand(lastStage)) {
+				// A cd carries the shell to its target only when it succeeds: a target that is
+				// missing, or that the shell may not enter, fails and leaves the shell where it was.
+				// Both outcomes stay tracked - the destination with the success it proves, the
+				// current directory with the failure - so the branch a failed cd sends the shell
+				// into is judged instead of being dropped as unreachable. A form whose target this
+				// walk cannot name leaves the success path unresolvable, never the destination as
+				// proof of the effective directory.
+				addState(next, { dir: cdTargetDir(lastStage, state.dir), verdict: true });
+				addState(next, { dir: state.dir, verdict: false });
+				continue;
+			}
+			// Any other command leaves the directory alone, on either outcome - until one that can
+			// move it in a form this walk cannot follow makes every later command's directory
+			// unknowable.
+			addState(next, { dir: UNTRACKABLE_CWD_COMMAND.test(lastStage) ? undefined : state.dir, verdict: pipeline.status });
+		}
+		states = next;
+	}
+	return rebuilds;
 }
 
 // CodeGraph writes .codegraph/.gitignore with `*` and `!.gitignore`, so that file
@@ -1031,7 +1264,45 @@ async function queryViaDaemon(cwd: string, parameters: CodeGraphToolParameters, 
 const daemonSkipUntil = new Map<string, number>();
 
 /** How long a wedged daemon is bypassed after its post-warm attempt times out. */
-const DAEMON_SKIP_MS = 60_000;
+export const DAEMON_SKIP_MS = 60_000;
+
+/** The bypass entries a session START recorded from its own health verdict: unlike the
+ * prompt-scoped failures the query path records, these survive the first
+ * before_agent_start — the user was told queries use the CLI fallback — and expire on
+ * their own DAEMON_SKIP_MS clock. */
+const startupDaemonSkip = new Set<string>();
+
+/** The map key a daemon bypass is recorded and read under: the same canonical spelling
+ * resolveWorkspaceCwd produces, so a session started through a symlink to the project
+ * still finds its recorded verdict at query time; an unresolvable workspace keeps its own
+ * spelling. */
+function daemonSkipKey(workspace: string): string {
+	try {
+		return resolveWorkspaceCwd(workspace);
+	} catch {
+		return workspace;
+	}
+}
+
+/** Records a wedged daemon the session start itself detected: keyed canonically and
+ * marked startup-owned so the first prompt boundary keeps it until its own expiry. */
+function recordStartupDaemonSkip(workspace: string): void {
+	const key = daemonSkipKey(workspace);
+	daemonSkipUntil.set(key, Date.now() + DAEMON_SKIP_MS);
+	startupDaemonSkip.add(key);
+}
+
+/** Test seam for the startup wedge verdict: records the entry the session-start warm
+ * seam records and returns its restore. Exercised only by the test suite; not part of
+ * the tool's runtime surface. */
+export function armStartupDaemonSkipForTest(workspace: string): () => void {
+	const key = daemonSkipKey(workspace);
+	recordStartupDaemonSkip(workspace);
+	return () => {
+		daemonSkipUntil.delete(key);
+		startupDaemonSkip.delete(key);
+	};
+}
 
 /** The session-start say handle the lazy re-warm ready notice rides: captured when a session
  * starts so a daemon revived mid-session can announce itself, replaced by every newer session,
@@ -1065,7 +1336,15 @@ export function clearSearchWindow(): void {
 	workspaceVerified.clear();
 	excludeApplied.clear();
 	excludePresent.clear();
-	daemonSkipUntil.clear();
+	// A new prompt resets only the prompt-scoped query failures: a wedge the session START
+	// detected keeps its bypass until the verdict's own 60-second expiry, so the first
+	// search still honors the "queries use the CLI fallback for now" the user was told.
+	const now = Date.now();
+	for (const [cwd, until] of daemonSkipUntil) {
+		if (startupDaemonSkip.has(cwd) && until > now) continue;
+		daemonSkipUntil.delete(cwd);
+		startupDaemonSkip.delete(cwd);
+	}
 }
 
 /** What a failed sync knows about its own cause when the runner reported it. */
@@ -1092,6 +1371,43 @@ export function codegraphSyncFailureNotice(
 		return { text: `codegraph sync failed in ${cwd} (daemon alive; its file watcher keeps the index fresh)${reason}${tail}`, level: "info" };
 	}
 	return { text: `codegraph sync failed in ${cwd}${reason}${tail}`, level: "warning" };
+}
+
+/**
+ * The notify for one settled warm-up: every success - freshly warmed, a racing winner's daemon
+ * the spawn adopted, or a live daemon the health probe already verified so no warm ran - carries
+ * the same ready line, and the wedged and failed outcomes carry their warning. Every
+ * WarmUpOutcome shape maps to exactly one notice, so an emitter never branches on its own.
+ */
+export function warmNotice(outcome: WarmUpOutcome, cwd: string): { text: string; level: "info" | "warning" } {
+	if (outcome.ok) return { text: `CodeGraph ready in ${cwd}`, level: "info" };
+	if (outcome.wedged) return { text: `CodeGraph daemon in ${cwd} is not answering; queries use the CLI fallback for now`, level: "warning" };
+	return { text: `CodeGraph warm-up failed in ${cwd}`, level: "warning" };
+}
+
+/** Delivers a warm-up completion notice through the say handle of the session that started the
+ * warm-up: a handle that is no longer the current session's belongs to a session that ended or
+ * was replaced, so its completion is discarded instead of announcing through the newer session
+ * and suppressing that session's own deferred start notice. */
+function sayWarmNotice(
+	say: ((text: string, level: "info" | "warning") => void) | undefined,
+	outcome: WarmUpOutcome,
+	cwd: string,
+): void {
+	if (say === undefined || say !== warmNoticeSay) return;
+	const notice = warmNotice(outcome, cwd);
+	say(notice.text, notice.level);
+}
+
+/**
+ * The notify for the index action a session start is about to run: the init line announces
+ * initialization before the first index is built, the sync line keeps its existing text.
+ * Emitted through onStart before the index dispatch runs, so a session that will build or
+ * refresh the index announces it first.
+ */
+export function indexStartNotice(action: "init" | "sync"): { text: string; level: "info" } {
+	if (action === "sync") return { text: "syncing the CodeGraph index...", level: "info" };
+	return { text: "initializing the current repo for CodeGraph...", level: "info" };
 }
 
 /**
@@ -1126,26 +1442,6 @@ export function indexedNotice(
 		return { text: `codegraph init failed in ${cwd} after ${result.initAttempts - 1} retries; run "codegraph init" manually`, level: "warning" };
 	}
 	return { text: `codegraph ${result.action} failed in ${cwd}`, level: "warning" };
- * The notify for one settled warm-up: every success - freshly warmed, a racing winner's daemon
- * the spawn adopted, or a live daemon the health probe already verified so no warm ran - carries
- * the same ready line, and the wedged and failed outcomes carry their warning. Every
- * WarmUpOutcome shape maps to exactly one notice, so an emitter never branches on its own.
- */
-export function warmNotice(outcome: WarmUpOutcome, cwd: string): { text: string; level: "info" | "warning" } {
-	if (outcome.ok) return { text: `CodeGraph ready in ${cwd}`, level: "info" };
-	if (outcome.wedged) return { text: `CodeGraph daemon in ${cwd} is not answering; queries use the CLI fallback for now`, level: "warning" };
-	return { text: `CodeGraph warm-up failed in ${cwd}`, level: "warning" };
-}
-
-/**
- * The notify for the index action a session start is about to run: the init line announces
- * initialization before the first index is built, the sync line keeps its existing text.
- * Emitted through onStart before the index dispatch runs, so a session that will build or
- * refresh the index announces it first.
- */
-export function indexStartNotice(action: "init" | "sync"): { text: string; level: "info" } {
-	if (action === "sync") return { text: "syncing the CodeGraph index...", level: "info" };
-	return { text: "initializing the current repo for CodeGraph...", level: "info" };
 }
 
 /** How long a session-start index notice waits before it is said. The installed pi TUI paints
@@ -1237,16 +1533,28 @@ export function createCodeGraphTool(
 		daemonExplore = queryViaDaemon,
 		// The win32 query path never awaits its warm-up (S9), so there it runs backgrounded — an
 		// unref'ed warm-up cannot keep the session alive; POSIX races its wait, never blocking past it.
-		warm = (project: string, timeoutMs: number) => warmUpDaemon(project, true, timeoutMs),
+		// A warm this path started announces its success through the same ready line the lazy
+		// re-warm emits — bound to the session that started the warm-up — while failures stay
+		// silent: the query path is best effort and already falls back to the CLI.
+		warm = (project: string, timeoutMs: number) => {
+			const say = warmNoticeSay;
+			return warmUpDaemon(project, true, timeoutMs).then((warmed) => {
+				if (!warmed) return false;
+				sayWarmNotice(say, { ok: true }, project);
+				return true;
+			});
+		},
 		// The lazy re-warm announces only success: a daemon that stays dead is re-warmed by every
 		// query, and failure notices there would be per-query noise the CLI fallback already
 		// answers - one ready line when the daemon is back is the whole message.
-		rewarm = (project: string) => maybeRewarm(project, (daemonProject) => warmUpDaemonDetailed(daemonProject, true).then((outcome) => {
-			if (!outcome.ok) return false;
-			const notice = warmNotice(outcome, project);
-			warmNoticeSay?.(notice.text, notice.level);
-			return true;
-		})),
+		rewarm = (project: string) => maybeRewarm(project, (daemonProject) => {
+			const say = warmNoticeSay;
+			return warmUpDaemonDetailed(daemonProject, true).then((outcome) => {
+				if (!outcome.ok) return false;
+				sayWarmNotice(say, outcome, project);
+				return true;
+			});
+		}),
 		syncRun = runCodegraph,
 		gitRun = defaultGitRun,
 		initLock = acquireInitLock,
@@ -1376,8 +1684,17 @@ export function createCodeGraphTool(
 					if (viaDaemon?.status === "timeout" || viaDaemon?.status === "unavailable") {
 						// The post-warm attempt still cannot serve — wedged (timeout) or refusing (unavailable,
 						// e.g. no project loaded): the CLI answers until the next turn instead of re-paying
-						// attempt+warm+attempt on every query.
-						daemonSkipUntil.set(cwd, Date.now() + DAEMON_SKIP_MS);
+						// attempt+warm+attempt on every query. A search that started before session start can
+						// publish its failure after the startup wedge was recorded; the startup verdict then
+						// keeps its own deadline and marker instead of being demoted to a prompt-scoped
+						// failure the next prompt boundary would clear — but only while that deadline still
+						// runs: an expired startup entry must not block the fresh bypass this failure earns,
+						// or every later search of the prompt re-runs the attempt chain the bypass skips.
+						if (!(startupDaemonSkip.has(cwd) && (daemonSkipUntil.get(cwd) ?? 0) > Date.now())) {
+							daemonSkipUntil.set(cwd, Date.now() + DAEMON_SKIP_MS);
+							// Fresh query evidence supersedes a startup verdict: this entry is prompt-scoped.
+							startupDaemonSkip.delete(cwd);
+						}
 					}
 				}
 				if (viaDaemon?.status === "ok") return finish(truncateOutput(viaDaemon.text), { viaDaemon: true, syncTriggered });
@@ -1526,7 +1843,7 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			if (event.toolName !== "bash" && event.toolName !== "bash_background") return undefined;
 			const command = (event.input as { command?: unknown }).command;
 			if (typeof command !== "string") return undefined;
-			const rebuilds = codegraphIndexCommands(command);
+			const rebuilds = codegraphIndexCommands(command, ctx.cwd);
 			if (rebuilds.length === 0) return undefined;
 			if (process.env.GENTLE_CODEGRAPH_ALLOW_INDEX === "1") return undefined;
 			// The override must ride EVERY rebuild command: one authorized rebuild never
@@ -1538,7 +1855,7 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			// `index` the nearest initialized ancestor above it, the resolution a bare call performs.
 			// A rebuild carrying its own override is already authorized: it is excluded here, so an
 			// ordinary first init elsewhere in the list never blocks on the authorized sibling's target.
-			if (!rebuilds.some((rebuild) => !rebuild.allowIndexOverride && rebuildsExistingIndex(rebuild.verb, rebuild.rest, ctx.cwd))) return undefined;
+			if (!rebuilds.some((rebuild) => !rebuild.allowIndexOverride && rebuildsExistingIndex(rebuild.verb, rebuild.rest, rebuild.cwds))) return undefined;
 			return { block: true, reason: CODEGRAPH_INDEX_BLOCK_REASON };
 		} catch {
 			return undefined;
@@ -1557,11 +1874,11 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			said = true;
 			if (ctx.hasUI) ctx.ui.notify(text, level);
 		};
+		// The latest session owns the lazy re-warm's ready notice.
+		warmNoticeSay = say;
 		// The seed outcome the index notice keys on: main-busy is the benign stand-down whose
 		// ok verdict must not read as a created index (the worktree still has no database).
 		let seedStoodDown = false;
-		// The latest session owns the lazy re-warm's ready notice.
-		warmNoticeSay = say;
 		void prepareReadiness({
 			cwd: ctx.cwd,
 			env: process.env,
@@ -1582,7 +1899,7 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 				say(notice.text, notice.level);
 				// A wedged daemon holds the lock and cannot serve, and a respawn would lose the lock to
 				// the wedged holder — the CLI answers queries until the bypass expires.
-				if (outcome.wedged) daemonSkipUntil.set(workspace, Date.now() + DAEMON_SKIP_MS);
+				if (outcome.wedged) recordStartupDaemonSkip(workspace);
 				return outcome.ok;
 			},
 			onStart: (action) => {

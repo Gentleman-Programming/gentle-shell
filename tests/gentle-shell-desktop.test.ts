@@ -964,3 +964,26 @@ test("--status reports a feed it can read", async (t) => {
 	assert.ok(line !== undefined, f.out.join("\n"));
 	assert.match(line ?? "", /1 session snapshot in .*desktop\/sessions \(newest \d+s old\)/);
 });
+
+test("--status reads the agent home a separate install recorded", async (t) => {
+	const f = fixture(t);
+	// packageRoot mirrors <root>/prefix/lib/node_modules/gentle-pi, and installation.json sits at <root>.
+	const root = join(f.home, "install");
+	const packageRoot = join(root, "prefix", "lib", "node_modules", "gentle-pi");
+	mkdirSync(packageRoot, { recursive: true });
+	const agent = join(root, "agent");
+	writeFileSync(join(root, "installation.json"), `${JSON.stringify({ Agent: agent })}\n`);
+	const base = context(f, { args: ["--status"], packageRoot });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: "" } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	assert.match(line ?? "", new RegExp(`Roots: ${agent} is not listed`));
+});
+
+test("--status treats a trailing separator as the same agent home", async (t) => {
+	const f = fixture(t);
+	const agent = join(f.home, ".pi", "agent");
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: `${agent}/` } }), 0);
+	assert.equal(f.out.some((entry) => entry.startsWith("  Roots: ")), false, f.out.join("\n"));
+});

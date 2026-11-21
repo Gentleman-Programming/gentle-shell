@@ -1124,6 +1124,8 @@ async function openDesktop(ctx: DesktopContext, paths: DesktopPaths, app: string
 
 // The agent homes Gentle Shell Desktop's mods read without being told
 // (docs/desktop-feed.md, "where readers look").
+// The same directory can arrive with a trailing separator; compare without it.
+const trimSlashes = (path: string): string => path.replace(/[\\/]+$/, "") || path;
 const knownRoots = (home: string): string[] => [join(home, ".gentle-shell", "agent"), join(home, ".pi", "agent")];
 
 // The agent home this install runs its sessions in: an explicit override, else the
@@ -1164,7 +1166,7 @@ export function feedStatusLine(agentDir: string, now: number = Date.now()): stri
 // A separate install keeps its agent outside the homes the mods read, so the window
 // shows "No Gentle Shell session here" until that home is listed. Report it, read-only.
 export function rootsStatusLine(paths: DesktopPaths, home: string, agentDir: string): string | undefined {
-	if (knownRoots(home).includes(agentDir)) return undefined;
+	if (knownRoots(home).includes(trimSlashes(agentDir))) return undefined;
 	let listed: string[] = [];
 	try {
 		const parsed = JSON.parse(readFileSync(paths.rootsFile, "utf8"));
@@ -1172,7 +1174,7 @@ export function rootsStatusLine(paths: DesktopPaths, home: string, agentDir: str
 		if (Array.isArray(roots)) listed = roots.filter((root: unknown): root is string => typeof root === "string");
 	} catch {}
 	const expanded = listed.map((root) => (root === "~" ? home : root.startsWith("~/") ? join(home, root.slice(2)) : root));
-	return expanded.includes(agentDir)
+	return expanded.map(trimSlashes).includes(trimSlashes(agentDir))
 		? `  Roots: ${agentDir} listed in ${paths.rootsFile}`
 		: `  Roots: ${agentDir} is not listed in ${paths.rootsFile}, so the mods cannot read that agent home; add {"roots": ["${agentDir}"]}`;
 }

@@ -12781,6 +12781,7 @@ function createGentleAiExtensionForTesting(
 					lineageId: { type: "string" }, lenses: { type: "array", minItems: 1, maxItems: 4, items: { type: "string", enum: ["risk", "resilience", "readability", "reliability"] } },
 					lensesReason: { type: "string" }, requestContextPath: { type: "string" }, untrackedScope: { type: "string", enum: ["exclude", "select"] },
 					intendedUntracked: { type: "array", items: { type: "string" } },
+					escalate: { type: "object", additionalProperties: false, required: ["item", "reason"], description: "Pass the same escalate you named on assess so the run's assessment reflects it and makes review due: {item: integer 1-6 high-risk item, reason: non-empty, at most 500 UTF-8 bytes}. Ignored on resume with lineageId.", properties: { item: { type: "integer", minimum: 1, maximum: 6 }, reason: { type: "string", minLength: 1 } } },
 				},
 			},
 			executionMode: "sequential",

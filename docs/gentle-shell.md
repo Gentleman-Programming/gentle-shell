@@ -526,7 +526,7 @@ The canvas server binds `127.0.0.1` on a random port and needs a random per-serv
 
 ### Gentle Tower
 
-Gentle Tower is a web view of every open Gentle Shell session, for people who prefer a picture to a terminal. Each project is a painted building and each session is a floor of it. Open it with `/gentle:tower` inside a session, or with `gentle-shell tower` from any terminal (`--no-open` prints the URL only, `--port <n>` fixes the port). It serves until Ctrl+C or until the session that opened it ends. Hovering anything clickable outlines it and names what a click does; a short tour on the first visit points at the floors, people, rooms, door and top bar, and the `?` button (or the `?` key) shows it again.
+Gentle Tower is a web view of every open Gentle Shell session, for people who prefer a picture to a terminal. Each project is a painted building and each session is a floor of it. Open it with `/gentle:tower` inside a session, or with `gentle-shell tower` from any terminal (`--no-open` prints the URL only, `--port <n>` fixes the port, `--json` prints one JSON line `{"schema":"gentle-shell.tower/v1","url":…,"host":"127.0.0.1","port":…}` instead of the text, for programs such as the desktop app). It serves until Ctrl+C or until the session that opened it ends. Hovering anything clickable outlines it and names what a click does; a short tour on the first visit points at the floors, people, rooms, door and top bar, and the `?` button (or the `?` key) shows it again.
 
 <img width="100%" src="assets/features/gentle-tower.png" alt="Gentle Tower with two floors of the gentle-pi building, their todo bars on the left and the selection strip with Talk, Tasks, Artifacts and Permissions at the bottom">
 

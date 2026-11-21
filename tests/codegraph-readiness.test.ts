@@ -188,16 +188,37 @@ function signalZeroErrno(pid: number): string | undefined {
 	}
 }
 
+/** The ps state probe the settlement oracle consults; overridable so a test can hold the
+ * answer back for one pid and prove the oracle samples every pid at the settlement itself,
+ * never after an earlier pid's probe has waited. */
+let psStateProbe: (pid: number) => { status: number | null; stdout?: Buffer | string } = (pid) => spawnSync("ps", ["-o", "state=", "-p", String(pid)], { timeout: 2_000 });
+
+/** One pid's settlement evidence, taken with no await in between: ESRCH proves death,
+ * Linux /proc proves zombie-hood, and an enumerable pid off Linux stays ambiguous for the
+ * ps refinement, which may await. */
+function firstSettlementEvidence(pid: number): true | false | "ambiguous" {
+	if (signalZeroErrno(pid) === "ESRCH") return true;
+	if (process.platform === "linux") {
+		try {
+			const stat = readFileSync("/proc/" + pid + "/stat", "utf8");
+			return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] === "Z" ? true : false;
+		} catch {
+			return false;
+		}
+	}
+	return "ambiguous"; // enumerable off Linux: a zombie or a running process, and ps decides
+}
+
 /** Whether a descendant is already dead at the moment the run's result settles — the strict
  * oracle the settlement assertions need, unlike the polled processRunning. A reparented
  * orphan the group SIGKILL killed stays enumerable as a zombie until init reaps it, and a
  * zombie can neither run nor write: gone means ESRCH, or terminated-but-unreaped (state Z
  * from /proc on Linux, from ps elsewhere). A pid that is still executing fails this check. */
 async function goneAtSettlement(pid: number): Promise<boolean> {
-	if (!processRunning(pid)) return true;
-	if (process.platform === "linux") return false;
+	const first = firstSettlementEvidence(pid);
+	if (first !== "ambiguous") return first;
 	for (let probe = 0; probe < SETTLEMENT_STATE_PROBES; probe += 1) {
-		const state = spawnSync("ps", ["-o", "state=", "-p", String(pid)], { timeout: 2_000 });
+		const state = psStateProbe(pid);
 		const text = (state.stdout ?? "").toString().trim();
 		if (state.status === 0 && text !== "") return psStateSaysGone(text);
 		// An unusable sample says nothing about the pid, but one macOS reaped between the kill probe
@@ -214,8 +235,20 @@ async function goneAtSettlement(pid: number): Promise<boolean> {
  * the settlement assertions are meant to forbid, and a collector that wakes late can equally
  * miss a survivor that exits a beat after the result. A run that settles before its pid files
  * are observable fails the startup premise instead of lending the assertions a post-settlement
- * wait. */
-async function descendantPids(run: Promise<boolean>, files: readonly string[]): Promise<{ pids: number[]; gone: boolean[] }> {
+ * wait.
+ *
+ * Every pid's first evidence is taken in one synchronous pass at the settlement itself — no
+ * await may separate a later pid's first sample from the settlement, or a descendant that
+ * exits while an earlier pid's ps refinement waits turns "alive at settlement" into "gone"
+ * and hands the assertion a vacuous pass. A pid whose fixture records its own exit (the
+ * `exitMarker` for its pid file) is judged by that marker alone: it counts as gone only when
+ * the marker already existed at the settlement, because a ps sample taken any later can only
+ * observe the exit, never the moment of it. */
+async function descendantPids(
+	run: Promise<boolean>,
+	files: readonly string[],
+	exitMarker?: (file: string) => string | undefined,
+): Promise<{ pids: number[]; gone: boolean[] }> {
 	const published = (file: string): number | undefined => {
 		if (!existsSync(file)) return undefined;
 		const pid = Number(readFileSync(file, "utf8").trim());
@@ -225,10 +258,23 @@ async function descendantPids(run: Promise<boolean>, files: readonly string[]): 
 	const captured = new Map<string, boolean>();
 	const settleSample = async () => {
 		settled = true;
+		// The one synchronous pass: every pid's marker read and kill-probe evidence happen
+		// before the first await, so no pid's verdict can be rewritten by an exit that lands
+		// while an earlier pid's refinement waits.
+		const ambiguous: Array<{ file: string; pid: number }> = [];
 		for (const file of files) {
 			const pid = published(file);
-			if (pid !== undefined && !captured.has(file)) captured.set(file, await goneAtSettlement(pid));
+			if (pid === undefined || captured.has(file)) continue;
+			const marker = exitMarker?.(file);
+			if (marker !== undefined) {
+				captured.set(file, existsSync(marker));
+				continue;
+			}
+			const evidence = firstSettlementEvidence(pid);
+			if (evidence === "ambiguous") ambiguous.push({ file, pid });
+			else captured.set(file, evidence);
 		}
+		for (const { file, pid } of ambiguous) captured.set(file, await goneAtSettlement(pid));
 	};
 	const settledRun = run.then(settleSample);
 	const deadline = Date.now() + 3_000;
@@ -237,7 +283,7 @@ async function descendantPids(run: Promise<boolean>, files: readonly string[]): 
 	}
 	await settledRun;
 	assert.ok(files.every((file) => published(file) !== undefined), "the fake command and its descendants published their pids before the run settled");
-	assert.ok(files.every((file) => captured.has(file)), "the settlement reaction observed every required pid: a run that settles before its pid files are observable fails the startup premise");
+	assert.ok(files.every((file) => captured.has(file)), "the settlement reaction observed every required pid: a run that settles before its pid files are observable fails the startup premise instead of lending the assertions a post-settlement wait");
 	return {
 		pids: files.map((file) => published(file)!),
 		gone: files.map((file) => captured.get(file)!),
@@ -1362,6 +1408,67 @@ test("runCodegraph: a timed-out group member that outlives the SIGTERM leader is
 	assert.deepEqual(gone, [true, true], "a group member holding no stdio is already dead when the result settles: it cannot outlive the reported result");
 });
 
+test("runCodegraph: a self-exiting descendant is not sampled as gone at settlement", async (t) => {
+	if (process.platform === "win32") return t.skip("POSIX fake-bin harness");
+	const bin = dir(t, "settle-sample-bin");
+	const pidFile = join(bin, "child.pid");
+	const grandFile = join(bin, "grandchild.pid");
+	const grandExit = join(bin, "grandchild.exited");
+	// The grandchild detaches into its own process group before the group kill can reach it and
+	// exits on its own a moment later, recording the exit itself: a ps sample taken after that
+	// exit observes only the death, never the moment of it, so the recorded exit marker — read
+	// at the settlement — is the only evidence that places the death after the settlement.
+	writeFileSync(join(bin, "escape.js"), [
+		"const { spawn } = require('node:child_process');",
+		"const child = spawn(process.execPath, [require('node:path').join(__dirname, 'linger.js')], { detached: true, stdio: 'ignore' });",
+		"child.unref();",
+		"",
+	].join("\n"));
+	writeFileSync(join(bin, "linger.js"), [
+		"const fs = require('node:fs');",
+		"fs.writeFileSync(process.env.FAKE_GRANDCHILD, String(process.pid));",
+		"setTimeout(() => {",
+		"  fs.writeFileSync(process.env.FAKE_GRANDCHILD_EXITED, 'x');",
+		"  process.exit(0);",
+		"}, 1200);",
+		"",
+	].join("\n"));
+	writeFileSync(join(bin, "codegraph"), "#!/bin/sh\nnode \"$FAKE_ESCAPE\" &\nsleep 60 &\nprintf '%s\\n' \"$$\" > \"$FAKE_PIDFILE\"\nwait\n");
+	chmodSync(join(bin, "codegraph"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath}`;
+	process.env.FAKE_PIDFILE = pidFile;
+	process.env.FAKE_GRANDCHILD = grandFile;
+	process.env.FAKE_GRANDCHILD_EXITED = grandExit;
+	process.env.FAKE_ESCAPE = join(bin, "escape.js");
+	const previousProbe = psStateProbe;
+	// The held-back probe: no ps answer arrives until the grandchild has recorded its own exit,
+	// so a sampler that awaits this probe for one pid samples the next pid only after the
+	// grandchild died — the vacuous pass this test forbids.
+	psStateProbe = (pid) => {
+		const holdUntil = Date.now() + 2_500;
+		while (!existsSync(grandExit) && Date.now() < holdUntil) {
+			/* hold the answer back until the fixture records its exit */
+		}
+		return previousProbe(pid);
+	};
+	t.after(() => {
+		process.env.PATH = previousPath;
+		delete process.env.FAKE_PIDFILE;
+		delete process.env.FAKE_GRANDCHILD;
+		delete process.env.FAKE_GRANDCHILD_EXITED;
+		delete process.env.FAKE_ESCAPE;
+		psStateProbe = previousProbe;
+		killFakeTree(grandFile);
+		killFakeTree(pidFile);
+	});
+	const run = runCodegraph(["sync", "-q"], dir(t, "settle-sample-cwd"), 400);
+	const { gone } = await descendantPids(run, [pidFile, grandFile], (file) => (file === grandFile ? grandExit : undefined));
+	const ok = await run;
+	assert.equal(ok, false, "the fake leader never exits on its own: the timeout settles the run");
+	assert.deepEqual(gone, [true, false], "the grandchild was still running when the run settled: its own recorded exit came later, so the settlement oracle must not call it gone");
+});
+
 test("runCodegraph: a delayed Windows tree kill holds the timeout result until the kill completes", async (t) => {
 	if (process.platform === "win32") return t.skip("POSIX fake-bin harness; the Windows settlement path itself runs through the kill seam");
 	const bin = dir(t, "winkill-bin");
@@ -1601,7 +1708,7 @@ test("prepareReadiness: an init whose teardown could not be confirmed is not ret
 	assert.deepEqual(result, { action: "init", ok: false, warm: "skipped" });
 	assert.equal(attempts, 1, "an unconfirmed teardown ends the sequence: no second init -y starts beside a possible writer");
 	assert.deepEqual(indexed, [{ action: "init", ok: false, initAttempts: 1, initStop: "teardown-unconfirmed" }], "the report names the stop reason, so the notice never offers the manual init while a writer of that attempt may still run");
-	assert.equal(readLeaseVerdict(lockPathFor(cwd, "init", locks)), "free", "the lease is released even though the sequence stopped early");
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "init", locks)), "held-live", "the lease stays held: an unconfirmed teardown leaves a possible writer, and no other session may start a competing init beside it");
 });
 
 test("prepareReadiness: a normal failure followed by an unconfirmed teardown reports why the retries stopped", async (t) => {
@@ -1624,7 +1731,67 @@ test("prepareReadiness: a normal failure followed by an unconfirmed teardown rep
 	assert.deepEqual(result, { action: "init", ok: false, warm: "skipped" });
 	assert.equal(attempts, 2, "the reader stops at the first unconfirmed teardown, one attempt after the plain failure");
 	assert.deepEqual(indexed, [{ action: "init", ok: false, initAttempts: 2, initStop: "teardown-unconfirmed" }], "the attempt count alone cannot tell an exhausted sequence from one stopped on an unproved teardown");
-	assert.equal(readLeaseVerdict(lockPathFor(cwd, "init", locks)), "free", "the lease is released when the sequence stops early");
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "init", locks)), "held-live", "the lease stays held when the sequence stops on an unproved teardown: the writer of the last attempt may still be running");
+});
+
+test("prepareReadiness: an unconfirmed init teardown releases the lease once the writer is verified gone", async (t) => {
+	const cwd = dir(t, "init-unconfirmed-recovery");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const locks = dir(t, "init-unconfirmed-recovery-locks");
+	// A real short-lived writer the run reports through the spawn hook, exactly as the runner
+	// reports a child whose Windows tree kill could not be confirmed.
+	const writer = spawn(process.execPath, ["-e", "setTimeout(() => {}, 500)"], { stdio: "ignore" });
+	t.after(() => {
+		try {
+			process.kill(writer.pid, "SIGKILL");
+		} catch {
+			/* already gone */
+		}
+	});
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		run: async (_args, _cwd, _timeoutMs, onSpawn, onInfo) => {
+			onSpawn?.(writer.pid, false);
+			onInfo?.({ ok: false, teardownUnconfirmed: true });
+			return false;
+		},
+	}));
+	assert.deepEqual(result, { action: "init", ok: false, warm: "skipped" });
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "init", locks)), "held-live", "the lease is still held the moment the flow returns: a possible writer fences the project");
+	const deadline = Date.now() + 5_000;
+	while (readLeaseVerdict(lockPathFor(cwd, "init", locks)) !== "free" && Date.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "init", locks)), "free", "the recovery released the lease once the writer pid was verified gone");
+});
+
+test("prepareReadiness: an unconfirmed sync teardown releases the sync lease once the writer is verified gone", async (t) => {
+	const cwd = dir(t, "sync-unconfirmed");
+	writeDb(cwd);
+	const locks = dir(t, "sync-unconfirmed-locks");
+	const writer = spawn(process.execPath, ["-e", "setTimeout(() => {}, 500)"], { stdio: "ignore" });
+	t.after(() => {
+		try {
+			process.kill(writer.pid, "SIGKILL");
+		} catch {
+			/* already gone */
+		}
+	});
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		run: async (_args, _cwd, _timeoutMs, onSpawn, onInfo) => {
+			onSpawn?.(writer.pid, false);
+			onInfo?.({ ok: false, teardownUnconfirmed: true });
+			return false;
+		},
+	}));
+	assert.deepEqual(result, { action: "sync", ok: false, warm: "ok" }, "a failed sync still leaves an index to warm");
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "held-live", "the sync lease is still held the moment the flow returns: a possible writer fences the refresh");
+	const deadline = Date.now() + 5_000;
+	while (readLeaseVerdict(lockPathFor(cwd, "sync", locks)) !== "free" && Date.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	assert.equal(readLeaseVerdict(lockPathFor(cwd, "sync", locks)), "free", "the recovery released the sync lease once the writer pid was verified gone");
 });
 
 test("prepareReadiness: a confirmed teardown keeps the silent init retries", async (t) => {
@@ -3238,7 +3405,11 @@ test("prepareReadiness: an update this session stops the project daemon, removes
 	const registry = dir(t, "update-reindex-registry");
 	const socket = join(registry, "live.sock");
 	writeFileSync(socket, "");
-	const daemonChild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+	// The daemon holds the old database open while it lives — the Windows file-lock shape the
+	// stop-before-removal order exists for — and records readiness once it is running, so the
+	// stop below meets a live daemon, not one still starting up.
+	const daemonReady = join(registry, "daemon.ready");
+	const daemonChild = spawn(process.execPath, ["-e", "const fs = require('node:fs'); fs.openSync(process.env.FAKE_DB, 'r'); fs.writeFileSync(process.env.FAKE_READY, 'x'); setInterval(() => {}, 1 << 30);"], { stdio: "ignore", env: { ...process.env, FAKE_DB: join(cwd, ".codegraph", "codegraph.db"), FAKE_READY: daemonReady } });
 	t.after(() => {
 		try {
 			process.kill(daemonChild.pid, "SIGKILL");
@@ -3247,10 +3418,16 @@ test("prepareReadiness: an update this session stops the project daemon, removes
 		}
 	});
 	fakeRegistryRecord(registry, cwd, socket, daemonChild.pid);
+	const readyDeadline = Date.now() + 5_000;
+	while (!existsSync(daemonReady) && Date.now() < readyDeadline) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	assert.ok(existsSync(daemonReady), "the fake daemon opened the database and is running before the update runs");
 	const locks = dir(t, "update-reindex-locks");
 	const runs: string[] = [];
 	const lockHeldByUs: boolean[] = [];
 	const folderGoneAtInit: boolean[] = [];
+	const daemonDeadAtRemoval: boolean[] = [];
 	const events: unknown[] = [];
 	const result = await prepareReadiness(fakeInput(cwd, {
 		registryDir: registry,
@@ -3261,6 +3438,14 @@ test("prepareReadiness: an update this session stops the project daemon, removes
 			runs.push(args.join(" "));
 			if (args[0] === "init") {
 				folderGoneAtInit.push(!existsSync(join(cwd, ".codegraph")));
+				// The removal boundary itself: the daemon's liveness is sampled the moment the
+				// replacement init starts, right after the old folder went away.
+				try {
+					process.kill(daemonChild.pid, 0);
+					daemonDeadAtRemoval.push(false);
+				} catch {
+					daemonDeadAtRemoval.push(true);
+				}
 				const token = JSON.parse(readFileSync(lockPathFor(cwd, "init", locks), "utf8")) as { pid: number };
 				lockHeldByUs.push(token.pid === process.pid);
 				mkdirSync(join(cwd, ".codegraph"), { recursive: true });
@@ -3276,17 +3461,207 @@ test("prepareReadiness: an update this session stops the project daemon, removes
 	assert.deepEqual(folderGoneAtInit, [true], "the whole .codegraph folder — not only the database — is gone when the re-init starts");
 	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "index", "the rebuilt database replaced the removed folder");
 	assert.deepEqual(events, [{ action: "init", ok: true, initAttempts: 1, update: { from: "1.6.3", to: "1.6.4" } }], "the onIndexed report says the reindex came from an update");
-	const deadline = Date.now() + 3_000;
-	let daemonAlive = true;
-	while (daemonAlive && Date.now() < deadline) {
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		try {
-			process.kill(daemonChild.pid, 0);
-		} catch {
-			daemonAlive = false;
+	assert.deepEqual(daemonDeadAtRemoval, [true], "the daemon had already exited at the removal boundary: shutdown completed before .codegraph went, not merely before the flow returned");
+	assert.equal(existsSync(join(cwd, ".codegraph.pre-update-reindex")), false, "the successful rebuild leaves no recoverable backup behind");
+});
+
+test("prepareReadiness: a completed update reindex is not replayed for the same project", async (t) => {
+	const cwd = dir(t, "update-reindex-once");
+	writeDb(cwd);
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const update = updatedCheck("1.6.3", "1.6.4");
+	const runs: string[] = [];
+	const rebuildAndSync = (target: string): ReadinessInput => fakeInput(target, {
+		locksDir: dir(t, "update-reindex-once-locks"),
+		installCheck: noInstallCheck,
+		updateCheck: update,
+		run: async (args) => {
+			runs.push(args.join(" "));
+			if (args[0] === "init") {
+				mkdirSync(join(target, ".codegraph"), { recursive: true });
+				writeFileSync(join(target, ".codegraph", "codegraph.db"), "index");
+			}
+			return true;
+		},
+	});
+	assert.deepEqual(await prepareReadiness(rebuildAndSync(cwd)), { action: "init", ok: true, warm: "ok" }, "the first pass rebuilds the index for the new binary");
+	assert.deepEqual(await prepareReadiness(rebuildAndSync(cwd)), { action: "sync", ok: true, warm: "ok" }, "the memoized update result does not delete and rebuild the same project's index again");
+	assert.deepEqual(runs, ["init -y", "sync -q"], "one rebuild, then the ordinary sync on the rebuilt index");
+	// A second project stays eligible: the completed-rebuild record is per project.
+	const other = dir(t, "update-reindex-once-other");
+	writeDb(other);
+	writeFileSync(join(other, "package.json"), "{}\n");
+	const otherRuns: string[] = [];
+	assert.deepEqual(await prepareReadiness(fakeInput(other, {
+		locksDir: dir(t, "update-reindex-once-other-locks"),
+		installCheck: noInstallCheck,
+		updateCheck: update,
+		run: async (args) => {
+			otherRuns.push(args.join(" "));
+			if (args[0] === "init") {
+				mkdirSync(join(other, ".codegraph"), { recursive: true });
+				writeFileSync(join(other, ".codegraph", "codegraph.db"), "index");
+			}
+			return true;
+		},
+	})), { action: "init", ok: true, warm: "ok" }, "a different project is still eligible for its own rebuild");
+	assert.deepEqual(otherRuns, ["init -y"]);
+});
+
+test("prepareReadiness: a failed rebuild keeps the update reindex eligible", async (t) => {
+	const cwd = dir(t, "update-reindex-retry");
+	writeDb(cwd);
+	writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "old-index");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const locks = dir(t, "update-reindex-retry-locks");
+	let initRuns = 0;
+	const failingInit = async (args: readonly string[]): Promise<boolean> => {
+		if (args[0] === "init") {
+			initRuns += 1;
+			return false;
 		}
+		return true;
+	};
+	const first = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		installCheck: noInstallCheck,
+		updateCheck: updatedCheck("1.6.3", "1.6.4"),
+		run: failingInit,
+	}));
+	assert.equal(first.ok, false, "the replacement init failed");
+	assert.equal(initRuns, INIT_RETRY_COUNT + 1, "the first pass exhausted its silent retries");
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "old-index", "the failed rebuild restored the old index");
+	const second = await prepareReadiness(fakeInput(cwd, {
+		locksDir: locks,
+		installCheck: noInstallCheck,
+		updateCheck: updatedCheck("1.6.3", "1.6.4"),
+		run: failingInit,
+	}));
+	assert.equal(second.ok, false);
+	assert.equal(initRuns, 2 * (INIT_RETRY_COUNT + 1), "the second pass stays eligible: a failed rebuild is not a completed one");
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "old-index", "the old index survived both passes");
+});
+
+test("prepareReadiness: a child stands down before the update reindex removes a published index", async (t) => {
+	const { worktree } = worktreePair(t);
+	const calls: string[] = [];
+	const result = await prepareReadiness(fakeInput(worktree, {
+		env: { GENTLE_PI_AGENTS_CHILD: "1" },
+		locksDir: dir(t, "child-update-locks"),
+		installCheck: noInstallCheck,
+		// The child entered readiness with an unindexed worktree; the update check is exactly the
+		// window in which another session publishes the worktree's index.
+		updateCheck: async () => {
+			writeDb(worktree);
+			return { ran: true, version: "1.6.3", from: "1.6.3", to: "1.6.4" };
+		},
+		seed: async () => {
+			calls.push("seed");
+			return { outcome: "seeded" };
+		},
+		run: async (args) => {
+			calls.push(`run:${args.join(" ")}`);
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "none", ok: true, warm: "skipped" }, "the child stands down: the published index belongs to the session that built it");
+	assert.deepEqual(calls, [], "no seed, no init, no sync: the child deleted nothing and rebuilt nothing");
+	assert.equal(indexState(worktree), "present", "the index another session published while the child waited is still there");
+});
+
+test("prepareReadiness: the update reindex preflights the replacement init and keeps a percent-path index", async (t) => {
+	const cwd = dir(t, "update-percent");
+	// A literal percent in the project path: the Windows cmd.exe fallback refuses it before any
+	// spawn, so the replacement init could never run there.
+	const percentPath = join(cwd, "repo-%USERNAME%");
+	mkdirSync(percentPath, { recursive: true });
+	writeDb(percentPath);
+	writeFileSync(join(percentPath, "package.json"), "{}\n");
+	const recorded = recordingSeam("win32", null);
+	const runs: string[] = [];
+	const result = await prepareReadiness(fakeInput(percentPath, {
+		locksDir: dir(t, "update-percent-locks"),
+		installCheck: noInstallCheck,
+		updateCheck: updatedCheck("1.6.3", "1.6.4"),
+		spawnSeam: recorded.seam,
+		run: async (args) => {
+			runs.push(args.join(" "));
+			return true;
+		},
+	}));
+	assert.ok(recorded.resolutions >= 1, "the preflight consulted the win32 shim resolver for the actual replacement invocation");
+	assert.deepEqual(result, { action: "sync", ok: true, warm: "ok" }, "no rebuild can follow: the index keeps its plan and the ordinary sync runs");
+	assert.deepEqual(runs, ["sync -q"]);
+	assert.equal(readFileSync(join(percentPath, ".codegraph", "codegraph.db"), "utf8"), "index", "the index was left untouched");
+});
+
+test("prepareReadiness: the update reindex restores the old index when the replacement init fails", async (t) => {
+	const cwd = dir(t, "update-restore");
+	writeDb(cwd);
+	writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "old-index");
+	writeFileSync(join(cwd, ".codegraph", "daemon.log"), "old daemon log");
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const result = await prepareReadiness(fakeInput(cwd, {
+		locksDir: dir(t, "update-restore-locks"),
+		installCheck: noInstallCheck,
+		updateCheck: updatedCheck("1.6.3", "1.6.4"),
+		run: async (args) => args[0] !== "init",
+	}));
+	assert.deepEqual(result, { action: "init", ok: false, warm: "skipped" }, "the replacement init failed");
+	assert.equal(readFileSync(join(cwd, ".codegraph", "codegraph.db"), "utf8"), "old-index", "the old index came back: the failed rebuild did not lose it");
+	assert.equal(readFileSync(join(cwd, ".codegraph", "daemon.log"), "utf8"), "old daemon log", "the whole old folder was restored, not only the database");
+	assert.equal(existsSync(join(cwd, ".codegraph.pre-update-reindex")), false, "the recovery consumed its backup: no orphaned copy stays beside the index");
+});
+
+test("prepareReadiness: a delayed daemon shutdown delays the removal until the daemon is gone", async (t) => {
+	const cwd = dir(t, "update-delayed-daemon");
+	writeDb(cwd);
+	writeFileSync(join(cwd, "package.json"), "{}\n");
+	const registry = dir(t, "update-delayed-daemon-registry");
+	const socket = join(registry, "live.sock");
+	writeFileSync(socket, "");
+	// The daemon holds the database open and obeys SIGTERM only after a delay, recording
+	// readiness only once that handler is installed: the removal boundary must not arrive
+	// while it still lives, or the file lock it holds would survive into the rebuild window.
+	const daemonReady = join(registry, "daemon.ready");
+	const daemonChild = spawn(process.execPath, ["-e", "const fs = require('node:fs'); fs.openSync(process.env.FAKE_DB, 'r'); process.on('SIGTERM', () => setTimeout(() => process.exit(0), 400)); fs.writeFileSync(process.env.FAKE_READY, 'x'); setInterval(() => {}, 1 << 30);"], { stdio: "ignore", env: { ...process.env, FAKE_DB: join(cwd, ".codegraph", "codegraph.db"), FAKE_READY: daemonReady } });
+	t.after(() => {
+		try {
+			process.kill(daemonChild.pid, "SIGKILL");
+		} catch {
+			/* already gone */
+		}
+	});
+	fakeRegistryRecord(registry, cwd, socket, daemonChild.pid);
+	const readyDeadline = Date.now() + 5_000;
+	while (!existsSync(daemonReady) && Date.now() < readyDeadline) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
 	}
-	assert.equal(daemonAlive, false, "the project daemon was stopped before the folder was removed (win file locks)");
+	assert.ok(existsSync(daemonReady), "the delayed daemon installed its handler and is running before the update runs");
+	const daemonDeadAtRemoval: boolean[] = [];
+	const startedAt = Date.now();
+	const result = await prepareReadiness(fakeInput(cwd, {
+		registryDir: registry,
+		locksDir: dir(t, "update-delayed-daemon-locks"),
+		installCheck: noInstallCheck,
+		updateCheck: updatedCheck("1.6.3", "1.6.4"),
+		run: async (args) => {
+			if (args[0] === "init") {
+				try {
+					process.kill(daemonChild.pid, 0);
+					daemonDeadAtRemoval.push(false);
+				} catch {
+					daemonDeadAtRemoval.push(true);
+				}
+				mkdirSync(join(cwd, ".codegraph"), { recursive: true });
+				writeFileSync(join(cwd, ".codegraph", "codegraph.db"), "index");
+			}
+			return true;
+		},
+	}));
+	assert.deepEqual(result, { action: "init", ok: true, warm: "ok" });
+	assert.deepEqual(daemonDeadAtRemoval, [true], "the delayed daemon had exited by the time the removal landed: no removal starts under a live daemon");
+	assert.ok(Date.now() - startedAt >= 300, "the flow really waited out the daemon's delayed shutdown");
 });
 
 test("prepareReadiness: an update check that ran without changing the binary version leaves everything alone", async (t) => {

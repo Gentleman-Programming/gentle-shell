@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -694,4 +696,21 @@ test("removed recovery verbs are refused as unsupported operations, never routed
 	} as unknown as ExtensionAPI);
 	for (const operation of ["reset", "recover", "abandon", "repair"]) assert.ok(published.includes(operation), `${operation} must remain published`);
 	for (const operation of ["recover-lock", "quarantine-legacy", "reconcile-authority", "repair-legacy-alias"]) assert.ok(!published.includes(operation), `${operation} must not be published`);
+});
+
+test("REPAIR on a legacy-looking status performs no store mutation", async () => {
+	const repo = mkdtempSync(join(tmpdir(), "gentle-repair-legacy-"));
+	try {
+		execFileSync("git", ["init", "-q", repo]);
+		const before = readdirSync(repo, { recursive: true }).sort();
+		const native = {
+			targetStatus: async () => ({ applicability: "current_target", action: "start", authority: { version: "legacy-v1", lineageId: "legacy", state: "reviewing", generation: 1, revision: "a".repeat(64) } }),
+		} as unknown as import("../lib/native-review-cli.ts").NativeReviewCli;
+		const result = await __testing.executeReviewControllerOperation({ operation: "repair", lineageId: "legacy" }, repo, native, undefined, undefined, interactiveContext(true));
+		assert.notEqual(result.repaired, true);
+		assert.deepEqual(readdirSync(repo, { recursive: true }).sort(), before);
+		assert.ok(!existsSync(join(repo, ".git", "reviews")));
+	} finally {
+		rmSync(repo, { recursive: true, force: true });
+	}
 });

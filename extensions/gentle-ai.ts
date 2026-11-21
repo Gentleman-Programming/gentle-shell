@@ -11338,10 +11338,7 @@ async function executeReviewControllerOperationImpl(
 		}
 		clearRetainedNativeStatusSelectionsOnTerminal(retainedUntrackedSelections, defaultCwd, status.authority?.lineageId, status.authority?.state); retainNativeCaptureRoutes(retainedUntrackedSelections, defaultCwd, status, frozenTarget?.committedOnly === true ? nativeCommittedRangeSelector(frozenTarget) : undefined);
 		if (status.authority?.version === "compact-v2") return { operation: parameters.operation, repaired: false, compact_authority: "immutable-untouched", status: mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined) };
-		if (status.authority?.version !== "legacy-v1") return mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
-		const store = ReviewTransactionStore.forRepository(defaultCwd);
-		store.repairCurrentAuthority();
-		return { operation: parameters.operation, repaired: true };
+		return mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.ACKNOWLEDGE_APPROVED) {
 		const controllerOnlyInput = ["changeName", "idempotencyKey", "transition", "input", "outputPath", "inputPath", "operationId", "lineageIds", "acknowledgeUntrustedBundleSource"]

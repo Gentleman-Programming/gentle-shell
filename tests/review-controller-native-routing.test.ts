@@ -3806,3 +3806,24 @@ test("a version-incompatible error with a foreign message never leaks it as reme
 	assert.equal("reason" in result, false);
 	assert.equal(JSON.stringify(result).includes("/Users/someone"), false);
 });
+
+// A bare capabilities/v2 is a real decoder too-old identity (#3424 follow-up).
+test("INSPECT surfaces the bare capabilities/v2 too-old message", async () => {
+	const message = "gentle-ai native review capabilities/v2 is older than the supported v2.6 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override";
+	const result = await __testing.executeReviewControllerOperation({ operation: "inspect" }, process.cwd(), tooOldNative(message));
+	assert.equal(result.reason, message);
+});
+
+// Forged near-matches and not-older versions never become a reason.
+test("forged or not-older too-old messages never surface as reason", async () => {
+	const forged = [
+		STATUS_V8_TOO_OLD.replace("status/v8", "status/v9"), STATUS_V8_TOO_OLD.replace("status/v8", "status/v12"),
+		CAPABILITIES_V25_TOO_OLD.replace("v2.5 is", "v2.6 is"), CAPABILITIES_V25_TOO_OLD.replace("v2.5 is", "v2.7 is"), CAPABILITIES_V25_TOO_OLD.replace("v2.5 is", "v3.0 is"),
+		"x" + STATUS_V8_TOO_OLD, STATUS_V8_TOO_OLD + " /Users/someone/secret", STATUS_V8_TOO_OLD + "\n",
+		STATUS_V8_TOO_OLD.replace("v4.6.0", "v4.5.0"),
+	];
+	for (const message of forged) for (const operation of ["status", "inspect"] as const) {
+		const result = await __testing.executeReviewControllerOperation({ operation }, process.cwd(), tooOldNative(message));
+		assert.equal("reason" in result, false, `${operation}: ${JSON.stringify(message)}`);
+	}
+});

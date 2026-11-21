@@ -167,12 +167,16 @@ export function reviewStatusTooOldMessage(schema: string): string {
 // Anything else (including a forged message) is never relayed.
 export function reviewContractTooOldRemediation(message: unknown): string | undefined {
 	if (typeof message !== "string") return undefined;
-	const schemas = /^gentle-ai native review (?:(status)\/v(\d{1,3})|(capabilities)\/v(\d{1,3}\.\d{1,3})) is older than/.exec(message);
-	if (schemas === null) return undefined;
-	const expected = schemas[1] !== undefined
-		? reviewStatusTooOldMessage(`gentle-ai.review-integration.status/v${schemas[2]}`)
-		: capabilitiesTooOldMessage(`gentle-ai.review-integration.capabilities/v${schemas[4]}`);
-	return expected === message ? message : undefined;
+	// Same predicates as the decoders: status/vN with N < 9, capabilities/v2 or
+	// v2.N with N below the minimum minor. A not-older version never matches.
+	const status = /^gentle-ai native review status\/v([0-9]+) is older than/.exec(message);
+	if (status !== null) {
+		return Number(status[1]) < 9 && reviewStatusTooOldMessage(`gentle-ai.review-integration.status/v${status[1]}`) === message ? message : undefined;
+	}
+	const capabilities = /^gentle-ai native review capabilities\/v2(?:\.([0-9]+))? is older than/.exec(message);
+	if (capabilities === null || Number(capabilities[1] ?? 0) >= REVIEW_MINIMUM_CAPABILITIES_MINOR) return undefined;
+	const schema = `gentle-ai.review-integration.capabilities/v2${capabilities[1] === undefined ? "" : `.${capabilities[1]}`}`;
+	return capabilitiesTooOldMessage(schema) === message ? message : undefined;
 }
 const FEATURE_NAMES = Object.freeze([
 	"start_request_context",

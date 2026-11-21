@@ -1184,7 +1184,9 @@ export function rootsStatusLine(paths              , home        , agentDir     
 	const expanded = listed
 		.map((root) => root.trim())
 		.filter((root) => root.length > 0)
-		.map((root) => (root === "~" ? home : root.startsWith("~/") ? join(home, root.slice(2)) : root));
+		// The reader concatenates instead of joining, so "~/r/." stays distinct from "~/r"; join() would
+		// collapse the dot segment and merge two roots the mods keep apart.
+		.map((root) => (root === "~" ? home : root.startsWith("~/") ? `${home}${root.slice(1)}` : root));
 	const order = [...knownRoots(home).map(trimSlashes), ...expanded.map(trimSlashes)].filter(isAbsolutePath);
 	const seen = new Set        ();
 	const read           = [];

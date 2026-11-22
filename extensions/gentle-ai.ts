@@ -148,7 +148,7 @@ import {
 	type ProfilePinSource,
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
-import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { clearSessionProfileBinding, readSessionProfileBinding, readSessionProfileStartupNone } from "../lib/session-profile-binding.ts";
 import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection, type SessionProfileLifecycleManager } from "../lib/session-profile-integration.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority, requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
@@ -194,6 +194,13 @@ import {
 	type DesktopBackgroundSubagentsOwnerRead,
 	type DesktopBackgroundSubagentsService,
 } from "../lib/desktop-rpc-background-subagents.ts";
+import {
+	globalPersonaPath,
+	projectPersonaPath,
+	resolvePersonaMode,
+	writePersonaMode as writePersonaModeFiles,
+	type PersonaMode as PersonaConfigMode,
+} from "../lib/persona-config.ts";
 import {
 	REVIEW_HOST_RELAY_FAILURE,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_ENV,
@@ -1741,7 +1748,7 @@ async function pathExists(path: string): Promise<boolean> {
 	}
 }
 
-type PersonaMode = "gentleman" | "neutral";
+type PersonaMode = PersonaConfigMode;
 
 const PERSONA_OPTIONS = ["gentleman", "neutral"] as const;
 
@@ -3117,42 +3124,22 @@ function secondaryMergeSourcePath(cwd: string, target: CurrentProfileTarget | un
 	return target !== undefined ? modelConfigPath(cwd) : legacyProjectModelConfigPath(cwd);
 }
 
+// The persona files have one owner, lib/persona-config.ts, shared with the
+// Desktop `persona` config store.
 function projectPersonaConfigPath(cwd: string): string {
-	return join(cwd, ".pi", "gentle-ai", "persona.json");
+	return projectPersonaPath(cwd);
 }
 
 function personaConfigPath(_cwd: string): string {
-	return join(gentleAiConfigHome(), "persona.json");
-}
-
-function readPersonaFile(path: string): PersonaMode | undefined {
-	if (!existsSync(path)) return undefined;
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-		if (!isRecord(parsed)) return undefined;
-		return parsed.mode === "neutral" ? "neutral" : "gentleman";
-	} catch {
-		return undefined;
-	}
+	return globalPersonaPath(gentleAiConfigHome());
 }
 
 function readPersonaMode(cwd: string): PersonaMode {
-	return (
-		readPersonaFile(projectPersonaConfigPath(cwd)) ??
-		readPersonaFile(personaConfigPath(cwd)) ??
-		"gentleman"
-	);
+	return resolvePersonaMode(cwd, gentleAiConfigHome());
 }
 
 function writePersonaMode(cwd: string, mode: PersonaMode): string[] {
-	const paths = [personaConfigPath(cwd)];
-	const projectPath = projectPersonaConfigPath(cwd);
-	if (existsSync(projectPath)) paths.push(projectPath);
-	for (const path of paths) {
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, `${JSON.stringify({ mode }, null, 2)}\n`);
-	}
-	return paths;
+	return writePersonaModeFiles(cwd, gentleAiConfigHome(), mode);
 }
 
 // A pinned or active profile is a complete routing snapshot, so while the
@@ -7311,6 +7298,33 @@ function knownSessionProfileStartup(state: SessionProfileAppendOutcome["state"],
 /** Where a clear goes back to, named with the status label convention. */
 function startupStateText(startup: SessionProfileStartupState): string {
 	return startup === "none" ? "no profile, as this session started" : `the profile this session started with, "${sessionProfileLabel({ kind: "inherited", profile: startup })}", and use it`;
+}
+
+/**
+ * Desktop `clear_profile_binding`: the same owner action as `/gentle:profiles
+ * clear`, behind the apply gate, with its notices recorded instead of shown.
+ * The outcome is read from the binding store, not from notice text: any
+ * owner warning is `not_cleared` (even when the store moved, as after a failed
+ * append), a change is `cleared`, else `unchanged`.
+ */
+async function clearDesktopSessionProfile(context: ExtensionContext): Promise<{ status: "cleared" | "unchanged" | "not_cleared" | "busy" }> {
+	if (!beginDesktopProfileApply()) return { status: "busy" };
+	try {
+		const sessionId = context.sessionManager?.getSessionId?.();
+		const state = () => (typeof sessionId === "string" ? JSON.stringify([readSessionProfileBinding(sessionId) ?? null, readSessionProfileStartupNone(sessionId)]) : "");
+		const before = state();
+		let warned = false;
+		const ui = Object.create(context.ui, {
+			notify: { value: (_message: string, type?: "info" | "warning" | "error") => { if (type === "warning" || type === "error") warned = true; } },
+		});
+		await handleProfilesClear(Object.create(context, { ui: { value: ui, enumerable: true } }) as ExtensionContext);
+		if (warned) return { status: "not_cleared" };
+		return { status: state() !== before ? "cleared" : "unchanged" };
+	} catch {
+		return { status: "not_cleared" };
+	} finally {
+		endDesktopProfileApply();
+	}
 }
 
 /**
@@ -13418,6 +13432,7 @@ function createGentleAiExtensionForTesting(
 			request.respond({
 				schema: DESKTOP_PROFILES_SERVICE_SCHEMA,
 				apply: (applyRequest) => (disposed ? Promise.resolve({ status: "not_applied", notes: [] }) : applyDesktopProfile(ctx, pi, applyRequest)),
+				clear: () => (disposed ? Promise.resolve({ status: "not_cleared" as const }) : clearDesktopSessionProfile(ctx)),
 				dispose: () => {
 					disposed = true;
 				},

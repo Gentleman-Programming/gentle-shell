@@ -62,8 +62,8 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents"],
-  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "session_snapshot"]
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding"],
+  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "session_snapshot"]
 }
 ```
 
@@ -85,14 +85,17 @@ Returns the current event sequence and a bounded state projection:
         { "store": "profile_fallbacks", "scope": "global", "readOnly": false, "status": "missing", "revision": "sha256:3c11…" },
         { "store": "subagents", "scope": "global+project", "readOnly": true, "status": "ok", "revision": "sha256:77be…" },
         { "store": "pins", "scope": "local+repo", "readOnly": false, "status": "ok", "revision": "sha256:0d19…" },
-        { "store": "managed_assets", "scope": "global", "readOnly": true, "status": "ok", "revision": "sha256:be05…" }
+        { "store": "managed_assets", "scope": "global", "readOnly": true, "status": "ok", "revision": "sha256:be05…" },
+        { "store": "persona", "scope": "global+project", "readOnly": false, "status": "ok", "revision": "sha256:41aa…" },
+        { "store": "banner", "scope": "global", "readOnly": false, "status": "missing", "revision": "sha256:9c02…" },
+        { "store": "notifications", "scope": "global", "readOnly": false, "status": "ok", "revision": "sha256:d317…" }
       ]
     }
   }
 }
 ```
 
-The projection carries only store identity, scope, mutability, status, and revision — never store content, never a path. It is the cheap way for a client to notice that one of the six revisions moved and then call `get_config` for that store. `state` is `{}` when no Desktop command has bound a session context yet, or when that context has no working directory: without one, the project and pin layers cannot be read truthfully, so nothing is projected instead of a guess.
+The projection carries only store identity, scope, mutability, status, and revision — never store content, never a path. It is the cheap way for a client to notice that one of the nine revisions moved and then call `get_config` for that store. `state` is `{}` when no Desktop command has bound a session context yet, or when that context has no working directory: without one, the project and pin layers cannot be read truthfully, so nothing is projected instead of a guess.
 
 This snapshot does not project permission state: use `get_permission_mode` for that. `sequence` is the number of delivered events, so a client that saw `seq: 4` expects `sequence: 4` from a fresh snapshot unless it missed an event.
 
@@ -148,7 +151,7 @@ Reads one existing configuration store through the owner that already reads it. 
 
 | Param | Required | Type | Meaning |
 | --- | --- | --- | --- |
-| `store` | yes | one of the six store identifiers below | The store to read. |
+| `store` | yes | one of the nine store identifiers below | The store to read. |
 
 Any other key — including `scope`, `path`, `file`, or `physical_path` — is rejected as `invalid_request`. A string that is not a known store identifier is rejected as `unknown_store`. Neither case reads anything.
 
@@ -160,6 +163,9 @@ Any other key — including `scope`, `path`, `file`, or `physical_path` — is r
 | `subagents` | `parseAgentsConfig` over `<agentHome>/subagents.json` + `<cwd>/.pi/subagents.json` | `global+project` | `true` | Normalized `AgentsConfig` the runtime would launch with. A layer that cannot be parsed is skipped and the remaining layer still merges, exactly like the runtime reader. |
 | `pins` | `readProfilePinStatus` + `evaluateProfilePin` over the local pin and the repo declaration | `local+repo` | `false` | `resolved`, the winning layer and profile, plus the `invalid` and `stale` layers. Writable per layer — see [`set_config`](#set_config). |
 | `managed_assets` | `readManagedAssetsManifestResult` over `<agentHome>/gentle-ai/managed-assets.json` | `global` | `true` | The installer's ownership manifest (`schemaVersion`, `assets`), filtered to ownership-shaped entries: relative asset paths below the agent home and 64-hex sha256 digests. Anything else is omitted, never echoed. |
+| `persona` | `readPersonaLayer` + `resolvePersonaMode` over `<configHome>/persona.json` + `<cwd>/.pi/gentle-ai/persona.json` | `global+project` | `false` | `{ mode }`: the persona in effect, the project layer winning. |
+| `banner` | `readBannerConfigSync` over `<configHome>/banner.json` | `global` | `false` | `{ showRose, showTextLogo, color }`. |
+| `notifications` | `parseNotificationSettingsFile` over `<configHome>/notifications.json` | `global` | `false` | The validated settings without `schema`, every `file:` sound replaced by `"file"`. |
 
 Success:
 
@@ -191,7 +197,7 @@ Success:
 | --- | --- |
 | `store` | The store identifier that was read. |
 | `scope` | Which owner layers this store is assembled from: `global`, `global+project`, or `local+repo`. |
-| `readOnly` | `false` for the three authoritative stores (`profiles`, `profile_fallbacks`, `pins`); `true` for the three derived or installer-owned stores (`models`, `subagents`, `managed_assets`). |
+| `readOnly` | `false` for the six writable stores (`profiles`, `profile_fallbacks`, `pins`, `persona`, `banner`, `notifications`); `true` for the three derived or installer-owned stores (`models`, `subagents`, `managed_assets`). |
 | `status` | `ok` (normalized content follows), `missing` (no layer produced content because no layer file exists), or `invalid` (layers exist but none of them produced content). See [Layer semantics](#layer-semantics). |
 | `revision` | Opaque read-time digest of the canonical normalized content. See [Revision limits](#revision-limits). |
 | `value` | Normalized owner content, present when the store produced one. Absent when a layer is missing or invalid. |
@@ -202,7 +208,10 @@ Success:
 
 `status` answers for the store; `layers` answers for each file it is assembled from. For a merged store the two are different questions:
 
-- `profiles`, `profile_fallbacks`, and `managed_assets` have one layer, so `status` is that layer's status.
+- `profiles`, `profile_fallbacks`, `managed_assets`, `banner`, and `notifications` have one layer, so `status` is that layer's status.
+- `persona` has a `global` layer (`persona.json` in the Gentle config home) and a `project` layer (`<cwd>/.pi/gentle-ai/persona.json`); `value` is `{ "mode": "gentleman" | "neutral" }`, the mode in effect (the project layer wins), exactly as the prompt build resolves it.
+- `banner` is `{ showRose, showTextLogo, color }` from `banner.json`. A file without those three valid settings is `invalid` and is never repaired by a read; extra keys are ignored, as the `/gentle:banner` editor ignores them, and a Desktop write keeps only the three settings.
+- `notifications` is the owner's validated `notifications.json` without its `schema` key. Every `file:` sound is replaced by the marker `"file"`, so no sound path crosses the wire.
 - `subagents` mirrors the runtime reader: a layer that cannot be parsed is skipped and the remaining layer still merges. `status` is `ok` as soon as one layer is usable, and `layers` still names the broken one.
 - `models` keeps the owner's merge rule, which rejects the saved routing when a layer it reads is malformed; there `status` is `invalid` even if the other layer is fine.
 - `missing` means every layer file is absent. `invalid` means layer files exist but none produced content; in that case the owner would fall back to its own defaults, which are not the content of this store, so no `value` is returned.
@@ -282,13 +291,18 @@ Reads have no side effect. A `get_config` request never creates, rewrites, repai
 
 #### Write targets
 
-A write target is one file, not one store. `get_config` reports it only for a writable store, and `set_config` requires the revision of the exact target it is about to replace:
+A write target is one file, not one store, with one exception: `persona`'s `global` target. `get_config` reports targets only for a writable store, and `set_config` requires the revision of the exact target it is about to replace:
 
 | `store` | `target` values | File |
 | --- | --- | --- |
 | `profiles` | `global` | `<configHome>/profiles.json` |
 | `profile_fallbacks` | `global` | `<configHome>/profile-fallbacks.json` |
 | `pins` | `local`, `repo` | `<git-common-dir>/gentle-ai/profile-pin.json`, `<worktree-root>/.pi/gentle-ai/profile.json` |
+| `persona` | `global` | `<configHome>/persona.json`, plus `<cwd>/.pi/gentle-ai/persona.json` when it already exists |
+| `banner` | `global` | `<configHome>/banner.json` |
+| `notifications` | `global` | `<configHome>/notifications.json` |
+
+`persona`'s `global` target covers both persona files, because the owner rewrites the project file too when it exists: its `writeRevision` digests both layers (so a project edit makes a token stale even while the global file is missing), and its `value` is `{ global, project }` layer states rather than one file. Each file is replaced atomically, but the two-file write is not a transaction: a failure after the global file is written can leave the project file unchanged, and the answer reports the layers as they are.
 
 `writeRevision` is the digest of that one target's state: `sha256` over canonical JSON of `{store, target, status, value}`. When the target reads `ok`, `value` is the owner-normalized file content (for a pin layer, the profile name it holds), so any content change moves the digest. When the target reads `missing` or `invalid`, `value` is absent and the digest covers **only `{store, target, status}`** — the owner produced no content to hash, and this contract does not hash raw bytes. Two consequences follow, and they are limits rather than incidents:
 
@@ -412,7 +426,7 @@ A layer whose file currently reads `invalid` is likewise a valid target for a se
 The checks below run in this order, and the first one that fails answers the request. Nothing is read or written after a rejection.
 
 1. **Envelope** (`invalid_request`): exactly the keys `store`, `data`, and `expectedRevision`; `store` must be a string; `data` must be present. A request missing `data` is malformed whatever store or revision it names, so this check comes before the store rules — a `models` write without `data` is `invalid_request`, not `read_only`. Store contents are not looked at here.
-2. **Store identity** (`unknown_store`): the string must be one of the six store identifiers.
+2. **Store identity** (`unknown_store`): the string must be one of the nine store identifiers.
 3. **Mutability** (`read_only`): `models`, `subagents`, and `managed_assets` are rejected before their `data` is inspected or their revision is compared, so any payload gets the same answer.
 4. **Usable revision** (`revision_conflict`): `expectedRevision` must be a non-empty string. Absent, empty, and non-string tokens are all "the client did not prove it saw the current state", and this is decided before the payload is validated.
 5. **Session roots** (`config_unavailable`): the bound session must have a working directory.
@@ -1498,6 +1512,34 @@ With a matching token the owner writes the file and re-reads: `{ "status": "appl
 
 Errors: `invalid_request`; `background_subagents_busy` while another Desktop change is in progress; `background_subagents_unavailable` when no owner answers (for example inside a subagent process), the state cannot be read, the request predates a session reset, or the write did not complete (re-read the policy).
 
+### `get_profile_binding`
+
+Reads which profile this session routes its subagents with, through the same rule launches, the status bar, and `/gentle:profiles` use (`resolveSessionProfile`). A binding chosen in the terminal, restored on resume, or inherited at the session's start is reported exactly as a launch would apply it. Params must be an empty object. It writes nothing and emits no event; like the status bar and the Desktop feed, the read can freeze the inherited profile of a session that has not frozen it yet, which is the same freeze its first launch would do.
+
+```json
+{ "ok": true, "data": { "kind": "explicit", "profile": "fast", "origin": "session" } }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `explicit` (chosen for this session), `inherited` (the profile the session started with), `follow` (follows the shared layers live, `GENTLE_PI_PROFILE_FOLLOW`), or `live` (a child session reading the layers). |
+| `profile` | The profile name, or `null` for the routing without a profile. |
+| `origin` | `session` for an explicit choice; otherwise the layer that supplied it: `local` (the clone pin), `repo` (the repository declaration), or `global`; `null` without a profile. |
+
+Errors: `invalid_request` (any param) and `profiles_unavailable` (no session id or working directory).
+
+### `clear_profile_binding`
+
+Runs `/gentle:profiles clear` for this session: the session goes back to the profile it started with, or to the routing without a session profile. Params must be an empty object. It takes the profile apply slot, so it never runs during an `apply_profile`.
+
+```json
+{ "ok": true, "data": { "status": "cleared", "changed": true, "binding": { "kind": "inherited", "profile": null, "origin": null } } }
+```
+
+`status` is `not_cleared` whenever the owner warned (for example an unreadable session record or unavailable profile authority), even if the binding moved; otherwise `cleared` when the binding store changed and `unchanged` when there was nothing to clear. The owner's notices are not forwarded. A binding written elsewhere while the clear runs is folded into the one `desktop` event. `binding` is the state after the call, and `changed` says whether it differs from before. A change also emits `profile_binding_changed` with `source: "desktop"`, after the response. Errors: `invalid_request`, `profile_apply_busy` while an apply runs, and `profiles_unavailable` when no owner answers or the owner predates this method.
+
+Publishing a profile to the repository is not a separate method: it is the repository pin, written with `set_config` on `pins` with `{ "source": "repo", "profile": "<name>" }` (and `profile: null` to unpublish).
+
 ## Responses
 
 Success:
@@ -1676,7 +1718,7 @@ An external change:
 
 `store`, `scope`, `revision`, and `status` match what `get_config` and `get_snapshot` would answer for that store at that moment. There is no `value`, no `writeTarget` or `writeRevision` (an external writer may have touched any layer), and no path; read the store with `get_config` for its content and write targets.
 
-Detection watches the owner files' directories, non-recursively, for an interactive RPC host only: the config home (`profiles.json`, `profile-fallbacks.json`, `models.json`), the agent home and its `gentle-ai/` directory (global `subagents.json`, the managed-assets manifest), the session cwd's `.pi/` and `.pi/gentle-ai/` (project `subagents.json` and `models.json`, the `repo` pin), and the Git common dir's `gentle-ai/` (the `local` pin) when the cwd is a resolvable worktree. Only events for those owner file names count. About 250 ms after the last relevant event, every store's revision is recomputed with the same readers `get_config` uses, and an event is emitted only for a store whose revision differs from the last revision this channel reported (a `get_config` answer, a `get_snapshot` projection, a `set_config` answer, or an earlier event). Consequences:
+Detection watches the owner files' directories, non-recursively, for an interactive RPC host only: the config home (`profiles.json`, `profile-fallbacks.json`, `models.json`, `persona.json`, `banner.json`, `notifications.json`), the project `.pi/gentle-ai/` directory (`persona.json`), the agent home and its `gentle-ai/` directory (global `subagents.json`, the managed-assets manifest), the session cwd's `.pi/` and `.pi/gentle-ai/` (project `subagents.json` and `models.json`, the `repo` pin), and the Git common dir's `gentle-ai/` (the `local` pin) when the cwd is a resolvable worktree. Only events for those owner file names count. About 250 ms after the last relevant event, every store's revision is recomputed with the same readers `get_config` uses, and an event is emitted only for a store whose revision differs from the last revision this channel reported (a `get_config` answer, a `get_snapshot` projection, a `set_config` answer, or an earlier event). Consequences:
 
 - a Desktop `set_config` is never echoed: its response records the resulting revision before the owner's own rename wakes the watcher;
 - reformatting a file, rewriting identical content, or undoing a change inside the window emits nothing, because the revision did not move;
@@ -1686,7 +1728,7 @@ Detection watches the owner files' directories, non-recursively, for an interact
 
 A directory that does not exist yet (for example a project without `.pi/`, or a fresh `<git-common-dir>/gentle-ai/`) is watched through its nearest existing ancestor, non-recursively and only for the creation of the next path segment. When that segment appears the ancestor watcher is closed and the next level is watched, until the owner directory itself is; each step recomputes once, so a pin that `/gentle:profiles` writes into a new directory raises exactly one event. A watched directory that is later removed reports its stores (now `missing`) and falls back to the same ancestor watching, so recreating it and writing the store again raises one event.
 
-When a Desktop command binds a different session cwd, the watchers move with it, and the stores whose layers depend on the cwd (`models` and `subagents` project layers, and `pins`) are re-read at that moment: each one whose revision differs from the last one this channel reported is announced with `source: "external"` and becomes the new baseline, so a later unrelated change never carries stale extra events. If a change was detected but its debounce window had not closed when the cwd moved, every store is re-read instead, so that change is reported rather than dropped with the old watchers.
+When a Desktop command binds a different session cwd, the watchers move with it, and the stores whose layers depend on the cwd (`models`, `subagents`, and `persona` project layers, and `pins`) are re-read at that moment: each one whose revision differs from the last one this channel reported is announced with `source: "external"` and becomes the new baseline, so a later unrelated change never carries stale extra events. If a change was detected but its debounce window had not closed when the cwd moved, every store is re-read instead, so that change is reported rather than dropped with the old watchers.
 
 This is **best effort**, and `get_snapshot` revisions stay the source of truth. A path with no existing ancestor, an unsupported platform, or an exhausted watcher limit simply produces no external events for that directory; the channel keeps working and never reports an error for it. Watchers are created on `session_start` and are disposed, ancestor watchers included, on session shutdown and on session switch. A client that must not miss a change still compares `get_snapshot` revisions after connecting and after a sequence gap.
 
@@ -1826,6 +1868,14 @@ Carries the session sections whose content changed since the last `session_snaps
 
 It is emitted when the feed publishes, on the feed's own tiers: within 16 ms for urgent state (an open or answered question, the permission mode, an idle/working/blocked transition, a held prompt), otherwise after a 250 ms debounce, and at most once per second while the session is busy. A flush that changes nothing emits nothing, and a section is included only when its content changed; a job's `elapsedMs`, which moves on every flush, is not a change (derive it from `startedAt`). A client that needs the whole state reads `get_snapshot` with `sections` after connecting or after a sequence gap. Advertised only while the feed seam is wired.
 
+### `profile_binding_changed`
+
+Emitted when this session's profile binding changes: a `clear_profile_binding` (`source: "desktop"`), or any other write to the binding store for this session (`source: "external"`): the `/gentle:profiles` screen, an `apply_profile` in session mode, or a resume restoring the record. The data is the new `get_profile_binding` answer plus `source`. Writes for other sessions and writes that leave the answer unchanged emit nothing.
+
+```json
+{ "event": "profile_binding_changed", "data": { "kind": "explicit", "profile": "fast", "origin": "session", "source": "external" } }
+```
+
 ### `review_mode_changed`
 
 Follows a confirmed `set_review_mode` whose re-read state differs from the state the confirmation was computed from, after the response line.
@@ -1847,8 +1897,9 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 
 ## Configuration limits
 
-- **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
-- **Bounded write surface.** `set_config` exists only for `profiles`, `profile_fallbacks`, and `pins`, and only as a whole-store replacement, one explicitly selected pin layer, or the explicit clear of one pin layer (`profile: null`). There is no generic physical-file target, no patch operation, no setter for `models`, `subagents`, or `managed_assets`, no way to clear both layers in one request, and no profile application or materialization: a profile write stores the definition, it does not apply it, and nothing else is rewritten as a side effect.
+- **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`, `persona-config.ts`, `banner-config.ts`, `notification-policy.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
+- **Settings stores.** `persona` takes `{ "mode": "gentleman" | "neutral" }` and writes like `/gentle:persona`: the global file, plus the project file only when it already exists, so a project override never silently outranks the change (its `writeRevision` covers both layers, and a project file is never created). `banner` takes exactly `{ showRose, showTextLogo, color }`. `notifications` takes the settings as read: an event may keep the `"file"` marker only where its current sound is a file, which keeps that file; a new `file:` path is `invalid_data`, because the Desktop never sees one. All three write atomically, and none waits for a profile apply (`profile_apply_busy` applies only to the profile stores). Telemetry and the Pi theme are not config stores here: telemetry is a consent switch, and Pi persists its theme through an asynchronous settings queue and exports no list of installed themes to validate against.
+- **Bounded write surface.** `set_config` exists only for `profiles`, `profile_fallbacks`, `pins`, and the settings stores above, and only as a whole-store replacement, one explicitly selected pin layer, or the explicit clear of one pin layer (`profile: null`). There is no generic physical-file target, no patch operation, no setter for `models`, `subagents`, or `managed_assets`, no way to clear both layers in one request, and no profile application or materialization: a profile write stores the definition, it does not apply it, and nothing else is rewritten as a side effect.
 - **Read-only rationale.** `models` and `subagents` are derived: the owners write them when a profile is applied or a route is materialized, so a Desktop write would fight that writer and leave the runtime and the store disagreeing. `managed_assets` is the installer's ownership manifest with hashes it verifies on install, so a client write would silently disable ownership checks. Only the stores whose owners accept validated writes report `readOnly: false`, and that flag describes the store's owner capability, which now matches this slice's write surface.
 - **No-op means no write.** Sending the content a store already holds, or clearing a pin layer that has no file, is answered with `changed: false`, no rewrite, no mtime churn, no removal, and no event, so a client can safely reconcile by re-sending what it read.
 - **Per-process guard, not a transaction.** The `expectedRevision` check and the owner's atomic rename happen in one synchronous step, so concurrent Desktop requests in one process cannot both commit from the same revision. Across processes there is no lock: another `pi` process, `/gentle:profiles`, or the installer can write between the check and the rename, and this contract cannot detect that. Treat `expectedRevision` as conflict detection, not as mutual exclusion.
@@ -1921,7 +1972,8 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 ## Profiles limits
 
 - **One owner, no second apply.** `apply_profile` reaches the `/gentle:profiles` owner in `extensions/gentle-ai.ts` through a defensive, versioned owner-service adapter, like the usage and design seams. The owner runs the screen's own **Use in this session** and **Make default** actions with a UI that records notices and answers confirmations only with a matching token. It never opens a dialog in Pi.
-- **Apply only.** This slice has one method and one event. Creating, editing, or deleting profiles stays `set_config` on the `profiles` store; pins stay `set_config` on `pins`.
+- **Apply, binding, and clear.** `apply_profile` and its `profile_applied` event, plus `get_profile_binding`, `clear_profile_binding`, and `profile_binding_changed`. Creating, editing, or deleting profiles stays `set_config` on the `profiles` store; pins, including publishing a profile to the repository, stay `set_config` on `pins`.
+- **One rule for the binding.** `get_profile_binding` and the event read `resolveSessionProfile`, the rule launches use, so they never disagree with a launch. The event follows the in-process binding store; a binding changed by another Pi process is not observed.
 - **Confirmation is Desktop's job.** The token binds an apply to the title and message that were shown and to the exact saved profile; it is not a proof that a person saw them.
 - **Truthful absence.** When the owning extension is not loaded, `apply_profile` answers `profiles_unavailable` rather than inventing an outcome.
 

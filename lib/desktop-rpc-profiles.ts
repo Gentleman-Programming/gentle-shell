@@ -45,6 +45,8 @@ export type DesktopProfileApplyResult =
 export interface DesktopProfilesService {
 	readonly schema: typeof DESKTOP_PROFILES_SERVICE_SCHEMA;
 	apply(request: DesktopProfileApplyRequest): Promise<DesktopProfileApplyResult>;
+	/** `/gentle:profiles clear` for this session; absent from an owner that predates it. */
+	clear?(): Promise<{ status: "cleared" | "unchanged" | "not_cleared" | "busy" }>;
 	dispose(): void;
 }
 

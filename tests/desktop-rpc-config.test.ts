@@ -539,7 +539,7 @@ test("get_config rejects unknown stores, unsupported params, and physical paths"
 
 	assert.deepEqual(DESKTOP_CONFIG_METHODS, ["get_config", "set_config"]);
 	assert.deepEqual([...DESKTOP_CONFIG_EVENTS], ["config_changed"]);
-	assert.deepEqual([...DESKTOP_CONFIG_STORES], ["profiles", "models", "profile_fallbacks", "subagents", "pins", "managed_assets"]);
+	assert.deepEqual([...DESKTOP_CONFIG_STORES], ["profiles", "models", "profile_fallbacks", "subagents", "pins", "managed_assets", "persona", "banner", "notifications"]);
 });
 
 test("reads never mutate any store", async (t) => {
@@ -596,6 +596,9 @@ test("stores carry the documented read-only split", async (t) => {
 		subagents: true,
 		pins: false,
 		managed_assets: true,
+		persona: false,
+		banner: false,
+		notifications: false,
 	});
 });
 
@@ -1344,8 +1347,10 @@ test("capabilities advertise the wired config read and write surface", async (t)
 		"get_status",
 		"get_background_subagents",
 		"set_background_subagents",
+		"get_profile_binding",
+		"clear_profile_binding",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
 });
 
 test("get_config answers through the transport with no physical path in the response", async (t) => {

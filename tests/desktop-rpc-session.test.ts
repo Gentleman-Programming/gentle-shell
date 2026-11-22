@@ -327,14 +327,14 @@ test("S5/S6: without the feed, sections answer session_unavailable and capabilit
 	assert.deepEqual(out[0].error, SESSION_UNAVAILABLE);
 	const capabilities = (await app.invoke("capabilities"))[0].data;
 	assert.equal(capabilities.events.includes(DESKTOP_SESSION_EVENT), false);
-	assert.deepEqual(capabilities.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed"]);
+	assert.deepEqual(capabilities.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
 	assert.deepEqual((await app.invoke("get_snapshot"))[0].data.state, (await app.invoke("get_snapshot", { other: 1 }))[0].data.state);
 });
 
 test("S6: with the feed wired, capabilities advertise session_snapshot", async (t) => {
 	const app = await rpcHarness(t, true);
 	const capabilities = (await app.invoke("capabilities"))[0].data;
-	assert.deepEqual(capabilities.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", DESKTOP_SESSION_EVENT]);
+	assert.deepEqual(capabilities.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", DESKTOP_SESSION_EVENT]);
 	assert.equal(capabilities.methods.includes("get_snapshot"), true);
 });
 

@@ -159,3 +159,18 @@ test("overlapping Desktop clears keep suppressing external echoes until the last
 	releases[1]!();
 	await second;
 });
+
+test("a binding written while a Desktop clear ends busy or failing is still reported as external", async (t) => {
+	for (const ending of ["busy", "throws"] as const) {
+		let release: () => void = () => {};
+		const f = fixture(t, { clear: () => new Promise((resolve, reject) => { release = () => (ending === "busy" ? resolve({ status: "busy" }) : reject(new Error("owner failed"))); }) });
+		f.bridge.wire(f.emit);
+		const pending = f.bridge.handle("clear_profile_binding", {});
+		await new Promise((resolve) => setImmediate(resolve));
+		bindSessionProfile("session-a", `fast-${ending}`, {});
+		assert.equal(f.events.length, 0, "suppressed while the clear runs");
+		release();
+		await pending;
+		assert.deepEqual(f.events, [{ event: "profile_binding_changed", data: { kind: "explicit", profile: `fast-${ending}`, origin: "session", source: "external" } }], ending);
+	}
+});

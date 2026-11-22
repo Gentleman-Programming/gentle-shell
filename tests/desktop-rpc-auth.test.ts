@@ -258,3 +258,21 @@ test("the bridge itself drops a reload answer when a reset lands mid-refresh", a
 	release();
 	assert.deepEqual(await pending, { ok: false, error: AUTH_UNAVAILABLE });
 });
+
+// ---- Follow-ups (review-6198081762928a6d advisories, CodeRabbit on #3475) ----
+
+test("an inherited property name as the auth source never crosses as a source", () => {
+	for (const source of ["constructor", "__proto__", "toString"]) {
+		const result = projectAuthStatus({ getAll: () => [{ provider: "x" }], getProviderAuthStatus: () => ({ configured: true, source }), isUsingOAuth: () => false, refresh: async () => ({ aborted: false, errors: new Map() }) });
+		assert.equal(result.providers[0]!.source, null, source);
+	}
+});
+
+test("get_auth_status answers auth_unavailable when the registry throws, without its message", async (t) => {
+	const fake = fakeRegistry();
+	fake.registry.getProviderAuthStatus = () => { throw new Error("C:\Users\secret\auth.json is locked"); };
+	const app = harness(t, fake.registry);
+	await app.invoke("throws", "get_auth_status");
+	assert.deepEqual(app.last().error, AUTH_UNAVAILABLE);
+	assert.equal(app.widgets.at(-1)!.includes("secret"), false);
+});

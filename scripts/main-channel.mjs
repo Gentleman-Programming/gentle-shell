@@ -23,8 +23,8 @@ import { goAcquisition, pnpmGlobalBin, requirements } from "./installer-prefligh
 
 export const SHELL_REPOSITORY = "Gentleman-Programming/gentle-shell";
 export const GENTLE_AI_REPOSITORY = "Gentleman-Programming/gentle-ai";
-export const GENTLE_AI_MODULE = "github.com/gentleman-programming/gentle-ai/v4";
-export const GENTLE_AI_MAIN_PACKAGE = "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai";
+export const GENTLE_AI_MODULE = "github.com/gentleman-programming/gentle-ai/v5";
+export const GENTLE_AI_MAIN_PACKAGE = `${GENTLE_AI_MODULE}/cmd/gentle-ai`;
 export const CHANNEL_SCHEMA = "gentle-shell.channel/v1";
 export const CHANNELS = Object.freeze(["release", "main"]);
 

@@ -50,7 +50,7 @@ function world({ owner = "pnpm", latest = "4.1.0", commits = { ai: AI_SHA, shell
 			return command === "/usr/bin/npm" || command.endsWith("node.exe") ? { code: 0, stdout: `${npmRoot}\n` } : { code: 1, stdout: "" };
 		}
 		calls.push({ command, argv });
-		if (argv[0] === "install" && argv[1]?.includes("gentle-ai/v4/cmd/gentle-ai@")) {
+		if (argv[0] === "install" && argv[1]?.includes("gentle-ai/v5/cmd/gentle-ai@")) {
 			if (failGoInstall) return { code: 1, stdout: "" };
 			mkdirSync(options.env!.GOBIN, { recursive: true });
 			for (const name of ["gentle-ai", "gentle-ai.exe"]) writeFileSync(join(options.env!.GOBIN, name), "#!/bin/sh\n", { mode: 0o755 });
@@ -59,17 +59,17 @@ function world({ owner = "pnpm", latest = "4.1.0", commits = { ai: AI_SHA, shell
 		if (argv[0] === "version" && command === `${bin}/go`) {
 			if (argv[1] === "-m") {
 				const commit = String(argv[2] ?? "").split("/").at(-2) ?? "";
-				return { code: 0, stdout: `${command} (binary)\n\tmod\t${GENTLE_AI_MODULE}\tv4.0.1-0.20261008202137-${commit.slice(0, 12)}\th1:J8EluS7QrfM+m3vmQlF26B/shZRjD6rBfsKtrABL5mc=\n` };
+				return { code: 0, stdout: `${command} (binary)\n\tmod\t${GENTLE_AI_MODULE}\tv5.0.1-0.20261008202137-${commit.slice(0, 12)}\th1:J8EluS7QrfM+m3vmQlF26B/shZRjD6rBfsKtrABL5mc=\n` };
 			}
 			return { code: 0, stdout: `go version go${requirements.go} ${platform}/amd64\n` };
 		}
 		if (argv[0] === "list" && command === `${bin}/go`) {
 			const commit = String(argv[3] ?? "").slice(`${GENTLE_AI_MODULE}@`.length);
-			return { code: 0, stdout: JSON.stringify({ Path: GENTLE_AI_MODULE, Version: `v4.0.1-0.20261008202137-${commit.slice(0, 12)}`, Origin: { VCS: "git", URL: "https://github.com/gentleman-programming/gentle-ai", Hash: commit } }) };
+			return { code: 0, stdout: JSON.stringify({ Path: GENTLE_AI_MODULE, Version: `v5.0.1-0.20261008202137-${commit.slice(0, 12)}`, Origin: { VCS: "git", URL: "https://github.com/gentleman-programming/gentle-ai", Hash: commit } }) };
 		}
 		if (argv[0] === "version") {
 			const sha = command.split("/").at(-2) ?? "";
-			return { code: 0, stdout: `gentle-ai 4.0.1-0.20261008202137-${sha.slice(0, 12)}\n` };
+			return { code: 0, stdout: `gentle-ai 5.0.1-0.20261008202137-${sha.slice(0, 12)}\n` };
 		}
 		if (command === "tar" || command.endsWith("tar.exe")) {
 			writeFileSync(join(argv[argv.indexOf("-C") + 1], "package.json"), JSON.stringify({ name: "gentle-pi", version: "4.1.0", scripts: { prepack: "x" } }));
@@ -196,7 +196,7 @@ test("a main install rebuilds only what moved on main and records the new commit
 	try {
 		await writeChannel(w.ctx, { channel: "main", shellCommit: SHELL_SHA, gentleAiCommit: AI_SHA }, fsPromises);
 		assert.equal(await w.upgrade([], "4.0.0-main.6e7e3a18f794"), 0);
-		assert.ok(w.calls.some((call) => call.argv.join(" ") === `install github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@${NEW_AI}`));
+		assert.ok(w.calls.some((call) => call.argv.join(" ") === `install github.com/gentleman-programming/gentle-ai/v5/cmd/gentle-ai@${NEW_AI}`));
 		const tgz = join(w.home, ".pi", "gentle-ai", "main", "packages", "gentle-pi-4.1.0-main.333333333333.tgz");
 		assert.deepEqual(w.installs(), [`/usr/bin/pnpm add -g ${tgz} --allow-build=gentle-pi`]);
 		assert.deepEqual(await readChannel(w.ctx, fsPromises), { channel: "main", shellCommit: NEW_SHELL, gentleAiCommit: NEW_AI });
@@ -206,7 +206,7 @@ test("a main install rebuilds only what moved on main and records the new commit
 
 // #2356: a Gentle AI step that fails still installs a main Shell that moved, so the
 // retry runs the new Shell's code; the channel is recorded only when both succeed.
-const GO_INSTALL_FAILED = `main-gentle-ai-build-failed: go install github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@${NEW_AI} failed`;
+const GO_INSTALL_FAILED = `main-gentle-ai-build-failed: go install github.com/gentleman-programming/gentle-ai/v5/cmd/gentle-ai@${NEW_AI} failed`;
 const PRIOR_REGISTRATION = JSON.stringify({ schema: "gentle-pi.dev-binary/v1", path: "/prior/main/gentle-ai" });
 const NEW_SHELL_TGZ = (home: string) => join(home, ".pi", "gentle-ai", "main", "packages", "gentle-pi-4.1.0-main.333333333333.tgz");
 async function onPriorMain(w: ReturnType<typeof world>) {
@@ -437,7 +437,7 @@ test("--channel main switches a release install to both latest main commits", po
 	const w = world();
 	try {
 		assert.equal(await w.upgrade(["--channel", "main"]), 0);
-		assert.ok(w.calls.some((call) => call.argv[1] === `github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@${AI_SHA}`));
+		assert.ok(w.calls.some((call) => call.argv[1] === `github.com/gentleman-programming/gentle-ai/v5/cmd/gentle-ai@${AI_SHA}`));
 		assert.equal(w.installs().length, 1);
 		assert.deepEqual(await readChannel(w.ctx, fsPromises), { channel: "main", shellCommit: SHELL_SHA, gentleAiCommit: AI_SHA });
 		assert.deepEqual(JSON.parse(readFileSync(join(w.home, ".pi", "gentle-ai", "dev-binary.json"), "utf8")).path,

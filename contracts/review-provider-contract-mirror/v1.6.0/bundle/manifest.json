@@ -67,7 +67,7 @@
       "runtime": "pi",
       "file": {
         "path": "orchestration/pi.md",
-        "sha256": "ee25b26c5e913008a115e1cde258288a2c4b1ad9a41cb0b040fab2b76561e124"
+        "sha256": "af9f6ace7917aad3700077f8eb3a3e0a178106d7ac320e0b085aa10516ad4aa4"
       }
     }
   ],
@@ -76,7 +76,7 @@
       "runtime": "pi",
       "file": {
         "path": "routing/pi.md",
-        "sha256": "da52909e3b91b044d36556f7775d5d2b10410212b5c0466f267006fea16a58c3"
+        "sha256": "43d457487317646c20e91109d90ec17dcc621d645cc8ea7f2097e820aaa045d4"
       }
     }
   ]

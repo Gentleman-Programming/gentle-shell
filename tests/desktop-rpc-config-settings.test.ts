@@ -208,3 +208,27 @@ test("a file marker never moves a file sound to another event", async (t) => {
 	assert.equal((await e.write("notifications", value)).error?.code, "invalid_data");
 	assert.equal(readFileSync(path, "utf8"), before);
 });
+
+// ---- Review follow-ups (CodeRabbit on #3471) ----
+
+test("a file sound changed outside Desktop moves the notifications read revision", async (t) => {
+	const e = env(t);
+	const [first] = NOTIFICATION_EVENTS;
+	const settings = structuredClone(DEFAULT_NOTIFICATION_SETTINGS) as any;
+	settings.audio.events[first!] = FILE_SOUND;
+	notificationsFile(e, settings);
+	const before = (await e.read("notifications")).revision;
+	settings.audio.events[first!] = FILE_SOUND.replace("secret-done", "other-done");
+	notificationsFile(e, settings);
+	const after = await e.read("notifications");
+	assert.notEqual(after.revision, before);
+	assert.equal(JSON.stringify(after).includes("other-done"), false, "the path still never crosses");
+});
+
+test("an unknown or prototype event key is rejected, never silently dropped", async (t) => {
+	const e = env(t);
+	const data = JSON.parse(JSON.stringify(DEFAULT_NOTIFICATION_SETTINGS));
+	const withProto = JSON.parse(JSON.stringify(data).replace('"events":{', '"events":{"__proto__":null,'));
+	assert.equal((await e.write("notifications", withProto)).error?.code, "invalid_data");
+	assert.equal(existsSync(join(e.configHome, "notifications.json")), false);
+});

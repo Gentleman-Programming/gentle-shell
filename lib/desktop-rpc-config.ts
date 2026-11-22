@@ -238,6 +238,12 @@ interface StoreRead {
 	status: DesktopConfigStatus;
 	value?: unknown;
 	layers: DesktopConfigLayer[];
+	/**
+	 * What the read revision digests when it differs from the wire value: the
+	 * notifications store hides file sound paths, but a path changed elsewhere
+	 * must still move its revision.
+	 */
+	revisionValue?: unknown;
 }
 
 function layer(source: DesktopConfigLayerSource, status: "missing" | "invalid" | "valid"): DesktopConfigLayer {
@@ -441,7 +447,7 @@ function readNotifications(root: DesktopConfigRoots): StoreRead {
 	const read = readNotificationsFile(root);
 	return {
 		status: read.status === "valid" ? "ok" : read.status,
-		...(read.status === "valid" ? { value: redactNotificationSettings(read.settings) } : {}),
+		...(read.status === "valid" ? { value: redactNotificationSettings(read.settings), revisionValue: read.settings } : {}),
 		layers: [layer("global", read.status)],
 	};
 }
@@ -462,7 +468,7 @@ export function readConfigStore(store: DesktopConfigStore, root: DesktopConfigRo
 	const reader = STORE_READERS[store];
 	const read = reader.read(root);
 	const value = read.value === undefined ? undefined : wireValue(read.value);
-	const revision = configRevision(store, read.status, value);
+	const revision = configRevision(store, read.status, read.revisionValue === undefined ? value : wireValue(read.revisionValue));
 	const writeTargets = writeTargetsFor(store, root);
 	return {
 		store,
@@ -487,7 +493,7 @@ interface StoreRevision {
 function storeRevision(store: DesktopConfigStore, root: DesktopConfigRoots): StoreRevision {
 	const reader = STORE_READERS[store];
 	const read = reader.read(root);
-	return { store, scope: reader.scope, status: read.status, revision: configRevision(store, read.status, read.value) };
+	return { store, scope: reader.scope, status: read.status, revision: configRevision(store, read.status, read.revisionValue === undefined ? read.value : read.revisionValue) };
 }
 
 function watchTarget(path: string): DesktopWatchTarget {
@@ -655,18 +661,20 @@ function planNotificationsWrite(data: unknown, root: DesktopConfigRoots, expecte
 	const currentValue = current.status === "valid" ? current.settings : undefined;
 	// Payload first, then the revision, in the documented order every store follows.
 	if (!isRecordValue(data) || !isRecordValue(data.audio) || !isRecordValue(data.audio.events)) return { error: INVALID_DATA };
-	const events: Record<string, unknown> = {};
+	// Every key the client sent is kept (an entries list, never property
+	// assignment, so `__proto__` cannot vanish) until the owner validator rejects it.
+	const events: Array<[string, unknown]> = [];
 	for (const [event, sound] of Object.entries(data.audio.events)) {
 		if (typeof sound === "string" && sound.startsWith("file:")) return { error: INVALID_DATA };
 		if (sound === NOTIFICATION_FILE_SOUND) {
 			const kept = currentValue?.audio.events[event as keyof NotificationSettings["audio"]["events"]];
 			if (typeof kept !== "string" || !kept.startsWith("file:")) return { error: INVALID_DATA };
-			events[event] = kept;
+			events.push([event, kept]);
 		} else {
-			events[event] = sound;
+			events.push([event, sound]);
 		}
 	}
-	const settings = { ...data, audio: { ...data.audio, events } };
+	const settings = { ...data, audio: { ...data.audio, events: Object.fromEntries(events) } };
 	if (!isNotificationSettings(settings)) return { error: INVALID_DATA };
 	const writeRevision = configWriteRevision("notifications", "global", current.status === "valid" ? "ok" : current.status, currentValue);
 	const conflict = revisionConflict(expected, writeRevision);

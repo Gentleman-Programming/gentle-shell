@@ -131,6 +131,7 @@ test("capabilities advertise the wired permission domain and no agent tool", asy
 		"set_review_mode",
 		"get_usage_stats",
 		"get_update_status",
+		"list_agent_definitions",
 		"get_status",
 	]);
 	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed"]);

@@ -277,12 +277,12 @@ test("resolveVimRuntime resolves local bundle cli entrypoint when provided", () 
 });
 
 test("audited Pi editor releases are one frozen exact allowlist that includes the installed TUI", () => {
-  assert.deepEqual([...AUDITED_PI_EDITOR_VERSIONS], ["0.99.1", "0.99.2", "1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.5.1", "1.5.2"]);
+  assert.deepEqual([...AUDITED_PI_EDITOR_VERSIONS], ["0.99.1", "0.99.2", "1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.5.1", "1.5.2", "1.6.0"]);
   assert.equal(bundledAgent.VERSION, INSTALLED_PI, "bundled and local metadata must describe the same actual installed release");
   assert.ok(Object.isFrozen(AUDITED_PI_EDITOR_VERSIONS));
   assert.throws(() => (AUDITED_PI_EDITOR_VERSIONS as unknown as string[]).push("0.99.3"), TypeError);
   assert.ok(isAuditedPiEditorVersion(INSTALLED_PI), `installed pi-tui ${INSTALLED_PI} must be audited`);
-  for (const unknown of ["0.99.3", "0.99.10", "0.99", "v0.99.2", " 0.99.2", "0.99.2-rc.1", ">=0.99.2", "1.0.1", ">=1.0.0", "v1.0.0", " 1.0.0", "1.0.0-rc.1", "1.2.1", "1.2.0-rc.1", "v1.2.0", ">=1.2.0", "1.4.1", "1.5.3", "1.5.2-rc.1", "1.4.0-rc.1", undefined, 99.2]) {
+  for (const unknown of ["0.99.3", "0.99.10", "0.99", "v0.99.2", " 0.99.2", "0.99.2-rc.1", ">=0.99.2", "1.0.1", ">=1.0.0", "v1.0.0", " 1.0.0", "1.0.0-rc.1", "1.2.1", "1.2.0-rc.1", "v1.2.0", ">=1.2.0", "1.4.1", "1.6.1", "1.6.0-rc.1", "1.5.3", "1.5.2-rc.1", "1.4.0-rc.1", undefined, 99.2]) {
     assert.equal(isAuditedPiEditorVersion(unknown), false, String(unknown));
   }
 });
@@ -827,4 +827,14 @@ test("visual highlight spans wraps and treats collapsed paste as one selection u
   const lines = adapter.renderSelection(12, { line: 0, col: 0 }, { line: 0, col: e.getText().length });
   assert.ok(lines.filter((line) => line.includes("\x1b[7m")).length > 1);
   assert.equal(e.getExpandedText(), "z".repeat(1001) + " following long words");
+});
+
+test("unaudited 1.6.x metadata fails closed in the bundled host and the adapter", (t) => {
+  for (const v of ["1.6.1", "1.6.0-rc.1", "1.7.0"]) assert.equal(resolveVimRuntime(fabricatedPiCli(t, v), bundledAgent!.CustomEditor), undefined, v);
+  assert.equal(resolveVimRuntime(fabricatedPiCli(t, "1.6.0", "1.6.0", "1.5.2"), bundledAgent!.CustomEditor), undefined);
+  for (const v of ["1.6.1", "1.6.0-rc.1", "1.7.0"]) {
+    const e = editor(); e.setText("abcd"); (e as unknown as { focused: boolean }).focused = true; const frame = e.render(12);
+    assert.throws(() => createVimEditorAdapter(e, v), /unsupported/i, v);
+    assert.deepEqual(e.render(12), frame); assert.equal(e.getText(), "abcd");
+  }
 });

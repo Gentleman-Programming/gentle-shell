@@ -220,7 +220,7 @@ You should not have to run `git status` in every worktree to find out what your 
 
 Not everyone lives in a terminal. `/gentle:tower` opens a local web view where each project is a painted building and each open Gentle Shell session is a floor of it. The orchestrator and its named helpers (`worker`, `explore`, `verify`, or `worker-tests` when a role repeats) stand in the room of what they are doing: the map while exploring, the workshop while building, the lab while testing, the lounge when done. A `?` means a floor needs you.
 
-To open it without a session, run `gentle-shell tower` from any terminal: it prints the local URL, opens your browser and keeps serving until Ctrl+C (`--no-open` only prints the URL; `--port <n>` fixes the port, still `127.0.0.1` only).
+To open it without a session, run `gentle-shell tower` from any terminal: it prints the local URL, opens your browser and keeps serving until Ctrl+C (`--no-open` only prints the URL; `--port <n>` fixes the port, still `127.0.0.1` only; `--json` prints the URL as one JSON line for programs).
 
 - **Tasks at a glance**: each floor shows its todo progress (`2/4 · blocked: …`); click it for the full list. The map's corkboard notes are the same tasks.
 - **Talk to a floor** (`T`): read the orchestrator's latest words and send a message; it arrives as a new turn, or as a follow-up while the agent works. Questions asked in the terminal show as waiting; answer them there or tell the floor.

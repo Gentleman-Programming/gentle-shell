@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "get_status"],
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status"],
   "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "session_snapshot"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The package-status slice advertises exactly its one read method and no event; `/gentle:doctor` stays terminal-only. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), and [Status limits](#status-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The agent-definitions slice advertises exactly its one read method and no event; editing definitions stays a file edit. The package-status slice advertises exactly its one read method and no event; `/gentle:doctor` stays terminal-only. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), [Agent definitions limits](#agent-definitions-limits), and [Status limits](#status-limits).
 
 ### `get_snapshot`
 
@@ -877,6 +877,8 @@ Each entry carries only the whitelisted fields of the owner's `TaskRecord`:
 | `fallbackFrom` | The model the run moved away from, present only after a fallback switch. |
 | `thinking` | The thinking level the helper ran at, present only when one was resolved. |
 | `lastStep` | A closed phase label derived from the task status, never the raw owner step text: `queued`, `waiting`, `running`, a fixed safe active step (`starting`, `writing`, `cleaning up`, `generating tool arguments`, `question dismissed`, `answered`, `interrupted`), or the generic terminal reason (`completed`, `failed`, `cancelled`, `timed_out`). Raw `TaskRecord.lastStep` text can carry an error message, a stderr tail, or a provider body, so it is mapped into this closed vocabulary and never forwarded. |
+| `turns`, `toolCalls` | Progress inside the run: turns finished and tool calls started so far. Absent only from an owner that predates them. |
+| `activeTool` | The name of the tool running right now, only while the task is active and only when the name is a plain identifier (`[A-Za-z0-9_.:-]`, at most 64). Its arguments and output never cross; read them with `get_subagent_thread`. |
 | `usage` | The helper's accumulated usage: `total` tokens, `cost`, and — once the run settled — the final-assistant `input`, `output`, `cache` (read + write), and `reasoning` token breakdown. The breakdown fields are absent for an in-flight task whose breakdown is not recorded yet, and for a restored finished task whose run never recorded one. |
 
 No prompt text, tool arguments or output, working directory, session path, result, error text, or full session internals ever cross the wire in a list entry; tool arguments, tool output, and thread text are only readable, bounded, through [`get_subagent_thread`](#get_subagent_thread). The list is bounded: active tasks first (recency order), then recently-finished tasks (newest end first), capped at 50 entries, so the answer can never grow with the process lifetime. When the agents owner is absent (the owning extension is not loaded), the answer is `agents_unavailable` — never a fabricated empty list.
@@ -991,12 +993,13 @@ Success:
       { "model": "claude-opus-5-5", "messages": 2, "tokens": 1365, "cost": 0.51, "share": 0.512 },
       { "model": "gpt-5.5", "messages": 2, "tokens": 1300, "cost": 1.25, "share": 0.488 }
     ],
-    "byDay": [{ "day": "2026-09-20", "tokens": 1000 }, { "day": "2026-10-08", "tokens": 300 }, { "day": "2026-10-09", "tokens": 1365 }],
+    "byDay": [{ "day": "2026-09-20", "tokens": 1000, "cost": 1 }, { "day": "2026-10-08", "tokens": 300, "cost": 0.25 }, { "day": "2026-10-09", "tokens": 1365, "cost": 0.51 }],
+    "byProvider": [{ "provider": "anthropic", "messages": 4, "tokens": 2665, "cost": 1.76, "share": 1 }],
     "byProject": [
       { "name": "alpha", "sessions": 2, "messages": 3, "tokens": 2365, "cost": 1.51 },
       { "name": "beta", "sessions": 1, "messages": 1, "tokens": 300, "cost": 0.25 }
     ],
-    "truncated": { "byModel": false, "byDay": false, "byProject": false }
+    "truncated": { "byModel": false, "byDay": false, "byProvider": false, "byProject": false }
   }
 }
 ```
@@ -1005,11 +1008,12 @@ Success:
 | --- | --- |
 | `totals` | Sessions with at least one assistant usage record in range, those records (`messages`), their token counts, `totalTokens` (each record's own total, or the sum of its parts when it has none), and `cost` in the provider's currency units. Totals always cover the whole range, even when an array below is truncated. |
 | `byModel` | One row per model id, largest `tokens` first; `share` is the model's fraction of `totals.totalTokens`. At most 50 rows. |
-| `byDay` | Tokens per local calendar day (`YYYY-MM-DD`) with any usage, oldest first. At most 400 rows: the most recent days are kept. |
+| `byDay` | Tokens and cost per local calendar day (`YYYY-MM-DD`) with any usage, oldest first. At most 400 rows: the most recent days are kept. |
+| `byProvider` | One row per provider id (as Pi records it on each assistant message, `unknown` when missing), largest `tokens` first; `share` is the provider's fraction of `totals.totalTokens`. At most 50 rows. |
 | `byProject` | Present only for `scope: "all"`. One row per working directory, shown by its display name (the last path segment, never the path), largest `tokens` first. Two directories with the same last segment stay two rows. At most 50 rows. |
 | `truncated` | `true` for each array that had more rows than its bound. `byProject` appears only with `byProject`. |
 
-Model ids and project names longer than 128 characters are cut. No session id, path, provider, prompt, or message text ever crosses the wire. The panel's other figures (streaks, most active day, longest session) are not part of this answer. When no sessions root can be read, or the stats owner is not loaded, the answer is `stats_unavailable` — never a fabricated zero.
+Model ids, provider ids, and project names longer than 128 characters are cut. No session id, path, prompt, or message text ever crosses the wire. The panel's other figures (streaks, most active day, longest session) are not part of this answer. When no sessions root can be read, or the stats owner is not loaded, the answer is `stats_unavailable` — never a fabricated zero.
 
 ### `apply_profile`
 
@@ -1378,6 +1382,43 @@ Success:
 
 No absolute path, raw package source, registry URL, token, command line, or lookup output crosses the wire. A failed lookup is reported as `unknown`, never by its message. Running an update is out of scope: the client shows the command, and the launcher runs it. `updates_unavailable` answers only when the session is not bound or was replaced during the read, or a source fails unexpectedly.
 
+### `list_agent_definitions`
+
+Lists the agent definitions this session can launch, the subagent defaults, and Pi's default orchestrator. It reads the same sources `subagent_list_agents` discovers from, fresh on every call: `<agent home>/agents`, `<agent home>/subagents`, `<cwd>/.pi/agents`, and `<cwd>/.pi/subagents` (a later folder wins a name clash, so a project definition replaces a global one), the global and project `subagents.json`, and the three orchestrator keys of Pi's `settings.json` in the agent home. Params must be an empty object; any key is `invalid_request`, and a malformed request reads nothing. It has no side effects and emits no event.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-90", "method": "list_agent_definitions", "params": {} }
+```
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-90",
+  "ok": true,
+  "data": {
+    "agents": [
+      { "name": "explore", "description": "Global explorer.", "scope": "global", "model": "openai-codex/gpt-5.6-terra", "thinking": "high", "mode": null, "tools": ["read", "grep"], "toolsTruncated": false },
+      { "name": "worker", "description": "Project worker.", "scope": "project", "model": null, "thinking": null, "mode": "background", "tools": [], "toolsTruncated": false }
+    ],
+    "truncated": false,
+    "problems": { "invalid": 1, "notices": 0 },
+    "subagentDefaults": { "model": "anthropic/claude-luna", "thinking": null, "mode": "background" },
+    "defaultOrchestrator": { "status": "set", "model": "openai-codex/gpt-5.6-terra", "thinking": "medium" }
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `agents` | The discovered definitions, sorted by name, at most 200. `model`, `thinking`, and `mode` are what the definition declares (`null` when it inherits); the model a launch actually uses can still come from `subagents.json` profiles or a repository profile pin. `tools` is the list after tool overlays, at most 64 names. |
+| `truncated` | `true` when more than 200 definitions exist. |
+| `problems` | Counts of definitions that failed to parse (`invalid`) and of discovery notices such as unknown frontmatter keys or overlays naming unknown agents (`notices`). Their text names files, so only counts cross. |
+| `subagentDefaults` | `default_model`, `default_thinking`, and `default_mode` from `subagents.json` (project over global); `mode` defaults to `task`. |
+| `defaultOrchestrator.status` | `set` when Pi's `settings.json` names `defaultProvider` and `defaultModel`; `unset` when the file exists without them; `missing` when the file does not exist; `invalid` when it cannot be parsed. `model` is `provider/model` and `thinking` is `defaultThinkingLevel`, both only when `set`. |
+
+No file path, prompt body, or problem text crosses the wire. `agent_definitions_unavailable` answers when the session is not bound or discovery fails (for example an unreadable folder); its message never carries the failure text.
+
 ### `get_status`
 
 Reads the facts `/gentle:status` prints for this session's project, through the status owner in `extensions/gentle-ai.ts` (a versioned owner service, like review). Params must be an empty object; any key is `invalid_request`, and a malformed request never reaches the owner. It has no side effects and emits no event.
@@ -1714,7 +1755,7 @@ Carries the active session's projected subagent list whenever the existing agent
 }
 ```
 
-`agents` is the same whitelisted, bounded projection as `list_subagents` (`id`, `agent`, `status`, `model`, `modelSource?`, `fallbackFrom?`, `thinking?`, `lastStep`, `usage`), so a client that missed a response can reconcile from the event alone. The event is filtered to the active owner session; a foreign-session transition emits nothing to this bridge. Bursts of transitions are coalesced into one event per window and byte-identical projected lists are deduped, matching the activity publisher. A no-op or failed cancellation emits nothing: an already-terminal `cancel_subagent` changes nothing, so no event follows. When a changed `cancel_subagent` triggers the event, its response line always precedes the event line through the same router sequencer.
+`agents` is the same whitelisted, bounded projection as `list_subagents` (`id`, `agent`, `status`, `model`, `modelSource?`, `fallbackFrom?`, `thinking?`, `lastStep`, `usage`, `turns?`, `toolCalls?`, `activeTool?`), so a client that missed a response can reconcile from the event alone. The event is filtered to the active owner session; a foreign-session transition emits nothing to this bridge. Bursts of transitions are coalesced into one event per window and byte-identical projected lists are deduped, matching the activity publisher. A no-op or failed cancellation emits nothing: an already-terminal `cancel_subagent` changes nothing, so no event follows. When a changed `cancel_subagent` triggers the event, its response line always precedes the event line through the same router sequencer.
 
 ### `profile_applied`
 
@@ -1829,9 +1870,9 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 
 - **One owner, no second store or runner.** `list_subagents`, `cancel_subagent`, and the `agents_update` event reach the existing agents owner — the single parent-session `TaskStore` plus the parent `AgentRunner` — through a defensive, versioned owner-service adapter, the agents analogue of the jobs seam. There is no second store, no second runner, no subagent spawning, and no cached copy.
 - **List, cancel, and thread read only.** This slice has exactly three methods, `list_subagents`, `cancel_subagent`, and `get_subagent_thread`, and one event, `agents_update`. It does not start subagents: the agent dispatch tools stay agent tools, and there is no run/start method on this channel. `cancel_subagent` is the agents panel's exact stop path — `runner.cancel` — not a second stop implementation and never a request to the model to stop itself.
-- **Safe projection only.** A list or cancel entry carries exactly `id`, `agent`, `status`, `model`, `modelSource?`, `fallbackFrom?`, `thinking?`, `lastStep`, and `usage` (`total`, `cost`, and the final-assistant `input`/`output`/`cache`/`reasoning` breakdown when recorded). `lastStep` is a closed, status-derived phase label, never the raw owner step text, which can carry an error message, a stderr tail, or a provider body. No prompt text, working directory, session path, result, error text, or full session internals is ever returned or logged, and tool arguments, tool output, and thread text (including a streamed error note) appear only in a bounded `get_subagent_thread` item. A foreign field on an owner entry is dropped by the projection, never echoed.
+- **Safe projection only.** A list or cancel entry carries exactly `id`, `agent`, `status`, `model`, `modelSource?`, `fallbackFrom?`, `thinking?`, `lastStep`, `turns?`, `toolCalls?`, `activeTool?`, and `usage` (`total`, `cost`, and the final-assistant `input`/`output`/`cache`/`reasoning` breakdown when recorded). `lastStep` is a closed, status-derived phase label, never the raw owner step text, which can carry an error message, a stderr tail, or a provider body. No prompt text, working directory, session path, result, error text, or full session internals is ever returned or logged, and tool arguments, tool output, and thread text (including a streamed error note) appear only in a bounded `get_subagent_thread` item. A foreign field on an owner entry is dropped by the projection, never echoed.
 - **Bounded list.** `list_subagents` returns active tasks first (recency order), then recently-finished tasks (newest end first), capped at 50 entries. The store already evicts finished tasks beyond its own retention, so the answer can never grow with the process lifetime.
-- **No-op and failure mean no event.** A `cancel_subagent` on an already-terminal task answers that terminal state with no event, and a `cancel_subagent` on an unknown or foreign id answers `not_found` with no event. A running task's cancel is requested but asynchronous: the response reports the still-`running` state and emits no immediate byte-identical event; only the real store transition (the child exit to `cancelled`) emits through the normal `agents_update` path. Only an actual TaskStore transition (add, status change, or the completion-time usage recording) emits `agents_update`.
+- **No-op and failure mean no event.** A `cancel_subagent` on an already-terminal task answers that terminal state with no event, and a `cancel_subagent` on an unknown or foreign id answers `not_found` with no event. A running task's cancel is requested but asynchronous: the response reports the still-`running` state and emits no immediate byte-identical event; only the real store transition (the child exit to `cancelled`) emits through the normal `agents_update` path. A TaskStore transition (add, status change, or the completion-time usage recording) emits `agents_update` at once; progress inside a running task (a turn ends, a tool starts or ends, usage grows) emits it at most once per session every 500 ms, and only when the projected list actually changed.
 - **Usage persists across restore.** The completion-time usage breakdown is written to the task's history record, so a restored finished task keeps its final breakdown. A task whose run never recorded a breakdown (no final-assistant observation) has no breakdown fields after restore.
 - **Agent work reaches the app.** The bridge subscribes to the owner eagerly at session start, so a subagent started or settled by the agent (or any other path through the owner) still arrives as an `agents_update` event. Bursts of transitions are coalesced into one event per window and byte-identical projected lists are deduped, so a settle that records usage right after its status change still emits exactly once. Session replacement or shutdown disconnects the observer, cancels the pending coalesced flush, and drops late outcomes, and the router's own publisher guard drops superseded events. A changed `cancel_subagent`'s response always precedes its event.
 - **Thread read is the widget's projection.** `get_subagent_thread` reuses the `gentle-agents.activity/v1` per-thread projection and bounds (`projectRpcThread`, then `boundRpcThread`, in `lib/agents-rpc-publisher.ts`): the last 40 items, 2 000 characters per text item, 500 for tool args and output, and the 256 KB halving. It is a read behind the `cancel_subagent` ownership check, emits no event, and adds no channel: it is one more read on the existing owner-service adapter. Tool args and output are the subagent's own data — whatever its tools received and printed — bounded but not redacted.
@@ -1892,7 +1933,7 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **One owner, one loader, one aggregation.** `get_usage_stats` reaches the `/gentle:stats` owner in `extensions/gentle-stats.ts` through a defensive, versioned owner-service adapter, the stats analogue of the jobs seam. The owner reads the same sessions roots as the panel (the active home and the user's original Pi home) with the panel's own loader instance, so both share one size/mtime cache: an unchanged session file is never re-read. Totals, models, and days come from the panel's `aggregateStats` with the requested range and scope; each project row is that same aggregation scoped to one project. There is no second parser, cache, or store.
 - **Shared in-flight load.** The loader answers concurrent loads of the same roots with one in-flight scan, so overlapping Desktop requests (or a request while the panel is loading) read the history once. The scan is asynchronous and streams files line by line; nothing is persisted.
 - **Read only, no event.** This slice has exactly one method and no event. History changes as sessions run; a client re-reads when it wants fresh numbers.
-- **Safe, bounded projection.** The wire carries counts, token sums, costs, model ids, day keys, and project display names only. Arrays are capped (models 50, days 400, projects 50) with a `truncated` flag per array; totals stay complete. A session's id, path, provider, or message text never crosses, and a raw read failure is answered with the fixed `stats_unavailable` message.
+- **Safe, bounded projection.** The wire carries counts, token sums, costs, model ids, provider ids, day keys, and project display names only. Arrays are capped (models 50, days 400, providers 50, projects 50) with a `truncated` flag per array; totals stay complete. A session's id, path, or message text never crosses (provider ids are reported in `byProvider`), and a raw read failure is answered with the fixed `stats_unavailable` message.
 - **Truthful absence.** When no sessions root can be read, or the owner is not loaded, the answer is `stats_unavailable`. A readable root with no usage answers zeros, which is the truth.
 - **Same numbers as the panel, including its gaps.** Records the panel counts are counted here too: an assistant record with zero usage still counts as a message (see #1921). This slice does not change what the aggregation counts.
 
@@ -1905,6 +1946,13 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **Memory only.** A refresh result is kept in this Pi process's memory and answers later plain reads (across a session switch too); it is never written, so the launcher's own cache and its startup notice are unchanged.
 - **Gaps stated.** Pi's latest version is known only in a bundled install. Package `latest` is always `null`. A git package has no `current`. `gentle-ai-managed` is detected only when the running gentle-pi is the `npm:gentle-pi` package Pi installed.
 - **Read only, no event.** This slice has exactly one method and no event, and it never runs an update.
+
+## Agent definitions limits
+
+- **One source of truth.** Discovery, defaults, and the orchestrator come from `discoverAgents`, `loadAgentsConfig`, and `readOrchestratorSettings`, the owners `subagent_list_agents` and `/gentle:profiles` already use; nothing is copied.
+- **Declared, not effective, models.** A definition's `model` is what its frontmatter declares. Routing in `subagents.json` and a repository profile pin can override it at launch; read them with `get_config` (`models`, `profiles`, `pins`).
+- **Bounded.** At most 200 agents, 64 tools per agent, names cut at 128 characters, descriptions at 512, and model ids over 256 characters reported as `null`.
+- **Read only, no event.** Definitions are plain files; a client that needs fresh data reads again. Editing them stays a file edit.
 
 ## Status limits
 
@@ -1934,6 +1982,7 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-review.test.ts \
   tests/desktop-rpc-stats.test.ts \
   tests/desktop-rpc-updates.test.ts \
+  tests/desktop-rpc-agent-definitions.test.ts \
   tests/desktop-rpc-status.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```

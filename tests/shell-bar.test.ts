@@ -295,15 +295,33 @@ test("renderShellBar keeps its own zero-window contract independent of the sideb
 	assert.match(renderShellBar(model({ usage }), plainTheme, 200)[0], /codex 5h ▱▱▱▱▱▱▱▱ 0% · week 0%$/);
 });
 
-test("renderShellBar shows an unknown context as a question mark after compaction", () => {
-	const [line] = renderShellBar(model({ contextPercent: null }), plainTheme, 160);
-	assert.match(line, /ctx ▱▱▱▱▱▱▱▱ \?%/);
+test("context bars distinguish unknown usage after compaction from disabled auto-compaction", () => {
+	for (const [headroom, label] of [[null, "? to compact"], ["off", "compact off"]] as const) {
+		const data = model({ contextPercent: null, contextHeadroom: headroom });
+		const [line] = renderShellBar(data, plainTheme, 160);
+		assert.ok(line.includes(`ctx ▱▱▱▱▱▱▱▱ ?% (${label})`), line);
+		const header = renderShellHeaderBar(buildShellHeaderModel(data), plainTheme, 160).text;
+		assert.ok(header.includes(`ctx ▱▱▱▱▱▱▱▱ ?% (${label})`), header);
+		const minimal = renderShellStatusBar(data, plainTheme, 160, undefined, { ...DEFAULT_VISUAL_SETTINGS, density: "minimal" }).rows.join("\n");
+		assert.ok(minimal.includes(`ctx ?% (${label})`), minimal);
+	}
 });
 
 test("renderShellBar right-aligns the session name when it fits", () => {
 	const [line] = renderShellBar(model({ sessionName: "Release notes" }), plainTheme, 120);
 	assert.equal(visibleWidth(line), 120);
 	assert.match(line, /Release notes$/);
+});
+
+test("renderShellBar drops only compaction detail when that makes room for the session name", () => {
+	const data = model({ cwd: "~/work/gentle-pi", branch: "main", modelId: "gpt-5.5", effort: "medium", sessionName: "Review",
+		contextPercent: 59, contextWindow: 1_048_576, contextHeadroom: 12_146, costTotal: 0, subscription: false });
+	const left = "✿ gentle shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▰▱▱▱ 59%";
+	assert.deepEqual([94, 98, 120].map(width => renderShellBar(data, plainTheme, width)[0]), [
+		left + " ⟡ $0.000   Review",
+		left + " ⟡ $0.000       Review",
+		left + " (12k to compact) ⟡ $0.000" + " ".repeat(12) + "Review",
+	]);
 });
 
 test("renderShellBar appends extension statuses as trailing segments", () => {

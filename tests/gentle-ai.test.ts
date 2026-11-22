@@ -3688,6 +3688,42 @@ for (const action of ["confirm", "deselect", "empty", "escape", "nothing"] as co
 	});
 }
 
+test("models screen stale cleanup keeps the keyboard focus visible at short heights", async (t) => {
+	const { fixture, writeStore, storePath } = profilesStoreFixture(t);
+	const entry = { model: "openai/alpha" };
+	const routes = { abandoned: entry, obsolete: entry, retired: entry };
+	writeStore({ team: routes, sibling: routes }, "team");
+	const subPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subPath, JSON.stringify({ model_profiles: routes }));
+	writeFileSync(fixture.globalPath, JSON.stringify(routes));
+	const paths = [subPath, fixture.globalPath, storePath];
+	const before = paths.map((path) => readFileSync(path, "utf8"));
+	fixture.tui.terminal.rows = 10;
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		panel.handleInput("\x1b[B");
+		assert.match(stripAnsi(renderComponent(panel)), /▸ \[x\] obsolete/);
+		panel.handleInput(" ");
+		for (let rows = 15; rows >= 3; rows--) {
+			fixture.tui.terminal.rows = rows;
+			const text = stripAnsi(renderComponent(panel));
+			assert.equal(text.split("\n").length, rows);
+			assert.match(text, /▸ \[ \] obsolete/);
+		}
+		assert.deepEqual(paths.map((path) => readFileSync(path, "utf8")), before);
+		panel.handleInput("\r");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	const expected = { obsolete: entry };
+	assert.deepEqual(JSON.parse(readFileSync(subPath, "utf8")), { model_profiles: expected });
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), expected);
+	const stored = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(stored.profiles, { team: expected, sibling: expected });
+	assert.equal(stored.active, "team");
+	assert.deepEqual(fixture.notifications, []);
+});
+
 test("models screen stale cleanup only removes a key from the store that actually has it", async (t) => {
 	const { fixture, writeStore, storePath } = profilesStoreFixture(t);
 	const entry = { model: "openai/alpha" };

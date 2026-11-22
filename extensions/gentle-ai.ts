@@ -5216,6 +5216,11 @@ class RoutingTablePanel implements OverlayComponent {
 		const table = this.tableLines(inner).map((line) => this.renderText(stripAnsi(line), "dim"));
 		this.hitRegions = [];
 		const card = this.cardFor(inner);
+		// At the frame's one-body-line minimum, show the focused cleanup row
+		// directly: there is no space left for the card's own border.
+		if (this.overlay === "cleanup" && Math.floor(this.terminalRows?.() ?? 24) <= 3) {
+			return this.renderFrame(card.lines, width);
+		}
 		return this.renderFrame(this.placeCard(table, card, inner), width);
 	}
 
@@ -5530,16 +5535,26 @@ class RoutingTablePanel implements OverlayComponent {
 			case "cleanup": {
 				const width = Math.min(inner - 4, 68);
 				const keys = this.cleanup!.keys;
-				const visible = Math.max(1, (this.terminalRows?.() ?? 24) - 15);
+				const bodyRows = Math.floor(this.terminalRows?.() ?? 24) - 2;
+				const compact = bodyRows < 13;
+				const top = compact ? 0 : 4;
+				const showTitle = !compact || bodyRows >= 4;
+				const showHint = !compact || bodyRows >= 5;
+				// Reserve the two card borders and optional chrome before sizing the window.
+				const chromeRows = compact ? Number(showTitle) + Number(showHint) : 7;
+				const visible = Math.max(1, bodyRows - top - 2 - chromeRows);
 				const start = Math.max(0, Math.min(this.cleanupCursor - Math.floor(visible / 2), keys.length - visible));
-				const lines = [this.renderText("Clean stale routing keys", "title"), ""];
-				if (start > 0) lines.push(this.renderText(`↑ ${start} more`, "dim"));
+				const lines: string[] = [];
+				if (showTitle) lines.push(this.renderText("Clean stale routing keys", "title"));
+				if (!compact) lines.push("");
+				if (!compact && start > 0) lines.push(this.renderText(`↑ ${start} more`, "dim"));
 				for (let i = start; i < Math.min(keys.length, start + visible); i++) {
 					lines.push(this.renderText(`${i === this.cleanupCursor ? "▸" : " "} [${this.cleanupSelected.has(keys[i]) ? "x" : " "}] ${sanitizeTerminalText(keys[i])}`, i === this.cleanupCursor ? "title" : "text"));
 				}
-				if (start + visible < keys.length) lines.push(this.renderText("↓ more", "dim"));
-				lines.push("", this.renderText("↑↓ choose · space toggle · enter clean · esc cancel", "dim"));
-				return { lines, width, top: 4, left: Math.max(0, Math.floor((inner - width) / 2)) };
+				if (!compact && start + visible < keys.length) lines.push(this.renderText("↓ more", "dim"));
+				if (!compact) lines.push("");
+				if (showHint) lines.push(this.renderText("↑↓ choose · space toggle · enter clean · esc cancel", "dim"));
+				return { lines, width, top, left: Math.max(0, Math.floor((inner - width) / 2)) };
 			}
 			case "model":
 				return this.modelCard(inner);

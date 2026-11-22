@@ -3751,6 +3751,29 @@ test("models screen cleanup transaction treats a shared project and user subagen
 	assert.deepEqual(readFileSync(userPath), originalUserBytes, "the old user path is not part of the cleanup");
 });
 
+test("models screen cleanup transaction refuses to write while Desktop is applying a profile", async (t) => {
+	const { fixture, bytes } = cleanupTransactionFixture(t);
+	const before = bytes();
+	let feedback = "";
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		assert.match(stripAnsi(renderComponent(panel)), /\[x\] abandoned/);
+		assert.equal(beginDesktopProfileApply(), true);
+		try {
+			panel.handleInput("\r");
+			feedback = stripAnsi(renderComponent(panel));
+			assert.equal(beginDesktopProfileApply(), false, "cleanup never releases a gate it did not acquire");
+		} finally {
+			endDesktopProfileApply();
+		}
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.match(feedback, /Cleanup failed: Gentle Desktop is applying a profile right now/s);
+	assert.doesNotMatch(feedback, /Removed \d+ stale routing/);
+	assert.deepEqual(bytes(), before, "a busy apply leaves every cleanup store unchanged");
+});
+
 test("models screen cleanup transaction rejects a profile changed since the panel opened", async (t) => {
 	const { fixture, storePath, bytes } = cleanupTransactionFixture(t);
 	let external: ReturnType<typeof bytes>;

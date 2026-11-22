@@ -7238,9 +7238,7 @@ async function openProfilesPanelLoop(
 					});
 					const keys = [...new Set([...subStores.flatMap((sub) => sub.keys), ...models.flatMap((store) => store.keys),
 						...profileStores.flatMap((profile) => profile.keys)])].sort();
-					return { keys,
-						notices: () => routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles, authorityAvailable),
-						apply: (selected) => {
+					const applySelected = (selected: string[]) => {
 						// Agent definitions can appear while the card is open; judge the selection again.
 						const inventory = cleanupInventory();
 						const stillStale = new Set([
@@ -7300,7 +7298,21 @@ async function openProfilesPanelLoop(
 						}
 						file = next;
 						return file;
-					} };
+					};
+					return {
+						keys,
+						notices: () => routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles, authorityAvailable),
+						apply: (selected) => {
+							if (!beginDesktopProfileApply()) {
+								throw new Error("Gentle Desktop is applying a profile right now; nothing was removed. Try again when it finishes.");
+							}
+							try {
+								return applySelected(selected);
+							} finally {
+								endDesktopProfileApply();
+							}
+						},
+					};
 				},
 			}));
 			draftOverride = undefined;

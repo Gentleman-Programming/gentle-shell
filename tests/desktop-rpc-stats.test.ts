@@ -41,7 +41,7 @@ const localDay = (iso: string): string => localDayKey(Date.parse(iso));
 const ALPHA = "/home/devel/secret/alpha";
 const BETA = "/home/devel/secret/beta";
 
-interface Usage { at: string; model: string; input: number; output: number; cacheRead?: number; cacheWrite?: number; total?: number; cost: number }
+interface Usage { at: string; provider?: string; model: string; input: number; output: number; cacheRead?: number; cacheWrite?: number; total?: number; cost: number }
 
 function writeSession(root: string, cwd: string, id: string, usages: Usage[], prompt = "secret prompt text"): void {
 	const dir = join(root, `--${cwd.replace(/[\\/]+/g, "-")}--`);
@@ -54,7 +54,7 @@ function writeSession(root: string, cwd: string, id: string, usages: Usage[], pr
 			timestamp: usage.at,
 			message: {
 				role: "assistant",
-				provider: "test-provider",
+				provider: usage.provider ?? "test-provider",
 				model: usage.model,
 				content: [{ type: "text", text: "secret answer text" }],
 				usage: {
@@ -430,4 +430,33 @@ test("the projection bounds 51 models, 401 days, and 51 projects and cuts long m
 	assert.ok(out.byModel.every((model) => model.model.length <= 128));
 	const days = out.byDay.map((day) => day.day);
 	assert.deepEqual([...days].sort(), days);
+});
+
+// ---- Providers (gentle-shell-gpui parity, T10) ----
+
+test("get_usage_stats splits usage by provider, largest first, and bounds the provider rows", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "desktop-rpc-stats-providers-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const at = new Date(NOW).toISOString();
+	writeSession(root, ALPHA, "multi", [
+		{ at, provider: "anthropic", model: "claude-a", input: 300, output: 0, cost: 0.3 },
+		{ at, provider: "openai", model: "gpt-a", input: 100, output: 0, cost: 0.2 },
+		{ at, provider: "anthropic", model: "claude-a", input: 100, output: 0, cost: 0.1 },
+	]);
+	const app = harness(t, { roots: [root] });
+	await app.invoke("providers", { range: "7d", scope: "project" });
+	assert.deepEqual(app.responses()[0].data.byProvider, [
+		{ provider: "anthropic", messages: 2, tokens: 400, cost: 0.4, share: 0.8 },
+		{ provider: "openai", messages: 1, tokens: 100, cost: 0.2, share: 0.2 },
+	]);
+
+	const many = mkdtempSync(join(tmpdir(), "desktop-rpc-stats-many-providers-"));
+	t.after(() => rmSync(many, { recursive: true, force: true }));
+	writeSession(many, ALPHA, "many", Array.from({ length: 51 }, (_, index) => ({ at, provider: `p-${String(index).padStart(2, "0")}`, model: "m", input: 1, output: 0, cost: 0 })));
+	const bounded = harness(t, { roots: [many] });
+	await bounded.invoke("many", { range: "7d", scope: "project" });
+	const data = bounded.responses()[0].data;
+	assert.equal(data.byProvider.length, 50);
+	assert.equal(data.truncated.byProvider, true);
+	assert.equal(data.totals.totalTokens, 51, "totals stay complete");
 });

@@ -1571,7 +1571,7 @@ The registry's status label (an environment variable name or a command) never cr
 
 ### `reload_credentials`
 
-Makes this session pick up credentials added or removed elsewhere (another terminal's `/login`, the desktop app's own sign-in, an edited environment file) without restarting. It calls `modelRegistry.refresh({ allowNetwork: false })`, which rebuilds which providers are configured and which models are available; no model catalog is fetched. Params must be an empty object. Concurrent calls share one refresh.
+Makes this session pick up credentials added or removed elsewhere (another terminal's `/login`, the desktop app's own sign-in). Environment variables are read from the process environment at each lookup, so editing an environment file does not reach a running session without restarting. It calls `modelRegistry.refresh({ allowNetwork: false })`, which rebuilds which providers are configured and which models are available; no model catalog is fetched. Params must be an empty object. Concurrent calls share one refresh.
 
 ```json
 { "ok": true, "data": { "reloaded": true, "aborted": false, "failedProviders": [], "providers": [ /* as get_auth_status */ ], "truncated": false } }
@@ -2127,7 +2127,8 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-agent-definitions.test.ts \
   tests/desktop-rpc-status.test.ts \
   tests/desktop-rpc-background-subagents.test.ts \
-  tests/desktop-rpc-auth.test.ts \n  tests/maintainer/desktop-rpc.maintest.ts
+  tests/desktop-rpc-auth.test.ts \
+  tests/maintainer/desktop-rpc.maintest.ts
 ```
 
 The permission tests register the real `registerYoloSessionPolicy` owner with an isolated temporary config home and a stub identity resolver; they never read or write the user's own permission store.

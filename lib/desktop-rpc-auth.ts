@@ -89,7 +89,7 @@ export function projectAuthStatus(registry: DesktopAuthRegistry): DesktopAuthSta
 	const providers = ids.slice(0, DESKTOP_AUTH_LIMITS.providers).map((provider): DesktopProviderAuth => {
 		const status = registry.getProviderAuthStatus(provider);
 		const configured = status?.configured === true;
-		const source = configured && typeof status.source === "string" ? SOURCES[status.source] ?? null : null;
+		const source = configured && typeof status.source === "string" && Object.hasOwn(SOURCES, status.source) ? SOURCES[status.source]! : null;
 		let type: CredentialType | null = null;
 		if (configured) type = registry.isUsingOAuth(firstModel.get(provider)!) ? "oauth" : "api_key";
 		return { provider, displayName: displayName(registry, provider), configured, type, source };

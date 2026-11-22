@@ -50,10 +50,6 @@ for (const [label, decoder] of decoders) {
 		for (const state of ["approved", "reviewing"]) {
 			assert.throws(() => decoder.decodeReviewStatusV3(status(state, structuredClone(key))), /status\.non_blocking_findings requires a current compact-v2 authority in correction_required or escalated/, state);
 		}
-		const legacy = status("correction_required", structuredClone(key));
-		legacy.authority.version = "legacy-v1";
-		delete legacy.frozen; delete legacy.receipt; delete legacy.authority_target_identity;
-		assert.throws(() => decoder.decodeReviewStatusV3(legacy), /status\.non_blocking_findings requires a current compact-v2 authority in correction_required or escalated/);
 		assert.throws(() => decoder.decodeReviewStatusV3(status("correction_required", structuredClone(key), "gentle-ai.review-integration.status/v8")), /gentle-ai native review status\/v8 is older than the supported v9 \(gentle-ai v4\.6\.0\); update gentle-ai or remove the dev-binary override/, "status/v8 is refused as older than the supported minimum");
 	});
 

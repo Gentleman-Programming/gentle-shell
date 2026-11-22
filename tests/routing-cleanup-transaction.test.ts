@@ -95,6 +95,20 @@ test("rejects changed bytes and changed identity before renaming any destination
   assert.equal(fs.readdirSync(dir).length, 4);
  }
 });
+test("rejects a destination changed after the preflight, before its own rename", t => {
+ const { dir, paths, replacements } = fixture(t);
+ const snapshot = snapshotRoutingCleanup(paths);
+ const rename = fs.renameSync;
+ let changed = false;
+ t.mock.method(fs, "renameSync", (from: any, to: any) => {
+  if (!changed && String(to) === paths[0]) { changed = true; fs.writeFileSync(paths[2], "external"); }
+  return rename(from, to);
+ });
+ assert.throws(() => commitRoutingCleanup(snapshot, replacements), { message: `Routing cleanup failed: Routing cleanup input changed: ${paths[2]}` });
+ assert.equal(fs.readFileSync(paths[2], "utf8"), "external");
+ [0, 1, 3].forEach(i => assert.equal(fs.readFileSync(paths[i], "utf8"), `old${i}`));
+ assert.equal(fs.readdirSync(dir).length, 4);
+});
 test("rejects a no-op destination that changed after capture", t => {
  const { dir, paths, replacements } = fixture(t);
  replacements.set(paths[2], Buffer.from("old2"));

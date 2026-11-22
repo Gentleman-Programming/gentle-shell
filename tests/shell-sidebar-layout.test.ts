@@ -1100,7 +1100,7 @@ test("the header leaf carries the rule row: a two-line header renders both lines
 
 	const node = f.root[NODE]() as unknown as { type: string; entries: { component: Component }[] };
 	assert.equal(node.type, "vstack", "a two-line header still wraps the hstack in a vstack");
-	const header = node.entries[0]!.component as { render(width: number): string[] };
+	const header = node.entries[0]!.component as unknown as { render(width: number): readonly string[] };
 	assert.deepEqual(header.render(0), ["HEADER 140", "RULE 140"], "both the status line and the rule row reach the layout, rendered at the terminal width minus the rail's right inset");
 });
 

@@ -255,7 +255,7 @@ test("capabilities advertise get_changes and get_change_diff and no changes even
 	await a.fire("session_start");
 	const response = await a.call("capabilities");
 	for (const method of DESKTOP_CHANGES_METHODS) assert.ok(response.data.methods.includes(method), method);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed"], "reads advertise no event");
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"], "reads advertise no event");
 	await a.fire("session_shutdown");
 });
 

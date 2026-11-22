@@ -22,6 +22,7 @@ import { allowedEditSurfaces as hasTaskScopedAllowedEditSurfaces, bindSessionRep
 import { sameMessageToolCalls } from "../lib/writer-batch-admission.ts";
 import { rejectUnriskedVerifierLaunch } from "../lib/verifier-admission.ts";
 import { VERIFIER_SETTLE_REMINDER_TYPE, createVerifierSettleReminders, finalAssistantText } from "../lib/verifier-settle-reminder.ts";
+import { trackCodexTurnContinuation } from "../lib/codex-turn-continuation.ts";
 import { consumeReviewMutation, pendingReviewMutation, pendingReviewMutationProfiles, recordReviewMutation, type ReceiptSession } from "../lib/review-reminder-receipt.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import { snapshotReviewStartContext } from "../lib/review-start-context.ts";
@@ -147,7 +148,7 @@ import {
 	type ProfilePinSource,
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
-import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { clearSessionProfileBinding, readSessionProfileBinding, readSessionProfileStartupNone } from "../lib/session-profile-binding.ts";
 import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection, type SessionProfileLifecycleManager } from "../lib/session-profile-integration.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority, requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
@@ -179,6 +180,27 @@ import {
 	type DesktopReviewOwnerWrite,
 	type DesktopReviewService,
 } from "../lib/desktop-rpc-review.ts";
+import {
+	DESKTOP_STATUS_SERVICE_CHANNEL,
+	DESKTOP_STATUS_SERVICE_SCHEMA,
+	packageStatusSeverity,
+	type DesktopPackageStatus,
+	type DesktopStatusOwnerRead,
+	type DesktopStatusService,
+} from "../lib/desktop-rpc-status.ts";
+import {
+	DESKTOP_BACKGROUND_SUBAGENTS_SERVICE_CHANNEL,
+	DESKTOP_BACKGROUND_SUBAGENTS_SERVICE_SCHEMA,
+	type DesktopBackgroundSubagentsOwnerRead,
+	type DesktopBackgroundSubagentsService,
+} from "../lib/desktop-rpc-background-subagents.ts";
+import {
+	globalPersonaPath,
+	projectPersonaPath,
+	resolvePersonaMode,
+	writePersonaMode as writePersonaModeFiles,
+	type PersonaMode as PersonaConfigMode,
+} from "../lib/persona-config.ts";
 import {
 	REVIEW_HOST_RELAY_FAILURE,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_ENV,
@@ -388,11 +410,15 @@ function packageAssetAudit(owner: PackageAssetOwner): { stale: number; overrides
 	return { stale, overrides };
 }
 
+/** The counts behind `/gentle:status`'s asset lines, shared with the Desktop status read. */
+function packageAssetCounts(cwd: string, owner: PackageAssetOwner): { stale: number; overrides: number; local: number } {
+	return { ...packageAssetAudit(owner), local: localAgentOverrideCount(cwd, owner) };
+}
+
 function packageAssetDiagnosticLines(cwd: string): string[] {
 	return (["delegation", "review"] as const).flatMap((owner) => {
 		const label = owner;
-		const { stale, overrides } = packageAssetAudit(owner);
-		const local = localAgentOverrideCount(cwd, owner);
+		const { stale, overrides, local } = packageAssetCounts(cwd, owner);
 		const lines = [`${stale > 0 ? "warn" : "pass"}: Global ${label} assets stale: ${stale} file(s)`];
 		if (stale > 0) {
 			lines[0] += ` — run /gentle:install-${owner} --force to refresh managed assets`;
@@ -1263,6 +1289,7 @@ async function resolveReviewAssessmentPlan(
 				cwd,
 				...untracked,
 				...(input.baseRef === undefined ? {} : { baseRef: input.baseRef, committedOnly: true as const }),
+				...(input.escalate === undefined ? {} : { escalate: input.escalate }),
 				...(signal === undefined ? {} : { signal }),
 			};
 			assessment = await nativeReviewCli.assess(request);
@@ -1537,6 +1564,7 @@ const FULL_DELEGATION_SENTENCE_REPLACEMENTS: ReadonlyArray<readonly [string, str
 const RDD_ONLY_SENTENCES: readonly string[] = [
 	" When RDD is on and native assess returns a tier, that tier wins.",
 	" (assess `escalate` when RDD is on or unknown)",
+	" RDD on: `escalate` makes review due.",
 	"- An eligible interactive Pi host may resolve `gentle-ai.review-integration.consent/v3` before the envelope reaches the model. Permission: host-owned. If `gentle_review` returns the envelope unresolved, it is still the original provider-owned two-choice contract. Use `ask_user_choice` exactly or relay losslessly and stop. Never add the host action to a decoded or relayed provider envelope.\n",
 	" The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch; native review runs only under the user-owned RDD switch.",
 ];
@@ -1720,7 +1748,7 @@ async function pathExists(path: string): Promise<boolean> {
 	}
 }
 
-type PersonaMode = "gentleman" | "neutral";
+type PersonaMode = PersonaConfigMode;
 
 const PERSONA_OPTIONS = ["gentleman", "neutral"] as const;
 
@@ -3096,42 +3124,22 @@ function secondaryMergeSourcePath(cwd: string, target: CurrentProfileTarget | un
 	return target !== undefined ? modelConfigPath(cwd) : legacyProjectModelConfigPath(cwd);
 }
 
+// The persona files have one owner, lib/persona-config.ts, shared with the
+// Desktop `persona` config store.
 function projectPersonaConfigPath(cwd: string): string {
-	return join(cwd, ".pi", "gentle-ai", "persona.json");
+	return projectPersonaPath(cwd);
 }
 
 function personaConfigPath(_cwd: string): string {
-	return join(gentleAiConfigHome(), "persona.json");
-}
-
-function readPersonaFile(path: string): PersonaMode | undefined {
-	if (!existsSync(path)) return undefined;
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-		if (!isRecord(parsed)) return undefined;
-		return parsed.mode === "neutral" ? "neutral" : "gentleman";
-	} catch {
-		return undefined;
-	}
+	return globalPersonaPath(gentleAiConfigHome());
 }
 
 function readPersonaMode(cwd: string): PersonaMode {
-	return (
-		readPersonaFile(projectPersonaConfigPath(cwd)) ??
-		readPersonaFile(personaConfigPath(cwd)) ??
-		"gentleman"
-	);
+	return resolvePersonaMode(cwd, gentleAiConfigHome());
 }
 
 function writePersonaMode(cwd: string, mode: PersonaMode): string[] {
-	const paths = [personaConfigPath(cwd)];
-	const projectPath = projectPersonaConfigPath(cwd);
-	if (existsSync(projectPath)) paths.push(projectPath);
-	for (const path of paths) {
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, `${JSON.stringify({ mode }, null, 2)}\n`);
-	}
-	return paths;
+	return writePersonaModeFiles(cwd, gentleAiConfigHome(), mode);
 }
 
 // A pinned or active profile is a complete routing snapshot, so while the
@@ -7293,6 +7301,33 @@ function startupStateText(startup: SessionProfileStartupState): string {
 }
 
 /**
+ * Desktop `clear_profile_binding`: the same owner action as `/gentle:profiles
+ * clear`, behind the apply gate, with its notices recorded instead of shown.
+ * The outcome is read from the binding store, not from notice text: any
+ * owner warning is `not_cleared` (even when the store moved, as after a failed
+ * append), a change is `cleared`, else `unchanged`.
+ */
+async function clearDesktopSessionProfile(context: ExtensionContext): Promise<{ status: "cleared" | "unchanged" | "not_cleared" | "busy" }> {
+	if (!beginDesktopProfileApply()) return { status: "busy" };
+	try {
+		const sessionId = context.sessionManager?.getSessionId?.();
+		const state = () => (typeof sessionId === "string" ? JSON.stringify([readSessionProfileBinding(sessionId) ?? null, readSessionProfileStartupNone(sessionId)]) : "");
+		const before = state();
+		let warned = false;
+		const ui = Object.create(context.ui, {
+			notify: { value: (_message: string, type?: "info" | "warning" | "error") => { if (type === "warning" || type === "error") warned = true; } },
+		});
+		await handleProfilesClear(Object.create(context, { ui: { value: ui, enumerable: true } }) as ExtensionContext);
+		if (warned) return { status: "not_cleared" };
+		return { status: state() !== before ? "cleared" : "unchanged" };
+	} catch {
+		return { status: "not_cleared" };
+	} finally {
+		endDesktopProfileApply();
+	}
+}
+
+/**
  * `/gentle:profiles clear`: go back to the startup state when it is known
  * (gentle-shell#2742, section 3), else append a legacy clear record, and publish
  * only the returned state. Never-bound, already-cleared and startup sessions
@@ -7474,7 +7509,7 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 		operation: {
 			type: "string",
 			enum: Object.values(REVIEW_CONTROLLER_OPERATION),
-			description: "Controller operation. Inspect authority before start. Reset requires the exact challenge returned by inspect.",
+			description: "Controller operation. Inspect authority before start. Reset routes to native review reclaim (lineage, actor, reason) after a fresh UI confirmation.",
 		},
 		lineageId: {
 			type: "string",
@@ -7497,7 +7532,7 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 		},
 		input: {
 			type: "string",
-			description: "A JSON object or serialized object string for START/ASSESS/answer-consent/abandon/STATUS; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"} plus the agent lens selection {\"lenses\":[...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus). answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. For Pi v3 use consent.consentBinding; otherwise use top-level consent_binding. Both are Pi-minted, never a lineage id. An explicit baseRef requires committedOnly: true and requests a committed range; baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, and escalate. The escalate is {\"item\":N,\"reason\":\"...\"} with item an integer from 1 to 6 and a non-empty reason of at most 500 characters; any other shape is rejected, and omitting it means no escalation. Ordinary provider capture belongs only to gentle_review_capture. Legacy controller input remains separate.",
+			description: "A JSON object or serialized object string for START/ASSESS/answer-consent/abandon/STATUS; every other operation requires a serialized object string. New native ordinary START uses {\"mode\":\"ordinary\"} plus the agent lens selection {\"lenses\":[...],\"lensesReason\":\"<what you touched and how>\"} (both or neither, 1-4 of risk, resilience, readability, reliability; never with focus). answer-consent uses exactly {\"consentBinding\":\"<opaque id>\",\"answer\":\"granted|declined\"}. For Pi v3 use consent.consentBinding; otherwise use top-level consent_binding. Both are Pi-minted, never a lineage id. An explicit baseRef requires committedOnly: true and requests a committed range; baseRef must be HEAD, a full 40- or 64-character commit id, or a ref name. ASSESS accepts an optional object with baseRef, committedOnly, writerModelId, writerEffort, nativeReviewOutcome, and escalate. The escalate is {\"item\":N,\"reason\":\"...\"} with item an integer from 1 to 6 and a non-empty reason of at most 500 UTF-8 bytes; any other shape is rejected, and omitting it means no escalation. A valid escalate is forwarded to native assess, which makes native review due. Ordinary START accepts the same escalate (one line) and freezes it so the tier and consent read high; INSPECT does not take it. Ordinary provider capture belongs only to gentle_review_capture. Legacy controller input remains separate.",
 		},
 		outputPath: { type: "string", description: "Retired; ignored." },
 		inputPath: { type: "string", description: "Repository-local input file for the retired legacy controller flow." },
@@ -7878,13 +7913,10 @@ async function authorizeDestructiveReviewOperation(
 	ctx: ExtensionContext,
 ): Promise<void> {
 	const parameters = parseReviewControllerParameters(parametersValue);
-	// RESET alone carries the legacy repository-wide challenge. Native compact-v2
-	// RECOVER has its own six-field contract and its own derived
-	// `gentle-ai.review-recovery-authorization/v1` binding, neither of which the
-	// legacy `repositoryId`/`commonDirHash`/`inventoryHash`/`confirmation` quartet
-	// can express. Native INSPECT never publishes that quartet either, so
-	// demanding it here made the only supported recovery flow unreachable
-	// (issue #212).
+	// RESET routes to native `review reclaim` (lineage, actor, reason) behind a
+	// fresh UI confirmation. The legacy repository-wide challenge quartet is gone:
+	// its only producer was the deleted legacy detector, so demanding it forced
+	// callers to invent values.
 	// RECOVER authorizes itself in `executeReviewControllerOperation` because its
 	// binding can only be derived from a fresh native target-status read. ABANDON joins that self-authorizing
 	// family for the same reason (issue #1159): its binding is derived from a
@@ -7893,16 +7925,12 @@ async function authorizeDestructiveReviewOperation(
 	const isReset = parameters.operation === REVIEW_CONTROLLER_OPERATION.RESET;
 	if (!isReset) return;
 	const input = parseControllerJson(requiredControllerString(parameters, "input"), parameters.operation);
-	for (const key of ["repositoryId", "commonDirHash", "inventoryHash"] as const) {
-		if (typeof input[key] !== "string" || input[key].length === 0) throw new Error(`Review controller ${parameters.operation} requires an exact string ${key}`);
-	}
-	if (typeof input.confirmation !== "string" || input.confirmation.length === 0) throw new Error(`Review controller ${parameters.operation} requires an exact string confirmation`);
 	if (!ctx.hasUI) {
 		throw new Error(`Review controller ${parameters.operation.toUpperCase()} requires fresh explicit authorization through the interactive Pi UI; headless execution fails closed`);
 	}
 	const approved = await ctx.ui.confirm(
 		`Authorize destructive review authority ${parameters.operation.toUpperCase()}?`,
-		[`Operation: ${parameters.operation.toUpperCase()}`, `Repository: ${input.repositoryId}`, `Exact challenge: ${input.confirmation}`, "This invalidates all prior review authority for this repository."].join("\n"),
+		[`Operation: ${parameters.operation.toUpperCase()}`, `Lineage: ${String(input.lineage ?? "")}`, `Actor: ${String(input.actor ?? "")}`, `Reason: ${String(input.reason ?? "")}`, "This quarantines the lineage's incomplete review store through native gentle-ai review reclaim."].join("\n"),
 	);
 	if (!approved) throw new Error(`Review controller ${parameters.operation.toUpperCase()} was not explicitly authorized`);
 }
@@ -8733,7 +8761,7 @@ function nativeStartRejection(reason: string, field?: string): Record<string, un
 							? "native-start-committed-only-required"
 							: reason === "committed-only-invalid"
 								? "native-start-committed-only-invalid"
-								: reason === "unknown-field" || reason === "focus-invalid" || reason === "lenses-invalid" || reason === "untracked-selection-invalid" || reason === "provider-base-offer-invalid" || reason === "provider-base-tree-mismatch"
+								: reason === "unknown-field" || reason === "escalate-invalid" || reason === "focus-invalid" || reason === "lenses-invalid" || reason === "untracked-selection-invalid" || reason === "provider-base-offer-invalid" || reason === "provider-base-tree-mismatch"
 									? "native-start-input-invalid"
 									: "native-start-policy-path-invalid",
 		reason,
@@ -8785,6 +8813,7 @@ interface PendingReviewConsent {
 	untrackedSelection?: RetainedNativeUntrackedSelection;
 	consent: ReviewConsentEnvelope;
 	requestContextPath?: string;
+	escalate?: AgentRiskEscalation;
 	consentDigest: string;
 }
 
@@ -11338,10 +11367,7 @@ async function executeReviewControllerOperationImpl(
 		}
 		clearRetainedNativeStatusSelectionsOnTerminal(retainedUntrackedSelections, defaultCwd, status.authority?.lineageId, status.authority?.state); retainNativeCaptureRoutes(retainedUntrackedSelections, defaultCwd, status, frozenTarget?.committedOnly === true ? nativeCommittedRangeSelector(frozenTarget) : undefined);
 		if (status.authority?.version === "compact-v2") return { operation: parameters.operation, repaired: false, compact_authority: "immutable-untouched", status: mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined) };
-		if (status.authority?.version !== "legacy-v1") return mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
-		const store = ReviewTransactionStore.forRepository(defaultCwd);
-		store.repairCurrentAuthority();
-		return { operation: parameters.operation, repaired: true };
+		return mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined);
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.ACKNOWLEDGE_APPROVED) {
 		const controllerOnlyInput = ["changeName", "idempotencyKey", "transition", "input", "outputPath", "inputPath", "operationId", "lineageIds", "acknowledgeUntrustedBundleSource"]
@@ -11536,6 +11562,7 @@ async function executeReviewControllerOperationImpl(
 			const answered = await nativeReviewCli.answerConsent({
 				cwd: pending.authorityCwd,
 				...(pending.requestContextPath === undefined ? {} : { requestContextPath: pending.requestContextPath }),
+				...(pending.escalate === undefined ? {} : { escalate: pending.escalate }),
 				consent: pending.consent,
 				answer: input.answer,
 				...(signal === undefined ? {} : { signal }),
@@ -11606,8 +11633,13 @@ async function executeReviewControllerOperationImpl(
 		assertSupportedReviewStartMode(rawStart.mode);
 		if (rawStart.mode === REVIEW_MODE.ORDINARY) {
 			if ("policyHash" in rawStart) return nativeStartRejection("legacy-policy-hash-unsupported");
-			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "requestContextPath", "focus", "lenses", "lensesReason", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
+			const unknownField = Object.keys(rawStart).find((field) => !["mode", "baseRef", "committedOnly", "policyPath", "requestContextPath", "focus", "lenses", "lensesReason", "escalate", "untrackedScope", "expectedUntrackedInventory", "intendedUntracked"].includes(field));
 			if (unknownField !== undefined) return nativeStartRejection("unknown-field", unknownField);
+			let escalateContext: { escalate?: AgentRiskEscalation } = {};
+			if (rawStart.escalate !== undefined) {
+				try { escalateContext = { escalate: decodeAgentRiskEscalation(rawStart.escalate) }; }
+				catch { return nativeStartRejection("escalate-invalid"); }
+			}
 			if (rawStart.requestContextPath !== undefined && !isCanonicalProcessString(rawStart.requestContextPath)) return nativeStartRejection("request-context-invalid");
 			const requestContext: { requestContextPath?: string } = {};
 			if (rawStart.requestContextPath !== undefined) {
@@ -11626,7 +11658,7 @@ async function executeReviewControllerOperationImpl(
 				? {}
 				: validateNativeStartPolicyPath(defaultCwd, rawStart.policyPath);
 			if (policy.reason !== undefined) return nativeStartRejection(policy.reason);
-			const startContext = snapshotReviewStartContext({ ...requestContext, ...lensSelection, ...(isNativeStartFocus(focus) ? { focus } : {}), ...(policy.policyPath === undefined ? {} : { policyPath: policy.policyPath }) });
+			const startContext = snapshotReviewStartContext({ ...requestContext, ...escalateContext, ...lensSelection, ...(isNativeStartFocus(focus) ? { focus } : {}), ...(policy.policyPath === undefined ? {} : { policyPath: policy.policyPath }) });
 			const baseRef = rawStart.baseRef;
 			if (baseRef !== undefined && !isCanonicalProcessString(baseRef)) return nativeStartRejection("base-ref-invalid");
 			if (baseRef !== undefined && rawStart.committedOnly !== true) return nativeStartRejection("committed-only-required");
@@ -11856,6 +11888,7 @@ async function executeReviewControllerOperationImpl(
 							...(retainedUntrackedSelection === undefined ? {} : { untrackedSelection: retainedUntrackedSelection }),
 							consent: error.consent,
 							...requestContext,
+							...escalateContext,
 							consentDigest,
 						};
 						pendingReviewConsentRegistry.add(pendingReviewConsentSession, pending);
@@ -12605,10 +12638,10 @@ function createGentleAiExtensionForTesting(
 			// "Use ABANDON only after an explicit user decision. ABANDON accepts only lineage, actor, and reason (reason must be the native enum `operator_disposition` or `retired_schema`): Pi freshly reads the native authority inventory, derives the lineage's revision, snapshot identity, and discarded-work summary, and renders the exact eight-line binding before interactive approval; caller-supplied inventory-derived fields are rejected. `review dispose-result` is unsupported pending design."
 			"Use ABANDON only after an explicit user decision with exact provider-issued inputs; Pi freshly reads the native inventory, renders the exact authorization binding for interactive approval, and rejects caller-supplied inventory-derived fields. `review dispose-result` is unsupported pending design.",
 			"Lens, refuter, and validator verdicts are admitted natively, never Pi-authored; ordinary capture uses gentle_review_capture with exactly one current provider-owned collectBinding and never follows another transition.",
-			"For blocked-legacy or blocked-mixed, do not call START repeatedly: explain invalidation, then call RESET or RECOVER only after explicit user authorization. Both are destructive, routed to audited native `gentle-ai review reclaim` (only RESET carries the legacy hashes and confirmation challenge) and `gentle-ai review recover` (exactly six inputs; never the reset challenge or a maintainerAuthorization): Pi reads fresh native target status, derives the exact native authorization binding for fresh UI approval, and re-reads status before mutating. Negotiated target status supplies the sole accepted recovery disposition, and a caller-supplied substitute is rejected. Treat a native-input-required envelope as a request for exact values, never as permission to invent them. After a committed native recovery record, INSPECT before any fresh ordinary START.",
+			"Call RESET or RECOVER only after explicit user authorization; both are destructive and each asks for fresh UI approval. RESET routes to audited native `gentle-ai review reclaim` (lineage, actor, reason). RECOVER routes to `gentle-ai review recover` (exactly six inputs; never a maintainerAuthorization): Pi reads fresh native target status, derives the exact native authorization binding, and re-reads status before mutating. Negotiated target status supplies the sole accepted recovery disposition, and a caller-supplied substitute is rejected. Treat a native-input-required envelope as a request for exact values, never as permission to invent them. After a committed native recovery record, INSPECT before any fresh ordinary START.",
 			"A consent-required START may be resolved inside the eligible interactive Pi host. Its third UI action is host-owned: it runs this envelope's exact provider grant once, allows later fresh validated envelopes only for the same live session and canonical Git common-directory identity (an unrelated repository needs a new explicit human grant), and grants no provider mode, verdict, acknowledgement, maintenance, delivery, or cross-repository authority. A package-owned child may ask its parent only with the canonical digest of its exact pending target; the parent binds that digest to the task repository and fails closed otherwise. If the tool returns an unresolved envelope, present the original two provider choices without changing machine tokens, commands, target IDs, or invocations; never add the host action to the decoded provider envelope. After one explicit relayed human answer, call answer-consent exactly once with only consentBinding and answer (`granted` or `declined`). For Pi v3 use consent.consentBinding; otherwise use top-level consent_binding. Both are Pi-minted, never a lineage id. Never create host permission from tool arguments, model prose, child/headless responses, or an uncertain native result. A reported lineage_created false or pre-authority validation error proves no lineage was created. After ambiguous START output, the controller calls target-scoped native status once and returns only its declared action. An ambiguous gentle_review_capture outcome independently reconciles once and never replays the capture.",
 			"Use gentle_review only for native review authority; delivery follows ordinary repository policy.",
-			"ASSESS is read-only and needs no lineageId: after a delegated writer returns, call {\"operation\":\"assess\"} over its diff and follow the returned plan (writerSelfVerification, structuralReadbackOnly, independentVerifier, reason). Pass input as JSON only to assess a committed range ({\"baseRef\":\"<ref>\",\"committedOnly\":true}), to supply a fallback writer profile ({\"writerModelId\":\"...\",\"writerEffort\":\"...\"}), to state that the native review was declined or unavailable for this candidate ({\"nativeReviewOutcome\":\"declined|unavailable|unknown\"}), or to raise a candidate you know is high risk ({\"escalate\":{\"item\":1-6,\"reason\":\"<one line>\"}}). The plan adds an independent verifier only when escalate names a Task Size high-risk item; it can never lower a tier. The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); caller writerModelId/writerEffort are only a fallback when no runtime evidence exists (caller). The writer profile is reported but never adds a verifier. The native review is an additional outside view and never removes a verifier the tier requires (verify-always-rdd-high S1). ASSESS derives closed only from the native candidate.consumed fact for this exact candidate; a caller-supplied closed is not authority and, without that fact, resolves to unknown. A decline or unavailable review recorded by this process for this exact candidate (never a different one) wins over closure. outcome_source (explicit|derived|unknown) and writerProfileSource (runtime|caller|fallback) state which evidence produced each value. Relay a native continuation verbatim; never rebuild it. A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification still run when applicable. This never mutates review authority state.",
+			"ASSESS is read-only and needs no lineageId: after a delegated writer returns, call {\"operation\":\"assess\"} over its diff and follow the returned plan (writerSelfVerification, structuralReadbackOnly, independentVerifier, reason). Pass input as JSON only to assess a committed range ({\"baseRef\":\"<ref>\",\"committedOnly\":true}), to supply a fallback writer profile ({\"writerModelId\":\"...\",\"writerEffort\":\"...\"}), to state that the native review was declined or unavailable for this candidate ({\"nativeReviewOutcome\":\"declined|unavailable|unknown\"}), or to raise a candidate you know is high risk ({\"escalate\":{\"item\":1-6,\"reason\":\"<one line>\"}}). The plan adds an independent verifier only when escalate names a Task Size high-risk item; it can never lower a tier. An escalation is also forwarded to native assess, which raises the tier to high and reports reviewDue true, so a native review becomes due (due is computed only by native). The writer profile comes from the runtime-recorded model and effort of the pending mutations for this root (writerProfileSource runtime); caller writerModelId/writerEffort are only a fallback when no runtime evidence exists (caller). The writer profile is reported but never adds a verifier. The native review is an additional outside view and never removes a verifier the tier requires (verify-always-rdd-high S1). ASSESS derives closed only from the native candidate.consumed fact for this exact candidate; a caller-supplied closed is not authority and, without that fact, resolves to unknown. A decline or unavailable review recorded by this process for this exact candidate (never a different one) wins over closure. outcome_source (explicit|derived|unknown) and writerProfileSource (runtime|caller|fallback) state which evidence produced each value. Relay a native continuation verbatim; never rebuild it. A native code review is not a substitute for applicable functional checks: tests, builds, and functional verification still run when applicable. This never mutates review authority state.",
 		],
 		parameters: REVIEW_CONTROLLER_PARAMETERS,
 		executionMode: "sequential",
@@ -12789,6 +12822,7 @@ function createGentleAiExtensionForTesting(
 					lineageId: { type: "string" }, lenses: { type: "array", minItems: 1, maxItems: 4, items: { type: "string", enum: ["risk", "resilience", "readability", "reliability"] } },
 					lensesReason: { type: "string" }, requestContextPath: { type: "string" }, untrackedScope: { type: "string", enum: ["exclude", "select"] },
 					intendedUntracked: { type: "array", items: { type: "string" } },
+					escalate: { type: "object", additionalProperties: false, required: ["item", "reason"], description: "Pass the same escalate you named on assess so the run's assessment and START reflect it and make review due: {item: integer 1-6 high-risk item, reason: one line, non-empty, at most 500 UTF-8 bytes}. Ignored on resume with lineageId.", properties: { item: { type: "integer", minimum: 1, maximum: 6 }, reason: { type: "string", minLength: 1 } } },
 				},
 			},
 			executionMode: "sequential",
@@ -13185,20 +13219,22 @@ function createGentleAiExtensionForTesting(
 	// gets one visible reminder and one continuation per user prompt. Earlier proposed entries are kept. The incoming
 	// `canContinue` is false for a completed run (its last message is the assistant's); Pi re-validates the continuation
 	// after the appended reminder, so it is not a precondition here.
+	const codexFallback = trackCodexTurnContinuation(pi);
 	pi.on("agent_before_settle", (event, ctx) => {
-		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
-		const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
-		if ((verifierSettleNamedRuns.get(sessionKey) ?? 0) > 0) return undefined;
-		if (event.outcome !== "completed") return undefined;
-		const reminder = verifierSettleReminders.beforeSettle(
-			sessionKey,
-			finalAssistantText(event.context.contextMessages),
-		);
-		if (reminder === undefined) return undefined;
-		return {
-			entries: [...event.entries, { type: "custom_message", customType: VERIFIER_SETTLE_REMINDER_TYPE, content: reminder, display: true }],
-			continue: true,
-		};
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD !== "1") {
+			const sessionKey = pendingReviewConsentSessionKey(ctx, pendingReviewConsentFallbackKey);
+			if ((verifierSettleNamedRuns.get(sessionKey) ?? 0) <= 0 && event.outcome === "completed") {
+				const reminder = verifierSettleReminders.beforeSettle(
+					sessionKey,
+					finalAssistantText(event.context.contextMessages),
+				);
+				if (reminder !== undefined) return {
+					entries: [...event.entries, { type: "custom_message", customType: VERIFIER_SETTLE_REMINDER_TYPE, content: reminder, display: true }],
+					continue: true,
+				};
+			}
+		}
+		return codexFallback(event, ctx);
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
@@ -13396,6 +13432,7 @@ function createGentleAiExtensionForTesting(
 			request.respond({
 				schema: DESKTOP_PROFILES_SERVICE_SCHEMA,
 				apply: (applyRequest) => (disposed ? Promise.resolve({ status: "not_applied", notes: [] }) : applyDesktopProfile(ctx, pi, applyRequest)),
+				clear: () => (disposed ? Promise.resolve({ status: "not_cleared" as const }) : clearDesktopSessionProfile(ctx)),
 				dispose: () => {
 					disposed = true;
 				},
@@ -13777,6 +13814,96 @@ function createGentleAiExtensionForTesting(
 					disposed = true;
 				},
 			});
+		} catch {
+			/* obsolete trusted context: discovery expires closed */
+		}
+	});
+
+	// Desktop get/set_background_subagents: the same resolution and the same
+	// global writer as `/gentle:background-subagents`. The bridge asks the user
+	// to confirm before it calls `write`, so the switch stays user-initiated.
+	if (typeof pi.events?.on === "function") pi.events.on(DESKTOP_BACKGROUND_SUBAGENTS_SERVICE_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object") return;
+		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopBackgroundSubagentsService): void }>;
+		if (typeof request.respond !== "function" || !request.context) return;
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
+		const cwd = request.context.sessionManager?.getCwd?.() ?? request.context.cwd;
+		let disposed = false;
+		const read = async (): Promise<DesktopBackgroundSubagentsOwnerRead> => {
+			if (disposed) return { kind: "unavailable" };
+			const resolution = resolveBackgroundSubagentsPolicy(cwd);
+			const source = resolution.source === "project_file" ? "project" as const : resolution.source === "global_file" ? "global" as const : resolution.source;
+			return {
+				kind: "status",
+				state: {
+					effective: resolution.policy,
+					source,
+					malformed: resolution.malformed,
+					projectFile: resolution.projectFileExists ? "present" : "absent",
+					globalFile: resolution.globalFileExists ? "present" : "absent",
+					capability: resolveBackgroundSubagentsCapability(cwd, readActiveToolNames(pi)),
+				},
+			};
+		};
+		try {
+			request.respond({
+				schema: DESKTOP_BACKGROUND_SUBAGENTS_SERVICE_SCHEMA,
+				read,
+				async write(policy) {
+					if (disposed) return { kind: "unavailable" };
+					try {
+						writeGlobalBackgroundSubagentsPolicy(policy);
+					} catch {
+						return { kind: "failed" };
+					}
+					// Report the owner's re-read after the write, not the write's echo.
+					return await read();
+				},
+				dispose: () => { disposed = true; },
+			});
+		} catch {
+			/* obsolete trusted context: discovery expires closed */
+		}
+	});
+
+	// Desktop `get_status`: the facts `/gentle:status` prints, structured and
+	// path-free. The dev-binary override is resolved but never run (no version
+	// spawn), and its path, the routing file path, and the `--force` hints stay
+	// in the terminal answer.
+	if (typeof pi.events?.on === "function") pi.events.on(DESKTOP_STATUS_SERVICE_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object") return;
+		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopStatusService): void }>;
+		if (typeof request.respond !== "function" || !request.context) return;
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
+		const cwd = request.context.sessionManager?.getCwd?.() ?? request.context.cwd;
+		let disposed = false;
+		const read = async (): Promise<DesktopStatusOwnerRead> => {
+			if (disposed) return { kind: "unavailable" };
+			let devBinary: DesktopPackageStatus["devBinary"];
+			try {
+				const override = resolveGentleAiDevBinaryOverride();
+				devBinary = override === undefined ? { state: "inactive", sha256Prefix: null } : { state: "active", sha256Prefix: override.sha256.slice(0, 16) };
+			} catch (error) {
+				if (!(error instanceof GentleAiDevBinaryOverrideError)) throw error;
+				devBinary = { state: "invalid", sha256Prefix: null };
+			}
+			const savedConfig = await readModelRoutingAuthorityAsync(modelConfigPath(cwd), legacyProjectModelConfigPath(cwd));
+			const assets = (owner: PackageAssetOwner) => {
+				const { stale, overrides, local } = packageAssetCounts(cwd, owner);
+				return { stale, userOverrides: overrides, activeAgentOverrides: local };
+			};
+			const status = {
+				package: "active" as const,
+				odd: "active" as const,
+				persona: readPersonaMode(cwd),
+				devBinary,
+				assets: { delegation: assets("delegation"), review: assets("review") },
+				modelConfig: { global: existsSync(modelConfigPath(cwd)) ? "present" as const : "missing" as const, routing: savedConfig.status },
+			};
+			return { kind: "status", status: { ...status, severity: packageStatusSeverity(status) } };
+		};
+		try {
+			request.respond({ schema: DESKTOP_STATUS_SERVICE_SCHEMA, read, dispose: () => { disposed = true; } });
 		} catch {
 			/* obsolete trusted context: discovery expires closed */
 		}

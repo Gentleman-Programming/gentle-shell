@@ -1839,7 +1839,7 @@ test(`${channel} emits only a private, balanced Herdr projection`, () => {
 		registerTool() {},
 	} as unknown as ExtensionAPI;
 	createGentleAiExtension({ nativeReviewCli: null })(pi);
-	const privateHostDiscovery = new Set(["gentle:yolo:host-ui", "gentle:rdd:host-ui", "gentle:desktop:profiles-service", "gentle:desktop:review-service"]);
+	const privateHostDiscovery = new Set(["gentle:yolo:host-ui", "gentle:rdd:host-ui", "gentle:desktop:profiles-service", "gentle:desktop:review-service", "gentle:desktop:status-service", "gentle:desktop:background-subagents-service"]);
 	for (const channel of privateHostDiscovery) assert.equal(eventHandlers.has(channel), true);
 	assert.deepEqual([...eventHandlers.keys()].filter(name => !privateHostDiscovery.has(name)).sort(), [
 		"gentle-pi:ask-user-choice:blocked", "gentle-pi:ask-user-question:blocked", "rpiv:ask-user:blocked",

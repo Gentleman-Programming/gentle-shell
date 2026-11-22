@@ -147,12 +147,15 @@ const REQUIRED_SCHEMAS_COMMON = Object.freeze([
 const REQUIRED_MANDATORY_FEATURES = Object.freeze([
 	"compact_v2_authority",
 	"immutable_snapshot",
-	"legacy_v1_target_scoped_read_only",
 	"repository_independent_capabilities",
 	"restart_safe_projection",
 	"target_scoped_status",
 	"uniform_failure_envelope",
 ]         );
+// Legacy-v1 review authority is no longer supported. gentle-ai v4.6.0 still
+// announces this mandatory feature, so it is tolerated (not required): a
+// provider may announce it or not.
+const TOLERATED_LEGACY_MANDATORY_FEATURE = "legacy_v1_target_scoped_read_only";
 const CAPABILITIES_IDENTITY = Object.freeze({
 	requiredSchemas: Object.freeze([...REQUIRED_SCHEMAS_COMMON, REVIEW_MINIMUM_CAPABILITIES_IDENTITY, "gentle-ai.review-integration.consent/v3", "gentle-ai.review-integration.start/v4", "gentle-ai.review-integration.status/v6", "gentle-ai.review-intended-untracked-selection/v1"]),
 	optionalFeatureFloor: 14,
@@ -1062,24 +1065,29 @@ export function decodeReviewCapabilitiesV2(value         , verifiedExecutableDig
 	const optional = array(features.optional, "capabilities.features.optional", (entry, label) => decodeOptionalFeature(entry, label), { minimum: identity.optionalFeatureFloor, unique: true });
 	const mandatoryNames = mandatory.map((feature) => feature.name);
 	const optionalNames = optional.map((feature) => feature.name);
-	assertExactSet(mandatoryNames, requiredMandatoryFeatures, "mandatory capabilities");
+	if (mandatoryNames.filter((name) => name === TOLERATED_LEGACY_MANDATORY_FEATURE).length > 1) throw new TypeError("mandatory capabilities contain duplicate names");
+	assertExactSet(mandatoryNames.filter((name) => name !== TOLERATED_LEGACY_MANDATORY_FEATURE), requiredMandatoryFeatures, "mandatory capabilities");
 	if (new Set(optionalNames).size !== optionalNames.length) throw new TypeError("optional capabilities contain duplicate names");
 	if (optionalNames.some((name) => mandatoryNames.includes(name                           ))) throw new TypeError("mandatory and optional capabilities overlap");
 	if (mandatory.some((feature) => !feature.supported)) throw new TypeError("mandatory capability is unsupported");
 
-	const compatibility = exactRecord(body.compatibility, "capabilities.compatibility", ["minimum_protocol_major", "maximum_protocol_major", "additive_minor_policy", "unknown_mandatory", "unknown_optional", "modes", "legacy_window"]);
+	const compatibility = exactRecord(body.compatibility, "capabilities.compatibility", ["minimum_protocol_major", "maximum_protocol_major", "additive_minor_policy", "unknown_mandatory", "unknown_optional", "modes"], ["legacy_window"]);
 	if (compatibility.minimum_protocol_major !== 2 || compatibility.maximum_protocol_major !== 2 || compatibility.additive_minor_policy !== "optional-fields-only" || compatibility.unknown_mandatory !== "reject" || compatibility.unknown_optional !== "ignore") {
 		throw new TypeError("incompatible capability evolution policy");
 	}
-	const modes = enumArray(compatibility.modes, Object.values(REVIEW_AUTHORITY_VERSION), "capabilities.compatibility.modes", { minimum: 2, maximum: 2 });
-	if (modes[0] !== REVIEW_AUTHORITY_VERSION.COMPACT_V2 || modes[1] !== REVIEW_AUTHORITY_VERSION.LEGACY_V1) throw new TypeError("capabilities compatibility modes are out of order");
-	const legacyWindow = exactRecord(compatibility.legacy_window, "capabilities.compatibility.legacy_window", ["mode", "state", "read_only", "deprecation_started", "removal", "minimum_compatibility_releases"]);
-	if (legacyWindow.mode !== REVIEW_AUTHORITY_VERSION.LEGACY_V1) throw new TypeError("capabilities legacy window mode is incompatible");
-	enumeration(legacyWindow.state, ["pre-fence", "active", "deprecated", "expired"]         , "capabilities.compatibility.legacy_window.state");
-	boolean(legacyWindow.read_only, "capabilities.compatibility.legacy_window.read_only");
-	boolean(legacyWindow.deprecation_started, "capabilities.compatibility.legacy_window.deprecation_started");
-	nonempty(legacyWindow.removal, "capabilities.compatibility.legacy_window.removal");
-	integer(legacyWindow.minimum_compatibility_releases, "capabilities.compatibility.legacy_window.minimum_compatibility_releases", 1);
+	const modes = enumArray(compatibility.modes, Object.values(REVIEW_AUTHORITY_VERSION), "capabilities.compatibility.modes", { minimum: 1, maximum: 2 });
+	const modesCompactOnly = modes.length === 1 && modes[0] === REVIEW_AUTHORITY_VERSION.COMPACT_V2;
+	const modesWithLegacy = modes.length === 2 && modes[0] === REVIEW_AUTHORITY_VERSION.COMPACT_V2 && modes[1] === REVIEW_AUTHORITY_VERSION.LEGACY_V1;
+	if (!modesCompactOnly && !modesWithLegacy) throw new TypeError("capabilities compatibility modes are out of order");
+	if (compatibility.legacy_window !== undefined) {
+		const legacyWindow = exactRecord(compatibility.legacy_window, "capabilities.compatibility.legacy_window", ["mode", "state", "read_only", "deprecation_started", "removal", "minimum_compatibility_releases"]);
+		if (legacyWindow.mode !== REVIEW_AUTHORITY_VERSION.LEGACY_V1) throw new TypeError("capabilities legacy window mode is incompatible");
+		enumeration(legacyWindow.state, ["pre-fence", "active", "deprecated", "expired"]         , "capabilities.compatibility.legacy_window.state");
+		boolean(legacyWindow.read_only, "capabilities.compatibility.legacy_window.read_only");
+		boolean(legacyWindow.deprecation_started, "capabilities.compatibility.legacy_window.deprecation_started");
+		nonempty(legacyWindow.removal, "capabilities.compatibility.legacy_window.removal");
+		integer(legacyWindow.minimum_compatibility_releases, "capabilities.compatibility.legacy_window.minimum_compatibility_releases", 1);
+	}
 
 	if (body.bootstrap !== undefined) {
 		const bootstrap = exactRecord(body.bootstrap, "capabilities.bootstrap", ["command", "target_selector_variants", "required_feature", "unsupported_outcome", "parent_only"]);
@@ -2025,7 +2033,7 @@ export function decodeReviewStatusV3(value         )                 {
 	if (body.authority !== undefined) {
 		const source = exactRecord(body.authority, "status.authority", ["version", "lineage_id", "state", "generation", "revision"]);
 		authority = {
-			version: enumeration(source.version, Object.values(REVIEW_AUTHORITY_VERSION), "status.authority.version"),
+			version: enumeration(source.version, [REVIEW_AUTHORITY_VERSION.COMPACT_V2]         , "status.authority.version"),
 			lineageId: lineage(source.lineage_id, "status.authority.lineage_id"),
 			state: nonempty(source.state, "status.authority.state"),
 			generation: integer(source.generation, "status.authority.generation", 1),
@@ -2048,10 +2056,6 @@ export function decodeReviewStatusV3(value         )                 {
 		};
 	}
 	if (authority?.version === REVIEW_AUTHORITY_VERSION.COMPACT_V2 && frozen === undefined) throw new TypeError("compact-v2 status requires frozen metadata");
-	if (authority?.version === REVIEW_AUTHORITY_VERSION.LEGACY_V1 && (frozen !== undefined || body.authority_target_identity !== undefined)) throw new TypeError("legacy status cannot expose frozen metadata or authority_target_identity");
-	if (authority?.version === REVIEW_AUTHORITY_VERSION.LEGACY_V1 && receipt !== undefined && receipt.status !== "expected_missing" && receipt.status !== "present") {
-		throw new TypeError("legacy status receipt is incompatible");
-	}
 
 	const action = enumeration(body.action, STATUS_ACTIONS, "status.action");
 	const actionDisposition = body.action_disposition === undefined ? undefined : enumeration(body.action_disposition, Object.values(REVIEW_STATUS_ACTION_DISPOSITION), "status.action_disposition");

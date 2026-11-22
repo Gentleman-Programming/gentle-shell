@@ -302,50 +302,6 @@ export function resolveRepositoryAuthorityV1(cwd: string): RepositoryAuthorityV1
 	});
 }
 
-export interface RepositoryAuthorityRecoveryV1 extends RepositoryAuthorityV1 {
-	readonly identity_broken: boolean;
-}
-
-// RESL2-001 / RELY2-001 remediation: a pinned root commit removed by an
-// ordinary history rewrite (e.g. `git branch -D` on an orphan root) makes
-// the SUBSET check in `resolveRepositoryAuthorityV1` fail permanently.
-// That is correct, fail-closed behavior for ordinary access — but recovery
-// inspection could never even start if it called that same fail-closed
-// resolver as its first line. This lenient variant runs the identical live
-// probe but never throws on a broken subset: when the pin no longer holds,
-// it reports `identity_broken: true` and computes a fresh, NOT-YET-PERSISTED
-// identity from the CURRENT live root-commit set instead, so explicit
-// recovery inspection can detect the break and surface it. This function
-// must never be used by ordinary read/mutation paths — only by the explicit
-// recovery-inspection path (legacy authority detection).
-export function resolveRepositoryAuthorityForRecoveryV1(cwd: string): RepositoryAuthorityRecoveryV1 {
-	const probe = probeLiveRepositoryV1(cwd);
-	const pinned = readPinnedRepositoryIdentityV1(probe.storeRoot);
-	let repository_identity: ReviewRepositoryIdentityBodyV1;
-	let identity_broken = false;
-	if (pinned) {
-		const live = new Set(probe.liveAnchors);
-		const subsetHolds = pinned.object_format === probe.objectFormat && pinned.root_commit_ids.every((anchor) => live.has(anchor));
-		if (subsetHolds) {
-			repository_identity = pinned;
-		} else {
-			identity_broken = true;
-			repository_identity = { schema: "gentle-ai.review-repository/v1", object_format: probe.objectFormat, root_commit_ids: probe.liveAnchors };
-		}
-	} else {
-		repository_identity = { schema: "gentle-ai.review-repository/v1", object_format: probe.objectFormat, root_commit_ids: probe.liveAnchors };
-	}
-	const repository_id = domainHashV1("repository", repository_identity);
-	return Object.freeze({
-		common_directory: probe.canonicalCommonDirectory,
-		store_root: probe.storeRoot,
-		repository_identity,
-		repository_id,
-		authority_id: domainHashV1("authority", { repository_id, graph_format: "graph-v1" }),
-		identity_broken,
-	});
-}
-
 export function reviewStoreRootForRepositoryV1(cwd: string): string {
 	return resolve(resolveRepositoryAuthorityV1(cwd).store_root);
 }

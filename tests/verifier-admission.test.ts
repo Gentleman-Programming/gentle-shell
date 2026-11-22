@@ -162,7 +162,7 @@ test("S3/S5: the orchestrator tool_call hook gates only primary verifier launche
 
 test("S6: the Verification rule and the reference docs point at the runtime admission", () => {
 	const read = (path: string) => readFileSync(join(import.meta.dirname, "..", path), "utf8");
-	assert.ok(read("assets/orchestrator.md").includes("independent `gentle-ai-verify`; else inline; runtime admission, gates/overengineering"), "the core rule names the runtime check");
+	assert.ok(read("assets/orchestrator.md").includes("independent `gentle-ai-verify`; else inline; see `orchestrator-verification.md`"), "the core rule points at the verification module that names the runtime check");
 	assert.ok(read("assets/orchestrator-verification.md").includes("(runtime admits its launch on a `Risk: item N` line or sentence, a feature-document task line, or past the context backstop)"), "the normative rule names the admitted line");
 	const docs = read("docs/readme-reference.md");
 	const writer = docs.indexOf("A second admission check stops small-task delegation");

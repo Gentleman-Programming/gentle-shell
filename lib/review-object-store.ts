@@ -121,63 +121,6 @@ export class ReviewGraphObjectStoreV1 {
 		return descriptor;
 	}
 
-	repairCurrentPointers(): void {
-		let quorum: CurrentPointerV1;
-		try {
-			quorum = this.readQuorum();
-		} catch (error) {
-			// Genesis (generation-0) forward recovery: if the store has no
-			// prior generation at all — evidenced by there being exactly one
-			// installed root-set object in the entire store, ever — and that
-			// sole object hash-verifies as an unambiguous genesis candidate
-			// for this repository/authority, reconstruct all three CURRENT
-			// slots from it. Any ambiguity (zero or multiple installed
-			// objects, or the sole object failing to hash-verify or not
-			// being a genesis candidate) stays fail-closed with the
-			// original quorum error.
-			const candidate = this.discoverSoleGenesisRootSet();
-			if (!candidate) throw error;
-			this.writePointer(0, candidate, 0);
-			this.writePointer(1, candidate, 1);
-			this.writePointer(2, candidate, 2);
-			return;
-		}
-		for (const slot of [0, 1, 2]) {
-			try {
-				const pointer = this.readPointer(slot);
-				if (pointer.root_set_id === quorum.root_set_id && pointer.generation === quorum.generation) continue;
-			} catch {}
-			this.writePointer(slot, this.readRootSet(quorum.root_set_id), quorum.slot_epoch);
-		}
-	}
-
-	private discoverSoleGenesisRootSet(): ReviewRootSetEnvelopeV1 | undefined {
-		const base = join(this.root, "roots", "sha256");
-		if (!existsSync(base)) return undefined;
-		const objectIds: string[] = [];
-		for (const prefix of readdirSync(base)) {
-			const prefixPath = join(base, prefix);
-			if (!statSync(prefixPath).isDirectory()) continue;
-			for (const suffix of readdirSync(prefixPath)) objectIds.push(`${prefix}${suffix}`);
-		}
-		if (objectIds.length !== 1) return undefined;
-		let candidate: ReviewRootSetEnvelopeV1;
-		try {
-			candidate = this.readRootSet(objectIds[0]!);
-		} catch {
-			return undefined;
-		}
-		if (
-			candidate.body.repository_id !== this.#repositoryId ||
-			candidate.body.authority_id !== this.#authorityId ||
-			candidate.body.generation !== 0 ||
-			candidate.body.predecessor_root_set_id !== null
-		) {
-			return undefined;
-		}
-		return candidate;
-	}
-
 	private tryReadCurrent(): ReviewRootSetEnvelopeV1 | undefined { try { return this.readCurrent(); } catch { return undefined; } }
 	private readQuorum(): CurrentPointerV1 {
 		const pointers = [0, 1, 2].flatMap((slot) => { try { return [this.readPointer(slot)]; } catch { return []; } });

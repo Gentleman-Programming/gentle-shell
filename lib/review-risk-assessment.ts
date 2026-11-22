@@ -268,8 +268,15 @@ export function decodeAgentRiskEscalation(value: unknown): AgentRiskEscalation {
 	if (typeof item !== "number" || !Number.isInteger(item) || !(item in HIGH_RISK_ITEMS)) {
 		throw new Error("escalate item must be an integer from 1 to 6 naming a high-risk item");
 	}
-	if (typeof reason !== "string" || reason.trim() === "" || reason.length > AGENT_RISK_ESCALATION_REASON_MAX) {
-		throw new Error(`escalate reason must be a non-empty string of at most ${AGENT_RISK_ESCALATION_REASON_MAX} characters`);
+	// Native assess measures --escalate-reason in UTF-8 bytes; count the same
+	// way so an accepted reason is never refused natively.
+	if (typeof reason !== "string" || reason.trim() === "" || new TextEncoder().encode(reason).length > AGENT_RISK_ESCALATION_REASON_MAX) {
+		throw new Error(`escalate reason must be a non-empty string of at most ${AGENT_RISK_ESCALATION_REASON_MAX} UTF-8 bytes`);
+	}
+	// The reason is documented as one line and rides a native argv and a consent
+	// invocation: a line break would break the provider's consent envelope.
+	if (/[\n\v\f\r\u0085\u2028\u2029]/.test(reason)) {
+		throw new Error("escalate reason must be one line: no line breaks");
 	}
 	return Object.freeze({ item: item as HighRiskItem, reason });
 }

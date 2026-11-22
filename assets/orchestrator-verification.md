@@ -19,7 +19,7 @@ The independent verifier runs only when the change touches a named Task Size hig
 
 ## Agent escalation (gentle-shell#1494)
 
-For Task Size high-risk work when RDD is on or unknown, assess with `"escalate": {"item": <1-6>, "reason": "<one line>"}`. With validated RDD off, name the risk and run the independent verifier without requiring assess. It adds a verifier only when `escalate` names a Task Size high-risk item; raises to high, keeps `nativeRisk`, returns `agentEscalation`, never lowers a tier.
+For Task Size high-risk work when RDD is on or unknown, assess with `"escalate": {"item": <1-6>, "reason": "<one line>"}`. It adds a verifier only when `escalate` names a Task Size high-risk item; raises to high, keeps `nativeRisk`, returns `agentEscalation`, never lowers a tier. With RDD on it also makes native review due, which a verifier never replaces.
 
 ## Verifier preparation failure
 

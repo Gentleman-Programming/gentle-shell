@@ -40,7 +40,7 @@ The permanent modules have direct production consumers after #191:
 | Permanent module | Direct production consumers |
 | --- | --- |
 | `review-canonical.ts` | `extensions/gentle-ai.ts` and eight live review modules |
-| `review-repository.ts` | `extensions/gentle-ai.ts`, graph object store, legacy detector, snapshot, and transaction |
+| `review-repository.ts` | `extensions/gentle-ai.ts`, graph object store, snapshot, and transaction |
 | `review-candidate-view.ts` | `extensions/gentle-ai.ts` |
 
 The remaining ordinary reducer is not dead authority. Historical graph event replay calls it to validate semantic adjacency. Deleting it would weaken graph integrity even though controller mutation is read-only.

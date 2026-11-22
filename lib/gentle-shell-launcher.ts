@@ -183,18 +183,26 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 export interface TowerArgs {
 	open: boolean;
 	port?: number;
+	/** Print one JSON line (`gentle-shell.tower/v1`) instead of the text lines. */
+	json?: true;
 	error?: string;
 }
 
-// `gentle-shell tower [--no-open] [--port <n>]`: the server always binds
-// 127.0.0.1; --port only fixes which local port.
+// `gentle-shell tower [--no-open] [--port <n>] [--json]`: the server always
+// binds 127.0.0.1; --port only fixes which local port; --json is for programs
+// (the desktop app) that read the URL instead of a person.
 export function parseTowerArgs(args: string[]): TowerArgs {
 	let open = true;
 	let port: number | undefined;
+	let json = false;
 	for (let i = 0; i < args.length; i += 1) {
 		const arg = args[i];
 		if (arg === "--no-open") {
 			open = false;
+			continue;
+		}
+		if (arg === "--json") {
+			json = true;
 			continue;
 		}
 		if (arg === "--port" || arg.startsWith("--port=")) {
@@ -207,7 +215,7 @@ export function parseTowerArgs(args: string[]): TowerArgs {
 		}
 		return { open, error: `unknown tower argument "${arg}"` };
 	}
-	return port === undefined ? { open } : { open, port };
+	return { open, ...(port === undefined ? {} : { port }), ...(json ? { json: true as const } : {}) };
 }
 
 // --- home resolution -------------------------------------------------------
@@ -1372,7 +1380,7 @@ export function helpText(): string {
 		"       gentle-shell memory migrate --confirm-quiescent",
 		"       gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]",
 		"       gentle-shell desktop [--yes] [--no-open] | --status | --uninstall",
-		"       gentle-shell tower [--no-open] [--port <n>]",
+		"       gentle-shell tower [--no-open] [--port <n>] [--json]",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",
@@ -1423,7 +1431,8 @@ export function helpText(): string {
 		"                   question); --status and --uninstall; 'gentle-shell desktop --help'.",
 		"  tower            Open the Gentle Tower outside any session: every open Gentle Shell session",
 		"                   as a floor, in your browser. Prints the local URL and serves until Ctrl+C.",
-		"                   --no-open only prints the URL; --port <n> fixes the port (127.0.0.1 only).",
+		"                   --no-open only prints the URL; --port <n> fixes the port (127.0.0.1 only);",
+		"                   --json prints one JSON line with the URL instead, for programs.",
 		"",
 		"Managing packages:",
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",

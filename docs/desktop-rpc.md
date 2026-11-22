@@ -62,7 +62,7 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding"],
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials"],
   "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "session_snapshot"]
 }
 ```
@@ -1540,6 +1540,45 @@ Runs `/gentle:profiles clear` for this session: the session goes back to the pro
 
 Publishing a profile to the repository is not a separate method: it is the repository pin, written with `set_config` on `pins` with `{ "source": "repo", "profile": "<name>" }` (and `profile: null` to unpublish).
 
+### `get_auth_status`
+
+Lists the providers this session knows models for, and whether each has credentials and of which kind. It reads Pi's model registry (`ctx.modelRegistry`) from memory: no file is read and no credential value is ever touched. Params must be an empty object. It has no side effects and emits no event.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-97",
+  "ok": true,
+  "data": {
+    "providers": [
+      { "provider": "anthropic", "displayName": "Anthropic", "configured": true, "type": "oauth", "source": "stored" },
+      { "provider": "openai-codex", "displayName": "OpenAI Codex", "configured": false, "type": null, "source": null }
+    ],
+    "truncated": false
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `provider` | Pi's provider id; sorted, at most 200. Ids that are not plain names are skipped. |
+| `configured` | Pi has credentials it can use for this provider. |
+| `type` | `oauth` (a sign-in) or `api_key` when configured, otherwise `null`. |
+| `source` | Where Pi found them: `stored` (Pi's credential store), `runtime`, `environment`, `models_json` (a key or a command in `models.json`; which one is not said), or `extension` (a provider extension's fallback). `null` when not configured. |
+
+The registry's status label (an environment variable name or a command) never crosses, nor any value. Errors: `invalid_request` (any param), and `auth_unavailable` (no registry in this session, or the registry read failed).
+
+### `reload_credentials`
+
+Makes this session pick up credentials added or removed elsewhere (another terminal's `/login`, the desktop app's own sign-in, an edited environment file) without restarting. It calls `modelRegistry.refresh({ allowNetwork: false })`, which rebuilds which providers are configured and which models are available; no model catalog is fetched. Params must be an empty object. Concurrent calls share one refresh.
+
+```json
+{ "ok": true, "data": { "reloaded": true, "aborted": false, "failedProviders": [], "providers": [ /* as get_auth_status */ ], "truncated": false } }
+```
+
+`failedProviders` lists the ids whose refresh reported an error; the error text never crosses. Errors: `invalid_request`, `auth_unavailable` (no registry in this session, or the session was replaced during the reload), and `reload_failed` (the refresh itself failed).
+
 ## Responses
 
 Success:
@@ -2058,6 +2097,13 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **Confirmed.** No write happens without a token bound to the state the user saw.
 - **No event.** A change made in the terminal or by editing a file is seen on the next read.
 
+## Credential limits
+
+- **Status, never values.** Only `getAll`, `getProviderAuthStatus`, `isUsingOAuth`, `getProviderDisplayName`, and `refresh` are called. The slice never reads `auth.json` and never calls a registry method that returns a key or a token.
+- **No sign-in or sign-out.** Signing in stays with Pi's login flow; removing credentials is out of scope.
+- **Offline reload.** `reload_credentials` never allows the network, so it does not fetch model catalogs.
+- **No event.** Ask again, or call `reload_credentials`, after a change elsewhere.
+
 ## Verification
 
 ```sh
@@ -2081,7 +2127,7 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-agent-definitions.test.ts \
   tests/desktop-rpc-status.test.ts \
   tests/desktop-rpc-background-subagents.test.ts \
-  tests/maintainer/desktop-rpc.maintest.ts
+  tests/desktop-rpc-auth.test.ts \n  tests/maintainer/desktop-rpc.maintest.ts
 ```
 
 The permission tests register the real `registerYoloSessionPolicy` owner with an isolated temporary config home and a stub identity resolver; they never read or write the user's own permission store.

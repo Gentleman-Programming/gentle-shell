@@ -7261,14 +7261,18 @@ async function openProfilesPanelLoop(
 							}
 						}
 						// Prepared runtime compensation only: no crash/power-loss guarantee.
+						let result;
 						try {
-							commitRoutingCleanup(snapshot, replacements);
+							result = commitRoutingCleanup(snapshot, replacements);
 						} catch (error) {
 							const message = profilesErrorMessage(error);
 							// Panel feedback is capped at two lines; retain every restoration
 							// error and recovery path in the notification visible on close.
 							ctx.ui.notify(`Cleanup failed: ${message}`, "warning");
 							throw new Error(`${message.split("\n")[0]}. Full details are in notifications.`, { cause: error });
+						}
+						if (result.warnings.length > 0) {
+							ctx.ui.notify(`Routing cleanup committed, but temporary files could not be removed:\n${result.warnings.join("\n")}`, "warning");
 						}
 						file = next;
 						return file;

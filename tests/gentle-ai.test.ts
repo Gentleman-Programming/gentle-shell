@@ -3779,6 +3779,48 @@ test("models screen cleanup transaction rejects a key whose agent appeared after
 	assert.doesNotMatch(feedback, /Removed \d+ stale routing/);
 });
 
+test("models screen cleanup transaction warns about leftover files after commit", async (t) => {
+	const { fixture, subPath, userPath, storePath } = cleanupTransactionFixture(t);
+	const destinations = [subPath, userPath, fixture.globalPath, storePath];
+	const leftovers: string[] = [];
+	let feedback = "";
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		assert.match(stripAnsi(renderComponent(panel)), /\[x\] abandoned/);
+		const unlink = fs.unlinkSync;
+		const mock = t.mock.method(fs, "unlinkSync", (path: Parameters<typeof unlink>[0]) => {
+			if (destinations.some((destination) => String(path).startsWith(`${destination}.cleanup-restore-`))) {
+				leftovers.push(String(path));
+				throw new Error("injected temporary-file removal failure");
+			}
+			unlink(path);
+		});
+		try {
+			panel.handleInput("\r");
+		} finally {
+			mock.mock.restore();
+		}
+		feedback = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	const known = { worker: { model: "openai/alpha" } };
+	for (const path of [subPath, userPath]) {
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { extra: { keep: true }, model_profiles: known });
+	}
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), known);
+	const stored = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(stored.profiles, { team: known, sibling: {} });
+	assert.equal(stored.active, "team");
+	assert.match(feedback, /Removed 1 stale routing key/);
+	assert.doesNotMatch(feedback, /abandoned|Cleanup failed:/);
+	assert.equal(leftovers.length, destinations.length);
+	for (const path of leftovers) assert.ok(existsSync(path), `temporary file remains: ${path}`);
+	const notice = fixture.notifications.find((entry) => entry.severity === "warning" && entry.message.includes(leftovers[0]!));
+	assert.ok(notice, "the panel must warn about leftover temporary files after a successful cleanup");
+	for (const path of leftovers) assert.ok(notice.message.includes(path), `warning must name ${path}`);
+});
+
 for (const boundary of ["prepare", "replace", "replace-then-throw", "absent-then-throw", "restore-error"] as const) {
 	test(`models screen cleanup transaction: ${boundary}`, async (t) => {
 		const { fixture, storePath, paths, bytes } = cleanupTransactionFixture(t);

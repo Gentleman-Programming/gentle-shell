@@ -188,11 +188,11 @@ export class DesktopProfileBindingBridge {
 			try {
 				result = await (service as unknown as { clear(): Promise<DesktopProfileClearResult> }).clear();
 			} catch {
-				this.clearing = Math.max(0, this.clearing - 1);
+				if (generation === this.generation) this.clearing = Math.max(0, this.clearing - 1);
 				this.reconcileSuppressed(host, generation);
 				return { ok: false, error: PROFILE_BINDING_UNAVAILABLE };
 			}
-			this.clearing = Math.max(0, this.clearing - 1);
+			if (generation === this.generation) this.clearing = Math.max(0, this.clearing - 1);
 			if (generation !== this.generation) return { ok: false, error: PROFILE_BINDING_UNAVAILABLE };
 			if (result?.status === "busy") {
 				this.reconcileSuppressed(host, generation);

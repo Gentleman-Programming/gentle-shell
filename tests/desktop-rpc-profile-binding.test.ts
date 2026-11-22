@@ -174,3 +174,22 @@ test("a binding written while a Desktop clear ends busy or failing is still repo
 		assert.deepEqual(f.events, [{ event: "profile_binding_changed", data: { kind: "explicit", profile: `fast-${ending}`, origin: "session", source: "external" } }], ending);
 	}
 });
+
+test("a clear that started before a reset never lowers the new session's clear count", async (t) => {
+	const releases: Array<() => void> = [];
+	const f = fixture(t, { clear: () => new Promise((resolve) => { releases.push(() => resolve({ status: "unchanged" })); }) });
+	f.bridge.wire(f.emit);
+	const stale = f.bridge.handle("clear_profile_binding", {});
+	await new Promise((resolve) => setImmediate(resolve));
+	f.bridge.reset();
+	f.bridge.attach({ cwd: "/x", sessionManager: { getSessionId: () => "session-a", getCwd: () => "/x" } } as unknown as ExtensionContext);
+	f.bridge.wire(f.emit);
+	const fresh = f.bridge.handle("clear_profile_binding", {});
+	await new Promise((resolve) => setImmediate(resolve));
+	releases[0]!();
+	await stale;
+	bindSessionProfile("session-a", "during-fresh-clear", {});
+	assert.equal(f.events.length, 0, "the fresh clear still suppresses echoes");
+	releases[1]!();
+	await fresh;
+});

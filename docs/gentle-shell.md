@@ -66,7 +66,7 @@ The [v2.6.0 release](https://github.com/Gentleman-Programming/gentle-pi/releases
 - The Agents List and Details views preserve the orchestrator/session hierarchy and completion, abort, and lost-exit history. Parent-child queries and notifications have an explicit handoff path, while model, effort, and usage stay observable per task.
 - Named `/gentle:profiles` atomically route the orchestrator separately from packaged and review roles, and carry a per-profile orchestrator workflow mode (`w` on the models screen: organic, where the orchestrator may implement inline, or full delegation, where every implementation goes to a subagent); see the [technical reference](readme-reference.md#agent-model-profiles) for the profile model. Full delegation pays off with an expensive orchestrator and light workers; on small tasks it costs a few times the wall time of organic, so see [Orchestrator workflow mode](readme-reference.md#orchestrator-workflow-mode) for the measured cost and which mode to pick.
 
-The source checkout prepares `gentle-pi` `4.9.0` with a package-local Gentle AI `v4.6.0` pin; this does not imply that the package release has been published. The published provider bundle matches the existing `1.6.0` mirror, and the native review CLI still advertises `capabilities/v2.6`.
+The source checkout prepares `gentle-pi` `4.9.0` with a package-local Gentle AI `v5.0.0` pin; this does not imply that the package release has been published. The mirror uses the signed provider bundle published with v5.0.0. Its bundle version stays `1.6.0`, and the native review CLI still advertises `capabilities/v2.6` without legacy authority.
 
 ## Shell interactions and runtime behavior
 

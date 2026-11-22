@@ -7183,7 +7183,8 @@ async function openProfilesPanelLoop(
 						...discoverAgents(roots).agents,
 					];
 					const known = cleanupInventory();
-					const subPaths = ["project", "user"].map((source) => agentModelProfileConfigPath(roots.cwd, source as AgentSource));
+					const subPaths = [...new Set((["project", "user"] as const).map((source) =>
+						resolve(agentModelProfileConfigPath(roots.cwd, source))))];
 					const modelPath = modelConfigPath(ctx.cwd);
 					const legacyPath = legacyProjectModelConfigPath(ctx.cwd);
 					const paths = [...subPaths, modelPath, path, legacyPath];

@@ -3728,6 +3728,29 @@ function cleanupTransactionFixture(t: test.TestContext) {
 	return { ...setup, subPath, userPath, paths, bytes };
 }
 
+test("models screen cleanup transaction treats a shared project and user subagent file as one store", async (t) => {
+	const { fixture, subPath, userPath, storePath } = cleanupTransactionFixture(t);
+	process.env.GENTLE_PI_AGENT_HOME = dirname(subPath);
+	const originalUserBytes = readFileSync(userPath);
+	const entry = { model: "openai/alpha" };
+	let card = "", feedback = "";
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		card = stripAnsi(renderComponent(panel));
+		if (card.includes("Clean stale routing keys")) panel.handleInput("\r");
+		feedback = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.match(card, /\[x\] abandoned/);
+	assert.match(feedback, /Removed 1 stale routing key\./);
+	assert.doesNotMatch(feedback, /Cleanup failed:/);
+	assert.deepEqual(JSON.parse(readFileSync(subPath, "utf8")), { extra: { keep: true }, model_profiles: { worker: entry } });
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: entry });
+	assert.deepEqual(JSON.parse(readFileSync(storePath, "utf8")).profiles, { team: { worker: entry }, sibling: {} });
+	assert.deepEqual(readFileSync(userPath), originalUserBytes, "the old user path is not part of the cleanup");
+});
+
 test("models screen cleanup transaction rejects a profile changed since the panel opened", async (t) => {
 	const { fixture, storePath, bytes } = cleanupTransactionFixture(t);
 	let external: ReturnType<typeof bytes>;

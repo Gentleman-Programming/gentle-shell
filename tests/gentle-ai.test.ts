@@ -3724,6 +3724,45 @@ test("models screen stale cleanup keeps the keyboard focus visible at short heig
 	assert.deepEqual(fixture.notifications, []);
 });
 
+for (const rows of [40, 10, 3]) {
+	test(`models screen stale cleanup accepts pointer selection at ${rows} rows`, async (t) => {
+		const { fixture, bytes, subPath, userPath, storePath } = cleanupTransactionFixture(t);
+		const entry = { model: "openai/alpha" };
+		writeFileSync(fixture.globalPath, JSON.stringify({ abandoned: entry, obsolete: entry }));
+		const before = bytes();
+		fixture.tui.terminal.rows = rows;
+		fixture.onInput((panel) => {
+			const width = 120;
+			const click = (label: string) => {
+				const lines = panel.render(width).map(stripAnsi);
+				const y = lines.findIndex((line) => line.includes(label));
+				assert.notEqual(y, -1, `missing target: ${label}`);
+				const x = lines[y].indexOf(label);
+				for (const type of ["press", "click"] as const) {
+					panel.handleMouse!({ type, x, y, screenX: x, screenY: y, button: "left", width, height: rows });
+				}
+			};
+			panel.handleInput("x");
+			if (rows === 3) panel.handleInput("\x1b[B");
+			click("[x] obsolete");
+			assert.match(stripAnsi(renderComponent(panel)), /▸ \[ \] obsolete/, "one click deselects and focuses the key without closing the card");
+			assert.deepEqual(bytes(), before);
+			if (rows === 3) panel.handleInput("\r");
+			else click("[ Clean ]");
+			panel.handleInput("\x1b");
+		});
+		await fixture.run("gentle:profiles");
+		assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { obsolete: entry });
+		for (const path of [subPath, userPath]) {
+			assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { extra: { keep: true }, model_profiles: { worker: entry } });
+		}
+		const stored = JSON.parse(readFileSync(storePath, "utf8"));
+		assert.deepEqual(stored.profiles, { team: { worker: entry }, sibling: {} });
+		assert.equal(stored.active, "team");
+		assert.deepEqual(fixture.notifications, []);
+	});
+}
+
 test("models screen stale cleanup only removes a key from the store that actually has it", async (t) => {
 	const { fixture, writeStore, storePath } = profilesStoreFixture(t);
 	const entry = { model: "openai/alpha" };

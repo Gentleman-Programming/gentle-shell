@@ -4283,6 +4283,8 @@ type RoutingTableMouseAction =
 	| { kind: "all-fast" }
 	| { kind: "model-option"; index: number }
 	| { kind: "effort-option"; index: number }
+	| { kind: "cleanup-option"; index: number }
+	| { kind: "cleanup-confirm" }
 	| { kind: "menu-item"; id: string }
 	| { kind: "button"; button: RoutingTableButton };
 
@@ -5071,23 +5073,28 @@ class RoutingTablePanel implements OverlayComponent {
 		const keys = this.cleanup!.keys;
 		if (matchesKey(data, "up")) this.cleanupCursor = Math.max(0, this.cleanupCursor - 1);
 		if (matchesKey(data, "down")) this.cleanupCursor = Math.min(keys.length - 1, this.cleanupCursor + 1);
-		if (data === " ") {
-			const key = keys[this.cleanupCursor];
-			if (this.cleanupSelected.has(key)) this.cleanupSelected.delete(key);
-			else this.cleanupSelected.add(key);
-		}
-		if (matchesKey(data, "return")) {
-			const selected = keys.filter((key) => this.cleanupSelected.has(key));
-			this.closeOverlay();
-			if (selected.length === 0) return;
-			try {
-				this.file = this.cleanup!.apply(selected);
-				this.notices = this.cleanup!.notices();
-				this.stored = removeRoutingKeys(this.stored, selected);
-				this.draft = removeRoutingKeys(this.draft, selected);
-				this.say(`Removed ${selected.length} stale routing key${selected.length === 1 ? "" : "s"}.`);
-			} catch (error) { this.say(`Cleanup failed: ${profilesErrorMessage(error)}`); }
-		}
+		if (data === " ") this.toggleCleanupKey(this.cleanupCursor);
+		if (matchesKey(data, "return")) this.confirmCleanup();
+	}
+
+	private toggleCleanupKey(index: number): void {
+		this.cleanupCursor = index;
+		const key = this.cleanup!.keys[index];
+		if (this.cleanupSelected.has(key)) this.cleanupSelected.delete(key);
+		else this.cleanupSelected.add(key);
+	}
+
+	private confirmCleanup(): void {
+		const selected = this.cleanup!.keys.filter((key) => this.cleanupSelected.has(key));
+		this.closeOverlay();
+		if (selected.length === 0) return;
+		try {
+			this.file = this.cleanup!.apply(selected);
+			this.notices = this.cleanup!.notices();
+			this.stored = removeRoutingKeys(this.stored, selected);
+			this.draft = removeRoutingKeys(this.draft, selected);
+			this.say(`Removed ${selected.length} stale routing key${selected.length === 1 ? "" : "s"}.`);
+		} catch (error) { this.say(`Cleanup failed: ${profilesErrorMessage(error)}`); }
 	}
 
 	private handleSwitchKey(data: string): void {
@@ -5154,6 +5161,7 @@ class RoutingTablePanel implements OverlayComponent {
 				return `tab:${action.name}`;
 			case "model-option":
 			case "effort-option":
+			case "cleanup-option":
 				return `${action.kind}:${action.index}`;
 			case "menu-item":
 				return `menu:${action.id}`;
@@ -5196,6 +5204,12 @@ class RoutingTablePanel implements OverlayComponent {
 			case "effort-option":
 				this.pickEffort(action.index);
 				return;
+			case "cleanup-option":
+				this.toggleCleanupKey(action.index);
+				return;
+			case "cleanup-confirm":
+				this.confirmCleanup();
+				return;
 			case "menu-item":
 				this.runMenuItem(action.id);
 				return;
@@ -5219,6 +5233,7 @@ class RoutingTablePanel implements OverlayComponent {
 		// At the frame's one-body-line minimum, show the focused cleanup row
 		// directly: there is no space left for the card's own border.
 		if (this.overlay === "cleanup" && Math.floor(this.terminalRows?.() ?? 24) <= 3) {
+			this.hitRegions = this.hitRegions.map((region) => ({ ...region, y: region.y + 1, x0: region.x0 + 2, x1: region.x1 + 2 }));
 			return this.renderFrame(card.lines, width);
 		}
 		return this.renderFrame(this.placeCard(table, card, inner), width);
@@ -5548,12 +5563,20 @@ class RoutingTablePanel implements OverlayComponent {
 				if (showTitle) lines.push(this.renderText("Clean stale routing keys", "title"));
 				if (!compact) lines.push("");
 				if (!compact && start > 0) lines.push(this.renderText(`↑ ${start} more`, "dim"));
+				const content = bodyRows <= 1 ? inner : width - 4;
 				for (let i = start; i < Math.min(keys.length, start + visible); i++) {
-					lines.push(this.renderText(`${i === this.cleanupCursor ? "▸" : " "} [${this.cleanupSelected.has(keys[i]) ? "x" : " "}] ${sanitizeTerminalText(keys[i])}`, i === this.cleanupCursor ? "title" : "text"));
+					const text = `${i === this.cleanupCursor ? "▸" : " "} [${this.cleanupSelected.has(keys[i]) ? "x" : " "}] ${sanitizeTerminalText(keys[i])}`;
+					this.hitRegions.push({ y: lines.length, x0: 0, x1: content, action: { kind: "cleanup-option", index: i } });
+					lines.push(this.hoverWrap(`cleanup-option:${i}`, this.renderText(text, i === this.cleanupCursor ? "title" : "text"), text, content));
 				}
 				if (!compact && start + visible < keys.length) lines.push(this.renderText("↓ more", "dim"));
 				if (!compact) lines.push("");
-				if (showHint) lines.push(this.renderText("↑↓ choose · space toggle · enter clean · esc cancel", "dim"));
+				if (showHint) {
+					const label = "[ Clean ]";
+					this.hitRegions.push({ y: lines.length, x0: 0, x1: label.length, action: { kind: "cleanup-confirm" } });
+					lines.push(this.hoverWrap("cleanup-confirm", this.renderText(label, "accent"), label)
+						+ this.renderText("  ↑↓ choose · space toggle · enter clean · esc cancel", "dim"));
+				}
 				return { lines, width, top, left: Math.max(0, Math.floor((inner - width) / 2)) };
 			}
 			case "model":

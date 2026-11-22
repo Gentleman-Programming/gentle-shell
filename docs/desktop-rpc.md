@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status"],
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions"],
   "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "session_snapshot"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), and [Updates limits](#updates-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The agent-definitions slice advertises exactly its one read method and no event; editing definitions stays a file edit. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), and [Agent definitions limits](#agent-definitions-limits).
 
 ### `get_snapshot`
 
@@ -1380,6 +1380,43 @@ Success:
 
 No absolute path, raw package source, registry URL, token, command line, or lookup output crosses the wire. A failed lookup is reported as `unknown`, never by its message. Running an update is out of scope: the client shows the command, and the launcher runs it. `updates_unavailable` answers only when the session is not bound or was replaced during the read, or a source fails unexpectedly.
 
+### `list_agent_definitions`
+
+Lists the agent definitions this session can launch, the subagent defaults, and Pi's default orchestrator. It reads the same sources `subagent_list_agents` discovers from, fresh on every call: `<agent home>/agents`, `<agent home>/subagents`, `<cwd>/.pi/agents`, and `<cwd>/.pi/subagents` (a later folder wins a name clash, so a project definition replaces a global one), the global and project `subagents.json`, and the three orchestrator keys of Pi's `settings.json` in the agent home. Params must be an empty object; any key is `invalid_request`, and a malformed request reads nothing. It has no side effects and emits no event.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-90", "method": "list_agent_definitions", "params": {} }
+```
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-90",
+  "ok": true,
+  "data": {
+    "agents": [
+      { "name": "explore", "description": "Global explorer.", "scope": "global", "model": "openai-codex/gpt-5.6-terra", "thinking": "high", "mode": null, "tools": ["read", "grep"], "toolsTruncated": false },
+      { "name": "worker", "description": "Project worker.", "scope": "project", "model": null, "thinking": null, "mode": "background", "tools": [], "toolsTruncated": false }
+    ],
+    "truncated": false,
+    "problems": { "invalid": 1, "notices": 0 },
+    "subagentDefaults": { "model": "anthropic/claude-luna", "thinking": null, "mode": "background" },
+    "defaultOrchestrator": { "status": "set", "model": "openai-codex/gpt-5.6-terra", "thinking": "medium" }
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `agents` | The discovered definitions, sorted by name, at most 200. `model`, `thinking`, and `mode` are what the definition declares (`null` when it inherits); the model a launch actually uses can still come from `subagents.json` profiles or a repository profile pin. `tools` is the list after tool overlays, at most 64 names. |
+| `truncated` | `true` when more than 200 definitions exist. |
+| `problems` | Counts of definitions that failed to parse (`invalid`) and of discovery notices such as unknown frontmatter keys or overlays naming unknown agents (`notices`). Their text names files, so only counts cross. |
+| `subagentDefaults` | `default_model`, `default_thinking`, and `default_mode` from `subagents.json` (project over global); `mode` defaults to `task`. |
+| `defaultOrchestrator.status` | `set` when Pi's `settings.json` names `defaultProvider` and `defaultModel`; `unset` when the file exists without them; `missing` when the file does not exist; `invalid` when it cannot be parsed. `model` is `provider/model` and `thinking` is `defaultThinkingLevel`, both only when `set`. |
+
+No file path, prompt body, or problem text crosses the wire. `agent_definitions_unavailable` answers when the session is not bound or discovery fails (for example an unreadable folder); its message never carries the failure text.
+
 ## Responses
 
 Success:
@@ -1866,6 +1903,13 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **Gaps stated.** Pi's latest version is known only in a bundled install. Package `latest` is always `null`. A git package has no `current`. `gentle-ai-managed` is detected only when the running gentle-pi is the `npm:gentle-pi` package Pi installed.
 - **Read only, no event.** This slice has exactly one method and no event, and it never runs an update.
 
+## Agent definitions limits
+
+- **One source of truth.** Discovery, defaults, and the orchestrator come from `discoverAgents`, `loadAgentsConfig`, and `readOrchestratorSettings`, the owners `subagent_list_agents` and `/gentle:profiles` already use; nothing is copied.
+- **Declared, not effective, models.** A definition's `model` is what its frontmatter declares. Routing in `subagents.json` and a repository profile pin can override it at launch; read them with `get_config` (`models`, `profiles`, `pins`).
+- **Bounded.** At most 200 agents, 64 tools per agent, names cut at 128 characters, descriptions at 512, and model ids over 256 characters reported as `null`.
+- **Read only, no event.** Definitions are plain files; a client that needs fresh data reads again. Editing them stays a file edit.
+
 ## Verification
 
 ```sh
@@ -1886,6 +1930,7 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-review.test.ts \
   tests/desktop-rpc-stats.test.ts \
   tests/desktop-rpc-updates.test.ts \
+  tests/desktop-rpc-agent-definitions.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 

@@ -232,7 +232,11 @@ async function sourceOwner({root, linkPath, manifest, selected, adapters, path, 
   if (!succeeded(listing) || !Array.isArray(projects) || projects.length !== 1 || key(await canonical(projects[0]?.path)) !== key(root)) throw refusal('source workspace has other or unknown projects; update Pi from the workspace owner');
  }
  const flags = pin[1] === 'pnpm' ? ['--dir', root, '--lockfile-dir', root, '--recursive=false', '--ignore-pnpmfile', ...(sourceConfig === undefined ? [] : ['--workspace-root'])] : ['--prefix', root, '--workspaces=false', '--no-audit', '--no-fund'];
- return {name:pin[1], ...invocation, package:SHELL, spec:PI, sourceRoot:root, sourceConfig, sourceEnv, sourceOptions, linkPath,
+ // Pi-scope packages the Shell itself installs (pi-ai, pi-tui) move with Pi to
+ // its exact pins; left behind they stay an old root copy beside Pi's new one.
+ const sourceSiblings = [...new Set(['dependencies', 'devDependencies', 'optionalDependencies'].flatMap(field => Object.keys(manifest[field] ?? {})))]
+  .filter(name => name !== PI && /^@earendil-works\/[a-z0-9][a-z0-9._-]*$/.test(name));
+ return {name:pin[1], ...invocation, package:SHELL, spec:PI, sourceRoot:root, sourceConfig, sourceEnv, sourceOptions, linkPath, sourceSiblings,
   manifest:await adapters.fs.readFile(path.join(root, 'package.json'), 'utf8'),
   args:[pin[1] === 'pnpm' ? 'update' : 'install', PI, '--no-save', '--ignore-scripts', '--global=false', ...flags, ...sourceOptions]};
 }
@@ -455,12 +459,14 @@ export async function updateSelectedPi(input) {
   catch { throw new Error(`gentle-shell update: the main-channel build ${owner.spec} is missing, and this unpublished build cannot be reinstalled from the registry; run 'gentle-shell upgrade --channel release' and then 'gentle-shell upgrade --channel main' to rebuild it. No installation changed.`); }
  }
  const latest = await latestPublishedPi(owner, input);
- const ageExclusion = owner.name === 'pnpm' ? await piAgeExclusion(owner, input, await piSiblings(owner, input, latest)) : [];
+ const siblings = owner.name === 'pnpm' || owner.sourceSiblings?.length ? await piSiblings(owner, input, latest) : [];
+ const ageExclusion = owner.name === 'pnpm' ? await piAgeExclusion(owner, input, siblings) : [];
+ const siblingSpecs = siblings.filter(([name]) => owner.sourceSiblings?.includes(name)).map(([name, exact]) => `${name}@${exact}`);
  // Exactly one approved package per command; never create a comma group or
  // reinstall arbitrary dependencies merely because they share a store. The
  // exact global Pi version is transient, not a source manifest pin.
  const spec = owner.package === PI ? `${PI}@${latest}` : owner.spec;
- const args = owner.args ? owner.args.map(arg => arg === PI ? `${PI}@${latest}` : arg)
+ const args = owner.args ? owner.args.flatMap(arg => arg === PI ? [`${PI}@${latest}`, ...siblingSpecs] : [arg])
   : (owner.name === 'pnpm' ? ['add', '-g', spec, ...(owner.package === SHELL ? ['--allow-build=gentle-pi'] : [])] : ['install', '-g', spec, ...(owner.package === PI ? ['--ignore-scripts'] : [])]);
  args.push(...ageExclusion);
  const result = await input.adapters.run(owner.command, [...owner.prefix, ...args], {deadlineMs:20 * 60_000, cwd: owner.sourceRoot ?? input.cwd, stderrTail:4096, ...(owner.sourceEnv ? {env:owner.sourceEnv} : {})});
@@ -470,7 +476,7 @@ export async function updateSelectedPi(input) {
   // error line in either stream wins over a stderr warning, stderr's on a tie.
   const output = [result?.stdout, result?.stderrTail].filter(text => typeof text === 'string').join('\n');
   const detail = setupErrorDetail(output, input.home, input.platform);
-  throw new Error(`gentle-shell update: ${owner.name} (${[owner.command, ...owner.prefix].join(' ')}) could not install ${owner.sourceRoot ? `${PI}@${latest}` : spec}${detail ? `\n${detail}` : ''}`);
+  throw new Error(`gentle-shell update: ${owner.name} (${[owner.command, ...owner.prefix].join(' ')}) could not install ${owner.sourceRoot ? [`${PI}@${latest}`, ...siblingSpecs].join(', ') : spec}${detail ? `\n${detail}` : ''}`);
  }
  if (owner.sourceRoot) {
   const {path, key} = pathsFor(input.platform ?? process.platform);

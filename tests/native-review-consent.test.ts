@@ -541,3 +541,18 @@ test("a declined Pi consent/v3 answer replays the captured exact agent-bound inv
 	assert.deepEqual(queue.calls.at(-1), decoded.choices[1].invocation.split(" ").slice(1));
 	assert.equal(queue.calls.filter((arguments_) => arguments_.includes("--agent") && arguments_.includes("pi")).length, 1);
 });
+
+test("consent invocation must still carry the requested escalation exactly once", async () => {
+	const consent = (await import("../lib/review-integration-v2.ts")).decodeReviewConsentV2(fixture<Record<string, unknown>>("consent.fixture.json"));
+	const escalate = { item: 3 as const, reason: "touches the auth boundary" };
+	const carried = structuredClone(consent);
+	for (const choice of carried.choices) choice.invocation = choice.invocation.replace(/ --consent /, ` --escalate-item ${escalate.item} --escalate-reason 'touches the auth boundary' --consent `);
+	const started = fixture<Record<string, unknown>>("start.fixture.json");
+	started.artifact_subjects = [];
+	const queue = queuedAdapter([capabilities(), started]);
+	const answered = await client(queue.adapter).answerConsent!({ cwd: "/repo", consent: carried, answer: "granted", escalate }).catch((error) => error);
+	assert.ok(!(answered instanceof NativeReviewConsentBindingError && answered.reason === "consent-invocation-escalate-changed"), String(answered));
+	const dropped = queuedAdapter([capabilities(), started]);
+	await assert.rejects(client(dropped.adapter).answerConsent!({ cwd: "/repo", consent, answer: "granted", escalate }), (error: unknown) => error instanceof NativeReviewConsentBindingError && error.reason === "consent-invocation-escalate-changed");
+	assert.equal(dropped.calls.filter((arguments_) => arguments_.includes("granted")).length, 0);
+});

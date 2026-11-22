@@ -80,7 +80,10 @@ function createFixture(columns: number, rowCount: number, sidebar: boolean, work
 		return [...((tui as unknown as { previousScreen: string[] }).previousScreen ?? [])];
 	};
 	render(); // establish native viewport height and scroll bounds before sampling
-	return { columns, rowCount, sidebar, workload, counts, document, viewport, render, stop: () => { dispose(); tui.stop(); } };
+	// Pi >= 1.6 reuses the previous frame's component output for view-only
+	// renders (scroll). Older Pi has no such flag and always re-renders.
+	const markContentChanged = () => { (tui as unknown as { contentChanged?: boolean }).contentChanged = true; };
+	return { columns, rowCount, sidebar, workload, counts, document, viewport, render, markContentChanged, stop: () => { dispose(); tui.stop(); } };
 }
 
 function measure(fixture: Fixture, invalidate = false, anchors?: number[]) {
@@ -95,7 +98,10 @@ function measure(fixture: Fixture, invalidate = false, anchors?: number[]) {
 	for (let repeat = 0; repeat < 3; repeat++) {
 		for (const position of positions) {
 			fixture.viewport.transcript.scrollTo(position, { disableFollow: true });
-			if (invalidate) fixture.document.invalidate();
+			if (invalidate) {
+				fixture.document.invalidate();
+				fixture.markContentChanged(); // content changes always re-render the document, even where scroll frames reuse output
+			}
 			const cpuStart = process.cpuUsage();
 			const start = performance.now();
 			const rawScreen = fixture.render();
@@ -151,7 +157,10 @@ test("characterize settled native fullscreen scroll frames with and without the 
 				const result = results[i]!;
 				assert.equal(result.screens.length, result.positions.length * 3);
 				assert.equal(result.rawScreens.length, result.screens.length);
-				assert.equal(result.renderCalls.transcript, result.positions.length * 3, "every scroll traverses the settled document");
+				// Settled scroll never needs more than one document render per frame;
+				// Pi >= 1.6 reuses cached output and may render it zero times. Frame
+				// correctness is asserted below.
+				assert.ok(result.renderCalls.transcript <= result.positions.length * 3, "a scroll frame renders the settled document at most once");
 				for (const [frame, screen] of result.screens.entries()) {
 					assert.equal(screen.length, 24, "native fullscreen retains terminal height");
 					assert.ok(screen.some((line) => line.startsWith("╭─ editor")), "editor remains visible");
@@ -216,8 +225,8 @@ test("wrapped ANSI and native Markdown distinguish width composition from settle
 				for (let index = 0; index < fixtures.length; index++) {
 					const hit = hits[index]!;
 					const miss = misses[index]!;
-					assert.equal(hit.renderCalls.transcript, 15);
-					assert.equal(miss.renderCalls.transcript, 15);
+					assert.ok(hit.renderCalls.transcript <= 15, "settled scroll renders the document at most once per frame");
+					assert.equal(miss.renderCalls.transcript, 15, "changed content re-renders the document every frame");
 					assert.equal(hit.rawScreens.length, 15);
 					assert.equal(miss.rawScreens.length, 15);
 					assert.deepEqual(hit.rawScreens, miss.rawScreens, "invalidating only the document preserves frame bytes");

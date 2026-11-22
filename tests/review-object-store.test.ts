@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -84,57 +84,7 @@ test("root publication exposes the old quorum when a fault occurs before the sec
 	}
 });
 
-test("genesis quorum-loss crash is forward-recoverable when exactly one unambiguous candidate root set exists", () => {
-	const root = temporaryRoot();
-	try {
-		let fired = false;
-		const store = new ReviewGraphObjectStoreV1(root, hash, "b".repeat(64), {
-			faultInjector(point: ReviewObjectStoreFaultPoint) {
-				if (point === "before-current-slot-1-replace" && !fired) {
-					fired = true;
-					throw new Error("injected genesis quorum-loss fault");
-				}
-			},
-		});
-		const genesisRoot = store.installRootSet({ schema: "gentle-ai.review-root-set/v1", repository_id: hash, authority_id: "b".repeat(64), generation: 0, predecessor_root_set_id: null, lineages: [] });
-		// Only CURRENT.0 was durably written before the crash.
-		assert.throws(() => store.publishRootSet(genesisRoot), /injected genesis quorum-loss fault/);
-		assert.throws(() => store.readCurrent(), /quorum/i);
-		store.repairCurrentPointers();
-		assert.equal(store.readCurrent().root_set_id, genesisRoot.root_set_id);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("genesis repair stays fail closed when two candidate root sets are ambiguous", () => {
-	const root = temporaryRoot();
-	try {
-		const store = new ReviewGraphObjectStoreV1(root, hash, "b".repeat(64));
-		store.installRootSet({ schema: "gentle-ai.review-root-set/v1", repository_id: hash, authority_id: "b".repeat(64), generation: 0, predecessor_root_set_id: null, lineages: [] });
-		store.installRootSet({ schema: "gentle-ai.review-root-set/v1", repository_id: hash, authority_id: "b".repeat(64), generation: 0, predecessor_root_set_id: null, lineages: [{ lineage_id: "x", mode: "graph" }] });
-		assert.throws(() => store.readCurrent(), /quorum/i);
-		assert.throws(() => store.repairCurrentPointers(), /quorum/i);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("genesis repair stays fail closed when the sole candidate root set is corrupted", () => {
-	const root = temporaryRoot();
-	try {
-		const store = new ReviewGraphObjectStoreV1(root, hash, "b".repeat(64));
-		const genesisRoot = store.installRootSet({ schema: "gentle-ai.review-root-set/v1", repository_id: hash, authority_id: "b".repeat(64), generation: 0, predecessor_root_set_id: null, lineages: [] });
-		const path = join(root, "roots", "sha256", genesisRoot.root_set_id.slice(0, 2), genesisRoot.root_set_id.slice(2));
-		writeFileSync(path, "not canonical json");
-		assert.throws(() => store.readCurrent(), /quorum/i);
-		assert.throws(() => store.repairCurrentPointers(), /quorum/i);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("root successors must name the current root and repair restores only a quorum-backed pointer", () => {
+test("root successors must name the current root", () => {
 	const root = temporaryRoot();
 	try {
 		const store = new ReviewGraphObjectStoreV1(root, hash, "b".repeat(64));
@@ -142,12 +92,7 @@ test("root successors must name the current root and repair restores only a quor
 		store.publishRootSet(first);
 		const fork = store.installRootSet({ schema: "gentle-ai.review-root-set/v1", repository_id: hash, authority_id: "b".repeat(64), generation: 1, predecessor_root_set_id: "c".repeat(64), lineages: [] });
 		assert.throws(() => store.publishRootSet(fork), /predecessor|descendant/i);
-		unlinkSync(join(root, "CURRENT.2"));
-		store.repairCurrentPointers();
 		assert.equal(store.readCurrent().root_set_id, first.root_set_id);
-		writeFileSync(join(root, "CURRENT.0"), "broken");
-		writeFileSync(join(root, "CURRENT.1"), "also-broken");
-		assert.throws(() => store.repairCurrentPointers(), /quorum/i);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

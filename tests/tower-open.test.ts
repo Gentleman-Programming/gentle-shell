@@ -87,6 +87,30 @@ test("runTower --no-open only prints the URL, and honours a fixed port", async (
 	assert.match(out.join(""), new RegExp(`^Gentle Tower: http://127\\.0\\.0\\.1:${port}/`));
 });
 
+test("runTower --json prints one JSON line with the URL instead of the text lines", async () => {
+	const root = scratch();
+	const out: string[] = [], err: string[] = [], opened: string[] = [];
+	let server = { url: "", port: 0 };
+	const code = await runTower({ env: { GENTLE_TOWER_HOME: join(root, "hub") }, open: false, json: true, webDir: builtWeb(root), presenceDirs: [],
+		stdout: (s) => out.push(s), stderr: (s) => err.push(s), openUrl: (u) => opened.push(u),
+		untilStopped: async (s) => { server = { url: s.url, port: s.port }; } });
+	assert.equal(code, 0);
+	assert.deepEqual(err, []);
+	assert.deepEqual(opened, []);
+	assert.match(server.url, URL_SHAPE);
+	assert.equal(out.join(""), `${JSON.stringify({ schema: "gentle-shell.tower/v1", url: server.url, host: "127.0.0.1", port: server.port })}\n`);
+});
+
+test("runTower --json still reports a start failure as text on stderr and exits 1", async () => {
+	const root = scratch();
+	const out: string[] = [], err: string[] = [];
+	const code = await runTower({ env: { GENTLE_TOWER_HOME: join(root, "hub") }, open: false, json: true, webDir: join(root, "missing-web"), presenceDirs: [],
+		stdout: (s) => out.push(s), stderr: (s) => err.push(s), untilStopped: async () => {} });
+	assert.equal(code, 1);
+	assert.deepEqual(out, []);
+	assert.equal(err.length, 1);
+});
+
 test("the package check needs the built tower only when packing after a build", async () => {
 	const { packageRequiredPaths, requiredPaths: base } = await import("../scripts/verify-package-files.mjs");
 	assert.ok(!base.includes("web/tower/dist/index.html"), "a plain check (tests, CI) never needs the gitignored build");

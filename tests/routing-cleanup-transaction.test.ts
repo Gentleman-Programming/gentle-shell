@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { snapshotRoutingCleanup, commitRoutingCleanup } from "../lib/routing-cleanup-transaction.ts";
 
 function fixture(t: any) {
- const root = resolve("tmp/cleanup-transaction-tests");
- fs.mkdirSync(root, { recursive: true });
- const dir = fs.mkdtempSync(join(root, "case-"));
+ // OS temp, not the worktree: Windows watchers on the repository tree can make
+ // a compensating rename fail with a transient EPERM.
+ const dir = fs.mkdtempSync(join(tmpdir(), "cleanup-transaction-"));
  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
  const paths = Array.from({ length: 4 }, (_, i) => join(dir, `${i}.json`));
  paths.forEach((p, i) => fs.writeFileSync(p, `old${i}`));

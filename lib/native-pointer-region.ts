@@ -40,7 +40,7 @@ export class NativePointerRegion implements Component {
 		this.scope?.register(this);
 	}
 
-	render(width: number): string[] {
+	render(width: number): readonly string[] {
 		if (this.renderedWidth !== undefined && this.renderedWidth !== width) this.clearHover();
 		this.renderedWidth = width;
 		return this.adapter.render(width);

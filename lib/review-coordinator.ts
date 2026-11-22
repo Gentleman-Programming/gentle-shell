@@ -1,5 +1,6 @@
 /** Host orchestration of one ordinary native review. All authority stays in the existing facade. */
 export type ReviewCoordinatorTool = "gentle_review" | "gentle_review_capture" | "gentle_review_capture_group";
+import { decodeAgentRiskEscalation, type AgentRiskEscalation } from "./review-risk-assessment.ts";
 type Body = Record<string, unknown>;
 const record = (value: unknown): Body => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Body : {};
 const nonempty = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
@@ -140,6 +141,7 @@ export interface ReviewCoordinatorInput {
 	requestContextPath?: string;
 	untrackedScope?: "exclude" | "select";
 	intendedUntracked?: string[];
+	escalate?: AgentRiskEscalation;
 }
 
 export interface ReviewCoordinatorDeps {
@@ -157,7 +159,7 @@ export interface ReviewCoordinatorDeps {
 export function parseReviewCoordinatorInput(value: unknown): ReviewCoordinatorInput {
 	const input = record(value);
 	if (input !== value) throw new Error("Review coordinator input must be an object");
-	const allowed = ["workspaceRoot", "baseRef", "committedOnly", "lineageId", "lenses", "lensesReason", "requestContextPath", "untrackedScope", "intendedUntracked"];
+	const allowed = ["workspaceRoot", "baseRef", "committedOnly", "lineageId", "lenses", "lensesReason", "requestContextPath", "untrackedScope", "intendedUntracked", "escalate"];
 	if (Object.keys(input).some((key) => !allowed.includes(key))) throw new Error("Unsupported review coordinator input");
 	for (const key of ["workspaceRoot", "baseRef", "lineageId", "lensesReason"]) {
 		if (input[key] !== undefined && !nonempty(input[key])) throw new Error(`${key} must be nonempty`);
@@ -170,6 +172,7 @@ export function parseReviewCoordinatorInput(value: unknown): ReviewCoordinatorIn
 	if (input.untrackedScope !== undefined && !["exclude", "select"].includes(String(input.untrackedScope))) throw new Error("Invalid untrackedScope");
 	if (input.untrackedScope === "select" && (!Array.isArray(input.intendedUntracked) || !input.intendedUntracked.every(nonempty))) throw new Error("select requires intendedUntracked");
 	if (input.intendedUntracked !== undefined && input.untrackedScope !== "select") throw new Error("intendedUntracked requires select");
+	if (input.escalate !== undefined) return { ...input, escalate: decodeAgentRiskEscalation(input.escalate) } as ReviewCoordinatorInput;
 	return input as ReviewCoordinatorInput;
 }
 
@@ -255,7 +258,9 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  const drive = async (): Promise<Body> => {
  let details: Body;
  if (lineage === undefined) {
-  const assessment = await invoke("gentle_review", { operation: "assess", ...selectorInput });
+  // The same escalate reaches assess and START (never inspect: the provider accepts it only on a fresh-START preflight) so the frozen tier and consent read high.
+  const assessInput = input.escalate === undefined ? selectorInput : { input: JSON.stringify({ ...selector, escalate: input.escalate }) };
+  const assessment = await invoke("gentle_review", { operation: "assess", ...assessInput });
   if (assessment.reviewDue === false && input.requestContextPath !== undefined) return finish("request-context-requires-fresh-review", assessment);
   if (assessment.reviewDue !== true) return finish(assessment.reviewDue === false ? "not-due" : "assessment-unavailable", assessment);
   details = await invoke("gentle_review", { operation: "inspect", ...selectorInput,
@@ -291,6 +296,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
     started = true;
     details = await invoke("gentle_review", { operation: "start", input: JSON.stringify({ mode: "ordinary", ...selector,
      ...(input.requestContextPath === undefined ? {} : { requestContextPath: input.requestContextPath }),
+     ...(input.escalate === undefined ? {} : { escalate: input.escalate }),
      ...(input.lenses === undefined ? {} : { lenses: input.lenses, lensesReason: input.lensesReason }) }) });
     if (details.outcome === "native-review-consent-required") return finish("consent-required", details);
     const issued = record(details.result).lineage_id;

@@ -27,7 +27,7 @@ test("observed writer evidence is reusable but does not replace independent prob
 });
 
 test("auxiliary gates must protect a concrete requirement or threat", () => {
-  assert.ok(parent.includes("gates/overengineering: `orchestrator-verification.md`"));
+  assert.ok(parent.includes("else inline; see `orchestrator-verification.md`"));
   assert.ok(policy.includes("acceptance criterion, concrete threat, or authoritative contract"));
   assert.ok(policy.includes("must not become a delivery blocker"));
   assert.ok(policy.includes("Do not build a framework for a bounded capability probe"));

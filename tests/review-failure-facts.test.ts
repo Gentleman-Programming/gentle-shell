@@ -64,8 +64,8 @@ test("managed-asset continuation and audit evidence retain their existing operat
 		replayability: "not_replayable", next_action: "stop", hint: "run gentle-ai sync",
 	});
 	const auditRecord = { operation: "review.repair", outcome: "unknown" };
-	const unknown = new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, "review/repair", true, true, "unknown", undefined, auditRecord);
-	assert.equal(__testing.nativeOperationFailure("repair", unknown).native_audit_record, auditRecord);
+	const unknown = new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, "review/reclaim", true, true, "unknown", undefined, auditRecord);
+	assert.equal(__testing.nativeOperationFailure("reset", unknown).native_audit_record, auditRecord);
 });
 
 test("consent binding remains a pre-launch local refusal rather than a provider outage", () => {

@@ -19,6 +19,7 @@ import {
 } from "../lib/desktop-rpc-status.ts";
 import { DesktopStatusBridge } from "../lib/desktop-status-service.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
+import { GENTLE_AI_DEV_BINARY_ENV } from "../lib/gentle-ai-binary.ts";
 
 // get_status: the facts `/gentle:status` prints, read through the owner's
 // versioned service in `extensions/gentle-ai.ts`, without paths, command hints,
@@ -165,12 +166,12 @@ test("the real gentle-ai owner answers the same facts /gentle:status prints, pat
 	mkdirSync(configHome, { recursive: true });
 	mkdirSync(agentHome, { recursive: true });
 	writeFileSync(join(cwd, ".pi", "gentle-ai", "persona.json"), JSON.stringify({ mode: "neutral" }));
-	const saved = { config: process.env.GENTLE_PI_CONFIG_HOME, agent: process.env.GENTLE_PI_AGENT_HOME, dev: process.env.GENTLE_AI_DEV_BINARY };
+	const saved = { config: process.env.GENTLE_PI_CONFIG_HOME, agent: process.env.GENTLE_PI_AGENT_HOME, dev: process.env[GENTLE_AI_DEV_BINARY_ENV] };
 	process.env.GENTLE_PI_CONFIG_HOME = configHome;
 	process.env.GENTLE_PI_AGENT_HOME = agentHome;
-	delete process.env.GENTLE_AI_DEV_BINARY;
+	delete process.env[GENTLE_AI_DEV_BINARY_ENV];
 	t.after(() => {
-		for (const [key, value] of [["GENTLE_PI_CONFIG_HOME", saved.config], ["GENTLE_PI_AGENT_HOME", saved.agent], ["GENTLE_AI_DEV_BINARY", saved.dev]] as const) {
+		for (const [key, value] of [["GENTLE_PI_CONFIG_HOME", saved.config], ["GENTLE_PI_AGENT_HOME", saved.agent], [GENTLE_AI_DEV_BINARY_ENV, saved.dev]] as const) {
 			if (value === undefined) delete process.env[key];
 			else process.env[key] = value;
 		}

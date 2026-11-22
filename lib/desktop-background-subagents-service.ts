@@ -78,7 +78,20 @@ export class DesktopBackgroundSubagentsBridge {
 		this.host = undefined;
 	}
 
-	async handle(method: string, params: Record<string, unknown>): Promise<DesktopRpcOutcome | undefined> {
+	/**
+	 * The generation at dispatch time. The Desktop domain captures it before its
+	 * first await and passes it to `handle`, so a request that was dispatched
+	 * before a session reset is refused even if a replacement session attached
+	 * while it waited for the bridges ahead of this one.
+	 */
+	dispatchGeneration(): number {
+		return this.generation;
+	}
+
+	async handle(method: string, params: Record<string, unknown>, dispatchedGeneration: number = this.generation): Promise<DesktopRpcOutcome | undefined> {
+		if ((method === "get_background_subagents" || method === "set_background_subagents") && dispatchedGeneration !== this.generation) {
+			return { ok: false, error: BACKGROUND_SUBAGENTS_UNAVAILABLE };
+		}
 		if (method === "get_background_subagents") {
 			if (!parseGetBackgroundSubagentsParams(params)) return { ok: false, error: INVALID_GET_BACKGROUND_SUBAGENTS };
 			return this.withOwner(async (service) => {

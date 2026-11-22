@@ -111,6 +111,9 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 	});
 	const backgroundSubagents = new DesktopBackgroundSubagentsBridge(pi);
 	const domain: DesktopRpcDomain = (method, params) => {
+		// Captured before any await: a background-subagents write dispatched before a
+		// session reset must not run under the replacement session.
+		const backgroundGeneration = backgroundSubagents.dispatchGeneration();
 		const sessionsOutcome = sessionList.handle(method, params, dispatchingRequestId);
 		if (sessionsOutcome !== undefined) return sessionsOutcome;
 		// Config is the only synchronous bridge; permission, usage, design, jobs,
@@ -138,7 +141,7 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 			if (reviewOutcome !== undefined) return reviewOutcome;
 			const statsOutcome = await stats.handle(method, params);
 			if (statsOutcome !== undefined) return statsOutcome;
-			const backgroundOutcome = await backgroundSubagents.handle(method, params);
+			const backgroundOutcome = await backgroundSubagents.handle(method, params, backgroundGeneration);
 			if (backgroundOutcome !== undefined) return backgroundOutcome;
 			return updates.handle(method, params);
 		})();

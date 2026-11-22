@@ -50,14 +50,14 @@ function realOwner(t: test.TestContext, processEnv: NodeJS.ProcessEnv = {}) {
 		rmSync(root, { recursive: true, force: true });
 	});
 	const events = bus();
-	const pi = { on() {}, registerCommand() {}, registerTool() {}, events } as unknown as ExtensionAPI;
+	const pi = { on() {}, registerCommand() {}, registerTool() {}, getActiveTools: () => ["read", "subagent_run"], events } as unknown as ExtensionAPI;
 	createGentleAiExtension({ nativeReviewCli: null, processEnv: { GENTLE_AI_TELEMETRY: "0", ...processEnv } })(pi);
 	const bridge = new DesktopBackgroundSubagentsBridge(pi);
 	bridge.attach({ cwd, mode: "rpc", sessionManager: { getCwd: () => cwd } } as unknown as ExtensionContext);
 	return { bridge, globalFile: join(configHome, BACKGROUND_SUBAGENTS_FILE), projectFile: join(cwd, ".pi", "gentle-ai", BACKGROUND_SUBAGENTS_FILE) };
 }
 
-const DEFAULT_STATE: DesktopBackgroundSubagentsState = { effective: "off", source: "default", malformed: false, projectFile: "absent", globalFile: "absent", capability: "absent" };
+const DEFAULT_STATE: DesktopBackgroundSubagentsState = { effective: "off", source: "default", malformed: false, projectFile: "absent", globalFile: "absent", capability: "ready" };
 
 async function token(bridge: DesktopBackgroundSubagentsBridge, policy: "on" | "off"): Promise<string> {
 	const outcome = await bridge.handle("set_background_subagents", { policy });
@@ -173,4 +173,14 @@ test("a second change while one is pending answers background_subagents_busy", a
 	const settled = await first;
 	assert.ok(settled?.ok);
 	assert.equal((settled.data as { status: string }).status, "confirmation_required");
+});
+
+test("a change dispatched before a session reset is refused and writes nothing", async (t) => {
+	const owner = realOwner(t);
+	const dispatched = owner.bridge.dispatchGeneration();
+	const shown = await token(owner.bridge, "on");
+	owner.bridge.reset();
+	owner.bridge.attach({ cwd: "/replacement" } as unknown as ExtensionContext);
+	assert.deepEqual(await owner.bridge.handle("set_background_subagents", { policy: "on", confirmationToken: shown }, dispatched), { ok: false, error: BACKGROUND_SUBAGENTS_UNAVAILABLE });
+	assert.equal(existsSync(owner.globalFile), false);
 });

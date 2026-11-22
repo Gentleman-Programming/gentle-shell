@@ -14,7 +14,7 @@ gentle-shell-gpui cannot read which profile the current session is bound to: it 
 ### Proposed outcome
 
 - `get_profile_binding {}`: `{ kind, profile, origin }` through the same rule launches, the status bar, and the Desktop feed use (`resolveSessionProfile`).
-- `profile_binding_changed` event: any write to this session's binding (not a pin or global change seen through `follow`/`live`; re-read after `config_changed` for those), with `source: "desktop" | "external"`.
+- `profile_binding_changed` event: a write to this session's binding that changes the answer (not a pin or global change seen through `follow`/`live`; re-read after `config_changed` for those), with `source: "desktop" | "external"`.
 - `clear_profile_binding {}`: the `/gentle:profiles clear` owner action, behind the profile apply slot, answering `cleared | unchanged | not_cleared` without forwarding notices.
 - No `publish_profile`: publishing a profile to the repository is the repo pin, already writable with `set_config` on `pins`.
 

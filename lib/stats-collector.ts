@@ -77,10 +77,22 @@ export interface StatsFilter {
 	dayKey?: (ms: number) => string;
 }
 
+export interface ProviderStats {
+	provider: string;
+	tokens: number;
+	cost: number;
+	messages: number;
+	share: number;
+}
+
 export interface StatsSummary {
 	totals: TokenTotals;
 	models: ModelStats[];
 	days: Record<string, number>;
+	/** Cost per day, keyed like `days`, rounded like every other cost. */
+	dayCosts: Record<string, number>;
+	/** Usage per provider, largest first, with each provider's share of the tokens. */
+	providers: ProviderStats[];
 	sessions: number;
 	activeDays: number;
 	daysInRange: number;
@@ -312,6 +324,8 @@ export function aggregateStats(sessions: readonly SessionRecord[], filter: Stats
 	const totals = emptyTotals();
 	const models = new Map<string, Omit<ModelStats, "share">>();
 	const days: Record<string, number> = {};
+	const dayCosts: Record<string, number> = {};
+	const providers = new Map<string, Omit<ProviderStats, "share">>();
 	let sessionCount = 0;
 	let longestSession: StatsSummary["longestSession"];
 	for (const session of sessions) {
@@ -325,6 +339,12 @@ export function aggregateStats(sessions: readonly SessionRecord[], filter: Stats
 			lastAt = Math.max(lastAt, message.timestamp);
 			addUsage(totals, message);
 			days[day] = (days[day] ?? 0) + message.total;
+			dayCosts[day] = (dayCosts[day] ?? 0) + message.cost;
+			const provider = providers.get(message.provider) ?? { provider: message.provider, tokens: 0, cost: 0, messages: 0 };
+			provider.tokens += message.total;
+			provider.cost += message.cost;
+			provider.messages++;
+			providers.set(message.provider, provider);
 			const model = models.get(message.model) ?? { model: message.model, tokens: 0, cost: 0, messages: 0 };
 			model.tokens += message.total;
 			model.cost += message.cost;
@@ -347,6 +367,10 @@ export function aggregateStats(sessions: readonly SessionRecord[], filter: Stats
 			.map((model) => ({ ...model, cost: roundCost(model.cost), share: totals.total > 0 ? model.tokens / totals.total : 0 }))
 			.sort((a, b) => b.tokens - a.tokens || b.messages - a.messages || a.model.localeCompare(b.model)),
 		days,
+		dayCosts: Object.fromEntries(Object.entries(dayCosts).map(([day, cost]) => [day, roundCost(cost)])),
+		providers: [...providers.values()]
+			.map((provider) => ({ ...provider, cost: roundCost(provider.cost), share: totals.total > 0 ? provider.tokens / totals.total : 0 }))
+			.sort((a, b) => b.tokens - a.tokens || b.messages - a.messages || a.provider.localeCompare(b.provider)),
 		sessions: sessionCount,
 		activeDays: active.length,
 		daysInRange: daysBetween(firstDay, today) + 1,

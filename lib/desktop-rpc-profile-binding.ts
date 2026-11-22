@@ -85,6 +85,8 @@ export class DesktopProfileBindingBridge {
 	private lastEmitted: string | undefined;
 	/** Desktop clears in flight; while any runs, its store writes are reported once, as `desktop`. */
 	private clearing = 0;
+	/** The emitter `wire` received; used to publish writes a failed clear suppressed. */
+	private emit: Emit | undefined;
 
 	constructor(pi: ExtensionAPI, options: ProfileBindingReaderOptions & { discover?: typeof discoverDesktopProfilesService } = {}) {
 		this.pi = pi;
@@ -104,6 +106,7 @@ export class DesktopProfileBindingBridge {
 		this.unobserve = undefined;
 		this.lastEmitted = undefined;
 		this.clearing = 0;
+		this.emit = undefined;
 	}
 
 	private sessionOf(host: ExtensionContext): { cwd: string; sessionId: string } | undefined {
@@ -129,6 +132,7 @@ export class DesktopProfileBindingBridge {
 	/** Subscribe to binding writes; an external change to this session's binding becomes one event. */
 	wire(emit: Emit): void {
 		this.unobserve?.();
+		this.emit = emit;
 		this.unobserve = observeSessionProfileBindings((sessionId) => {
 			if (this.clearing > 0) return;
 			const host = this.host;
@@ -162,6 +166,16 @@ export class DesktopProfileBindingBridge {
 		return this.clear(host);
 	}
 
+	/**
+	 * A clear that ends without a Desktop change (busy or failing) reports
+	 * nothing itself, so any binding write it suppressed while it ran is
+	 * published now, once, as `external`. Skipped while another clear still runs.
+	 */
+	private reconcileSuppressed(host: ExtensionContext, generation: number): void {
+		if (this.clearing > 0 || generation !== this.generation || !this.emit) return;
+		this.emitIfChanged(host, this.emit, "external");
+	}
+
 	private async clear(host: ExtensionContext): Promise<DesktopRpcOutcome> {
 		const generation = this.generation;
 		const before = this.read(host);
@@ -174,12 +188,16 @@ export class DesktopProfileBindingBridge {
 			try {
 				result = await (service as unknown as { clear(): Promise<DesktopProfileClearResult> }).clear();
 			} catch {
+				if (generation === this.generation) this.clearing = Math.max(0, this.clearing - 1);
+				this.reconcileSuppressed(host, generation);
 				return { ok: false, error: PROFILE_BINDING_UNAVAILABLE };
-			} finally {
-				this.clearing = Math.max(0, this.clearing - 1);
 			}
+			if (generation === this.generation) this.clearing = Math.max(0, this.clearing - 1);
 			if (generation !== this.generation) return { ok: false, error: PROFILE_BINDING_UNAVAILABLE };
-			if (result?.status === "busy") return { ok: false, error: PROFILE_BINDING_BUSY };
+			if (result?.status === "busy") {
+				this.reconcileSuppressed(host, generation);
+				return { ok: false, error: PROFILE_BINDING_BUSY };
+			}
 			const status = result?.status === "cleared" || result?.status === "unchanged" || result?.status === "not_cleared" ? result.status : "not_cleared";
 			const after = this.read(host) ?? before;
 			const changed = JSON.stringify(after) !== JSON.stringify(before);

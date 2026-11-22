@@ -3570,14 +3570,16 @@ test("effective routing prefers models.json over the materialized stores", (t) =
 	assert.equal(existsSync(join(fixture.root, ".pi", "gentle-ai", "models.json")), false, "reading never writes");
 });
 
-for (const root of ["project .agents", "home .agents", "bundled pi-subagents"] as const) {
+for (const root of ["project .agents", "home .agents", "bundled pi-subagents", "runtime filename fallback"] as const) {
 	test(`models screen stale cleanup preserves agents from ${root}`, async (t) => {
 		const { fixture, writeStore, storePath } = profilesStoreFixture(t, []);
-		const name = root === "bundled pi-subagents" ? "worker" : "inventory-helper";
+		const filenameFallback = root === "runtime filename fallback";
+		const name = root === "bundled pi-subagents" ? "worker" : filenameFallback ? "archivist" : "inventory-helper";
 		const dir = root === "project .agents" ? join(fixture.root, ".agents")
 			: root === "home .agents" ? join(process.env.HOME!, ".agents")
+			: filenameFallback ? join(fixture.root, ".pi", "agents")
 			: join(fixture.root, ".pi", "npm", "node_modules", "pi-subagents", "agents");
-		writeMarkdown(join(dir, `${name}.md`), `---\nname: ${name}\ndescription: Inventory fixture\n---\nbody\n`);
+		writeMarkdown(join(dir, `${name}.md`), `---\n${filenameFallback ? "" : `name: ${name}\n`}description: Inventory fixture\n---\nbody\n`);
 		const routes = { [name]: { model: "openai/alpha" }, abandoned: { model: "openai/alpha" } };
 		writeStore({ team: routes }, "team");
 		const subPath = join(fixture.root, ".pi", "subagents.json");
@@ -3777,6 +3779,24 @@ test("models screen cleanup transaction rejects a key whose agent appeared after
 	assert.deepEqual(afterCleanup!, before, "cleanup preserves all stores byte-for-byte");
 	assert.match(feedback, /Cleanup failed:.*no longer stale: abandoned/s);
 	assert.doesNotMatch(feedback, /Removed \d+ stale routing/);
+});
+
+test("models screen cleanup transaction rejects a filename-named agent added during selection", async (t) => {
+	const { fixture, bytes } = cleanupTransactionFixture(t);
+	const before = bytes();
+	let feedback = "";
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		assert.match(stripAnsi(renderComponent(panel)), /\[x\] abandoned/);
+		writeMarkdown(join(fixture.root, ".pi", "agents", "abandoned.md"), "---\ndescription: Revived agent\n---\nbody\n");
+		panel.handleInput("\r");
+		feedback = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.match(feedback, /Cleanup failed:.*no longer stale: abandoned/s);
+	assert.doesNotMatch(feedback, /Removed \d+ stale routing/);
+	assert.deepEqual(bytes(), before, "cleanup preserves all stores byte-for-byte");
 });
 
 test("models screen cleanup transaction warns about leftover files after commit", async (t) => {

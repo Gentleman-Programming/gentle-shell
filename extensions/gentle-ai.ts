@@ -7176,8 +7176,13 @@ async function openProfilesPanelLoop(
 					// Tab switches update selectedName without reopening this panel.
 					const name = selectedName!;
 					const roots = { cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd, home: homedir(), agentHome: resolveGentlePiAgentHome() };
-					const discovered = listDiscoverableAgents(roots.cwd);
-					const known = [...PROVIDER_REVIEW_ROLES.map((name) => ({ name })), ...discovered];
+					const cleanupInventory = () => [
+						...PROVIDER_REVIEW_ROLES.map((name) => ({ name })),
+						...listDiscoverableAgents(roots.cwd),
+						// Runtime discovery also accepts agents named after their file.
+						...discoverAgents(roots).agents,
+					];
+					const known = cleanupInventory();
 					const subPaths = ["project", "user"].map((source) => agentModelProfileConfigPath(roots.cwd, source as AgentSource));
 					const modelPath = modelConfigPath(ctx.cwd);
 					const legacyPath = legacyProjectModelConfigPath(ctx.cwd);
@@ -7225,7 +7230,7 @@ async function openProfilesPanelLoop(
 						notices: () => routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles, authorityAvailable),
 						apply: (selected) => {
 						// Agent definitions can appear while the card is open; judge the selection again.
-						const inventory = [...PROVIDER_REVIEW_ROLES.map((name) => ({ name })), ...listDiscoverableAgents(roots.cwd)];
+						const inventory = cleanupInventory();
 						const stillStale = new Set([...subStores.map((sub) => sub.routes), models, ...profileStores.map((profile) => profile.routes)]
 							.flatMap((routes) => candidates(routes, inventory)));
 						const revived = selected.filter((key) => !stillStale.has(key));

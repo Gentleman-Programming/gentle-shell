@@ -148,7 +148,7 @@ import {
 	type ProfilePinSource,
 	type ProfilePinStatus,
 } from "../lib/agent-profile-pin.ts";
-import { clearSessionProfileBinding, readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { clearSessionProfileBinding, readSessionProfileBinding, readSessionProfileStartupNone } from "../lib/session-profile-binding.ts";
 import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection, type SessionProfileLifecycleManager } from "../lib/session-profile-integration.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority, requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
@@ -7301,6 +7301,33 @@ function startupStateText(startup: SessionProfileStartupState): string {
 }
 
 /**
+ * Desktop `clear_profile_binding`: the same owner action as `/gentle:profiles
+ * clear`, behind the apply gate, with its notices recorded instead of shown.
+ * The outcome is read from the binding store, not from notice text: any
+ * owner warning is `not_cleared` (even when the store moved, as after a failed
+ * append), a change is `cleared`, else `unchanged`.
+ */
+async function clearDesktopSessionProfile(context: ExtensionContext): Promise<{ status: "cleared" | "unchanged" | "not_cleared" | "busy" }> {
+	if (!beginDesktopProfileApply()) return { status: "busy" };
+	try {
+		const sessionId = context.sessionManager?.getSessionId?.();
+		const state = () => (typeof sessionId === "string" ? JSON.stringify([readSessionProfileBinding(sessionId) ?? null, readSessionProfileStartupNone(sessionId)]) : "");
+		const before = state();
+		let warned = false;
+		const ui = Object.create(context.ui, {
+			notify: { value: (_message: string, type?: "info" | "warning" | "error") => { if (type === "warning" || type === "error") warned = true; } },
+		});
+		await handleProfilesClear(Object.create(context, { ui: { value: ui, enumerable: true } }) as ExtensionContext);
+		if (warned) return { status: "not_cleared" };
+		return { status: state() !== before ? "cleared" : "unchanged" };
+	} catch {
+		return { status: "not_cleared" };
+	} finally {
+		endDesktopProfileApply();
+	}
+}
+
+/**
  * `/gentle:profiles clear`: go back to the startup state when it is known
  * (gentle-shell#2742, section 3), else append a legacy clear record, and publish
  * only the returned state. Never-bound, already-cleared and startup sessions
@@ -13405,6 +13432,7 @@ function createGentleAiExtensionForTesting(
 			request.respond({
 				schema: DESKTOP_PROFILES_SERVICE_SCHEMA,
 				apply: (applyRequest) => (disposed ? Promise.resolve({ status: "not_applied", notes: [] }) : applyDesktopProfile(ctx, pi, applyRequest)),
+				clear: () => (disposed ? Promise.resolve({ status: "not_cleared" as const }) : clearDesktopSessionProfile(ctx)),
 				dispose: () => {
 					disposed = true;
 				},

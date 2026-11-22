@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status"],
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents"],
   "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "session_snapshot"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The agent-definitions slice advertises exactly its one read method and no event; editing definitions stays a file edit. The package-status slice advertises exactly its one read method and no event; `/gentle:doctor` stays terminal-only. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), [Agent definitions limits](#agent-definitions-limits), and [Status limits](#status-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The agent-definitions slice advertises exactly its one read method and no event; editing definitions stays a file edit. The package-status slice advertises exactly its one read method and no event; `/gentle:doctor` stays terminal-only. The background-subagents slice advertises exactly its read and change methods and no event; every answer carries the state. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), [Agent definitions limits](#agent-definitions-limits), [Status limits](#status-limits), and [Background subagents limits](#background-subagents-limits).
 
 ### `get_snapshot`
 
@@ -291,13 +291,18 @@ Reads have no side effect. A `get_config` request never creates, rewrites, repai
 
 #### Write targets
 
-A write target is one file, not one store. `get_config` reports it only for a writable store, and `set_config` requires the revision of the exact target it is about to replace:
+A write target is one file, not one store, with one exception: `persona`'s `global` target. `get_config` reports targets only for a writable store, and `set_config` requires the revision of the exact target it is about to replace:
 
 | `store` | `target` values | File |
 | --- | --- | --- |
 | `profiles` | `global` | `<configHome>/profiles.json` |
 | `profile_fallbacks` | `global` | `<configHome>/profile-fallbacks.json` |
 | `pins` | `local`, `repo` | `<git-common-dir>/gentle-ai/profile-pin.json`, `<worktree-root>/.pi/gentle-ai/profile.json` |
+| `persona` | `global` | `<configHome>/persona.json`, plus `<cwd>/.pi/gentle-ai/persona.json` when it already exists |
+| `banner` | `global` | `<configHome>/banner.json` |
+| `notifications` | `global` | `<configHome>/notifications.json` |
+
+`persona`'s `global` target covers both persona files, because the owner rewrites the project file too when it exists: its `writeRevision` digests both layers (so a project edit makes a token stale even while the global file is missing), and its `value` is `{ global, project }` layer states rather than one file. Each file is replaced atomically, but the two-file write is not a transaction: a failure after the global file is written can leave the project file unchanged, and the answer reports the layers as they are.
 
 `writeRevision` is the digest of that one target's state: `sha256` over canonical JSON of `{store, target, status, value}`. When the target reads `ok`, `value` is the owner-normalized file content (for a pin layer, the profile name it holds), so any content change moves the digest. When the target reads `missing` or `invalid`, `value` is absent and the digest covers **only `{store, target, status}`** — the owner produced no content to hash, and this contract does not hash raw bytes. Two consequences follow, and they are limits rather than incidents:
 
@@ -1470,6 +1475,43 @@ Reads the facts `/gentle:status` prints for this session's project, through the 
 
 No path, command hint, or display text crosses the wire. `status_unavailable` answers when the session is not bound or was replaced during the read, no owner answers (for example inside a subagent process), or the owner's answer fails validation or throws; its message never carries the failure text.
 
+### `get_background_subagents`
+
+Reads the background-subagents policy the way `/gentle:background-subagents status` resolves it for this session's project: the project file `.pi/gentle-ai/background-subagents.json`, then the machine-wide file in the Gentle config home, then `GENTLE_PI_BACKGROUND_SUBAGENTS`, then the default `off`. Params must be an empty object. It has no side effects and emits no event.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-96",
+  "ok": true,
+  "data": { "effective": "off", "source": "default", "malformed": false, "projectFile": "absent", "globalFile": "absent", "capability": "ready" }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `effective` | `on` or `off`: whether background subagents may be launched. |
+| `source` | What decided it: `project`, `global`, `environment`, or `default`. |
+| `malformed` | The deciding file exists but is not a valid policy file; the policy is then `off` (fail closed). |
+| `projectFile`, `globalFile` | `present` or `absent`. No path crosses the wire. |
+| `capability` | `ready` when this session can launch background subagents at all, `absent` otherwise. Read-time only. |
+
+### `set_background_subagents`
+
+Writes the machine-wide policy, exactly as `/gentle:background-subagents enable|disable` does. The policy is a user-owned switch, so a change takes two calls, like `set_review_mode`.
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `policy` | yes | `on` \| `off` | The machine-wide policy to write. |
+| `confirmationToken` | no | string (1-128) | The token from the confirmation answer. |
+
+Any other key, including a `scope`, is `invalid_request`: only the machine-wide file is written, never a project file. Without a matching token the answer is `{ "status": "confirmation_required", "policy", "state", "confirmation": { "title", "message", "token" } }` and nothing is written. The message says when this project's file decides instead, so the change would not apply here. The token is bound to the request, the exact text shown, and the state it describes: if the state changes before the second call, the answer asks again. A request dispatched before a session reset is refused, even if a replacement session attached meanwhile.
+
+With a matching token the owner writes the file and re-reads: `{ "status": "applied", "policy", "changed", "state" }`. `state` is the re-read state (so `effective` can stay unchanged when a project file decides), and `changed` reports whether it differs from the state shown.
+
+Errors: `invalid_request`; `background_subagents_busy` while another Desktop change is in progress; `background_subagents_unavailable` when no owner answers (for example inside a subagent process), the state cannot be read, the request predates a session reset, or the write did not complete (re-read the policy).
+
 ## Responses
 
 Success:
@@ -1972,6 +2014,13 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **Cost.** The asset audit reads every managed asset file; read on demand, do not poll.
 - **Read only, no event.**
 
+## Background subagents limits
+
+- **Same owner, same writer.** Reads use `resolveBackgroundSubagentsPolicy` and the capability check; writes use the command's own global writer. Nothing is copied.
+- **Machine-wide only.** The Desktop writes the global file, like the command. A project file still decides for its project, and the answer shows it.
+- **Confirmed.** No write happens without a token bound to the state the user saw.
+- **No event.** A change made in the terminal or by editing a file is seen on the next read.
+
 ## Verification
 
 ```sh
@@ -1994,6 +2043,7 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-updates.test.ts \
   tests/desktop-rpc-agent-definitions.test.ts \
   tests/desktop-rpc-status.test.ts \
+  tests/desktop-rpc-background-subagents.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 

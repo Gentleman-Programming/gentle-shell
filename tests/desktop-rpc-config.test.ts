@@ -1341,6 +1341,9 @@ test("capabilities advertise the wired config read and write surface", async (t)
 		"get_usage_stats",
 		"get_update_status",
 		"list_agent_definitions",
+		"get_status",
+		"get_background_subagents",
+		"set_background_subagents",
 	]);
 	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed"]);
 });

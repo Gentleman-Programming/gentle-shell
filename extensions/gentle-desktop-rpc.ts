@@ -39,6 +39,10 @@ import { DESKTOP_UPDATES_EVENTS, DESKTOP_UPDATES_METHODS } from "../lib/desktop-
 import { DesktopUpdatesBridge, type UpdateSourcesFactory } from "../lib/desktop-updates-service.ts";
 import { DESKTOP_AGENT_DEFINITIONS_EVENTS, DESKTOP_AGENT_DEFINITIONS_METHODS } from "../lib/desktop-rpc-agent-definitions.ts";
 import { DesktopAgentDefinitionsBridge, type AgentDefinitionsLocationFactory } from "../lib/desktop-agent-definitions-service.ts";
+import { DESKTOP_STATUS_EVENTS, DESKTOP_STATUS_METHODS } from "../lib/desktop-rpc-status.ts";
+import { DesktopStatusBridge } from "../lib/desktop-status-service.ts";
+import { DESKTOP_BACKGROUND_SUBAGENTS_EVENTS, DESKTOP_BACKGROUND_SUBAGENTS_METHODS } from "../lib/desktop-rpc-background-subagents.ts";
+import { DesktopBackgroundSubagentsBridge } from "../lib/desktop-background-subagents-service.ts";
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 import type { DesktopChangeTimers, DesktopDirectoryWatch } from "../lib/desktop-rpc-config-watch.ts";
 
@@ -111,8 +115,13 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		...(options.updateSources === undefined ? {} : { sources: options.updateSources }),
 		...(options.updateTimeoutMs === undefined ? {} : { timeoutMs: options.updateTimeoutMs }),
 	});
+	const packageStatus = new DesktopStatusBridge(pi);
+	const backgroundSubagents = new DesktopBackgroundSubagentsBridge(pi);
 	const agentDefinitions = new DesktopAgentDefinitionsBridge(options.agentDefinitionsLocation === undefined ? {} : { location: options.agentDefinitionsLocation });
 	const domain: DesktopRpcDomain = (method, params) => {
+		// Captured before any await: a background-subagents write dispatched before a
+		// session reset must not run under the replacement session.
+		const backgroundGeneration = backgroundSubagents.dispatchGeneration();
 		const sessionsOutcome = sessionList.handle(method, params, dispatchingRequestId);
 		if (sessionsOutcome !== undefined) return sessionsOutcome;
 		// Config is the only synchronous bridge; permission, usage, design, jobs,
@@ -143,12 +152,16 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 			if (reviewOutcome !== undefined) return reviewOutcome;
 			const statsOutcome = await stats.handle(method, params);
 			if (statsOutcome !== undefined) return statsOutcome;
+			const statusOutcome = await packageStatus.handle(method, params);
+			if (statusOutcome !== undefined) return statusOutcome;
+			const backgroundOutcome = await backgroundSubagents.handle(method, params, backgroundGeneration);
+			if (backgroundOutcome !== undefined) return backgroundOutcome;
 			return updates.handle(method, params);
 		})();
 	};
-	const events = [...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS, ...DESKTOP_SESSIONS_EVENTS, ...DESKTOP_CHANGES_EVENTS, ...DESKTOP_REVIEW_EVENTS, ...DESKTOP_STATS_EVENTS, ...DESKTOP_UPDATES_EVENTS, ...DESKTOP_AGENT_DEFINITIONS_EVENTS];
+	const events = [...DESKTOP_CONFIG_EVENTS, DESKTOP_PERMISSION_EVENT, ...DESKTOP_USAGE_EVENTS, ...DESKTOP_DESIGN_EVENTS, ...DESKTOP_JOBS_EVENTS, ...DESKTOP_PROFILES_EVENTS, ...DESKTOP_AGENTS_EVENTS, ...DESKTOP_SESSIONS_EVENTS, ...DESKTOP_CHANGES_EVENTS, ...DESKTOP_REVIEW_EVENTS, ...DESKTOP_STATS_EVENTS, ...DESKTOP_UPDATES_EVENTS, ...DESKTOP_AGENT_DEFINITIONS_EVENTS, ...DESKTOP_STATUS_EVENTS, ...DESKTOP_BACKGROUND_SUBAGENTS_EVENTS];
 	const router = new DesktopRpcRouter(
-		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_PROFILES_METHODS, ...DESKTOP_AGENTS_METHODS, ...DESKTOP_SESSIONS_METHODS, ...DESKTOP_CHANGES_METHODS, ...DESKTOP_REVIEW_METHODS, ...DESKTOP_STATS_METHODS, ...DESKTOP_UPDATES_METHODS, ...DESKTOP_AGENT_DEFINITIONS_METHODS],
+		["capabilities", "get_snapshot", ...DESKTOP_CONFIG_METHODS, ...DESKTOP_PERMISSION_METHODS, ...DESKTOP_USAGE_METHODS, ...DESKTOP_DESIGN_METHODS, ...DESKTOP_JOBS_METHODS, ...DESKTOP_PROFILES_METHODS, ...DESKTOP_AGENTS_METHODS, ...DESKTOP_SESSIONS_METHODS, ...DESKTOP_CHANGES_METHODS, ...DESKTOP_REVIEW_METHODS, ...DESKTOP_STATS_METHODS, ...DESKTOP_UPDATES_METHODS, ...DESKTOP_AGENT_DEFINITIONS_METHODS, ...DESKTOP_STATUS_METHODS, ...DESKTOP_BACKGROUND_SUBAGENTS_METHODS],
 		// `session_snapshot` is advertised only while the feed owner seam is wired.
 		() => (sessions.wired ? [...events, ...DESKTOP_SESSION_EVENTS] : events),
 		() => config.snapshotState(),
@@ -176,6 +189,8 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		stats.reset();
 		updates.reset();
 		agentDefinitions.reset();
+		packageStatus.reset();
+		backgroundSubagents.reset();
 		router.stop();
 		activePublish = undefined;
 		retiredPublish = undefined;
@@ -244,6 +259,8 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		stats.reset();
 		updates.reset();
 		agentDefinitions.reset();
+		packageStatus.reset();
+		backgroundSubagents.reset();
 		router.stop();
 	});
 
@@ -274,6 +291,8 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 			stats.attach(ctx);
 			updates.attach(ctx);
 			agentDefinitions.attach(ctx);
+			packageStatus.attach(ctx);
+			backgroundSubagents.attach(ctx);
 			dispatchingRequestId = desktopRequestId(args);
 			let pending: void | Promise<void>;
 			try {

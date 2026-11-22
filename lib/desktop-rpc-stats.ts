@@ -21,7 +21,7 @@ export const DESKTOP_STATS_SERVICE_SCHEMA = "gentle-pi.desktop-stats-service/v1"
 export const DESKTOP_STATS_SERVICE_CHANNEL = "gentle:desktop:stats-service";
 
 /** Upper bounds on each array one answer carries. */
-export const DESKTOP_STATS_LIMITS = { models: 50, days: 400, projects: 50 } as const;
+export const DESKTOP_STATS_LIMITS = { models: 50, days: 400, projects: 50, providers: 50 } as const;
 /** Longest model id or project name the wire carries; longer strings are cut. */
 export const DESKTOP_STATS_NAME_LIMIT = 128;
 
@@ -60,6 +60,15 @@ export interface DesktopUsageStatsModel {
 export interface DesktopUsageStatsDay {
 	day: string;
 	tokens: number;
+	cost: number;
+}
+
+export interface DesktopUsageStatsProvider {
+	provider: string;
+	messages: number;
+	tokens: number;
+	cost: number;
+	share: number;
 }
 
 export interface DesktopUsageStatsProject {
@@ -77,8 +86,9 @@ export interface DesktopUsageStats {
 	totals: DesktopUsageStatsTotals;
 	byModel: DesktopUsageStatsModel[];
 	byDay: DesktopUsageStatsDay[];
+	byProvider: DesktopUsageStatsProvider[];
 	byProject?: DesktopUsageStatsProject[];
-	truncated: { byModel: boolean; byDay: boolean; byProject?: boolean };
+	truncated: { byModel: boolean; byDay: boolean; byProvider: boolean; byProject?: boolean };
 }
 
 /** One owner read: the parsed history from the owner's loader, or truthful absence. */
@@ -139,7 +149,8 @@ export function projectDesktopUsageStats(
 ): DesktopUsageStats {
 	const summary = aggregateStats(sessions, { range: query.range, scope: query.scope, cwd: query.cwd, now: query.now });
 	const models = summary.models.map((model) => ({ model: boundedName(model.model), messages: model.messages, tokens: model.tokens, cost: model.cost, share: model.share }));
-	const days = Object.keys(summary.days).sort().map((day) => ({ day, tokens: summary.days[day]! }));
+	const days = Object.keys(summary.days).sort().map((day) => ({ day, tokens: summary.days[day]!, cost: summary.dayCosts[day] ?? 0 }));
+	const providers = summary.providers.map((provider) => ({ provider: boundedName(provider.provider), messages: provider.messages, tokens: provider.tokens, cost: provider.cost, share: provider.share }));
 	const stats: DesktopUsageStats = {
 		range: query.range,
 		scope: query.scope,
@@ -155,7 +166,8 @@ export function projectDesktopUsageStats(
 		},
 		byModel: models.slice(0, DESKTOP_STATS_LIMITS.models),
 		byDay: days.slice(Math.max(0, days.length - DESKTOP_STATS_LIMITS.days)),
-		truncated: { byModel: models.length > DESKTOP_STATS_LIMITS.models, byDay: days.length > DESKTOP_STATS_LIMITS.days },
+		byProvider: providers.slice(0, DESKTOP_STATS_LIMITS.providers),
+		truncated: { byModel: models.length > DESKTOP_STATS_LIMITS.models, byDay: days.length > DESKTOP_STATS_LIMITS.days, byProvider: providers.length > DESKTOP_STATS_LIMITS.providers },
 	};
 	if (query.scope === STATS_SCOPE.ALL) {
 		const projects = projectRows(sessions, query);

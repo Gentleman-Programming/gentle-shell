@@ -14,6 +14,7 @@ import {
 	projectAuthStatus,
 } from "../lib/desktop-rpc-auth.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
+import { DesktopAuthBridge } from "../lib/desktop-auth-service.ts";
 
 // get_auth_status / reload_credentials: which providers have credentials and of
 // which kind, from Pi's model registry, through the real Desktop transport over
@@ -95,7 +96,7 @@ test("the Desktop transport advertises both methods once and no new event", asyn
 	await app.invoke("cap", "capabilities");
 	const data = app.last().data;
 	for (const method of DESKTOP_AUTH_METHODS) assert.equal(data.methods.filter((name: string) => name === method).length, 1);
-	assert.deepEqual(data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed"]);
+	assert.deepEqual(data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
 });
 
 // ---- get_auth_status ----
@@ -228,4 +229,32 @@ test("an environment label never crosses and repeated reads never refresh", asyn
 test("an unknown source is null and a throwing display name falls back to the id", () => {
 	const result = projectAuthStatus({ getAll: () => [{ provider: "x" }], getProviderAuthStatus: () => ({ configured: true, source: "configured provider" }), getProviderDisplayName: () => { throw new Error("boom"); }, isUsingOAuth: () => false, refresh: async () => ({ aborted: false, errors: new Map() }) });
 	assert.deepEqual(result.providers, [{ provider: "x", displayName: "x", configured: true, type: "api_key", source: null }]);
+});
+
+// ---- Native review advisories (review-00bf531659b82903) ----
+
+test("a completed reload with an unexpected result shape still answers the reloaded state", async (t) => {
+	for (const shape of [undefined, { aborted: true, errors: "not a map" }]) {
+		const fake = fakeRegistry({ refresh: async () => shape as never });
+		const app = harness(t, fake.registry);
+		await app.invoke("odd-shape", "reload_credentials");
+		const response = app.last();
+		assert.equal(response.ok, true, JSON.stringify(shape));
+		assert.equal(response.data.reloaded, true);
+		assert.equal(response.data.aborted, shape?.aborted === true);
+		assert.deepEqual(response.data.failedProviders, []);
+	}
+});
+
+test("the bridge itself drops a reload answer when a reset lands mid-refresh", async () => {
+	let release: () => void = () => {};
+	const fake = fakeRegistry({ refresh: () => new Promise((resolve) => { release = () => resolve({ aborted: false, errors: new Map() }); }) });
+	const bridge = new DesktopAuthBridge();
+	bridge.attach({ modelRegistry: fake.registry } as never);
+	const pending = bridge.handle("reload_credentials", {});
+	await new Promise((resolve) => setImmediate(resolve));
+	bridge.reset();
+	bridge.attach({ modelRegistry: fake.registry } as never);
+	release();
+	assert.deepEqual(await pending, { ok: false, error: AUTH_UNAVAILABLE });
 });

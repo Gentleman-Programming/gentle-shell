@@ -74,7 +74,14 @@ export class DesktopAuthBridge {
 			try {
 				return {
 					ok: true,
-					data: { reloaded: true, aborted: result.aborted === true, failedProviders: failedProviderIds(result.errors ?? new Map()), ...projectAuthStatus(registry) },
+					// The refresh already took effect: an unexpected result shape answers
+					// the reloaded state with no aborted flag and no failed ids, never unavailable.
+					data: {
+						reloaded: true,
+						aborted: result?.aborted === true,
+						failedProviders: result?.errors instanceof Map ? failedProviderIds(result.errors) : [],
+						...projectAuthStatus(registry),
+					},
 				};
 			} catch {
 				return { ok: false, error: AUTH_UNAVAILABLE };

@@ -189,6 +189,12 @@ import {
 	type DesktopStatusService,
 } from "../lib/desktop-rpc-status.ts";
 import {
+	DESKTOP_BACKGROUND_SUBAGENTS_SERVICE_CHANNEL,
+	DESKTOP_BACKGROUND_SUBAGENTS_SERVICE_SCHEMA,
+	type DesktopBackgroundSubagentsOwnerRead,
+	type DesktopBackgroundSubagentsService,
+} from "../lib/desktop-rpc-background-subagents.ts";
+import {
 	REVIEW_HOST_RELAY_FAILURE,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_ENV,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS,
@@ -13792,6 +13798,53 @@ function createGentleAiExtensionForTesting(
 				dispose: () => {
 					disposed = true;
 				},
+			});
+		} catch {
+			/* obsolete trusted context: discovery expires closed */
+		}
+	});
+
+	// Desktop get/set_background_subagents: the same resolution and the same
+	// global writer as `/gentle:background-subagents`. The bridge asks the user
+	// to confirm before it calls `write`, so the switch stays user-initiated.
+	if (typeof pi.events?.on === "function") pi.events.on(DESKTOP_BACKGROUND_SUBAGENTS_SERVICE_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object") return;
+		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopBackgroundSubagentsService): void }>;
+		if (typeof request.respond !== "function" || !request.context) return;
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
+		const cwd = request.context.sessionManager?.getCwd?.() ?? request.context.cwd;
+		let disposed = false;
+		const read = async (): Promise<DesktopBackgroundSubagentsOwnerRead> => {
+			if (disposed) return { kind: "unavailable" };
+			const resolution = resolveBackgroundSubagentsPolicy(cwd);
+			const source = resolution.source === "project_file" ? "project" as const : resolution.source === "global_file" ? "global" as const : resolution.source;
+			return {
+				kind: "status",
+				state: {
+					effective: resolution.policy,
+					source,
+					malformed: resolution.malformed,
+					projectFile: resolution.projectFileExists ? "present" : "absent",
+					globalFile: resolution.globalFileExists ? "present" : "absent",
+					capability: resolveBackgroundSubagentsCapability(cwd, readActiveToolNames(pi)),
+				},
+			};
+		};
+		try {
+			request.respond({
+				schema: DESKTOP_BACKGROUND_SUBAGENTS_SERVICE_SCHEMA,
+				read,
+				async write(policy) {
+					if (disposed) return { kind: "unavailable" };
+					try {
+						writeGlobalBackgroundSubagentsPolicy(policy);
+					} catch {
+						return { kind: "failed" };
+					}
+					// Report the owner's re-read after the write, not the write's echo.
+					return await read();
+				},
+				dispose: () => { disposed = true; },
 			});
 		} catch {
 			/* obsolete trusted context: discovery expires closed */

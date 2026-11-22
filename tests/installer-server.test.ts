@@ -298,6 +298,7 @@ test("/api/plan reports blockers with guidance and no profile change when alread
 });
 
 test("/api/plan names the found and required version of an older Gentle Shell and how to resolve it", async () => {
+	const { version: releaseVersion } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 	const { host, port, login } = await start({ collect: async () => collected({
 		pi: { available: true, version: "1.2.4", usable: true },
 		shell: { available: true, version: "3.4.0", usable: false, global: true },
@@ -307,8 +308,8 @@ test("/api/plan names the found and required version of an older Gentle Shell an
 		const view = await plan(port, await login());
 		assert.deepEqual(view.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["incompatible-tool", "shell"]]);
 		assert.equal(view.blockers[0].guidance,
-			"Gentle Shell 3.4.0 is installed globally with pnpm, but this installer needs 4.9.0 or newer. Nothing was replaced. " +
-			"Update it with `pnpm add -g gentle-pi@4.9.0`, or remove it with `pnpm remove -g gentle-pi`, then select Check again.");
+			`Gentle Shell 3.4.0 is installed globally with pnpm, but this installer needs ${releaseVersion} or newer. Nothing was replaced. ` +
+			`Update it with \`pnpm add -g gentle-pi@${releaseVersion}\`, or remove it with \`pnpm remove -g gentle-pi\`, then select Check again.`);
 		assert.deepEqual(view.actions, []);
 	} finally {
 		await host.close("test");

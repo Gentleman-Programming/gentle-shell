@@ -2175,7 +2175,7 @@ async function main() {
 		const tower = parseTowerArgs(args.commandArgs);
 		if (tower.error !== undefined) fail(`gentle-shell tower: ${tower.error}\nRun 'gentle-shell --help' for usage.`, 2);
 		const { runTower } = await import("../runtime/tower-open.mjs");
-		process.exitCode = await runTower({ env: process.env, open: tower.open, port: tower.port,
+		process.exitCode = await runTower({ env: process.env, open: tower.open, port: tower.port, json: tower.json === true,
 			stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text) });
 		return;
 	}

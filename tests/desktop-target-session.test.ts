@@ -3,7 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // The session the Gentle Shell Desktop window is about (herdr/mods/*/snapshot.js targetSession).
 // Every gentle-* mod carries its own byte-identical copy, so each copy is loaded and checked, with
@@ -50,7 +50,7 @@ type Snapshot = {
 const load = async (mod: string): Promise<Snapshot> => {
 	mkdirSync(join(scratch, mod), { recursive: true });
 	copyFileSync(join(MODS, mod, "snapshot.js"), join(scratch, mod, "snapshot.js"));
-	return import(join(scratch, mod, "snapshot.js"));
+	return import(pathToFileURL(join(scratch, mod, "snapshot.js")).href);
 };
 
 // A Gentle Shell TUI running in another terminal (no Herdr terminal of this window matches it).

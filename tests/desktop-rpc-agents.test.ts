@@ -1378,3 +1378,44 @@ test("the real owner pushes in-turn progress as one throttled agents_update with
 	assert.equal(agent!.activeTool, "bash");
 	assert.equal(JSON.stringify(events.at(-1)).includes("/secret/path"), false);
 });
+
+test("activeTool skips finished tool items and reports the most recent running one", () => {
+	const thread = { items: [
+		{ kind: "tool" as const, callId: "c1", name: "bash", args: {}, output: "", running: true, isError: false },
+		{ kind: "tool" as const, callId: "c2", name: "read", args: {}, output: "", running: false, isError: false },
+	], dropped: 0, version: 2, limits: { maxItems: 400, maxOutputChars: 16000 } };
+	assert.equal(probeAgents.activeToolName(thread), "bash");
+});
+
+/** Fire only the owner's pending progress throttle (500 ms), never its stall timers. */
+function flushProgress(owner: ReturnType<typeof recordedScheduler>): void {
+	for (const entry of [...owner.entries]) {
+		if (entry.cancelled || entry.ms !== 500) continue;
+		entry.cancelled = true;
+		entry.fn();
+	}
+}
+
+test("streamed text alone emits no agents_update", async (t) => {
+	const owner = recordedScheduler();
+	const h = await realOwnerHarness(t, { schedule: owner.schedule });
+	await launchBackgroundTask(h);
+	const scheduler = recordedScheduler();
+	const bridge = new DesktopAgentsBridge(h.pi, { discover: async () => h.service, schedule: scheduler.schedule, coalesceMs: 10 });
+	bridge.attach(h.ctx);
+	const events: unknown[] = [];
+	bridge.wire((_event, data) => events.push(data));
+	await bridge.start();
+	h.children[0]!.emit({ type: "turn_end" });
+	// The first delta moves the step to `writing`, a real projected change.
+	h.children[0]!.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "start" } });
+	await tick();
+	flushProgress(owner);
+	scheduler.flushAll();
+	const before = events.length;
+	for (const delta of ["a", "b", "c"]) h.children[0]!.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta } });
+	await tick();
+	flushProgress(owner);
+	scheduler.flushAll();
+	assert.equal(events.length, before, "text deltas change no projected field");
+});

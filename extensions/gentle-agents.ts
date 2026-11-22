@@ -1499,7 +1499,16 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			desktopProgressTasks.delete(change.taskId);
 		} else if (!desktopProgressTasks.has(change.taskId)) {
 			const sessionId = change.sessionId;
-			desktopProgressTasks.set(change.taskId, store.subscribe(change.taskId, () => notifyDesktopAgentsProgress(sessionId)));
+			// Only a change to this task's wire projection is progress: streamed text
+			// moves `lastActivityAt` (which reorders the store's list) but no
+			// projected field, so it never schedules a notification.
+			let lastProjection: string | undefined;
+			desktopProgressTasks.set(change.taskId, store.subscribe(change.taskId, (task, thread) => {
+				const projection = JSON.stringify(projectDesktopAgent(task, thread));
+				if (projection === lastProjection) return;
+				lastProjection = projection;
+				notifyDesktopAgentsProgress(sessionId);
+			}));
 		}
 	});
 	const stopAgentsProgressNotifications = (): void => {

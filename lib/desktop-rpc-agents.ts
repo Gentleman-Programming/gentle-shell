@@ -182,13 +182,16 @@ const ACTIVE_TOOL_NAME = /^[A-Za-z0-9_.:-]{1,64}$/;
 
 const countField = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
-/** The name of the last tool still running in the thread, when it is a plain identifier. */
+/**
+ * The name of the most recent tool still running in the thread, when it is a
+ * plain identifier. Finished tool items are skipped, so a parallel call that
+ * ended after a still-running one never hides it.
+ */
 export function activeToolName(thread: TaskThread | undefined): string | undefined {
 	if (!thread) return undefined;
 	for (let index = thread.items.length - 1; index >= 0; index -= 1) {
 		const item = thread.items[index]!;
-		if (item.kind !== THREAD_ITEM.TOOL) continue;
-		if (!item.running) return undefined;
+		if (item.kind !== THREAD_ITEM.TOOL || !item.running) continue;
 		return ACTIVE_TOOL_NAME.test(item.name) ? item.name : undefined;
 	}
 	return undefined;

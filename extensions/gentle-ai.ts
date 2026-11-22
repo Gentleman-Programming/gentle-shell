@@ -5090,11 +5090,16 @@ class RoutingTablePanel implements OverlayComponent {
 		if (selected.length === 0) return;
 		try {
 			this.file = this.cleanup!.apply(selected);
+		} catch (error) { return this.say(`Cleanup failed: ${profilesErrorMessage(error)}`); }
+		this.stored = removeRoutingKeys(this.stored, selected);
+		this.draft = removeRoutingKeys(this.draft, selected);
+		const success = `Removed ${selected.length} stale routing key${selected.length === 1 ? "" : "s"}.`;
+		this.say(success);
+		try {
 			this.notices = this.cleanup!.notices();
-			this.stored = removeRoutingKeys(this.stored, selected);
-			this.draft = removeRoutingKeys(this.draft, selected);
-			this.say(`Removed ${selected.length} stale routing key${selected.length === 1 ? "" : "s"}.`);
-		} catch (error) { this.say(`Cleanup failed: ${profilesErrorMessage(error)}`); }
+		} catch {
+			this.say(`${success} Warning: Could not refresh routing notices.`);
+		}
 	}
 
 	private handleSwitchKey(data: string): void {

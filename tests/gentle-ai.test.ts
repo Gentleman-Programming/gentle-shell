@@ -3618,6 +3618,60 @@ test("models screen stale cleanup refreshes existing notices after success", asy
 	await fixture.run("gentle:profiles");
 });
 
+test("models screen stale cleanup keeps the commit when refreshing notices throws", async (t) => {
+	// Model a parent session even when the test runner itself is a Pi child.
+	for (const key of ["GENTLE_PI_AGENTS_CHILD", "GENTLE_PI_PROFILE_FOLLOW"]) {
+		const previous = process.env[key];
+		delete process.env[key];
+		t.after(() => { if (previous !== undefined) process.env[key] = previous; });
+	}
+	const { fixture, subPath, userPath, storePath, writeStore, writePin, localPinPath } = cleanupTransactionFixture(t);
+	const entry = { model: "openai/alpha" };
+	const read = (path: string) => JSON.parse(readFileSync(path, "utf8"));
+	const original = read(subPath);
+	writeStore({ team: { worker: entry, abandoned: entry }, sibling: { abandoned: entry } });
+	writeFileSync(subPath, JSON.stringify({ ...original, model_profiles: { ...original.model_profiles, explor: entry } }));
+	freezeScreenSession(fixture);
+	writePin(localPinPath, "team");
+	const notice = /subagents\.json routes "explor", which no agent matches, so it is ignored\./;
+	const invalidEffort = { toString: null };
+	let rendered = "";
+	let committed: unknown[] = [];
+	let visited = false;
+	fixture.onInput((panel) => {
+		if (visited) return panel.handleInput("\x1b");
+		visited = true;
+		const before = stripAnsi(panel.render(120).join("\n"));
+		assert.match(before, /Used in this repo\./);
+		assert.match(before, notice, "the unbound panel reads subagents.json notices");
+		// Opening the panel needs valid input; introduce the bad setting before cleanup takes its snapshot.
+		writeFileSync(subPath, JSON.stringify({ ...read(subPath), default_effort: invalidEffort }));
+		panel.handleInput("x");
+		const card = stripAnsi(renderComponent(panel));
+		assert.match(card, /\[x\] abandoned/);
+		assert.match(card, /\[x\] explor/);
+		panel.handleInput("\r");
+		rendered = stripAnsi(panel.render(120).join("\n"));
+		committed = [read(subPath), read(userPath), read(fixture.globalPath), read(storePath).profiles];
+		// The save reopens the panel, so restore the valid effort without restoring any routes.
+		writeFileSync(subPath, JSON.stringify({ ...original, model_profiles: read(subPath).model_profiles }));
+		chooseAgent(panel, "worker");
+		chooseEffort(panel, "high");
+		panel.handleInput("s");
+	});
+	await fixture.run("gentle:profiles");
+	const cleanSubagents = { extra: { keep: true }, model_profiles: { worker: entry } };
+	assert.deepEqual(committed, [
+		{ ...cleanSubagents, default_effort: invalidEffort }, cleanSubagents, { worker: entry },
+		{ team: { worker: entry }, sibling: {} },
+	]);
+	assert.doesNotMatch(rendered, /Cleanup failed:/);
+	assert.match(rendered, /Removed 2 stale routing keys\. Warning: Could not refresh routing notices\./);
+	assert.match(rendered, notice, "the previous notices remain visible");
+	assert.doesNotMatch(rendered, /\d+ unsaved/, "cleanup keeps the draft and saved baseline in sync");
+	assert.deepEqual(read(storePath).profiles, { team: { worker: { ...entry, thinking: "high" } }, sibling: {} }, "a later save does not resurrect removed routes");
+});
+
 test("models screen stale cleanup refreshes notices for the switched profile", async (t) => {
 	const { fixture, writeStore } = cleanupTransactionFixture(t);
 	const entry = { model: "openai/alpha" };

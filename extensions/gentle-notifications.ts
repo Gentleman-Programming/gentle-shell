@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isTokenCount, readCompactionThreshold } from "../lib/compaction-threshold.ts";
 import { CONTEXT_HIGH_PERCENT, ContextHighLatch } from "../lib/context-threshold.ts";
 import { MainNotificationRun, NOTIFICATION_ATTENTION_EVENT, NOTIFICATION_SOURCE_EVENT, isNotificationSourceEvent } from "../lib/notification-events.ts";
 import { claimNotificationOwner, type NotificationServiceDependencies } from "../lib/notification-service.ts";
@@ -31,13 +32,20 @@ export function createNotificationExtension(pi: ExtensionAPI, deps: Notification
 	/** One sound and one optional visual notice per high episode; the latch owns rearming. */
 	const evaluateContextHigh = (ctx: ExtensionContext): void => {
 		if (!valid(ctx) || !sessionId || !contextRunId) return;
-		const reading = ctx.getContextUsage?.()?.percent ?? null;
-		if (!contextHigh.observe(reading)) return;
+		const usage = ctx.getContextUsage?.();
+		const threshold = readCompactionThreshold(pi, ctx.model, usage?.contextWindow ?? ctx.model?.contextWindow);
+		const percent = usage?.percent ?? null;
+		const high = typeof threshold === "number"
+			? contextHigh.observe(isTokenCount(usage?.tokens) ? usage.tokens : null, threshold)
+			: contextHigh.observe(percent);
+		if (!high) return;
 		owner.enqueue({ sessionId, runId: contextRunId, sequence: ++contextSequence,
 			event: "context.high", occurredAt: owner.now() });
 		if (!visualNotice()) return;
-		const percent = reading ?? CONTEXT_HIGH_PERCENT;
-		try { ctx.ui.notify(`Context usage is at ${Math.round(percent)}% (\u2265 ${CONTEXT_HIGH_PERCENT}%); consider compacting before the next turn.`, "warning"); }
+		const notice = typeof threshold === "number"
+			? "Context usage has reached the auto-compaction threshold; Pi compacts when usage exceeds it."
+			: `Context usage is at ${Math.round(percent ?? CONTEXT_HIGH_PERCENT)}% (\u2265 ${CONTEXT_HIGH_PERCENT}%); consider compacting before the next turn.`;
+		try { ctx.ui.notify(notice, "warning"); }
 		catch { /* A local visual diagnostic cannot fail a run. */ }
 	};
 	const remember = (off: unknown) => { if (typeof off === "function") nativeOff.push(off as () => void); };

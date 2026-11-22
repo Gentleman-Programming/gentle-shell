@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
-import { Container, MouseRegion, type TuiMouseEvent, SelectList, Text } from "@earendil-works/pi-tui";
+import { Container, MouseRegion, type TuiMouseEvent, SelectList, Text, TuiAltScreen } from "@earendil-works/pi-tui";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 
 const items = [
@@ -122,4 +122,40 @@ test("native fullscreen interaction preserves Container geometry and SelectList 
 	const click = root.handleMouse(mouse("click", "left", secondRow, lines.length));
 	assert.equal(click?.handled, true);
 	assert.deepEqual(selected, ["second", "second"]);
+});
+
+test("native fullscreen interaction ignores mouse events without finite geometry", () => {
+	const seen: string[] = [];
+	const interaction = createNativeFullscreenInteraction({
+		keyboardTarget: new Text("x", 0, 0),
+		requestRender() {},
+		mouseObserver: { beforeMouse: () => seen.push("before"), afterMouse: () => seen.push("after") },
+	});
+	assert.equal(interaction.handleMouse({ type: "click" } as unknown as TuiMouseEvent), undefined);
+	assert.deepEqual(seen, [], "a malformed event is not observed");
+});
+
+test("real alt-screen mouse events keep finite geometry and still reach the observer and target", () => {
+	const seen: string[] = []; const hits: string[] = [];
+	const root = createNativeFullscreenInteraction({ keyboardTarget: new Text("k", 0, 0), requestRender() {}, mouseObserver: { beforeMouse: (e: TuiMouseEvent) => { seen.push(e.type); }, afterMouse() {} } });
+	root.addChild(new Text("top", 0, 0));
+	root.addChild(new MouseRegion(new Text("target", 0, 0), (e) => { hits.push(e.type); return { handled: true }; }));
+	const terminal = { start() {}, stop() {}, async drainInput() {}, write() {}, get columns() { return 40; }, get rows() { return 10; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, kittyProtocolActive: false, getBufferedInput() { return ""; }, hasPendingInput() { return false; } } as never;
+	const tui = new TuiAltScreen(terminal, false); tui.setLayoutRoot(root as never); tui.start();
+	try {
+		(tui as unknown as { doRender(): void }).doRender();
+		const row = (tui as unknown as { previousScreen: string[] }).previousScreen.findIndex((l) => l.includes("target"));
+		const t = tui as unknown as { handleMouseEvent(raw: { button: number; x: number; y: number; release: boolean }): void };
+		t.handleMouseEvent({ button: 0, x: 1, y: row, release: false }); t.handleMouseEvent({ button: 0, x: 1, y: row, release: true });
+		assert.ok(hits.includes("press") && hits.includes("click")); assert.ok(seen.includes("press"));
+	} finally { tui.stop(); }
+});
+test("finite zero or negative geometry is still observed; only non-finite geometry is ignored", () => {
+	for (const [patch, observed] of [[{ width: 0 }, true], [{ y: -1 }, true], [{ width: Number.NaN }, false], [{ height: Infinity }, false], [{ y: undefined }, false]] as const) {
+		const seen: string[] = [];
+		const root = createNativeFullscreenInteraction({ keyboardTarget: new Text("k", 0, 0), requestRender() {}, mouseObserver: { beforeMouse: () => seen.push("b"), afterMouse: () => seen.push("a") } });
+		root.addChild(new Text("row", 0, 0));
+		root.handleMouse({ ...mouse("click", "left", 0, 10), ...patch } as TuiMouseEvent);
+		assert.deepEqual(seen, observed ? ["b", "a"] : [], JSON.stringify(patch));
+	}
 });

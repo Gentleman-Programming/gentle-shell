@@ -131,6 +131,10 @@ test("capabilities advertise the wired permission domain and no agent tool", asy
 		"set_review_mode",
 		"get_usage_stats",
 		"get_update_status",
+		"list_agent_definitions",
+		"get_status",
+		"get_background_subagents",
+		"set_background_subagents",
 		"get_profile_binding",
 		"clear_profile_binding",
 	]);

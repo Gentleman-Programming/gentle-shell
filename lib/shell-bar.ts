@@ -38,6 +38,8 @@ export interface ShellBarModel {
 	profileTier?: "standard" | "fast";
 	contextPercent: number | null;
 	contextWindow: number;
+	/** Estimated tokens before auto-compaction; null means the estimate is unknown. */
+	contextHeadroom?: number | "off" | null;
 	costTotal: number;
 	subscription: boolean;
 	usage: ProviderUsage | undefined;
@@ -60,6 +62,7 @@ export interface ShellHeaderModel {
 	effort: string | undefined;
 	profile?: string;
 	contextPercent: number | null;
+	contextHeadroom?: ShellBarModel["contextHeadroom"];
 	costTotal: number;
 	subscription: boolean;
 	// The active provider's subscription usage, shown as its own segment after
@@ -69,8 +72,9 @@ export interface ShellHeaderModel {
 }
 
 export function buildShellHeaderModel(model: ShellBarModel, showJobs = false): ShellHeaderModel {
-	const { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage } = model;
+	const { cwd, branch, dirty, modelId, effort, profile, contextPercent, contextHeadroom, costTotal, subscription, usage } = model;
 	return { cwd, branch, dirty, modelId, effort, profile, contextPercent, costTotal, subscription, usage,
+		...(contextHeadroom !== undefined ? { contextHeadroom } : {}),
 		...(showJobs && model.jobs?.length ? { jobs: model.jobs.length } : {}) };
 }
 
@@ -170,10 +174,13 @@ function executionSegment(modelId: string, effort: string | undefined, theme: Sh
 		: theme.fg(ROLE.MODEL, modelId);
 }
 
-function contextSegment(contextPercent: number | null, theme: ShellBarTheme, paint?: GaugePaint, withGauge = true): string {
+function contextSegments({ contextPercent, contextHeadroom }: Pick<ShellBarModel, "contextPercent" | "contextHeadroom">, theme: ShellBarTheme, paint?: GaugePaint, withGauge = true): [string, ...string[]] {
 	const percentText = contextPercent === null ? "?%" : `${Math.round(contextPercent)}%`;
 	const gauge = withGauge ? `${paintGauge(contextPercent, theme, GAUGE_CELLS, paint)} ` : "";
-	return `${theme.fg(ROLE.LABEL, "ctx")} ${gauge}${theme.fg(ROLE.VALUE, percentText)}`;
+	const base = `${theme.fg(ROLE.LABEL, "ctx")} ${gauge}${theme.fg(ROLE.VALUE, percentText)}`;
+	if (contextHeadroom === undefined) return [base];
+	const detail = contextHeadroom === "off" ? "compact off" : `${contextHeadroom === null ? "?" : formatTokens(contextHeadroom)} to compact`;
+	return [base + theme.fg(ROLE.LABEL, ` (${detail})`), base];
 }
 
 function costSegment(costTotal: number, subscription: boolean, theme: ShellBarTheme): string {
@@ -183,7 +190,7 @@ function costSegment(costTotal: number, subscription: boolean, theme: ShellBarTh
 function buildSegments(model: ShellBarModel, theme: ShellBarTheme, presentation?: Presentation, paint?: GaugePaint): string[] {
 	const location = locationSegment(model, theme);
 	const modelSegment = executionSegment(model.modelId, model.effort, theme);
-	const context = contextSegment(model.contextPercent, theme, paint);
+	const [context] = contextSegments(model, theme, paint);
 	const cost = costSegment(model.costTotal, model.subscription, theme);
 	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId, paint) : undefined;
 	const statuses = model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)));
@@ -383,12 +390,15 @@ export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme,
 	const profileName = model.profile ? sanitizeStatus(model.profile) : "";
 	const profile = profileName ? ` ${theme.fg(ROLE.LABEL, "·")} ${theme.fg(ROLE.LABEL, profileName)}` : "";
 	const exec = presentation?.visibility.modelDetails === false ? "" : executionSegment(model.modelId, model.effort, theme);
-	const counters = showCounters ? [contextSegment(model.contextPercent, theme, paint, !minimal), costSegment(model.costTotal, model.subscription, theme)] : [];
+	const cost = showCounters ? costSegment(model.costTotal, model.subscription, theme) : "";
+	const contexts = showCounters ? contextSegments(model, theme, paint, !minimal) : [];
+	const counterStages = showCounters ? contexts.map((context) => [context, cost]) : [[]];
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
 	const stages: Array<UsageStage | undefined> = !showCounters ? [undefined] : minimal ? ["text", "primary", undefined] : ["full", "text", "primary", undefined];
 	const attempts = [...stages.flatMap((stage) => [{ stage, withExec: true, withTier: true, withProfile: true }, ...(profile ? [{ stage, withExec: true, withTier: true, withProfile: false }] : [])]),
 		...(tier ? [{ stage: undefined, withExec: true, withTier: false, withProfile: false }] : []), { stage: undefined, withExec: false, withTier: false, withProfile: false }];
-	for (const { stage, withExec, withTier, withProfile } of attempts) {
+	// Retry without the headroom label before giving up existing status text.
+	for (const { stage, withExec, withTier, withProfile } of attempts) for (const counters of counterStages) {
 		const usage = stage ? usageSegmentText(windows, theme, stage, minimal ? undefined : usageHint, paint) : "";
 		const right = join([withExec ? exec + (exec && withTier ? tier : "") + (exec && withProfile ? profile : "") : "", ...counters, usage]);
 		let shownLeft = left;
@@ -419,7 +429,7 @@ export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme,
 	// Still too wide: the branch gives way before context and cost, which give
 	// way last, context after cost. Keep the badges when only they fit.
 	const tailWidth = tail ? visibleWidth(tail) + (branch ? visibleWidth(divider) : 0) : 0;
-	for (const right of [join(counters), counters[0] ?? "", ""]) {
+	for (const right of [...counterStages.map(join), ...contexts, ""]) {
 		const leftRoom = room - visibleWidth(right) - (right ? RIGHT_PADDING : 0);
 		const branchRoom = leftRoom - tailWidth;
 		if (branch && branchRoom < 4 && right) continue;
@@ -564,10 +574,11 @@ function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: num
 	const targetWidth = Math.max(0, Math.floor(width));
 	const jobs = model.jobs ? theme.fg(ROLE.STATUS, shellJobsCount(model.jobs)) : undefined;
 	const minimal = presentation?.density === "minimal";
-	const ctxCost = joinSegments([
-		...(jobs ? [jobs] : []),
-		...(presentation?.visibility.usageCost === false ? [] : [contextSegment(model.contextPercent, theme, paint, !minimal), costSegment(model.costTotal, model.subscription, theme)]),
-	], theme);
+	const showCounters = presentation?.visibility.usageCost !== false;
+	const cost = showCounters ? costSegment(model.costTotal, model.subscription, theme) : "";
+	const ctxCostStages = showCounters
+		? contextSegments(model, theme, paint, !minimal).map((context) => joinSegments([...(jobs ? [jobs] : []), context, cost], theme))
+		: [jobs ?? ""];
 	const windows = model.usage ? (selectUsageLimit(model.usage, model.modelId)?.windows ?? []) : [];
 	const belowInput = presentation?.headerPlacement === "below-input";
 	const safeModel = belowInput ? { ...model, cwd: sanitizeStatus(model.cwd), branch: model.branch === null ? null : sanitizeStatus(model.branch) } : model;
@@ -586,13 +597,13 @@ function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: num
 	// Unlike the compact bar's usage meter (hidden with no data), this is a
 	// standing, clickable affordance: it reads "usage" even with no data, plus
 	// the shortcut hint outside minimal density, unless disabled or too narrow.
-	const usageStages: Array<UsageStage | undefined> = presentation?.visibility.usageCost === false ? [undefined] : minimal ? ["text", "primary", undefined] : ["full", "text", "primary", undefined];
+	const usageStages: Array<UsageStage | undefined> = !showCounters ? [undefined] : minimal ? ["text", "primary", undefined] : ["full", "text", "primary", undefined];
 	const attempts: Array<{ leftIndex: number; usageStage: UsageStage | undefined }> = [
 		...leftStages.slice(0, minimalLeft).map((_, leftIndex) => ({ leftIndex, usageStage: usageStages[0] })),
 		...usageStages.map((usageStage) => ({ leftIndex: minimalLeft, usageStage })),
 		{ leftIndex: leftStages.length - 1, usageStage: undefined },
 	];
-	for (const { leftIndex, usageStage } of attempts) {
+	for (const { leftIndex, usageStage } of attempts) for (const ctxCost of ctxCostStages) {
 		const usageText = usageStage ? usageSegmentText(windows, theme, usageStage, minimal ? undefined : usageHint, paint) : undefined;
 		const right = usageText ? joinSegments([ctxCost, usageText], theme) : ctxCost;
 		const left = joinSegments(leftStages[leftIndex]!, theme);
@@ -703,14 +714,26 @@ export function renderShellBar(model: ShellBarModel, theme: ShellBarTheme, width
 	let segments = buildSegments(model, theme, presentation, paint);
 	const right = model.sessionName ? theme.fg(ROLE.SESSION, model.sessionName) : undefined;
 
+	const withSessionName = (line: string): string[] | undefined => {
+		if (!right) return;
+		const padding = width - visibleWidth(line) - visibleWidth(right);
+		if (padding >= RIGHT_PADDING) return [line + " ".repeat(padding) + right];
+	};
 	let left = joinSegments(segments, theme);
-	if (right && visibleWidth(left) + RIGHT_PADDING + visibleWidth(right) <= width) {
-		const padding = " ".repeat(width - visibleWidth(left) - visibleWidth(right));
-		return [left + padding + right];
-	}
+	const named = withSessionName(left);
+	if (named) return named;
 
+	const tooWide = visibleWidth(left) > width;
+	const compact = model.contextHeadroom !== undefined && (right || tooWide) ? { ...model, contextHeadroom: undefined } : model;
+	if (compact !== model) {
+		const bareSegments = buildSegments(compact, theme, presentation, paint);
+		const bareLeft = joinSegments(bareSegments, theme);
+		const bareNamed = withSessionName(bareLeft);
+		if (bareNamed) return bareNamed;
+		if (tooWide) { segments = bareSegments; left = bareLeft; }
+	}
 	if (visibleWidth(left) > width) {
-		segments = buildSegments(compactModel(model), theme, presentation);
+		segments = buildSegments(compactModel(compact), theme, presentation);
 		left = joinSegments(segments, theme);
 	}
 	while (segments.length > 1 && visibleWidth(left) > width) {

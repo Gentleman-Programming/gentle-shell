@@ -77,7 +77,58 @@ test("capabilities enforce every required top-level and nested property", () => 
 	assertNestedRequired(decode, source, ["build"], ["id", "go_version", "module_version", "vcs", "vcs_revision", "vcs_time", "vcs_modified"]);
 	assertNestedRequired(decode, source, ["executable"], ["sha256", "evidence", "verification"]);
 	assertNestedRequired(decode, source, ["features"], ["mandatory", "optional"]);
-	assertNestedRequired(decode, source, ["compatibility"], ["minimum_protocol_major", "maximum_protocol_major", "additive_minor_policy", "unknown_mandatory", "unknown_optional", "modes", "legacy_window"]);
+	assertNestedRequired(decode, source, ["compatibility"], ["minimum_protocol_major", "maximum_protocol_major", "additive_minor_policy", "unknown_mandatory", "unknown_optional", "modes"]);
+});
+
+test("capabilities v2.6 keep decoding the legacy-announcing v4.6.0 advertisement", () => {
+	const source = capabilitiesFixture<JsonObject>();
+	const features = source.features as { mandatory: Array<{ name: string }> };
+	assert.ok(features.mandatory.some((feature) => feature.name === "legacy_v1_target_scoped_read_only"));
+	assert.deepEqual((source.compatibility as JsonObject).modes, ["compact-v2", "legacy-v1"]);
+	const decoded = decodeReviewCapabilitiesV2(source, executableDigest);
+	assert.ok(decoded.mandatoryFeatures.has("legacy_v1_target_scoped_read_only"));
+	assert.equal(decoded.mandatoryFeatures.size, 7);
+});
+
+test("capabilities v2.6 without legacy feature, with compact-v2 only modes and no legacy_window decode", () => {
+	const source = capabilitiesFixture<JsonObject>();
+	const features = source.features as { mandatory: Array<{ name: string }> };
+	features.mandatory = features.mandatory.filter((feature) => feature.name !== "legacy_v1_target_scoped_read_only");
+	const compatibility = source.compatibility as JsonObject;
+	compatibility.modes = ["compact-v2"];
+	delete compatibility.legacy_window;
+	const decoded = decodeReviewCapabilitiesV2(source, executableDigest);
+	assert.equal(decoded.mandatoryFeatures.has("legacy_v1_target_scoped_read_only"), false);
+	assert.equal(decoded.mandatoryFeatures.size, 6);
+	// modes ["compact-v2","legacy-v1"] without a legacy_window also decodes.
+	compatibility.modes = ["compact-v2", "legacy-v1"];
+	assert.doesNotThrow(() => decodeReviewCapabilitiesV2(source, executableDigest));
+});
+
+test("capabilities v2.6 refuse unsupported modes and a malformed legacy_window", () => {
+	const decode = (value: JsonObject) => decodeReviewCapabilitiesV2(value, executableDigest);
+	for (const modes of [["legacy-v1"], ["compact-v2", "unknown"], ["unknown"], ["legacy-v1", "compact-v2"], [], ["compact-v2", "compact-v2"], ["compact-v2", "legacy-v1", "extra"]]) {
+		const candidate = capabilitiesFixture<JsonObject>();
+		(candidate.compatibility as JsonObject).modes = modes;
+		assert.throws(() => decode(candidate), undefined, JSON.stringify(modes));
+	}
+	const badWindow = capabilitiesFixture<JsonObject>();
+	((badWindow.compatibility as JsonObject).legacy_window as JsonObject).state = "bogus";
+	assert.throws(() => decode(badWindow), /legacy_window\.state/);
+	const extraWindow = capabilitiesFixture<JsonObject>();
+	((extraWindow.compatibility as JsonObject).legacy_window as JsonObject).unadvertised = true;
+	assert.throws(() => decode(extraWindow), /not allowed/);
+	const missingField = capabilitiesFixture<JsonObject>();
+	delete ((missingField.compatibility as JsonObject).legacy_window as JsonObject).removal;
+	assert.throws(() => decode(missingField), /removal is required/);
+	const duplicateLegacy = capabilitiesFixture<JsonObject>();
+	const mandatory = (duplicateLegacy.features as { mandatory: Array<{ name: string }> }).mandatory;
+	mandatory.push(structuredClone(mandatory.find((feature) => feature.name === "legacy_v1_target_scoped_read_only")!));
+	assert.throws(() => decode(duplicateLegacy));
+	const missingRequired = capabilitiesFixture<JsonObject>();
+	const m2 = (missingRequired.features as { mandatory: Array<{ name: string }> }).mandatory;
+	(missingRequired.features as { mandatory: unknown }).mandatory = m2.filter((feature) => feature.name !== "compact_v2_authority");
+	assert.throws(() => decode(missingRequired), /mandatory capabilities/);
 });
 
 test("capabilities reject additional properties at every exact object boundary", () => {

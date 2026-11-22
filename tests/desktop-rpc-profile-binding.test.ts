@@ -144,3 +144,18 @@ test("clear_profile_binding answers busy during a profile apply and unavailable 
 	assert.deepEqual(await bad.bridge.handle("clear_profile_binding", { profile: "fast" }), { ok: false, error: INVALID_PROFILE_BINDING_PARAMS });
 	assert.equal(bad.calls.discover, 0, "malformed params never reach the owner");
 });
+
+test("overlapping Desktop clears keep suppressing external echoes until the last one finishes", async (t) => {
+	const releases: Array<() => void> = [];
+	const f = fixture(t, { clear: () => new Promise((resolve) => { releases.push(() => { clearSessionProfileBinding("session-a"); resolve({ status: "cleared" }); }); }) });
+	f.bridge.wire(f.emit);
+	const first = f.bridge.handle("clear_profile_binding", {});
+	const second = f.bridge.handle("clear_profile_binding", {});
+	await new Promise((resolve) => setImmediate(resolve));
+	releases[0]!();
+	await first;
+	bindSessionProfile("session-a", "fast", {});
+	assert.equal(f.events.length, 0, "a write while the second clear runs is not reported as external");
+	releases[1]!();
+	await second;
+});

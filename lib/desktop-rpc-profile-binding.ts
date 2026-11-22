@@ -83,8 +83,8 @@ export class DesktopProfileBindingBridge {
 	private generation = 0;
 	private unobserve: (() => void) | undefined;
 	private lastEmitted: string | undefined;
-	/** While a Desktop clear runs, its own store writes are reported once, as `desktop`. */
-	private clearing = false;
+	/** Desktop clears in flight; while any runs, its store writes are reported once, as `desktop`. */
+	private clearing = 0;
 
 	constructor(pi: ExtensionAPI, options: ProfileBindingReaderOptions & { discover?: typeof discoverDesktopProfilesService } = {}) {
 		this.pi = pi;
@@ -103,7 +103,7 @@ export class DesktopProfileBindingBridge {
 		this.unobserve?.();
 		this.unobserve = undefined;
 		this.lastEmitted = undefined;
-		this.clearing = false;
+		this.clearing = 0;
 	}
 
 	private sessionOf(host: ExtensionContext): { cwd: string; sessionId: string } | undefined {
@@ -130,7 +130,7 @@ export class DesktopProfileBindingBridge {
 	wire(emit: Emit): void {
 		this.unobserve?.();
 		this.unobserve = observeSessionProfileBindings((sessionId) => {
-			if (this.clearing) return;
+			if (this.clearing > 0) return;
 			const host = this.host;
 			if (!host || this.sessionOf(host)?.sessionId !== sessionId) return;
 			this.emitIfChanged(host, emit, "external");
@@ -170,13 +170,13 @@ export class DesktopProfileBindingBridge {
 		try {
 			if (!service || typeof (service as { clear?: unknown }).clear !== "function" || generation !== this.generation) return { ok: false, error: PROFILE_BINDING_UNAVAILABLE };
 			let result: DesktopProfileClearResult;
-			this.clearing = true;
+			this.clearing += 1;
 			try {
 				result = await (service as unknown as { clear(): Promise<DesktopProfileClearResult> }).clear();
 			} catch {
 				return { ok: false, error: PROFILE_BINDING_UNAVAILABLE };
 			} finally {
-				this.clearing = false;
+				this.clearing = Math.max(0, this.clearing - 1);
 			}
 			if (generation !== this.generation) return { ok: false, error: PROFILE_BINDING_UNAVAILABLE };
 			if (result?.status === "busy") return { ok: false, error: PROFILE_BINDING_BUSY };

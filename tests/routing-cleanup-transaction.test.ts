@@ -23,7 +23,7 @@ test("commits exact bytes, preserves modes, skips no-ops", t => {
  const mode = fs.statSync(paths[0]).mode & 0o777;
  const identity = fs.statSync(paths[1]).ino;
  replacements.set(paths[1], Buffer.from("old1"));
- commitRoutingCleanup(snapshotRoutingCleanup(paths), replacements);
+ assert.deepEqual(commitRoutingCleanup(snapshotRoutingCleanup(paths), replacements), { warnings: [] });
  assert.equal(fs.statSync(paths[0]).mode & 0o777, mode);
  assert.equal(fs.statSync(paths[1]).ino, identity);
  paths.forEach(p => assert.deepEqual(fs.readFileSync(p), replacements.get(p)));
@@ -61,15 +61,38 @@ test("preparation failure leaves all destinations untouched", t => {
  original(paths);
  assert.equal(fs.readdirSync(dir).length, 4);
 });
-test("rejects changed bytes and changed identity", t => {
- const { paths, replacements } = fixture(t);
+test("rejects changed bytes and changed identity before renaming any destination", t => {
+ const { dir, paths, replacements } = fixture(t);
+ const identities = paths.map(p => fs.statSync(p).ino);
+ const rename = fs.renameSync;
+ const installs: string[] = [];
+ t.mock.method(fs, "renameSync", (from: any, to: any) => {
+  if (paths.includes(String(to))) installs.push(String(to));
+  return rename(from, to);
+ });
  for (const replace of [false, true]) {
+  installs.length = 0;
   const snapshot = snapshotRoutingCleanup(paths);
-  if (replace) { fs.unlinkSync(paths[2]); fs.writeFileSync(paths[2], "external"); }
-  else fs.writeFileSync(paths[2], "external");
+  const bytes = fs.readFileSync(paths[2]);
+  let replacement: number | undefined;
+  if (replace) {
+   // Identical bytes from another file: only the identity check can catch it.
+   const outside = join(dir, "outside");
+   fs.writeFileSync(outside, bytes);
+   replacement = fs.statSync(outside).ino;
+   rename(outside, paths[2]);
+  } else fs.writeFileSync(paths[2], "external");
   assert.throws(() => commitRoutingCleanup(snapshot, replacements), { message: `Routing cleanup failed: Routing cleanup input changed: ${paths[2]}` });
-  assert.equal(fs.readFileSync(paths[2], "utf8"), "external");
-  [0, 1, 3].forEach(i => assert.equal(fs.readFileSync(paths[i], "utf8"), `old${i}`));
+  assert.deepEqual(installs, []);
+  if (replace) {
+   assert.deepEqual(fs.readFileSync(paths[2]), bytes);
+   assert.equal(fs.statSync(paths[2]).ino, replacement);
+  } else assert.equal(fs.readFileSync(paths[2], "utf8"), "external");
+  [0, 1, 3].forEach(i => {
+   assert.equal(fs.readFileSync(paths[i], "utf8"), `old${i}`);
+   assert.equal(fs.statSync(paths[i]).ino, identities[i]);
+  });
+  assert.equal(fs.readdirSync(dir).length, 4);
  }
 });
 test("rejects a no-op destination that changed after capture", t => {
@@ -144,13 +167,23 @@ for (const preparation of [false, true]) test(`reports temporary cleanup failure
    return (write as any)(...args);
   });
  }
- let error: Error | undefined;
- try { commitRoutingCleanup(snapshot, replacements); } catch (e) { error = e as Error; }
- assert.ok(error?.message.includes("Cleanup failed:"));
- assert.ok(error.message.includes("cleanup fault"));
- if (preparation) original(paths);
- else paths.forEach((p, i) => assert.equal(fs.readFileSync(p, "utf8"), `new${i}`));
- assert.ok(fs.readdirSync(dir).some(p => p.includes("restore")));
+ const leftovers = () => fs.readdirSync(dir).filter(p => p.includes("restore")).map(p => join(dir, p));
+ if (preparation) {
+  let error: Error | undefined;
+  try { commitRoutingCleanup(snapshot, replacements); } catch (e) { error = e as Error; }
+  assert.ok(error?.message.startsWith("Routing cleanup failed: prepare fault"));
+  assert.ok(error.message.includes("Cleanup failed:"));
+  assert.ok(error.message.includes("cleanup fault"));
+  original(paths);
+  assert.ok(leftovers().length > 0);
+  return;
+ }
+ // Every rename succeeded: the commit stands and leftover removal is only a warning.
+ const result = commitRoutingCleanup(snapshot, replacements);
+ paths.forEach((p, i) => assert.equal(fs.readFileSync(p, "utf8"), `new${i}`));
+ const left = leftovers();
+ assert.equal(left.length, 4);
+ assert.deepEqual([...result.warnings].sort(), left.map(p => `Cleanup failed: ${p}; Error: cleanup fault`).sort());
 });
 test("snapshot bytes are copies and non-ENOENT inspection errors propagate", t => {
  const { paths } = fixture(t);

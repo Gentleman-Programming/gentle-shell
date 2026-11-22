@@ -7203,7 +7203,11 @@ async function openProfilesPanelLoop(
 							throw new Error(`Invalid routing file: ${sub.path}`);
 						}
 					}
-					const models = readObject(modelPath) ?? readObject(legacyPath) ?? {};
+					const globalModels = readObject(modelPath);
+					const legacyModels = readObject(legacyPath);
+					// The saved-model reader merges both layers, with global taking precedence.
+					const modelStores = [{ path: modelPath, routes: globalModels }, { path: legacyPath, routes: legacyModels }]
+						.flatMap(({ path, routes }) => routes === undefined ? [] : [{ path, routes }]);
 					const rawProfiles = readObject(path);
 					const parsedProfiles = normalizeProfilesFile(rawProfiles);
 					if (!rawProfiles || !parsedProfiles || !isRecord(rawProfiles.profiles)) {
@@ -7220,19 +7224,19 @@ async function openProfilesPanelLoop(
 						const routes = isRecord(sub.raw?.model_profiles) ? sub.raw.model_profiles : {};
 						return { ...sub, routes, keys: candidates(routes) };
 					});
-					const modelKeys = candidates(models);
+					const models = modelStores.map((store) => ({ ...store, keys: candidates(store.routes) }));
 					const profileStores = Object.entries(rawProfiles.profiles).map(([name, routes]) => {
 						if (!isRecord(routes)) throw new Error(`Invalid routing file: ${path}`);
 						return { name, routes, keys: candidates(routes) };
 					});
-					const keys = [...new Set([...subStores.flatMap((sub) => sub.keys), ...modelKeys,
+					const keys = [...new Set([...subStores.flatMap((sub) => sub.keys), ...models.flatMap((store) => store.keys),
 						...profileStores.flatMap((profile) => profile.keys)])].sort();
 					return { keys,
 						notices: () => routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles, authorityAvailable),
 						apply: (selected) => {
 						// Agent definitions can appear while the card is open; judge the selection again.
 						const inventory = cleanupInventory();
-						const stillStale = new Set([...subStores.map((sub) => sub.routes), models, ...profileStores.map((profile) => profile.routes)]
+						const stillStale = new Set([...subStores, ...models, ...profileStores].map((store) => store.routes)
 							.flatMap((routes) => candidates(routes, inventory)));
 						const revived = selected.filter((key) => !stillStale.has(key));
 						if (revived.length > 0) {
@@ -7248,8 +7252,13 @@ async function openProfilesPanelLoop(
 							const routes = remove(sub.routes, sub.keys);
 							if (routes !== sub.routes) add(sub.path, { ...sub.raw, model_profiles: routes });
 						}
-						const nextModels = remove(models, modelKeys);
-						if (nextModels !== models) add(modelPath, nextModels);
+						for (const store of models) {
+							const routes = remove(store.routes, store.keys);
+							if (routes === store.routes) continue;
+							add(store.path, routes);
+							// Preserve materialization when cleanup starts with only the legacy source.
+							if (store.path === legacyPath && globalModels === undefined) add(modelPath, routes);
+						}
 						let profiles = rawProfiles.profiles as Record<string, unknown>;
 						for (const profile of profileStores) {
 							const routes = remove(profile.routes, profile.keys);
@@ -7258,7 +7267,7 @@ async function openProfilesPanelLoop(
 						const nextRaw = { ...rawProfiles, profiles };
 						const next = normalizeProfilesFile(nextRaw)!.file;
 						if (profiles !== rawProfiles.profiles) add(path, nextRaw);
-						// Also detect edits to read-only inputs (including the legacy source).
+						// Also detect edits to inputs that have no replacement.
 						const current = snapshotRoutingCleanup(paths);
 						for (const input of paths) {
 							const before = snapshot.read(input), after = current.read(input);

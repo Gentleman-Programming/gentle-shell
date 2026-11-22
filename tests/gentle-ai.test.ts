@@ -3979,7 +3979,6 @@ for (const invalid of ["malformed", "unreadable", "linked", "changed"] as const)
 test("models screen cleanup transaction: materializes absent global from legacy models", async (t) => {
 	const { fixture, bytes } = cleanupTransactionFixture(t);
 	fs.renameSync(fixture.globalPath, fixture.projectPath);
-	const legacy = readFileSync(fixture.projectPath);
 	fixture.onInput((panel) => {
 		panel.handleInput("x");
 		panel.handleInput("\r");
@@ -3987,9 +3986,42 @@ test("models screen cleanup transaction: materializes absent global from legacy 
 		panel.handleInput("\x1b");
 	});
 	await fixture.run("gentle:profiles");
-	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: { model: "openai/alpha" } });
-	assert.deepEqual(readFileSync(fixture.projectPath), legacy, "legacy source stays untouched");
+	const remaining = { worker: { model: "openai/alpha" } };
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), remaining);
+	assert.deepEqual(JSON.parse(readFileSync(fixture.projectPath, "utf8")), remaining, "the legacy source cannot reintroduce the removed route");
 	assert.ok(bytes()[2], "global target is materialized");
+});
+
+test("models screen cleanup transaction: removes selected routes from both saved models layers", async (t) => {
+	const { fixture } = cleanupTransactionFixture(t);
+	const worker = { model: "openai/alpha" };
+	const legacy = { worker: { model: "openai/beta" }, abandoned: { model: "openai/beta" },
+		"legacy-only": { model: "openai/beta" }, obsolete: worker, metadata: { custom: "keep" } };
+	writeFileSync(fixture.projectPath, JSON.stringify(legacy));
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		const card = stripAnsi(renderComponent(panel));
+		assert.match(card, /\[x\] abandoned/);
+		assert.match(card, /\[x\] legacy-only/);
+		assert.match(card, /\[x\] obsolete/);
+		assert.doesNotMatch(card, /\[x\] (worker|metadata)/);
+		panel.handleInput("\x1b[B");
+		panel.handleInput("\x1b[B");
+		panel.handleInput(" ");
+		panel.handleInput("\r");
+		assert.match(stripAnsi(renderComponent(panel)), /Removed 2 stale routing keys\./);
+		panel.handleInput("x");
+		const reopened = stripAnsi(renderComponent(panel));
+		assert.match(reopened, /\[x\] obsolete/);
+		assert.doesNotMatch(reopened, /\[x\] (abandoned|legacy-only)/);
+		panel.handleInput("\x1b");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker });
+	assert.deepEqual(JSON.parse(readFileSync(fixture.projectPath, "utf8")), {
+		worker: legacy.worker, obsolete: legacy.obsolete, metadata: legacy.metadata,
+	});
 });
 
 test("models screen cleanup transaction: preserves raw metadata and per-store selection", async (t) => {

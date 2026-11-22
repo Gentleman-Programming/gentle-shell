@@ -181,6 +181,14 @@ import {
 	type DesktopReviewService,
 } from "../lib/desktop-rpc-review.ts";
 import {
+	DESKTOP_STATUS_SERVICE_CHANNEL,
+	DESKTOP_STATUS_SERVICE_SCHEMA,
+	packageStatusSeverity,
+	type DesktopPackageStatus,
+	type DesktopStatusOwnerRead,
+	type DesktopStatusService,
+} from "../lib/desktop-rpc-status.ts";
+import {
 	REVIEW_HOST_RELAY_FAILURE,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_ENV,
 	REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS,
@@ -389,11 +397,15 @@ function packageAssetAudit(owner: PackageAssetOwner): { stale: number; overrides
 	return { stale, overrides };
 }
 
+/** The counts behind `/gentle:status`'s asset lines, shared with the Desktop status read. */
+function packageAssetCounts(cwd: string, owner: PackageAssetOwner): { stale: number; overrides: number; local: number } {
+	return { ...packageAssetAudit(owner), local: localAgentOverrideCount(cwd, owner) };
+}
+
 function packageAssetDiagnosticLines(cwd: string): string[] {
 	return (["delegation", "review"] as const).flatMap((owner) => {
 		const label = owner;
-		const { stale, overrides } = packageAssetAudit(owner);
-		const local = localAgentOverrideCount(cwd, owner);
+		const { stale, overrides, local } = packageAssetCounts(cwd, owner);
 		const lines = [`${stale > 0 ? "warn" : "pass"}: Global ${label} assets stale: ${stale} file(s)`];
 		if (stale > 0) {
 			lines[0] += ` — run /gentle:install-${owner} --force to refresh managed assets`;
@@ -13781,6 +13793,49 @@ function createGentleAiExtensionForTesting(
 					disposed = true;
 				},
 			});
+		} catch {
+			/* obsolete trusted context: discovery expires closed */
+		}
+	});
+
+	// Desktop `get_status`: the facts `/gentle:status` prints, structured and
+	// path-free. The dev-binary override is resolved but never run (no version
+	// spawn), and its path, the routing file path, and the `--force` hints stay
+	// in the terminal answer.
+	if (typeof pi.events?.on === "function") pi.events.on(DESKTOP_STATUS_SERVICE_CHANNEL, (payload: unknown) => {
+		if (!payload || typeof payload !== "object") return;
+		const request = payload as Partial<{ context: ExtensionContext; respond(service: DesktopStatusService): void }>;
+		if (typeof request.respond !== "function" || !request.context) return;
+		if (permissionEnvironment.GENTLE_PI_AGENTS_CHILD === "1") return;
+		const cwd = request.context.sessionManager?.getCwd?.() ?? request.context.cwd;
+		let disposed = false;
+		const read = async (): Promise<DesktopStatusOwnerRead> => {
+			if (disposed) return { kind: "unavailable" };
+			let devBinary: DesktopPackageStatus["devBinary"];
+			try {
+				const override = resolveGentleAiDevBinaryOverride();
+				devBinary = override === undefined ? { state: "inactive", sha256Prefix: null } : { state: "active", sha256Prefix: override.sha256.slice(0, 16) };
+			} catch (error) {
+				if (!(error instanceof GentleAiDevBinaryOverrideError)) throw error;
+				devBinary = { state: "invalid", sha256Prefix: null };
+			}
+			const savedConfig = await readModelRoutingAuthorityAsync(modelConfigPath(cwd), legacyProjectModelConfigPath(cwd));
+			const assets = (owner: PackageAssetOwner) => {
+				const { stale, overrides, local } = packageAssetCounts(cwd, owner);
+				return { stale, userOverrides: overrides, activeAgentOverrides: local };
+			};
+			const status = {
+				package: "active" as const,
+				odd: "active" as const,
+				persona: readPersonaMode(cwd),
+				devBinary,
+				assets: { delegation: assets("delegation"), review: assets("review") },
+				modelConfig: { global: existsSync(modelConfigPath(cwd)) ? "present" as const : "missing" as const, routing: savedConfig.status },
+			};
+			return { kind: "status", status: { ...status, severity: packageStatusSeverity(status) } };
+		};
+		try {
+			request.respond({ schema: DESKTOP_STATUS_SERVICE_SCHEMA, read, dispose: () => { disposed = true; } });
 		} catch {
 			/* obsolete trusted context: discovery expires closed */
 		}

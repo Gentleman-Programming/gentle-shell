@@ -159,3 +159,37 @@ test("overlapping Desktop clears keep suppressing external echoes until the last
 	releases[1]!();
 	await second;
 });
+
+test("a binding written while a Desktop clear ends busy or failing is still reported as external", async (t) => {
+	for (const ending of ["busy", "throws"] as const) {
+		let release: () => void = () => {};
+		const f = fixture(t, { clear: () => new Promise((resolve, reject) => { release = () => (ending === "busy" ? resolve({ status: "busy" }) : reject(new Error("owner failed"))); }) });
+		f.bridge.wire(f.emit);
+		const pending = f.bridge.handle("clear_profile_binding", {});
+		await new Promise((resolve) => setImmediate(resolve));
+		bindSessionProfile("session-a", `fast-${ending}`, {});
+		assert.equal(f.events.length, 0, "suppressed while the clear runs");
+		release();
+		await pending;
+		assert.deepEqual(f.events, [{ event: "profile_binding_changed", data: { kind: "explicit", profile: `fast-${ending}`, origin: "session", source: "external" } }], ending);
+	}
+});
+
+test("a clear that started before a reset never lowers the new session's clear count", async (t) => {
+	const releases: Array<() => void> = [];
+	const f = fixture(t, { clear: () => new Promise((resolve) => { releases.push(() => resolve({ status: "unchanged" })); }) });
+	f.bridge.wire(f.emit);
+	const stale = f.bridge.handle("clear_profile_binding", {});
+	await new Promise((resolve) => setImmediate(resolve));
+	f.bridge.reset();
+	f.bridge.attach({ cwd: "/x", sessionManager: { getSessionId: () => "session-a", getCwd: () => "/x" } } as unknown as ExtensionContext);
+	f.bridge.wire(f.emit);
+	const fresh = f.bridge.handle("clear_profile_binding", {});
+	await new Promise((resolve) => setImmediate(resolve));
+	releases[0]!();
+	await stale;
+	bindSessionProfile("session-a", "during-fresh-clear", {});
+	assert.equal(f.events.length, 0, "the fresh clear still suppresses echoes");
+	releases[1]!();
+	await fresh;
+});

@@ -7301,8 +7301,6 @@ async function openProfilesPanelLoop(
 							const routes = remove(store.routes, store.keys);
 							if (routes === store.routes) continue;
 							add(store.path, routes);
-							// Preserve materialization when cleanup starts with only the legacy source.
-							if (store.path === legacyPath && globalModels === undefined) add(modelPath, routes);
 						}
 						let profiles = rawProfiles.profiles as Record<string, unknown>;
 						for (const profile of profileStores) {

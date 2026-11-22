@@ -17,7 +17,7 @@ import type {
 	Theme,
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension, readModelConfig } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { freezeSessionProfileAtOwnStart, freezeSessionProfileAtStartup, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
@@ -3962,20 +3962,19 @@ test("models screen cleanup transaction warns about leftover files after commit"
 	for (const path of leftovers) assert.ok(notice.message.includes(path), `warning must name ${path}`);
 });
 
-for (const boundary of ["prepare", "replace", "replace-then-throw", "absent-then-throw", "restore-error"] as const) {
+for (const boundary of ["prepare", "replace", "replace-then-throw", "legacy-only-then-throw", "restore-error"] as const) {
 	test(`models screen cleanup transaction: ${boundary}`, async (t) => {
 		const { fixture, storePath, paths, bytes } = cleanupTransactionFixture(t);
-		if (boundary === "absent-then-throw") {
+		if (boundary === "legacy-only-then-throw") {
 			fs.renameSync(fixture.globalPath, fixture.projectPath);
 		}
 		const before = bytes();
 		const original = { writeFileSync: fs.writeFileSync, renameSync: fs.renameSync, openSync: fs.openSync };
 		let injected = false;
 		let restoreInjected = false;
-		// Fail models after earlier stores were changed. The legacy writer uses
-		// writeFileSync; the prepared transaction uses renameSync. Both hooks
-		// perform the actual replacement first for the partial-mutation cases.
-		const target = fixture.globalPath;
+		// Fail models after earlier stores were changed. The legacy-only case
+		// fails after replacing the project file, while global stays absent.
+		const target = boundary === "legacy-only-then-throw" ? fixture.projectPath : fixture.globalPath;
 		fixture.onInput((panel) => {
 			panel.handleInput("x");
 			try {
@@ -4074,20 +4073,34 @@ for (const invalid of ["malformed", "unreadable", "linked", "changed"] as const)
 	});
 }
 
-test("models screen cleanup transaction: materializes absent global from legacy models", async (t) => {
-	const { fixture, bytes } = cleanupTransactionFixture(t);
+test("models screen cleanup transaction: cleanup never creates the global models.json from legacy routes", async (t) => {
+	const { fixture, writeStore } = cleanupTransactionFixture(t);
+	const remaining = { worker: { model: "openai/alpha" } };
+	// With no active profile, the effective reader uses each workspace's legacy routes.
+	writeStore({ team: { ...remaining, abandoned: remaining.worker }, sibling: { abandoned: remaining.worker } });
 	fs.renameSync(fixture.globalPath, fixture.projectPath);
+	const workerJson = JSON.stringify(JSON.parse(readFileSync(fixture.projectPath, "utf8")).worker);
+	const otherCwd = join(fixture.root, "other-workspace");
+	const otherRouting = { worker: { model: "openai/beta", thinking: "high" } };
+	writeMarkdown(join(otherCwd, ".pi", "gentle-ai", "models.json"), JSON.stringify(otherRouting));
+	assert.equal(existsSync(fixture.globalPath), false);
+	assert.deepEqual(readModelConfig(otherCwd), otherRouting);
 	fixture.onInput((panel) => {
 		panel.handleInput("x");
+		assert.match(stripAnsi(renderComponent(panel)), /\[x\] abandoned/);
 		panel.handleInput("\r");
 		assert.match(stripAnsi(renderComponent(panel)), /Removed 1 stale routing key\./);
 		panel.handleInput("\x1b");
 	});
 	await fixture.run("gentle:profiles");
-	const remaining = { worker: { model: "openai/alpha" } };
-	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), remaining);
-	assert.deepEqual(JSON.parse(readFileSync(fixture.projectPath, "utf8")), remaining, "the legacy source cannot reintroduce the removed route");
-	assert.ok(bytes()[2], "global target is materialized");
+	const legacy = JSON.parse(readFileSync(fixture.projectPath, "utf8"));
+	assert.deepEqual(legacy, remaining, "the legacy source cannot reintroduce the removed route");
+	assert.equal(JSON.stringify(legacy.worker), workerJson, "cleanup preserves the live legacy route's JSON");
+	assert.deepEqual(
+		{ globalExists: existsSync(fixture.globalPath), otherRouting: readModelConfig(otherCwd) },
+		{ globalExists: false, otherRouting },
+		"legacy cleanup must not create global routing or change another workspace's effective routing",
+	);
 });
 
 test("models screen cleanup transaction: removes selected routes from both saved models layers", async (t) => {

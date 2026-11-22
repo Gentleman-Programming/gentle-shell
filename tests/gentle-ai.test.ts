@@ -4024,6 +4024,34 @@ test("models screen cleanup transaction: removes selected routes from both saved
 	});
 });
 
+test("models screen cleanup transaction: includes effort-only subagent routes accepted by the runtime", async (t) => {
+	const { fixture, subPath, userPath, storePath } = cleanupTransactionFixture(t);
+	const effort = { effort: " HIGH ", custom: "keep" };
+	const routes = { "effort-only": effort, worker: effort, "review-refuter": effort, metadata: { custom: "keep" } };
+	writeFileSync(subPath, JSON.stringify({ model_profiles: routes }));
+	writeFileSync(userPath, JSON.stringify({ model_profiles: { "effort-only": { thinking: " LOW " } } }));
+	const modelRoutes = { "effort-only": { effort: " HIGH " } };
+	writeFileSync(fixture.globalPath, JSON.stringify(modelRoutes));
+	const modelsBefore = readFileSync(fixture.globalPath);
+	const profilesBefore = readFileSync(storePath);
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		const card = stripAnsi(renderComponent(panel));
+		assert.match(card, /\[x\] effort-only/);
+		assert.doesNotMatch(card, /\[x\] (worker|review-refuter|metadata)/);
+		panel.handleInput(" "); // Keep abandoned; remove only effort-only.
+		panel.handleInput("\r");
+		assert.match(stripAnsi(renderComponent(panel)), /Removed 1 stale routing key\./);
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	const { "effort-only": _removed, ...remaining } = routes;
+	assert.deepEqual(JSON.parse(readFileSync(subPath, "utf8")), { model_profiles: remaining });
+	assert.deepEqual(JSON.parse(readFileSync(userPath, "utf8")), { model_profiles: {} });
+	assert.deepEqual(readFileSync(fixture.globalPath), modelsBefore);
+	assert.deepEqual(readFileSync(storePath), profilesBefore);
+});
+
 test("models screen cleanup transaction: preserves raw metadata and per-store selection", async (t) => {
 	const { fixture, subPath, userPath, storePath } = cleanupTransactionFixture(t);
 	const profile = JSON.parse(readFileSync(storePath, "utf8"));

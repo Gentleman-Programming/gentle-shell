@@ -63,7 +63,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys, staleRoutingKeys, removeRoutingKeys } from "../lib/agents-config.ts";
+import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, parseAgentsConfig, unmatchedProfileKeys, staleRoutingKeys, removeRoutingKeys } from "../lib/agents-config.ts";
 import { snapshotRoutingCleanup, commitRoutingCleanup } from "../lib/routing-cleanup-transaction.ts";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -92,6 +92,7 @@ import { installPackageAssets, getPackageAssetOwner, hasPackageAssetOwnerInstall
 import {
 	THINKING_LEVELS,
 	normalizeModelConfig,
+	isSafeAgentName,
 	isThinkingLevel,
 	normalizeModelId,
 	normalizeRoutingEntry,
@@ -7222,7 +7223,13 @@ async function openProfilesPanelLoop(
 					const candidates = (raw: Record<string, unknown>, inventory = known) => staleRoutingKeys(normalizeModelConfig(raw) ?? {}, inventory);
 					const subStores = subFiles.map((sub) => {
 						const routes = isRecord(sub.raw?.model_profiles) ? sub.raw.model_profiles : {};
-						return { ...sub, routes, keys: candidates(routes) };
+						const accepted = normalizeModelConfig(routes) ?? {};
+						const { modelProfiles } = parseAgentsConfig(undefined, { model_profiles: routes });
+						// The runtime also accepts effort values with mixed case or padding.
+						for (const [key, { thinking }] of Object.entries(modelProfiles)) {
+							if (thinking !== undefined && isSafeAgentName(key)) accepted[key] = { ...accepted[key], thinking };
+						}
+						return { ...sub, routes, accepted, keys: staleRoutingKeys(accepted, known) };
 					});
 					const models = modelStores.map((store) => ({ ...store, keys: candidates(store.routes) }));
 					const profileStores = Object.entries(rawProfiles.profiles).map(([name, routes]) => {
@@ -7236,8 +7243,10 @@ async function openProfilesPanelLoop(
 						apply: (selected) => {
 						// Agent definitions can appear while the card is open; judge the selection again.
 						const inventory = cleanupInventory();
-						const stillStale = new Set([...subStores, ...models, ...profileStores].map((store) => store.routes)
-							.flatMap((routes) => candidates(routes, inventory)));
+						const stillStale = new Set([
+							...subStores.flatMap((sub) => staleRoutingKeys(sub.accepted, inventory)),
+							...[...models, ...profileStores].flatMap(({ routes }) => candidates(routes, inventory)),
+						]);
 						const revived = selected.filter((key) => !stillStale.has(key));
 						if (revived.length > 0) {
 							throw new Error(`Agent definitions changed; no longer stale: ${revived.join(", ")}. Reopen the panel before cleaning up.`);

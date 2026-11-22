@@ -431,14 +431,14 @@ test("package manifest installs pi-pretty through a wrapper without bundling nat
 	);
 });
 
-test("package verification binds the published Gentle AI v4.6.0 runtime pin", () => {
+test("package verification binds the published Gentle AI v5.0.0 runtime pin", () => {
 	const installer = readFileSync(join(PACKAGE_ROOT, "scripts", "gentle-ai-installer.mjs"), "utf8");
 	const binary = readFileSync(join(PACKAGE_ROOT, "lib", "gentle-ai-binary.ts"), "utf8");
 	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
 
-	assert.match(installer, /INSTALLER_VERSION = "4\.6\.0"/);
+	assert.match(installer, /INSTALLER_VERSION = "5\.0\.0"/);
 	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_PACKAGE.*GENTLE_AI_WINDOWS_SOURCE_MODULE/);
-	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:FXR0FEGvnov6eCf\/FR7Ey8PfxxdhbDHq1\/WnkjpA1AQ="/);
+	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:8NBGfEMu\/LsR\/lJxALGNAsvK9\+5SA2htPNueWKXIW24="/);
 	assert.match(installer, /GOTOOLCHAIN: "local"/);
 	assert.match(installer, /GOSUMDB: "sum\.golang\.org"/);
 	assert.match(binary, /GENTLE_AI_VERSION = INSTALLER_VERSION/);

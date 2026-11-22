@@ -1082,6 +1082,11 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// af87572ac591c005941c898957f4084bd3c38e1afe2fe794e2f308be714096a6)
 	// matches Shell's existing 1.6.0 mirror byte-for-byte.
 	"4.6.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
+	// The signed darwin/arm64 v5.0.0 binary retains capabilities/v2.6 at
+	// protocol 2.6 without legacy authority, emits actual STATUS v9, and keeps
+	// both abandon authorization flags. The compact-v2 Shell adapter stays
+	// on the same support row. The refreshed 1.6.0 provider bundle is separate.
+	"5.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 });
 
 export interface NativeReviewProcessDiagnostics {

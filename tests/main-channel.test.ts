@@ -6,7 +6,6 @@ import { join, win32 } from "node:path";
 import test from "node:test";
 import {
 	CHANNEL_SCHEMA,
-	GENTLE_AI_MAIN_PACKAGE,
 	GENTLE_AI_MODULE,
 	MainChannelError,
 	buildMainGentleAi,
@@ -24,8 +23,8 @@ import { artifactFor } from "../scripts/installer-downloads.mjs";
 
 const SHELL_SHA = "6e7e3a18f794223396527a54c7c36d19c7d236c6";
 const AI_SHA = "1f9d5e6423e37f7d2316859045f379ba9b5d8c3a";
-const PSEUDO = "v4.0.1-0.20261008202137-1f9d5e6423e3";
-const LIST_FAILURE = "go: github.com/gentleman-programming/gentle-ai/v4@v4.0.1-0.20261008202137-1f9d5e6423e3: module lookup failed";
+const PSEUDO = "v5.0.1-0.20261008202137-1f9d5e6423e3";
+const LIST_FAILURE = "go: github.com/gentleman-programming/gentle-ai/v5@v5.0.1-0.20261008202137-1f9d5e6423e3: module lookup failed";
 const posixOnly = { skip: process.platform === "win32" };
 
 function sandbox() {
@@ -46,7 +45,7 @@ function gentleAiBuildRun(world: {
 	probeVersion?: string;
 	listFails?: boolean;
 }) {
-	const { commit, listVersion = "v4.2.0", originHash = commit, embeddedVersion = listVersion, probeVersion = listVersion.replace(/^v/, ""), listFails = false } = world;
+	const { commit, listVersion = "v5.0.0", originHash = commit, embeddedVersion = listVersion, probeVersion = listVersion.replace(/^v/, ""), listFails = false } = world;
 	const calls: Call[] = [];
 	const run = async (command: string, argv: string[], options: Call["options"]) => {
 		calls.push({ command, argv, options });
@@ -58,7 +57,7 @@ function gentleAiBuildRun(world: {
 		if (argv[0] === "list") {
 			if (listFails) return { code: 1, stdout: "", stderrTail: `${LIST_FAILURE}\n` };
 			return { code: 0, stdout: JSON.stringify({ Path: GENTLE_AI_MODULE, Version: listVersion,
-				Origin: { VCS: "git", URL: "https://github.com/gentleman-programming/gentle-ai", Hash: originHash, Ref: "refs/tags/v4.2.0" } }) };
+				Origin: { VCS: "git", URL: "https://github.com/gentleman-programming/gentle-ai", Hash: originHash, Ref: "refs/tags/v5.0.0" } }) };
 		}
 		if (argv[0] === "version" && argv[1] === "-m") {
 			return { code: 0, stdout: `${command} (binary)\n\tmod\t${GENTLE_AI_MODULE}\t${embeddedVersion}\th1:J8EluS7QrfM+m3vmQlF26B/shZRjD6rBfsKtrABL5mc=\n` };
@@ -230,7 +229,7 @@ test("a failed source extraction or Go build keeps the command's bounded stderr 
 		};
 		await assert.rejects(packMainShell({ commit: SHELL_SHA, ctx: s.ctx, fetch, run: tar, pnpm: { command: "/bin/pnpm", prefix: [] }, fs: fsPromises, platform: "linux" }),
 			(error: MainChannelError) => error.code === "main-shell-pack-failed" && error.cause instanceof Error && error.cause.message === tail.trim());
-		const go = "go: downloading github.com/gentleman-programming/gentle-ai/v4\ngo: verifying module: checksum mismatch\n";
+		const go = "go: downloading github.com/gentleman-programming/gentle-ai/v5\ngo: verifying module: checksum mismatch\n";
 		const build = async (_command: string, _argv: string[], options: { stderrTail?: number }) => {
 			requested.push(options.stderrTail);
 			return { code: 1, stdout: "", stderrTail: go };
@@ -252,26 +251,27 @@ test("Gentle AI main is built from the exact commit through Go's checksum databa
 		const built = await buildMainGentleAi({ commit: AI_SHA, ctx: s.ctx, platform: "darwin", goPath, run, fs: fsPromises });
 		const install = calls[0];
 		assert.equal(install.command, goPath);
-		assert.deepEqual(install.argv, ["install", `${GENTLE_AI_MAIN_PACKAGE}@${AI_SHA}`]);
+		assert.deepEqual(install.argv, ["install", `github.com/gentleman-programming/gentle-ai/v5/cmd/gentle-ai@${AI_SHA}`]);
+		assert.deepEqual(calls[1].argv, ["list", "-m", "-json", `github.com/gentleman-programming/gentle-ai/v5@${AI_SHA}`]);
 		for (const [key, value] of Object.entries({ GOPROXY: "https://proxy.golang.org", GOSUMDB: "sum.golang.org", GOTOOLCHAIN: "local",
 			GOFLAGS: "-modcacherw", GONOSUMDB: "", GOPRIVATE: "", GOINSECURE: "", GOENV: "off", GOWORK: "off" })) assert.equal(install.options.env![key], value, key);
 		assert.equal(built.binaryPath, join(s.home, ".pi", "gentle-ai", "main", "gentle-ai", AI_SHA, "gentle-ai"));
-		assert.equal(built.version, "4.0.1-0.20261008202137-1f9d5e6423e3");
+		assert.equal(built.version, "5.0.1-0.20261008202137-1f9d5e6423e3");
 		assert.deepEqual(JSON.parse(readFileSync(join(s.home, ".pi", "gentle-ai", "dev-binary.json"), "utf8")),
 			{ schema: "gentle-pi.dev-binary/v1", path: built.binaryPath });
 	} finally { s.cleanup(); }
 });
 
-// #2301: when main's HEAD is exactly a tag commit, Go stamps the tag (v4.2.0), not a
+// #2301: when main's HEAD is exactly a tag commit, Go stamps the tag (v5.0.0), not a
 // pseudo-version, so the suffix check alone rejects every tagged release.
 test("a main commit that is exactly a release tag is accepted when Go resolves that tag to the commit", posixOnly, async () => {
 	const s = sandbox();
 	try {
 		const TAGGED = "4acaf4241beae1e0c977c92dfe406a270f8d40de";
-		const { run } = gentleAiBuildRun({ commit: TAGGED, listVersion: "v4.2.0", originHash: TAGGED });
+		const { run } = gentleAiBuildRun({ commit: TAGGED, listVersion: "v5.0.0", originHash: TAGGED });
 		const built = await buildMainGentleAi({ commit: TAGGED, ctx: s.ctx, platform: "darwin", goPath: "/go/bin/go", run, fs: fsPromises });
 		assert.equal(built.binaryPath, join(s.home, ".pi", "gentle-ai", "main", "gentle-ai", TAGGED, "gentle-ai"));
-		assert.equal(built.version, "4.2.0");
+		assert.equal(built.version, "5.0.0");
 		assert.deepEqual(JSON.parse(readFileSync(join(s.home, ".pi", "gentle-ai", "dev-binary.json"), "utf8")),
 			{ schema: "gentle-pi.dev-binary/v1", path: built.binaryPath });
 	} finally { s.cleanup(); }
@@ -293,7 +293,7 @@ test("a go list whose Origin.Hash names another commit is rejected, and the buil
 test("a binary whose embedded module version differs from what Go resolved is rejected and never registered", posixOnly, async () => {
 	const s = sandbox();
 	try {
-		const { run } = gentleAiBuildRun({ commit: AI_SHA, listVersion: PSEUDO, embeddedVersion: "v4.1.2" });
+		const { run } = gentleAiBuildRun({ commit: AI_SHA, listVersion: PSEUDO, embeddedVersion: "v5.0.2" });
 		await assert.rejects(buildMainGentleAi({ commit: AI_SHA, ctx: s.ctx, platform: "darwin", goPath: "/go/bin/go", run, fs: fsPromises }),
 			(error: MainChannelError) => error.code === "main-gentle-ai-unverified");
 		assert.equal(existsSync(join(s.home, ".pi", "gentle-ai", "dev-binary.json")), false);
@@ -316,8 +316,8 @@ test("a failed go list is rejected as unverified, with its stderr tail as the ca
 // channel record) must not delete the working override when verification fails.
 for (const [name, failure] of Object.entries({
 	"go list fails": { listFails: true },
-	"the embedded version differs": { embeddedVersion: "v4.1.2" },
-	"the reported version differs": { probeVersion: "4.0.1-0.20261008202137-aaaaaaaaaaaa" },
+	"the embedded version differs": { embeddedVersion: "v5.0.2" },
+	"the reported version differs": { probeVersion: "5.0.1-0.20261008202137-aaaaaaaaaaaa" },
 })) test(`a registered build of the same commit survives a rebuild whose verification fails because ${name}`, posixOnly, async () => {
 	const s = sandbox();
 	try {
@@ -358,7 +358,7 @@ test("go list and go version -m run with the same sealed environment and cwd as 
 test("a Gentle AI build whose reported version differs from the resolved module version is rejected and never registered", posixOnly, async () => {
 	const s = sandbox();
 	try {
-		const { run } = gentleAiBuildRun({ commit: AI_SHA, listVersion: PSEUDO, probeVersion: "4.0.1-0.20261008202137-aaaaaaaaaaaa" });
+		const { run } = gentleAiBuildRun({ commit: AI_SHA, listVersion: PSEUDO, probeVersion: "5.0.1-0.20261008202137-aaaaaaaaaaaa" });
 		await assert.rejects(buildMainGentleAi({ commit: AI_SHA, ctx: s.ctx, platform: "darwin", goPath: "/go/bin/go", run, fs: fsPromises }),
 			(error: MainChannelError) => error.code === "main-gentle-ai-unverified");
 		assert.equal(existsSync(join(s.home, ".pi", "gentle-ai", "dev-binary.json")), false);
@@ -435,7 +435,7 @@ async function upgradeWorld({ userGo = null as string | null, pinned = false, ac
 	const run = async (command: string, argv: string[], options: Call["options"]) => {
 		calls.push({ command, argv, options });
 		const isGo = command === "/usr/bin/go" || command === pinnedGo;
-		const pseudo = (commit: string) => `v4.0.1-0.20261008202137-${commit.slice(0, 12)}`;
+		const pseudo = (commit: string) => `v5.0.1-0.20261008202137-${commit.slice(0, 12)}`;
 		if (isGo && argv[0] === "version" && argv[1] === "-m") return { code: 0, stdout: `${command} (binary)\n\tmod\t${GENTLE_AI_MODULE}\t${pseudo(NEW_AI)}\th1:J8EluS7QrfM+m3vmQlF26B/shZRjD6rBfsKtrABL5mc=\n` };
 		if (isGo && argv[0] === "list") {
 			const requested = argv[3].slice(`${GENTLE_AI_MODULE}@`.length);
@@ -447,7 +447,7 @@ async function upgradeWorld({ userGo = null as string | null, pinned = false, ac
 			writeFileSync(join(options.env!.GOBIN, "gentle-ai"), "#!/bin/sh\n", { mode: 0o755 });
 			return { code: 0, stdout: "" };
 		}
-		return { code: 0, stdout: `gentle-ai 4.0.1-0.20261008202137-${NEW_AI.slice(0, 12)}\n` };
+		return { code: 0, stdout: `gentle-ai 5.0.1-0.20261008202137-${NEW_AI.slice(0, 12)}\n` };
 	};
 	const which = async (name: string) => (name === "pnpm" || (name === "go" && userGo !== null) ? `/usr/bin/${name}` : null);
 	// The verified download itself is acquireGo's (installer-downloads tests); here it only publishes the pinned path.

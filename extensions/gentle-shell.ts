@@ -1,5 +1,5 @@
 import { sharedCooldown, syncUsageCooldown } from "../lib/model-fallback-policy.ts";
-import { CustomEditor, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, getLanguageFromPath, highlightCode, keyHint, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { isHomeOrBroadUserDirectory } from "../lib/bounded-writer-admission.ts";
 import { Editor, Image, Key, decodeKittyPrintable, getCapabilities, isKeyRelease, matchesKey, parseKey, truncateToWidth, visibleWidth, type Component, type EditorTheme, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { readClipboardImage, type ClipboardImage } from "../lib/clipboard-image.ts";
@@ -8,8 +8,8 @@ import { describeAttachment, ImageAttachments } from "../lib/image-attachments.t
 import { defaultCacheRoot, ImageDiskCache } from "../lib/image-disk-cache.ts";
 import { execFile, spawnSync } from "node:child_process";
 import { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
-import { existsSync, realpathSync, statSync } from "node:fs";
-import { lstat } from "node:fs/promises";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { lstat, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createShellGitWorker, failedGitRead, gitExecResult, type GitExecError, type ShellGitWorkerRead } from "../lib/shell-git-worker.ts";
 import { shellUntrackedLines } from "../lib/shell-untracked-lines.ts";
@@ -18,15 +18,19 @@ import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "..
 import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellChromeBar, renderShellChromePad, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
+import { buildShellHeaderModel, formatTokens, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellChromeBar, renderShellChromePad, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { DIFF_MAX_BYTES, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type UntrackedLineCounts, type WorktreeChanges } from "../lib/shell-changes.ts";
+import { PROJECT_TREE_GLYPHS, PROJECT_TREE_ROLES, createProjectTreeStore, type ProjectTreeRow, type ProjectTreeStatus } from "../lib/shell-file-tree.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { changeDirectoryInsideRoot, loadFileDiff, repositoryGitDirectories, runFileDiff } from "../lib/change-diff.ts";
 import { DESKTOP_CHANGES_SERVICE_CHANNEL, DESKTOP_CHANGES_SERVICE_SCHEMA, projectDesktopChanges, projectDesktopDiff, type DesktopChangesService } from "../lib/desktop-rpc-changes.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
 import { windowsProcessTreeKiller, type ProcessTreeKiller } from "../lib/native-review-cli.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
-import { CARD_STYLE, CARD_TONE, cardStyle, panelHeaderRow, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
+import { CARD_STYLE, CARD_TONE, cardStyle, paintSurfaceRow, panelHeaderRow, renderCard, setCardStyle, surfaceOpener, type Card, type CardTheme } from "../lib/shell-card.ts";
+import { renderShellInfoBox, shellInfoDigest, type ShellInfoModel } from "../lib/shell-info-card.ts";
+import { AGENTIC_TABS, normalizeAgenticTab, resolveAgenticTabs, writeAgenticTabs } from "../lib/agentic-tabs-policy.ts";
+import { readConsolePanelState, withConsoleCollapsed, withPanelFolded, writeConsolePanelState } from "../lib/console-panel-policy.ts";
 import { resolveCardStyle, writeCardStyle } from "../lib/card-style-policy.ts";
 import { CARD_CONTENT, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 import { CommandPalette, commandsKey, type CommandPaletteResult } from "../lib/command-palette.ts";
@@ -46,7 +50,7 @@ import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, readBannerConfig, readBannerConfi
 import { commandKeymapId, commandKeymapIds, effectiveKey, keymapCommand, keymapLabel, keymapSavedNotice, loadKeymaps, prepareKeymapChange, writeKeymaps, type KeymapBindings, type PiKeybindings } from "../lib/keymaps.ts";
 import { GentleAiDevBinaryOverrideError, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
 import { DOUBLE_ESC_CANCEL_HINT, floatPromptRow, framePromptLines, panelPromptRow, resolvePromptLayout, IDLE_ESC_CLEAR_HINT, PANEL_BUTTON, PROMPT_HINT, PROMPT_STATE, SHELL_PULSE_MS, SHELL_PULSE_WATCHDOG_MS, withPromptHint, workingTick, type PromptState } from "../lib/shell-prompt.ts";
-import { stripAnsi } from "../lib/terminal-theme.ts";
+import { sanitizeTerminalText, stripAnsi } from "../lib/terminal-theme.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CLAUDE_BRIDGE_PROVIDER, priceBridgeMessage } from "../lib/bridge-cost.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
@@ -146,9 +150,9 @@ import {
 	type DesktopUsageService,
 } from "../lib/desktop-rpc-usage.ts";
 import { UsageView } from "../lib/shell-usage-view.ts";
-import { releaseSidebarHover, setSidebarHover, sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail } from "../lib/shell-sidebar.ts";
-import { installSidebar, invalidateSidebar, narrowStatusOwner, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
-import { panelSheetBackHit, renderPanelSheet, renderWorkRow, setChromeSurface, workRowLead } from "../lib/shell-panel.ts";
+import { releaseSidebarHover, setSidebarHover, sidebarHeader, sidebarPart, sidebarState, sidebarStatusBar, VISUAL_SETTINGS_CHANGED, type SidebarRail, type AgenticTab } from "../lib/shell-sidebar.ts";
+import { installSidebar, invalidateSidebar, narrowStatusOwner, setConsoleCollapsed, SIDEBAR_BREAKPOINT, STATUS_OWNER } from "../lib/shell-sidebar-layout.ts";
+import { consoleScrollBar, GLASS_SLATE_BG_STOPS, GLASS_SLATE_BORDER_STOPS, interpolateRgb, isCineEstelarLive, isCineEstelarSkin, paintHorizontalGradientRow, panelSheetBackHit, renderConsoleBottom, renderConsoleRow, renderConsoleTop, renderPanelHeader, renderPanelRow, renderPanelSheet, renderWorkRow, setChromeSurface, workRowLead } from "../lib/shell-panel.ts";
 import { installPagePaint, type PageTheme } from "../lib/shell-page.ts";
 import { layoutSchematic } from "../lib/visual-layout-preview.ts";
 import { collectSessionStats, type SessionStats } from "../lib/shell-stats.ts";
@@ -162,6 +166,7 @@ import { installSessionChangeCapture } from "../lib/session-change-capture.ts";
 import { SelectionEngine } from "../lib/selection-engine.ts";
 import { withOverlayRepaint } from "../lib/overlay-repaint.ts";
 import { buildNotificationRows } from "../lib/notification-customize.ts";
+import { HOVER_ROLE } from "../lib/shell-hover.ts";
 
 // Gentle Shell: the visual layer gentle-pi puts on top of pi. It installs the
 // status bar, the petal prompt, the working-tree changes widget and overlay,
@@ -408,6 +413,7 @@ export function buildShellBarModel(
 		usage: options.usage,
 		...(options.jobs !== undefined ? { jobs: options.jobs } : {}),
 		statuses,
+		gentleDotsStatus: entries.find(([key]) => key === "gentle-dots")?.[1],
 		...(mode ? { permission: { mode, ...(detail ? { detail } : {}) } } : {}),
 		integrations: entries.filter(([key]) => key !== MODE_STATUS_KEY && key !== YOLO_STATUS_KEY).map(([, text]) => text),
 	};
@@ -547,6 +553,8 @@ interface PromptEditorDeps {
 	watchdogMs?: number;
 	/** Read on every render: true while the wide IDE chrome shows, so the editor draws its panel frame. */
 	panelChrome?: () => boolean;
+	/** True when the Cine-Estelar rounded glass prompt frame is active. */
+	cinePrompt?: () => boolean;
 	/** The Panel action is available only in the shell's narrow chrome. */
 	panelButton?: () => boolean;
 	/** Rows the editor draws right above its rule (the mobile work row, agent questions), so no widget lands between them and the input; `hovered` is the top row under the pointer. */
@@ -1459,6 +1467,71 @@ export class GentlePromptEditor extends CustomEditor {
 					? floatPromptRow(this.selectionEngine.decorateBottomRule("", layout.nativeWidth, ""), layout, (text) => this.borderColor(text))
 					: this.selectionEngine.decorateBottomRule(framed[framed.length - 1] ?? "", width, "╯");
 		}
+		if (layout.panel && this.deps.cinePrompt?.() && framed.length >= 2 && width >= 12) {
+			const innerW = Math.max(0, width - 2);
+			const stateText = state === PROMPT_STATE.WORKING ? (this.deps.workingLabel?.() ?? "working…") : state === PROMPT_STATE.QUEUED ? "queued" : "waiting for input";
+			if (isCineEstelarLive()) {
+				const [lfr, lfg, lfb] = GLASS_SLATE_BORDER_STOPS[0]!;
+				const [rfr, rfg, rfb] = GLASS_SLATE_BORDER_STOPS[GLASS_SLATE_BORDER_STOPS.length - 1]!;
+				let topBorder = "\x1b[49m";
+				for (let i = 0; i < width; i++) {
+					const ch = i === 0 ? "╭" : i === width - 1 ? "╮" : "─";
+					const [fr, fg, fb] = interpolateRgb(GLASS_SLATE_BORDER_STOPS, i / Math.max(1, width - 1));
+					topBorder += `\x1b[38;2;${fr};${fg};${fb}m${ch}`;
+				}
+				topBorder += "\x1b[39m";
+				const diamond = "\x1b[38;2;199;155;255m◆\x1b[39m";
+				const labelPart = `\x1b[38;2;230;236;255m${stateText}\x1b[39m`;
+				const dashTail = "\x1b[38;2;152;168;204m───\x1b[39m";
+				const headerPrefix = ` ${diamond} ${labelPart} ${dashTail}`;
+				const headerPad = " ".repeat(Math.max(0, innerW - visibleWidth(headerPrefix)));
+				const headerRow =
+					`\x1b[49m\x1b[38;2;${lfr};${lfg};${lfb}m│\x1b[39m` +
+					paintHorizontalGradientRow(truncateToWidth(headerPrefix + headerPad, innerW, ""), innerW, GLASS_SLATE_BG_STOPS) +
+					`\x1b[49m\x1b[38;2;${rfr};${rfg};${rfb}m│\x1b[39m`;
+				framed[0] = topBorder;
+				for (let idx = 1; idx < framed.length - 1; idx += 1) {
+					const rawRow =
+						idx === 1 && this.getText() === ""
+							? ` \x1b[38;2;186;198;228m>\x1b[39m \x1b[38;2;214;224;248m${PROMPT_HINT}\x1b[39m\x1b[38;2;248;250;255m█\x1b[39m`
+							: ` ${framed[idx] ?? ""}`;
+					const clippedRow = truncateToWidth(rawRow, innerW, "");
+					const paddedRow = `${clippedRow}${" ".repeat(Math.max(0, innerW - visibleWidth(clippedRow)))}`;
+					framed[idx] =
+						`\x1b[49m\x1b[38;2;${lfr};${lfg};${lfb}m│\x1b[39m` +
+						paintHorizontalGradientRow(paddedRow, innerW, GLASS_SLATE_BG_STOPS) +
+						`\x1b[49m\x1b[38;2;${rfr};${rfg};${rfb}m│\x1b[39m`;
+				}
+				framed.splice(1, 0, headerRow);
+				let botRule = "\x1b[49m";
+				for (let i = 0; i < width; i++) {
+					const ch = i === 0 ? "╰" : i === width - 1 ? "╯" : "─";
+					const [fr, fg, fb] = interpolateRgb(GLASS_SLATE_BORDER_STOPS, i / Math.max(1, width - 1));
+					botRule += `\x1b[38;2;${fr};${fg};${fb}m${ch}`;
+				}
+				botRule += "\x1b[39m";
+				framed[framed.length - 1] = botRule;
+			} else {
+				const open = surfaceOpener({ fg: this.deps.fg, bg: this.deps.bg }, "customMessageBg");
+				const modeTag = this.vimPolicy === "on" ? (this.vimVisual.active ? (this.vimVisual.kind === "line" ? "VISUAL LINE" : "VISUAL") : this.vimNormal ? "NORMAL" : "INSERT") : "INSERT";
+				const star = this.deps.fg("mdLink", this.deps.bold("★"));
+				const labelPart = this.deps.fg("muted", stateText);
+				const badgePart = `${this.deps.fg("accent", "[")} ${this.deps.fg("mdLink", this.deps.bold(modeTag))} ${this.deps.fg("accent", "]")}`;
+				const fixedCols = 2 + 1 + 2 + visibleWidth(stateText) + 2 + (visibleWidth(modeTag) + 4) + 2;
+				const ruleLen = Math.max(1, innerW - fixedCols);
+				const topInterior = `${this.deps.fg("accent", "─")} ${star} ${labelPart} ${this.deps.fg("border", "─".repeat(ruleLen))} ${badgePart} ${this.deps.fg("accent", "─")}`;
+				const topClipped = truncateToWidth(topInterior, innerW, "");
+				const topPad = this.deps.fg("accent", "─".repeat(Math.max(0, innerW - visibleWidth(topClipped))));
+				framed[0] = `${this.deps.fg("accent", "╭")}${paintSurfaceRow(topClipped + topPad, open)}${this.deps.fg("accent", "╮")}`;
+				for (let idx = 1; idx < framed.length - 1; idx += 1) {
+					const rawRow = framed[idx] ?? "";
+					const clippedRow = truncateToWidth(` ${rawRow}`, innerW, "");
+					const paddedRow = `${clippedRow}${" ".repeat(Math.max(0, innerW - visibleWidth(clippedRow)))}`;
+					framed[idx] = `${this.deps.fg("accent", "│")}${paintSurfaceRow(paddedRow, open)}${this.deps.fg("accent", "│")}`;
+				}
+				framed[framed.length - 1] = `${this.deps.fg("accent", "╰")}${paintSurfaceRow(this.deps.fg("accent", "─".repeat(innerW)), open)}${this.deps.fg("accent", "╯")}`;
+			}
+		}
 		// The shell decides what goes above the editor (work row, agent questions) for every frame style.
 		const topRows = this.deps.topRows?.(width, this.hoveredTopRow) ?? [];
 		if (this.hoveredTopRow !== undefined && this.hoveredTopRow >= topRows.length) this.hoveredTopRow = undefined;
@@ -1575,7 +1648,7 @@ type PromptFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorCom
 function installPrompt(
 	ctx: ExtensionContext,
 	onCreated: (prompt: GentlePromptEditor) => void,
-	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null>; panelChrome?: (tui: TUI) => boolean; panelButton?: (tui: TUI) => boolean; topRows?: (tui: TUI, width: number, hovered?: number) => string[]; onTopRowClick?: (tui: TUI, index: number) => void; onPanelClick?: () => void },
+	promptDeps: { now: () => number; doubleEscCancelEnabled: () => boolean; dispatchQueuedText: (text: string) => void; vimRuntimeVersion?: () => string | undefined; attachments?: ImageAttachments; readClipboardImage?: () => Promise<ClipboardImage | null>; panelChrome?: (tui: TUI) => boolean; cinePrompt?: (tui: TUI) => boolean; panelButton?: (tui: TUI) => boolean; topRows?: (tui: TUI, width: number, hovered?: number) => string[]; onTopRowClick?: (tui: TUI, index: number) => void; onPanelClick?: () => void },
 ): boolean {
 	const previous = ctx.ui.getEditorComponent() as PromptFactory | undefined;
 	if (previous && !previous[PROMPT_OWNER]) return false;
@@ -1595,6 +1668,7 @@ function installPrompt(
 			attachments: promptDeps.attachments,
 			readClipboardImage: promptDeps.readClipboardImage,
 			panelChrome: promptDeps.panelChrome ? () => promptDeps.panelChrome!(tui) : undefined,
+			cinePrompt: promptDeps.cinePrompt ? () => promptDeps.cinePrompt!(tui) : undefined,
 			panelButton: promptDeps.panelButton ? () => promptDeps.panelButton!(tui) : undefined,
 			topRows: promptDeps.topRows ? (width, hovered) => promptDeps.topRows!(tui, width, hovered) : undefined,
 			onTopRowClick: promptDeps.onTopRowClick ? (index) => promptDeps.onTopRowClick!(tui, index) : undefined,
@@ -1655,6 +1729,7 @@ function renderDoubleEscCancelReport(
 
 const CHANGES_WIDGET_KEY = "gentle-shell-changes";
 const HEADER_WIDGET_KEY = "gentle-shell-below-input-header";
+const PANE_INFO_WIDGET_KEY = "gentle-shell-pane-info";
 const CHANGES_COMMAND_NAME = "gentle:changes";
 const IMAGES_COMMAND_NAME = "gentle:images";
 const CHANGES_POLL_DEFAULT_MS = 2000;
@@ -2356,7 +2431,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if ((tui as TUI & { mode?: string }).mode !== "fullscreen" || !tui.terminal || chromeMode(tui) === "narrow") return false;
 		const placement = visualSettings.statusPlacement;
 		if (placement === "hidden" || placement === "bottom") return true;
-		// The rail owns the host (layout installed) only at 140 columns or wider, with Status auto or right.
+		// The rail owns the host (layout installed) only at 120 columns or wider, with Status auto or right.
 		const state = sidebarState(tui);
 		return Boolean(state.ownsHost?.() && (!drawn || state.active));
 	};
@@ -2508,6 +2583,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	// even when another session or a hand edit changed the file mid-session.
 	const doubleEscCancelConfigHome = gentlePiConfigHome(env);
 	const animationOptions = { gentlePiConfigHome: doubleEscCancelConfigHome };
+	let visibleAgenticTabs = resolveAgenticTabs(animationOptions).tabs;
 	let animationPolicy = resolveAnimationPolicy(animationOptions).policy;
 	let vimPolicy = resolveVimPolicy(animationOptions).policy;
 	// Conversation cards read the style from a process-wide slot; the saved
@@ -2580,6 +2656,57 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		shown = fingerprint;
 		showChanges(ctx, model, visualSettings.visibility.changes, (width) => groupedChangesOwner(width));
 	};
+	const gitForRoot = (root: string, maxBuffer?: number) =>
+		changesGit?.run(root, maxBuffer) ?? overrides.gitRunner?.(root, maxBuffer) ?? shellGitRunner(root, process.env, execFile, maxBuffer);
+	// The project tree behind the console's TREE panel: one `git ls-files` per
+	// root, cached outside every render path. The rail only reads the cache.
+	const projectTree = createProjectTreeStore();
+	// The roots to show: the worktrees the session tracks, or the session's own
+	// directory when nothing is tracked yet (a fresh session has no turn yet).
+	const treeRoots = (ctx: ExtensionContext, tracker: WorktreeChangesTracker): string[] => {
+		const roots = tracker.worktrees.map((tree) => tree.root);
+		return (roots.length > 0 ? roots : [ctx.cwd]).filter((root) => !isHomeOrBroadUserDirectory(root));
+	};
+	// How the console column is folded: the whole column with a key, each panel
+	// with a click on its title. The state survives a restart.
+	let consolePanelState = readConsolePanelState();
+	const foldedPanels = new Set(consolePanelState.folded);
+	const persistConsolePanelState = (): void => {
+		try {
+			writeConsolePanelState(consolePanelState);
+		} catch {}
+		setConsoleCollapsed(consolePanelState.collapsed);
+		const sidebar = sidebarTui?.terminal ? sidebarState(sidebarTui) : undefined;
+		if (sidebar) sidebar.consoleCollapsed = () => consolePanelState.collapsed;
+		renderHost?.invalidateSidebar?.();
+		renderHost?.requestRender();
+	};
+	const toggleConsoleColumn = (): void => {
+		consolePanelState = withConsoleCollapsed(consolePanelState, !consolePanelState.collapsed);
+		persistConsolePanelState();
+	};
+	const togglePanelFold = (key: string): void => {
+		const folded = !foldedPanels.has(key);
+		if (folded) foldedPanels.add(key);
+		else foldedPanels.delete(key);
+		consolePanelState = withPanelFolded(consolePanelState, key, folded);
+		persistConsolePanelState();
+	};
+	const refreshProjectTrees = async (ctx: ExtensionContext, tracker: WorktreeChangesTracker): Promise<boolean> => {
+		const roots = treeRoots(ctx, tracker);
+		const results = await Promise.all(
+			roots.map(async (root) => {
+				const statuses = new Map<string, ProjectTreeStatus>();
+				for (const tree of tracker.worktrees) {
+					if (tree.root !== root) continue;
+					for (const file of tree.model.files) statuses.set(file.path, file.status);
+				}
+				projectTree.setChanges(root, statuses);
+				return projectTree.refresh(root, gitForRoot(root), `${statuses.size}:${[...statuses.keys()].join(",")}`);
+			}),
+		);
+		return results.some(Boolean);
+	};
 	// Changes inventories the session's surviving roots. The first background
 	// scan waits until after startup and the first quiet paint.
 	const changesTracker = (ctx: ExtensionContext, git: ShellDeps["gitRunner"]) => {
@@ -2608,6 +2735,9 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		if (!tracker || !ctx.hasUI || registry?.sessionId !== ctx.sessionManager.getSessionId()) return;
 		const model = await refreshChangesTracker(tracker, fromIdle);
 		if (changes === tracker) applyChanges(ctx, model);
+		if (sidebarTui?.terminal && sidebarState(sidebarTui).agenticTab === "tree") {
+			await refreshProjectTrees(ctx, tracker);
+		}
 	};
 	// Desktop's changes slice reaches this tracker only through a versioned,
 	// adapter-shaped seam (the changes analogue of the usage seam above). Both
@@ -2695,6 +2825,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	pi.on("session_start", async (_event, ctx) => {
 		changesIdle?.dispose();
 		changesIdle = undefined;
+		visibleAgenticTabs = resolveAgenticTabs(animationOptions).tabs;
 		customizeGeneration++;
 		if (imagesDiskCachePolicy === "session") {
 			const cacheRoot = defaultCacheRoot(env);
@@ -2758,7 +2889,24 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			disposeFooter?.();
 			sidebarTui = tui;
-			if (tui.terminal) sidebarState(tui).visibility = { todo: visualSettings.visibility.todo };
+			if (tui.terminal) {
+				const sidebar = sidebarState(tui);
+				sidebar.visibility = { todo: visualSettings.visibility.todo };
+				sidebar.consoleCollapsed = () => consolePanelState.collapsed;
+				// The persisted fold has to reach the layout: without the bump the
+				// memo keeps the column it prepared before the state was applied.
+				setConsoleCollapsed(consolePanelState.collapsed);
+				invalidateSidebar(tui);
+				sidebar.agenticVisibleTabs = () => visibleAgenticTabs;
+				if (sidebar.agenticTab && !visibleAgenticTabs.includes(sidebar.agenticTab)) sidebar.agenticTab = "main";
+				sidebar.projectName = () => {
+					const cwd = currentContext?.cwd ?? "";
+					const name = cwd.split("/").filter(Boolean).at(-1);
+					return name;
+				};
+				let tabsDetected = false;
+				sidebar.agenticTabsEnabled = () => tabsDetected ||= pi.getCommands().some((command) => command.name === "gentle:extras");
+			}
 			renderHost = { requestRender: () => tui.requestRender(), invalidateSidebar: () => invalidateSidebar(tui) };
 			const bottom = createShellBarComponent(pi, ctx, renderHost, theme, footerData, () => tracker.model.files.length, () => usage.get(ctx.model?.provider ?? ""), () => visualSettings);
 			// The Status card paints live session state that no event re-registers a
@@ -2817,23 +2965,64 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			// folds its section, the Changes row opens /gentle:changes.
 			const statusCollapsed = new Set<StatusSection>();
 			let statusHover: StatusSection | "open-changes" | undefined;
+			let actionHover: string | undefined;
+			type AgenticActionTarget = { row: number; kind: "run-command"; command: string };
 			// Keyed by width: the rail and the full-width panel sheet render the same part.
-			const statusTargets = new Map<number, StatusTarget[]>();
+			const statusTargets = new Map<number, Array<StatusTarget | AgenticActionTarget>>();
 			const statusGroups = new Map<number, { groups: Array<{ start: number; end: number }>; loose: number[] }>();
 			const statusCard: Component = {
 				render(width: number) {
 					// Beside the rail every header placement draws a chrome bar that shows
 					// the permission mode with its icon, so the rail never repeats the raw
 					// mode statuses; the session-and-statuses view stays for other hosts.
+					const sidebar = sidebarState(tui);
+					const tab = sidebar.agenticTabsEnabled?.() ? sidebar.agenticTab ?? "main" : "main";
+					// Console workspaces (DESIGN.md §C2): MAIN carries the session panels and
+					// the pending decisions, GIT the changes and the review, MEM the Engram
+					// integrations, PROF its own panel. TREE and WT never render this card.
+					const tabsOn = sidebar.agenticTabsEnabled?.() === true;
+					const sections = !tabsOn ? undefined
+						: tab === "main" || tab === "git" ? new Set<StatusSection>(["changes", "review"])
+							: tab === "mem" ? new Set<StatusSection>(["integrations"])
+								: tab === "prof" ? new Set<StatusSection>() : undefined;
+					const baseModel = footerModel();
+					const tabModel = tab === "mem" && baseModel.integrations
+						? { ...baseModel, integrations: baseModel.integrations.filter((entry) => entry !== baseModel.gentleDotsStatus) }
+						: withStats(baseModel);
+					const tabSettings = tab === "git" ? { ...visualSettings, visibility: { ...visualSettings.visibility, changes: true } } : visualSettings;
 					const view = statusCardVisible()
-						? renderShellStatusSections(withStats(footerModel()), theme, width, visualSettings, railHints, { collapsed: statusCollapsed, hovered: statusHover })
+						? renderShellStatusSections(tabModel, theme, width, tabSettings, railHints, { collapsed: statusCollapsed, hovered: statusHover, sections })
 						: renderShellStatusSections(withStats({ ...footerModel(), integrations: undefined, permission: undefined }), theme, width, visualSettings, railHints, { session: true, collapsed: statusCollapsed, hovered: statusHover });
-					statusTargets.set(width, view.targets);
-					statusGroups.set(width, { groups: view.groups, loose: view.loose });
-					return view.lines;
+					const lines = [...view.lines];
+					const targets: Array<StatusTarget | AgenticActionTarget> = [...view.targets];
+					const groups = [...view.groups];
+					if (statusCardVisible() && (tab === "git" || tab === "prof")) {
+						const available = new Set(pi.getCommands().map((command) => command.name));
+						const actions = (tab === "git" ? [
+							{ command: "gentle:git-graph", label: "Grafo de Git" },
+							{ command: "gentle:file-tree", label: "Archivos y cambios" },
+						] : [{ command: "gentle:profiles", label: "Abrir perfiles" }]).filter((action) => available.has(action.command));
+						if (lines.length && visualSettings.density === "comfortable") lines.push(" ".repeat(width));
+						const groupStart = lines.length;
+						lines.push(renderPanelHeader(theme, width, { title: tab === "prof" ? "Perfil" : "Herramientas", open: true }));
+						if (tab === "prof") {
+							const profile = sanitizeTerminalText(baseModel.profile ?? "sin perfil activo").replace(/[\r\n\t]/g, " ");
+							lines.push(renderPanelRow(width, theme.fg("muted", profile)));
+						}
+						for (const action of actions) {
+							targets.push({ row: lines.length, kind: "run-command", command: action.command });
+							lines.push(renderPanelRow(width, theme.fg(actionHover === action.command ? HOVER_ROLE : "accent", `› ${action.label}`)));
+						}
+						if (!actions.length) lines.push(renderPanelRow(width, theme.fg("muted", "No disponible en esta sesión")));
+						groups.push({ start: groupStart, end: lines.length });
+					}
+					statusTargets.set(width, targets);
+					statusGroups.set(width, { groups, loose: view.loose });
+					return lines;
 				},
 				invalidate() {
 					statusHover = undefined;
+					actionHover = undefined;
 				},
 			};
 			// The Stats section (on in Power user); walked once per session leaf, like sessionStats.
@@ -2853,23 +3042,29 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			const statusRegion = new NativePointerRegion(statusCard, {
 				onHover(event) {
 					const target = targetAt(event.y, event.width);
-					const next = !target ? undefined : target.kind === "toggle" ? target.section : "open-changes";
-					if (next) setSidebarHover(tui, statusRegion, () => statusRegion.clearHover());
+					const nextAction = target?.kind === "run-command" ? target.command : undefined;
+					const next = !target || target.kind === "run-command" ? undefined : target.kind === "toggle" ? target.section : "open-changes";
+					if (next || nextAction) setSidebarHover(tui, statusRegion, () => statusRegion.clearHover());
 					else setSidebarHover(tui);
-					if (next === statusHover) return { handled: true };
+					if (next === statusHover && nextAction === actionHover) return { handled: true };
 					statusHover = next;
+					actionHover = nextAction;
 					return { handled: true, render: true };
 				},
 				onLeave() {
 					releaseSidebarHover(tui, statusRegion);
-					if (!statusHover) return;
+					if (!statusHover && !actionHover) return;
 					statusHover = undefined;
+					actionHover = undefined;
 					tui.requestRender();
 				},
 				onClick(event) {
 					const target = event.button === "left" ? targetAt(event.y, event.width) : undefined;
 					if (!target) return undefined;
-					if (target.kind === "open-changes") void openChanges(ctx);
+					if (target.kind === "run-command") {
+						if (pi.getCommands().some((entry) => entry.name === target.command)) pi.sendUserMessage(`/${target.command}`, { expandPromptTemplates: true });
+						else ctx.ui.notify(`/${target.command} no está disponible en esta sesión.`, "warning");
+					} else if (target.kind === "open-changes") void openChanges(ctx);
 					else if (statusCollapsed.has(target.section)) statusCollapsed.delete(target.section);
 					else statusCollapsed.add(target.section);
 					invalidateSidebar(tui);
@@ -2881,13 +3076,569 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				digest: () => {
 					const stats = statsOn() ? currentStats() : undefined;
 					const spend = stats ? subagentSpend() : undefined;
-					return JSON.stringify([footerStatus.key(), [...statusCollapsed], statusHover ?? "", stats ? [stats.turns, stats.toolCalls, stats.cost, stats.spanMs, spend?.runs, spend?.tokens, spend?.cost] : ""]);
+					return JSON.stringify([sidebarState(tui).agenticTab, footerStatus.key(), [...statusCollapsed], statusHover ?? "", actionHover ?? "", stats ? [stats.turns, stats.toolCalls, stats.cost, stats.spanMs, spend?.runs, spend?.tokens, spend?.cost] : ""]);
 				},
 				render: (width) => statusRegion.render(width),
 				cardGroups: (width) => statusGroups.get(width),
 				handleMouse: (event) => statusRegion.handleMouse(event),
 				invalidate: () => statusRegion.invalidate(),
 			});
+			// --- console data panels (DESIGN.md §C2, T19-U2) -------------------
+			// Sesión, Contexto, Engram, Árbol de archivos and Worktrees are the
+			// panels the console adds to the rail's own sections. Each one renders
+			// a `▾ NAME … count` header plus its rows at the console body width;
+			// the layout bites that header into the box's top rule.
+			const kv = (width: number, label: string, value: string, role: Parameters<typeof theme.fg>[0] = "text") => renderPanelRow(width, theme.fg("muted", label), theme.fg(role, value), 1);
+			const clean = (text: string | undefined) => sanitizeTerminalText(text ?? "").replace(/[\r\n\t]/g, " ");
+			const shortPath = (path: string) => {
+				const text = clean(path);
+				const prefix = process.env.HOME ?? "";
+				return prefix && text.startsWith(prefix) ? `~${text.slice(prefix.length)}` : text;
+			};
+			const gaugeCells = (percent: number | null): string => {
+				const cells = 18;
+				const filled = percent === null ? 0 : Math.max(0, Math.min(cells, Math.round((percent / 100) * cells)));
+				const waveCells = filled === 0 ? 2 : Math.min(2, cells - filled);
+				const emptyCells = Math.max(0, cells - filled - waveCells);
+				const cyanRun = Math.min(filled, Math.ceil(cells * 0.45));
+				const violetRun = Math.max(0, filled - cyanRun);
+				const bar =
+					theme.fg("mdLink", "━".repeat(cyanRun)) +
+					theme.fg("accent", "━".repeat(violetRun)) +
+					theme.fg(filled > 0 ? "accent" : "mdLink", "∿".repeat(waveCells)) +
+					theme.fg("border", "─".repeat(emptyCells));
+				return `${theme.fg("mdLink", "◖")}${bar}${theme.fg("accent", "◗")}`;
+			};
+			const consolePart = (key: string, rail: SidebarRail): (() => void) => {
+				const mounted = sidebarPart(tui, key, { render: () => [], invalidate() {}, dispose() {} }, rail);
+				return () => mounted.dispose?.();
+			};
+			// Un panel plegado deja sólo su cabecera, y un clic en ella lo despliega.
+			const isLeftClick = (event: { type?: string; button?: string }) =>
+				(!event.type || event.type === "click") && (!event.button || event.button === "left");
+			const runConsoleCommand = (command: string): boolean => {
+				if (pi.getCommands().some((entry) => entry.name === command)) {
+					pi.sendUserMessage(`/${command}`, { expandPromptTemplates: true });
+					return true;
+				}
+				return false;
+			};
+			let viewerOpen = false;
+			const openConsoleFileViewer = async (viewCtx: ExtensionContext, root: string, relPath: string): Promise<void> => {
+				if (viewerOpen || !viewCtx.hasUI) return;
+				viewerOpen = true;
+				try {
+					const fullPath = resolve(root, relPath);
+					const lang = (() => { try { return getLanguageFromPath(relPath); } catch { return undefined; } })();
+					let rawBytes = Buffer.alloc(0);
+					let binary = false;
+					let truncated = false;
+					try {
+						const buf = await readFile(fullPath);
+						rawBytes = buf;
+						const checkLen = Math.min(buf.byteLength, 8_000);
+						for (let i = 0; i < checkLen; i += 1) {
+							if (buf[i] === 0) { binary = true; break; }
+						}
+						if (!binary && buf.byteLength > 200_000) {
+							truncated = true;
+							rawBytes = buf.subarray(0, 200_000);
+						}
+					} catch {}
+					const codeLines = binary ? [] : highlightCode(rawBytes.toString("utf8"), lang);
+					let diffLines: Array<{ kind: "added" | "removed" | "context"; text: string }> = [];
+					try {
+						const res = await gitForRoot(root, DIFF_MAX_BYTES)(["diff", "HEAD", "--", relPath]);
+						if (res.code === 0 && res.stdout.trim().length > 0) {
+							let inHunk = false;
+							for (const line of res.stdout.split("\n")) {
+								if (line.startsWith("@@")) { inHunk = true; continue; }
+								if (!inHunk) continue;
+								if (line.startsWith("+")) diffLines.push({ kind: "added", text: line.slice(1) });
+								else if (line.startsWith("-")) diffLines.push({ kind: "removed", text: line.slice(1) });
+								else if (line.startsWith(" ") || line.length === 0) diffLines.push({ kind: "context", text: line.slice(1) });
+							}
+						}
+					} catch {}
+					await viewCtx.ui.custom<void>((tuiHost, overlayTheme, _kb, done) => {
+						let scrollTop = 0;
+						let showDiff = false;
+						const activeLines = (): string[] => {
+							if (binary) return [overlayTheme.fg("warning", "  Archivo binario: no se puede previsualizar en texto.")];
+							if (showDiff && diffLines.length > 0) {
+								return diffLines.map((entry, idx) => {
+									const num = overlayTheme.fg("dim", String(idx + 1).padStart(4));
+									const sign = entry.kind === "added" ? "+" : entry.kind === "removed" ? "-" : " ";
+									const role = entry.kind === "added" ? "toolDiffAdded" : entry.kind === "removed" ? "toolDiffRemoved" : "muted";
+									return `${num} ${overlayTheme.fg(role, `${sign} ${entry.text}`)}`;
+								});
+							}
+							if (codeLines.length === 0) return [overlayTheme.fg("muted", "  (archivo vacío)")];
+							return codeLines.map((line, idx) => `${overlayTheme.fg("dim", String(idx + 1).padStart(4))}  ${line}`);
+						};
+						const view: Component = {
+							render(width: number): string[] {
+								const w = Math.max(24, Math.floor(width));
+								const totalRows = Math.max(8, (tuiHost.terminal?.rows ?? 34) - 4);
+								const bodyCap = Math.max(4, totalRows - 4);
+								const lines = activeLines();
+								const maxScroll = Math.max(0, lines.length - bodyCap);
+								scrollTop = Math.max(0, Math.min(scrollTop, maxScroll));
+								const slice = lines.slice(scrollTop, scrollTop + bodyCap);
+								const meta = [
+									rawBytes.byteLength > 0 ? `${rawBytes.byteLength} B` : "",
+									lang ?? "",
+									diffLines.length > 0 ? (showDiff ? "DIFF" : `±${diffLines.length}`) : "clean",
+									truncated ? "200KB max" : "",
+								].filter(Boolean).join(" · ");
+								const top = renderConsoleTop(overlayTheme as unknown as ShellBarTheme, w, {
+									title: clean(relPath),
+									count: `[ ${meta} ]`,
+								});
+								const hint = renderConsoleRow(
+									overlayTheme as unknown as ShellBarTheme,
+									w,
+									overlayTheme.fg("dim", ` ${showDiff ? "modo: diff vs HEAD" : "modo: código"} · d: alternar diff · j/k/↑/↓: scroll · g/G: inicio/fin · esc: cerrar`),
+								);
+								const sep = renderConsoleRow(overlayTheme as unknown as ShellBarTheme, w, overlayTheme.fg("borderMuted", "─".repeat(Math.max(0, w - 2))));
+								const body = slice.map((row) => renderConsoleRow(overlayTheme as unknown as ShellBarTheme, w, ` ${row}`));
+								const bar = lines.length > slice.length ? consoleScrollBar(scrollTop + 1, scrollTop + slice.length, lines.length) : "[ esc cerrar ]";
+								const bottom = renderConsoleBottom(overlayTheme as unknown as ShellBarTheme, w, bar);
+								return [top, hint, sep, ...body, bottom];
+							},
+							handleInput(data: string) {
+								if (data === "\x1b" || data === "q") { done(); return; }
+								if (data === "d" && diffLines.length > 0) {
+									showDiff = !showDiff;
+									scrollTop = 0;
+									tuiHost.requestRender();
+									return;
+								}
+								if (data === "g") { scrollTop = 0; tuiHost.requestRender(); return; }
+								if (data === "G") { scrollTop = Math.max(0, activeLines().length - 1); tuiHost.requestRender(); return; }
+								if (data === "j" || data === "\x1b[B") { scrollTop += 1; tuiHost.requestRender(); return; }
+								if (data === "k" || data === "\x1b[A") { scrollTop = Math.max(0, scrollTop - 1); tuiHost.requestRender(); return; }
+								if (data === "\x1b[6~" || data === " ") { scrollTop += 12; tuiHost.requestRender(); return; }
+								if (data === "\x1b[5~") { scrollTop = Math.max(0, scrollTop - 12); tuiHost.requestRender(); }
+							},
+							handleMouse(event: TuiMouseEvent) {
+								if (event.type === "wheel") {
+									scrollTop = Math.max(0, scrollTop + Math.sign(event.wheelDelta ?? 0) * 3);
+									tuiHost.requestRender();
+									return { handled: true, render: true };
+								}
+								if (event.type === "click" && event.button === "left" && event.y === 0) {
+									done();
+									return { handled: true, render: true };
+								}
+								return undefined;
+							},
+							invalidate() {},
+						};
+						const interaction = createNativeFullscreenInteraction({
+							keyboardTarget: view,
+							requestRender: () => tuiHost.requestRender(),
+						});
+						interaction.addChild(view);
+						return interaction;
+					}, { overlay: true, overlayOptions: { anchor: "center", width: "86%", maxHeight: "88%" } });
+				} finally {
+					viewerOpen = false;
+				}
+			};
+			const foldableRail = (key: string, rail: SidebarRail): SidebarRail => ({
+				...rail,
+				render: (width: number) => {
+					const lines = rail.render(width);
+					return foldedPanels.has(key) ? lines.slice(0, 1) : lines;
+				},
+				digest: () => `${rail.digest?.() ?? ""}|${key}:${foldedPanels.has(key) ? "1" : "0"}`,
+				handleMouse: (event: TuiMouseEvent) => {
+					if (event.y === 0 && isLeftClick(event)) {
+						togglePanelFold(key);
+						return { handled: true, render: true };
+					}
+					return rail.handleMouse?.(event);
+				},
+			});
+			const sessionRail: SidebarRail = {
+				surface: "panel",
+				digest: () => {
+					const model = footerModel();
+					return JSON.stringify([model.cwd, model.branch, model.dirty, model.modelId, model.effort, model.profile, model.sessionName, ctx.isIdle(), currentStats().turns]);
+				},
+				render: (width) => {
+					const model = footerModel();
+					const stats = currentStats();
+					const rows = [
+						kv(width, "Project", shortPath(model.cwd), "mdLink"),
+						kv(width, "Branch", `${model.branch ?? "sin rama"}${model.dirty ? ` ±${model.dirty}` : ""}`, "accent"),
+						kv(width, "Model", `${clean(model.modelId)}${model.effort ? ` (${clean(model.effort)})` : ""}`, "mdLink"),
+						kv(width, "Profile", clean(model.profile ?? "sin perfil activo"), "mdLink"),
+						kv(width, "Estado", `${ctx.isIdle() ? "✦ idle" : "◐ en curso"} · ${stats.turns} turnos`, ctx.isIdle() ? "success" : "warning"),
+					];
+					const count = model.sessionName ? clean(model.sessionName) : `${stats.turns} turnos`;
+					return [renderPanelHeader(theme, width, { title: "Sesión", count, open: !foldedPanels.has("session") }), ...rows];
+				},
+				handleMouse(event) {
+					if (!isLeftClick(event) || event.y < 1) return undefined;
+					if (event.y === 1) sidebarState(tui).setAgenticTab?.("tree");
+					else if (event.y === 2) void openChanges(ctx);
+					else if (event.y === 3) {
+						if (!runConsoleCommand("model")) void openUsage(ctx);
+					} else if (event.y === 4) {
+						if (!runConsoleCommand("gentle:profiles")) sidebarState(tui).setAgenticTab?.("prof");
+					} else return undefined;
+					invalidateSidebar(tui);
+					return { handled: true, render: true };
+				},
+				invalidate() {},
+			};
+			const contextRail: SidebarRail = {
+				surface: "panel",
+				digest: () => {
+					const model = footerModel();
+					const stats = currentStats();
+					return JSON.stringify([model.contextPercent, model.contextWindow, stats.turns, stats.toolCalls, stats.input, stats.output, stats.cost]);
+				},
+				render: (width) => {
+					const model = footerModel();
+					const stats = currentStats();
+					const percent = model.contextPercent;
+					const window = formatTokens(model.contextWindow);
+					if (isCineEstelarLive()) {
+						const waveTop = `${theme.fg("muted", "Ctx")}   \x1b[38;2;138;242;255m▁▂▄▆▇▆▄▂▁\x1b[39m  \x1b[38;2;168;216;255m▁▂▄▆▅▃▁\x1b[39m   \x1b[38;2;208;172;255m▁▂▃▅▄▂▁\x1b[39m`;
+						const waveBot = `\x1b[38;2;132;238;252m◖▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱◗\x1b[39m   \x1b[38;2;190;166;255m╰───╯\x1b[39m`;
+						const pctVal = percent === null ? `— de ${window}` : `${percent}% de ${window}`;
+						const rows = [
+							renderPanelRow(width, waveTop, theme.fg(percent !== null && percent >= 80 ? "warning" : "success", pctVal), 1),
+							renderPanelRow(width, waveBot, theme.fg("text", "20 celdas"), 1),
+							kv(width, "Sesión", `${stats.turns} turnos · ${stats.toolCalls} tools`),
+							kv(width, "Tokens", `${formatTokens(stats.input)} in · ${formatTokens(stats.output)} out · $${stats.cost.toFixed(3)}`),
+						];
+						return [renderPanelHeader(theme, width, { title: "Contexto", count: percent === null ? "—" : `${percent}%`, open: !foldedPanels.has("context") }), ...rows];
+					}
+					const rows = [
+						kv(width, "Ctx", percent === null ? `— de ${window}` : `${percent}% de ${window}`, percent !== null && percent >= 80 ? "warning" : "success"),
+						renderPanelRow(width, gaugeCells(percent), theme.fg("muted", "20 celdas"), 1),
+						kv(width, "Sesión", `${stats.turns} turnos · ${stats.toolCalls} tools`),
+						kv(width, "Tokens", `${formatTokens(stats.input)} in · ${formatTokens(stats.output)} out · $${stats.cost.toFixed(3)}`),
+					];
+					return [renderPanelHeader(theme, width, { title: "Contexto", count: percent === null ? "—" : `${percent}%`, open: !foldedPanels.has("context") }), ...rows];
+				},
+				handleMouse(event) {
+					if (!isLeftClick(event) || event.y < 1) return undefined;
+					void openUsage(ctx);
+					return { handled: true, render: true };
+				},
+				invalidate() {},
+			};
+			let engramProbe = false;
+			let engramToolCount = 0;
+			const engramRail: SidebarRail = {
+				surface: "panel",
+				digest: () => {
+					engramProbe = false;
+					engramToolCount = 0;
+					try {
+						const tools = pi.getAllTools().filter((tool) => tool.name.startsWith("mem_"));
+						engramToolCount = tools.length;
+						engramProbe = tools.some((tool) => tool.name === "mem_save");
+					} catch {
+						engramProbe = false;
+						engramToolCount = 0;
+					}
+					return `${engramProbe}:${engramToolCount}`;
+				},
+				render: (width) => [
+					renderPanelHeader(theme, width, { title: "Engram", count: engramProbe ? "✓" : "✗", open: !foldedPanels.has("engram") }),
+					kv(width, "Estado", engramProbe ? "✓ disponible" : "✗ no disponible", engramProbe ? "success" : "warning"),
+					kv(width, "Tools", engramToolCount > 2 ? `mem_search · mem_save (+${engramToolCount - 2})` : "mem_search · mem_save", "mdLink"),
+				],
+				handleMouse(event) {
+					if (!isLeftClick(event) || event.y < 1) return undefined;
+					sidebarState(tui).setAgenticTab?.("mem");
+					invalidateSidebar(tui);
+					return { handled: true, render: true };
+				},
+				invalidate() {},
+			};
+			let treeError = "";
+			type TreeRowTarget =
+				| { kind: "row"; root: string; row: ProjectTreeRow }
+				| { kind: "toolbar"; root: string };
+			let treeRowTargets: TreeRowTarget[] = [];
+			const fileTypeIcon = (fileName: string): string => {
+				if (fileName.endsWith(".ts") || fileName.endsWith(".tsx")) return "\x1b[38;2;104;214;255mTS\x1b[39m";
+				if (fileName.endsWith(".js") || fileName.endsWith(".mjs") || fileName.endsWith(".cjs")) return "\x1b[38;2;255;214;102mJS\x1b[39m";
+				if (fileName.endsWith(".json")) return "\x1b[38;2;255;184;108m{}\x1b[39m";
+				if (fileName.endsWith(".md")) return "\x1b[38;2;199;155;255mMD\x1b[39m";
+				if (fileName.endsWith(".patch") || fileName.endsWith(".diff")) return "\x1b[38;2;80;250;123m± \x1b[39m";
+				if (fileName.endsWith(".sh")) return "\x1b[38;2;80;250;123m$ \x1b[39m";
+				return "\x1b[38;2;164;178;212m··\x1b[39m";
+			};
+			const treeRail: SidebarRail = {
+				surface: "panel",
+				digest: () =>
+					JSON.stringify([
+						sidebarState(tui).agenticTab ?? "main",
+						tracker.worktrees.map((tree) => [tree.root, tree.model.digest ?? "", tree.model.files.length]),
+						treeRoots(ctx, tracker).map((root) => [root, projectTree.snapshot(root).rows.length, [...projectTree.foldedPaths(root)]]),
+					]),
+				render: (width) => {
+					// The tree is read only when this panel is on screen: the rail
+					// renders the active tab, so an unused TREE tab costs nothing.
+					void refreshProjectTrees(ctx, tracker)
+						.then((changed) => {
+							if (!changed) return;
+							invalidateSidebar(tui);
+							tui.requestRender();
+						})
+						.catch((error) => {
+							treeError = error instanceof Error ? error.message : String(error);
+							invalidateSidebar(tui);
+							tui.requestRender();
+						});
+					const snapshots = treeRoots(ctx, tracker).map((root) => ({
+						root,
+						snapshot: projectTree.snapshot(root),
+					}));
+					const total = snapshots.reduce((sum, item) => sum + item.snapshot.rows.length, 0);
+					const trackedTotal = snapshots.reduce((sum, item) => sum + item.snapshot.tracked, 0);
+					const countLabel = isCineEstelarLive() && trackedTotal > 0 ? `${trackedTotal} archivos` : `${total}`;
+					const header = renderPanelHeader(theme, width, { title: "Árbol del proyecto", count: countLabel, open: !foldedPanels.has("tree") });
+					treeRowTargets = [];
+					if (total === 0) {
+						const roots = treeRoots(ctx, tracker);
+						return [header, renderPanelRow(width, theme.fg("muted", treeError || `leyendo el árbol de ${roots[0] ?? "?"}…`), "", 1)];
+					}
+					const rows: string[] = [];
+					const primaryRoot = snapshots[0]?.root ?? ctx.cwd;
+					if (isCineEstelarLive()) {
+						const toolbarLeft = `\x1b[38;2;139;233;253m[▾ Expandir]\x1b[39m \x1b[38;2;199;155;255m[▸ Carpetas]\x1b[39m`;
+						const toolbarRight = sidebarState(tui).agenticTab === "tree"
+							? `\x1b[38;2;80;250;123m[⊞ Modal]\x1b[39m`
+							: `\x1b[38;2;80;250;123m[5:TREE ↗]\x1b[39m`;
+						rows.push(renderPanelRow(width, toolbarLeft, toolbarRight, 1));
+						treeRowTargets.push({ kind: "toolbar", root: primaryRoot });
+					}
+					for (const { root, snapshot } of snapshots) {
+						for (const row of snapshot.rows) {
+							if (isCineEstelarLive()) {
+								const guide = row.treePrefix ? `\x1b[38;2;92;108;144m${row.treePrefix}\x1b[39m` : "";
+								const glyph = PROJECT_TREE_GLYPHS[row.status];
+								const statusBadge = glyph ? theme.fg(PROJECT_TREE_ROLES[row.status], glyph) : "";
+								if (row.kind === "dir") {
+									const dirChevron = row.folded
+										? "\x1b[38;2;199;155;255m▸ 📁\x1b[39m"
+										: "\x1b[38;2;139;233;253m▾ 📂\x1b[39m";
+									const dirColor = row.folded ? "\x1b[1m\x1b[38;2;218;202;255m" : "\x1b[1m\x1b[38;2;158;234;255m";
+									const leftText = `${guide}${dirChevron} ${dirColor}${row.name}/\x1b[22m\x1b[39m`;
+									const countStr = row.childCount !== undefined ? `\x1b[38;2;148;162;198m${row.childCount}\x1b[39m` : "";
+									const rightText = [statusBadge, countStr].filter(Boolean).join(" ");
+									rows.push(renderPanelRow(width, leftText, rightText, 1));
+								} else {
+									const icon = fileTypeIcon(row.name);
+									const nameColor = glyph ? "\x1b[1m\x1b[38;2;242;246;255m" : "\x1b[38;2;204;214;238m";
+									const leftText = `${guide}${icon} ${nameColor}${row.name}\x1b[22m\x1b[39m`;
+									rows.push(renderPanelRow(width, leftText, statusBadge, 1));
+								}
+							} else {
+								const indent = "  ".repeat(row.depth);
+								const glyph = PROJECT_TREE_GLYPHS[row.status];
+								const foldGlyph = row.kind === "dir" ? `${theme.fg("dim", row.folded ? "▸" : "▾")} ` : "";
+								const label = row.kind === "dir" ? `${row.name}/` : row.name;
+								const coloredLabel = row.kind === "dir" ? theme.fg("accent", label) : glyph ? theme.fg("text", label) : theme.fg("muted", label);
+								const text = glyph
+									? `${theme.fg(PROJECT_TREE_ROLES[row.status], glyph)} ${indent}${foldGlyph}${coloredLabel}`
+									: `${indent}${foldGlyph}${coloredLabel}`;
+								rows.push(renderPanelRow(width, text, "", 1));
+							}
+							treeRowTargets.push({ kind: "row", root, row });
+							if (rows.length >= 400) break;
+						}
+						if (rows.length >= 400) break;
+					}
+					return [header, ...rows];
+				},
+				handleMouse(event) {
+					if (!isLeftClick(event) || event.y < 1) return undefined;
+					const target = treeRowTargets[event.y - 1];
+					if (!target) return undefined;
+					if (target.kind === "toolbar") {
+						if (event.x < 15) {
+							projectTree.expandAll(target.root);
+						} else if (event.x < 30) {
+							projectTree.foldAllDirs(target.root, false);
+						} else if (sidebarState(tui).agenticTab === "tree") {
+							runConsoleCommand("gentle:file-tree");
+						} else {
+							sidebarState(tui).setAgenticTab?.("tree");
+						}
+						invalidateSidebar(tui);
+						tui.requestRender();
+						return { handled: true, render: true };
+					}
+					if (target.row.kind === "dir") {
+						projectTree.toggleFold(target.root, target.row.path);
+						invalidateSidebar(tui);
+						tui.requestRender();
+						return { handled: true, render: true };
+					}
+					void openConsoleFileViewer(ctx, target.root, target.row.path);
+					return { handled: true, render: true };
+				},
+				invalidate() {},
+			};
+			const worktreeRail: SidebarRail = {
+				surface: "panel",
+				digest: () => JSON.stringify([tracker.worktrees.map((tree) => [tree.root, tree.branch ?? "", tree.model.files.length]), tracker.failedRoots, tracker.unbornRoots]),
+				render: (width) => {
+					const trees = tracker.worktrees;
+					const header = renderPanelHeader(theme, width, { title: "Worktrees", count: `${trees.length}`, open: !foldedPanels.has("wt") });
+					const rows = trees.map((tree) => {
+						const name = tree.root.split("/").filter(Boolean).at(-1) ?? tree.root;
+						const dirty = tree.model.files.length;
+						return renderPanelRow(width, `${theme.fg("accent", "⎇")} ${clean(tree.branch ?? "HEAD separado")}`, `${clean(name)}${dirty ? ` · ${dirty}` : ""}`, 1);
+					});
+					const unknown = [
+						...(tracker.unbornRoots.length ? [renderPanelRow(width, theme.fg("muted", `${tracker.unbornRoots.length} sin commits`), "", 1)] : []),
+						...(tracker.failedRoots.length ? [renderPanelRow(width, theme.fg("warning", `${tracker.failedRoots.length} sin leer`), "", 1)] : []),
+					];
+					if (trees.length === 0 && unknown.length === 0) return [header, renderPanelRow(width, theme.fg("muted", "sin worktrees registrados"), "", 1)];
+					return [header, ...rows, ...unknown];
+				},
+				handleMouse(event) {
+					if (!isLeftClick(event) || event.y < 1) return undefined;
+					if (!runConsoleCommand("gentle:agent-map")) void openChanges(ctx);
+					return { handled: true, render: true };
+				},
+				invalidate() {},
+			};
+			// --- Agentes, Roles y Ecosistema (3:PROF) ---------------------------
+			type AgentCatalogCache = {
+				stamp: string;
+				roles: Array<{ name: string; model: string; effort?: string }>;
+				chains: string[];
+				mcps: string[];
+				agentCount: number;
+				skillCount: number;
+			};
+			let agentCatalogCache: AgentCatalogCache | undefined;
+			const readAgentCatalog = (): AgentCatalogCache => {
+				const agentDir = env.PI_CODING_AGENT_DIR ?? join(os.homedir(), ".gentle-shell", "agent");
+				const subagentsPath = join(agentDir, "subagents.json");
+				const mcpPath = join(agentDir, "mcp.json");
+				const chainsDir = join(agentDir, "chains");
+				const agentsDir = join(agentDir, "agents");
+				const skillsDir = join(agentDir, "skills");
+				const statStamp = (p: string) => {
+					try {
+						const st = statSync(p);
+						return `${st.size}:${st.mtimeMs}`;
+					} catch {
+						return "0";
+					}
+				};
+				const stamp = `${statStamp(subagentsPath)}|${statStamp(mcpPath)}|${statStamp(chainsDir)}|${statStamp(agentsDir)}|${statStamp(skillsDir)}`;
+				if (agentCatalogCache?.stamp === stamp) return agentCatalogCache;
+				const roles: Array<{ name: string; model: string; effort?: string }> = [];
+				try {
+					const parsed = JSON.parse(readFileSync(subagentsPath, "utf8")) as {
+						model_profiles?: Record<string, { model?: string; effort?: string }>;
+					};
+					for (const [rawName, cfg] of Object.entries(parsed.model_profiles ?? {})) {
+						if (!cfg?.model) continue;
+						const shortName = rawName.replace(/^(gentle-ai-|role-|review-)/, "");
+						const shortModel = cfg.model.split("/").at(-1) ?? cfg.model;
+						roles.push({ name: shortName, model: shortModel, ...(cfg.effort ? { effort: cfg.effort } : {}) });
+					}
+				} catch {}
+				const chains: string[] = [];
+				try {
+					for (const entry of readdirSync(chainsDir)) {
+						if (entry.endsWith(".chain.md")) chains.push(entry.replace(/\.chain\.md$/, ""));
+					}
+					chains.sort();
+				} catch {}
+				const mcps: string[] = [];
+				try {
+					const parsed = JSON.parse(readFileSync(mcpPath, "utf8")) as { mcpServers?: Record<string, unknown> };
+					mcps.push(...Object.keys(parsed.mcpServers ?? {}));
+				} catch {}
+				let agentCount = 0;
+				try {
+					agentCount = readdirSync(agentsDir).filter((f) => f.endsWith(".md")).length;
+				} catch {}
+				let skillCount = 0;
+				try {
+					skillCount = readdirSync(skillsDir).filter((f) => !f.startsWith(".")).length;
+				} catch {}
+				agentCatalogCache = { stamp, roles, chains, mcps, agentCount, skillCount };
+				return agentCatalogCache;
+			};
+			const rolesRail: SidebarRail = {
+				surface: "panel",
+				digest: () => {
+					const cat = readAgentCatalog();
+					return `${cat.stamp}:${cat.roles.length}`;
+				},
+				render: (width) => {
+					const cat = readAgentCatalog();
+					if (cat.roles.length === 0) return [];
+					const header = renderPanelHeader(theme, width, { title: "Roles y agentes", count: `${cat.roles.length}`, open: !foldedPanels.has("roles") });
+					const rows = cat.roles.map((item) =>
+						kv(width, item.name, `${item.model}${item.effort ? ` (${item.effort})` : ""}`, "syntaxFunction"),
+					);
+					return [header, ...rows];
+				},
+				handleMouse(event) {
+					if (!isLeftClick(event) || event.y < 1) return undefined;
+					if (!runConsoleCommand("gentle:agent-map")) runConsoleCommand("gentle:profiles");
+					return { handled: true, render: true };
+				},
+				invalidate() {},
+			};
+			const ecosystemRail: SidebarRail = {
+				surface: "panel",
+				digest: () => {
+					const cat = readAgentCatalog();
+					return `${cat.stamp}:${cat.mcps.length}:${cat.chains.length}`;
+				},
+				render: (width) => {
+					const cat = readAgentCatalog();
+					if (cat.mcps.length === 0 && cat.chains.length === 0 && cat.skillCount === 0) return [];
+					const header = renderPanelHeader(theme, width, {
+						title: "Ecosistema",
+						count: `${cat.mcps.length} mcp · ${cat.skillCount} skills`,
+						open: !foldedPanels.has("ecosystem"),
+					});
+					const rows = [
+						kv(width, "MCP", cat.mcps.length > 0 ? cat.mcps.join(" · ") : "ninguno", "accent"),
+						kv(width, "Chains", cat.chains.length > 0 ? cat.chains.join(" · ") : "ninguna", "syntaxFunction"),
+						kv(width, "Agentes", `${cat.agentCount} defs · ${cat.skillCount} skills`, "text"),
+						renderPanelRow(width, theme.fg("accent", "› Catálogo de extras"), theme.fg("muted", "/gentle:extras"), 1),
+						renderPanelRow(width, theme.fg("accent", "› Mapa de subagentes"), theme.fg("muted", "/gentle:agent-map"), 1),
+					];
+					return [header, ...rows];
+				},
+				handleMouse(event) {
+					if (!isLeftClick(event) || event.y < 1) return undefined;
+					if (event.y === 5) runConsoleCommand("gentle:agent-map");
+					else runConsoleCommand("gentle:extras");
+					return { handled: true, render: true };
+				},
+				invalidate() {},
+			};
+			const consoleDisposers = [
+				consolePart("session", foldableRail("session", sessionRail)),
+				consolePart("context", foldableRail("context", contextRail)),
+				consolePart("engram", foldableRail("engram", engramRail)),
+				consolePart("tree", foldableRail("tree", treeRail)),
+				consolePart("wt", foldableRail("wt", worktreeRail)),
+				consolePart("roles", foldableRail("roles", rolesRail)),
+				consolePart("ecosystem", foldableRail("ecosystem", ecosystemRail)),
+			];
 			// The Jobs card: its own rail section, like Agents and Todos, fed by the
 			// same running-job display snapshot the Status card used to print. The
 			// rail is natively scrollable, so it lists every running job; there is
@@ -3018,7 +3769,30 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			});
 			const disposeStatusBar = sidebarStatusBar(tui, {
 				digest: () => footerStatus.key(),
-				render: (width) => splitChrome() || narrowSplit() || narrowBelow() ? statusBarChrome(width).rows : belowRail() ? chromeBar(width).rows : [],
+				render: (width) => {
+					const rawRows = splitChrome() || narrowSplit() || narrowBelow() ? statusBarChrome(width).rows : belowRail() ? chromeBar(width).rows : [];
+					if (!isCineEstelarSkin(env) || !sidebarState(tui).agenticTabsEnabled?.()) return rawRows;
+					if (isCineEstelarLive(env) && width >= 40) {
+						const leftCluster = ` \x1b[38;2;130;146;184m·  ·\x1b[39m  \x1b[38;2;235;242;255m✦\x1b[39m`;
+						const midCluster = `\x1b[38;2;130;146;184m·\x1b[39m   \x1b[38;2;220;232;255m•\x1b[39m   \x1b[38;2;139;233;253m✦\x1b[39m   \x1b[38;2;199;155;255m✧\x1b[39m   \x1b[38;2;220;232;255m✦\x1b[39m   \x1b[38;2;130;146;184m·\x1b[39m`;
+						const rightCluster = `\x1b[38;2;180;196;230m⊕\x1b[39m  \x1b[38;2;235;242;255m•\x1b[39m  \x1b[38;2;130;146;184m·\x1b[39m `;
+						const leftW = visibleWidth(leftCluster);
+						const midW = visibleWidth(midCluster);
+						const rightW = visibleWidth(rightCluster);
+						const midStart = Math.max(leftW + 2, Math.floor((width - midW) / 2));
+						const gap1 = Math.max(1, midStart - leftW);
+						const gap2 = Math.max(1, width - leftW - gap1 - midW - rightW);
+						const constellationRow = truncateToWidth(`${leftCluster}${" ".repeat(gap1)}${midCluster}${" ".repeat(gap2)}${rightCluster}`, width, "");
+						return [constellationRow];
+					}
+					return rawRows.map((row) => {
+						let seen = 0;
+						return row.replace(/│/g, () => {
+							seen += 1;
+							return seen === 1 ? theme.fg("accent", "✦") : theme.fg("mdLink", "·");
+						});
+					});
+				},
 				invalidate() {},
 				handleMouse(event) {
 					if (!(splitChrome() || narrowSplit() || narrowBelow() || belowRail()) || event.type !== "click" || event.button !== "left") return undefined;
@@ -3059,6 +3833,45 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					return { handled: true, render: true };
 				},
 			}), { placement: "belowEditor" });
+			// --- dense info box at the foot of the main pane (DESIGN.md §C2, T19-U3) ---
+			// The same two sources the console panels read — the memoized footer model
+			// and the memoized session stats — so no fact is read twice and no frame
+			// pays for a recount. The rendered rows are cached by the digest of exactly
+			// what they paint: a redraw that changed nothing reuses the previous lines.
+			const homeDir = process.env.HOME;
+			const infoMemo: { digest: string; theme: unknown; lines: string[] } = { digest: "", theme: undefined, lines: [] };
+			const infoSource = (): ShellInfoModel => {
+				const model = footerModel();
+				const stats = currentStats();
+				return {
+					modelId: model.modelId, effort: model.effort, profile: model.profile,
+					contextPercent: model.contextPercent, contextWindow: model.contextWindow,
+					turns: stats.turns, toolCalls: stats.toolCalls, input: stats.input, output: stats.output, cost: stats.cost,
+					cwd: model.cwd, branch: model.branch, dirty: model.dirty,
+				};
+			};
+			const infoBoxLines = (width: number): string[] => {
+				const digest = shellInfoDigest(infoSource(), width, homeDir);
+				if (infoMemo.digest === digest && infoMemo.theme === theme) return infoMemo.lines;
+				const lines = renderShellInfoBox(infoSource(), theme, width, homeDir);
+				infoMemo.digest = digest;
+				infoMemo.theme = theme;
+				infoMemo.lines = lines;
+				return lines;
+			};
+			// The box belongs to the console direction, so it appears where the console
+			// column does: fullscreen and at least SIDEBAR_BREAKPOINT columns. Narrow
+			// screens and the classic layout keep the bottom bar alone instead of
+			// printing the same facts twice.
+			ctx.ui.setWidget(PANE_INFO_WIDGET_KEY, () => ({
+				render(width: number) {
+					if (disposed) return [];
+					if ((tui as TUI & { mode?: string }).mode !== "fullscreen") return [];
+					if (!tui.terminal || tui.terminal.columns < SIDEBAR_BREAKPOINT) return [];
+					return infoBoxLines(width);
+				},
+				invalidate() { infoMemo.digest = ""; },
+			}), { placement: "aboveEditor" });
 			// Pi still owns the footer component; shutdown releases its session-bound
 			// hooks before the old context becomes invalid, even if Pi disposes later.
 			const dispose = () => {
@@ -3068,13 +3881,25 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 				clearInterval(jobsTimer);
 				jobsPart.dispose();
 				ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined);
+				ctx.ui.setWidget(PANE_INFO_WIDGET_KEY, undefined);
+				for (const disposePart of consoleDisposers) disposePart();
 				disposeHeader();
 				disposeStatusBar();
 				statusRegion.dispose();
 				uninstall();
 				unpaintPage();
 				part.dispose();
-				if (sidebarTui === tui) { sidebarTui = undefined; renderHost = undefined; groupedChangesOwner = () => false; }
+				if (sidebarTui === tui) {
+					if (tui.terminal) {
+						const sidebar = sidebarState(tui);
+						sidebar.agenticTabsEnabled = undefined;
+						sidebar.agenticVisibleTabs = undefined;
+						sidebar.projectName = undefined;
+					}
+					sidebarTui = undefined;
+					renderHost = undefined;
+					groupedChangesOwner = () => false;
+				}
 			};
 			disposeFooter = dispose;
 			return { ...part,
@@ -3112,6 +3937,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			{ now: () => deps.now(), doubleEscCancelEnabled: () => doubleEscCancelPolicy === "on", dispatchQueuedText: (text) => { pendingQueuedText = pendingQueuedText === undefined ? text : `${pendingQueuedText}\n\n${text}`; }, vimRuntimeVersion: deps.vimRuntimeVersion, attachments: imageAttachments, readClipboardImage: () => (deps.readClipboardImage ?? readClipboardImage)(),
 				// The editor joins the wide IDE chrome while the rail owns the host with the header on top.
 				panelChrome: (tui) => chromeMode(tui) !== undefined || chromeBarsShown(tui, true),
+				cinePrompt: (tui) => isCineEstelarSkin(env) && Boolean(tui.terminal && sidebarState(tui).agenticTabsEnabled?.()),
 				// Without the rail, [ Panel ] opens the Status sections: the mobile chrome,
 				// and a wide terminal with Status at the bottom.
 				panelButton: (tui) => chromeMode(tui) === "narrow" || (visualSettings.statusPlacement === "bottom" && chromeBarsShown(tui, true)),
@@ -3244,6 +4070,76 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			handler: async (ctx) => openChanges(ctx),
 		});
 	}
+	// La columna de la consola se pliega y se despliega con una tecla; el estado
+	// se recuerda, como el de las pestañas.
+	const consoleKey = effectiveKey("console.collapse", env, keymaps.bindings);
+	if (consoleKey) {
+		pi.registerShortcut(consoleKey as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+			description: "Collapse or expand the console column",
+			handler: async () => {
+				toggleConsoleColumn();
+			},
+		});
+	}
+	// The console workspaces, in the row's fixed order. `/gentle:tab` also accepts
+	// the previous names (`inicio`, `perfil`, `memoria`, `stats`) through
+	// normalizeAgenticTab, so an old habit or an old config keeps working.
+	const tabChoices: Array<{ id: AgenticTab; label: string }> = [
+		{ id: "main", label: "MAIN · sesión, contexto y trabajo" },
+		{ id: "git", label: "GIT · grafo, cambios y revisión" },
+		{ id: "prof", label: "PROF · perfiles y modelos" },
+		{ id: "mem", label: "MEM · memoria e integraciones" },
+		{ id: "tree", label: "TREE · árbol de archivos" },
+		{ id: "wt", label: "WT · worktrees" },
+	];
+	pi.registerCommand("gentle:tab", {
+		description: "Elegir o configurar las pestañas del panel.",
+		handler: async (args, ctx) => {
+			const input = args.trim().toLowerCase();
+			const sidebar = sidebarTui?.terminal ? sidebarState(sidebarTui) : undefined;
+			if (input === "configurar") {
+				if (!ctx.hasUI) return;
+				const existing = resolveAgenticTabs(animationOptions);
+				if (existing.malformed) { ctx.ui.notify(`No se modifica la preferencia ilegible: ${existing.path}`, "error"); return; }
+				const applyVisibleTabs = (next: AgenticTab[]) => {
+					visibleAgenticTabs = next;
+					if (sidebar?.agenticTab && !next.includes(sidebar.agenticTab)) sidebar.setAgenticTab?.("main");
+					if (sidebarTui) { invalidateSidebar(sidebarTui); sidebarTui.requestRender(); }
+				};
+				applyVisibleTabs(existing.tabs);
+				while (true) {
+					const choices = tabChoices.filter((choice) => choice.id !== "main").map((choice) => `${visibleAgenticTabs.includes(choice.id) ? "✓" : "○"} ${choice.label}`);
+					const restore = "Restaurar todas";
+					const done = "Listo";
+					const selected = await ctx.ui.select("Pestañas visibles · MAIN siempre visible", [...choices, restore, done]);
+					if (selected === undefined || selected === done) return;
+					const index = choices.indexOf(selected);
+					if (selected !== restore && index < 0) return;
+					const id = tabChoices.filter((choice) => choice.id !== "main")[index]?.id;
+					const next = selected === restore ? [...AGENTIC_TABS] : visibleAgenticTabs.includes(id!) ? visibleAgenticTabs.filter((tab) => tab !== id) : AGENTIC_TABS.filter((tab) => visibleAgenticTabs.includes(tab) || tab === id);
+					try { writeAgenticTabs(next, animationOptions); } catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); return; }
+					applyVisibleTabs(next);
+				}
+			}
+			if (!sidebar?.agenticTabsEnabled?.() || !sidebar.setAgenticTab || !sidebar.ownsHost?.()) {
+				ctx.ui.notify("Las pestañas requieren Gentle Dots y el panel lateral en pantalla completa.", "warning");
+				return;
+			}
+			const choices = tabChoices.filter((choice) => visibleAgenticTabs.includes(choice.id));
+			let tab = choices.find((choice) => choice.id === normalizeAgenticTab(input))?.id;
+			if (!input) {
+				const selected = await ctx.ui.select("Elegí una pestaña", choices.map((choice) => choice.label));
+				if (selected === undefined) return;
+				tab = choices.find((choice) => choice.label === selected)?.id;
+			}
+			if (!tab) {
+				ctx.ui.notify("Pestaña no disponible. Usá /gentle:tab configurar para mostrarla.", "info");
+				return;
+			}
+			sidebar.setAgenticTab(tab);
+		},
+	});
+
 	pi.registerCommand(COMMANDS_COMMAND_NAME, {
 		description: "Open the command palette: a curated, grouped menu of Gentle commands.",
 		handler: async (_args, ctx) => showCommandPalette(pi, ctx, env, keymaps.bindings),
@@ -3622,7 +4518,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			for (const preset of Object.values(VISUAL_PRESET)) add(() => `Preset: ${PRESET_LABEL[preset]}${visualPresetOf(visual()) === preset ? " (current)" : ""}`, pending, () => updateVisual((settings) => applyVisualPreset(settings, preset)), () => layoutPreview(applyVisualPreset(visual(), preset)),
 				layoutChoice("Preset", PRESET_LABEL[preset], () => visualPresetOf(visual()) === preset, "Light hides the rail, Power user adds Stats; alt+l cycles them"));
 			for (const value of Object.values(STATUS_PLACEMENT)) add(() => `Status placement: ${value}${visual().statusPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, statusPlacement: value })), () => layoutPreview({ ...visual(), statusPlacement: value }),
-				layoutChoice("Status", value, () => visual().statusPlacement === value, "Where Status lives; auto uses the rail from 140 columns"));
+				layoutChoice("Status", value, () => visual().statusPlacement === value, "Where Status lives; auto uses the rail from 120 columns"));
 			for (const value of Object.values(HEADER_PLACEMENT)) add(() => `Header placement: ${value}${visual().headerPlacement === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, headerPlacement: value })), () => layoutPreview({ ...visual(), headerPlacement: value }),
 				layoutChoice("Header", value, () => visual().headerPlacement === value, "The model, context and cost row: top above the conversation, below-input under the input, split into a title row and a bottom status bar"));
 			for (const value of Object.values(DENSITY)) add(() => `Density: ${value}${visual().density === value ? " (current)" : ""}`, pending, () => updateVisual((settings) => ({ ...settings, density: value })), () => layoutPreview({ ...visual(), density: value }),

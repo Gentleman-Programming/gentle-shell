@@ -3914,7 +3914,7 @@ test("T3 live style Cards action refreshes cached TODO and Status in both direct
 	const wide = root[node]() as unknown as { entries: { component: { render(width: number): string[] } }[] };
 	assert.equal(wide.entries.length, 3, "title row, transcript with the rail, status bar");
 	const [titleAbove, titleRow, titleBelow] = stripAnsi(frame.header).split("\n");
-	assert.match(titleRow!, /^ ✿ repo  \/repo .*Release notes $/, "the title row keeps the session; the profile rides the status bar");
+	assert.match(titleRow!, /^ ◆ GENTLE  \/  repo .*Release notes $/, "the title row keeps the session; the profile rides the status bar");
 	assert.equal(titleAbove!.trim() + titleBelow!.trim(), "", "comfortable centers the title row between two margin rows");
 	const [statusMargin, statusRow, statusBelow] = stripAnsi(wide.entries[2]!.component.render(160).join("\n")).split("\n");
 	assert.equal(statusMargin!.trim() + statusBelow!.trim(), "", "and the status bar too");
@@ -4504,7 +4504,7 @@ test("named profile applies installed theme, banner, animation and visual settin
 	for (let i = 0; i < 100 && !ui.notices.some(notice => /profile night applied/.test(notice)); i++) await new Promise<void>(resolve => setTimeout(resolve, 5));
 	assert.deepEqual(applied, ["light"]);
 	assert.equal(resolveVisualSettings(options).settings.statusPlacement, "hidden");
-	assert.deepEqual(await readBannerConfig(home), { showRose: false, showTextLogo: true, color: "cyan" });
+	assert.deepEqual(await readBannerConfig(home), { showRose: false, showTextLogo: true, showInfo: true, color: "cyan" });
 	assert.equal(resolveAnimationPolicy(options).policy, "performance");
 	assert.match(ui.notices.at(-1)!, /profile night applied.*banner applies at next startup/i);
 	view.handleInput("\x1b");
@@ -5383,11 +5383,13 @@ function renderFooter(ui: FakeUi): string {
 const changesSettled = () => backgroundChangeRefreshesSettled();
 
 // Changes reads each root's Git state and nothing else: worktree labels,
-// status and numstat against HEAD, and a lazy diff of the selected file.
+// status and numstat against HEAD, a lazy diff of the selected file, and
+// `ls-files` for the console's project tree (a read-only listing).
 const gitStateOnly = (git: readonly string[][]) => git.length > 0 && git.every((args) => {
  const command = args[0] === "-C" ? args.slice(2) : args;
  return (command[0] === "worktree" && command[1] === "list") || (command[0] === "status" && command.includes("--porcelain=v1"))
-  || (command[0] === "diff" && command.includes("HEAD")) || command[0] === "symbolic-ref" || (command[0] === "rev-parse" && command.includes("--verify"));
+  || (command[0] === "diff" && command.includes("HEAD")) || command[0] === "symbolic-ref" || (command[0] === "rev-parse" && command.includes("--verify"))
+  || command[0] === "ls-files";
 });
 
 test("Changes lists the session root's Git state at turn end, never at startup", async () => {
@@ -7637,28 +7639,28 @@ function checkMobileUsageClick(f: Awaited<ReturnType<typeof mobilePlacementFixtu
 }
 
 test("mobile top is one upper status bar while split retains title and lower status", async (t) => {
-	for (const width of [80, 120]) for (const status of ["auto", "bottom", "hidden"] as const) {
+	for (const width of [80, 119]) for (const status of ["auto", "bottom", "hidden"] as const) {
 		const density = status === "auto" ? "comfortable" : status === "hidden" ? "minimal" : "compact";
 		const top = await mobilePlacementFixture(t, "top", status, width, density);
 		const topRows = top.state.parts.get("header")!.render(width);
 		const topText = checkMobileBar(top, topRows, width);
 		assert.equal(topRows.length, density === "comfortable" ? 3 : 1, "density controls only the bar's margins");
 		assert.match(topText, /gpt-5\.5 · medium/, "the single bar owns the model when it fits");
-		if (width === 120) assert.match(topText, /✿ repo/, "the single bar keeps project identity when it fits");
+		if (width === 119) assert.match(topText, /(?:✿ repo|◆ GENTLE  \/  repo)/, "the single bar keeps project identity when it fits");
 		assert.deepEqual(top.state.parts.get("statusbar")!.render(width), [], "top has no lower status bar");
 		assert.match(top.layoutRows()[0]!, /SUPER-YOLO/, "the mounted top bar is above the conversation");
 		assert.equal(top.layoutRows().length, 2, "the mounted layout has no lower bar");
 		assert.deepEqual(top.widget.render(width), []);
 		assert.deepEqual(top.footer.render(width), []);
-		if (width === 120) checkMobileUsageClick(top, top.state.parts.get("header")!, width);
+		if (width === 119) checkMobileUsageClick(top, top.state.parts.get("header")!, width);
 		await checkMobilePanel(top, width);
 		const split = await mobilePlacementFixture(t, "split", status, width, density);
 		const title = split.state.parts.get("header")!.render(width).map(stripAnsi).join("\n");
-		assert.match(title, /✿ repo/);
+		assert.match(title, /(?:✿ repo|◆ GENTLE  \/  repo)/);
 		assert.match(title, /gpt-5\.5 · medium/);
 		const lower = checkMobileBar(split, split.state.parts.get("statusbar")!.render(width), width);
 		assert.doesNotMatch(lower, /gpt-5\.5|✿ repo/, "split never repeats title identity or model");
-		assert.match(split.layoutRows()[0]!, /✿ repo/);
+		assert.match(split.layoutRows()[0]!, /(?:✿ repo|◆ GENTLE  \/  repo)/);
 		assert.match(split.layoutRows().at(-1)!, /SUPER-YOLO/, "split mounts status below the conversation");
 		assert.deepEqual(split.widget.render(width), []);
 		assert.deepEqual(split.footer.render(width), []);
@@ -7667,7 +7669,7 @@ test("mobile top is one upper status bar while split retains title and lower sta
 });
 
 test("mobile below-input keeps the modern Panel editor and one lower status bar", async (t) => {
-	for (const width of [80, 120]) for (const status of ["auto", "bottom", "hidden"] as const) {
+	for (const width of [80, 119]) for (const status of ["auto", "bottom", "hidden"] as const) {
 		const density = status === "auto" ? "comfortable" : status === "hidden" ? "minimal" : "compact";
 		const f = await mobilePlacementFixture(t, "below-input", status, width, density);
 		await checkMobilePanel(f, width);
@@ -7676,8 +7678,8 @@ test("mobile below-input keeps the modern Panel editor and one lower status bar"
 		assert.equal(lower.length, density === "comfortable" ? 3 : 1, "density controls only the bar's margins");
 		assert.equal((text.match(/SUPER-YOLO/g) ?? []).length, 1, "exactly one lower bar paints the permission mode");
 		assert.match(text, /gpt-5\.5 · medium/);
-		if (width === 120) {
-			assert.match(text, /✿ repo/);
+		if (width === 119) {
+			assert.match(text, /(?:✿ repo|◆ GENTLE  \/  repo)/);
 			checkMobileUsageClick(f, f.state.parts.get("statusbar")!, width);
 		}
 		assert.match(f.layoutRows().at(-1)!, /SUPER-YOLO/, "below-input mounts its bar below the editor dock");
@@ -7686,7 +7688,7 @@ test("mobile below-input keeps the modern Panel editor and one lower status bar"
 });
 
 test("mobile placement changes move one bar live without losing Panel or duplicating permission", async (t) => {
-	const f = await mobilePlacementFixture(t, "top", "auto", 120);
+	const f = await mobilePlacementFixture(t, "top", "auto", 119);
 	const pending = f.commands.get("gentle:customize")!.handler("", f.ctx);
 	await f.overlayReady;
 	try {
@@ -7696,10 +7698,10 @@ test("mobile placement changes move one bar live without losing Panel or duplica
 			assert.equal(mounted.length, placement === "split" ? 3 : 2);
 			assert.match(placement === "top" ? mounted[0]! : mounted.at(-1)!, /SUPER-YOLO/);
 			assert.equal((mounted.join("\n").match(/SUPER-YOLO/g) ?? []).length, 1);
-			assert.deepEqual(f.widget.render(120), []);
-			assert.deepEqual(f.footer.render(120), []);
-			assert.deepEqual(f.banner.render(120), []);
-			assert.match(stripAnsi(f.editor.render(120)[0]!), /\[ Panel \]/);
+			assert.deepEqual(f.widget.render(119), []);
+			assert.deepEqual(f.footer.render(119), []);
+			assert.deepEqual(f.banner.render(119), []);
+			assert.match(stripAnsi(f.editor.render(119)[0]!), /\[ Panel \]/);
 		}
 	} finally {
 		f.ui.overlayView!.handleInput("\x1b");
@@ -7720,7 +7722,7 @@ test("mobile below-input retains Changes when the chrome bar owns the footer", a
 	await fire(handlers, "session_start", ctx);
 	const node = Symbol.for("@earendil-works/pi-tui/layout-node");
 	const root = { render: () => [], invalidate() {}, [node]: () => ({ type: "vstack", entries: [] }) };
-	const tui = { mode: "fullscreen", terminal: { rows: 32, columns: 120 }, layoutRoot: root, requestRender() {} };
+	const tui = { mode: "fullscreen", terminal: { rows: 32, columns: 119 }, layoutRoot: root, requestRender() {} };
 	const theme = { ...plainTheme, bg: (_role: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m`, getBgAnsi: () => "\x1b[48;5;22m" };
 	const footer = (ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => SidebarRail & { dispose(): void })(tui, theme, {
 		getGitBranch: () => "main", getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {},
@@ -7732,7 +7734,7 @@ test("mobile below-input retains Changes when the chrome bar owns the footer", a
 	const changes = (ui.widgets.get("gentle-shell-changes") as (tui: unknown, theme: ShellBarTheme) => SidebarRail)(tui, theme);
 	const widget = (ui.widgets.get("gentle-shell-below-input-header") as () => SidebarRail)();
 	const status = sidebarState(tui as unknown as TUI).parts.get("statusbar")!;
-	const visible = [...changes.render(120), ...footer.render(120), ...widget.render(120), ...status.render(120)].map(stripAnsi).join("\n");
+	const visible = [...changes.render(119), ...footer.render(119), ...widget.render(119), ...status.render(119)].map(stripAnsi).join("\n");
 	assert.match(visible, /1 file · \+2 −0/, "the uncommitted Changes remain visible");
 	assert.equal((visible.match(/1 file/g) ?? []).length, 1, "Changes have only one owner");
 	assert.match(visible, /ctx.*\$0\.000 sub/, "the lower chrome still carries the counters");
@@ -7745,7 +7747,8 @@ test("the installed editor draws the panel frame in the wide and mobile IDE chro
 	const { ctx, ui } = fakeContext();
 	const editor = installedPrompt(ctx, ui, handlers);
 	const state = sidebarState(fakeTui as unknown as TUI);
-	const owned = { active: state.active, ownsHost: state.ownsHost };
+	const owned = { active: state.active, ownsHost: state.ownsHost, columns: fakeTui.terminal.columns };
+	fakeTui.terminal.columns = 119;
 	const host = fakeTui as { mode?: string };
 	try {
 		setCardStyle(CARD_STYLE.NEON);
@@ -7773,6 +7776,7 @@ test("the installed editor draws the panel frame in the wide and mobile IDE chro
 		assert.match(stripAnsi(editor.render(80)[0]!), /^╭/, "regular mode keeps the framed editor");
 	} finally {
 		delete host.mode;
+		fakeTui.terminal.columns = owned.columns;
 		state.active = owned.active;
 		state.ownsHost = owned.ownsHost;
 		setCardStyle(previous);
@@ -8072,12 +8076,12 @@ test("Status at the bottom keeps Agents and Todos as cards and the chrome bars o
 			assert.deepEqual(state.parts.get("statusbar")!.render(180), [], "no split status bar");
 			assert.deepEqual(footer.render(180), [], "no integration reports anything, so there is no bottom Status row");
 			assert.doesNotMatch(stripAnsi(editor.render(180)[0]!), /▸ ◐ Run the suite/, "no work row above the editor");
-			tui.terminal.columns = 120;
+			tui.terminal.columns = 119;
 			assert.equal(state.compactWork?.(), true, "below the rail breakpoint the minimal edition folds live work like a phone");
-			assert.deepEqual(todo.render(120), [], "the Todos card folds into the work row");
-			assert.match(stripAnsi(state.parts.get("header")!.render(120).join("\n")), /✿ repo .*main .*ctx/, "the single top bar carries identity and status");
-			assert.deepEqual(state.parts.get("statusbar")!.render(120), [], "top has no separate lower bar");
-			assert.match(stripAnsi(editor.render(120)[0]!), /▸ ◐ Run the suite/, "the work row sits right above the editor");
+			assert.deepEqual(todo.render(119), [], "the Todos card folds into the work row");
+			assert.match(stripAnsi(state.parts.get("header")!.render(119).join("\n")), /✿ repo .*main .*ctx/, "the single top bar carries identity and status");
+			assert.deepEqual(state.parts.get("statusbar")!.render(119), [], "top has no separate lower bar");
+			assert.match(stripAnsi(editor.render(119)[0]!), /▸ ◐ Run the suite/, "the work row sits right above the editor");
 		} finally {
 			editor.dispose();
 			todo.dispose();
@@ -8544,11 +8548,11 @@ test("on a transparent rail a click on a section card's title folds that section
 		};
 		const rail = findRail(root)!;
 		assert.ok(rail, `${style}: the rail is mounted`);
-		const text = () => rail.render(50).map(stripAnsi);
+		const text = () => rail.render(53).map(stripAnsi);
 		assert.doesNotMatch(text().join("\n"), /alt\+u usage|\/ commands/, `${style}: the rail has no key hints row`);
 		const title = text().findIndex((row) => row.includes("INTEGRATIONS"));
 		assert.ok(title >= 0 && text().some((row) => row.includes("gentle-pi · ready")), `${style}: Integrations shows its rows`);
-		const click = (x: number, y: number) => ({ type: "click", button: "left", x, y, screenX: 110 + x, screenY: y, width: 50, height: 38, shift: false, alt: false, ctrl: false });
+		const click = (x: number, y: number) => ({ type: "click", button: "left", x, y, screenX: 110 + x, screenY: y, width: 53, height: 38, shift: false, alt: false, ctrl: false });
 		assert.equal(rail.handleMouse(click(6, title))?.handled, true, `${style}: the card title row takes the click`);
 		root[node]();
 		assert.ok(!text().some((row) => row.includes("gentle-pi · ready")), `${style}: the click folded Integrations`);
@@ -8594,14 +8598,98 @@ test("on a transparent rail hovering a section card's title paints it in the hov
 		const plain = (row: string) => stripAnsi(row);
 		// The hover role opens right before the title text, with no other color in between.
 		const hovered = /\x1b\[33mINTEGRATIONS/;
-		const title = rail.render(50).findIndex((row) => plain(row).includes("INTEGRATIONS"));
-		assert.doesNotMatch(rail.render(50)[title]!, hovered, `${style}: not hovered yet`);
-		const move = (x: number, y: number) => ({ type: "move", button: "none", x, y, screenX: 110 + x, screenY: y, width: 50, height: 38, shift: false, alt: false, ctrl: false });
+		const title = rail.render(53).findIndex((row) => plain(row).includes("INTEGRATIONS"));
+		assert.doesNotMatch(rail.render(53)[title]!, hovered, `${style}: not hovered yet`);
+		const move = (x: number, y: number) => ({ type: "move", button: "none", x, y, screenX: 110 + x, screenY: y, width: 53, height: 38, shift: false, alt: false, ctrl: false });
 		assert.ok(rail.handleMouse(move(8, title))?.handled, `${style}: the title row takes the hover`);
 		root[node]();
-		const row = rail.render(50).find((line) => plain(line).includes("INTEGRATIONS"))!;
+		const row = rail.render(53).find((line) => plain(line).includes("INTEGRATIONS"))!;
 		assert.match(row, hovered, `${style}: the hovered card title is painted in the hover role`);
 		assert.equal((plain(row).match(/[▾▸✿]/g) ?? []).length, 1, `${style}: one glyph, the section's own`);
 		await fire(handlers, "session_shutdown", ctx);
 	}
+});
+
+test("Gentle Dots activa pestañas reales del rail y /gentle:tab cambia la sección", async (t) => {
+	const commandsList = [...DEFAULT_COMMANDS, { name: "gentle:extras", description: "Extras", source: "extension" as const, sourceInfo: FAKE_SOURCE_INFO }, { name: "gentle:git-graph", description: "Grafo", source: "extension" as const, sourceInfo: FAKE_SOURCE_INFO }, { name: "gentle:file-tree", description: "Archivos", source: "extension" as const, sourceInfo: FAKE_SOURCE_INFO }];
+	const { pi, handlers, commands, sentMessages } = fakePi(undefined, commandsList);
+	const home = scopedDoubleEscCancelConfigHome(t);
+	writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, statusPlacement: "auto", headerPlacement: "split" }, { gentlePiConfigHome: home });
+	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" });
+	let configuring = false;
+	const { ctx, ui } = fakeContext({ select: async (_title, options) => {
+		if (!configuring) return options.find((item) => item.startsWith("GIT ·"));
+		configuring = false;
+		return options.find((item) => item.startsWith("✓ GIT"));
+	} });
+	await fire(handlers, "session_start", ctx);
+	const node = Symbol.for("@earendil-works/pi-tui/layout-node");
+	const root = { render: () => ["conversation"], invalidate() {}, [node]: () => ({ type: "vstack", entries: [] }) };
+	const tui = { mode: "fullscreen", terminal: { rows: 40, columns: 160 }, layoutRoot: root, requestRender() {} };
+	const factory = ui.footerFactory as (tui: unknown, theme: ShellBarTheme, data: unknown) => { render(width: number): string[]; dispose(): void };
+	const footer = factory(tui, plainTheme, { getGitBranch: () => "main", getExtensionStatuses: () => new Map([["engram", "Engram listo"]]), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} });
+	t.after(async () => { footer.dispose(); await fire(handlers, "session_shutdown", ctx); });
+	const state = sidebarState(tui as unknown as TUI);
+	const status = () => state.parts.get("footer")!.render(34).map(stripAnsi).join("\n");
+	root[node]();
+	assert.equal(state.agenticTabsEnabled?.(), true);
+	assert.match(status(), /CHANGES/);
+	await commands.get("gentle:tab")!.handler("", ctx);
+	root[node]();
+	assert.equal(state.agenticTab, "git", "el selector se navega sin mouse ni argumentos");
+	await commands.get("gentle:tab")!.handler("memoria", ctx);
+	root[node]();
+	assert.equal(state.agenticTab, "mem", "los nombres viejos siguen funcionando como alias");
+	assert.match(status(), /INTEGRATIONS/);
+	assert.match(status(), /Engram listo/);
+	assert.doesNotMatch(status(), /CHANGES/);
+	await commands.get("gentle:tab")!.handler("git", ctx);
+	root[node]();
+	assert.match(status(), /CHANGES/);
+	assert.doesNotMatch(status(), /INTEGRATIONS/);
+	const gitRows = status().split("\n");
+	const graphRow = gitRows.findIndex((row) => row.includes("Grafo de Git"));
+	const filesRow = gitRows.findIndex((row) => row.includes("Archivos y cambios"));
+	assert.ok(graphRow >= 0 && filesRow >= 0);
+	const clickRow = (row: number) => state.parts.get("footer")!.handleMouse?.({ type: "click", button: "left", x: 5, y: row, screenX: 5, screenY: row, width: 34, height: gitRows.length, shift: false, alt: false, ctrl: false });
+	assert.equal(clickRow(graphRow)?.handled, true);
+	assert.equal(sentMessages.at(-1)?.content, "/gentle:git-graph");
+	assert.equal(clickRow(filesRow)?.handled, true);
+	assert.equal(sentMessages.at(-1)?.content, "/gentle:file-tree");
+	await commands.get("gentle:tab")!.handler("perfil", ctx);
+	root[node]();
+	assert.equal(state.agenticTab, "prof");
+	const profileRows = status().split("\n");
+	const profileRow = profileRows.findIndex((row) => row.includes("Abrir perfiles"));
+	assert.ok(profileRow >= 0);
+	assert.equal(clickRow(profileRow)?.handled, true);
+	assert.equal(sentMessages.at(-1)?.content, "/gentle:profiles");
+	// `stats` se fusionó con MAIN en la consola: los números viven en el panel
+	// Contexto, no en una pestaña aparte. El alias viejo sigue entrando.
+	await commands.get("gentle:tab")!.handler("stats", ctx);
+	root[node]();
+	assert.equal(state.agenticTab, "main");
+	assert.match(stripAnsi(state.parts.get("context")!.render(48).join("\n")), /CONTEXTO/);
+	assert.doesNotMatch(status(), /INTEGRATIONS/);
+	await commands.get("gentle:tab")!.handler("git", ctx);
+	configuring = true;
+	await commands.get("gentle:tab")!.handler("configurar", ctx);
+	assert.equal(state.agenticTab, "main", "ocultar la pestaña activa vuelve a MAIN");
+	assert.ok(!state.agenticVisibleTabs?.().includes("git"));
+	const saved = JSON.parse(readFileSync(join(home, "agentic-tabs.json"), "utf8"));
+	assert.ok(!saved.tabs.includes("git"));
+	assert.ok(saved.tabs.includes("main"));
+	assert.ok(saved.tabs.includes("tree") && saved.tabs.includes("wt"), "las pestañas nuevas se persisten");
+	await commands.get("gentle:tab")!.handler("git", ctx);
+	assert.match(ui.notices.at(-1) ?? "", /configurar/);
+	// Verify new console parts (roles, ecosystem) and interactive row actions on session/context
+	assert.ok(state.parts.has("roles"), "el panel roles está montado en el rail");
+	assert.ok(state.parts.has("ecosystem"), "el panel ecosystem está montado en el rail");
+	assert.match(stripAnsi(state.parts.get("roles")!.render(48).join("\n")), /ROLES Y AGENTES/);
+	assert.match(stripAnsi(state.parts.get("ecosystem")!.render(48).join("\n")), /ECOSISTEMA/);
+	const sessionPart = state.parts.get("session")!;
+	sessionPart.render(48);
+	const clickProject = sessionPart.handleMouse?.({ type: "click", button: "left", x: 6, y: 1, screenX: 6, screenY: 1, width: 48, height: 6, shift: false, alt: false, ctrl: false });
+	assert.equal(clickProject?.handled, true, "clic en fila Project de Sesión navega a 5:TREE");
+	assert.equal(state.agenticTab, "tree");
 });

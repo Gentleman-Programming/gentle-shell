@@ -31,12 +31,12 @@ Memoria del proyecto para retomar el trabajo entre sesiones. Los detalles de cad
 
 ## Tareas pendientes (en orden)
 
-Consolas en curso al cerrar la sesión (se reanudan con `pi -ne -na --model opencode-go/deepseek-v4.1-flash:high --session <archivo>` desde `~/.pi/agent/sessions/--home-jcastro-Desarrollo-FullStack-drakonc-shell--/`):
+Consolas detenidas por el usuario el 2026-11-22 (~19:30). Qué hizo cada una y qué le faltó (sus sesiones se pueden reanudar con `pi -ne -na --model opencode-go/deepseek-v4.1-flash:high --session <archivo>` desde `~/.pi/agent/sessions/--home-jcastro-Desarrollo-FullStack-drakonc-shell--/`):
 
-- `pi-g5c` — identidad 5.6: devolver a `gentle-ai.*` los identificadores de esquema que cruzan la frontera con el binario (lib/, extensions/, runtime/, tests/) y registrar la excepción. `contracts/` ya está restaurado y su comprobación pasa.
-- `pi-inv` — diagnóstico: qué escribe en `~/.pi/agent` (pruebas con HOME real, launcher o rutas fijas como `extensions/history/index.ts:127`). Sin cambios en el repo.
-- `pi-clear` — `comando-limpiar-pantalla` 1.1–2.2: `/drakonc:clear` (hay un `lib/session-view-clear.ts` sin confirmar).
-- `pi-readme` — README: requisitos, instalación en otros equipos (Linux, macOS, Windows), uso básico, actualizar y desinstalar.
+- `pi-g5c` (identidad 5.6, contrato con el binario): hecho — `contracts/` restaurado a sus bytes (la comprobación del contrato pasa) y todos los identificadores de esquema de `lib/` y `extensions/` vuelven a `gentle-ai.*` (0 restos `drakonc-ai.*/vN`). Faltó: terminar la ejecución completa de la suite que tenía en curso, probar en un arranque real que desaparecen los avisos `schema-incompatible` y `routing/pi.md`. Tarea 5.6 sin marcar.
+- `pi-inv` (diagnóstico de escrituras en `~/.pi/agent`): estaba ejecutando cada archivo de pruebas con HOME temporal y bwrap para aislar `~/.pi`. Faltó: la conclusión y la tabla de responsables. No cambió el repo. Hasta tenerla, no volver a borrar `~/.pi/agent/{agents,chains,drakonc-agents,drakonc-ai}`.
+- `pi-clear` (`comando-limpiar-pantalla`): hecho — investigación (Pi encadena `headerContainer`, `loadedResourcesContainer` y `chatContainer`; la API de extensiones no ofrece limpiar), módulo `lib/session-view-clear.ts`, registro en `extensions/drakonc-shell.ts`, entrada en la paleta y en `docs/readme-reference.md`; 58 pruebas pasan (`session-view-clear` y `command-palette`). Faltó: la prueba real en terminal (se cortó mientras la hacía) y el informe final. Tareas sin marcar.
+- `pi-readme` (README, parte de 6.1): hecho — secciones Requisitos, Instalación en otro equipo (Linux, macOS, Windows), Uso básico y Actualizar y desinstalar. Faltó: el enlace a `docs/readme-reference.md` que exige `tests/package-manifest.test.ts` (fallo previo) y el informe final.
 
 Siguientes, cuando terminen:
 

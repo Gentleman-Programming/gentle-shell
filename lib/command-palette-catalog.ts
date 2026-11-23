@@ -36,6 +36,7 @@ export const COMMAND_PALETTE_CATALOG: readonly CommandPaletteCatalogGroup[] = [
 		title: "Session",
 		items: [
 			{ command: "drakonc:guide", label: "Guided tour of Drakonc Shell" },
+			{ command: "drakonc:clear", label: "Clear the conversation view · the agent keeps the context" },
 			{ command: "drakonc:yolo", label: "🚀 YOLO 🔥 session permission" },
 			{ command: "drakonc:changes", label: "Browse changes" },
 			{ command: "drakonc:agents", label: "Subagents" },

@@ -21,6 +21,7 @@ import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { changeDirectoryInsideRoot, loadFileDiff, repositoryGitDirectories, runFileDiff } from "../lib/change-diff.ts";
 import { DESKTOP_CHANGES_SERVICE_CHANNEL, DESKTOP_CHANGES_SERVICE_SCHEMA, projectDesktopChanges, projectDesktopDiff, type DesktopChangesService } from "../lib/desktop-rpc-changes.ts";
 import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-interaction.ts";
+import { runSessionViewClear } from "../lib/session-view-clear.ts";
 import { windowsProcessTreeKiller, type ProcessTreeKiller } from "../lib/native-review-cli.ts";
 import { SessionWorktreeRegistry, resolveSessionWorktree, worktreeGitEnvironment, type WorktreeResolver, type WorktreeIdentity } from "../lib/session-worktree-registry.ts";
 import { CARD_STYLE, CARD_TONE, cardStyle, panelHeaderRow, renderCard, setCardStyle, type Card, type CardTheme } from "../lib/shell-card.ts";
@@ -633,6 +634,11 @@ export class DrakoncPromptEditor extends CustomEditor {
 	// Counts submitted drafts, so a clipboard read that resolves after its
 	// draft was sent never lands in (and rides along with) the next message.
 	private submittedDrafts = 0;
+
+	/** El TUI vigente de la sesión, para los comandos que actúan sobre la vista sin recibir uno propio. */
+	get terminalHost(): TUI {
+		return this.pointerTui;
+	}
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, deps: PromptEditorDeps) {
 		super(tui, theme, keybindings);
@@ -1916,6 +1922,7 @@ function showChanges(ctx: ExtensionContext, model: ChangesModel, visible = true,
 
 const USAGE_COMMAND_NAME = "drakonc:usage";
 const PANEL_COMMAND_NAME = "drakonc:panel";
+const CLEAR_COMMAND_NAME = "drakonc:clear";
 /** Rows the panel sheet leaves free at the bottom: work row, editor rule, input, closing row, status bar and a spare. */
 const SHEET_RESERVED_ROWS = 6;
 const PRESET_LABEL: Record<VisualPreset, string> = { [VISUAL_PRESET.LIGHT]: "Light", [VISUAL_PRESET.NEUTRAL]: "Neutral", [VISUAL_PRESET.POWER_USER]: "Power user" };
@@ -2447,6 +2454,19 @@ export default function drakoncShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.registerCommand(PANEL_COMMAND_NAME, {
 		description: "Show the sidebar panel (todos, jobs, agents, changes, review, integrations) as a full-width sheet.",
 		handler: async (_args, ctx) => openPanelSheet(ctx),
+	});
+	// Limpiar la pantalla sin tocar la sesión: el prompt propio guarda el TUI vigente y
+	// el footer lo publica como respaldo, así que el comando nunca abre un overlay.
+	const sessionViewTui = () => prompt?.terminalHost ?? sidebarTui;
+	pi.registerCommand(CLEAR_COMMAND_NAME, {
+		description: "Clear the conversation view without losing context; resume the session to see the history again.",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("Esta consola no tiene una vista de conversación que limpiar.", "warning");
+				return;
+			}
+			runSessionViewClear(sessionViewTui(), { notify: (message, type) => ctx.ui.notify(message, type), isIdle: () => ctx.isIdle() });
+		},
 	});
 	const openUsage = (ctx: ExtensionContext) =>
 		ctx.ui.custom<null>(

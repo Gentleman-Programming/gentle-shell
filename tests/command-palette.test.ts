@@ -670,7 +670,7 @@ test("COMMAND_PALETTE_CATALOG matches the curated command set, in order", () => 
 		"drakonc:telemetry",
 		"drakonc:dev-binary",
 	]);
-	assert.deepEqual(byTitle("Session"), ["drakonc:guide", "drakonc:yolo", "drakonc:changes", "drakonc:agents", "drakonc:jobs", "drakonc:usage", "drakonc:review-session-permission", "drakonc:voice", "drakonc:design"]);
+	assert.deepEqual(byTitle("Session"), ["drakonc:guide", "drakonc:clear", "drakonc:yolo", "drakonc:changes", "drakonc:agents", "drakonc:jobs", "drakonc:usage", "drakonc:review-session-permission", "drakonc:voice", "drakonc:design"]);
 	assert.deepEqual(byTitle("Diagnostics"), ["drakonc:status", "drakonc:doctor"]);
 	assert.equal(byTitle("SDD"), undefined);
 	assert.deepEqual(byTitle("Skills"), ["skill-registry:refresh"]);

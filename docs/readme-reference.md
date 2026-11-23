@@ -1404,6 +1404,7 @@ The notice appears once per distinct change: further launches stay quiet until t
 | `/drakonc:doctor`              | Runs read-only diagnostics for assets, model/persona config, memory tools, safety guards, and (inside Herdr) the task-summary sidebar setup. |
 | `/drakonc:profiles`               | Opens the models screen on this repository's profile. `export <name>`, `import`, and `publish <name>` handle profile files and the repository declaration; `export-routing` and `restore-routing` move the saved global routing through `models.export.json`. |
 | `/drakonc:commands`               | Opens the command palette (default `alt+k`): a curated, grouped menu (Configuration, Session, Diagnostics, Skills) of registered Drakonc commands; search and run by label. |
+| `/drakonc:clear`                  | Clears the conversation view, leaving only the header, the status bar and the prompt. The agent keeps the full context: nothing is removed from the session, compacted or restarted (`/new` still starts a new one). Resume the session, `/resume` or reopen Drakonc to see the history again. It waits for the running turn to finish and has no default shortcut. |
 | `/drakonc:persona`                | Switches global persona mode, with project override support.        |
 | `/drakonc:background-subagents`   | Shows or sets the managed background-subagents policy (`status\|enable\|disable`), naming the source that decided it. |
 | `/drakonc:double-esc-cancel`      | Shows or sets the double-esc-cancel preference (`status\|enable\|disable`); no argument toggles it. |
@@ -1424,6 +1425,12 @@ The notice appears once per distinct change: further launches stay quiet until t
 | `/skill-creation`                | Creates or updates an LLM-first skill using the packaged `drakonc-ai-skill-creator` contract and style guide. |
 
 Startup installs and refreshes delegation and review assets. Status and doctor identify missing or stale managed assets and the relevant repair command. User and project overrides are reported separately from package drift. Package refresh preserves overrides; explicit saved model settings may still update packaged or custom-agent routing at startup. A packaged agent with outdated instructions that still match a shipped version is refreshed even when its frontmatter was edited (for example a hand-set `model:`/`thinking:` or a tool that reformatted `tools:`): refresh installs the current agent and keeps its `model:`/`thinking:` lines. An agent with edited instructions, or with frontmatter edits on the current instructions, stays as a user override. After changing any `assets/agents` file, run `node scripts/update-agent-body-history.mjs` to record the new instructions.
+
+### Clearing the conversation view
+
+`/drakonc:clear` empties the conversation view and leaves the header, the status bar and the prompt. It is not `/new` and not a compaction: no session entry is deleted or rewritten, and the next turn sends the model exactly the messages it would have sent without clearing. Only what comes after the command is painted; the full history returns when the session is resumed, reopened, or reloaded. It waits for the running turn to finish, since the answer in flight lives in a component Pi discards when the turn ends, and it has no default shortcut (`ctrl+l` already opens the model selector); assign one from the keymap section of `/drakonc:customize`.
+
+In fullscreen the whole conversation area is repainted empty. In the regular renderer Pi's lines already written stay in the terminal's own scrollback: the command clears the conversation Pi repaints from then on, not the historical output of the terminal.
 
 ### Native cache warming (Pi 0.86.1+)
 

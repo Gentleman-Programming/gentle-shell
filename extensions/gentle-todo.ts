@@ -1,12 +1,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ScrollView, Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { ScrollView, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import type { OrchestratorMode } from "../lib/agent-profiles.ts";
 import { resolveOrchestratorMode } from "../lib/orchestrator-mode-policy.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { placePersistedMessages, requestMessagePosition, type PersistedPlacement } from "../lib/request-context-placement.ts";
-import { panelHeaderRow } from "../lib/shell-card.ts";
+import { CARD_FAMILY, CARD_FAMILY_GLYPH, CARD_TONE, cardBottom, cardLine, cardTop, familyTone, floatRows, panelHeaderRow, type CardTone } from "../lib/shell-card.ts";
 import { renderPanelRow } from "../lib/shell-panel.ts";
 import { sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 import { invalidateSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -21,7 +21,6 @@ import {
 	replayTodo,
 	staleTurns,
 	TODO_DETAILS_KEY,
-	TODO_GLYPH,
 	TODO_PROGRESS_EVENT,
 	TODO_TOOL_NAME,
 	todoCardTone,
@@ -91,6 +90,24 @@ export function todoEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 export { todoCollapseKey } from "../lib/shell-todo.ts";
 
 type PlacedMessage = { role: "custom"; customType: string; content: string; display: false; details: PersistedPlacement; timestamp: number };
+
+/**
+ * One settled frame per todo card component: the transcript re-renders on every
+ * frame, and the call's rule and the result's rows only change with their own
+ * inputs (width, expansion), so the card is built once and reused.
+ */
+class TodoCardRows {
+	private frame?: { width: number; expanded: boolean; lines: string[] };
+
+	render(width: number, expanded: boolean, build: () => string[]): string[] {
+		if (this.frame?.width === width && this.frame.expanded === expanded) return this.frame.lines;
+		const lines = build();
+		this.frame = { width, expanded, lines };
+		return lines;
+	}
+
+	invalidate(): void { this.frame = undefined; }
+}
 
 interface TodoSession {
 	state: TodoState;
@@ -309,13 +326,46 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		],
 		parameters: TOOL_PARAMETERS,
 		executionMode: "sequential",
+		// The `todo` call is an event family card (DESIGN.md §C2): a one-cell
+		// violet border with the title bitten into the top rule
+		// (`┌─ ▪ todo · write ────┐`) and the summary inside. The call owns the
+		// top rule; the result draws the sides and always closes the frame, the
+		// same split the quiet tools use, so a running write never shows a
+		// dangling rule. A failed write swaps the box to the error family.
 		renderCall(args, theme) {
 			const params = args as TodoParams;
-			return new Text(theme.fg("toolTitle", `${TODO_GLYPH} todo · ${params.action}`), 0, 0);
+			const title = `todo · ${params.action}`;
+			const rows = new TodoCardRows();
+			return {
+				render(width: number) {
+					const target = Math.max(0, Math.floor(width));
+					if (target === 0) return [];
+					return rows.render(target, false, () => floatRows(CARD_TONE.TODO, theme, target, (inner) => ({
+						head: [cardTop({ title, glyph: CARD_FAMILY_GLYPH[CARD_FAMILY.TODO], body: [], tone: CARD_TONE.TODO }, theme, inner)],
+					})));
+				},
+				invalidate() { rows.invalidate(); },
+			};
 		},
 		renderResult(result, options, theme) {
 			const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
-			return new Text(options.expanded ? text : theme.fg("muted", text.split("\n")[0] ?? ""), 0, 0);
+			const failed = (result.details as { error?: unknown } | undefined)?.error !== undefined;
+			const tone: CardTone = familyTone(CARD_FAMILY.TODO, failed);
+			const rows = new TodoCardRows();
+			return {
+				render(width: number) {
+					const target = Math.max(0, Math.floor(width));
+					if (target === 0) return [];
+					return rows.render(target, options.expanded, () => {
+						const shown = options.expanded ? text : (text.split("\n")[0] ?? "");
+						return floatRows(tone, theme, target, (inner) => ({
+							body: shown.split("\n").map((line) => cardLine(failed ? theme.fg("error", line) : line, tone, theme, inner)),
+							bottom: cardBottom(tone, theme, inner),
+						}));
+					});
+				},
+				invalidate() { rows.invalidate(); },
+			};
 		},
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const current = session(ctx);

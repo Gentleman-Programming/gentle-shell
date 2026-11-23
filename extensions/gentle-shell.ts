@@ -9,15 +9,16 @@ import { defaultCacheRoot, ImageDiskCache } from "../lib/image-disk-cache.ts";
 import { execFile, spawnSync } from "node:child_process";
 import { openInExternalEditor, type ExternalEditorHost } from "../lib/external-editor.ts";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { lstat, readFile } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createShellGitWorker, failedGitRead, gitExecResult, type GitExecError, type ShellGitWorkerRead } from "../lib/shell-git-worker.ts";
+import { shellUntrackedLines } from "../lib/shell-untracked-lines.ts";
 import { profilesFilePath, profileRoleEntries, readProfilesFileResult } from "../lib/agent-profiles.ts";
 import { resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles } from "../lib/session-profile-freeze.ts";
 import * as os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { buildShellHeaderModel, renderShellBar, renderShellBelowInputFloat, renderShellBottomOnlyBar, renderShellHeaderChrome, renderShellSidebarBar, renderShellStatusBar, renderShellStatusSections, renderShellChromeBar, renderShellChromePad, renderShellTitleRow, type StatusSection, type StatusTarget, keepNativeWorkingRow, shellEnabled, shellHeaderUsageHit, shellJobsCount, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
-import { DIFF_MAX_BYTES, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type LineCounter, type WorktreeChanges } from "../lib/shell-changes.ts";
+import { DIFF_MAX_BYTES, WorktreeChangesTracker, changesDigest, renderChangesWidget, type ChangedFile, type ChangesModel, type FileRevision, type GitRunner, type UntrackedLineCounts, type WorktreeChanges } from "../lib/shell-changes.ts";
 import { WorktreeChangesView } from "../lib/shell-changes-view.ts";
 import { changeDirectoryInsideRoot, loadFileDiff, repositoryGitDirectories, runFileDiff } from "../lib/change-diff.ts";
 import { DESKTOP_CHANGES_SERVICE_CHANNEL, DESKTOP_CHANGES_SERVICE_SCHEMA, projectDesktopChanges, projectDesktopDiff, type DesktopChangesService } from "../lib/desktop-rpc-changes.ts";
@@ -49,7 +50,7 @@ import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { CLAUDE_BRIDGE_PROVIDER, priceBridgeMessage } from "../lib/bridge-cost.ts";
 import { inferOddPhase } from "../lib/odd-phase-inference.ts";
 import { isInteractiveMode } from "../lib/rpc-host.ts";
-import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { gentlePiConfigHome, resolveGentlePiAgentHome } from "../lib/agent-home.ts";
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapture, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
@@ -203,6 +204,9 @@ export interface ShellDeps {
 	gitRunner(cwd: string, maxBuffer?: number): GitRunner;
 	/** A root Changes may scan: removed worktrees and leftover directories are skipped. */
 	rootExists(root: string): boolean;
+	/** Override the per-user untracked count cache directory. */
+	changesCacheDirectory?: string;
+	changesLineCache(directory?: string): UntrackedLineCounts;
 	vimRuntimeVersion?(): string | undefined;
 	/** Clipboard image source for the prompt's attachment chips; tests inject a fake. */
 	readClipboardImage?(): Promise<ClipboardImage | null>;
@@ -296,7 +300,7 @@ function ambientDevBinary(): DevBinaryNotice | undefined {
 	}
 }
 
-const defaultShellDeps: Omit<ShellDeps, "activeProfile" | "gitRunner"> = { fetch: (input, init) => globalThis.fetch(input, init), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, rootExists: (root) => existsSync(join(root, ".git")) };
+const defaultShellDeps: Omit<ShellDeps, "activeProfile" | "gitRunner"> = { fetch: (input, init) => globalThis.fetch(input, init), now: () => Date.now(), devBinary: ambientDevBinary, resolveWorktree: resolveSessionWorktree, rootExists: (root) => existsSync(join(root, ".git")), changesLineCache: (directory) => shellUntrackedLines(undefined, undefined, directory) };
 
 interface AssistantUsageEntry {
 	type: string;
@@ -1739,14 +1743,7 @@ export function shellGitRunner(cwd: string, env: NodeJS.ProcessEnv = process.env
 // One file's diff lives in lib/change-diff.ts so the panel and Desktop RPC show the same text.
 export { loadFileDiff };
 
-// Untracked files have no numstat; count their lines without reading past the diff bound.
-const untrackedLines = (root: string): LineCounter => async (path) => {
-	const target = join(root, path);
-	const info = await lstat(target);
-	if (!info.isFile() || info.size > DIFF_MAX_BYTES) return 0;
-	const text = await readFile(target, "utf8");
-	return text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
-};
+export { shellUntrackedLines };
 // Same-count edits still change size or mtime, so an open diff reloads.
 const fileRevision = (root: string): FileRevision => async (path) => {
 	const info = await lstat(join(root, path));
@@ -2587,7 +2584,11 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 			try { return sessionChangeRoots(sessionId, ctx.sessionManager.getEntries()).filter((root) => deps.rootExists(root) && !isHomeOrBroadUserDirectory(root)); }
 			catch { return []; }
 		};
-		return new WorktreeChangesTracker(git(ctx.cwd), (root) => git(root), untrackedLines, roots, fileRevision);
+		// An injected environment without an agent home stays isolated from the
+		// user's cache unless the caller explicitly supplies a cache directory.
+		const directory = deps.changesCacheDirectory ?? (env === process.env || env.GENTLE_PI_AGENT_HOME || env.PI_CODING_AGENT_DIR
+			? join(resolveGentlePiAgentHome(env), "cache", "gentle-shell-untracked-lines") : undefined);
+		return new WorktreeChangesTracker(git(ctx.cwd), (root) => git(root), undefined, roots, fileRevision, deps.changesLineCache(directory));
 	};
 	const refreshChanges = async (ctx: ExtensionContext) => {
 		const tracker = changes;
@@ -2618,19 +2619,24 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		};
 		// No tracked worktree, a failed root, or a replaced session is
 		// unavailable: a failed scan is never reported as a clean root.
-		const scan = async (): Promise<WorktreeChangesTracker | undefined> => {
+		const scan = async (maxPasses = 1): Promise<WorktreeChangesTracker | undefined> => {
 			const tracker = changes;
 			if (disposed || !tracker || changesGit !== git || registry?.sessionId !== sessionId) return undefined;
-			const model = await tracker.refresh();
-			if (disposed || changes !== tracker) return undefined;
-			if (currentContext) applyChanges(currentContext, model);
+			for (let pass = 0; pass < maxPasses; pass++) {
+				await tracker.refresh();
+				if (disposed || changes !== tracker) return undefined;
+				if (!tracker.untrackedCountsPending || tracker.failedRoots.length > 0) break;
+			}
+			if (currentContext) applyChanges(currentContext, tracker.model);
 			return tracker.scannedRootCount === 0 || tracker.failedRoots.length > 0 ? undefined : tracker;
 		};
 		try {
 			request.respond({
 				schema: DESKTOP_CHANGES_SERVICE_SCHEMA,
 				async read() {
-					const tracker = await scan();
+					// One extra pass handles inventories just over 64 MiB, without
+					// letting a huge or continuously edited tree hold an RPC open.
+					const tracker = await scan(2);
 					return tracker ? projectDesktopChanges(tracker.worktrees, idFor) : undefined;
 				},
 				async diff(rootId, path) {
@@ -2692,6 +2698,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		}
 		stopProfilePoll();
 		registry?.close();
+		void changes?.closeUntrackedCounts();
 		currentContext = ctx;
 		changes = undefined;
 		registry = new SessionWorktreeRegistry(pi, ctx.sessionManager, ctx.cwd, deps.resolveWorktree);
@@ -3128,6 +3135,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const gitStopped = changesGit?.dispose();
+		const countsSaved = changes?.closeUntrackedCounts();
 		changesGit = undefined;
 		customizeGeneration++;
 		disposeFooter?.();
@@ -3159,7 +3167,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		registry = undefined;
 		changes = undefined;
 		currentContext = undefined;
-		await gitStopped;
+		await Promise.all([gitStopped, countsSaved]);
 	});
 	const openChanges = async (ctx: ExtensionContext) => {
 		const git = changesGit;

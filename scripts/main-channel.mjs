@@ -455,6 +455,23 @@ function withDetail(error, detail) {
 	return new MainChannelError(error.code, `${message}; ${detail}`, error.cause);
 }
 
+// Only the interactive CLI supplies a stream; wizard and scripted installs stay silent.
+async function mainStage(stream, label, work) {
+	if (!stream) return work();
+	const frames = ["|", "/", "-", "\\"];
+	let frame = 0;
+	const draw = () => stream.write(`\r\x1b[2K${frames[frame++ % frames.length]} ${label}`);
+	draw();
+	const timer = setInterval(draw, 100);
+	timer.unref();
+	try {
+		return await work();
+	} finally {
+		clearInterval(timer);
+		stream.write("\r\x1b[2K");
+	}
+}
+
 /**
  * Updates Gentle Shell along its recorded channel (or the one `--channel` selects):
  * release goes to the latest npm release, main to the latest `main` commits of
@@ -467,7 +484,7 @@ function withDetail(error, detail) {
  * untouched) keeps the path below for this run, otherwise { code, installed }.
  * `owner` is called only when a migration can happen.
  */
-export async function runUpgrade({ args, ctx, platform, arch = process.arch, packageRoot, currentVersion, adapters, out }) {
+export async function runUpgrade({ args, ctx, platform, arch = process.arch, packageRoot, currentVersion, adapters, out, progressStream }) {
 	const { fetch, run, fs, which } = adapters;
 	const requested = parseUpgradeArgs(args);
 	const state = await readChannel(ctx, fs);
@@ -499,8 +516,11 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 		throw new MainChannelError("main-requires-tools", "the main channel packs Gentle Shell with pnpm; put it on PATH (Gentle AI is built with your Go, or with a pinned Go downloaded for the build)");
 	}
 	const acquire = adapters.acquireGo ?? (() => acquirePinnedGo({ root: join(configHome(ctx), "tools", "go"), platform, arch }));
-	const gentleAiCommit = await resolveMainCommit(GENTLE_AI_REPOSITORY, { fetch });
-	const shellCommit = await resolveMainCommit(SHELL_REPOSITORY, { fetch });
+	const stage = (label, work) => mainStage(progressStream, label, work);
+	const [gentleAiCommit, shellCommit] = await stage("Checking main revisions", async () => [
+		await resolveMainCommit(GENTLE_AI_REPOSITORY, { fetch }),
+		await resolveMainCommit(SHELL_REPOSITORY, { fetch }),
+	]);
 	const onMain = state.channel === "main";
 	const aiCurrent = onMain && state.gentleAiCommit === gentleAiCommit;
 	const shellCurrent = onMain && state.shellCommit === shellCommit && currentVersion.endsWith(`-main.${shellCommit.slice(0, 12)}`);
@@ -517,7 +537,7 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 	let aiError;
 	if (!aiCurrent) {
 		try {
-			await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs });
+			await stage("Building Gentle AI", async () => buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs }));
 		} catch (error) {
 			if (shellCurrent) throw error;
 			aiFailed = true;
@@ -526,9 +546,9 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 	}
 	if (!shellCurrent) {
 		try {
-			const manager = await ownerManager({ ctx, platform, packageRoot, adapters });
-			const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm, fs, platform });
-			await installGlobal(manager, tgz, run);
+			const manager = await stage("Checking package manager", () => ownerManager({ ctx, platform, packageRoot, adapters }));
+			const tgz = await stage("Building Gentle Shell", () => packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm, fs, platform }));
+			await stage("Installing Gentle Shell", () => installGlobal(manager, tgz, run));
 		} catch (error) {
 			throw aiFailed ? withDetail(error, `Gentle AI was not updated either (${describe(aiError)})`) : error;
 		}

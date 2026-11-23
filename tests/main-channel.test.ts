@@ -458,11 +458,22 @@ async function upgradeWorld({ userGo = null as string | null, pinned = false, ac
 		if (acquireFails) throw new Error("Go verified acquisition failed; nothing was published", { cause: new Error("Conflicting Go destination: /x") });
 		return { goPath: pinnedGo, version: "1.25.14", acquired: true };
 	};
-	const upgrade = () => runUpgrade({ args: ["--channel", "main"], ctx: s.ctx, platform: "darwin", arch: "arm64", packageRoot: join(s.root, "pkg"),
+	const upgrade = (progressStream?: { write: (chunk: string) => void }) => runUpgrade({ progressStream, args: ["--channel", "main"], ctx: s.ctx, platform: "darwin", arch: "arm64", packageRoot: join(s.root, "pkg"),
 		currentVersion: "4.0.0-main.6e7e3a18f794", adapters: { fetch, run, fs: fsPromises, which, acquireGo }, out: () => {} });
 	const builtWith = () => calls.find((call) => call.argv[0] === "install")?.command;
 	return { ...s, calls, pinnedGo, upgrade, builtWith, acquired };
 }
+
+test("main upgrade shows active stages and clears progress before a build error", posixOnly, async () => {
+	const w = await upgradeWorld({ acquireFails: true });
+	const frames: string[] = [];
+	try {
+		await assert.rejects(w.upgrade({ write: chunk => frames.push(chunk) }), /getting the pinned Go/);
+		assert.match(frames.join(""), /Checking main revisions/);
+		assert.match(frames.join(""), /Building Gentle AI/);
+		assert.equal(frames.at(-1), "\r\x1b[2K");
+	} finally { w.cleanup(); }
+});
 
 test("upgrading main uses the installer's pinned Go when the user's Go is missing, older or cannot be checked, and leaves the user's Go as it is", posixOnly, async () => {
 	for (const userGo of [null, "1.24.0", "devel"]) {

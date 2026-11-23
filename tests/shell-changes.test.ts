@@ -697,3 +697,37 @@ test("ChangesTracker counts lines and reads revisions for every file with bounde
 	assert.deepEqual(files.get("file-07.ts"), file("file-07.ts", 0, 0, CHANGE_STATUS.UNTRACKED), "a failing lookup keeps its fallback");
 	for (const path of paths.filter((path) => path !== "file-07.ts")) assert.deepEqual(files.get(path), { ...file(path, 2, 0, CHANGE_STATUS.UNTRACKED), diffRevision: `rev:${path}` });
 });
+
+// A HEAD verification that could not run (a closed or unusable Git reader) or
+// that hit its deadline is not an answered "no": the root failed, it is not an
+// unborn repository. Reading it as unborn showed a dirty repository as clean.
+test("a HEAD verification that was not answered marks the root failed, never unborn", async () => {
+	for (const unanswered of [{ code: 1, stdout: "", unavailable: true as const }, { code: 1, stdout: "", timedOut: true }]) {
+		const calls: string[] = [];
+		const tracker = new WorktreeChangesTracker(
+			async () => ({ stdout: "worktree /repo\0branch refs/heads/main\0\0", code: 0 }),
+			() => async (args) => {
+				calls.push(args[0]);
+				return args[0] === "rev-parse" ? unanswered : { stdout: args[0] === "status" ? " M a.ts\0" : "1\t0\ta.ts\n", code: 0 };
+			},
+			undefined,
+			() => ["/repo"],
+		);
+		await tracker.start();
+		assert.deepEqual(tracker.unbornRoots, [], JSON.stringify(unanswered));
+		assert.deepEqual(tracker.failedRoots, ["/repo"], JSON.stringify(unanswered));
+		assert.deepEqual(calls.filter((cmd) => cmd === "status"), [], "a root whose Git cannot answer is not scanned further");
+	}
+});
+
+test("a HEAD verification answered with a non-zero exit still means unborn", async () => {
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "worktree /repo\0branch refs/heads/main\0\0", code: 0 }),
+		() => async (args) => args[0] === "rev-parse" ? { code: 1, stdout: "" } : { stdout: "", code: 0 },
+		undefined,
+		() => ["/repo"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.unbornRoots, ["/repo"]);
+	assert.deepEqual(tracker.failedRoots, []);
+});

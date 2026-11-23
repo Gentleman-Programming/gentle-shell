@@ -211,6 +211,8 @@ export interface GitResult {
 	truncated?: boolean;
 	/** The Git deadline elapsed; stdout is diagnostic output, not a complete result. */
 	timedOut?: boolean;
+	/** Git could not be run at all (a closed or unusable reader); nothing was answered. */
+	unavailable?: boolean;
 }
 
 export type GitRunner = (args: string[]) => Promise<GitResult>;
@@ -263,6 +265,10 @@ export async function foreignRootBranch(git: GitRunner): Promise<string | undefi
 // thousands of phantom untracked files (the whole holder's contents). One
 // cheap verify answers "is there anything to diff against" before a scan.
 const HEAD_EXISTS_ARGS = ["rev-parse", "--verify", "-q", "HEAD"];
+
+function incompleteGitRead(result: GitResult | undefined) {
+	return result?.unavailable ? "unavailable" : result?.timedOut ? "timeout" : result?.truncated ? "truncated" : undefined;
+}
 
 // /gentle:changes: one group per registered root holding its working tree
 // against HEAD. A root whose Git fails (timed out, rejected) has no group but
@@ -342,6 +348,10 @@ export class WorktreeChangesTracker {
 				// Only an answered "no" means unborn: a rejected verify cannot tell
 				// unborn from broken Git, so the scan below still decides.
 				const head = await this.gitForRoot(root)(HEAD_EXISTS_ARGS).catch(() => undefined);
+				if (incompleteGitRead(head)) {
+					failed.push(root);
+					return undefined;
+				}
 				if (head && head.code !== 0) {
 					unborn.push(root);
 					return undefined;

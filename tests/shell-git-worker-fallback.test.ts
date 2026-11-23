@@ -72,14 +72,15 @@ test("a deleted process cwd falls back once and preserves real Git and execFile 
 		process.chdir(originalCwd);
 	}
 	assert.deepEqual(viaFallback.slice(0, 2), reads.slice(0, 2).map(({ result }) => result), "real Git still runs with a deleted cwd");
-	assert.deepEqual(viaWorker, reads.map(({ result }) => result));
 	// A read cut at maxBuffer keeps whatever stdout arrived before the cut; how
 	// much that is depends on pipe timing (on Linux the child can be killed
-	// before its first stdout chunk is read). The shape must match, and the
-	// partial stdout must be a prefix of the worker's.
-	const comparable = (result: { stdout: string; truncated?: boolean }, worker: { stdout: string }) =>
-		result.truncated && worker.stdout.startsWith(result.stdout) ? { ...result, stdout: worker.stdout } : result;
-	assert.deepEqual(viaFallback.map((result, i) => comparable(result, viaWorker[i])), viaWorker);
+	// before its first stdout chunk is read), on both paths. The shape must
+	// match, and the partial stdout must be a prefix of the full output.
+	const comparable = (result: { stdout: string; truncated?: boolean }, full: { stdout: string }) =>
+		result.truncated && full.stdout.startsWith(result.stdout) ? { ...result, stdout: full.stdout } : result;
+	const expected = reads.map(({ result }) => result);
+	assert.deepEqual(viaWorker.map((result, i) => comparable(result, expected[i])), expected);
+	assert.deepEqual(viaFallback.map((result, i) => comparable(result, expected[i])), expected);
 	assert.equal(constructions, 1, "later reads do not try to recreate the failed worker");
 });
 

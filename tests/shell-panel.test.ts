@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { paintPanelSurface, PANEL_SURFACE_ROLE, panelSheetBackHit, renderPanelHeader, renderPanelRow, renderPanelSheet, renderWorkRow } from "../lib/shell-panel.ts";
+import { consoleScrollBar, paintPanelSurface, PANEL_SURFACE_ROLE, panelSheetBackHit, renderConsolePanel, renderConsoleRow, renderPanelHeader, renderPanelRow, renderPanelSheet, renderWorkRow } from "../lib/shell-panel.ts";
 import { renderTodoSection, todoWorkSummary, type TodoState } from "../lib/shell-todo.ts";
 import { renderJobsSection } from "../lib/jobs-widget.ts";
 import { JOB_GLYPH } from "../lib/background-jobs-tools.ts";
@@ -21,9 +21,47 @@ const plain = { fg: (_color: string, text: string) => text, bold: (text: string)
 test("a panel header names the section in bold caps with its count right-aligned", () => {
 	assert.equal(visibleWidth(renderPanelHeader(plain, 40, { title: "Todos", count: "2/6", open: true })), 40);
 	const row = renderPanelHeader(theme, 80, { title: "Todos", count: "2/6", open: true });
-	assert.match(row, /<muted>▾<\/muted> <text>\*TODOS\*<\/text>/);
+	// The fold glyph keeps the accent role; the section name stays in the plain
+	// text role so the console can re-draw it in its own violet top rule.
+	assert.match(row, /<accent>▾<\/accent> <text>\*TODOS\*<\/text>/);
 	assert.match(row, /<muted>2\/6<\/muted>$/);
-	assert.match(renderPanelHeader(theme, 40, { title: "Todos", count: "2/6", open: false }), /<muted>▸<\/muted>/);
+	assert.match(renderPanelHeader(theme, 40, { title: "Todos", count: "2/6", open: false }), /<accent>▸<\/accent>/);
+});
+
+test("a console panel bites its title into the top rule and the range into the bottom rule", () => {
+	const rows = [" Project   ~/proyectos/gentle-dots-tui ", " Branch    feat/centro-agentico-tabs "];
+	const plainLines = renderConsolePanel(plain, 62, { title: "Sesión", count: "[ 6 ]", rows });
+	assert.equal(plainLines.length, 4, "top rule, one row per body line, bottom rule");
+	for (const line of plainLines) assert.equal(visibleWidth(line), 62, `every line closes at 62 cells: ${line}`);
+	assert.match(plainLines[0]!, /^╭─ ◆ Sesión ─+ \[ 6 \] ─╮$/, "glyph and name bite the top rule, the count sits on the same rule");
+	assert.equal(plainLines[1], `│${rows[0]!.padEnd(60)}│`, "a body row is padded to the box's inner width");
+	assert.match(plainLines[2]!, /^│ Branch    feat\/centro-agentico-tabs +│$/);
+	// A panel that fits closes with a plain rule and no range.
+	assert.match(plainLines[3]!, /^╰─+╯$/);
+	// The theme roles: the box is border, the bitten title and the count are accent.
+	const styled = renderConsolePanel(theme, 62, { title: "Sesión", count: "[ 6 ]", rows });
+	// `╭` is its own cell, the rule after it is the top rule's first segment.
+	assert.match(styled[0]!, /^<border>╭<\/border>─ <accent>◆ \*Sesión\*<\/accent> <border>─+<\/border> <accent>\[ 6 \]<\/accent> <border>─<\/border><border>╮<\/border>$/);
+});
+
+test("consoleScrollBar reports the visible slice and only overflowing panels carry one", () => {
+	assert.equal(consoleScrollBar(1, 7, 7), "[ 1..7/7 ▼ ]");
+	assert.equal(consoleScrollBar(1, 8, 12), "[ 1..8/12 ▼ ]");
+	assert.equal(consoleScrollBar(3, 10, 10), "[ 3..10/10 ▼ ]");
+	assert.equal(consoleScrollBar(1, 0, 0), "", "nothing to scroll, no bar");
+	const overflowing = renderConsolePanel(plain, 44, { title: "Working tree", rows: ["a", "b"] }, { first: 1, last: 2, total: 9 });
+	assert.match(overflowing.at(-1)!, /╰─+ \[ 1\.\.2\/9 ▼ \] ╯$/);
+	assert.equal(visibleWidth(overflowing.at(-1)!), 44);
+	const rows = Array.from({ length: 6 }, (_, index) => `row ${index}`);
+	assert.ok(renderConsolePanel(plain, 40, { title: "X", rows }).every((line) => visibleWidth(line) === 40));
+	assert.match(renderConsolePanel(theme, 44, { title: "Working tree", rows: ["a"] }, { first: 1, last: 1, total: 9 }).at(-1)!, /<muted>\[ 1\.\.1\/9 ▼ \]<\/muted>/);
+});
+
+test("a console row clips and pads its body to the box's inner width", () => {
+	const row = renderConsoleRow(plain, 20, "a very long body that cannot fit");
+	assert.equal(visibleWidth(row), 20);
+	assert.match(row, /^│a very long body …│$/);
+	assert.equal(renderConsoleRow(plain, 20, "short"), `│short${" ".repeat(13)}│`, "the body pads to width - 2");
 });
 
 test("a hovered panel header paints its glyph with the shared hover role", () => {
@@ -55,12 +93,14 @@ test("the Todos section folds finished work into one row and keeps open tasks on
 	const todos = state([["Rebuild the chain", "done"], ["Create the issue", "done"], ["Run the full suite", "in_progress", "job-1"], ["Push the tracker", "pending"], ["Drop it", "dropped"]]);
 	const section = renderTodoSection(todos, plain, 40, { collapsed: false, staleTurns: 0 });
 	assert.equal(stripAnsi(section.header).trim().replace(/\s+/g, " "), "▾ TODOS 2/4");
+	// Open work first (`in_progress → blocked → pending`), finished work folded
+	// into its totals row at the end (`lib/shell-todo.ts`).
 	assert.deepEqual(section.body.map((row) => stripAnsi(row).trimEnd()), [
-		"  ✓ 2 done",
-		"  ✕ 1 dropped",
 		"  ◐ Run the full suite",
 		"    └ job-1",
 		"  ○ Push the tracker",
+		"  ✓ 2 done",
+		"  ✕ 1 dropped",
 	]);
 	for (const row of [section.header, ...section.body]) assert.equal(visibleWidth(stripAnsi(row)), 40);
 });
@@ -159,11 +199,12 @@ const chromeModel = {
 test("the title row names the project once and always keeps the session; the profile rides the status bar", () => {
 	const row = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 90));
 	assert.equal(visibleWidth(row), 90);
-	assert.match(row, /^ ✿ gentle-pi  ~\/work\/gentle-pi +fleet adopt $/);
+	assert.match(row, /^ ◆ GENTLE  \/  gentle-pi +fleet adopt $/, "the title row names project and session; the branch rides the status bar");
 	const narrow = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 34));
 	assert.equal(visibleWidth(narrow), 34);
 	assert.match(narrow, /fleet adopt $/, "the path gives way before the session");
-	assert.doesNotMatch(stripAnsi(renderShellTitleRow({ ...chromeModel, sessionName: undefined, profile: undefined }, plain as never, 90)), /·/);
+	assert.match(stripAnsi(renderShellTitleRow({ ...chromeModel, sessionName: undefined, profile: undefined }, plain as never, 90)), /◆ GENTLE/);
+	assert.doesNotMatch(row, /feat\/shell-ide-rework/, "the branch belongs to the status bar, not the title row");
 });
 
 test("the status bar shows branch, permission mode, model, context, cost and usage in one row", () => {
@@ -290,7 +331,7 @@ test("a short sheet fills the resized viewport with painted rows without adding 
 test("the mobile title row carries the model and the profile, since the narrow status bar leaves them out", () => {
 	const row = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 72, { model: true }));
 	assert.equal(visibleWidth(row), 72);
-	assert.match(row, /^ ✿ gentle-pi .*claude-opus-5-5 · high · claude \(session\) $/);
+	assert.match(row, /^ ◆ GENTLE  \/  gentle-pi .*claude-opus-5-5 · high · claude \(session\) $/);
 });
 
 test("a long branch gives way before the context and cost in a phone-width status bar", () => {
@@ -357,4 +398,15 @@ test("the agent profile lives next to the model in the bars and in Stats, never 
 	const mobile = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 90, { model: true }));
 	assert.match(mobile, /claude-opus-5-5 · high · claude \(session\) $/, "on a phone the title row carries model and profile");
 	assert.doesNotMatch(stripAnsi(renderShellTitleRow(chromeModel, plain as never, 90)), /claude \(session\)/, "the split title row leaves the profile to the bar");
+});
+
+test("a selected sidebar tab shows only its own real sections and keeps their targets", () => {
+	const git = renderShellStatusSections({ ...chromeModel, review: { state: "reviewing", scope: "app.ts" } }, plain, 36, undefined, undefined, { sections: new Set(["changes", "review"]) });
+	assert.match(git.lines.join("\n"), /CHANGES/);
+	assert.match(git.lines.join("\n"), /REVIEW/);
+	assert.doesNotMatch(git.lines.join("\n"), /INTEGRATIONS/);
+	assert.ok(git.targets.some((target) => target.kind === "open-changes"));
+	const memory = renderShellStatusSections(chromeModel, plain, 36, undefined, undefined, { sections: new Set(["integrations"]) });
+	assert.match(memory.lines.join("\n"), /INTEGRATIONS/);
+	assert.doesNotMatch(memory.lines.join("\n"), /CHANGES|REVIEW/);
 });

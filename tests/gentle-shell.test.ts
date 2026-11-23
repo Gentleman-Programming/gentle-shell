@@ -5893,18 +5893,52 @@ test("gentleShell binds the changes shortcut to the same handler as the command"
 	assert.equal(silent.shortcuts.has("alt+g"), false, "the changes shortcut must not register when disabled");
 });
 
-test("Changes never polls Git in the background; external edits appear at turn end", async () => {
- const {pi,handlers,git}=fakePi([{numstat:"4\t2\texternal.ts\n",porcelain:" M external.ts\0"}]);
- gentleShell(pi,{GENTLE_PI_SHELL_CHANGES_WATCH_MS:"5"});
- const {ctx,ui}=fakeContext();
- await fire(handlers,"session_start",ctx);
- await new Promise(resolve=>setTimeout(resolve,30));
- assert.equal(git.length,0);
- assert.equal(ui.widgets.has("gentle-shell-changes"),false);
- await fire(handlers,"agent_end",ctx);
- await changesSettled();
- assert.match(renderFooter(ui),/±1/);
- await fire(handlers,"session_shutdown",ctx);
+test("the legacy watch setting does not poll after the idle load; external edits still appear at turn end", async () => {
+	const { pi, handlers, git } = fakePi([{ numstat: "", porcelain: "" }, { numstat: "4\t2\texternal.ts\n", porcelain: " M external.ts\0" }]);
+	let tick: (() => void) | undefined;
+	gentleShell(pi, { GENTLE_PI_SHELL_CHANGES_WATCH_MS: "5" }, {
+		scheduleChangesIdle: (callback) => {
+			tick = () => { tick = undefined; callback(); };
+			return { cancel: () => { tick = undefined; }, unref() {} };
+		},
+	});
+	const { ctx, ui } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	assert.doesNotMatch(renderFooter(ui), /±/);
+	assert.ok(tick);
+	tick();
+	await changesSettled();
+	assert.equal(ui.widgets.has("gentle-shell-changes"), false);
+	assert.equal(tick, undefined);
+	const afterIdle = git.length;
+	await new Promise(resolve => setTimeout(resolve, 30));
+	assert.equal(git.length, afterIdle);
+	await fire(handlers, "agent_end", ctx);
+	await changesSettled();
+	assert.match(renderFooter(ui), /±1/);
+	await fire(handlers, "session_shutdown", ctx);
+});
+
+test("opening Changes does not wait for the quiet timer and its inventory covers the idle load", async () => {
+	const { pi, handlers, commands, git } = fakePi([{ numstat: "4\t2\texternal.ts\n", porcelain: " M external.ts\0" }]);
+	let cancelled = false;
+	gentleShell(pi, {}, { scheduleChangesIdle: () => ({ cancel: () => { cancelled = true; }, unref() {} }) });
+	const { ctx, ui, overlayReady } = fakeContext();
+	await fire(handlers, "session_start", ctx);
+	renderFooter(ui);
+	assert.equal(git.length, 0);
+	const opened = commands.get("gentle:changes")!.handler("", ctx);
+	await overlayReady;
+	try {
+		ui.overlayView!.handleInput("\r");
+		assert.match(ui.overlayView!.render(140).join("\n"), /external\.ts/);
+		assert.equal(git.filter((args) => args.includes("status")).length, 1);
+		assert.equal(cancelled, true);
+	} finally {
+		ui.closeOverlay?.();
+		await opened;
+		await fire(handlers, "session_shutdown", ctx);
+	}
 });
 
 const JWT = `h.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" } })).toString("base64url")}.s`;

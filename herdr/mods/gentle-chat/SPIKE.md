@@ -76,7 +76,8 @@ shown, the chat is hidden, so the way back is the stack's `"tabs"` header.
 - Remote terminals (`machine/tN`) are not read (`readFile` is local); they show a notice.
 - The runtime has no ranged read or stat: every refresh fetches the file's bytes whole and
   slices them (only the new part is decoded/parsed). Fine for MB-sized sessions; a large one
-  wants the publisher's snapshot or a byte-range `exec`.
+  wants the publisher's snapshot or a byte-range `exec`. (Later: a file over 1 MB is read
+  through `sh`, and read whole again where `sh` cannot start, native Windows, #3352.)
 - The whole visible log (last 150 items, "Show earlier" for more) is rebuilt per render; a
   virtual list is the T5 answer for long sessions.
 - No subagent cards, diffs, questions, images or slash menu yet (T5/T7). Thinking blocks and

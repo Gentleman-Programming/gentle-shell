@@ -177,7 +177,7 @@ test("literal recorded roots never alias Unicode separators to another real repo
 	t.after(() => publisher.dispose());
 	publisher.updateDiscovery({ sessionId: "literal", endpoint: "/fixture", createdAt: 1 }, { workspace: ascii, tasks: [], scope: cache.project(ascii, [], []) });
 	const header = listPresence(base).entries[0];
-	const sidecar = join(base, "gentle-agents", "presence", `${header.sessionHash}.${header.incarnation}.discovery.json`);
+	const sidecar = join(base, "drakonc-agents", "presence", `${header.sessionHash}.${header.incarnation}.discovery.json`);
 	const value = JSON.parse(readFileSync(sidecar, "utf8"));
 	value.metadata.scope.host.root = nbsp;
 	writeFileSync(sidecar, JSON.stringify(value));

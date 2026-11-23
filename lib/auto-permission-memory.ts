@@ -1,7 +1,7 @@
 import type { ExtensionContext, ToolCallEvent, ToolInfo, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 
 export interface AutoPermissionMemoryContext {
- provider: "gentle-engram";
+ provider: "drakonc-engram";
  operation: "mem_save" | "mem_session_summary";
  project: string;
  cwd: string;
@@ -36,7 +36,7 @@ export class AutoPermissionMemory {
   const s=matches[0].sourceInfo;
   if(!s)return {rejection:"metadata-missing"};
   if(s.origin!=="package")return {rejection:"origin"};
-  if(!/^npm:gentle-engram(?:@[^\s/]+)?$/.test(s.source))return {rejection:"source-format"};
+  if(!/^npm:drakonc-engram(?:@[^\s/]+)?$/.test(s.source))return {rejection:"source-format"};
   if(typeof s.path!=="string" || !s.path || s.path.startsWith("builtin:") || s.path.startsWith("<"))return {rejection:"path"};
   return {source:JSON.stringify([s.path,s.source,s.scope,s.origin,s.baseDir ?? null])};
  }
@@ -93,7 +93,7 @@ export class AutoPermissionMemory {
    const allowed=event.toolName==="mem_save" ? ["cwd","project","title","content","type","scope","topic_key","capture_prompt"] : ["cwd","project","content"];
    if(Object.keys(args).some(key=>!allowed.includes(key))){this.last={stage:"write",reason:"invalid-arguments"};return undefined;}
    this.last={stage:"write",reason:"attached"};
-   return {provider:"gentle-engram",operation:event.toolName,project:binding.project,cwd:binding.cwd};
+   return {provider:"drakonc-engram",operation:event.toolName,project:binding.project,cwd:binding.cwd};
   } catch { this.last={stage:"write",reason:"unexpected-error"};return undefined; }
  }
 }

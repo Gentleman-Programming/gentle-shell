@@ -1,4 +1,4 @@
-// The startup banner settings (`banner.json` in the Gentle config home): the
+// The startup banner settings (`banner.json` in the Drakonc config home): the
 // shape, its defaults, and a synchronous strict reader and atomic writer. The
 // banner extension (`extensions/startup-banner.ts`) keeps its async reads and
 // re-exports these definitions; the Desktop `banner` config store uses the
@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-export type BannerColor = "pink" | "cyan" | "yellow" | "green";
+export type BannerColor = "red" | "pink" | "cyan" | "yellow" | "green";
 export interface BannerConfig {
 	showRose: boolean;
 	showTextLogo: boolean;
@@ -18,10 +18,10 @@ export interface BannerConfig {
 export const DEFAULT_BANNER_CONFIG: BannerConfig = {
 	showRose: true,
 	showTextLogo: true,
-	color: "pink",
+	color: "red",
 };
 
-export const BANNER_COLORS: BannerColor[] = ["pink", "cyan", "yellow", "green"];
+export const BANNER_COLORS: BannerColor[] = ["red", "pink", "cyan", "yellow", "green"];
 
 export function bannerConfigPath(configHome: string): string {
 	return join(configHome, "banner.json");

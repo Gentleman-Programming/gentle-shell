@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { childContextExtensionPaths } from "../extensions/gentle-agents.ts";
+import { childContextExtensionPaths } from "../extensions/drakonc-agents.ts";
 
 // #1690: children of an isolated standalone parent load the forwarded package
 // root, and a parent without the injection signal falls back to the curated
@@ -50,16 +50,16 @@ test("forwarding the package root gives children child-context, child-safety and
 // and do not count as product coverage.
 
 test("helper self-check: assertFrozenFallback rejects an extra entry and a reordered list", () => {
-	assert.throws(() => assertFrozenFallback([...frozenFallback, join(extensionsDir, "gentle-ai.ts")]), "an extra entry must fail");
+	assert.throws(() => assertFrozenFallback([...frozenFallback, join(extensionsDir, "drakonc-ai.ts")]), "an extra entry must fail");
 	assert.throws(() => assertFrozenFallback([...frozenFallback].reverse()), "the order is part of the contract");
 });
 
 test("helper self-check: packageEntrypointProblems flags each rule that narrows Pi's discovery", () => {
 	const manifest = { pi: { extensions: ["./extensions"] } };
-	const entries = ["child-context.ts", "child-safety.ts", "nan-provider.ts", "gentle-ai.ts"];
+	const entries = ["child-context.ts", "child-safety.ts", "nan-provider.ts", "drakonc-ai.ts"];
 	assert.deepEqual(packageEntrypointProblems(manifest, entries), []);
 	assert.deepEqual(packageEntrypointProblems(manifest, [...entries, "index.ts"]), ["extensions/index.ts narrows Pi's top-level discovery"]);
 	assert.deepEqual(packageEntrypointProblems(manifest, [...entries, "package.json"]), ["extensions/package.json narrows Pi's top-level discovery"]);
 	assert.deepEqual(packageEntrypointProblems(manifest, entries.filter((name) => name !== "child-safety.ts")), ["extensions/child-safety.ts is not a top-level entrypoint"]);
-	assert.deepEqual(packageEntrypointProblems({ pi: { extensions: ["./extensions/gentle-ai.ts"] } }, entries), ["pi.extensions is not [\"./extensions\"]"]);
+	assert.deepEqual(packageEntrypointProblems({ pi: { extensions: ["./extensions/drakonc-ai.ts"] } }, entries), ["pi.extensions is not [\"./extensions\"]"]);
 });

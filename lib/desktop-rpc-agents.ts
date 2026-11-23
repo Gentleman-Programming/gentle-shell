@@ -1,6 +1,6 @@
-// Gentle Desktop subagents slice: the pure contract shared by the Desktop
+// Drakonc Desktop subagents slice: the pure contract shared by the Desktop
 // bridge (`lib/desktop-agents-service.ts`) and the owner seam inside
-// `extensions/gentle-agents.ts`.
+// `extensions/drakonc-agents.ts`.
 //
 // Nothing here starts, stops, or spawns a subagent. It only names the wire
 // shapes, projects the owner's actual `TaskRecord` state into the safe
@@ -21,10 +21,10 @@ export const DESKTOP_AGENTS_EVENT = "agents_update";
 export const DESKTOP_AGENTS_EVENTS = [DESKTOP_AGENTS_EVENT] as const;
 
 // The versioned owner-service discovery seam (the agents analogue of the jobs
-// `gentle:desktop:jobs-service` adapter). The schema string guards the adapter
+// `drakonc:desktop:jobs-service` adapter). The schema string guards the adapter
 // against drift; the bridge ignores any responder whose shape does not match.
-export const DESKTOP_AGENTS_SERVICE_SCHEMA = "gentle-pi.desktop-agents-service/v1";
-export const DESKTOP_AGENTS_SERVICE_CHANNEL = "gentle:desktop:agents-service";
+export const DESKTOP_AGENTS_SERVICE_SCHEMA = "drakonc-pi.desktop-agents-service/v1";
+export const DESKTOP_AGENTS_SERVICE_CHANNEL = "drakonc:desktop:agents-service";
 
 /** Upper bound on the number of subagents one list answer carries (active + recent finished). */
 export const DESKTOP_AGENTS_LIST_LIMIT = 50;
@@ -131,7 +131,7 @@ export type DesktopAgentsCancelOutcome =
 
 /**
  * One subagent's bounded activity thread: the exact per-item projection and
- * bounds of the `gentle-agents.activity/v1` widget (`projectRpcThread`), plus
+ * bounds of the `drakonc-agents.activity/v1` widget (`projectRpcThread`), plus
  * the store's own thread `version` and `dropped` eviction count. `truncated` is
  * `true` when the store holds more items than the answer carries (the 40-item
  * window or the byte bound cut older items).

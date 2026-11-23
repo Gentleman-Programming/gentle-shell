@@ -7,7 +7,7 @@ fail() { printf '%s\n' "Bootstrap: $1" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || fail "Required utility missing: $1"; }
 for utility in dirname awk; do need "$utility"; done
 bundle=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd) || fail 'Cannot locate installation bundle'
-entry=$bundle/bin/gentle-shell-install.mjs
+entry=$bundle/bin/drakonc-shell-install.mjs
 [ -f "$entry" ] && [ ! -L "$entry" ] || fail 'Future wizard entry is missing; this bundle cannot start a live wizard'
 [ -f "$bundle/scripts/installer-downloads.mjs" ] || fail 'Download helper missing from bundle'
 for utility in uname mkdir mktemp chmod mv rm sleep wc id ls; do need "$utility"; done
@@ -101,7 +101,7 @@ owned=0
 # Only the exact directory this attempt claimed; rm -rf never follows links in it.
 owned_tools() {
     [ "$owned" = 1 ] && [ -n "$tools" ] || return 1
-    case "$tools" in "$HOME"/.gentle-shell-bootstrap-tools.*/*) return 1;; "$HOME"/.gentle-shell-bootstrap-tools.*) ;; *) return 1;; esac
+    case "$tools" in "$HOME"/.drakonc-shell-bootstrap-tools.*/*) return 1;; "$HOME"/.drakonc-shell-bootstrap-tools.*) ;; *) return 1;; esac
     [ -d "$tools" ] && [ ! -L "$tools" ] && [ -d "$tools/.claim" ] && [ ! -L "$tools/.claim" ]
 }
 cleanup() {
@@ -112,8 +112,8 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 make_tools() {
-    tools=$(mktemp -d "$HOME/.gentle-shell-bootstrap-tools.XXXXXXXX") || fail 'Cannot create private tooling directory'
-    case "$tools" in "$HOME"/.gentle-shell-bootstrap-tools.*) ;; *) fail 'Conflicting tooling destination';; esac
+    tools=$(mktemp -d "$HOME/.drakonc-shell-bootstrap-tools.XXXXXXXX") || fail 'Cannot create private tooling directory'
+    case "$tools" in "$HOME"/.drakonc-shell-bootstrap-tools.*) ;; *) fail 'Conflicting tooling destination';; esac
     [ -d "$tools" ] && [ ! -L "$tools" ] || fail 'Unsafe tooling destination'
     # ls may append @ (BSD: extended attributes, e.g. macOS com.apple.provenance
     # on every new directory) or . (GNU: an SELinux security context), but
@@ -122,7 +122,7 @@ make_tools() {
     # No existing destination is ever reused or replaced.
     mkdir "$tools/.claim" || fail 'Conflicting tooling destination'
     owned=1
-    printf '%s\n' 'gentle-pi prerequisite tooling only' > "$tools/.bootstrap-owned" || fail 'Cannot mark tooling ownership'
+    printf '%s\n' 'drakonc-pi prerequisite tooling only' > "$tools/.bootstrap-owned" || fail 'Cannot mark tooling ownership'
 }
 acquire_node=1
 if command -v node >/dev/null 2>&1; then
@@ -201,7 +201,7 @@ fi
 if [ "$owned" = 1 ]; then
     mark=
     if owned_tools && [ -f "$tools/.bootstrap-owned" ] && [ ! -L "$tools/.bootstrap-owned" ] &&
-        { IFS= read -r mark < "$tools/.bootstrap-owned"; } 2>/dev/null && [ "$mark" = 'gentle-pi prerequisite tooling only' ] &&
+        { IFS= read -r mark < "$tools/.bootstrap-owned"; } 2>/dev/null && [ "$mark" = 'drakonc-pi prerequisite tooling only' ] &&
         rm -rf "$tools" 2>/dev/null; then :
     else printf '%s\n' "Bootstrap: installation finished, but temporary tools could not be removed: $tools" >&2; fi
 fi

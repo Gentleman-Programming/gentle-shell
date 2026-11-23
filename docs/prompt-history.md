@@ -12,30 +12,30 @@ nothing is stored unless you explicitly opt in.
 
 ### Turn capture on or off
 
-1. Run `/gentle:customize` and open the **History** category.
+1. Run `/drakonc:customize` and open the **History** category.
 2. Select **Prompt history capture: enable** (or **disable**) and press Enter
    or Space. Highlighting a row only previews the saved preference and the
    effective state.
 3. The change applies from the next prompt; no pi restart is needed.
 
 The preference is saved globally in `<configHome>/history-capture.json`
-(default config home `~/.pi/gentle-ai`, overridable with
-`GENTLE_PI_CONFIG_HOME`) with the strict shape
-`{"schema":"gentle-pi.history-capture/v1","policy":"on"}` or `off`. It is
+(default config home `~/.pi/drakonc-ai`, overridable with
+`DRAKONC_PI_CONFIG_HOME`) with the strict shape
+`{"schema":"drakonc-pi.history-capture/v1","policy":"on"}` or `off`. It is
 written atomically and is not part of visual profiles or visual reset.
 
 For a single session or a script, the environment variable still works:
 
 ```bash
-GENTLE_PI_HISTORY_CAPTURE=1 pi
+DRAKONC_PI_HISTORY_CAPTURE=1 pi
 ```
 
 ### Which setting wins
 
 | Situation | Capture |
 |-----------|---------|
-| `GENTLE_PI_HISTORY_CAPTURE` is `1`, `true`, or `on` | on, whatever Customize says |
-| `GENTLE_PI_HISTORY_CAPTURE` is `0`, `false`, or `off` | off, whatever Customize says |
+| `DRAKONC_PI_HISTORY_CAPTURE` is `1`, `true`, or `on` | on, whatever Customize says |
+| `DRAKONC_PI_HISTORY_CAPTURE` is `0`, `false`, or `off` | off, whatever Customize says |
 | Variable unset, empty, or any other value | the Customize preference |
 | No preference saved | off |
 | Preference file malformed or unreadable | off (fail closed) |
@@ -74,7 +74,7 @@ described in "What disabling capture does" below.
 
 ## Where the files live
 
-Everything sits under `~/.pi/agent/history/` (in a bundled Gentle Shell, under `<agent home>/history/` instead, with the legacy files and the transcript scan in that agent home too: [Bundled install](bundled-install.md#isolation-from-the-users-gentle-ai)):
+Everything sits under `~/.pi/agent/history/` (in a bundled Drakonc Shell, under `<agent home>/history/` instead, with the legacy files and the transcript scan in that agent home too: [Bundled install](bundled-install.md#isolation-from-the-users-drakonc-ai)):
 
 - `registry.json` — advisory map of project hash → cwd, used for display
   labels.
@@ -144,7 +144,7 @@ The selector is always 30 rows tall. Its header adapts to the width:
   does not fit, the inactive scope is shortened
   (`◉ Current project | ○ All`).
 
-In fullscreen, when the Gentle sidebar is showing (140 columns or wider,
+In fullscreen, when the Drakonc sidebar is showing (140 columns or wider,
 Status placement `auto` or `right`), the selector stays in the editor column,
 one column short of the sidebar gap, instead of covering the sidebar. The
 sidebar publishes its width through the terminal-owned sidebar state

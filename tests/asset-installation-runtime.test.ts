@@ -16,11 +16,11 @@ async function proveLazyDiscovery(): Promise<void> {
 	const shim = join(cwd, "extensions.ts");
 	const source = (name: string) => JSON.stringify(new URL(`../extensions/${name}.ts`, import.meta.url).href);
 	writeFileSync(shim, `
-import { createGentleAiExtension } from ${source("gentle-ai")};
-import gentleAgents from ${source("gentle-agents")};
+import { createDrakoncAiExtension } from ${source("drakonc-ai")};
+import drakoncAgents from ${source("drakonc-agents")};
 export default function (pi) {
-  createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: {} })(pi);
-  gentleAgents(pi);
+  createDrakoncAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: {} })(pi);
+  drakoncAgents(pi);
 }
 `);
 	const modelRuntime = await ModelRuntime.create({
@@ -55,12 +55,12 @@ export default function (pi) {
 			return result.content.filter(part => part.type === "text").map(part => part.text).join("\n");
 		};
 		const before = await names();
-		assert.match(before, /- gentle-ai-explore \(global\)/);
+		assert.match(before, /- drakonc-ai-explore \(global\)/);
 		assert.match(before, /- review-risk \(global\)/);
 		assert.doesNotMatch(before, /- sdd-/, "fresh startup must not install SDD definitions");
 		assert.equal(existsSync(join(agentDir, "chains", "sdd-full.chain.md")), false);
-		assert.equal(existsSync(join(agentDir, "gentle-ai", "support", "strict-tdd.md")), true);
-		assert.equal(existsSync(join(agentDir, "gentle-ai", "support", "strict-tdd-verify.md")), true);
+		assert.equal(existsSync(join(agentDir, "drakonc-ai", "support", "strict-tdd.md")), true);
+		assert.equal(existsSync(join(agentDir, "drakonc-ai", "support", "strict-tdd-verify.md")), true);
 		assert.equal(session.messages.length, 0, "asset startup must not start a model turn");
 		console.log("SDK discovery: delegation/review only");
 	} finally {
@@ -68,11 +68,11 @@ export default function (pi) {
 	}
 }
 
-if (process.env.GENTLE_PI_ASSET_PROOF_CHILD === "1") {
+if (process.env.DRAKONC_PI_ASSET_PROOF_CHILD === "1") {
 	await proveLazyDiscovery();
 } else {
 	test("actual SDK discovers delegation and review assets without SDD activation", () => {
-		const root = mkdtempSync(join(tmpdir(), "gentle-pi-assets-sdk-"));
+		const root = mkdtempSync(join(tmpdir(), "drakonc-pi-assets-sdk-"));
 		try {
 			const home = join(root, "home");
 			const cwd = join(root, "project");
@@ -82,9 +82,9 @@ if (process.env.GENTLE_PI_ASSET_PROOF_CHILD === "1") {
 				cwd, encoding: "utf8", timeout: 30_000,
 				env: {
 					PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: home, TMPDIR: root,
-					PI_CODING_AGENT_DIR: agentDir, GENTLE_PI_AGENT_HOME: agentDir,
-					GENTLE_PI_CONFIG_HOME: join(home, "config"), XDG_CONFIG_HOME: join(home, ".config"),
-					PI_OFFLINE: "1", GENTLE_PI_ASSET_PROOF_CHILD: "1",
+					PI_CODING_AGENT_DIR: agentDir, DRAKONC_PI_AGENT_HOME: agentDir,
+					DRAKONC_PI_CONFIG_HOME: join(home, "config"), XDG_CONFIG_HOME: join(home, ".config"),
+					PI_OFFLINE: "1", DRAKONC_PI_ASSET_PROOF_CHILD: "1",
 				},
 			});
 			assert.ifError(result.error);

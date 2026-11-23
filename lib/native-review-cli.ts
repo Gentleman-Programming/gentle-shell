@@ -3,8 +3,8 @@ import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, posix, win32 } from "node:path";
 import { promisify } from "node:util";
-import { binaryDigest, gentleAiIsolationEnv, PackageLocalGentleAiBinaryMissingError, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
-import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
+import { binaryDigest, drakoncAiIsolationEnv, PackageLocalDrakoncAiBinaryMissingError, resolveDrakoncAiBinary } from "./drakonc-ai-binary.ts";
+import { DRAKONC_PI_REVIEW_RELAY_CONTRACT, DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
 import { decodeAgentRiskEscalation, decodeReviewAssessmentV1, type AgentRiskEscalation, type ReviewAssessmentV1 } from "./review-risk-assessment.ts";
 import {
 	REVIEW_INTEGRATION_CONTRACT,
@@ -38,11 +38,11 @@ const execFileAsync = promisify(execFile);
 
 // Negotiated review/status responses can carry a complete authority inventory.
 // Keep the production default large enough for that payload while retaining a
-// hard 64 MiB ceiling even when GENTLE_PI_REVIEW_MAX_BUFFER_BYTES is set.
+// hard 64 MiB ceiling even when DRAKONC_PI_REVIEW_MAX_BUFFER_BYTES is set.
 export const NATIVE_REVIEW_DEFAULT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const NATIVE_REVIEW_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
-const NATIVE_REVIEW_MAX_BUFFER_BYTES_ENV = "GENTLE_PI_REVIEW_MAX_BUFFER_BYTES";
-const NATIVE_REVIEW_MAX_BUFFER_CONFIGURATION_HINT = "Inspect native review state before any new START; GENTLE_PI_REVIEW_MAX_BUFFER_BYTES accepts a positive decimal up to 67108864.";
+const NATIVE_REVIEW_MAX_BUFFER_BYTES_ENV = "DRAKONC_PI_REVIEW_MAX_BUFFER_BYTES";
+const NATIVE_REVIEW_MAX_BUFFER_CONFIGURATION_HINT = "Inspect native review state before any new START; DRAKONC_PI_REVIEW_MAX_BUFFER_BYTES accepts a positive decimal up to 67108864.";
 
 function resolveNativeReviewMaxBufferBytes(environment: NodeJS.ProcessEnv = process.env): number {
 	const value = environment[NATIVE_REVIEW_MAX_BUFFER_BYTES_ENV];
@@ -102,15 +102,15 @@ export interface NativeReviewCli {
 	captureResult?(request: NativeReviewCaptureResultRequest): Promise<NativeReviewCaptureResultOutcome>;
 	captureCorrectionPlan?(request: NativeReviewCorrectionPlanCaptureRequest): Promise<ReviewLastEventClosureV1>;
 	captureProviderRole?(request: NativeReviewProviderRoleCaptureRequest): Promise<NativeReviewProviderRoleCaptureOutcome>;
-	// gentle-pi#638: records the host relay's declaration that one bound selected lens slot cannot be completed under current conditions. Younger than every binary pinned in NATIVE_CLI_CONTRACTS, so the capability is gated invocation-adjacent (see isNativeReviewUnachievableVerbRefused) instead of by a contract row.
+	// drakonc-pi#638: records the host relay's declaration that one bound selected lens slot cannot be completed under current conditions. Younger than every binary pinned in NATIVE_CLI_CONTRACTS, so the capability is gated invocation-adjacent (see isNativeReviewUnachievableVerbRefused) instead of by a contract row.
 	captureUnachievableLens?(request: NativeReviewUnachievableLensCaptureRequest): Promise<NativeReviewUnachievableLensCaptureArtifact>;
 	// Dark until a negotiated version reports the `mode` capability true
 	// (Design Decision #7, organic-rdd-parity). Plain versioned CLI operation,
 	// outside the negotiated review-integration protocol — same shape as
 	// reviewStatus/reclaim above.
 	reviewMode?(request: NativeReviewModeRequest): Promise<NativeReviewModeResult>;
-	// Read-only risk assessment (gentle-ai#4295, landing in parallel with
-	// gentle-pi#662). Same plain-versioned shape as reviewMode/reviewStatus:
+	// Read-only risk assessment (drakonc-ai#4295, landing in parallel with
+	// drakonc-pi#662). Same plain-versioned shape as reviewMode/reviewStatus:
 	// an older binary without the verb, or any other process/decode failure,
 	// rejects the returned promise -- callers report the tier as `unassessable`, which informs
 	// the verification plan but never adds an independent verifier by itself.
@@ -160,7 +160,7 @@ export interface NativeReviewModeRequest {
 	signal?: AbortSignal;
 }
 
-// Read-only risk assessment request (gentle-pi#662). `baseRef` requires
+// Read-only risk assessment request (drakonc-pi#662). `baseRef` requires
 // explicit `committedOnly` acknowledgement, exactly like Native START's
 // baseRef/committedOnly pairing, because both select a committed range
 // instead of the ambient working tree.
@@ -168,7 +168,7 @@ export interface NativeReviewAssessRequest extends NativeUntrackedSelection {
 	cwd: string;
 	baseRef?: string;
 	committedOnly?: boolean;
-	// gentle-ai#6203: forwarded as `--escalate-item/--escalate-reason` so native
+	// drakonc-ai#6203: forwarded as `--escalate-item/--escalate-reason` so native
 	// raises the tier to high and computes review due (the only place it is).
 	escalate?: AgentRiskEscalation;
 	signal?: AbortSignal;
@@ -191,26 +191,26 @@ export interface NativeReviewModeResult {
 
 // Exact-match tolerated-stderr allowlist for START only, gated on the `mode`
 // capability being true (Design Decision #6, organic-rdd-parity). Byte-exact
-// against gentle-ai's headless notices (internal/cli/review_mode.go
+// against drakonc-ai's headless notices (internal/cli/review_mode.go
 // reviewConsentSkippedNotice and its siblings) written when the switch is on
 // but no interactive terminal answered the one-time consent question — which
-// is always true when Pi spawns gentle-ai without a TTY. Any other text still
+// is always true when Pi spawns drakonc-ai without a TTY. Any other text still
 // fails closed as UNEXPECTED_STDERR.
 //
-// Each entry is one whole line the PINNED gentle-ai may write to the console
+// Each entry is one whole line the PINNED drakonc-ai may write to the console
 // stream while still succeeding. That last qualifier is what keeps this list
 // honest: v2.4.0 deleted reviewConsentSkippedDefaultProvenance ("Reviews are
 // on by default; this was never explicitly chosen. ..."), which used to ride
 // with the skip notice whenever the resolved mode source was `default`. Reviews
-// are on by default again since gentle-ai v4.0.0, but the pinned binary no
+// are on by default again since drakonc-ai v4.0.0, but the pinned binary no
 // longer has that function and cannot emit the line, so it is removed here
 // rather than left as dead tolerance. Multi-
 // line stderr is still expected in principle — these are separate Fprintln
 // calls, never one joined string — which is why membership is per line.
 export const REVIEW_CONSENT_NOTICES = Object.freeze([
-	"Gentle AI reviewed this change without asking, because this session has no terminal to answer on. Run 'gentle-ai review mode disable' to turn reviews off, or 'gentle-ai review mode status' to see the current setting.",
-	"Gentle AI could not read an answer, so it reviewed this change and will ask again next time.",
-	"Gentle AI did not recognize that answer, so it reviewed this change and will ask again next time.",
+	"Drakonc AI reviewed this change without asking, because this session has no terminal to answer on. Run 'drakonc-ai review mode disable' to turn reviews off, or 'drakonc-ai review mode status' to see the current setting.",
+	"Drakonc AI could not read an answer, so it reviewed this change and will ask again next time.",
+	"Drakonc AI did not recognize that answer, so it reviewed this change and will ask again next time.",
 	"Review skipped for this candidate at your request. It will be offered again on the next change.",
 ]);
 
@@ -223,7 +223,7 @@ function stderrIsTolerated(stderr: string, tolerated: readonly string[]): boolea
 	return lines.length > 0 && lines.every((line) => tolerated.includes(line));
 }
 
-// gentle-ai main narrates the negotiated STATUS forecast head to a human on
+// drakonc-ai main narrates the negotiated STATUS forecast head to a human on
 // stderr while keeping the machine envelope on stdout (reviewNarrateForecast
 // in internal/cli/review_narration.go, ground-truthed live against a main-line
 // dev build). The pinned release does not emit it, so this narration is
@@ -319,7 +319,7 @@ export type NativeReviewCaptureResultOutcome = NativeReviewAdmittedResultManifes
 // reorders, or substitutes one, because a synthesized acknowledgement would be
 // Pi deciding that a review is over. `binding` is the lineage, target, and
 // revision the caller already holds from STATUS: when the provider answers the
-// burn with a review-acknowledged/v1 envelope (gentle-ai #3947), that envelope
+// burn with a review-acknowledged/v1 envelope (drakonc-ai #3947), that envelope
 // must name exactly this burn.
 export interface NativeReviewAcknowledgeApprovedRequest {
 	readonly argumentTokens: readonly string[];
@@ -338,7 +338,7 @@ export interface NativeReviewCorrectionPlanCaptureRequest {
 	readonly signal?: AbortSignal;
 }
 
-// gentle-pi#311 P4-roles: one Go-owned non-lens provider role capture. The
+// drakonc-pi#311 P4-roles: one Go-owned non-lens provider role capture. The
 // provider renders a SELF-CONTAINED authority-advancing vector
 // (`review.capture-refuter` / `review.capture-validation` with binding tokens
 // plus `--agent=pi --execute=true`, no submission descriptor); Pi executes the
@@ -378,7 +378,7 @@ export interface NativeReviewProviderRoleCaptureArtifact {
 	readonly captured: true;
 }
 
-// gentle-pi#638: the typed declaration that one bound selected lens slot cannot be completed under current conditions. Mirrored from Go's reviewUnachievableLensCaptureArtifact (internal/cli/review_capture_unachievable.go): same schema identity, same closed field set, and the same 512-byte detail bound Go enforces, so a declaration this client refuses locally can never reach a binary that would accept it, and vice versa.
+// drakonc-pi#638: the typed declaration that one bound selected lens slot cannot be completed under current conditions. Mirrored from Go's reviewUnachievableLensCaptureArtifact (internal/cli/review_capture_unachievable.go): same schema identity, same closed field set, and the same 512-byte detail bound Go enforces, so a declaration this client refuses locally can never reach a binary that would accept it, and vice versa.
 export const NATIVE_REVIEW_UNACHIEVABLE_LENS_CAPTURE_SCHEMA = "gentle-ai.review-capture-unachievable/v1";
 export const NATIVE_REVIEW_UNACHIEVABLE_LENS_DETAIL_LIMIT = 512;
 
@@ -412,7 +412,7 @@ export interface NativeReviewUnachievableLensCaptureArtifact {
 	readonly recorded: true;
 }
 
-// gentle-pi#638 fail-open capability gate: `review capture-unachievable` is younger than every released binary pinned in NATIVE_CLI_CONTRACTS, so the verb is gated invocation-adjacent instead of by a capability row. An older binary renders Go's exact `unknown review command "capture-unachievable"` refusal (internal/cli/review_facade.go) on stderr with no stdout, so the invocation rejects before any decode and the captured diagnostics are the only place that text survives. Every other failure -- a typed binding-mismatch refusal, a timeout, a decode failure -- is a real outcome the caller must surface, never a capability signal. Duck-typed on purpose: the classifier must survive a duplicated module instance exactly like the error it inspects.
+// drakonc-pi#638 fail-open capability gate: `review capture-unachievable` is younger than every released binary pinned in NATIVE_CLI_CONTRACTS, so the verb is gated invocation-adjacent instead of by a capability row. An older binary renders Go's exact `unknown review command "capture-unachievable"` refusal (internal/cli/review_facade.go) on stderr with no stdout, so the invocation rejects before any decode and the captured diagnostics are the only place that text survives. Every other failure -- a typed binding-mismatch refusal, a timeout, a decode failure -- is a real outcome the caller must surface, never a capability signal. Duck-typed on purpose: the classifier must survive a duplicated module instance exactly like the error it inspects.
 const NATIVE_REVIEW_UNKNOWN_UNACHIEVABLE_VERB_REFUSAL = /unknown review command "capture-unachievable"/;
 
 function nativeLensSelectionArguments(request: NativeLensSelectionRequest): readonly string[] {
@@ -448,7 +448,7 @@ interface NativeUntrackedSelectionRequest {
 }
 
 /**
- * The agent's own review lens choice (gentle-ai START --lenses): canonical
+ * The agent's own review lens choice (drakonc-ai START --lenses): canonical
  * lens names in 4R order and one reason. Providers that predate it refuse
  * the flag, and START then falls back to the tier default.
  */
@@ -471,7 +471,7 @@ function nativeRequestContextArguments(request: NativeRequestContextSelection): 
 }
 
 /**
- * gentle-ai#6203: the agent escalation rides the contracted STATUS preflight
+ * drakonc-ai#6203: the agent escalation rides the contracted STATUS preflight
  * (`--escalate-item/--escalate-reason`) so the provider-issued START carries it;
  * Pi never appends it to a provider-issued START vector.
  */
@@ -536,8 +536,8 @@ export interface NativeTargetStatusRequest extends NativeUntrackedSelectionReque
 	/**
 	 * Ask the provider for the opt-in `non_blocking_findings` of a compact
 	 * correction_required or escalated authority (`--non-blocking-findings`,
-	 * gentle-ai#6088). Sent only on this client's own contracted STATUS. The
-	 * minimum supported provider (gentle-ai v4.6.0) always understands the flag,
+	 * drakonc-ai#6088). Sent only on this client's own contracted STATUS. The
+	 * minimum supported provider (drakonc-ai v4.6.0) always understands the flag,
 	 * so a refusal of it is an ordinary failure and is never retried.
 	 */
 	nonBlockingFindings?: true;
@@ -573,7 +573,7 @@ export type NativeReviewAuthorityEntryStatus = (typeof NATIVE_REVIEW_AUTHORITY_E
 export const NATIVE_REVIEW_LOCK_STATUS = {
 	OWNED: "owned",
 	AMBIGUOUS: "ambiguous",
-	// gentle-ai 2.1.8 leaves review-transactions/v2/LOCK behind after ordinary
+	// drakonc-ai 2.1.8 leaves review-transactions/v2/LOCK behind after ordinary
 	// successful operations and inventories it as a released (dead-owner) entry
 	// (#184). This stays a closed enum: lock status routes controller blocking
 	// behavior, so unknown future statuses must keep failing closed instead of
@@ -729,7 +729,7 @@ function providerFlagValue(tokens: readonly string[], flag: string): string | un
 
 const NATIVE_RISK_LEVEL = ["low", "medium", "high"] as const;
 
-// gentle-ai's negotiated `start/v2` envelope is a closed schema
+// drakonc-ai's negotiated `start/v2` envelope is a closed schema
 // (`additionalProperties: false`), so the two projections its plain sibling
 // carries cannot be added to it without a new contract version. Both are
 // projections of facts `start/v2` already reports as required fields, so a
@@ -742,7 +742,7 @@ const NATIVE_RISK_LEVEL = ["low", "medium", "high"] as const;
 // `reviewConsentEvidencePhrases` is documented there as the single phrasing
 // source so its surfaces cannot drift, which makes this a second surface: an
 // unrecognized reason code therefore renders nothing rather than guessing, and
-// nativeRiskEvidencePhrases is pinned against a gentle-ai fixture in
+// nativeRiskEvidencePhrases is pinned against a drakonc-ai fixture in
 // tests/native-review-parity.test.ts so a vocabulary change fails loudly.
 const REVIEW_EMPTY_CANDIDATE_HINT =
 	"the candidate has no pending changes; already-committed work can be reviewed by rerunning review start with --base-ref <commit> naming the base to compare against";
@@ -829,18 +829,18 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// row is a promise and these are the two whose data was proven to reach the
 	// negotiated path Pi actually consumes:
 	//
-	//   mode      `gentle-ai review mode status` answers the review-mode/v1
+	//   mode      `drakonc-ai review mode status` answers the review-mode/v1
 	//             envelope directly.
 	//   delivery  the gate result carries `delivery` ("disabled/unmanaged" when
 	//             the kill switch is off), verified against v2.2.0.
 	//
-	// riskEvidence and hint stay dark deliberately. Both exist in gentle-ai
+	// riskEvidence and hint stay dark deliberately. Both exist in drakonc-ai
 	// v2.2.0 but only on the PLAIN start envelope; the negotiated
 	// `review-integration.start/v2` that NativeReviewCliV216 decodes carries
 	// `risk_reasons` instead of `risk_evidence` and omits `hint` entirely.
 	// Lighting them would advertise data that cannot arrive. Closing that gap
 	// needs the negotiated start envelope extended upstream, which moves a
-	// byte-pinned fixture and therefore belongs to a gentle-ai release, not to
+	// byte-pinned fixture and therefore belongs to a drakonc-ai release, not to
 	// a Pi capability flip.
 	"2.2.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// 2.2.1 repeats 2.2.0 because the wire did not move for the lane Pi speaks.
@@ -871,7 +871,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// no row.
 	"2.4.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// Ground-truthed by driving the exact v2.5.0-rc.3 tagged build through the
-	// gentle-ai-bench driven journey corpus (exit 0), which exercises the
+	// drakonc-ai-bench driven journey corpus (exit 0), which exercises the
 	// start/status/capture/validate/mode/delivery lifecycles Pi consumes. The
 	// v2 lane advertises capabilities/v2.3 and its reviewing START is the
 	// `start/v4` continuation envelope that #499 already decodes; the closed
@@ -921,7 +921,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// so this row repeats 2.7.0. riskEvidence and hint remain dark because
 	// neither is proven to reach the negotiated START path Pi consumes.
 	"2.8.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
-	// v2.8.1 only changed runtime telemetry model attribution (gentle-ai#4536);
+	// v2.8.1 only changed runtime telemetry model attribution (drakonc-ai#4536);
 	// the closed fields Pi consumes did not change between 2.8.0 and 2.8.1, so
 	// this row repeats 2.8.0 exactly. riskEvidence and hint remain dark
 	// because neither is proven to reach the negotiated START path Pi consumes.
@@ -942,7 +942,7 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// (#4565), OpenCode reviewer Task wrapper decoding (#4545), and Engram
 	// protocol asset wording (#4179). Ground-truthed by diffing
 	// contracts/review-integration/v2 and contracts/review-provider-contract
-	// between the v2.8.2 and v2.9.0 tags in the gentle-ai source tree: zero
+	// between the v2.8.2 and v2.9.0 tags in the drakonc-ai source tree: zero
 	// bytes changed. None of the above touch the closed START/STATUS fields
 	// this row negotiates, so it repeats 2.8.2 exactly. riskEvidence and hint
 	// remain dark because neither is proven to reach the negotiated START
@@ -952,53 +952,53 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	// deriving Claude Code SDD dispatch authority from the session transcript
 	// (#4575, #4551). Ground-truthed by diffing contracts/review-integration/v2
 	// and contracts/review-provider-contract between the v2.9.0 and v2.9.1 tags
-	// in the gentle-ai source tree: zero bytes changed. Neither change touches
+	// in the drakonc-ai source tree: zero bytes changed. Neither change touches
 	// the closed START/STATUS fields this row negotiates, so it repeats 2.9.0
 	// exactly. riskEvidence and hint remain dark because neither is proven to
 	// reach the negotiated START path Pi consumes.
 	"2.9.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v3.0.0 shipped ODD as the orchestrator's mandatory default protocol and
-	// integrated the simplified SDD workflow into it (gentle-ai #4642, #4644),
+	// integrated the simplified SDD workflow into it (drakonc-ai #4642, #4644),
 	// with the provider contract byte-frozen at 1.2.0. Ground-truthed by
 	// diffing contracts/review-integration/v2 and
 	// contracts/review-provider-contract between the v2.9.1 and v3.0.0 tags
-	// in the gentle-ai source tree: zero bytes changed. Neither change touches
+	// in the drakonc-ai source tree: zero bytes changed. Neither change touches
 	// the closed START/STATUS fields this row negotiates, so it repeats 2.9.1
 	// exactly. riskEvidence and hint remain dark because neither is proven to
 	// reach the negotiated START path Pi consumes.
 	"3.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
-	// v3.0.1 moved the Go module path to github.com/gentleman-programming/gentle-ai/v3
-	// with no contract change (gentle-ai #4683). Ground-truthed by diffing
+	// v3.0.1 moved the Go module path to github.com/drakoncman-programming/drakonc-ai/v3
+	// with no contract change (drakonc-ai #4683). Ground-truthed by diffing
 	// contracts/review-integration/v2 and contracts/review-provider-contract
-	// between the v3.0.0 and v3.0.1 tags in the gentle-ai source tree: zero
+	// between the v3.0.0 and v3.0.1 tags in the drakonc-ai source tree: zero
 	// bytes changed. This row repeats 3.0.0 (and 2.9.1) exactly. riskEvidence
 	// and hint remain dark because neither is proven to reach the negotiated
 	// START path Pi consumes.
 	"3.0.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
-	// v3.1.0 changed the ODD orchestrator contract only (gentle-ai #4714).
+	// v3.1.0 changed the ODD orchestrator contract only (drakonc-ai #4714).
 	// Ground-truthed by diffing contracts/review-integration/v2 and
 	// contracts/review-provider-contract between the v3.0.2 and v3.1.0 tags
-	// in the gentle-ai source tree: zero bytes changed (provider contract
+	// in the drakonc-ai source tree: zero bytes changed (provider contract
 	// stays 1.2.0). Neither change touches the closed START/STATUS fields
 	// this row negotiates, so it repeats 3.0.1 exactly. riskEvidence and hint
 	// remain dark because neither is proven to reach the negotiated START
 	// path Pi consumes.
 	"3.1.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
-	// v3.2.1 changed the ODD orchestrator contract only (gentle-ai #4714
+	// v3.2.1 changed the ODD orchestrator contract only (drakonc-ai #4714
 	// follow-up). Ground-truthed by diffing contracts/review-integration/v2 and
 	// contracts/review-provider-contract between the v3.1.0 and v3.2.1 tags
-	// in the gentle-ai source tree: zero bytes changed (provider contract
+	// in the drakonc-ai source tree: zero bytes changed (provider contract
 	// stays 1.2.0). Neither change touches the closed START/STATUS fields
 	// this row negotiates, so it repeats 3.1.0 exactly. riskEvidence and hint
 	// remain dark because neither is proven to reach the negotiated START
 	// path Pi consumes.
 	"3.2.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
-	// v3.4.0 (gentle-pi never pinned the intervening v3.3.0 tag, so it gets no
+	// v3.4.0 (drakonc-pi never pinned the intervening v3.3.0 tag, so it gets no
 	// row here) added capabilities/v2.6 and status/v8-v9, and extended
 	// `review assess` with review_due/review_due_reason/next_transition
-	// (gentle-ai #4714 follow-up). Ground-truthed by diffing
+	// (drakonc-ai #4714 follow-up). Ground-truthed by diffing
 	// contracts/review-integration/v2 and contracts/review-provider-contract
-	// between the v3.2.1 and v3.4.0 tags in the gentle-ai source tree: the
+	// between the v3.2.1 and v3.4.0 tags in the drakonc-ai source tree: the
 	// provider contract stays byte-identical at 1.2.0, and every
 	// review-integration/v2 change is an additive superset (new optional
 	// schema/fields) that decodeReviewStatusV3 and the capabilities
@@ -1039,14 +1039,14 @@ export const NATIVE_CLI_CONTRACTS = Object.freeze({
 	"4.0.0": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v4.1.1 repeats 4.0.0: the published binary still advertises
 	// capabilities/v2.6 under review-integration/v2. The provider contract moved
-	// from 1.2.0 to 1.3.0 (additive agent lens selection, gentle-ai#5348), with
+	// from 1.2.0 to 1.3.0 (additive agent lens selection, drakonc-ai#5348), with
 	// published tarball SHA-256
 	// b04b6b75d1a446c942a816fbf92932d16f8c3d3001f93159dee2a92bbf2ebe44.
 	// No new negotiated capability identity is asserted.
 	"4.1.1": Object.freeze({ start: true, finalize: true, validate: true, bindSdd: true, status: true, inventory: true, reclaim: true, recover: true, abandon: true, mode: true, riskEvidence: false, hint: false, delivery: true }),
 	// v4.2.0 repeats 4.1.1: the published binary still advertises
 	// capabilities/v2.6 under review-integration/v2. The provider contract moved
-	// from 1.3.0 to 1.4.0 (routing/pi.md, gentle-ai#5536), with published
+	// from 1.3.0 to 1.4.0 (routing/pi.md, drakonc-ai#5536), with published
 	// tarball SHA-256
 	// 9d2927a84ba9a596f69029e3f854b16f86ca4c8b32cc5d63683764ccf2fb394b.
 	// No new negotiated capability identity is asserted.
@@ -1124,14 +1124,14 @@ export class NativeReviewCliError extends Error {
 	}
 }
 
-// The one central runner for every gentle-ai CLI invocation the extension
-// makes. It declares the Pi host relay handshake on each spawn: gentle-ai
-// refuses pi admission pre-authority without it (gentle-pi#311 P4), and a
+// The one central runner for every drakonc-ai CLI invocation the extension
+// makes. It declares the Pi host relay handshake on each spawn: drakonc-ai
+// refuses pi admission pre-authority without it (drakonc-pi#311 P4), and a
 // single injection point keeps the declaration impossible to forget on any
-// individual operation. In a bundled install it also keeps Gentle AI's state
-// inside the prefix (gentleAiIsolationEnv, S9).
-export function gentleAiProcessEnvironment(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-	return { ...gentleAiIsolationEnv(base), [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT };
+// individual operation. In a bundled install it also keeps Drakonc AI's state
+// inside the prefix (drakoncAiIsolationEnv, S9).
+export function drakoncAiProcessEnvironment(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	return { ...drakoncAiIsolationEnv(base), [DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV]: DRAKONC_PI_REVIEW_RELAY_CONTRACT };
 }
 
 export type ProcessTreeKiller = (pid: number) => void;
@@ -1173,7 +1173,7 @@ function execFileResultFromError(error: unknown, timedOut: boolean): ExecFileRes
 }
 
 // Windows: abort and timeout kill the whole process tree instead of only
-// gentle-ai, with the same observable results as the POSIX path.
+// drakonc-ai, with the same observable results as the POSIX path.
 function windowsExecFile(request: ExecFileRequest, killProcessTree: ProcessTreeKiller): Promise<ExecFileResult> {
 	const { signal } = request;
 	if (signal?.aborted) return Promise.reject(abortError(signal));
@@ -1181,7 +1181,7 @@ function windowsExecFile(request: ExecFileRequest, killProcessTree: ProcessTreeK
 		let timedOut = false, aborted = false, pipesCut = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let fallback: ReturnType<typeof setTimeout> | undefined;
-		const child = execFile(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, maxBuffer: request.maxBufferBytes, env: gentleAiProcessEnvironment() }, (error, stdout, stderr) => {
+		const child = execFile(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, maxBuffer: request.maxBufferBytes, env: drakoncAiProcessEnvironment() }, (error, stdout, stderr) => {
 			if (timer !== undefined) clearTimeout(timer);
 			if (fallback !== undefined) clearTimeout(fallback);
 			signal?.removeEventListener("abort", onAbort);
@@ -1189,7 +1189,7 @@ function windowsExecFile(request: ExecFileRequest, killProcessTree: ProcessTreeK
 			if (error === null) { resolve({ stdout, stderr, exitCode: 0, signal: null, timedOut: pipesCut, outputLimitExceeded: false }); return; }
 			try { resolve(execFileResultFromError(Object.assign(error, { stdout, stderr }), timedOut)); } catch (failure) { reject(failure); }
 		});
-		// If taskkill cannot run (AppLocker, a broken PATH), still end gentle-ai
+		// If taskkill cannot run (AppLocker, a broken PATH), still end drakonc-ai
 		// itself so the deadline holds; its children may then outlive it. A
 		// surviving descendant can still hold the inherited stdout/stderr open,
 		// which would keep execFile from calling back, so cut the pipes too.
@@ -1216,7 +1216,7 @@ export function createNodeExecFileAdapter(options: { readonly platform?: NodeJS.
 	}
 	return async (request) => {
 		try {
-			const output = await execFileAsync(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, timeout: request.timeoutMs, maxBuffer: request.maxBufferBytes, signal: request.signal, env: gentleAiProcessEnvironment() });
+			const output = await execFileAsync(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, timeout: request.timeoutMs, maxBuffer: request.maxBufferBytes, signal: request.signal, env: drakoncAiProcessEnvironment() });
 			return { stdout: output.stdout, stderr: output.stderr, exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 		} catch (error) {
 			return execFileResultFromError(error, false);
@@ -1328,7 +1328,7 @@ function decodeNativeMaintenanceResult(value: unknown, expectedOperation: Native
 }
 // Unimplemented next_transition.execute.operation values must never reach
 // argv synthesis. Checked against the raw pre-decode body so an operation
-// gentle-pi does not implement (e.g. a future `dispose-result`) fails with a
+// drakonc-pi does not implement (e.g. a future `dispose-result`) fails with a
 // named, typed refusal instead of a generic schema-incompatible error, and
 // before any client ever tries to build an invocation for it (Design
 // Decision #6, migrate-review-integration-v2).
@@ -1340,7 +1340,7 @@ function assertSupportedNextTransitionOperation(body: Record<string, unknown>): 
 	if (typeof execute !== "object" || execute === null || Array.isArray(execute)) return;
 	const operation = (execute as Record<string, unknown>).operation;
 	if (typeof operation === "string" && !NATIVE_REVIEW_SUPPORTED_TRANSITION_OPERATIONS.has(operation)) {
-		throw nativeError(NATIVE_REVIEW_ERROR_CODE.UNSUPPORTED_TRANSITION_OPERATION, NATIVE_REVIEW_OPERATION.STATUS, false, `unsupported-transition-operation: gentle-pi does not implement the next_transition operation "${operation}"; refusing rather than synthesizing an invocation for it`);
+		throw nativeError(NATIVE_REVIEW_ERROR_CODE.UNSUPPORTED_TRANSITION_OPERATION, NATIVE_REVIEW_OPERATION.STATUS, false, `unsupported-transition-operation: drakonc-pi does not implement the next_transition operation "${operation}"; refusing rather than synthesizing an invocation for it`);
 	}
 }
 function decode<T>(operation: NativeReviewOperation, mutating: boolean, callback: () => T, diagnostics = nativeProcessDiagnostics(operation, NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE)): T {
@@ -1603,8 +1603,8 @@ class NativeReviewPlainCli {
 	private readonly timeoutMs: number;
 	private readonly maxBufferBytes: number;
 	private readonly cleanupDirectory: (directory: string) => Promise<void>;
-	constructor(adapter: ExecFileAdapter, executable: string | (() => string) = resolveGentleAiBinary, timeoutMs = 30_000, maxBufferBytes = resolveNativeReviewMaxBufferBytes(), cleanupDirectory = (directory: string) => rm(directory, { recursive: true, force: true })) {
-		if (typeof executable === "string" && (!isAbsolute(executable) || executable === "gentle-ai")) throw new TypeError("Native review requires an absolute package-local executable");
+	constructor(adapter: ExecFileAdapter, executable: string | (() => string) = resolveDrakoncAiBinary, timeoutMs = 30_000, maxBufferBytes = resolveNativeReviewMaxBufferBytes(), cleanupDirectory = (directory: string) => rm(directory, { recursive: true, force: true })) {
+		if (typeof executable === "string" && (!isAbsolute(executable) || executable === "drakonc-ai")) throw new TypeError("Native review requires an absolute package-local executable");
 		this.adapter = adapter;
 		this.executable = executable;
 		this.timeoutMs = timeoutMs;
@@ -1615,11 +1615,11 @@ class NativeReviewPlainCli {
 	private executablePath(operation: NativeReviewOperation, mutating: boolean): string {
 		try {
 			const executable = typeof this.executable === "string" ? this.executable : this.executable();
-			if (!isAbsolute(executable) || executable === "gentle-ai") throw new TypeError("Native review requires an absolute package-local executable");
+			if (!isAbsolute(executable) || executable === "drakonc-ai") throw new TypeError("Native review requires an absolute package-local executable");
 			return executable;
 		}
 		catch (error) {
-			if (error instanceof PackageLocalGentleAiBinaryMissingError) {
+			if (error instanceof PackageLocalDrakoncAiBinaryMissingError) {
 				throw nativeError(NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING, operation, mutating, error.message, undefined, false);
 			}
 			throw nativeError(NATIVE_REVIEW_ERROR_CODE.UNAVAILABLE, operation, mutating, "package-local native process could not start", undefined, false);
@@ -1745,7 +1745,7 @@ class NativeReviewPlainCli {
 }
 
 export function nativeReviewAbandonAuthorization(request: Pick<NativeReviewAbandonRequest, "lineage" | "expectedRevision" | "snapshotIdentity" | "capturedLensResults" | "findingsPresent" | "actor" | "reason">): string {
-	// gentle-ai 0ed9225f removed evidence records from the discarded-work summary,
+	// drakonc-ai 0ed9225f removed evidence records from the discarded-work summary,
 	// so the native v2 gate verifies an exact eight-line binding (schema, lineage,
 	// revision, snapshot_identity, reason, captured_lens_results, findings_present,
 	// actor) — there is no evidence_records_present line to derive or relay.
@@ -1806,7 +1806,7 @@ export class NativeReviewIntegrationError extends Error {
 }
 
 // Raised when negotiated START answers a consent question (`consent/v2` from
-// the pinned line, `consent/v3` from gentle-ai >= 2.3.0; action:
+// the pinned line, `consent/v3` from drakonc-ai >= 2.3.0; action:
 // "consent_required") instead of `start/v3`. The provider has frozen no
 // authority yet: Pi must relay this complete candidate-scoped question and may
 // answer only through one of the exact invocations carried by the envelope.
@@ -2006,7 +2006,7 @@ function decodeNativeAdmittedResultManifest(value: unknown): NativeReviewAdmitte
 	// (decoder-freshness discipline): the complete live envelope — identity
 	// constants, binding fields, and the exactly-one-locator rule — is
 	// validated before anything is handed to FINALIZE, and an unknown field
-	// grown by gentle-ai main is rejected instead of silently dropped.
+	// grown by drakonc-ai main is rejected instead of silently dropped.
 	const artifact = decodeReviewResultArtifactV2(value);
 	return Object.freeze({
 		schema: artifact.schema,
@@ -2018,7 +2018,7 @@ function decodeNativeAdmittedResultManifest(value: unknown): NativeReviewAdmitte
 	});
 }
 
-// gentle-pi#311 P4-roles: the strict acknowledgement for one executed
+// drakonc-pi#311 P4-roles: the strict acknowledgement for one executed
 // provider role vector. The immutable verdict bytes live in the Go-owned
 // compact store slot; this envelope only names the binding the capture
 // proved, so anything beyond that exact shape is refused.
@@ -2045,7 +2045,7 @@ function decodeNativeProviderRoleCaptureArtifact(value: unknown): NativeReviewPr
 	});
 }
 
-// gentle-pi#638: the recorded declaration Go prints for one unachievable slot. Closed key set, exact schema identity, and the lens Go itself resolved from the request hash -- the host never asserts which lens failed, only reads back the one the provider bound.
+// drakonc-pi#638: the recorded declaration Go prints for one unachievable slot. Closed key set, exact schema identity, and the lens Go itself resolved from the request hash -- the host never asserts which lens failed, only reads back the one the provider bound.
 function decodeNativeUnachievableLensCaptureArtifact(value: unknown): NativeReviewUnachievableLensCaptureArtifact {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError("native unachievable lens capture artifact must be an object");
 	const body = value as Record<string, unknown>;
@@ -2073,12 +2073,12 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 	private readonly cleanupDirectory: (directory: string) => Promise<void>;
 	constructor(
 		adapter: ExecFileAdapter,
-		executable: string | (() => string) = resolveGentleAiBinary,
+		executable: string | (() => string) = resolveDrakoncAiBinary,
 		timeoutMs = 30_000,
 		maxBufferBytes = resolveNativeReviewMaxBufferBytes(),
 		cleanupDirectory: (directory: string) => Promise<void> = (directory) => rm(directory, { recursive: true, force: true }),
 	) {
-		if (typeof executable === "string" && (!isAbsolute(executable) || executable === "gentle-ai")) throw new TypeError("Native review requires an absolute package-local executable");
+		if (typeof executable === "string" && (!isAbsolute(executable) || executable === "drakonc-ai")) throw new TypeError("Native review requires an absolute package-local executable");
 		this.adapter = adapter;
 		this.executable = executable;
 		this.timeoutMs = timeoutMs;
@@ -2090,10 +2090,10 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 	private executablePath(operation: NativeReviewOperation, mutating: boolean): string {
 		try {
 			const path = typeof this.executable === "string" ? this.executable : this.executable();
-			if (!isAbsolute(path) || path === "gentle-ai") throw new TypeError("Native review requires an absolute package-local executable");
+			if (!isAbsolute(path) || path === "drakonc-ai") throw new TypeError("Native review requires an absolute package-local executable");
 			return path;
 		} catch (error) {
-			if (error instanceof PackageLocalGentleAiBinaryMissingError) throw nativeError(NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING, operation, mutating, error.message, undefined, false);
+			if (error instanceof PackageLocalDrakoncAiBinaryMissingError) throw nativeError(NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING, operation, mutating, error.message, undefined, false);
 			throw nativeError(NATIVE_REVIEW_ERROR_CODE.UNAVAILABLE, operation, mutating, "package-local native process could not start", undefined, false);
 		}
 	}
@@ -2111,7 +2111,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		// receipt left to describe. Only that shape opts out of the body, and
 		// only for a zero exit. When such an operation does print, the bytes
 		// are handed back as a body for the caller to decode against the one
-		// identity it accepts (gentle-ai #3947); a non-zero exit still has to
+		// identity it accepts (drakonc-ai #3947); a non-zero exit still has to
 		// produce its typed failure envelope like every other operation.
 		expectsBody = true,
 	): Promise<NegotiatedExecution> {
@@ -2210,7 +2210,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		// explicit answer it cannot infer. Discriminate before decode and surface
 		// the complete envelope; only the caller can map a human answer. The
 		// body's own schema string selects the identity-exact decoder: the
-		// pinned 2.2.x line emits consent/v2, gentle-ai >= 2.3.0 (capabilities
+		// pinned 2.2.x line emits consent/v2, drakonc-ai >= 2.3.0 (capabilities
 		// v2.1+) emits consent/v3, and any other identity fails closed inside
 		// the v3 decoder's exact identity gate.
 		if (execution.body.action === "consent_required") {
@@ -2308,7 +2308,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		const submitted = request.intendedUntrackedSelection;
 		if (submitted !== undefined && submitted.argumentTokens.reduce((count, token) => count + token.split("{{value}}").length - 1, 0) !== 1) throw new TypeError("Native intended-untracked selection requires exactly one provider-issued {{value}} token");
 		const submittedTokens = submitted === undefined ? undefined : submitted.argumentTokens.map((token) => token.replaceAll("{{value}}", submitted.value));
-		// gentle-ai 3.7.1 submission argument_tokens never carry --base-ref /
+		// drakonc-ai 3.7.1 submission argument_tokens never carry --base-ref /
 		// --committed-only / --lineage, so a forwarded selector must be appended
 		// after them; only bail if the provider already staked out a conflicting
 		// value for the same flag. providerFlagValue also fails closed on a
@@ -2357,7 +2357,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			}
 		}
 		// The opt-in rides only this client's own contracted STATUS, never a
-		// provider-issued selection submission. gentle-ai v4.6.0 (the minimum
+		// provider-issued selection submission. drakonc-ai v4.6.0 (the minimum
 		// supported binary) always understands --non-blocking-findings.
 		const statusArgumentsWith = (escalation: readonly string[]) => submittedTokens === undefined ? [
 			"review", "status", "--contract", REVIEW_INTEGRATION_CONTRACT, "--cwd", request.cwd,
@@ -2402,7 +2402,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		if (request.resultDocument.length === 0) throw new TypeError("Native CAPTURE_RESULT result document must contain at least one byte");
 		const carriesContext = request.argumentTokens.some((token) => token === "--repository-context" || token.startsWith("--repository-context="));
 		if (carriesContext && request.cwd !== undefined) throw new TypeError("Native CAPTURE_RESULT takes a repository context or --cwd, never both");
-		const directory = await mkdtemp(join(tmpdir(), "gentle-ai-capture-result-"));
+		const directory = await mkdtemp(join(tmpdir(), "drakonc-ai-capture-result-"));
 		try {
 			await chmod(directory, 0o700);
 			const resultFile = join(directory, "result.json");
@@ -2434,7 +2434,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 	// ordinary typed failure envelope. Two success shapes exist and both are
 	// the same burn: every published release up to v2.5.0-rc.3 prints nothing
 	// (resolved as `undefined`, byte-for-byte the pinned behaviour), and
-	// gentle-ai #3947 prints one `gentle-ai.review-acknowledged/v1` envelope
+	// drakonc-ai #3947 prints one `gentle-ai.review-acknowledged/v1` envelope
 	// naming the burned lineage, target, and consumed revision. Any other
 	// output on a zero exit is schema-incompatible with the mutation outcome
 	// unknown, exactly like a malformed terminal closure: the caller
@@ -2469,14 +2469,14 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		});
 	}
 
-	// gentle-pi#311 P4-roles: executes one provider-rendered self-contained
+	// drakonc-pi#311 P4-roles: executes one provider-rendered self-contained
 	// role capture vector exactly as rendered — one CLI invocation, verbatim
 	// tokens in provider order, in the foreground. Go materializes the role
 	// prompt, spawns its own locked-down pi subprocess, and admits the raw
 	// verdict; Pi never adds, removes, or reorders a single token (not even
 	// --cwd: the vector's --repository-context is authoritative and mutually
 	// exclusive with a path). The central adapter injects the relay handshake
-	// environment on this spawn like on every other gentle-ai invocation.
+	// environment on this spawn like on every other drakonc-ai invocation.
 	async captureProviderRole(request: NativeReviewProviderRoleCaptureRequest): Promise<NativeReviewProviderRoleCaptureOutcome> {
 		if (!isNativeReviewProviderRoleCaptureOperation(request.captureOperation)) throw new TypeError(`Native CAPTURE_PROVIDER_ROLE supports only review.capture-refuter and review.capture-validation, received ${JSON.stringify(request.captureOperation)}`);
 		const verb = request.captureOperation.slice("review.".length);
@@ -2499,7 +2499,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		});
 	}
 
-	// gentle-pi#638: `gentle-ai review capture-unachievable` records one bound declaration that the exact slot the collect transition offered cannot be completed under current conditions. Unlike every other capture verb the host runs, this one reports a failure instead of a result, so it never takes the provider-issued tokens verbatim: the declaration's binding values are named fields re-derived from the slot, and Go verifies them against the frozen lineage, revision, target, and subject hash before recording anything (internal/cli/review_capture_unachievable.go). A binding that no longer matches is a typed refusal the caller surfaces, never a host-side reconstruction.
+	// drakonc-pi#638: `drakonc-ai review capture-unachievable` records one bound declaration that the exact slot the collect transition offered cannot be completed under current conditions. Unlike every other capture verb the host runs, this one reports a failure instead of a result, so it never takes the provider-issued tokens verbatim: the declaration's binding values are named fields re-derived from the slot, and Go verifies them against the frozen lineage, revision, target, and subject hash before recording anything (internal/cli/review_capture_unachievable.go). A binding that no longer matches is a typed refusal the caller surfaces, never a host-side reconstruction.
 	async captureUnachievableLens(request: NativeReviewUnachievableLensCaptureRequest): Promise<NativeReviewUnachievableLensCaptureArtifact> {
 		for (const [field, value] of (["lineageId", "reason"] as const).map((field) => [field, request[field]] as const)) {
 			if (!isCanonicalProcessString(value)) throw new TypeError(`Native CAPTURE_UNACHIEVABLE ${field} must be a non-empty, trimmed, NUL-free string`);
@@ -2509,16 +2509,16 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			if (!/^sha256:[0-9a-f]{64}$/.test(value)) throw new TypeError(`Native CAPTURE_UNACHIEVABLE ${field} must be a canonical SHA-256 identity`);
 		}
 		const detail = request.detail === undefined ? "" : request.detail.trim();
-		// gentle-pi#822: the native limit is 512 UTF-8 bytes, not 512 UTF-16 code units — the Go side measures the encoded payload, so a multibyte detail needs Buffer.byteLength; a .length check would let 300 two-byte characters through.
+		// drakonc-pi#822: the native limit is 512 UTF-8 bytes, not 512 UTF-16 code units — the Go side measures the encoded payload, so a multibyte detail needs Buffer.byteLength; a .length check would let 300 two-byte characters through.
 		if (Buffer.byteLength(detail, "utf8") > NATIVE_REVIEW_UNACHIEVABLE_LENS_DETAIL_LIMIT) throw new TypeError(`Native CAPTURE_UNACHIEVABLE detail exceeds ${NATIVE_REVIEW_UNACHIEVABLE_LENS_DETAIL_LIMIT} bytes`);
 		if (request.repositoryContext !== undefined && !isCanonicalProcessString(request.repositoryContext)) throw new TypeError("Native CAPTURE_UNACHIEVABLE repositoryContext must be a non-empty, trimmed, NUL-free string");
 		const executable = this.executablePath(NATIVE_REVIEW_OPERATION.CAPTURE_UNACHIEVABLE, true);
-		// gentle-pi#822: --repository-context is authoritative and mutually exclusive with a path (the captureProviderRole discipline), so --cwd rides the invocation only when no repository context names it; the process working directory stays request.cwd either way.
+		// drakonc-pi#822: --repository-context is authoritative and mutually exclusive with a path (the captureProviderRole discipline), so --cwd rides the invocation only when no repository context names it; the process working directory stays request.cwd either way.
 		const execution = await this.invoke(NATIVE_REVIEW_OPERATION.CAPTURE_UNACHIEVABLE, request.cwd, ["review", "capture-unachievable", "--lineage", request.lineageId, "--target", request.targetIdentity, "--expected-revision", request.expectedRevision, "--request-hash", request.requestHash, "--reason", request.reason, ...(detail === "" ? [] : ["--detail", detail]), ...(request.repositoryContext === undefined ? ["--cwd", request.cwd] : ["--repository-context", request.repositoryContext])], true, request.signal, executable);
 		return decode(NATIVE_REVIEW_OPERATION.CAPTURE_UNACHIEVABLE, true, () => decodeNativeUnachievableLensCaptureArtifact(execution.body));
 	}
 
-	// gentle-pi#311 P5: executes one provider-rendered `review.finalize`
+	// drakonc-pi#311 P5: executes one provider-rendered `review.finalize`
 	// execute transition exactly as rendered. The tokens come verbatim from
 	// the negotiated next_transition (e.g. `--lineage=<id>
 	// --captured-results=true`); Pi assembles no reviewer, refuter, or
@@ -2579,9 +2579,9 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		return decode(NATIVE_REVIEW_OPERATION.MODE, mutating, () => decodeNativeReviewMode(execution.body, operation));
 	}
 
-	// Read-only risk assessment (gentle-ai#4295, gentle-pi#662). Never mutates;
+	// Read-only risk assessment (drakonc-ai#4295, drakonc-pi#662). Never mutates;
 	// an older binary without the verb, or any other process/decode failure,
-	// rejects -- callers (the `gentle_review` tool's `assess` operation) fail
+	// rejects -- callers (the `drakonc_review` tool's `assess` operation) fail
 	// closed to `high`.
 	async assess(request: NativeReviewAssessRequest): Promise<ReviewAssessmentV1> {
 		const selection = nativeUntrackedSelection(request);
@@ -2616,12 +2616,12 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 	}
 }
 
-export function createNativeReviewCli(adapter?: ExecFileAdapter, executable: string | (() => string) = resolveGentleAiBinary): NativeReviewCli {
+export function createNativeReviewCli(adapter?: ExecFileAdapter, executable: string | (() => string) = resolveDrakoncAiBinary): NativeReviewCli {
 	return new NativeReviewCliV216(adapter ?? createNodeExecFileAdapter(), executable);
 }
 
 /**
- * gentle-shell#3169: native assess refuses a committed-only range while any
+ * drakonc-shell#3169: native assess refuses a committed-only range while any
  * untracked file exists unless the untracked inventory is declared. A base-diff
  * snapshot never includes untracked files, so excluding them leaves the
  * assessed range unchanged. The digest comes only from native status; without

@@ -1,6 +1,6 @@
 # Choose how permission questions are handled
 
-Use **Normal**, **Auto**, **YOLO**, or **Super Yolo** for the current primary session. Optionally save any of them as the user-global default for future sessions. These modes do not redesign Gentle Shell delegation, expand the task you authorized, or replace independent safety and consent. One always-on exception: reading the task's exact resolved skill files (the selected `SKILL.md` plus its referenced instruction files, by registry, catalog or parent-supplied paths) needs no per-file permission question in any mode; secrets, sensitive paths, unrelated personal files and explicit user prohibitions still apply.
+Use **Normal**, **Auto**, **YOLO**, or **Super Yolo** for the current primary session. Optionally save any of them as the user-global default for future sessions. These modes do not redesign Drakonc Shell delegation, expand the task you authorized, or replace independent safety and consent. One always-on exception: reading the task's exact resolved skill files (the selected `SKILL.md` plus its referenced instruction files, by registry, catalog or parent-supplied paths) needs no per-file permission question in any mode; secrets, sensitive paths, unrelated personal files and explicit user prohibitions still apply.
 
 ## Tool context in Auto
 
@@ -22,7 +22,7 @@ Auto still classifies every memory call. It can treat a non-sensitive Engram fin
 
 This contextual treatment requires live host evidence, not a tool name or an assistant claim:
 
-- The effective `mem_current_project` and write registrations must come from the same native `npm:gentle-engram` package source. MCP adapters, namesakes, ambiguous effective registry entries and unavailable provenance do not qualify. Pi resolves duplicate tool names before exposing this registry; the check follows the effective winning registration, not historical registrations.
+- The effective `mem_current_project` and write registrations must come from the same native `npm:drakonc-engram` package source. MCP adapters, namesakes, ambiguous effective registry entries and unavailable provenance do not qualify. Pi resolves duplicate tool names before exposing this registry; the check follows the effective winning registration, not historical registrations.
 - An already-authorized `mem_current_project({cwd})` must complete successfully in this session with exactly the current workspace cwd, a nonempty canonical project, `git_remote` or `dir_basename` resolution, and no ambiguity, alternatives or warning/error fields.
 - The subsequent native `mem_save` or `mem_session_summary` must explicitly supply that same `cwd` and `project`; saves must use project scope (or its default). Self-asserted project names alone do not qualify.
 
@@ -31,21 +31,21 @@ The evidence is never restored from transcript text. Session/workspace replaceme
 ## Quick path
 
 ```text
-/gentle:mode auto
-/gentle:mode status
+/drakonc:mode auto
+/drakonc:mode status
 ```
 
 To start future sessions in Auto, save the default separately:
 
 ```text
-/gentle:mode default auto
+/drakonc:mode default auto
 ```
 
 Changing the default does **not** change the current session. To return this session and future sessions to Normal, run both:
 
 ```text
-/gentle:mode normal
-/gentle:mode default normal
+/drakonc:mode normal
+/drakonc:mode default normal
 ```
 
 | Mode | Behavior |
@@ -59,13 +59,13 @@ Changing the default does **not** change the current session. To return this ses
 
 | Command | Effect |
 | --- | --- |
-| `/gentle:mode normal`, `auto`, `yolo`, or `super-yolo` | Select exactly one mode for the current interactive primary session. |
-| `/gentle:mode status` or `/gentle:mode` | Show current mode and saved default. |
-| `/gentle:mode default normal`, `auto`, `yolo`, or `super-yolo` | Save the default for new primary sessions, leaving the current mode unchanged. |
-| `/gentle:yolo` | Choose the session mode interactively; cancellation does not grant permission or save a default. Noninteractive callers see status. |
-| `/gentle:yolo enable`, `disable`, or `status` | Existing shortcut; enable selects YOLO, disable selects Normal, and status distinguishes Super Yolo. |
+| `/drakonc:mode normal`, `auto`, `yolo`, or `super-yolo` | Select exactly one mode for the current interactive primary session. |
+| `/drakonc:mode status` or `/drakonc:mode` | Show current mode and saved default. |
+| `/drakonc:mode default normal`, `auto`, `yolo`, or `super-yolo` | Save the default for new primary sessions, leaving the current mode unchanged. |
+| `/drakonc:yolo` | Choose the session mode interactively; cancellation does not grant permission or save a default. Noninteractive callers see status. |
+| `/drakonc:yolo enable`, `disable`, or `status` | Existing shortcut; enable selects YOLO, disable selects Normal, and status distinguishes Super Yolo. |
 
-In `/gentle:customize` → **Editor**, use **Session permissions** to change the current mode, or **Default permissions** to save a future-session preference. The original **YOLO: ON/OFF · session only** row still toggles the live mode; it does not save a default. Browsing, previews, and closing the menu do not grant permission.
+In `/drakonc:customize` → **Editor**, use **Session permissions** to change the current mode, or **Default permissions** to save a future-session preference. The original **YOLO: ON/OFF · session only** row still toggles the live mode; it does not save a default. Browsing, previews, and closing the menu do not grant permission.
 
 Current-session selection takes precedence over the global default. Repository settings, visual profiles, and session transcript entries cannot supply a permission-mode default. Package-owned children do not inherit the parent's elevated mode; their existing bounded delegation and safety paths remain in charge.
 
@@ -103,7 +103,7 @@ An allow verdict only returns control to the original executor and remaining gua
 
 ### Execution-surface guard
 
-A tool call whose input sets `openProjectPaneIfMissing` to anything but `false` is blocked before any prompt or execution, in every mode including YOLO and super-YOLO, and in child sessions. The reason carries the stable code `gentle-ai.execution-surface.external-fallback-prohibited`; run the work through `subagent_*` or the native `Agent` in the current runtime instead, or stop and tell the user.
+A tool call whose input sets `openProjectPaneIfMissing` to anything but `false` is blocked before any prompt or execution, in every mode including YOLO and super-YOLO, and in child sessions. The reason carries the stable code `drakonc-ai.execution-surface.external-fallback-prohibited`; run the work through `subagent_*` or the native `Agent` in the current runtime instead, or stop and tell the user.
 
 ## Failure behavior and cost
 
@@ -124,11 +124,11 @@ Technical failures are not safety verdicts:
 
 Changing to manual permissions is always a human decision; Auto never changes mode to recover itself.
 
-The **Auto checks** status and `gentle-auto-permission` session entries account for classifier attempts separately, including denied calls that never produce a normal tool result. Available late usage is recorded when the same live session still owns it. These records are **not included in Pi's native conversation totals**; unavailable usage is not evidence that an attempt was free.
+The **Auto checks** status and `drakonc-auto-permission` session entries account for classifier attempts separately, including denied calls that never produce a normal tool result. Available late usage is recorded when the same live session still owns it. These records are **not included in Pi's native conversation totals**; unavailable usage is not evidence that an attempt was free.
 
 ## Persistence and lifetime
 
-The dedicated `permission-mode.json` in Gentle Pi's resolved user config home contains a strict versioned preference. Saving uses a private atomic replacement; malformed or unreadable existing preferences fall back to Normal and refuse an overwrite until repaired. Use the human command/menu path rather than asking model tools to edit this authority file.
+The dedicated `permission-mode.json` in Drakonc Pi's resolved user config home contains a strict versioned preference. Saving uses a private atomic replacement; malformed or unreadable existing preferences fall back to Normal and refuse an overwrite until repaired. Use the human command/menu path rather than asking model tools to edit this authority file.
 
 Model `write`/`edit` calls keep the config home protected except for the main-channel updater's `dev-binary.json`, `channel.json`, `main/` and `tools/go`. Those destinations select or build executable code, so they still require authorization under the current mode's ordinary checks; Auto classifies them and can deny an update. They are not automatically allowed. Permission preferences, global and project `runtime-guardrails.json`, their parent directories and symlink aliases resolving to them stay blocked even if a classifier would allow the action. Other config-home state, including model routing, persona and privacy preferences, remains protected.
 

@@ -5,7 +5,7 @@
 Fix the live defect reported by the user ("el consumo de glm no sale"): the shell bar always paints
 `usage.limits[0]`, so a NaN session using `glm5.3-flash` shows the first model the server happens to
 list (`deepseek-v4-flash`). Make the bar follow the session model, and group the NaN per-model
-allowances by family in the `/gentle:usage` panel without inventing any UI element that Codex and
+allowances by family in the `/drakonc:usage` panel without inventing any UI element that Codex and
 Anthropic do not already have.
 
 ## Constraints
@@ -29,7 +29,7 @@ Anthropic do not already have.
 - `lib/shell-bar.ts`
 - `tests/shell-usage.test.ts`
 - `tests/shell-bar.test.ts`
-- `docs/gentle-shell.md`
+- `docs/drakonc-shell.md`
 
 ## Source contract (unchanged)
 
@@ -78,7 +78,7 @@ entry (so the rolling `4h` row never renders on real data).
 - NAN-A1 RED: `node --experimental-strip-types --test tests/shell-usage.test.ts` — 3 failing (`renderUsageBar prefers…`, `…without raw allowances…`, `parseNanQuota keeps the raw numbers…`).
 - NAN-A2 GREEN: 20 passed, 0 failed.
 - NAN-A3 RED: 2 failing (`renderUsagePanel groups…`, `renderUsagePanel lists the NaN account total…`).
-- NAN-A4 GREEN: `tests/shell-usage.test.ts tests/shell-usage-view.test.ts tests/shell-bar.test.ts tests/gentle-shell.test.ts` — 86 passed, 0 failed.
+- NAN-A4 GREEN: `tests/shell-usage.test.ts tests/shell-usage-view.test.ts tests/shell-bar.test.ts tests/drakonc-shell.test.ts` — 86 passed, 0 failed.
 - NAN-A5 RED: `tests/shell-bar.test.ts` failed with the bar drawing `deepseek-v4-flash period ▰▱▱▱▱▱▱▱ 18%` inside a `glm5.3-flash` session; GREEN after passing `model.modelId`: 43 passed, 0 failed across the usage and bar suites.
 - Full suite: `pnpm test` — exit 0, 2691 tests, 2653 passed, 0 failed, 38 skipped, provider contract mirror passed, runtime harness ran clean.
 - Typecheck: `pnpm run typecheck` — exit 0, 197 recorded diagnostics, no regressions, and 2 file/code pairs improved (baseline left untouched: it is outside this change's edit surfaces).
@@ -87,10 +87,10 @@ entry (so the rolling `4h` row never renders on real data).
 
 ## Native review (closed, approved)
 
-- Lineage `review-73622327c0dfb3c6`, tier `high` (`process_boundary` on `extensions/gentle-shell.ts`), 4 lenses, 673 original changed lines, budget 200 with no correction opened.
+- Lineage `review-73622327c0dfb3c6`, tier `high` (`process_boundary` on `extensions/drakonc-shell.ts`), 4 lenses, 673 original changed lines, budget 200 with no correction opened.
 - First START returned `consent-binding-stale` (10-minute window, `lineage_created: false`); a second START with a fresh idempotency key created the lineage.
 - The group capture failed with `pi-empty-output` and single-slot captures were the working route; the three remaining lenses only admitted after setting `settings.json` `defaultModel` to `glm5.3-flash` for the relay child (restored right after). Root cause is recorded in the tracker follow-up below.
-- Closed `approved`; acknowledgement burned authority (`gentle-ai.review-acknowledged/v1`, revision `sha256:ce7084e0…`); delivery left to ordinary repository policy. All 9 findings were admitted as advisory and non-blocking (`R2-doc-contract-fullcap`, `R2-family-percent-dead-fallback`, `R2-quotanumber-bool-flag`, `R2-shared-refresh-timestamp`, `R3-fullcap-omitted`, `R3-timestamp-scale`, `R4-1`, `R4-2`, `R4-3`).
+- Closed `approved`; acknowledgement burned authority (`drakonc-ai.review-acknowledged/v1`, revision `sha256:ce7084e0…`); delivery left to ordinary repository policy. All 9 findings were admitted as advisory and non-blocking (`R2-doc-contract-fullcap`, `R2-family-percent-dead-fallback`, `R2-quotanumber-bool-flag`, `R2-shared-refresh-timestamp`, `R3-fullcap-omitted`, `R3-timestamp-scale`, `R4-1`, `R4-2`, `R4-3`).
 
 ## Relay defect found while reviewing (not caused by this candidate)
 

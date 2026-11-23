@@ -8,7 +8,7 @@ import { DesktopConfigBridge } from "../lib/desktop-rpc-config.ts";
 import { beginDesktopProfileApply, endDesktopProfileApply } from "../lib/desktop-rpc-profiles.ts";
 import { DEFAULT_NOTIFICATION_SETTINGS, NOTIFICATION_EVENTS, NOTIFICATION_SCHEMA } from "../lib/notification-policy.ts";
 
-// The persona, banner, and notifications config stores (gentle-shell-gpui
+// The persona, banner, and notifications config stores (drakonc-shell-gpui
 // parity, T3): read and written through the same get_config/set_config
 // contract as the profile stores, by their own owners.
 
@@ -26,7 +26,7 @@ function env(t: test.TestContext) {
 		configHome,
 		workspace,
 		bridge,
-		projectPersona: join(workspace, ".pi", "gentle-ai", "persona.json"),
+		projectPersona: join(workspace, ".pi", "drakonc-ai", "persona.json"),
 		async read(store: string): Promise<any> {
 			const outcome = await bridge.handle("get_config", { store });
 			assert.ok(outcome?.ok, JSON.stringify(outcome));
@@ -52,8 +52,8 @@ test("persona reads both layers and the mode in effect", async (t) => {
 	assert.equal(empty.readOnly, false);
 	assert.equal(empty.scope, "global+project");
 	assert.deepEqual(empty.layers, [{ source: "global", status: "missing" }, { source: "project", status: "missing" }]);
-	writeFileSync(join(e.configHome, "persona.json"), JSON.stringify({ mode: "gentleman" }));
-	mkdirSync(join(e.workspace, ".pi", "gentle-ai"), { recursive: true });
+	writeFileSync(join(e.configHome, "persona.json"), JSON.stringify({ mode: "drakoncman" }));
+	mkdirSync(join(e.workspace, ".pi", "drakonc-ai"), { recursive: true });
 	writeFileSync(e.projectPersona, JSON.stringify({ mode: "neutral" }));
 	const both = await e.read("persona");
 	assert.equal(both.status, "ok");
@@ -62,8 +62,8 @@ test("persona reads both layers and the mode in effect", async (t) => {
 
 test("a persona write updates the global file and an existing project file, then answers the new state", async (t) => {
 	const e = env(t);
-	mkdirSync(join(e.workspace, ".pi", "gentle-ai"), { recursive: true });
-	writeFileSync(e.projectPersona, JSON.stringify({ mode: "gentleman" }));
+	mkdirSync(join(e.workspace, ".pi", "drakonc-ai"), { recursive: true });
+	writeFileSync(e.projectPersona, JSON.stringify({ mode: "drakoncman" }));
 	const outcome = await e.write("persona", { mode: "neutral" });
 	assert.equal(outcome.ok, true, JSON.stringify(outcome));
 	assert.equal(outcome.data.changed, true);
@@ -86,8 +86,8 @@ test("persona rejects bad data and a stale token, writing nothing", async (t) =>
 		assert.equal(outcome.error?.code, "invalid_data", JSON.stringify(data));
 	}
 	const stale = await e.revision("persona");
-	mkdirSync(join(e.workspace, ".pi", "gentle-ai"), { recursive: true });
-	writeFileSync(e.projectPersona, JSON.stringify({ mode: "gentleman" }));
+	mkdirSync(join(e.workspace, ".pi", "drakonc-ai"), { recursive: true });
+	writeFileSync(e.projectPersona, JSON.stringify({ mode: "drakoncman" }));
 	assert.equal((await e.write("persona", { mode: "neutral" }, stale)).error?.code, "revision_conflict", "a project change makes the global token stale");
 	assert.equal(existsSync(join(e.configHome, "persona.json")), false);
 });

@@ -1,5 +1,5 @@
-// Gentle Desktop profile-apply bridge: reaches the `/gentle:profiles` owner in
-// `extensions/gentle-ai.ts` through a versioned owner-service event/adapter,
+// Drakonc Desktop profile-apply bridge: reaches the `/drakonc:profiles` owner in
+// `extensions/drakonc-ai.ts` through a versioned owner-service event/adapter,
 // like the usage and design seams. The owner runs the screen's own "Use in this
 // session" and "Make default" actions; this bridge only validates params and
 // shapes owner results into the Desktop RPC contract. There is no second apply
@@ -12,8 +12,8 @@ import type { DesktopRpcOutcome } from "./desktop-rpc.ts";
 export const DESKTOP_PROFILES_METHODS = ["apply_profile"] as const;
 export const DESKTOP_PROFILE_APPLIED_EVENT = "profile_applied";
 export const DESKTOP_PROFILES_EVENTS = [DESKTOP_PROFILE_APPLIED_EVENT] as const;
-export const DESKTOP_PROFILES_SERVICE_SCHEMA = "gentle-pi.desktop-profiles-service/v1";
-export const DESKTOP_PROFILES_SERVICE_CHANNEL = "gentle:desktop:profiles-service";
+export const DESKTOP_PROFILES_SERVICE_SCHEMA = "drakonc-pi.desktop-profiles-service/v1";
+export const DESKTOP_PROFILES_SERVICE_CHANNEL = "drakonc:desktop:profiles-service";
 
 const DISCOVERY_TIMEOUT_MS = 100;
 const MAX_FIELD_LENGTH = 128;
@@ -45,15 +45,15 @@ export type DesktopProfileApplyResult =
 export interface DesktopProfilesService {
 	readonly schema: typeof DESKTOP_PROFILES_SERVICE_SCHEMA;
 	apply(request: DesktopProfileApplyRequest): Promise<DesktopProfileApplyResult>;
-	/** `/gentle:profiles clear` for this session; absent from an owner that predates it. */
+	/** `/drakonc:profiles clear` for this session; absent from an owner that predates it. */
 	clear?(): Promise<{ status: "cleared" | "unchanged" | "not_cleared" | "busy" }>;
 	dispose(): void;
 }
 
-// Process-wide: the apply owner (gentle-ai) and the Desktop config writer
-// (gentle-desktop-rpc) may load this module separately, so the gate lives on a
+// Process-wide: the apply owner (drakonc-ai) and the Desktop config writer
+// (drakonc-desktop-rpc) may load this module separately, so the gate lives on a
 // registered symbol rather than in module state.
-const APPLY_GATE = Symbol.for("gentle-shell.desktop-profile-apply");
+const APPLY_GATE = Symbol.for("drakonc-shell.desktop-profile-apply");
 type GateHost = { [APPLY_GATE]?: boolean };
 
 /**

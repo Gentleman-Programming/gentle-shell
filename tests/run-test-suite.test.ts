@@ -18,15 +18,15 @@ function fakeRunStage(codes) {
 	};
 }
 
-test("default stages cover unit tests, provider contract, and runtime harness", () => {
+test("default stages cover unit tests, provider contract, runtime harness, and install sources", () => {
 	assert.deepEqual(
 		DEFAULT_STAGES.map((stage) => stage.name),
-		["unit-tests", "provider-contract", "runtime-harness"],
+		["unit-tests", "provider-contract", "runtime-harness", "install-sources"],
 	);
 });
 
 test("every stage runs even when an earlier stage fails", async () => {
-	const run = fakeRunStage([1, 0, 1]);
+	const run = fakeRunStage([1, 0, 1, 0]);
 	const results = await runTestSuite(DEFAULT_STAGES, { runStageImpl: run, write: () => {} });
 	assert.deepEqual(
 		results,
@@ -34,6 +34,7 @@ test("every stage runs even when an earlier stage fails", async () => {
 			{ name: "unit-tests", code: 1 },
 			{ name: "provider-contract", code: 0 },
 			{ name: "runtime-harness", code: 1 },
+			{ name: "install-sources", code: 0 },
 		],
 	);
 });
@@ -66,7 +67,7 @@ test("all-pass summary reports success", async () => {
 const runnerPath = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "run-test-suite.mjs");
 
 function writeStagesFile(t: test.TestContext, stages: Array<{ name: string; command: string }>): string {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-pi-run-test-suite-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-pi-run-test-suite-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const stagesPath = join(dir, "stages.json");
 	writeFileSync(stagesPath, JSON.stringify(stages));
@@ -95,7 +96,7 @@ test("direct invocation exits 0 when every stage passes", (t) => {
 });
 
 test("direct invocation still runs stages when reached through a file symlink", (t) => {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-pi-run-test-suite-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-pi-run-test-suite-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const linkPath = join(dir, "runner-link.mjs");
 	try {
@@ -116,16 +117,16 @@ function probeStageEnvironment(t: test.TestContext, env: NodeJS.ProcessEnv) {
 	const probePath = join(dirname(stagesPath), "probe.mjs");
 	writeFileSync(probePath, `
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-const home = process.env.GENTLE_PI_CONFIG_HOME;
+const home = process.env.DRAKONC_PI_CONFIG_HOME;
 const gitGlobalPath = process.env.GIT_CONFIG_GLOBAL;
 const xdgPath = process.env.XDG_CONFIG_HOME;
 console.log("ENV_PROBE=" + JSON.stringify({
   git: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase().startsWith("GIT_"))),
   gitGlobal: gitGlobalPath ? { exists: existsSync(gitGlobalPath), content: existsSync(gitGlobalPath) ? readFileSync(gitGlobalPath, "utf8") : null } : null,
   xdg: xdgPath ?? null,
-  agents: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase().startsWith("GENTLE_PI_AGENTS_"))),
+  agents: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase().startsWith("DRAKONC_PI_AGENTS_"))),
   home,
-  shellMarker: process.env.GENTLE_SHELL_CONFIG_HOME ?? null,
+  shellMarker: process.env.DRAKONC_SHELL_CONFIG_HOME ?? null,
   files: home && existsSync(home) ? readdirSync(home) : null,
   sentinel: process.env.TEST_ENV_SENTINEL,
   tmp: process.env.TMPDIR ?? null,
@@ -166,7 +167,7 @@ test("unit stage strips inherited Git configuration without changing later stage
 	for (const [key, value] of Object.entries(env)) assert.equal(provider.git[key], value);
 });
 
-// gentle-shell#2552: Git reads its global/system config files by path, so
+// drakonc-shell#2552: Git reads its global/system config files by path, so
 // stripping inherited GIT_* environment was not enough — a host global ignore
 // (e.g. ".agents/") leaked into fixtures and dropped untracked symlink targets
 // from `git add -A`. The stage must pin every remaining config source.
@@ -180,15 +181,15 @@ test("unit stage pins Git config files to empty defaults; later stages keep inhe
 	assert.equal(provider.xdg, process.env.XDG_CONFIG_HOME ?? null, "later stages keep the inherited XDG configuration");
 });
 
-// gentle-shell#2552: Git reads $XDG_CONFIG_HOME/git/ignore even with an empty
+// drakonc-shell#2552: Git reads $XDG_CONFIG_HOME/git/ignore even with an empty
 // GIT_CONFIG_GLOBAL, so a host ignore file (e.g. ".agents/") must not drop
 // fixture files from `git add -A` inside the unit stage.
 test("unit stage isolates the XDG ignore file; a hostile host ignore cannot hide fixture files", (t) => {
-	const hostileHome = mkdtempSync(join(tmpdir(), "gentle-pi-hostile-home-"));
+	const hostileHome = mkdtempSync(join(tmpdir(), "drakonc-pi-hostile-home-"));
 	t.after(() => rmSync(hostileHome, { recursive: true, force: true }));
 	mkdirSync(join(hostileHome, ".config", "git"), { recursive: true });
 	writeFileSync(join(hostileHome, ".config", "git", "ignore"), ".agents/\n");
-	const stagesDir = mkdtempSync(join(tmpdir(), "gentle-pi-xdg-fixture-"));
+	const stagesDir = mkdtempSync(join(tmpdir(), "drakonc-pi-xdg-fixture-"));
 	t.after(() => rmSync(stagesDir, { recursive: true, force: true }));
 	const fixturePath = join(stagesDir, "fixture.mjs");
 	writeFileSync(fixturePath, `
@@ -196,7 +197,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-xdg-repo-"));
+const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-xdg-repo-"));
 const run = (...args) => execFileSync("git", args, { cwd, encoding: "utf8" });
 run("init", "-b", "main");
 mkdirSync(join(cwd, ".agents", "skills", "example"), { recursive: true });
@@ -217,18 +218,18 @@ console.log("XDG_FIXTURE=" + JSON.stringify({ staged: run("ls-files").includes("
 });
 
 test("unit stage strips inherited subagent context without changing later stages", (t) => {
-	const env = { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: "1" };
+	const env = { DRAKONC_PI_AGENTS_CHILD: "1", DRAKONC_PI_AGENTS_OWNED_IPC: "1" };
 	const [unit, provider] = probeStageEnvironment(t, env);
 	assert.deepEqual(unit.agents, {});
 	for (const [key, value] of Object.entries(env)) assert.equal(provider.agents[key], value);
 });
 
 test("unit stage removes the launcher marker without changing later stages", (t) => {
-	const marker = mkdtempSync(join(tmpdir(), "gentle-pi-shell-marker-"));
+	const marker = mkdtempSync(join(tmpdir(), "drakonc-pi-shell-marker-"));
 	t.after(() => rmSync(marker, { recursive: true, force: true }));
 	const sentinel = join(marker, "sentinel");
 	writeFileSync(sentinel, "untouched");
-	const [unit, provider, runtime] = probeStageEnvironment(t, { GENTLE_SHELL_CONFIG_HOME: marker });
+	const [unit, provider, runtime] = probeStageEnvironment(t, { DRAKONC_SHELL_CONFIG_HOME: marker });
 	assert.equal(unit.shellMarker, null);
 	assert.equal(provider.shellMarker, marker);
 	assert.equal(runtime.shellMarker, marker);
@@ -237,11 +238,11 @@ test("unit stage removes the launcher marker without changing later stages", (t)
 });
 
 test("unit stage accepts an uncreated inherited config home without creating it", (t) => {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-pi-caller-config-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-pi-caller-config-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const home = join(dir, "not-created");
 	assert.equal(existsSync(home), false);
-	const [unit, provider] = probeStageEnvironment(t, { GENTLE_PI_CONFIG_HOME: home });
+	const [unit, provider] = probeStageEnvironment(t, { DRAKONC_PI_CONFIG_HOME: home });
 	assert.notEqual(unit.home, home);
 	assert.deepEqual(unit.files, ["empty.gitconfig"]);
 	assert.equal(existsSync(unit.home), false);
@@ -251,12 +252,12 @@ test("unit stage accepts an uncreated inherited config home without creating it"
 });
 
 test("unit stage uses an empty temporary config home and removes it after exit", (t) => {
-	const home = mkdtempSync(join(tmpdir(), "gentle-pi-caller-config-"));
+	const home = mkdtempSync(join(tmpdir(), "drakonc-pi-caller-config-"));
 	t.after(() => rmSync(home, { recursive: true, force: true }));
 	const configPath = join(home, "runtime-guardrails.json");
 	const config = JSON.stringify({ autonomousMode: true, guardedCommands: { gitPush: "allow", gitRebase: "allow", gitBranchDeleteForce: "allow" } });
 	writeFileSync(configPath, config);
-	const [unit, provider] = probeStageEnvironment(t, { GENTLE_PI_CONFIG_HOME: home });
+	const [unit, provider] = probeStageEnvironment(t, { DRAKONC_PI_CONFIG_HOME: home });
 	assert.notEqual(unit.home, home);
 	assert.deepEqual(unit.files, ["empty.gitconfig"]);
 	assert.equal(existsSync(unit.home), false);
@@ -266,7 +267,7 @@ test("unit stage uses an empty temporary config home and removes it after exit",
 });
 
 test("direct invocation rejects a malformed stages file with a non-zero exit", (t) => {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-pi-run-test-suite-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-pi-run-test-suite-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const stagesPath = join(dir, "stages.json");
 	writeFileSync(stagesPath, JSON.stringify([{ name: "missing-command" }]));
@@ -278,18 +279,18 @@ test("direct invocation rejects a malformed stages file with a non-zero exit", (
 // Harness roadmap T3: each subagent gets its own TMPDIR, and unit fixtures that
 // leave a fake child unfinished would leave it behind; the stage owns them all.
 test("unit stage gets a private TMPDIR removed after the stage; later stages keep the inherited one", (t) => {
-	const inherited = mkdtempSync(join(tmpdir(), "gentle-pi-caller-tmp-"));
+	const inherited = mkdtempSync(join(tmpdir(), "drakonc-pi-caller-tmp-"));
 	t.after(() => rmSync(inherited, { recursive: true, force: true }));
 	const [unit, provider] = probeStageEnvironment(t, { TMPDIR: inherited });
 	assert.notEqual(unit.tmp, inherited);
-	assert.match(unit.tmp, /gentle-pi-unit-tmp-/);
+	assert.match(unit.tmp, /drakonc-pi-unit-tmp-/);
 	assert.equal(unit.tmpExists, true, "the private TMPDIR exists while the stage runs");
 	assert.equal(existsSync(unit.tmp), false, "the private TMPDIR is removed after the stage");
 	assert.equal(provider.tmp, inherited);
 });
 
 test("long inherited TMPDIR permits a real unit socket and preserves later stage outputs and environments", (t) => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-long-tmp-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-long-tmp-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const inherited = join(root, "long".repeat(20), "temp".repeat(20));
 	mkdirSync(inherited, { recursive: true });
@@ -314,7 +315,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 const name = process.argv[2];
 const env = process.env;
-const snapshot = { tmp: env.TMPDIR, home: env.GENTLE_PI_CONFIG_HOME, marker: env.GENTLE_SHELL_CONFIG_HOME ?? null,
+const snapshot = { tmp: env.TMPDIR, home: env.DRAKONC_PI_CONFIG_HOME, marker: env.DRAKONC_SHELL_CONFIG_HOME ?? null,
   gitGlobal: env.GIT_CONFIG_GLOBAL, gitNoSystem: env.GIT_CONFIG_NOSYSTEM, xdg: env.XDG_CONFIG_HOME };
 if (name === "unit") {
   snapshot.mode = statSync(env.TMPDIR).mode & 0o777;
@@ -351,7 +352,7 @@ process.exitCode = results.some(result => result.code !== 0) ? 1 : 0;
 `);
 	const result = spawnSync(process.execPath, [hostPath, stagesPath], {
 		encoding: "utf8",
-		env: { ...process.env, TMPDIR: inherited, GENTLE_PI_CONFIG_HOME: callerConfig, GENTLE_SHELL_CONFIG_HOME: marker,
+		env: { ...process.env, TMPDIR: inherited, DRAKONC_PI_CONFIG_HOME: callerConfig, DRAKONC_SHELL_CONFIG_HOME: marker,
 			GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "0", XDG_CONFIG_HOME: xdg },
 	});
 	assert.equal(result.status, 1);

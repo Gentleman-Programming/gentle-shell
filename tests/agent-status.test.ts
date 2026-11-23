@@ -18,7 +18,7 @@ after(() => { for (const root of temporaryRoots) rmSync(root, { recursive: true,
 const input = { agent: "pi" as const, session: "../session", pid: 42, cwd: "/workspace", state: "working" as const, task: null };
 test("S2: exact schema and UTC timestamp", async () => {
 	const { agentStatus } = await import("../lib/agent-status.ts");
-	assert.deepEqual(agentStatus(input, 0), { schema: "gentle-shell.agent-status/v1", ...input, updatedAt: "1970-01-01T00:00:00.000Z" });
+	assert.deepEqual(agentStatus(input, 0), { schema: "drakonc-shell.agent-status/v1", ...input, updatedAt: "1970-01-01T00:00:00.000Z" });
 });
 test("S2/S4: shared title selection, sanitizing, bounds and null cases; Herdr bytes unchanged", async () => {
 	const { activeTodoTitle } = await import("../lib/herdr-activity.ts");

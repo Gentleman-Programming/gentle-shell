@@ -19,7 +19,7 @@ import {
 	hasReviewSessionPermission,
 } from "../lib/review-session-standing-permission.ts";
 
-const LIFECYCLE_SYMBOL = Symbol.for("gentle-pi.test.review-session-permission-lifecycle");
+const LIFECYCLE_SYMBOL = Symbol.for("drakonc-pi.test.review-session-permission-lifecycle");
 
 interface LifecycleEvent {
 	instance: number;
@@ -34,7 +34,7 @@ interface LifecycleState {
 }
 
 function scratch(t: test.TestContext) {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-permission-runtime-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-permission-runtime-")));
 	t.after(() => {
 		try { execFileSync("chmod", ["-R", "u+w", root], { stdio: "ignore" }); } catch { /* best effort */ }
 		rmSync(root, { recursive: true, force: true });
@@ -102,24 +102,24 @@ test("actual Pi SDK loader preserves permission only across reload and disposes 
 		else globalState[LIFECYCLE_SYMBOL] = previousLifecycle;
 	});
 
-	const extensionSource = pathToFileURL(join(import.meta.dirname, "..", "extensions", "gentle-ai.ts")).href;
+	const extensionSource = pathToFileURL(join(import.meta.dirname, "..", "extensions", "drakonc-ai.ts")).href;
 	const extensionPath = join(agentDir, "extensions", "runtime-permission.ts");
 	writeFileSync(extensionPath, `
-import { createGentleAiExtension } from ${JSON.stringify(extensionSource)};
-const lifecycle = globalThis[Symbol.for("gentle-pi.test.review-session-permission-lifecycle")];
+import { createDrakoncAiExtension } from ${JSON.stringify(extensionSource)};
+const lifecycle = globalThis[Symbol.for("drakonc-pi.test.review-session-permission-lifecycle")];
 const instance = ++lifecycle.nextInstance;
 export default function (pi) {
   pi.on("session_start", (event, ctx) => lifecycle.events.push({ instance, type: "start", reason: event.reason, manager: ctx.sessionManager }));
   pi.on("session_shutdown", (event, ctx) => lifecycle.events.push({ instance, type: "shutdown", reason: event.reason, manager: ctx.sessionManager }));
-  createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: {} })(pi);
+  createDrakoncAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: {} })(pi);
 }
 `, "utf8");
 
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
-	process.env.GENTLE_PI_AGENT_HOME = agentDir;
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
+	process.env.DRAKONC_PI_AGENT_HOME = agentDir;
 	t.after(() => {
-		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousAgentHome === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 	});
 	const statuses: Array<{ key: string; text?: string }> = [];
 	const uiContext = testUi(statuses);

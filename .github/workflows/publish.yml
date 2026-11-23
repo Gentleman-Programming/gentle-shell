@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   publish:
-    if: github.repository == 'Gentleman-Programming/gentle-shell'
+    if: github.repository == 'Drakoncman-Programming/drakonc-shell'
     environment: npm
     runs-on: ubuntu-latest
     permissions:
@@ -69,14 +69,14 @@ jobs:
 
           const expectedRepository = {
             type: "git",
-            url: "git+https://github.com/Gentleman-Programming/gentle-shell.git",
+            url: "git+https://github.com/Drakoncman-Programming/drakonc-shell.git",
           };
           if (
             packageJson.repository?.type !== expectedRepository.type ||
             packageJson.repository?.url !== expectedRepository.url
           ) {
             throw new Error(
-              "package.json.repository must exactly match Gentleman-Programming/gentle-shell.",
+              "package.json.repository must exactly match Drakoncman-Programming/drakonc-shell.",
             );
           }
           NODE
@@ -240,7 +240,7 @@ jobs:
     # built from the same verified release commit once npm publication succeeded,
     # with stable names so releases/latest/download/<name> links keep working.
     needs: publish
-    if: github.repository == 'Gentleman-Programming/gentle-shell'
+    if: github.repository == 'Drakoncman-Programming/drakonc-shell'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -268,11 +268,11 @@ jobs:
         run: gh release upload "${RELEASE_TAG}" "${RUNNER_TEMP}"/installers/* --repo "${GITHUB_REPOSITORY}" --clobber
 
   distribution:
-    # The release distribution (S3): gentle-pi at the verified tag and the exact
+    # The release distribution (S3): drakonc-pi at the verified tag and the exact
     # Pi, with the pnpm-lock.yaml our pinned pnpm resolves for them. It needs the
-    # npm publication, since gentle-pi@<version> must resolve from the registry.
+    # npm publication, since drakonc-pi@<version> must resolve from the registry.
     needs: publish
-    if: github.repository == 'Gentleman-Programming/gentle-shell'
+    if: github.repository == 'Drakoncman-Programming/drakonc-shell'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -298,7 +298,7 @@ jobs:
       - name: Keep the assets for verification
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: gentle-shell-distribution
+          name: drakonc-shell-distribution
           path: ${{ runner.temp }}/distribution/
           if-no-files-found: error
           retention-days: 7
@@ -307,7 +307,7 @@ jobs:
     # The exact assets install with --frozen-lockfile on every system, with our
     # pinned Node and pnpm (and Go on Windows), and the launcher runs them.
     needs: distribution
-    if: github.repository == 'Gentleman-Programming/gentle-shell'
+    if: github.repository == 'Drakoncman-Programming/drakonc-shell'
     strategy:
       fail-fast: false
       matrix:
@@ -332,7 +332,7 @@ jobs:
       - name: Fetch the distribution assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: gentle-shell-distribution
+          name: drakonc-shell-distribution
           path: ${{ runner.temp }}/distribution
 
       - name: Install them frozen and run the launcher
@@ -342,7 +342,7 @@ jobs:
   distribution-assets:
     # Attached only after every verify lane passed, with stable names.
     needs: [publish, distribution-verify]
-    if: github.repository == 'Gentleman-Programming/gentle-shell'
+    if: github.repository == 'Drakoncman-Programming/drakonc-shell'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -350,11 +350,11 @@ jobs:
       - name: Fetch the verified distribution assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: gentle-shell-distribution
+          name: drakonc-shell-distribution
           path: ${{ runner.temp }}/distribution
 
       - name: Attach the distribution assets to the release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.publish.outputs.tag }}
-        run: gh release upload "${RELEASE_TAG}" "${RUNNER_TEMP}/distribution/gentle-shell-distribution.json" "${RUNNER_TEMP}/distribution/gentle-shell-distribution-lock.yaml" --repo "${GITHUB_REPOSITORY}" --clobber
+        run: gh release upload "${RELEASE_TAG}" "${RUNNER_TEMP}/distribution/drakonc-shell-distribution.json" "${RUNNER_TEMP}/distribution/drakonc-shell-distribution-lock.yaml" --repo "${GITHUB_REPOSITORY}" --clobber

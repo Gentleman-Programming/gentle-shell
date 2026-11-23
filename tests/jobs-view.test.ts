@@ -55,7 +55,7 @@ function click(h: ReturnType<typeof harness>, frame: string[], text: string): vo
 	h.interaction.handleMouse(mouse(frame, text));
 }
 
-const gentleTheme = loadThemeFromPath("themes/Gentle.json", "truecolor");
+const drakoncTheme = loadThemeFromPath("themes/Drakonc.json", "truecolor");
 
 test("the split view lists this session's jobs beside the selected job's details and output tail", () => {
 	const h = harness([
@@ -178,7 +178,7 @@ test("a monitor shows its kind and event count in the list and details", () => {
 });
 
 test("pointer hover uses the shared warning role without selecting, stopping or repeatedly redrawing", () => {
-	const h = harness([job({ id: "first" }), job({ id: "second" })], 14, gentleTheme);
+	const h = harness([job({ id: "first" }), job({ id: "second" })], 14, drakoncTheme);
 	try {
 		let frame = h.frame();
 		const event = mouse(frame, "second", "move");
@@ -186,7 +186,7 @@ test("pointer hover uses the shared warning role without selecting, stopping or 
 		assert.equal(h.interaction.handleMouse(event)?.render, true);
 		frame = h.frame();
 		const hovered = frame[event.y]!;
-		assert.ok(hovered.includes(gentleTheme.getFgAnsi("warning")), "the rendered job row uses the warning token");
+		assert.ok(hovered.includes(drakoncTheme.getFgAnsi("warning")), "the rendered job row uses the warning token");
 		assert.match(frame.map(stripAnsi).join("\n"), /› ◐ first/);
 		assert.deepEqual(h.stopped, []);
 		assert.equal(h.closed(), 0);
@@ -195,7 +195,7 @@ test("pointer hover uses the shared warning role without selecting, stopping or 
 		const blank = { ...event, x: 3, screenX: 3, y: 7, screenY: 7 };
 		h.interaction.handleMouse(blank);
 		assert.equal(h.renders(), before + 1, "moving to a blank row clears the hover");
-		assert.ok(!h.frame()[event.y]!.includes(gentleTheme.getFgAnsi("warning")));
+		assert.ok(!h.frame()[event.y]!.includes(drakoncTheme.getFgAnsi("warning")));
 	} finally { h.view.dispose(); }
 });
 
@@ -241,12 +241,12 @@ test("stale rows, hidden rows and invalid geometry never select or stop a differ
 test("the explicit stop control rechecks the rendered identity and current running status", () => {
 	const first = job({ id: "first" });
 	const second = job({ id: "second" });
-	const h = harness([first, second], 14, gentleTheme);
+	const h = harness([first, second], 14, drakoncTheme);
 	try {
 		let frame = h.frame();
 		const stop = mouse(frame, "s Stop");
 		h.interaction.handleMouse({ ...stop, type: "move", button: "none" });
-		assert.ok(h.frame()[stop.y]!.includes(gentleTheme.getFgAnsi("warning")));
+		assert.ok(h.frame()[stop.y]!.includes(drakoncTheme.getFgAnsi("warning")));
 		assert.deepEqual(h.stopped, []);
 		h.interaction.handleMouse({ ...stop, type: "press" });
 		h.view.handleInput("j");
@@ -266,7 +266,7 @@ test("the explicit stop control rechecks the rendered identity and current runni
 });
 
 test("narrow details/list and close controls work by click while hidden controls stay inert", () => {
-	const h = harness([job({ id: "first" }), job({ id: "second", command: "show second" })], 14, gentleTheme);
+	const h = harness([job({ id: "first" }), job({ id: "second", command: "show second" })], 14, drakoncTheme);
 	try {
 		let frame = h.frame(40);
 		click(h, frame, "second");
@@ -275,7 +275,7 @@ test("narrow details/list and close controls work by click while hidden controls
 		assert.doesNotMatch(frame.map(stripAnsi).join("\n"), /› ◐ second/);
 		const back = mouse(frame, "tab list", "move");
 		h.interaction.handleMouse(back);
-		assert.ok(h.frame(40)[back.y]!.includes(gentleTheme.getFgAnsi("warning")));
+		assert.ok(h.frame(40)[back.y]!.includes(drakoncTheme.getFgAnsi("warning")));
 		frame = h.frame(40);
 		click(h, frame, "tab list");
 		frame = h.frame(40);
@@ -285,7 +285,7 @@ test("narrow details/list and close controls work by click while hidden controls
 		assert.match(frame.map(stripAnsi).join("\n"), /show second/);
 		const close = mouse(frame, "q close", "move");
 		h.interaction.handleMouse(close);
-		assert.ok(h.frame(40)[close.y]!.includes(gentleTheme.getFgAnsi("warning")));
+		assert.ok(h.frame(40)[close.y]!.includes(drakoncTheme.getFgAnsi("warning")));
 		assert.equal(h.closed(), 0, "hovering close does not close the overlay");
 		click(h, h.frame(40), "q close");
 		assert.equal(h.closed(), 1);
@@ -349,7 +349,7 @@ test("scrolled lists target only the visible job identities and fallback close r
 });
 
 test("resize, invalidation and disposal discard pointer geometry and hover", () => {
-	const h = harness([job({ id: "first" }), job({ id: "second" })], 14, gentleTheme);
+	const h = harness([job({ id: "first" }), job({ id: "second" })], 14, drakoncTheme);
 	try {
 		let frame = h.frame();
 		const row = mouse(frame, "second");
@@ -358,20 +358,20 @@ test("resize, invalidation and disposal discard pointer geometry and hover", () 
 		h.interaction.handleMouse(row);
 		assert.deepEqual(h.stopped, []);
 		frame = h.frame(80);
-		assert.ok(!frame.join("\n").includes(gentleTheme.getFgAnsi("warning")));
+		assert.ok(!frame.join("\n").includes(drakoncTheme.getFgAnsi("warning")));
 		assert.match(frame.map(stripAnsi).join("\n"), /› ◐ first/);
 		const fresh = mouse(frame, "second");
 		h.interaction.handleMouse({ ...fresh, type: "move", button: "none" });
-		assert.ok(h.frame(80)[fresh.y]!.includes(gentleTheme.getFgAnsi("warning")));
+		assert.ok(h.frame(80)[fresh.y]!.includes(drakoncTheme.getFgAnsi("warning")));
 		h.view.invalidate();
 		h.interaction.handleMouse(fresh);
 		frame = h.frame(80);
-		assert.ok(!frame.join("\n").includes(gentleTheme.getFgAnsi("warning")));
+		assert.ok(!frame.join("\n").includes(drakoncTheme.getFgAnsi("warning")));
 		assert.match(frame.map(stripAnsi).join("\n"), /› ◐ first/);
 		h.interaction.handleMouse({ ...fresh, type: "move", button: "none" });
 		h.view.dispose();
 		h.interaction.handleMouse(fresh);
-		assert.ok(!h.frame(80).join("\n").includes(gentleTheme.getFgAnsi("warning")));
+		assert.ok(!h.frame(80).join("\n").includes(drakoncTheme.getFgAnsi("warning")));
 		assert.deepEqual(h.stopped, []);
 		assert.equal(h.closed(), 0);
 	} finally { h.view.dispose(); }
@@ -382,7 +382,7 @@ test("real centered TuiAltScreen SGR events hover, select and stop the visible j
 	const terminal: Terminal = {
 		start(onInput) { input = onInput; }, stop() {}, async drainInput() {}, write() {}, get columns() { return 120; }, get rows() { return 30; }, get kittyProtocolActive() { return false; }, moveBy() {}, hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
 	};
-	const h = harness([job({ id: "first" }), job({ id: "second" })], 14, gentleTheme);
+	const h = harness([job({ id: "first" }), job({ id: "second" })], 14, drakoncTheme);
 	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
 	const overlay = tui.showOverlay(h.interaction, { anchor: "center", width: 80, maxHeight: 14 });
 	tui.start();
@@ -395,10 +395,10 @@ test("real centered TuiAltScreen SGR events hover, select and stop the visible j
 		const x = bounds.col + row.x + 1, y = bounds.row + row.y + 1;
 		input?.(`\x1b[<35;${x};${y}M`);
 		frame = h.frame(80);
-		assert.ok(frame[row.y]!.includes(gentleTheme.getFgAnsi("warning")));
+		assert.ok(frame[row.y]!.includes(drakoncTheme.getFgAnsi("warning")));
 		assert.match(frame.map(stripAnsi).join("\n"), /› ◐ first/);
 		input?.("\x1b[<35;1;1M");
-		assert.ok(h.frame(80)[row.y]!.includes(gentleTheme.getFgAnsi("warning")), "native overlay dispatch does not deliver outside-card motion");
+		assert.ok(h.frame(80)[row.y]!.includes(drakoncTheme.getFgAnsi("warning")), "native overlay dispatch does not deliver outside-card motion");
 		input?.(`\x1b[<0;${x};${y}M`);
 		input?.(`\x1b[<0;${x};${y}m`);
 		tui.renderNow(true);

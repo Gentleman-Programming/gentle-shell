@@ -11,7 +11,7 @@ const roots: string[] = [];
 const servers: TowerServer[] = [];
 after(async () => { for (const s of servers) await s.close(); roots.forEach((r) => rmSync(r, { recursive: true, force: true })); });
 function scratch() {
-	const root = mkdtempSync(join(tmpdir(), "gentle-tower-act-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-tower-act-"));
 	roots.push(root);
 	const hub = join(root, "sessions");
 	const web = join(root, "web");
@@ -88,7 +88,7 @@ test("the server queues a valid action for its floor and refuses the rest", asyn
 	assert.equal(existsSync(towerInboxDir(hub, "s-1")) ? readdirSync(towerInboxDir(hub, "s-1")).length : 0, 0);
 });
 
-// ---------- new floor: a new Gentle Shell session in a project already in the tower ----------
+// ---------- new floor: a new Drakonc Shell session in a project already in the tower ----------
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { buildLaunchScript, buildWindowsLaunchScript, launchInTerminal, shellQuote } from "../lib/tower-launch.ts";
@@ -111,8 +111,8 @@ test("a new floor accepts absolute Windows project paths and still refuses relat
 
 test("the launch script quotes everything; a hostile message stays one argument", () => {
 	assert.equal(shellQuote("it's"), `'it'\\''s'`);
-	const script = buildLaunchScript({ cwd: "/w/my app", node: "/usr/bin/node", launcher: "/pkg/bin/gentle-shell.mjs", prompt: "'; rm -rf ~; echo '" });
-	assert.equal(script, `#!/bin/sh\nrm -f "$0"\ncd '/w/my app' && exec '/usr/bin/node' '/pkg/bin/gentle-shell.mjs' '--' '--' ''\\''; rm -rf ~; echo '\\'''\n`);
+	const script = buildLaunchScript({ cwd: "/w/my app", node: "/usr/bin/node", launcher: "/pkg/bin/drakonc-shell.mjs", prompt: "'; rm -rf ~; echo '" });
+	assert.equal(script, `#!/bin/sh\nrm -f "$0"\ncd '/w/my app' && exec '/usr/bin/node' '/pkg/bin/drakonc-shell.mjs' '--' '--' ''\\''; rm -rf ~; echo '\\'''\n`);
 	assert.equal(buildLaunchScript({ cwd: "/w/a", node: "/n", launcher: "/l" }), `#!/bin/sh\nrm -f "$0"\ncd '/w/a' && exec '/n' '/l'\n`);
 });
 
@@ -172,26 +172,26 @@ test("on Linux the terminal itself keeps running, so starting it is enough", asy
 	assert.equal(term.calls[0][0], "x-terminal-emulator");
 });
 
-const winSpec = { cwd: "C:\\w\\my app", node: "C:\\Program Files\\nodejs\\node.exe", launcher: "C:\\pkg\\bin\\gentle-shell.mjs" };
+const winSpec = { cwd: "C:\\w\\my app", node: "C:\\Program Files\\nodejs\\node.exe", launcher: "C:\\pkg\\bin\\drakonc-shell.mjs" };
 
 test("the Windows launch script quotes for cmd; a hostile message stays one literal argument", () => {
 	const head = "@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\n";
 	const tail = `(goto) 2>nul & del "%~f0"\r\n`;
 	assert.equal(buildWindowsLaunchScript({ ...winSpec, prompt: `& del C:\\x %PATH% "` }),
-		`${head}cd /d "C:\\w\\my app" && "C:\\Program Files\\nodejs\\node.exe" "C:\\pkg\\bin\\gentle-shell.mjs" "--" "--" "& del C:\\x %%PATH%% """\r\n${tail}`);
+		`${head}cd /d "C:\\w\\my app" && "C:\\Program Files\\nodejs\\node.exe" "C:\\pkg\\bin\\drakonc-shell.mjs" "--" "--" "& del C:\\x %%PATH%% """\r\n${tail}`);
 	assert.equal(buildWindowsLaunchScript({ cwd: "C:\\a%b", node: "C:\\n.exe", launcher: "C:\\l.mjs" }),
 		`${head}cd /d "C:\\a%%b" && "C:\\n.exe" "C:\\l.mjs"\r\n${tail}`);
 	// cmd metacharacters stay literal inside the quotes; backslashes before a quote are doubled for the C runtime.
 	assert.equal(buildWindowsLaunchScript({ ...winSpec, cwd: "C:\\w", prompt: `a|b<c>d^e(f)!g \\"h\\` }),
-		`${head}cd /d "C:\\w" && "C:\\Program Files\\nodejs\\node.exe" "C:\\pkg\\bin\\gentle-shell.mjs" "--" "--" "a|b<c>d^e(f)!g \\\\""h\\\\"\r\n${tail}`);
+		`${head}cd /d "C:\\w" && "C:\\Program Files\\nodejs\\node.exe" "C:\\pkg\\bin\\drakonc-shell.mjs" "--" "--" "a|b<c>d^e(f)!g \\\\""h\\\\"\r\n${tail}`);
 });
 
 test("the Windows launch script refuses what cmd cannot carry safely", () => {
-	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, prompt: "one\r\ntwo" }), /^Error: Gentle Tower: the first message has a line break or control character, which cmd cannot pass safely$/);
+	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, prompt: "one\r\ntwo" }), /^Error: Drakonc Tower: the first message has a line break or control character, which cmd cannot pass safely$/);
 	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, prompt: "a\0b" }), /first message has a line break or control character/);
-	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, cwd: "C:\\w\"x" }), /^Error: Gentle Tower: the project folder has a double quote, which cmd cannot pass safely$/);
+	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, cwd: "C:\\w\"x" }), /^Error: Drakonc Tower: the project folder has a double quote, which cmd cannot pass safely$/);
 	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, cwd: "C:\\w\nx" }), /project folder has a line break or control character/);
-	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, prompt: "%".repeat(4000) + "x".repeat(200) }), /^Error: Gentle Tower: the command is longer than cmd's 8191-character line limit$/);
+	assert.throws(() => buildWindowsLaunchScript({ ...winSpec, prompt: "%".repeat(4000) + "x".repeat(200) }), /^Error: Drakonc Tower: the command is longer than cmd's 8191-character line limit$/);
 	assert.doesNotThrow(() => buildWindowsLaunchScript({ ...winSpec, prompt: "tab\there" }));
 });
 
@@ -204,7 +204,7 @@ test("on Windows a floor opens in Windows Terminal, the script run from its own 
 	const dir = options.cwd as string;
 	assert.equal(cmd, "wt.exe");
 	assert.deepEqual(args, ["-d", dir, "cmd", "/d", "/c", ".\\new-floor.cmd"]);
-	assert.ok(dir.startsWith(join(root, "gentle-tower-floor-")), dir);
+	assert.ok(dir.startsWith(join(root, "drakonc-tower-floor-")), dir);
 	assert.equal(readFileSync(join(dir, "new-floor.cmd"), "utf8"), buildWindowsLaunchScript({ ...winSpec, prompt: "& del C:\\x" }));
 	// No user text reaches any command line: the message lives only in the script.
 	assert.ok(!JSON.stringify(wt.calls).includes("del C:"));

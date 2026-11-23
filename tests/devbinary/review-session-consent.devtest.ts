@@ -6,12 +6,12 @@ import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../../extensions/drakonc-ai.ts";
 import { CandidateViewRegistry } from "../../lib/review-candidate-view.ts";
 import { NativeReviewCliV216, type ExecFileAdapter } from "../../lib/native-review-cli.ts";
 import { requireDevBinary } from "../support/native-binary-gate.ts";
 
-const binary = process.env.GENTLE_AI_DEV_BINARY;
+const binary = process.env.DRAKONC_AI_DEV_BINARY;
 const gate = requireDevBinary({ devBinaryPath: binary, exists: !!binary && isAbsolute(binary) && existsSync(binary), env: process.env });
 
 // Real native replies and two real candidates; only the human UI is a fixture.
@@ -20,8 +20,8 @@ test("native CLI retains host session consent across two actual candidates", { s
 	const scratch = realpathSync(mkdtempSync(join(tmpdir(), "review-session-native-")));
 	const cwd = join(scratch, "repo"), home = join(scratch, "home");
 	mkdirSync(cwd); mkdirSync(home);
-	const environment = { ...process.env, HOME: home, USERPROFILE: home, GENTLE_AI_HOME: join(home, "native"),
-		GENTLE_PI_CONFIG_HOME: join(home, "config"), XDG_CONFIG_HOME: join(home, ".config"), GENTLE_AI_NO_SELF_UPDATE: "1" };
+	const environment = { ...process.env, HOME: home, USERPROFILE: home, DRAKONC_AI_HOME: join(home, "native"),
+		DRAKONC_PI_CONFIG_HOME: join(home, "config"), XDG_CONFIG_HOME: join(home, ".config"), DRAKONC_AI_NO_SELF_UPDATE: "1" };
 	for (const key of Object.keys(environment)) if (key.startsWith("GIT_")) delete environment[key as keyof typeof environment];
 	const git = (...args: string[]) => execFileSync("git", args, { cwd, env: environment, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 	git("init", "-b", "main");
@@ -50,7 +50,7 @@ test("native CLI retains host session consent across two actual candidates", { s
 	const views = new CandidateViewRegistry();
 	t.after(() => { views.cleanupAll(); rmSync(scratch, { recursive: true, force: true }); });
 	const tools = new Map<string, { execute(...args: unknown[]): Promise<{ details: Record<string, unknown> }> }>();
-	createGentleAiExtension({ nativeReviewCli: native, candidateViews: views, processEnv: environment })({
+	createDrakoncAiExtension({ nativeReviewCli: native, candidateViews: views, processEnv: environment })({
 		on() {}, registerCommand() {}, registerTool(tool: { name: string; execute(...args: unknown[]): Promise<{ details: Record<string, unknown> }> }) { tools.set(tool.name, tool); },
 		events: { emit() {} },
 	} as unknown as ExtensionAPI);
@@ -67,7 +67,7 @@ test("native CLI retains host session consent across two actual candidates", { s
 			return answer;
 		},
 	} } as unknown as ExtensionContext;
-	const controller = tools.get("gentle_review")!;
+	const controller = tools.get("drakonc_review")!;
 	for (const value of [2, 3]) {
 		writeFileSync(join(cwd, "app.ts"), `export const value = ${value};\n`);
 		const inspected = await controller.execute(`inspect-${value}`, { operation: "inspect" }, undefined, undefined, context);

@@ -11,13 +11,13 @@ import {
 import { Text, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
-import { resolveGentleAiDevBinaryOverride, type GentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
+import { resolveDrakoncAiDevBinaryOverride, type DrakoncAiDevBinaryOverride } from "../lib/drakonc-ai-binary.ts";
 import { CARD_CONTENT, cardContent } from "../lib/card-content-policy.ts";
-import { GentleAiElapsedTimingLedger } from "../lib/gentle-ai-elapsed-store.ts";
+import { DrakoncAiElapsedTimingLedger } from "../lib/drakonc-ai-elapsed-store.ts";
 import { quietToolsEnabled } from "../lib/quiet-tools-config.ts";
 import { registerCompactCodemode } from "../lib/codemode-renderer.ts";
 import { offerBuiltinCodemodeOptOut, type BuiltinCodemodeOptOutOptions } from "../lib/builtin-codemode-optout.ts";
-import { getGentleAiRenderState, renderGentleAiLifecycleCall, renderGentleAiResult, type GentleAiRenderContext } from "../lib/gentle-ai-renderer.ts";
+import { getDrakoncAiRenderState, renderDrakoncAiLifecycleCall, renderDrakoncAiResult, type DrakoncAiRenderContext } from "../lib/drakonc-ai-renderer.ts";
 import {
 	CARD_TONE, cardAwaitingResult, cardBottom, cardInnerWidth, cardLine, cardRunningLine, cardStyle, cardTopRows, floatRows, markCardResult,
 	type CardRowContext, type CardTheme,
@@ -190,15 +190,15 @@ function isGitCommand(args: Record<string, unknown> | undefined): boolean {
 	return /^(?:env\s+\S+=\S+\s+|command\s+|\w+=\S+\s+)*git(?:\s|$)/.test(command);
 }
 
-export type GentleAiRoutineCommand = "review";
+export type DrakoncAiRoutineCommand = "review";
 
-const GENTLE_AI_EXECUTABLE = String.raw`(?:gentle-ai(?:\.exe)?|(?:\.{1,2}[\\/]|(?:[A-Za-z]:)?(?:[\\/][^\\/\r\n]+)*[\\/])\.gentle-ai[\\/]v\d+\.\d+\.\d+[\\/]gentle-ai(?:\.exe)?)`;
-const GENTLE_AI_COMMAND_ARGUMENTS = new RegExp(`^${GENTLE_AI_EXECUTABLE}$`);
+const DRAKONC_AI_EXECUTABLE = String.raw`(?:drakonc-ai(?:\.exe)?|(?:\.{1,2}[\\/]|(?:[A-Za-z]:)?(?:[\\/][^\\/\r\n]+)*[\\/])\.drakonc-ai[\\/]v\d+\.\d+\.\d+[\\/]drakonc-ai(?:\.exe)?)`;
+const DRAKONC_AI_COMMAND_ARGUMENTS = new RegExp(`^${DRAKONC_AI_EXECUTABLE}$`);
 
-function createGentleAiCommandArguments(activeDevBinaryPath?: string): RegExp {
-	if (!activeDevBinaryPath) return GENTLE_AI_COMMAND_ARGUMENTS;
+function createDrakoncAiCommandArguments(activeDevBinaryPath?: string): RegExp {
+	if (!activeDevBinaryPath) return DRAKONC_AI_COMMAND_ARGUMENTS;
 	const escapedPath = activeDevBinaryPath.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
-	return new RegExp(`^(?:${GENTLE_AI_EXECUTABLE}|${escapedPath})$`);
+	return new RegExp(`^(?:${DRAKONC_AI_EXECUTABLE}|${escapedPath})$`);
 }
 
 type ShellTokenization =
@@ -299,7 +299,7 @@ const REVIEW_SCHEMA_NAMES = new Set([
 	"verification-evidence-record",
 ]);
 
-function gentleAiCommandTokensFrom(tokens: string[], commandArguments: RegExp): string[] | undefined {
+function drakoncAiCommandTokensFrom(tokens: string[], commandArguments: RegExp): string[] | undefined {
 	let index = 0;
 	while (isAssignment(tokens[index] ?? "")) index += 1;
 	if (tokens[index] === "command") {
@@ -316,9 +316,9 @@ function gentleAiCommandTokensFrom(tokens: string[], commandArguments: RegExp): 
 	return tokens.slice(index + 1);
 }
 
-function gentleAiCommandTokens(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): string[] | undefined {
+function drakoncAiCommandTokens(args: Record<string, unknown> | undefined, commandArguments = DRAKONC_AI_COMMAND_ARGUMENTS): string[] | undefined {
 	const shell = shellTokens(typeof args?.command === "string" ? args.command : "");
-	return shell.kind === "complete" ? gentleAiCommandTokensFrom(shell.tokens, commandArguments) : undefined;
+	return shell.kind === "complete" ? drakoncAiCommandTokensFrom(shell.tokens, commandArguments) : undefined;
 }
 
 function displayToken(token: string): string {
@@ -335,22 +335,22 @@ function validateGate(tokens: string[]): string | undefined {
 }
 
 /**
- * Matches only supported routine Gentle AI CLI calls, including bounded
+ * Matches only supported routine Drakonc AI CLI calls, including bounded
  * package-local paths, not arbitrary shell output that merely mentions
- * gentle-ai. Review commands otherwise emit machine-readable RDD data.
+ * drakonc-ai. Review commands otherwise emit machine-readable RDD data.
  */
-export function isGentleAiDirectCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): boolean {
-	return gentleAiCommandTokens(args, commandArguments) !== undefined;
+export function isDrakoncAiDirectCommand(args: Record<string, unknown> | undefined, commandArguments = DRAKONC_AI_COMMAND_ARGUMENTS): boolean {
+	return drakoncAiCommandTokens(args, commandArguments) !== undefined;
 }
 
-export function gentleAiRoutineCommand(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): GentleAiRoutineCommand | undefined {
-	const tokens = gentleAiCommandTokens(args, commandArguments);
+export function drakoncAiRoutineCommand(args: Record<string, unknown> | undefined, commandArguments = DRAKONC_AI_COMMAND_ARGUMENTS): DrakoncAiRoutineCommand | undefined {
+	const tokens = drakoncAiCommandTokens(args, commandArguments);
 	if (!tokens) return undefined;
 	if (tokens[0] === "review") return "review";
 	return undefined;
 }
 
-function gentleAiOperationPathFrom(tokens: string[]): string | undefined {
+function drakoncAiOperationPathFrom(tokens: string[]): string | undefined {
 	if (tokens[0]?.startsWith("sdd-")) return undefined;
 	if (tokens[0] === "version") return "version";
 	if (tokens[0] !== "review") return "command";
@@ -373,9 +373,9 @@ function gentleAiOperationPathFrom(tokens: string[]): string | undefined {
 	return REVIEW_DIRECT_OPERATIONS.has(operation) ? `review ${displayToken(operation)}` : "review";
 }
 
-export function gentleAiOperationPath(args: Record<string, unknown> | undefined, commandArguments = GENTLE_AI_COMMAND_ARGUMENTS): string | undefined {
-	const tokens = gentleAiCommandTokens(args, commandArguments);
-	return tokens ? gentleAiOperationPathFrom(tokens) : undefined;
+export function drakoncAiOperationPath(args: Record<string, unknown> | undefined, commandArguments = DRAKONC_AI_COMMAND_ARGUMENTS): string | undefined {
+	const tokens = drakoncAiCommandTokens(args, commandArguments);
+	return tokens ? drakoncAiOperationPathFrom(tokens) : undefined;
 }
 
 interface ToolResultFormatOptions {
@@ -595,7 +595,7 @@ class BoundedRows implements Component {
 	invalidate(): void {}
 }
 
-// Tool card: every quiet tool call is a rounded petal card, like the Gentle AI
+// Tool card: every quiet tool call is a rounded petal card, like the Drakonc AI
 // card, so the call and its output read as one block apart from assistant
 // prose. pi does not paint tool backgrounds for renderShell "self", so the
 // frame tone carries the status the painted Box would otherwise show. The call
@@ -721,20 +721,20 @@ function sanitizedRenderContext(context: (Omit<ToolRenderContextLike, "args"> & 
 	};
 }
 
-type GentleAiDevBinaryOverrideResolver = () => GentleAiDevBinaryOverride | undefined;
-function resolveQuietToolsDevBinaryPath(resolveOverride: GentleAiDevBinaryOverrideResolver): string | undefined {
+type DrakoncAiDevBinaryOverrideResolver = () => DrakoncAiDevBinaryOverride | undefined;
+function resolveQuietToolsDevBinaryPath(resolveOverride: DrakoncAiDevBinaryOverrideResolver): string | undefined {
 	try { const path = resolveOverride()?.path; return typeof path === "string" && isAbsolute(path) ? path : undefined; }
 	catch { return undefined; }
 }
 
-function gentleAiRenderTransition(
+function drakoncAiRenderTransition(
 	args: Record<string, unknown> | undefined, context: ToolRenderContextLike | undefined,
 	commandArguments: RegExp, options: { result?: boolean; isPartial?: boolean } = {},
 ): { operationPath?: string; directResult: boolean } {
-	const state = getGentleAiRenderState(context?.state);
+	const state = getDrakoncAiRenderState(context?.state);
 	const tokenization = shellTokens(typeof args?.command === "string" ? args.command : "");
-	const directTokens = tokenization.kind === "generic" ? undefined : gentleAiCommandTokensFrom(tokenization.tokens, commandArguments);
-	const operationPath = directTokens ? gentleAiOperationPathFrom(directTokens) : undefined;
+	const directTokens = tokenization.kind === "generic" ? undefined : drakoncAiCommandTokensFrom(tokenization.tokens, commandArguments);
+	const operationPath = directTokens ? drakoncAiOperationPathFrom(directTokens) : undefined;
 	const argsComplete = context?.argsComplete === true;
 	const forResult = options.result === true;
 	const isPartial = options.isPartial === true || context?.isPartial === true;
@@ -751,12 +751,12 @@ function gentleAiRenderTransition(
 /** Rendering-only factory; the default export attaches the Bash renderers to native Bash through pi.registerToolRenderer, so execution and schema stay pi's. */
 export function createQuietToolRenderer(
 	toolName: QuietToolName,
-	resolveOverride: GentleAiDevBinaryOverrideResolver = () => undefined,
-	timing: () => GentleAiElapsedTimingLedger | undefined = () => undefined,
+	resolveOverride: DrakoncAiDevBinaryOverrideResolver = () => undefined,
+	timing: () => DrakoncAiElapsedTimingLedger | undefined = () => undefined,
 	officialRenderResult?: ToolDefinition["renderResult"],
 ): Pick<ToolDefinition, "renderShell" | "renderCall" | "renderResult"> {
-	const commandArguments = () => createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride));
-	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext => {
+	const commandArguments = () => createDrakoncAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride));
+	const withElapsedTiming = (context: DrakoncAiRenderContext): DrakoncAiRenderContext => {
 		const ledger = timing();
 		return ledger ? { ...context, elapsedTiming: ledger } : context;
 	};
@@ -767,14 +767,14 @@ export function createQuietToolRenderer(
 			const callArgs = args as Record<string, unknown>;
 			const renderContext = sanitizedRenderContext(context);
 			const operationPath = toolName === "bash"
-				? gentleAiRenderTransition(callArgs, renderContext, commandArguments()).operationPath
+				? drakoncAiRenderTransition(callArgs, renderContext, commandArguments()).operationPath
 				: undefined;
 			if (operationPath) {
 				const detail = renderContext.expanded === true && typeof callArgs.command === "string" ? `$ ${callArgs.command}` : undefined;
-				return renderGentleAiLifecycleCall(operationPath, theme, withElapsedTiming(renderContext as GentleAiRenderContext), detail);
+				return renderDrakoncAiLifecycleCall(operationPath, theme, withElapsedTiming(renderContext as DrakoncAiRenderContext), detail);
 			}
 			const tone = toolTone(renderContext.isPartial !== false, renderContext.isError === true);
-			// Same place and wording as the Gentle AI card: the expand key rides the top rule once the call finished.
+			// Same place and wording as the Drakonc AI card: the expand key rides the top rule once the call finished.
 			// Pi flips isPartial to false only with a result; a card rebuilt from the
 			// session history has one even though Pi never saw its execution start.
 			const finished = renderContext.isPartial === false;
@@ -794,14 +794,14 @@ export function createQuietToolRenderer(
 			// supplied them on options; keep that structural fallback for those hosts.
 			const legacyError = "isError" in options && options.isError === true;
 			const isError = renderContext?.isError ?? legacyError;
-			const directResult = toolName === "bash" && gentleAiRenderTransition(
+			const directResult = toolName === "bash" && drakoncAiRenderTransition(
 				renderContext?.args,
 				renderContext,
 				commandArguments(),
 				{ result: true, isPartial: options.isPartial },
 			).directResult;
 			if (directResult) {
-				return renderGentleAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext ? withElapsedTiming(renderContext as GentleAiRenderContext) : undefined);
+				return renderDrakoncAiResult(safeResult, { expanded: options.expanded, isPartial: options.isPartial, isError }, theme, renderContext ? withElapsedTiming(renderContext as DrakoncAiRenderContext) : undefined);
 			}
 			const resultTone = toolTone(options.isPartial === true, isError);
 			const carded = (component: () => Component, cacheable = options.isPartial !== true): Component => new ToolCardBody(component, resultTone, theme, cacheable);
@@ -855,7 +855,7 @@ export function createQuietToolRenderer(
 	};
 }
 
-function registerQuietTool(pi: ExtensionAPI, toolName: RegisteredToolName, resolveOverride: GentleAiDevBinaryOverrideResolver, timing: () => GentleAiElapsedTimingLedger | undefined): void {
+function registerQuietTool(pi: ExtensionAPI, toolName: RegisteredToolName, resolveOverride: DrakoncAiDevBinaryOverrideResolver, timing: () => DrakoncAiElapsedTimingLedger | undefined): void {
 	const registrationTool = getBuiltInTools(process.cwd())[toolName];
 	pi.registerTool({
 		...registrationTool,
@@ -868,14 +868,14 @@ function registerQuietTool(pi: ExtensionAPI, toolName: RegisteredToolName, resol
 
 export default function quietTools(
 	pi: ExtensionAPI,
-	resolveOverride: GentleAiDevBinaryOverrideResolver = () => resolveGentleAiDevBinaryOverride(),
+	resolveOverride: DrakoncAiDevBinaryOverrideResolver = () => resolveDrakoncAiDevBinaryOverride(),
 	codemodeOptOut: Omit<BuiltinCodemodeOptOutOptions, "effectiveExtensions"> = {},
 ): ReturnType<ExtensionFactory> {
 	if (!quietToolsEnabled()) return;
-	let elapsedTiming: GentleAiElapsedTimingLedger | undefined;
+	let elapsedTiming: DrakoncAiElapsedTimingLedger | undefined;
 	let codemodeOptOutOffered = false;
 	pi.on("session_start", (_event, ctx) => {
-		elapsedTiming = new GentleAiElapsedTimingLedger(ctx.sessionManager, pi);
+		elapsedTiming = new DrakoncAiElapsedTimingLedger(ctx.sessionManager, pi);
 		// The compact codemode below displaces Pi's builtin, which makes Pi warn
 		// at startup. Offer the settings opt-out once per process, detached so
 		// the dialog never holds up startup; the offer itself never throws.
@@ -885,25 +885,25 @@ export default function quietTools(
 		try { effectiveExtensions = pi.getSettings().extensions; } catch { /* Fall back to the settings file alone. */ }
 		void offerBuiltinCodemodeOptOut(ctx, { ...codemodeOptOut, effectiveExtensions });
 	});
-	// Only bash calls that render as gentle-ai cards carry a durable duration;
+	// Only bash calls that render as drakonc-ai cards carry a durable duration;
 	// every other quiet tool keeps its plain renderer and writes no entries.
-	const recordGentleTiming = (event: { toolCallId: string; toolName: string; args?: unknown }, endedAt?: number): void => {
+	const recordDrakoncTiming = (event: { toolCallId: string; toolName: string; args?: unknown }, endedAt?: number): void => {
 		const ledger = elapsedTiming;
-		if (!ledger || event.toolName !== "bash" || !isGentleAiDirectCommand(event.args as Record<string, unknown> | undefined, createGentleAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride)))) return;
+		if (!ledger || event.toolName !== "bash" || !isDrakoncAiDirectCommand(event.args as Record<string, unknown> | undefined, createDrakoncAiCommandArguments(resolveQuietToolsDevBinaryPath(resolveOverride)))) return;
 		try {
 			if (endedAt === undefined) ledger.recordStart(event.toolCallId, Date.now());
 			else ledger.recordEnd(event.toolCallId, endedAt);
 		} catch { /* Timing persistence is best-effort and never breaks the tool event. */ }
 	};
-	pi.on("tool_execution_start", (event) => recordGentleTiming(event));
-	pi.on("tool_execution_end", (event) => recordGentleTiming(event, Date.now()));
-	const withElapsedTiming = (context: GentleAiRenderContext): GentleAiRenderContext =>
+	pi.on("tool_execution_start", (event) => recordDrakoncTiming(event));
+	pi.on("tool_execution_end", (event) => recordDrakoncTiming(event, Date.now()));
+	const withElapsedTiming = (context: DrakoncAiRenderContext): DrakoncAiRenderContext =>
 		elapsedTiming ? { ...context, elapsedTiming } : context;
 	for (const toolName of Object.keys(TOOL_CREATORS) as RegisteredToolName[]) {
 		registerQuietTool(pi, toolName, resolveOverride, () => elapsedTiming);
 	}
 	// Native Bash keeps pi's execution and schema; only its drawing becomes a
-	// Gentle card while the Card content preference is minimal, so quiet bash
+	// Drakonc card while the Card content preference is minimal, so quiet bash
 	// rows match the other tools. The resolver API is newer than this
 	// package's pinned pi types, so it is probed structurally; hosts without it
 	// — and the default content preference — keep pi's native bash rendering.

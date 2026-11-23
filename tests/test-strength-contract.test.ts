@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
-// gentle-shell#1731 T26 (L54): in the final bench blind review of x2, the
-// Gentle Shell inline solutions ranked below Codex on tests: they skipped the
+// drakonc-shell#1731 T26 (L54): in the final bench blind review of x2, the
+// Drakonc Shell inline solutions ranked below Codex on tests: they skipped the
 // empty-stdout check, put the bad row last (no proof that later valid rows are
 // not saved), missed the empty value, and asserted internal storage instead of
 // the public output. The verify-backed arm ranked first because verify's probe
@@ -23,28 +23,28 @@ const TEST_RULE = [
 const read = (relative: string): string => readFileSync(join(import.meta.dirname, "..", relative), "utf8");
 
 test("T26: the always-on Implement step gives inline work the test checklist", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const step = __testing.buildGentlePrompt(persona).split("\n").find((line) => line.startsWith("6. **Implement"));
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const step = __testing.buildDrakoncPrompt(persona).split("\n").find((line) => line.startsWith("6. **Implement"));
 		assert.ok(step, "ODD step 6 Implement is missing");
 		for (const clause of TEST_RULE) assert.ok(step.includes(clause), `${persona} Implement step is missing: ${clause}`);
 	}
 });
 
 test("T26: the worker test discipline carries the same checklist", () => {
-	const worker = read("assets/agents/gentle-ai-worker.md");
+	const worker = read("assets/agents/drakonc-ai-worker.md");
 	for (const clause of TEST_RULE) assert.ok(worker.includes(clause), `worker test discipline is missing: ${clause}`);
 	assert.ok(!worker.includes("add the smallest behavior-level test"), "RED must not ask for the smallest test");
 });
 
-// T26b (L56): blind review of x5 ranked Codex above the inline Gentle Shell
+// T26b (L56): blind review of x5 ranked Codex above the inline Drakonc Shell
 // arms partly because they added options without updating help and README.
 test("T26b: inline and delegated work update the help and docs that describe a changed option", () => {
 	const clause = "When you add or change a command, option, or message, update the help text and docs that describe it";
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const step = __testing.buildGentlePrompt(persona).split("\n").find((line) => line.startsWith("6. **Implement"));
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const step = __testing.buildDrakoncPrompt(persona).split("\n").find((line) => line.startsWith("6. **Implement"));
 		assert.ok(step?.includes(clause), `${persona} Implement step is missing the docs rule`);
 	}
-	assert.ok(read("assets/agents/gentle-ai-worker.md").includes(clause), "worker is missing the docs rule");
+	assert.ok(read("assets/agents/drakonc-ai-worker.md").includes(clause), "worker is missing the docs rule");
 });
 
 // T27 (L56): in `pi --mode json` the runtime already rejects background
@@ -53,11 +53,11 @@ test("T26b: inline and delegated work update the help and docs that describe a c
 // shipped the silent `budget set --year` defect. Single-shot hosts render off.
 test("T27: single-shot host modes render the background policy as off", () => {
 	for (const mode of ["json", "print"]) {
-		const prompt = __testing.buildGentlePrompt("gentleman", process.cwd(), undefined, undefined, mode);
+		const prompt = __testing.buildDrakoncPrompt("drakoncman", process.cwd(), undefined, undefined, mode);
 		assert.match(prompt, /Background subagent policy: off \(single-shot mode\)/, `${mode} must render off`);
 	}
 	for (const mode of ["tui", "rpc", undefined]) {
-		const prompt = __testing.buildGentlePrompt("gentleman", process.cwd(), undefined, undefined, mode);
+		const prompt = __testing.buildDrakoncPrompt("drakoncman", process.cwd(), undefined, undefined, mode);
 		assert.doesNotMatch(prompt, /single-shot mode/, `${String(mode)} must keep the configured policy`);
 	}
 });
@@ -70,8 +70,8 @@ test("T27: single-shot host modes render the background policy as off", () => {
 // command or option proving its previous behavior still holds. Nothing else.
 const PRESERVE = "For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases";
 test("T28b: inline test-first derives cases from the rules and touched commands, with no edge-case quota", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		const principle = prompt.split("\n").find((line) => line.includes("use test-first by default"));
 		assert.ok(principle?.includes("observe RED, GREEN, then refactor with focused checks"), `${persona} principle keeps RED, GREEN, refactor`);
 		assert.ok(principle?.includes("one RED test per requested rule"), `${persona} principle must ask for one RED test per rule`);
@@ -81,7 +81,7 @@ test("T28b: inline test-first derives cases from the rules and touched commands,
 });
 
 test("T28b: the worker preserves touched behavior instead of inventing edge cases", () => {
-	const worker = read("assets/agents/gentle-ai-worker.md");
+	const worker = read("assets/agents/drakonc-ai-worker.md");
 	assert.ok(worker.includes(`3. PRESERVE — ${PRESERVE}`), "worker step 3 must be PRESERVE");
 	assert.doesNotMatch(worker, /at least two edge cases|3\. TRIANGULATE/, "worker must not keep the edge-case quota");
 });
@@ -93,12 +93,12 @@ test("T28b: the worker preserves touched behavior instead of inventing edge case
 // nobody asked to change that shares the changed code (the real regressions).
 const TOUCHED = "An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation)";
 test("T31: PRESERVE uses the general definition of touched, not a parser-specific case", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.ok(prompt.includes(TOUCHED), `${persona} prompt must define touched behavior`);
 		assert.doesNotMatch(prompt, /shared parser or command, test that every sibling subcommand/, `${persona} must drop the T30 parser case`);
 	}
-	const worker = read("assets/agents/gentle-ai-worker.md");
+	const worker = read("assets/agents/drakonc-ai-worker.md");
 	assert.ok(worker.includes(TOUCHED), "worker must define touched behavior");
 	assert.doesNotMatch(worker, /shared parser or command, test that every sibling subcommand/, "worker must drop the T30 parser case");
 });
@@ -118,8 +118,8 @@ test("T31: high-risk item 3 is about unrequested breaks, not the requested chang
 // shared code before claiming none.
 const SHARED_CHECK = "Before writing `Risk: none`, check whether your diff changes code that existing behavior the request did not mention also uses (shared options, parsers, helpers); if it does, that is item 3";
 test("T33: the Close step checks shared code before Risk: none", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const step = __testing.buildGentlePrompt(persona).split("\n").find((line) => line.startsWith("7. **Close"));
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const step = __testing.buildDrakoncPrompt(persona).split("\n").find((line) => line.startsWith("7. **Close"));
 		assert.ok(step?.includes(SHARED_CHECK), `${persona} Close step must check shared code before Risk: none`);
 	}
 });
@@ -131,11 +131,11 @@ test("T33: the Close step checks shared code before Risk: none", () => {
 // S15: the differential check runs in scratch and is never committed as a test (blind round 4 found tests pinning a git commit).
 const DIFFERENTIAL = "Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a `mktemp -d` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test.";
 test("C8: inline test-first and the worker PRESERVE step run the differential check", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const principle = __testing.buildGentlePrompt(persona).split("\n").find((line) => line.includes("use test-first by default"));
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const principle = __testing.buildDrakoncPrompt(persona).split("\n").find((line) => line.includes("use test-first by default"));
 		assert.ok(principle?.includes(`${TOUCHED}. ${DIFFERENTIAL}`), `${persona} principle must run the differential check after PRESERVE`);
 	}
-	const step = read("assets/agents/gentle-ai-worker.md").split("\n").find((line) => line.startsWith("3. PRESERVE — "));
+	const step = read("assets/agents/drakonc-ai-worker.md").split("\n").find((line) => line.startsWith("3. PRESERVE — "));
 	assert.ok(step?.includes(DIFFERENTIAL), "worker step 3 must run the differential check");
 });
 
@@ -144,7 +144,7 @@ test("C8: inline test-first and the worker PRESERVE step run the differential ch
 // worker reuses the existing function for shared state, and each writer prompt
 // names the helpers to reuse, because parallel units cannot see each other.
 test("C3: the worker reuses the existing function for shared state and keeps its invariants", () => {
-	const worker = read("assets/agents/gentle-ai-worker.md");
+	const worker = read("assets/agents/drakonc-ai-worker.md");
 	assert.ok(
 		worker.includes("- Before you create or change shared state (a record, list entry, file, or setting that other commands also create or read), find the existing function that already does it and reuse it, keeping every invariant it enforces (ordering, uniqueness, validation, normalization). Never re-implement that step inline with a different shape."),
 		"worker must reuse the existing shared-state function",

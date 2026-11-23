@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
 // ODD harness-continuity S3 (odd/tasks/harness-continuity.md): authorized work
 // continues, a pending child is a wait event that resumes the turn, and only a
@@ -17,25 +17,25 @@ import { __testing } from "../extensions/gentle-ai.ts";
 const read = (relative: string): string => readFileSync(join(import.meta.dirname, "..", relative), "utf8");
 const verification = read("assets/orchestrator-verification.md");
 const tracking = read("assets/orchestrator-tracking.md");
-const worker = read("assets/agents/gentle-ai-worker.md");
-const verify = read("assets/agents/gentle-ai-verify.md");
-const personas = ["gentleman", "neutral"] as const;
+const worker = read("assets/agents/drakonc-ai-worker.md");
+const verify = read("assets/agents/drakonc-ai-verify.md");
+const personas = ["drakoncman", "neutral"] as const;
 const modes = ["organic", "full-delegation"] as const;
 let scratch: string;
 let previousConfigHome: string | undefined;
 before(() => {
-	scratch = mkdtempSync(join(tmpdir(), "gentle-bounded-stop-"));
-	previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = join(scratch, "config");
+	scratch = mkdtempSync(join(tmpdir(), "drakonc-bounded-stop-"));
+	previousConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = join(scratch, "config");
 });
 after(() => {
-	if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-	else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	if (previousConfigHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+	else process.env.DRAKONC_PI_CONFIG_HOME = previousConfigHome;
 	if (scratch) rmSync(scratch, { recursive: true, force: true });
 });
 
 function prompt(persona: (typeof personas)[number], mode: (typeof modes)[number] = "organic"): string {
-	return __testing.buildGentlePrompt(persona, scratch, ["read"], undefined, undefined, mode);
+	return __testing.buildDrakoncPrompt(persona, scratch, ["read"], undefined, undefined, mode);
 }
 
 function lineStarting(text: string, prefix: string): string {
@@ -84,7 +84,7 @@ test("T23(a): a partial or blocked writer gets the one correction; verification-
 
 test("S3: the canonical Close carries authorized continuation, a pending-child wait, and only real stops in both modes", () => {
 	for (const mode of modes) {
-		const close = closeStep("gentleman", mode);
+		const close = closeStep("drakoncman", mode);
 		containsAll(close, CANONICAL_CLOSE, `${mode} canonical Close`);
 		assert.ok(!close.includes("Needs your decision"), `${mode} Close must not license a generic terminal result`);
 		assert.ok(!close.includes("never more verification"), `${mode} Close must not broaden into a generic verification stop`);
@@ -92,7 +92,7 @@ test("S3: the canonical Close carries authorized continuation, a pending-child w
 });
 
 test("S3: an explicit user stop is scoped to the work it names while authorized checks continue", () => {
-	const rendered = prompt("gentleman");
+	const rendered = prompt("drakoncman");
 	containsAll(rendered, [
 		"An explicit user stop applies only to the work it names.",
 		"while a required authorized check the existing budget still allows keeps running",
@@ -103,7 +103,7 @@ test("S3: an explicit user stop is scoped to the work it names while authorized 
 
 test("S3 F1: denied, exhausted, missing-consent, and partial-stop cases stay scoped to the affected work", () => {
 	for (const mode of modes) {
-		const close = closeStep("gentleman", mode);
+		const close = closeStep("drakoncman", mode);
 		const slice = trackedPendingBoundary(close);
 		containsAll(slice, [
 			"waits on already-launched work",
@@ -141,10 +141,10 @@ test("S3: a pending child or an open human decision is a legitimate pending turn
 });
 
 test("S3: no phrase detector or broad verification stop joins ordinary continuity", () => {
-	const source = read("extensions/gentle-ai.ts");
+	const source = read("extensions/drakonc-ai.ts");
 	assert.ok(!source.includes("Needs your decision"), "the extension must not detect or emit the generic terminal phrase");
 	assert.ok(!source.includes("never more verification"), "the extension must not license a broad verification stop");
-	assert.ok(prompt("gentleman").includes("Never turn a report into a blind self-reprompt loop."));
+	assert.ok(prompt("drakoncman").includes("Never turn a report into a blind self-reprompt loop."));
 });
 
 test("T23(c): writer self-review and worker validation stop after a bounded correction", () => {
@@ -195,7 +195,7 @@ test("S1-S4: the worker returns its diagnosed loop cause after its bound and the
 		"return `status: partial` with a reproduction blocker and its evidence, not exhausted corrections",
 	], "worker RED construction bound");
 	containsAll(verification, [
-		"Follow **Authorized work continuity** for setup and worker recovery; scratch: `gentle-ai-verify`.",
+		"Follow **Authorized work continuity** for setup and worker recovery; scratch: `drakonc-ai-verify`.",
 	], "parent continuation reference");
 });
 
@@ -227,7 +227,7 @@ test("T23(f): the verify agent allows a second correction only for the same bloc
 	], "verify item 5");
 });
 
-test("gentle-shell#3082: a stopped verification carries its terminal disposition in the lazy module", () => {
+test("drakonc-shell#3082: a stopped verification carries its terminal disposition in the lazy module", () => {
 	containsAll(verification, [
 		"When required proof is unobtainable, one terminal disposition closes a stopped verification",
 		"name the missing proof and resume authorized in-scope work at `status: partial`",

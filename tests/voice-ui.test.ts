@@ -3,7 +3,7 @@ import test from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { pushToTalkStatus, VoiceDictationView, VoiceProgressView } from "../lib/voice-ui.ts";
 
-// The compact /gentle:voice overlays: rendering within the width, the keys
+// The compact /drakonc:voice overlays: rendering within the width, the keys
 // each state accepts, and no repaint after disposal.
 
 const ENTER = "\r";

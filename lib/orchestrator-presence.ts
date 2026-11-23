@@ -130,7 +130,7 @@ export function rootFor(profile: string, create = false, catalog = false) {
 		directory(path);
 		if (dirname(path) === path) break;
 	}
-	const shared = join(absolute, "gentle-agents");
+	const shared = join(absolute, "drakonc-agents");
 	const root = join(shared, catalog ? "catalog" : "presence");
 	// History may already own a 0755 shared root. Never change its permissions.
 	for (const path of [shared, root]) {
@@ -397,7 +397,7 @@ export class PresencePublisher {
 		try { action(); } catch (error) { this.error = reason(error); this.dispose(); }
 	}
 	private rootPath(kind: "header" | "activity" | "discovery" | "catalog") {
-		return join(resolve(this.profile), "gentle-agents", kind === "catalog" ? "catalog" : "presence");
+		return join(resolve(this.profile), "drakonc-agents", kind === "catalog" ? "catalog" : "presence");
 	}
 	/** Publishes from the warm cache synchronously, then refreshes the validated
 	 * ancestor chain asynchronously without ever overlapping itself. */
@@ -411,7 +411,7 @@ export class PresencePublisher {
 	 * sync write path stays cache-only. A failed validation only cools the cache. */
 	private async revalidate() {
 		const absolute = resolve(this.profile);
-		const shared = join(absolute, "gentle-agents");
+		const shared = join(absolute, "drakonc-agents");
 		const chains: { root: string; create: boolean }[] = [{ root: join(shared, "presence"), create: false }];
 		if (this.catalog) chains.push({ root: join(shared, "catalog"), create: true });
 		for (const { root, create } of chains) {
@@ -506,7 +506,7 @@ export class PresencePublisher {
 		this.pending = this.published = "";
 		for (const [path, identity] of this.owned) {
 			try {
-				rootFor(this.profile, false, dirname(path) === join(resolve(this.profile), "gentle-agents", "catalog"));
+				rootFor(this.profile, false, dirname(path) === join(resolve(this.profile), "drakonc-agents", "catalog"));
 				const stat = fs.lstatSync(path);
 				regular(stat);
 				if (stat.dev === identity.dev && stat.ino === identity.ino) fs.unlinkSync(path);

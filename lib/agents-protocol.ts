@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
-// Gentle Agents protocol. A child pi process streams RPC events; the host
+// Drakonc Agents protocol. A child pi process streams RPC events; the host
 // turns each one into a small typed delta, applies it to an append-only,
 // bounded thread, and tells only the listeners of that task. Nothing here
 // rebuilds a transcript, re-validates a whole snapshot, or fans out globally.
@@ -209,7 +209,7 @@ export const TERMINAL_RETENTION = 200;
 /** Child UI requests that block on an answer; everything else (notify, setStatus, setWidget) is noise here. */
 export const DIALOG_METHODS: ReadonlySet<string> = new Set(["select", "confirm", "input", "editor"]);
 /** The one child notify that reaches the task thread: requested --tools the child does not have (#1690). */
-export const MISSING_TOOLS_NOTE_PREFIX = "gentle-agents: requested tools missing in child:";
+export const MISSING_TOOLS_NOTE_PREFIX = "drakonc-agents: requested tools missing in child:";
 const LABEL_MAX = 72;
 const TEXT_CAP = 20_000;
 const ELLIPSIS = "…";

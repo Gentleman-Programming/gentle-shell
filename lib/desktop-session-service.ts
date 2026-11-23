@@ -1,5 +1,5 @@
-// Gentle Desktop session-state bridge (#3319): reaches the existing session
-// projection owner (the feed extension, `extensions/gentle-desktop-feed.ts`)
+// Drakonc Desktop session-state bridge (#3319): reaches the existing session
+// projection owner (the feed extension, `extensions/drakonc-desktop-feed.ts`)
 // through a defensive, versioned owner-service event/adapter — the session
 // analogue of `discoverDesktopJobsService`. It never reads the feed's file and
 // keeps no state of its own beyond the last sections it emitted: every read is

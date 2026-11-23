@@ -1,5 +1,5 @@
 // The one list of paths the sensitive-path policy denies. The tool guard
-// (extensions/gentle-ai.ts) and the verifier preparer (scripts/prepare-verifier.mjs)
+// (extensions/drakonc-ai.ts) and the verifier preparer (scripts/prepare-verifier.mjs)
 // both read it, so what the guard denies is never staged into verifier scratch.
 export const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	/(^|\/)\.ssh(?:\/|$)/,

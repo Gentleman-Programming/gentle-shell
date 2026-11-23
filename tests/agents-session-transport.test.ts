@@ -13,7 +13,7 @@ import { ActiveSessionClient, ActiveSessionClientError, ActiveSessionListener, F
 async function registry(t: TestContext, beforeCandidateOpen?: () => Promise<void>) {
 	const home = await mkdtemp(join(tmpdir(), "g-"));
 	await chmod(home, 0o755);
-	await mkdir(join(home, "gentle-agents"), { mode: 0o755 });
+	await mkdir(join(home, "drakonc-agents"), { mode: 0o755 });
 	t.after(() => rm(home, { recursive: true, force: true }));
 	return SessionPresenceRegistry.create(home, beforeCandidateOpen);
 }
@@ -43,7 +43,7 @@ test("preserves both shared parent modes while creating private transport direct
 	assert.equal(await mode(transport.paths.presence), 0o700);
 	assert.equal(await mode(transport.paths.sockets), 0o700);
 	assert.equal(await mode(join(transport.paths.root, "..", "..")), 0o755, "agentHome remains host-owned");
-	assert.equal(await mode(join(transport.paths.root, "..")), 0o755, "gentle-agents remains host-owned");
+	assert.equal(await mode(join(transport.paths.root, "..")), 0o755, "drakonc-agents remains host-owned");
 });
 
 test("accepts only private-owned or sticky world-writable runtime parents", () => {
@@ -65,7 +65,7 @@ test("binds deep ASCII and Unicode profiles to isolated bounded socket paths", a
 	t.after(() => rm(base, { recursive: true, force: true }));
 	const profile = async (name: string) => {
 		const home = join(base, ...Array.from({ length: 4 }, () => name.repeat(32)));
-		await mkdir(join(home, "gentle-agents"), { recursive: true, mode: 0o755 });
+		await mkdir(join(home, "drakonc-agents"), { recursive: true, mode: 0o755 });
 		return SessionPresenceRegistry.create(home);
 	};
 	const ascii = await profile("ascii-"), unicode = await profile("é-");
@@ -132,7 +132,7 @@ test("lists only advertised peer IDs without mutating the private registry", asy
 	assert.equal(remaining.length, 3, "only the live records (self, alpha twice) survive the sweep");
 });
 
-// gentle-shell#1443: inode existence does not imply liveness. A session that
+// drakonc-shell#1443: inode existence does not imply liveness. A session that
 // dies without unlinking its socket leaves an advertises()-passing record that
 // must be purged from the list itself — not only after a refused send or an
 // over-cap sweep. The probe is refusal-only: ambiguous outcomes keep records.
@@ -352,7 +352,7 @@ test("a matching FIFO cannot block presence discovery", async (t) => {
 test("rejects a symlinked dedicated transport directory", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "g-"));
 	t.after(() => rm(home, { recursive: true, force: true }));
-	await symlink("missing", join(home, "gentle-agents"));
+	await symlink("missing", join(home, "drakonc-agents"));
 	await rejected(SessionPresenceRegistry.create(home), "unsafe_path");
 });
 

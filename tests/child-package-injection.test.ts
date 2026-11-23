@@ -10,8 +10,8 @@ import {
 
 const envWith = (value: string | undefined) => ({ [CHILD_PACKAGE_INJECTION_ENV]: value });
 
-test("the env name follows the GENTLE_SHELL_* launcher naming", () => {
-	assert.equal(CHILD_PACKAGE_INJECTION_ENV, "GENTLE_SHELL_CHILD_PACKAGE_INJECTION");
+test("the env name follows the DRAKONC_SHELL_* launcher naming", () => {
+	assert.equal(CHILD_PACKAGE_INJECTION_ENV, "DRAKONC_SHELL_CHILD_PACKAGE_INJECTION");
 });
 
 test("encode and parse round-trip both launcher shapes", () => {
@@ -58,8 +58,8 @@ test("parse rejects malformed values without throwing", () => {
 });
 
 test("parse checks absoluteness with the injected path flavor, so Windows paths are accepted", () => {
-	const windows = encodeChildPackageInjection({ noExtensions: false, extensionPaths: ["C:\\x\\gentle-pi"] });
-	assert.deepEqual(parseChildPackageInjection(envWith(windows), win32), { noExtensions: false, extensionPaths: ["C:\\x\\gentle-pi"] });
+	const windows = encodeChildPackageInjection({ noExtensions: false, extensionPaths: ["C:\\x\\drakonc-pi"] });
+	assert.deepEqual(parseChildPackageInjection(envWith(windows), win32), { noExtensions: false, extensionPaths: ["C:\\x\\drakonc-pi"] });
 	assert.equal(parseChildPackageInjection(envWith(windows), posix), undefined);
 	const driveRelative = encodeChildPackageInjection({ noExtensions: false, extensionPaths: ["C:x"] });
 	assert.equal(parseChildPackageInjection(envWith(driveRelative), win32), undefined);

@@ -17,12 +17,12 @@ ones judged not worth changing. Branch `feat/harness-r1-runtime-checks` (rebased
      ~53-62 (a failed or timed-out `git diff` reports "0 authored changed lines" instead of no line).
   3. R4-commit-slice-sync-git-blocks-parent / R3-commit-slice-sync-git — lib/commit-slice-signal.ts ~31-37 (synchronous
      git calls in the parent tool_result path).
-  4. R3-commit-slice-background-shell / R3-002 — extensions/gentle-ai.ts ~10370-10373 (slice line for a background
+  4. R3-commit-slice-background-shell / R3-002 — extensions/drakonc-ai.ts ~10370-10373 (slice line for a background
      shell or a command whose commit has not happened yet).
   5. R3-commit-detect-echo — lib/commit-slice-signal.ts:17 (commit detection on echo/quoted text).
-  6. R1-todo-progress-overrides-withdrawal / R1-001 / R3-005 — extensions/gentle-agents.ts ~595-604 (automatic
+  6. R1-todo-progress-overrides-withdrawal / R1-001 / R3-005 — extensions/drakonc-agents.ts ~595-604 (automatic
      progress republishes state the owner withdrew with `state: null`).
-  7. R3-todo-progress-cleared-list — extensions/gentle-todo.ts ~289 (cleared list publishes "0/0 done").
+  7. R3-todo-progress-cleared-list — extensions/drakonc-todo.ts ~289 (cleared list publishes "0/0 done").
   8. R3-delivered-test-lint-false-positive / R3-003 / R4-delivered-test-lint-no-escape — lib/delivered-test-lint.ts
      ~19-43 (false positive cases; no escape hatch).
   9. R3-backstop-zero-threshold — lib/context-backstop.ts:36 (a zero or tiny threshold).
@@ -73,7 +73,7 @@ ones judged not worth changing. Branch `feat/harness-r1-runtime-checks` (rebased
   (extended; RED: `{ progress: '1/3 done; current: Docs' }` instead of null).
 - L8 (T1, finding 7, fixed): a cleared todo list published "0/0 done". It now drops the progress line and keeps the
   curated fields, and publishes nothing when there was no progress line. Same test as L7 (RED: `progress: '0/0 done'`).
-  Fixed at the consumer (extensions/gentle-agents.ts), not at the emitter, so peers do not keep the stale count.
+  Fixed at the consumer (extensions/drakonc-agents.ts), not at the emitter, so peers do not keep the stale count.
 - L9 (T1, finding 8, not changed): confirmed false positives: a test fixture string such as
   `isDestructive("git checkout 9e8d7c6 -- src")`, a comment `git diff shows the change from 1a2b3c4`, and a shell line
   `TMPDIR=$(mktemp -d) node --test "$PWD/tests"` (the TMPDIR value runs to the end of the command). Narrowing the
@@ -85,7 +85,7 @@ ones judged not worth changing. Branch `feat/harness-r1-runtime-checks` (rebased
   launch). The window-derived threshold is now at least 1 token. Test: `the threshold is never below one token, so an
   empty context never reaches it`.
 - L11 (T1, finding 10, fixed, test only): tests/agents-runner.test.ts built the expected prefix as
-  `${tmpdir()}/gentle-pi-subagent-tmp-`, which fails on Windows separators; it now uses `join`. No RED on Linux (the
+  `${tmpdir()}/drakonc-pi-subagent-tmp-`, which fails on Windows separators; it now uses `join`. No RED on Linux (the
   file does not run on Windows CI); test: `a relative inherited TMPDIR falls back to the system temp dir, so the
   child's path is absolute`.
 - L12 (T1, finding 11, not changed): the suggestion's text is not in this document or the repository. Examined line 35

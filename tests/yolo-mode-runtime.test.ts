@@ -5,24 +5,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { getThemeByName } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import gentleShell from "../extensions/gentle-shell.ts";
+import drakoncShell from "../extensions/drakonc-shell.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { createEventBus, createExtensionRuntime, ExtensionRunner, SessionManager, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
 import { discoverYoloUiAdapter, registerYoloSessionPolicy, YOLO_STATUS_KEY, YOLO_STATUS_TEXT } from "../lib/yolo-session-policy.ts";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 
-// An empty env would resolve the developer's real ~/.pi/gentle-ai and inherit its persisted mode default.
+// An empty env would resolve the developer's real ~/.pi/drakonc-ai and inherit its persisted mode default.
 function isolatedEnv(t: test.TestContext): NodeJS.ProcessEnv {
 	const home = mkdtempSync(join(tmpdir(), "yolo-runtime-config-"));
 	t.after(() => rmSync(home, { recursive: true, force: true }));
-	return { GENTLE_PI_CONFIG_HOME: home };
+	return { DRAKONC_PI_CONFIG_HOME: home };
 }
 
-test("complete Gentle AI extension registers and executes YOLO through the actual SDK loader", async t => {
+test("complete Drakonc AI extension registers and executes YOLO through the actual SDK loader", async t => {
 	const cwd = process.cwd();
 	const runtime = createExtensionRuntime();
-	const extension = await loadExtensionFromFactory(createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: isolatedEnv(t) }), cwd, createEventBus(), runtime);
+	const extension = await loadExtensionFromFactory(createDrakoncAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: isolatedEnv(t) }), cwd, createEventBus(), runtime);
 	assert.equal(extension.handlers.get("session_start")?.length, 1, "original startup hook remains the sole handler");
 	assert.equal(extension.handlers.get("session_shutdown")?.length, 1, "original shutdown hook remains the sole handler");
 	const runner = new ExtensionRunner([extension], runtime, cwd, SessionManager.inMemory(cwd), {} as never);
@@ -31,7 +31,7 @@ test("complete Gentle AI extension registers and executes YOLO through the actua
 	runner.bindCommandContext();
 	assert.equal(runner.getAllRegisteredTools().some(({ definition }) => definition.name.includes("yolo")), false);
 	assert.equal(runner.getCommand("yolo"), undefined, "bare yolo command is not registered");
-	const command = runner.getCommand("gentle:yolo"); assert.ok(command);
+	const command = runner.getCommand("drakonc:yolo"); assert.ok(command);
 	await command.handler("enable", runner.createCommandContext());
 	assert.equal(statuses.get(YOLO_STATUS_KEY), YOLO_STATUS_TEXT);
 	await command.handler("disable", runner.createCommandContext());
@@ -73,7 +73,7 @@ test("SDK-loaded YOLO command resets across actual runner lifecycle dispatch and
 	};
 	let runner = await load();
 	const command = async (args: string) => {
-		const registered = runner.getCommand("gentle:yolo"); assert.ok(registered);
+		const registered = runner.getCommand("drakonc:yolo"); assert.ok(registered);
 		await registered.handler(args, runner.createCommandContext());
 	};
 	await runner.emit({ type: "session_start", reason: "startup" });
@@ -99,11 +99,11 @@ for (const shellFirst of [false, true]) test(`SDK loads both extensions on one b
 	const home = mkdtempSync(join(tmpdir(), "yolo-sdk-menu-"));
 	t.after(() => rmSync(home, { recursive: true, force: true }));
 	const cwd = process.cwd(), runtime = createExtensionRuntime(), bus = createEventBus();
-	const env = { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" };
-	const ownerFactory = createGentleAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: env,
+	const env = { DRAKONC_PI_CONFIG_HOME: home, DRAKONC_PI_SHELL_CHANGES_WATCH_MS: "off" };
+	const ownerFactory = createDrakoncAiExtension({ nativeReviewCli: null, candidateViews: null, processEnv: env,
 		resolveTelemetryTriggerBinary: () => { throw new Error("disabled in test"); },
 	});
-	const shellFactory = (pi: Parameters<typeof gentleShell>[0]) => gentleShell(pi, env, {
+	const shellFactory = (pi: Parameters<typeof drakoncShell>[0]) => drakoncShell(pi, env, {
 		fetch: async () => { assert.fail("no network calls"); }, devBinary: () => undefined, activeProfile: () => undefined,
 	});
 	const extensions = [];
@@ -154,7 +154,7 @@ for (const shellFirst of [false, true]) test(`SDK loads both extensions on one b
 	// The compatibility SDK omits mode; annotate the transport we explicitly
 	// bound above. All other getters retain real SDK invalidation semantics.
 	if (ctx.mode === undefined) Object.defineProperty(ctx, "mode", { value: "tui" });
-	const command = runner.getCommand("gentle:yolo")!, customize = runner.getCommand("gentle:customize")!;
+	const command = runner.getCommand("drakonc:yolo")!, customize = runner.getCommand("drakonc:customize")!;
 	assert.ok(command); assert.ok(customize);
 	const menu = customize.handler("", ctx);
 	await ready; assert.ok(view);

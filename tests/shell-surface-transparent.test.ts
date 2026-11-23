@@ -75,15 +75,15 @@ test("the panel sheet follows the chrome surface", (t) => {
 test("invalid surface or header writes keep the stored file byte-identical", () => {
 	const home = mkdtempSync(join(tmpdir(), "visual-invalid-"));
 	try {
-		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split", surface: "transparent" }, { gentlePiConfigHome: home });
+		writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split", surface: "transparent" }, { drakoncPiConfigHome: home });
 		const file = join(home, "visual-customization.json");
 		const before = readFileSync(file, "utf8");
 		for (const bad of [{ surface: "glass" }, { surface: "Transparent" }, { headerPlacement: "above-input" }]) {
-			assert.throws(() => writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, ...bad } as never, { gentlePiConfigHome: home }), /Invalid visual settings/);
+			assert.throws(() => writeVisualSettings({ ...DEFAULT_VISUAL_SETTINGS, ...bad } as never, { drakoncPiConfigHome: home }), /Invalid visual settings/);
 			assert.equal(readFileSync(file, "utf8"), before);
 		}
 		const { surface: _surface, ...legacy } = DEFAULT_VISUAL_SETTINGS;
-		assert.throws(() => writeVisualSettings(legacy as never, { gentlePiConfigHome: home }));
-		assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.surface, "transparent");
+		assert.throws(() => writeVisualSettings(legacy as never, { drakoncPiConfigHome: home }));
+		assert.equal(resolveVisualSettings({ drakoncPiConfigHome: home }).settings.surface, "transparent");
 	} finally { rmSync(home, { recursive: true, force: true }); }
 });

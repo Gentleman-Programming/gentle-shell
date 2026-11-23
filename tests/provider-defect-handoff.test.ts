@@ -7,10 +7,10 @@ import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 // ---------------------------------------------------------------------------
 // Provider Defect Handoff — structural readback tests (issue #256, track 5)
 //
-// Pins the port of Gentle AI's v2.4.0-rc.8 provider-defect handoff consent
+// Pins the port of Drakonc AI's v2.4.0-rc.8 provider-defect handoff consent
 // contract (the gentle-ai.review-integration.consent/v3 envelope; canonical
 // source internal/assets/generic/sdd-orchestrator.md at tag v2.4.0-rc.8 of
-// Gentleman-Programming/gentle-ai) into Pi's lazy-loaded orchestrator assets.
+// Drakoncman-Programming/drakonc-ai) into Pi's lazy-loaded orchestrator assets.
 // The contract is a prerelease (not in v2.3.0 stable). These tests assert
 // structural presence, ordering, and the removal of stale rc.3-era rules; they
 // do not execute any lifecycle command.
@@ -18,7 +18,7 @@ import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 // harness-continuity S9 (T9): the report workflow moved out of the always-loaded delegation modules into the
-// focused `gentle-ai-provider-defect-report` skill, loaded only when a Gentle AI invocation produced the failure.
+// focused `drakonc-ai-provider-defect-report` skill, loaded only when a Drakonc AI invocation produced the failure.
 // Every workflow assertion below reads the skill; the delegation union keeps only the classification stub.
 const SKILL_PATH = "skills/provider-defect-report/SKILL.md";
 const SKILL = readFileSync(join(REPO_ROOT, SKILL_PATH), "utf8");
@@ -27,7 +27,7 @@ const PROMPTS = readFileSync(join(REPO_ROOT, "assets", "orchestrator-prompts.md"
 
 const CHOICE_TOKENS = ["report_and_continue", "continue_without_reporting", "stop_here"] as const;
 
-// rc.8 choice-1 ordering mirrors gentle-ai v2.4.0-rc.8 blocking_prompt_contract_test.go; asserted only where phrases exist.
+// rc.8 choice-1 ordering mirrors drakonc-ai v2.4.0-rc.8 blocking_prompt_contract_test.go; asserted only where phrases exist.
 function assertChoice1Order(haystack: string, anchors: readonly string[], surface: string): void {
 	const positions = anchors.map((p) => haystack.indexOf(p));
 	anchors.forEach((p, i) => assert.notEqual(positions[i], -1, `${surface}: missing rc.8 choice-1 anchor: ${JSON.stringify(p)}`));
@@ -54,7 +54,7 @@ const SKILL_CHOICE1_ORDER = [
 // ---------------------------------------------------------------------------
 
 test("the provider-defect-report skill is discoverable, prefixed, and packaged", () => {
-	assert.match(SKILL, /^---\nname: gentle-ai-provider-defect-report\ndescription: "Trigger: [^\n]+"\nlicense: Apache-2\.0\nmetadata:\n  author: gentleman-programming\n  version: "1\.0"\n---/);
+	assert.match(SKILL, /^---\nname: drakonc-ai-provider-defect-report\ndescription: "Trigger: [^\n]+"\nlicense: Apache-2\.0\nmetadata:\n  author: drakoncman-programming\n  version: "1\.0"\n---/);
 	for (const section of ["Activation Contract", "Hard Rules", "Decision Gates", "Execution Steps", "Output Contract", "References"]) {
 		assert.match(SKILL, new RegExp(`^## ${section}$`, "m"), `the skill is missing section ${section}`);
 	}
@@ -62,13 +62,13 @@ test("the provider-defect-report skill is discoverable, prefixed, and packaged",
 });
 
 test("the delegation modules keep only a short classification stub that loads the skill", () => {
-	const stub = PROMPTS.match(/^#### Gentle AI Provider Defect Handoff \(MANDATORY\)$[\s\S]*/m)?.[0] ?? "";
+	const stub = PROMPTS.match(/^#### Drakonc AI Provider Defect Handoff \(MANDATORY\)$[\s\S]*/m)?.[0] ?? "";
 	assert.ok(stub.length > 0, "orchestrator-prompts.md keeps the provider defect heading");
 	assert.match(stub, /Before losslessly relaying any blocking choice envelope, classify its semantic admissibility/);
 	assert.match(stub, /The test is what produced the failure, not what the work was doing when it happened/);
 	assert.match(stub, /there is no report and no handoff/);
 	assert.match(stub, /do not name the component you believe is responsible/i);
-	assert.match(stub, /load the `gentle-ai-provider-defect-report` skill/);
+	assert.match(stub, /load the `drakonc-ai-provider-defect-report` skill/);
 	assert.ok(Buffer.byteLength(stub, "utf8") < 1200, `the stub stays short: ${Buffer.byteLength(stub, "utf8")} B`);
 	for (const token of [...CHOICE_TOKENS, 'choices[answer="declined"].invocation', "final privacy scan", "definitive lookup", "evidence channel"]) {
 		assert.ok(!DELEGATION.includes(token), `the delegation modules still carry workflow detail: ${token}`);
@@ -77,7 +77,7 @@ test("the delegation modules keep only a short classification stub that loads th
 
 test("the provider-defect-report skill references the prerelease consent/v3 contract", () => {
 	assert.match(SKILL, /prerelease/i);
-	assert.match(SKILL, /gentle-ai\.review-integration\.consent\/v3/);
+	assert.match(SKILL, /drakonc-ai\.review-integration\.consent\/v3/);
 });
 
 test("the provider-defect-report skill lists all three semantic choice tokens", () => {
@@ -116,7 +116,7 @@ test("the provider-defect-report skill states the admissibility-before-relay rul
 });
 
 test("the provider-defect-report skill excludes local consent lifecycle outcomes from provider-defect reporting", () => {
-	assert.match(SKILL, /Pending consent has no response deadline\. `consent-binding-already-consumed` is a local lifecycle outcome, not a Gentle AI provider defect/i);
+	assert.match(SKILL, /Pending consent has no response deadline\. `consent-binding-already-consumed` is a local lifecycle outcome, not a Drakonc AI provider defect/i);
 	assert.match(SKILL, /An unknown consent binding is reportable only when independent evidence proves a fresh, same-session, unconsumed binding was lost/i);
 	assert.match(SKILL, /Never infer that evidence from the old combined stale-binding message/i);
 });
@@ -124,7 +124,7 @@ test("the provider-defect-report skill excludes local consent lifecycle outcomes
 test("the provider-defect-report skill states the never-offer-to-repair rule", () => {
 	assert.match(
 		SKILL,
-		/never offer to switch to, inspect, modify, or directly repair the Gentle AI repository/i,
+		/never offer to switch to, inspect, modify, or directly repair the Drakonc AI repository/i,
 	);
 	assert.match(SKILL, /reject it as semantically inadmissible and issue this separate orchestrator-owned handoff envelope/i);
 });
@@ -183,7 +183,7 @@ test("the provider-defect-report skill states the uncertainty continuation (decl
 
 test("the provider-defect-report skill states the exact-captured-decline-invocation rule", () => {
 	assert.match(SKILL, /Both continue choices execute that exact captured decline invocation exactly once/i);
-	assert.match(SKILL, /`choices\[answer="declined"\]\.invocation` from the `gentle-ai\.review-integration\.consent\/v3` envelope/i);
+	assert.match(SKILL, /`choices\[answer="declined"\]\.invocation` from the `drakonc-ai\.review-integration\.consent\/v3` envelope/i);
 	assert.match(
 		SKILL,
 		/Never synthesize the decline command, target, token, or consumer continuation from prose/i,
@@ -196,11 +196,11 @@ test("the provider-defect-report skill states handoff scope and mode preservatio
 	// cost-speed P20 (PD-88): an explicit user request to stop RDD wins over the handoff scope rule.
 	assert.ok(
 		SKILL.includes(
-			"Unless the user explicitly asks, do not invoke `gentle-ai review mode disable` at clone or global scope or turn RDD off or on within this handoff.",
+			"Unless the user explicitly asks, do not invoke `drakonc-ai review mode disable` at clone or global scope or turn RDD off or on within this handoff.",
 		),
 		"the handoff scope rule must yield to an explicit user request",
 	);
-	assert.doesNotMatch(SKILL, /Do not invoke `gentle-ai review mode disable` at clone or global scope within this handoff/i);
+	assert.doesNotMatch(SKILL, /Do not invoke `drakonc-ai review mode disable` at clone or global scope within this handoff/i);
 	assert.doesNotMatch(SKILL, /Do not turn RDD off or on within this handoff/i);
 	assert.match(SKILL, /The result carries no lineage or receipt; ordinary delivery is unmanaged by the candidate choice, and the next candidate asks again/i);
 });
@@ -223,11 +223,11 @@ test("the provider-defect-report skill states the resume route (published fix or
 // 2 — Prohibited stale rc.3-era rules (must NOT survive in the handoff)
 // ---------------------------------------------------------------------------
 
-test("the provider-defect-report skill does NOT carry the gentle-report label discipline", () => {
+test("the provider-defect-report skill does NOT carry the drakonc-report label discipline", () => {
 	assert.equal(
-		SKILL.includes("gentle-report"),
+		SKILL.includes("drakonc-report"),
 		false,
-		"the v2.4.0-rc.8 handoff removed the gentle-report label discipline; the string must not appear",
+		"the v2.4.0-rc.8 handoff removed the drakonc-report label discipline; the string must not appear",
 	);
 });
 
@@ -254,7 +254,7 @@ test("the provider-defect-report skill does NOT retain the rc.3 hard-stop that w
 
 test("the provider-defect-report skill does NOT reference the rc.3 canon", () => {
 	assert.equal(SKILL.includes("v2.4.0-rc.3"), false, "stale rc.3 version reference must be removed");
-	assert.equal(SKILL.includes("gentle-ai#2060"), false, "stale rc.3 issue reference must be removed");
+	assert.equal(SKILL.includes("drakonc-ai#2060"), false, "stale rc.3 issue reference must be removed");
 });
 
 // ---------------------------------------------------------------------------
@@ -265,6 +265,6 @@ test("the skill owns the complete provider defect handoff", () => {
 	assert.match(SKILL, /Both continue choices execute that exact captured decline invocation exactly once/);
 });
 
-test("the complete delegation handoff invokes `gentle-ai review mode disable` exactly once", () => {
-	assert.equal(countOccurrences(SKILL, "gentle-ai review mode disable"), 1);
+test("the complete delegation handoff invokes `drakonc-ai review mode disable` exactly once", () => {
+	assert.equal(countOccurrences(SKILL, "drakonc-ai review mode disable"), 1);
 });

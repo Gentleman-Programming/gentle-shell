@@ -13,9 +13,9 @@ import test from "node:test";
 const read = (relative: string): string => readFileSync(join(import.meta.dirname, "..", relative), "utf8");
 const skills = read("assets/orchestrator-skills.md");
 const agents = {
-	worker: read("assets/agents/gentle-ai-worker.md"),
-	verify: read("assets/agents/gentle-ai-verify.md"),
-	explore: read("assets/agents/gentle-ai-explore.md"),
+	worker: read("assets/agents/drakonc-ai-worker.md"),
+	verify: read("assets/agents/drakonc-ai-verify.md"),
+	explore: read("assets/agents/drakonc-ai-explore.md"),
 };
 
 function containsAll(text: string, clauses: readonly string[], label: string): void {
@@ -33,7 +33,7 @@ test("S4 skills: the parent passes only skills matching the delegated task's fil
 test("S4 continuations: a resumed child skips only material it already read and that did not change; first launch reads stay", () => {
 	const continuation =
 		"When resumed in the same child session, do not re-read skill files or spec sections you already read there unless they changed or the parent says so; read anything you have not read yet as usual";
-	for (const [name, body] of Object.entries(agents)) containsAll(body, [continuation], `gentle-ai-${name}`);
+	for (const [name, body] of Object.entries(agents)) containsAll(body, [continuation], `drakonc-ai-${name}`);
 	containsAll(agents.worker, ["Read every exact path under `## Skills to load before work`", "read it from the top until `## Log`"], "worker first launch");
 	containsAll(agents.verify, ["read all of it, including the verbatim user entries in `## Log`", "read anything you have not read yet as usual, including new `## Log` entries."], "verify first launch and new Log entries");
 	containsAll(agents.explore, ["read it until `## Log` for the requirements"], "explore first launch");
@@ -41,9 +41,9 @@ test("S4 continuations: a resumed child skips only material it already read and 
 
 test("S4 reports: every child report is compact, cites exact commands with exit codes and counts, and never restates the task", () => {
 	const noRestate = "never restate the task, the spec text, or unchanged file contents";
-	containsAll(agents.worker, [noRestate], "gentle-ai-worker");
-	containsAll(agents.explore, [noRestate], "gentle-ai-explore");
-	containsAll(agents.verify, ["never restate the task or spec beyond the line a finding contradicts, or unchanged file contents"], "gentle-ai-verify");
+	containsAll(agents.worker, [noRestate], "drakonc-ai-worker");
+	containsAll(agents.explore, [noRestate], "drakonc-ai-explore");
+	containsAll(agents.verify, ["never restate the task or spec beyond the line a finding contradicts, or unchanged file contents"], "drakonc-ai-verify");
 	containsAll(agents.worker, [
 		"Return one compact handoff using the schema below; cite exact commands with exit codes and test counts",
 		"blockers with `path:line`",
@@ -71,7 +71,7 @@ test("S4 reports: every child report is compact, cites exact commands with exit 
 	], "verify report");
 	containsAll(agents.explore, ["Return a compact handoff of at most ~2k tokens", "`path:line`", "Never claim evidence you did not observe."], "explore report");
 	// S8: the retired Key Learnings closing ritual no longer follows the Return contract.
-	for (const [name, body] of Object.entries(agents)) assert.ok(!body.includes("Key Learnings"), `gentle-ai-${name} still carries the retired Key Learnings ritual`);
+	for (const [name, body] of Object.entries(agents)) assert.ok(!body.includes("Key Learnings"), `drakonc-ai-${name} still carries the retired Key Learnings ritual`);
 });
 
 test("S4 verifier setup pitfalls: clean env, short scratch, one file per config role, flag check, no executing entry points", () => {

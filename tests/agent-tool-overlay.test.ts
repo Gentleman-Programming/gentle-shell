@@ -12,7 +12,7 @@ function writeJson(path: string, value: unknown): void {
 }
 
 function tempRoot(): string {
-	return mkdtempSync(join(tmpdir(), "gentle-tool-overlay-"));
+	return mkdtempSync(join(tmpdir(), "drakonc-tool-overlay-"));
 }
 
 test("loadToolOverlays merges sources with higher precedence winning per tool", (t) => {
@@ -22,7 +22,7 @@ test("loadToolOverlays merges sources with higher precedence winning per tool", 
 	const cwd = join(root, "project");
 	writeJson(join(configHome, "agent-overlays.d", "10-extension.json"), { worker: { add: ["ext"] } });
 	writeJson(join(configHome, "tools.json"), { worker: { add: ["a", "global-add"], remove: ["b"] } });
-	writeJson(join(cwd, ".pi", "gentle-ai", "tools.json"), { worker: { remove: ["a"], add: ["b", "project-add"] } });
+	writeJson(join(cwd, ".pi", "drakonc-ai", "tools.json"), { worker: { remove: ["a"], add: ["b", "project-add"] } });
 
 	const result = loadToolOverlays(configHome, cwd);
 	assert.deepEqual(result.notices, []);

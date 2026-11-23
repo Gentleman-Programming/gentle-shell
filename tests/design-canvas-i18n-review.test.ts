@@ -7,8 +7,8 @@ import { findAll, flush, handoffDoc, heardGeneration, inspectorPick, loadCanvas,
 // tab, each in Spanish after choosing Español and the exact English again after English, relabeled in place. What
 // goes to the agent stays English (S3). Every assertion compares strings, numbers or booleans, never fake elements.
 
-const LANGUAGE_KEY = "gentle-design:language";
-const TECHNICAL_KEY = "gentle-design:technical";
+const LANGUAGE_KEY = "drakonc-design:language";
+const TECHNICAL_KEY = "drakonc-design:technical";
 const COMMENTS_URL = "/t/api/designs/alpha/comments";
 const SEND_ALL_URL = "/t/api/designs/alpha/comments/send-all";
 const PARTS_URL = "/t/api/designs/alpha/parts";
@@ -282,9 +282,9 @@ test("the offline note of Implement only this is in the stored language from the
 	canvas.boards.forEach((board, index) => { board.frame.rect = { left: 100 + index * 500, top: 120, width: 400, height: 300 }; });
 	pick(canvas as unknown as Canvas);
 	const note = () => findAll(canvas.document.getElementById("gd-popover-form"), (element) => element.id === "gd-popover-part-note")[0].textContent;
-	assert.equal(note(), "El canvas no está conectado a una sesión de Pi; ábrelo con /gentle:design open");
+	assert.equal(note(), "El canvas no está conectado a una sesión de Pi; ábrelo con /drakonc:design open");
 	choose(canvas as unknown as Canvas, "English");
-	assert.equal(note(), "The canvas is not connected to a Pi session; open it with /gentle:design open");
+	assert.equal(note(), "The canvas is not connected to a Pi session; open it with /drakonc:design open");
 });
 
 test("in Spanish a comment is posted as written, with no word of the canvas in it, and the box says it was sent in Spanish", async () => {

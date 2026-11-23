@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   test:
-    if: github.repository == 'decode2/gentle-pi'
+    if: github.repository == 'decode2/drakonc-pi'
     strategy:
       fail-fast: false
       matrix:
@@ -90,11 +90,11 @@ jobs:
       - name: Run extension and portable Windows transport tests (Windows)
         if: matrix.platform == 'windows'
         shell: pwsh
-        run: node --experimental-strip-types --test tests/gentle-agents.test.ts tests/windows-session-compile.test.ts tests/windows-session-transport.test.ts
+        run: node --experimental-strip-types --test tests/drakonc-agents.test.ts tests/windows-session-compile.test.ts tests/windows-session-transport.test.ts
       - name: Run extension and portable Windows transport tests (Unix)
         if: matrix.platform != 'windows'
         shell: bash
-        run: node --experimental-strip-types --test tests/gentle-agents.test.ts tests/windows-session-compile.test.ts tests/windows-session-transport.test.ts
+        run: node --experimental-strip-types --test tests/drakonc-agents.test.ts tests/windows-session-compile.test.ts tests/windows-session-transport.test.ts
       - name: Run AgentRunner permission FD3 platform matrix (Windows)
         if: matrix.platform == 'windows'
         shell: cmd

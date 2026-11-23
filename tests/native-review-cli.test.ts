@@ -19,13 +19,13 @@ import {
 	createNodeExecFileAdapter,
 	createWindowsProcessTreeKiller,
 	windowsTaskkillPath,
-	gentleAiProcessEnvironment,
+	drakoncAiProcessEnvironment,
 	isNativeReviewUnachievableVerbRefused,
 	type ExecFileAdapter,
 	type NativeReviewModeRequest,
 	type NativeTargetStatusRequest,
 } from "../lib/native-review-cli.ts";
-import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
+import { setBundledInstallForTesting } from "../lib/drakonc-shell-bundled.ts";
 import { capabilitiesV26 } from "./support/capabilities-v26.ts";
 import { statusV9 } from "./support/status-v9.ts";
 
@@ -67,7 +67,7 @@ function queuedAdapter(results: readonly QueuedResult[]): {
 }
 
 function client(adapter: ExecFileAdapter): NativeReviewCliV216 {
-	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
+	return new NativeReviewCliV216(adapter, "/package/.drakonc-ai/drakonc-ai", 30_000, 1024 * 1024);
 }
 
 const modeClients = [
@@ -75,7 +75,7 @@ const modeClients = [
 	["constructor", (adapter: ExecFileAdapter, executable: () => string) => new NativeReviewCliV216(adapter, executable)],
 ] as const;
 const modeCwd = "/isolated-review-mode-test";
-const modeExecutable = "/package/.gentle-ai/gentle-ai";
+const modeExecutable = "/package/.drakonc-ai/drakonc-ai";
 
 function modeOutput(operation: "status" | "enable" | "disable", scope: "clone" | "global" | "both", global: "on" | "off", cloneLocal: "" | "off") {
 	const effective = cloneLocal === "off" || global === "off" ? "off" : "on";
@@ -185,7 +185,7 @@ test("negotiated STATUS refuses an older status envelope with the actionable min
   const queue = queuedAdapter([{ stdout: JSON.stringify(older) }]);
   await assert.rejects(client(queue.adapter).targetStatus({ cwd: "/repo", lineageId: "review-status-fixture", agent: "pi" }), (error: any) => {
    assert.equal(error.code, "version-incompatible");
-   assert.equal(error.message, `gentle-ai native review status/v${version} is older than the supported v9 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override`);
+   assert.equal(error.message, `drakonc-ai native review status/v${version} is older than the supported v9 (drakonc-ai v4.6.0); update drakonc-ai or remove the dev-binary override`);
    return true;
   });
  }
@@ -268,7 +268,7 @@ test("provider-owned refuter and targeted-validator vectors accept only their ma
 	);
 });
 
-// gentle-pi#638: the host relay's deterministic-failure exit declares the
+// drakonc-pi#638: the host relay's deterministic-failure exit declares the
 // bound slot unachievable through the native verb instead of leaving the
 // operator to re-spend an identical reviewer run. The invocation names the
 // slot's frozen binding fields (--lineage/--target/--expected-revision/
@@ -288,7 +288,7 @@ test("capture-unachievable declares the exact slot binding and decodes its recor
 	const queue = queuedAdapter([{ stdout: JSON.stringify(UNACHIEVABLE_ARTIFACT) }]);
 	const result = await client(queue.adapter).captureUnachievableLens({ ...unachievableRequest(), detail: "killed after 2256004ms against a 2256000ms relay bound", repositoryContext: "rctx1_" + "e".repeat(64) });
 	assert.deepEqual(result, { schema: "gentle-ai.review-capture-unachievable/v1", lineageId: "relay-lineage", targetIdentity: UNACHIEVABLE_TARGET, lens: "review-reliability", selectedOrder: 0, reason: "relay_transport_bound_exceeded", recorded: true });
-	// gentle-pi#822: --repository-context is authoritative and mutually exclusive with a path, so a declaration carrying one names no --cwd; the process still runs from request.cwd.
+	// drakonc-pi#822: --repository-context is authoritative and mutually exclusive with a path, so a declaration carrying one names no --cwd; the process still runs from request.cwd.
 	assert.deepEqual(queue.calls[0]?.arguments, ["review", "capture-unachievable", "--lineage", "relay-lineage", "--target", UNACHIEVABLE_TARGET, "--expected-revision", UNACHIEVABLE_REVISION, "--request-hash", UNACHIEVABLE_REQUEST_HASH, "--reason", "relay_transport_bound_exceeded", "--detail", "killed after 2256004ms against a 2256000ms relay bound", "--repository-context", "rctx1_" + "e".repeat(64)]);
 	assert.equal(queue.calls[0]?.cwd, "/repo", "the process working directory stays request.cwd even when --cwd is not passed as an argument");
 	assert.equal(queue.calls[0]?.timeoutMs, undefined, "the mutating declaration runs without the read-only negotiation timeout");
@@ -501,7 +501,7 @@ test("negotiated STATUS rejects malformed committed selectors before launching a
 		{ cwd: "/repo", baseRef: "refs/heads/main", committedOnly: "true" },
 	]) {
 		const queue = queuedAdapter([]);
-		// gentle-pi#822: these fixtures are intentionally mistyped (a numeric baseRef, a string committedOnly) — the repo's `as unknown as` idiom keeps the invalid shapes reaching the validator instead of widening the request type.
+		// drakonc-pi#822: these fixtures are intentionally mistyped (a numeric baseRef, a string committedOnly) — the repo's `as unknown as` idiom keeps the invalid shapes reaching the validator instead of widening the request type.
 		await assert.rejects(() => client(queue.adapter).targetStatus(request as unknown as NativeTargetStatusRequest), TypeError);
 		assert.equal(queue.calls.length, 0);
 	}
@@ -549,7 +549,7 @@ test("native START queries STATUS then executes only the provider-rendered order
 	]);
 });
 
-// Captured from the released gentle-ai 4.0.0 binary, which predates START
+// Captured from the released drakonc-ai 4.0.0 binary, which predates START
 // lens selection (verify-always-rdd-high S8).
 const LENS_SELECTION_UNSUPPORTED_FAILURE = {
 	schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2", operation: "review.status",
@@ -654,7 +654,7 @@ test("request context refuses an older capabilities advertisement with the actio
  const queue = queuedAdapter([{ stdout: JSON.stringify(older) }]);
  await assert.rejects(new NativeReviewCliV216(queue.adapter, executable).targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }), (error: any) => {
   assert.equal(error.code, "version-incompatible");
-  assert.equal(error.message, "gentle-ai native review capabilities/v2.5 is older than the supported v2.6 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override");
+  assert.equal(error.message, "drakonc-ai native review capabilities/v2.5 is older than the supported v2.6 (drakonc-ai v4.6.0); update drakonc-ai or remove the dev-binary override");
   return true;
  });
 });
@@ -875,14 +875,14 @@ async function assertLensReasonReplay(rendered: string, reason: string): Promise
 	const answered = await client(queue.adapter).answerConsent({ cwd: "/repo", consent, answer: "granted" });
 	assert.equal(answered.kind, "started");
 	assert.equal(queue.calls.length, 1);
-	assert.equal(queue.calls[0]?.file, "/package/.gentle-ai/gentle-ai");
+	assert.equal(queue.calls[0]?.file, "/package/.drakonc-ai/drakonc-ai");
 	assert.deepEqual(queue.calls[0]?.arguments, expected);
 	const replayed = queue.calls[0]?.arguments ?? [];
 	const reasonIndex = replayed.indexOf("--lenses-reason");
 	assert.deepEqual(replayed.slice(reasonIndex, reasonIndex + 2), ["--lenses-reason", reason]);
 }
 
-// gentle-ai renders a lens reason with POSIX shell quoting, so an apostrophe
+// drakonc-ai renders a lens reason with POSIX shell quoting, so an apostrophe
 // arrives as `'...'\''...'`. Pi splits it into exact argv and never runs a shell.
 test("native consent answer replays a POSIX-quoted apostrophe lens reason as one exact argument", async () => {
 	await assertLensReasonReplay("'touched the package'\\''s parser'", "touched the package's parser");
@@ -1028,15 +1028,15 @@ test("negotiated STATUS accepts only exact provider forecast narration on stderr
 });
 
 test("native client requires an absolute package-local executable before any invocation", () => {
-	assert.throws(() => new NativeReviewCliV216(queuedAdapter([]).adapter, "gentle-ai"), /absolute package-local executable/);
-	assert.throws(() => new NativeReviewCliV216(queuedAdapter([]).adapter, "relative/gentle-ai"), /absolute package-local executable/);
+	assert.throws(() => new NativeReviewCliV216(queuedAdapter([]).adapter, "drakonc-ai"), /absolute package-local executable/);
+	assert.throws(() => new NativeReviewCliV216(queuedAdapter([]).adapter, "relative/drakonc-ai"), /absolute package-local executable/);
 });
 
 // O012 migrated from the retired per-operation version probe. V216 executes
 // negotiated argv directly; this test proves the argv boundary without
 // resurrecting NativeReviewCliV213 or capability/version negotiation.
 test("native client executes current negotiated argv without a shell", async () => {
-	const literal = "$GENTLE_PI_MUST_NOT_EXPAND";
+	const literal = "$DRAKONC_PI_MUST_NOT_EXPAND";
 	const result = await createNodeExecFileAdapter()({
 		file: process.execPath,
 		arguments: ["-p", "process.argv[1]", literal],
@@ -1050,27 +1050,27 @@ test("native client executes current negotiated argv without a shell", async () 
 });
 
 test("current STATUS preserves bounded output configuration and output-limit precedence", async () => {
-	const previous = process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES;
+	const previous = process.env.DRAKONC_PI_REVIEW_MAX_BUFFER_BYTES;
 	try {
 		for (const [environmentValue, expectedBuffer] of [[undefined, NATIVE_REVIEW_DEFAULT_MAX_BUFFER_BYTES], ["2097152", 2_097_152], ["invalid", NATIVE_REVIEW_DEFAULT_MAX_BUFFER_BYTES]] as const) {
-			if (environmentValue === undefined) delete process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES;
-			else process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES = environmentValue;
+			if (environmentValue === undefined) delete process.env.DRAKONC_PI_REVIEW_MAX_BUFFER_BYTES;
+			else process.env.DRAKONC_PI_REVIEW_MAX_BUFFER_BYTES = environmentValue;
 			const calls: Array<{ timeoutMs: number | undefined; maxBufferBytes: number }> = [];
 			const adapter: ExecFileAdapter = async (request) => {
 				calls.push({ timeoutMs: request.timeoutMs, maxBufferBytes: request.maxBufferBytes });
 				return { stdout: JSON.stringify(currentStatusFixture()), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 			};
-			await new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai").targetStatus({ cwd: "/repo" });
+			await new NativeReviewCliV216(adapter, "/package/.drakonc-ai/drakonc-ai").targetStatus({ cwd: "/repo" });
 			assert.deepEqual(calls, [{ timeoutMs: 30_000, maxBufferBytes: expectedBuffer }]);
 		}
 	} finally {
-		if (previous === undefined) delete process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES;
-		else process.env.GENTLE_PI_REVIEW_MAX_BUFFER_BYTES = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_REVIEW_MAX_BUFFER_BYTES;
+		else process.env.DRAKONC_PI_REVIEW_MAX_BUFFER_BYTES = previous;
 	}
 
 	const outputLimited = new NativeReviewCliV216(async () => ({
 		stdout: "", stderr: "", exitCode: 0, signal: "SIGTERM", timedOut: true, outputLimitExceeded: true,
-	}), "/package/.gentle-ai/gentle-ai");
+	}), "/package/.drakonc-ai/drakonc-ai");
 	await assert.rejects(
 		() => outputLimited.targetStatus({ cwd: "/repo" }),
 		(error: unknown) => error instanceof NativeReviewCliError
@@ -1079,7 +1079,7 @@ test("current STATUS preserves bounded output configuration and output-limit pre
 			&& error.diagnostics.timed_out === false
 			&& error.diagnostics.output_limit_exceeded === true
 			&& error.diagnostics.max_buffer_bytes === NATIVE_REVIEW_DEFAULT_MAX_BUFFER_BYTES
-			&& error.diagnostics.configuration_hint === "Inspect native review state before any new START; GENTLE_PI_REVIEW_MAX_BUFFER_BYTES accepts a positive decimal up to 67108864.",
+			&& error.diagnostics.configuration_hint === "Inspect native review state before any new START; DRAKONC_PI_REVIEW_MAX_BUFFER_BYTES accepts a positive decimal up to 67108864.",
 	);
 });
 
@@ -1097,7 +1097,7 @@ test("node execFile adapter passes AbortSignal to child_process", async () => {
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
 });
 
-// On Windows, killing gentle-ai alone leaves its git children running against
+// On Windows, killing drakonc-ai alone leaves its git children running against
 // the repository index; abort and timeout must take the whole tree down.
 test("node execFile adapter kills the whole process tree on Windows abort and timeout", async () => {
 	const killed: number[] = [];
@@ -1126,7 +1126,7 @@ test("node execFile adapter kills the whole process tree on Windows abort and ti
 });
 
 // taskkill can be unavailable (AppLocker, a broken PATH): the deadline must
-// still hold, through a direct kill of gentle-ai itself.
+// still hold, through a direct kill of drakonc-ai itself.
 test("node execFile adapter still enforces the timeout on Windows when the tree kill does nothing", async () => {
 	const adapter = createNodeExecFileAdapter({ platform: "win32", killProcessTree: () => {} });
 	const startedAt = Date.now();
@@ -1135,10 +1135,10 @@ test("node execFile adapter still enforces the timeout on Windows when the tree 
 	assert.ok(Date.now() - startedAt < 3_000, `settled after ${Date.now() - startedAt}ms`);
 });
 
-// A descendant that inherited gentle-ai's stdout/stderr keeps the pipes open
-// after gentle-ai itself exits; the deadline must still hold.
+// A descendant that inherited drakonc-ai's stdout/stderr keeps the pipes open
+// after drakonc-ai itself exits; the deadline must still hold.
 test("node execFile adapter enforces the Windows timeout when a descendant holds the inherited pipes", async () => {
-	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-tree-kill-"));
+	const directory = mkdtempSync(join(tmpdir(), "drakonc-pi-tree-kill-"));
 	const pidFile = join(directory, "descendant.pid");
 	const script = `const { spawn } = require("node:child_process"); const d = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "inherit" }); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(d.pid)); d.unref();`;
 	try {
@@ -1180,7 +1180,7 @@ test("capture-result receives the controller AbortSignal without an automatic mu
 		throw error;
 	};
 	await assert.rejects(
-		() => new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai").captureResult({
+		() => new NativeReviewCliV216(adapter, "/package/.drakonc-ai/drakonc-ai").captureResult({
 			argumentTokens: [`--repository-context=${REPOSITORY_CONTEXT}`],
 			resultDocument: "{}",
 			signal: controller.signal,
@@ -1223,7 +1223,7 @@ test("current native process boundary preserves caps, timeout classes, and sanit
 		}
 		return { stdout: JSON.stringify(currentStatusFixture()), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 	};
-	const review = new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 321, 654);
+	const review = new NativeReviewCliV216(adapter, "/package/.drakonc-ai/drakonc-ai", 321, 654);
 	await review.targetStatus({ cwd: "/repo" });
 	await review.captureResult({ argumentTokens: [`--repository-context=${REPOSITORY_CONTEXT}`], resultDocument: "{}" });
 	assert.deepEqual(calls, [{ timeoutMs: 321, maxBufferBytes: 654 }, { timeoutMs: undefined, maxBufferBytes: 654 }]);
@@ -1252,7 +1252,7 @@ test("authority inventory accepts compact discarded work and historical entry st
 		entries: statuses.map((status) => ({
 			version: "compact-v2",
 			lineage_id: `review-${status}`,
-			path: `${repository}/.git/gentle-ai/${status}`,
+			path: `${repository}/.git/drakonc-ai/${status}`,
 			status,
 			discarded_work: discardedWork,
 			problems: [],
@@ -1288,14 +1288,14 @@ test("current review STATUS retains compact snapshot and released-lock wire fiel
 		complete: true,
 		authoritative: true,
 		status: "active",
-		entries: [{ version: "compact-v2", lineage_id: "current-lineage", path: `${repository}/.git/gentle-ai`, status: "active", revision: `sha256:${"e".repeat(64)}`, snapshot_identity: snapshotIdentity, problems: [] }],
-		locks: [{ version: "compact-v2", path: `${repository}/.git/gentle-ai/LOCK`, status: "released" }],
+		entries: [{ version: "compact-v2", lineage_id: "current-lineage", path: `${repository}/.git/drakonc-ai`, status: "active", revision: `sha256:${"e".repeat(64)}`, snapshot_identity: snapshotIdentity, problems: [] }],
+		locks: [{ version: "compact-v2", path: `${repository}/.git/drakonc-ai/LOCK`, status: "released" }],
 		diagnostics: [],
 	};
 	const queue = queuedAdapter([{ stdout: JSON.stringify(body) }]);
 	const status = await client(queue.adapter).reviewStatus({ cwd: repository });
 	assert.equal(status.entries[0]?.snapshotIdentity, snapshotIdentity);
-	assert.deepEqual(status.locks, [{ version: "compact-v2", path: `${repository}/.git/gentle-ai/LOCK`, status: "released" }]);
+	assert.deepEqual(status.locks, [{ version: "compact-v2", path: `${repository}/.git/drakonc-ai/LOCK`, status: "released" }]);
 	for (const lockStatus of ["Released", "stale", "future"]) {
 		const malformed = queuedAdapter([{ stdout: JSON.stringify({ ...body, locks: [{ ...body.locks[0], status: lockStatus }] }) }]);
 		await assert.rejects(
@@ -1304,7 +1304,7 @@ test("current review STATUS retains compact snapshot and released-lock wire fiel
 		);
 	}
 	if (process.platform !== "win32") {
-		const root = mkdtempSync(join(tmpdir(), "gentle-pi-native-status-"));
+		const root = mkdtempSync(join(tmpdir(), "drakonc-pi-native-status-"));
 		const alias = `${root}-alias`;
 		symlinkSync(root, alias, "dir");
 		t.after(() => {
@@ -1317,7 +1317,7 @@ test("current review STATUS retains compact snapshot and released-lock wire fiel
 });
 
 // ---------------------------------------------------------------------------
-// acknowledge-approved — gentle-ai #3947 made the burn print one typed
+// acknowledge-approved — drakonc-ai #3947 made the burn print one typed
 // `gentle-ai.review-acknowledged/v1` envelope; every published release up to
 // v2.5.0-rc.3 burns in silence. Both are a successful burn; anything else on
 // stdout is not.
@@ -1414,27 +1414,55 @@ test("acknowledge-approved keeps its fail-closed stderr and typed refusal discip
 
 // S9: this package running from a bundled install (the testing overlay stands
 // in for its location; the detection itself is tested with real installs in
-// gentle-ai-binary-isolation.test.ts) and the launcher's GENTLE_SHELL_PREFIX.
+// drakonc-ai-binary-isolation.test.ts) and the launcher's DRAKONC_SHELL_PREFIX.
+// The companion's own home is computed from the OS home, so a temporary HOME
+// keeps the expectation exact without touching the real one.
+function useTemporaryOsHome(t: { after: (fn: () => void) => void }): string {
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-ai-isolation-home-")));
+	const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	t.after(() => {
+		for (const [name, value] of Object.entries(previous)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		rmSync(home, { recursive: true, force: true });
+	});
+	return home;
+}
+
 function bundledIsolation(t: { after: (fn: () => void) => void }): { prefix: string; env: NodeJS.ProcessEnv } {
-	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-site-")));
+	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-ai-isolation-site-")));
 	setBundledInstallForTesting({ root: prefix });
 	t.after(() => {
 		setBundledInstallForTesting(undefined);
 		rmSync(prefix, { recursive: true, force: true });
 	});
-	return { prefix, env: { PATH: "/usr/bin", GENTLE_SHELL_PREFIX: prefix } };
+	return { prefix, env: { PATH: "/usr/bin", DRAKONC_SHELL_PREFIX: prefix } };
 }
 
-test("the central gentle-ai environment carries Gentle AI's isolation variables only in a bundled install", (t) => {
+test("the central drakonc-ai environment carries Drakonc AI's isolation variables, inside a bundled install or not", (t) => {
+	const osHome = useTemporaryOsHome(t);
 	const { prefix, env } = bundledIsolation(t);
-	const bundled = gentleAiProcessEnvironment(env);
-	assert.equal(bundled.GENTLE_AI_HOME, join(prefix, "gentle-ai"));
-	assert.equal(bundled.GENTLE_AI_PI_CONFIG_DIR, join(prefix, "config", "gentle-ai"));
-	assert.equal(bundled.GENTLE_PI_CONFIG_HOME, join(prefix, "config"), "the parent Gentle AI 4.0.0 reads it as");
-	assert.equal(bundled.GENTLE_AI_NO_SELF_UPDATE, "1");
+	const bundled = drakoncAiProcessEnvironment(env);
+	assert.equal(bundled.DRAKONC_AI_HOME, join(prefix, "drakonc-ai"));
+	assert.equal(bundled.DRAKONC_AI_PI_CONFIG_DIR, join(prefix, "config", "drakonc-ai"));
+	assert.equal(bundled.DRAKONC_PI_CONFIG_HOME, join(prefix, "config"), "the parent Drakonc AI 4.0.0 reads it as");
+	assert.equal(bundled.DRAKONC_AI_NO_SELF_UPDATE, "1");
 	assert.equal(bundled.GENTLE_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
-	const ordinary = gentleAiProcessEnvironment({ PATH: "/usr/bin" });
-	assert.deepEqual(ordinary, { PATH: "/usr/bin", GENTLE_PI_REVIEW_RELAY_CONTRACT: "gentle-pi.review-relay/v1" });
+	// Outside a prefix the pinned companion still gets Drakonc's own home and no
+	// self-update, under both names, and no config folder of its own.
+	const standaloneHome = join(osHome, ".drakonc-shell", "drakonc-ai-home");
+	const ordinary = drakoncAiProcessEnvironment({ PATH: "/usr/bin" });
+	assert.deepEqual(ordinary, {
+		PATH: "/usr/bin",
+		GENTLE_PI_REVIEW_RELAY_CONTRACT: "gentle-pi.review-relay/v1",
+		DRAKONC_AI_HOME: standaloneHome,
+		GENTLE_AI_HOME: standaloneHome,
+		DRAKONC_AI_NO_SELF_UPDATE: "1",
+		GENTLE_AI_NO_SELF_UPDATE: "1",
+	});
 });
 
 function requestContextConsent(path: string): Record<string, any> {

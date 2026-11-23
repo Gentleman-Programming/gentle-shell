@@ -64,7 +64,7 @@ interface Fixture {
 }
 
 // Installs a fake runtime and model through the real installer, so status,
-// markers and layout are exactly what /gentle:voice will find.
+// markers and layout are exactly what /drakonc:voice will find.
 async function installFixture(t: test.TestContext, target: VoiceTarget): Promise<Fixture> {
 	const base = join(repoRoot, "tmp");
 	mkdirSync(base, { recursive: true });
@@ -222,7 +222,7 @@ test("records, stops and returns the transcript from a fixed, scrubbed worker la
 	assert.equal(launch!.options.cwd, runtimeRoot);
 	assert.equal(launch!.options.shell, false);
 	assert.equal(launch!.options.detached, false);
-	assert.deepEqual(Object.keys(launch!.options.env).sort(), ["GENTLE_PI_AGENTS_CHILD", "HOME", "NODE_NO_WARNINGS"]);
+	assert.deepEqual(Object.keys(launch!.options.env).sort(), ["DRAKONC_PI_AGENTS_CHILD", "HOME", "NODE_NO_WARNINGS"]);
 
 	const request = run.worker().received[0] as any;
 	assert.equal(request.type, "start");

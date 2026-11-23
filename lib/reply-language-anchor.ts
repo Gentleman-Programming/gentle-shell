@@ -11,7 +11,7 @@
 //
 // The anchor is added only when the context's tail is automated, never mid tool
 // loop, and only when no anchor already follows that tail. The caller persists it
-// once (gentle-shell#1662, #2195), but Pi appends a message sent while streaming
+// once (drakonc-shell#1662, #2195), but Pi appends a message sent while streaming
 // only once the turn ends, after the reply and its tool results, so the saved copy
 // lands later than the request's trailing copy did. Each anchor therefore records
 // the message it followed and its own timestamp, and `placePersistedReplyAnchors`
@@ -25,11 +25,11 @@ import { placePersistedMessages, requestMessagePosition, type PersistedPlacement
 
 type AgentMessage = ContextEvent["messages"][number];
 
-export const REPLY_LANGUAGE_ANCHOR_TYPE = "gentle-pi.reply-language";
+export const REPLY_LANGUAGE_ANCHOR_TYPE = "drakonc-pi.reply-language";
 
 /** Custom messages that never ask the model to answer, so they neither trigger nor hide an anchor. */
-const PASSIVE_TYPES = new Set(["gentle-todo-state", "gentle-todo-reminder", REPLY_LANGUAGE_ANCHOR_TYPE]);
-/** Every automated wake opens with this disowning prefix (extensions/gentle-agents.ts PARENT_WAKE_TEXT). */
+const PASSIVE_TYPES = new Set(["drakonc-todo-state", "drakonc-todo-reminder", REPLY_LANGUAGE_ANCHOR_TYPE]);
+/** Every automated wake opens with this disowning prefix (extensions/drakonc-agents.ts PARENT_WAKE_TEXT). */
 const AUTOMATED_USER_PREFIX = "[System-generated ";
 const EXCERPT_CHARS = 100;
 

@@ -11,9 +11,9 @@ import { ASSET_DIR, boardsOf, click, FakeDocument, findAll, flush, loadCanvas, m
 // The canvas language (canvas-i18n.js, canvas-i18n-es.js; odd/tasks/canvas-i18n.md S1-S8): Español, English or
 // Match the browser in the rail's Settings, saved in this browser, applied at once; the shell's strings in Spanish.
 
-const LANGUAGE_KEY = "gentle-design:language";
+const LANGUAGE_KEY = "drakonc-design:language";
 const LANGUAGE_ITEMS = ["Español", "English", "Match the browser"];
-const THEME_ITEMS = ["Gentleman", "Neutral"];
+const THEME_ITEMS = ["Drakoncman", "Neutral"];
 const NOTE = "Messages to the agent stay in English.";
 // Every canvas module with a TEXT block, by its ES name (canvas-<name>.js): the catalog covers them all.
 const MODULE_FILES = readdirSync(ASSET_DIR).filter((name) => /^canvas-[a-z-]+\.js$/.test(name)).sort();
@@ -96,7 +96,7 @@ const ENGLISH = {
 	nav: "Navigating",
 	implement: ["Implement this", "Implement First in the project", "Confirm implementing First", "Send it to the session to implement?"],
 	shield: ["Use First", "Click to use this design", "First artboard"],
-	docTitle: "Alpha · Gentle Design",
+	docTitle: "Alpha · Drakonc Design",
 };
 
 const SPANISH = {
@@ -114,7 +114,7 @@ const SPANISH = {
 	implement: ["Implementar", "Implementar First en el proyecto", "Confirmar la implementación de First", "¿Enviarla a la sesión para implementarla?"],
 	shield: ["Usar First", "Haz clic para usar este diseño", "Propuesta First"],
 	// The design's title and the product's name: nothing to translate.
-	docTitle: "Alpha · Gentle Design",
+	docTitle: "Alpha · Drakonc Design",
 };
 
 // ---- the default (S1)
@@ -167,7 +167,7 @@ test("Settings ends with Español, English and Match the browser as radio items 
 	assert.deepEqual(canvas.languageWrites(), ["es"]);
 	const spanish = openSettings(canvas);
 	assert.equal(menuEl(canvas).getAttribute("aria-label"), "Ajustes");
-	assert.deepEqual(labels(spanish), ["Tablero del design system", "Atajos de teclado", "Detalles técnicos", "Gentleman", "Neutro", "Español", "English", "Igual que el navegador"]);
+	assert.deepEqual(labels(spanish), ["Tablero del design system", "Atajos de teclado", "Detalles técnicos", "Drakoncman", "Neutro", "Español", "English", "Igual que el navegador"]);
 	assert.deepEqual(spanish.slice(5).map((item) => item.getAttribute("aria-checked")), ["true", "false", "false"]);
 	assert.deepEqual(texts(menuEl(canvas), "gd-menu-note"), ["Los mensajes al agente siguen en inglés."]);
 	// Space chooses too.
@@ -373,7 +373,7 @@ test("the covered modules read their strings through ctx.i18n, and the language 
 	}
 	for (const name of ["canvas-i18n.js", "canvas-i18n-es.js"]) assert.equal(DESIGN_CANVAS_ASSETS[name], "text/javascript; charset=utf-8");
 	const i18n = read("canvas-i18n.js");
-	assert.ok(i18n.includes('"gentle-design:language"'));
+	assert.ok(i18n.includes('"drakonc-design:language"'));
 	assert.ok(!/state\.language(Choice)?\s*=(?!=)/.test(i18n), "store mutators only");
 	const boot = read("canvas-boot.js").replace(/\n\/\/ ?/g, " ");
 	assert.ok(boot.includes("relabel"), "canvas-boot.js documents the relabel rule");
@@ -391,7 +391,7 @@ const NOT_TEXT = new Set([
 	// An HTTP header and method, the DataTransfer type of dropped files, a link's rel, a CSS selector and a print rule.
 	"Content-Type", "POST", "Files", "noopener noreferrer", "button, a, input, select, textarea, iframe", "@page { size:  px  px; }",
 	// The product's name (the page title adds it after the design's).
-	"Gentle Design", "· Gentle Design",
+	"Drakonc Design", "· Drakonc Design",
 	// Errors for the developer, thrown only when the code itself is wrong.
 	"canvas:   is exported by two modules", "cannot change",
 ]);
@@ -512,11 +512,11 @@ test("every word index.html shows, as text or in a title, aria-label, placeholde
 });
 
 test("the docs describe the language in Settings: the choices, the default, where it is saved and what stays as written", () => {
-	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
-	const section = docs.slice(docs.indexOf("### Gentle Design"));
+	const docs = readFileSync(fileURLToPath(new URL("../docs/drakonc-shell.md", import.meta.url)), "utf8");
+	const section = docs.slice(docs.indexOf("### Drakonc Design"));
 	const start = section.indexOf("- **Tool rail**");
 	const rail = section.slice(start, section.indexOf("\n", start));
-	for (const part of ["**Español**", "**English**", "**Match the browser**", "browser's language", "`gentle-design:language`", "without reloading", "comment text", "artboard titles", "file names", "Messages to the agent stay in English"]) {
+	for (const part of ["**Español**", "**English**", "**Match the browser**", "browser's language", "`drakonc-design:language`", "without reloading", "comment text", "artboard titles", "file names", "Messages to the agent stay in English"]) {
 		assert.ok(rail.includes(part), `the rail entry mentions ${part}`);
 	}
 	// Every surface switches; what goes to the agent, the accessibility findings included, stays English.

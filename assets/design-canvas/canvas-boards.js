@@ -8,7 +8,7 @@
 const TEXT = Object.freeze({
 	systemTitle: "Design system",
 	systemTradeoff: "Project tokens (design/system.md)",
-	systemNote: "Comments apply to design artboards only. To change the system, update the project's design sources and run /gentle:design sync.",
+	systemNote: "Comments apply to design artboards only. To change the system, update the project's design sources and run /drakonc:design sync.",
 	systemOff: "Comments off on this board",
 	invalidDesign: (slug) => `${slug} (invalid design.json)`,
 	frameTitle: (title) => `${title} artboard`,
@@ -27,7 +27,7 @@ const TEXT = Object.freeze({
 	notSent: (reason) => `Not sent: ${reason}`,
 	error: "error",
 	feature: (feature) => `Feature: ${feature}`,
-	noDesigns: "No designs yet. Run /gentle:design with a brief to create one.",
+	noDesigns: "No designs yet. Run /drakonc:design with a brief to create one.",
 	cannotShow: (slug, reason) => `Design "${slug}" cannot be shown: ${reason}`,
 	invalidManifest: (slug) => `design.json for ${slug} is invalid`,
 	noArtboards: "This design has no artboards yet.",
@@ -285,7 +285,7 @@ export function init(ctx) {
 		store.setDesign({ manifest: null, boards: [] });
 		actions.clearLayout();
 		showFeature(null);
-		els.title.textContent = "Gentle Design";
+		els.title.textContent = "Drakonc Design";
 		if (!state.systemBoard) {
 			showEmpty(() => T.noDesigns);
 			return;
@@ -319,7 +319,7 @@ export function init(ctx) {
 		store.setDesign({ manifest });
 		showFeature(manifest);
 		els.title.textContent = manifest.title;
-		doc.title = `${manifest.title} · Gentle Design`;
+		doc.title = `${manifest.title} · Drakonc Design`;
 		win.history.replaceState(null, "", `${base}d/${encodeURIComponent(slug)}/`);
 		if (manifest.artboards.length === 0 && !state.systemBoard) {
 			showEmpty(() => T.noArtboards);
@@ -441,7 +441,7 @@ export function init(ctx) {
 		if (slug !== state.slug) return;
 		if (slug === null) {
 			win.history.replaceState(null, "", base);
-			doc.title = "Gentle Design";
+			doc.title = "Drakonc Design";
 			if (!same || !state.systemBoard) showSystemOnly();
 			return;
 		}

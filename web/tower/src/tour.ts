@@ -8,7 +8,7 @@ const editable = (t: EventTarget | null) => t instanceof HTMLInputElement || t i
 export interface Box { x: number; y: number; w: number; h: number }
 export interface TourStep { title: string; text: string; target: () => Box | undefined }
 
-const KEY = "gentle-tower:tour";
+const KEY = "drakonc-tower:tour";
 const fromDom = (el: Element | null): Box | undefined => {
 	if (!el) return undefined;
 	const r = el.getBoundingClientRect();

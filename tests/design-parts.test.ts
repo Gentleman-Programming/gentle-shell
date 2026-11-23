@@ -11,7 +11,7 @@ import { DESIGN_PARTS_MAX, DesignPartsError, createDesignPartStore, sendDesignPa
 // time ("Implement only this"). It never touches handoffs.json, so no direction is chosen or discarded.
 
 function designRoot(t: TestContext) {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-design-parts-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-design-parts-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const root = join(dir, "design");
 	mkdirSync(join(root, "alpha"), { recursive: true });

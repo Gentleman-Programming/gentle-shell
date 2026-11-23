@@ -4,7 +4,10 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	accountIdFromToken,
 	formatReset,
+	LEGACY_USAGE_SOURCE_EVENT,
+	LEGACY_USAGE_SOURCE_SCHEMA,
 	NAN_QUOTA_NOTE,
+	OPENCODE_USAGE_SOURCE_PACKAGE,
 	parseAnthropicHeaders,
 	parseCodexHeaders,
 	parseNanQuota,
@@ -17,7 +20,9 @@ import {
 	renderUsagePanel,
 	SUPPORTED_USAGE_PROVIDERS,
 	usageScopeProviders,
+	usageSourceHint,
 	UsageSourceRegistry,
+	USAGE_SOURCE_EVENT,
 	USAGE_SOURCE_SCHEMA,
 	UsageStore,
 	windowLabel,
@@ -193,17 +198,17 @@ test("renderUsagePanel puts the active provider first and explains missing data"
 	const claude = parseAnthropicHeaders({ "anthropic-ratelimit-unified-5h-utilization": "0.2" }, NOW);
 	assert.ok(claude);
 	const both = renderUsagePanel([codex, claude], plainTheme, 100, NOW, { provider: "anthropic" });
-	assert.match(both[0], /^✿ anthropic · updated just now$/);
+	assert.match(both[0], /^🐉 anthropic · updated just now$/);
 	assert.match(both[1], /^ {2}claude 5h +[▰▱]{16} +20%$/);
 	assert.match(both.find((line) => line.startsWith("openai-codex")) ?? "", /^openai-codex · pro/);
 
 	const apiKey = renderUsagePanel([codex], plainTheme, 100, NOW, { provider: "openai" });
-	assert.match(apiKey[0], /^✿ openai · no subscription usage for this provider$/);
+	assert.match(apiKey[0], /^🐉 openai · no subscription usage for this provider$/);
 	assert.match(apiKey[1], /^openai-codex · pro/);
 
 	const pending = renderUsagePanel([], plainTheme, 100, NOW, { provider: "anthropic" });
-	assert.deepEqual(pending, ["✿ anthropic · usage arrives with the first response"]);
-	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "openai-codex" }), ["✿ openai-codex · no usage yet · r to fetch"]);
+	assert.deepEqual(pending, ["🐉 anthropic · usage arrives with the first response"]);
+	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "openai-codex" }), ["🐉 openai-codex · no usage yet · r to fetch"]);
 });
 
 // NaN Cloud quota: per-model allowances for the billing period, plus the
@@ -282,11 +287,11 @@ test("parseNanQuota degrades to no data instead of throwing", () => {
 test("nan is a supported usage provider with its own pending note", () => {
 	assert.ok(SUPPORTED_USAGE_PROVIDERS.includes("nan"));
 	assert.equal(providerNote("nan"), "no usage yet · r to fetch");
-	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "nan" }), ["✿ nan · no usage yet · r to fetch"]);
+	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "nan" }), ["🐉 nan · no usage yet · r to fetch"]);
 });
 
 // A generic hook: any extension can register a usage source for its own
-// provider at runtime, without gentle-shell knowing anything about it.
+// provider at runtime, without drakonc-shell knowing anything about it.
 
 test("parseUsageSource validates the registration payload and ignores anything malformed", () => {
 	const fetchFn = async () => undefined;
@@ -299,7 +304,7 @@ test("parseUsageSource validates the registration payload and ignores anything m
 	const withNote = parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", pendingNote: "warming up", fetch: fetchFn });
 	assert.equal(withNote?.pendingNote, "warming up");
 
-	assert.equal(parseUsageSource({ schema: "gentle-pi.usage-source/v0", provider: "acme-cloud", fetch: fetchFn }), undefined, "wrong schema");
+	assert.equal(parseUsageSource({ schema: "drakonc-pi.usage-source/v0", provider: "acme-cloud", fetch: fetchFn }), undefined, "wrong schema");
 	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "", fetch: fetchFn }), undefined, "empty provider");
 	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme cloud", fetch: fetchFn }), undefined, "unsafe provider id");
 	assert.equal(parseUsageSource({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: "nope" }), undefined, "fetch not a function");
@@ -308,6 +313,98 @@ test("parseUsageSource validates the registration payload and ignores anything m
 	assert.equal(parseUsageSource(undefined), undefined);
 	assert.equal(parseUsageSource("acme-cloud"), undefined);
 	assert.equal(parseUsageSource({}), undefined);
+});
+
+test("the inherited contract keeps its own event and schema apart from the own pair", () => {
+	assert.equal(USAGE_SOURCE_EVENT, "drakonc-pi:usage-source/v1");
+	assert.equal(USAGE_SOURCE_SCHEMA, "drakonc-pi.usage-source/v1");
+	assert.equal(LEGACY_USAGE_SOURCE_EVENT, "gentle-pi:usage-source/v1");
+	assert.equal(LEGACY_USAGE_SOURCE_SCHEMA, "gentle-pi.usage-source/v1");
+});
+
+test("parseUsageSource accepts only the schema of the event that carried the payload", () => {
+	const fetchFn = async () => undefined;
+	const own = { schema: USAGE_SOURCE_SCHEMA, provider: "opencode-go", fetch: fetchFn };
+	const legacy = { schema: LEGACY_USAGE_SOURCE_SCHEMA, provider: "opencode-go", fetch: fetchFn };
+
+	assert.equal(parseUsageSource(own)?.schema, USAGE_SOURCE_SCHEMA, "el contrato propio es el esperado por defecto");
+	assert.equal(parseUsageSource(own, USAGE_SOURCE_SCHEMA)?.provider, "opencode-go");
+	assert.equal(parseUsageSource(legacy, LEGACY_USAGE_SOURCE_SCHEMA)?.schema, LEGACY_USAGE_SOURCE_SCHEMA);
+	assert.equal(parseUsageSource(legacy, LEGACY_USAGE_SOURCE_SCHEMA)?.fetch, fetchFn);
+
+	assert.equal(parseUsageSource(legacy), undefined, "el evento propio rechaza el esquema heredado");
+	assert.equal(parseUsageSource(own, LEGACY_USAGE_SOURCE_SCHEMA), undefined, "el evento heredado rechaza el esquema propio");
+	assert.equal(parseUsageSource({ ...legacy, provider: "opencode go" }, LEGACY_USAGE_SOURCE_SCHEMA), undefined, "provider invalido bajo el alias");
+	assert.equal(parseUsageSource({ ...legacy, fetch: "nope" }, LEGACY_USAGE_SOURCE_SCHEMA), undefined, "fetch ausente bajo el alias");
+	assert.equal(parseUsageSource({ ...legacy, pendingNote: 7 }, LEGACY_USAGE_SOURCE_SCHEMA), undefined, "pendingNote no textual bajo el alias");
+});
+
+test("UsageSourceRegistry refuses a source for any built-in provider under both contract names", () => {
+	const registry = new UsageSourceRegistry();
+	for (const provider of SUPPORTED_USAGE_PROVIDERS) {
+		let calls = 0;
+		const fetchFn = async () => {
+			calls += 1;
+			return undefined;
+		};
+		assert.equal(registry.register({ schema: USAGE_SOURCE_SCHEMA, provider, fetch: fetchFn }), false, `${provider} por el evento propio`);
+		assert.equal(registry.register({ schema: LEGACY_USAGE_SOURCE_SCHEMA, provider, fetch: fetchFn }), false, `${provider} por el evento heredado`);
+		assert.equal(registry.get(provider), undefined, "la fuente integrada sigue siendo la unica");
+		assert.equal(registry.has(provider), false);
+		assert.equal(calls, 0, "la funcion ajena nunca se ejecuta, asi que nunca recibe la clave");
+	}
+	assert.equal(registry.register({ schema: LEGACY_USAGE_SOURCE_SCHEMA, provider: "opencode-go", fetch: async () => undefined }), true, "un proveedor sin fuente integrada si se registra");
+});
+
+test("re-registering one provider under the other contract name keeps a single source", () => {
+	const registry = new UsageSourceRegistry();
+	const legacy: UsageSource = { schema: LEGACY_USAGE_SOURCE_SCHEMA, provider: "opencode-go", pendingNote: "heredado", fetch: async () => undefined };
+	const own: UsageSource = { schema: USAGE_SOURCE_SCHEMA, provider: "opencode-go", pendingNote: "propio", fetch: async () => undefined };
+	assert.equal(registry.register(legacy), true);
+	assert.equal(registry.register(own), true);
+	assert.equal(registry.get("opencode-go"), own, "la mas reciente es la activa");
+	assert.equal(registry.note("opencode-go"), "propio");
+});
+
+// Sin fuente registrada, un proveedor de OpenCode no entrega ventanas de uso:
+// el panel nombra el paquete de terceros que las habilita, con version fija y
+// sin endpoints, claves ni porcentajes inventados.
+
+test("renderUsagePanel explains how to enable the usage windows of an OpenCode provider", () => {
+	for (const provider of ["opencode", "opencode-go"]) {
+		const lines = renderUsagePanel([], plainTheme, 140, NOW, { provider });
+		assert.deepEqual(lines, [
+			`🐉 ${provider} · no subscription usage for this provider`,
+			"  no usage windows for this provider",
+			`  enable them with: drakonc-shell install ${OPENCODE_USAGE_SOURCE_PACKAGE}`,
+			"  third-party package: it receives your OpenCode Go key",
+		]);
+		const text = lines.join("\n");
+		assert.doesNotMatch(text, /%/, "ningun porcentaje inventado");
+		assert.doesNotMatch(text, /https?:|:\/\//, "ningun endpoint");
+		assert.doesNotMatch(text, /sk-|Bearer|api[_-]?key\s*=/i, "ninguna clave");
+		assert.equal(OPENCODE_USAGE_SOURCE_PACKAGE, "npm:gentle-opencode-go@0.1.2", "la version del paquete queda fija");
+		assert.deepEqual(usageSourceHint(provider), lines.slice(1).map((line) => line.slice(2)));
+	}
+});
+
+test("the OpenCode hint yields to a registered source, a real failure, and other providers", () => {
+	const registry = new UsageSourceRegistry();
+	registry.register({ schema: LEGACY_USAGE_SOURCE_SCHEMA, provider: "opencode-go", fetch: async () => undefined });
+	assert.deepEqual(renderUsagePanel([], plainTheme, 140, NOW, { provider: "opencode-go" }, registry), ["🐉 opencode-go · no usage yet · r to fetch"], "con fuente solo falta su primera lectura");
+	assert.deepEqual(
+		renderUsagePanel([], plainTheme, 140, NOW, { provider: "opencode-go" }, undefined, { providers: ["opencode-go"], failed: new Set(["opencode-go"]) }),
+		["🐉 opencode-go · fetch failed · r to retry"],
+		"un fallo real se explica con la nota generica, sin instrucciones de instalacion ni el texto del error",
+	);
+	assert.deepEqual(renderUsagePanel([], plainTheme, 140, NOW, { provider: "acme-cloud" }), ["🐉 acme-cloud · no subscription usage for this provider"]);
+	assert.deepEqual(usageSourceHint("openai-codex"), []);
+});
+
+test("the built-in providers keep their own pending notes under the inherited alias", () => {
+	assert.deepEqual(renderUsagePanel([], plainTheme, 120, NOW, { provider: "openai-codex" }), ["🐉 openai-codex · no usage yet · r to fetch"]);
+	assert.deepEqual(renderUsagePanel([], plainTheme, 120, NOW, { provider: "anthropic" }), ["🐉 anthropic · usage arrives with the first response"]);
+	assert.deepEqual(renderUsagePanel([], plainTheme, 120, NOW, { provider: "nan" }), ["🐉 nan · no usage yet · r to fetch"]);
 });
 
 test("UsageSourceRegistry replaces a provider's source on re-registration", () => {
@@ -335,12 +432,12 @@ test("a registered provider is supported without touching the built-in note map"
 	registry.register({ schema: USAGE_SOURCE_SCHEMA, provider: "acme-cloud", fetch: async () => undefined });
 	assert.equal(providerNote("acme-cloud", registry), "no usage yet · r to fetch");
 	assert.equal(providerNote("nan", registry), "no usage yet · r to fetch", "the static built-ins are unaffected");
-	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "acme-cloud" }, registry), ["✿ acme-cloud · no usage yet · r to fetch"]);
+	assert.deepEqual(renderUsagePanel([], plainTheme, 100, NOW, { provider: "acme-cloud" }, registry), ["🐉 acme-cloud · no usage yet · r to fetch"]);
 });
 
 // A registered source's resolved value crosses the same trust boundary a
 // parsed HTTP payload does. parseProviderUsage validates it exactly like
-// one, and the object gentle-shell records is always freshly built, never
+// one, and the object drakonc-shell records is always freshly built, never
 // the caller's own reference.
 
 const VALID_SOURCE_USAGE = {
@@ -413,7 +510,7 @@ test("renderUsagePanel lists each NaN model allowance with its reset on the same
 	const usage = parseNanQuota(NAN_QUOTA, NOW);
 	const lines = renderUsagePanel([usage], plainTheme, 80, NOW, { provider: "nan" });
 	for (const line of lines) assert.ok(visibleWidth(line) <= 80, `too wide: ${line}`);
-	assert.match(lines[0], /^✿ nan · updated just now$/);
+	assert.match(lines[0], /^🐉 nan · updated just now$/);
 	assert.match(lines[1], /^ {2}glm5\.3 +[▰▱]{16} +27% · resets in \d+d \d+h$/);
 	// The rolling window a model reports is a row of its own, with its own reset.
 	assert.match(lines[2], /^ {2}glm5\.3 4h +[▰▱]{16} +30% · resets in \d+h \d+m$/);
@@ -690,7 +787,7 @@ test("renderUsagePanel draws the targeted scope in scope order with no-data and 
 	const codex = parseCodexUsage(CODEX_PAYLOAD, NOW);
 	const nan = parseNanQuota(NAN_QUOTA, NOW);
 	const lines = scopePanel([nan, codex], ["openai-codex", "nan", "acme-cloud"], ["acme-cloud"]);
-	assert.match(lines[0], /^✿ openai-codex · pro/);
+	assert.match(lines[0], /^🐉 openai-codex · pro/);
 	assert.match(lines.find((line) => line.startsWith("nan")) ?? "", /^nan · /, "a targeted provider with data renders like any other");
 	assert.match(lines.find((line) => line.startsWith("acme-cloud")) ?? "", /^acme-cloud · fetch failed · r to retry$/);
 });
@@ -717,14 +814,14 @@ test("renderUsagePanel never presents a provider outside the current scope after
 	const codex = parseCodexUsage(CODEX_PAYLOAD, NOW);
 	const nan = parseNanQuota(NAN_QUOTA, NOW);
 	const lines = scopePanel([nan, codex], ["openai-codex"]);
-	assert.ok(lines.some((line) => line.startsWith("✿ openai-codex · pro")));
+	assert.ok(lines.some((line) => line.startsWith("🐉 openai-codex · pro")));
 	assert.equal(lines.some((line) => line.startsWith("nan ·")), false, "the previous profile's provider is not current scope");
 });
 
 test("renderUsagePanel renders the failure note beside a retained snapshot, and only after a real failure", () => {
 	const codex = parseCodexUsage(CODEX_PAYLOAD, NOW);
 	const afterFailure = scopePanel([codex], ["openai-codex"], ["openai-codex"]);
-	assert.match(afterFailure[0], /^✿ openai-codex · pro/, "the retained snapshot stays the provider's headline");
+	assert.match(afterFailure[0], /^🐉 openai-codex · pro/, "the retained snapshot stays the provider's headline");
 	assert.match(afterFailure[1], /^ {2}codex week /, "the last good snapshot survives the failed refresh");
 	assert.ok(afterFailure.some((line) => /^ {2}fetch failed · r to retry$/.test(line)), "the failure is visible beside the retained snapshot");
 	assert.equal(scopePanel([codex], ["openai-codex"]).some((line) => line.includes("fetch failed")), false, "a provider whose latest refresh succeeded carries no failure note");

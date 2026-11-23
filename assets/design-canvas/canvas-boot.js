@@ -1,4 +1,4 @@
-// Gentle Design canvas: artboards side by side with pan, zoom, live reload,
+// Drakonc Design canvas: artboards side by side with pan, zoom, live reload,
 // and comments persisted in design/<slug>/comments.json (pins, list, send modes).
 // design/system.html, when present, is the first board of every design; it is
 // kept out of state.boards so comments never apply to it.

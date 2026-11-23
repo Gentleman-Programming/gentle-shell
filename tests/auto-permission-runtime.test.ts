@@ -11,7 +11,7 @@ function fixture(t: test.TestContext, modeLookup?: () => Promise<string>) {
  t.after(() => rmSync(cwd, {recursive:true,force:true}));
  let sessionId = "session-a", mode = "auto", epoch = 1;
  const entries: any[] = [], records: any[] = [], requests: any[] = [];
- const sourceInfo={path:"/installed/gentle-engram/index.ts",source:"npm:gentle-engram@0.2.0",origin:"package",scope:"user"};
+ const sourceInfo={path:"/installed/drakonc-engram/index.ts",source:"npm:drakonc-engram@0.2.0",origin:"package",scope:"user"};
  const tools=["mem_current_project","mem_save","mem_session_summary"].map(name=>({name,sourceInfo}));
  let response: any = {status:"available",decision:"allow",reason:"In scope",usage:{input:2,output:1,totalTokens:3,costTotal:0.01}};
  const manager = {getSessionId:()=>sessionId,getBranch:()=>entries,getLeafId:()=>entries.at(-1)?.id ?? null};
@@ -86,7 +86,7 @@ test("verified task memory is classifier context, never a bypass or a forged pro
  f.setResponse({status:"available",decision:"deny",reason:"Explicit restriction still applies"});
  const saved=await f.execute("mem_save",{cwd:f.cwd,project:"canonical",title:"Finding",content:"Task finding"});
  assert.equal(saved.executions,0);
- assert.deepEqual(f.requests.at(-1).memoryContext,{provider:"gentle-engram",operation:"mem_save",cwd:f.cwd,project:"canonical"});
+ assert.deepEqual(f.requests.at(-1).memoryContext,{provider:"drakonc-engram",operation:"mem_save",cwd:f.cwd,project:"canonical"});
  await f.execute("mem_save",{project:"canonical",content:"Task finding"});
  assert.equal(f.requests.at(-1).memoryContext,undefined,"action's project claim is not sufficient");
  f.runtime.cancelPending();f.input("Continue investigating without publishing.");
@@ -104,7 +104,7 @@ test("Engram destination binding recovers after reload only through a fresh admi
    details:{data:{cwd:f.cwd,project:"canonical",project_source:"git_remote",available_projects:null}}} as any,f.ctx);
  };
  const summary=()=>f.execute("mem_session_summary",{cwd:f.cwd,project:"canonical",content:"Synthetic task finding"});
- const expected={provider:"gentle-engram",operation:"mem_session_summary",cwd:f.cwd,project:"canonical"};
+ const expected={provider:"drakonc-engram",operation:"mem_session_summary",cwd:f.cwd,project:"canonical"};
  authorize();await resolve();await summary();
  assert.deepEqual(f.requests.at(-1).memoryContext,expected);
  assert.equal(f.records.at(-1)[1].memoryContextAttached,true);
@@ -250,7 +250,7 @@ test("Auto fails closed on missing verdict, throws, changed arguments, mode revo
 });
 
 test("Native consent, human questions and delegation remain with their original executors", async t=>{
- const f=fixture(t);for(const name of ["ask_user_choice","ask_user_question","gentle_review","gentle_review_capture","gentle_review_capture_group","gentle_review_run","subagent_run","subagent_reply"]){
+ const f=fixture(t);for(const name of ["ask_user_choice","ask_user_question","drakonc_review","drakonc_review_capture","drakonc_review_capture_group","drakonc_review_run","subagent_run","subagent_reply"]){
   assert.equal((await f.execute(name,{})).executions,1);
  }
  assert.equal(f.requests.length,0);
@@ -262,7 +262,7 @@ test("Companion update files are not permission authority and still receive ordi
  const f=fixture(t);f.input("Update the installed companion tools from main.");
  for(const mode of ["normal","auto","yolo"]) {
   f.setMode(mode);
-  for(const path of ["dev-binary.json","channel.json","main/gentle-ai","tools/go/bin/go"]) {
+  for(const path of ["dev-binary.json","channel.json","main/drakonc-ai","tools/go/bin/go"]) {
    const input={path:join(f.cwd,"config",path),content:"updated companion data"};
    for(const toolName of ["write","edit"]) {
     assert.equal(f.runtime.guard({toolName,input},f.ctx),undefined,`${mode}: ${path} is not policy`);
@@ -279,7 +279,7 @@ test("Companion update files are not permission authority and still receive ordi
 test("Permission authority, aliases and parent directories remain protected in every mode", async t=>{
  const f=fixture(t);f.input("Update companion tools without changing permissions.");
  const home=join(f.cwd,"config");mkdirSync(home);
- const projectHome=join(f.cwd,".pi","gentle-ai");mkdirSync(projectHome,{recursive:true});
+ const projectHome=join(f.cwd,".pi","drakonc-ai");mkdirSync(projectHome,{recursive:true});
  for(const name of ["permission-mode.json","runtime-guardrails.json"])writeFileSync(join(home,name),"{}");
  writeFileSync(join(projectHome,"runtime-guardrails.json"),"{}");
  symlinkSync(home,join(f.cwd,"config-alias"));

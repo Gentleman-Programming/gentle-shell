@@ -1,4 +1,4 @@
-// The reduced Pi FINALIZE input contract (gentle-pi#311 P5).
+// The reduced Pi FINALIZE input contract (drakonc-pi#311 P5).
 //
 // Pi no longer authors or transports reviewer, refuter, or validator
 // verdicts: lens results are admitted natively through the pi host relay,
@@ -28,7 +28,7 @@ export class CompactReviewContractError extends Error {
 	}
 }
 
-// Relocated from the deleted lib/review-compact.ts (gentle-pi#311 P5): the
+// Relocated from the deleted lib/review-compact.ts (drakonc-pi#311 P5): the
 // only compact shapes with surviving production consumers are the targeted
 // validation document and its component rows.
 export interface CompactValidationCheckInput {

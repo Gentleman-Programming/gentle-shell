@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 
 // ---------------------------------------------------------------------------
 // Double-esc-cancel policy — global file > env > default off (issue #1163)
@@ -31,12 +31,12 @@ export interface DoubleEscCancelResolution {
 
 export interface LoadDoubleEscCancelOptions {
 	/** Override the config home directory (used in tests to avoid touching ~/.pi). */
-	gentlePiConfigHome?: string;
+	drakoncPiConfigHome?: string;
 	/** Override the environment lookup (used in tests). */
 	env?: Record<string, string | undefined>;
 }
 
-export const DOUBLE_ESC_CANCEL_SCHEMA = "gentle-pi.double-esc-cancel/v1";
+export const DOUBLE_ESC_CANCEL_SCHEMA = "drakonc-pi.double-esc-cancel/v1";
 export const DOUBLE_ESC_CANCEL_FILE = "double-esc-cancel.json";
 
 // Pi's own idle double-Esc (empty editor -> /tree or /fork, interactive-mode.js
@@ -50,7 +50,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Strict decode of {"schema":"gentle-pi.double-esc-cancel/v1","policy":"on"|"off"}.
+ * Strict decode of {"schema":"drakonc-pi.double-esc-cancel/v1","policy":"on"|"off"}.
  * Any malformed shape (bad JSON, wrong schema, unknown keys, invalid policy)
  * returns undefined so the caller fails closed to "off".
  */
@@ -73,8 +73,8 @@ export function parseDoubleEscCancelPolicyFile(raw: string): DoubleEscCancelPoli
  *
  * Resolution order (first hit wins):
  *   1. Global file `${configHome}/double-esc-cancel.json`
- *      (configHome honors GENTLE_PI_CONFIG_HOME, default ~/.pi/gentle-ai)
- *   2. Env var GENTLE_PI_DOUBLE_ESC_CANCEL ("on" | "off")
+ *      (configHome honors DRAKONC_PI_CONFIG_HOME, default ~/.drakonc-shell/drakonc-ai)
+ *   2. Env var DRAKONC_PI_DOUBLE_ESC_CANCEL ("on" | "off")
  *   3. Default "off"
  *
  * A present-but-malformed file fails closed to "off" instead of falling
@@ -86,10 +86,10 @@ export function resolveDoubleEscCancelPolicy(
 	options: LoadDoubleEscCancelOptions = {},
 ): DoubleEscCancelResolution {
 	const env = options.env ?? process.env;
-	const envValue = env.GENTLE_PI_DOUBLE_ESC_CANCEL;
+	const envValue = env.DRAKONC_PI_DOUBLE_ESC_CANCEL;
 	let globalFile = "";
 	try {
-		const configHome = options.gentlePiConfigHome ?? gentlePiConfigHome(env);
+		const configHome = options.drakoncPiConfigHome ?? drakoncPiConfigHome(env);
 		globalFile = join(configHome, DOUBLE_ESC_CANCEL_FILE);
 		const globalFileExists = existsSync(globalFile);
 		if (globalFileExists) {
@@ -124,13 +124,13 @@ export function loadDoubleEscCancelPolicy(options: LoadDoubleEscCancelOptions = 
 
 /**
  * Write the global policy file, creating the config home when needed.
- * Used by both `/gentle:double-esc-cancel enable` and `... disable`.
+ * Used by both `/drakonc:double-esc-cancel enable` and `... disable`.
  */
 export function writeDoubleEscCancelPolicy(
 	policy: DoubleEscCancelPolicy,
-	options: { gentlePiConfigHome?: string } = {},
+	options: { drakoncPiConfigHome?: string } = {},
 ): string {
-	const configHome = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const configHome = options.drakoncPiConfigHome ?? drakoncPiConfigHome();
 	const path = join(configHome, DOUBLE_ESC_CANCEL_FILE);
 	mkdirSync(configHome, { recursive: true });
 	writeFileSync(path, `${JSON.stringify({ schema: DOUBLE_ESC_CANCEL_SCHEMA, policy }, null, 2)}\n`);

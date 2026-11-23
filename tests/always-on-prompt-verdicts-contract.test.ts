@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
 // cost-speed-painpoints S15 P5a: verdicts C7, C9, C12, X1, X3, X10, R1 and C8 (L41) on the always-on
 // primary prompt, plus two P4 cuts: the verifier-setup paragraph moves to its lazy module, and RDD-only
@@ -13,7 +13,7 @@ import { __testing } from "../extensions/gentle-ai.ts";
 const REPO_ROOT = join(import.meta.dirname, "..");
 const ASSETS = join(REPO_ROOT, "assets");
 const MODES = ["organic", "full-delegation"] as const;
-const PERSONAS = ["gentleman", "neutral"] as const;
+const PERSONAS = ["drakoncman", "neutral"] as const;
 const ACTIVE_TOOLS = ["read", "bash", "edit", "write", "subagent_run"] as const;
 const RDD_LINES = {
 	off: "Receipt-driven development: off (decided by global)",
@@ -22,19 +22,19 @@ const RDD_LINES = {
 } as const;
 
 let scratch: string;
-const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+const previousConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
 before(() => {
 	scratch = mkdtempSync(join(tmpdir(), "p5a-verdicts-"));
-	process.env.GENTLE_PI_CONFIG_HOME = join(scratch, "config");
+	process.env.DRAKONC_PI_CONFIG_HOME = join(scratch, "config");
 });
 after(() => {
-	if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-	else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	if (previousConfigHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+	else process.env.DRAKONC_PI_CONFIG_HOME = previousConfigHome;
 	rmSync(scratch, { recursive: true, force: true });
 });
 
-function render(mode: (typeof MODES)[number], rdd: keyof typeof RDD_LINES = "unknown", persona: (typeof PERSONAS)[number] = "gentleman"): string {
-	return __testing.buildGentlePrompt(persona, join(scratch, "project"), ACTIVE_TOOLS, RDD_LINES[rdd], undefined, mode).replaceAll(ASSETS, "/a");
+function render(mode: (typeof MODES)[number], rdd: keyof typeof RDD_LINES = "unknown", persona: (typeof PERSONAS)[number] = "drakoncman"): string {
+	return __testing.buildDrakoncPrompt(persona, join(scratch, "project"), ACTIVE_TOOLS, RDD_LINES[rdd], undefined, mode).replaceAll(ASSETS, "/a");
 }
 
 function read(relative: string): string {
@@ -77,7 +77,7 @@ test("C12: only workers save memory, and only with a validated project", () => {
 test("X1: the RDD ownership boundary states the contract is injected only while RDD is not off", () => {
 	for (const mode of MODES) for (const rdd of ["off", "on", "unknown"] as const) {
 		const prompt = render(mode, rdd);
-		assert.ok(prompt.includes("While RDD is not off, this package injects the mirrored provider-bundle review execution contract; Gentle AI writes nothing into this prompt. Absent that mirrored contract, this package invents no lifecycle instructions."), `[${mode}/${rdd}] ownership boundary`);
+		assert.ok(prompt.includes("While RDD is not off, this package injects the mirrored provider-bundle review execution contract; Drakonc AI writes nothing into this prompt. Absent that mirrored contract, this package invents no lifecycle instructions."), `[${mode}/${rdd}] ownership boundary`);
 		assert.ok(!prompt.includes("into this session's system prompt at start"), `[${mode}/${rdd}] false injection claim must go`);
 	}
 });
@@ -85,19 +85,19 @@ test("X1: the RDD ownership boundary states the contract is injected only while 
 test("X3: the background-policy rules pointer names a file that carries them", () => {
 	const organic = render("organic");
 	assert.ok(organic.includes("; rules: background block, `orchestrator-delegation-reference.md`."), "organic pointer");
-	assert.ok(read("assets/orchestrator-delegation-reference.md").includes("<!-- gentle-pi:background-subagents -->"), "the reference carries the background block");
+	assert.ok(read("assets/orchestrator-delegation-reference.md").includes("<!-- drakonc-pi:background-subagents -->"), "the reference carries the background block");
 	const full = render("full-delegation");
 	assert.ok(full.includes("; rules: the background block in `orchestrator-full-delegation-card.md`."), "full delegation still projects the pointer to its card");
 	for (const prompt of [organic, full]) assert.ok(!prompt.includes("delegation background-subagents block"), "dangling pointer must go");
 });
 
 test("X10: the review-contract comment names the core budget test without a stale number", () => {
-	const source = read("extensions/gentle-ai.ts");
+	const source = read("extensions/drakonc-ai.ts");
 	assert.ok(!source.includes("pinned at an 8192-byte budget"), "stale 8192-byte comment must go");
 	assert.ok(source.includes("that core prompt has its own byte budget (tests/orchestrator-budget.test.ts)."), "comment names the budget test");
 });
 
-const STOP_RDD = "- When the user asks to stop receipt-driven development, run `gentle-ai review mode disable` without arguing, working around it, or proposing alternatives first; never enable it unless the user explicitly asks.";
+const STOP_RDD = "- When the user asks to stop receipt-driven development, run `drakonc-ai review mode disable` without arguing, working around it, or proposing alternatives first; never enable it unless the user explicitly asks.";
 
 test("R1: the user's request to stop RDD runs disable, in every mode and RDD state, without asserting a default", () => {
 	for (const mode of MODES) for (const rdd of ["off", "on", "unknown"] as const) for (const persona of PERSONAS) {
@@ -142,7 +142,7 @@ test("P4: the verifier-setup paragraph lives in the verification module, not the
 
 const RDD_ONLY = [
 	"When RDD is on and native assess returns a tier, that tier wins.",
-	"An eligible interactive Pi host may resolve `gentle-ai.review-integration.consent/v3` before the envelope reaches the model.",
+	"An eligible interactive Pi host may resolve `drakonc-ai.review-integration.consent/v3` before the envelope reaches the model.",
 	"The native review candidate is a work-unit commit or a PR slice, never a TODO checkbox and never the accumulated feature branch; native review runs only under the user-owned RDD switch.",
 ];
 
@@ -162,7 +162,7 @@ test("P4: RDD-only sentences render only while RDD is not validated off, and the
 	const escalate = "(assess `escalate` when RDD is on or unknown)";
 	assert.ok(render("organic", "on").includes(`3. **Verification rule** — only a named high-risk item ${escalate} → independent`), "organic on keeps escalate");
 	assert.ok(render("organic", "unknown").includes(escalate), "organic unknown keeps escalate");
-	assert.ok(render("organic", "off").includes("3. **Verification rule** — only a named high-risk item → independent `gentle-ai-verify`"), "organic off drops only the escalate clause");
+	assert.ok(render("organic", "off").includes("3. **Verification rule** — only a named high-risk item → independent `drakonc-ai-verify`"), "organic off drops only the escalate clause");
 });
 
 // Verifier mwb8aq15-1t-hdan B1: the full-delegation parent launches verifiers too, so it needs a route to the
@@ -171,7 +171,7 @@ test("P4: RDD-only sentences render only while RDD is not validated off, and the
 test("P4 B1: the full-delegation parent routes a verifier setup failure to the verification module section", () => {
 	for (const rdd of ["off", "on", "unknown"] as const) {
 		const verify = render("full-delegation", rdd).split("\n").find((line) => line.startsWith("3. **Verify**")) ?? "";
-		assert.ok(verify.includes("add one independent `gentle-ai-verify` only when the Risk line names a high-risk item"), `[${rdd}] verifier sentence stays`);
+		assert.ok(verify.includes("add one independent `drakonc-ai-verify` only when the Risk line names a high-risk item"), `[${rdd}] verifier sentence stays`);
 		assert.ok(verify.includes("; verification, handoffs, verifier setup failure: `orchestrator-verification.md` (`## Verifier preparation failure`)."), `[${rdd}] setup-failure route`);
 	}
 	const module = read("assets/orchestrator-verification.md");

@@ -2,7 +2,7 @@
 
 ## Objective
 
-Show the authoritative NaN Cloud per-model token allowance in Gentle Shell's existing subscription usage surfaces (bar + `/gentle:usage` panel), without inventing a second data model.
+Show the authoritative NaN Cloud per-model token allowance in Drakonc Shell's existing subscription usage surfaces (bar + `/drakonc:usage` panel), without inventing a second data model.
 
 ## Constraints
 
@@ -21,12 +21,12 @@ Show the authoritative NaN Cloud per-model token allowance in Gentle Shell's exi
 - `lib/shell-usage.ts`
 - `lib/shell-usage-view.ts` (only if the view needs a NaN-specific line)
 - `lib/shell-bar.ts` (only if the bar needs a NaN-specific case)
-- `extensions/gentle-shell.ts`
+- `extensions/drakonc-shell.ts`
 - `tests/shell-usage.test.ts`
 - `tests/shell-usage-view.test.ts`
 - `tests/shell-bar.test.ts`
-- `tests/gentle-shell.test.ts`
-- `docs/gentle-shell.md`
+- `tests/drakonc-shell.test.ts`
+- `docs/drakonc-shell.md`
 
 ## Source contract
 
@@ -56,17 +56,17 @@ Verified against the official NaN Cloud dashboard bundle (`https://cloud.nan.bui
 ## Progress
 
 - 2026-09-17 (previous session, managed checkout): contract locked, NAN-1 RED reached (`11 passed, 1 failed` on `tests/shell-usage.test.ts`). Work was destroyed by `pi update --extensions` resetting the Pi-managed checkout.
-- 2026-09-17 (this session): recovered into a real clone. Repository root `/home/egdev/proyectos/gentle-shell` (fresh clone of `Gentleman-Programming/gentle-shell` at `2b579c80`), branch `feat/nan-usage-sidebar`. Global Pi settings and the Pi-managed checkout were not touched.
-- Delegation fallback: `subagent_run` rejected `workspace_root=/home/egdev/proyectos/gentle-shell` ("Select an existing worktree in the same Git clone as this session") because the parent session cwd is not the same clone. The parent continued as the sole inline writer.
+- 2026-09-17 (this session): recovered into a real clone. Repository root `/home/egdev/proyectos/drakonc-shell` (fresh clone of `Drakoncman-Programming/drakonc-shell` at `2b579c80`), branch `feat/nan-usage-sidebar`. Global Pi settings and the Pi-managed checkout were not touched.
+- Delegation fallback: `subagent_run` rejected `workspace_root=/home/egdev/proyectos/drakonc-shell` ("Select an existing worktree in the same Git clone as this session") because the parent session cwd is not the same clone. The parent continued as the sole inline writer.
 
 ## Verification evidence
 
 - Baseline before changes: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/shell-usage-view.test.ts` — 14 passed, 0 failed.
 - NAN-1 RED: `node --experimental-strip-types --test tests/shell-usage.test.ts` — 1 failed, `does not provide an export named 'parseNanQuota'`.
-- NAN-1 RED: `node --experimental-strip-types --test tests/gentle-shell.test.ts` — 1 failed, `does not provide an export named 'fetchNanUsage'`.
+- NAN-1 RED: `node --experimental-strip-types --test tests/drakonc-shell.test.ts` — 1 failed, `does not provide an export named 'fetchNanUsage'`.
 - NAN-2 GREEN: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/shell-usage-view.test.ts` — 19 passed, 0 failed.
-- NAN-3 GREEN: `node --experimental-strip-types --test tests/gentle-shell.test.ts` — 44 passed, 0 failed.
-- Suite: `pnpm test` — exit 0, 2685 tests, 2647 passed, 0 failed, 38 skipped; provider contract mirror check passed; runtime harness ran clean. (The first suite attempt failed in `test:harness` only because `pnpm install --ignore-scripts` had skipped the gentle-ai binary; `node scripts/install-gentle-ai.mjs` installed v3.1.0 and the harness then passed.)
+- NAN-3 GREEN: `node --experimental-strip-types --test tests/drakonc-shell.test.ts` — 44 passed, 0 failed.
+- Suite: `pnpm test` — exit 0, 2685 tests, 2647 passed, 0 failed, 38 skipped; provider contract mirror check passed; runtime harness ran clean. (The first suite attempt failed in `test:harness` only because `pnpm install --ignore-scripts` had skipped the drakonc-ai binary; `node scripts/install-drakonc-ai.mjs` installed v3.1.0 and the harness then passed.)
 - Typecheck: `node scripts/check-types.mjs` — 197 recorded diagnostics, no regressions.
 - Commits: `7fd803fc` (parser + tests + this tracker), `9bc7b9dd` (fetcher, wiring, docs, tests).
 
@@ -76,11 +76,11 @@ Feature complete and verified on `feat/nan-usage-sidebar`. Nothing is pushed. Th
 
 ## Native review attempt (blocked, no authority created)
 
-- Target root: `/home/egdev/proyectos/gentle-shell` (unrelated to the session repository, authorized explicitly by the user).
-- `gentle_review inspect` → `ready`, lineage `review-76fe20947051c2bb`, forecast `execute/fresh_target_ready`, offered route `--base-ref=2b579c80 --committed-only=true --consent=relay`.
-- `gentle_review start` with `{"mode":"ordinary","baseRef":"2b579c80…","committedOnly":true}` → `blocked`, `native-operation-failed`, `error_code: schema-incompatible`, `lineage_created: false`, `mutation_outcome: none`.
-- Target-scoped `gentle_review status` → `blocked`, `next_transition` `collect/empty_candidate_base_ref_required`, `collectBindings` one slot (`captureOperation: external.select_base_ref`, schema `gentle-ai.review-base-ref-selection/v1`). Confirmed `repair.counts.lineages: 0` and `candidates: []`, so nothing was created by the failed attempt.
-- `gentle_review_capture` with that exact provider slot and the inspect-issued lineage → `capture-binding-rejected` ("unknown, expired, or belongs to a different session route"), `mutation_outcome: none`.
-- Diagnosis: with a clean worktree the workspace projection is empty (`paths: []`, `base_tree == candidate_tree == 7484118a`), so native asks for an explicit base-ref selection. The running facade's `start` requires an executable `review.start` transition, and its public capture tools require a lineage this pre-lineage slot does not have. `extensions/gentle-ai.ts` `mapNativeTargetStatus` passes any non-untracked collect through as a `collectBindings` entry, which exposes the slot without a consumer. Upstream is already at `2b579c80`, so no update resolves it.
+- Target root: `/home/egdev/proyectos/drakonc-shell` (unrelated to the session repository, authorized explicitly by the user).
+- `drakonc_review inspect` → `ready`, lineage `review-76fe20947051c2bb`, forecast `execute/fresh_target_ready`, offered route `--base-ref=2b579c80 --committed-only=true --consent=relay`.
+- `drakonc_review start` with `{"mode":"ordinary","baseRef":"2b579c80…","committedOnly":true}` → `blocked`, `native-operation-failed`, `error_code: schema-incompatible`, `lineage_created: false`, `mutation_outcome: none`.
+- Target-scoped `drakonc_review status` → `blocked`, `next_transition` `collect/empty_candidate_base_ref_required`, `collectBindings` one slot (`captureOperation: external.select_base_ref`, schema `drakonc-ai.review-base-ref-selection/v1`). Confirmed `repair.counts.lineages: 0` and `candidates: []`, so nothing was created by the failed attempt.
+- `drakonc_review_capture` with that exact provider slot and the inspect-issued lineage → `capture-binding-rejected` ("unknown, expired, or belongs to a different session route"), `mutation_outcome: none`.
+- Diagnosis: with a clean worktree the workspace projection is empty (`paths: []`, `base_tree == candidate_tree == 7484118a`), so native asks for an explicit base-ref selection. The running facade's `start` requires an executable `review.start` transition, and its public capture tools require a lineage this pre-lineage slot does not have. `extensions/drakonc-ai.ts` `mapNativeTargetStatus` passes any non-untracked collect through as a `collectBindings` entry, which exposes the slot without a consumer. Upstream is already at `2b579c80`, so no update resolves it.
 - This is a provider/facade lifecycle gap for an already-committed candidate with a clean worktree, not a defect in this feature.
-- Retry plan (user decision: restart Pi, then retry): after `/reload` or a full restart, `gentle_review inspect` with `workspaceRoot=/home/egdev/proyectos/gentle-shell`, then `gentle_review start` with a fresh `idempotencyKey` and the same committed-range input. A fresh START is legal because no lineage exists.
+- Retry plan (user decision: restart Pi, then retry): after `/reload` or a full restart, `drakonc_review inspect` with `workspaceRoot=/home/egdev/proyectos/drakonc-shell`, then `drakonc_review start` with a fresh `idempotencyKey` and the same committed-range input. A fresh START is legal because no lineage exists.

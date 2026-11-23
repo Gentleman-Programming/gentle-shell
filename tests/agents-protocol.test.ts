@@ -113,14 +113,14 @@ test("all terminal statuses produce exactly one transition and restore establish
 	}
 });
 
-// Gentle Agents protocol: the child pi process streams RPC events; the host
+// Drakonc Agents protocol: the child pi process streams RPC events; the host
 // normalizes them into small typed deltas, applies them to an append-only
 // thread, and notifies only the listeners of the task that changed.
 
 function record(overrides: Partial<TaskRecord> = {}): TaskRecord {
 	return {
 		id: "t1",
-		agent: "gentle-ai-explore",
+		agent: "drakonc-ai-explore",
 		mode: "task",
 		prompt: "Map the repo",
 		label: "map the repo",
@@ -171,7 +171,7 @@ test("normalizeRpcEvent maps pi RPC events to task deltas and ignores the rest",
 // #1690: Pi drops unknown --tools names silently, so the child reports them
 // with one marked notify; only that notify reaches the task thread.
 test("normalizeRpcEvent turns the marked missing-tools notify into a note and drops every other notify", () => {
-	const message = `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope, codegraph`;
+	const message = `${MISSING_TOOLS_NOTE_PREFIX} drakonc_review_scope, codegraph`;
 	assert.deepEqual(normalizeRpcEvent({ type: "extension_ui_request", id: "u1", method: "notify", message, notifyType: "warning" }), [{ type: TASK_EVENT.NOTE, text: message }]);
 	assert.deepEqual(normalizeRpcEvent({ type: "extension_ui_request", id: "u2", method: "notify", message: "requested tools missing in child: x" }), [], "an unmarked notify stays dropped");
 	assert.deepEqual(normalizeRpcEvent({ type: "extension_ui_request", id: "u3", method: "notify", message: ` ${MISSING_TOOLS_NOTE_PREFIX} x` }), [], "the marker must be a prefix");

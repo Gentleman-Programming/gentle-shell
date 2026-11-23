@@ -1,11 +1,11 @@
-// gentle-shell#1587: delegated children (GENTLE_PI_AGENTS_CHILD=1) load the
-// same context files as the orchestrator, including gentle-ai managed blocks
+// drakonc-shell#1587: delegated children (DRAKONC_PI_AGENTS_CHILD=1) load the
+// same context files as the orchestrator, including drakonc-ai managed blocks
 // that bind themselves to the orchestrator only. Those blocks cost ~37k prefix
 // tokens per child and give a worker orchestration rules it must not follow.
 // This module removes exactly those blocks plus the engram-protocol memory
 // block and keeps everything else. The primary session applies the same filter
-// while Gentle Shell injects its own orchestrator prompt and gentle-engram
-// injects its own MEMORY_INSTRUCTIONS (extensions/gentle-ai.ts
+// while Drakonc Shell injects its own orchestrator prompt and drakonc-engram
+// injects its own MEMORY_INSTRUCTIONS (extensions/drakonc-ai.ts
 // before_agent_start). Only the injected context is filtered: every file on
 // disk keeps its blocks byte-for-byte for runtimes that read them as workspace
 // files and carry no runtime-injected equivalent (OpenClaw).
@@ -19,8 +19,8 @@ export const ORCHESTRATOR_ONLY_MANAGED_BLOCKS = [
 
 export type OrchestratorOnlyManagedBlock = (typeof ORCHESTRATOR_ONLY_MANAGED_BLOCKS)[number];
 
-// gentle-ai's managed memory protocol. Dropped from injected context like an
-// orchestrator-only block, but for a different reason: gentle-engram injects
+// drakonc-ai's managed memory protocol. Dropped from injected context like an
+// orchestrator-only block, but for a different reason: drakonc-engram injects
 // the equivalent instructions every turn, so the loaded copy is a duplicate
 // that only adds session-start ceremony.
 export const ENGRAM_PROTOCOL_MANAGED_BLOCK = "engram-protocol";
@@ -54,7 +54,7 @@ export interface ContextFileOptions {
 
 // A managed marker counts only when it is alone on its line. Inline mentions
 // (prose, inline code) and markers inside fenced code are plain text.
-const MARKER_LINE = /^[ \t]*<!--[ \t]*(\/?)gentle-ai:([A-Za-z0-9][A-Za-z0-9._-]*)[ \t]*-->[ \t]*$/;
+const MARKER_LINE = /^[ \t]*<!--[ \t]*(\/?)drakonc-ai:([A-Za-z0-9][A-Za-z0-9._-]*)[ \t]*-->[ \t]*$/;
 const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const BLANK_LINE = /^[ \t]*\r?\n?$/;
 

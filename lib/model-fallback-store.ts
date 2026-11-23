@@ -8,7 +8,7 @@ import { isSafeAgentName, isThinkingLevel, SAFE_MODEL_ID_PATTERN, type ThinkingL
 // apart lets older versions read profiles.json unchanged (they just never
 // fall back). Every model in a chain is one the user picked.
 
-export const FALLBACKS_KIND = "gentle-pi.profile_model_fallbacks";
+export const FALLBACKS_KIND = "drakonc-pi.profile_model_fallbacks";
 export const FALLBACKS_VERSION = 1;
 /** The chain for every agent of a profile that has none of its own. */
 export const DEFAULT_CHAIN_KEY = "*";

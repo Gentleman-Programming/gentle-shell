@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension, __testing } from "../extensions/drakonc-ai.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import type { ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import { worktreeGitEnvironment } from "../lib/session-worktree-registry.ts";
@@ -17,10 +17,10 @@ import { worktreeGitEnvironment } from "../lib/session-worktree-registry.ts";
 
 type AnyHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 type Notice = { message: string; severity: string };
-const ENV_KEYS = ["HOME", "USERPROFILE", "GENTLE_PI_CONFIG_HOME", "GENTLE_PI_AGENT_HOME", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME"] as const;
+const ENV_KEYS = ["HOME", "USERPROFILE", "DRAKONC_PI_CONFIG_HOME", "DRAKONC_PI_AGENT_HOME", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME"] as const;
 
 function fixture(t: test.TestContext, gitAtHome: boolean) {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-startup-home-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-startup-home-")));
 	const home = join(root, "home");
 	const state = join(root, "state");
 	const cwd = join(home, "project");
@@ -30,8 +30,8 @@ function fixture(t: test.TestContext, gitAtHome: boolean) {
 	git(gitAtHome ? home : cwd);
 	const environment: Record<(typeof ENV_KEYS)[number], string> = {
 		HOME: home, USERPROFILE: home,
-		GENTLE_PI_CONFIG_HOME: join(state, "config"),
-		GENTLE_PI_AGENT_HOME: join(state, "agents"),
+		DRAKONC_PI_CONFIG_HOME: join(state, "config"),
+		DRAKONC_PI_AGENT_HOME: join(state, "agents"),
 		PI_CODING_AGENT_DIR: join(state, "pi"),
 		XDG_CONFIG_HOME: join(state, "xdg"),
 	};
@@ -75,9 +75,9 @@ function start(cli: NativeReviewCli, cwd: string, environment: NodeJS.ProcessEnv
 		registerTool() {},
 		sendMessage() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({
+	createDrakoncAiExtension({
 		nativeReviewCli: cli,
-		processEnv: { ...environment, GENTLE_PI_AGENTS_CHILD: "0", GENTLE_AI_TELEMETRY: "0" },
+		processEnv: { ...environment, DRAKONC_PI_AGENTS_CHILD: "0", DRAKONC_AI_TELEMETRY: "0" },
 		resolveTelemetryTriggerBinary: () => join(cwd, "never-executed"),
 		telemetryTriggerSpawn: () => assert.fail("Startup fixtures must not spawn telemetry"),
 	})(pi);
@@ -100,7 +100,7 @@ test("a repository rooted at HOME warns once and skips the startup review negoti
 	const warnings = homeWarning(notices);
 	assert.equal(warnings.length, 1, JSON.stringify(notices));
 	assert.equal(warnings[0]!.severity, "warning");
-	assert.match(warnings[0]!.message, /Open Gentle Shell inside a project folder/);
+	assert.match(warnings[0]!.message, /Open Drakonc Shell inside a project folder/);
 	assert.equal(calls.target, 0, "no startup review negotiation");
 	assert.equal(calls.mode, 0, "no startup review mode spawn");
 	await handlers.get("session_start")!({ reason: "reload" }, ctx);
@@ -138,7 +138,7 @@ test("an unresolvable HOME neither warns nor skips the startup review negotiatio
 });
 
 // S5: Pi awaits session_start handlers one after another, so the native review
-// negotiation (two gentle-ai spawns) no longer holds startup. It runs after
+// negotiation (two drakonc-ai spawns) no longer holds startup. It runs after
 // session_start returns, bounded by a signal, and the first prompt still reuses
 // its RDD status instead of spawning the same read again.
 test("startup returns before the native review negotiation finishes, and the first prompt still reuses its status", async (t) => {
@@ -169,7 +169,7 @@ test("startup returns before the native review negotiation finishes, and the fir
 	assert.equal(calls.target, 1, "the negotiation still completes after startup");
 });
 
-// gentle-shell#2195: the RDD line sits in the cached system-prompt prefix, so a
+// drakonc-shell#2195: the RDD line sits in the cached system-prompt prefix, so a
 // session keeps the line it first rendered and re-renders only when RDD turns
 // off or back on.
 test("a session keeps its first RDD status line until the off state changes", async (t) => {

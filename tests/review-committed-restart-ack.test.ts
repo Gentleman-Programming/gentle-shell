@@ -16,7 +16,7 @@ const LINEAGE = "committed-restart-ack";
 
 /** Build a fresh controller process with a file-backed, single-use provider fixture. */
 function workerSource() {
-	const extension = pathToFileURL(join(import.meta.dirname, "../extensions/gentle-ai.ts")).href;
+	const extension = pathToFileURL(join(import.meta.dirname, "../extensions/drakonc-ai.ts")).href;
 	const registry = pathToFileURL(join(import.meta.dirname, "../lib/review-candidate-view.ts")).href;
 	return `
 import assert from 'node:assert/strict';
@@ -75,7 +75,7 @@ writeFileSync(output,JSON.stringify({pid:process.pid,result,requests,burns:state
 
 /** Create an isolated committed range and workers sharing only simulated provider state. */
 function fixture(t: test.TestContext, decoy = false) {
-	const scratch = realpathSync(mkdtempSync(join(tmpdir(), "gentle-committed-restart-")));
+	const scratch = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-committed-restart-")));
 	t.after(() => rmSync(scratch, { recursive: true, force: true }));
 	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
 	const git = (...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=", "-c", "commit.gpgSign=false", "-c", "core.autocrlf=false", ...args], { cwd: scratch, env, encoding: "utf8", windowsHide: true }).trim();

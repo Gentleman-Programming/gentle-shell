@@ -8,7 +8,7 @@ U8 closed the U1-U7 slimming work. New ordinary review authority is native; Pi r
 
 | Surface | Owner after #191 |
 | --- | --- |
-| Ordinary START, FINALIZE, target status, validation, recovery, and reconciliation | Package-local Gentle AI v2.4.0 through `gentle-ai.review-integration/v2` (migration complete, see below) |
+| Ordinary START, FINALIZE, target status, validation, recovery, and reconciliation | Package-local Drakonc AI v2.4.0 through `drakonc-ai.review-integration/v2` (migration complete, see below) |
 | Canonical consumer identities | Permanent Pi module `lib/review-canonical.ts` |
 | Git common-directory and repository identity | Permanent Pi module `lib/review-repository.ts` |
 | Immutable reviewer candidate views | Permanent Pi module `lib/review-candidate-view.ts` |
@@ -20,16 +20,16 @@ Pi no longer owns an ordinary compact store, compact gate, compatibility facade,
 
 ## Naming note: "compact-v2" is not contract v2
 
-This document and `gentle_review`'s recovery/maintenance commands use "compact-v2" to name Pi's own internal review-authority storage generation (historically `lib/review-compact.ts`, now only the reduced `lib/review-compact-contract.ts` after gentle-pi#311 P5), predating and unrelated to gentle-ai's negotiated protocol contract `gentle-ai.review-integration/v2`. The two share a digit and nothing else: "compact-v2" is Pi-internal authority-state vocabulary; `review-integration/v2` is gentle-ai's wire contract replacing the Base64 `candidate_diff` transport with immutable `base_tree`/`candidate_tree` and an ordered `changed_path_manifest`. Do not conflate them when reading the maintenance-boundary section below.
+This document and `drakonc_review`'s recovery/maintenance commands use "compact-v2" to name Pi's own internal review-authority storage generation (historically `lib/review-compact.ts`, now only the reduced `lib/review-compact-contract.ts` after drakonc-pi#311 P5), predating and unrelated to drakonc-ai's negotiated protocol contract `drakonc-ai.review-integration/v2`. The two share a digit and nothing else: "compact-v2" is Pi-internal authority-state vocabulary; `review-integration/v2` is drakonc-ai's wire contract replacing the Base64 `candidate_diff` transport with immutable `base_tree`/`candidate_tree` and an ordered `changed_path_manifest`. Do not conflate them when reading the maintenance-boundary section below.
 
 ## Contract migration status: `review-integration/v1` → `/v2` (complete)
 
-gentle-ai publishes two negotiated contracts side by side: `gentle-ai.review-integration/v1` (the Base64 candidate-diff transport Pi used to speak) and `gentle-ai.review-integration/v2` (immutable `base_tree`/`candidate_tree`, an ordered `changed_path_manifest`, mandatory `artifact_subjects`, and an evidence-first correction lifecycle). gentle-pi negotiates `/v2` only, with no dual-lane fallback — the pinned binary always answers exactly one exact version, so negotiating a version range would buy nothing and double the decoder surface permanently.
+drakonc-ai publishes two negotiated contracts side by side: `drakonc-ai.review-integration/v1` (the Base64 candidate-diff transport Pi used to speak) and `drakonc-ai.review-integration/v2` (immutable `base_tree`/`candidate_tree`, an ordered `changed_path_manifest`, mandatory `artifact_subjects`, and an evidence-first correction lifecycle). drakonc-pi negotiates `/v2` only, with no dual-lane fallback — the pinned binary always answers exactly one exact version, so negotiating a version range would buy nothing and double the decoder surface permanently.
 
 The `review-integration/v2` migration landed in two stages:
 
 - **Stage 1 (authorable without an external dependency):** the `lib/review-integration-v2.ts` decoder module, a pure evidence-first correction-lifecycle module, and a field-wise candidate-view manifest check were authored and unit-tested against the mirrored `contracts/review-integration/v2/` fixtures while `lib/native-review-cli.ts` still negotiated `/v1`.
-- **Stage 2 (gated on the pinned gentle-ai release advertising contract v2, landed against v2.2.2):** one atomic commit flipped the import, added the net-new negotiated `review repair` and `review capture-evidence` call sites, deleted `lib/review-integration-v1.ts` and its generated runtime and tests, and regenerated `runtime/*.mjs`. `contracts/review-integration/v1/**` stays on disk permanently because the `/v2` JSON schemas `$ref` into its fragments.
+- **Stage 2 (gated on the pinned drakonc-ai release advertising contract v2, landed against v2.2.2):** one atomic commit flipped the import, added the net-new negotiated `review repair` and `review capture-evidence` call sites, deleted `lib/review-integration-v1.ts` and its generated runtime and tests, and regenerated `runtime/*.mjs`. `contracts/review-integration/v1/**` stays on disk permanently because the `/v2` JSON schemas `$ref` into its fragments.
 
 Under `/v2`, reviewers inspect the frozen candidate through read-only Git against the exact frozen trees; a runtime that cannot enforce a per-command shell boundary exposes no shell and reports incomplete inspection rather than substituting live files. Pi already satisfies this by materializing a chmod-read-only worktree scoped to the manifest and pointing lens agents at it through `Read` — they get no Git shell at all.
 
@@ -39,9 +39,9 @@ The permanent modules have direct production consumers after #191:
 
 | Permanent module | Direct production consumers |
 | --- | --- |
-| `review-canonical.ts` | `extensions/gentle-ai.ts` and eight live review modules |
-| `review-repository.ts` | `extensions/gentle-ai.ts`, graph object store, snapshot, and transaction |
-| `review-candidate-view.ts` | `extensions/gentle-ai.ts` |
+| `review-canonical.ts` | `extensions/drakonc-ai.ts` and eight live review modules |
+| `review-repository.ts` | `extensions/drakonc-ai.ts`, graph object store, snapshot, and transaction |
+| `review-candidate-view.ts` | `extensions/drakonc-ai.ts` |
 
 The remaining ordinary reducer is not dead authority. Historical graph event replay calls it to validate semantic adjacency. Deleting it would weaken graph integrity even though controller mutation is read-only.
 
@@ -86,15 +86,15 @@ U1-U8 retire nine review modules present on `origin/main`:
 | U1-U4 | `review-bundle`, `review-checkpoint`, `review-graph-reducer`, `review-mirror`, `review-reset` |
 | U5-U8 | `review-authority-supersession`, `review-compact-gate`, `review-compact-store`, `review-facade` |
 
-U8 found no additional zero-consumer code module at the time. gentle-pi#311 P5 later retired the Pi-owned review semantics that had kept several of those modules alive: `review-compact`, `review-refuter-adapter`, and `review-runtime-contract` are deleted (adversarial roles now execute through Go-owned pi processes via provider-rendered self-contained vectors, and FINALIZE follows the provider's negotiated captured-results transition). The reduced `review-compact-contract` keeps only the negotiated collection answers (correction forecast, targeted validation document, final evidence); graph, ordinary-policy, snapshot, trigger, and risk modules retain production, contract, or semantic-replay consumers.
+U8 found no additional zero-consumer code module at the time. drakonc-pi#311 P5 later retired the Pi-owned review semantics that had kept several of those modules alive: `review-compact`, `review-refuter-adapter`, and `review-runtime-contract` are deleted (adversarial roles now execute through Go-owned pi processes via provider-rendered self-contained vectors, and FINALIZE follows the provider's negotiated captured-results transition). The reduced `review-compact-contract` keeps only the negotiated collection answers (correction forecast, targeted validation document, final evidence); graph, ordinary-policy, snapshot, trigger, and risk modules retain production, contract, or semantic-replay consumers.
 
 The packaged `contracts/review-integration/v1/` schemas and fixtures plus `docs/review-integration.md` are byte-identical provider artifacts for negotiated contract `review-integration/v1`, not dead Pi compatibility documentation; the newer `contracts/review-integration/v2/` schemas and fixtures are a second byte-identical mirror, for contract `review-integration/v2`, whose schemas `$ref` into the `/v1` fragments — which is why the `/v1` directory stays packaged even after Pi migrates its active decoder. Package verification proves both directories' hashes.
 
 ## Published Maintenance Boundary
 
-Gentle AI has exposed explicit, audited maintenance commands outside negotiated ordinary review since v2.1.11; the currently pinned v2.4.0 keeps them available under the same legacy version table. Pi invokes `review abandon` only after fresh interactive approval of exact LF-only authorization text; headless execution and absent, malformed, or stale bindings fail closed.
+Drakonc AI has exposed explicit, audited maintenance commands outside negotiated ordinary review since v2.1.11; the currently pinned v2.4.0 keeps them available under the same legacy version table. Pi invokes `review abandon` only after fresh interactive approval of exact LF-only authorization text; headless execution and absent, malformed, or stale bindings fail closed.
 
-`abandon` is restricted by native re-derivation to a caller-named non-terminal compact-v2 lineage; the facade freshly reads the authoritative native inventory, requires a unique lineage entry, and derives the exact discarded-work summary before rendering the `gentle-ai.review-abandon-authorization/v2` binding, whose fields the native gate re-derives before accepting (captured lens results with their ordinal order, findings presence). `review dispose-result` remains unexposed pending design. Recovery routes only the provider-selected negotiated `action_disposition`.
+`abandon` is restricted by native re-derivation to a caller-named non-terminal compact-v2 lineage; the facade freshly reads the authoritative native inventory, requires a unique lineage entry, and derives the exact discarded-work summary before rendering the `drakonc-ai.review-abandon-authorization/v2` binding, whose fields the native gate re-derives before accepting (captured lens results with their ordinal order, findings presence). `review dispose-result` remains unexposed pending design. Recovery routes only the provider-selected negotiated `action_disposition`.
 
 ## Windows Evidence
 
@@ -102,7 +102,7 @@ Current code contains Windows-aware paths but does not prove complete Windows su
 
 | Surface | Code evidence | Supported claim |
 | --- | --- | --- |
-| Native binary install | Selects `gentle-ai.exe`, Windows archives, and trusted `System32\\tar.exe` | Installer has an explicit Windows path |
+| Native binary install | Selects `drakonc-ai.exe`, Windows archives, and trusted `System32\\tar.exe` | Installer has an explicit Windows path |
 | Repository identity | Uses hard-link no-replace publication and skips unsupported directory fsync on `win32` | Atomic visibility and conflict rejection are designed; no power-loss directory-entry durability claim |
 | Graph object store and lock | File publication uses hard links; directory lock movement has a Windows branch; directory fsync is skipped | Fail-closed branches exist, but Linux simulation does not prove NTFS behavior |
 | Native diagnostics | Recognizes drive-letter and UNC paths | Windows paths can be normalized and sanitized |

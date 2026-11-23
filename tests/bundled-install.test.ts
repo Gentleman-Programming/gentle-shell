@@ -135,9 +135,9 @@ function adapters(overrides: Record<string, unknown> = {}) {
 }
 
 // Rule 1: one prefix with every folder inside it.
-test("prefixLayout puts every bundled folder under ~/.gentle-shell on POSIX", () => {
+test("prefixLayout puts every bundled folder under ~/.drakonc-shell on POSIX", () => {
 	const layout = prefixLayout({ platform: "linux", env: {}, home: "/home/me" });
-	const root = "/home/me/.gentle-shell";
+	const root = "/home/me/.drakonc-shell";
 	assert.equal(layout.root, root);
 	assert.equal(layout.agent, `${root}/agent`);
 	assert.equal(layout.node, `${root}/runtime/node-${NODE}/bin/node`);
@@ -149,23 +149,23 @@ test("prefixLayout puts every bundled folder under ~/.gentle-shell on POSIX", ()
 	assert.equal(layout.versions, `${root}/versions`);
 	assert.equal(layout.current, `${root}/current`);
 	assert.equal(layout.currentKind, "symlink");
-	assert.equal(layout.launcher, `${root}/bin/gentle-shell`);
+	assert.equal(layout.launcher, `${root}/bin/drakonc-shell`);
 	assert.throws(() => prefixLayout({ platform: "linux", env: {}, home: "relative" }), /home/i);
 });
 
 test("prefixLayout uses the Windows private folder and a pointer file for current", () => {
 	const env = { LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local", USERPROFILE: "C:\\Users\\me" };
 	const layout = prefixLayout({ platform: "win32", env, home: "C:\\Users\\me" });
-	const root = "C:\\Users\\me\\AppData\\Local\\gentle-shell";
+	const root = "C:\\Users\\me\\AppData\\Local\\drakonc-shell";
 	assert.equal(layout.root, root);
-	assert.equal(layout.agent, "C:\\Users\\me\\.gentle-shell\\agent");
+	assert.equal(layout.agent, "C:\\Users\\me\\.drakonc-shell\\agent");
 	assert.equal(layout.node, `${root}\\runtime\\node-${NODE}\\node.exe`);
 	assert.equal(layout.engram, `${root}\\runtime\\engram-${ENGRAM}\\engram.exe`);
 	assert.equal(layout.currentKind, "pointer");
-	assert.equal(layout.launcher, `${root}\\bin\\gentle-shell.cmd`);
+	assert.equal(layout.launcher, `${root}\\bin\\drakonc-shell.cmd`);
 	assert.equal(layout.tmp, `${root}\\tmp`);
-	const fallback = prefixLayout({ platform: "win32", env, home: "C:\\Users\\me", root: "C:\\Users\\me\\.gentle-shell-bundle" });
-	assert.equal(fallback.versions, "C:\\Users\\me\\.gentle-shell-bundle\\versions");
+	const fallback = prefixLayout({ platform: "win32", env, home: "C:\\Users\\me", root: "C:\\Users\\me\\.drakonc-shell-bundle" });
+	assert.equal(fallback.versions, "C:\\Users\\me\\.drakonc-shell-bundle\\versions");
 });
 
 posixTest("claimPrefix creates a private root, tightens its own group- or other-writable root and refuses a link or a non-folder", () => {
@@ -179,28 +179,28 @@ posixTest("claimPrefix creates a private root, tightens its own group- or other-
 	assert.equal(claimPrefix({ platform: "darwin", env: { HOME: user }, home: user }).root, layout.root);
 	assert.equal(readFileSync(join(layout.root, "config.json"), "utf8"), "{}");
 	const linked = home();
-	symlinkSync(layout.root, join(linked, ".gentle-shell"));
+	symlinkSync(layout.root, join(linked, ".drakonc-shell"));
 	assert.throws(() => claimPrefix({ platform: "darwin", env: { HOME: linked }, home: linked }), /Unsafe bundled prefix/);
 	// T3 B3: a real folder of this user that umask 002 (or chmod) left group- or other-writable is
 	// tightened (go-w), not refused, and its contents stay.
 	for (const mode of [0o775, 0o777]) {
 		const shared = home();
-		mkdirSync(join(shared, ".gentle-shell"));
-		writeFileSync(join(shared, ".gentle-shell", "config.json"), "{}");
-		chmodSync(join(shared, ".gentle-shell"), mode);
-		assert.equal(claimPrefix({ platform: "darwin", env: { HOME: shared }, home: shared }).root, join(shared, ".gentle-shell"));
-		assert.equal(lstatSync(join(shared, ".gentle-shell")).mode & 0o777, mode & ~0o022);
-		assert.equal(readFileSync(join(shared, ".gentle-shell", "config.json"), "utf8"), "{}");
+		mkdirSync(join(shared, ".drakonc-shell"));
+		writeFileSync(join(shared, ".drakonc-shell", "config.json"), "{}");
+		chmodSync(join(shared, ".drakonc-shell"), mode);
+		assert.equal(claimPrefix({ platform: "darwin", env: { HOME: shared }, home: shared }).root, join(shared, ".drakonc-shell"));
+		assert.equal(lstatSync(join(shared, ".drakonc-shell")).mode & 0o777, mode & ~0o022);
+		assert.equal(readFileSync(join(shared, ".drakonc-shell", "config.json"), "utf8"), "{}");
 	}
 	const file = home();
-	writeFileSync(join(file, ".gentle-shell"), "");
+	writeFileSync(join(file, ".drakonc-shell"), "");
 	assert.throws(() => claimPrefix({ platform: "darwin", env: { HOME: file }, home: file }), /Unsafe bundled prefix|EEXIST|ENOTDIR/);
 });
 
 test("claimPrefix on Windows walks then claims %LOCALAPPDATA%, falling back to the profile only on an untrusted owner or ACL", () => {
 	const env = { LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local", USERPROFILE: "C:\\Users\\me" };
-	const primary = "C:\\Users\\me\\AppData\\Local\\gentle-shell";
-	const fallback = "C:\\Users\\me\\.gentle-shell-bundle";
+	const primary = "C:\\Users\\me\\AppData\\Local\\drakonc-shell";
+	const fallback = "C:\\Users\\me\\.drakonc-shell-bundle";
 	const run = (failing: Record<string, string>) => {
 		const walked: string[] = []; const claims: string[] = [];
 		const layout = claimPrefix({ platform: "win32", env, home: "C:\\Users\\me", adapters: {
@@ -228,8 +228,8 @@ test("claimPrefix on Windows walks then claims %LOCALAPPDATA%, falling back to t
 
 test("the plan's prefix is the folder claimPrefix will claim, and a claim that would choose another folder changes nothing", () => {
 	const env = { LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local", USERPROFILE: "C:\\Users\\me" };
-	const primary = "C:\\Users\\me\\AppData\\Local\\gentle-shell";
-	const fallback = "C:\\Users\\me\\.gentle-shell-bundle";
+	const primary = "C:\\Users\\me\\AppData\\Local\\drakonc-shell";
+	const fallback = "C:\\Users\\me\\.drakonc-shell-bundle";
 	const adapters = (failing: string | null, claims: string[]) => ({
 		exists: (path: string) => path !== primary && path !== fallback,
 		prepare: () => {},
@@ -239,7 +239,7 @@ test("the plan's prefix is the folder claimPrefix will claim, and a claim that w
 	const none: string[] = [];
 	assert.equal(prefixRoot({ platform: "win32", env, adapters: adapters(null, none) }), primary);
 	assert.equal(prefixRoot({ platform: "win32", env, adapters: adapters("C:\\Users\\me\\AppData", none) }), fallback, "the same fallback the claim takes");
-	assert.equal(prefixRoot({ platform: "linux", env: { HOME: "/home/me" } }), undefined, "POSIX keeps ~/.gentle-shell");
+	assert.equal(prefixRoot({ platform: "linux", env: { HOME: "/home/me" } }), undefined, "POSIX keeps ~/.drakonc-shell");
 	assert.deepEqual(none, [], "choosing the plan's folder claims nothing");
 	const claims: string[] = [];
 	assert.throws(() => claimPrefix({ platform: "win32", env, home: "C:\\Users\\me", root: primary, adapters: adapters("C:\\Users\\me\\AppData", claims) }),
@@ -253,13 +253,13 @@ test("ensureWindowsPrivateFolder runs the PNPM_HOME claim with only the folder a
 	const windows = await import("../scripts/installer-windows.mjs");
 	const source = readFileSync(new URL("../scripts/installer-windows.mjs", import.meta.url), "utf8");
 	const pnpmHomeClaim = source.split("const pnpmHomeClaim = String.raw`")[1].split("`;")[0];
-	const expected = pnpmHomeClaim.replaceAll("$env:GENTLE_WINDOWS_PNPM_HOME", "$env:GENTLE_WINDOWS_PRIVATE_FOLDER")
-		.replaceAll("'.gentle-shell-pnpm-home'", "$env:GENTLE_WINDOWS_PRIVATE_MARKER").replaceAll("'gentle-pi private pnpm home'", "$env:GENTLE_WINDOWS_PRIVATE_TEXT");
-	const folder = "C:\\L\\gentle-shell";
-	const options = (output: string, walked: string[] = []) => ({ marker: ".gentle-shell-bundle", text: "gentle-shell bundled install", platform: "win32",
+	const expected = pnpmHomeClaim.replaceAll("$env:DRAKONC_WINDOWS_PNPM_HOME", "$env:DRAKONC_WINDOWS_PRIVATE_FOLDER")
+		.replaceAll("'.drakonc-shell-pnpm-home'", "$env:DRAKONC_WINDOWS_PRIVATE_MARKER").replaceAll("'drakonc-pi private pnpm home'", "$env:DRAKONC_WINDOWS_PRIVATE_TEXT");
+	const folder = "C:\\L\\drakonc-shell";
+	const options = (output: string, walked: string[] = []) => ({ marker: ".drakonc-shell-bundle", text: "drakonc-shell bundled install", platform: "win32",
 		processAdapter: (_command: string, args: string[], env: Record<string, string>) => {
 			assert.equal(args[4], expected);
-			assert.deepEqual([env.GENTLE_WINDOWS_PRIVATE_FOLDER, env.GENTLE_WINDOWS_PRIVATE_MARKER, env.GENTLE_WINDOWS_PRIVATE_TEXT], [folder, ".gentle-shell-bundle", "gentle-shell bundled install"]);
+			assert.deepEqual([env.DRAKONC_WINDOWS_PRIVATE_FOLDER, env.DRAKONC_WINDOWS_PRIVATE_MARKER, env.DRAKONC_WINDOWS_PRIVATE_TEXT], [folder, ".drakonc-shell-bundle", "drakonc-shell bundled install"]);
 			return output;
 		},
 		storage: (path: string) => { walked.push(path); } });
@@ -285,7 +285,7 @@ posixTest("ensureRuntime installs the verified Node and pnpm into runtime/ and r
 	assert.equal(lstatSync(join(layout.pnpmDir, "package", "dist", "node-gyp-bin", "node-gyp")).mode & 0o777, 0o700);
 	assert.equal(lstatSync(join(layout.pnpmDir, "package", "package.json")).mode & 0o777, 0o600);
 	// The Node executable and its npm are published, no links: npm and npx are our own wrappers.
-	assert.deepEqual(readdirSync(join(layout.runtime, `node-${NODE}`)).sort(), [".gentle-shell-runtime", "bin", "gentle-shell", "lib"]);
+	assert.deepEqual(readdirSync(join(layout.runtime, `node-${NODE}`)).sort(), [".drakonc-shell-runtime", "bin", "drakonc-shell", "lib"]);
 	// Pi's npmCommand entry, named npm (ensureNpmShim).
 	assert.match(readFileSync(layout.npmShim, "utf8"), /npm-cli\.js/);
 	assert.deepEqual(readdirSync(join(layout.runtime, `node-${NODE}`, "bin")).sort(), ["node", "npm", "npx"]);
@@ -344,10 +344,10 @@ posixTest("ensureEngram publishes only the verified engram executable after runn
 	assert.deepEqual((await ensureRuntime({ layout, platform: "darwin", arch: "arm64", adapters: fixture })).acquired, ["node", "pnpm"]);
 	assert.equal(existsSync(layout.engramDir), false);
 	assert.deepEqual((await ensureRuntime({ layout, platform: "darwin", arch: "arm64", engram: true, adapters: fixture })).acquired, ["engram"]);
-	assert.deepEqual(readdirSync(layout.engramDir).sort(), [".gentle-shell-runtime", "engram"]);
+	assert.deepEqual(readdirSync(layout.engramDir).sort(), [".drakonc-shell-runtime", "engram"]);
 	assert.deepEqual(readFileSync(layout.engram), engramBytes);
 	assert.equal(lstatSync(layout.engram).mode & 0o777, 0o700);
-	assert.equal(readFileSync(join(layout.engramDir, ".gentle-shell-runtime"), "utf8"), `${engramUrl}\n`);
+	assert.equal(readFileSync(join(layout.engramDir, ".drakonc-shell-runtime"), "utf8"), `${engramUrl}\n`);
 	// `engram version` ran from the staging folder, before publication.
 	const check = calls.runs.at(-1)!;
 	assert.deepEqual(check.args, ["version"]);
@@ -383,7 +383,7 @@ test("engramExecutable takes only the top-level engram from the tarball and engr
 	assert.throws(() => engramExecutable(zip([["engram", exe]]), zipped), /Engram archive rejected/);
 });
 
-// S5: the /gentle:music offer. Only uv is a new runtime; it, the uv-managed
+// S5: the /drakonc:music offer. Only uv is a new runtime; it, the uv-managed
 // Python and gentle-stream all live inside the prefix.
 const UV = "0.13.6";
 const uvBytes = Buffer.from("#!/bin/sh\necho fixture uv\n");
@@ -431,14 +431,14 @@ function uvAdapters({ version = `uv ${UV} (fixture 2026-10-26 aarch64-apple-darw
 
 test("prefixLayout keeps uv, the managed Python and the music player inside the prefix", () => {
 	const layout = prefixLayout({ platform: "linux", env: {}, home: "/home/me" });
-	const root = "/home/me/.gentle-shell";
+	const root = "/home/me/.drakonc-shell";
 	assert.equal(layout.uvDir, `${root}/runtime/uv-${UV}`);
 	assert.equal(layout.uv, `${root}/runtime/uv-${UV}/uv`);
 	assert.equal(layout.music, `${root}/music`);
-	assert.equal(layout.gentleStream, `${root}/music/bin/gentle-stream`);
+	assert.equal(layout.drakoncStream, `${root}/music/bin/gentle-stream`);
 	const windows = prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" }, home: "C:\\Users\\me" });
-	assert.equal(windows.uv, `C:\\Users\\me\\AppData\\Local\\gentle-shell\\runtime\\uv-${UV}\\uv.exe`);
-	assert.equal(windows.gentleStream, "C:\\Users\\me\\AppData\\Local\\gentle-shell\\music\\bin\\gentle-stream.exe");
+	assert.equal(windows.uv, `C:\\Users\\me\\AppData\\Local\\drakonc-shell\\runtime\\uv-${UV}\\uv.exe`);
+	assert.equal(windows.drakoncStream, "C:\\Users\\me\\AppData\\Local\\drakonc-shell\\music\\bin\\gentle-stream.exe");
 });
 
 test("uvExecutable takes only <stem>/uv from the tarball and uv.exe from the zip, regular files only", () => {
@@ -455,10 +455,10 @@ posixTest("ensureUv publishes only the verified uv after running it, once", asyn
 	const { layout } = claimed();
 	const { calls, adapters: fixture } = uvAdapters();
 	assert.equal(await ensureUv({ layout, platform: "darwin", arch: "arm64", adapters: fixture }), true);
-	assert.deepEqual(readdirSync(layout.uvDir).sort(), [".gentle-shell-runtime", "uv"]);
+	assert.deepEqual(readdirSync(layout.uvDir).sort(), [".drakonc-shell-runtime", "uv"]);
 	assert.deepEqual(readFileSync(layout.uv), uvBytes);
 	assert.equal(lstatSync(layout.uv).mode & 0o777, 0o700);
-	assert.equal(readFileSync(join(layout.uvDir, ".gentle-shell-runtime"), "utf8"), `${uvUrl}\n`);
+	assert.equal(readFileSync(join(layout.uvDir, ".drakonc-shell-runtime"), "utf8"), `${uvUrl}\n`);
 	assert.match(calls.runs[0]!.command, /\/runtime\/\.stage-[^/]+\/uv$/);
 	assert.equal(await ensureUv({ layout, platform: "darwin", arch: "arm64", adapters: fixture }), false, "reused");
 	assert.deepEqual(calls.downloads, ["uv"]);
@@ -473,16 +473,16 @@ posixTest("ensureUv publishes only the verified uv after running it, once", asyn
 posixTest("installedMusicPlayer accepts only a player that resolves to a regular file inside music/", () => {
 	const { layout } = claimed();
 	assert.equal(installedMusicPlayer(layout), false, "missing");
-	mkdirSync(dirname(layout.gentleStream), { recursive: true });
+	mkdirSync(dirname(layout.drakoncStream), { recursive: true });
 	const outside = join(mkdtempSync(join(tmpdir(), "gs-player-")), "gentle-stream");
 	writeFileSync(outside, "#!/bin/sh\n");
-	symlinkSync(outside, layout.gentleStream);
+	symlinkSync(outside, layout.drakoncStream);
 	assert.equal(installedMusicPlayer(layout), false, "a link out of music/");
-	rmSync(layout.gentleStream);
+	rmSync(layout.drakoncStream);
 	const tool = join(layout.music, "tools", "gentle-stream", "bin", "gentle-stream");
 	mkdirSync(dirname(tool), { recursive: true });
 	writeFileSync(tool, "#!/bin/sh\n");
-	symlinkSync(tool, layout.gentleStream);
+	symlinkSync(tool, layout.drakoncStream);
 	assert.equal(installedMusicPlayer(layout), true, "uv's link into music/tools");
 	rmSync(dirname(outside), { recursive: true, force: true });
 });
@@ -494,7 +494,7 @@ posixTest("installMusicPlayer confines uv, Python and gentle-stream to the prefi
 	const env = { HOME: "/home/me", PATH: "/usr/bin", UV_TOOL_DIR: "/home/me/.local/share/uv/tools", UV_INDEX_URL: "https://example.invalid", VIRTUAL_ENV: "/venv", HTTPS_PROXY: "http://proxy:3128",
 		PYTHONUSERBASE: "/home/me/.pybase", PYTHONSTARTUP: "/home/me/startup.py", PIP_INDEX_URL: "https://pip.invalid" };
 	const result = await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env, adapters: fixture, out: (line: string) => out.push(line) });
-	assert.deepEqual(result, { gentleStream: layout.gentleStream, samples: true, installed: true });
+	assert.deepEqual(result, { drakoncStream: layout.drakoncStream, samples: true, installed: true });
 	const install = calls.runs.find((run) => run.args[0] === "tool")!;
 	assert.equal(install.command, layout.uv);
 	assert.deepEqual(install.args, ["tool", "install", "--python", "3.13", `gentle-stream[samples] @ ${PLAYER_ARCHIVE}`]);
@@ -517,7 +517,7 @@ posixTest("installMusicPlayer confines uv, Python and gentle-stream to the prefi
 	assert.deepEqual(calls.runs.at(-1)!.args, ["cache", "clean"], "the download cache is emptied afterwards");
 	// Idempotent: a second call downloads and runs nothing.
 	const before = calls.runs.length;
-	assert.deepEqual(await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env, adapters: fixture }), { gentleStream: layout.gentleStream, samples: true, installed: false });
+	assert.deepEqual(await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env, adapters: fixture }), { drakoncStream: layout.drakoncStream, samples: true, installed: false });
 	assert.equal(calls.runs.length, before);
 	assert.deepEqual(calls.downloads, ["uv"]);
 });
@@ -527,11 +527,11 @@ posixTest("installMusicPlayer retries without the samples extra when it cannot b
 	const { calls, adapters: fixture } = uvAdapters({ fail: (spec) => spec.includes("[samples]") });
 	const out: string[] = [];
 	const result = await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env: {}, adapters: fixture, out: (line: string) => out.push(line) });
-	assert.deepEqual(result, { gentleStream: layout.gentleStream, samples: false, installed: true });
+	assert.deepEqual(result, { drakoncStream: layout.drakoncStream, samples: false, installed: true });
 	assert.deepEqual(calls.runs.filter((run) => run.args[0] === "tool").map((run) => run.args.at(-1)), [`gentle-stream[samples] @ ${PLAYER_ARCHIVE}`, `gentle-stream @ ${PLAYER_ARCHIVE}`]);
 	assert.ok(out.some((line) => /without the samples extra/i.test(line) && /FluidSynth/.test(line)));
-	// Reused without samples too, so no retry loop on every /gentle:music.
-	assert.deepEqual(await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env: {}, adapters: fixture }), { gentleStream: layout.gentleStream, samples: false, installed: false });
+	// Reused without samples too, so no retry loop on every /drakonc:music.
+	assert.deepEqual(await installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env: {}, adapters: fixture }), { drakoncStream: layout.drakoncStream, samples: false, installed: false });
 });
 
 posixTest("installMusicPlayer fails clearly when uv cannot install the player at all", async () => {
@@ -539,7 +539,7 @@ posixTest("installMusicPlayer fails clearly when uv cannot install the player at
 	for (const fixture of [uvAdapters({ fail: () => true }), uvAdapters({ writes: "none" }), uvAdapters({ writes: "outside" })]) {
 		const { layout } = claimed();
 		await assert.rejects(installMusicPlayer({ layout, platform: "darwin", arch: "arm64", env: {}, adapters: fixture.adapters }), /gentle-stream/);
-		assert.equal(existsSync(join(layout.music, ".gentle-shell-music")), false);
+		assert.equal(existsSync(join(layout.music, ".drakonc-shell-music")), false);
 	}
 });
 
@@ -563,7 +563,7 @@ test("pnpmEnvironment keeps pnpm's home, store, cache, state and config inside t
 		HOME: "/home/me", PATH: "/usr/local/bin:/usr/bin", PNPM_HOME: "/home/me/.local/share/pnpm", npm_config_registry: "https://user.example",
 		NPM_CONFIG_USERCONFIG: "/home/me/.npmrc", pnpm_config_store_dir: "/elsewhere", XDG_CONFIG_HOME: "/home/me/.config", NODE_OPTIONS: "--require /x.js",
 		npm_lifecycle_event: "postinstall", COREPACK_ENABLE_STRICT: "1", HTTPS_PROXY: "http://proxy:3128" } });
-	const root = "/home/me/.gentle-shell";
+	const root = "/home/me/.drakonc-shell";
 	assert.equal(env.PATH, `${root}/runtime/node-${NODE}/bin:/usr/local/bin:/usr/bin`);
 	assert.equal(env.PNPM_HOME, `${root}/pnpm`);
 	assert.equal(env.pnpm_config_store_dir, `${root}/pnpm/store`);
@@ -589,12 +589,12 @@ test("pnpmEnvironment keeps pnpm's home, store, cache, state and config inside t
 test("pnpmEnvironment on Windows replaces every Path spelling and moves TEMP into the prefix", () => {
 	const layout = prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\L", USERPROFILE: "C:\\U" }, home: "C:\\U" });
 	const env = pnpmEnvironment(layout, { platform: "win32", env: { Path: "C:\\Windows\\System32", TEMP: "C:\\T", tmp: "C:\\T", Pnpm_Home: "C:\\U\\pnpm", SystemRoot: "C:\\Windows" } });
-	assert.equal(env.Path, `C:\\L\\gentle-shell\\runtime\\node-${NODE};C:\\Windows\\System32`);
+	assert.equal(env.Path, `C:\\L\\drakonc-shell\\runtime\\node-${NODE};C:\\Windows\\System32`);
 	assert.equal(Object.keys(env).filter((key) => key.toUpperCase() === "PATH").length, 1);
 	assert.equal(Object.keys(env).filter((key) => key.toUpperCase() === "PNPM_HOME").length, 1);
-	assert.equal(env.PNPM_HOME, "C:\\L\\gentle-shell\\pnpm");
-	assert.equal(env.TEMP, "C:\\L\\gentle-shell\\tmp");
-	assert.equal(env.TMP, "C:\\L\\gentle-shell\\tmp");
+	assert.equal(env.PNPM_HOME, "C:\\L\\drakonc-shell\\pnpm");
+	assert.equal(env.TEMP, "C:\\L\\drakonc-shell\\tmp");
+	assert.equal(env.TMP, "C:\\L\\drakonc-shell\\tmp");
 	assert.equal(env.tmp, undefined);
 	assert.equal(env.SystemRoot, "C:\\Windows");
 });
@@ -604,15 +604,15 @@ const manifest = { shell: "4.1.0", pi: "1.0.2" };
 function fakePnpm(versions = manifest) {
 	const runs: { command: string; args: string[]; cwd: string; env: Record<string, string>; marker: string }[] = [];
 	const run = (command: string, args: string[], options: { cwd: string; env: Record<string, string> }) => {
-		runs.push({ command, args, ...options, marker: readFileSync(join(options.cwd, ".gentle-shell-version"), "utf8") });
+		runs.push({ command, args, ...options, marker: readFileSync(join(options.cwd, ".drakonc-shell-version"), "utf8") });
 		const modules = join(options.cwd, "node_modules");
 		// Like pnpm's Windows junctions: absolute links into node_modules/.pnpm.
-		const real = join(modules, ".pnpm", `gentle-pi@${versions.shell}`, "node_modules", "gentle-pi");
+		const real = join(modules, ".pnpm", `drakonc-pi@${versions.shell}`, "node_modules", "drakonc-pi");
 		mkdirSync(join(real, "bin"), { recursive: true });
 		mkdirSync(join(modules, "@earendil-works", "pi-coding-agent"), { recursive: true });
-		writeFileSync(join(real, "package.json"), JSON.stringify({ name: "gentle-pi", version: versions.shell }));
-		writeFileSync(join(real, "bin", "gentle-shell.mjs"), "");
-		symlinkSync(real, join(modules, "gentle-pi"));
+		writeFileSync(join(real, "package.json"), JSON.stringify({ name: "drakonc-pi", version: versions.shell }));
+		writeFileSync(join(real, "bin", "drakonc-shell.mjs"), "");
+		symlinkSync(real, join(modules, "drakonc-pi"));
 		writeFileSync(join(modules, "@earendil-works", "pi-coding-agent", "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: versions.pi }));
 		return { status: 0, stdout: "", stderr: "" };
 	};
@@ -631,12 +631,12 @@ posixTest("installVersion runs our pnpm frozen in the final versions/<shell>-<pi
 	// pnpm runs where the version stays: its absolute links (Windows junctions) never dangle.
 	assert.equal(install.cwd, result.path);
 	assert.equal(install.marker, `installing 4.1.0-1.0.2 ${process.pid}\n`);
-	assert.equal(readFileSync(join(result.path, ".gentle-shell-version"), "utf8"), "4.1.0-1.0.2\n");
-	assert.equal(realpathSync(join(result.path, "node_modules", "gentle-pi")).startsWith(`${realpathSync(result.path)}/`), true);
+	assert.equal(readFileSync(join(result.path, ".drakonc-shell-version"), "utf8"), "4.1.0-1.0.2\n");
+	assert.equal(realpathSync(join(result.path, "node_modules", "drakonc-pi")).startsWith(`${realpathSync(result.path)}/`), true);
 	assert.equal(install.env.pnpm_config_store_dir, layout.store);
 	const files = distributionFiles(manifest);
-	assert.deepEqual(JSON.parse(files["package.json"]).dependencies, { "gentle-pi": "4.1.0", "@earendil-works/pi-coding-agent": "1.0.2" });
-	assert.match(files["pnpm-workspace.yaml"], /^allowBuilds:\n {2}gentle-pi: true\nstrictDepBuilds: false\n$/);
+	assert.deepEqual(JSON.parse(files["package.json"]).dependencies, { "drakonc-pi": "4.1.0", "@earendil-works/pi-coding-agent": "1.0.2" });
+	assert.match(files["pnpm-workspace.yaml"], /^allowBuilds:\n {2}drakonc-pi: true\nstrictDepBuilds: false\n$/);
 	for (const [name, text] of Object.entries({ ...files, "pnpm-lock.yaml": "lockfileVersion: '9.0'\n" })) assert.equal(readFileSync(join(result.path, name), "utf8"), text, name);
 	assert.deepEqual(readdirSync(layout.versions), ["4.1.0-1.0.2"]);
 	const again = await installVersion({ layout, manifest, lockfile: "lockfileVersion: '9.0'\n", platform: "darwin", env: {}, adapters: { run: pnpm.run } });
@@ -652,8 +652,8 @@ posixTest("installVersion rejects a wrong installed version, a foreign folder an
 	assert.deepEqual(readdirSync(layout.versions), []);
 	// pnpm prints install and postinstall failures on stdout: the error keeps both streams.
 	await assert.rejects(installVersion({ layout, manifest, lockfile: "x", platform: "darwin", env: {},
-		adapters: { run: () => ({ status: 1, stdout: "postinstall: Gentle AI build failed\n[ELIFECYCLE] exit 1", stderr: "" }) } }),
-		(error: Error & { stderr?: string }) => /pnpm install failed \(exit 1\)/.test(error.message) && /Gentle AI build failed/.test(String(error.stderr)));
+		adapters: { run: () => ({ status: 1, stdout: "postinstall: Drakonc AI build failed\n[ELIFECYCLE] exit 1", stderr: "" }) } }),
+		(error: Error & { stderr?: string }) => /pnpm install failed \(exit 1\)/.test(error.message) && /Drakonc AI build failed/.test(String(error.stderr)));
 	assert.deepEqual(readdirSync(layout.versions), []);
 	mkdirSync(join(layout.versions, "4.1.0-1.0.2"));
 	writeFileSync(join(layout.versions, "4.1.0-1.0.2", "user.txt"), "keep");
@@ -661,7 +661,7 @@ posixTest("installVersion rejects a wrong installed version, a foreign folder an
 	assert.equal(readFileSync(join(layout.versions, "4.1.0-1.0.2", "user.txt"), "utf8"), "keep");
 	await assert.rejects(installVersion({ layout, manifest: { shell: "../x", pi: "1.0.2" }, lockfile: "x", platform: "darwin", env: {}, adapters: { run: fakePnpm().run } }), /version/i);
 	// A folder whose marker names another version is not ours either.
-	writeFileSync(join(layout.versions, "4.1.0-1.0.2", ".gentle-shell-version"), "installing 9.9.9-1.0.0 1\n");
+	writeFileSync(join(layout.versions, "4.1.0-1.0.2", ".drakonc-shell-version"), "installing 9.9.9-1.0.0 1\n");
 	await assert.rejects(installVersion({ layout, manifest, lockfile: "x", platform: "darwin", env: {}, adapters: { run: fakePnpm().run } }), /Conflicting version/);
 	assert.equal(readFileSync(join(layout.versions, "4.1.0-1.0.2", "user.txt"), "utf8"), "keep");
 });
@@ -671,18 +671,18 @@ posixTest("installVersion cleans only its own interrupted install and never one 
 	const folder = join(layout.versions, "4.1.0-1.0.2");
 	const dead = spawnSync(process.execPath, ["-e", ""]).pid;
 	mkdirSync(join(folder, "node_modules"), { recursive: true });
-	writeFileSync(join(folder, ".gentle-shell-version"), `installing 4.1.0-1.0.2 ${dead}\n`);
+	writeFileSync(join(folder, ".drakonc-shell-version"), `installing 4.1.0-1.0.2 ${dead}\n`);
 	writeFileSync(join(folder, "node_modules", "partial"), "crash leftover");
 	const result = await installVersion({ layout, manifest, lockfile: "x", platform: "darwin", env: {}, adapters: { run: fakePnpm().run } });
 	assert.equal(result.installed, true);
 	assert.equal(existsSync(join(folder, "node_modules", "partial")), false);
-	assert.equal(readFileSync(join(folder, ".gentle-shell-version"), "utf8"), "4.1.0-1.0.2\n");
+	assert.equal(readFileSync(join(folder, ".drakonc-shell-version"), "utf8"), "4.1.0-1.0.2\n");
 	const other = claimed().layout;
 	const running = join(other.versions, "4.1.0-1.0.2");
 	mkdirSync(running);
-	writeFileSync(join(running, ".gentle-shell-version"), `installing 4.1.0-1.0.2 ${process.pid}\n`);
+	writeFileSync(join(running, ".drakonc-shell-version"), `installing 4.1.0-1.0.2 ${process.pid}\n`);
 	await assert.rejects(installVersion({ layout: other, manifest, lockfile: "x", platform: "darwin", env: {}, adapters: { run: fakePnpm().run } }), /in progress/);
-	assert.equal(readFileSync(join(running, ".gentle-shell-version"), "utf8"), `installing 4.1.0-1.0.2 ${process.pid}\n`);
+	assert.equal(readFileSync(join(running, ".drakonc-shell-version"), "utf8"), `installing 4.1.0-1.0.2 ${process.pid}\n`);
 	// pruneVersions never counts or deletes an unfinished version.
 	assert.deepEqual(pruneVersions(other), []);
 	assert.equal(existsSync(running), true);
@@ -751,23 +751,23 @@ posixTest("activateVersion never replaces a current that is not ours and writes 
 });
 
 // Rule 6: the launcher and the single PATH change.
-posixTest("ensureLauncher writes bin/gentle-shell that execs our Node with the current gentle-pi", () => {
+posixTest("ensureLauncher writes bin/drakonc-shell that execs our Node with the current drakonc-pi", () => {
 	const { layout } = claimed();
 	ensureLauncher(layout);
 	const text = readFileSync(layout.launcher, "utf8");
 	const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-	const entry = join(layout.current, "node_modules/gentle-pi/bin/gentle-shell.mjs");
-	assert.equal(text, ["#!/bin/sh", "# gentle-shell bundled launcher (generated; do not edit)", `if [ ! -f ${quote(entry)} ]; then`,
-		"\techo 'gentle-shell: no active Gentle Shell version; run the Gentle Shell installer again.' >&2", "\texit 1", "fi",
+	const entry = join(layout.current, "node_modules/drakonc-pi/bin/drakonc-shell.mjs");
+	assert.equal(text, ["#!/bin/sh", "# drakonc-shell bundled launcher (generated; do not edit)", `if [ ! -f ${quote(entry)} ]; then`,
+		"\techo 'drakonc-shell: no active Drakonc Shell version; run the Drakonc Shell installer again.' >&2", "\texit 1", "fi",
 		`exec ${quote(layout.node)} ${quote(entry)} "$@"`, ""].join("\n"));
 	assert.equal(lstatSync(layout.launcher).mode & 0o777, 0o755);
 	// Without an active version it says so; with one it passes every argument and the exit code.
 	const missing = spawnSync(layout.launcher, ["x"], { encoding: "utf8" });
-	assert.deepEqual([missing.status, missing.stderr], [1, "gentle-shell: no active Gentle Shell version; run the Gentle Shell installer again.\n"]);
+	assert.deepEqual([missing.status, missing.stderr], [1, "drakonc-shell: no active Drakonc Shell version; run the Drakonc Shell installer again.\n"]);
 	mkdirSync(posix.dirname(layout.node), { recursive: true });
 	writeFileSync(layout.node, "#!/bin/sh\nprintf '%s|' \"$@\"\nexit 7\n", { mode: 0o700 });
-	mkdirSync(join(layout.versions, "v", "node_modules/gentle-pi/bin"), { recursive: true });
-	writeFileSync(join(layout.versions, "v", "node_modules/gentle-pi/bin/gentle-shell.mjs"), "");
+	mkdirSync(join(layout.versions, "v", "node_modules/drakonc-pi/bin"), { recursive: true });
+	writeFileSync(join(layout.versions, "v", "node_modules/drakonc-pi/bin/drakonc-shell.mjs"), "");
 	symlinkSync("versions/v", layout.current);
 	const ran = spawnSync(layout.launcher, ["a b", "$HOME", "'"], { encoding: "utf8" });
 	assert.deepEqual([ran.status, ran.stdout], [7, `${entry}|a b|$HOME|'|`]);
@@ -779,12 +779,12 @@ posixTest("ensureLauncher writes bin/gentle-shell that execs our Node with the c
 test("ensureLauncher text for Windows reads the current pointer file", async () => {
 	const { launcherText } = await import("../scripts/bundled-install.mjs");
 	const layout = prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\L", USERPROFILE: "C:\\U" }, home: "C:\\U" });
-	const entry = "%~dp0..\\versions\\%GENTLE_SHELL_CURRENT%\\node_modules\\gentle-pi\\bin\\gentle-shell.mjs";
-	assert.equal(launcherText(layout), ["@echo off", "rem gentle-shell bundled launcher (generated; do not edit)", "setlocal DisableDelayedExpansion",
-		'set "GENTLE_SHELL_CURRENT="', 'if exist "%~dp0..\\current" set /p GENTLE_SHELL_CURRENT=<"%~dp0..\\current"',
-		"if not defined GENTLE_SHELL_CURRENT goto missing", `if not exist "${entry}" goto missing`,
+	const entry = "%~dp0..\\versions\\%DRAKONC_SHELL_CURRENT%\\node_modules\\drakonc-pi\\bin\\drakonc-shell.mjs";
+	assert.equal(launcherText(layout), ["@echo off", "rem drakonc-shell bundled launcher (generated; do not edit)", "setlocal DisableDelayedExpansion",
+		'set "DRAKONC_SHELL_CURRENT="', 'if exist "%~dp0..\\current" set /p DRAKONC_SHELL_CURRENT=<"%~dp0..\\current"',
+		"if not defined DRAKONC_SHELL_CURRENT goto missing", `if not exist "${entry}" goto missing`,
 		`"%~dp0..\\runtime\\node-${NODE}\\node.exe" "${entry}" %*`, "exit /b %errorlevel%", ":missing",
-		">&2 echo gentle-shell: no active Gentle Shell version; run the Gentle Shell installer again.", "exit /b 1", ""].join("\r\n"));
+		">&2 echo drakonc-shell: no active Drakonc Shell version; run the Drakonc Shell installer again.", "exit /b 1", ""].join("\r\n"));
 });
 
 posixTest("pathEntryPlan links into ~/.local/bin on PATH, otherwise plans one marked profile line, and both are reversible", () => {
@@ -793,17 +793,17 @@ posixTest("pathEntryPlan links into ~/.local/bin on PATH, otherwise plans one ma
 	const localBin = join(user, ".local", "bin");
 	mkdirSync(localBin, { recursive: true });
 	const onPath = pathEntryPlan(layout, { platform: "darwin", env: { PATH: `/usr/bin:${localBin}`, SHELL: "/bin/zsh" }, home: user });
-	assert.deepEqual(onPath, { kind: "symlink", path: join(localBin, "gentle-shell"), target: layout.launcher });
+	assert.deepEqual(onPath, { kind: "symlink", path: join(localBin, "drakonc-shell"), target: layout.launcher });
 	applyPathEntry(onPath);
-	assert.equal(readlinkSync(join(localBin, "gentle-shell")), layout.launcher);
+	assert.equal(readlinkSync(join(localBin, "drakonc-shell")), layout.launcher);
 	assert.deepEqual(pathEntryPlan(layout, { platform: "darwin", env: { PATH: localBin }, home: user }), { kind: "none" });
 	removePathEntry(onPath);
-	assert.equal(existsSync(join(localBin, "gentle-shell")), false);
+	assert.equal(existsSync(join(localBin, "drakonc-shell")), false);
 
 	const zshrc = join(user, ".zshrc");
 	writeFileSync(zshrc, "alias ll='ls -l'\n");
 	const profile = pathEntryPlan(layout, { platform: "darwin", env: { PATH: "/usr/bin", SHELL: "/bin/zsh" }, home: user });
-	assert.deepEqual(profile, { kind: "profile", path: zshrc, line: `export PATH="${layout.bin}:$PATH" # gentle-shell bundled install`, create: false });
+	assert.deepEqual(profile, { kind: "profile", path: zshrc, line: `export PATH="${layout.bin}:$PATH" # drakonc-shell bundled install`, create: false });
 	const applied = applyPathEntry(profile);
 	assert.equal(readFileSync(zshrc, "utf8"), `alias ll='ls -l'\n${profile.line}\n`);
 	assert.deepEqual(pathEntryPlan(layout, { platform: "darwin", env: { PATH: "/usr/bin", SHELL: "/bin/zsh" }, home: user }), { kind: "none" });
@@ -813,15 +813,15 @@ posixTest("pathEntryPlan links into ~/.local/bin on PATH, otherwise plans one ma
 	assert.equal(pathEntryPlan(layout, { platform: "linux", env: { PATH: "/usr/bin" }, home: user }).path, join(user, ".profile"));
 	assert.equal(pathEntryPlan(layout, { platform: "linux", env: { PATH: "/usr/bin", SHELL: "/bin/zsh", ZDOTDIR: join(user, "zdot") }, home: user }).path, join(user, "zdot", ".zshrc"));
 	assert.deepEqual(pathEntryPlan(layout, { platform: "linux", env: { PATH: `/usr/bin:${layout.bin}` }, home: user }), { kind: "none" });
-	// Someone else's gentle-shell in ~/.local/bin is never replaced.
-	writeFileSync(join(localBin, "gentle-shell"), "user");
+	// Someone else's drakonc-shell in ~/.local/bin is never replaced.
+	writeFileSync(join(localBin, "drakonc-shell"), "user");
 	assert.equal(pathEntryPlan(layout, { platform: "linux", env: { PATH: localBin, SHELL: "/bin/bash" }, home: user }).kind, "profile");
 });
 
 posixTest("pathEntryPlan never writes through a symlinked, read-only or non-file profile and asks for one manual line instead", () => {
 	const { home: user, layout } = claimed();
 	const env = { PATH: "/usr/bin", SHELL: "/bin/zsh" };
-	const line = `export PATH="${layout.bin}:$PATH" # gentle-shell bundled install`;
+	const line = `export PATH="${layout.bin}:$PATH" # drakonc-shell bundled install`;
 	// stow/chezmoi: the profile is a link into a dotfiles repository.
 	const dotfiles = join(posix.dirname(user), "dotfiles");
 	mkdirSync(dotfiles);
@@ -921,12 +921,12 @@ test("a login bash still reads the user's ~/.profile after the PATH line is adde
 test("pathEntryPlan on Windows plans one HKCU Path entry applied through an injected adapter", () => {
 	const layout = prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\L", USERPROFILE: "C:\\U" }, home: "C:\\U" });
 	const plan = pathEntryPlan(layout, { platform: "win32", env: { Path: "C:\\Windows" }, home: "C:\\U" });
-	assert.deepEqual(plan, { kind: "registry", key: "HKCU\\Environment", name: "Path", entry: "C:\\L\\gentle-shell\\bin" });
-	assert.deepEqual(pathEntryPlan(layout, { platform: "win32", env: { PATH: "C:\\Windows;c:\\l\\gentle-shell\\bin\\" }, home: "C:\\U" }), { kind: "none" });
+	assert.deepEqual(plan, { kind: "registry", key: "HKCU\\Environment", name: "Path", entry: "C:\\L\\drakonc-shell\\bin" });
+	assert.deepEqual(pathEntryPlan(layout, { platform: "win32", env: { PATH: "C:\\Windows;c:\\l\\drakonc-shell\\bin\\" }, home: "C:\\U" }), { kind: "none" });
 	const registry: string[] = [];
 	applyPathEntry(plan, { registry: { add: (entry: string) => registry.push(`+${entry}`), remove: (entry: string) => registry.push(`-${entry}`) } });
 	removePathEntry(plan, { registry: { add: () => {}, remove: (entry: string) => registry.push(`-${entry}`) } });
-	assert.deepEqual(registry, ["+C:\\L\\gentle-shell\\bin", "-C:\\L\\gentle-shell\\bin"]);
+	assert.deepEqual(registry, ["+C:\\L\\drakonc-shell\\bin", "-C:\\L\\drakonc-shell\\bin"]);
 	assert.throws(() => applyPathEntry(plan), /registry adapter/);
 });
 
@@ -939,7 +939,7 @@ test("removePathEntry leaves the PATH alone for a receipt that applied nothing, 
 	assert.deepEqual(applyPathEntry(plan, { registry: registry("present") }), { ...plan, applied: false });
 	assert.deepEqual(applyPathEntry(plan, { registry: registry("added") }), { ...plan, applied: true });
 	removePathEntry({ ...plan, applied: false }, { registry: registry(undefined) });
-	assert.deepEqual(calls, ["+C:\\L\\gentle-shell\\bin", "+C:\\L\\gentle-shell\\bin"]);
+	assert.deepEqual(calls, ["+C:\\L\\drakonc-shell\\bin", "+C:\\L\\drakonc-shell\\bin"]);
 });
 
 posixTest("removePathEntry keeps a profile line and a link that a receipt says were already there", () => {
@@ -952,7 +952,7 @@ posixTest("removePathEntry keeps a profile line and a link that a receipt says w
 	assert.equal(receipt.applied, false);
 	removePathEntry(receipt);
 	assert.equal(readFileSync(zshrc, "utf8"), `${plan.line}\n`);
-	const link = join(user, ".local", "bin", "gentle-shell");
+	const link = join(user, ".local", "bin", "drakonc-shell");
 	mkdirSync(dirname(link), { recursive: true });
 	symlinkSync(layout.launcher, link);
 	removePathEntry({ kind: "symlink", path: link, target: layout.launcher, applied: false });
@@ -962,7 +962,7 @@ posixTest("removePathEntry keeps a profile line and a link that a receipt says w
 posixTest("writePathReceipt keeps only an applied receipt in the prefix, private and replaced whole, and readPathReceipt accepts only this install's entry", () => {
 	const { home: user, layout } = claimed();
 	const env = { SHELL: "/bin/zsh" };
-	const line = `export PATH="${layout.bin}:$PATH" # gentle-shell bundled install`;
+	const line = `export PATH="${layout.bin}:$PATH" # drakonc-shell bundled install`;
 	const profile = { kind: "profile", path: join(user, ".zshrc"), line, create: true };
 	assert.equal(layout.pathReceipt, join(layout.root, "path-entry.json"));
 	assert.deepEqual(readPathReceipt(layout, { env, home: user }), { status: "none" });
@@ -973,14 +973,14 @@ posixTest("writePathReceipt keeps only an applied receipt in the prefix, private
 	assert.deepEqual(JSON.parse(readFileSync(layout.pathReceipt, "utf8")), { schema: 1, ...profile, separator: false });
 	assert.deepEqual(readPathReceipt(layout, { env, home: user }), { status: "recorded", receipt: { ...profile, separator: false, applied: true } });
 	assert.match(describePathReceipt({ ...profile, separator: false, applied: true }), new RegExp(`${line.replace(/[$"]/g, "\\$&")}.*\\.zshrc`));
-	const link = { kind: "symlink", path: join(user, ".local", "bin", "gentle-shell"), target: layout.launcher };
+	const link = { kind: "symlink", path: join(user, ".local", "bin", "drakonc-shell"), target: layout.launcher };
 	writePathReceipt(layout, { ...link, applied: true });
 	assert.deepEqual(readPathReceipt(layout, { env, home: user }), { status: "recorded", receipt: { ...link, applied: true } });
 	assert.deepEqual(readdirSync(layout.root).filter((name) => name.includes("path-entry")), ["path-entry.json"]);
 	// Anything this prefix did not write is never acted on.
 	const foreign = [
-		{ ...link, target: "/usr/local/bin/gentle-shell" },
-		{ ...profile, line: "export PATH=\"/opt/x:$PATH\" # gentle-shell bundled install", separator: false },
+		{ ...link, target: "/usr/local/bin/drakonc-shell" },
+		{ ...profile, line: "export PATH=\"/opt/x:$PATH\" # drakonc-shell bundled install", separator: false },
 		{ ...profile, path: "relative/.zshrc", separator: false },
 		{ kind: "registry", key: "HKCU\\Environment", name: "Path", entry: "C:\\Windows" },
 		{ kind: "none" },
@@ -1000,9 +1000,9 @@ posixTest("writePathReceipt keeps only an applied receipt in the prefix, private
 
 // A1 (T6 verifier): a receipt is trusted only for a file or link the PATH plan
 // itself can choose for this user; a forged one is named, never acted on.
-posixTest("readPathReceipt accepts a profile line only in a startup file the PATH plan can choose, and a link only at ~/.local/bin/gentle-shell", () => {
+posixTest("readPathReceipt accepts a profile line only in a startup file the PATH plan can choose, and a link only at ~/.local/bin/drakonc-shell", () => {
 	const { home: user, layout } = claimed();
-	const { sh, fish } = { sh: `export PATH="${layout.bin}:$PATH" # gentle-shell bundled install`, fish: `set -gx PATH '${layout.bin}' $PATH # gentle-shell bundled install` };
+	const { sh, fish } = { sh: `export PATH="${layout.bin}:$PATH" # drakonc-shell bundled install`, fish: `set -gx PATH '${layout.bin}' $PATH # drakonc-shell bundled install` };
 	const read = (receipt: Record<string, unknown>, env: Record<string, string> = {}, platform = "darwin") => {
 		writeFileSync(layout.pathReceipt, JSON.stringify({ schema: 1, create: false, separator: false, ...receipt }));
 		return readPathReceipt({ ...layout, platform }, { env, home: user }).status;
@@ -1010,23 +1010,23 @@ posixTest("readPathReceipt accepts a profile line only in a startup file the PAT
 	// Every file pathEntryPlan picks, per shell, on macOS and Linux.
 	for (const name of [".zshrc", ".bash_profile", ".bash_login", ".profile"]) assert.equal(read({ kind: "profile", path: join(user, name), line: sh }), "recorded", name);
 	assert.equal(read({ kind: "profile", path: join(user, ".bashrc"), line: sh }, {}, "linux"), "recorded");
-	assert.equal(read({ kind: "profile", path: join(user, ".config", "fish", "conf.d", "gentle-shell.fish"), line: fish }), "recorded");
+	assert.equal(read({ kind: "profile", path: join(user, ".config", "fish", "conf.d", "drakonc-shell.fish"), line: fish }), "recorded");
 	// ZDOTDIR and XDG_CONFIG_HOME move the zsh and fish files exactly as the plan moves them.
 	const zdot = join(user, "zdot");
 	const xdg = join(user, "xdg");
 	assert.equal(read({ kind: "profile", path: join(zdot, ".zshrc"), line: sh }, { ZDOTDIR: zdot }), "recorded");
 	assert.equal(read({ kind: "profile", path: join(user, ".zshrc"), line: sh }, { ZDOTDIR: zdot }), "invalid");
-	assert.equal(read({ kind: "profile", path: join(xdg, "fish", "conf.d", "gentle-shell.fish"), line: fish }, { XDG_CONFIG_HOME: xdg }), "recorded");
+	assert.equal(read({ kind: "profile", path: join(xdg, "fish", "conf.d", "drakonc-shell.fish"), line: fish }, { XDG_CONFIG_HOME: xdg }), "recorded");
 	// E1: our exact line, but in a file the plan never edits on this system; E2: a created file elsewhere.
 	assert.equal(read({ kind: "profile", path: join(user, ".bashrc"), line: sh }), "invalid");
 	assert.equal(read({ kind: "profile", path: join(user, "dotfiles", "path.sh"), line: sh, create: true }), "invalid");
 	assert.equal(read({ kind: "profile", path: join(user, ".zshenv"), line: sh }), "invalid");
 	// The fish line belongs only in the fish file, the sh line only in sh files.
 	assert.equal(read({ kind: "profile", path: join(user, ".zshrc"), line: fish }), "invalid");
-	assert.equal(read({ kind: "profile", path: join(user, ".config", "fish", "conf.d", "gentle-shell.fish"), line: sh }), "invalid");
-	// The link: only ~/.local/bin/gentle-shell to our launcher.
-	assert.equal(read({ kind: "symlink", path: join(user, ".local", "bin", "gentle-shell"), target: layout.launcher }), "recorded");
-	assert.equal(read({ kind: "symlink", path: join(user, "bin", "gentle-shell"), target: layout.launcher }), "invalid");
+	assert.equal(read({ kind: "profile", path: join(user, ".config", "fish", "conf.d", "drakonc-shell.fish"), line: sh }), "invalid");
+	// The link: only ~/.local/bin/drakonc-shell to our launcher.
+	assert.equal(read({ kind: "symlink", path: join(user, ".local", "bin", "drakonc-shell"), target: layout.launcher }), "recorded");
+	assert.equal(read({ kind: "symlink", path: join(user, "bin", "drakonc-shell"), target: layout.launcher }), "invalid");
 	// The bundled self-uninstall, given the forged receipts, leaves both files as they are.
 	const bashrc = join(user, ".bashrc");
 	const dotfile = join(user, "dotfiles", "path.sh");
@@ -1045,7 +1045,7 @@ posixTest("removePathEntry reports a profile line it could not find and a link t
 	const zshrc = join(user, ".zshrc");
 	writeFileSync(zshrc, "alias x=y\n");
 	const receipt = applyPathEntry(pathEntryPlan(layout, { platform: "darwin", env: { PATH: "/usr/bin", SHELL: "/bin/zsh" }, home: user }));
-	const edited = `export PATH="$PATH:${layout.bin}" # gentle-shell bundled install`;
+	const edited = `export PATH="$PATH:${layout.bin}" # drakonc-shell bundled install`;
 	writeFileSync(zshrc, `alias x=y\n${edited}\n`);
 	const kept = removePathEntry(receipt);
 	assert.equal(readFileSync(zshrc, "utf8"), `alias x=y\n${edited}\n`);
@@ -1053,7 +1053,7 @@ posixTest("removePathEntry reports a profile line it could not find and a link t
 	assert.ok(kept.note.includes(zshrc) && kept.note.includes(edited), kept.note);
 	writeFileSync(zshrc, `alias x=y\n${receipt.line}\n`);
 	assert.deepEqual(removePathEntry(receipt), { removed: true });
-	const link = join(user, ".local", "bin", "gentle-shell");
+	const link = join(user, ".local", "bin", "drakonc-shell");
 	mkdirSync(dirname(link), { recursive: true });
 	symlinkSync("/usr/local/bin/other", link);
 	const other = removePathEntry({ kind: "symlink", path: link, target: layout.launcher, applied: true });
@@ -1069,7 +1069,7 @@ test("readPathReceipt accepts the Windows user Path entry of this prefix only", 
 	const entry = { kind: "registry", key: "HKCU\\Environment", name: "Path", entry: layout.bin };
 	writeFileSync(layout.pathReceipt, JSON.stringify({ schema: 1, ...entry }));
 	assert.deepEqual(readPathReceipt(layout, { env: {}, home: "C:\\U" }), { status: "recorded", receipt: { ...entry, applied: true } });
-	assert.match(describePathReceipt({ ...entry, applied: true }), /C:\\L\\gentle-shell\\bin in your user Path/);
+	assert.match(describePathReceipt({ ...entry, applied: true }), /C:\\L\\drakonc-shell\\bin in your user Path/);
 	writeFileSync(layout.pathReceipt, JSON.stringify({ schema: 1, ...entry, key: "HKLM\\Environment" }));
 	assert.equal(readPathReceipt(layout, { env: {}, home: "C:\\U" }).status, "invalid");
 	t.diagnostic("simulated Windows layout, real receipt file");
@@ -1081,9 +1081,9 @@ test("scheduleWindowsRemoval starts one detached Windows PowerShell that waits f
 	const calls: { command: string; args: string[]; options: Record<string, any> }[] = [];
 	let unref = false;
 	const spawn = (command: string, args: string[], options: Record<string, any>) => { calls.push({ command, args, options }); return { unref: () => { unref = true; } }; };
-	const files = ["C:\\L\\gentle shell's $x;\\runtime\\node-24.21.0\\node.exe", "C:\\L\\gentle shell's $x;\\bin\\gentle-shell.cmd"];
-	const directories = ["C:\\L\\gentle shell's $x;\\runtime\\node-24.21.0", "C:\\L\\gentle shell's $x;"];
-	const last = "C:\\L\\gentle shell's $x;\\.gentle-shell-bundle";
+	const files = ["C:\\L\\drakonc shell's $x;\\runtime\\node-24.21.0\\node.exe", "C:\\L\\drakonc shell's $x;\\bin\\drakonc-shell.cmd"];
+	const directories = ["C:\\L\\drakonc shell's $x;\\runtime\\node-24.21.0", "C:\\L\\drakonc shell's $x;"];
+	const last = "C:\\L\\drakonc shell's $x;\\.drakonc-shell-bundle";
 	scheduleWindowsRemoval({ pid: 4242, files, last, directories, env: { SystemRoot: "C:\\Windows", Path: "C:\\Windows" }, spawn });
 	assert.equal(calls.length, 1);
 	const [{ command, args, options }] = calls;
@@ -1100,13 +1100,13 @@ test("scheduleWindowsRemoval starts one detached Windows PowerShell that waits f
 	assert.equal(shellArgs.length, 7);
 	const script = Buffer.from(shellArgs[6], "base64").toString("utf16le");
 	assert.match(script, /Wait-Process -Id \$waitFor/);
-	assert.match(script, /GENTLE_SHELL_REMOVE_FILES/);
+	assert.match(script, /DRAKONC_SHELL_REMOVE_FILES/);
 	// A4: the marker goes only once every listed file is gone, so a retry still finds the install.
-	assert.match(script, /GENTLE_SHELL_REMOVE_LAST/);
-	assert.equal(options.env.GENTLE_SHELL_REMOVE_LAST, last);
+	assert.match(script, /DRAKONC_SHELL_REMOVE_LAST/);
+	assert.equal(options.env.DRAKONC_SHELL_REMOVE_LAST, last);
 	for (const path of [...files, ...directories]) assert.equal(args.join(" ").includes(path), false, path);
 	assert.deepEqual([options.detached, options.stdio, options.windowsHide, options.cwd, unref], [true, "ignore", true, "C:\\Windows", true]);
-	assert.deepEqual([options.env.GENTLE_SHELL_REMOVE_AFTER_PID, options.env.GENTLE_SHELL_REMOVE_FILES, options.env.GENTLE_SHELL_REMOVE_DIRECTORIES, options.env.Path],
+	assert.deepEqual([options.env.DRAKONC_SHELL_REMOVE_AFTER_PID, options.env.DRAKONC_SHELL_REMOVE_FILES, options.env.DRAKONC_SHELL_REMOVE_DIRECTORIES, options.env.Path],
 		["4242", files.join("\n"), directories.join("\n"), "C:\\Windows"]);
 	for (const bad of [{ pid: 0 }, { files: ["relative\\node.exe"] }, { directories: ["\\\\server\\share"] }, { env: {} }, { last: "relative\\marker" },
 		// SystemRoot reaches cmd's command line (the PowerShell path): a cmd metacharacter refuses.
@@ -1193,8 +1193,8 @@ test("setupEnvironment runs setup with our Node and npm, then the version's Pi, 
 	const layout = prefixLayout({ platform: "linux", env: {}, home: "/home/me" });
 	const env = setupEnvironment(layout, { platform: "linux", id: "4.1.0-1.0.2", env: { PATH: "/usr/local/bin:/usr/bin", HOME: "/home/me",
 		XDG_CONFIG_HOME: "/home/me/.config", npm_config_registry: "https://user.example", NODE_OPTIONS: "--require /x.js", PNPM_HOME: "/p",
-		GENTLE_BOOTSTRAP_TOOLS: "/t", GENTLE_INSTALL_PNPM_ENTRY: "/e", NPM_TOKEN: "t" } });
-	const root = "/home/me/.gentle-shell";
+		DRAKONC_BOOTSTRAP_TOOLS: "/t", DRAKONC_INSTALL_PNPM_ENTRY: "/e", NPM_TOKEN: "t" } });
+	const root = "/home/me/.drakonc-shell";
 	assert.equal(env.PATH, `${root}/runtime/node-${NODE}/bin:${root}/versions/4.1.0-1.0.2/node_modules/.bin:/usr/local/bin:/usr/bin`);
 	assert.equal(env.XDG_CONFIG_HOME, "/home/me/.config");
 	// npm reads the filtered prefix npmrc and writes its global prefix and cache inside the prefix.
@@ -1203,18 +1203,18 @@ test("setupEnvironment runs setup with our Node and npm, then the version's Pi, 
 	assert.equal(env.npm_config_prefix, `${root}/npm/prefix`);
 	assert.equal(env.npm_config_cache, `${root}/npm/cache`);
 	assert.equal(env.npm_config_update_notifier, "false");
-	for (const key of ["npm_config_registry", "NODE_OPTIONS", "PNPM_HOME", "GENTLE_BOOTSTRAP_TOOLS", "GENTLE_INSTALL_PNPM_ENTRY"]) assert.equal(env[key], undefined, key);
+	for (const key of ["npm_config_registry", "NODE_OPTIONS", "PNPM_HOME", "DRAKONC_BOOTSTRAP_TOOLS", "DRAKONC_INSTALL_PNPM_ENTRY"]) assert.equal(env[key], undefined, key);
 	assert.equal(env.NPM_TOKEN, "t");
 	assert.equal(env.HOME, "/home/me");
 	const windows = setupEnvironment(prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\L" }, home: "C:\\U" }),
 		{ platform: "win32", id: "4.1.0-1.0.2", env: { Path: "C:\\Windows" } });
-	assert.equal(windows.Path, `C:\\L\\gentle-shell\\runtime\\node-${NODE};C:\\L\\gentle-shell\\versions\\4.1.0-1.0.2\\node_modules\\.bin;C:\\Windows`);
+	assert.equal(windows.Path, `C:\\L\\drakonc-shell\\runtime\\node-${NODE};C:\\L\\drakonc-shell\\versions\\4.1.0-1.0.2\\node_modules\\.bin;C:\\Windows`);
 	assert.throws(() => setupEnvironment(layout, { platform: "linux", id: "../x", env: {} }), /Unsafe version id/);
 });
 
-// T2 (S5, S6, S8): `gentle-shell upgrade` in a bundled install.
+// T2 (S5, S6, S8): `drakonc-shell upgrade` in a bundled install.
 const LATEST = { shell: "4.2.0", pi: "1.0.2" };
-const releaseModuleFile = (layout: ReturnType<typeof prefixLayout>, id: string) => join(layout.versions, id, "node_modules", "gentle-pi", "scripts", "bundled-install.mjs");
+const releaseModuleFile = (layout: ReturnType<typeof prefixLayout>, id: string) => join(layout.versions, id, "node_modules", "drakonc-pi", "scripts", "bundled-install.mjs");
 function upgradeAdapters(layout: ReturnType<typeof prefixLayout>, { release = LATEST, status = "published", reported = release, module = {} as Record<string, unknown> } = {}) {
 	const calls: { ensureRuntime: unknown[]; verify: { command: string; args: string[]; env: Record<string, string> }[]; loaded: string[]; launchers: unknown[] } =
 		{ ensureRuntime: [], verify: [], loaded: [], launchers: [] };
@@ -1228,7 +1228,7 @@ function upgradeAdapters(layout: ReturnType<typeof prefixLayout>, { release = LA
 		load: async (file: string) => { calls.loaded.push(file); return releaseModule; },
 		run: async (command: string, args: string[], options: { env: Record<string, string> }) => {
 			calls.verify.push({ command, args, env: options.env });
-			return { status: 0, stdout: `gentle-shell ${reported.shell}\npi ${reported.pi}\nhome isolated /x\n`, stderr: "" };
+			return { status: 0, stdout: `drakonc-shell ${reported.shell}\npi ${reported.pi}\nhome isolated /x\n`, stderr: "" };
 		},
 	};
 	return { adapters, calls };
@@ -1244,7 +1244,7 @@ posixTest("upgradeBundled installs the latest release beside the active one, ver
 	const { user, layout } = await activeInstall();
 	const { adapters, calls } = upgradeAdapters(layout);
 	const lines: string[] = [];
-	const result = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: { PATH: "/usr/bin", GENTLE_SHELL_PI: "/x/pi", PI_CODING_AGENT_DIR: "/x" },
+	const result = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: { PATH: "/usr/bin", DRAKONC_SHELL_PI: "/x/pi", PI_CODING_AGENT_DIR: "/x" },
 		adapters, out: (line: string) => lines.push(line) });
 	assert.deepEqual(result, { id: "4.2.0-1.0.2", changed: true, previous: "4.1.0-1.0.1", removed: ["4.0.0-1.0.0"] });
 	assert.equal(activeVersion(layout), "4.2.0-1.0.2");
@@ -1253,12 +1253,12 @@ posixTest("upgradeBundled installs the latest release beside the active one, ver
 	assert.deepEqual(calls.loaded, [releaseModuleFile(layout, "4.2.0-1.0.2")]);
 	const [verify] = calls.verify;
 	assert.equal(verify.command, layout.node);
-	assert.deepEqual(verify.args, [join(layout.versions, "4.2.0-1.0.2", "node_modules", "gentle-pi", "bin", "gentle-shell.mjs"), "--version"]);
-	assert.equal(verify.env.GENTLE_SHELL_PI, undefined);
+	assert.deepEqual(verify.args, [join(layout.versions, "4.2.0-1.0.2", "node_modules", "drakonc-pi", "bin", "drakonc-shell.mjs"), "--version"]);
+	assert.equal(verify.env.DRAKONC_SHELL_PI, undefined);
 	assert.equal(verify.env.PI_CODING_AGENT_DIR, undefined);
 	// The check runs that version in bundled mode, as if current named it (only for --version).
-	assert.equal(verify.env.GENTLE_SHELL_VERIFY_VERSION, "4.2.0-1.0.2");
-	assert.match(lines.join("\n"), /Gentle Shell 4\.2\.0 with Pi 1\.0\.2.*4\.1\.0-1\.0\.1.*--rollback/s);
+	assert.equal(verify.env.DRAKONC_SHELL_VERIFY_VERSION, "4.2.0-1.0.2");
+	assert.match(lines.join("\n"), /Drakonc Shell 4\.2\.0 with Pi 1\.0\.2.*4\.1\.0-1\.0\.1.*--rollback/s);
 });
 
 posixTest("upgradeBundled changes nothing when the latest release is already current", async () => {
@@ -1268,7 +1268,7 @@ posixTest("upgradeBundled changes nothing when the latest release is already cur
 	const result = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters, out: (line: string) => lines.push(line) });
 	assert.deepEqual(result, { id: "4.1.0-1.0.1", changed: false });
 	assert.deepEqual([calls.ensureRuntime.length, calls.verify.length, calls.loaded.length], [0, 0, 0]);
-	assert.match(lines.join("\n"), /Gentle Shell 4\.1\.0 with Pi 1\.0\.1 is already current/);
+	assert.match(lines.join("\n"), /Drakonc Shell 4\.1\.0 with Pi 1\.0\.1 is already current/);
 	assert.deepEqual(readdirSync(layout.versions).sort(), ["4.0.0-1.0.0", "4.1.0-1.0.1"]);
 });
 
@@ -1331,10 +1331,10 @@ posixTest("upgradeBundled reports success with a warning when only pruning fails
 		out: (line: string) => lines.push(line) });
 	assert.deepEqual(result, { id: "4.2.0-1.0.2", changed: true, previous: "4.1.0-1.0.1", removed: [], warning: "older versions were not removed (EBUSY)" });
 	assert.equal(activeVersion(layout), "4.2.0-1.0.2");
-	assert.match(lines.join("\n"), /Upgraded to Gentle Shell 4\.2\.0.*warning: older versions were not removed \(EBUSY\)/s);
+	assert.match(lines.join("\n"), /Upgraded to Drakonc Shell 4\.2\.0.*warning: older versions were not removed \(EBUSY\)/s);
 });
 
-posixTest("upgradeBundled never downgrades a newer Pi installed with update --latest, and a newer Gentle Shell release still upgrades", async () => {
+posixTest("upgradeBundled never downgrades a newer Pi installed with update --latest, and a newer Drakonc Shell release still upgrades", async () => {
 	const { user, layout } = await activeInstall();
 	await installed(layout, [["4.1.0", "1.0.5"]]);
 	activateVersion(layout, "4.1.0-1.0.5");
@@ -1342,7 +1342,7 @@ posixTest("upgradeBundled never downgrades a newer Pi installed with update --la
 	const lines: string[] = [];
 	const result = await upgradeBundled({ layout, home: user, platform: "darwin", arch: "arm64", env: {}, adapters: same.adapters, out: (line: string) => lines.push(line) });
 	assert.deepEqual(result, { id: "4.1.0-1.0.5", changed: false });
-	assert.deepEqual(lines, ["Gentle Shell 4.1.0 is current; Pi 1.0.5 is newer than this release's verified Pi 1.0.1."]);
+	assert.deepEqual(lines, ["Drakonc Shell 4.1.0 is current; Pi 1.0.5 is newer than this release's verified Pi 1.0.1."]);
 	assert.deepEqual([same.calls.ensureRuntime.length, same.calls.verify.length, same.calls.loaded.length], [0, 0, 0]);
 	assert.equal(activeVersion(layout), "4.1.0-1.0.5");
 	const newer = upgradeAdapters(layout, { reported: { shell: "4.2.0", pi: "1.0.5" } });
@@ -1355,7 +1355,7 @@ posixTest("upgradeBundled never downgrades a newer Pi installed with update --la
 	assert.deepEqual(pnpm.runs[0].args.slice(1), ["install", "--no-frozen-lockfile"]);
 	assert.equal(existsSync(join(layout.versions, upgraded.id, "pnpm-lock.yaml")), false);
 	assert.match(output[0], /warning:.*Pi 1\.0\.5.*verified Pi 1\.0\.2.*without.*lockfile/);
-	assert.match(output[1], /Upgraded to Gentle Shell 4\.2\.0 with Pi 1\.0\.5/);
+	assert.match(output[1], /Upgraded to Drakonc Shell 4\.2\.0 with Pi 1\.0\.5/);
 });
 
 posixTest("a failed new Shell installation with preserved newer Pi leaves current unchanged", async () => {
@@ -1418,15 +1418,15 @@ posixTest("upgradePiLatest warns, installs the newest Pi without a lockfile besi
 	assert.deepEqual(result, { id: "4.1.0-1.0.5", changed: true, previous: "4.1.0-1.0.1", removed: ["4.0.0-1.0.0"] });
 	assert.equal(activeVersion(layout), "4.1.0-1.0.5");
 	assert.deepEqual(lines, [
-		"warning: Pi 1.0.5 is newer than the Pi verified for this Gentle Shell release (1.0.1); it installs without the release's verified lockfile, and Gentle Shell features that rely on audited Pi internals (such as the Vim editor) may turn off until a Gentle Shell release verifies it.",
+		"warning: Pi 1.0.5 is newer than the Pi verified for this Drakonc Shell release (1.0.1); it installs without the release's verified lockfile, and Drakonc Shell features that rely on audited Pi internals (such as the Vim editor) may turn off until a Drakonc Shell release verifies it.",
 		"<install>",
-		"Installed Pi 1.0.5 with Gentle Shell 4.1.0 (from 4.1.0-1.0.1). Run 'gentle-shell upgrade --rollback' to switch back.",
+		"Installed Pi 1.0.5 with Drakonc Shell 4.1.0 (from 4.1.0-1.0.1). Run 'drakonc-shell upgrade --rollback' to switch back.",
 	]);
 	const folder = join(layout.versions, "4.1.0-1.0.5");
 	assert.equal(existsSync(join(folder, "pnpm-lock.yaml")), false);
 	for (const [name, text] of Object.entries(distributionFiles({ shell: "4.1.0", pi: "1.0.5" }))) assert.equal(readFileSync(join(folder, name), "utf8"), text, name);
 	assert.deepEqual(calls.loaded, [releaseModuleFile(layout, "4.1.0-1.0.5")]);
-	assert.equal(calls.verify[0].env.GENTLE_SHELL_VERIFY_VERSION, "4.1.0-1.0.5");
+	assert.equal(calls.verify[0].env.DRAKONC_SHELL_VERIFY_VERSION, "4.1.0-1.0.5");
 	assert.equal(pnpm.runs.length, 0);
 });
 
@@ -1493,7 +1493,7 @@ posixTest("rollbackBundled switches current to the kept previous version with it
 	const single = claimed();
 	await installed(single.layout, [["4.0.0", "1.0.0"]]);
 	activateVersion(single.layout, "4.0.0-1.0.0");
-	await assert.rejects(rollbackBundled({ ...options, layout: single.layout, home: single.home }), /No previous Gentle Shell version/);
+	await assert.rejects(rollbackBundled({ ...options, layout: single.layout, home: single.home }), /No previous Drakonc Shell version/);
 	assert.equal(activeVersion(single.layout), "4.0.0-1.0.0");
 });
 
@@ -1515,14 +1515,14 @@ posixTest("rollbackBundled fails closed without the target's own module and puts
 
 test("bundledNpmCommand runs our npm through an entry named npm, with only the prefix configuration", () => {
 	const layout = prefixLayout({ platform: "linux", env: {}, home: "/home/me" });
-	const root = "/home/me/.gentle-shell";
-	assert.deepEqual(bundledNpmCommand(layout), [`${root}/runtime/node-${NODE}/bin/node`, `${root}/runtime/node-${NODE}/gentle-shell/npm`,
+	const root = "/home/me/.drakonc-shell";
+	assert.deepEqual(bundledNpmCommand(layout), [`${root}/runtime/node-${NODE}/bin/node`, `${root}/runtime/node-${NODE}/drakonc-shell/npm`,
 		`--userconfig=${root}/pnpm/config/npmrc`, `--globalconfig=${root}/npm/npmrc`, `--cache=${root}/npm/cache`, "--update-notifier=false"]);
 	// A --prefix flag would also set npm's local prefix: Pi's git-extension
 	// install (npm install in the clone, no --prefix of its own) would land there.
 	assert.equal(bundledNpmCommand(layout).some((part) => /^--prefix(?:=|$)/.test(part)), false);
 	const windows = bundledNpmCommand(prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\L" }, home: "C:\\U" }));
-	assert.deepEqual(windows.slice(0, 2), [`C:\\L\\gentle-shell\\runtime\\node-${NODE}\\node.exe`, `C:\\L\\gentle-shell\\runtime\\node-${NODE}\\gentle-shell\\npm`]);
+	assert.deepEqual(windows.slice(0, 2), [`C:\\L\\drakonc-shell\\runtime\\node-${NODE}\\node.exe`, `C:\\L\\drakonc-shell\\runtime\\node-${NODE}\\drakonc-shell\\npm`]);
 });
 
 // N1: Pi 1.1.0 names the package manager from the basenames in npmCommand

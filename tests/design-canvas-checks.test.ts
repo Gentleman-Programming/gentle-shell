@@ -647,9 +647,9 @@ test("index.html has the tabs, the Quality panel and the Show icon; canvas.css s
 });
 
 test("the docs describe the Quality tab, Show and the checks' limits in the heuristics note", () => {
-	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
-	const section = docs.slice(docs.indexOf("### Gentle Design"), docs.indexOf("### Gentle Music"));
+	const docs = readFileSync(fileURLToPath(new URL("../docs/drakonc-shell.md", import.meta.url)), "utf8");
+	const section = docs.slice(docs.indexOf("### Drakonc Design"), docs.indexOf("### Drakonc Music"));
 	assert.ok(section.includes("The checks run inside the artboard's own frame, so they describe the artboard at the size it is shown, and they are heuristics, not a full audit: they miss keyboard, focus-order, motion and screen-reader problems, each list is capped (20 problems and 10 advice items per check, with the full count reported), and a page with more than 3000 elements is checked only up to its 3000th, so its counts cover that part only."));
 	assert.ok(section.includes("The ring follows the element as its page scrolls"), "the docs say the ring follows the element");
-	for (const words of ["**Quality**", "**Comments**", "**Show**", "**Ask the agent to fix**", "`Accessible ✓`"]) assert.ok(section.includes(words), `the Gentle Design docs mention ${words}`);
+	for (const words of ["**Quality**", "**Comments**", "**Show**", "**Ask the agent to fix**", "`Accessible ✓`"]) assert.ok(section.includes(words), `the Drakonc Design docs mention ${words}`);
 });

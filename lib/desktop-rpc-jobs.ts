@@ -1,6 +1,6 @@
-// Gentle Desktop background-jobs slice: the pure contract shared by the
+// Drakonc Desktop background-jobs slice: the pure contract shared by the
 // Desktop bridge (`lib/desktop-jobs-service.ts`) and the owner seam inside
-// `extensions/gentle-agents.ts`.
+// `extensions/drakonc-agents.ts`.
 //
 // Nothing here starts, stops, or polls a job. It only names the wire shapes,
 // projects the owner's actual `JobRecord` state into the safe Desktop
@@ -20,10 +20,10 @@ export const DESKTOP_JOBS_EVENT = "jobs_update";
 export const DESKTOP_JOBS_EVENTS = [DESKTOP_JOBS_EVENT] as const;
 
 // The versioned owner-service discovery seam (the jobs analogue of the usage
-// `gentle:desktop:usage-service` adapter). The schema string guards the adapter
+// `drakonc:desktop:usage-service` adapter). The schema string guards the adapter
 // against drift; the bridge ignores any responder whose shape does not match.
-export const DESKTOP_JOBS_SERVICE_SCHEMA = "gentle-pi.desktop-jobs-service/v1";
-export const DESKTOP_JOBS_SERVICE_CHANNEL = "gentle:desktop:jobs-service";
+export const DESKTOP_JOBS_SERVICE_SCHEMA = "drakonc-pi.desktop-jobs-service/v1";
+export const DESKTOP_JOBS_SERVICE_CHANNEL = "drakonc:desktop:jobs-service";
 
 /** Upper bound on the number of jobs one list answer carries (running + recent finished). */
 export const DESKTOP_JOBS_LIST_LIMIT = 50;

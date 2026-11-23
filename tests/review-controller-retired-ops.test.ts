@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
 function scratchDir(prefix: string): string {
 	const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -12,7 +12,7 @@ function scratchDir(prefix: string): string {
 }
 
 async function runRetiredOperation(parameters: Record<string, unknown>): Promise<Record<string, unknown>> {
-	const cwd = scratchDir("gentle-pi-retired-ops-");
+	const cwd = scratchDir("drakonc-pi-retired-ops-");
 	return await __testing.executeReviewControllerOperation(parameters, cwd, null);
 }
 
@@ -24,8 +24,8 @@ function assertRetiredEnvelope(details: Record<string, unknown>, operation: stri
 	assert.equal(details.mutation_outcome, "none");
 	assert.match(String(details.reason), /retired/i);
 	assert.match(String(details.reason), /bundle/i);
-	assert.match(String(details.next_action), /gentle-ai review/);
-	assert.match(String(details.next_action), /gentle-ai\/reviews/);
+	assert.match(String(details.next_action), /drakonc-ai review/);
+	assert.match(String(details.next_action), /drakonc-ai\/reviews/);
 }
 
 test("EXPORT is retired: returns a structured not-supported envelope without touching disk", async () => {

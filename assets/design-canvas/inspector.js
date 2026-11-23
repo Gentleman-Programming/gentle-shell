@@ -1,4 +1,4 @@
-// Gentle Design artboard inspector, injected by the canvas server into every
+// Drakonc Design artboard inspector, injected by the canvas server into every
 // artboard. In comment mode it highlights the hovered element and reports the
 // clicked one to the canvas; otherwise it only forwards canvas zoom and pan.
 // It also reports where each commented element is, so the canvas can pin it,

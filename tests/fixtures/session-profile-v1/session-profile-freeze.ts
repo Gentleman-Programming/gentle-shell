@@ -1,6 +1,6 @@
-// Inherited profile freeze (gentle-shell#1064 slice 3b-ii).
+// Inherited profile freeze (drakonc-shell#1064 slice 3b-ii).
 //
-// A parent session that never pressed Enter in `/gentle:profiles` resolves the
+// A parent session that never pressed Enter in `/drakonc:profiles` resolves the
 // shared defaults `p → P → G` (local pin, repository declaration, global
 // `active` in profiles.json) ONCE, at startup, and keeps that snapshot with its
 // origin. Changing a default later only affects new sessions, exactly like Pi's
@@ -13,7 +13,7 @@
 //
 //   explicit Enter binding  →  frozen inherited snapshot  →  live p → P → G
 //
-// The live resolution applies only in `follow` mode (GENTLE_PI_PROFILE_FOLLOW=1,
+// The live resolution applies only in `follow` mode (DRAKONC_PI_PROFILE_FOLLOW=1,
 // for CI and headless runs), in subagent children (their routing comes from the
 // parent through --model), and when no session id is available. In `follow`
 // mode the orchestrator is still chosen at startup while children follow later
@@ -24,7 +24,7 @@
 // module once per extension entrypoint. A resumed session (`--resume`,
 // `--continue`, `--session`) therefore freezes again from the current defaults,
 // and its drift memory starts empty. Persisting the freeze as a
-// `gentle-pi.session-profile/v1` entry with origin `local | repo | global` is
+// `drakonc-pi.session-profile/v1` entry with origin `local | repo | global` is
 // the integration point with slice 3b-i.
 import { createHash } from "node:crypto";
 import { normalizeModelConfig, type AgentModelConfig } from "../../../lib/model-routing-authority.ts";
@@ -34,7 +34,7 @@ import { readSessionProfileBinding } from "./session-profile-binding.ts";
 import type { WorktreeIdentity, WorktreeResolver } from "../../../lib/session-worktree-registry.ts";
 
 /** Opt-in that keeps the live `p → P → G` resolution instead of freezing it at startup. */
-export const PROFILE_FOLLOW_ENV = "GENTLE_PI_PROFILE_FOLLOW";
+export const PROFILE_FOLLOW_ENV = "DRAKONC_PI_PROFILE_FOLLOW";
 
 /** Which shared default supplied an inherited profile. */
 export type InheritedProfileOrigin = "local" | "repo" | "global";
@@ -78,7 +78,7 @@ interface FreezeRegistry {
 	notified: Map<string, Set<string>>;
 }
 
-const freezeRegistryKey = Symbol.for("gentle-pi:session-profile-freeze");
+const freezeRegistryKey = Symbol.for("drakonc-pi:session-profile-freeze");
 
 function registry(): FreezeRegistry {
 	const holder = globalThis as { [freezeRegistryKey]?: FreezeRegistry };
@@ -103,7 +103,7 @@ export function profileFollowEnabled(env: NodeJS.ProcessEnv = process.env): bool
 }
 
 function isChildSession(env: NodeJS.ProcessEnv): boolean {
-	return env.GENTLE_PI_AGENTS_CHILD === "1";
+	return env.DRAKONC_PI_AGENTS_CHILD === "1";
 }
 
 /**
@@ -252,10 +252,10 @@ export function inheritedProfileDriftNotice(options: SessionProfileOptions): str
 	if (seen.has(key)) return undefined;
 	seen.add(key);
 	notified.set(options.sessionId!, seen);
-	return `el Gentleman: the default profile changed to ${describe(current)}, this session keeps ${describe(resolution.profile)}. Open /gentle:profiles and choose Use in this session to adopt one.`;
+	return `el Drakoncman: the default profile changed to ${describe(current)}, this session keeps ${describe(resolution.profile)}. Open /drakonc:profiles and choose Use in this session to adopt one.`;
 }
 
-// gentle-shell#2228: an explicit binding re-copies the profile definition at
+// drakonc-shell#2228: an explicit binding re-copies the profile definition at
 // selection, so later edits to that entry in profiles.json no-op silently until
 // the operator re-Enters. The same once-per-change fingerprint machine as the
 // inherited notice names the drift; the comparison never adopts the edit.
@@ -280,7 +280,7 @@ function bindingDefinitionDriftNotice(
 	if (seen.has(key)) return undefined;
 	seen.add(key);
 	notified.set(options.sessionId!, seen);
-	return `el Gentleman: the profile definition changed to "${resolution.name}" (profiles.json), this session keeps the binding from selection. Open /gentle:profiles and choose Use in this session to adopt one.`;
+	return `el Drakoncman: the profile definition changed to "${resolution.name}" (profiles.json), this session keeps the binding from selection. Open /drakonc:profiles and choose Use in this session to adopt one.`;
 }
 
 /** Testing-only reset of every frozen snapshot and drift memory. */

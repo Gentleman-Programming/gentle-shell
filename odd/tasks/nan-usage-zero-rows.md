@@ -34,7 +34,7 @@ card that has the least of it.
 - `odd/tasks/nan-usage-zero-rows.md`
 - `lib/shell-bar.ts`
 - `tests/shell-bar.test.ts`
-- `docs/gentle-shell.md`
+- `docs/drakonc-shell.md`
 
 ## Tasks
 
@@ -67,7 +67,7 @@ card that has the least of it.
   `sidebar keeps the Usage group when nothing was consumed`,
   `sidebar hides exactly the rows that would print 0%, rounding included`.
 - NAN-Z2 GREEN: same command with `lib/shell-bar.ts` restored — 25 passed, 0 failed.
-- Focused: `node --experimental-strip-types --test tests/shell-bar.test.ts tests/shell-usage.test.ts tests/shell-usage-view.test.ts tests/gentle-shell.test.ts` — 93 passed, 0 failed.
+- Focused: `node --experimental-strip-types --test tests/shell-bar.test.ts tests/shell-usage.test.ts tests/shell-usage-view.test.ts tests/drakonc-shell.test.ts` — 93 passed, 0 failed.
 - Full suite: `pnpm test` — exit 0, 2697 tests, 2659 passed, 0 failed, 38 skipped; provider contract mirror check passed and the runtime harness ran clean.
 - Typecheck: `pnpm run typecheck` — exit 0, 197 recorded diagnostics, no regressions; 2 file/code pairs improved.
 - Commits: the work unit is the commit that carries this document — `feat(shell): hide the allowance rows that consumed nothing`.
@@ -76,5 +76,5 @@ card that has the least of it.
 ## Next step
 
 This commit closes the last work unit of the feature on `feat/nan-usage-sidebar`. The native review and
-the PR are the user's decisions; the branch is delivered through the `egdev6/gentle-shell` fork because
+the PR are the user's decisions; the branch is delivered through the `egdev6/drakonc-shell` fork because
 this checkout's account has pull-only access to the upstream repository.

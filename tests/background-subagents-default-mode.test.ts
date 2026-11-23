@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AGENT_MODE } from "../lib/agents-config.ts";
-import { resolveDefaultSubagentMode } from "../extensions/gentle-agents.ts";
+import { resolveDefaultSubagentMode } from "../extensions/drakonc-agents.ts";
 
 // ---------------------------------------------------------------------------
 // resolveDefaultSubagentMode: the runtime default for subagent_run when
@@ -12,7 +12,7 @@ import { resolveDefaultSubagentMode } from "../extensions/gentle-agents.ts";
 // modes (`pi -p` and `pi --mode json`) dispose the runtime once the prompt
 // returns, before a background result can be delivered, so they must keep
 // the configured default even when the policy is on (see the single-shot
-// guard in gentle-agents.ts `launch`).
+// guard in drakonc-agents.ts `launch`).
 // ---------------------------------------------------------------------------
 
 test("policy on + interactive parent -> background", () => {
@@ -118,7 +118,7 @@ test("parentMode undefined with policy on is treated as not print -> background"
 });
 
 // Explicit request mode always wins over the resolved default: this is
-// asserted at the wiring site (extensions/gentle-agents.ts `run` and
+// asserted at the wiring site (extensions/drakonc-agents.ts `run` and
 // `continue` tools), not inside this pure helper, which has no notion of
 // "explicit" at all — it is called only when params.mode and agent.mode are
 // both absent. tests/agents-integration.test.ts does not currently exercise

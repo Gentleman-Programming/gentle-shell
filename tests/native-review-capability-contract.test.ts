@@ -96,7 +96,7 @@ test("2.4.0 repeats 2.2.3 because the START envelope Pi consumes still omits ris
 	// Ground-truthed against the published v2.4.0 linux_amd64 release binary
 	// (sha256:0be4467... , captured 2026-08-17), not against a main build:
 	//
-	//   mode      `gentle-ai review mode status --json` still answers
+	//   mode      `drakonc-ai review mode status --json` still answers
 	//             `gentle-ai.rdd-mode-status/v1`. The RESOLVED value moved --
 	//             an unconfigured install now reports effective "off" with
 	//             source "default" instead of "on" -- but that is a decision
@@ -104,7 +104,7 @@ test("2.4.0 repeats 2.2.3 because the START envelope Pi consumes still omits ris
 	//   delivery  `review validate --gate pre-commit` still answers
 	//             `gentle-ai.review-gate-result/v1` with
 	//             `delivery: "disabled/unmanaged"` at exit 0. RDD is on by
-	//             default again since gentle-ai v4.0.0, so this is the answer
+	//             default again since drakonc-ai v4.0.0, so this is the answer
 	//             for an install that turned review off, and the column still
 	//             matters.
 	//
@@ -126,7 +126,7 @@ test("2.4.0 repeats 2.2.3 because the START envelope Pi consumes still omits ris
 
 test("2.5.0-rc.3 repeats 2.4.0 because the negotiated lane Pi consumes is unchanged", () => {
 	// Ground-truthed by driving the exact v2.5.0-rc.3 tagged build through the
-	// gentle-ai-bench driven journey corpus (exit 0), which exercises the
+	// drakonc-ai-bench driven journey corpus (exit 0), which exercises the
 	// start/status/capture/validate/mode/delivery lifecycles Pi consumes. The
 	// lane now advertises capabilities/v2.3 and the reviewing START is the
 	// `start/v4` continuation envelope that #499 already decodes; the closed
@@ -195,7 +195,7 @@ test("2.8.0 repeats 2.7.0 because the negotiated lane Pi consumes is unchanged",
 });
 
 test("2.8.1 repeats 2.8.0 because the negotiated lane Pi consumes is unchanged", () => {
-	// v2.8.1 only changed runtime telemetry model attribution (gentle-ai#4536);
+	// v2.8.1 only changed runtime telemetry model attribution (drakonc-ai#4536);
 	// the closed fields Pi consumes did not change between 2.8.0 and 2.8.1, so
 	// this row repeats 2.8.0. riskEvidence and hint remain dark because neither
 	// is proven to reach Pi's negotiated START path.
@@ -224,7 +224,7 @@ test("2.9.0 repeats 2.8.2 because the negotiated lane Pi consumes is unchanged",
 	// reviewer Task wrapper decoding (#4545), and Engram protocol asset
 	// wording (#4179). Diffing contracts/review-integration/v2 and
 	// contracts/review-provider-contract between the v2.8.2 and v2.9.0 tags
-	// in the gentle-ai source tree showed zero byte changes, so this row
+	// in the drakonc-ai source tree showed zero byte changes, so this row
 	// repeats 2.8.2. riskEvidence and hint remain dark because neither is
 	// proven to reach Pi's negotiated START path.
 	const contract = NATIVE_CLI_CONTRACTS["2.9.0"] as Record<string, boolean>;
@@ -238,7 +238,7 @@ test("2.9.1 repeats 2.9.0 because the negotiated lane Pi consumes is unchanged",
 	// deriving Claude Code SDD dispatch authority from the session transcript
 	// (#4575, #4551). Diffing contracts/review-integration/v2 and
 	// contracts/review-provider-contract between the v2.9.0 and v2.9.1 tags
-	// in the gentle-ai source tree showed zero byte changes, so this row
+	// in the drakonc-ai source tree showed zero byte changes, so this row
 	// repeats 2.9.0. riskEvidence and hint remain dark because neither is
 	// proven to reach Pi's negotiated START path.
 	const contract = NATIVE_CLI_CONTRACTS["2.9.1"] as Record<string, boolean>;
@@ -249,10 +249,10 @@ test("2.9.1 repeats 2.9.0 because the negotiated lane Pi consumes is unchanged",
 
 test("3.0.0 repeats 2.9.1 because the negotiated lane Pi consumes is unchanged", () => {
 	// v3.0.0 shipped ODD as the orchestrator's mandatory default protocol and
-	// integrated the simplified SDD workflow into it (gentle-ai #4642, #4644),
+	// integrated the simplified SDD workflow into it (drakonc-ai #4642, #4644),
 	// with the provider contract byte-frozen at 1.2.0. Diffing
 	// contracts/review-integration/v2 and contracts/review-provider-contract
-	// between the v2.9.1 and v3.0.0 tags in the gentle-ai source tree showed
+	// between the v2.9.1 and v3.0.0 tags in the drakonc-ai source tree showed
 	// zero byte changes, so this row repeats 2.9.1. riskEvidence and hint
 	// remain dark because neither is proven to reach Pi's negotiated START
 	// path.
@@ -264,10 +264,10 @@ test("3.0.0 repeats 2.9.1 because the negotiated lane Pi consumes is unchanged",
 
 test("3.0.1 repeats 3.0.0 because the negotiated lane Pi consumes is unchanged", () => {
 	// v3.0.1 moved the Go module path to
-	// github.com/gentleman-programming/gentle-ai/v3 with no contract change
-	// (gentle-ai #4683). Diffing contracts/review-integration/v2 and
+	// github.com/drakoncman-programming/drakonc-ai/v3 with no contract change
+	// (drakonc-ai #4683). Diffing contracts/review-integration/v2 and
 	// contracts/review-provider-contract between the v3.0.0 and v3.0.1 tags
-	// in the gentle-ai source tree showed zero byte changes, so this row
+	// in the drakonc-ai source tree showed zero byte changes, so this row
 	// repeats 3.0.0. riskEvidence and hint remain dark because neither is
 	// proven to reach Pi's negotiated START path.
 	const contract = NATIVE_CLI_CONTRACTS["3.0.1"] as Record<string, boolean>;
@@ -277,10 +277,10 @@ test("3.0.1 repeats 3.0.0 because the negotiated lane Pi consumes is unchanged",
 });
 
 test("3.1.0 repeats 3.0.1 because the negotiated lane Pi consumes is unchanged", () => {
-	// v3.1.0 changed the ODD orchestrator contract only (gentle-ai #4714).
+	// v3.1.0 changed the ODD orchestrator contract only (drakonc-ai #4714).
 	// Diffing contracts/review-integration/v2 and
 	// contracts/review-provider-contract between the v3.0.2 and v3.1.0 tags
-	// in the gentle-ai source tree showed zero byte changes (provider contract
+	// in the drakonc-ai source tree showed zero byte changes (provider contract
 	// stays 1.2.0), so this row repeats 3.0.1. riskEvidence and hint remain
 	// dark because neither is proven to reach Pi's negotiated START path.
 	const contract = NATIVE_CLI_CONTRACTS["3.1.0"] as Record<string, boolean>;
@@ -290,10 +290,10 @@ test("3.1.0 repeats 3.0.1 because the negotiated lane Pi consumes is unchanged",
 });
 
 test("3.2.1 repeats 3.1.0 because the negotiated lane Pi consumes is unchanged", () => {
-	// v3.2.1 changed the ODD orchestrator contract only (gentle-ai #4714
+	// v3.2.1 changed the ODD orchestrator contract only (drakonc-ai #4714
 	// follow-up). Diffing contracts/review-integration/v2 and
 	// contracts/review-provider-contract between the v3.1.0 and v3.2.1 tags
-	// in the gentle-ai source tree showed zero byte changes (provider contract
+	// in the drakonc-ai source tree showed zero byte changes (provider contract
 	// stays 1.2.0), so this row repeats 3.1.0. riskEvidence and hint remain
 	// dark because neither is proven to reach Pi's negotiated START path.
 	const contract = NATIVE_CLI_CONTRACTS["3.2.1"] as Record<string, boolean>;
@@ -303,11 +303,11 @@ test("3.2.1 repeats 3.1.0 because the negotiated lane Pi consumes is unchanged",
 });
 
 test("3.4.0 repeats 3.2.1 because the negotiated lane Pi consumes is unchanged", () => {
-	// v3.4.0 (gentle-pi never pinned the intervening v3.3.0 tag, so it gets no
+	// v3.4.0 (drakonc-pi never pinned the intervening v3.3.0 tag, so it gets no
 	// row) added capabilities/v2.6, status/v8-v9, and the `review assess`
 	// review_due/review_due_reason/next_transition fields. Diffing
 	// contracts/review-integration/v2 and contracts/review-provider-contract
-	// between the v3.2.1 and v3.4.0 tags in the gentle-ai source tree showed
+	// between the v3.2.1 and v3.4.0 tags in the drakonc-ai source tree showed
 	// the provider contract stays byte-identical at 1.2.0, and every
 	// review-integration/v2 change is an additive superset that
 	// decodeReviewStatusV3 and the capabilities negotiator already accept

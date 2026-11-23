@@ -6,8 +6,8 @@ import test, { type TestContext } from "node:test";
 import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import installGentleTodo from "../extensions/gentle-todo.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
+import installDrakoncTodo from "../extensions/drakonc-todo.ts";
 
 // cost-speed-painpoints S15 (P1b). The todo hook added two hidden messages that broke the
 // request prefix: the reminder was request-local (in request k, gone in k+1) and the snapshot
@@ -15,7 +15,7 @@ import installGentleTodo from "../extensions/gentle-todo.ts";
 // request k+1 starts with exactly the messages of request k, while the model still receives
 // the same reminder and snapshot at the same moments.
 //
-// The loop drives the real gentle-ai and gentle-todo hooks the way Pi 1.5.2 does: `context`
+// The loop drives the real drakonc-ai and drakonc-todo hooks the way Pi 1.5.2 does: `context`
 // handlers see the conversation without system messages (a changed list gets one replayed
 // system head, runner.js restoreSystemMessages), then `context_with_system` handlers see the
 // full transcript. A custom message sent with `triggerTurn: false` while streaming is stamped
@@ -46,12 +46,12 @@ function session(t: TestContext, transcript: Message[] = [{ role: "system", cont
 			pending.push({ role: "custom", customType: message.customType, content: message.content, display: message.display, details: message.details, timestamp: now() });
 		},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({
+	createDrakoncAiExtension({
 		nativeReviewCli: null,
-		processEnv: { GENTLE_PI_CONFIG_HOME: join(cwd, "config"), GENTLE_PI_AGENTS_CHILD: "0" },
+		processEnv: { DRAKONC_PI_CONFIG_HOME: join(cwd, "config"), DRAKONC_PI_AGENTS_CHILD: "0" },
 		resolveTelemetryTriggerBinary: () => "/usr/bin/true", telemetryTriggerSpawn: (() => undefined) as never,
 	})(api);
-	installGentleTodo(api, {});
+	installDrakoncTodo(api, {});
 	const ctx = {
 		cwd, hasUI: false, mode: "interactive", ui: { notify() {}, setWidget() {}, setStatus() {} },
 		sessionManager: { getSessionId: () => "todo-append-only", getCwd: () => cwd, getBranch: () => transcript.map((message) => ({ type: "message", message })) },
@@ -111,8 +111,8 @@ function prefixBreaks(requests: Message[][], from = 0): string[] {
 	return breaks;
 }
 
-const reminders = (messages: Message[]) => messages.filter((message) => message.customType === "gentle-todo-reminder");
-const snapshots = (messages: Message[]) => messages.filter((message) => message.customType === "gentle-todo-state");
+const reminders = (messages: Message[]) => messages.filter((message) => message.customType === "drakonc-todo-reminder");
+const snapshots = (messages: Message[]) => messages.filter((message) => message.customType === "drakonc-todo-state");
 
 test("P1b (a): the request after the one that carried the todo reminder extends it", async (t) => {
 	const s = session(t);
@@ -181,9 +181,9 @@ test("P1b (d): a session saved before placement existed loads, and its snapshots
 		{ role: "system", content: "You are the harness under test.", timestamp: 0 },
 		{ role: "user", content: [{ type: "text", text: "Arreglá el bug" }], timestamp: 1 },
 		{ role: "assistant", content: [{ type: "toolCall", id: "old", name: "todo", arguments: { action: "write", tasks: [{ title: "Fix the bug" }] } }], timestamp: 2 },
-		{ role: "toolResult", toolCallId: "old", toolName: "todo", content: [{ type: "text", text: "ok" }], details: { gentleTodo: { tasks: [{ id: 1, title: "Fix the bug", status: "pending" }], nextId: 2, updatedTurn: 1 } }, isError: false, timestamp: 3 },
+		{ role: "toolResult", toolCallId: "old", toolName: "todo", content: [{ type: "text", text: "ok" }], details: { drakoncTodo: { tasks: [{ id: 1, title: "Fix the bug", status: "pending" }], nextId: 2, updatedTurn: 1 } }, isError: false, timestamp: 3 },
 		{ role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: 4 },
-		{ role: "custom", customType: "gentle-todo-state", content: "Current todo list:\n1. [pending] Fix the bug", display: false, timestamp: 5 },
+		{ role: "custom", customType: "drakonc-todo-state", content: "Current todo list:\n1. [pending] Fix the bug", display: false, timestamp: 5 },
 	];
 	const s = session(t, structuredClone(legacy));
 	await s.fire("session_start", { type: "session_start" });

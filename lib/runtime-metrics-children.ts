@@ -3,10 +3,10 @@ import { parseAgentDefinition, type AgentDefinition, type ModelRef } from "./age
 import type { ChildObservationSnapshot } from "./agents-runner.ts";
 import { FINISHED_STATUSES, type TaskStatus } from "./agents-protocol.ts";
 import { classifyRuntimeModelId, EFFORTS, normalizeRuntimeProvider, parseAgentClass, RuntimeMetrics, UNKNOWN_AGENT_CLASS, validRuntimeResponse, type AgentClass, type FinalResponse, type RuntimeMetricBucket } from "./runtime-metrics.ts";
-export const CHILD_METRICS_EVENT = "gentle:runtime-metrics:child/v1";
+export const CHILD_METRICS_EVENT = "drakonc:runtime-metrics:child/v1";
 // Local revocation notification invalidates active observations. Contains only
 // the local session join, never policy output.
-export const CHILD_METRICS_REVOKED = "gentle:runtime-metrics:revoked/v1";
+export const CHILD_METRICS_REVOKED = "drakonc:runtime-metrics:revoked/v1";
 const missing = { state: "unavailable" } as const;
 const tokenFields = ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"] as const;
 /** Recognize only names from this package's fixed assets and the transport's
@@ -20,7 +20,7 @@ const tokenFields = ["input", "output", "cacheRead", "cacheWrite", "reasoning", 
 let definitions: Array<{ name: string; fingerprint: string; fingerprintClass?: AgentClass }> | undefined;
 const packagedAgentClassAliases = new Map<string, string>([["sdd-proposal", "sdd-propose"]]);
 function fingerprintAgentClassName(name: string): string {
-	const compatibilityName = name.startsWith("gentle-ai-") ? name.slice("gentle-ai-".length) : name;
+	const compatibilityName = name.startsWith("drakonc-ai-") ? name.slice("drakonc-ai-".length) : name;
 	return packagedAgentClassAliases.get(compatibilityName) ?? compatibilityName;
 }
 function fingerprint(agent: AgentDefinition): string {

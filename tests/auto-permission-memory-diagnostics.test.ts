@@ -14,7 +14,7 @@ test("binder diagnostics retain rejection cause without destination or content",
 });
 
 test("source rejection reports only the first failed provenance predicate",()=>{
- const sourceInfo={path:"/installed/engram.ts",source:"npm:gentle-engram@latest",scope:"user",origin:"package"};
+ const sourceInfo={path:"/installed/engram.ts",source:"npm:drakonc-engram@latest",scope:"user",origin:"package"};
  const tool={name:"mem_current_project",sourceInfo};
  const cases:[string,any[]][]=[
   ["tool-missing",[]],["tool-ambiguous",[tool,tool]],
@@ -40,7 +40,7 @@ test("source rejection reports only the first failed provenance predicate",()=>{
 
 test("registry exceptions replace successful attachment diagnostics",()=>{
  let fail=false;
- const sourceInfo={path:"/installed/engram.ts",source:"npm:gentle-engram",scope:"user",origin:"package"};
+ const sourceInfo={path:"/installed/engram.ts",source:"npm:drakonc-engram",scope:"user",origin:"package"};
  const memory=new AutoPermissionMemory(()=>{if(fail)throw Error("PRIVATE_ERROR");return ["mem_current_project","mem_save"].map(name=>({name,sourceInfo})) as any;});
  const ctx:any={cwd:"/project",sessionManager:{getSessionId:()=>"session",getBranch:()=>[{id:"human"}]}};
  const call={toolName:"mem_current_project",toolCallId:"resolve",input:{cwd:ctx.cwd}};

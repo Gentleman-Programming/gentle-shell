@@ -44,7 +44,7 @@ function sampleItems(): FixtureItem[] {
 // Writes the presence pair directly (same shape projectActivity publishes) so
 // tests control content and timing without the publisher's coalescing debounce.
 function publish(profile: string, session: FixtureSession, tasks: FixtureTask[]): void {
-	const root = join(profile, "gentle-agents", "presence");
+	const root = join(profile, "drakonc-agents", "presence");
 	mkdirSync(root, { recursive: true, mode: 0o700 });
 	const sessionHash = createHash("sha256").update(session.sessionId).digest("hex");
 	const bytes = Buffer.from(JSON.stringify({ schema: 1, sessionHash, incarnation: session.incarnation, generation: 1, activity: { tasks } }), "utf8");

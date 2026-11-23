@@ -46,7 +46,7 @@ function recorder(platform = "win32", overrides: Partial<NativeWindowsOptions> =
 		env: {
 			SystemRoot: "D:\\Hostile", windir: "D:\\Hostile", TEMP: "C:\\Temp", TMP: "C:\\Tmp", USERPROFILE: "C:\\Users\\u",
 			OPENAI_API_KEY: "sk", ANTHROPIC_API_KEY: "x", AWS_SECRET_ACCESS_KEY: "y",
-			NODE_OPTIONS: "--inspect", NODE_PATH: "/n", DEBUG: "*", PATH: "C:\\evil", GENTLE_AUDIO_SNAPSHOT: "C:\\leak.wav",
+			NODE_OPTIONS: "--inspect", NODE_PATH: "/n", DEBUG: "*", PATH: "C:\\evil", DRAKONC_AUDIO_SNAPSHOT: "C:\\leak.wav",
 		},
 		...overrides,
 	});
@@ -138,7 +138,7 @@ test("probe treats malformed, multiline, oversize and false output as unavailabl
 });
 
 test("play gates synchronously once, encodes the snapshot and resolves on a clean close", async () => {
-	const snapshot = "C:\\Users\\u\\AppData\\Local\\Temp\\gentle-123\\sound.wav";
+	const snapshot = "C:\\Users\\u\\AppData\\Local\\Temp\\drakonc-123\\sound.wav";
 	const { player, spawned, children } = recorder();
 	let calls = 0;
 	const playing = player.play(snapshot, undefined, () => { calls += 1; return true; });
@@ -197,7 +197,7 @@ test("play rejects non-Windows-absolute snapshots before any spawn", async () =>
 });
 
 test("play rejects privately on wrong schema, multiline, oversize and nonzero close", async () => {
-	const snapshot = "C:\\Users\\u\\AppData\\Local\\Temp\\gentle\\sound.wav";
+	const snapshot = "C:\\Users\\u\\AppData\\Local\\Temp\\drakonc\\sound.wav";
 	const variants: Array<{ emit: (child: FakeChild) => void; code: number }> = [
 		{ emit: (child) => child.stdout.emit("data", "not json"), code: 0 },
 		{ emit: (child) => child.stdout.emit("data", JSON.stringify({ schema: "wrong", ok: true, played: true })), code: 0 },
@@ -272,7 +272,7 @@ test("child environment is a fixed Windows allowlist with forced SystemRoot", as
 		env: {
 			SystemRoot: "D:\\Hostile", windir: "D:\\Hostile", TEMP: "C:\\Temp", TMP: "C:\\Tmp", USERPROFILE: "C:\\Users\\u",
 			OPENAI_API_KEY: "sk", ANTHROPIC_API_KEY: "x", AWS_SECRET_ACCESS_KEY: "y",
-			NODE_OPTIONS: "--inspect", NODE_PATH: "/n", DEBUG: "*", PATH: "C:\\evil", GENTLE_AUDIO_SNAPSHOT: "C:\\leak.wav",
+			NODE_OPTIONS: "--inspect", NODE_PATH: "/n", DEBUG: "*", PATH: "C:\\evil", DRAKONC_AUDIO_SNAPSHOT: "C:\\leak.wav",
 		},
 	});
 	void player.probe();
@@ -283,7 +283,7 @@ test("child environment is a fixed Windows allowlist with forced SystemRoot", as
 	assert.equal(env.TEMP, "C:\\Temp");
 	assert.equal(env.TMP, "C:\\Tmp");
 	assert.equal(env.USERPROFILE, "C:\\Users\\u");
-	for (const drop of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY", "NODE_OPTIONS", "NODE_PATH", "DEBUG", "PATH", "GENTLE_AUDIO_SNAPSHOT"])
+	for (const drop of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY", "NODE_OPTIONS", "NODE_PATH", "DEBUG", "PATH", "DRAKONC_AUDIO_SNAPSHOT"])
 		assert.equal(env[drop], undefined, drop);
 });
 
@@ -455,7 +455,7 @@ test("wsl detection fails closed for a missing distro, bad interop path or inval
 
 test("wsl play maps one POSIX snapshot to a single encoded UNC path without interpolating data", async () => {
 	const distro = "Ubuntu 22.04 \u00f1";
-	const snapshot = "/tmp/gentle-1/\u00f1 'quote' $x `y`; sound.wav";
+	const snapshot = "/tmp/drakonc-1/\u00f1 'quote' $x `y`; sound.wav";
 	const { player, spawned, children } = wslRecorder({ WSL_DISTRO_NAME: distro, WSL_INTEROP: "/run/WSL/7_interop" });
 	const playing = player.play(snapshot);
 	assert.equal(spawned.length, 1);
@@ -466,7 +466,7 @@ test("wsl play maps one POSIX snapshot to a single encoded UNC path without inte
 	assert.ok(embedded, "the play script must decode one embedded base64 literal");
 	const decoded = Buffer.from(embedded!, "base64").toString("utf8");
 	assert.equal(decoded, toWslUncPath(distro, snapshot));
-	assert.equal(decoded, `\\\\wsl.localhost\\${distro}\\tmp\\gentle-1\\\u00f1 'quote' $x \`y\`; sound.wav`);
+	assert.equal(decoded, `\\\\wsl.localhost\\${distro}\\tmp\\drakonc-1\\\u00f1 'quote' $x \`y\`; sound.wav`);
 	assert.ok(!script.includes(snapshot), "the raw POSIX snapshot must never appear in the command");
 	assert.ok(!/whoami|Start-Process/.test(script), "no snapshot byte may become command text");
 	children[0]!.stdout.emit("data", playOk());
@@ -530,8 +530,8 @@ test("wsl child env keeps only the interop pair and cannot redirect the fixed ho
 		platform: "linux",
 		env: {
 			WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL/9_interop",
-			SystemRoot: "D:\\Hostile", windir: "D:\\Hostile", PATH: "/evil", WSLENV: "GENTLE_AUDIO_SNAPSHOT",
-			GENTLE_AUDIO_SNAPSHOT: "/tmp/leak.wav", OPENAI_API_KEY: "sk", NODE_OPTIONS: "--inspect",
+			SystemRoot: "D:\\Hostile", windir: "D:\\Hostile", PATH: "/evil", WSLENV: "DRAKONC_AUDIO_SNAPSHOT",
+			DRAKONC_AUDIO_SNAPSHOT: "/tmp/leak.wav", OPENAI_API_KEY: "sk", NODE_OPTIONS: "--inspect",
 			TEMP: "/tmp", USERPROFILE: "C:\\Users\\u",
 		},
 		executableAvailable: async () => true,
@@ -547,7 +547,7 @@ test("wsl child env keeps only the interop pair and cannot redirect the fixed ho
 	assert.equal(env.WSL_DISTRO_NAME, "Ubuntu");
 	assert.equal(env.TEMP, "/tmp");
 	assert.equal(env.USERPROFILE, "C:\\Users\\u");
-	for (const drop of ["PATH", "WSLENV", "GENTLE_AUDIO_SNAPSHOT", "OPENAI_API_KEY", "NODE_OPTIONS"])
+	for (const drop of ["PATH", "WSLENV", "DRAKONC_AUDIO_SNAPSHOT", "OPENAI_API_KEY", "NODE_OPTIONS"])
 		assert.equal(env[drop], undefined, drop);
 });
 

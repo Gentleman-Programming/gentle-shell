@@ -2,7 +2,7 @@
 
 - Feature: `reviewer-opencode-session-headers`
 - Branch: `fix/reviewer-opencode-session-headers` (base `main` c7fd2e26)
-- Engram mirror: topic `odd/reviewer-opencode-session-headers/tasks` (project gentle-pi)
+- Engram mirror: topic `odd/reviewer-opencode-session-headers/tasks` (project drakonc-pi)
 - TDD: strict; focused runner `node --experimental-strip-types --test tests/<file>.test.ts`; full `pnpm test` (+ `pnpm run typecheck`)
 - Delivery: owner decides commit / PR (not taken by the agent)
 - RDD: on (global)
@@ -60,7 +60,7 @@ In:
 - `lib/review-host-relay.ts`: carry an optional reviewer session id on
   `ReviewHostRelayRequest`, validate it with the rest of the reviewer selection
   configuration, and pass it into the in-process request.
-- `extensions/gentle-ai.ts`: thread the live session id from the extension
+- `extensions/drakonc-ai.ts`: thread the live session id from the extension
   context down to both host-relay request builders (single-slot capture and
   reviewer group), reusing the existing safe extraction pattern.
 - Tests for each layer.
@@ -73,7 +73,7 @@ Out:
   reported failure; can be a follow-up.
 - Any model invention or fallback. A missing or unknown model stays a typed
   refusal.
-- The pre-existing uncommitted change in `tests/gentle-shell.test.ts` (Windows
+- The pre-existing uncommitted change in `tests/drakonc-shell.test.ts` (Windows
   path normalization in the Git discovery assertion). Do not stage, revert, or
   fold it in.
 
@@ -98,7 +98,7 @@ Out:
       the attribution headers beneath the registry's auth headers.
 - [x] T3 — RED/GREEN: `lib/review-host-relay.ts` carries `reviewerSessionId`
       end to end into the completion options.
-- [x] T4 — RED/GREEN: `extensions/gentle-ai.ts` threads the live session id
+- [x] T4 — RED/GREEN: `extensions/drakonc-ai.ts` threads the live session id
       into both request builders.
 - [x] T5 — Verification: focused tests, then `pnpm test` and
       `pnpm run typecheck` green.
@@ -136,7 +136,7 @@ Code reviewed directly (not only asserted):
 - `lib/review-host-relay.ts` — +10 lines: the `reviewerSessionId` field, its
   pass-through in `validateReviewerSelectionConfiguration`, and its mapping to
   the in-process request's `sessionId` at the `runReviewer` call.
-- `extensions/gentle-ai.ts` — the parameter is appended last on all three
+- `extensions/drakonc-ai.ts` — the parameter is appended last on all three
   functions so existing positional call sites keep compiling, and set at the two
   tool-handler call sites from the pre-existing safe extractor
   `reviewSessionManagerAndId(ctx)` (HEAD line 6025; try/catch, rejects an empty
@@ -145,13 +145,13 @@ Code reviewed directly (not only asserted):
 ## The T3 focused test runs in CI, not on Windows
 
 `tests/review-host-relay.test.ts` cannot execute on this Windows machine: its
-harness writes a fake binary literally named `gentle-ai` with no executable
+harness writes a fake binary literally named `drakonc-ai` with no executable
 extension and `chmod 755` (lines 121-123), so its tests fail before reaching any
 assertion:
 
 ```text
-Error [ReviewHostRelayError]: gentle-ai prompt materialization could not start:
-spawn C:\...\Temp\gentle-pi-relay-harness-*\gentle-ai ENOENT
+Error [ReviewHostRelayError]: drakonc-ai prompt materialization could not start:
+spawn C:\...\Temp\drakonc-pi-relay-harness-*\drakonc-ai ENOENT
 ```
 
 This is **by design, not a defect**: `.github/workflows/ci.yml` runs the full
@@ -173,14 +173,14 @@ Consequences:
 
 ## Untouched by design
 
-`tests/gentle-shell.test.ts` still carries its pre-existing uncommitted change
+`tests/drakonc-shell.test.ts` still carries its pre-existing uncommitted change
 (Windows path normalization in a Git discovery assertion). It was left exactly
 as found and is not part of this work.
 
 ## Operational note
 
 The harness repo **is** the live extension (`~/.pi/agent/settings.json`
-registers `..\..\gentle-pi-main`), so this fix reaches the runtime — but only at
+registers `..\..\drakonc-pi-main`), so this fix reaches the runtime — but only at
 the next Pi session start. The instance that hit `MissingSessionID` had the old
 module in memory; a fresh session is required to exercise the fix.
 
@@ -189,14 +189,14 @@ module in memory; a fresh session is required to exercise the fix.
 - Commit `9841de69 fix(review): carry OpenCode session attribution into the
   in-process reviewer` — 7 files, +483/-5, on branch
   `fix/reviewer-opencode-session-headers`.
-- Issue: `Gentleman-Programming/gentle-shell#1242`.
-- Pull request: `Gentleman-Programming/gentle-shell#1243` (1 commit, 7 files,
-  base `main`), opened from the fork `IGabrielRC/gentle-shell`.
+- Issue: `Drakoncman-Programming/drakonc-shell#1242`.
+- Pull request: `Drakoncman-Programming/drakonc-shell#1243` (1 commit, 7 files,
+  base `main`), opened from the fork `IGabrielRC/drakonc-shell`.
 - The contributing account `IGabrielRC` has `pull` but not `push` on the
   upstream, so the fork route was the only one available. The fork was created
-  from the upstream and renamed to `gentle-shell` to match the canonical
-  repository name (`gentle-pi` is an alias; `gh repo view` reports
-  `Gentleman-Programming/gentle-shell`).
+  from the upstream and renamed to `drakonc-shell` to match the canonical
+  repository name (`drakonc-pi` is an alias; `gh repo view` reports
+  `Drakoncman-Programming/drakonc-shell`).
 - Git identity was unset in the working clone (no local, no global
   `user.email`), so the first commit attempt failed outright. The repository now
   carries a local identity matching the one already used in the author's other

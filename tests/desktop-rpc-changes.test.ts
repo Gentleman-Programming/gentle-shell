@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
-import shell, { shellGitRunner } from "../extensions/gentle-shell.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
+import shell, { shellGitRunner } from "../extensions/drakonc-shell.ts";
 import { loadFileDiff } from "../lib/change-diff.ts";
 import {
 	CHANGE_NOT_FOUND,
@@ -33,7 +33,7 @@ import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET } from "../lib/desktop-rpc.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 import { CHANGE_STATUS, changesModel, DIFF_MAX_BYTES, DIFF_TOO_LARGE, type GitRunner } from "../lib/shell-changes.ts";
 
-// #3322: `get_changes` and `get_change_diff` read the `/gentle:changes`
+// #3322: `get_changes` and `get_change_diff` read the `/drakonc:changes`
 // owner (the shell's WorktreeChangesTracker and the shared loadFileDiff
 // arguments). A diff is served only for a file in the owner's current change
 // set for that root; everything else is `not_found`.
@@ -175,10 +175,10 @@ test("a reset while the owner works drops the stale answer and disposes the adap
 	assert.equal(disposed, 1);
 });
 
-// ---- Transport with the real owner: gentle-shell + gentle-desktop-rpc ----
+// ---- Transport with the real owner: drakonc-shell + drakonc-desktop-rpc ----
 
 function tempRepo(t: test.TestContext) {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-rpc-changes-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-rpc-changes-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const git = (...args: string[]) => execFileSync("git", ["-C", root, "-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" });
 	git("init", "-q", "--initial-branch=main");
@@ -216,7 +216,7 @@ function app(t: test.TestContext, root: string, options: { gitRunner?: RunnerFor
 	let gitCalls = 0;
 	if (options.withOwner !== false) {
 		const runner = options.gitRunner ?? realGit;
-		shell(pi, { GENTLE_PI_SHELL_CHANGES_POLL_MS: "60000", GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+		shell(pi, { DRAKONC_PI_SHELL_CHANGES_POLL_MS: "60000", DRAKONC_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
 			resolveWorktree: () => ({ root, commonDir: join(root, ".git") }),
 			devBinary: () => undefined,
 			gitRunner: (cwd, maxBuffer) => { const run = runner(cwd, maxBuffer); return (args) => { gitCalls += 1; return run(args); }; },
@@ -238,7 +238,7 @@ function app(t: test.TestContext, root: string, options: { gitRunner?: RunnerFor
 		root, ctx, lines, fire, listeners, gitCalls: () => gitCalls,
 		async call(method: string, params: Record<string, unknown> = {}) {
 			const before = lines.length;
-			await commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: `req-${++sequence}`, method, params }), ctx);
+			await commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: `req-${++sequence}`, method, params }), ctx);
 			const published = lines.slice(before).map((line) => JSON.parse(line));
 			assert.equal(published.length, 1, `${method} publishes exactly one line: its response, never an event`);
 			assert.equal(published[0].kind, "response");
@@ -312,7 +312,7 @@ test("get_change_diff serves exactly the panel's diff for tracked and untracked 
 test("get_change_diff answers not_found for anything outside the owner's change set", async (t) => {
 	const repo = tempRepo(t);
 	writeFileSync(join(repo.root, "file.ts"), "changed\n");
-	const outsideDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-rpc-outside-")));
+	const outsideDir = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-rpc-outside-")));
 	t.after(() => rmSync(outsideDir, { recursive: true, force: true }));
 	const outside = join(outsideDir, "secret.txt");
 	writeFileSync(outside, "TOP-SECRET-OUTSIDE\n");
@@ -348,7 +348,7 @@ test("get_change_diff answers not_found for anything outside the owner's change 
 
 test("a link in the worktree never serves the content outside the root it points at", async (t) => {
 	const repo = tempRepo(t);
-	const outsideDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-rpc-link-")));
+	const outsideDir = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-rpc-link-")));
 	t.after(() => rmSync(outsideDir, { recursive: true, force: true }));
 	writeFileSync(join(outsideDir, "secret.txt"), "TOP-SECRET-LINKED\n");
 	// A directory link is a junction on Windows (no privilege needed); a file
@@ -449,7 +449,7 @@ test("changes_unavailable when there is no owner, no worktree, or Git fails", as
 	assert.ok(!JSON.stringify(diffFailed).includes("/secret/path"));
 	await diffFails.fire("session_shutdown");
 
-	const nonRepo = realpathSync(mkdtempSync(join(tmpdir(), "gentle-rpc-norepo-")));
+	const nonRepo = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-rpc-norepo-")));
 	t.after(() => rmSync(nonRepo, { recursive: true, force: true }));
 	const noWorktree = app(t, nonRepo, { gitRunner: () => async () => ({ stdout: "", code: 128 }) });
 	await noWorktree.fire("session_start");
@@ -498,7 +498,7 @@ function scratchDir(t: test.TestContext, prefix: string) {
 
 test("get_change_diff never runs a repository textconv driver; the panel path is unchanged", async (t) => {
 	const repo = tempRepo(t);
-	const scratch = scratchDir(t, "gentle-rpc-driver-");
+	const scratch = scratchDir(t, "drakonc-rpc-driver-");
 	const marker = join(scratch, "marker.txt");
 	const script = join(scratch, "driver.sh");
 	const posix = (path: string) => path.split("\\").join("/");
@@ -574,9 +574,9 @@ test("P2: a root id from a previous session is not_found", async (t) => {
 
 test("P3: a directory swapped to a junction after listing is refused, nested links too", async (t) => {
 	const repo = tempRepo(t);
-	const outside = scratchDir(t, "gentle-rpc-swap-");
+	const outside = scratchDir(t, "drakonc-rpc-swap-");
 	writeFileSync(join(outside, "secret.txt"), "TOP-SECRET-SWAP\n");
-	const moved = scratchDir(t, "gentle-rpc-moved-");
+	const moved = scratchDir(t, "drakonc-rpc-moved-");
 	mkdirSync(join(repo.root, "sub"));
 	writeFileSync(join(repo.root, "sub", "secret.txt"), "inside\n");
 	mkdirSync(join(repo.root, "u"));

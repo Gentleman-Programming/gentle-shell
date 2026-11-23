@@ -47,7 +47,7 @@ function noProfile(manager: SessionProfileLifecycleManager): boolean {
    return (
     value.type === "custom" &&
     typeof value.customType === "string" &&
-    value.customType.startsWith("gentle-pi.session-profile/")
+    value.customType.startsWith("drakonc-pi.session-profile/")
    );
   })
  );

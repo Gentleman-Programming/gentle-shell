@@ -1,6 +1,6 @@
 # Skill Style Guide
 
-This guide is the normative style contract for LLM-first skills shipped with or created inside `gentle-pi` projects.
+This guide is the normative style contract for LLM-first skills shipped with or created inside `drakonc-pi` projects.
 
 ## Purpose
 
@@ -57,7 +57,7 @@ name: {kebab-case-skill-name}
 description: "Trigger: {phrases users or agents will say}. {What this skill does}."
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "1.0"
 ---
 ```

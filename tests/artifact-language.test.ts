@@ -18,10 +18,10 @@ async function collectTextFiles(dir: string): Promise<string[]> {
 	return files;
 }
 
-const SPANISH_ARTIFACT_COPY = [/\bhacelo\b/i, /\bSoy el Gentleman\b/i];
+const SPANISH_ARTIFACT_COPY = [/\bhacelo\b/i, /\bSoy el Drakoncman\b/i];
 
 test("ordinary startup does not load the retired SDD preflight API", async () => {
-	const extension = await readFile(join(ROOT, "extensions/gentle-ai.ts"), "utf8");
+	const extension = await readFile(join(ROOT, "extensions/drakonc-ai.ts"), "utf8");
 	assert.doesNotMatch(extension, /\b(?:ensureSddPreflight|getSddPreflightPreferences|isSddPreflightTrigger|renderSddPreflightPrompt|isParentConfirmedSddPreflightContext)\b/);
 });
 

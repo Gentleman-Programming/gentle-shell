@@ -220,7 +220,7 @@ export function openArtifacts(s: TowerSnapshot): void {
 // ---------- Engram library ----------
 interface Memory { id: number; type?: string; title?: string; content?: string; created_at?: string; review_after?: string }
 const SHELVES: Record<string, string> = { decision: "Decisions", bugfix: "Bug fixes", preference: "Your preferences", architecture: "Architecture", discovery: "Discoveries", pattern: "Patterns" };
-const SPINE = ["#7a4ab8", "#4a7ab0", "#c86a9a", "#6aa88a", "#c8a85a", "#5ab0b8"];
+const SPINE = ["#7a4ab8", "#4a7ab0", "#c85a6a", "#6aa88a", "#c8a85a", "#5ab0b8"];
 export function openLibrary(project: Project): void {
 	const el = modal("library", "Engram · the library", `${project.id} · what your agents remember`, `<div class="lib"><div class="shelves"><input class="search" placeholder="Search memories…" aria-label="Search memories" value="${esc(project.id)}"><div class="shelfset"></div></div><article class="page muted">Pick a book.</article></div>`, true);
 	const set = el.querySelector(".shelfset")!, page = el.querySelector(".page")!, input = el.querySelector("input")!;
@@ -273,7 +273,7 @@ export function openLibrary(project: Project): void {
 
 // ---------- a new floor ----------
 export function openNewFloor(project: Project): void {
-	const el = modal("new-floor", "New floor", `${project.id} · a new Gentle Shell session`, `<form class="newfloor">
+	const el = modal("new-floor", "New floor", `${project.id} · a new Drakonc Shell session`, `<form class="newfloor">
 		<label for="nf-prompt">What should this floor work on? <small>optional — you can also tell it later</small></label>
 		<textarea id="nf-prompt" rows="4" placeholder="Fix the login bug and add a test for it"></textarea>
 		<p class="muted">It opens in a new terminal window in <code>${esc(project.cwd)}</code> and shows up here as a floor.</p>
@@ -304,7 +304,7 @@ export function openTab(projects: Project[]): void {
 	const total = sessions.reduce((a, s) => a + s.cost.total, 0);
 	const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
 	const row = (l: string, sub: string, v: string) => `<div class="r"><span>${esc(l)} <small>${esc(sub)}</small></span><span>${v}</span></div>`;
-	modal("tab", "The bar · your tab", "open sessions right now", `<div class="receipt"><h3>THE GENTLEMAN CLUB</h3><div class="c">tab · ${sessions.length} open session${sessions.length === 1 ? "" : "s"}</div>
+	modal("tab", "The bar · your tab", "open sessions right now", `<div class="receipt"><h3>THE DRAKONCMAN CLUB</h3><div class="c">tab · ${sessions.length} open session${sessions.length === 1 ? "" : "s"}</div>
 		${[...byModel].sort((a, b) => b[1].cost - a[1].cost).map(([m, v]) => row(m, `${k(v.tokens)} tok`, money(v.cost))).join("") || '<div class="c">no model usage yet</div>'}<hr>
 		${projects.map((p) => row(p.id, `${p.sessions.length} floor${p.sessions.length === 1 ? "" : "s"}`, money(p.sessions.reduce((a, s) => a + s.cost.total, 0)))).join("")}<hr>
 		${sessions.filter((s) => !s.basic).map((s) => row(s.name, s.project.name, money(s.cost.total))).join("")}<hr>

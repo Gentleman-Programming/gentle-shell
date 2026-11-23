@@ -5,10 +5,10 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import gentleTodo from "../extensions/gentle-todo.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
+import drakoncTodo from "../extensions/drakonc-todo.ts";
 
-// gentle-shell#1485: pi-claude-bridge forwards only the structured
+// drakonc-shell#1485: pi-claude-bridge forwards only the structured
 // systemPromptOptions parts of before_agent_start (contextFiles, skills,
 // customPrompt, appendSystemPrompt) after Claude Code's own preset, so a
 // handler-returned replacement systemPrompt never reaches the model on that
@@ -24,15 +24,15 @@ let fixtureRoot: string | undefined;
 const fixtureEnvironment: NodeJS.ProcessEnv = {};
 const previousEnvironment = new Map<string, string | undefined>();
 before(async () => {
-	const root = await mkdtemp(join(tmpdir(), "gentle-pi-append-route-"));
+	const root = await mkdtemp(join(tmpdir(), "drakonc-pi-append-route-"));
 	fixtureRoot = root;
 	fixtureCwd = join(root, "project");
 	const home = join(root, "home");
 	for (const directory of [fixtureCwd, home]) await mkdir(directory);
 	Object.assign(fixtureEnvironment, {
 		HOME: home, USERPROFILE: home,
-		GENTLE_PI_CONFIG_HOME: join(home, "config"),
-		GENTLE_PI_AGENT_HOME: join(home, "agents"),
+		DRAKONC_PI_CONFIG_HOME: join(home, "config"),
+		DRAKONC_PI_AGENT_HOME: join(home, "agents"),
 		PI_CODING_AGENT_DIR: join(home, "pi"),
 		XDG_CONFIG_HOME: join(home, "xdg"),
 	});
@@ -49,7 +49,7 @@ after(async () => {
 	if (fixtureRoot !== undefined) await rm(fixtureRoot, { recursive: true, force: true });
 });
 
-function gentleAiHandlers(processEnv: NodeJS.ProcessEnv = {}): Map<string, Handler> {
+function drakoncAiHandlers(processEnv: NodeJS.ProcessEnv = {}): Map<string, Handler> {
 	const handlers = new Map<string, Handler>();
 	const pi = {
 		on(name: string, handler: Handler) {
@@ -59,16 +59,16 @@ function gentleAiHandlers(processEnv: NodeJS.ProcessEnv = {}): Map<string, Handl
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({
+	createDrakoncAiExtension({
 		nativeReviewCli: null,
-		processEnv: { ...fixtureEnvironment, GENTLE_PI_AGENTS_CHILD: "0", ...processEnv, GENTLE_AI_TELEMETRY: "0" },
+		processEnv: { ...fixtureEnvironment, DRAKONC_PI_AGENTS_CHILD: "0", ...processEnv, DRAKONC_AI_TELEMETRY: "0" },
 		resolveTelemetryTriggerBinary: () => join(fixtureCwd, "never-executed"),
 		telemetryTriggerSpawn: () => assert.fail("Route fixtures must not spawn telemetry"),
 	})(pi);
 	return handlers;
 }
 
-function gentleTodoHandlers(): { handlers: Map<string, Handler[]>; tools: Map<string, { execute: (...args: unknown[]) => Promise<unknown> }> } {
+function drakoncTodoHandlers(): { handlers: Map<string, Handler[]>; tools: Map<string, { execute: (...args: unknown[]) => Promise<unknown> }> } {
 	const handlers = new Map<string, Handler[]>();
 	const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown>; name: string }>();
 	const pi = {
@@ -80,7 +80,7 @@ function gentleTodoHandlers(): { handlers: Map<string, Handler[]>; tools: Map<st
 		},
 		registerShortcut() {},
 	} as unknown as ExtensionAPI;
-	gentleTodo(pi, {});
+	drakoncTodo(pi, {});
 	return { handlers, tools };
 }
 
@@ -94,8 +94,8 @@ function ctx(): ExtensionContext {
 }
 
 test("both extensions land their block in appendSystemPrompt on one shared options object, and neither returns a replacement systemPrompt", async () => {
-	const aiHandlers = gentleAiHandlers();
-	const { handlers: todoHandlers, tools } = gentleTodoHandlers();
+	const aiHandlers = drakoncAiHandlers();
+	const { handlers: todoHandlers, tools } = drakoncTodoHandlers();
 	const session = ctx();
 
 	for (const handler of todoHandlers.get("session_start") ?? []) await handler({}, session);
@@ -111,11 +111,11 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 	let todoResult: unknown;
 	for (const handler of todoHandlers.get("before_agent_start") ?? []) todoResult = await handler(event, session);
 
-	assert.equal(aiResult, undefined, "gentle-ai must not return a replacement systemPrompt");
-	assert.equal(todoResult, undefined, "gentle-todo must not return a replacement systemPrompt");
+	assert.equal(aiResult, undefined, "drakonc-ai must not return a replacement systemPrompt");
+	assert.equal(todoResult, undefined, "drakonc-todo must not return a replacement systemPrompt");
 
 	const appended = event.systemPromptOptions.appendSystemPrompt;
-	assert.match(appended, /el Gentleman Identity and Harness/);
+	assert.match(appended, /el Drakoncman Identity and Harness/);
 	const continuityStart = appended.indexOf("## Authorized work continuity");
 	const coreStart = appended.indexOf("Default workflow: Organic Driven Development");
 	assert.ok(continuityStart >= 0 && continuityStart < coreStart,
@@ -154,17 +154,17 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 		assert.ok(!continuity.includes(clause), `continuity must not restate the moved setup rule: ${clause}`);
 	}
 	assert.match(appended, /## Todo list/);
-	// gentle-shell#1662: the list itself travels as a request-local message, never in the prompt.
+	// drakonc-shell#1662: the list itself travels as a request-local message, never in the prompt.
 	assert.doesNotMatch(appended, /Fix the bug/);
 	assert.ok(
-		appended.indexOf("el Gentleman Identity and Harness") < appended.indexOf("## Todo list"),
-		"gentle-ai's block must precede gentle-todo's, matching handler registration order",
+		appended.indexOf("el Drakoncman Identity and Harness") < appended.indexOf("## Todo list"),
+		"drakonc-ai's block must precede drakonc-todo's, matching handler registration order",
 	);
 });
 
 test("re-running both handlers on the same already-populated options object does not duplicate either block", async () => {
-	const aiHandlers = gentleAiHandlers();
-	const { handlers: todoHandlers, tools } = gentleTodoHandlers();
+	const aiHandlers = drakoncAiHandlers();
+	const { handlers: todoHandlers, tools } = drakoncTodoHandlers();
 	const session = ctx();
 
 	for (const handler of todoHandlers.get("session_start") ?? []) await handler({}, session);
@@ -173,27 +173,27 @@ test("re-running both handlers on the same already-populated options object does
 
 	const event = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
 	await aiHandlers.get("before_agent_start")!(event, session);
-	const gentleAiOccurrencesAfterFirstRun = event.systemPromptOptions.appendSystemPrompt.split("el Gentleman Identity and Harness").length - 1;
-	assert.equal(gentleAiOccurrencesAfterFirstRun, 1);
+	const drakoncAiOccurrencesAfterFirstRun = event.systemPromptOptions.appendSystemPrompt.split("el Drakoncman Identity and Harness").length - 1;
+	assert.equal(drakoncAiOccurrencesAfterFirstRun, 1);
 
-	// A defensive re-run of gentle-ai's own handler against an options object
+	// A defensive re-run of drakonc-ai's own handler against an options object
 	// that already carries its exact block must not append it again.
 	await aiHandlers.get("before_agent_start")!(event, session);
-	const gentleAiOccurrencesAfterSecondRun = event.systemPromptOptions.appendSystemPrompt.split("el Gentleman Identity and Harness").length - 1;
-	assert.equal(gentleAiOccurrencesAfterSecondRun, 1, "a second gentle-ai run on the same options object must not duplicate the harness");
+	const drakoncAiOccurrencesAfterSecondRun = event.systemPromptOptions.appendSystemPrompt.split("el Drakoncman Identity and Harness").length - 1;
+	assert.equal(drakoncAiOccurrencesAfterSecondRun, 1, "a second drakonc-ai run on the same options object must not duplicate the harness");
 });
 
 for (const scenario of ["child", "named-agent"] as const) {
 	test(`${scenario} start leaves shared prompt options unchanged and returns no replacement`, async () => {
-		const handlers = gentleAiHandlers(scenario === "child" ? { GENTLE_PI_AGENTS_CHILD: "1" } : {});
+		const handlers = drakoncAiHandlers(scenario === "child" ? { DRAKONC_PI_AGENTS_CHILD: "1" } : {});
 		const event = {
 			systemPrompt: "base",
 			systemPromptOptions: { appendSystemPrompt: "Existing provider section" },
-			...(scenario === "named-agent" ? { agentName: "gentle-ai-worker" } : {}),
+			...(scenario === "named-agent" ? { agentName: "drakonc-ai-worker" } : {}),
 		};
 		const result = await handlers.get("before_agent_start")!(event, ctx());
 		assert.equal(result, undefined, "excluded sessions must not return a replacement system prompt");
 		assert.equal(event.systemPromptOptions.appendSystemPrompt, "Existing provider section");
-		assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /el Gentleman Identity and Harness/);
+		assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /el Drakoncman Identity and Harness/);
 	});
 }

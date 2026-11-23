@@ -22,13 +22,13 @@ after(() => {
 
 test("push-to-talk is off until written, and a written value survives a fresh read", () => {
 	const home = scratchHome();
-	const options = { gentlePiConfigHome: home };
+	const options = { drakoncPiConfigHome: home };
 	assert.equal(readVoicePushToTalk(options), false);
 	const path = writeVoicePushToTalk(true, options);
 	assert.equal(path, join(home, VOICE_SETTINGS_FILE));
 	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { schema: VOICE_SETTINGS_SCHEMA, pushToTalk: true });
 	// A reload only re-reads the file.
-	assert.equal(readVoicePushToTalk({ gentlePiConfigHome: home }), true);
+	assert.equal(readVoicePushToTalk({ drakoncPiConfigHome: home }), true);
 	writeVoicePushToTalk(false, options);
 	assert.equal(readVoicePushToTalk(options), false);
 });
@@ -38,12 +38,12 @@ test("a malformed or foreign settings file reads as off", () => {
 	const path = join(home, VOICE_SETTINGS_FILE);
 	for (const raw of ["not json", "[]", `{"schema":"${VOICE_SETTINGS_SCHEMA}","pushToTalk":"yes"}`, `{"schema":"other","pushToTalk":true}`, `{"schema":"${VOICE_SETTINGS_SCHEMA}","pushToTalk":true,"extra":1}`]) {
 		writeFileSync(path, raw);
-		assert.equal(readVoicePushToTalk({ gentlePiConfigHome: home }), false, raw);
+		assert.equal(readVoicePushToTalk({ drakoncPiConfigHome: home }), false, raw);
 	}
 });
 
 test("the config home follows the environment when no home is given", () => {
 	const home = scratchHome();
-	writeVoicePushToTalk(true, { gentlePiConfigHome: home });
-	assert.equal(readVoicePushToTalk({ env: { GENTLE_PI_CONFIG_HOME: home } }), true);
+	writeVoicePushToTalk(true, { drakoncPiConfigHome: home });
+	assert.equal(readVoicePushToTalk({ env: { DRAKONC_PI_CONFIG_HOME: home } }), true);
 });

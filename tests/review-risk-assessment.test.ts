@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension, __testing } from "../extensions/drakonc-ai.ts";
 import {
 	NATIVE_REVIEW_ERROR_CODE,
 	NATIVE_REVIEW_MODE_SOURCE,
@@ -35,8 +35,8 @@ import { consumeReviewMutation, pendingReviewMutation, recordReviewMutation } fr
 import type { ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
 // ---------------------------------------------------------------------------
-// gentle-pi#662: decoder for the native `gentle-ai review assess` envelope
-// (gentle-ai#4295, landing in parallel -- stubbed here, never invoked as a
+// drakonc-pi#662: decoder for the native `drakonc-ai review assess` envelope
+// (drakonc-ai#4295, landing in parallel -- stubbed here, never invoked as a
 // real process).
 // ---------------------------------------------------------------------------
 
@@ -94,16 +94,16 @@ test("decodeReviewAssessmentV1 rejects a malformed shape", () => {
 });
 
 // ---------------------------------------------------------------------------
-// gentle-pi#1175: the native v2 `assess.schema.json` requires only `code` on a
+// drakonc-pi#1175: the native v2 `assess.schema.json` requires only `code` on a
 // reason, and adds `candidate.consumed`, `review_due`, `review_due_reason`,
-// and `next_transition`. Older binaries (for example gentle-ai v3.7.0)
+// and `next_transition`. Older binaries (for example drakonc-ai v3.7.0)
 // predate those fields; they must decode without invented values.
 // ---------------------------------------------------------------------------
 
 function nextTransition(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		operation: "review.status",
-		command: "gentle-ai",
+		command: "drakonc-ai",
 		arguments: [
 			{ name: "review", value: "" },
 			{ name: "--cwd", value: "/repo" },
@@ -303,7 +303,7 @@ test("decodeReviewAssessmentV1 ignores unknown top-level fields and never projec
 });
 
 // ---------------------------------------------------------------------------
-// verificationPlan: every (rdd, risk, profile) combination from gentle-pi#662.
+// verificationPlan: every (rdd, risk, profile) combination from drakonc-pi#662.
 // ---------------------------------------------------------------------------
 
 const RISKS: readonly VerificationTier[] = [VERIFICATION_TIER.PASSIVE, VERIFICATION_TIER.MEDIUM, VERIFICATION_TIER.HIGH, VERIFICATION_TIER.UNASSESSABLE];
@@ -330,7 +330,7 @@ test("verificationPlan: rdd on + closed behaves exactly like rdd off for every r
 });
 
 // ---------------------------------------------------------------------------
-// gentle-pi#668: the `on` branch holds only while the native review reaches a
+// drakonc-pi#668: the `on` branch holds only while the native review reaches a
 // terminal (`closed`) outcome for this candidate. A decline, an unavailable
 // review, or an unknown/omitted outcome falls back to the exact same
 // risk-gated path as `off` -- declining a review is candidate-scoped and
@@ -578,13 +578,13 @@ test("resolveWriterProfile: an unknown or omitted profile fails closed to small,
 });
 
 // ---------------------------------------------------------------------------
-// Tool-level unassessable path: the `gentle_review` tool's `assess` operation
-// (`extensions/gentle-ai.ts`, gentle-pi#662) must treat a native CLI without
+// Tool-level unassessable path: the `drakonc_review` tool's `assess` operation
+// (`extensions/drakonc-ai.ts`, drakonc-pi#662) must treat a native CLI without
 // the `assess` verb (an older binary) or a rejected `assess` call (a process
 // failure) the same way -- native risk "unassessable", which informs only:
 // the plan is medium and adds no independent verifier unless the agent
-// escalates a named high-risk item. `assess` is exposed as a `gentle_review`
-// operation, not a dedicated tool, so the fixed `gentle_*` tool registry stays
+// escalates a named high-risk item. `assess` is exposed as a `drakonc_review`
+// operation, not a dedicated tool, so the fixed `drakonc_*` tool registry stays
 // unchanged.
 
 function reviewControllerTool(nativeReviewCli: Partial<NativeReviewCli> | null): { execute: (id: string, params: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<{ content: readonly { type: string; text: string }[]; details: unknown }> } {
@@ -596,9 +596,9 @@ function reviewControllerTool(nativeReviewCli: Partial<NativeReviewCli> | null):
 			tools.set(tool.name, tool);
 		},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: nativeReviewCli as NativeReviewCli | null })(pi);
-	const tool = tools.get("gentle_review");
-	assert.ok(tool, "gentle_review must be registered");
+	createDrakoncAiExtension({ nativeReviewCli: nativeReviewCli as NativeReviewCli | null })(pi);
+	const tool = tools.get("drakonc_review");
+	assert.ok(tool, "drakonc_review must be registered");
 	return tool;
 }
 
@@ -628,7 +628,7 @@ for (const [label, input] of [["normal", undefined], ["escalated", ESCALATE], ["
 		const escalated = input !== undefined && "escalate" in input;
 		const risk = escalated ? VERIFICATION_TIER.HIGH : VERIFICATION_TIER.MEDIUM;
 		assert.deepEqual(result.details, {
-			operation: "assess", schema: "gentle-pi.review-assessment-plan/v1", risk, nativeRisk: "unassessable",
+			operation: "assess", schema: "drakonc-pi.review-assessment-plan/v1", risk, nativeRisk: "unassessable",
 			...(escalated ? { agentEscalation: { item: 3, label: "changing or removing contracts others already consume", reason: ESCALATE.escalate.reason, applied: true } } : {}),
 			reasons: [{ code: "rdd-off-assessment-skipped", detail: "Native assessment skipped because receipt-driven development is off; changed counts were not measured." }],
 			changedPaths: 0, changedLines: 0, candidate: null, rddLine: "off", nativeReviewOutcome: "unknown", outcome_source: "unknown",
@@ -680,10 +680,10 @@ test("registered assess preserves on, malformed and failed mode paths without us
 
 // Changed with verification by named risk: an unassessable candidate no longer
 // verifies like high; the plan is medium and the native tier stays visible.
-test("gentle_review assess: an older binary without the assess verb informs only (no verifier without escalate)", async () => {
+test("drakonc_review assess: an older binary without the assess verb informs only (no verifier without escalate)", async () => {
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "off", cloneLocal: "off", effective: "off", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
-		// assess intentionally absent: pre-gentle-ai#4295 binary.
+		// assess intentionally absent: pre-drakonc-ai#4295 binary.
 	};
 	const tool = reviewControllerTool(nativeReviewCli);
 	const result = await tool.execute("call-1", { operation: "assess" }, undefined, undefined, ctx);
@@ -703,7 +703,7 @@ test("gentle_review assess: an older binary without the assess verb informs only
 
 // Changed with verification by named risk: a rejected assess call informs
 // only; the RDD status fail-closed half of this test is unchanged.
-test("gentle_review assess: a rejected assess call informs only, and RDD status read failure fails closed to unknown", async () => {
+test("drakonc_review assess: a rejected assess call informs only, and RDD status read failure fails closed to unknown", async () => {
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => {
 			throw new Error("native review mode is unavailable");
@@ -723,7 +723,7 @@ test("gentle_review assess: a rejected assess call informs only, and RDD status 
 	assert.equal(details.plan.independentVerifier, false);
 });
 
-test("gentle_review assess: a successful native assessment is reflected directly in the returned plan", async () => {
+test("drakonc_review assess: a successful native assessment is reflected directly in the returned plan", async () => {
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		assess: async () => ({
@@ -743,7 +743,7 @@ test("gentle_review assess: a successful native assessment is reflected directly
 	assert.equal(details.plan.structuralReadbackOnly, true);
 });
 
-test("gentle_review assess: baseRef without committedOnly is rejected", async () => {
+test("drakonc_review assess: baseRef without committedOnly is rejected", async () => {
 	const tool = reviewControllerTool({});
 	await assert.rejects(
 		() => tool.execute("call-4", { operation: "assess", input: JSON.stringify({ baseRef: "origin/main" }) }, undefined, undefined, ctx),
@@ -754,7 +754,7 @@ test("gentle_review assess: baseRef without committedOnly is rejected", async ()
 // Changed with verification by named risk: the writer profile is still
 // resolved and reported (omitted fails closed to small, gemini is large), but
 // it no longer adds a verifier to a medium plan.
-test("gentle_review assess: writerModelId/writerEffort in input select the reported writer profile, which never changes the plan", async () => {
+test("drakonc_review assess: writerModelId/writerEffort in input select the reported writer profile, which never changes the plan", async () => {
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "off", cloneLocal: "off", effective: "off", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		assess: async () => ({
@@ -799,7 +799,7 @@ test("gentle_review assess: writerModelId/writerEffort in input select the repor
 // Changed with verification by named risk: a native high without escalate is
 // a medium plan (no verifier); the declined fallback still applies, and an
 // escalation still gets its verifier.
-test("gentle_review assess: an explicit nativeReviewOutcome:\"declined\" input falls back to the risk-gated plan even when RDD is on (gentle-pi#668)", async () => {
+test("drakonc_review assess: an explicit nativeReviewOutcome:\"declined\" input falls back to the risk-gated plan even when RDD is on (drakonc-pi#668)", async () => {
 	const nativeReviewCli: Partial<NativeReviewCli> = {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		assess: async () => ({
@@ -828,7 +828,7 @@ test("gentle_review assess: an explicit nativeReviewOutcome:\"declined\" input f
 	assert.equal(escalatedDetails.plan.independentVerifier, true, "a declined review keeps the verifier an escalation requires");
 });
 
-test("gentle_review assess: an unrecognized nativeReviewOutcome value is rejected", async () => {
+test("drakonc_review assess: an unrecognized nativeReviewOutcome value is rejected", async () => {
 	const tool = reviewControllerTool({});
 	await assert.rejects(
 		() => tool.execute("call-10", { operation: "assess", input: JSON.stringify({ nativeReviewOutcome: "approved" }) }, undefined, undefined, ctx),
@@ -836,7 +836,7 @@ test("gentle_review assess: an unrecognized nativeReviewOutcome value is rejecte
 	);
 });
 
-// gentle-pi#668 correction: keyed per candidate (repository + target
+// drakonc-pi#668 correction: keyed per candidate (repository + target
 // identity), never repository alone; `closed` is never written to the memo.
 function assessOnNativeCli(currentTargetIdentity: () => string): Partial<NativeReviewCli> {
 	return {
@@ -864,7 +864,7 @@ function assessOnNativeCli(currentTargetIdentity: () => string): Partial<NativeR
 	};
 }
 
-test("gentle_review assess: derivation is bound to the exact candidate recorded, and a caller-declared closed is never trusted without native evidence (gentle-pi#668 correction, gentle-pi#1175)", async (t) => {
+test("drakonc_review assess: derivation is bound to the exact candidate recorded, and a caller-declared closed is never trusted without native evidence (drakonc-pi#668 correction, drakonc-pi#1175)", async (t) => {
 	t.after(() => __testing.clearNativeReviewOutcomeMemoForTesting());
 	__testing.clearNativeReviewOutcomeMemoForTesting();
 	let current = "target-a";
@@ -895,7 +895,7 @@ test("gentle_review assess: derivation is bound to the exact candidate recorded,
 	assert.equal(forB.outcome_source, "unknown");
 	assert.equal(forB.plan.independentVerifier, true);
 
-	// gentle-pi#1175: a caller-declared closed is only a claim. This older
+	// drakonc-pi#1175: a caller-declared closed is only a claim. This older
 	// assessment carries no candidate.consumed, so it fails closed to unknown.
 	const closed = (await tool.execute("call-14", { operation: "assess", input: JSON.stringify({ nativeReviewOutcome: "closed", ...ESCALATE }) }, undefined, undefined, ctx)).details as { nativeReviewOutcome: string; outcome_source: string; plan: { independentVerifier: boolean; writerSelfVerification: boolean } };
 	assert.equal(closed.nativeReviewOutcome, "unknown");
@@ -905,7 +905,7 @@ test("gentle_review assess: derivation is bound to the exact candidate recorded,
 });
 
 // ---------------------------------------------------------------------------
-// gentle-pi#1175 (T2): closure comes only from the exact native evidence of
+// drakonc-pi#1175 (T2): closure comes only from the exact native evidence of
 // THIS assess call -- candidate.consumed === true, which native writes only
 // inside the approved-acknowledgement burn for that exact target identity.
 // ---------------------------------------------------------------------------
@@ -958,7 +958,7 @@ async function assessWith(cli: Partial<NativeReviewCli>, input?: Record<string, 
 	return (await reviewControllerTool(cli).execute("closure", params, undefined, undefined, context)).details as AssessDetails;
 }
 
-test("gentle_review assess: already-reviewed predecessor remains medium and never proves exact-candidate closure (#1954)", async (t) => {
+test("drakonc_review assess: already-reviewed predecessor remains medium and never proves exact-candidate closure (#1954)", async (t) => {
 	t.after(() => __testing.clearNativeReviewOutcomeMemoForTesting());
 	__testing.clearNativeReviewOutcomeMemoForTesting();
 	for (const input of [undefined, { nativeReviewOutcome: "closed" }]) {
@@ -995,7 +995,7 @@ test("gentle_review assess: already-reviewed predecessor remains medium and neve
 // Verification by named risk: the closure tests below that check "closure or a
 // decline never removes the verifier" escalate, because only an escalation
 // makes the plan require one.
-test("gentle_review assess: native consumed true derives closed for this candidate", async () => {
+test("drakonc_review assess: native consumed true derives closed for this candidate", async () => {
 	const details = await assessWith(closureCli({ consumed: true }), ESCALATE);
 	assert.equal(details.nativeReviewOutcome, "closed");
 	assert.equal(details.outcome_source, "derived");
@@ -1003,7 +1003,7 @@ test("gentle_review assess: native consumed true derives closed for this candida
 	assert.equal(details.plan.independentVerifier, true, "a natively closed candidate keeps the risk-tier verifier (verify-always-rdd-high S1)");
 });
 
-test("gentle_review assess: a caller-declared closed without native consumed evidence fails closed to unknown", async () => {
+test("drakonc_review assess: a caller-declared closed without native consumed evidence fails closed to unknown", async () => {
 	for (const consumed of [false, undefined]) {
 		const details = await assessWith(closureCli({ consumed }), { nativeReviewOutcome: "closed", ...ESCALATE });
 		assert.equal(details.nativeReviewOutcome, "unknown", `consumed ${String(consumed)}`);
@@ -1012,14 +1012,14 @@ test("gentle_review assess: a caller-declared closed without native consumed evi
 	}
 });
 
-test("gentle_review assess: a caller-declared closed corroborated by native consumed stays closed", async () => {
+test("drakonc_review assess: a caller-declared closed corroborated by native consumed stays closed", async () => {
 	const details = await assessWith(closureCli({ consumed: true }), { nativeReviewOutcome: "closed", ...ESCALATE });
 	assert.equal(details.nativeReviewOutcome, "closed");
 	assert.equal(details.outcome_source, "derived", "closure is attributed to the native evidence, not to the caller's claim");
 	assert.equal(details.plan.independentVerifier, true, "closure never removes the risk-tier verifier");
 });
 
-test("gentle_review assess: explicit declined, unavailable, or unknown beats native consumed (only ever raises the bar)", async () => {
+test("drakonc_review assess: explicit declined, unavailable, or unknown beats native consumed (only ever raises the bar)", async () => {
 	for (const outcome of ["declined", "unavailable", "unknown"]) {
 		const details = await assessWith(closureCli({ consumed: true }), { nativeReviewOutcome: outcome, ...ESCALATE });
 		assert.equal(details.nativeReviewOutcome, outcome);
@@ -1028,7 +1028,7 @@ test("gentle_review assess: explicit declined, unavailable, or unknown beats nat
 	}
 });
 
-test("gentle_review assess: a recorded decline for the same candidate beats native consumed and a caller-declared closed", async (t) => {
+test("drakonc_review assess: a recorded decline for the same candidate beats native consumed and a caller-declared closed", async (t) => {
 	t.after(() => __testing.clearNativeReviewOutcomeMemoForTesting());
 	__testing.clearNativeReviewOutcomeMemoForTesting();
 	__testing.recordNativeReviewOutcome(ctx.cwd, "target-a", "declined");
@@ -1041,7 +1041,7 @@ test("gentle_review assess: a recorded decline for the same candidate beats nati
 	}
 });
 
-test("gentle_review assess: a different candidate never inherits closure or a recorded decline", async (t) => {
+test("drakonc_review assess: a different candidate never inherits closure or a recorded decline", async (t) => {
 	t.after(() => __testing.clearNativeReviewOutcomeMemoForTesting());
 	__testing.clearNativeReviewOutcomeMemoForTesting();
 	__testing.recordNativeReviewOutcome(ctx.cwd, "target-a", "declined");
@@ -1057,7 +1057,7 @@ test("gentle_review assess: a different candidate never inherits closure or a re
 
 // Changed with verification by named risk: an unassessable candidate is a
 // medium plan with no verifier unless escalated; it is still never closed.
-test("gentle_review assess: an unassessable candidate is never closed", async () => {
+test("drakonc_review assess: an unassessable candidate is never closed", async () => {
 	for (const input of [undefined, { nativeReviewOutcome: "closed" }]) {
 		const details = await assessWith(closureCli({ unassessable: true }), input);
 		assert.equal(details.nativeRisk, VERIFICATION_TIER.UNASSESSABLE);
@@ -1067,7 +1067,7 @@ test("gentle_review assess: an unassessable candidate is never closed", async ()
 	}
 });
 
-test("gentle_review assess: derived closure only changes the RDD on-path; RDD off plans are unchanged", async () => {
+test("drakonc_review assess: derived closure only changes the RDD on-path; RDD off plans are unchanged", async () => {
 	for (const risk of ["passive", "medium", "high"] as const) {
 		for (const consumed of [true, false]) {
 			// Off skips native assessment, so its fallback is unassessable even for a passive fixture.
@@ -1082,7 +1082,7 @@ test("gentle_review assess: derived closure only changes the RDD on-path; RDD of
 });
 
 // ---------------------------------------------------------------------------
-// gentle-pi#1175 (T2): the writer profile comes from the runtime-recorded
+// drakonc-pi#1175 (T2): the writer profile comes from the runtime-recorded
 // mutation receipts for this root; caller input is used only when no pending
 // runtime receipt exists.
 // ---------------------------------------------------------------------------
@@ -1113,7 +1113,7 @@ const mediumOffCli = (): Partial<NativeReviewCli> => closureCli({ rdd: "off", ri
 // Changed with verification by named risk (here and in the next two tests):
 // the runtime writer profile still wins and is reported, but a small profile
 // no longer adds a verifier to a medium plan.
-test("gentle_review assess: the runtime writer profile wins over contradicting caller input", async () => {
+test("drakonc_review assess: the runtime writer profile wins over contradicting caller input", async () => {
 	const small = receiptContext();
 	small.record({ toolCallId: "w1", writerModelId: "openai/gpt-5-mini", writerEffort: "high" });
 	const claimedLarge = await assessWith(mediumOffCli(), { writerModelId: "claude-sonnet-5", writerEffort: "high" }, small.context);
@@ -1129,7 +1129,7 @@ test("gentle_review assess: the runtime writer profile wins over contradicting c
 	assert.equal(claimedSmall.plan.independentVerifier, false);
 });
 
-test("gentle_review assess: any small or unknown pending runtime writer makes the profile small", async () => {
+test("drakonc_review assess: any small or unknown pending runtime writer makes the profile small", async () => {
 	const cases: Array<{ name: string; receipts: RuntimeProfileFields[] }> = [
 		{ name: "missing model id", receipts: [{ writerModelId: "claude-sonnet-5", writerEffort: "high" }, { writerEffort: "high" }] },
 		{ name: "no profile at all", receipts: [{}] },
@@ -1153,7 +1153,7 @@ test("gentle_review assess: any small or unknown pending runtime writer makes th
 	assert.equal(details.writerProfileSource, "runtime");
 });
 
-test("gentle_review assess: without pending runtime receipts the caller input path is unchanged", async () => {
+test("drakonc_review assess: without pending runtime receipts the caller input path is unchanged", async () => {
 	const fixture = receiptContext();
 	fixture.record({ toolCallId: "w1", writerModelId: "gpt-5-mini" });
 	fixture.consumeAll();
@@ -1176,7 +1176,7 @@ test("gentle_review assess: without pending runtime receipts the caller input pa
 	assert.equal(noSession.writerProfileSource, "fallback");
 });
 
-test("gentle_review assess never requires a lineageId (unlike most other operations)", async () => {
+test("drakonc_review assess never requires a lineageId (unlike most other operations)", async () => {
 	const tool = reviewControllerTool({});
 	// Would throw "Review controller requires a lineageId" if ASSESS were not
 	// exempted from that check.
@@ -1210,12 +1210,12 @@ function queuedAdapter(results: readonly QueuedResult[]): { adapter: ExecFileAda
 }
 
 function nativeClient(adapter: ExecFileAdapter): NativeReviewCliV216 {
-	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
+	return new NativeReviewCliV216(adapter, "/package/.drakonc-ai/drakonc-ai", 30_000, 1024 * 1024);
 }
 
 // Changed with verification by named risk: the refusal is reported as native
 // risk unassessable, which informs only (medium plan, no verifier).
-test("gentle_review assess: stderr-only refusal preserves safe actionable diagnostics and reports unassessable", async () => {
+test("drakonc_review assess: stderr-only refusal preserves safe actionable diagnostics and reports unassessable", async () => {
 	const queue = queuedAdapter([{ stdout: "", stderr: "untracked scope declaration required; use --untracked-scope=exclude or select; token=hidden-secret", exitCode: 1 }]);
 	const client = nativeClient(queue.adapter);
 	const tool = reviewControllerTool({ assess: client.assess.bind(client) });
@@ -1230,7 +1230,7 @@ test("gentle_review assess: stderr-only refusal preserves safe actionable diagno
 	assert.doesNotMatch(JSON.stringify(result), /hidden-secret/);
 });
 
-test("gentle_review assess: diagnostic projection is bounded and redacts paths and environment assignments", async () => {
+test("drakonc_review assess: diagnostic projection is bounded and redacts paths and environment assignments", async () => {
 	const queue = queuedAdapter([{ stdout: "", stderr: "untracked declaration required /private/project/file C:\\private\\project\\file PRIVATE_PROJECT=hidden-project token=hidden-token " + "x".repeat(6000), exitCode: 1 }]);
 	const client = nativeClient(queue.adapter);
 	const tool = reviewControllerTool({ assess: client.assess.bind(client) });
@@ -1370,11 +1370,11 @@ test("native assess: a non-zero exit (an older binary reporting an unknown comma
 	);
 });
 
-// gentle-pi#1175: the full native path (real decoder through the native CLI
+// drakonc-pi#1175: the full native path (real decoder through the native CLI
 // wrapper) must keep a code-only reason assessable and project the new
 // native facts without fabricating them for older envelopes.
 
-test("gentle_review assess: a native envelope whose reasons lack path/detail is assessed, not unassessable", async () => {
+test("drakonc_review assess: a native envelope whose reasons lack path/detail is assessed, not unassessable", async () => {
 	const queue = queuedAdapter([{ stdout: JSON.stringify(validEnvelope({ reasons: [{ code: "touches-auth-path" }] })) }]);
 	const client = nativeClient(queue.adapter);
 	const result = await reviewControllerTool({ assess: client.assess.bind(client) }).execute("code-only", { operation: "assess" }, undefined, undefined, ctx);
@@ -1383,7 +1383,7 @@ test("gentle_review assess: a native envelope whose reasons lack path/detail is 
 	assert.deepEqual(details.reasons, [{ code: "touches-auth-path" }]);
 });
 
-test("gentle_review assess: consumed, reviewDue, reviewDueReason, and nextTransition are projected verbatim from native", async () => {
+test("drakonc_review assess: consumed, reviewDue, reviewDueReason, and nextTransition are projected verbatim from native", async () => {
 	const queue = queuedAdapter([{ stdout: JSON.stringify(newEnvelope({ candidate: { kind: "current-changes", consumed: false } })) }]);
 	const client = nativeClient(queue.adapter);
 	const result = await reviewControllerTool({ assess: client.assess.bind(client) }).execute("new-envelope", { operation: "assess" }, undefined, undefined, ctx);
@@ -1400,7 +1400,7 @@ test("gentle_review assess: consumed, reviewDue, reviewDueReason, and nextTransi
 	assert.deepEqual(text.nextTransition, nextTransition());
 });
 
-test("gentle_review assess: an older native envelope projects no consumed/reviewDue/reviewDueReason/nextTransition", async () => {
+test("drakonc_review assess: an older native envelope projects no consumed/reviewDue/reviewDueReason/nextTransition", async () => {
 	const queue = queuedAdapter([{ stdout: JSON.stringify(validEnvelope()) }]);
 	const client = nativeClient(queue.adapter);
 	const result = await reviewControllerTool({ assess: client.assess.bind(client) }).execute("old-envelope", { operation: "assess" }, undefined, undefined, ctx);
@@ -1412,7 +1412,7 @@ test("gentle_review assess: an older native envelope projects no consumed/review
 	assert.equal(Object.hasOwn(details.candidate, "consumed"), false, "consumed must not be fabricated");
 });
 
-test("gentle_review assess: an unassessable projection omits reason.path instead of emitting an empty string", async () => {
+test("drakonc_review assess: an unassessable projection omits reason.path instead of emitting an empty string", async () => {
 	const result = await reviewControllerTool({}).execute("no-assess", { operation: "assess" }, undefined, undefined, ctx);
 	// Verification by named risk: the failed assessment shows as nativeRisk.
 	const details = result.details as { nativeRisk: string; reasons: Record<string, unknown>[] };
@@ -1437,7 +1437,7 @@ test("native assess: a wrong schema or unrecognized risk value fails closed as s
 	);
 });
 
-test("#3169: gentle_review assess of a committed range excludes untracked files with the native inventory, leaving explicit and workspace assessments alone", async (t) => {
+test("#3169: drakonc_review assess of a committed range excludes untracked files with the native inventory, leaving explicit and workspace assessments alone", async (t) => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "assess-untracked-exclusion-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const gitEnv = { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };

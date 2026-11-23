@@ -4,11 +4,11 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension, __testing } from "../extensions/drakonc-ai.ts";
 import { NativeReviewCliV216, type ExecFileAdapter } from "../lib/native-review-cli.ts";
 
 // odd/tasks/review-one-call.md T11 (S5), L19: only the run asks the provider
-// for the non-blocking findings; a direct gentle_review never does, and the
+// for the non-blocking findings; a direct drakonc_review never does, and the
 // run's result carries one bounded copy of them.
 
 type Body = Record<string, unknown>;
@@ -31,7 +31,7 @@ const scratch = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "rdd-nbf-s
 after(() => rmSync(scratch, { recursive: true, force: true }));
 execFileSync("git", ["init", "-q"], { cwd: scratch });
 writeFileSync(join(scratch, "app.ts"), "export const value = 1;\n");
-const executable = join(scratch, "gentle-ai-fixture");
+const executable = join(scratch, "drakonc-ai-fixture");
 writeFileSync(executable, "fixture provider; never executed");
 
 const captured = JSON.parse(readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", "status-v9-escalated-non-blocking.captured.json"), "utf8")) as CapturedStatus;
@@ -65,7 +65,7 @@ function provider(count: number, mutate: (set: Body) => void = () => {}) {
 		return { stdout, stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 	};
 	const tools = new Map<string, FixtureTool>();
-	createGentleAiExtension({ nativeReviewCli: new NativeReviewCliV216(adapter, executable, 30_000, 64 * 1024 * 1024), candidateViews: null, processEnv: { GENTLE_AI_TELEMETRY: "0" } })(
+	createDrakoncAiExtension({ nativeReviewCli: new NativeReviewCliV216(adapter, executable, 30_000, 64 * 1024 * 1024), candidateViews: null, processEnv: { DRAKONC_AI_TELEMETRY: "0" } })(
 		{ on() {}, registerCommand() {}, registerTool: (tool: FixtureTool) => tools.set(tool.name, tool) } as never);
 	const context = { cwd: scratch, hasUI: false, sessionManager: { getSessionId: () => "fixture-scope", getBranch: () => [], getSessionFile: () => undefined } };
 	const invoke = async (name: string, parameters: Body) => {
@@ -75,11 +75,11 @@ function provider(count: number, mutate: (set: Body) => void = () => {}) {
 	return { statusCalls, invoke, close: () => { __testing.setReviewHostRelayRunnerForTesting(); __testing.setReviewHostRelayGroupRunnersForTesting(); } };
 }
 
-test("a direct gentle_review status or inspect never asks for the non-blocking findings and relays none", async (t) => {
+test("a direct drakonc_review status or inspect never asks for the non-blocking findings and relays none", async (t) => {
 	for (const parameters of [{ operation: "status", lineageId: lineage }, { operation: "status" }, { operation: "inspect" }]) {
 		const host = provider(300);
 		try {
-			const { details, content, bytes } = await host.invoke("gentle_review", parameters);
+			const { details, content, bytes } = await host.invoke("drakonc_review", parameters);
 			t.diagnostic(`${JSON.stringify(parameters)} content ${bytes} B`);
 			assert.ok(host.statusCalls.length >= 1, JSON.stringify(parameters));
 			for (const args of host.statusCalls) assert.equal(args.includes("--non-blocking-findings"), false, `${JSON.stringify(parameters)}: ${args.join(" ")}`);
@@ -93,7 +93,7 @@ test("a model-supplied attempt to opt in through tool input is refused, never se
 	for (const parameters of [{ operation: "status", lineageId: lineage, nonBlockingFindings: true }, { operation: "status", lineageId: lineage, input: JSON.stringify({ nonBlockingFindings: true }) }]) {
 		const host = provider(1);
 		try {
-			const { details } = await host.invoke("gentle_review", parameters).catch((error: Error) => ({ details: { thrown: error.message } as Body }));
+			const { details } = await host.invoke("drakonc_review", parameters).catch((error: Error) => ({ details: { thrown: error.message } as Body }));
 			for (const args of host.statusCalls) assert.equal(args.includes("--non-blocking-findings"), false, JSON.stringify(parameters));
 			assert.doesNotMatch(JSON.stringify(details), /"non_blocking_findings"/, JSON.stringify(parameters));
 		} finally { host.close(); }
@@ -105,7 +105,7 @@ const RUN_CEILING = 32 * 1024;
 test("the run asks for them and returns one bounded copy: the nested record omits the raw set, the list and claims are capped", async (t) => {
 	const host = provider(300);
 	try {
-		const { details, bytes } = await host.invoke("gentle_review_run", { lineageId: lineage });
+		const { details, bytes } = await host.invoke("drakonc_review_run", { lineageId: lineage });
 		t.diagnostic(`run content ${bytes} B with 300 findings`);
 		assert.equal(details.outcome, "stopped", JSON.stringify(details).slice(0, 400));
 		assert.ok(host.statusCalls.length >= 1);
@@ -131,7 +131,7 @@ test("the run asks for them and returns one bounded copy: the nested record omit
 test("a small set is returned whole with no omitted count", async () => {
 	const host = provider(3);
 	try {
-		const { details } = await host.invoke("gentle_review_run", { lineageId: lineage });
+		const { details } = await host.invoke("drakonc_review_run", { lineageId: lineage });
 		assert.equal(details.outcome, "stopped");
 		assert.equal(details.non_blocking_findings.findings.length, 3);
 		assert.equal(Object.hasOwn(details, "non_blocking_findings_omitted_count"), false);
@@ -152,7 +152,7 @@ test("a malformed set fails the strict STATUS decode and the run ends blocked; o
 	for (const [label, mutate] of malformed) {
 		const host = provider(2, mutate);
 		try {
-			const { details } = await host.invoke("gentle_review_run", { lineageId: lineage });
+			const { details } = await host.invoke("drakonc_review_run", { lineageId: lineage });
 			assert.equal(details.outcome, "blocked", label);
 			for (const key of ["non_blocking_findings", "non_blocking_finding_claims"]) assert.equal(Object.hasOwn(details, key), false, `${label}: ${key}`);
 		} finally { host.close(); }
@@ -160,7 +160,7 @@ test("a malformed set fails the strict STATUS decode and the run ends blocked; o
 	for (const [label, mutate] of [["whitespace-only id", (set: Body) => { set.findings[0].id = "   "; }], ["whitespace-only statement", (set: Body) => { set.statement = " "; }]] as const) {
 		const host = provider(2, mutate);
 		try {
-			const { details } = await host.invoke("gentle_review_run", { lineageId: lineage });
+			const { details } = await host.invoke("drakonc_review_run", { lineageId: lineage });
 			assert.equal(details.outcome, "stopped", label);
 			for (const key of ["non_blocking_findings", "non_blocking_finding_claims", "non_blocking_findings_omitted_count"]) assert.equal(Object.hasOwn(details, key), false, `${label}: ${key}`);
 			assert.equal(Object.hasOwn(details.result.result, "non_blocking_findings"), false, `${label}: the raw set is still left out`);

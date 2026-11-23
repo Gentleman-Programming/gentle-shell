@@ -1,4 +1,4 @@
-// Gentle Tower web app: live floors from Gentle Shell over SSE.
+// Drakonc Tower web app: live floors from Drakonc Shell over SSE.
 import "pixi.js/unsafe-eval";
 import "./style.css";
 import { floorTop } from "./art";
@@ -20,7 +20,7 @@ let scale = 2;
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const STATE_LABEL = { need: "waiting for you", work: "working", done: "finished" } as const;
 const GLYPH = { need: "?", work: "…", done: "✓" } as const;
-const TODO_COLOR: Record<TowerTodo["status"], string> = { done: "#b4e7c7", in_progress: "#ff76c3", blocked: "#e0c27a", pending: "#3a2a4a", dropped: "#2a2030" };
+const TODO_COLOR: Record<TowerTodo["status"], string> = { done: "#b4e7c7", in_progress: "#ff4d5e", blocked: "#e0c27a", pending: "#2a3448", dropped: "#1a2438" };
 
 function project(): Project | undefined {
 	return projects.find((p) => p.cwd === current)
@@ -91,7 +91,7 @@ function renderSelection() {
 		return;
 	}
 	if (s.basic) {
-		el.innerHTML = `<div><div class="nm">Floor ${floor + 1} · ${esc(s.name)}</div><div class="meta">${esc(s.project.name)} · Live in Gentle Shell · open details by restarting it with the tower</div></div>`;
+		el.innerHTML = `<div><div class="nm">Floor ${floor + 1} · ${esc(s.name)}</div><div class="meta">${esc(s.project.name)} · Live in Drakonc Shell · open details by restarting it with the tower</div></div>`;
 		return;
 	}
 	const prog = todoProgress(s.todos);
@@ -168,9 +168,9 @@ function sizeCanvas() {
 // The tour points at live zones; the scene ones are converted from scene units to the page.
 const inScene = (r: ReturnType<typeof scene.roomRect>) => (r ? scene.toClient(r) : undefined);
 const tour = new Tour([
-	{ title: "Floors and their tasks", text: "Each card is a <b>floor</b>: one Gentle Shell session. The bar under it is its <b>task list</b>; click it to see every task and where the work is.", target: domTarget("#floors .floor") },
+	{ title: "Floors and their tasks", text: "Each card is a <b>floor</b>: one Drakonc Shell session. The bar under it is its <b>task list</b>; click it to see every task and where the work is.", target: domTarget("#floors .floor") },
 	{ title: "The people", text: "The one in the bowler hat is the floor's orchestrator: click it to <b>Talk</b>. Hats are helpers; click one to see what it does or stop it. Hover anything to see what a click does.", target: () => inScene(scene.personRect(0)) },
-	{ title: "The rooms", text: "Rooms are clickable too: the <b>MAP</b> board opens the tasks, <b>ENGRAM</b> the memory library, the <b>LOUNGE</b> and <b>GENTLE AI</b> rooms your tab. Any other room selects the floor: Talk, Tasks and Artifacts.", target: () => inScene(scene.floorRect(0)) },
+	{ title: "The rooms", text: "Rooms are clickable too: the <b>MAP</b> board opens the tasks, <b>ENGRAM</b> the memory library, the <b>LOUNGE</b> and <b>DRAKONC AI</b> rooms your tab. Any other room selects the floor: Talk, Tasks and Artifacts.", target: () => inScene(scene.floorRect(0)) },
 	{ title: "The door", text: "The door shows the most permissive floor. Click it to change <b>permissions</b>: lowering applies at once, raising asks in that session's terminal.", target: () => inScene(scene.doorRect()) },
 	{ title: "The club", text: "<b>New floor</b> opens a session, <b>Engram</b> is the library, <b>Your tab</b> is what you spent and <b>Review</b> switches outside review. Press <kbd>?</kbd> or this <b>?</b> button to see the tour again.", target: domTarget("#lobby") },
 ]);

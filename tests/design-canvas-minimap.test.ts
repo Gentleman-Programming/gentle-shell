@@ -366,7 +366,7 @@ test("the shortcuts list has a row for M, and a changed key shows in the minimap
 	assert.deepEqual([texts(row, "gd-key-current")[0], texts(row, "gd-key-action")[0]], ["M", "Show or hide the minimap"]);
 	assert.equal(canvas.document.getElementById("gd-minimap-key").textContent, "M");
 
-	const storage = memoryStorage({ "gentle-design:shortcuts": JSON.stringify({ minimap: "n" }) });
+	const storage = memoryStorage({ "drakonc-design:shortcuts": JSON.stringify({ minimap: "n" }) });
 	const custom = await minimapCanvas({}, { localStorage: storage.localStorage });
 	assert.equal(custom.document.getElementById("gd-minimap-key").textContent, "N");
 	assert.equal(press(custom, "m").defaultPrevented, false, "the old key is free");

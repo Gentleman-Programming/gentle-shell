@@ -1,4 +1,5 @@
 import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { BRAND_GLYPH } from "./brand-glyph.ts";
 import type { OrchestratorMode } from "./agent-profiles.ts";
 import { CARD_TONE, panelHeaderRow, panelInnerWidth, renderCard, type CardTheme, type CardTone } from "./shell-card.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
@@ -6,7 +7,7 @@ import { paintHoverable } from "./shell-hover.ts";
 import { PANEL_ROW_INDENT, renderPanelHeader, renderPanelRow, type PanelSummary } from "./shell-panel.ts";
 import { effectiveKey, type KeymapBindings } from "./keymaps.ts";
 
-// Gentle Todo: the task list the model keeps while it works. Everything here
+// Drakonc Todo: the task list the model keeps while it works. Everything here
 // is pure. The state lives in the session branch (every tool result carries
 // the full snapshot), and staleness is how many turns passed since the last
 // write while tasks are still open.
@@ -90,11 +91,11 @@ export interface TodoRenderOptions {
 }
 
 /** Tool results carry the snapshot under this key; the old rpiv-todo shape is read too. */
-export const TODO_DETAILS_KEY = "gentleTodo";
+export const TODO_DETAILS_KEY = "drakoncTodo";
 export const TODO_TOOL_NAME = "todo";
-export const TODO_GLYPH = "❀";
-/** Emitted on pi.events after each successful todo write; gentle-agents publishes it as session progress. */
-export const TODO_PROGRESS_EVENT = "gentle-pi:todo:progress";
+export const TODO_GLYPH = BRAND_GLYPH;
+/** Emitted on pi.events after each successful todo write; drakonc-agents publishes it as session progress. */
+export const TODO_PROGRESS_EVENT = "drakonc-pi:todo:progress";
 
 export interface TodoProgress {
 	sessionId: string;
@@ -126,7 +127,7 @@ const NOTE_ROLE = "muted";
 const STALE_AFTER_TURNS = 2;
 /** Above this many rows the finished tasks fold into one line and the rest is capped. */
 const ROW_CAP = 12;
-/** The key that folds the Todos card and section; GENTLE_PI_TODO_KEY overrides it ("" or "off" disables it), then keymaps.json. */
+/** The key that folds the Todos card and section; DRAKONC_PI_TODO_KEY overrides it ("" or "off" disables it), then keymaps.json. */
 export function todoCollapseKey(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
 	return effectiveKey("todo.collapse", env, bindings);
 }
@@ -265,7 +266,7 @@ function fromRpiv(details: { tasks?: RpivTask[]; nextId?: number }): TodoState {
 }
 
 // The last successful `todo` result on the branch is the state: ours carries
-// the snapshot under `gentleTodo`; rpiv-todo carried `tasks` + `nextId` at the top.
+// the snapshot under `drakoncTodo`; rpiv-todo carried `tasks` + `nextId` at the top.
 export function replayTodo(entries: readonly unknown[]): TodoState {
 	let state = emptyTodo();
 	for (const entry of entries as ReplayEntry[]) {
@@ -280,11 +281,11 @@ export function replayTodo(entries: readonly unknown[]): TodoState {
 	return state;
 }
 
-// gentle-shell#1367, #1662: the system prompt is a cached prefix for every
+// drakonc-shell#1367, #1662: the system prompt is a cached prefix for every
 // provider, so the block it carries is byte-stable for the whole session:
 // rules only, no task content and no counters. The current list travels as a
 // hidden transcript message appended when it changes (todoStateMessage,
-// gentle-shell#2195), so requests stay append-only and a change costs only
+// drakonc-shell#2195), so requests stay append-only and a change costs only
 // the tail of the conversation, never the prefix.
 const TODO_SMALL_TASK_ORGANIC = "A small task (Task Size) uses no todo list: do it and report.";
 const TODO_SMALL_TASK_FULL_DELEGATION = "A small task (Task Size) uses no todo list: delegate it and report.";

@@ -341,7 +341,7 @@ interface ReviewTransactionStoreOptions {
 	mutationLockPlatform?: ReviewLockPlatformAdapterV1;
 }
 
-const authoritativeReceiptBrand: unique symbol = Symbol("gentle-ai.authoritative-receipt");
+const authoritativeReceiptBrand: unique symbol = Symbol("drakonc-ai.authoritative-receipt");
 let mutationLockPlatformForTesting: ReviewLockPlatformAdapterV1 | undefined;
 
 /** @internal Test-only injection for exercising graph authority without a native platform adapter. */
@@ -942,7 +942,7 @@ export function reviewStoreRootForRepository(cwd: string): string {
 	).trim();
 	const gitPath = execFileSync(
 		"git",
-		["rev-parse", "--git-path", "gentle-ai/reviews"],
+		["rev-parse", "--git-path", "drakonc-ai/reviews"],
 		{ cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
 	).trim();
 	return isAbsolute(gitPath) ? gitPath : resolve(repositoryRoot, gitPath);

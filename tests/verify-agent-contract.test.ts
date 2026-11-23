@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-// gentle-shell#1731 T11 (S4, S5; L24): in the bench the independent verifier
+// drakonc-shell#1731 T11 (S4, S5; L24): in the bench the independent verifier
 // re-ran the writer's own tests and happy-path examples and missed defects that
 // blind adversarial probes found (an import accepting invalid split groups; a
 // budget ignoring refund parts whose own test locked the bug in). The verifier
@@ -11,7 +11,7 @@ import test from "node:test";
 // contracts, not proof of model adherence.
 
 const read = (relative: string): string => readFileSync(join(import.meta.dirname, "..", relative), "utf8");
-const verify = read("assets/agents/gentle-ai-verify.md");
+const verify = read("assets/agents/drakonc-ai-verify.md");
 
 function checklistItem(n: number): string {
 	const line = verify.split("\n").find((entry) => entry.startsWith(`${n}. **`));
@@ -90,7 +90,7 @@ test("T11: probes stay inside the authorized commands or the scratch copy, and v
 	assert.ok(!/\n {2}- (edit|write)\n/.test(tools), "verify must not gain edit or write tools");
 });
 
-test("gentle-shell#3082: verification inputs bind to named commits, not live files", () => {
+test("drakonc-shell#3082: verification inputs bind to named commits, not live files", () => {
 	containsAll(verify, [
 		"Bind verification inputs to the commits the parent named (baseline and candidate), not to live workspace files",
 		"report a preparation failure naming the path and both versions",
@@ -99,7 +99,7 @@ test("gentle-shell#3082: verification inputs bind to named commits, not live fil
 	], "input identity boundary");
 });
 
-test("gentle-shell#3082: a safety-guard denial is reportable evidence in the handoff", () => {
+test("drakonc-shell#3082: a safety-guard denial is reportable evidence in the handoff", () => {
 	containsAll(verify, [
 		"A safety-guard denial is not an infrastructure failure",
 		"rule and blocked path, sanitized of secret contents",

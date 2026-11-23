@@ -1,7 +1,7 @@
 # Fix #1192: keep the committed-range selector across intended-untracked selection
 
 Locator: `odd/tasks/fix-1192-committed-selector.md` · Engram mirror: `odd/fix-1192-committed-selector/tasks`
-Branch: `fix/1192-untracked-submission-base-ref` (worktree `../gentle-pi-1192`, base `origin/main` a9232643)
+Branch: `fix/1192-untracked-submission-base-ref` (worktree `../drakonc-pi-1192`, base `origin/main` a9232643)
 
 ## Objective
 
@@ -12,7 +12,7 @@ submission, the retained selection, and START.
 ## Problem
 
 `NativeReviewCliV216.targetStatus` built the submitted-selection STATUS argv only from the
-provider-issued tokens, which never carry `--base-ref`/`--committed-only` (gentle-ai 3.7.1).
+provider-issued tokens, which never carry `--base-ref`/`--committed-only` (drakonc-ai 3.7.1).
 The target identity changed and START failed with `candidate-target-projection-drift`.
 The same submitted branch also drops `lineageId`, and the retained pre-lineage selection does
 not remember the committed selector.
@@ -24,7 +24,7 @@ not remember the committed selector.
 - TDD: not configured for this project (standard mode). Runner:
   `node --experimental-strip-types --test <file>`; install with `pnpm install --frozen-lockfile`.
 - RDD: clone-local `off` (user decision). Verification follows the RDD-off tier from
-  `gentle-ai review assess`.
+  `drakonc-ai review assess`.
 - Delivery: `ask-on-risk`; forecast ~300 authored changed lines (single PR).
 
 ## Tasks
@@ -45,7 +45,7 @@ not remember the committed selector.
 - [x] T4 Dangling `--base-ref` (last token, no value) or empty `--base-ref=` → throw. Route:
   delegated writer. Evidence: `providerFlagValue` throws TypeError; test "targetStatus rejects a
   dangling or empty --base-ref/--lineage in the submitted tokens" (4 malformed cases).
-- [x] T5 Retained pre-lineage selection (`extensions/gentle-ai.ts`,
+- [x] T5 Retained pre-lineage selection (`extensions/drakonc-ai.ts`,
   `RetainedPreLineageNativeUntrackedSelection`) stores `baseRef`/`committedOnly`; a plain START
   adopting it uses the retained selector; an explicit START with a different selector does not
   adopt it (fail closed). Route: delegated writer. Decisions:
@@ -53,7 +53,7 @@ not remember the committed selector.
     (explicit wins, same precedent as explicit untrackedScope/submission) rather than a hard
     reject, so a differently-scoped explicit START still proceeds; the retained entry is not
     special-cased for preservation beyond that, since a successful START always clears the
-    pre-lineage `""` key afterward regardless (gentle-pi#706), so it is moot in the success path
+    pre-lineage `""` key afterward regardless (drakonc-pi#706), so it is moot in the success path
     and only matters if this START itself fails (existing same-candidate retry behavior).
   - "A retained selection without baseRef must not be adopted by an explicit committed-range
     START if that would change the candidate" is already covered by the existing post-negotiation
@@ -70,14 +70,14 @@ not remember the committed selector.
   Evidence: tests "inspect with a committed-range selector retains baseRef/committedOnly, and a
   plain START adopts it" and "an explicit baseRef that conflicts with a retained committed-range
   selector is not adopted" in `tests/review-controller-native-routing.test.ts`.
-- [x] T6 End-to-end RDD proof: load the worktree extension against the real `gentle-ai` binary
+- [x] T6 End-to-end RDD proof: load the worktree extension against the real `drakonc-ai` binary
   in a temp repo (committed range + unrelated untracked file) and show inspect →
   selection → START creates a lineage without projection drift.
-  Route: parent-run headless Pi (`gentle-shell --package-root <worktree> -p --no-session
-  --model claude-bridge/claude-opus-5-5`), i.e. Pi + `pi-claude-bridge`, gentle-ai
+  Route: parent-run headless Pi (`drakonc-shell --package-root <worktree> -p --no-session
+  --model claude-bridge/claude-opus-5-5`), i.e. Pi + `pi-claude-bridge`, drakonc-ai
   3.7.1-0.20260923150940. Temp repo: base commit, feature commit (`add.ts`), untracked
   `notes.txt` + Pi-created `.gitignore`.
-  - Baseline (installed gentle-pi, same runtime): inspect with baseRef → `sha256:1c2fdb…`
+  - Baseline (installed drakonc-pi, same runtime): inspect with baseRef → `sha256:1c2fdb…`
     `base-diff` [`add.ts`]; inspect + `untrackedScope: exclude` → `sha256:011fb4…`
     `current-changes` [] `empty_candidate_base_ref_required` (bug reproduced).
   - Fixed (this branch, 236192c5): inspect → `sha256:cad755ff…` `base-diff` [`add.ts`]

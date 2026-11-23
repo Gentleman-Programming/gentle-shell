@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
-import gentleStats from "../extensions/gentle-stats.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
+import drakoncStats from "../extensions/drakonc-stats.ts";
 import { DESKTOP_RPC_SCHEMA } from "../lib/desktop-rpc.ts";
 import {
 	DESKTOP_STATS_EVENTS,
@@ -28,8 +28,8 @@ import { isolatedConfigEnv, removeIsolatedConfigHomes } from "./isolated-config-
 after(removeIsolatedConfigHomes);
 
 // get_usage_stats: the Desktop read over the same loader and aggregation the
-// /gentle:stats panel uses. Fixtures are session files written into a fresh
-// temp sessions root outside the worktree, read by the real gentle-stats owner
+// /drakonc:stats panel uses. Fixtures are session files written into a fresh
+// temp sessions root outside the worktree, read by the real drakonc-stats owner
 // through the real Desktop transport.
 
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
@@ -108,7 +108,7 @@ function spyLoader() {
 	return { loader, calls, results };
 }
 
-/** The real Desktop transport and, unless `owner: false`, the real gentle-stats owner on one fake pi. */
+/** The real Desktop transport and, unless `owner: false`, the real drakonc-stats owner on one fake pi. */
 function harness(t: test.TestContext, options: { roots?: readonly string[]; owner?: boolean; loader?: StatsLoader } = {}) {
 	interactiveHost(t);
 	const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
@@ -130,7 +130,7 @@ function harness(t: test.TestContext, options: { roots?: readonly string[]; owne
 	} as unknown as ExtensionAPI;
 	desktopRpc(pi);
 	if (options.owner !== false) {
-		gentleStats(pi, { env: isolatedConfigEnv({}), now: () => NOW, sessionsRoots: () => options.roots ?? [], loader: options.loader });
+		drakoncStats(pi, { env: isolatedConfigEnv({}), now: () => NOW, sessionsRoots: () => options.roots ?? [], loader: options.loader });
 	}
 	const widgets: string[] = [];
 	const ctx = {
@@ -145,7 +145,7 @@ function harness(t: test.TestContext, options: { roots?: readonly string[]; owne
 		listeners,
 		async fire(event: string) { for (const handler of handlers.get(event) ?? []) await handler({}, ctx); },
 		async invoke(requestId: string, params: Record<string, unknown>, method = "get_usage_stats") {
-			await commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }), ctx);
+			await commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }), ctx);
 		},
 		responses() { return widgets.map((line) => JSON.parse(line)); },
 	};
@@ -361,7 +361,7 @@ test("discoverDesktopStatsService accepts the versioned adapter and ignores malf
 	});
 	assert.equal((await discoverDesktopStatsService(pi, ctx))?.schema, DESKTOP_STATS_SERVICE_SCHEMA);
 	listeners.set(DESKTOP_STATS_SERVICE_CHANNEL, (payload) => {
-		(payload as { respond(service: unknown): void }).respond({ schema: "gentle-pi.desktop-stats-service/v0", read: async () => ({ kind: "unavailable" }), dispose: () => {} });
+		(payload as { respond(service: unknown): void }).respond({ schema: "drakonc-pi.desktop-stats-service/v0", read: async () => ({ kind: "unavailable" }), dispose: () => {} });
 	});
 	assert.equal(await discoverDesktopStatsService(pi, ctx), undefined);
 });
@@ -432,7 +432,7 @@ test("the projection bounds 51 models, 401 days, and 51 projects and cuts long m
 	assert.deepEqual([...days].sort(), days);
 });
 
-// ---- Providers (gentle-shell-gpui parity, T10) ----
+// ---- Providers (drakonc-shell-gpui parity, T10) ----
 
 test("get_usage_stats splits usage by provider, largest first, and bounds the provider rows", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "desktop-rpc-stats-providers-"));

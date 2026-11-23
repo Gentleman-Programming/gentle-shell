@@ -4,12 +4,12 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewError, CandidateViewRegistry, injectReviewCandidateView } from "../lib/review-candidate-view.ts";
 import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
-// Field report (2026-08-16, gentle-pi main 402f9f77 + gentle-ai
+// Field report (2026-08-16, drakonc-pi main 402f9f77 + drakonc-ai
 // 2.4.0-main.20278905): after #340 the FINALIZE routing defect was fixed but
 // the Pi relay's candidate-view registration still refused for an externally
 // recovered successor. Reproduced against the live binary: hydration itself
@@ -31,7 +31,7 @@ function git(cwd: string, ...arguments_: string[]): string {
 
 /** A LINKED worktree (not the primary checkout) with dirty tracked files. */
 function linkedDirtyWorktree(t: test.TestContext): string {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-hydration-gap-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-hydration-gap-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const primary = join(root, "primary");
 	const linked = join(root, "linked");

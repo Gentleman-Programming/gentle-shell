@@ -73,7 +73,7 @@ test("bounded continuation reaches owned children and recorded roots beyond eigh
 	publisher.refreshLabel();
 	assert.ok(query(stable).catalog, "non-catalog legacy metadata does not change catalog identity");
 	const header = listPresence(profile).entries[0];
-	const path = join(profile, "gentle-agents", "catalog", `${publisher.target.sessionHash}.${publisher.target.incarnation}.json`);
+	const path = join(profile, "drakonc-agents", "catalog", `${publisher.target.sessionHash}.${publisher.target.incarnation}.json`);
 	const bytes = readFileSync(path);
 	const before = statSync(path).ino;
 	publisher.updateDiscovery(peer, { workspace: "/host-metadata-only", tasks, registered });
@@ -96,7 +96,7 @@ test("bounded continuation reaches owned children and recorded roots beyond eigh
 	symlinkSync(join(profile, "absent"), path);
 	assert.equal(query().catalog, undefined);
 	publisher.dispose();
-	assert.equal(readdirSync(join(profile, "gentle-agents", "catalog")).length, 1, "replacement link is not removed");
+	assert.equal(readdirSync(join(profile, "drakonc-agents", "catalog")).length, 1, "replacement link is not removed");
 	const replacement = PresencePublisher.start({ profile, sessionId: "peer", label: "Replacement", activity: [] });
 	t.after(() => replacement.dispose());
 	replacement.updateDiscovery(peer, { workspace: "/repo", tasks, registered });
@@ -137,7 +137,7 @@ test("explicit bounds, literal unknown paths, no new Git resolution, private sib
 	assert.equal(probes, 15);
 	assert.equal(listPresence(profile).scanned, 3, "catalog cannot inflate legacy header directory scan");
 	publisher.dispose();
-	assert.deepEqual(readdirSync(join(profile, "gentle-agents", "catalog")), []);
+	assert.deepEqual(readdirSync(join(profile, "drakonc-agents", "catalog")), []);
 	const huge = projectCatalog(tasks.map(t => ({ ...t, id: "😀".repeat(120), cwd: "/" + "x".repeat(255) })), registered);
 	assert.ok(huge.tasks.length < 64, "byte budget also omits whole entries");
 	assert.equal(huge.tasks.length + huge.omittedTasks, tasks.length);

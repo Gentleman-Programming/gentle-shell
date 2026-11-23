@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { assertReviewLastEventClosureBinding, decodeReviewLastEventClosureV1, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 

@@ -1,13 +1,13 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 import { applyToolOverlay, loadToolOverlays } from "./agent-tool-overlay.ts";
 import type { AgentProfilesFile } from "./agent-profiles.ts";
 import { DEFAULT_REPORT_MAX_BYTES } from "./agents-report-cap.ts";
 import { THINKING_LEVELS as ROUTING_THINKING_LEVELS, isServiceTier, type AgentModelConfig, type ServiceTier, type ThinkingLevel as RoutingThinkingLevel } from "./model-routing-authority.ts";
 
-// Gentle Agents configuration. Agent definitions are markdown files with YAML
-// frontmatter (the format gentle-ai installs) and runtime settings come from
+// Drakonc Agents configuration. Agent definitions are markdown files with YAML
+// frontmatter (the format drakonc-ai installs) and runtime settings come from
 // subagents.json at the global and project level. Everything here is pure
 // apart from the discovery helpers, which take their roots as arguments.
 
@@ -192,7 +192,7 @@ function scalar(value: FrontmatterValue | undefined): string | undefined {
 
 const KNOWN_AGENT_FRONTMATTER_KEYS: readonly string[] = ["name", "description", "model", "thinking", "effort", "thinking_level", "subagent_mode", "mode", "tools"];
 
-// gentle-shell#3386: a key nothing reads (for example `extensions:`) used to be dropped silently.
+// drakonc-shell#3386: a key nothing reads (for example `extensions:`) used to be dropped silently.
 export function unknownFrontmatterKeys(text: string): string[] {
 	return Object.keys(parseFrontmatter(text).data).filter((key) => !KNOWN_AGENT_FRONTMATTER_KEYS.includes(key));
 }
@@ -236,7 +236,7 @@ export function agentDirectories(roots: DiscoveryRoots): Array<{ dir: string; sc
 }
 
 export function discoverAgents(roots: DiscoveryRoots): DiscoveryResult {
-	const overlays = loadToolOverlays(roots.configHome ?? gentlePiConfigHome(), roots.cwd);
+	const overlays = loadToolOverlays(roots.configHome ?? drakoncPiConfigHome(), roots.cwd);
 	const agents = new Map<string, AgentDefinition>();
 	const errors: string[] = [];
 	for (const { dir, scope } of agentDirectories(roots)) {
@@ -381,7 +381,7 @@ export interface UnmatchedProfileKey {
 // prefix exists to prevent; reporting the unmatched key keeps resolution
 // exact-match and makes the misconfiguration visible instead.
 /**
- * Provider review roles (gentle-pi#2271): routed by key for the in-process
+ * Provider review roles (drakonc-pi#2271): routed by key for the in-process
  * reviewer, never installed as agent files, so a model_profiles entry for them
  * is always matched.
  */
@@ -396,10 +396,10 @@ export function unmatchedProfileKeys(
 	const suggestionFor = (key: string): string | undefined => {
 		const lowered = key.toLowerCase();
 		if (lowerNames.has(lowered)) return agents.find((agent) => agent.name.toLowerCase() === lowered)?.name;
-		const stripped = lowered.replace(/^gentle-ai-/, "");
+		const stripped = lowered.replace(/^drakonc-ai-/, "");
 		for (const candidate of [lowered, stripped]) {
 			for (const name of lowerNames) {
-				if (name === candidate || name === `gentle-ai-${candidate}`) {
+				if (name === candidate || name === `drakonc-ai-${candidate}`) {
 					return agents.find((agent) => agent.name.toLowerCase() === name)?.name;
 				}
 			}

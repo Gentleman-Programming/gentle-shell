@@ -1,9 +1,9 @@
 ---
-name: gentle-ai-chained-pr
+name: drakonc-ai-chained-pr
 description: "Trigger: PRs over 400 lines, stacked PRs, review slices. Split oversized changes into chained PRs that protect review focus."
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "1.0"
 ---
 
@@ -14,7 +14,7 @@ Load this skill when a planned PR may exceed **400 changed lines**, an ODD featu
 ## Hard Rules
 
 - Recommend slicing PRs over **400 changed lines**; offer the ordered oversized-delivery menu below and follow the user's selection subject to the destination repository's documented contribution/size policy.
-- `size:exception` is a Gentle-owned repository policy, not a universal label requirement. Never request, create, or add this label for generic users unless the destination policy uses it. Preserve that policy's maintainer acceptance gates and protected-label human authorization; selection alone grants neither.
+- `size:exception` is a Drakonc-owned repository policy, not a universal label requirement. Never request, create, or add this label for generic users unless the destination policy uses it. Preserve that policy's maintainer acceptance gates and protected-label human authorization; selection alone grants neither.
 - The budget constrains how work is **sliced**, never the code itself. Never delete comments, blank lines, docs, or tests, and never compress or restyle code, to fit under the budget.
 - Slicing is bounded: make **one** honest slicing pass. If no cohesive split brings every slice within budget, stop iterating, keep the best cohesive split, and report the final line count and rationale. Recommend a size exception only when the destination policy provides that route.
 - Keep each PR reviewable in about **≤60 minutes**.

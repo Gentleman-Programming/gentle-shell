@@ -26,13 +26,13 @@ const SUBAGENT_SCRATCH_NAME = new RegExp(`^${SUBAGENT_SCRATCH_PREFIX}[A-Za-z0-9]
 /** Whether a path's last component is named as the runtime names a session scratch. */
 export const isSessionScratchName = (path: string): boolean => SCRATCH_NAME.test(basename(path));
 export const SWEEP_GRACE_MS = 60 * 60 * 1000;
-/** `/gentle:scratch clean` keeps the live scratch's entries changed this long before it started. */
+/** `/drakonc:scratch clean` keeps the live scratch's entries changed this long before it started. */
 export const CLEAN_RECENT_MS = 60_000;
 
 // The TMPDIRs of this process's live and quarantined subagents. On globalThis
 // because Pi loads every extension as its own module instance, again on /reload,
 // and a runner of an earlier instance may still hold a quarantined child.
-const LIVE_SUBAGENT_SCRATCH = Symbol.for("gentle-pi.live-subagent-scratch");
+const LIVE_SUBAGENT_SCRATCH = Symbol.for("drakonc-pi.live-subagent-scratch");
 const liveSubagentRegistry = (): Set<string> => {
 	const holder = globalThis as { [LIVE_SUBAGENT_SCRATCH]?: Set<string> };
 	return (holder[LIVE_SUBAGENT_SCRATCH] ??= new Set());

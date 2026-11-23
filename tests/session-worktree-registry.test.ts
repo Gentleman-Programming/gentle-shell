@@ -307,7 +307,7 @@ test("memoized identity still observes removal, nested repositories and expiry",
 	assert.equal(calls, 4, "a missing repository is never memoized, so bootstrap is observed at once");
 });
 
-test("Windows root spelling accepts forward slashes as the native separator only (gentle-shell#2314)", () => {
+test("Windows root spelling accepts forward slashes as the native separator only (drakonc-shell#2314)", () => {
 	// Git prints C:/repo while realpath returns C:\\repo; both name the same root.
 	assert.equal(nativeRootSpelling("C:/path/to/sibling-repo", "win32"), "C:\\path\\to\\sibling-repo");
 	assert.equal(nativeRootSpelling("C:\\path\\to\\sibling-repo", "win32"), "C:\\path\\to\\sibling-repo");

@@ -51,7 +51,7 @@ interface PrivateEditor {
   onChange?: (text: string) => void;
   pastes: Map<number, string>;
   pasteCounter: number;
-  /** Host-owned atomic spans (gentle-shell#2464 image chips) that NORMAL motions must not split. */
+  /** Host-owned atomic spans (drakonc-shell#2464 image chips) that NORMAL motions must not split. */
   atomicSpans?(line: string): Array<{ start: number; end: number }>;
   undoStack: Stack;
   history: string[];
@@ -74,7 +74,7 @@ interface PrivateEditor {
   exitHistoryBrowsing(): void;
 }
 
-// The single audited-release source for the adapter and Gentle Shell's runtime
+// The single audited-release source for the adapter and Drakonc Shell's runtime
 // identity gates. Add a release only after re-auditing the files named above.
 export const AUDITED_PI_EDITOR_VERSIONS = Object.freeze(["0.99.1", "0.99.2", "1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.5.1", "1.5.2", "1.6.0"] as const);
 export type AuditedPiEditorVersion = (typeof AUDITED_PI_EDITOR_VERSIONS)[number];

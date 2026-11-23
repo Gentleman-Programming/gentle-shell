@@ -18,7 +18,7 @@ registerBackgroundJobTools({ registerTool: (tool) => tools.push(tool), registerM
 });
 const background = tools.find((tool) => tool.name === "bash_background")!;
 const core = readFileSync(new URL("../assets/orchestrator.md", import.meta.url), "utf8");
-const guide = readFileSync(new URL("../docs/gentle-shell.md", import.meta.url), "utf8");
+const guide = readFileSync(new URL("../docs/drakonc-shell.md", import.meta.url), "utf8");
 
 for (const [name, text] of Object.entries({ registeredDescription: background.description, guide })) {
 	test(`${name}: synchronous checks have an inclusive explicit 30-second limit and safe fallback`, () => {

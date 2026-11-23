@@ -113,21 +113,21 @@ test("the rail Status draws Changes, Review and Integrations with the agent prof
 		costTotal: 1, subscription: false, usage: undefined,
 		changes: { files: 22, added: 802, deleted: 352 },
 		review: { state: "consent" as const, scope: "app.ts +2 files" },
-		statuses: ["🧠 gentle-pi · ready", "💥 SUPER YOLO ON — no permission prompts; private paths stay blocked"],
+		statuses: ["🧠 drakonc-pi · ready", "💥 SUPER YOLO ON — no permission prompts; private paths stay blocked"],
 	};
 	const lines = renderShellSidebarBar(model, plain as never, 48, { density: "comfortable", visibility: { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false } }, "ctrl+shift+t todos · alt+u usage");
 	for (const line of lines) assert.equal(visibleWidth(line), 48, `row fills the rail: ${line}`);
 	const rows = lines.map((line) => line.trimEnd());
 	assert.deepEqual(rows, [
 		edge("▾ CHANGES", "22 files", 48),
-		edge("  +802 −352", "/gentle:changes", 48),
+		edge("  +802 −352", "/drakonc:changes", 48),
 		"",
 		edge("▾ REVIEW", "needs you", 48),
 		"  Needs your consent",
 		"  app.ts +2 files",
 		"",
 		edge("▾ INTEGRATIONS", "2", 48),
-		"  - 🧠 gentle-pi · ready",
+		"  - 🧠 drakonc-pi · ready",
 		"  - 💥 SUPER YOLO ON — no permission prompts;",
 		"    private paths stay blocked",
 		"",
@@ -140,7 +140,7 @@ test("the rail Status keeps an empty Changes row, hides Review without evidence 
 	const base = { cwd: "/p", branch: null, dirty: undefined, sessionName: undefined, modelId: "m", effort: undefined, contextPercent: null, contextWindow: 0, costTotal: 0, subscription: false, usage: undefined, statuses: [] };
 	const visibility = { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false };
 	const rows = renderShellSidebarBar(base, plain as never, 40, { density: "compact", visibility }).map((line) => line.trimEnd());
-	assert.deepEqual(rows, [edge("▾ CHANGES", "clean", 40), edge("  no captured changes", "/gentle:changes", 40), edge("▾ INTEGRATIONS", "none", 40), "  no status reported"]);
+	assert.deepEqual(rows, [edge("▾ CHANGES", "clean", 40), edge("  no captured changes", "/drakonc:changes", 40), edge("▾ INTEGRATIONS", "none", 40), "  no status reported"]);
 	const hidden = renderShellSidebarBar(base, plain as never, 40, { density: "compact", visibility: { ...visibility, changes: false } }).map((line) => line.trimEnd());
 	assert.doesNotMatch(hidden.join("\n"), /CHANGES/);
 });
@@ -148,18 +148,18 @@ test("the rail Status keeps an empty Changes row, hides Review without evidence 
 // The wide fullscreen chrome (design/shell-rework/02-proposal.html): a title row
 // with the project identity above, one status bar row below.
 const chromeModel = {
-	cwd: "~/work/gentle-pi", branch: "feat/shell-ide-rework", dirty: 3, sessionName: "fleet adopt", profile: "claude (session)",
+	cwd: "~/work/drakonc-pi", branch: "feat/shell-ide-rework", dirty: 3, sessionName: "fleet adopt", profile: "claude (session)",
 	modelId: "claude-opus-5-5", effort: "high", contextPercent: 27, contextWindow: 1000,
 	costTotal: 0, subscription: false, usage: undefined,
 	permission: { mode: "SUPER-YOLO", detail: "no permission prompts; private paths stay blocked" },
-	statuses: ["Permissions: SUPER-YOLO", "💥 SUPER YOLO ON — no permission prompts; private paths stay blocked", "🧠 gentle-pi · ready"],
-	integrations: ["🧠 gentle-pi · ready"],
+	statuses: ["Permissions: SUPER-YOLO", "💥 SUPER YOLO ON — no permission prompts; private paths stay blocked", "🧠 drakonc-pi · ready"],
+	integrations: ["🧠 drakonc-pi · ready"],
 };
 
 test("the title row names the project once and always keeps the session; the profile rides the status bar", () => {
 	const row = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 90));
 	assert.equal(visibleWidth(row), 90);
-	assert.match(row, /^ ✿ gentle-pi  ~\/work\/gentle-pi +fleet adopt $/);
+	assert.match(row, /^ 🐉 drakonc-pi  ~\/work\/drakonc-pi +fleet adopt $/);
 	const narrow = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 34));
 	assert.equal(visibleWidth(narrow), 34);
 	assert.match(narrow, /fleet adopt $/, "the path gives way before the session");
@@ -196,7 +196,7 @@ test("a narrow status bar drops usage before the model and keeps the branch", ()
 });
 
 test("Integrations bullets distinguish items from continuations without losing details or folding", () => {
- const model = { ...chromeModel, integrations: ["🧠 gentle-pi · ready", "Fast requested; last response from server: Standard (default)"] };
+ const model = { ...chromeModel, integrations: ["🧠 drakonc-pi · ready", "Fast requested; last response from server: Standard (default)"] };
  const visibility = { changes: false, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false };
  for (const width of [28, 40, 72]) {
   const result = renderShellStatusSections(model, plain, width, { density: "compact", visibility });
@@ -221,13 +221,13 @@ test("Integrations bullets distinguish items from continuations without losing d
 test("Integrations explains the permission mode without repeating it", () => {
 	const rows = renderShellSidebarBar(chromeModel, plain as never, 48).map((line) => line.trimEnd());
 	const at = rows.findIndex((row) => row.startsWith("▾ INTEGRATIONS"));
-	assert.deepEqual(rows.slice(at + 1), ["  - permissions no permission prompts; private", "    paths stay blocked", "  - 🧠 gentle-pi · ready"]);
+	assert.deepEqual(rows.slice(at + 1), ["  - permissions no permission prompts; private", "    paths stay blocked", "  - 🧠 drakonc-pi · ready"]);
 	assert.doesNotMatch(rows.join("\n"), /SUPER-YOLO|SUPER YOLO/);
 });
 
 // Mobile (design/shell-rework/05-mobile.html, 07-many-agents-mobile.html): below
 // the rail breakpoint live work folds into one row above the editor, and
-// /gentle:panel opens the rail's sections as a full-width sheet.
+// /drakonc:panel opens the rail's sections as a full-width sheet.
 test("the work row shows the current todo, or the agents while they run, with the todo count", () => {
 	const todo = todoWorkSummary(state([["Done", "done"], ["Run the full suite", "in_progress"], ["Next", "pending"]]), plain);
 	assert.deepEqual(todo, { left: "◐ Run the full suite", right: "1/3", rightLabel: "todos" });
@@ -248,7 +248,7 @@ test("the panel sheet stacks the rail sections under a title row and scrolls wit
 	]);
 	const sheet = renderPanelSheet(parts as never, plain, 30, { rows: 20, scrollTop: 0 });
 	const rows = sheet.lines.map((line) => stripAnsi(line).trimEnd());
-	assert.deepEqual(rows, [edge(" ✿ Panel", "esc back ", 30).trimEnd(), "", " ▾ TODOS", "   ○ one", "", " ▾ AGENTS", "", " ▾ CHANGES", "   clean", ...Array(11).fill("")]);
+	assert.deepEqual(rows, [edge(" 🐉 Panel", "esc back ", 30).trimEnd(), "", " ▾ TODOS", "   ○ one", "", " ▾ AGENTS", "", " ▾ CHANGES", "   clean", ...Array(11).fill("")]);
 	for (const line of sheet.lines) assert.equal(visibleWidth(stripAnsi(line)), 30);
 	const clipped = renderPanelSheet(parts as never, plain, 30, { rows: 5, scrollTop: 2 });
 	assert.equal(clipped.lines.length, 5, "title row plus four content rows");
@@ -290,7 +290,7 @@ test("a short sheet fills the resized viewport with painted rows without adding 
 test("the mobile title row carries the model and the profile, since the narrow status bar leaves them out", () => {
 	const row = stripAnsi(renderShellTitleRow(chromeModel, plain as never, 72, { model: true }));
 	assert.equal(visibleWidth(row), 72);
-	assert.match(row, /^ ✿ gentle-pi .*claude-opus-5-5 · high · claude \(session\) $/);
+	assert.match(row, /^ 🐉 drakonc-pi .*claude-opus-5-5 · high · claude \(session\) $/);
 });
 
 test("a long branch gives way before the context and cost in a phone-width status bar", () => {
@@ -302,7 +302,7 @@ test("a long branch gives way before the context and cost in a phone-width statu
 	assert.match(row, /^ feat\/shell\S*… │ 💥 SUPER-YOLO /, "the branch is clipped and the permission mode stays");
 });
 
-test("the rail Status sections are click targets: headers collapse them and the Changes row opens /gentle:changes", () => {
+test("the rail Status sections are click targets: headers collapse them and the Changes row opens /drakonc:changes", () => {
 	const model = { ...chromeModel, changes: { files: 2, added: 7, deleted: 3 }, review: undefined };
 	const open = renderShellStatusSections(model, plain as never, 48, undefined, undefined, {});
 	const at = (pattern: RegExp) => open.lines.findIndex((line) => pattern.test(stripAnsi(line)));
@@ -313,11 +313,11 @@ test("the rail Status sections are click targets: headers collapse them and the 
 	]);
 	const collapsed = renderShellStatusSections(model, plain as never, 48, undefined, undefined, { collapsed: new Set(["integrations"]) }).lines.map((line) => stripAnsi(line).trimEnd());
 	assert.ok(collapsed.some((line) => /^▸ INTEGRATIONS/.test(line)), "a collapsed section keeps its header with ▸");
-	assert.ok(!collapsed.some((line) => /gentle-pi · ready/.test(line)), "and hides its rows");
+	assert.ok(!collapsed.some((line) => /drakonc-pi · ready/.test(line)), "and hides its rows");
 	const hovered = renderShellStatusSections(model, theme as never, 120, undefined, undefined, { hovered: "changes" }).lines.join("\n");
 	assert.match(hovered, /<warning>▾<\/warning> <warning>\*CHANGES\*<\/warning>/, "a hovered header paints the shared hover role");
 	const hoveredOpen = renderShellStatusSections(model, theme as never, 120, undefined, undefined, { hovered: "open-changes" }).lines.join("\n");
-	assert.match(hoveredOpen, /<warning>\/gentle:changes<\/warning>/, "a hovered Changes row paints its command in the hover role");
+	assert.match(hoveredOpen, /<warning>\/drakonc:changes<\/warning>/, "a hovered Changes row paints its command in the hover role");
 	assert.deepEqual(renderShellSidebarBar(model, plain as never, 48), open.lines, "renderShellSidebarBar stays the lines of the same render");
 });
 

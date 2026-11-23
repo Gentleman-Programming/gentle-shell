@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 // These are instruction-delivery contracts, not proof of autonomous model adherence.
@@ -10,9 +10,9 @@ const read = (path: string) => readFileSync(join(import.meta.dirname, "..", path
 const core = read("assets/orchestrator.md");
 const delegation = readDelegationDetail();
 const memory = read("assets/orchestrator-memory.md");
-// The harness as rendered by extensions/gentle-ai.ts, including the ODD steps
+// The harness as rendered by extensions/drakonc-ai.ts, including the ODD steps
 // it takes from the mirrored provider bundle's routing/pi.md.
-const wrapper = __testing.buildGentlePrompt("gentleman");
+const wrapper = __testing.buildDrakoncPrompt("drakoncman");
 
 function containsAll(text: string, clauses: readonly string[]): void {
 	for (const clause of clauses) assert.ok(text.includes(clause), `missing contract: ${clause}`);
@@ -110,7 +110,7 @@ test("S7: the feature document is canonical and the Engram mirror and `todo` are
 	assert.ok(!delegation.includes(statement), "the delegation modules do not restate it");
 });
 
-// gentle-shell#1494 field follow-up: tracking must not grow its own reconciliation
+// drakonc-shell#1494 field follow-up: tracking must not grow its own reconciliation
 // scripts, invented size gates, or repeated malformed writer launches.
 test("tracking sync recovers from partial writes without custom reconciliation gates", () => {
 	containsAll(memory, [
@@ -139,10 +139,10 @@ test("assumption challenge and task checks do not activate or duplicate native r
 		"functional checks per task",
 		"native review runs at that work-unit commit or PR slice boundary",
 		"Never replace assessment with model judgment, task size or defect severity",
-		"`gentle_review` `{\"operation\":\"assess\"}`",
+		"`drakonc_review` `{\"operation\":\"assess\"}`",
 		// P5b (C5): the injected contract governs how a review starts, runs, and gets consent; tracking keeps the
 		// commit-boundary rules mirrored from routing/pi.md, which the rendered prompt carries nowhere else.
-		"When RDD is enabled, the injected Gentle AI contract governs native review start, execution and consent; this module adds only assessment and commit boundaries.",
+		"When RDD is enabled, the injected Drakonc AI contract governs native review start, execution and consent; this module adds only assessment and commit boundaries.",
 		"A not-due `passive` commit needs no review and the boundary advances; `under_budget` stays pending in the slice and never triggers review by itself.",
 		"lower the tier or infer low risk",
 		"When RDD is disabled, do not start or prompt for RDD",
@@ -150,15 +150,15 @@ test("assumption challenge and task checks do not activate or duplicate native r
 });
 
 // S14: commit per reviewable slice. The exact canon sentence for ODD step 6,
-// identical in gentle-ai routing.go and this harness.
+// identical in drakonc-ai routing.go and this harness.
 const S14_COMMIT_SENTENCE =
 	"Commit work units in reviewable slices of about 400 authored changed lines on the feature branch (branch first when on the default branch), with tests and docs alongside the behavior and a Conventional Commit message; a unit whose Risk line names a high-risk item gets its own commit so native review can take it alone, and the last slice closes the feature. Record the commit that holds each task in the feature document as evidence.";
 const PER_TASK_COMMIT_SENTENCE =
 	"Every tracked task closes with at least one work-unit commit on the feature branch, branch first when on the default branch, with tests and docs alongside the behavior, using a Conventional Commit message; record the commit identity in the feature document as evidence.";
 
 test("S14: the rendered parent prompt commits per reviewable slice, not per task", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.equal(prompt.split(S14_COMMIT_SENTENCE).length - 1, 1, `[${persona}] the parent prompt must carry the S14 sentence once`);
 		assert.ok(!prompt.includes(PER_TASK_COMMIT_SENTENCE), `[${persona}] the parent prompt keeps the per-task commit sentence`);
 		assert.ok(
@@ -189,7 +189,7 @@ test("ODD commits work units in reviewable slices and reviews the commit or PR s
 	);
 	assert.ok(!core.includes("- Never commit unless the user explicitly asks."), "core Safety contradicts ODD step 6 work-unit commits");
 	containsAll(delegation, [
-		'After each work-unit commit, assess it with `gentle_review` `{"operation":"assess"}` and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`',
+		'After each work-unit commit, assess it with `drakonc_review` `{"operation":"assess"}` and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`',
 		"start at the branch point; each reviewed boundary is the next base",
 		// S14: commit per reviewable slice; one commit may hold several tasks, so outcomes are recorded per commit.
 		"Record each commit's assessed tier, outcome (not due, granted, declined, unavailable) and `reviewDueReason`",
@@ -293,13 +293,13 @@ test("one feature document carries intent, accepted rationale and worker context
 		"New scope, external edits, stale proof, or missing context require inspecting the affected state before editing",
 		"passes the locator, task IDs, and linked `S#`; workers read the document until `## Log` before edits",
 	]);
-	containsAll(read("assets/agents/gentle-ai-worker.md"), [
+	containsAll(read("assets/agents/drakonc-ai-worker.md"), [
 		"Read the parent's ODD feature document locator before edits",
 		"Preserve valid completed work; return proposed intent/task changes and their reasons",
 	]);
 });
 
-// gentle-shell#1713: handoffs paraphrased the user's request, the feature
+// drakonc-shell#1713: handoffs paraphrased the user's request, the feature
 // document summarized it, and verify never saw it. The document is now the
 // specification subagents read by reference, in a fixed token-cheap order.
 test("feature document is the verbatim specification subagents read by reference", () => {
@@ -316,10 +316,10 @@ test("feature document is the verbatim specification subagents read by reference
 		"a verdict per `S#`",
 		"reproduce it before deciding it already works",
 	];
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		containsAll(prompt, [...always,
-			// Parity with the gentle-ai canon (gentle-ai#5215).
+			// Parity with the drakonc-ai canon (drakonc-ai#5215).
 			"name the document, task, and specs (for example `Spec: odd/tasks/<feature>.md, T2, S3-S4`), tell workers to read until `## Log`",
 			"runs the spec's examples the parent authorized, against isolated state when they mutate data",
 		]);
@@ -338,27 +338,27 @@ test("feature document is the verbatim specification subagents read by reference
 		"never translate, condense, or paraphrase the user's requirements",
 		"Reproduce a user-reported failure",
 	]);
-	containsAll(read("assets/agents/gentle-ai-worker.md"), ["until `## Log`", "which `S#` the change covers"]);
-	containsAll(read("assets/agents/gentle-ai-verify.md"), [
+	containsAll(read("assets/agents/drakonc-ai-worker.md"), ["until `## Log`", "which `S#` the change covers"]);
+	containsAll(read("assets/agents/drakonc-ai-verify.md"), [
 		"execute only exact test, build, lint, or spec example commands explicitly authorized by the parent",
 		"verbatim user entries in `## Log`",
 		"verdict per `S#`",
 		"compare the exact output and error text",
 		"isolated state",
 	]);
-	containsAll(read("assets/agents/gentle-ai-explore.md"), ["until `## Log`"]);
+	containsAll(read("assets/agents/drakonc-ai-explore.md"), ["until `## Log`"]);
 });
 
 test("ODD defaults to applicable test-first without chat or TUI activation", () => {
-	const worker = read("assets/agents/gentle-ai-worker.md");
-	const verify = read("assets/agents/gentle-ai-verify.md");
+	const worker = read("assets/agents/drakonc-ai-worker.md");
+	const verify = read("assets/agents/drakonc-ai-verify.md");
 	const support = read("assets/support/strict-tdd.md") + read("assets/support/strict-tdd-verify.md");
-	const skill = read("skills/gentle-ai/SKILL.md");
+	const skill = read("skills/drakonc-ai/SKILL.md");
 	// S11 T3: deduplicated. The core sits after the harness in the same system
 	// prompt; its pointer sentence restated the harness test-first policy, so the
 	// rendered parent prompt (harness + core) now carries that policy exactly
 	// once, from the harness, instead of the core carrying its own copy.
-	const rendered = __testing.buildGentlePrompt("gentleman");
+	const rendered = __testing.buildDrakoncPrompt("drakoncman");
 	// P5b (C3): the delegation modules forward the policy instead of restating its cycle.
 	for (const text of [rendered, worker, verify, support, skill, wrapper]) {
 		containsAll(text, ["applicable", "RED", "GREEN"]);
@@ -382,7 +382,7 @@ test("ODD defaults to applicable test-first without chat or TUI activation", () 
 	assert.doesNotMatch(core + delegation + worker + support + skill + wrapper, /If tests exist, use strict TDD/i);
 });
 
-// S9 canon change (gentle-ai 87a3b2eb): "These triggers are mandatory, not
+// S9 canon change (drakonc-ai 87a3b2eb): "These triggers are mandatory, not
 // advisory." read as a default to delegate (L8). A trigger is mandatory only
 // once its condition truly holds; none holds by default, inline when in doubt.
 test("delegation triggers are behavioral in the lazy canonical port and the always-on ODD step", () => {
@@ -448,14 +448,14 @@ test("core and lazy canonical trigger lists agree in numbering and semantics", (
 	}
 });
 
-// Evidence-budget rule (gentle-shell#1587, measured in gentle-ai#5139): every
+// Evidence-budget rule (drakonc-shell#1587, measured in drakonc-ai#5139): every
 // routing surface states the same numbers, and the retired file-count and
 // tool-call triggers are gone from all of them.
 test("evidence-budget numbers agree across routing surfaces and retired triggers are gone", () => {
 	const surfaces: Record<string, string> = {
 		"assets/orchestrator.md": core,
 		"assets/orchestrator-delegation.md": delegation,
-		"skills/gentle-ai/SKILL.md": read("skills/gentle-ai/SKILL.md"),
+		"skills/drakonc-ai/SKILL.md": read("skills/drakonc-ai/SKILL.md"),
 	};
 	for (const [path, text] of Object.entries(surfaces)) {
 		containsAll(text, [
@@ -468,7 +468,7 @@ test("evidence-budget numbers agree across routing surfaces and retired triggers
 		]);
 		assert.doesNotMatch(text, /4-file rule|20 tool calls|5 exploratory (?:file )?reads/, `${path} keeps a retired trigger`);
 	}
-	for (const agent of ["assets/agents/gentle-ai-explore.md", "assets/agents/gentle-ai-verify.md"]) {
+	for (const agent of ["assets/agents/drakonc-ai-explore.md", "assets/agents/drakonc-ai-verify.md"]) {
 		containsAll(read(agent), ["at most ~2k tokens", "`path:line`"]);
 	}
 });
@@ -483,7 +483,7 @@ test("context backstop prompt text defers to the runtime signal instead of a fix
 		assert.ok(text.includes("several steps"), `${path} must say only a unit needing several steps is delegated`);
 	}
 	const docs = read("docs/readme-reference.md");
-	containsAll(docs, ["GENTLE_PI_CONTEXT_BACKSTOP_TOKENS", "GENTLE_PI_CONTEXT_BACKSTOP_FRACTION", "min(", "`getContextUsage()`", "re-armed"]);
+	containsAll(docs, ["DRAKONC_PI_CONTEXT_BACKSTOP_TOKENS", "DRAKONC_PI_CONTEXT_BACKSTOP_FRACTION", "min(", "`getContextUsage()`", "re-armed"]);
 	assert.doesNotMatch(docs, /~150k tokens|150,000-token context backstop/, "docs still describe the fixed backstop");
 });
 
@@ -504,10 +504,10 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 		"7. **Close.**",
 		"call it from the primary session only when its ODD phase actually changes",
 		"Harness principles:",
-		"# el Gentleman Orchestrator",
+		"# el Drakoncman Orchestrator",
 	];
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		let cursor = -1;
 		for (const clause of orderedClauses) {
 			const index = prompt.indexOf(clause);
@@ -523,8 +523,8 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 	// S11 T3: deduplicated. The harness principle and the core pointer sentence
 	// both restated the mandatory workflow; the steps' own header (asserted in
 	// order above as "predefined workflow of this orchestrator") is the one statement.
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.equal(prompt.split("is the predefined workflow").length - 1, 1, `[${persona}] the ODD workflow is declared more than once`);
 		assert.ok(!prompt.includes("ODD (Default Workflow, harness section above)"), `[${persona}] the core restates the ODD workflow`);
 	}
@@ -533,7 +533,7 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 });
 
 // S14: commit per reviewable slice; outcomes are recorded per commit, since one commit may hold several tasks.
-// Mirrors gentle-ai#6110: a high-risk unit following pending `under_budget`
+// Mirrors drakonc-ai#6110: a high-risk unit following pending `under_budget`
 // commits assesses that slice first without forcing review. The rendered prompt carries
 // only steps 1-7 of routing/pi.md and the injected orchestration contract has no slice rule, so tracking states it;
 // P5b removed only the sentences that restated the injected contract (start, consent, Medium deferral).

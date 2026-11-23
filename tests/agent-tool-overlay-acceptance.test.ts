@@ -14,16 +14,16 @@ import { fileURLToPath } from "node:url";
 import { agentBody, installPackageAssets } from "../lib/agent-assets.ts";
 import { discoverAgents } from "../lib/agents-config.ts";
 
-// gentle-shell#3133 acceptance: the tool overlay is a load-time layer, so it
+// drakonc-shell#3133 acceptance: the tool overlay is a load-time layer, so it
 // adds/removes tools WITHOUT editing the package-owned agent file. The file
 // stays pristine, `managed-assets.json` keeps owning it, and upgrades replace
 // it freely while the overlay is re-applied on top.
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const WORKER_KEY = "agents/gentle-ai-worker.md";
+const WORKER_KEY = "agents/drakonc-ai-worker.md";
 const WORKER_SHIPPED = readFileSync(join(PACKAGE_ROOT, "assets", WORKER_KEY), "utf8");
 const STALE_FIXTURE = readFileSync(
-	join(PACKAGE_ROOT, "tests", "fixtures", "agent-assets", "gentle-ai-worker.strict-tdd-era.md"),
+	join(PACKAGE_ROOT, "tests", "fixtures", "agent-assets", "drakonc-ai-worker.strict-tdd-era.md"),
 	"utf8",
 );
 
@@ -33,13 +33,13 @@ function sha256(content: string): string {
 
 function isolatedHome() {
 	const agentHome = mkdtempSync(join(tmpdir(), "overlay-agent-home-"));
-	const previous = process.env.GENTLE_PI_AGENT_HOME;
+	const previous = process.env.DRAKONC_PI_AGENT_HOME;
 	const restore = () => {
-		if (previous === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previous;
 		rmSync(agentHome, { recursive: true, force: true });
 	};
-	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	process.env.DRAKONC_PI_AGENT_HOME = agentHome;
 	return { agentHome, restore };
 }
 
@@ -58,14 +58,14 @@ function isolatedRoots(agentHome: string) {
 
 function manifestOwns(agentHome: string): string | undefined {
 	const manifest = JSON.parse(
-		readFileSync(join(agentHome, "gentle-ai", "managed-assets.json"), "utf8"),
+		readFileSync(join(agentHome, "drakonc-ai", "managed-assets.json"), "utf8"),
 	) as { assets: Record<string, string> };
 	return manifest.assets[WORKER_KEY];
 }
 
 function workerTools(agentHome: string, configHome: string, cwd: string): string[] {
 	const agent = discoverAgents({ cwd, home: cwd, agentHome, configHome }).agents.find(
-		(candidate) => candidate.name === "gentle-ai-worker",
+		(candidate) => candidate.name === "drakonc-ai-worker",
 	);
 	assert.ok(agent, "worker must be discovered");
 	return agent.tools;
@@ -78,7 +78,7 @@ test("overlay adds a tool at load without editing the package-owned file, and re
 		installPackageAssets(agentHome, false, ["delegation"]);
 		writeFileSync(
 			join(configHome, "tools.json"),
-			JSON.stringify({ "gentle-ai-worker": { add: ["bash_background"] } }),
+			JSON.stringify({ "drakonc-ai-worker": { add: ["bash_background"] } }),
 		);
 
 		// The overlay is applied at load, but the shipped file never declares it.
@@ -110,13 +110,13 @@ test("an upgrade replaces an outdated body while the external overlay survives (
 		installPackageAssets(agentHome, false, ["delegation"]);
 		writeFileSync(
 			join(configHome, "tools.json"),
-			JSON.stringify({ "gentle-ai-worker": { add: ["bash_background"] } }),
+			JSON.stringify({ "drakonc-ai-worker": { add: ["bash_background"] } }),
 		);
 
 		// Simulate an installed copy that predates the current shipped body.
 		const workerPath = join(agentHome, WORKER_KEY);
 		writeFileSync(workerPath, STALE_FIXTURE);
-		const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+		const manifestPath = join(agentHome, "drakonc-ai", "managed-assets.json");
 		const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { assets: Record<string, string> };
 		delete manifest.assets[WORKER_KEY];
 		writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
@@ -143,10 +143,10 @@ test("project overlay outranks the global overlay, and both outrank an extension
 		// Extension adds `ext_tool`, global removes it and adds `glob_tool`, project re-adds `ext_tool`.
 		const dropInDir = join(configHome, "agent-overlays.d");
 		mkdirSync(dropInDir, { recursive: true });
-		writeFileSync(join(dropInDir, "aa-extension.json"), JSON.stringify({ "gentle-ai-worker": { add: ["ext_tool"] } }));
-		writeFileSync(join(configHome, "tools.json"), JSON.stringify({ "gentle-ai-worker": { add: ["glob_tool"], remove: ["ext_tool"] } }));
-		mkdirSync(join(cwd, ".pi", "gentle-ai"), { recursive: true });
-		writeFileSync(join(cwd, ".pi", "gentle-ai", "tools.json"), JSON.stringify({ "gentle-ai-worker": { add: ["ext_tool"] } }));
+		writeFileSync(join(dropInDir, "aa-extension.json"), JSON.stringify({ "drakonc-ai-worker": { add: ["ext_tool"] } }));
+		writeFileSync(join(configHome, "tools.json"), JSON.stringify({ "drakonc-ai-worker": { add: ["glob_tool"], remove: ["ext_tool"] } }));
+		mkdirSync(join(cwd, ".pi", "drakonc-ai"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "drakonc-ai", "tools.json"), JSON.stringify({ "drakonc-ai-worker": { add: ["ext_tool"] } }));
 
 		const tools = workerTools(agentHome, configHome, cwd);
 		assert.ok(tools.includes("ext_tool"), "project re-add wins over the global remove");

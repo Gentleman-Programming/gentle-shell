@@ -24,7 +24,7 @@ function harness() {
 		registerCommand: (name: string, command: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) => commands.set(name, command),
 		events: { on: () => () => {} },
 	} as unknown as ExtensionAPI;
-	const controller = registerYoloSessionPolicy(pi, { GENTLE_PI_CONFIG_HOME: home }, {
+	const controller = registerYoloSessionPolicy(pi, { DRAKONC_PI_CONFIG_HOME: home }, {
 		// Test seam: observe identity resolution without spawning Git.
 		resolveIdentity: async () => { resolveCalls += 1; return undefined; },
 	});

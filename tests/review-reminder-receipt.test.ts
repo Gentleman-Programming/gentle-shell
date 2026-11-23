@@ -53,7 +53,7 @@ test("malformed, unknown-version, and unmatched consumption entries do not estab
 	for (const patch of [{ kind: "spawn" }, { source: "prose" }, { toolName: "bash" }, { sessionId: "" }, { root: "relative" }, { taskId: "foreign" }, { extra: true }, { toolCallId: "" }, { id: null }]) {
 		f.entries.push({ ...good, data: { ...data, ...patch } });
 	}
-	f.entries.push({ ...good, customType: "gentle-pi.review-reminder-receipt/v99" });
+	f.entries.push({ ...good, customType: "drakonc-pi.review-reminder-receipt/v99" });
 	assert.equal(pendingReviewMutation(f.session, "/repo"), undefined);
 	f.entries.push(good);
 	const captured = pendingReviewMutation(f.session, "/repo");
@@ -91,7 +91,7 @@ test("the ledger scan is memoized until the next append and hosts without leaf i
 	assert.equal(scans, beforeUncached + 2, "a host without leaf identity stays uncached");
 });
 
-// gentle-pi#1175 (T2): mutation receipts optionally carry the writer profile
+// drakonc-pi#1175 (T2): mutation receipts optionally carry the writer profile
 // the runtime resolved, so ASSESS never has to trust a model re-declaration.
 test("mutation receipts validate with or without runtime writer profile fields, never with empty ones", () => {
 	const f = fixture();

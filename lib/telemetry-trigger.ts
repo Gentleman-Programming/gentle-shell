@@ -1,13 +1,13 @@
 import { spawn as nodeSpawn } from "node:child_process";
-import { gentleAiIsolationEnv } from "./gentle-ai-binary.ts";
+import { drakoncAiIsolationEnv } from "./drakonc-ai-binary.ts";
 
-// gentle-ai#4309 owns anonymous usage telemetry end to end: install and
+// drakonc-ai#4309 owns anonymous usage telemetry end to end: install and
 // heartbeat events, the notice, every kill switch, and the wire contract.
-// gentle-pi#677 only nudges the local binary once per process, best-effort,
+// drakonc-pi#677 only nudges the local binary once per process, best-effort,
 // and never surfaces the outcome to the user. This module is the pure,
 // testable core of that nudge (`shouldTriggerTelemetry`,
 // `spawnTelemetryTrigger`) plus the decode helper the foreground
-// `/gentle:telemetry` slash command uses to relay `<op> --json` output
+// `/drakonc:telemetry` slash command uses to relay `<op> --json` output
 // (`decodeTelemetryTriggerDecision`).
 
 export const TELEMETRY_TRIGGER_KILL_TIMEOUT_MS = 3_000;
@@ -31,7 +31,7 @@ export interface TelemetryTriggerDecisionV1 {
 }
 
 /**
- * Decodes `gentle-ai telemetry trigger --json` stdout. An older binary
+ * Decodes `drakonc-ai telemetry trigger --json` stdout. An older binary
  * without the verb prints `unknown telemetry command` and exits non-zero, so
  * its stdout never parses as JSON here; that -- along with malformed JSON, a
  * mismatched schema, an unrecognized decision, or a missing/non-string
@@ -62,16 +62,16 @@ export type TelemetryKillSwitchReason = "do-not-track" | "telemetry-disabled" | 
 
 function telemetryKillSwitchReason(env: Readonly<Record<string, string | undefined>>): TelemetryKillSwitchReason | undefined {
 	if (env.DO_NOT_TRACK === "1") return "do-not-track";
-	if (env.GENTLE_AI_TELEMETRY === "0") return "telemetry-disabled";
+	if (env.DRAKONC_AI_TELEMETRY === "0") return "telemetry-disabled";
 	if (env.CI === "true") return "ci";
 	return undefined;
 }
 
 /**
- * True unless one of Gentle Pi's own kill switches is set
- * (`DO_NOT_TRACK=1`, `GENTLE_AI_TELEMETRY=0`, or `CI=true`). The binary
+ * True unless one of Drakonc Pi's own kill switches is set
+ * (`DO_NOT_TRACK=1`, `DRAKONC_AI_TELEMETRY=0`, or `CI=true`). The binary
  * enforces its own opt-out and rate limiting independently; this predicate
- * only decides whether Gentle Pi spawns the trigger at all.
+ * only decides whether Drakonc Pi spawns the trigger at all.
  */
 export function shouldTriggerTelemetry(env: Readonly<Record<string, string | undefined>>): boolean {
 	return telemetryKillSwitchReason(env) === undefined;
@@ -129,8 +129,8 @@ export function spawnTelemetryTrigger(options: SpawnTelemetryTriggerOptions): Te
 	try {
 		const child = spawnImpl(options.executable, ["telemetry", "trigger", "--json"], {
 			cwd: options.cwd,
-			// S9: a bundled install keeps Gentle AI's telemetry state inside its prefix.
-			env: gentleAiIsolationEnv(options.env),
+			// S9: a bundled install keeps Drakonc AI's telemetry state inside its prefix.
+			env: drakoncAiIsolationEnv(options.env),
 			detached: true,
 			windowsHide: true,
 			stdio: "ignore",

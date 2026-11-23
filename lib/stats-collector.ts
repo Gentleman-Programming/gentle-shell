@@ -4,7 +4,7 @@ import { createInterface } from "node:readline";
 import { listSessionFiles } from "../extensions/history/session-scan.ts";
 import { SessionChanges } from "./session-changes.ts";
 
-// /gentle:stats data: a read-only, failure-tolerant scan of Pi's top-level
+// /drakonc:stats data: a read-only, failure-tolerant scan of Pi's top-level
 // session files (nested subagent runs are excluded by listSessionFiles) across
 // one or more homes, and pure aggregation over the parsed records. Nothing
 // here persists anything.

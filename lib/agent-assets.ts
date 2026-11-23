@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveGentlePiAgentHome } from "./agent-home.ts";
+import { resolveDrakoncPiAgentHome } from "./agent-home.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
  return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -26,9 +26,9 @@ const LEGACY_MANAGED_ASSET_MANIFESTS = Object.freeze([
 const AGENT_BODY_HISTORY = join(ASSETS_DIR, "migrations", "agent-body-history.json");
 
 const ASSET_OWNER_BY_KEY = Object.freeze({
-	"agents/gentle-ai-explore.md": "delegation",
-	"agents/gentle-ai-verify.md": "delegation",
-	"agents/gentle-ai-worker.md": "delegation",
+	"agents/drakonc-ai-explore.md": "delegation",
+	"agents/drakonc-ai-verify.md": "delegation",
+	"agents/drakonc-ai-worker.md": "delegation",
 	"agents/jd-fix-agent.md": "review",
 	"agents/jd-judge-a.md": "review",
 	"agents/jd-judge-b.md": "review",
@@ -39,8 +39,8 @@ const ASSET_OWNER_BY_KEY = Object.freeze({
 	"agents/review-refuter.md": "review",
 	"agents/review-validator.md": "review",
 	"chains/4r-review.chain.md": "review",
-	"gentle-ai/support/strict-tdd.md": "delegation",
-	"gentle-ai/support/strict-tdd-verify.md": "delegation",
+	"drakonc-ai/support/strict-tdd.md": "delegation",
+	"drakonc-ai/support/strict-tdd-verify.md": "delegation",
 } as const);
 
 export type PackageAssetOwner = (typeof ASSET_OWNER_BY_KEY)[keyof typeof ASSET_OWNER_BY_KEY];
@@ -51,8 +51,8 @@ export function getPackageAssetOwner(ownershipKey: string): PackageAssetOwner | 
 		: undefined;
 }
 
-function gentlePiAgentHome(): string {
-	return resolveGentlePiAgentHome();
+function drakoncPiAgentHome(): string {
+	return resolveDrakoncPiAgentHome();
 }
 
 
@@ -98,7 +98,7 @@ function readManagedAssetsManifest(path: string): ManagedAssetsManifest {
 
 /** Where the installer keeps its ownership manifest for one agent home. */
 export function managedAssetsManifestPath(agentHome: string): string {
-	return join(agentHome, "gentle-ai", MANAGED_ASSETS_MANIFEST);
+	return join(agentHome, "drakonc-ai", MANAGED_ASSETS_MANIFEST);
 }
 
 /**
@@ -163,7 +163,7 @@ function acquireManagedAssetsLock(
 	agentHome: string,
 	options: PackageAssetInstallLockOptions = {},
 ): { path: string; owner: ManagedAssetsLockOwner } {
-	const lockParent = join(agentHome, "gentle-ai");
+	const lockParent = join(agentHome, "drakonc-ai");
 	const lockPath = join(lockParent, MANAGED_ASSETS_LOCK);
 	const timeoutMs = normalizedLockDuration(options.timeoutMs, MANAGED_ASSETS_LOCK_TIMEOUT_MS);
 	const retryMs = Math.max(1, normalizedLockDuration(options.retryMs, MANAGED_ASSETS_LOCK_RETRY_MS));
@@ -379,7 +379,7 @@ export function updatePackageManagedSddAgentOwnership(
 	nextContent: string,
 	lockOptions?: PackageAssetInstallLockOptions,
 ): boolean {
-	const agentHome = gentlePiAgentHome();
+	const agentHome = drakoncPiAgentHome();
 	const relativePath = relative(join(agentHome, "agents"), installedPath);
 	if (
 		relativePath.length === 0 ||
@@ -391,7 +391,7 @@ export function updatePackageManagedSddAgentOwnership(
 	}
 	const ownershipKey = `agents/${relativePath.split(sep).join("/")}`;
 	return withManagedAssetsLock(agentHome, () => {
-		const manifestPath = join(agentHome, "gentle-ai", MANAGED_ASSETS_MANIFEST);
+		const manifestPath = join(agentHome, "drakonc-ai", MANAGED_ASSETS_MANIFEST);
 		const manifest = readManagedAssetsManifest(manifestPath);
 		if (manifest.assets[ownershipKey] !== managedAssetHash(previousContent)) {
 			return false;
@@ -429,8 +429,8 @@ export function updatePackageManagedSddAgentOwnership(
 }
 
 export function hasPackageAssetOwnerInstallation(owner: PackageAssetOwner): boolean {
-	const agentHome = gentlePiAgentHome();
-	const manifest = readManagedAssetsManifest(join(agentHome, "gentle-ai", MANAGED_ASSETS_MANIFEST));
+	const agentHome = drakoncPiAgentHome();
+	const manifest = readManagedAssetsManifest(join(agentHome, "drakonc-ai", MANAGED_ASSETS_MANIFEST));
 	return Object.keys(manifest.assets).some((key) => getPackageAssetOwner(key) === owner) ||
 		Object.entries(ASSET_OWNER_BY_KEY).some(([key, candidate]) =>
 			candidate === owner && existsSync(join(agentHome, key)),
@@ -442,7 +442,7 @@ export function isPackageManagedSddAsset(
 	ownershipKey: string,
 ): boolean {
 	const manifest = readManagedAssetsManifest(
-		join(gentlePiAgentHome(), "gentle-ai", MANAGED_ASSETS_MANIFEST),
+		join(drakoncPiAgentHome(), "drakonc-ai", MANAGED_ASSETS_MANIFEST),
 	);
 	const expectedHash = manifest.assets[ownershipKey];
 	if (expectedHash === undefined || !existsSync(installedPath)) return false;
@@ -563,7 +563,7 @@ function copyDirectoryFiles(
 	return { copied, skipped };
 }
 
-// Assets retired by gentle-pi#311 P5: the Pi-owned adversarial review actors.
+// Assets retired by drakonc-pi#311 P5: the Pi-owned adversarial review actors.
 // The refuter and validator verdicts now execute through Go-owned pi
 // processes via provider-rendered self-contained vectors, so these agent
 // definitions have no runtime consumer. The migration manifests under
@@ -574,7 +574,7 @@ function copyDirectoryFiles(
 // history); user-modified copies are left in place and only lose managed
 // ownership.
 const RETIRED_MANAGED_ASSETS = Object.freeze([
-	// Canonical spec composition now belongs to archive (gentle-pi#1051).
+	// Canonical spec composition now belongs to archive (drakonc-pi#1051).
 	"agents/sdd-sync.md",
 	...[
 		"apply", "archive", "design", "explore", "init", "onboard", "proposal",
@@ -583,7 +583,7 @@ const RETIRED_MANAGED_ASSETS = Object.freeze([
 	"chains/sdd-full.chain.md",
 	"chains/sdd-plan.chain.md",
 	"chains/sdd-verify.chain.md",
-	"gentle-ai/support/sdd-status-contract.md",
+	"drakonc-ai/support/sdd-status-contract.md",
 	"agents/review-refuter.md",
 	"agents/review-validator.md",
 ]);
@@ -595,7 +595,7 @@ function removeRetiredManagedAssets(
 ): void {
 	let legacyHashes: Record<string, readonly string[]> | undefined;
 	for (const ownershipKey of RETIRED_MANAGED_ASSETS) {
-		if (selected && !selected.has(ownershipKey) && !(ownershipKey.includes("sdd-") && selected.has("gentle-ai/support/strict-tdd.md"))) continue;
+		if (selected && !selected.has(ownershipKey) && !(ownershipKey.includes("sdd-") && selected.has("drakonc-ai/support/strict-tdd.md"))) continue;
 		const installedPath = join(agentHome, ...ownershipKey.split("/"));
 		if (!existsSync(installedPath)) {
 			delete manifest.assets[ownershipKey];
@@ -632,12 +632,12 @@ export function installPackageAssets(
 	owners?: readonly PackageAssetOwner[],
 	lockOptions?: PackageAssetInstallLockOptions,
 ): { agents: number; chains: number; support: number; skipped: number } {
-	const agentHome = gentlePiAgentHome();
+	const agentHome = drakoncPiAgentHome();
 	return withManagedAssetsLock(agentHome, () => {
 		const selected = owners === undefined ? undefined : new Set(
 			Object.entries(ASSET_OWNER_BY_KEY).filter(([, owner]) => owners.includes(owner)).map(([key]) => key),
 		);
-		const manifestPath = join(agentHome, "gentle-ai", MANAGED_ASSETS_MANIFEST);
+		const manifestPath = join(agentHome, "drakonc-ai", MANAGED_ASSETS_MANIFEST);
 		let legacyAssetHashes: (() => Readonly<Record<string, readonly string[]>>) | undefined;
 		if (force) {
 			let cachedLegacyAssetHashes: Record<string, readonly string[]> | undefined;
@@ -666,8 +666,8 @@ export function installPackageAssets(
 		);
 		const support = copyDirectoryFiles(
 			join(ASSETS_DIR, "support"),
-			join(agentHome, "gentle-ai", "support"),
-			"gentle-ai/support",
+			join(agentHome, "drakonc-ai", "support"),
+			"drakonc-ai/support",
 			force,
 			manifest,
 			legacyAssetHashes,

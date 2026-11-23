@@ -3,8 +3,8 @@ import { lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-export const SESSION_WORKTREE_ENTRY = "gentle-pi.session-worktree/v1";
-export const SESSION_WORKTREE_CHANGED = "gentle-pi:session-worktree-changed";
+export const SESSION_WORKTREE_ENTRY = "drakonc-pi.session-worktree/v1";
+export const SESSION_WORKTREE_CHANGED = "drakonc-pi:session-worktree-changed";
 export interface WorktreeIdentity { root: string; commonDir: string }
 export type WorktreeResolver = (path: string, cwd: string) => WorktreeIdentity | undefined;
 interface SessionReader {

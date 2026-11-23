@@ -13,9 +13,9 @@ interface Example {
 	summary: RegExp;
 }
 const cases: Example[] = [
-	{ kind: "session" as const, args: { subject: "Inspect Windows", state: { objective: "Read-only VM inspection" } }, result: { content: [{ type: "text", text: "Active session ID: stable-routing-id\nCurrent alias: Recover Alan changes" }], details: { gentleAgents: { senderSessionId: "stable-routing-id", alias: "Recover Alan changes" } } }, summary: /Current alias: Recover Alan changes/ },
-	{ kind: "consult" as const, args: { recipient_session_id: "peer-id" }, result: { content: [{ type: "text", text: '{"status":"available","authority":"none"}' }], details: { gentleAgents: { receipt: { status: "available", authority: "none" } } } }, summary: /available.*not an owner reply/i },
-	{ kind: "list" as const, args: {}, result: { content: [{ type: "text", text: "Advertised sessions (reachability is unknown):\n- peer-id" }], details: { gentleAgents: { candidates: [{ sessionId: "peer-id" }] } } }, summary: /1 advertised session.*reachability unknown/i },
+	{ kind: "session" as const, args: { subject: "Inspect Windows", state: { objective: "Read-only VM inspection" } }, result: { content: [{ type: "text", text: "Active session ID: stable-routing-id\nCurrent alias: Recover Alan changes" }], details: { drakoncAgents: { senderSessionId: "stable-routing-id", alias: "Recover Alan changes" } } }, summary: /Current alias: Recover Alan changes/ },
+	{ kind: "consult" as const, args: { recipient_session_id: "peer-id" }, result: { content: [{ type: "text", text: '{"status":"available","authority":"none"}' }], details: { drakoncAgents: { receipt: { status: "available", authority: "none" } } } }, summary: /available.*not an owner reply/i },
+	{ kind: "list" as const, args: {}, result: { content: [{ type: "text", text: "Advertised sessions (reachability is unknown):\n- peer-id" }], details: { drakoncAgents: { candidates: [{ sessionId: "peer-id" }] } } }, summary: /1 advertised session.*reachability unknown/i },
 ];
 
 function card(entry: Example, expanded: boolean, partial = false) {
@@ -50,7 +50,7 @@ test("discovery overview uses one row per recorded session and groups unknown se
 		...cases[2],
 		result: {
 			content: [{ type: "text", text: "Advertised sessions: raw-output-must-not-repeat" }],
-			details: { gentleAgents: { candidates: [
+			details: { drakoncAgents: { candidates: [
 				{ sessionId: "known-id", label: "API team", freshness: "recent", reachability: "unknown", workspace: "/work/api", tasks: [{ id: "task-1", label: "Check login", status: "running", workspace: "/work/task" }], scope: { host: { root: "/repo/api" }, complete: false, omittedTasks: 2 } },
 				{ sessionId: "unknown-id", freshness: "unknown", reachability: "unknown" },
 				{ sessionId: "stale-id", freshness: "stale", reachability: "unknown", label: "Old alias must stay hidden", workspace: "/stale-workspace" },
@@ -68,8 +68,8 @@ test("discovery overview uses one row per recorded session and groups unknown se
 
 test("consultation, classified work, and missing-detail JSON become labelled rows with safety limits", () => {
 	const examples: Example[] = [
-		{ ...cases[1], result: { content: [{ type: "text", text: '{"status":"available","authority":"none"}' }], details: { gentleAgents: { receipt: { status: "available", ownerReply: false, authority: "none", snapshot: { label: "API team", state: { state: { objective: "Verify login" } } }, unknowns: ["reachability"], omissions: ["private-context"], digest: "technical-digest" } } } } },
-		{ ...cases[2], args: { filter: { area: "Auth" } }, result: { content: [{ type: "text", text: '{"matches":[]}' }], details: { gentleAgents: { workSearch: { matches: [{ sessionId: "peer-id", work: { area: "Auth", tags: ["Review"] } }], coverage: { exhaustive: false, omittedMatches: 2 }, ownerReply: false, authority: "none" } } } } },
+		{ ...cases[1], result: { content: [{ type: "text", text: '{"status":"available","authority":"none"}' }], details: { drakoncAgents: { receipt: { status: "available", ownerReply: false, authority: "none", snapshot: { label: "API team", state: { state: { objective: "Verify login" } } }, unknowns: ["reachability"], omissions: ["private-context"], digest: "technical-digest" } } } } },
+		{ ...cases[2], args: { filter: { area: "Auth" } }, result: { content: [{ type: "text", text: '{"matches":[]}' }], details: { drakoncAgents: { workSearch: { matches: [{ sessionId: "peer-id", work: { area: "Auth", tags: ["Review"] } }], coverage: { exhaustive: false, omittedMatches: 2 }, ownerReply: false, authority: "none" } } } } },
 		{ ...cases[1], result: { content: [{ type: "text", text: '{"status":"unavailable","code":"not-ready"}' }] } },
 	];
 	const outputs = examples.map(entry => stripAnsi(card(entry, true).render(140).join("\n")));
@@ -93,7 +93,7 @@ test("targeted discovery retains full identity and concise unknown repository li
 		{ sessionId: "no-identity", label: "Non-Git workspace", freshness: "recent", scope: { host: { root: null, cloneHash: null, resolvedAt: 1, source: "recorded-workspace/git" }, complete: true } },
 	];
 	for (const peer of peers) {
-		const entry: Example = { ...cases[2], args: { recipient_session_id: peer.sessionId }, result: { content: [], details: { gentleAgents: { candidates: [peer] } } } };
+		const entry: Example = { ...cases[2], args: { recipient_session_id: peer.sessionId }, result: { content: [], details: { drakoncAgents: { candidates: [peer] } } } };
 		const output = stripAnsi(card(entry, true).render(140).join("\n"));
 		assert.ok(output.includes(`Session ID: ${peer.sessionId}`));
 		assert.match(output, peer.sessionId === "no-scope" ? /Repository scope: unknown/ : /Repository identity: unknown/);
@@ -110,7 +110,7 @@ test("expanded discovery has a fixed height even with dozens of rich records and
 		tasks: Array.from({ length: 8 }, (_, task) => ({ id: `task-${task}`, label: "Verbose task must not be dumped", workspace: "/hidden/task/workspace", status: "running" })), omitted: 2,
 		catalog: { tasks: [{ label: "Duplicated catalog must not appear" }], registered: Array(8).fill("/very/long/registered/worktree/path") },
 	}));
-	const entry: Example = { ...cases[2], result: { content: [], details: { gentleAgents: { candidates: peers } } } };
+	const entry: Example = { ...cases[2], result: { content: [], details: { drakoncAgents: { candidates: peers } } } };
 	const before = structuredClone(entry);
 	try {
 		for (const style of Object.values(CARD_STYLE)) {
@@ -136,7 +136,7 @@ test("expanded discovery has a fixed height even with dozens of rich records and
 
 test("classified-work overviews are also bounded and do not dump descriptors or coverage trees", () => {
 	const matches = Array.from({ length: 30 }, (_, index) => ({ sessionId: `peer-${index}`, label: `Auth task ${index}`, taskId: `task-${index}`, work: { area: "Auth", topic: "Login", tags: Array(8).fill("Verbose tag must stay hidden") } }));
-	const entry: Example = { ...cases[2], args: { filter: { area: "Auth" } }, result: { content: [], details: { gentleAgents: { workSearch: { matches, coverage: { exhaustive: false, omittedMatches: 2, unexaminedPeers: 3 }, ownerReply: false, authority: "none" } } } } };
+	const entry: Example = { ...cases[2], args: { filter: { area: "Auth" } }, result: { content: [], details: { drakoncAgents: { workSearch: { matches, coverage: { exhaustive: false, omittedMatches: 2, unexaminedPeers: 3 }, ownerReply: false, authority: "none" } } } } };
 	for (const width of [140, 80, 48, 24, 1, 0]) {
 		const rows = card(entry, true).render(width);
 		assert.ok(rows.length <= 16, `width ${width}: ${rows.length} rows`);
@@ -160,7 +160,7 @@ test("overview colors create hierarchy without changing text, column widths, or 
 		fg: (role: string, value: string) => { calls.push({ role, value }); return `\x1b[${colors[role] ?? 39}m${value}\x1b[39m`; },
 		bold: (value: string) => `\x1b[1m${value}\x1b[22m`,
 	};
-	const entry: Example = { ...cases[2], result: { content: [], details: { gentleAgents: { candidates: [
+	const entry: Example = { ...cases[2], result: { content: [], details: { drakoncAgents: { candidates: [
 		{ sessionId: "peer-1", label: "API 团队", workspace: "/work/api", freshness: "recent", tasks: [{}, {}, {}] },
 		{ sessionId: "peer-2", label: "No tasks", freshness: "recent", tasks: [] },
 		{ sessionId: "peer-3", label: "Unknown count", freshness: "recent" },
@@ -200,7 +200,7 @@ test("session identity highlights alias and subject without changing content or 
 	let accent = 34;
 	const colors: Record<string, number> = { muted: 37, dim: 90 };
 	const colored = { ...theme, fg: (role: string, value: string) => `\x1b[${role === "accent" ? accent : colors[role] ?? 39}m${value}\x1b[39m` };
-	const entry: Example = { ...cases[0], args: { subject: "Inspeccionar Windows — demo 团队" }, result: { content: [], details: { gentleAgents: { alias: "Prueba visual", senderSessionId: "01a11f31-f3a7-71e9-ba8a-4649a0cf8c11" } } } };
+	const entry: Example = { ...cases[0], args: { subject: "Inspeccionar Windows — demo 团队" }, result: { content: [], details: { drakoncAgents: { alias: "Prueba visual", senderSessionId: "01a11f31-f3a7-71e9-ba8a-4649a0cf8c11" } } } };
 	const before = structuredClone(entry);
 	const previous = cardStyle();
 	try {
@@ -236,7 +236,7 @@ test("session identity highlights alias and subject without changing content or 
 });
 
 test("session identity preserves main's separate task aliases and human session name", () => {
-	const entry: Example = { ...cases[0], args: { subject: "Inspect project" }, result: { content: [], details: { gentleAgents: { alias: "Demo session", sessionName: "Demo session", currentAlias: "Inspect project", initialAlias: "First task", senderSessionId: "stable-routing-id" } } } };
+	const entry: Example = { ...cases[0], args: { subject: "Inspect project" }, result: { content: [], details: { drakoncAgents: { alias: "Demo session", sessionName: "Demo session", currentAlias: "Inspect project", initialAlias: "First task", senderSessionId: "stable-routing-id" } } } };
 	const compact = stripAnsi(card(entry, false).render(140).join("\n"));
 	assert.match(compact, /Current alias: Inspect project/);
 	assert.match(compact, /Session name: Demo session/);
@@ -247,7 +247,7 @@ test("session identity preserves main's separate task aliases and human session 
 	assert.match(expanded, /Routing ID: stable-routing-id/);
 	assert.doesNotMatch(expanded, /Requested subject: Inspect project/);
 	for (const expanded of [false, true]) {
-		const unknown: Example = { ...entry, result: { content: [], details: { gentleAgents: { alias: "Demo session", sessionName: "Demo session", currentAlias: null, initialAlias: null } } } };
+		const unknown: Example = { ...entry, result: { content: [], details: { drakoncAgents: { alias: "Demo session", sessionName: "Demo session", currentAlias: null, initialAlias: null } } } };
 		const output = stripAnsi(card(unknown, expanded).render(140).join("\n"));
 		assert.match(output, /Current alias: unknown/);
 		assert.doesNotMatch(output, /Current alias: Demo session|Current alias: Inspect project/);
@@ -258,7 +258,7 @@ test("session identity preserves main's separate task aliases and human session 
 test("classified-work limits use warning rather than success colors", () => {
 	const calls: Array<{ role: string; value: string }> = [];
 	const colors = { ...theme, fg: (role: string, value: string) => { calls.push({ role, value }); return value; } };
-	const result = { content: [], details: { gentleAgents: { workSearch: { matches: [{ sessionId: "peer-1", label: "Auth task", work: { area: "Auth" } }], coverage: { omittedMatches: 2 }, source: { status: "unavailable", reason: "source-unclassified" } } } } };
+	const result = { content: [], details: { drakoncAgents: { workSearch: { matches: [{ sessionId: "peer-1", label: "Auth task", work: { area: "Auth" } }], coverage: { omittedMatches: 2 }, source: { status: "unavailable", reason: "source-unclassified" } } } } };
 	const component = orchestratorToolRenderers("list", () => "collapse").renderResult(result, { expanded: true, isPartial: false }, colors, { args: { filter: {} }, state: {} });
 	component.render(140);
 	assert.ok(calls.some(call => call.role === "warning" && call.value === "2 matches omitted"));
@@ -270,7 +270,7 @@ test("classified-work limits use warning rather than success colors", () => {
 test("overview styles are recomputed on render after a theme changes", () => {
 	let accent = 34;
 	const changing = { ...theme, fg: (role: string, value: string) => role === "accent" ? `\x1b[${accent}m${value}\x1b[39m` : value };
-	const entry: Example = { ...cases[2], result: { content: [], details: { gentleAgents: { candidates: [{ sessionId: "peer-1", label: "API team", freshness: "recent", tasks: [] }] } } } };
+	const entry: Example = { ...cases[2], result: { content: [], details: { drakoncAgents: { candidates: [{ sessionId: "peer-1", label: "API team", freshness: "recent", tasks: [] }] } } } };
 	const context = { args: {}, state: {}, expanded: true, isPartial: false };
 	const component = orchestratorToolRenderers("list", () => "collapse").renderResult(entry.result, { expanded: true, isPartial: false }, changing, context);
 	const before = component.render(140);
@@ -292,7 +292,7 @@ test("legacy JSON keys that match object prototypes render as data, never as lab
 
 test("nested readable data remains sanitized and width-safe with Unicode", () => {
 	const unsafe = "\x1b]52;c;clipboard\x07\x1b[31mAPI 团队 e\u0301\x1b[0m\r\u0000";
-	const entry: Example = { ...cases[1], result: { content: [{ type: "text", text: "ignored serialization" }], details: { gentleAgents: { receipt: { status: "available", snapshot: { [unsafe]: unsafe }, unknowns: [unsafe] } } } } };
+	const entry: Example = { ...cases[1], result: { content: [{ type: "text", text: "ignored serialization" }], details: { drakoncAgents: { receipt: { status: "available", snapshot: { [unsafe]: unsafe }, unknowns: [unsafe] } } } } };
 	const previous = cardStyle();
 	try {
 		for (const style of Object.values(CARD_STYLE)) {
@@ -368,7 +368,7 @@ test("successful-looking partial results never display a final status or count",
 test("work search and detail-less stored results remain useful", () => {
 	const renderer = orchestratorToolRenderers("list", () => "expand");
 	const context = { args: { filter: {} }, state: {}, expanded: false, isPartial: false };
-	const result = renderer.renderResult({ content: [{ type: "text", text: '{"matches":[]}' }], details: { gentleAgents: { workSearch: { matches: [] } } } }, { expanded: false, isPartial: false }, theme, context);
+	const result = renderer.renderResult({ content: [{ type: "text", text: '{"matches":[]}' }], details: { drakoncAgents: { workSearch: { matches: [] } } } }, { expanded: false, isPartial: false }, theme, context);
 	assert.match(stripAnsi(result.render(140).join("\n")), /0 work matches.*non-exhaustive/i);
 	const legacy = renderer.renderResult({ content: [{ type: "text", text: "No other sessions are currently advertised." }] }, { expanded: true, isPartial: false }, theme, context);
 	assert.match(stripAnsi(legacy.render(140).join("\n")), /No other sessions/);
@@ -390,7 +390,7 @@ test("expanded cards preserve payloads, sanitize terminal text, and resize in bo
 			}
 		}
 		const unsafe = "\x1b]52;c;clipboard\x07Visible\r\u0000";
-		const view = card({ ...cases[0], result: { content: [{ type: "text", text: unsafe }], details: { gentleAgents: { alias: unsafe, senderSessionId: "stable-routing-id" } } } }, true);
+		const view = card({ ...cases[0], result: { content: [{ type: "text", text: unsafe }], details: { drakoncAgents: { alias: unsafe, senderSessionId: "stable-routing-id" } } } }, true);
 		const text = stripAnsi(view.render(140).join("\n"));
 		assert.match(text, /Visible/);
 		assert.doesNotMatch(text, /\x1b|\r|\u0000/);

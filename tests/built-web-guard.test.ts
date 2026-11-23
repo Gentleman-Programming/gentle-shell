@@ -11,7 +11,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 // #3378: the release guard must fail on what npm packs, not on what is on disk.
 // Runs against a scratch copy of the package without web/tower/.npmignore.
 test("--with-built-web exits 1 naming web/tower/dist/index.html when npm pack excludes it", () => {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-pi-built-web-guard-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-pi-built-web-guard-"));
 	try {
 		cpSync(root, dir, {
 			recursive: true,

@@ -5,27 +5,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CARD_CONTENT, CARD_CONTENT_SCHEMA, cardContent, parseCardContentFile, resolveCardContent, setCardContent, writeCardContent } from "../lib/card-content-policy.ts";
 
-const home = () => mkdtempSync(join(tmpdir(), "gentle-card-content-"));
+const home = () => mkdtempSync(join(tmpdir(), "drakonc-card-content-"));
 
 test("a missing preference means the default content level", () => {
 	const dir = home();
-	assert.deepEqual(resolveCardContent({ gentlePiConfigHome: dir }), { content: "minimal", source: "default", malformed: false, globalFile: join(dir, "card-content.json") }, "minimal is the default");
+	assert.deepEqual(resolveCardContent({ drakoncPiConfigHome: dir }), { content: "minimal", source: "default", malformed: false, globalFile: join(dir, "card-content.json") }, "minimal is the default");
 });
 
 test("the preference round-trips through the atomic writer", () => {
 	const dir = home();
-	const path = writeCardContent(CARD_CONTENT.MINIMAL, { gentlePiConfigHome: dir });
+	const path = writeCardContent(CARD_CONTENT.MINIMAL, { drakoncPiConfigHome: dir });
 	assert.equal(path, join(dir, "card-content.json"));
 	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { schema: CARD_CONTENT_SCHEMA, content: "minimal" });
-	assert.deepEqual(resolveCardContent({ gentlePiConfigHome: dir }), { content: "minimal", source: "global_file", malformed: false, globalFile: path });
-	writeCardContent(CARD_CONTENT.DEFAULT, { gentlePiConfigHome: dir });
-	assert.equal(resolveCardContent({ gentlePiConfigHome: dir }).content, "default");
+	assert.deepEqual(resolveCardContent({ drakoncPiConfigHome: dir }), { content: "minimal", source: "global_file", malformed: false, globalFile: path });
+	writeCardContent(CARD_CONTENT.DEFAULT, { drakoncPiConfigHome: dir });
+	assert.equal(resolveCardContent({ drakoncPiConfigHome: dir }).content, "default");
 	assert.deepEqual(readdirSync(dir), ["card-content.json"], "no temporary file survives the rename");
 });
 
 test("the writer rejects values outside the content domain", () => {
 	const dir = home();
-	assert.throws(() => writeCardContent("clean" as never, { gentlePiConfigHome: dir }), TypeError);
+	assert.throws(() => writeCardContent("clean" as never, { drakoncPiConfigHome: dir }), TypeError);
 	assert.equal(existsSync(join(dir, "card-content.json")), false);
 });
 
@@ -35,14 +35,14 @@ test("invalid or unreadable preference files read as default and are never overw
 		const dir = home();
 		const path = join(dir, "card-content.json");
 		writeFileSync(path, raw);
-		assert.deepEqual(resolveCardContent({ gentlePiConfigHome: dir }), { content: "minimal", source: "global_file", malformed: true, globalFile: path }, raw);
-		assert.throws(() => writeCardContent(CARD_CONTENT.MINIMAL, { gentlePiConfigHome: dir }), /Cannot update malformed or unreadable card content preference/, raw);
+		assert.deepEqual(resolveCardContent({ drakoncPiConfigHome: dir }), { content: "minimal", source: "global_file", malformed: true, globalFile: path }, raw);
+		assert.throws(() => writeCardContent(CARD_CONTENT.MINIMAL, { drakoncPiConfigHome: dir }), /Cannot update malformed or unreadable card content preference/, raw);
 		assert.equal(readFileSync(path, "utf8"), raw, "the malformed file is preserved");
 	}
 	const dir = home();
 	mkdirSync(join(dir, "card-content.json"));
-	assert.equal(resolveCardContent({ gentlePiConfigHome: dir }).malformed, true, "a directory in its place is unreadable, not missing");
-	assert.throws(() => writeCardContent(CARD_CONTENT.MINIMAL, { gentlePiConfigHome: dir }), /Cannot update malformed or unreadable card content preference/);
+	assert.equal(resolveCardContent({ drakoncPiConfigHome: dir }).malformed, true, "a directory in its place is unreadable, not missing");
+	assert.throws(() => writeCardContent(CARD_CONTENT.MINIMAL, { drakoncPiConfigHome: dir }), /Cannot update malformed or unreadable card content preference/);
 	assert.deepEqual(readdirSync(dir), ["card-content.json"], "the rejected write must not create temporary files");
 	assert.deepEqual(readdirSync(join(dir, "card-content.json")), [], "the unreadable directory is preserved");
 });
@@ -52,20 +52,20 @@ test("POSIX unreadable preference files read as default and are never overwritte
 	skip: process.platform === "win32" || process.getuid?.() === 0 ? "requires POSIX permissions and a non-root user" : false,
 }, () => {
 	const locked = home();
-	writeCardContent(CARD_CONTENT.MINIMAL, { gentlePiConfigHome: locked });
+	writeCardContent(CARD_CONTENT.MINIMAL, { drakoncPiConfigHome: locked });
 	chmodSync(join(locked, "card-content.json"), 0o000);
 	try {
-		assert.deepEqual({ ...resolveCardContent({ gentlePiConfigHome: locked }), globalFile: "" }, { content: "minimal", source: "global_file", malformed: true, globalFile: "" });
-		assert.throws(() => writeCardContent(CARD_CONTENT.DEFAULT, { gentlePiConfigHome: locked }), /Cannot update malformed or unreadable card content preference/);
+		assert.deepEqual({ ...resolveCardContent({ drakoncPiConfigHome: locked }), globalFile: "" }, { content: "minimal", source: "global_file", malformed: true, globalFile: "" });
+		assert.throws(() => writeCardContent(CARD_CONTENT.DEFAULT, { drakoncPiConfigHome: locked }), /Cannot update malformed or unreadable card content preference/);
 	} finally {
 		chmodSync(join(locked, "card-content.json"), 0o600);
 	}
-	assert.equal(resolveCardContent({ gentlePiConfigHome: locked }).content, CARD_CONTENT.MINIMAL, "the rejected write preserves the stored preference");
+	assert.equal(resolveCardContent({ drakoncPiConfigHome: locked }).content, CARD_CONTENT.MINIMAL, "the rejected write preserves the stored preference");
 	assert.deepEqual(readdirSync(locked), ["card-content.json"], "the rejected write leaves no temporary files");
 });
 
 test("the live slot shares one content level per process and an unset slot reads default", (t) => {
-	const slot = Symbol.for("gentle-pi.card-content");
+	const slot = Symbol.for("drakonc-pi.card-content");
 	const state = globalThis as typeof globalThis & { [slot]?: unknown };
 	const found = state[slot];
 	t.after(() => { state[slot] = found; });

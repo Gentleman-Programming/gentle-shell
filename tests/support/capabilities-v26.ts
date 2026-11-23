@@ -1,6 +1,6 @@
 // The pinned contract fixtures predate capabilities/v2.6 and their bytes are
 // frozen, so tests derive the only supported advertisement (capabilities/v2.6,
-// gentle-ai v4.6.0) from any older capabilities body instead of editing them.
+// drakonc-ai v4.6.0) from any older capabilities body instead of editing them.
 const RETIRED_SCHEMAS = ["gentle-ai.review-final-verification-incident/v1", "gentle-ai.review-receipt/v2", "gentle-ai.review-verification-evidence/v2"];
 const RETIRED_FEATURES = ["exact_receipt_replay", "five_delivery_gates", "sdd_receipt_binding"];
 

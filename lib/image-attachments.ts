@@ -3,7 +3,7 @@ import { getImageDimensions, type ImageDimensions } from "@earendil-works/pi-tui
 import type { ClipboardImage } from "./clipboard-image.ts";
 import type { ImageDiskCache } from "./image-disk-cache.ts";
 
-// Pasted images live in the draft as atomic `[Image#N]` chips (gentle-shell#2464).
+// Pasted images live in the draft as atomic `[Image#N]` chips (drakonc-shell#2464).
 // The bytes stay in memory: a chip deleted from the draft is never sent, and
 // the chips still in the text become real image attachments on submit.
 //

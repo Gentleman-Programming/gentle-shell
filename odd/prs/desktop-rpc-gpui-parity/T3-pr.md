@@ -4,7 +4,7 @@ Closes #ISSUE
 
 ## Summary
 
-- Persona and banner owners move to `lib/persona-config.ts` and `lib/banner-config.ts` (atomic sync writers); `/gentle:persona` and the banner use them.
+- Persona and banner owners move to `lib/persona-config.ts` and `lib/banner-config.ts` (atomic sync writers); `/drakonc:persona` and the banner use them.
 - Only the profile stores keep waiting for a profile apply.
 
 ## Test plan

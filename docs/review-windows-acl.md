@@ -15,4 +15,4 @@ node --experimental-strip-types --test tests/review-candidate-windows-boundary.t
 
 The second file uses real Windows ACLs in disposable Git repositories, including quoted/Unicode paths, changes after Git inspection, marker/lock tampering, Git removal failure and parent replacement. It skips on other platforms. The parser/transport tests separately cover incomplete responses and an unauthorized owner through a controlled subprocess response; they do not claim a privileged ownership transfer.
 
-Related work and experimental measurements: [issue #2881](https://github.com/Gentleman-Programming/gentle-shell/issues/2881). The combined redesign measurements include other changes and are not an isolated performance claim for this patch.
+Related work and experimental measurements: [issue #2881](https://github.com/Drakoncman-Programming/drakonc-shell/issues/2881). The combined redesign measurements include other changes and are not an isolated performance claim for this patch.

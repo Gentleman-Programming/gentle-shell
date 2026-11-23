@@ -4,7 +4,7 @@
 Add the omitted `single-pr` delivery outcome as the third, least-recommended option in the oversized menu, after feature/tracker-branch chaining and default-branch chaining. Define semantics rather than mandatory UI wording.
 
 ## Authorized scope
-- Worktree: `/Users/alanbuscaglia/work/gentle-pi-worktrees/single-pr-delivery`.
+- Worktree: `/Users/alanbuscaglia/work/drakonc-pi-worktrees/single-pr-delivery`.
 - Branch: `feat/single-pr-delivery`; base: `290c0dc1352d65ed134bcf07187e81be955645a7` (local main).
 - Local implementation, tests, docs and work-unit checking; unrelated dirty original-worktree source edits remain untouched.
 - No remote access, push, PR creation or merge.

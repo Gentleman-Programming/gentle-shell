@@ -10,7 +10,7 @@ import ts from "typescript";
 import type { Project, TowerSnapshot } from "../web/tower/src/types.ts";
 
 test("hover test typechecks and skips cleanly with only root dependencies", (t) => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-tower-hover-ci-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-tower-hover-ci-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	mkdirSync(join(root, "tests"), { recursive: true });
 	mkdirSync(join(root, "web", "tower", "src"), { recursive: true });

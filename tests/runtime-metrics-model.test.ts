@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizeRuntimeModel } from "../lib/runtime-metrics.ts";
 
-// Data-driven family-pattern normalizer (gentle-pi#968 / gentle-ai#4536). Rules:
+// Data-driven family-pattern normalizer (drakonc-pi#968 / drakonc-ai#4536). Rules:
 // - non-string or empty provider or id -> {provider: "unknown", id: "unknown"};
 // - id is trimmed, the LAST "/"-separated segment is kept, then lowercased; it is
 //   public only when it matches the schema id pattern within its maxLength,

@@ -37,7 +37,7 @@ interface Calls { sent: Array<{ text: string; expand: boolean }>; answered: Arra
 function owners(over: Partial<DesktopActionOwners> = {}, state: { open?: boolean; working?: boolean; handle?: boolean } = {}): { owners: DesktopActionOwners; calls: Calls } {
 	const calls: Calls = { sent: [], answered: [], owners: [] };
 	const owner = (name: string) => async (value: string): Promise<DesktopRpcOutcome> => { calls.owners.push(`${name}:${value}`); return { ok: true, data: {} }; };
-	const commands: Record<string, "extension" | "prompt" | "skill"> = { "gentle:mode": "extension", "gentle:agents": "extension", review: "prompt", "skill:go-testing": "skill" };
+	const commands: Record<string, "extension" | "prompt" | "skill"> = { "drakonc:mode": "extension", "drakonc:agents": "extension", review: "prompt", "skill:go-testing": "skill" };
 	return {
 		calls,
 		owners: {
@@ -105,8 +105,8 @@ test("S10: pi built-ins, extension commands and ! lines stay in that session's t
 	assert.deepEqual(await run(o.owners, "send_prompt", { text: "/new" }), terminal);
 	assert.deepEqual(await run(o.owners, "send_prompt", { text: "/model claude-opus-5-5" }), terminal);
 	assert.deepEqual(await run(o.owners, "send_prompt", { text: "/quit" }), terminal);
-	assert.deepEqual(await run(o.owners, "send_prompt", { text: "/gentle:mode super-yolo" }), terminal, "an extension command is TUI code with its own authority");
-	assert.deepEqual(await run(o.owners, "send_prompt", { text: "/gentle:agents" }), terminal);
+	assert.deepEqual(await run(o.owners, "send_prompt", { text: "/drakonc:mode super-yolo" }), terminal, "an extension command is TUI code with its own authority");
+	assert.deepEqual(await run(o.owners, "send_prompt", { text: "/drakonc:agents" }), terminal);
 	assert.deepEqual(await run(o.owners, "send_prompt", { text: "!rm -rf build" }), { ok: false, error: { code: "terminal_command", message: "Open that session's terminal to run ! shell commands." } });
 	assert.deepEqual(o.calls.sent, []);
 	assert.deepEqual(o.calls.owners, [], "no permission owner is reached");
@@ -126,7 +126,7 @@ test("S10: prompt templates and skills expand as in the editor; an unknown /word
 
 test("S10: a session without a prompt owner refuses send_prompt", async () => {
 	const o = owners({ sendPrompt: undefined });
-	assert.deepEqual(await run(o.owners, "send_prompt", { text: "hola" }), { ok: false, error: { code: "unsupported", message: "This session takes no prompts from the desktop. Update Gentle Shell and restart it." } });
+	assert.deepEqual(await run(o.owners, "send_prompt", { text: "hola" }), { ok: false, error: { code: "unsupported", message: "This session takes no prompts from the desktop. Update Drakonc Shell and restart it." } });
 });
 
 // ---- answer_question via the session ----
@@ -284,7 +284,7 @@ test("S10: the ask_user_choice list publishes its handle and the handle's answer
 	assert.deepEqual(done.details.selection, { value: "tok-b", label: "B", index: 2 });
 	assert.equal(done.content[0]!.text, "User selected: 2. B (value: tok-b)");
 	assert.equal(handle.answer({ option: 0 }), false, "answered once");
-	assert.deepEqual(h.events, ["gentle-pi:ask-user-choice:blocked", "gentle-pi:ask-user-choice:blocked"], "the tool's bus traffic is unchanged");
+	assert.deepEqual(h.events, ["drakonc-pi:ask-user-choice:blocked", "drakonc-pi:ask-user-choice:blocked"], "the tool's bus traffic is unchanged");
 });
 
 test("S10: the ask_user_question view publishes its handle and the handle's answer is the tool's result", async () => {
@@ -299,5 +299,5 @@ test("S10: the ask_user_question view publishes its handle and the handle's answ
 	const done = await result as { details: { answers?: unknown } };
 	assert.deepEqual(done.details.answers, [{ questionIndex: 0, question: "Pick one?", kind: "option", answer: "X" }]);
 	assert.equal(handle.answer({ option: 1 }), false, "answered once");
-	assert.deepEqual(h.events, ["gentle-pi:ask-user-question:blocked", "gentle-pi:ask-user-question:blocked"], "the tool's bus traffic is unchanged");
+	assert.deepEqual(h.events, ["drakonc-pi:ask-user-question:blocked", "drakonc-pi:ask-user-question:blocked"], "the tool's bus traffic is unchanged");
 });

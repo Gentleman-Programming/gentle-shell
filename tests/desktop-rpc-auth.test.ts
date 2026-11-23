@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import { DESKTOP_RPC_SCHEMA } from "../lib/desktop-rpc.ts";
 import {
 	AUTH_UNAVAILABLE,
@@ -80,7 +80,7 @@ function harness(t: test.TestContext, registry: unknown) {
 	return {
 		widgets,
 		invoke(requestId: string, method: string, params: Record<string, unknown> = {}) {
-			return commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }), ctx);
+			return commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }), ctx);
 		},
 		last() { return JSON.parse(widgets.at(-1)!); },
 		async shutdown() { for (const handler of handlers.get("session_shutdown") ?? []) await handler({}, ctx); },

@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { PI_RUNTIME_IDENTITY, ROUTING_REQUIRED_SINCE_MINOR, verifyProviderContractBundleTree } from "../lib/provider-contract-bundle.ts";
 import { PROVIDER_CONTRACT_LOCK_FILE, PROVIDER_CONTRACT_MIRROR_ROOT } from "../scripts/mirror-provider-contract.mjs";
 
 // ---------------------------------------------------------------------------
-// ODD routing drift ratchet (gentle-pi#1147 follow-up)
+// ODD routing drift ratchet (drakonc-pi#1147 follow-up)
 //
-// gentle-ai renders the always-on ODD routing block for Pi
+// drakonc-ai renders the always-on ODD routing block for Pi
 // (`internal/components/agentguidance/routing.go`) and publishes it in the
 // provider contract bundle as `routing/pi.md` (contract 1.4.0). The mirrored
 // bundle (`contracts/review-provider-contract-mirror/`, refreshed with
@@ -39,13 +39,13 @@ interface RoutingAnchor {
 
 const DELEGATION = "assets/orchestrator-delegation.md";
 const CORE = "assets/orchestrator.md";
-// The harness prompt rendered by extensions/gentle-ai.ts, including the ODD
+// The harness prompt rendered by extensions/drakonc-ai.ts, including the ODD
 // steps it takes from the mirrored routing/pi.md.
 const EXTENSION = "rendered harness prompt";
 
 const ANCHORS: readonly RoutingAnchor[] = [
 	{
-		// S9 canon change (gentle-ai 87a3b2eb): the heading dropped "Mandatory";
+		// S9 canon change (drakonc-ai 87a3b2eb): the heading dropped "Mandatory";
 		// a trigger is mandatory only once its condition truly holds.
 		label: "delegation triggers heading",
 		canonical: "### Delegation Triggers",
@@ -86,8 +86,8 @@ const ANCHORS: readonly RoutingAnchor[] = [
 	{
 		label: "mapping trigger when understanding exceeds the evidence budget",
 		canonical: "**Mapping trigger:** when understanding exceeds the inline batch budget",
-		// gentle-ai#5139 replaced the 4-file count with the evidence budget;
-		// gentle-ai#5218 scoped it to understanding (gentle-shell#1494).
+		// drakonc-ai#5139 replaced the 4-file count with the evidence budget;
+		// drakonc-ai#5218 scoped it to understanding (drakonc-shell#1494).
 		mirrors: [
 			{ surface: DELEGATION, includes: "**Mapping trigger (Evidence-budget rule):** read inline only when the evidence fits one parallel batch of at most 3 calls" },
 			{ surface: CORE, includes: "**Evidence-budget rule** — understanding needs more than one read batch" },
@@ -104,8 +104,8 @@ const ANCHORS: readonly RoutingAnchor[] = [
 	},
 	{
 		label: "writer trigger fires only for a named reason, never by size or file count",
-		// S9 canon change (gentle-ai 87a3b2eb): the canon caught up with Gentle
-		// Shell (gentle-shell#1731): the writer fires on named reasons
+		// S9 canon change (drakonc-ai 87a3b2eb): the canon caught up with Drakonc
+		// Shell (drakonc-shell#1731): the writer fires on named reasons
 		// (parallelism, context), never on size alone or a price ratio.
 		canonical: "**Writer trigger:** a writer is delegated only for a named reason, one bounded writer per unit",
 		mirrors: [
@@ -134,7 +134,7 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
-		// S9 canon change (gentle-ai c3763aa7, C3): whoever writes reuses the
+		// S9 canon change (drakonc-ai c3763aa7, C3): whoever writes reuses the
 		// existing shared-state helper and keeps its invariants.
 		label: "writers reuse the existing shared-state function",
 		canonical: "reuses the existing function for shared state",
@@ -143,7 +143,7 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
-		// S9 canon change (gentle-ai c3763aa7, C8): PRESERVE diffs each existing
+		// S9 canon change (drakonc-ai c3763aa7, C8): PRESERVE diffs each existing
 		// command that shares the changed code against the previous code.
 		label: "differential check against the previous code",
 		canonical: "run a differential check",
@@ -154,7 +154,7 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
-		label: "task size decides the route (gentle-shell#1494)",
+		label: "task size decides the route (drakonc-shell#1494)",
 		canonical: "### Task Size",
 		mirrors: [
 			{ surface: CORE, includes: "## Task Size" },
@@ -163,13 +163,13 @@ const ANCHORS: readonly RoutingAnchor[] = [
 	},
 	{
 		label: "verification trigger is reserved for a named high-risk item",
-		// S9 canon change (gentle-ai 6b9a71ef): only a change whose Risk line
+		// S9 canon change (drakonc-ai 6b9a71ef): only a change whose Risk line
 		// names a high-risk item gets the independent verifier.
 		canonical: "**Verification trigger:** only a change whose Risk line names a high-risk item gets an independent verifier",
 		mirrors: [
 			// Verification by named risk: the core row names the escalate-only verifier.
-			{ surface: CORE, includes: "**Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `gentle-ai-verify`" },
-			{ surface: DELEGATION, includes: "only a change whose Risk line names a high-risk item (Task Size, assess `escalate` when RDD is on or unknown) gets an independent `gentle-ai-verify` run" },
+			{ surface: CORE, includes: "**Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `drakonc-ai-verify`" },
+			{ surface: DELEGATION, includes: "only a change whose Risk line names a high-risk item (Task Size, assess `escalate` when RDD is on or unknown) gets an independent `drakonc-ai-verify` run" },
 		],
 	},
 	{
@@ -188,8 +188,8 @@ const ANCHORS: readonly RoutingAnchor[] = [
 	{
 		label: "long-session backstop",
 		canonical: "**Long-session backstop:**",
-		// Gentle Shell intentionally leads the canon here: a parent-context token
-		// backstop replaces the tool-call count (tracked by gentle-ai#5139), and the
+		// Drakonc Shell intentionally leads the canon here: a parent-context token
+		// backstop replaces the tool-call count (tracked by drakonc-ai#5139), and the
 		// runtime measures it and signals it instead of the canon's advisory ~150k
 		// estimate (harness roadmap R1), so the Pi anchor names the runtime signal.
 		mirrors: [
@@ -222,7 +222,7 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		],
 	},
 	{
-		label: "handoffs pass the feature spec by reference (gentle-shell#1713)",
+		label: "handoffs pass the feature spec by reference (drakonc-shell#1713)",
 		canonical: "Hand off by reference, never by paraphrase: name the document, task, and specs",
 		mirrors: [
 			{ surface: EXTENSION, includes: "Hand off by reference, never by paraphrase: name the document, task, and specs" },
@@ -248,7 +248,7 @@ const ANCHORS: readonly RoutingAnchor[] = [
 // rows, so they are mirror-only and not anchors of the canonical routing block.
 const CORE_ONLY_TRIGGERS = [
 	"**Incident rule** — diagnose wrong cwd/worktree/git/tooling incidents separately",
-	"**Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `gentle-ai-verify`",
+	"**Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `drakonc-ai-verify`",
 ] as const;
 
 // The verified mirrored routing/pi.md: the bundle tree must pass the strict
@@ -293,7 +293,7 @@ test("the pi mirror surfaces carry every mapped mandatory-delegation anchor", ()
 	const surfaces: Record<string, string> = {
 		[DELEGATION]: readRepo(DELEGATION_PATH),
 		[CORE]: readRepo(CORE_PATH),
-		[EXTENSION]: __testing.buildGentlePrompt("gentleman"),
+		[EXTENSION]: __testing.buildDrakoncPrompt("drakoncman"),
 	};
 	for (const anchor of ANCHORS) {
 		for (const mirror of anchor.mirrors) {

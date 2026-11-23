@@ -22,13 +22,13 @@ const EXT_BY_MIME: Record<string, string> = {
 /** Files this cache owns. The sweep only ever touches directories holding them. */
 const OWN_FILE = /^image-\d+\.(png|jpg|webp|gif)$/;
 
-/** `${XDG_CACHE_HOME:-~/.cache}/gentle-shell/images`, where sessions are created. */
+/** `${XDG_CACHE_HOME:-~/.cache}/drakonc-shell/images`, where sessions are created. */
 export function defaultCacheRoot(env: NodeJS.ProcessEnv = process.env, home = homedir()): string {
 	const xdg = env.XDG_CACHE_HOME;
 	// XDG says a relative value must be ignored: a cache path that depends on the
 	// working directory cannot be handed to a tool as an absolute file path.
 	const base = xdg && xdg.trim() && isAbsolute(xdg) ? xdg : join(home, ".cache");
-	return join(base, "gentle-shell", "images");
+	return join(base, "drakonc-shell", "images");
 }
 
 /**

@@ -9,7 +9,7 @@ import { runReviewCoordinator, type ReviewCoordinatorTool } from "../lib/review-
 
 // odd/tasks/review-one-call.md T11 (S5), L18: a run that stops on a correction
 // request or an escalation returns the provider's non-blocking findings
-// (STATUS non_blocking_findings, gentle-ai#6088) with bounded reviewer claims.
+// (STATUS non_blocking_findings, drakonc-ai#6088) with bounded reviewer claims.
 
 type Body = Record<string, unknown>;
 interface Metrics { steps: Body[] }
@@ -107,7 +107,7 @@ for (const [name, statement, kept, cut] of [
 		assert.equal(Buffer.byteLength((result.non_blocking_findings as Body).statement as string), Buffer.byteLength(kept));
 		assert.deepEqual(result.non_blocking_findings, { statement: kept, findings: findings.map(listed), ...(cut ? { statement_truncated: true } : {}) });
 		assert.equal(result.outcome, response.result.next_transition.kind === "stop" ? "stopped" : "input-required");
-		assert.deepEqual(host.calls, [{ tool: "gentle_review", parameters: { operation: "status", lineageId: lineage } }]);
+		assert.deepEqual(host.calls, [{ tool: "drakonc_review", parameters: { operation: "status", lineageId: lineage } }]);
 		assert.deepEqual(response, original, "provider input remains untouched");
 		const { non_blocking_findings: _raw, ...nested } = original.result;
 		assert.deepEqual(result.result, { ...original, result: nested }, "no unbounded nested copy");
@@ -175,7 +175,7 @@ test("the facade's STATUS operation asks the provider for the non-blocking findi
 	for (const scenario of ["correction", "escalated"] as const) {
 		const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, scenario, correctionFindings: [blocking] });
 		try {
-			const result = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage });
+			const result = await runtime.invoke("drakonc_review_run", { lineageId: runtime.lineage });
 			assert.equal(result.outcome, scenario === "correction" ? "input-required" : "stopped");
 			const statuses = runtime.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => entry.request as Body);
 			assert.equal(statuses.length, 1);
@@ -187,19 +187,19 @@ test("the facade's STATUS operation asks the provider for the non-blocking findi
 test("a direct INSPECT never asks for the non-blocking findings; inside the run only facade status reads do", async () => {
 	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, scenario: "escalated" });
 	try {
-		const inspected = await runtime.invoke("gentle_review", { operation: "inspect" });
+		const inspected = await runtime.invoke("drakonc_review", { operation: "inspect" });
 		assert.equal(inspected.result?.authority?.state, "escalated", JSON.stringify(inspected).slice(0, 400));
 		const statuses = runtime.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => entry.request as Body);
 		assert.ok(statuses.length >= 1);
-		for (const status of statuses) assert.equal(Object.hasOwn(status, "nonBlockingFindings"), false, "L19: a direct gentle_review never asks");
+		for (const status of statuses) assert.equal(Object.hasOwn(status, "nonBlockingFindings"), false, "L19: a direct drakonc_review never asks");
 	} finally { runtime.close(); }
 	// A reviewer-group capture reads STATUS before and after its submissions without the opt-in.
 	const group = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, scenario: "refuter" });
 	try {
-		const result = await group.invoke("gentle_review_run", { lineageId: group.lineage });
+		const result = await group.invoke("drakonc_review_run", { lineageId: group.lineage });
 		assert.equal(result.outcome, "closed", JSON.stringify(result).slice(0, 400));
 		const flagged = group.nativeRequests.filter((entry) => entry.operation === "target-status").map((entry) => (entry.request as Body).nonBlockingFindings === true);
-		const statusSteps = (result.metrics as Metrics).steps.filter((step: Body) => step.tool === "gentle_review" && step.operation === "status").length;
+		const statusSteps = (result.metrics as Metrics).steps.filter((step: Body) => step.tool === "drakonc_review" && step.operation === "status").length;
 		assert.equal(flagged.filter(Boolean).length, statusSteps, "one opted-in read per facade status operation");
 		assert.ok(flagged.some((value: boolean) => !value), "capture-side STATUS reads stay as they are");
 	} finally { group.close(); }

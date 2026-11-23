@@ -62,7 +62,7 @@ The current registry fingerprint omits resolved fields that change rendered outp
 - Parent spot check: focused registry tests passed 35/35 and `git diff --check` passed.
 - Work-unit commit: `d28f1303` (`fix(skill-registry): preserve resolved authority on refresh`).
 - Native review: `review-81d5b6672bf79eae` approved with no correction required; acknowledgement burned revision `sha256:386e1925237f6a9d01b32cd79483f16b82dd4f6278a6b7d730be87738d6de101`.
-- Engram mirror pending: the active Pi session is bound to the outer `gentleman` project, so Engram rejected a `gentle-shell`-scoped save. The local tracker remains authoritative for this session.
+- Engram mirror pending: the active Pi session is bound to the outer `drakoncman` project, so Engram rejected a `drakonc-shell`-scoped save. The local tracker remains authoritative for this session.
 
 ## Next Step
 

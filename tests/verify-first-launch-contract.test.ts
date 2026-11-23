@@ -6,10 +6,10 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
 import { blockChildDestructiveCommand } from "../extensions/child-safety.ts";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
 
-// gentle-shell#1731 T16 (S5; L33-L34): in the after3 bench (B x4/x5) the first
+// drakonc-shell#1731 T16 (S5; L33-L34): in the after3 bench (B x4/x5) the first
 // verify launch ran no probes because the handoff said only "read-only" and
 // named no probe commands or isolated state, so every probe was reported
 // unverified and the parent continued the task (~2 min per cell). Read-only now
@@ -21,18 +21,18 @@ import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.t
 // These are instruction-delivery contracts, not proof of model adherence.
 
 const read = (relative: string): string => readFileSync(join(import.meta.dirname, "..", relative), "utf8");
-const verify = read("assets/agents/gentle-ai-verify.md");
+const verify = read("assets/agents/drakonc-ai-verify.md");
 const verification = read("assets/orchestrator-verification.md");
 let scratch: string;
 let previousConfigHome: string | undefined;
 before(() => {
-	scratch = mkdtempSync(join(tmpdir(), "gentle-verify-first-"));
-	previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = join(scratch, "config");
+	scratch = mkdtempSync(join(tmpdir(), "drakonc-verify-first-"));
+	previousConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = join(scratch, "config");
 });
 after(() => {
-	if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-	else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	if (previousConfigHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+	else process.env.DRAKONC_PI_CONFIG_HOME = previousConfigHome;
 	if (scratch) rmSync(scratch, { recursive: true, force: true });
 });
 
@@ -78,7 +78,7 @@ test("S3: parent setup rule keeps the human-requested relaunch after a repaired 
 
 test("S2-S3: setup recovery references the always-on bounded policy", () => {
 	containsAll(verification, [
-		"Follow **Authorized work continuity** for setup and worker recovery; scratch: `gentle-ai-verify`.",
+		"Follow **Authorized work continuity** for setup and worker recovery; scratch: `drakonc-ai-verify`.",
 		"auto-relaunch for it",
 	], "parent setup recovery");
 });
@@ -115,7 +115,7 @@ test("S4: successful setup retains independent probes, isolation, consent and fi
 		"one correction batch and one recheck limited to the reported blockers",
 	], "verification safeguards");
 	containsAll(verification, [
-		"one separate `gentle-ai-verify` run",
+		"one separate `drakonc-ai-verify` run",
 		"one correction batch that fixes every reported blocker",
 	], "parent safeguards");
 	assert.ok(read("docs/delegated-verification.md").includes("human consent for native review"));
@@ -150,7 +150,7 @@ test("T16/W1: the scratch copy method cannot write outside the scratch directory
 	], "scratch copy method");
 });
 
-// gentle-shell#2818: the prompt asked for a copy without `.git` but named only
+// drakonc-shell#2818: the prompt asked for a copy without `.git` but named only
 // `cp -a --reflink=auto`, which cannot exclude anything. Verifiers then ran
 // `rm -rf "$s/work/.git"` (blocked by child safety) or `cp --exclude` (no such
 // option), so no probe ran. The prompt names one exact guard-compatible form.
@@ -329,8 +329,8 @@ test("T17b: inline-write preparation is distinct from discovery", () => {
 });
 
 test("T17: the always-on Explore step delegates exploration only for a map the parent needs", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona, scratch, ["read"]);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona, scratch, ["read"]);
 		const step = prompt.split("\n").find((line) => line.startsWith("2. **Explore.**"));
 		assert.ok(step, "ODD step 2 Explore is missing");
 		containsAll(step, [

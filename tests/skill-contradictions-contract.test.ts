@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test, { after } from "node:test";
 import askUserQuestion from "../extensions/ask-user-question.ts";
-import gentleAgents from "../extensions/gentle-agents.ts";
-import gentleTodo from "../extensions/gentle-todo.ts";
+import drakoncAgents from "../extensions/drakonc-agents.ts";
+import drakoncTodo from "../extensions/drakonc-todo.ts";
 import { requiredPaths } from "../scripts/verify-package-files.mjs";
 
 // cost-speed-painpoints S15 P7: skill and tool-guideline contradictions resolved in the
@@ -16,7 +16,7 @@ const read = (path: string) => readFileSync(join(root, path), "utf8");
 const rdd = read("skills/rdd-defect-workflow/SKILL.md");
 const commentWriter = read("skills/comment-writer/SKILL.md");
 const workUnits = read("skills/work-unit-commits/SKILL.md");
-const harnessSkill = read("skills/gentle-ai/SKILL.md");
+const harnessSkill = read("skills/drakonc-ai/SKILL.md");
 
 type Tool = { name: string; description?: string; promptGuidelines?: string[] };
 const tools = new Map<string, Tool>();
@@ -27,8 +27,8 @@ const pi = {
 	registerFlag() {}, getFlag() {}, events: { on() {}, emit() {} },
 	registerTool(tool: Tool) { tools.set(tool.name, tool); },
 };
-gentleAgents(pi as never, { GENTLE_PI_CONFIG_HOME: fixture }, { home: fixture, agentHome: fixture });
-gentleTodo(pi as never, {});
+drakoncAgents(pi as never, { DRAKONC_PI_CONFIG_HOME: fixture }, { home: fixture, agentHome: fixture });
+drakoncTodo(pi as never, {});
 askUserQuestion(pi as never);
 const guidelines = (name: string) => {
 	const tool = tools.get(name);
@@ -80,12 +80,12 @@ test("C6: delivery follows changed lines, not a Low/Medium/High risk scale; a hi
 	assert.match(section, /Risk never picks the delivery strategy; a unit whose Risk line names a high-risk item gets its own commit\./);
 });
 
-test("C7: the gentle-ai skill points to the core Writer rule instead of restating it differently", () => {
+test("C7: the drakonc-ai skill points to the core Writer rule instead of restating it differently", () => {
 	const rule = harnessSkill.split("\n").find(line => line.startsWith("- **Writer rule**")) ?? "";
 	assert.equal(rule, "- **Writer rule**: outside full delegation, a writer only when two or more independent units of behavior, each heavier than a subagent start, are launched together in one turn, or when the context backstop fires; task size and file count never fire it. In full delegation every write goes to a bounded writer, whatever its size.");
 });
 
-test("N1: the gentle-ai skill checks the effective session skills view before the registry file", () => {
+test("N1: the drakonc-ai skill checks the effective session skills view before the registry file", () => {
 	assert.doesNotMatch(harnessSkill, /check the registry\/filesystem for a more specific skill/);
 	assert.match(harnessSkill, /check `<available_skills>` and, when present, the `Effective session skills` block for a more specific skill before generic execution \(registry and filesystem only as a fallback\)/);
 });

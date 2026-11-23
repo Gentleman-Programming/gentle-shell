@@ -6,10 +6,10 @@ import { join } from "node:path";
 import test, { after, before } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension, __testing } from "../extensions/drakonc-ai.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 
-// gentle-pi#560 / gentle-ai#4056, #4057: since 2026-08-01 Gentle AI stopped
+// drakonc-pi#560 / drakonc-ai#4056, #4057: since 2026-08-01 Drakonc AI stopped
 // writing a runtime-specific review execution contract into Pi's generated
 // APPEND_SYSTEM composition. This package now injects the mirrored provider
 // contract bundle's own `orchestration/pi.md` text at session start instead.
@@ -28,15 +28,15 @@ let fixtureCwd: string;
 const fixtureEnvironment: NodeJS.ProcessEnv = {};
 const previousEnvironment = new Map<string, string | undefined>();
 before(() => {
-	fixtureRoot = mkdtempSync(join(tmpdir(), "gentle-pi-review-prompt-"));
+	fixtureRoot = mkdtempSync(join(tmpdir(), "drakonc-pi-review-prompt-"));
 	fixtureCwd = join(fixtureRoot, "project");
 	const home = join(fixtureRoot, "home");
 	mkdirSync(fixtureCwd);
 	mkdirSync(home);
 	Object.assign(fixtureEnvironment, {
 		HOME: home, USERPROFILE: home,
-		GENTLE_PI_CONFIG_HOME: join(home, "config"),
-		GENTLE_PI_AGENT_HOME: join(home, "agents"),
+		DRAKONC_PI_CONFIG_HOME: join(home, "config"),
+		DRAKONC_PI_AGENT_HOME: join(home, "agents"),
 		PI_CODING_AGENT_DIR: join(home, "pi"),
 		XDG_CONFIG_HOME: join(home, "xdg"),
 	});
@@ -71,9 +71,9 @@ function harness(nativeReviewCli: NativeReviewCli | null, processEnv?: NodeJS.Pr
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({
+	createDrakoncAiExtension({
 		nativeReviewCli,
-		processEnv: { ...fixtureEnvironment, GENTLE_PI_AGENTS_CHILD: "0", ...processEnv, GENTLE_AI_TELEMETRY: "0" },
+		processEnv: { ...fixtureEnvironment, DRAKONC_PI_AGENTS_CHILD: "0", ...processEnv, DRAKONC_AI_TELEMETRY: "0" },
 		resolveTelemetryTriggerBinary: () => join(fixtureCwd, "never-executed"),
 		telemetryTriggerSpawn: () => assert.fail("Review prompt fixtures must not spawn telemetry"),
 	})(pi);
@@ -115,21 +115,21 @@ test("before_agent_start injects the mirrored review execution contract for the 
 	assert.doesNotMatch(appended, /ODD \(Default Workflow, harness section above\)/);
 	assert.doesNotMatch(appended, /Prefer SDD\/OpenSpec artifacts/);
 	const { contract_semver } = JSON.parse(readFileSync(MIRROR_LOCK_PATH, "utf8")) as { contract_semver: string };
-	assert.ok(appended.includes(`## Gentle AI review execution contract (mirrored provider bundle ${contract_semver})`), "the heading names the locked mirror version");
+	assert.ok(appended.includes(`## Drakonc AI review execution contract (mirrored provider bundle ${contract_semver})`), "the heading names the locked mirror version");
 	assert.ok(appended.includes(expected), "the mirrored orchestration/pi.md text must appear verbatim");
-	assert.match(appended, /call `gentle_review` with {"operation":"inspect"}/);
-	assert.match(appended, /call `gentle_review` with operation `status`, the exact retained `lineageId`, and `workspaceRoot`/);
-	assert.match(appended, /Use `gentle_review_capture` for one current returned slot or `gentle_review_capture_group` for the complete current reviewer group/);
+	assert.match(appended, /call `drakonc_review` with {"operation":"inspect"}/);
+	assert.match(appended, /call `drakonc_review` with operation `status`, the exact retained `lineageId`, and `workspaceRoot`/);
+	assert.match(appended, /Use `drakonc_review_capture` for one current returned slot or `drakonc_review_capture_group` for the complete current reviewer group/);
 	assert.match(appended, /An eligible interactive Pi host may resolve `gentle-ai\.review-integration\.consent\/v3` before the envelope reaches the model/);
-	assert.match(appended, /If `gentle_review` returns the envelope unresolved, it is still the original provider-owned two-choice contract/);
+	assert.match(appended, /If `drakonc_review` returns the envelope unresolved, it is still the original provider-owned two-choice contract/);
 	assert.match(appended, /Never add the host action to a decoded or relayed provider envelope/);
 	assert.match(appended, /An approved capture awaits acknowledgement; it is not burned\. On `approved`, use bound facade STATUS to obtain or replay the exact provider-issued `acknowledge-approved` continuation, then execute it unchanged\. Only its successful returned envelope burns authority; do not issue STATUS after that burn\./);
-	let previousLifecycleIndex = appended.indexOf("## Gentle AI review execution contract");
+	let previousLifecycleIndex = appended.indexOf("## Drakonc AI review execution contract");
 	for (const marker of [
-		'call `gentle_review` with {"operation":"inspect"}',
+		'call `drakonc_review` with {"operation":"inspect"}',
 		"2. **Freeze once.**",
-		"call `gentle_review` with operation `status`",
-		"Use `gentle_review_capture` for one current returned slot",
+		"call `drakonc_review` with operation `status`",
+		"Use `drakonc_review_capture` for one current returned slot",
 		"5. **Acknowledge exactly.**",
 	]) {
 		const markerIndex = appended.indexOf(marker, previousLifecycleIndex + 1);
@@ -137,19 +137,19 @@ test("before_agent_start injects the mirrored review execution contract for the 
 		previousLifecycleIndex = markerIndex;
 	}
 	assert.doesNotMatch(appended, /authority is already burned/);
-	assert.doesNotMatch(appended, /gentle-ai review status\b.*--agent pi/);
+	assert.doesNotMatch(appended, /drakonc-ai review status\b.*--agent pi/);
 });
 
 test("before_agent_start does not inject the review execution contract for a named agent session", async () => {
 	const { beforeAgentStart } = harness({} as NativeReviewCli);
 	const event = primaryEvent({ agentName: "review-readability" });
 	await beforeAgentStart(event, ctx());
-	assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /Gentle AI review execution contract/);
+	assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /Drakonc AI review execution contract/);
 });
 
-test("before_agent_start does not inject the review execution contract for gentle-ai-worker", async () => {
+test("before_agent_start does not inject the review execution contract for drakonc-ai-worker", async () => {
 	const { beforeAgentStart } = harness({} as NativeReviewCli);
-	const event = primaryEvent({ agentName: "gentle-ai-worker" });
+	const event = primaryEvent({ agentName: "drakonc-ai-worker" });
 	await beforeAgentStart(event, ctx());
 	assert.equal(event.systemPromptOptions.appendSystemPrompt, "", "a named agent gets nothing appended");
 });
@@ -167,12 +167,12 @@ test("before_agent_start does not let legacy prompt text bypass primary ODD and 
 	await beforeAgentStart(event, ctx());
 	const appended = event.systemPromptOptions.appendSystemPrompt;
 	assert.match(appended, /large tasks get ODD tracking and workers/);
-	assert.match(appended, /Gentle AI review execution contract/);
+	assert.match(appended, /Drakonc AI review execution contract/);
 	assert.doesNotMatch(appended, /### 3\. SDD \(optional\)/);
 });
 
-test("before_agent_start does not inject the review execution contract or gentlePrompt for a child session (GENTLE_PI_AGENTS_CHILD=1)", async () => {
-	const { beforeAgentStart } = harness({} as NativeReviewCli, { GENTLE_PI_AGENTS_CHILD: "1" });
+test("before_agent_start does not inject the review execution contract or drakoncPrompt for a child session (DRAKONC_PI_AGENTS_CHILD=1)", async () => {
+	const { beforeAgentStart } = harness({} as NativeReviewCli, { DRAKONC_PI_AGENTS_CHILD: "1" });
 	const event = primaryEvent({ systemPromptOptions: { appendSystemPrompt: "Worker-specific instructions" } });
 	const result = await beforeAgentStart(event, ctx());
 	assert.equal(result, undefined, "the handler must not return a replacement systemPrompt");
@@ -183,7 +183,7 @@ test("before_agent_start injects nothing when nativeReviewCli is null", async ()
 	const { beforeAgentStart } = harness(null);
 	const event = primaryEvent();
 	await beforeAgentStart(event, ctx());
-	assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /Gentle AI review execution contract/);
+	assert.doesNotMatch(event.systemPromptOptions.appendSystemPrompt, /Drakonc AI review execution contract/);
 });
 
 test("before_agent_start is idempotent: running twice on the same systemPromptOptions never duplicates the harness", async () => {
@@ -193,13 +193,13 @@ test("before_agent_start is idempotent: running twice on the same systemPromptOp
 	const firstLength = event.systemPromptOptions.appendSystemPrompt.length;
 	await beforeAgentStart(event, ctx());
 	assert.equal(event.systemPromptOptions.appendSystemPrompt.length, firstLength, "a second run on the same options object must not append again");
-	const occurrences = event.systemPromptOptions.appendSystemPrompt.split("Gentle AI review execution contract").length - 1;
+	const occurrences = event.systemPromptOptions.appendSystemPrompt.split("Drakonc AI review execution contract").length - 1;
 	assert.equal(occurrences, 1);
 });
 
-// gentle-ai R1/R3: a tampered mirrored orchestration/pi.md must never be spliced into the system prompt.
+// drakonc-ai R1/R3: a tampered mirrored orchestration/pi.md must never be spliced into the system prompt.
 function tempMirror(text: string, entrySha256: string): string {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-mirror-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-mirror-"));
 	const bundleDir = join(root, "v9.9.9", "bundle", "orchestration");
 	mkdirSync(bundleDir, { recursive: true });
 	writeFileSync(join(bundleDir, "pi.md"), text, "utf8");
@@ -214,7 +214,7 @@ test("rejects a tampered mirror, accepts a matching one, and warns once", async 
 	const matching = tempMirror(matchingText, createHash("sha256").update(Buffer.from(matchingText, "utf8")).digest("hex"));
 	try {
 		// Cache-bust: isolate this module's fragment cache from the real-mirror tests above.
-		const cacheBustedUrl = `${pathToFileURL(join(import.meta.dirname, "..", "extensions", "gentle-ai.ts")).href}?tamper=${Math.random()}`;
+		const cacheBustedUrl = `${pathToFileURL(join(import.meta.dirname, "..", "extensions", "drakonc-ai.ts")).href}?tamper=${Math.random()}`;
 		type Testing = {
 			readMirroredReviewContractFragment: (mirrorRoot?: string) => string | null;
 			loadReviewContractPromptFragment: (ctx: ExtensionContext, mirrorRoot?: string) => string | null;
@@ -233,7 +233,7 @@ test("rejects a tampered mirror, accepts a matching one, and warns once", async 
 	}
 });
 
-// gentle-shell#1494 F2: when receipt-driven development is off, the review
+// drakonc-shell#1494 F2: when receipt-driven development is off, the review
 // execution contract is irrelevant to the session, so it is not loaded. On and
 // unknown keep it (unknown fails safe toward the reviewed path).
 function rddCli(effective: "on" | "off" | "throws"): NativeReviewCli {
@@ -253,9 +253,9 @@ for (const [effective, injected] of [["off", false], ["on", true], ["throws", tr
 			const event = primaryEvent();
 			await beforeAgentStart(event, ctx());
 			const appended = event.systemPromptOptions.appendSystemPrompt;
-			assert.match(appended, /# el Gentleman Orchestrator/, "the harness itself is always injected");
-			if (injected) assert.match(appended, /Gentle AI review execution contract/);
-			else assert.doesNotMatch(appended, /Gentle AI review execution contract/);
+			assert.match(appended, /# el Drakoncman Orchestrator/, "the harness itself is always injected");
+			if (injected) assert.match(appended, /Drakonc AI review execution contract/);
+			else assert.doesNotMatch(appended, /Drakonc AI review execution contract/);
 		} finally {
 			__testing.clearRddStatusMemoForTesting();
 		}

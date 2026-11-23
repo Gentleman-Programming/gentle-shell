@@ -12,7 +12,7 @@ import { designCommentBatchContent, designCommentContent, describeWatchFailure, 
 const TOKEN = "test-token-0123456789abcdef";
 const ASSET_DIR = fileURLToPath(new URL("../assets/design-canvas/", import.meta.url));
 
-// gentle-shell#3156: when the host's inotify limit is exhausted, fs.watch cannot register and the
+// drakonc-shell#3156: when the host's inotify limit is exhausted, fs.watch cannot register and the
 // server's change events never fire; the server now says so per stream, and the tests that wait
 // for those events skip naming the environment instead of failing like a canvas regression.
 function probeFsWatch(): boolean {
@@ -64,8 +64,8 @@ function scratch(t: TestContext, prefix: string): string {
 }
 
 function fixture(t: TestContext) {
-	const root = scratch(t, "gentle-design-canvas-");
-	const outside = scratch(t, "gentle-design-outside-");
+	const root = scratch(t, "drakonc-design-canvas-");
+	const outside = scratch(t, "drakonc-design-outside-");
 	writeFileSync(join(outside, "secret.html"), "<p>secret</p>");
 	const alpha = join(root, "alpha");
 	mkdirSync(join(alpha, "sub"), { recursive: true });
@@ -738,12 +738,12 @@ test("the system board is served sandboxed with the inspector injected", async (
 
 test("a symlinked system.html escaping the design root is 404, and a directory is not a board", async (t) => {
 	const { port, base, root } = await start(t);
-	const outside = scratch(t, "gentle-design-system-outside-");
+	const outside = scratch(t, "drakonc-design-system-outside-");
 	writeFileSync(join(outside, "system.html"), "<p>secret</p>");
 	symlinkSync(join(outside, "system.html"), join(root, "system.html"));
 	assert.equal((await rawRequest(port, `${base}system.html`)).status, 404);
 	assert.equal(JSON.parse((await rawRequest(port, `${base}api/system`)).body).exists, false);
-	const dirRoot = scratch(t, "gentle-design-system-dir-");
+	const dirRoot = scratch(t, "drakonc-design-system-dir-");
 	mkdirSync(join(dirRoot, "system.html"));
 	const other = await startDesignCanvasServer({ designRoot: dirRoot, onComment: () => {}, randomToken: () => TOKEN });
 	t.after(() => other.close());
@@ -1387,7 +1387,7 @@ test("close() is idempotent, ends event streams and frees the port", async (t) =
 });
 
 test("a missing design root lists nothing and still serves the canvas", async (t) => {
-	const parent = scratch(t, "gentle-design-empty-");
+	const parent = scratch(t, "drakonc-design-empty-");
 	const server = await startDesignCanvasServer({ designRoot: join(parent, "design"), onComment: () => {}, randomToken: () => TOKEN });
 	t.after(() => server.close());
 	assert.deepEqual(JSON.parse((await rawRequest(server.port, `/${TOKEN}/api/designs`)).body), { designs: [] });
@@ -1408,8 +1408,8 @@ test("formatDesignComment builds the exact session message with the comment id",
 		"Comment:",
 		"Make the headline shorter.",
 		"",
-		"Edit only the artboard design/landing/02-bold.html, following the gentle-design skill.",
-		"When it is applied, mark it resolved with the gentle_design_comments tool (action \"resolve\", slug \"landing\", ids [\"k3x9p2\"], note \"<one line on what you changed>\"), or set its status to \"resolved\" in design/landing/comments.json.",
+		"Edit only the artboard design/landing/02-bold.html, following the drakonc-design skill.",
+		"When it is applied, mark it resolved with the drakonc_design_comments tool (action \"resolve\", slug \"landing\", ids [\"k3x9p2\"], note \"<one line on what you changed>\"), or set its status to \"resolved\" in design/landing/comments.json.",
 	].join("\n"));
 	assert.match(formatDesignComment({ ...VALID, id: "a1", excerpt: "" }), /\nExcerpt: \(none\)\n/);
 });
@@ -1437,8 +1437,8 @@ test("formatDesignCommentBatch builds one exact message listing every comment", 
 		"   Shorter.",
 		"   And bolder.",
 		"",
-		"Apply each comment following the gentle-design skill, editing only the artboard it names.",
-		"When a comment is applied, mark it resolved with the gentle_design_comments tool (action \"resolve\", slug \"landing\", ids [\"aaa111\", \"bbb222\"], note \"<one line on what you changed>\"), or set its status to \"resolved\" in design/landing/comments.json.",
+		"Apply each comment following the drakonc-design skill, editing only the artboard it names.",
+		"When a comment is applied, mark it resolved with the drakonc_design_comments tool (action \"resolve\", slug \"landing\", ids [\"aaa111\", \"bbb222\"], note \"<one line on what you changed>\"), or set its status to \"resolved\" in design/landing/comments.json.",
 	].join("\n"));
 });
 
@@ -1530,8 +1530,8 @@ test("formatDesignComment names the screenshot, and the session content attaches
 		"Comment:",
 		"The button jumps mid-animation.",
 		"",
-		"Edit only the artboard design/landing/02-bold.html, following the gentle-design skill.",
-		"When it is applied, mark it resolved with the gentle_design_comments tool (action \"resolve\", slug \"landing\", ids [\"k3x9p2\"], note \"<one line on what you changed>\"), or set its status to \"resolved\" in design/landing/comments.json.",
+		"Edit only the artboard design/landing/02-bold.html, following the drakonc-design skill.",
+		"When it is applied, mark it resolved with the drakonc_design_comments tool (action \"resolve\", slug \"landing\", ids [\"k3x9p2\"], note \"<one line on what you changed>\"), or set its status to \"resolved\" in design/landing/comments.json.",
 	].join("\n");
 	assert.equal(formatDesignComment(comment), text);
 	assert.deepEqual(designCommentContent(comment), [{ type: "text", text }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }]);
@@ -1695,7 +1695,7 @@ test("S1: an empty, malformed, huge, linked or directory system.md never fails t
 	writeFileSync(join(root, "system.md"), `${SYSTEM_MD}${"x".repeat(300 * 1024)}`);
 	assert.deepEqual(JSON.parse((await tokens()).body), { exists: true, tokens: [], problem: "too-large" });
 	rmSync(join(root, "system.md"));
-	const outside = scratch(t, "gentle-design-tokens-outside-");
+	const outside = scratch(t, "drakonc-design-tokens-outside-");
 	writeFileSync(join(outside, "system.md"), SYSTEM_MD);
 	symlinkSync(join(outside, "system.md"), join(root, "system.md"));
 	assert.deepEqual(JSON.parse((await tokens()).body), { exists: false, tokens: [] }, "a link out of the design root is not read");
@@ -1932,7 +1932,7 @@ test("canvas-layout S17: an edited comment's message names it as an edit and quo
 	assert.ok(!formatDesignComment({ id: "k3x9p2", slug: "landing", file: "02-bold.html", selector: "h1", excerpt: "", comment: "x" }).includes("edited"));
 });
 
-test("describeWatchFailure names the exhausted inotify limit (gentle-shell#3156)", () => {
+test("describeWatchFailure names the exhausted inotify limit (drakonc-shell#3156)", () => {
 	assert.match(describeWatchFailure(Object.assign(new Error("watch failed"), { code: "ENOSPC" })), /fs\.watch failed: ENOSPC .*fs\.inotify\.max_user_watches/);
 	assert.match(describeWatchFailure(new Error("boom")), /fs\.watch failed: /);
 });

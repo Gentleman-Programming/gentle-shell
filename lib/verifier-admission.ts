@@ -5,8 +5,8 @@ import { contextBackstopReached, type MeasuredContext } from "./context-backstop
 // Task Size high-risk item, yet a bench run still launched it on a small, not high-risk task. In the primary session a
 // verifier launch is admitted only when its task or context declares a named high-risk item, carries a task of an
 // existing feature document (the same lines writer admission accepts), or the parent's measured context reaches the
-// context backstop. The agent catalog has no generic verifier alias, so only `gentle-ai-verify` is gated.
-export const VERIFIER_NAMES = ["gentle-ai-verify"];
+// context backstop. The agent catalog has no generic verifier alias, so only `drakonc-ai-verify` is gated.
+export const VERIFIER_NAMES = ["drakonc-ai-verify"];
 // A declaration that starts a line (optionally as a list item) or a sentence (after `.`, `!` or `?` and a space) with
 // `Risk:` whose first entry is `item N` with N in 1-6, for example `Risk: item 3 (shared parser)`, `- Risk: item 2,
 // item 3 (reason)` or `... on top of ebf3f35. Risk: item 1 (migration)`. `Risk: none` and a mention inside a

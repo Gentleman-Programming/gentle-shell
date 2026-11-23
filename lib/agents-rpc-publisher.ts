@@ -1,6 +1,6 @@
 import { isFinished, THREAD_ITEM, TASK_STATUS, type TaskRecord, type TaskStatus, type TaskStore, type TaskSummary, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
 
-// Publishes live Gentle Agents subagent state to an interactive RPC host
+// Publishes live Drakonc Agents subagent state to an interactive RPC host
 // (the desktop app), the RPC equivalent of the above-editor TUI card. Pi's
 // only fire-and-forget, structured-enough RPC push is `setWidget(key, string[])`
 // (component factories are ignored in RPC mode), so this module projects the
@@ -9,11 +9,11 @@ import { isFinished, THREAD_ITEM, TASK_STATUS, type TaskRecord, type TaskStatus,
 // task events into one `setWidget` call per window.
 
 /** Schema tag carried on every published line so a client can version the payload shape. */
-export const ACTIVITY_SCHEMA = "gentle-agents.activity/v1";
+export const ACTIVITY_SCHEMA = "drakonc-agents.activity/v1";
 /** Same widget key the TUI card uses. RPC's `setWidget` only accepts a component
  * factory (ignored) or a `string[]` (sent), so the two publications never collide
  * on the wire even though they share a key. */
-export const ACTIVITY_WIDGET_KEY = "gentle-agents";
+export const ACTIVITY_WIDGET_KEY = "drakonc-agents";
 
 /** Prompts are the field most likely to carry a long user request; keep only a preview. */
 const PROMPT_LIMIT = 200;
@@ -126,7 +126,7 @@ function projectTaskSummary(task: TaskRecord): RpcTaskSummary {
 }
 
 /**
- * The bounded thread projection one task carries in `gentle-agents.activity/v1`:
+ * The bounded thread projection one task carries in `drakonc-agents.activity/v1`:
  * the store's `version` and `dropped` verbatim and the last `maxThreadItems`
  * items, each through `projectThreadItem`. Shared by the widget and Desktop
  * RPC's `get_subagent_thread`, so the two never disagree.

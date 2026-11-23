@@ -11,7 +11,7 @@ import { qualifiedReviewLockPlatform, testSnapshot } from "./review-test-fixture
 const tree = (digit: string) => digit.repeat(40);
 
 function repository(t: test.TestContext): string {
-	const parent = mkdtempSync(join(tmpdir(), "gentle-pi-review-authority-"));
+	const parent = mkdtempSync(join(tmpdir(), "drakonc-pi-review-authority-"));
 	const cwd = join(parent, "repo");
 	mkdirSync(cwd);
 	t.after(() => rmSync(parent, { recursive: true, force: true }));

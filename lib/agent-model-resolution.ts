@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { resolveGentlePiAgentHome } from "./agent-home.ts";
+import { resolveDrakoncPiAgentHome } from "./agent-home.ts";
 import { resolveProfilePin } from "./agent-profile-pin.ts";
 import {
 	discoverAgents,
@@ -13,7 +13,7 @@ import {
 } from "./agents-config.ts";
 import type { WorktreeResolver } from "./session-worktree-registry.ts";
 
-// gentle-shell#1731: subagent launches and the harness model-routing fact share
+// drakonc-shell#1731: subagent launches and the harness model-routing fact share
 // one resolution of the effective subagent model, so the fact the orchestrator
 // reads can never disagree with the model a launch would actually use.
 
@@ -26,9 +26,9 @@ export interface AgentHomeSelection {
 	homeOverridden?: boolean;
 }
 
-/** The agent home Gentle Agents discovers definitions and `subagents.json` from. */
+/** The agent home Drakonc Agents discovers definitions and `subagents.json` from. */
 export function resolveAgentHomeDirectory(selection: AgentHomeSelection): string {
-	const selectedHome = selection.agentHome ?? (selection.homeOverridden ? join(selection.home, ".pi", "agent") : resolveGentlePiAgentHome(selection.env));
+	const selectedHome = selection.agentHome ?? (selection.homeOverridden ? join(selection.home, ".pi", "agent") : resolveDrakoncPiAgentHome(selection.env));
 	// Expand environment tildes like Pi, but leave explicit path APIs literal.
 	const environmentHome = selection.agentHome === undefined && !selection.homeOverridden;
 	const expandedHome = environmentHome && selectedHome === "~" ? selection.home

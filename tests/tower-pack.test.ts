@@ -8,14 +8,14 @@ import { builtWebPaths, packedFileList } from "../scripts/verify-package-files.m
 const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const towerDir = join(root, "web", "tower");
 
-// Regression for https://github.com/Gentleman-Programming/gentle-shell/issues/3378
-// (and gentle-ai#6173): web/tower/.gitignore lists dist/, and npm applies nested
+// Regression for https://github.com/Drakoncman-Programming/drakonc-shell/issues/3378
+// (and drakonc-ai#6173): web/tower/.gitignore lists dist/, and npm applies nested
 // ignore files even when package.json `files` whitelists web/tower/dist/. Without
 // a nested .npmignore, pack succeeds but ships zero entries under web/tower/dist,
-// so `gentle-shell tower` fails on install. The pack runs in a scratch copy, never
+// so `drakonc-shell tower` fails on install. The pack runs in a scratch copy, never
 // in this checkout, so no other test can observe a fake web/tower/dist.
 function scratchPackage({ withNpmignore }: { withNpmignore: boolean }): string {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-pi-tower-pack-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-pi-tower-pack-"));
 	const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 	writeFileSync(join(dir, "package.json"), JSON.stringify({ name: manifest.name, version: manifest.version, files: manifest.files }));
 	const tower = join(dir, "web", "tower");

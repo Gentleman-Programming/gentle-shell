@@ -18,9 +18,9 @@ const REAL_ASSETS_DIR = join(REPO_ROOT, "assets");
 const VARIANT_FILE = "orchestrator-full-delegation.md";
 // cost-speed-painpoints S15 P5a (verdict C7): the anchor changes together with DELEGATION_MODE_REGION_START.
 const ORGANIC_START = "You are a COORDINATOR who executes understood work inline.";
-const ORGANIC_END = "{{GENTLE_PI_BACKGROUND_POLICY}}";
+const ORGANIC_END = "{{DRAKONC_PI_BACKGROUND_POLICY}}";
 
-const { __testing } = await import("../extensions/gentle-ai.ts");
+const { __testing } = await import("../extensions/drakonc-ai.ts");
 
 const scratch: string[] = [];
 function assetsDirWith(transform: (files: Record<string, string>) => Record<string, string> = (files) => files): string {
@@ -58,7 +58,7 @@ test("full delegation mode replaces the organic rules instead of adding to them"
 	const dir = assetsDirWith();
 	const rendered = full(dir);
 	const variant = readFileSync(join(REAL_ASSETS_DIR, VARIANT_FILE), "utf8").trim();
-	const [beforeRisk, afterRisk] = variant.split("{{GENTLE_PI_HIGH_RISK_ITEMS}}");
+	const [beforeRisk, afterRisk] = variant.split("{{DRAKONC_PI_HIGH_RISK_ITEMS}}");
 	assert.ok(rendered.includes(beforeRisk!.trim()) && rendered.includes(afterRisk!.trim()), "the variant block must be injected around its high-risk items");
 	assert.equal(rendered.includes(ORGANIC_START), false, "the organic role text must be gone, not merely followed");
 	// Task Size survives as tracking and risk only; its inline route does not.
@@ -142,7 +142,7 @@ test("the memoized core is keyed by the mode, so a switch cannot serve stale rul
 	assert.equal(__testing.getOrchestratorPrompt(cwd, undefined, undefined, undefined, "full-delegation"), fullPrompt);
 });
 
-// gentle-shell#379: delegation stays inside the current runtime. The open
+// drakonc-shell#379: delegation stays inside the current runtime. The open
 // "another available delegation mechanism" fallback is gone from the routing
 // detail and the reference docs, and each names the stop rule instead.
 test("delegation fallback never leaves the current runtime", () => {

@@ -8,12 +8,12 @@ import { readVoiceComponentStatus, resolveVoiceHome, voiceComponentPath } from "
 // One dictation session (S1-S3): record from the default microphone until stop,
 // then transcribe locally with the installed Parakeet model. Capture, the
 // blocking model load and the decode all run in scripts/voice-worker.cjs, a
-// separate Node process, so nothing native is ever loaded into Gentle AI.
+// separate Node process, so nothing native is ever loaded into Drakonc AI.
 // Importing this module or constructing a session does no IO; only start()
 // reads the install and spawns the worker. The transcript is returned to the
 // caller and never submitted or inserted anywhere by this module.
 
-export const VOICE_WORKER_SCHEMA = "gentle.voice/v1";
+export const VOICE_WORKER_SCHEMA = "drakonc.voice/v1";
 export const VOICE_WORKER_URL = new URL("../scripts/voice-worker.cjs", import.meta.url);
 
 export const VOICE_SESSION_DEFAULTS = {
@@ -169,7 +169,7 @@ function childEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = {};
 	for (const key of CHILD_ENV_KEYS) if (source[key] !== undefined) env[key] = source[key];
 	env.NODE_NO_WARNINGS = "1";
-	env.GENTLE_PI_AGENTS_CHILD = "1";
+	env.DRAKONC_PI_AGENTS_CHILD = "1";
 	return env;
 }
 

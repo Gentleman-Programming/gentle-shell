@@ -50,7 +50,7 @@ test("a show event for another design leaves focus, loads that design and replac
 
 	await canvas.serverEvent("show", { slug: null });
 	assert.equal(canvas.urls.at(-1), "/t/", "null shows the system-only view at the root URL");
-	assert.equal(canvas.document.getElementById("gd-title").textContent, "Gentle Design");
+	assert.equal(canvas.document.getElementById("gd-title").textContent, "Drakonc Design");
 	assert.deepEqual(canvas.frames(), []);
 
 	const fetches = canvas.fetched.length;

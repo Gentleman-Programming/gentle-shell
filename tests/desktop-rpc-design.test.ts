@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
-import gentleDesign from "../extensions/gentle-design.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
+import drakoncDesign from "../extensions/drakonc-design.ts";
 import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET, DesktopRpcRouter, type DesktopRpcDomain } from "../lib/desktop-rpc.ts";
 import {
 	DESKTOP_DESIGN_EVENT,
@@ -22,7 +22,7 @@ import {
 	type DesktopDesignService,
 } from "../lib/desktop-rpc-design.ts";
 import { DesktopDesignBridge, discoverDesktopDesignService } from "../lib/desktop-design-service.ts";
-import { createDesignCanvas, type DesignCanvasTransition } from "../lib/gentle-design.ts";
+import { createDesignCanvas, type DesignCanvasTransition } from "../lib/drakonc-design.ts";
 import type { DesignCanvasServer, DesignCanvasServerOptions } from "../lib/design-canvas-server.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
@@ -120,7 +120,7 @@ test("isDesktopDesignServiceShape accepts only the versioned adapter", () => {
 		dispose: () => {},
 	};
 	assert.equal(isDesktopDesignServiceShape(good), true);
-	assert.equal(isDesktopDesignServiceShape({ ...good, schema: "gentle-pi.desktop-design-service/v0" }), false);
+	assert.equal(isDesktopDesignServiceShape({ ...good, schema: "drakonc-pi.desktop-design-service/v0" }), false);
 	assert.equal(isDesktopDesignServiceShape({ ...good, read: undefined }), false);
 	assert.equal(isDesktopDesignServiceShape({ ...good, url: undefined }), false);
 	assert.equal(isDesktopDesignServiceShape({ ...good, listDesigns: undefined }), false);
@@ -534,14 +534,14 @@ test("discoverDesktopDesignService accepts the versioned adapter and ignores mal
 	assert.equal(service?.schema, DESKTOP_DESIGN_SERVICE_SCHEMA);
 
 	listeners.set(DESKTOP_DESIGN_SERVICE_CHANNEL, (payload) => {
-		(payload as { respond(service: unknown): void }).respond({ schema: "gentle-pi.desktop-design-service/v0", read: async () => makeCanvasState(false, null, 0) });
+		(payload as { respond(service: unknown): void }).respond({ schema: "drakonc-pi.desktop-design-service/v0", read: async () => makeCanvasState(false, null, 0) });
 	});
 	assert.equal(await discoverDesktopDesignService(pi, ctx), undefined);
 });
 
 // ---- Real owner service ----
 
-test("the real gentle-design owner service answers stopped canvas state and design list", async () => {
+test("the real drakonc-design owner service answers stopped canvas state and design list", async () => {
 	const cwd = scratchCwd();
 	writeDesign(cwd, "login", "Login screen");
 	const listeners = new Map<string, (value: unknown) => void>();
@@ -556,7 +556,7 @@ test("the real gentle-design owner service answers stopped canvas state and desi
 			emit(name: string, value: unknown) { listeners.get(name)?.(value); },
 		},
 	} as unknown as ExtensionAPI;
-	gentleDesign(pi, {});
+	drakoncDesign(pi, {});
 	const ctx = { cwd } as ExtensionContext;
 
 	const service = await discoverDesktopDesignService(pi, ctx);
@@ -590,7 +590,7 @@ test("the Desktop transport advertises the design method and event", async (t) =
 	const widgets: Array<{ key: string; lines: string[] }> = [];
 	const ctx = { mode: "rpc", ui: { setWidget(key: string, lines: string[]) { widgets.push({ key, lines }); } } };
 	events.get("session_start")?.({}, ctx);
-	await commands.get("gentle:desktop")!.handler(
+	await commands.get("drakonc:desktop")!.handler(
 		JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "cap-1", method: "capabilities", params: {} }),
 		ctx,
 	);
@@ -650,7 +650,7 @@ test("get_design_canvas answers design_unavailable through the transport without
 	const widgets: Array<{ key: string; lines: string[] }> = [];
 	const ctx = { mode: "rpc", ui: { setWidget(key: string, lines: string[]) { widgets.push({ key, lines }); } } };
 	events.get("session_start")?.({}, ctx);
-	await commands.get("gentle:desktop")!.handler(
+	await commands.get("drakonc:desktop")!.handler(
 		JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "design-1", method: "get_design_canvas", params: {} }),
 		ctx,
 	);

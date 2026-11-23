@@ -1,8 +1,8 @@
-// Bounded ODD phase signal for the Gentle prompt's working label. There is
+// Bounded ODD phase signal for the Drakonc prompt's working label. There is
 // no Pi runtime event for ODD phases, so the label comes from two sources:
 // phases inferred deterministically from the primary session's tool activity
-// (lib/odd-phase-inference.ts, wired in extensions/gentle-shell.ts) and
-// explicit reports by the orchestrator through gentle_odd_phase, which
+// (lib/odd-phase-inference.ts, wired in extensions/drakonc-shell.ts) and
+// explicit reports by the orchestrator through drakonc_odd_phase, which
 // refine it with phases tools cannot show (see
 // assets/orchestrator-tracking.md). Never inferred from assistant prose;
 // the prompt falls back to the generic "working…" label when nothing applies.
@@ -34,7 +34,7 @@ export function oddPhaseLabel(phase: OddPhase): string {
 	return `${phase}…`;
 }
 
-/** Who set a session's phase: the orchestrator through gentle_odd_phase, or tool-activity inference. */
+/** Who set a session's phase: the orchestrator through drakonc_odd_phase, or tool-activity inference. */
 export type OddPhaseSource = "explicit" | "inferred";
 
 interface ReportedOddPhase {
@@ -54,7 +54,7 @@ interface ReportedOddPhase {
 export class OddPhaseRegistry {
 	private readonly phases = new Map<string, ReportedOddPhase>();
 	// The WORKING-state pulse loop does not run at all under the "potato"
-	// animation policy (see GentlePromptEditor.startPulse), and workingLabel
+	// animation policy (see DrakoncPromptEditor.startPulse), and workingLabel
 	// is otherwise only read on the next incidental render. Pi's own docs
 	// (docs/tui.md) instruct components to call requestRender() themselves
 	// after a state change; no host re-render is implicitly guaranteed. The
@@ -136,6 +136,6 @@ export class OddPhaseRegistry {
 // module-local singleton is duplicated. The global symbol bridges only those
 // loaders inside this process; subagents run in separate OS processes. Keep
 // the session key inside the registry and clear it at turn/session boundaries.
-const ODD_PHASE_REGISTRY = Symbol.for("gentle-pi.odd-phase-registry");
+const ODD_PHASE_REGISTRY = Symbol.for("drakonc-pi.odd-phase-registry");
 const processState = globalThis as typeof globalThis & { [ODD_PHASE_REGISTRY]?: OddPhaseRegistry };
 export const oddPhaseRegistry = processState[ODD_PHASE_REGISTRY] ??= new OddPhaseRegistry();

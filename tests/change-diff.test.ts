@@ -4,15 +4,15 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import * as shell from "../extensions/gentle-shell.ts";
+import * as shell from "../extensions/drakonc-shell.ts";
 import { changeDirectoryInsideRoot, fileDiffArgs, loadFileDiff, repositoryGitDirectories, runFileDiff } from "../lib/change-diff.ts";
 import { CHANGE_STATUS, DIFF_MAX_BYTES, DIFF_TOO_LARGE } from "../lib/shell-changes.ts";
 
-// The `/gentle:changes` panel and Desktop RPC read one file's diff through the
+// The `/drakonc:changes` panel and Desktop RPC read one file's diff through the
 // same lib module, so both show the same text (#3322, S6).
 
 function tempRepo(t: test.TestContext) {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-change-diff-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-change-diff-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const git = (...args: string[]) => execFileSync("git", ["-C", root, "-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" });
 	git("init", "-q", "--initial-branch=main");

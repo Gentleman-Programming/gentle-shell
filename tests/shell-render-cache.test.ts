@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { buildShellBarModel, createFooterStatusMemo, type ShellFooterData } from "../extensions/gentle-shell.ts";
+import { buildShellBarModel, createFooterStatusMemo, type ShellFooterData } from "../extensions/drakonc-shell.ts";
 import { CHANGE_STATUS } from "../lib/shell-changes.ts";
 import type { RunningJobDisplay } from "../lib/jobs-sidebar-state.ts";
 import type { ReviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";

@@ -1,16 +1,16 @@
 # Lean delegation context and evidence-budget rule (issue #1587)
 
-Locator: `odd/tasks/lean-delegation-context.md` · Engram mirror: `odd/lean-delegation-context/tasks` (project `gentle-pi`)
+Locator: `odd/tasks/lean-delegation-context.md` · Engram mirror: `odd/lean-delegation-context/tasks` (project `drakonc-pi`)
 
-Issue: https://github.com/Gentleman-Programming/gentle-shell/issues/1587 (`status:approved`)
-Full study: https://github.com/Gentleman-Programming/gentle-ai/issues/5139
+Issue: https://github.com/Drakoncman-Programming/drakonc-shell/issues/1587 (`status:approved`)
+Full study: https://github.com/Drakoncman-Programming/drakonc-ai/issues/5139
 Branch: `feat/lean-delegation-context` (base `origin/main` 289cee5ba)
 
 ## Objective
 
-Stop delegated subagents from loading the gentle-ai orchestrator-only managed `AGENTS.md`
+Stop delegated subagents from loading the drakonc-ai orchestrator-only managed `AGENTS.md`
 blocks while keeping project conventions, and replace the file-count / tool-call delegation
-triggers in the Gentle Shell prompt assets with the measured evidence-budget rule.
+triggers in the Drakonc Shell prompt assets with the measured evidence-budget rule.
 
 ## Why (measured)
 
@@ -23,7 +23,7 @@ triggers in the Gentle Shell prompt assets with the measured evidence-budget rul
 
 ## Scope and constraints
 
-- Gentle Shell only. Provider-mirrored and byte-pinned contract text stays untouched.
+- Drakonc Shell only. Provider-mirrored and byte-pinned contract text stays untouched.
 - Children fail safe: if managed blocks cannot be filtered, keep today's behavior.
 - Keep writer and verification delegation; keep human consent, RDD, and native authority.
 - Orchestrator prompt stays within its 8 KiB budget.
@@ -39,8 +39,8 @@ triggers in the Gentle Shell prompt assets with the measured evidence-budget rul
 - Pi `before_agent_start` exposes `event.systemPromptOptions.contextFiles` ({path, content}[]) as a
   per-turn mutable copy; Pi renders from the mutated options. pi-claude-bridge 0.9.0 keeps a
   reference to the same options object and rebuilds its appended prompt from its `contextFiles`.
-- Children (`GENTLE_PI_AGENTS_CHILD=1`, lib/agents-runner.ts:207/:454) load the gentle-ai
-  extension; its `before_agent_start` child path (extensions/gentle-ai.ts ~:9356) leaves
+- Children (`DRAKONC_PI_AGENTS_CHILD=1`, lib/agents-runner.ts:207/:454) load the drakonc-ai
+  extension; its `before_agent_start` child path (extensions/drakonc-ai.ts ~:9356) leaves
   contextFiles untouched today.
 - Core triggers in assets/orchestrator.md ("4-file rule", "Long-session rule ~20 tool calls, 5
   exploratory reads") are pinned by tests/odd-routing-canonical-ratchet.test.ts,
@@ -52,21 +52,21 @@ triggers in the Gentle Shell prompt assets with the measured evidence-budget rul
 
 ## Design decisions
 
-- T1: in the child path of gentle-ai `before_agent_start`, replace
+- T1: in the child path of drakonc-ai `before_agent_start`, replace
   `systemPromptOptions.contextFiles` (same options object) with copies whose orchestrator-only
   managed blocks are removed: `orchestrator`, `sdd-orchestrator`, `sdd-model-assignments`,
   `agent-routing` (they bind themselves to the orchestrator). Nested blocks not on that list
   (e.g. `remote-authorization` inside `agent-routing`) and all other blocks (`codegraph-guidance`,
   `engram-protocol`, unknown names) plus all unmanaged project text are kept. Malformed or
   unbalanced markers leave that file unchanged (fail safe). Primary sessions untouched.
-- T2: Gentle Shell leads; local trigger anchors are updated intentionally (canon fixture
-  unchanged, divergence tracked by gentle-ai#5139).
+- T2: Drakonc Shell leads; local trigger anchors are updated intentionally (canon fixture
+  unchanged, divergence tracked by drakonc-ai#5139).
 
 ## Tasks
 
-- [x] T1 — Lean child context: filter gentle-ai managed orchestrator blocks out of delegated
+- [x] T1 — Lean child context: filter drakonc-ai managed orchestrator blocks out of delegated
       children's context (+ tests, + measured prefix). Commit `302d0950d`.
-- [x] T2 — Evidence-budget delegation rule in Gentle Shell prompt assets (+ contract tests). Commit `14bd23568`.
+- [x] T2 — Evidence-budget delegation rule in Drakonc Shell prompt assets (+ contract tests). Commit `14bd23568`.
 - [ ] T3 — Single PR closing #1587; merge commit after green CI (user-authorized).
 
 ## Checks
@@ -89,26 +89,26 @@ triggers in the Gentle Shell prompt assets with the measured evidence-budget rul
   (changes what every subagent sees) → writer self-verification + native review (RDD on) +
   live measurement of the child prefix.
 
-- T1 attempt 1 (writer muo7u2od-7-tw8z): lib/child-context-files.ts + hook in gentle-ai.ts; unit
+- T1 attempt 1 (writer muo7u2od-7-tw8z): lib/child-context-files.ts + hook in drakonc-ai.ts; unit
   RED/GREEN 23/23; 111/111 focused; typecheck/runtime/package checks pass. LIVE MEASUREMENT FAILED:
-  real child still 87.7k. Diagnosis: in the isolated Gentle Shell home the launcher injects the
-  gentle-pi package into the parent only (-e); children load only settings.json packages, so
-  gentle-ai.ts never runs in the child (no gentle-ai custom entries in child session). Manual
-  GENTLE_PI_AGENTS_CHILD=1 session with the package: 94.4k → 56.9k, so the filter logic works.
+  real child still 87.7k. Diagnosis: in the isolated Drakonc Shell home the launcher injects the
+  drakonc-pi package into the parent only (-e); children load only settings.json packages, so
+  drakonc-ai.ts never runs in the child (no drakonc-ai custom entries in child session). Manual
+  DRAKONC_PI_AGENTS_CHILD=1 session with the package: 94.4k → 56.9k, so the filter logic works.
 - T1 redesign (continued writer, task muo82w22-8-f4hz): dedicated extensions/child-context.ts
-  passed to every child via the existing `extensionPaths` → `--extension` mechanism; gentle-ai.ts
+  passed to every child via the existing `extensionPaths` → `--extension` mechanism; drakonc-ai.ts
   hook reverted. Lesson: unit tests did not model how children load extensions; live measurement
   is the acceptance check.
 
-- T1 redesign result: extensions/child-context.ts + gentle-agents `childContextExtensionPaths`
-  → `--extension` for every child; gentle-ai.ts untouched. RED: module-not-found / missing export;
+- T1 redesign result: extensions/child-context.ts + drakonc-agents `childContextExtensionPaths`
+  → `--extension` for every child; drakonc-ai.ts untouched. RED: module-not-found / missing export;
   GREEN 20/20 + wiring 1/1. Writer: 327/327 focused; typecheck no regressions; runtime and package
-  checks pass. Parent spot check: child-context-files + gentle-agents 180/180.
+  checks pass. Parent spot check: child-context-files + drakonc-agents 180/180.
   LIVE: real delegated explorer children start at 56.9k and 57.9k tokens (baseline 86.8k/87.7k),
   −30k (−34%) per delegation; answers correct.
   Native review: lineage review-0b23f374b16c0bf8, medium, approved, acknowledged, authority burned
   (target sha256:8c82a8b1…). Advisory non-blocking: R3-001 WARNING extensions/child-context.ts:11-20,
-  R3-002 WARNING tests/gentle-agents.test.ts:4311-4312, R3-003/R3-004 SUGGESTION.
+  R3-002 WARNING tests/drakonc-agents.test.ts:4311-4312, R3-003/R3-004 SUGGESTION.
   Commit `302d0950d` tree d6b83029… equals the reviewed tree. Authored ~500 lines (tests-heavy).
 
 - T2 (route: delegated direct, writer trigger: 10 files; risk: medium, prompt text + tests):
@@ -117,7 +117,7 @@ triggers in the Gentle Shell prompt assets with the measured evidence-budget rul
     4289 tests, 4255 pass, 0 fail, 0 cancelled (34 skipped). typecheck no regressions; runtime and
     package checks pass. Rendered orchestrator prompt 7544 B at a 161-char root (budget 8192).
   - Canon fixture and AGENTS.md unchanged; ratchet updates local mirror anchors only (comment cites
-    gentle-ai#5139). tests/package-manifest.test.ts:1621 regex updated (old wording now false).
+    drakonc-ai#5139). tests/package-manifest.test.ts:1621 regex updated (old wording now false).
   - Parent spot check: 54/54 (contract, budget, ratchet).
   - Native review: lineage review-dc09524924a05bf6, medium, approved. Advisory: R3 WARNING context
     backstop threshold at assets/orchestrator.md:56 (the model cannot observe its own context size
@@ -132,7 +132,7 @@ triggers in the Gentle Shell prompt assets with the measured evidence-budget rul
   - Authored lines: +65 −34 = 99.
 - Running authored total: ~600 lines (T1 ~500, tests-heavy; T2 99).
 
-- T3: PR https://github.com/Gentleman-Programming/gentle-shell/pull/1590 (`type:feature`). First CI
+- T3: PR https://github.com/Drakoncman-Programming/drakonc-shell/pull/1590 (`type:feature`). First CI
   run on head 73c00efe2: all jobs green; verify `pnpm test` 4289 tests, 4255 pass, 0 fail.
   CodeRabbit (🟡 Minor, same spot as native advisory R3-002): the child-context wiring test built
   the expected path with `URL.pathname` (percent-encoding, `/C:/` on Windows). RED reproduced in a
@@ -144,9 +144,9 @@ triggers in the Gentle Shell prompt assets with the measured evidence-budget rul
 
 - Context backstop (~150k) relies on the model knowing its context size; consider a mechanical
   signal (relates to #1117).
-- Gentle AI generated assets and canon: apply the same rule and child-context scoping
-  (gentle-ai#5139).
-- Parent prefix reduction (duplicated managed blocks, tool schemas) tracked in gentle-ai#5139.
+- Drakonc AI generated assets and canon: apply the same rule and child-context scoping
+  (drakonc-ai#5139).
+- Parent prefix reduction (duplicated managed blocks, tool schemas) tracked in drakonc-ai#5139.
 
 ## Next step
 

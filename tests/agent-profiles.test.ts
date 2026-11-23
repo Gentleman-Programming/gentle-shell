@@ -44,7 +44,7 @@ import {
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 
 // Agent-model profiles: pure store, summary, and export logic for the
-// /gentle:profiles panel. These tests perform zero filesystem access — every
+// /drakonc:profiles panel. These tests perform zero filesystem access — every
 // tested function operates on strings and plain objects.
 
 const CONFIG: AgentModelConfig = {
@@ -508,7 +508,7 @@ test("formatProfileSummaryLines renders counts, models, and roles", () => {
 // ---- Triangulation: adversarial and alternate cases ----
 
 test("parseProfilesFileText drops a __proto__ profile key without polluting the object", () => {
-	const text = '{"kind":"gentle-pi.agent_model_profiles","version":1,"profiles":{"__proto__":{"explore":{"model":"m/x"}},"team":{"explore":{"model":"m/x"}}}}';
+	const text = '{"kind":"drakonc-pi.agent_model_profiles","version":1,"profiles":{"__proto__":{"explore":{"model":"m/x"}},"team":{"explore":{"model":"m/x"}}}}';
 	const parsed = parseProfilesFileText(text);
 	assert.equal(parsed.status, "valid");
 	if (parsed.status !== "valid") return;
@@ -599,7 +599,7 @@ test("normalizeProfilesFile reports an active marker that names no profile", () 
 // (absent file, unreadable JSON, dropped entries, missing parent directories) are
 // exactly the ones a mock would hide.
 
-const root = mkdtempSync(join(tmpdir(), "gentle-agent-profiles-"));
+const root = mkdtempSync(join(tmpdir(), "drakonc-agent-profiles-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 
 test("readProfilesFileResult reports a missing store without throwing", () => {
@@ -648,7 +648,7 @@ test("writeProfilesFileSync creates missing parent directories", () => {
 // to one store's serializer.
 test("writeJsonFileAtomicallySync writes exact bytes, creates parents, and leaves no temp file behind", () => {
 	const path = join(root, "atomic-text", "artifact.json");
-	const first = `${JSON.stringify({ kind: "gentle-pi.test", value: 1 }, null, 2)}\n`;
+	const first = `${JSON.stringify({ kind: "drakonc-pi.test", value: 1 }, null, 2)}\n`;
 	writeJsonFileAtomicallySync(path, first);
 	assert.equal(readFileSync(path, "utf8"), first);
 	writeJsonFileAtomicallySync(path, "second\n");
@@ -658,7 +658,7 @@ test("writeJsonFileAtomicallySync writes exact bytes, creates parents, and leave
 
 test("writeJsonFileAtomicallySync skips an identical rewrite so the file is not replaced", () => {
 	const path = join(root, "atomic-noop", "artifact.json");
-	const text = `${JSON.stringify({ kind: "gentle-pi.test", value: 1 }, null, 2)}\n`;
+	const text = `${JSON.stringify({ kind: "drakonc-pi.test", value: 1 }, null, 2)}\n`;
 	writeJsonFileAtomicallySync(path, text);
 	const historicalTime = new Date("2000-01-01T00:00:00.000Z");
 	utimesSync(path, historicalTime, historicalTime);
@@ -788,18 +788,18 @@ test("unmatchedRoutingNotes flags routing rows whose key names no discovered age
 	const rows = [
 		{ agent: "explore", model: "nan/glm5.3", thinking: "inherit" },
 		{ agent: "worker", model: "inherit", thinking: "inherit" },
-		{ agent: "gentle-ai-verify", model: "openai/alpha", thinking: "high" },
+		{ agent: "drakonc-ai-verify", model: "openai/alpha", thinking: "high" },
 	];
-	const notes = unmatchedRoutingNotes(rows, ["gentle-ai-explore", "gentle-ai-verify", "review-risk"]);
-	assert.equal(notes.get("explore"), "did you mean gentle-ai-explore?");
+	const notes = unmatchedRoutingNotes(rows, ["drakonc-ai-explore", "drakonc-ai-verify", "review-risk"]);
+	assert.equal(notes.get("explore"), "did you mean drakonc-ai-explore?");
 	assert.equal(notes.get("worker"), "no matching agent");
-	assert.equal(notes.get("gentle-ai-verify"), undefined);
+	assert.equal(notes.get("drakonc-ai-verify"), undefined);
 	assert.equal(notes.size, 2);
 	assert.deepEqual(
-		unmatchedRoutingNotes(rows, ["gentle-ai-explore", "gentle-ai-worker", "gentle-ai-verify"]),
+		unmatchedRoutingNotes(rows, ["drakonc-ai-explore", "drakonc-ai-worker", "drakonc-ai-verify"]),
 		new Map([
-			["explore", "did you mean gentle-ai-explore?"],
-			["worker", "did you mean gentle-ai-worker?"],
+			["explore", "did you mean drakonc-ai-explore?"],
+			["worker", "did you mean drakonc-ai-worker?"],
 		]),
 	);
 });

@@ -6,14 +6,14 @@ import { dirname, join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import test from "node:test";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import gentleAgents from "../../extensions/gentle-agents.ts";
-import gentleShell from "../../extensions/gentle-shell.ts";
-import { createGentleAiExtension } from "../../extensions/gentle-ai.ts";
+import drakoncAgents from "../../extensions/drakonc-agents.ts";
+import drakoncShell from "../../extensions/drakonc-shell.ts";
+import { createDrakoncAiExtension } from "../../extensions/drakonc-ai.ts";
 import { createNodeExecFileAdapter, NativeReviewCliV216 } from "../../lib/native-review-cli.ts";
 import { SESSION_WORKTREE_ENTRY } from "../../lib/session-worktree-registry.ts";
 import { requireDevBinary } from "../support/native-binary-gate.ts";
 
-const binary = process.env.GENTLE_AI_DEV_BINARY;
+const binary = process.env.DRAKONC_AI_DEV_BINARY;
 const gate = requireDevBinary({ devBinaryPath: binary, exists: !!binary && binary.startsWith("/") && existsSync(binary), env: process.env });
 if ("reason" in gate) console.log(`non-git-subagent-bootstrap: ${gate.reason}`);
 
@@ -57,25 +57,25 @@ export default function (pi) {
 }
 
 for (const explicit of [false, true]) {
-test(`dev-binary: pre-bootstrap SDK session first ${explicit ? "explicit worker" : "implicit gentle-ai-worker"} dispatch completes a real Pi child`, { skip: !gate.run, timeout: 90000 }, async (t) => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-subagent-bootstrap-")));
+test(`dev-binary: pre-bootstrap SDK session first ${explicit ? "explicit worker" : "implicit drakonc-ai-worker"} dispatch completes a real Pi child`, { skip: !gate.run, timeout: 90000 }, async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-subagent-bootstrap-")));
 	const home = join(root, "home");
 	const agentDir = join(home, "agent");
 	const cwd = join(root, "project");
 	mkdirSync(join(agentDir, "agents"), { recursive: true });
 	mkdirSync(cwd);
 	writeFileSync(join(cwd, "candidate.txt"), "unchanged candidate bytes\n");
-	const role = explicit ? "worker" : "gentle-ai-worker";
+	const role = explicit ? "worker" : "drakonc-ai-worker";
 	mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
 	writeFileSync(join(cwd, ".pi", "agents", `${role}.md`), "---\ndescription: Offline bootstrap proof\nmodel: bootstrap-fixture/deterministic\ntools: [read]\n---\nReturn the offline fixture answer.\n");
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: false }, compaction: { enabled: false }, packages: [] }));
 	const env: NodeJS.ProcessEnv = {
 		PATH: process.env.PATH, HOME: home, USERPROFILE: home,
 		XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), XDG_CACHE_HOME: join(home, ".cache"),
-		GENTLE_PI_AGENT_HOME: agentDir, PI_CODING_AGENT_DIR: agentDir,
-		GENTLE_PI_CONFIG_HOME: join(home, "pi-config"), PI_OFFLINE: "1",
-		GENTLE_PI_SHELL: "1", GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off",
-		GENTLE_PI_RUNTIME_METRICS: "off",
+		DRAKONC_PI_AGENT_HOME: agentDir, PI_CODING_AGENT_DIR: agentDir,
+		DRAKONC_PI_CONFIG_HOME: join(home, "pi-config"), PI_OFFLINE: "1",
+		DRAKONC_PI_SHELL: "1", DRAKONC_PI_SHELL_CHANGES_WATCH_MS: "off",
+		DRAKONC_PI_RUNTIME_METRICS: "off",
 	};
 	const previous = new Map<string, string | undefined>();
 	for (const key of new Set([...Object.keys(env), ...Object.keys(process.env).filter(key => key.startsWith("GIT_"))])) {
@@ -124,7 +124,7 @@ test(`dev-binary: pre-bootstrap SDK session first ${explicit ? "explicit worker"
 		cwd, agentDir, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 		extensionFactories: [
 			(await import(pathToFileURL(provider).href)).default,
-			pi => gentleAgents(pi, env, {
+			pi => drakoncAgents(pi, env, {
 				home, agentHome: agentDir, env,
 				pi: { command: process.execPath, args: [cli, "--offline", "--no-extensions", "--extension", provider, "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files"] },
 				// Observe real OS spawn and production RPC traffic without replacing it.
@@ -143,8 +143,8 @@ test(`dev-binary: pre-bootstrap SDK session first ${explicit ? "explicit worker"
 					return child as never;
 				},
 			}),
-			pi => gentleShell(pi, env),
-			createGentleAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: {} }),
+			pi => drakoncShell(pi, env),
+			createDrakoncAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: {} }),
 		],
 	});
 	await loader.reload();
@@ -168,7 +168,7 @@ test(`dev-binary: pre-bootstrap SDK session first ${explicit ? "explicit worker"
 			const index = 0;
 			const child = children[index]!;
 			assert.ok(child.pid && child.pid !== process.pid, "real installed Pi child PID");
-			const details = (result.details as { gentleAgents: { status: string; cwd: string; taskId: string } }).gentleAgents;
+			const details = (result.details as { drakoncAgents: { status: string; cwd: string; taskId: string } }).drakoncAgents;
 			assert.equal(details.status, "completed", JSON.stringify(result));
 			assert.equal(details.cwd, cwd);
 			const answer = result.content.find(part => part.type === "text") as { text: string };

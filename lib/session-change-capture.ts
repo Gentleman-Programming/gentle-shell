@@ -19,10 +19,10 @@ const unknown = (): ChangeSnapshot => ({ kind: "unavailable", reason: "Tool snap
 
 /**
  * Observe explicit write/edit outcomes, never infer ownership from Git status or shell text.
- * The evidence feeds session statistics and names the roots /gentle:changes reads from Git.
+ * The evidence feeds session statistics and names the roots /drakonc:changes reads from Git.
  */
 export function installSessionChangeCapture(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env, resolver: WorktreeResolver = resolveSessionWorktree): void {
-	const child = env.GENTLE_PI_AGENTS_CHILD === "1";
+	const child = env.DRAKONC_PI_AGENTS_CHILD === "1";
 	const pending = new Map<string, Pending>();
 	let current: ExtensionContext | undefined;
 	let store: SessionChanges | undefined;
@@ -85,7 +85,7 @@ export function installSessionChangeCapture(pi: ExtensionAPI, env: NodeJS.Proces
 			if (item.sessionId !== ctx.sessionManager.getSessionId() || pending.get(event.toolCallId) !== item) return;
 			item.evidence = { id: event.toolCallId, root: item.root, path: item.relativePath, before, after: verified };
 			// Use the existing RPC tool-result envelope, not a new IPC channel or a model message.
-			if (child) return { details: { ...(event.details && typeof event.details === "object" ? event.details : {}), gentleSessionChange: item.evidence } };
+			if (child) return { details: { ...(event.details && typeof event.details === "object" ? event.details : {}), drakoncSessionChange: item.evidence } };
 		} catch { pending.delete(event.toolCallId); }
 	});
 	pi.on("tool_execution_end", (event, ctx) => {

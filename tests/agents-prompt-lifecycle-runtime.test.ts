@@ -14,10 +14,10 @@ import {
 	type AgentSession,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import gentleAgents, { type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import drakoncAgents, { type SessionTransportFactory } from "../extensions/drakonc-agents.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 
-// Real-host proof of the Gentle Agents -> parent delivery paths (#1528, #1631).
+// Real-host proof of the Drakonc Agents -> parent delivery paths (#1528, #1631).
 //
 // A fake pi object can only prove what the fake models, and #1631 shipped
 // without a real-host reproduction. This file drives the real Pi AgentSession
@@ -75,7 +75,7 @@ interface Host {
 }
 
 async function createHost(t: TestContext): Promise<Host> {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-agents-lifecycle-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-agents-lifecycle-")));
 	const home = join(root, "home");
 	const cwd = join(root, "project");
 	const agentDir = join(home, ".pi", "agent");
@@ -134,7 +134,7 @@ async function createHost(t: TestContext): Promise<Host> {
 	};
 	let clock = 1000;
 	const env = { PATH: process.env.PATH ?? "/bin" };
-	// Input handlers run in extension order, so the gate sits after Gentle Agents:
+	// Input handlers run in extension order, so the gate sits after Drakonc Agents:
 	// its `input` handler has already run while the prompt stays parked.
 	const inputGate = (pi: ExtensionAPI) => {
 		pi.on("input", async () => {
@@ -146,7 +146,7 @@ async function createHost(t: TestContext): Promise<Host> {
 			return { action: "continue" };
 		});
 	};
-	const agents = (pi: ExtensionAPI) => gentleAgents(pi, env, {
+	const agents = (pi: ExtensionAPI) => drakoncAgents(pi, env, {
 		home,
 		agentHome: agentDir,
 		env,

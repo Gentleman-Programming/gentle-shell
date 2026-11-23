@@ -10,7 +10,7 @@
   "risk_level": "high",
   "changed_files": 2,
   "changed_lines": 12,
-  "headline": "Gentle AI can review this change before you call it done.",
+  "headline": "Drakonc AI can review this change before you call it done.",
   "reason": "this change gets a deeper review because it touches code that starts other processes in internal/runner/runner.go.",
   "value": "Reviewing takes a bit longer, and it makes the result substantially safer.",
   "risk_evidence": [
@@ -21,13 +21,13 @@
       "answer": "granted",
       "label": "Run the review now",
       "effect": "Reviews this exact frozen candidate now; nothing is granted for later candidates, so each later medium- or high-risk candidate asks again.",
-      "invocation": "gentle-ai review start --contract gentle-ai.review-integration/v2 --cwd /tmp/claude-1000/-home-gentleman-work-gentle-ai/7629c2de-8b8b-4005-b117-ab45c0869f70/scratchpad/consentcap/repo --target sha256:377c60e10b852cfcbcca6cd101e6ee7def9621a24a9f4b361d32137a3b0b3988 --projection workspace --consent granted"
+      "invocation": "gentle-ai review start --contract gentle-ai.review-integration/v2 --cwd /tmp/claude-1000/-home-drakoncman-work-drakonc-ai/7629c2de-8b8b-4005-b117-ab45c0869f70/scratchpad/consentcap/repo --target sha256:377c60e10b852cfcbcca6cd101e6ee7def9621a24a9f4b361d32137a3b0b3988 --projection workspace --consent granted"
     },
     {
       "answer": "declined",
       "label": "Not now, just this once",
       "effect": "Skips the review for this exact candidate only; no review lineage or receipt is created, and ordinary delivery is unmanaged by candidate choice. The next candidate is asked again. This is not the kill switch.",
-      "invocation": "gentle-ai review start --contract gentle-ai.review-integration/v2 --cwd /tmp/claude-1000/-home-gentleman-work-gentle-ai/7629c2de-8b8b-4005-b117-ab45c0869f70/scratchpad/consentcap/repo --target sha256:377c60e10b852cfcbcca6cd101e6ee7def9621a24a9f4b361d32137a3b0b3988 --projection workspace --consent declined"
+      "invocation": "gentle-ai review start --contract gentle-ai.review-integration/v2 --cwd /tmp/claude-1000/-home-drakoncman-work-drakonc-ai/7629c2de-8b8b-4005-b117-ab45c0869f70/scratchpad/consentcap/repo --target sha256:377c60e10b852cfcbcca6cd101e6ee7def9621a24a9f4b361d32137a3b0b3988 --projection workspace --consent declined"
     }
   ],
   "off_path": {

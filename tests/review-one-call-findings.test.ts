@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { createCoordinatorRuntime, type CoordinatorRuntimeOptions } from "./support/review-coordinator-runtime.ts";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { runReviewCoordinator } from "../lib/review-coordinator.ts";
 
 // odd/tasks/review-one-call.md T11 (S5): finding text on a run that does not approve.
@@ -26,7 +26,7 @@ const stepNames = (result: Body) => result.metrics.steps.map((step: { tool: stri
 async function runOnce(options: CoordinatorRuntimeOptions) {
 	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, ...options });
 	try {
-		const result = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage });
+		const result = await runtime.invoke("drakonc_review_run", { lineageId: runtime.lineage });
 		return { result, nativeCalls: [...runtime.nativeCalls], relayRuns: runtime.relayRuns() };
 	} finally { runtime.close(); }
 }
@@ -64,7 +64,7 @@ test("S5: a run that ends in a correction request returns the request's findings
 	assert.equal(run.result.outcome, "input-required", JSON.stringify(run.result));
 	for (const key of [...CORRECTION_KEYS, ...ADVISORY_KEYS, "non_blocking_findings", "non_blocking_finding_claims"]) assert.equal(Object.hasOwn(run.result, key), false, key);
 	assert.deepEqual(run.result.result.result.next_transition.correction_request.findings, findings, "the STATUS envelope is relayed unchanged");
-	assert.deepEqual(stepNames(run.result), ["gentle_review:status"], "the run dispatches nothing more");
+	assert.deepEqual(stepNames(run.result), ["drakonc_review:status"], "the run dispatches nothing more");
 	assert.equal(run.relayRuns, 0);
 });
 
@@ -94,7 +94,7 @@ test("S5: a malformed correction finding never reaches the result and never chan
 		assert.equal(run.result.outcome, "input-required", label);
 		for (const key of CORRECTION_KEYS) assert.equal(Object.hasOwn(run.result, key), false, `${label}: ${key}`);
 		assert.deepEqual(run.result.non_blocking_findings, NO_NON_BLOCKING, `${label}: the answer itself still comes back`);
-		assert.deepEqual(stepNames(run.result), ["gentle_review:status"], label);
+		assert.deepEqual(stepNames(run.result), ["drakonc_review:status"], label);
 	}
 });
 
@@ -121,8 +121,8 @@ const MARKS_GUIDANCE = "advisory_finding_claims_truncated, correction_finding_cl
 
 test("S3/S5: the run guidance relays correction findings and their claims as the reviewers' own text", () => {
 	const tools = new Map<string, { description: string; promptGuidelines: string[] }>();
-	createGentleAiExtension({ nativeReviewCli: null, processEnv: {} })({ on() {}, registerCommand() {}, registerTool: (tool: never) => tools.set((tool as { name: string }).name, tool) } as never);
-	const run = tools.get("gentle_review_run")!;
+	createDrakoncAiExtension({ nativeReviewCli: null, processEnv: {} })({ on() {}, registerCommand() {}, registerTool: (tool: never) => tools.set((tool as { name: string }).name, tool) } as never);
+	const run = tools.get("drakonc_review_run")!;
 	assert.ok(run.promptGuidelines.includes(RELAY_GUIDANCE));
 	assert.ok(run.promptGuidelines.includes(MARKS_GUIDANCE));
 	assert.ok(run.promptGuidelines.includes("When non_blocking_findings.statement_truncated is true, say the provider statement was truncated at 1,024 UTF-8 bytes; do not present it as complete or infer missing text."));

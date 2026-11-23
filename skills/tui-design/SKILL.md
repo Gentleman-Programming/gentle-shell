@@ -1,15 +1,15 @@
 ---
-name: gentle-ai-tui-design
-description: "Trigger: terminal UI design, TUI redesign, Gentle Shell look, IDE in a terminal, sidebar/status bar polish, critique TUI. Refine terminal UIs with visual proof."
+name: drakonc-ai-tui-design
+description: "Trigger: terminal UI design, TUI redesign, Drakonc Shell look, IDE in a terminal, sidebar/status bar polish, critique TUI. Refine terminal UIs with visual proof."
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "1.0"
 ---
 
 ## Activation Contract
 
-Use for designing, reviewing or refining a terminal interface (panels, rails, status bars, cards, prompts), especially Gentle Shell. The target feel is an IDE inside a terminal: dense, calm, developer-first, never a costume of retro TUI chrome. Not for web pages (use `gentle-design`).
+Use for designing, reviewing or refining a terminal interface (panels, rails, status bars, cards, prompts), especially Drakonc Shell. The target feel is an IDE inside a terminal: dense, calm, developer-first, never a costume of retro TUI chrome. Not for web pages (use `drakonc-design`).
 
 ## Hard Rules
 
@@ -20,7 +20,7 @@ Use for designing, reviewing or refining a terminal interface (panels, rails, st
 - Say each fact once per screen. Data shown in the header never repeats in a panel.
 - One command, one target. Refinement preserves the system; redesign replaces it. Never polish a look being thrown away.
 - Rendering stays cheap: no I/O or recomputation in render paths, cache keyed on everything that changes output (style, width, theme).
-- Mockups (via `gentle-design`) must be terminal-expressible: monospace cell grid in `ch` units, only fg/bg colors, bold/dim/italic/underline/strikethrough, box-drawing and glyphs.
+- Mockups (via `drakonc-design`) must be terminal-expressible: monospace cell grid in `ch` units, only fg/bg colors, bold/dim/italic/underline/strikethrough, box-drawing and glyphs.
 
 ## Decision Gates
 

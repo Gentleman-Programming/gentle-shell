@@ -27,4 +27,4 @@ Branch docs/readme-polish, stacked on docs/readme-modernize (PR #2192). Closes #
 - L3 — User chose for the hero: "Quitar 3 y fusionar 4+5 (recomendado)".
 - L4 — PR #2192 CI: installer (macos-latest) was cancelled at 15m03s with no failed step (job limit is 20 min); all other checks passed.
 - L5 — User: "Si, el punto 5. Podemos hacer push apilado entonces?" New titles reuse facts already in each section; anchors #background-jobs and #nan-model-provider kept with explicit ids.
-- L6 — CodeRabbit on #2203: Customize lacked a link although docs/gentle-shell.md documents its Cards category; added a precisely labelled link instead of a generic "Docs →".
+- L6 — CodeRabbit on #2203: Customize lacked a link although docs/drakonc-shell.md documents its Cards category; added a precisely labelled link instead of a generic "Docs →".

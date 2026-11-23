@@ -6,15 +6,15 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
-	gentleAiVersionPinMismatches,
+	drakoncAiVersionPinMismatches,
 	installerPaths,
 	missingRequiredPaths,
 	reconcileContractsOnDisk,
 	reconcileGeneratedRuntimeSources,
 	requiredPaths,
 } from "../scripts/verify-package-files.mjs";
-import { INSTALLER_VERSION, RELEASE_BASE_URL, GENTLE_AI_WINDOWS_SOURCE_TAG } from "../scripts/gentle-ai-installer.mjs";
-import { GENTLE_AI_VERSION } from "../lib/gentle-ai-binary.ts";
+import { INSTALLER_VERSION, RELEASE_BASE_URL, DRAKONC_AI_WINDOWS_SOURCE_TAG } from "../scripts/drakonc-ai-installer.mjs";
+import { DRAKONC_AI_VERSION } from "../lib/drakonc-ai-binary.ts";
 
 test("package resource CLI reconciles the STATUS diagnostic runtime with the generated inventory", () => {
 	const result = spawnSync(process.execPath, [join(process.cwd(), "scripts/verify-package-files.mjs")], {
@@ -22,11 +22,11 @@ test("package resource CLI reconciles the STATUS diagnostic runtime with the gen
 	});
 	assert.equal(result.status, 0, result.stderr || result.stdout);
 	assert.equal(result.stderr, "");
-	assert.match(result.stdout, /^gentle-pi package resource check passed \(/);
+	assert.match(result.stdout, /^drakonc-pi package resource check passed \(/);
 });
 
 function makeFixtureRoot(): string {
-	return mkdtempSync(join(tmpdir(), "gentle-pi-verify-package-files-"));
+	return mkdtempSync(join(tmpdir(), "drakonc-pi-verify-package-files-"));
 }
 
 test("contracts/ walk fails on a file that exists on disk but is unlisted in contractHashes", () => {
@@ -124,44 +124,44 @@ test("sources <-> runtime/*.mjs walk fails when a sources entry is absent from r
 	}
 });
 
-// Regression test for the documented incident in scripts/install-gentle-ai.mjs:
+// Regression test for the documented incident in scripts/install-drakonc-ai.mjs:
 // the installer once reported installing v2.1.11 while writing v2.2.0 to disk
 // because two hardcoded version copies had drifted apart. The textual
 // `.includes(...)` grep this replaces could not have caught this, because it
 // only verifies a string appears in a file, not that two values agree.
-test("Gentle AI version pin mismatch is reported with a specific message when a derived location disagrees with the authoritative constant", () => {
-	const mismatches = gentleAiVersionPinMismatches({
+test("Drakonc AI version pin mismatch is reported with a specific message when a derived location disagrees with the authoritative constant", () => {
+	const mismatches = drakoncAiVersionPinMismatches({
 		installerVersion: "2.2.3",
-		releaseBaseUrl: "https://github.com/Gentleman-Programming/gentle-ai/releases/download/v2.2.3/",
+		releaseBaseUrl: "https://github.com/Drakoncman-Programming/drakonc-ai/releases/download/v2.2.3/",
 		windowsSourceTag: "v2.2.3",
-		libGentleAiVersion: "2.2.0",
+		libDrakoncAiVersion: "2.2.0",
 	});
 
 	assert.deepEqual(mismatches, [
-		'lib/gentle-ai-binary.ts GENTLE_AI_VERSION ("2.2.0") does not match the authoritative scripts/gentle-ai-installer.mjs INSTALLER_VERSION ("2.2.3")',
+		'lib/drakonc-ai-binary.ts DRAKONC_AI_VERSION ("2.2.0") does not match the authoritative scripts/drakonc-ai-installer.mjs INSTALLER_VERSION ("2.2.3")',
 	]);
 });
 
-test("Gentle AI version pin mismatch also flags a drifted release URL and a drifted Windows source tag", () => {
-	const mismatches = gentleAiVersionPinMismatches({
+test("Drakonc AI version pin mismatch also flags a drifted release URL and a drifted Windows source tag", () => {
+	const mismatches = drakoncAiVersionPinMismatches({
 		installerVersion: "2.2.3",
-		releaseBaseUrl: "https://github.com/Gentleman-Programming/gentle-ai/releases/download/v2.2.0/",
+		releaseBaseUrl: "https://github.com/Drakoncman-Programming/drakonc-ai/releases/download/v2.2.0/",
 		windowsSourceTag: "v2.1.11",
-		libGentleAiVersion: "2.2.3",
+		libDrakoncAiVersion: "2.2.3",
 	});
 
 	assert.deepEqual(mismatches, [
-		'RELEASE_BASE_URL ("https://github.com/Gentleman-Programming/gentle-ai/releases/download/v2.2.0/") does not pin the authoritative v2.2.3',
-		'GENTLE_AI_WINDOWS_SOURCE_TAG ("v2.1.11") does not match the authoritative v2.2.3',
+		'RELEASE_BASE_URL ("https://github.com/Drakoncman-Programming/drakonc-ai/releases/download/v2.2.0/") does not pin the authoritative v2.2.3',
+		'DRAKONC_AI_WINDOWS_SOURCE_TAG ("v2.1.11") does not match the authoritative v2.2.3',
 	]);
 });
 
-test("Gentle AI version pin agrees across the installer version, the release URL, the Windows source tag, and lib/gentle-ai-binary.ts", () => {
-	const mismatches = gentleAiVersionPinMismatches({
+test("Drakonc AI version pin agrees across the installer version, the release URL, the Windows source tag, and lib/drakonc-ai-binary.ts", () => {
+	const mismatches = drakoncAiVersionPinMismatches({
 		installerVersion: INSTALLER_VERSION,
 		releaseBaseUrl: RELEASE_BASE_URL,
-		windowsSourceTag: GENTLE_AI_WINDOWS_SOURCE_TAG,
-		libGentleAiVersion: GENTLE_AI_VERSION,
+		windowsSourceTag: DRAKONC_AI_WINDOWS_SOURCE_TAG,
+		libDrakoncAiVersion: DRAKONC_AI_VERSION,
 	});
 
 	assert.deepEqual(mismatches, []);
@@ -196,7 +196,7 @@ test("both walks report no drift when sources, runtime/*.mjs, requiredPaths, and
 
 test("required package paths include every browser installation wizard file", () => {
 	const expected = [
-		"bin/gentle-shell-install.mjs",
+		"bin/drakonc-shell-install.mjs",
 		"scripts/installer-server.mjs",
 		"scripts/installer-runner.mjs",
 		"scripts/installer-preflight.mjs",
@@ -225,10 +225,10 @@ test("missing required paths are reported, including directories in place of fil
 	try {
 		mkdirSync(join(fixtureRoot, "bin"), { recursive: true });
 		mkdirSync(join(fixtureRoot, "assets/install-wizard/index.html"), { recursive: true });
-		writeFileSync(join(fixtureRoot, "bin/gentle-shell-install.mjs"), "// entry\n");
+		writeFileSync(join(fixtureRoot, "bin/drakonc-shell-install.mjs"), "// entry\n");
 
 		assert.deepEqual(
-			missingRequiredPaths(fixtureRoot, ["bin/gentle-shell-install.mjs", "assets/install-wizard/index.html", "scripts/installer-server.mjs"]),
+			missingRequiredPaths(fixtureRoot, ["bin/drakonc-shell-install.mjs", "assets/install-wizard/index.html", "scripts/installer-server.mjs"]),
 			["assets/install-wizard/index.html", "scripts/installer-server.mjs"],
 		);
 	} finally {

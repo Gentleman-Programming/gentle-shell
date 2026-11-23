@@ -1,18 +1,18 @@
-// Gentle Desktop package-status slice: the pure contract shared by the Desktop
+// Drakonc Desktop package-status slice: the pure contract shared by the Desktop
 // bridge (`lib/desktop-status-service.ts`) and the status owner in
-// `extensions/gentle-ai.ts` (the same facts `/gentle:status` prints).
+// `extensions/drakonc-ai.ts` (the same facts `/drakonc:status` prints).
 //
 // The owner answers through a versioned event/adapter, like the review and
 // stats seams; this module validates its answer and keeps the Desktop shape
-// free of paths, command hints, and display text. `/gentle:doctor` is not part
+// free of paths, command hints, and display text. `/drakonc:doctor` is not part
 // of it: the doctor is interactive and can change things.
 
 export const DESKTOP_STATUS_METHODS = ["get_status"] as const;
 /** Package status is an explicit read: this slice advertises no event. */
 export const DESKTOP_STATUS_EVENTS = [] as const;
 
-export const DESKTOP_STATUS_SERVICE_SCHEMA = "gentle-pi.desktop-status-service/v1";
-export const DESKTOP_STATUS_SERVICE_CHANNEL = "gentle:desktop:status-service";
+export const DESKTOP_STATUS_SERVICE_SCHEMA = "drakonc-pi.desktop-status-service/v1";
+export const DESKTOP_STATUS_SERVICE_CHANNEL = "drakonc:desktop:status-service";
 
 export const INVALID_STATUS_PARAMS = { code: "invalid_request", message: "Invalid status parameters" } as const;
 export const STATUS_UNAVAILABLE = { code: "status_unavailable", message: "Package status unavailable" } as const;
@@ -33,12 +33,12 @@ export interface DesktopAssetStatus {
 export interface DesktopPackageStatus {
 	package: "active";
 	odd: "active";
-	persona: "gentleman" | "neutral";
-	/** The `gentle-ai` dev-binary override; `sha256Prefix` only while active (16 hex). */
+	persona: "drakoncman" | "neutral";
+	/** The `drakonc-ai` dev-binary override; `sha256Prefix` only while active (16 hex). */
 	devBinary: { state: DevBinaryState; sha256Prefix: string | null };
 	assets: { delegation: DesktopAssetStatus; review: DesktopAssetStatus };
 	modelConfig: { global: "present" | "missing"; routing: RoutingState };
-	/** `warning` exactly when `/gentle:status` would warn. */
+	/** `warning` exactly when `/drakonc:status` would warn. */
 	severity: "info" | "warning";
 }
 
@@ -61,7 +61,7 @@ export function parseStatusParams(params: Record<string, unknown>): { ok: true }
 	return Object.keys(params).length === 0 ? { ok: true } : { error: INVALID_STATUS_PARAMS };
 }
 
-/** The severity rule of `/gentle:status`, shared so both answers agree. */
+/** The severity rule of `/drakonc:status`, shared so both answers agree. */
 export function packageStatusSeverity(status: Omit<DesktopPackageStatus, "severity">): "info" | "warning" {
 	const assets = [status.assets.delegation, status.assets.review];
 	return status.modelConfig.routing === "invalid" || status.devBinary.state !== "inactive" || assets.some((asset) => asset.stale > 0 || asset.activeAgentOverrides > 0)
@@ -80,7 +80,7 @@ function parseAssets(value: unknown): DesktopAssetStatus | undefined {
 /** Re-validates an owner answer field by field; anything else is `undefined`. */
 export function parseDesktopPackageStatus(value: unknown): DesktopPackageStatus | undefined {
 	if (!record(value) || value.package !== "active" || value.odd !== "active") return undefined;
-	if (value.persona !== "gentleman" && value.persona !== "neutral") return undefined;
+	if (value.persona !== "drakoncman" && value.persona !== "neutral") return undefined;
 	const dev = value.devBinary;
 	if (!record(dev) || (dev.state !== "inactive" && dev.state !== "active" && dev.state !== "invalid")) return undefined;
 	const prefix = dev.state === "active" && typeof dev.sha256Prefix === "string" && /^[0-9a-f]{16}$/.test(dev.sha256Prefix) ? dev.sha256Prefix : null;

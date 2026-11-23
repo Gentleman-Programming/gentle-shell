@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
 // Bench gate-p53-r1-BS40 x6 run 3 (headless RPC): the ask-on-risk delivery
@@ -12,7 +12,7 @@ import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 const HEADLESS_DELIVERY = "No human can answer questions in this session";
 
 function promptFor(mode: string | undefined): string {
-	return __testing.buildGentlePrompt("neutral", process.cwd(), undefined, undefined, mode);
+	return __testing.buildDrakoncPrompt("neutral", process.cwd(), undefined, undefined, mode);
 }
 
 function withInteractiveHost<T>(value: string | undefined, run: () => T): T {
@@ -52,7 +52,7 @@ test("interactive hosts keep asking the delivery question", () => {
 test("the reference documents the headless delivery default", async () => {
 	const { readFileSync } = await import("node:fs");
 	const reference = readFileSync(new URL("../docs/readme-reference.md", import.meta.url), "utf8");
-	for (const term of ["no human can answer questions", "`GENTLE_SHELL_INTERACTIVE_HOST=1`", "`ask-on-risk` does not ask", "`feature-branch-chain`"]) {
+	for (const term of ["no human can answer questions", "`DRAKONC_SHELL_INTERACTIVE_HOST=1`", "`ask-on-risk` does not ask", "`feature-branch-chain`"]) {
 		assert.ok(reference.includes(term), `docs/readme-reference.md is missing ${term}`);
 	}
 });

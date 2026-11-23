@@ -4,5 +4,5 @@
   "state": "approved",
   "action": "validate delivery with gentle-ai review validate --gate \u003cgate\u003e",
   "store_revision": "sha256:7a0fde32ddb4f17b77120c9c2a940c700ab5f8a7730b5e207c631b3a38b58f2c",
-  "receipt_path": "/tmp/gentle-ai-v212-finalize-UsUFIr/.git/gentle-ai/review-transactions/v2/lineage-1/review-receipt.json"
+  "receipt_path": "/tmp/drakonc-ai-v212-finalize-UsUFIr/.git/drakonc-ai/review-transactions/v2/lineage-1/review-receipt.json"
 }

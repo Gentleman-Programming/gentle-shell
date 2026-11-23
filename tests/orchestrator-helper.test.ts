@@ -8,7 +8,7 @@ import type { MetadataReceipt } from "../lib/orchestrator-consultation.ts";
 const model: Model<Api> = { id: "local", provider: "fixture", api: "fixture", name: "Local",
 	baseUrl: "http://invalid.local", reasoning: true, input: ["text"], contextWindow: 32000, maxTokens: 1024,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-const receipt = (): MetadataReceipt => ({ schema: "gentle-agents.consultation/v1", kind: "metadata", status: "available",
+const receipt = (): MetadataReceipt => ({ schema: "drakonc-agents.consultation/v1", kind: "metadata", status: "available",
 	source: "published_snapshot", ownerReply: false, authority: "none", targetSessionId: "owner", observedAt: 123,
 	freshness: "recent", digest: "a".repeat(64), snapshot: { label: "Owner", workspace: "/recorded", tasks: [],
 		omittedTasks: 2, scope: null, catalog: null, state: null }, unknowns: ["owner-decision"], omissions: ["private-context"] });

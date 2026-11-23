@@ -102,9 +102,9 @@ test("#2676: a healthy long stream publishes heartbeats; observer failure is har
 
 test("#2676: stream limits use explicit positive timer-safe overrides and bounded defaults", () => {
 	assert.deepEqual(reviewerStreamLimits({}), { firstOutputTimeoutMs: 120_000, idleTimeoutMs: 120_000 });
-	assert.deepEqual(reviewerStreamLimits({ GENTLE_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS: "300000", GENTLE_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS: "90000" }), { firstOutputTimeoutMs: 300_000, idleTimeoutMs: 90_000 });
+	assert.deepEqual(reviewerStreamLimits({ DRAKONC_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS: "300000", DRAKONC_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS: "90000" }), { firstOutputTimeoutMs: 300_000, idleTimeoutMs: 90_000 });
 	for (const value of ["0", "-1", "NaN", "Infinity", "1.5", "2147483648", "100ms"]) {
-		assert.equal(reviewerStreamLimits({ GENTLE_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS: value }).idleTimeoutMs, 120_000);
+		assert.equal(reviewerStreamLimits({ DRAKONC_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS: value }).idleTimeoutMs, 120_000);
 	}
 });
 

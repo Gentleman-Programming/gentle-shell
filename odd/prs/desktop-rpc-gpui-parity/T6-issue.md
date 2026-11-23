@@ -9,7 +9,7 @@
 
 ### Problem or opportunity
 
-`agents_update` fires only on status changes, so gentle-shell-gpui parses the `gentle-agents` terminal widget to show turns, tool calls, and the current step of a running subagent.
+`agents_update` fires only on status changes, so drakonc-shell-gpui parses the `drakonc-agents` terminal widget to show turns, tool calls, and the current step of a running subagent.
 
 ### Proposed outcome
 
@@ -21,4 +21,4 @@ A separate `agents_progress` event: rejected, clients would merge two streams.
 
 ### Additional context
 
-Part of the gentle-shell-gpui parity work: each piece replaces an app-side workaround (reading private files, prompt-text commands, or parsing terminal output). Implementation branch: `feat/desktop-rpc-subagent-progress`.
+Part of the drakonc-shell-gpui parity work: each piece replaces an app-side workaround (reading private files, prompt-text commands, or parsing terminal output). Implementation branch: `feat/desktop-rpc-subagent-progress`.

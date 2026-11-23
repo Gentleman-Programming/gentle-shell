@@ -15,8 +15,8 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { fileURLToPath } from "node:url";
-import { applyModelConfig } from "../extensions/gentle-ai.ts";
-import { resolveGentlePiAgentHome } from "../lib/agent-home.ts";
+import { applyModelConfig } from "../extensions/drakonc-ai.ts";
+import { resolveDrakoncPiAgentHome } from "../lib/agent-home.ts";
 import { agentBody, getPackageAssetOwner, installPackageAssets, readAgentBodyHistory, type PackageAssetOwner } from "../lib/agent-assets.ts";
 import { discoverAgents } from "../lib/agents-config.ts";
 import { AUDITED_PI_EDITOR_VERSIONS } from "../lib/vim-editor-adapter.ts";
@@ -24,7 +24,7 @@ import { resolveProjectPiSdkVersion, runNpmWithEnv } from "../scripts/test-packe
 // Package installation is owned by lib/agent-assets.ts, not the retired SDD preflight.
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const MANAGED_EXEMPLAR_FILE = "gentle-ai-explore.md";
+const MANAGED_EXEMPLAR_FILE = "drakonc-ai-explore.md";
 const RETIRED_REFUTER_FILE = "review-refuter.md";
 const REVIEW_RISK_FILE = "review-risk.md";
 const V013_REVIEW_RISK_FIXTURE = join(
@@ -57,8 +57,8 @@ const V014_MANAGED_ASSETS = join(
 	"migrations",
 	"managed-assets-v0.14.json",
 );
-// gentle-pi#311 P5: the managed-asset installer mechanism tests use
-// gentle-ai-explore.md as their exemplar (packaged, absent from the v0.13
+// drakonc-pi#311 P5: the managed-asset installer mechanism tests use
+// drakonc-ai-explore.md as their exemplar (packaged, absent from the v0.13
 // manifest) after review-refuter.md was retired together with every
 // Pi-authored adversarial review verdict.
 const MANAGED_EXEMPLAR_TOOLS = ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"];
@@ -123,11 +123,11 @@ test("public docs and metadata advertise ODD and review without retired phase wo
 	assert.ok(manifest.keywords?.includes("odd"));
 	assert.ok(manifest.keywords?.includes("code-review"));
 	assert.ok(manifest.keywords?.every(keyword => !/sdd|openspec/i.test(keyword)));
-	for (const path of ["README.md", "docs/gentle-shell.md", "docs/readme-reference.md"]) {
+	for (const path of ["README.md", "docs/drakonc-shell.md", "docs/readme-reference.md"]) {
 		const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
 		assert.match(source, /ODD|Organic Driven Development/, path);
 		assert.match(source, /review/i, path);
-		assert.doesNotMatch(source, /\bSDD\b|OpenSpec|\/gentle-sdd-init|\/gentle:install-sdd|\/gentle:sdd-preflight|\/sdd-/i, path);
+		assert.doesNotMatch(source, /\bSDD\b|OpenSpec|\/drakonc-sdd-init|\/drakonc:install-sdd|\/drakonc:sdd-preflight|\/sdd-/i, path);
 	}
 });
 
@@ -137,7 +137,7 @@ test("technical reference declares the tested Pi minimum required for agent_sett
 	assert.equal(manifest.devDependencies?.["@earendil-works/pi-coding-agent"], ">=1.2.0");
 	assert.equal(manifest.peerDependenciesMeta?.["@earendil-works/pi-coding-agent"]?.optional, true);
 	assert.equal(manifest.engines?.node, "^22.19.0 || >=23.6.0");
-	for (const path of ["docs/readme-reference.md", "docs/gentle-shell.md"]) {
+	for (const path of ["docs/readme-reference.md", "docs/drakonc-shell.md"]) {
 		const source = readFileSync(join(PACKAGE_ROOT, path), "utf8");
 		assert.match(source, /Pi 1\.2\.0 or newer/, path);
 		assert.match(source, /open `>=1\.0\.0` development range/, path);
@@ -177,7 +177,7 @@ test("packed runtime uses optional Pi host peers with one open development range
 // Fixture project roots let the resolver's range policy be tested without
 // touching the real install.
 function withPiSdkProject(range: unknown, installed: unknown, run: (root: string) => void): void {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-sdk-version-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-sdk-version-"));
 	try {
 		const sdk = join(root, "node_modules", "@earendil-works", "pi-coding-agent");
 		mkdirSync(sdk, { recursive: true });
@@ -222,7 +222,7 @@ test("package manifest has no obsolete native activation build surface", () => {
 
 	assert.ok(!packageJson.files?.includes("native/"), "package must not ship the obsolete native addon directory");
 	assert.ok(!packageJson.scripts?.["native:build"], "package must not expose an obsolete native build script");
-	assert.doesNotMatch(manifest, /build-native-addon|gentle_review_native|review-native-fence/i);
+	assert.doesNotMatch(manifest, /build-native-addon|drakonc_review_native|review-native-fence/i);
 	assert.doesNotMatch(packageJson.scripts?.prepack ?? "", /native:build/);
 	assert.doesNotMatch(packageJson.scripts?.prepublishOnly ?? "", /native:build/);
 });
@@ -232,7 +232,7 @@ test("package verification excludes the retired init extension while retaining O
 	assert.equal(existsSync(join(PACKAGE_ROOT, "extensions", "sdd-init.ts")), false);
 	assert.doesNotMatch(verifier, /^\s*"extensions\/sdd-init\.ts",?$/m);
 	assert.match(verifier, /existsSync\(join\(root, "extensions\/sdd-init\.ts"\)\)/);
-	for (const resource of ["extensions/gentle-ai.ts", "extensions/skill-registry.ts", "assets/orchestrator.md", "assets/orchestrator-delegation.md", "assets/orchestrator-delegation-reference.md", "assets/agents/gentle-ai-worker.md", "assets/agents/review-risk.md", "assets/chains/4r-review.chain.md"]) {
+	for (const resource of ["extensions/drakonc-ai.ts", "extensions/skill-registry.ts", "assets/orchestrator.md", "assets/orchestrator-delegation.md", "assets/orchestrator-delegation-reference.md", "assets/agents/drakonc-ai-worker.md", "assets/agents/review-risk.md", "assets/chains/4r-review.chain.md"]) {
 		assert.ok(verifier.includes(`"${resource}"`), `${resource} must remain required`);
 	}
 });
@@ -248,7 +248,7 @@ test("package verification names the native review runtime boundary and packaged
 	assert.match(verifier, /build-runtime-modules\.mjs.*--check/s, "package verification must reject generated-runtime drift");
 	assert.match(verifier, /"tests\/fixtures\/native-review-cli\/v2\.1\.3\/start\.json"/, "package verification must retain the pinned native decoder fixture");
 	assert.match(
-		readFileSync(join(PACKAGE_ROOT, "extensions", "gentle-ai.ts"), "utf8"),
+		readFileSync(join(PACKAGE_ROOT, "extensions", "drakonc-ai.ts"), "utf8"),
 		/createNativeReviewCli\(\)/,
 		"the production extension must construct its native client from the packaged runtime module",
 	);
@@ -259,7 +259,7 @@ test("double-click installers are attached to the release only after the verifie
 	const job = workflow.match(/^ {2}installers:\n([\s\S]*?)(?=^ {2}[A-Za-z0-9_-]+:\n|(?![\s\S]))/m)?.[1];
 	assert.ok(job, "publish.yml has an installers job");
 	assert.match(job, /^ {4}needs: publish$/m, "installers wait for the verified npm publication");
-	assert.match(job, /^ {4}if: github\.repository == 'Gentleman-Programming\/gentle-shell'$/m);
+	assert.match(job, /^ {4}if: github\.repository == 'Drakoncman-Programming\/drakonc-shell'$/m);
 	assert.match(job, /^ {6}contents: write$/m, "only this job may write the release");
 	assert.match(job, /ref: \$\{\{ github\.sha \}\}/, "the installers come from the verified release commit");
 	assert.match(job, /persist-credentials: false/);
@@ -315,7 +315,7 @@ test("npm publication is bound to the exact package tag and triggering commit", 
 		packageJson.repository,
 		{
 			type: "git",
-			url: "git+https://github.com/Gentleman-Programming/gentle-shell.git",
+			url: "git+https://github.com/Drakoncman-Programming/drakonc-shell.git",
 		},
 		"trusted publishing requires the exact case-sensitive npm repository identity",
 	);
@@ -324,7 +324,7 @@ test("npm publication is bound to the exact package tag and triggering commit", 
 });
 
 test("Pi delivery relay is absent from the packaged extension", () => {
-	const extension = readFileSync(join(PACKAGE_ROOT, "extensions", "gentle-ai.ts"), "utf8");
+	const extension = readFileSync(join(PACKAGE_ROOT, "extensions", "drakonc-ai.ts"), "utf8");
 
 	assert.doesNotMatch(extension, /review-publication-gate/);
 });
@@ -368,19 +368,19 @@ test("generated runtime modules and packed-package checks are deterministic", ()
 	assert.doesNotMatch(packedRunner, /git-commit-transaction|transaction runner/i);
 });
 
-test("package manifest ships and runs the checked-in package-local Gentle AI installer", () => {
+test("package manifest ships and runs the checked-in package-local Drakonc AI installer", () => {
 	const packageJson = readPackageJson();
 	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
 	const reference = readFileSync(join(PACKAGE_ROOT, "docs", "readme-reference.md"), "utf8");
 
-	assert.equal(packageJson.scripts?.postinstall, "node scripts/install-gentle-ai.mjs");
-	assert.match(reference, /run `node scripts\/install-gentle-ai\.mjs`/, "missing-binary recovery documentation must use the package postinstall entrypoint");
-	assert.match(reference, /installed `gentle-pi` package directory/, "recovery documentation must name the package working directory");
-	assert.match(reference, /if `GENTLE_PI_SKIP_GENTLE_AI_INSTALL` is set, remove or unset it before/i, "recovery documentation must prevent the installer skip from repeating");
+	assert.equal(packageJson.scripts?.postinstall, "node scripts/install-drakonc-ai.mjs");
+	assert.match(reference, /run `node scripts\/install-drakonc-ai\.mjs`/, "missing-binary recovery documentation must use the package postinstall entrypoint");
+	assert.match(reference, /installed `drakonc-pi` package directory/, "recovery documentation must name the package working directory");
+	assert.match(reference, /if `DRAKONC_PI_SKIP_DRAKONC_AI_INSTALL` is set, remove or unset it before/i, "recovery documentation must prevent the installer skip from repeating");
 	assert.ok(packageJson.files?.includes("scripts/"));
-	assert.match(verifier, /"scripts\/install-gentle-ai\.mjs"/);
-	assert.match(verifier, /"scripts\/gentle-ai-installer\.mjs"/);
-	assert.match(verifier, /"lib\/gentle-ai-binary\.ts"/);
+	assert.match(verifier, /"scripts\/install-drakonc-ai\.mjs"/);
+	assert.match(verifier, /"scripts\/drakonc-ai-installer\.mjs"/);
+	assert.match(verifier, /"lib\/drakonc-ai-binary\.ts"/);
 });
 
 test("package manifest installs pi-pretty through a wrapper without bundling native optional dependencies", () => {
@@ -389,22 +389,22 @@ test("package manifest installs pi-pretty through a wrapper without bundling nat
 	assert.equal(
 		packageJson.dependencies?.["@heyhuynhgiabuu/pi-pretty"],
 		"0.6.27",
-		"gentle-pi must install the tested pi-pretty version containing the model-visible result integrity fix",
+		"drakonc-pi must install the tested pi-pretty version containing the model-visible result integrity fix",
 	);
 	assert.ok(
 		packageJson.pi?.extensions?.includes("./extensions"),
-		"gentle-pi must load packaged extension wrappers",
+		"drakonc-pi must load packaged extension wrappers",
 	);
 	assert.ok(
 		!packageJson.pi?.extensions?.includes(
 			"./node_modules/@heyhuynhgiabuu/pi-pretty/dist/index.js",
 		),
-		"gentle-pi must not reference pnpm-unportable nested node_modules paths",
+		"drakonc-pi must not reference pnpm-unportable nested node_modules paths",
 	);
 	const piPrettyWrapperPath = join(PACKAGE_ROOT, "extensions", "pi-pretty.ts");
 	assert.ok(
 		existsSync(piPrettyWrapperPath),
-		"gentle-pi must expose pi-pretty through a packaged wrapper extension",
+		"drakonc-pi must expose pi-pretty through a packaged wrapper extension",
 	);
 	const piPrettyWrapper = readFileSync(piPrettyWrapperPath, "utf8");
 	assert.match(
@@ -419,7 +419,7 @@ test("package manifest installs pi-pretty through a wrapper without bundling nat
 	);
 	assert.ok(
 		existsSync(join(PACKAGE_ROOT, "extensions", "quiet-tools.ts")),
-		"gentle-pi must expose quiet built-in tool rendering through a packaged extension",
+		"drakonc-pi must expose quiet built-in tool rendering through a packaged extension",
 	);
 	assert.ok(
 		!packageJson.bundledDependencies?.includes("@heyhuynhgiabuu/pi-pretty"),
@@ -431,19 +431,19 @@ test("package manifest installs pi-pretty through a wrapper without bundling nat
 	);
 });
 
-test("package verification binds the published Gentle AI v5.0.0 runtime pin", () => {
-	const installer = readFileSync(join(PACKAGE_ROOT, "scripts", "gentle-ai-installer.mjs"), "utf8");
-	const binary = readFileSync(join(PACKAGE_ROOT, "lib", "gentle-ai-binary.ts"), "utf8");
+test("package verification binds the published Drakonc AI v5.0.0 runtime pin", () => {
+	const installer = readFileSync(join(PACKAGE_ROOT, "scripts", "drakonc-ai-installer.mjs"), "utf8");
+	const binary = readFileSync(join(PACKAGE_ROOT, "lib", "drakonc-ai-binary.ts"), "utf8");
 	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
 
 	assert.match(installer, /INSTALLER_VERSION = "5\.0\.0"/);
-	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_PACKAGE.*GENTLE_AI_WINDOWS_SOURCE_MODULE/);
-	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:8NBGfEMu\/LsR\/lJxALGNAsvK9\+5SA2htPNueWKXIW24="/);
+	assert.match(installer, /DRAKONC_AI_WINDOWS_SOURCE_PACKAGE.*DRAKONC_AI_WINDOWS_SOURCE_MODULE/);
+	assert.match(installer, /DRAKONC_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:8NBGfEMu\/LsR\/lJxALGNAsvK9\+5SA2htPNueWKXIW24="/);
 	assert.match(installer, /GOTOOLCHAIN: "local"/);
 	assert.match(installer, /GOSUMDB: "sum\.golang\.org"/);
-	assert.match(binary, /GENTLE_AI_VERSION = INSTALLER_VERSION/);
+	assert.match(binary, /DRAKONC_AI_VERSION = INSTALLER_VERSION/);
 	assert.match(binary, /GO_SUMDB_SOURCE_BUILD/);
-	assert.match(binary, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM/);
+	assert.match(binary, /DRAKONC_AI_WINDOWS_SOURCE_MODULE_CHECKSUM/);
 	assert.match(verifier, /v\$\{INSTALLER_VERSION\} runtime pin/);
 });
 
@@ -574,11 +574,11 @@ function assertWorkerFallbackRouting(section: string, sectionName: string): void
 	)?.[0];
 	assert.ok(boundedWriterPolicy, `${sectionName} must define bounded writer routing`);
 
-	const preferred = boundedWriterPolicy.indexOf("`gentle-ai-worker`");
+	const preferred = boundedWriterPolicy.indexOf("`drakonc-ai-worker`");
 	const configuredFallback = boundedWriterPolicy.indexOf("user-configured `worker`");
 	const nativeFallback = boundedWriterPolicy.indexOf("native `Agent`");
 
-	assert.ok(preferred >= 0, `${sectionName} must reference exact gentle-ai-worker name`);
+	assert.ok(preferred >= 0, `${sectionName} must reference exact drakonc-ai-worker name`);
 	assert.ok(
 		configuredFallback > preferred,
 		`${sectionName} must prefer the package-owned worker before a user-configured worker`,
@@ -623,7 +623,7 @@ test("packaged agents use YAML list syntax for tool allowlists", () => {
 		entry.endsWith(".md") ? [join(agentsDir, entry)] : [],
 	);
 
-	assert.ok(agentFiles.length > 0, "gentle-pi must ship packaged agents");
+	assert.ok(agentFiles.length > 0, "drakonc-pi must ship packaged agents");
 
 	for (const file of agentFiles) {
 		const frontmatter = readAgentFrontmatter(file);
@@ -654,7 +654,7 @@ test("packaged agents declare only tool names a Pi child session can resolve", (
 		entry.endsWith(".md") ? [join(agentsDir, entry)] : [],
 	);
 
-	assert.ok(agentFiles.length > 0, "gentle-pi must ship packaged agents");
+	assert.ok(agentFiles.length > 0, "drakonc-pi must ship packaged agents");
 
 	for (const file of agentFiles) {
 		const { tools } = readAgentDefinition(file);
@@ -672,7 +672,7 @@ test("packaged agents declare only tool names a Pi child session can resolve", (
 // not a tool name and Pi drops it from --tools.
 const DENY_ALL_TOOLS_MARKER = '"*": false';
 
-// gentle-shell#62: the declared YAML list once collapsed into one malformed
+// drakonc-shell#62: the declared YAML list once collapsed into one malformed
 // token on its way to the child, which then started without its filesystem
 // tools. This walks the real path every packaged agent takes at runtime:
 // install into an agent home, then discover and parse with the agent runtime,
@@ -682,11 +682,11 @@ test("packaged agents reach the agent runtime with their declared tool allowlist
 	const agentFiles = readdirSync(agentsDir).flatMap((entry) =>
 		entry.endsWith(".md") ? [join(agentsDir, entry)] : [],
 	);
-	assert.ok(agentFiles.length > 0, "gentle-pi must ship packaged agents");
+	assert.ok(agentFiles.length > 0, "drakonc-pi must ship packaged agents");
 
 	withIsolatedAssetHome((agentHome) => {
 		installPackageAssets(agentHome, false);
-		const empty = mkdtempSync(join(tmpdir(), "gentle-agent-roots-"));
+		const empty = mkdtempSync(join(tmpdir(), "drakonc-agent-roots-"));
 		try {
 			const { agents, errors } = discoverAgents({ cwd: empty, home: empty, agentHome });
 			assert.deepEqual(errors, [], "every packaged agent must parse through the agent runtime");
@@ -708,27 +708,27 @@ test("packaged agents reach the agent runtime with their declared tool allowlist
 });
 
 function withIsolatedAssetHome(run: (agentHome: string) => void): void {
-	const temporary = mkdtempSync(join(tmpdir(), "gentle-asset-owners-"));
-	const previous = process.env.GENTLE_PI_AGENT_HOME;
+	const temporary = mkdtempSync(join(tmpdir(), "drakonc-asset-owners-"));
+	const previous = process.env.DRAKONC_PI_AGENT_HOME;
 	try {
-		process.env.GENTLE_PI_AGENT_HOME = temporary;
+		process.env.DRAKONC_PI_AGENT_HOME = temporary;
 		run(temporary);
 	} finally {
-		if (previous === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previous;
 		rmSync(temporary, { recursive: true, force: true });
 	}
 }
 
 function installedAssetManifest(agentHome: string): ManagedAssetsManifest {
-	return JSON.parse(readFileSync(join(agentHome, "gentle-ai", "managed-assets.json"), "utf8"));
+	return JSON.parse(readFileSync(join(agentHome, "drakonc-ai", "managed-assets.json"), "utf8"));
 }
 
 test("ODD delegation assets retain applicable test-first checks and independent review boundaries without SDD routing", () => {
 	const support = readFileSync(join(PACKAGE_ROOT, "assets/support/strict-tdd.md"), "utf8");
-	const explorer = readFileSync(join(PACKAGE_ROOT, "assets/agents/gentle-ai-explore.md"), "utf8");
-	const verifier = readFileSync(join(PACKAGE_ROOT, "assets/agents/gentle-ai-verify.md"), "utf8");
-	const worker = readFileSync(join(PACKAGE_ROOT, "assets/agents/gentle-ai-worker.md"), "utf8");
+	const explorer = readFileSync(join(PACKAGE_ROOT, "assets/agents/drakonc-ai-explore.md"), "utf8");
+	const verifier = readFileSync(join(PACKAGE_ROOT, "assets/agents/drakonc-ai-verify.md"), "utf8");
+	const worker = readFileSync(join(PACKAGE_ROOT, "assets/agents/drakonc-ai-worker.md"), "utf8");
 	for (const source of [support, explorer, verifier, worker]) {
 		assert.doesNotMatch(source, /openspec\/config\.yaml|sdd-init|SDD phase protocols|generic non-SDD|sdd-verify|sdd\/\{project\}/i);
 	}
@@ -749,14 +749,14 @@ test("ODD delegation assets retain applicable test-first checks and independent 
 // such as the retired Strict TDD mode prompt.
 test("forced refresh updates a frozen package agent with a shipped body and keeps its routing", () => {
 	withIsolatedAssetHome((agentHome) => {
-		const key = "agents/gentle-ai-worker.md";
+		const key = "agents/drakonc-ai-worker.md";
 		const installedPath = join(agentHome, key);
 		const packaged = readFileSync(join(PACKAGE_ROOT, "assets", key), "utf8");
-		const stale = readFileSync(join(PACKAGE_ROOT, "tests/fixtures/agent-assets/gentle-ai-worker.strict-tdd-era.md"), "utf8");
-		const foreignFrontmatter = "---\nname: gentle-ai-worker\ndescription: Old description.\nmodel: openai/test-model\nthinking: max\ntools: read, grep, find, edit, write, bash, mem_save, mcp";
+		const stale = readFileSync(join(PACKAGE_ROOT, "tests/fixtures/agent-assets/drakonc-ai-worker.strict-tdd-era.md"), "utf8");
+		const foreignFrontmatter = "---\nname: drakonc-ai-worker\ndescription: Old description.\nmodel: openai/test-model\nthinking: max\ntools: read, grep, find, edit, write, bash, mem_save, mcp";
 		installPackageAssets(agentHome, false, ["delegation"]);
 		writeFileSync(installedPath, `${foreignFrontmatter}${agentBody(stale)}`);
-		const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+		const manifestPath = join(agentHome, "drakonc-ai", "managed-assets.json");
 		const manifest = installedAssetManifest(agentHome);
 		delete manifest.assets[key];
 		writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
@@ -777,13 +777,13 @@ test("forced refresh updates a frozen package agent with a shipped body and keep
 
 test("forced refresh restores an old shipped agent without routing to the managed copy", () => {
 	withIsolatedAssetHome((agentHome) => {
-		const key = "agents/gentle-ai-worker.md";
+		const key = "agents/drakonc-ai-worker.md";
 		const installedPath = join(agentHome, key);
 		const packaged = readFileSync(join(PACKAGE_ROOT, "assets", key), "utf8");
-		const stale = readFileSync(join(PACKAGE_ROOT, "tests/fixtures/agent-assets/gentle-ai-worker.strict-tdd-era.md"), "utf8");
+		const stale = readFileSync(join(PACKAGE_ROOT, "tests/fixtures/agent-assets/drakonc-ai-worker.strict-tdd-era.md"), "utf8");
 		installPackageAssets(agentHome, false, ["delegation"]);
 		writeFileSync(installedPath, stale.replace(/\ntools:\n(?:  - .*\n)+/, "\ntools: read, grep, find, edit, write, bash, mem_save\n"));
-		const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+		const manifestPath = join(agentHome, "drakonc-ai", "managed-assets.json");
 		const manifest = installedAssetManifest(agentHome);
 		manifest.assets[key] = sha256("stale");
 		writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
@@ -799,7 +799,7 @@ test("forced refresh restores an old shipped agent without routing to the manage
 // agent (here a restricted tool allowlist) stays a user override.
 test("forced refresh keeps a frontmatter edit on an agent with current instructions", () => {
 	withIsolatedAssetHome((agentHome) => {
-		const key = "agents/gentle-ai-worker.md";
+		const key = "agents/drakonc-ai-worker.md";
 		const installedPath = join(agentHome, key);
 		installPackageAssets(agentHome, false, ["delegation"]);
 		const restricted = readFileSync(installedPath, "utf8").replace("  - bash\n", "");
@@ -825,7 +825,7 @@ test("agent body history records the body of every packaged agent", () => {
 
 test("forced refresh still leaves agents with user-edited bodies in place", () => {
 	withIsolatedAssetHome((agentHome) => {
-		const key = "agents/gentle-ai-worker.md";
+		const key = "agents/drakonc-ai-worker.md";
 		const installedPath = join(agentHome, key);
 		installPackageAssets(agentHome, false, ["delegation"]);
 		const edited = readFileSync(installedPath, "utf8")
@@ -844,8 +844,8 @@ test("delegation installation retains strict TDD support without installing SDD 
 	withIsolatedAssetHome((agentHome) => {
 		installPackageAssets(agentHome, false, ["delegation"]);
 		const keys = Object.keys(installedAssetManifest(agentHome).assets);
-		assert.ok(keys.includes("gentle-ai/support/strict-tdd.md"));
-		assert.ok(keys.includes("gentle-ai/support/strict-tdd-verify.md"));
+		assert.ok(keys.includes("drakonc-ai/support/strict-tdd.md"));
+		assert.ok(keys.includes("drakonc-ai/support/strict-tdd-verify.md"));
 		assert.ok(keys.every(key => !key.startsWith("agents/sdd-") && !key.startsWith("chains/sdd-") && !key.includes("sdd-status-contract")));
 	});
 });
@@ -854,25 +854,25 @@ test("selective delegation installation owns only generic agents", () => {
 	withIsolatedAssetHome((agentHome) => {
 		const result = installPackageAssets(agentHome, false, ["delegation"]);
 		assert.deepEqual(Object.keys(installedAssetManifest(agentHome).assets).sort(), [
-			"agents/gentle-ai-explore.md",
-			"agents/gentle-ai-verify.md",
-			"agents/gentle-ai-worker.md",
-			"gentle-ai/support/strict-tdd-verify.md",
-			"gentle-ai/support/strict-tdd.md",
+			"agents/drakonc-ai-explore.md",
+			"agents/drakonc-ai-verify.md",
+			"agents/drakonc-ai-worker.md",
+			"drakonc-ai/support/strict-tdd-verify.md",
+			"drakonc-ai/support/strict-tdd.md",
 		]);
 		assert.deepEqual(result, { agents: 3, chains: 0, support: 2, skipped: 0 });
 		assert.deepEqual(readdirSync(join(agentHome, "agents")).sort(), [
-			"gentle-ai-explore.md", "gentle-ai-verify.md", "gentle-ai-worker.md",
+			"drakonc-ai-explore.md", "drakonc-ai-verify.md", "drakonc-ai-worker.md",
 		]);
 		assert.equal(existsSync(join(agentHome, "chains")), false);
-		assert.deepEqual(readdirSync(join(agentHome, "gentle-ai", "support")).sort(), ["strict-tdd-verify.md", "strict-tdd.md"]);
+		assert.deepEqual(readdirSync(join(agentHome, "drakonc-ai", "support")).sort(), ["strict-tdd-verify.md", "strict-tdd.md"]);
 	});
 });
 
 test("selective installation retires only assets belonging to the selected owner", () => {
 	withIsolatedAssetHome((agentHome) => {
 		installPackageAssets(agentHome, false);
-		const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+		const manifestPath = join(agentHome, "drakonc-ai", "managed-assets.json");
 		const manifest = installedAssetManifest(agentHome);
 		for (const name of RETIRED_ADVERSARIAL_AGENTS) {
 			writeFileSync(join(agentHome, "agents", name), "Previously managed review agent\n");
@@ -898,8 +898,8 @@ test("selective installation retires only assets belonging to the selected owner
 
 const EXPECTED_OWNER_ASSETS: Record<PackageAssetOwner, readonly string[]> = {
 	delegation: [
-		"agents/gentle-ai-explore.md", "agents/gentle-ai-verify.md", "agents/gentle-ai-worker.md",
-		"gentle-ai/support/strict-tdd.md", "gentle-ai/support/strict-tdd-verify.md",
+		"agents/drakonc-ai-explore.md", "agents/drakonc-ai-verify.md", "agents/drakonc-ai-worker.md",
+		"drakonc-ai/support/strict-tdd.md", "drakonc-ai/support/strict-tdd-verify.md",
 	],
 	review: [
 		"agents/jd-fix-agent.md", "agents/jd-judge-a.md", "agents/jd-judge-b.md",
@@ -922,10 +922,10 @@ for (const owner of Object.keys(EXPECTED_OWNER_ASSETS) as PackageAssetOwner[]) {
 			const expected = [...EXPECTED_OWNER_ASSETS[owner]].sort();
 			installPackageAssets(agentHome, false, [owner]);
 			assert.deepEqual(Object.keys(installedAssetManifest(agentHome).assets).sort(), expected);
-			assert.deepEqual(assetFileKeys(agentHome), [...expected, "gentle-ai/managed-assets.json"].sort());
+			assert.deepEqual(assetFileKeys(agentHome), [...expected, "drakonc-ai/managed-assets.json"].sort());
 			for (const key of expected) {
 				assert.equal(getPackageAssetOwner(key), owner);
-				const source = join(PACKAGE_ROOT, "assets", key.replace(/^gentle-ai\//, ""));
+				const source = join(PACKAGE_ROOT, "assets", key.replace(/^drakonc-ai\//, ""));
 				assert.equal(readFileSync(join(agentHome, key), "utf8"), readFileSync(source, "utf8"));
 			}
 			const counts = installPackageAssets(agentHome, false, [owner, owner]);
@@ -936,11 +936,11 @@ for (const owner of Object.keys(EXPECTED_OWNER_ASSETS) as PackageAssetOwner[]) {
 
 test("all-assets installation covers every retained packaged file with explicit ownership", () => {
 	const packaged = ["agents", "chains", "support"].flatMap(group =>
-		assetFileKeys(join(PACKAGE_ROOT, "assets", group), group === "support" ? "gentle-ai/support/" : `${group}/`),
+		assetFileKeys(join(PACKAGE_ROOT, "assets", group), group === "support" ? "drakonc-ai/support/" : `${group}/`),
 	).sort();
 	assert.deepEqual(packaged, Object.values(EXPECTED_OWNER_ASSETS).flat().sort());
 	for (const key of packaged) assert.notEqual(getPackageAssetOwner(key), undefined, key);
-	for (const key of ["agents/sdd-new.md", "gentle-ai/support/new.md", "toString", "__proto__"]) {
+	for (const key of ["agents/sdd-new.md", "drakonc-ai/support/new.md", "toString", "__proto__"]) {
 		assert.equal(getPackageAssetOwner(key), undefined, "unknown assets must not default to SDD");
 	}
 	withIsolatedAssetHome((agentHome) => {
@@ -955,7 +955,7 @@ test("selective refresh preserves unselected ownership and selected user changes
 	withIsolatedAssetHome((agentHome) => {
 		installPackageAssets(agentHome, false);
 		const manifest = installedAssetManifest(agentHome);
-		const selectedUserKey = "agents/gentle-ai-explore.md";
+		const selectedUserKey = "agents/drakonc-ai-explore.md";
 		const unselectedUserKey = "agents/review-risk.md";
 		for (const key of [selectedUserKey, unselectedUserKey, "agents/custom.md"]) {
 			writeFileSync(join(agentHome, key), "User-authored instructions\n");
@@ -965,11 +965,11 @@ test("selective refresh preserves unselected ownership and selected user changes
 		delete manifest.assets[selectedUserKey];
 		assert.deepEqual(installedAssetManifest(agentHome), manifest);
 		for (const [key, content] of before) {
-			if (key !== "gentle-ai/managed-assets.json") assert.equal(readFileSync(join(agentHome, key), "utf8"), content, key);
+			if (key !== "drakonc-ai/managed-assets.json") assert.equal(readFileSync(join(agentHome, key), "utf8"), content, key);
 		}
-		const manifestBytes = readFileSync(join(agentHome, "gentle-ai", "managed-assets.json"), "utf8");
+		const manifestBytes = readFileSync(join(agentHome, "drakonc-ai", "managed-assets.json"), "utf8");
 		assert.deepEqual(installPackageAssets(agentHome, true, []), { agents: 0, chains: 0, support: 0, skipped: 0 });
-		assert.equal(readFileSync(join(agentHome, "gentle-ai", "managed-assets.json"), "utf8"), manifestBytes);
+		assert.equal(readFileSync(join(agentHome, "drakonc-ai", "managed-assets.json"), "utf8"), manifestBytes);
 	});
 });
 
@@ -998,7 +998,7 @@ test("selective review migration adopts only untouched legacy copies and preserv
 				assert.equal(manifest.assets["agents/review-risk.md"], sha256(actual));
 			}
 			assert.equal(existsSync(join(agentHome, "agents", "sdd-apply.md")), false);
-			assert.equal(existsSync(join(agentHome, "gentle-ai", "support", "strict-tdd.md")), true);
+			assert.equal(existsSync(join(agentHome, "drakonc-ai", "support", "strict-tdd.md")), true);
 		});
 	}
 });
@@ -1059,7 +1059,7 @@ test("shell-free npm helper preserves packed tarball arguments and options", () 
 test("packed tarball excludes retired workflow paths while source retains legacy migration proof", () => {
 	const fixture = "tests/fixtures/legacy/sdd-research-v2.5.0.md";
 	assert.ok(existsSync(join(PACKAGE_ROOT, fixture)), "the historical source fixture must remain available to migration tests");
-	const destination = mkdtempSync(join(tmpdir(), "gentle-pi-pack-manifest-"));
+	const destination = mkdtempSync(join(tmpdir(), "drakonc-pi-pack-manifest-"));
 	try {
 		const output = runNpmWithEnv(["pack", "--ignore-scripts", "--offline", "--json", "--pack-destination", destination], process.env, {
 			cwd: PACKAGE_ROOT,
@@ -1070,7 +1070,7 @@ test("packed tarball excludes retired workflow paths while source retains legacy
 		assert.ok(packed?.files?.length, "npm pack must return a nonempty tar manifest");
 		assert.ok(packed.files.some(file => file.path === "tests/package-manifest.test.ts"), "other tests remain packed");
 		for (const path of [
-			"extensions/gentle-notifications.ts",
+			"extensions/drakonc-notifications.ts",
 			"lib/notification-audio.ts", "lib/notification-customize.ts", "lib/notification-events.ts", "lib/notification-policy.ts",
 			"lib/notification-scheduler.ts", "lib/notification-service.ts", "lib/notification-ui.ts",
 			"assets/sounds/success.wav", "assets/sounds/error.wav", "assets/sounds/attention.wav",
@@ -1107,7 +1107,7 @@ test("legacy research retirement requires exact ownership and preserves edited c
 });
 
 test("the retired Pi adversarial role agents are not packaged", () => {
-	// gentle-pi#311 P5: the refuter and targeted validator verdicts execute
+	// drakonc-pi#311 P5: the refuter and targeted validator verdicts execute
 	// through Go-owned pi processes via provider-rendered self-contained
 	// vectors; the Pi-authored agent definitions must stay deleted.
 	for (const retired of RETIRED_ADVERSARIAL_AGENTS) {
@@ -1117,11 +1117,11 @@ test("the retired Pi adversarial role agents are not packaged", () => {
 
 test("forced package installation preserves same-path user-authored agents and separate shadows, including on retired asset paths", () => {
 	// The user-authored file below sits on the RETIRED review-refuter.md path:
-	// this also pins that gentle-pi#311 P5 asset retirement deletes only
+	// this also pins that drakonc-pi#311 P5 asset retirement deletes only
 	// hash-proven package-managed copies, never user content.
-	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-refuter-home-"));
-	const temporaryProject = mkdtempSync(join(tmpdir(), "gentle-pi-refuter-project-"));
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "drakonc-pi-refuter-home-"));
+	const temporaryProject = mkdtempSync(join(tmpdir(), "drakonc-pi-refuter-project-"));
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
 	const samePathUserAgent = join(temporaryAgentHome, "agents", RETIRED_REFUTER_FILE);
 	const userShadow = join(temporaryAgentHome, "subagents", RETIRED_REFUTER_FILE);
 	const projectOverride = join(temporaryProject, ".pi", "agents", RETIRED_REFUTER_FILE);
@@ -1137,7 +1137,7 @@ test("forced package installation preserves same-path user-authored agents and s
 	].join("\n");
 
 	try {
-		process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+		process.env.DRAKONC_PI_AGENT_HOME = temporaryAgentHome;
 		mkdirSync(dirname(projectOverride), { recursive: true });
 		writeFileSync(projectOverride, "project override must stay\n");
 		mkdirSync(dirname(userShadow), { recursive: true });
@@ -1164,9 +1164,9 @@ test("forced package installation preserves same-path user-authored agents and s
 		);
 	} finally {
 		if (previousAgentHome === undefined) {
-			delete process.env.GENTLE_PI_AGENT_HOME;
+			delete process.env.DRAKONC_PI_AGENT_HOME;
 		} else {
-			process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+			process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 		}
 		rmSync(temporaryAgentHome, { recursive: true, force: true });
 		rmSync(temporaryProject, { recursive: true, force: true });
@@ -1202,13 +1202,13 @@ test("v0.14 ownership evidence is bundled and matches the self-contained bounded
 });
 
 test("first forced sync migrates untouched v0.13 assets, preserves routing, and owns new assets", () => {
-	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-v013-upgrade-"));
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "drakonc-pi-v013-upgrade-"));
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
 	const installedReviewRisk = join(temporaryAgentHome, "agents", REVIEW_RISK_FILE);
 	const installedExemplar = join(temporaryAgentHome, "agents", MANAGED_EXEMPLAR_FILE);
 	const managedAssetsManifest = join(
 		temporaryAgentHome,
-		"gentle-ai",
+		"drakonc-ai",
 		"managed-assets.json",
 	);
 	const legacySource = readFileSync(V013_REVIEW_RISK_FIXTURE, "utf8");
@@ -1218,7 +1218,7 @@ test("first forced sync migrates untouched v0.13 assets, preserves routing, and 
 	);
 
 	try {
-		process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+		process.env.DRAKONC_PI_AGENT_HOME = temporaryAgentHome;
 		mkdirSync(dirname(installedReviewRisk), { recursive: true });
 		writeFileSync(installedReviewRisk, routedLegacySource);
 		assert.equal(existsSync(managedAssetsManifest), false, "v0.13 had no ownership manifest");
@@ -1271,17 +1271,17 @@ test("first forced sync migrates untouched v0.13 assets, preserves routing, and 
 		assert.equal(postEditManifest.assets[`agents/${REVIEW_RISK_FILE}`], undefined);
 	} finally {
 		if (previousAgentHome === undefined) {
-			delete process.env.GENTLE_PI_AGENT_HOME;
+			delete process.env.DRAKONC_PI_AGENT_HOME;
 		} else {
-			process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+			process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 		}
 		rmSync(temporaryAgentHome, { recursive: true, force: true });
 	}
 });
 
 test("first forced sync migrates untouched v0.14 review contracts and preserves routing", () => {
-	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-v014-upgrade-"));
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "drakonc-pi-v014-upgrade-"));
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
 	const installedReviewRisk = join(temporaryAgentHome, "agents", REVIEW_RISK_FILE);
 	const legacySource = readFileSync(V014_REVIEW_RISK_FIXTURE, "utf8");
 	const routedLegacySource = legacySource.replace(
@@ -1290,7 +1290,7 @@ test("first forced sync migrates untouched v0.14 review contracts and preserves 
 	);
 
 	try {
-		process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+		process.env.DRAKONC_PI_AGENT_HOME = temporaryAgentHome;
 		mkdirSync(dirname(installedReviewRisk), { recursive: true });
 		writeFileSync(installedReviewRisk, routedLegacySource);
 
@@ -1311,15 +1311,15 @@ test("first forced sync migrates untouched v0.14 review contracts and preserves 
 			currentPackageSource,
 		);
 	} finally {
-		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousAgentHome === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 		rmSync(temporaryAgentHome, { recursive: true, force: true });
 	}
 });
 
 test("first forced sync preserves a body-edited v0.13 asset byte-for-byte", () => {
-	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-v013-edited-"));
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "drakonc-pi-v013-edited-"));
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
 	const installedReviewRisk = join(temporaryAgentHome, "agents", REVIEW_RISK_FILE);
 	const editedLegacySource = readFileSync(V013_REVIEW_RISK_FIXTURE, "utf8").replace(
 		"Find security risks; do not fix them.",
@@ -1327,7 +1327,7 @@ test("first forced sync preserves a body-edited v0.13 asset byte-for-byte", () =
 	);
 
 	try {
-		process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+		process.env.DRAKONC_PI_AGENT_HOME = temporaryAgentHome;
 		mkdirSync(dirname(installedReviewRisk), { recursive: true });
 		writeFileSync(installedReviewRisk, editedLegacySource);
 
@@ -1335,37 +1335,37 @@ test("first forced sync preserves a body-edited v0.13 asset byte-for-byte", () =
 
 		assert.deepEqual(readFileSync(installedReviewRisk), Buffer.from(editedLegacySource));
 		const manifest = JSON.parse(
-			readFileSync(join(temporaryAgentHome, "gentle-ai", "managed-assets.json"), "utf8"),
+			readFileSync(join(temporaryAgentHome, "drakonc-ai", "managed-assets.json"), "utf8"),
 		) as ManagedAssetsManifest;
 		assert.equal(manifest.assets[`agents/${REVIEW_RISK_FILE}`], undefined);
 	} finally {
 		if (previousAgentHome === undefined) {
-			delete process.env.GENTLE_PI_AGENT_HOME;
+			delete process.env.DRAKONC_PI_AGENT_HOME;
 		} else {
-			process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+			process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 		}
 		rmSync(temporaryAgentHome, { recursive: true, force: true });
 	}
 });
 
 test("forced package installation refreshes an asset recorded as package-managed", () => {
-	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-malformed-refuter-"));
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "drakonc-pi-malformed-refuter-"));
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
 	const installedExemplar = join(temporaryAgentHome, "agents", MANAGED_EXEMPLAR_FILE);
 	const managedAssetsManifest = join(
 		temporaryAgentHome,
-		"gentle-ai",
+		"drakonc-ai",
 		"managed-assets.json",
 	);
 	const previousPackageSource =
-		"---\nname: gentle-ai-explore\ntools:\n  - read\n  - bash\n---\nprevious package version\n";
+		"---\nname: drakonc-ai-explore\ntools:\n  - read\n  - bash\n---\nprevious package version\n";
 	const routedPreviousPackageSource = previousPackageSource.replace(
-		"name: gentle-ai-explore\n",
-		"name: gentle-ai-explore\nmodel: openai/previous-package\nthinking: high\n",
+		"name: drakonc-ai-explore\n",
+		"name: drakonc-ai-explore\nmodel: openai/previous-package\nthinking: high\n",
 	);
 
 	try {
-		process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+		process.env.DRAKONC_PI_AGENT_HOME = temporaryAgentHome;
 		installPackageAssets(PACKAGE_ROOT, true);
 		assert.ok(existsSync(installedExemplar), "a missing package asset must install");
 		assert.ok(
@@ -1389,9 +1389,9 @@ test("forced package installation refreshes an asset recorded as package-managed
 		assert.doesNotMatch(refreshed.source, /^  - bash$/m);
 	} finally {
 		if (previousAgentHome === undefined) {
-			delete process.env.GENTLE_PI_AGENT_HOME;
+			delete process.env.DRAKONC_PI_AGENT_HOME;
 		} else {
-			process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+			process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 		}
 		rmSync(temporaryAgentHome, { recursive: true, force: true });
 	}
@@ -1401,17 +1401,17 @@ function assertManagedAgentUserEditIsPreserved(
 	editLabel: string,
 	editSource: (source: string) => string,
 ): void {
-	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-managed-edit-"));
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "drakonc-pi-managed-edit-"));
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
 	const installedExemplar = join(temporaryAgentHome, "agents", MANAGED_EXEMPLAR_FILE);
 	const managedAssetsManifest = join(
 		temporaryAgentHome,
-		"gentle-ai",
+		"drakonc-ai",
 		"managed-assets.json",
 	);
 
 	try {
-		process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+		process.env.DRAKONC_PI_AGENT_HOME = temporaryAgentHome;
 		installPackageAssets(PACKAGE_ROOT, true);
 		const installedSource = readFileSync(installedExemplar, "utf8");
 		const userEditedSource = editSource(installedSource);
@@ -1435,9 +1435,9 @@ function assertManagedAgentUserEditIsPreserved(
 		);
 	} finally {
 		if (previousAgentHome === undefined) {
-			delete process.env.GENTLE_PI_AGENT_HOME;
+			delete process.env.DRAKONC_PI_AGENT_HOME;
 		} else {
-			process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+			process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 		}
 		rmSync(temporaryAgentHome, { recursive: true, force: true });
 	}
@@ -1446,8 +1446,8 @@ function assertManagedAgentUserEditIsPreserved(
 test("forced package installation preserves a model-only edit to a managed agent", () => {
 	assertManagedAgentUserEditIsPreserved("a model-only user edit", (source) =>
 		source.replace(
-			"name: gentle-ai-explore\n",
-			"name: gentle-ai-explore\nmodel: private/user-model\n",
+			"name: drakonc-ai-explore\n",
+			"name: drakonc-ai-explore\nmodel: private/user-model\n",
 		),
 	);
 });
@@ -1455,8 +1455,8 @@ test("forced package installation preserves a model-only edit to a managed agent
 test("forced package installation preserves a thinking-only edit to a managed agent", () => {
 	assertManagedAgentUserEditIsPreserved("a thinking-only user edit", (source) =>
 		source.replace(
-			"name: gentle-ai-explore\n",
-			"name: gentle-ai-explore\nthinking: xhigh\n",
+			"name: drakonc-ai-explore\n",
+			"name: drakonc-ai-explore\nthinking: xhigh\n",
 		),
 	);
 });
@@ -1471,24 +1471,24 @@ test("forced package installation preserves an ordinary body edit to a managed a
 });
 
 test("package model assignment keeps only package-managed agents owned", () => {
-	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-model-ownership-"));
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "drakonc-pi-model-ownership-"));
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
 	const installedExemplar = join(temporaryAgentHome, "agents", MANAGED_EXEMPLAR_FILE);
 	const userAgent = join(temporaryAgentHome, "agents", "user-router.md");
 	const managedAssetsManifest = join(
 		temporaryAgentHome,
-		"gentle-ai",
+		"drakonc-ai",
 		"managed-assets.json",
 	);
 	const userAgentSource = "---\nname: user-router\n---\nuser-owned body\n";
 
 	try {
-		process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+		process.env.DRAKONC_PI_AGENT_HOME = temporaryAgentHome;
 		installPackageAssets(PACKAGE_ROOT, true);
 		writeFileSync(userAgent, userAgentSource);
 
 		applyModelConfig(PACKAGE_ROOT, {
-			"gentle-ai-explore": { model: "package/selected-model", thinking: "high" },
+			"drakonc-ai-explore": { model: "package/selected-model", thinking: "high" },
 			"user-router": { model: "user/selected-model", thinking: "low" },
 		});
 
@@ -1526,9 +1526,9 @@ test("package model assignment keeps only package-managed agents owned", () => {
 		);
 	} finally {
 		if (previousAgentHome === undefined) {
-			delete process.env.GENTLE_PI_AGENT_HOME;
+			delete process.env.DRAKONC_PI_AGENT_HOME;
 		} else {
-			process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+			process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 		}
 		rmSync(temporaryAgentHome, { recursive: true, force: true });
 	}
@@ -1551,7 +1551,7 @@ test("deleted SDD definitions remain absent from the installed catalog", () => {
 			"remediate", "research", "spec", "status", "tasks", "verify",
 		].map(name => `agents/sdd-${name}.md`),
 		"chains/sdd-full.chain.md", "chains/sdd-plan.chain.md", "chains/sdd-verify.chain.md",
-		"gentle-ai/support/sdd-status-contract.md",
+		"drakonc-ai/support/sdd-status-contract.md",
 	];
 	withIsolatedAssetHome(agentHome => {
 		installPackageAssets(agentHome, false);
@@ -1563,10 +1563,10 @@ test("deleted SDD definitions remain absent from the installed catalog", () => {
 	});
 });
 
-test("gentle-ai-worker packages the exact scoped writer contract", () => {
+test("drakonc-ai-worker packages the exact scoped writer contract", () => {
 	const agentsDir = join(PACKAGE_ROOT, "assets", "agents");
-	const agentPath = join(agentsDir, "gentle-ai-worker.md");
-	assert.ok(existsSync(agentPath), "gentle-pi must package gentle-ai-worker.md");
+	const agentPath = join(agentsDir, "drakonc-ai-worker.md");
+	assert.ok(existsSync(agentPath), "drakonc-pi must package drakonc-ai-worker.md");
 	for (const genericName of ["worker.md", "generic-writer.md"]) {
 		assert.ok(
 			!existsSync(join(agentsDir, genericName)),
@@ -1575,7 +1575,7 @@ test("gentle-ai-worker packages the exact scoped writer contract", () => {
 	}
 
 	const { name, source, tools } = readAgentDefinition(agentPath);
-	assert.equal(name, "gentle-ai-worker");
+	assert.equal(name, "drakonc-ai-worker");
 	assert.deepEqual(tools, [
 		"read",
 		"grep",
@@ -1675,17 +1675,17 @@ test("gentle-ai-worker packages the exact scoped writer contract", () => {
 	assert.doesNotMatch(testDiscipline, /clearly required by the repository contract/);
 });
 
-test("package installation gives gentle-ai-worker a loader-compatible scoped identity", () => {
-	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-agent-home-"));
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+test("package installation gives drakonc-ai-worker a loader-compatible scoped identity", () => {
+	const temporaryAgentHome = mkdtempSync(join(tmpdir(), "drakonc-pi-agent-home-"));
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
 
 	try {
-		process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+		process.env.DRAKONC_PI_AGENT_HOME = temporaryAgentHome;
 		installPackageAssets(PACKAGE_ROOT, true, ["delegation"]);
 
 		const installedAgentsDir = join(temporaryAgentHome, "agents");
-		const installedAgentPath = join(installedAgentsDir, "gentle-ai-worker.md");
-		assert.ok(existsSync(installedAgentPath), "the production installer must install gentle-ai-worker.md");
+		const installedAgentPath = join(installedAgentsDir, "drakonc-ai-worker.md");
+		assert.ok(existsSync(installedAgentPath), "the production installer must install drakonc-ai-worker.md");
 		for (const genericName of ["worker.md", "generic-writer.md"]) {
 			assert.ok(
 				!existsSync(join(installedAgentsDir, genericName)),
@@ -1695,7 +1695,7 @@ test("package installation gives gentle-ai-worker a loader-compatible scoped ide
 
 		const { name, source, tools } = readAgentDefinition(installedAgentPath);
 		const normalizedRuntimeIdentity = name.trim().toLowerCase();
-		assert.equal(normalizedRuntimeIdentity, "gentle-ai-worker");
+		assert.equal(normalizedRuntimeIdentity, "drakonc-ai-worker");
 		assert.deepEqual(tools, [
 			"read",
 			"grep",
@@ -1714,110 +1714,110 @@ test("package installation gives gentle-ai-worker a loader-compatible scoped ide
 		assert.doesNotMatch(source, /^name:\s*(?:worker|generic-writer)$/m);
 	} finally {
 		if (previousAgentHome === undefined) {
-			delete process.env.GENTLE_PI_AGENT_HOME;
+			delete process.env.DRAKONC_PI_AGENT_HOME;
 		} else {
-			process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+			process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 		}
 		rmSync(temporaryAgentHome, { recursive: true, force: true });
 	}
 
-	assert.equal(process.env.GENTLE_PI_AGENT_HOME, previousAgentHome);
+	assert.equal(process.env.DRAKONC_PI_AGENT_HOME, previousAgentHome);
 	assert.ok(
 		!existsSync(temporaryAgentHome),
 		"the integration test must delete only its temporary agent home",
 	);
 });
 
-test("agent home resolver centralizes Gentle and Pi agent-dir precedence", () => {
-	const explicitGentleHome = mkdtempSync(join(tmpdir(), "gentle-pi-resolver-explicit-"));
-	const piAgentDir = mkdtempSync(join(tmpdir(), "gentle-pi-resolver-pi-dir-"));
+test("agent home resolver centralizes Drakonc and Pi agent-dir precedence", () => {
+	const explicitDrakoncHome = mkdtempSync(join(tmpdir(), "drakonc-pi-resolver-explicit-"));
+	const piAgentDir = mkdtempSync(join(tmpdir(), "drakonc-pi-resolver-pi-dir-"));
 
 	try {
 		assert.equal(
-			resolveGentlePiAgentHome({
-				GENTLE_PI_AGENT_HOME: explicitGentleHome,
+			resolveDrakoncPiAgentHome({
+				DRAKONC_PI_AGENT_HOME: explicitDrakoncHome,
 				PI_CODING_AGENT_DIR: piAgentDir,
 			}),
-			explicitGentleHome,
+			explicitDrakoncHome,
 		);
-		assert.equal(resolveGentlePiAgentHome({ PI_CODING_AGENT_DIR: piAgentDir }), piAgentDir);
-		assert.equal(resolveGentlePiAgentHome({}), join(homedir(), ".pi", "agent"));
+		assert.equal(resolveDrakoncPiAgentHome({ PI_CODING_AGENT_DIR: piAgentDir }), piAgentDir);
+		assert.equal(resolveDrakoncPiAgentHome({}), join(homedir(), ".pi", "agent"));
 		assert.equal(
-			resolveGentlePiAgentHome({ GENTLE_PI_AGENT_HOME: "", PI_CODING_AGENT_DIR: piAgentDir }),
+			resolveDrakoncPiAgentHome({ DRAKONC_PI_AGENT_HOME: "", PI_CODING_AGENT_DIR: piAgentDir }),
 			piAgentDir,
 			"an empty explicit override falls through like Pi Subagents does",
 		);
 		assert.equal(
-			resolveGentlePiAgentHome({ PI_CODING_AGENT_DIR: "" }),
+			resolveDrakoncPiAgentHome({ PI_CODING_AGENT_DIR: "" }),
 			join(homedir(), ".pi", "agent"),
 			"an empty PI_CODING_AGENT_DIR falls through like Pi Subagents does",
 		);
 	} finally {
-		rmSync(explicitGentleHome, { recursive: true, force: true });
+		rmSync(explicitDrakoncHome, { recursive: true, force: true });
 		rmSync(piAgentDir, { recursive: true, force: true });
 	}
 });
 
-test("asset installation uses PI_CODING_AGENT_DIR as the Pi agent home when no explicit Gentle override is set", () => {
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+test("asset installation uses PI_CODING_AGENT_DIR as the Pi agent home when no explicit Drakonc override is set", () => {
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
 	const previousPiAgentDir = process.env.PI_CODING_AGENT_DIR;
-	const temporaryPiAgentDir = mkdtempSync(join(tmpdir(), "gentle-pi-agent-dir-"));
-	const explicitGentleHome = mkdtempSync(join(tmpdir(), "gentle-pi-explicit-home-"));
+	const temporaryPiAgentDir = mkdtempSync(join(tmpdir(), "drakonc-pi-agent-dir-"));
+	const explicitDrakoncHome = mkdtempSync(join(tmpdir(), "drakonc-pi-explicit-home-"));
 
 	try {
-		delete process.env.GENTLE_PI_AGENT_HOME;
+		delete process.env.DRAKONC_PI_AGENT_HOME;
 		process.env.PI_CODING_AGENT_DIR = temporaryPiAgentDir;
 
 		installPackageAssets(PACKAGE_ROOT, true, ["delegation"]);
 
-		const installedPath = join(temporaryPiAgentDir, "agents", "gentle-ai-explore.md");
+		const installedPath = join(temporaryPiAgentDir, "agents", "drakonc-ai-explore.md");
 		assert.ok(existsSync(installedPath), "managed agents must install where Pi Subagents reads global definitions");
 		assert.deepEqual(readAgentDefinition(installedPath).tools, MANAGED_EXEMPLAR_TOOLS);
 		assert.ok(
-			!existsSync(join(explicitGentleHome, "agents", "gentle-ai-explore.md")),
+			!existsSync(join(explicitDrakoncHome, "agents", "drakonc-ai-explore.md")),
 			"the explicit override fixture must still be untouched before it is selected",
 		);
 
-		process.env.GENTLE_PI_AGENT_HOME = explicitGentleHome;
+		process.env.DRAKONC_PI_AGENT_HOME = explicitDrakoncHome;
 		installPackageAssets(PACKAGE_ROOT, true, ["delegation"]);
 		assert.ok(
-			existsSync(join(explicitGentleHome, "agents", "gentle-ai-explore.md")),
-			"GENTLE_PI_AGENT_HOME remains the explicit test/operator override",
+			existsSync(join(explicitDrakoncHome, "agents", "drakonc-ai-explore.md")),
+			"DRAKONC_PI_AGENT_HOME remains the explicit test/operator override",
 		);
 	} finally {
-		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousAgentHome === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 		if (previousPiAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousPiAgentDir;
 		rmSync(temporaryPiAgentDir, { recursive: true, force: true });
-		rmSync(explicitGentleHome, { recursive: true, force: true });
+		rmSync(explicitDrakoncHome, { recursive: true, force: true });
 	}
 });
 
 test("global model routing uses PI_CODING_AGENT_DIR for package-installed agents", () => {
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
 	const previousPiAgentDir = process.env.PI_CODING_AGENT_DIR;
-	const temporaryPiAgentDir = mkdtempSync(join(tmpdir(), "gentle-pi-model-agent-dir-"));
-	const temporaryProject = mkdtempSync(join(tmpdir(), "gentle-pi-model-project-"));
+	const temporaryPiAgentDir = mkdtempSync(join(tmpdir(), "drakonc-pi-model-agent-dir-"));
+	const temporaryProject = mkdtempSync(join(tmpdir(), "drakonc-pi-model-project-"));
 
 	try {
-		delete process.env.GENTLE_PI_AGENT_HOME;
+		delete process.env.DRAKONC_PI_AGENT_HOME;
 		process.env.PI_CODING_AGENT_DIR = temporaryPiAgentDir;
 		installPackageAssets(PACKAGE_ROOT, true, ["delegation"]);
 
 		const result = applyModelConfig(temporaryProject, {
-			"gentle-ai-explore": { model: "provider/model", thinking: "high" },
+			"drakonc-ai-explore": { model: "provider/model", thinking: "high" },
 		});
 
 		assert.equal(result.updated, 2);
 		const config = JSON.parse(readFileSync(join(temporaryPiAgentDir, "subagents.json"), "utf8"));
-		assert.deepEqual(config.model_profiles["gentle-ai-explore"], {
+		assert.deepEqual(config.model_profiles["drakonc-ai-explore"], {
 			model: "provider/model",
 			effort: "high",
 		});
 	} finally {
-		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousAgentHome === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 		if (previousPiAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousPiAgentDir;
 		rmSync(temporaryPiAgentDir, { recursive: true, force: true });
@@ -1826,16 +1826,16 @@ test("global model routing uses PI_CODING_AGENT_DIR for package-installed agents
 });
 
 test("normal and forced installation copy generic agents with complete role contracts", () => {
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
 	const expectedTools = {
-		"gentle-ai-explore": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"],
-		"gentle-ai-verify": ["read", "grep", "find", "bash", "mcp__codegraph__codegraph_explore"],
+		"drakonc-ai-explore": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"],
+		"drakonc-ai-verify": ["read", "grep", "find", "bash", "mcp__codegraph__codegraph_explore"],
 	} as const;
 
 	try {
 		for (const force of [false, true]) {
-			const temporaryAgentHome = mkdtempSync(join(tmpdir(), "gentle-pi-generic-agents-"));
-			process.env.GENTLE_PI_AGENT_HOME = temporaryAgentHome;
+			const temporaryAgentHome = mkdtempSync(join(tmpdir(), "drakonc-pi-generic-agents-"));
+			process.env.DRAKONC_PI_AGENT_HOME = temporaryAgentHome;
 			try {
 				installPackageAssets(PACKAGE_ROOT, force, ["delegation"]);
 
@@ -1848,7 +1848,7 @@ test("normal and forced installation copy generic agents with complete role cont
 					assert.deepEqual(installedTools, tools);
 					assert.match(source, /generic ODD work/);
 					assert.match(source, /Do not (?:fix findings, delegate to child agents|delegate to child agents, commit)/);
-					if (name === "gentle-ai-explore") {
+					if (name === "drakonc-ai-explore") {
 						assert.match(source, /cwd-scoped `codegraph` tool/);
 						assert.match(source, /never ask it to target another path/);
 						assert.match(source, /sole permitted mutation/);
@@ -1860,7 +1860,7 @@ test("normal and forced installation copy generic agents with complete role cont
 					// Cost/speed S4: reports are compact and never restate the task.
 					assert.match(source, /compact (?:handoff|evidence handoff)/);
 					assert.match(source, /Do not use review lenses\. RDD review remains independent and parent-owned\./);
-					if (name === "gentle-ai-verify") {
+					if (name === "drakonc-ai-verify") {
 						assert.match(source, /exact test, build, lint, or spec example commands explicitly authorized by the parent/);
 						assert.match(source, /only outputs the parent explicitly identified as expected/);
 						assert.match(source, /unexpected mutation as a blocker/);
@@ -1872,8 +1872,8 @@ test("normal and forced installation copy generic agents with complete role cont
 			}
 		}
 	} finally {
-		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousAgentHome === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 	}
 });
 
@@ -1883,7 +1883,7 @@ test("bounded implementation routing resolves the explicit canonical fallback re
 	const routing = ["orchestrator-delegation.md", "orchestrator-delegation-reference.md"]
 		.map((file) => readFileSync(join(PACKAGE_ROOT, "assets", file), "utf8"))
 		.join("\n\n");
-	// S9 canon change (gentle-ai 87a3b2eb): the canonical heading is "Delegation Triggers" (no "Mandatory").
+	// S9 canon change (drakonc-ai 87a3b2eb): the canonical heading is "Delegation Triggers" (no "Mandatory").
 	const reference = "For bounded writes, follow the canonical Writer rule under Delegation Triggers.";
 	const resolveSimpleDelegation = (source: string): string => {
 		const simpleDelegation = readMarkdownSection(source, "2. Simple Delegation");
@@ -1920,12 +1920,12 @@ test("orchestrator routes generic roles without static RDD lens routing", () => 
 	// the reference together are the lazy delegation route.
 	for (const files of [["orchestrator.md"], ["orchestrator-delegation.md", "orchestrator-delegation-reference.md"]]) {
 		const routing = files.map((file) => readFileSync(join(PACKAGE_ROOT, "assets", file), "utf8")).join("\n\n");
-		assert.match(routing, /`gentle-ai-explore`/);
-		assert.match(routing, /`gentle-ai-worker`/);
-		assert.match(routing, /`gentle-ai-verify`/);
+		assert.match(routing, /`drakonc-ai-explore`/);
+		assert.match(routing, /`drakonc-ai-worker`/);
+		assert.match(routing, /`drakonc-ai-verify`/);
 		assert.match(routing, /focused test and (?:the )?suite/);
 		// The Verification rule line itself must route high risk to the verifier.
-		assert.match(routing, /^\d\. \*\*Verification rule\*\*[^\n]*high[- ]risk[^\n]*`gentle-ai-verify`/m);
+		assert.match(routing, /^\d\. \*\*Verification rule\*\*[^\n]*high[- ]risk[^\n]*`drakonc-ai-verify`/m);
 		assert.match(routing, /missing(?: or |\/)unusable[\s\S]*native `Agent`[\s\S]*(?:the )?same read-only/);
 		assert.match(routing, /report (?:the )?fallback/);
 		assert.doesNotMatch(routing, /review lenses? (?:inside|only inside)|review lens routing/i);
@@ -1949,7 +1949,7 @@ test("pi-pretty wrapper uses cached ESM loading for compiled and pnpm symlink in
 	assert.match(wrapper, /quietToolsEnabled/);
 });
 
-test("Gentle Shell v5.0.0 package manifest declares the release version", () => {
+test("Drakonc Shell v5.0.0 package manifest declares the release version", () => {
 	const packageJson = readPackageJson();
 	assert.equal(packageJson.version, "5.0.0", "the release manifest must be explicitly pinned to v5.0.0");
 	assert.equal(packageJson.scripts?.test, "node scripts/run-test-suite.mjs");
@@ -1957,14 +1957,14 @@ test("Gentle Shell v5.0.0 package manifest declares the release version", () => 
 	assert.ok(packageJson.files?.includes("contracts/"));
 
 	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
-	// gentle-pi#311 P5: the retired adversarial role agents must not be pinned
+	// drakonc-pi#311 P5: the retired adversarial role agents must not be pinned
 	// as required package files, while the append-only migration history stays.
 	assert.doesNotMatch(verifier, /assets\/agents\/review-refuter\.md/);
 	assert.doesNotMatch(verifier, /assets\/agents\/review-validator\.md/);
 	assert.match(verifier, /assets\/migrations\/managed-assets-v0\.13\.json/);
 	assert.match(verifier, /assets\/migrations\/managed-assets-v0\.14\.json/);
 
-	const runtime = readFileSync(join(PACKAGE_ROOT, "extensions", "gentle-ai.ts"), "utf8");
+	const runtime = readFileSync(join(PACKAGE_ROOT, "extensions", "drakonc-ai.ts"), "utf8");
 	assert.doesNotMatch(runtime, /execFileSync\("git", \["(?:commit|push|tag)"/);
 	assert.doesNotMatch(runtime, /execFileSync\("(?:npm|pnpm)", \["publish"/);
 });
@@ -1978,10 +1978,10 @@ test("bounded review keeps the Judgment Day skill contract at canon metadata ver
 	assert.doesNotMatch(frontmatter, /^  version: "1\.4"$/m);
 });
 
-test("technical reference documents dynamic Gentle AI RDD ownership and the installed permission boundary", () => {
+test("technical reference documents dynamic Drakonc AI RDD ownership and the installed permission boundary", () => {
 	const reference = readFileSync(join(PACKAGE_ROOT, "docs", "readme-reference.md"), "utf8");
 	for (const clause of [
-		"Gentle AI dynamically supplies runtime-specific RDD instructions",
+		"Drakonc AI dynamically supplies runtime-specific RDD instructions",
 		"does not define an RDD lifecycle",
 		"Dangerous-command safety remains independent and authoritative.",
 		"package-managed isolated installation",
@@ -1989,7 +1989,7 @@ test("technical reference documents dynamic Gentle AI RDD ownership and the inst
 	]) {
 		assert.ok(reference.includes(clause), `technical reference missing dynamic RDD clause: ${clause}`);
 	}
-	assert.doesNotMatch(reference, /New ordinary review uses compact `gentle_review` `start -> finalize -> validate`\./);
+	assert.doesNotMatch(reference, /New ordinary review uses compact `drakonc_review` `start -> finalize -> validate`\./);
 });
 
 
@@ -2001,7 +2001,7 @@ test("package installation retires owned sync but preserves modified copies and 
 	withIsolatedAssetHome((agentHome) => {
 		installPackageAssets(agentHome, false);
 		const path = join(agentHome, "agents/sdd-sync.md");
-		const manifestPath = join(agentHome, "gentle-ai/managed-assets.json");
+		const manifestPath = join(agentHome, "drakonc-ai/managed-assets.json");
 		const legacy = "Previously managed sync executor\n";
 		const manifest = installedAssetManifest(agentHome);
 		manifest.assets["agents/sdd-sync.md"] = sha256(legacy);

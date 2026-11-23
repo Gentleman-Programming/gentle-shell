@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Field-test acquisition of the gentle-ai provider contract bundle
-// (gentle-pi#311 P1/P2).
+// Field-test acquisition of the drakonc-ai provider contract bundle
+// (drakonc-pi#311 P1/P2).
 //
 // This script NEVER fetches anything from the network and NEVER touches the
-// Gentle AI release pin (scripts/gentle-ai-installer.mjs INSTALLER_VERSION).
+// Drakonc AI release pin (scripts/drakonc-ai-installer.mjs INSTALLER_VERSION).
 // RC and main-built bundles are field-test input only: you pass an explicit
-// LOCAL path to a `gentle-ai-review-provider-contract-<semver>.tar.gz` archive
+// LOCAL path to a `drakonc-ai-review-provider-contract-<semver>.tar.gz` archive
 // or to an already-extracted bundle tree, the bundle is strictly verified,
 // and only then is the verified mirror written under
 // `contracts/review-provider-contract-mirror/` together with a lock record

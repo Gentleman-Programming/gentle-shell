@@ -24,7 +24,7 @@ export function reviewerStreamLimits(environment: NodeJS.ProcessEnv): { firstOut
 		const number = value !== undefined && /^[1-9]\d*$/.test(value) ? Number(value) : NaN;
 		return Number.isSafeInteger(number) && number <= 2_147_483_647 ? number : 120_000;
 	};
-	return { firstOutputTimeoutMs: bound("GENTLE_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS"), idleTimeoutMs: bound("GENTLE_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS") };
+	return { firstOutputTimeoutMs: bound("DRAKONC_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS"), idleTimeoutMs: bound("DRAKONC_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS") };
 }
 
 /** Observe content activity without retaining provider text or changing the completion. */

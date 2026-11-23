@@ -439,12 +439,12 @@ export function filterPrompts(
 }
 
 /**
- * Cross-extension fullscreen-sidebar state contract (gentle-shell): stored on
+ * Cross-extension fullscreen-sidebar state contract (drakonc-shell): stored on
  * the shared ProcessTerminal under a global-registry symbol so any extension
- * can read it without importing gentle-shell. Shape per lib/shell-sidebar.ts:
+ * can read it without importing drakonc-shell. Shape per lib/shell-sidebar.ts:
  * `{ active: boolean; ownsHost?: () => boolean; railColumns?: number; ... }`.
  */
-const SIDEBAR_STATE_SYMBOL = Symbol.for("gentle-pi.experimental-sidebar.state");
+const SIDEBAR_STATE_SYMBOL = Symbol.for("drakonc-pi.experimental-sidebar.state");
 
 /**
  * Visual breathing room between the picker and the sidebar rail, added on top
@@ -460,7 +460,7 @@ interface SidebarStateShape {
 
 /**
  * Overlay right margin for the current terminal: the rail reservation the
- * gentle-shell sidebar publishes (`railColumns`: rail width plus gap) plus
+ * drakonc-shell sidebar publishes (`railColumns`: rail width plus gap) plus
  * padding while the rail is painting, else 0 (native full-window overlay).
  * pi-tui resolves overlay width "100%" and the bottom-center anchor inside
  * `[0, columns - margin)`, which is then exactly the editor column. Reads the

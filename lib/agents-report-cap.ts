@@ -1,4 +1,4 @@
-// Gentle Agents report cap (P9b).
+// Drakonc Agents report cap (P9b).
 //
 // A finished child's report is pushed into the parent's conversation (the
 // background completion message, or the task-mode subagent_run and
@@ -110,6 +110,6 @@ export function capReport(report: string, maxBytes: number, taskId: string, agen
 /** Additive details for the UI: the existing fields stay as they are, and nothing is added under the cap. */
 export function withReportCap(details: Record<string, unknown>, capped: CappedReport): Record<string, unknown> {
 	if (!capped.truncated) return details;
-	const agents = (details.gentleAgents ?? {}) as Record<string, unknown>;
-	return { ...details, gentleAgents: { ...agents, reportTruncated: true, reportBytes: capped.reportBytes, reportDeliveredBytes: capped.deliveredBytes } };
+	const agents = (details.drakoncAgents ?? {}) as Record<string, unknown>;
+	return { ...details, drakoncAgents: { ...agents, reportTruncated: true, reportBytes: capped.reportBytes, reportDeliveredBytes: capped.deliveredBytes } };
 }

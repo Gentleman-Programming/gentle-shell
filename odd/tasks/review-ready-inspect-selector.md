@@ -2,11 +2,11 @@
 
 ## Objective
 
-A plain `gentle_review` START that follows an `inspect` with `baseRef`/`committedOnly` must review exactly the inspected committed range, also when that inspect needed no untracked-path decision.
+A plain `drakonc_review` START that follows an `inspect` with `baseRef`/`committedOnly` must review exactly the inspected committed range, also when that inspect needed no untracked-path decision.
 
 ## Problem
 
-Every `inspect` clears the pre-lineage retained selection (`extensions/gentle-ai.ts` ~7658). It is rewritten with `baseRef`/`committedOnly` only on the `untrackedScope` submission path (~7761-7776) or as a stop selector with `selectionBinding` (~7684), which `readRetainedPreLineageNativeUntrackedSelection` (~6408) excludes. A plain inspect (no `untrackedScope`) that resolves ready stores nothing, so the next plain START (~8196-8296) calls a selectorless STATUS and adopts the native default base-ref (merge-base, #874 `offeredCommittedRangeBaseRef`).
+Every `inspect` clears the pre-lineage retained selection (`extensions/drakonc-ai.ts` ~7658). It is rewritten with `baseRef`/`committedOnly` only on the `untrackedScope` submission path (~7761-7776) or as a stop selector with `selectionBinding` (~7684), which `readRetainedPreLineageNativeUntrackedSelection` (~6408) excludes. A plain inspect (no `untrackedScope`) that resolves ready stores nothing, so the next plain START (~8196-8296) calls a selectorless STATUS and adopts the native default base-ref (merge-base, #874 `offeredCommittedRangeBaseRef`).
 
 Observed: after lineage L1 reviewed `C0..C1`, `inspect {baseRef: C1, committedOnly: true}` returned the 5-path slice target, but the following START created L2 over the whole branch from `C0` (7 paths, a different target identity).
 
@@ -44,7 +44,7 @@ The #1192 fix covered only the untracked submission path; the ready path was nev
 
 ## Progress
 
-- Worktree: `../gentle-pi-worktrees/review-ready-inspect-selector`, branch `fix/review-ready-inspect-selector` from `origin/main` (53d62fbf3).
+- Worktree: `../drakonc-pi-worktrees/review-ready-inspect-selector`, branch `fix/review-ready-inspect-selector` from `origin/main` (53d62fbf3).
 
 ## Verification evidence
 

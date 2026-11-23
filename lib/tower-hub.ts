@@ -1,4 +1,4 @@
-// Gentle Tower hub: one private JSON file per live session, written atomically.
+// Drakonc Tower hub: one private JSON file per live session, written atomically.
 // Directory 0700, files 0600, write to a temp file then rename (repo convention).
 
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -8,27 +8,27 @@ import { isTowerSnapshot, TOWER_SNAPSHOT_MAX_BYTES, type TowerSnapshot } from ".
 
 export { TOWER_SNAPSHOT_MAX_BYTES };
 
-/** `GENTLE_TOWER_HOME` overrides the hub for tests and isolated runs. */
+/** `DRAKONC_TOWER_HOME` overrides the hub for tests and isolated runs. */
 export function towerHubDir(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
-	return env.GENTLE_TOWER_HOME || join(home, ".gentle-shell", "tower", "sessions");
+	return env.DRAKONC_TOWER_HOME || join(home, ".drakonc-shell", "tower", "sessions");
 }
 
 function safeId(sessionId: string): string {
-	if (!/^[A-Za-z0-9._-]{1,128}$/.test(sessionId) || sessionId.startsWith(".")) throw new Error(`Gentle Tower: unsafe session id ${JSON.stringify(sessionId)}`);
+	if (!/^[A-Za-z0-9._-]{1,128}$/.test(sessionId) || sessionId.startsWith(".")) throw new Error(`Drakonc Tower: unsafe session id ${JSON.stringify(sessionId)}`);
 	return sessionId;
 }
 
 function privateDir(dir: string): void {
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const st = lstatSync(dir);
-	if (!st.isDirectory() || st.isSymbolicLink()) throw new Error(`Gentle Tower: hub is not a directory: ${dir}`);
+	if (!st.isDirectory() || st.isSymbolicLink()) throw new Error(`Drakonc Tower: hub is not a directory: ${dir}`);
 	if ((st.mode & 0o077) !== 0) chmodSync(dir, 0o700);
 }
 
 export function writeTowerSnapshot(dir: string, snapshot: TowerSnapshot): void {
 	const id = safeId(snapshot.sessionId);
 	const body = JSON.stringify(snapshot);
-	if (Buffer.byteLength(body) > TOWER_SNAPSHOT_MAX_BYTES) throw new Error(`Gentle Tower: snapshot too large (${Buffer.byteLength(body)} bytes)`);
+	if (Buffer.byteLength(body) > TOWER_SNAPSHOT_MAX_BYTES) throw new Error(`Drakonc Tower: snapshot too large (${Buffer.byteLength(body)} bytes)`);
 	privateDir(dir);
 	const target = join(dir, `${id}.json`);
 	const temp = join(dir, `.${id}.${process.pid}.${Date.now()}.tmp`);

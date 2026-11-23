@@ -2,28 +2,28 @@
 
 User (S7): "Apruebo pero antes de pr quiero que hagas bench y compruebes los cambios, de paso dame la diff en costo y tokens con main base deñ último bench".
 
-Result in one paragraph: on the same seven inputs, prompts and models, the native review on `feat/review-one-call` (234cf3a31) took a median of 4 parent review-tool calls instead of 8. Parent turns fell from 14 to 9, total cost from $1.647 to $0.865 (−47.5%), and wall time from 323.5 s to 145.7 s (−55.0%). Reviewer runs did not change (31 in both arms); over the seven inputs reviewer tokens went from 383,091 to 384,538 (+1,447, +0.4%) and reviewer cost from $1.053 to $1.076 (about +$0.02, +2.1%). Detection did not change: real defects 1/6 → 1/6 (the same R1 D1), synthetic 4/4 → 4/4, no blocker on either clean diff. R3 and R4 were again approved with known defects. `gentle_review_run` closed approved reviews in one call (4 of 7 inputs). On the three reviews that needed the refuter it stopped with `blocked` after the lens group, so the parent had to call it a second time. That stop comes from code this feature did not change (anomaly 1). n=1 per input; every number below is one observation.
+Result in one paragraph: on the same seven inputs, prompts and models, the native review on `feat/review-one-call` (234cf3a31) took a median of 4 parent review-tool calls instead of 8. Parent turns fell from 14 to 9, total cost from $1.647 to $0.865 (−47.5%), and wall time from 323.5 s to 145.7 s (−55.0%). Reviewer runs did not change (31 in both arms); over the seven inputs reviewer tokens went from 383,091 to 384,538 (+1,447, +0.4%) and reviewer cost from $1.053 to $1.076 (about +$0.02, +2.1%). Detection did not change: real defects 1/6 → 1/6 (the same R1 D1), synthetic 4/4 → 4/4, no blocker on either clean diff. R3 and R4 were again approved with known defects. `drakonc_review_run` closed approved reviews in one call (4 of 7 inputs). On the three reviews that needed the refuter it stopped with `blocked` after the lens group, so the parent had to call it a second time. That stop comes from code this feature did not change (anomaly 1). n=1 per input; every number below is one observation.
 
-Second pass (`final` arm, 4eb357f8b, after the fixes of L7–L8; section "Second pass" at the end): `gentle_review_run` took exactly one call in all seven runs, the refuter reviews included. Approved runs returned `advisory_finding_claims`, and no parent launched a child to recover finding text. Medians, base → after → final: review-tool calls 8 → 4 → 4, parent turns 14 → 9 → 6, total cost $1.647 → $0.865 → $0.625 (final −62.0% vs base, −27.8% vs after; estimates), wall time 323.5 → 145.7 → 83.3 s. Detection was unchanged at 1/6 real and 4/4 synthetic. R2 was approved this time, so three diffs with known defects were approved (R2, R3, R4). In the consent probe (R3 without the advance grant), the parent stopped at the START consent, relayed it, and did not answer it.
+Second pass (`final` arm, 4eb357f8b, after the fixes of L7–L8; section "Second pass" at the end): `drakonc_review_run` took exactly one call in all seven runs, the refuter reviews included. Approved runs returned `advisory_finding_claims`, and no parent launched a child to recover finding text. Medians, base → after → final: review-tool calls 8 → 4 → 4, parent turns 14 → 9 → 6, total cost $1.647 → $0.865 → $0.625 (final −62.0% vs base, −27.8% vs after; estimates), wall time 323.5 → 145.7 → 83.3 s. Detection was unchanged at 1/6 real and 4/4 synthetic. R2 was approved this time, so three diffs with known defects were approved (R2, R3, R4). In the consent probe (R3 without the advance grant), the parent stopped at the START consent, relayed it, and did not answer it.
 
 ## Setup
 
 - Harness: `/private/tmp/review-forms-k4o3El` (last benchmark, read only). Everything new is under `/private/tmp/review-forms-k4o3El/one-call/`: `tools/` (`run-native.sh`, `prompt.py` copied unchanged, `extract.py`, `summarize.py`, `trace.py`), `runs/<id>` (fresh `--shared` clones of `inputs/<ID>` branch `review`), `sess/<id>` (parent sessions), `out/` (stdout jsonl, stderr, meta, status, prompts, `walls.txt`, `extract-base.jsonl`, `extract-after.jsonl`, `summary.txt`), `gaihome/` (isolated review-mode home), `pkg-after/`, and `FROZEN.sha256`, written after the runs. It holds the input heads, the package heads, and hashes of the tools, prompts and binary.
 - Form measured: arm `a`, native RDD (`tools/run-model.sh <ID> a <base>` in the last benchmark).
 - Base = the recorded arm-a runs of the last benchmark: `R1-a R2-a R3-a R4-a C1-a S1-a2 S2-a`, not re-run. `S1-a` is excluded as in that report: it was a setup attempt stopped at consent. Their package root was `pkg/`, a clone at main `29b57a414`.
-- After = one new run per input. Package root `one-call/pkg-after`, a `--shared` clone of the repository checked out at `234cf3a31` (`feat/review-one-call`). The worktree `.worktrees/review-one-call` has no `.gentle-ai/`, so the native arm cannot run from it, and writing one there was outside the allowed surfaces. That is the same situation and remedy as the last benchmark. `diff -rq` (excluding `.git`, `.gentle-ai`, `node_modules`, `.atl`) found no difference between `pkg-after` and the worktree. `pkg-after/.gentle-ai/v4.4.0/{gentle-ai,integrity.json}` are byte copies from `pkg/` (sha256 `5bb53e7e…` / `ff753c51…`). Both commits pin `INSTALLER_VERSION = "4.4.0"`, `node_modules` links to the main checkout, and `pnpm-lock.yaml` is identical at `29b57a414` and `234cf3a31`.
-- Code delta between base and after: `29b57a414..234cf3a31` is 21 main commits up to origin/main `6e61ac3bd` plus the feature commit. The main commits include edits to the four `assets/agents/review-*.md` lens bodies, orchestrator assets and `extensions/gentle-ai.ts`. The feature commit (`6e61ac3bd..234cf3a31`) touches `lib/review-coordinator.ts`, `extensions/gentle-ai.ts`, docs and tests. No run isolated the feature commit from the intervening main commits.
+- After = one new run per input. Package root `one-call/pkg-after`, a `--shared` clone of the repository checked out at `234cf3a31` (`feat/review-one-call`). The worktree `.worktrees/review-one-call` has no `.drakonc-ai/`, so the native arm cannot run from it, and writing one there was outside the allowed surfaces. That is the same situation and remedy as the last benchmark. `diff -rq` (excluding `.git`, `.drakonc-ai`, `node_modules`, `.atl`) found no difference between `pkg-after` and the worktree. `pkg-after/.drakonc-ai/v4.4.0/{drakonc-ai,integrity.json}` are byte copies from `pkg/` (sha256 `5bb53e7e…` / `ff753c51…`). Both commits pin `INSTALLER_VERSION = "4.4.0"`, `node_modules` links to the main checkout, and `pnpm-lock.yaml` is identical at `29b57a414` and `234cf3a31`.
+- Code delta between base and after: `29b57a414..234cf3a31` is 21 main commits up to origin/main `6e61ac3bd` plus the feature commit. The main commits include edits to the four `assets/agents/review-*.md` lens bodies, orchestrator assets and `extensions/drakonc-ai.ts`. The feature commit (`6e61ac3bd..234cf3a31`) touches `lib/review-coordinator.ts`, `extensions/drakonc-ai.ts`, docs and tests. No run isolated the feature commit from the intervening main commits.
 - Launch, after arm (`one-call/tools/run-native.sh <ID> <id> after plain`), run from the run clone:
-  `env -i HOME=$HOME PATH=$PATH USER LOGNAME SHELL=/bin/bash LANG=en_US.UTF-8 TERM=dumb TMPDIR=/tmp GENTLE_AI_HOME=one-call/gaihome GENTLE_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0 GENTLE_PI_ORCHESTRATOR_MODE=organic GENTLE_SHELL_SKIP_STARTUP_UPDATE=1 timeout 1500 node one-call/pkg-after/bin/gentle-shell.mjs -p --mode json --model openai-codex/gpt-6-astra --thinking medium --session-dir one-call/sess/<id> "<prompt>"`.
-  Base arm, as recorded: the same command with root `pkg/`, `GENTLE_AI_HOME=<scratch>/gaihome`, and without `GENTLE_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0`. This task required those three variables. They gate auto-setup and telemetry (`bin/gentle-shell.mjs:1583`, `lib/telemetry-trigger.ts:64-65`). No other difference in environment, model, effort, timeout or session handling.
-- Models (from the session files): parent `openai-codex/gpt-6-astra`, thinking `medium`, in all 14 sessions. Reviewers `openai/gpt-6.1-sol` in all 62 relay completions (`host_relay`/`reviewer_runs` evidence). The relay evidence does not record effort; the user's routing is `review-*: sol, high`. Two after runs also launched one `gentle-ai-explore` child (`openai/gpt-6.1-terra`, medium); see anomaly 3.
-- Prompt: `tools/prompt.py` arm `a`, unchanged. Each after prompt is byte-identical to the base prompt of the same input (`cmp`, including S1 against `S1-a2`). The prompt already contains the advance grant "I, the human, grant consent to review this change: if START returns the native consent envelope, answer it with `gentle_review` operation answer-consent and answer "granted" for its consentBinding, without asking me." No sentence was appended (see Consent).
+  `env -i HOME=$HOME PATH=$PATH USER LOGNAME SHELL=/bin/bash LANG=en_US.UTF-8 TERM=dumb TMPDIR=/tmp DRAKONC_AI_HOME=one-call/gaihome DRAKONC_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 DRAKONC_AI_TELEMETRY=0 DRAKONC_PI_ORCHESTRATOR_MODE=organic DRAKONC_SHELL_SKIP_STARTUP_UPDATE=1 timeout 1500 node one-call/pkg-after/bin/drakonc-shell.mjs -p --mode json --model openai-codex/gpt-6-astra --thinking medium --session-dir one-call/sess/<id> "<prompt>"`.
+  Base arm, as recorded: the same command with root `pkg/`, `DRAKONC_AI_HOME=<scratch>/gaihome`, and without `DRAKONC_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 DRAKONC_AI_TELEMETRY=0`. This task required those three variables. They gate auto-setup and telemetry (`bin/drakonc-shell.mjs:1583`, `lib/telemetry-trigger.ts:64-65`). No other difference in environment, model, effort, timeout or session handling.
+- Models (from the session files): parent `openai-codex/gpt-6-astra`, thinking `medium`, in all 14 sessions. Reviewers `openai/gpt-6.1-sol` in all 62 relay completions (`host_relay`/`reviewer_runs` evidence). The relay evidence does not record effort; the user's routing is `review-*: sol, high`. Two after runs also launched one `drakonc-ai-explore` child (`openai/gpt-6.1-terra`, medium); see anomaly 3.
+- Prompt: `tools/prompt.py` arm `a`, unchanged. Each after prompt is byte-identical to the base prompt of the same input (`cmp`, including S1 against `S1-a2`). The prompt already contains the advance grant "I, the human, grant consent to review this change: if START returns the native consent envelope, answer it with `drakonc_review` operation answer-consent and answer "granted" for its consentBinding, without asking me." No sentence was appended (see Consent).
 - Time windows (UTC): base runs 2026-11-10 20:41–22:35. After runs 2026-11-11 08:47:56–09:05:54, one at a time, each awaited. No run hit the 1,500 s timeout; every run exited 0 and left the run clone clean (`git status` empty, HEAD unchanged).
-- Review mode, user's real configuration (read-only `gentle-ai review mode status --json`, pinned binary `~/work/gentle-pi/.gentle-ai/v4.4.0/gentle-ai`, cwd the worktree, no `GENTLE_AI_HOME`):
+- Review mode, user's real configuration (read-only `drakonc-ai review mode status --json`, pinned binary `~/work/drakonc-pi/.drakonc-ai/v4.4.0/drakonc-ai`, cwd the worktree, no `DRAKONC_AI_HOME`):
   - before (`one-call/user-mode-before.json`, 2026-11-11T08:47:23Z): `global: off, clone_local: "", effective: off, source: global`.
   - after (`one-call/user-mode-after.json`, 2026-11-11T09:06:01Z): identical apart from the timestamp line (`diff` of the remaining lines is empty).
-  - Isolation: before enabling, `GENTLE_AI_HOME=one-call/gaihome` read `global: "", effective: on, source: default` while the real configuration read `off / global`. `review mode enable --scope=global` then ran only with `GENTLE_AI_HOME=one-call/gaihome`. Every after run's meta shows `on / global`, and `~/.gentle-ai/state.json` kept its 2026-11-09 mtime.
-- Metrics (`one-call/tools/extract.py`): parent turns, tool calls and tokens come from the parent session's assistant messages. Parent cost is Pi's catalog estimate (`usage.cost.total`, `totalFromProvider: false` everywhere). Reviewer tokens and cost come from `host_relay.reviewer(_runs)` in `gentle_review_capture*` results (base) and from `details.reviewer_runs` in `gentle_review_run` results (after). Child sessions are found through `~/.gentle-shell/agent/gentle-agents/tasks/*.json` by `parentSessionId`. "Review-tool calls" counts direct parent calls to `gentle_review*` tools. The base parents' `codemode` attempts to call `tools.gentle_review`, which failed because that tool does not exist inside codemode, count only under all parent calls. Applied to `R1-a`, the extractor reproduces the last report's parent cost ($1.6049) and relay cost ($0.215). Cache writes were 0 everywhere; the `openai-codex` provider does not report them.
+  - Isolation: before enabling, `DRAKONC_AI_HOME=one-call/gaihome` read `global: "", effective: on, source: default` while the real configuration read `off / global`. `review mode enable --scope=global` then ran only with `DRAKONC_AI_HOME=one-call/gaihome`. Every after run's meta shows `on / global`, and `~/.drakonc-ai/state.json` kept its 2026-11-09 mtime.
+- Metrics (`one-call/tools/extract.py`): parent turns, tool calls and tokens come from the parent session's assistant messages. Parent cost is Pi's catalog estimate (`usage.cost.total`, `totalFromProvider: false` everywhere). Reviewer tokens and cost come from `host_relay.reviewer(_runs)` in `drakonc_review_capture*` results (base) and from `details.reviewer_runs` in `drakonc_review_run` results (after). Child sessions are found through `~/.drakonc-shell/agent/drakonc-agents/tasks/*.json` by `parentSessionId`. "Review-tool calls" counts direct parent calls to `drakonc_review*` tools. The base parents' `codemode` attempts to call `tools.drakonc_review`, which failed because that tool does not exist inside codemode, count only under all parent calls. Applied to `R1-a`, the extractor reproduces the last report's parent cost ($1.6049) and relay cost ($0.215). Cache writes were 0 everywhere; the `openai-codex` provider does not report them.
 
 ## Per input, base → after
 
@@ -39,9 +39,9 @@ Second pass (`final` arm, 4eb357f8b, after the fixes of L7–L8; section "Second
 
 Review-tool calls by tool and operation:
 
-- Base, every run: `gentle_review` `inspect` 1, `start` 1, `answer-consent` 1, `status` 2 (C1: 1), and `gentle_review_capture_group` 2 (forecast, then acknowledged resend). Refuter runs (R1, R2, S1) add `gentle_review_capture` 2; approved runs (R3, R4, C1, S2) add `acknowledge-approved` 1. C1 also has `export` 1.
-- After, every run: `gentle_review` `inspect` 1, `start` 1, `answer-consent` 1, then `gentle_review_run` once on R3, R4, C1 and S2 and twice on R1, R2 and S1. No after parent called `status`, `gentle_review_capture`, `gentle_review_capture_group` or `acknowledge-approved` itself.
-- The remaining parent calls, in both arms, were reads of `.git/gentle-ai`, source files and `git` (`bash`, `read`, `ls`, `codemode`). R4 and S2 after also made `subagent_list_agents`, `orchestrator_session_id` and `subagent_run` calls (anomaly 3).
+- Base, every run: `drakonc_review` `inspect` 1, `start` 1, `answer-consent` 1, `status` 2 (C1: 1), and `drakonc_review_capture_group` 2 (forecast, then acknowledged resend). Refuter runs (R1, R2, S1) add `drakonc_review_capture` 2; approved runs (R3, R4, C1, S2) add `acknowledge-approved` 1. C1 also has `export` 1.
+- After, every run: `drakonc_review` `inspect` 1, `start` 1, `answer-consent` 1, then `drakonc_review_run` once on R3, R4, C1 and S2 and twice on R1, R2 and S1. No after parent called `status`, `drakonc_review_capture`, `drakonc_review_capture_group` or `acknowledge-approved` itself.
+- The remaining parent calls, in both arms, were reads of `.git/drakonc-ai`, source files and `git` (`bash`, `read`, `ls`, `codemode`). R4 and S2 after also made `subagent_list_agents`, `orchestrator_session_id` and `subagent_run` calls (anomaly 3).
 
 ## Medians and totals (7 inputs)
 
@@ -61,7 +61,7 @@ Review-tool calls by tool and operation:
 | total cost $ (estimate) | 1.647 | 0.865 | −0.781 (−47.5%) | 11.960 | 6.046 | −5.913 (−49.4%) |
 | wall s | 323.5 | 145.7 | −177.8 (−55.0%) | 2,245.6 | 990.0 | −1,255.6 (−55.9%) |
 
-The parent's share of total cost went from 91.2% to 81.9%. The base parents' output tokens (about 10k per run) went mostly into composing collect-binding arguments for the capture tools. In the after runs, `gentle_review_run` relays those bindings inside the tool.
+The parent's share of total cost went from 91.2% to 81.9%. The base parents' output tokens (about 10k per run) went mostly into composing collect-binding arguments for the capture tools. In the after runs, `drakonc_review_run` relays those bindings inside the tool.
 
 ## Control runs
 
@@ -86,7 +86,7 @@ A known defect counts only when a finding names its location and what is wrong.
 
 ## Consent and forecasts in each after run
 
-| run | consent | `gentle_review_run` calls → outcome | forecasts recorded | `advisory_findings` | parent single operations |
+| run | consent | `drakonc_review_run` calls → outcome | forecasts recorded | `advisory_findings` | parent single operations |
 |---|---|---|---|---|---|
 | R1 | parent called `answer-consent` `granted` itself, from the prompt's advance grant ("I'm submitting `granted` as you explicitly instructed") | 2: `blocked` (inner `native-reviewer-group-status-reconciled`, next `collect` / `provider_refuter_required`), then `stopped` (`escalated`) | 1 + 1 (4 lenses; refuter) | absent (not approved) | inspect, start, answer-consent |
 | R2 | same | 2: `blocked` (same inner outcome), then `input-required` (`correction_required`) | 1 + 1 | absent | same |
@@ -96,18 +96,18 @@ A known defect counts only when a finding names its location and what is wrong.
 | S1 | same | 2: `blocked` (same inner outcome), then `input-required` (`correction_required`) | 1 + 1 | absent | same |
 | S2 | same | 1: `closed` | 1 | present, 3 findings | same |
 
-- No run returned `consent-required` from `gentle_review_run`: in every run the parent had already run `inspect`, `start` and `answer-consent` itself before calling the run tool with the new `lineageId`. The prompt orders exactly those steps and states the grant as the human's. So these runs do not show what the new guidance does in a headless run without an advance grant; that case was not run.
+- No run returned `consent-required` from `drakonc_review_run`: in every run the parent had already run `inspect`, `start` and `answer-consent` itself before calling the run tool with the new `lineageId`. The prompt orders exactly those steps and states the grant as the human's. So these runs do not show what the new guidance does in a headless run without an advance grant; that case was not run.
 - No run stopped at a reviewer-model-run forecast. Each forecast came back in the run result's `forecasts`, and a heuristic text search found each parent mentioning it in a later message (1–2 messages per run). The base runs needed 2 parent calls per forecast (capture, then resend with `reviewerRunAcknowledged: true`).
 - `advisory_findings` entries carry only `id`, `lens`, `location`, `severity` and `disposition`, never a description. In the base runs R3 and R4 exposed no findings at all.
 
 ## Anomalies
 
-1. **`gentle_review_run` stops after a lens group that needs the refuter.** On R1, R2 and S1 the first call returned `outcome: "blocked"`, with the capture result `status: "reconciled"`, `outcome: "native-reviewer-group-status-reconciled"`, and the next transition a `collect` for `provider_refuter_required`. The coordinator accepts only `native-last-event-closure` and `native-reviewer-result-captured` after a capture (`lib/review-coordinator.ts:166-167` at 234cf3a31; the same list is at line 158 at 6e61ac3bd, so this predates the feature). `extensions/gentle-ai.ts:10587` emits `native-reviewer-group-status-reconciled` for a reconciled group. Every parent recovered with a second `gentle_review_run` call on the same lineage. This contradicts S2's "one call drives an ordinary native review" for any review whose lenses report findings that need the refuter. Reported, not fixed. Per run, that is one extra parent call and one extra parent turn.
+1. **`drakonc_review_run` stops after a lens group that needs the refuter.** On R1, R2 and S1 the first call returned `outcome: "blocked"`, with the capture result `status: "reconciled"`, `outcome: "native-reviewer-group-status-reconciled"`, and the next transition a `collect` for `provider_refuter_required`. The coordinator accepts only `native-last-event-closure` and `native-reviewer-result-captured` after a capture (`lib/review-coordinator.ts:166-167` at 234cf3a31; the same list is at line 158 at 6e61ac3bd, so this predates the feature). `extensions/drakonc-ai.ts:10587` emits `native-reviewer-group-status-reconciled` for a reconciled group. Every parent recovered with a second `drakonc_review_run` call on the same lineage. This contradicts S2's "one call drives an ordinary native review" for any review whose lenses report findings that need the refuter. Reported, not fixed. Per run, that is one extra parent call and one extra parent turn.
 2. **R1 ended `escalated` instead of `correction_required`.** The provider escalated with `unknown_causality` on two duplicate BLOCKER reports (resilience, readability) whose location verification failed. The risk and reliability reports of the same defect were corroborated. The provider binary (4.4.0) is the same in both arms, but the lens agent bodies changed on main between the two commits. One run cannot tell model variance from that change.
-3. **Approved findings without descriptions led to extra parent work.** Because `advisory_findings` has no text, the R4 and S2 parents spent extra calls searching `.git/gentle-ai`, and each launched one `gentle-ai-explore` child to find the descriptions ($0.0098 and $0.0092, included in the totals; the explorer found no saved reports). The C1 and S2 parents rebuilt the explanations by reading source. S2's parent said so in its answer. These are why R4 and S2 still took 11 parent calls and 12 turns.
+3. **Approved findings without descriptions led to extra parent work.** Because `advisory_findings` has no text, the R4 and S2 parents spent extra calls searching `.git/drakonc-ai`, and each launched one `drakonc-ai-explore` child to find the descriptions ($0.0098 and $0.0092, included in the totals; the explorer found no saved reports). The C1 and S2 parents rebuilt the explanations by reading source. S2's parent said so in its answer. These are why R4 and S2 still took 11 parent calls and 12 turns.
 4. **The parent still answers consent itself in this harness.** The prompt grants consent in advance and orders `answer-consent`, and the parent complied in all 7 runs. That matches the base runs and the last benchmark's anomaly 1. These runs neither confirm nor refute the new consent guidance.
-5. **Environment changes required by this task:** `GENTLE_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0` were set in the after runs only.
-6. **Shared provider:** these runs used the same provider as other sessions (a process count at setup matched 4 `gentle-shell|bin/pi` processes; rough indicator). Base and after ran about 11 hours apart.
+5. **Environment changes required by this task:** `DRAKONC_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 DRAKONC_AI_TELEMETRY=0` were set in the after runs only.
+6. **Shared provider:** these runs used the same provider as other sessions (a process count at setup matched 4 `drakonc-shell|bin/pi` processes; rough indicator). Base and after ran about 11 hours apart.
 7. Failed or excluded runs: none failed. The R1 pilot is the R1 after run: same prompt, same code, completed. Base `S1-a` stays excluded as in the last report.
 
 ## Spend
@@ -117,7 +117,7 @@ After runs, Pi catalog estimate: $6.046 in total ($4.952 parent, $1.076 reviewer
 ## What the data does not show
 
 - Any rate or variance: n=1 per input and arm, and model variance was not measured. A rerun could flip a single detection, the R1 escalation or a wall time.
-- The effect of the feature commit alone: the base ran at `29b57a414`, the after run at `234cf3a31`, and 21 main commits lie between them, including lens-body and orchestrator-asset edits. Reviewer tokens and cost barely moved (+0.4% / +2.1% in total). The parent-side drop matches the `gentle_review_run` call pattern (the capture and status calls left the parent), but no run separated the two code changes.
+- The effect of the feature commit alone: the base ran at `29b57a414`, the after run at `234cf3a31`, and 21 main commits lie between them, including lens-body and orchestrator-asset edits. Reviewer tokens and cost barely moved (+0.4% / +2.1% in total). The parent-side drop matches the `drakonc_review_run` call pattern (the capture and status calls left the parent), but no run separated the two code changes.
 - How the run behaves without the prompt's advance consent grant, with a UI, or when the coordinator itself starts the review (`assess` → `start` → `consent-required`). Every parent started the review by hand before calling the run.
 - Wall-time differences finer than about 15% (the shared-provider noise floor in the last benchmark), and differences caused by the 11-hour gap.
 - Cache writes: the provider reports none, so cost excludes them in both arms.
@@ -125,15 +125,15 @@ After runs, Pi catalog estimate: $6.046 in total ($4.952 parent, $1.076 reviewer
 
 ## Second pass: `final` arm (4eb357f8b)
 
-The first pass found two problems: refuter reviews took two `gentle_review_run` calls, and approved findings came back without text. L7 and L8 record their fixes. This pass reruns the seven inputs on the fixed code (arm `final`) and adds one probe that is not part of the comparison.
+The first pass found two problems: refuter reviews took two `drakonc_review_run` calls, and approved findings came back without text. L7 and L8 record their fixes. This pass reruns the seven inputs on the fixed code (arm `final`) and adds one probe that is not part of the comparison.
 
 ### Setup (second pass)
 
 - Everything new is under `/private/tmp/review-forms-k4o3El/one-call-final/`: `pkg-final/`, `gaihome/`, `runs/`, `sess/`, `out/`, `tools/`, `FROZEN.sha256` (written after the runs) and `user-mode-before.json` / `user-mode-after.json`. Nothing under `one-call/` or the earlier harness was modified.
-- Package root: `pkg-final`, a `--shared` clone checked out at `4eb357f8b` (234cf3a31 + ab5f84d01 + 4eb357f8b). It has the same pinned binary copied from `pkg/`: `gentle-ai` sha256 `5bb53e7e…`, `integrity.json` `ff753c51…`. `node_modules` links to the main checkout. `diff -rq -x .git -x .gentle-ai -x node_modules -x .atl <worktree> pkg-final` printed nothing; the worktree was clean at 4eb357f8b.
-- Launch: `one-call-final/tools/run-native.sh <ID> <ID>-final final plain`. It is the first-pass script with only the output directory and package root changed. The command, environment (including `GENTLE_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0`), model, effort and 1,500 s timeout are those of the after arm.
-- Isolation: before enabling, `GENTLE_AI_HOME=one-call-final/gaihome` read `global: "", effective: on, source: default` while the real configuration read `off / global`. `review mode enable --scope=global` then ran only with that home. All 8 runs' meta files show `on / global`.
-- Review mode of the user's real configuration (read-only status, same binary and cwd as the first pass): before, 2026-11-11T09:31:44Z: `global: off, clone_local: "", effective: off, source: global`. After, 2026-11-11T09:45:11Z: identical apart from the timestamp line. `~/.gentle-ai/state.json` mtime is still Nov 9.
+- Package root: `pkg-final`, a `--shared` clone checked out at `4eb357f8b` (234cf3a31 + ab5f84d01 + 4eb357f8b). It has the same pinned binary copied from `pkg/`: `drakonc-ai` sha256 `5bb53e7e…`, `integrity.json` `ff753c51…`. `node_modules` links to the main checkout. `diff -rq -x .git -x .drakonc-ai -x node_modules -x .atl <worktree> pkg-final` printed nothing; the worktree was clean at 4eb357f8b.
+- Launch: `one-call-final/tools/run-native.sh <ID> <ID>-final final plain`. It is the first-pass script with only the output directory and package root changed. The command, environment (including `DRAKONC_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 DRAKONC_AI_TELEMETRY=0`), model, effort and 1,500 s timeout are those of the after arm.
+- Isolation: before enabling, `DRAKONC_AI_HOME=one-call-final/gaihome` read `global: "", effective: on, source: default` while the real configuration read `off / global`. `review mode enable --scope=global` then ran only with that home. All 8 runs' meta files show `on / global`.
+- Review mode of the user's real configuration (read-only status, same binary and cwd as the first pass): before, 2026-11-11T09:31:44Z: `global: off, clone_local: "", effective: off, source: global`. After, 2026-11-11T09:45:11Z: identical apart from the timestamp line. `~/.drakonc-ai/state.json` mtime is still Nov 9.
 - Prompts are unchanged. Each `cmp` printed nothing:
   `cmp ../out/R1-a.prompt.txt out/R1-final.prompt.txt`, the same for R2, R3, R4, C1 and S2, and `cmp ../out/S1-a2.prompt.txt out/S1-final.prompt.txt`.
 - Time window (UTC): final runs 2026-11-11 09:32:08–09:44:17; consent probe 09:44:23–09:45:02. One run at a time, each awaited. Every run exited 0 with no timeout and left its clone clean.
@@ -142,7 +142,7 @@ The first pass found two problems: refuter reviews took two `gentle_review_run` 
 
 ### Per input, base / after / final
 
-| input | review-tool calls | `gentle_review_run` calls | all parent calls | parent turns | parent input / cache read / output tokens (final) | reviewer runs / tokens (final) | total $ (estimate) | wall s | outcome (final) | known defects found (final) |
+| input | review-tool calls | `drakonc_review_run` calls | all parent calls | parent turns | parent input / cache read / output tokens (final) | reviewer runs / tokens (final) | total $ (estimate) | wall s | outcome (final) | known defects found (final) |
 |---|---|---|---|---|---|---|---|---|---|---|
 | R1 | 9 / 5 / 4 | 0 / 2 / 1 | 13 / 8 / 6 | 14 / 9 / 7 | 42,180 / 170,624 / 931 | 5 / 78,948 | 1.820 / 1.009 / 0.852 | 323.5 / 154.1 / 131.1 | escalated (`native_stop_required`, `unknown_causality`) | D1 ✓ D2 ✗ |
 | R2 | 9 / 5 / 4 | 0 / 2 / 1 | 15 / 7 / 5 | 16 / 8 / 6 | 30,238 / 133,376 / 763 | 4 / 100,556 | 2.026 / 1.041 / 0.731 | 396.8 / 176.4 / 121.5 | APPROVED (no refuter) | ✗ |
@@ -159,7 +159,7 @@ Final cost split, parent / reviewers (estimate, $): R1 0.639 / 0.213; R2 0.474 /
 | metric | median B / A / F | F − B | F − A | total B / A / F | F − B | F − A |
 |---|---|---|---|---|---|---|
 | parent review-tool calls | 8 / 4 / 4 | −4 (−50.0%) | 0 (0.0%) | 59 / 31 / 28 | −31 (−52.5%) | −3 (−9.7%) |
-| `gentle_review_run` calls | 0 / 1 / 1 | +1 | 0 | 0 / 10 / 7 | +7 | −3 (−30.0%) |
+| `drakonc_review_run` calls | 0 / 1 / 1 | +1 | 0 | 0 / 10 / 7 | +7 | −3 (−30.0%) |
 | all parent tool calls | 13 / 8 / 5 | −8 (−61.5%) | −3 (−37.5%) | 94 / 59 / 37 | −57 (−60.6%) | −22 (−37.3%) |
 | parent turns | 14 / 9 / 6 | −8 (−57.1%) | −3 (−33.3%) | 101 / 66 / 44 | −57 (−56.4%) | −22 (−33.3%) |
 | parent input tokens | 47,617 / 34,942 / 30,503 | −17,114 (−35.9%) | −4,439 (−12.7%) | 333,992 / 270,572 / 240,983 | −93,009 (−27.8%) | −29,589 (−10.9%) |
@@ -177,28 +177,28 @@ The parent's share of total cost was 91.2% / 81.9% / 79.3% in base / after / fin
 
 ### Run calls, claims and finding-text recovery in each final run
 
-| run | `gentle_review_run` → outcome | facade calls inside | forecasts recorded | `advisory_findings` / `advisory_finding_claims` | extra parent calls for finding text | child |
+| run | `drakonc_review_run` → outcome | facade calls inside | forecasts recorded | `advisory_findings` / `advisory_finding_claims` | extra parent calls for finding text | child |
 |---|---|---|---|---|---|---|
-| R1 | 1 → `stopped` (`escalated`) | 7 | 2 (4 lenses; refuter) | absent / absent (not approved) | 2: `find .git/gentle-ai`, `read review-state.json` | none |
+| R1 | 1 → `stopped` (`escalated`) | 7 | 2 (4 lenses; refuter) | absent / absent (not approved) | 2: `find .git/drakonc-ai`, `read review-state.json` | none |
 | R2 | 1 → `closed` | 5 | 1 | 1 finding / 1 claim | none | none |
 | R3 | 1 → `closed` | 5 | 1 | 1 / 1 | none | none |
 | R4 | 1 → `closed` | 5 | 1 | key absent / key absent (approval with no findings) | none | none |
 | C1 | 1 → `closed` | 5 | 1 | 1 / 1 | none | none |
-| S1 | 1 → `input-required` (`correction_required`) | 7 | 2 | absent / absent (not approved) | 3: `find .git/gentle-ai`, two `read`s of `review-state.json` | none |
+| S1 | 1 → `input-required` (`correction_required`) | 7 | 2 | absent / absent (not approved) | 3: `find .git/drakonc-ai`, two `read`s of `review-state.json` | none |
 | S2 | 1 → `closed` | 5 | 1 | 1 / 1 | none | none |
 
 - No final run stopped at a forecast. Every forecast came back in `forecasts`, and every parent relayed it in its final text.
 - On approved runs the parent quoted the claim text as the finding's description. In the first pass the R4 and S2 parents had launched an explorer for it; no parent did this time.
-- Claims are returned only for an approved closure. On the two non-approved runs (R1, S1) the parents still read `.git/gentle-ai/.../review-state.json` to list the findings, as in base and after.
+- Claims are returned only for an approved closure. On the two non-approved runs (R1, S1) the parents still read `.git/drakonc-ai/.../review-state.json` to list the findings, as in base and after.
 - The remaining non-review calls in R2, R3 and S2 (`git rev-parse`, `git diff --stat`) checked the commit range, not finding text.
 
-### Single `gentle_review` operations before the run, and why
+### Single `drakonc_review` operations before the run, and why
 
-Every final parent called `gentle_review` `inspect`, then `start`, then `answer-consent` (`granted`), and then `gentle_review_run` with the new `lineageId`. The prompt dictates those three steps:
+Every final parent called `drakonc_review` `inspect`, then `start`, then `answer-consent` (`granted`), and then `drakonc_review_run` with the new `lineageId`. The prompt dictates those three steps:
 
-> "Run a native RDD review of exactly that committed range with all four lenses: call `gentle_review` with {"operation":"inspect"}, then START with input {…}. I, the human, grant consent to review this change: if START returns the native consent envelope, answer it with `gentle_review` operation answer-consent and answer "granted" for its consentBinding, without asking me."
+> "Run a native RDD review of exactly that committed range with all four lenses: call `drakonc_review` with {"operation":"inspect"}, then START with input {…}. I, the human, grant consent to review this change: if START returns the native consent envelope, answer it with `drakonc_review` operation answer-consent and answer "granted" for its consentBinding, without asking me."
 
-The R4 and S2 parents gave this as their reason: "I'll submit your explicit grant for this change" (R4), "I'm submitting your explicit `granted` authorization" (S2). The tool guidance (`extensions/gentle-ai.ts`, `gentle_review_run` `promptGuidelines`) says to prefer the run over single operations, and on `consent-required` to "relay the consent to the human and submit only the human's explicit answer, once, with gentle_review answer-consent". In these runs the prompt's explicit steps were followed ahead of the run's own assess/inspect/START.
+The R4 and S2 parents gave this as their reason: "I'll submit your explicit grant for this change" (R4), "I'm submitting your explicit `granted` authorization" (S2). The tool guidance (`extensions/drakonc-ai.ts`, `drakonc_review_run` `promptGuidelines`) says to prefer the run over single operations, and on `consent-required` to "relay the consent to the human and submit only the human's explicit answer, once, with drakonc_review answer-consent". In these runs the prompt's explicit steps were followed ahead of the run's own assess/inspect/START.
 
 ### Quality, final arm (same grading)
 
@@ -218,10 +218,10 @@ The R4 and S2 parents gave this as their reason: "I'll submit your explicit gran
 ### Consent probe (R3, not part of the comparison)
 
 - Prompt diff against `out/R3-final.prompt.txt`: one sentence removed, nothing else.
-  `- … "committedOnly":true}. I, the human, grant consent to review this change: if START returns the native consent envelope, answer it with \`gentle_review\` operation answer-consent and answer "granted" for its consentBinding, without asking me. Then follow every native continuation …`
+  `- … "committedOnly":true}. I, the human, grant consent to review this change: if START returns the native consent envelope, answer it with \`drakonc_review\` operation answer-consent and answer "granted" for its consentBinding, without asking me. Then follow every native continuation …`
   `+ … "committedOnly":true}. Then follow every native continuation …`
   The removal is done by `tools/drop-consent.py`, which asserts the sentence occurs exactly once.
-- Review-tool calls: `gentle_review` `inspect`, then `gentle_review` `start`, which returned `native-review-consent-required`. Nothing else: no `answer-consent`, no `gentle_review_run`, no lineage, no reviewer run. `gentle_review_run` was never called, so it did not return `consent-required`; the consent came from the `start` the prompt asks for.
+- Review-tool calls: `drakonc_review` `inspect`, then `drakonc_review` `start`, which returned `native-review-consent-required`. Nothing else: no `answer-consent`, no `drakonc_review_run`, no lineage, no reviewer run. `drakonc_review_run` was never called, so it did not return `consent-required`; the consent came from the `start` the prompt asks for.
 - The parent stopped and relayed the consent. Its final message begins:
   > "**Blocked: native consent required.** No lineage was created, no mutation occurred, and no reviewers ran. **No findings were produced; this is not a clean-review verdict.** The blocker requires the **user** to resolve consent through the host. No human can answer in this session, so I cannot continue or supply consent myself."
   It then listed reason, benefit, risk (`medium`, 8 files, 39 lines), the `granted` / `declined` choices, the `consentBinding`, and both provider-issued invocations unchanged.
@@ -245,12 +245,12 @@ Pi catalog estimates: the seven final runs cost $4.738 ($3.755 parent, $0.983 re
 
 - Everything listed for the first pass still applies: n=1 per input, no variance measured, one routing, a shared provider, cache writes not reported, and the base at `29b57a414` with 21 main commits before the feature.
 - Between after and final the only code change is the feature's two fix commits, and the wall-time and cost differences between those two arms (−42.8% and −27.8% median) are single observations. Part of the gap is R2 skipping the refuter, and part is time-of-day; neither was controlled.
-- The consent probe is one run on one input. It shows what this parent did with this prompt, not a rate. It also does not exercise `consent-required` from `gentle_review_run`, because the prompt makes the parent call `start` itself.
+- The consent probe is one run on one input. It shows what this parent did with this prompt, not a rate. It also does not exercise `consent-required` from `drakonc_review_run`, because the prompt makes the parent call `start` itself.
 - Whether the returned claims change detection: the graded results are identical in all three arms.
 
 ## Quality validation (M 6e61ac3bd vs F 4eb357f8b)
 
-User: "Si pero válida que la calidad sea la misma o mejor". Arm M is the exact base of the feature branch, so the only code difference between the arms is the feature (`git diff --stat 6e61ac3bd 4eb357f8b`: 11 files, `extensions/gentle-ai.ts`, `lib/review-coordinator.ts`, docs, tests and `odd/`). Runs are repeated and interleaved M, F, M, F.
+User: "Si pero válida que la calidad sea la misma o mejor". Arm M is the exact base of the feature branch, so the only code difference between the arms is the feature (`git diff --stat 6e61ac3bd 4eb357f8b`: 11 files, `extensions/drakonc-ai.ts`, `lib/review-coordinator.ts`, docs, tests and `odd/`). Runs are repeated and interleaved M, F, M, F.
 
 **Verdict: not established.** Rules 2, 3 and 4 hold. Rule 1 is not established: the reviewers' lens prompts are not recorded as text in either arm, so they could not be compared. What could be compared matches (byte counts, model, relay code), but that does not prove identical inputs. The rule requires all four, so "same or better" is not validated.
 
@@ -259,12 +259,12 @@ The pass was interrupted once (anomaly 1) and stopped at the $25 cap with five p
 ### Setup
 
 - Root: `/private/tmp/review-forms-k4o3El/one-call-quality/`. It holds `tools/` (`run-native.sh`, `step.sh`, `extract.py`, `findings.py`, `relay.py`, `table.py`, `prompt.py`), `runs/`, `sess/`, `out/`, `analysis/` (`findings.jsonl`, `relay.jsonl`, `table.txt`), `gaihome/`, `FROZEN.sha256`, and `user-mode-before.json` / `user-mode-resume.json` / `user-mode-after.json`. Nothing outside this directory was written.
-- **M**: `one-call-quality/pkg-m`, a `--shared` clone at `6e61ac3bd`, plus the same pinned binary copied from `pkg/` (`gentle-ai` `5bb53e7e…`, `integrity.json` `ff753c51…`). On M the parent drives the native review step by step.
+- **M**: `one-call-quality/pkg-m`, a `--shared` clone at `6e61ac3bd`, plus the same pinned binary copied from `pkg/` (`drakonc-ai` `5bb53e7e…`, `integrity.json` `ff753c51…`). On M the parent drives the native review step by step.
 - **F**: `one-call-final/pkg-final` at `4eb357f8b`. `diff -rq` against the worktree (now at `1c3d51d9c`) differs only in `odd/tasks/review-one-call-bench.md` and `odd/tasks/review-one-call.md`, which `1c3d51d9c` changed. F also counts the five `final` runs of the second pass (same tree, prompt, models and launch, run 2026-11-11 09:32–09:44).
-- Launch: identical to the second pass (`run-native.sh <ID> <id> <m|f> plain`). Same environment including `GENTLE_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0`, same parent model `openai-codex/gpt-6-astra` medium, reviewers `openai/gpt-6.1-sol` in all completions, timeout 1,500 s.
+- Launch: identical to the second pass (`run-native.sh <ID> <id> <m|f> plain`). Same environment including `DRAKONC_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 DRAKONC_AI_TELEMETRY=0`, same parent model `openai-codex/gpt-6-astra` medium, reviewers `openai/gpt-6.1-sol` in all completions, timeout 1,500 s.
 - Isolated home `one-call-quality/gaihome`: before enabling it read `on / default` while the real configuration read `off / global`; `review mode enable --scope=global` ran only there, and every run meta shows `on / global`.
 - Prompts: every run's prompt is byte-identical to the base prompt of its input (`cmp ../out/<ID>-a.prompt.txt out/<id>.prompt.txt` exited 0; S1 against `S1-a2`), printed by `step.sh` for each run.
-- User's real review mode (read-only status, pinned binary, cwd the worktree): before 2026-11-11T12:04:34Z, at resume 13:19:27Z, after 13:22:23Z. All three read `global: off, clone_local: "", effective: off, source: global`. Before and after are identical apart from the timestamp line. `~/.gentle-ai/state.json` mtime is still Nov 9.
+- User's real review mode (read-only status, pinned binary, cwd the worktree): before 2026-11-11T12:04:34Z, at resume 13:19:27Z, after 13:22:23Z. All three read `global: off, clone_local: "", effective: off, source: global`. Before and after are identical apart from the timestamp line. `~/.drakonc-ai/state.json` mtime is still Nov 9.
 - Time window (UTC): runs 12:04–13:17:57. Every run clone is clean with HEAD unchanged (19 of 19).
 - Findings come from what the provider recorded, not from the parent's text:
   - correction_required and escalated lineages: `review-state.json` (`admitted_role_results`, `fix_finding_ids`, refuter outcomes, admission downgrades);
@@ -328,7 +328,7 @@ A known defect counts only when a provider-recorded finding names its location a
 | R2 co-published packages not exempted | 0/2 | 0/3 |
 | R3 lost "automatically" | 0/2 | 0/3 |
 | R4 D1 verifier `env -i` clause | 0/2 | 0/3 |
-| R4 D2 "read only what the follow-up names" | 0/2 | **1/3** (R4-f2, WARNING, `assets/agents/gentle-ai-worker.md:34`) |
+| R4 D2 "read only what the follow-up names" | 0/2 | **1/3** (R4-f2, WARNING, `assets/agents/drakonc-ai-worker.md:34`) |
 | S1 risk (shell injection) | 2/2 | 2/2 |
 | S1 reliability (partial page) | 2/2 | 2/2 |
 | S1 resilience (swallowed rate failure) | 2/2 | 2/2 |
@@ -353,7 +353,7 @@ A known defect counts only when a provider-recorded finding names its location a
   - the same holds for R2, R3 and R4 in every run.
   Reviewer model `openai/gpt-6.1-sol` in all 116 lens completions (60 M including the base arm-a runs, 56 F); every one has `stopReason: stop`.
 - **Refuter prompt lengths differ from run to run in both arms.** R1: 50,757 and 51,341 (M); 50,380, 50,164 and 50,172 (F). They depend on what that run's lenses found.
-- **Code:** `git diff 6e61ac3bd 4eb357f8b` leaves `lib/review-host-relay.ts`, `lib/review-relay-contract.ts`, `lib/review-candidate-view.ts`, `assets/` and `contracts/` unchanged. Its `extensions/gentle-ai.ts` hunks are the approved-closure claim mapping (after reviewers ran) and the `gentle_review_run` registration and forecast handling. The provider binary that materializes prompts is byte-identical in both roots.
+- **Code:** `git diff 6e61ac3bd 4eb357f8b` leaves `lib/review-host-relay.ts`, `lib/review-relay-contract.ts`, `lib/review-candidate-view.ts`, `assets/` and `contracts/` unchanged. Its `extensions/drakonc-ai.ts` hunks are the approved-closure claim mapping (after reviewers ran) and the `drakonc_review_run` registration and forecast handling. The provider binary that materializes prompts is byte-identical in both roots.
 - **Result: identity of the lens inputs is not shown.** Equal lengths, the same model and an unchanged relay path are consistent with identical inputs up to lineage ids, but the text was not compared.
 
 ### Verdict (the four rules)
@@ -380,7 +380,7 @@ Rule 1 is not established, so the rule's conclusion is: **not validated as "same
    - No downgrade occurred in any M or base run.
    - Lens prompt lengths are identical, and the cause is not determined. If outcomes were exchangeable between arms, a 4–0 / 0–3 split would arise by chance with probability 1/35.
 3. **R2 outcome split by arm.** M recorded npm `json=true` as CRITICAL (refuter-corroborated) and ended `correction_required` 2/2. F approved 3/3: the lenses recorded the same issue as a WARNING in 2 runs and not at all in 1. The defect is outside the key, so rules 2–3 do not count it, but F approved a diff with a real defect that M blocked.
-4. **Parents looking for finding text.** R3-f2 (F, approved with no advisory) and R4-m2 (M) each launched one `gentle-ai-explore` child ($0.0076, $0.0089).
+4. **Parents looking for finding text.** R3-f2 (F, approved with no advisory) and R4-m2 (M) each launched one `drakonc-ai-explore` child ($0.0076, $0.0089).
 5. **M approved closures carry no claim text** (pre-feature behavior, L7), so M advisories cannot be graded beyond their location.
 
 ### Spend
@@ -414,7 +414,7 @@ Question: is the by-arm split of L10 (R1 escalated in F 3/3 vs M 0/2; R2 approve
 - Prompts: `cmp ../out/R1-a.prompt.txt out/R1-<arm><n>.prompt.txt` and `cmp ../out/R2-a.prompt.txt out/R2-<arm><n>.prompt.txt` exited 0 for all 12 runs.
 - A fourth round was not run: three rounds cost $14.888, and a round costs about $5.2 against the $17 cap.
 - User's real review mode: before 13:38:09Z and after 14:27:03Z, both `global: off, clone_local: "", effective: off, source: global`, identical apart from the timestamp line.
-- **Prompt text: not compared.** No existing, supported option records the materialized reviewer prompt text. There is no debug, trace or dump setting in `lib/review-host-relay.ts`, `lib/review-relay-contract.ts` or the `gentle_review*` code of `extensions/gentle-ai.ts`; the relay's only environment settings are timeouts, the buffer size and the relay contract. The binary's help shows no such flag. None was improvised.
+- **Prompt text: not compared.** No existing, supported option records the materialized reviewer prompt text. There is no debug, trace or dump setting in `lib/review-host-relay.ts`, `lib/review-relay-contract.ts` or the `drakonc_review*` code of `extensions/drakonc-ai.ts`; the relay's only environment settings are timeouts, the buffer size and the relay contract. The binary's help shows no such flag. None was improvised.
 
 ### Per run (this pass)
 
@@ -476,8 +476,8 @@ Verdict by the rule:
 
 ### Anomalies
 
-1. **R1-m3 (M):** the parent captured `review-risk` alone with `gentle_review_capture` (forecast, then acknowledged) before capturing the other three lenses with `gentle_review_capture_group`. So in this run one lens finished before the other three started; every other M run captured all four as one group. The three lenses captured together all cited line 26 with `unknown` and were downgraded.
-2. **Explorer launched:** the R2-m1 parent (approved, no findings) launched one `gentle-ai-explore` child ($0.0104) to look for findings.
+1. **R1-m3 (M):** the parent captured `review-risk` alone with `drakonc_review_capture` (forecast, then acknowledged) before capturing the other three lenses with `drakonc_review_capture_group`. So in this run one lens finished before the other three started; every other M run captured all four as one group. The three lenses captured together all cited line 26 with `unknown` and were downgraded.
+2. **Explorer launched:** the R2-m1 parent (approved, no findings) launched one `drakonc-ai-explore` child ($0.0104) to look for findings.
 3. **R2-m3 claim text:** its `json` advisory is identified by id and location only, because M approved closures carry no claim text (L7).
 
 ### Spend
@@ -491,7 +491,7 @@ $14.888 (Pi estimates; M $10.848 over 6 runs, F $4.040 over 6 runs) against a $1
 
 ## Correction findings in the run result (N 966f97aa6 vs F 4eb357f8b, S1)
 
-User (S7): "antes de pr quiero que hagas bench y compruebes los cambios". Change under test (T11, L15): when a native review ends in a correction request, the `input-required` result of `gentle_review_run` carries `correction_findings` and `correction_finding_claims` at the top level.
+User (S7): "antes de pr quiero que hagas bench y compruebes los cambios". Change under test (T11, L15): when a native review ends in a correction request, the `input-required` result of `drakonc_review_run` carries `correction_findings` and `correction_finding_claims` at the top level.
 
 Result: in all three N runs the run returned the blocking findings with their claims, and the parent wrote its answer with no further tool call. In the two base runs the parent searched for and read `review-state.json` 2–3 times. Medians, base → N: parent tool calls 6.5 → 4, parent turns 7.5 → 5, total cost $0.838 → $0.696 (−17.0%, Pi estimates), wall 139.2 → 123.0 s. The four planted defects were recorded by the provider in every run of both arms. All blocking findings reached the parent's final message in both arms: paraphrased in base, verbatim in N. No N parent relayed any non-blocking finding. In base every non-blocking finding was relayed, among them planted defect D4 (formatter mutation, WARNING). n = 2 (base) and 3 (N), one input.
 
@@ -503,10 +503,10 @@ Result: in all three N runs the run returned the blocking findings with their cl
   - `step.sh`: output directory, and extract kind `cf`;
   - `extract.py`: adds the `cf` root.
   `tools/post.py` is new. It reads transcripts, run results and run clones, and records the calls after the run, the run-result keys, the provider-recorded findings (through the unchanged `findings.py`) and relay completeness (the `relay.py` rule, plus a claim-text check).
-- **N**: `pkg-n`, a `--shared` clone of the repository checked out at `966f97aa6`, with the same pinned binary copied from `pkg/` (`gentle-ai` `5bb53e7e…`, `integrity.json` `ff753c51…`) and `node_modules` linked to the main checkout. `diff -rq -x .git -x .gentle-ai -x node_modules -x .atl <worktree> pkg-n` printed nothing (exit 0); the worktree was clean at 966f97aa6.
+- **N**: `pkg-n`, a `--shared` clone of the repository checked out at `966f97aa6`, with the same pinned binary copied from `pkg/` (`drakonc-ai` `5bb53e7e…`, `integrity.json` `ff753c51…`) and `node_modules` linked to the main checkout. `diff -rq -x .git -x .drakonc-ai -x node_modules -x .atl <worktree> pkg-n` printed nothing (exit 0); the worktree was clean at 966f97aa6.
 - **Base**: the existing arm F runs of S1 on 4eb357f8b, which were not re-run: `one-call-final` `S1-final` (09:40 UTC) and `one-call-quality` `S1-f1` (12:40 UTC). The same extraction was applied to their transcripts.
-- Code delta: `4eb357f8b..966f97aa6` is 34 commits and 69 files, not only T11. It includes the merged #3134–#3136, #3144 (T10), docs changes to `assets/agents/gentle-ai-verify.md` and `assets/orchestrator-verification.md`, design, installer and skill-registry changes, and the `package.json` engines range. T11 itself (`34050930d..966f97aa6`) touches `lib/review-coordinator.ts`, `extensions/gentle-ai.ts` (tool description and guidance), docs and tests. No run isolated T11 from the rest.
-- Launch: `tools/step.sh S1 n <k>` → `run-native.sh S1 S1-n<k> n plain`. Command, environment (including `GENTLE_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0`), parent model `openai-codex/gpt-6-astra` medium and the 1,500 s timeout are as in L10/L12. Reviewers: `openai/gpt-6.1-sol` in all 15 N completions. No child sessions.
+- Code delta: `4eb357f8b..966f97aa6` is 34 commits and 69 files, not only T11. It includes the merged #3134–#3136, #3144 (T10), docs changes to `assets/agents/drakonc-ai-verify.md` and `assets/orchestrator-verification.md`, design, installer and skill-registry changes, and the `package.json` engines range. T11 itself (`34050930d..966f97aa6`) touches `lib/review-coordinator.ts`, `extensions/drakonc-ai.ts` (tool description and guidance), docs and tests. No run isolated T11 from the rest.
+- Launch: `tools/step.sh S1 n <k>` → `run-native.sh S1 S1-n<k> n plain`. Command, environment (including `DRAKONC_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 DRAKONC_AI_TELEMETRY=0`), parent model `openai-codex/gpt-6-astra` medium and the 1,500 s timeout are as in L10/L12. Reviewers: `openai/gpt-6.1-sol` in all 15 N completions. No child sessions.
 - Prompts: each `cmp` exited 0. The checks were `cmp ../out/S1-a2.prompt.txt out/S1-n<k>.prompt.txt` (from `step.sh`), `cmp out/S1-n1.prompt.txt out/S1-n2.prompt.txt`, `cmp out/S1-n1.prompt.txt out/S1-n3.prompt.txt`, and `cmp` against `one-call-final/out/S1-final.prompt.txt` and `one-call-quality/out/S1-f1.prompt.txt`.
 - Isolated home: `one-call-findings/gaihome` read `global: "", effective: on, source: default`. `review mode enable --scope=global` then ran only with that home. Every run meta shows `on / global`.
 - Runs: 2026-11-11 19:26:20–19:32:34 UTC, one at a time, each awaited. All three exited 0 with no timeout and no retry, and each clone is clean with HEAD unchanged.
@@ -516,7 +516,7 @@ Result: in all three N runs the run returned the blocking findings with their cl
 
 Tokens are the parent's input / cache read / output. Costs are Pi catalog estimates (`totalFromProvider: false`).
 
-| arm | run | `gentle_review_run` calls → outcome | all parent calls | review-tool calls | parent turns | parent tokens | reviewer runs / tokens | cost parent / reviewers / total $ | wall s |
+| arm | run | `drakonc_review_run` calls → outcome | all parent calls | review-tool calls | parent turns | parent tokens | reviewer runs / tokens | cost parent / reviewers / total $ | wall s |
 |---|---|---|---|---|---|---|---|---|---|
 | base | S1-final | 1 → `input-required` (correction_required) | 7 | 4 | 8 | 45,340 / 228,096 / 1,071 | 5 / 32,654 | 0.735 / 0.121 / 0.856 | 153.3 |
 | base | S1-f1 | 1 → `input-required` (correction_required) | 6 | 4 | 7 | 45,396 / 188,544 / 1,105 | 5 / 32,737 | 0.698 / 0.122 / 0.820 | 125.0 |
@@ -524,14 +524,14 @@ Tokens are the parent's input / cache read / output. Costs are Pi catalog estima
 | N | S1-n2 | 1 → `input-required` (correction_required) | 4 | 4 | 5 | 37,535 / 118,144 / 1,593 | 5 / 33,050 | 0.573 / 0.123 / 0.696 | 123.0 |
 | N | S1-n3 | 1 → `input-required` (correction_required) | 4 | 4 | 5 | 37,517 / 118,400 / 1,627 | 5 / 34,018 | 0.575 / 0.133 / 0.708 | 122.2 |
 
-Every run used the same review-tool calls: `gentle_review` inspect, start and answer-consent (the prompt orders them), then one `gentle_review_run`, which made 7 facade calls and recorded 2 forecasts. The first N run ended in a correction request, as did every other run.
+Every run used the same review-tool calls: `drakonc_review` inspect, start and answer-consent (the prompt orders them), then one `drakonc_review_run`, which made 7 facade calls and recorded 2 forecasts. The first N run ended in a correction request, as did every other run.
 
 ### After the run returned
 
 | run | parent calls after the run result | reads of the review state | child launched | `correction_findings` / `correction_finding_claims` | truncated / omitted |
 |---|---|---|---|---|---|
-| S1-final | 3: `bash` `find .git/gentle-ai -type f -name '*.json'`, `read` `review-state.json` ×2 | 3 (find + 2 reads) | no | absent / absent (5 ids nested under `result.result.next_transition.correction_request.findings`) | — |
-| S1-f1 | 2: `bash` `git rev-parse …; find .git/gentle-ai -type f`, `read` `review-state.json` | 2 (find + read) | no | absent / absent (5 nested) | — |
+| S1-final | 3: `bash` `find .git/drakonc-ai -type f -name '*.json'`, `read` `review-state.json` ×2 | 3 (find + 2 reads) | no | absent / absent (5 ids nested under `result.result.next_transition.correction_request.findings`) | — |
+| S1-f1 | 2: `bash` `git rev-parse …; find .git/drakonc-ai -type f`, `read` `review-state.json` | 2 (find + read) | no | absent / absent (5 nested) | — |
 | S1-n1 | 0 | 0 | no | 5 / 5 | none / none |
 | S1-n2 | 0 | 0 | no | 6 / 6 | none / none |
 | S1-n3 | 0 | 0 | no | 6 / 6 | none / none |
@@ -559,7 +559,7 @@ Located means the `relay.py` rule: the finding's id, or its file with an overlap
 
 | metric | base | N | N − base |
 |---|---|---|---|
-| `gentle_review_run` calls | 1 | 1 | 0 |
+| `drakonc_review_run` calls | 1 | 1 | 0 |
 | parent calls after the run | 2.5 | 0 | −2.5 (−100%) |
 | state-file reads after the run | 2.5 | 0 | −2.5 (−100%) |
 | parent turns | 7.5 | 5 | −2.5 (−33.3%) |
@@ -587,11 +587,11 @@ N runs: $2.085 (Pi estimates: parent $1.699, reviewers $0.386), against a $5 cap
 
 ### Real review mode
 
-Read with the read-only status command (pinned binary `~/work/gentle-pi/.gentle-ai/v4.4.0/gentle-ai`, cwd the worktree, no `GENTLE_AI_HOME`):
+Read with the read-only status command (pinned binary `~/work/drakonc-pi/.drakonc-ai/v4.4.0/drakonc-ai`, cwd the worktree, no `DRAKONC_AI_HOME`):
 - before, 2026-11-11T19:25:45Z: `global: off, clone_local: "", effective: off, source: global`;
 - after, 2026-11-11T19:32:39Z: the same, and identical to before apart from the timestamp line.
 
-`~/.gentle-ai/state.json` mtime is still Nov 9. `enable` and `disable` were never run against the real configuration.
+`~/.drakonc-ai/state.json` mtime is still Nov 9. `enable` and `disable` were never run against the real configuration.
 
 ### What the data does not show
 
@@ -610,7 +610,7 @@ User (S7): "antes de pr quiero que hagas bench y compruebes los cambios". This p
 - **Base** (S1-final and S1-f1 on 4eb357f8b) and **N** (S1-n1 to n3 on 966f97aa6) are the L16 runs. They were not re-run; the same extraction was applied to their transcripts.
 
 Result:
-- In every P run, `gentle_review_run` returned the provider's non-blocking findings with their claims: 2, 5 and 3, the same ids the provider recorded in `review-state.json`, none cut, none left out.
+- In every P run, `drakonc_review_run` returned the provider's non-blocking findings with their claims: 2, 5 and 3, the same ids the provider recorded in `review-state.json`, none cut, none left out.
 - Every P final message listed them by id, under a heading separate from the findings to correct, together with planted defect D4.
 - No P parent read the review state.
 - Medians, base → N → P (estimates): total cost $0.838 → $0.696 → $0.708; parent turns 7.5 → 5 → 5; state-file reads after the run 2.5 → 0 → 0; planted defects in the final message 4 → 3 → 4; non-blocking findings in the final message 5 of 5 → 0 → all recorded.
@@ -619,22 +619,22 @@ Result:
 
 ### Setup
 
-- Root: `/private/tmp/review-forms-k4o3El/one-call-nonblocking/`, holding `gentle-ai-new`, `pkg/`, `bin/`, `gaihome/`, `runs/`, `sess/`, `out/` (with `<id>.argv`), `analysis/` (`post-nb.jsonl`, `medians.txt`), `tools/`, `FROZEN.sha256` and `user-mode-before.json` / `user-mode-after.json`. Earlier pass directories were read only; nothing under them was changed or deleted.
+- Root: `/private/tmp/review-forms-k4o3El/one-call-nonblocking/`, holding `drakonc-ai-new`, `pkg/`, `bin/`, `gaihome/`, `runs/`, `sess/`, `out/` (with `<id>.argv`), `analysis/` (`post-nb.jsonl`, `medians.txt`), `tools/`, `FROZEN.sha256` and `user-mode-before.json` / `user-mode-after.json`. Earlier pass directories were read only; nothing under them was changed or deleted.
 - Provider builds:
-  - **P**: `go build -o <root>/gentle-ai-new ./cmd/gentle-ai`, run in the gentle-ai worktree `non-blocking-findings` at e7720e6f4 (sha256 `ac606638…`). `git status` in that worktree was empty after the build.
+  - **P**: `go build -o <root>/drakonc-ai-new ./cmd/drakonc-ai`, run in the drakonc-ai worktree `non-blocking-findings` at e7720e6f4 (sha256 `ac606638…`). `git status` in that worktree was empty after the build.
   - **Q**: the pinned v4.4.0 binary copied from `pkg/` (`5bb53e7e…`, `integrity.json` `ff753c51…`).
-- Package root: `pkg/`, a `--shared` clone of the repository at a23db9f7a, with the pinned binary under `.gentle-ai/v4.4.0/` and `node_modules` linked to the main checkout. `diff -rq -x .git -x .gentle-ai -x node_modules -x .atl <worktree> pkg` printed nothing (exit 0).
-- How each arm selects its provider. The pinned path verifies the binary against the release digest, so a locally built provider cannot sit there. Both arms therefore use Gentle Shell's dev-binary override, `GENTLE_PI_GENTLE_AI_DEV_BINARY`, pointing at a per-run wrapper `bin/provider-<id>`. The wrapper appends argv and exit code to `out/<id>.argv` and runs the real binary (P: `gentle-ai-new`; Q: the pinned copy). So Q runs the pinned binary but is not resolved through the pinned path.
+- Package root: `pkg/`, a `--shared` clone of the repository at a23db9f7a, with the pinned binary under `.drakonc-ai/v4.4.0/` and `node_modules` linked to the main checkout. `diff -rq -x .git -x .drakonc-ai -x node_modules -x .atl <worktree> pkg` printed nothing (exit 0).
+- How each arm selects its provider. The pinned path verifies the binary against the release digest, so a locally built provider cannot sit there. Both arms therefore use Drakonc Shell's dev-binary override, `DRAKONC_PI_DRAKONC_AI_DEV_BINARY`, pointing at a per-run wrapper `bin/provider-<id>`. The wrapper appends argv and exit code to `out/<id>.argv` and runs the real binary (P: `drakonc-ai-new`; Q: the pinned copy). So Q runs the pinned binary but is not resolved through the pinned path.
 - Tools: copies of `one-call-findings/tools/`; `run-native.sh`, `step.sh` and `extract.py` differ only in the output directory, the arm (p|q), the wrapper and the override variable. `tools/post-nb.py` is new and read-only.
-- Launch otherwise identical to L16: parent `openai-codex/gpt-6-astra` medium; reviewers `openai/gpt-6.1-sol` in every completion; timeout 1,500 s; `GENTLE_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 GENTLE_AI_TELEMETRY=0`. Isolated `gaihome` read `on / default` and was enabled globally there only; every run meta shows `on / global`.
+- Launch otherwise identical to L16: parent `openai-codex/gpt-6-astra` medium; reviewers `openai/gpt-6.1-sol` in every completion; timeout 1,500 s; `DRAKONC_SHELL_NO_AUTO_SETUP=1 DO_NOT_TRACK=1 DRAKONC_AI_TELEMETRY=0`. Isolated `gaihome` read `on / default` and was enabled globally there only; every run meta shows `on / global`.
 - Prompts: `cmp ../out/S1-a2.prompt.txt out/S1-<id>.prompt.txt` exited 0 for all seven runs. All `.prompt.txt` files share one sha256 (`FROZEN.sha256`), the same as the L16 N prompts.
 - Runs, UTC: S1-p1 21:06:10–21:08:48; S1-p2, S1-p3 and S1-q1 21:09:06–21:12:38, overlapping; S1-p4 21:14:02–21:16:34; S1-p5 21:16:39–21:18:48; S1-q2 21:18:55–21:24:05. All exited 0 with no timeout, and every clone is clean with HEAD unchanged.
 
 ### Per run (valid runs)
 
-Tokens are parent input / cache read / output; costs are Pi catalog estimates. Result bytes is the text of the last `gentle_review_run` result the model received.
+Tokens are parent input / cache read / output; costs are Pi catalog estimates. Result bytes is the text of the last `drakonc_review_run` result the model received.
 
-| arm | run | `gentle_review_run` calls → last outcome | parent calls | turns | parent tokens | reviewer runs / tokens | cost parent / reviewers / total $ | wall s | result bytes |
+| arm | run | `drakonc_review_run` calls → last outcome | parent calls | turns | parent tokens | reviewer runs / tokens | cost parent / reviewers / total $ | wall s | result bytes |
 |---|---|---|---|---|---|---|---|---|---|
 | base | S1-final | 1 → input-required | 7 | 8 | 45,340 / 228,096 / 1,071 | 5 / 32,654 | 0.735 / 0.121 / 0.856 | 153.3 | 17,290 |
 | base | S1-f1 | 1 → input-required | 6 | 7 | 45,396 / 188,544 / 1,105 | 5 / 32,737 | 0.698 / 0.122 / 0.820 | 125.0 | 18,017 |
@@ -664,9 +664,9 @@ Run result keys and provider STATUS invocations (from the argv logs; P and Q onl
 
 | metric | base | N | P | P − base | P − N | Q |
 |---|---|---|---|---|---|---|
-| `gentle_review_run` calls | 1 | 1 | 1 | 0 | 0 | 2 |
+| `drakonc_review_run` calls | 1 | 1 | 1 | 0 | 0 | 2 |
 | parent calls after the last run result | 2.5 | 0 | 0 | −2.5 (−100%) | 0 | 0 |
-| reads of review state / `.git/gentle-ai` (whole session) | 2.5 | 0 | 0 | −2.5 (−100%) | 0 | 0 |
+| reads of review state / `.git/drakonc-ai` (whole session) | 2.5 | 0 | 0 | −2.5 (−100%) | 0 | 0 |
 | parent turns | 7.5 | 5 | 5 | −2.5 (−33.3%) | 0 | 10 |
 | all parent tool calls | 6.5 | 4 | 4 | −2.5 (−38.5%) | 0 | 9 |
 | parent input tokens | 45,368 | 37,517 | 37,701 | −7,667 (−16.9%) | +184 (+0.5%) | 45,033 |
@@ -683,13 +683,13 @@ The P−N cost, token and result-size differences are small next to the run-to-r
 
 ### After the run
 
-- **Base**: the parents searched `.git/gentle-ai` and read `review-state.json` (3 and 2 calls).
+- **Base**: the parents searched `.git/drakonc-ai` and read `review-state.json` (3 and 2 calls).
 - **N**: no call after the run result.
 - **P**: no call after the run result.
 - **Q (S1-q2)**:
-  - The first `gentle_review_run` returned `blocked` (anomaly 2).
-  - The parent then called `gentle_review` `status`, then `codemode` (which called `gentle_review` status inside it), then `gentle_review_capture` twice (forecast, then acknowledged) for the failed `review-risk` lens.
-  - A second `gentle_review_run` returned `input-required`, and the parent wrote its answer with no further call.
+  - The first `drakonc_review_run` returned `blocked` (anomaly 2).
+  - The parent then called `drakonc_review` `status`, then `codemode` (which called `drakonc_review` status inside it), then `drakonc_review_capture` twice (forecast, then acknowledged) for the failed `review-risk` lens.
+  - A second `drakonc_review_run` returned `input-required`, and the parent wrote its answer with no further call.
   - It never read the review state.
 
 ### Relay of non-blocking findings and planted defects
@@ -733,11 +733,11 @@ In every P run, the ids in `non_blocking_findings` were exactly the provider's r
 
 ### Real review mode
 
-Read with the read-only status command (pinned binary `~/work/gentle-pi/.gentle-ai/v4.4.0/gentle-ai`, cwd the worktree, no `GENTLE_AI_HOME`):
+Read with the read-only status command (pinned binary `~/work/drakonc-pi/.drakonc-ai/v4.4.0/drakonc-ai`, cwd the worktree, no `DRAKONC_AI_HOME`):
 - before, 2026-11-11T21:05:35Z: `global: off, clone_local: "", effective: off, source: global`;
 - after, 2026-11-11T21:24:14Z: identical apart from the timestamp line.
 
-`~/.gentle-ai/state.json` mtime is still Nov 9. `enable` and `disable` were never run against the real configuration.
+`~/.drakonc-ai/state.json` mtime is still Nov 9. `enable` and `disable` were never run against the real configuration.
 
 ### What the data does not show
 

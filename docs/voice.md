@@ -2,14 +2,14 @@
 
 Voice dictation is optional. It transcribes speech locally with NVIDIA Parakeet
 through sherpa-onnx, with no API key and no cloud inference. Everything happens
-from `/gentle:voice`; nothing described here runs at startup.
+from `/drakonc:voice`; nothing described here runs at startup.
 
 ## Quick path
 
-1. Run `/gentle:voice` and choose **Download voice dictation**. The
+1. Run `/drakonc:voice` and choose **Download voice dictation**. The
    confirmation lists each component, its size, the destination directory,
    the licenses and the platform limitations. Esc during the download cancels it.
-2. Run `/gentle:voice` again and choose **Start dictation**. Speak, then press
+2. Run `/drakonc:voice` again and choose **Start dictation**. Speak, then press
    Enter to stop. Esc cancels at any point.
 3. The transcript is pasted into the editor draft at the cursor. It is never
    sent automatically. Pi collapses pastes over 1,000 characters or 10 lines into
@@ -27,10 +27,10 @@ from `/gentle:voice`; nothing described here runs at startup.
 | Dictation | A compact overlay shows preparing, recording, transcribing. Enter stops recording; the overlay stays until the transcript is ready. |
 | Recording limit | After 2 minutes recording stops by itself, and the transcript is pasted without a key press. |
 | Insertion | The recognized text goes through Pi's editor paste pipeline, which may collapse long text into a paste marker. A blank result pastes nothing. |
-| One at a time | A second `/gentle:voice` while a download or dictation runs is refused with a notice. A Space hold during either one types spaces as usual. |
+| One at a time | A second `/drakonc:voice` while a download or dictation runs is refused with a notice. A Space hold during either one types spaces as usual. |
 | Cancel and shutdown | Esc, reload or session shutdown aborts the download or cancels the session. A transcript that arrives afterwards is dropped. |
 | Where it runs | Interactive TUI parent sessions only. RPC, print, JSON and delegated child sessions refuse it. No model-callable tool exists. |
-| Errors | Fixed messages with the action to take, such as installing ALSA or the Visual C++ runtime. Gentle AI never runs those installers. |
+| Errors | Fixed messages with the action to take, such as installing ALSA or the Visual C++ runtime. Drakonc AI never runs those installers. |
 
 The command is tested with fake dialogs, downloads and sessions only. No real
 download, native load or microphone recording has been exercised through it.
@@ -44,10 +44,10 @@ transcribing; no overlay opens, so the editor keeps the focus.
 
 | Topic | Behavior |
 |-------|----------|
-| Toggle | Stored as `voice-settings.json` (`gentle-pi.voice-settings/v1`) in the Gentle AI config home. A successful download turns it on; the `/gentle:voice` menu turns it off and on, effective immediately. A missing or malformed file means off. |
+| Toggle | Stored as `voice-settings.json` (`drakonc-pi.voice-settings/v1`) in the Drakonc AI config home. A successful download turns it on; the `/drakonc:voice` menu turns it off and on, effective immediately. A missing or malformed file means off. |
 | When it is armed | Only with the toggle on, in an interactive TUI parent session. Delegated child sessions, RPC, print and JSON modes never arm it. Reload or shutdown disarms it and cancels a running dictation. |
 | Startup | Reads the toggle file only. No voice files are checked, nothing is downloaded or loaded, and no worker starts. |
-| First hold | Checks that the runtime and model are installed; the spaces keep typing meanwhile. If voice is not installed, a notice points to `/gentle:voice` and push-to-talk stays off for the session; the saved choice is kept. |
+| First hold | Checks that the runtime and model are installed; the spaces keep typing meanwhile. If voice is not installed, a notice points to `/drakonc:voice` and push-to-talk stays off for the session; the saved choice is kept. |
 | One at a time | A hold while a download or dictation runs types spaces normally. |
 
 ### How a hold is recognized
@@ -109,8 +109,8 @@ The model is the sherpa-onnx export
 
 ## Where it is stored
 
-Everything lives in `<Gentle AI config home>/voice` (by default
-`~/.pi/gentle-ai/voice`; see `gentlePiConfigHome()`):
+Everything lives in `<Drakonc AI config home>/voice` (by default
+`~/.pi/drakonc-ai/voice`; see `drakoncPiConfigHome()`):
 
 ```text
 voice/
@@ -160,7 +160,7 @@ submits the text or touches the editor; the caller decides what to do with it.
 - **Separate process.** `start()` runs `scripts/voice-worker.cjs` with the same
   Node executable, from the runtime directory, with no shell. Microphone
   capture, the model load and the decode all happen in that process, so a
-  native crash or a long decode cannot freeze Gentle AI. Importing the module or
+  native crash or a long decode cannot freeze Drakonc AI. Importing the module or
   creating a session does nothing until `start()`.
 - **Checked before loading.** `start()` first requires both components to be
   reported installed. The worker then checks the files again before it loads
@@ -211,7 +211,7 @@ submits the text or touches the editor; the caller decides what to do with it.
   `TMPDIR`, `XDG_RUNTIME_DIR`, `PULSE_SERVER`, `PULSE_COOKIE`, `LANG`, `LC_ALL`,
   `LC_CTYPE`). Credentials, `PATH`, `NODE_OPTIONS` and loader variables are
   dropped.
-- **Protocol.** JSON lines with schema `gentle.voice/v1`. The parent sends
+- **Protocol.** JSON lines with schema `drakonc.voice/v1`. The parent sends
   `start` (with paths computed from the pinned manifests), then `stop` or
   `cancel`. The worker answers `recording`, `transcribing`, and one final
   `result` or `error`. Any other message, an unknown field, more than 16 lines
@@ -235,9 +235,9 @@ built for their architecture (checked from the binary headers, not by loading).
 | Windows x64 | Microsoft Visual C++ runtime (`vcruntime140.dll`) |
 
 node-cpal requires Node 22 or newer, and a dictation session refuses to start
-on an older Node. Gentle AI never downloads or installs the Visual C++ runtime;
+on an older Node. Drakonc AI never downloads or installs the Visual C++ runtime;
 a missing runtime is expected to surface as a runtime load failure, which has
-not been observed on hardware. `/gentle:voice` then names the runtime to install.
+not been observed on hardware. `/drakonc:voice` then names the runtime to install.
 
 None of these targets has been verified on real hardware yet: native loading,
 library paths and microphone capture have not been executed. Linux with a glibc

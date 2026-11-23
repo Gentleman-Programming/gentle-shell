@@ -1,6 +1,6 @@
-// The thin Pi host relay (gentle-pi#311 P4; provider contract gentle-ai#3249).
+// The thin Pi host relay (drakonc-pi#311 P4; provider contract drakonc-ai#3249).
 //
-// gentle-ai owns prompt materialization, role and schema selection, byte
+// drakonc-ai owns prompt materialization, role and schema selection, byte
 // budgets, parsing, admission, immutable capture, retry, correction
 // accounting, and receipt state. This host boundary is
 // intentionally narrow:
@@ -14,7 +14,7 @@
 //      a single user message. There is no child process, no extension
 //      allowlist, and no ambient default model — a missing registry or a
 //      routing entry with no model is a typed refusal before materialize ever
-//      runs (gentle-ai#4611; gentle-pi#311 P2).
+//      runs (drakonc-ai#4611; drakonc-pi#311 P2).
 //   3. Submit the completion's text untouched through the provider-owned
 //      `submission` form carried by the collect input: execute its exact
 //      operation and argument tokens with only the tempfile path substituted
@@ -35,7 +35,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { reviewerStreamLimits, publishReviewerProgress } from "./reviewer-stream.ts";
-import { gentleAiIsolationEnv, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
+import { drakoncAiIsolationEnv, resolveDrakoncAiBinary } from "./drakonc-ai-binary.ts";
 import {
 	INPROCESS_REVIEWER_FAILURE,
 	resolveInProcessReviewerModel,
@@ -46,11 +46,11 @@ import {
 	type InProcessReviewerRequest,
 } from "./inprocess-reviewer.ts";
 import { REVIEW_PROVIDER_ROLE_CAPTURE_OPERATION, REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3 } from "./review-integration-v2.ts";
-import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
+import { DRAKONC_PI_REVIEW_RELAY_CONTRACT, DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV } from "./review-relay-contract.ts";
 import { observeReviewRelayPhase, type ReviewRelayPhaseObserver } from "./review-relay-phase-timing.ts";
 
 export const REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE =
-	"provider relay requires a gentle-ai build with the pi host relay surface";
+	"provider relay requires a drakonc-ai build with the pi host relay surface";
 
 export const REVIEW_HOST_RELAY_FAILURE = {
 	RELAY_UNAVAILABLE: "relay-unavailable",
@@ -58,12 +58,12 @@ export const REVIEW_HOST_RELAY_FAILURE = {
 	SUBMISSION_CONTRACT_MISMATCH: "submission-contract-mismatch",
 	MATERIALIZE_FAILED: "materialize-failed",
 	EMPTY_PROMPT: "empty-prompt",
-	// gentle-pi#311 P2: these four names predate the in-process completion,
+	// drakonc-pi#311 P2: these four names predate the in-process completion,
 	// when a killed or crashed child process was the only way a reviewer
 	// failed. They stay exactly as they are — including their "pi" wording —
 	// because other test lanes (the maintainer provider-relay matrix, the
 	// restart-parity harness) construct `ReviewHostRelayError` literals with
-	// them directly and are out of this change's scope (gentle-pi#311 P4).
+	// them directly and are out of this change's scope (drakonc-pi#311 P4).
 	// PI_TIMED_OUT and PI_FAILED are still reachable from production: a
 	// reviewer completion that exceeds its bound or fails for any reason not
 	// covered by a more specific REVIEWER_* code below reuses them, since the
@@ -76,14 +76,14 @@ export const REVIEW_HOST_RELAY_FAILURE = {
 	PI_FAILED: "pi-failed",
 	PI_TIMED_OUT: "pi-timed-out",
 	PI_EMPTY_OUTPUT: "pi-empty-output",
-	// gentle-shell#1158 / #1136 (superseded by gentle-pi#311 P2): a caller-owned
+	// drakonc-shell#1158 / #1136 (superseded by drakonc-pi#311 P2): a caller-owned
 	// reviewer selection that cannot possibly complete — no model registry, or
 	// a routing entry with no configured model — is a configuration failure,
 	// refused typed before anything runs, never a mid-review transport
 	// mystery. The in-process path has no ambient default model to fall back
 	// to, so a missing selection is refused here rather than launched anyway.
 	REVIEWER_CONFIG_INVALID: "reviewer-config-invalid",
-	// gentle-pi#311 P2 — in-process completion outcomes with no equivalent
+	// drakonc-pi#311 P2 — in-process completion outcomes with no equivalent
 	// above (lib/inprocess-reviewer.ts#INPROCESS_REVIEWER_FAILURE).
 	REVIEWER_MODEL_NOT_FOUND: "reviewer-model-not-found",
 	REVIEWER_AUTH_UNAVAILABLE: "reviewer-auth-unavailable",
@@ -112,16 +112,16 @@ export class ReviewHostRelayError extends Error {
 	// Wall time the aborted, timed-out, or failed reviewer completion actually
 	// consumed, and the bound it was measured against. Both are null only when
 	// no completion ran. Without them a transport failure cannot be told apart
-	// from a crash, which is what forced the gentle-pi#367 reporter to measure
+	// from a crash, which is what forced the drakonc-pi#367 reporter to measure
 	// the relay by hand.
 	readonly elapsedMs: number | null;
 	readonly timeoutMs: number | null;
 	// "none" until the submission invocation launches; a launched submission
 	// whose outcome could not be read is "unknown" and the caller reconciles
 	// through negotiated STATUS, never through a blind retry. A launched
-	// submission that gentle-ai refused with its typed admission refusal is
+	// submission that drakonc-ai refused with its typed admission refusal is
 	// "none" again: the provider states that the lens slot was not consumed
-	// (gentle-pi#522 / #524).
+	// (drakonc-pi#522 / #524).
 	readonly mutationOutcome: "none" | "unknown";
 	/** What the in-process reviewer outcome carried as structured evidence (e.g. the completion's stopReason on an empty-output refusal). */
 	readonly reviewerEvidence: Record<string, unknown> | undefined;
@@ -140,7 +140,7 @@ export class ReviewHostRelayError extends Error {
 	}
 }
 
-// gentle-pi#522 / #524: gentle-ai refuses a reviewer submission before any
+// drakonc-pi#522 / #524: drakonc-ai refuses a reviewer submission before any
 // admission with exit 1 and its typed operator line, `<reason> [invalid_request]`.
 // That code is the provider's preflight class: the request was refused as
 // sent and the lens slot was not consumed. The relay recognises only that
@@ -152,7 +152,7 @@ export function isReviewHostRelayAdmissionRefusal(capture: { exitCode: number | 
 }
 
 // Refusal classification for the materialize invocation. The installed
-// gentle-ai is the only authority on whether the materialize form exists; Pi
+// drakonc-ai is the only authority on whether the materialize form exists; Pi
 // never version-sniffs. Two typed refusal classes are distinguished:
 //
 //   unknown-flag  the Go flag package's exact refusal for a flag the binary
@@ -164,8 +164,8 @@ export function isReviewHostRelayAdmissionRefusal(capture: { exitCode: number | 
 const UNKNOWN_FLAG_REFUSAL = /flag provided but not defined: -{1,2}(?:materialize|agent)\b/;
 const HANDSHAKE_REFUSAL = new RegExp(
 	[
-		GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV,
-		GENTLE_PI_REVIEW_RELAY_CONTRACT.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"),
+		DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV,
+		DRAKONC_PI_REVIEW_RELAY_CONTRACT.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"),
 		"not eligible for immutable receipt review",
 	].join("|"),
 );
@@ -177,7 +177,7 @@ export function classifyReviewHostRelayRefusal(stderr: string): "unknown-flag" |
 }
 
 // ---------------------------------------------------------------------------
-// gentle-pi#638: only a relay-bound reviewer timeout is deterministic for the
+// drakonc-pi#638: only a relay-bound reviewer timeout is deterministic for the
 // exact selected slot: relaunching the same materialized request reaches the
 // same wall. Generic admission refusals, including malformed reviewer JSON and
 // binding_mismatch [invalid_request], describe repairable submitted bytes; a
@@ -225,7 +225,7 @@ export interface ReviewHostRelaySlot {
 	readonly subjectHash?: string;
 	/**
 	 * Overrides the routing config key the reviewer selection resolves
-	 * through (gentle-pi#311 P3). A lens slot leaves this unset and resolves
+	 * through (drakonc-pi#311 P3). A lens slot leaves this unset and resolves
 	 * through `lens` instead; a v9 host-mediated refuter/targeted-validator
 	 * slot sets it to its fixed `review-refuter` / `review-validator` key,
 	 * since those roles carry no per-slot lens identity.
@@ -261,7 +261,7 @@ export function reviewHostRelaySlots(inputs: readonly ReviewCollectInputV3[]): r
 }
 
 // ---------------------------------------------------------------------------
-// Provider role vectors (gentle-pi#311 P4-roles) — the two Go-owned non-lens
+// Provider role vectors (drakonc-pi#311 P4-roles) — the two Go-owned non-lens
 // adversarial role capture operations. Unlike the lens materialize slots
 // above, these vectors are SELF-CONTAINED: the provider renders binding
 // tokens plus `--agent=pi --execute=true`, and executing the exact rendered
@@ -295,7 +295,7 @@ export function reviewProviderRoleVectorSlots(inputs: readonly ReviewCollectInpu
 }
 
 // ---------------------------------------------------------------------------
-// Host-mediated provider role slots (gentle-pi#311 P3; provider contract
+// Host-mediated provider role slots (drakonc-pi#311 P3; provider contract
 // v9) — the same two role capture operations above, but rendered exactly
 // like a lens materialize slot: binding tokens plus `--agent=pi
 // --materialize=true` (never `--execute`) and a provider-owned submission
@@ -372,15 +372,15 @@ export interface ReviewHostRelayRequest {
 	/** The provider-owned completing form; absent means contract mismatch. */
 	readonly submission?: ReviewCaptureSubmissionV1;
 	/** Absolute path; defaults to the verified package-local binary. */
-	readonly gentleAiExecutable?: string;
+	readonly drakoncAiExecutable?: string;
 	readonly environment?: NodeJS.ProcessEnv;
-	readonly gentleAiTimeoutMs?: number;
+	readonly drakoncAiTimeoutMs?: number;
 	/**
 	 * The live model registry the reviewer completion resolves its selection
 	 * and credentials through — structurally, pi's own `ModelRegistry`
 	 * (`ctx.modelRegistry`). Absent is a typed refusal before materialize ever
 	 * runs; the relay never falls back to a child process or an ambient
-	 * default model (gentle-ai#4611; gentle-pi#311 P2).
+	 * default model (drakonc-ai#4611; drakonc-pi#311 P2).
 	 */
 	readonly reviewerRegistry?: InProcessReviewerRegistry;
 	/**
@@ -409,7 +409,7 @@ export interface ReviewHostRelayRequest {
 	/**
 	 * Fixed name of where the reviewer routing snapshot came from (binding, pin,
 	 * frozen profile, or the global effective routing and its saved store path),
-	 * named in the missing-model refusal (gentle-shell#2163). Never a secret.
+	 * named in the missing-model refusal (drakonc-shell#2163). Never a secret.
 	 */
 	readonly routingSource?: string;
 	/** Whether the snapshot has no entry at all for {@link ReviewHostRelayRequest.routingKey}, as opposed to an entry without a model. */
@@ -448,10 +448,10 @@ export type ReviewHostRelayRunner = (request: ReviewHostRelayRequest) => Promise
 export type ReviewHostRelayPreparationRunner = (request: ReviewHostRelayRequest) => Promise<ReviewHostRelayPreparedResult>;
 export type ReviewHostRelaySubmissionRunner = (prepared: ReviewHostRelayPreparedResult) => Promise<ReviewHostRelayResult>;
 
-const DEFAULT_GENTLE_AI_TIMEOUT_MS = 120_000;
+const DEFAULT_DRAKONC_AI_TIMEOUT_MS = 120_000;
 
 // ---------------------------------------------------------------------------
-// The reviewer completion bound (gentle-pi#367).
+// The reviewer completion bound (drakonc-pi#367).
 //
 // The previous bound was a single hardcoded 600_000 ms reachable only through
 // the test-injectable runner. A field-measured lens legitimately needed 478s
@@ -468,15 +468,15 @@ const DEFAULT_GENTLE_AI_TIMEOUT_MS = 120_000;
 // actually needed — deliberately generous, because the reviewer model and
 // provider are user-owned and the relay cannot know their throughput.
 //
-// GENTLE_PI_REVIEW_RELAY_PI_TIMEOUT_MS replaces the derived bound entirely for
+// DRAKONC_PI_REVIEW_RELAY_PI_TIMEOUT_MS replaces the derived bound entirely for
 // callers who know their own configuration. It follows the repository's
-// established numeric-override shape (GENTLE_PI_CANDIDATE_GIT_TIMEOUT_MS,
-// GENTLE_PI_REVIEW_MAX_BUFFER_BYTES): a positive decimal, silently ignored
+// established numeric-override shape (DRAKONC_PI_CANDIDATE_GIT_TIMEOUT_MS,
+// DRAKONC_PI_REVIEW_MAX_BUFFER_BYTES): a positive decimal, silently ignored
 // when malformed, and clamped to the same hard ceiling so no configuration can
 // turn a foreground FINALIZE into an unbounded completion.
 // ---------------------------------------------------------------------------
 
-export const REVIEW_HOST_RELAY_PI_TIMEOUT_ENV = "GENTLE_PI_REVIEW_RELAY_PI_TIMEOUT_MS";
+export const REVIEW_HOST_RELAY_PI_TIMEOUT_ENV = "DRAKONC_PI_REVIEW_RELAY_PI_TIMEOUT_MS";
 export const REVIEW_HOST_RELAY_PI_TIMEOUT_FLOOR_MS = 900_000;
 export const REVIEW_HOST_RELAY_PI_TIMEOUT_PER_MEBIBYTE_MS = 900_000;
 export const REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS = 7_200_000;
@@ -510,7 +510,7 @@ interface ProcessCapture {
 	elapsedMs: number;
 }
 
-function collectGentleAiProcess(
+function collectDrakoncAiProcess(
 	file: string,
 	arguments_: readonly string[],
 	options: { cwd: string; env: NodeJS.ProcessEnv; stdin?: Buffer; timeoutMs: number; signal?: AbortSignal },
@@ -519,8 +519,8 @@ function collectGentleAiProcess(
 		const startedAt = Date.now();
 		const child = spawn(file, [...arguments_], {
 			cwd: options.cwd,
-			// S9: a bundled install keeps Gentle AI's state inside its prefix.
-			env: gentleAiIsolationEnv(options.env),
+			// S9: a bundled install keeps Drakonc AI's state inside its prefix.
+			env: drakoncAiIsolationEnv(options.env),
 			stdio: ["pipe", "pipe", "pipe"],
 			shell: false,
 			windowsHide: true,
@@ -616,8 +616,8 @@ function assertTokens(name: string, tokens: readonly string[]): void {
  * Validates the caller-owned reviewer selection before any process launches: a
  * missing model registry or a routing entry with no configured model is a
  * typed refusal, never a mid-review transport failure and never a fallback to
- * an ambient default model (gentle-ai#4611; gentle-pi#311 P2, superseding
- * gentle-shell#1158 / #1136's child-process launch configuration).
+ * an ambient default model (drakonc-ai#4611; drakonc-pi#311 P2, superseding
+ * drakonc-shell#1158 / #1136's child-process launch configuration).
  */
 function validateReviewerSelectionConfiguration(request: ReviewHostRelayRequest): { reviewerRegistry: InProcessReviewerRegistry; selection: string; thinking?: string; tier?: "standard" | "fast"; routingKey: string } {
 	const routingKey = typeof request.routingKey === "string" && request.routingKey.length > 0 ? request.routingKey : "review capture";
@@ -667,19 +667,19 @@ function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): Review
 	// environment state (a missing pinned binary, an invalid dev override, a
 	// transient filesystem error under load), and letting its untyped errors
 	// escape ahead of the config check turned the typed configuration refusal
-	// into an environment-dependent unknown failure (gentle-shell#2256).
-	const suppliedExecutable = request.gentleAiExecutable;
-	if (suppliedExecutable !== undefined && !isAbsolute(suppliedExecutable)) throw new TypeError("Pi host relay requires an absolute gentle-ai executable path");
+	// into an environment-dependent unknown failure (drakonc-shell#2256).
+	const suppliedExecutable = request.drakoncAiExecutable;
+	if (suppliedExecutable !== undefined && !isAbsolute(suppliedExecutable)) throw new TypeError("Pi host relay requires an absolute drakonc-ai executable path");
 	// Caller-owned reviewer selection is validated before any process launches:
 	// a broken configuration is a typed refusal, never a mid-review transport
-	// failure (gentle-pi#311 P2).
+	// failure (drakonc-pi#311 P2).
 	const reviewerSelection = validateReviewerSelectionConfiguration(request);
 	// The completing form is validated before any process launches: a materialize
 	// slot without a provider-owned submission is a typed contract mismatch,
 	// never a synthesized invocation.
 	resolveReviewHostRelaySubmission(request.submission);
-	const gentleAiExecutable = suppliedExecutable ?? resolveGentleAiBinary();
-	if (!isAbsolute(gentleAiExecutable)) throw new TypeError("Pi host relay requires an absolute gentle-ai executable path");
+	const drakoncAiExecutable = suppliedExecutable ?? resolveDrakoncAiBinary();
+	if (!isAbsolute(drakoncAiExecutable)) throw new TypeError("Pi host relay requires an absolute drakonc-ai executable path");
 	const environment = Object.freeze({ ...(request.environment ?? process.env) }) as NodeJS.ProcessEnv;
 	const submission = request.submission === undefined ? undefined : Object.freeze({
 		operationToken: request.submission.operationToken,
@@ -691,9 +691,9 @@ function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): Review
 		captureArgumentTokens: Object.freeze([...request.captureArgumentTokens]),
 		...(submission === undefined ? {} : { submission }),
 		...reviewerSelection,
-		gentleAiExecutable,
+		drakoncAiExecutable,
 		environment,
-		gentleAiTimeoutMs: request.gentleAiTimeoutMs ?? DEFAULT_GENTLE_AI_TIMEOUT_MS,
+		drakoncAiTimeoutMs: request.drakoncAiTimeoutMs ?? DEFAULT_DRAKONC_AI_TIMEOUT_MS,
 		targetCwd: request.targetCwd ?? process.cwd(),
 	});
 }
@@ -722,19 +722,19 @@ export async function prepareReviewHostRelaySlot(
 	// materialize and the submit leg of one slot.
 	let materialized: ProcessCapture;
 	try {
-		materialized = await observeReviewRelayPhase(preparedRequest.observePhase, "materialize", () => collectGentleAiProcess(preparedRequest.gentleAiExecutable!, ["review", preparedRequest.submission!.operationToken, ...preparedRequest.captureArgumentTokens], {
+		materialized = await observeReviewRelayPhase(preparedRequest.observePhase, "materialize", () => collectDrakoncAiProcess(preparedRequest.drakoncAiExecutable!, ["review", preparedRequest.submission!.operationToken, ...preparedRequest.captureArgumentTokens], {
 			cwd: preparedRequest.targetCwd!,
-			env: { ...preparedRequest.environment!, [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT },
-			timeoutMs: preparedRequest.gentleAiTimeoutMs!,
+			env: { ...preparedRequest.environment!, [DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV]: DRAKONC_PI_REVIEW_RELAY_CONTRACT },
+			timeoutMs: preparedRequest.drakoncAiTimeoutMs!,
 			...(preparedRequest.signal === undefined ? {} : { signal: preparedRequest.signal }),
 		}), (result) => result.exitCode === 0 && !result.timedOut && result.stdout.length > 0);
 	} catch (error) {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.MATERIALIZE_FAILED, "materialize", `gentle-ai prompt materialization could not start: ${error instanceof Error ? error.message : String(error)}`);
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.MATERIALIZE_FAILED, "materialize", `drakonc-ai prompt materialization could not start: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	if (materialized.exitCode !== 0 || materialized.timedOut) {
 		const stderr = materialized.stderr.toString("utf8");
 		const refusal = classifyReviewHostRelayRefusal(stderr);
-		const timing = { elapsedMs: materialized.elapsedMs, timeoutMs: preparedRequest.gentleAiTimeoutMs! };
+		const timing = { elapsedMs: materialized.elapsedMs, timeoutMs: preparedRequest.drakoncAiTimeoutMs! };
 		if (refusal === "unknown-flag") {
 			throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.RELAY_UNAVAILABLE, "materialize", REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE, {
 				exitCode: materialized.exitCode,
@@ -752,16 +752,16 @@ export async function prepareReviewHostRelaySlot(
 			});
 		}
 		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.MATERIALIZE_FAILED, "materialize", materialized.timedOut
-			? `gentle-ai prompt materialization exceeded its ${preparedRequest.gentleAiTimeoutMs!}ms bound after ${materialized.elapsedMs}ms`
-			: "gentle-ai prompt materialization failed", { exitCode: materialized.exitCode, stderr, timedOut: materialized.timedOut, ...timing });
+			? `drakonc-ai prompt materialization exceeded its ${preparedRequest.drakoncAiTimeoutMs!}ms bound after ${materialized.elapsedMs}ms`
+			: "drakonc-ai prompt materialization failed", { exitCode: materialized.exitCode, stderr, timedOut: materialized.timedOut, ...timing });
 	}
 	const promptBytes = materialized.stdout;
 	if (promptBytes.length === 0) {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.EMPTY_PROMPT, "materialize", "gentle-ai prompt materialization produced no bytes", {
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.EMPTY_PROMPT, "materialize", "drakonc-ai prompt materialization produced no bytes", {
 			exitCode: 0,
 			stderr: materialized.stderr.toString("utf8"),
 			elapsedMs: materialized.elapsedMs,
-			timeoutMs: preparedRequest.gentleAiTimeoutMs!,
+			timeoutMs: preparedRequest.drakoncAiTimeoutMs!,
 		});
 	}
 	// The reviewer bound is derived from the prompt the provider actually
@@ -850,7 +850,7 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 	const reviewerFacts = prepared.reviewerEvidence === undefined ? {} : { reviewerEvidence: structuredClone(prepared.reviewerEvidence) };
 	assertTokens("capture", request.captureArgumentTokens);
 	const submissionBinding = resolveReviewHostRelaySubmission(request.submission);
-	const stagingDirectory = await mkdtemp(join(tmpdir(), "gentle-pi-host-relay-result-"));
+	const stagingDirectory = await mkdtemp(join(tmpdir(), "drakonc-pi-host-relay-result-"));
 	let primaryFailure = false;
 	try {
 		await chmod(stagingDirectory, 0o700);
@@ -864,18 +864,18 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 		);
 		let submission: ProcessCapture;
 		try {
-			submission = await observeReviewRelayPhase(request.observePhase, "submit", () => collectGentleAiProcess(request.gentleAiExecutable!, ["review", submissionBinding.operationToken, ...submitTokens], {
+			submission = await observeReviewRelayPhase(request.observePhase, "submit", () => collectDrakoncAiProcess(request.drakoncAiExecutable!, ["review", submissionBinding.operationToken, ...submitTokens], {
 				cwd: request.targetCwd!,
-				env: { ...request.environment!, [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT },
-				timeoutMs: request.gentleAiTimeoutMs!,
+				env: { ...request.environment!, [DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV]: DRAKONC_PI_REVIEW_RELAY_CONTRACT },
+				timeoutMs: request.drakoncAiTimeoutMs!,
 				...(request.signal === undefined ? {} : { signal: request.signal }),
 			}), (result) => result.exitCode === 0 && !result.timedOut && result.stdout.length > 0);
 		} catch (error) {
-			throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", `gentle-ai capture submission could not start: ${error instanceof Error ? error.message : String(error)}`, reviewerFacts);
+			throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", `drakonc-ai capture submission could not start: ${error instanceof Error ? error.message : String(error)}`, reviewerFacts);
 		}
 		if (submission.exitCode !== 0 || submission.timedOut || submission.stdout.length === 0) {
 			const stderr = submission.stderr.toString("utf8");
-			const details = { exitCode: submission.exitCode, stderr, timedOut: submission.timedOut, elapsedMs: submission.elapsedMs, timeoutMs: request.gentleAiTimeoutMs!, ...reviewerFacts };
+			const details = { exitCode: submission.exitCode, stderr, timedOut: submission.timedOut, elapsedMs: submission.elapsedMs, timeoutMs: request.drakoncAiTimeoutMs!, ...reviewerFacts };
 			// A typed admission refusal proves the provider consumed no slot.
 			// Every other launched submission stays unknown pending fresh STATUS.
 			if (isReviewHostRelayAdmissionRefusal(submission, stderr)) {
@@ -885,8 +885,8 @@ export async function submitReviewHostRelayPreparedResult(prepared: ReviewHostRe
 				});
 			}
 			throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", submission.timedOut
-				? `gentle-ai capture submission exceeded its ${request.gentleAiTimeoutMs!}ms bound after ${submission.elapsedMs}ms`
-				: "gentle-ai refused the relayed capture submission", details);
+				? `drakonc-ai capture submission exceeded its ${request.drakoncAiTimeoutMs!}ms bound after ${submission.elapsedMs}ms`
+				: "drakonc-ai refused the relayed capture submission", details);
 		}
 		return {
 			promptByteLength: prepared.promptByteLength,

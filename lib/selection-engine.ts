@@ -2,7 +2,7 @@ import { decodePrintableKey } from "./pi-tui-keys.ts";
 import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type EditorComponent } from "@earendil-works/pi-tui";
 
 /**
- * Native text-selection engine for GentlePromptEditor: shift+home / shift+end
+ * Native text-selection engine for DrakoncPromptEditor: shift+home / shift+end
  * selection, alt+e / alt+a select-all, and replace-on-key (backspace / delete /
  * printable character) with reverse-video highlight and a bottom-rule hint.
  * Ported from @exopro/pi-select-del so the petal prompt owns the feature
@@ -13,7 +13,7 @@ import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type EditorCom
  *     the edge keep the selection; only a zero-width span collapses)
  *   - shift+end — anchor at the cursor, move to line end
  *   - alt+e — select all; alt+a too when no extension shortcut claims it
- *     (Gentle Agents owns alt+a by default, gentle-shell#1565)
+ *     (Drakonc Agents owns alt+a by default, drakonc-shell#1565)
  *   - a registered extension shortcut always wins over these selection chords,
  *     matching CustomEditor's own precedence
  *   - backspace / delete / printable character or bracketed paste over an

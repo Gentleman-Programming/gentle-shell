@@ -18,11 +18,11 @@ naming what changes before anything is written.
 
 ## Scope
 
-- `extensions/gentle-ai.ts`: extend the `case "apply"` guard — read the
+- `extensions/drakonc-ai.ts`: extend the `case "apply"` guard — read the
   current global routing via `readModelRoutingAuthorityAsync` before the
   prompt, compute a diff (replaced / cleared / added agent routes), prompt on
   every global apply, abort on decline before any write or live switch.
-- `tests/gentle-ai.test.ts`: flip the "nonempty global apply never asks for
+- `tests/drakonc-ai.test.ts`: flip the "nonempty global apply never asks for
   confirmation" assertion; add populated-apply regressions (decline preserves
   all four surfaces byte-identically; confirm applies and reports).
 
@@ -40,7 +40,7 @@ naming what changes before anything is written.
   the flipped orchestrator-persistence assertion.
 - [x] T2 — Implement the universal confirmation with route diff.
 - [x] T3 — GREEN: focused profile tests (37 pass), full
-  `tests/gentle-ai.test.ts` (96 pass), typecheck (187 diagnostics, baseline
+  `tests/drakonc-ai.test.ts` (96 pass), typecheck (187 diagnostics, baseline
   unchanged), `git diff --check` clean.
 - [ ] T4 — Work-unit commit (local only) and delivery report.
 
@@ -63,7 +63,7 @@ naming what changes before anything is written.
   already match the current global routing" while approval would clear
   helper's materialized route (2 tests); readable and unreadable populated
   messages lacked the settings.json / live-switch disclosure (2 tests).
-- T8 — GREEN: focused profile tests 43 pass, full `tests/gentle-ai.test.ts`
+- T8 — GREEN: focused profile tests 43 pass, full `tests/drakonc-ai.test.ts`
   102 pass, typecheck 187 diagnostics (baseline unchanged), `git diff --check`
   clean. Confirm-path regression added (materialized-only route cleared on
   approval); existing message assertions untouched.
@@ -82,7 +82,7 @@ naming what changes before anything is written.
 - T5 — RED observed: `AssertionError ... the dialog must disclose that the
   current global routing is unreadable` with actual message ending
   `worker: openai/alpha (added). Continue?` on both new tests.
-- T6 — GREEN: focused profile tests 39 pass, full `tests/gentle-ai.test.ts`
+- T6 — GREEN: focused profile tests 39 pass, full `tests/drakonc-ai.test.ts`
   98 pass, typecheck 187 diagnostics (baseline), `git diff --check` clean.
 
 ## Constraints
@@ -90,5 +90,5 @@ naming what changes before anything is written.
 - Strict TDD: observe RED before changing production code.
 - Technical artifacts in English; dialog copy stays consistent with the
   existing `efc7b52a` style.
-- Allowed edit surfaces: `extensions/gentle-ai.ts`, `tests/gentle-ai.test.ts`
+- Allowed edit surfaces: `extensions/drakonc-ai.ts`, `tests/drakonc-ai.test.ts`
   (plus this task doc).

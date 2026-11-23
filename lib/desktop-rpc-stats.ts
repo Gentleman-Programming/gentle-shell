@@ -1,8 +1,8 @@
-// Gentle Desktop usage-stats slice: the pure contract shared by the Desktop
+// Drakonc Desktop usage-stats slice: the pure contract shared by the Desktop
 // bridge (`lib/desktop-stats-service.ts`) and the owner seam inside
-// `extensions/gentle-stats.ts`.
+// `extensions/drakonc-stats.ts`.
 //
-// Nothing here reads a session file. The owner (`/gentle:stats`, with its one
+// Nothing here reads a session file. The owner (`/drakonc:stats`, with its one
 // size/mtime-cached loader) supplies the parsed session records; this module
 // runs the exact `aggregateStats` aggregation the stats panel runs and
 // projects its result into the safe, bounded Desktop shape. It is a
@@ -15,10 +15,10 @@ export const DESKTOP_STATS_METHODS = ["get_usage_stats"] as const;
 export const DESKTOP_STATS_EVENTS = [] as const;
 
 // The versioned owner-service discovery seam (the stats analogue of the jobs
-// `gentle:desktop:jobs-service` adapter). The schema string guards the adapter
+// `drakonc:desktop:jobs-service` adapter). The schema string guards the adapter
 // against drift; the bridge ignores any responder whose shape does not match.
-export const DESKTOP_STATS_SERVICE_SCHEMA = "gentle-pi.desktop-stats-service/v1";
-export const DESKTOP_STATS_SERVICE_CHANNEL = "gentle:desktop:stats-service";
+export const DESKTOP_STATS_SERVICE_SCHEMA = "drakonc-pi.desktop-stats-service/v1";
+export const DESKTOP_STATS_SERVICE_CHANNEL = "drakonc:desktop:stats-service";
 
 /** Upper bounds on each array one answer carries. */
 export const DESKTOP_STATS_LIMITS = { models: 50, days: 400, projects: 50, providers: 50 } as const;

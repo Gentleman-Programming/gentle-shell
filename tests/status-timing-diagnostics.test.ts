@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { createReviewSidebarPublisher } from "../lib/review-sidebar-state.ts";
 import {
 	StatusTimingDiagnostics, observeNativeStatus, measureStatusSync, measureStatusAsync, measureStatusSidebar,
@@ -23,7 +23,7 @@ function context() {
 }
 
 function wrapped<T>(timing: StatusTimingDiagnostics, run: () => Promise<T>) {
-	const definition = { name: "gentle_review", execute: run } as unknown as ToolDefinition;
+	const definition = { name: "drakonc_review", execute: run } as unknown as ToolDefinition;
 	return (ctx: ExtensionToolContext) => timing.tool(definition).execute("private-call", { operation: "inspect" }, undefined, undefined, ctx);
 }
 
@@ -76,7 +76,7 @@ test("opt-in captures monotonic stage durations once and excludes all identifyin
 	})(host.ctx);
 	assert.equal(actual, value);
 	assert.deepEqual(summary(timing, host), {
-		schema: "gentle-pi.status-timing/v1", host_total_ms: 47, dispatch_ms: 7,
+		schema: "drakonc-pi.status-timing/v1", host_total_ms: 47, dispatch_ms: 7,
 		sidebar_ms: 2, completion_ms: 13, truncated: false,
 		statuses: [{ timeout_ms: 30_000, total_ms: 27, resolution_ms: 3, adapter_ms: 19, decode_ms: 5, outcome: { kind: "success" } }],
 	});
@@ -226,17 +226,17 @@ test("registered command observes controller dispatch and sidebar without changi
 		calls++;
 		return { stdout: statusBytes, stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 	}, process.execPath);
-	createGentleAiExtension({ nativeReviewCli: cli })({
+	createDrakoncAiExtension({ nativeReviewCli: cli })({
 		on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => hooks.set(name, [...(hooks.get(name) ?? []), handler]),
 		registerTool: (definition: ToolDefinition) => tools.set(definition.name, definition),
 		registerCommand: (name: string, definition: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) => commands.set(name, definition),
 		events: { emit: () => { throw new Error("sidebar observer failed"); } },
 	} as unknown as ExtensionAPI);
-	const command = commands.get("gentle:status-timing")!;
+	const command = commands.get("drakonc:status-timing")!;
 	assert.ok(command);
 	await command.handler("enable", host.ctx);
 	assert.equal(calls, 0, "arming never runs native STATUS");
-	const tool = tools.get("gentle_review")!;
+	const tool = tools.get("drakonc_review")!;
 	const actual = await tool.execute("private-call", { operation: "inspect" }, undefined, undefined, host.ctx);
 	assert.equal(calls, 1);
 	assert.equal(typeof actual.details, "object");
@@ -260,7 +260,7 @@ test("real sidebar publication is timed and throwing listeners cannot hide resul
 	publisher.reset(host.ctx);
 	timing.command("enable", host.ctx);
 	const value = { content: [], details: {} };
-	const definition = { name: "gentle_review", execute: () => observeNativeStatus(30, async () => value) } as unknown as ToolDefinition;
+	const definition = { name: "drakonc_review", execute: () => observeNativeStatus(30, async () => value) } as unknown as ToolDefinition;
 	const actual = await timing.tool(publisher.tool(definition)).execute("private-call", { operation: "inspect" }, undefined, undefined, host.ctx);
 	assert.equal(actual, value);
 	assert.equal(summary(timing, host).sidebar_ms, 8);

@@ -5,17 +5,17 @@ import { assertManagedStorePathV1, resolveRepositoryAuthorityV1 } from "./review
 // Pi-owned, clone-local (Git-common-dir) latch recording that the one-time
 // "run the review now?" question has already been put to the user for this
 // clone. Design Decision #2 (organic-rdd-parity): scope, direction, and
-// asymmetry mirror gentle-ai's own RDDConsentAsked/RecordRDDConsentAsked
+// asymmetry mirror drakonc-ai's own RDDConsentAsked/RecordRDDConsentAsked
 // exactly (per clone, accept-only, never committed, never inherited) —
-// but this is Pi's OWN latch, at Pi's OWN path, never gentle-ai's private
+// but this is Pi's OWN latch, at Pi's OWN path, never drakonc-ai's private
 // rdd-mode/asked.json. Writing another product's private authority store
 // would be a boundary violation.
-export const REVIEW_CONSENT_LATCH_SCHEMA = "gentle-pi.review-consent-asked/v1";
+export const REVIEW_CONSENT_LATCH_SCHEMA = "drakonc-pi.review-consent-asked/v1";
 const REVIEW_CONSENT_LATCH_PAYLOAD = `{"schema":"${REVIEW_CONSENT_LATCH_SCHEMA}"}\n`;
 
 function reviewConsentLatchPath(cwd: string): string {
 	const authority = resolveRepositoryAuthorityV1(cwd);
-	return assertManagedStorePathV1(authority.common_directory, join(authority.common_directory, "gentle-pi", "review-consent", "asked.json"));
+	return assertManagedStorePathV1(authority.common_directory, join(authority.common_directory, "drakonc-pi", "review-consent", "asked.json"));
 }
 
 /**

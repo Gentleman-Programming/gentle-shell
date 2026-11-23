@@ -9,7 +9,7 @@ import { DESIGN_SOURCE_LIMITS, detectDesignSources, staleDesignSources } from ".
 // walk, and the ones changed after design/system.md was written.
 
 function scratch(t: TestContext): string {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-design-sources-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-design-sources-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	return dir;
 }

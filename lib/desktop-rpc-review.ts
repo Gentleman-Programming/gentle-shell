@@ -1,17 +1,17 @@
-// Gentle Desktop review-mode contract (#3324): the pure wire shapes, the
+// Drakonc Desktop review-mode contract (#3324): the pure wire shapes, the
 // owner-service interface, strict param parsers, the whitelist projection of
 // the owner's receipt-driven development (RDD) status, and the confirmation
-// text and token. The owner is `extensions/gentle-ai.ts`, which reads and
+// text and token. The owner is `extensions/drakonc-ai.ts`, which reads and
 // writes the switch through the same native review CLI adapter the
-// `/gentle:review-mode` command uses; nothing here runs `gentle-ai`.
+// `/drakonc:review-mode` command uses; nothing here runs `drakonc-ai`.
 
 import { createHash } from "node:crypto";
 
 export const DESKTOP_REVIEW_METHODS = ["get_review_mode", "set_review_mode"] as const;
 export const DESKTOP_REVIEW_MODE_CHANGED_EVENT = "review_mode_changed";
 export const DESKTOP_REVIEW_EVENTS = [DESKTOP_REVIEW_MODE_CHANGED_EVENT] as const;
-export const DESKTOP_REVIEW_SERVICE_SCHEMA = "gentle-pi.desktop-review-service/v1";
-export const DESKTOP_REVIEW_SERVICE_CHANNEL = "gentle:desktop:review-service";
+export const DESKTOP_REVIEW_SERVICE_SCHEMA = "drakonc-pi.desktop-review-service/v1";
+export const DESKTOP_REVIEW_SERVICE_CHANNEL = "drakonc:desktop:review-service";
 
 const MAX_TOKEN_LENGTH = 128;
 
@@ -34,7 +34,7 @@ export interface DesktopReviewOwnerStatus {
 	revision?: string;
 }
 
-/** `unavailable`: no adapter, or `gentle-ai` is missing or does not support the command. `unknown`: the read failed or timed out. */
+/** `unavailable`: no adapter, or `drakonc-ai` is missing or does not support the command. `unknown`: the read failed or timed out. */
 export type DesktopReviewOwnerRead =
 	| { kind: "status"; status: DesktopReviewOwnerStatus }
 	| { kind: "unknown" }
@@ -165,7 +165,7 @@ export function desktopReviewModeToken(request: DesktopReviewSetRequest, title: 
 
 // Process-wide: the review-mode owner and this bridge may load this module
 // separately, so the single-flight gate lives on a registered symbol.
-const SET_GATE = Symbol.for("gentle-shell.desktop-review-mode-set");
+const SET_GATE = Symbol.for("drakonc-shell.desktop-review-mode-set");
 type GateHost = { [SET_GATE]?: boolean };
 
 export function beginDesktopReviewModeSet(): boolean {

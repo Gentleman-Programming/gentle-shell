@@ -6,11 +6,11 @@ import test, { after } from "node:test";
 import { resolveAgentHomeDirectory, resolveEffectiveAgentModel, resolvePinnedAgentProfile } from "../lib/agent-model-resolution.ts";
 import type { AgentDefinition } from "../lib/agents-config.ts";
 
-// gentle-shell#1731 S3/AC3: the subagent launch and the harness model-routing
+// drakonc-shell#1731 S3/AC3: the subagent launch and the harness model-routing
 // fact resolve the effective subagent model through one helper, so the fact
 // can never disagree with the model a launch would actually use.
 
-const root = mkdtempSync(join(tmpdir(), "gentle-pi-agent-model-resolution-"));
+const root = mkdtempSync(join(tmpdir(), "drakonc-pi-agent-model-resolution-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 
 function fixture(name: string) {
@@ -33,9 +33,9 @@ function fixture(name: string) {
 			writeFileSync(join(agentHome, "subagents.json"), JSON.stringify(config));
 		},
 		writePinnedProfile(profiles: Record<string, unknown>, pin: string) {
-			writeFileSync(join(configHome, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, profiles }));
-			mkdirSync(join(commonDir, "gentle-ai"), { recursive: true });
-			writeFileSync(join(commonDir, "gentle-ai", "profile-pin.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profile_pin", version: 1, profile: pin }));
+			writeFileSync(join(configHome, "profiles.json"), JSON.stringify({ kind: "drakonc-pi.agent_model_profiles", version: 1, profiles }));
+			mkdirSync(join(commonDir, "drakonc-ai"), { recursive: true });
+			writeFileSync(join(commonDir, "drakonc-ai", "profile-pin.json"), JSON.stringify({ kind: "drakonc-pi.agent_model_profile_pin", version: 1, profile: pin }));
 		},
 	};
 }
@@ -44,51 +44,51 @@ const orchestrator = { provider: "anthropic", id: "fable" };
 
 test("the effective worker model comes from the global subagent profile", () => {
 	const f = fixture("global-profile");
-	f.writeAgent("gentle-ai-worker");
-	f.writeSubagents({ model_profiles: { "gentle-ai-worker": { model: "anthropic/opus" } } });
+	f.writeAgent("drakonc-ai-worker");
+	f.writeSubagents({ model_profiles: { "drakonc-ai-worker": { model: "anthropic/opus" } } });
 	assert.deepEqual(
-		resolveEffectiveAgentModel("gentle-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree, fallback: orchestrator }),
-		{ agent: "gentle-ai-worker", model: { provider: "anthropic", id: "opus" }, inherited: false },
+		resolveEffectiveAgentModel("drakonc-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree, fallback: orchestrator }),
+		{ agent: "drakonc-ai-worker", model: { provider: "anthropic", id: "opus" }, inherited: false },
 	);
 });
 
 test("a repository profile pin replaces global routing for the effective worker model", () => {
 	const f = fixture("pinned-profile");
-	f.writeAgent("gentle-ai-worker");
-	f.writeSubagents({ model_profiles: { "gentle-ai-worker": { model: "anthropic/opus" } } });
-	f.writePinnedProfile({ cheap: { "gentle-ai-worker": { model: "openai/mini" } } }, "cheap");
+	f.writeAgent("drakonc-ai-worker");
+	f.writeSubagents({ model_profiles: { "drakonc-ai-worker": { model: "anthropic/opus" } } });
+	f.writePinnedProfile({ cheap: { "drakonc-ai-worker": { model: "openai/mini" } } }, "cheap");
 	assert.deepEqual(
-		resolveEffectiveAgentModel("gentle-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree, fallback: orchestrator })?.model,
+		resolveEffectiveAgentModel("drakonc-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree, fallback: orchestrator })?.model,
 		{ provider: "openai", id: "mini" },
 	);
 });
 
 test("the agent definition model applies when no profile routes the agent", () => {
 	const f = fixture("definition-model");
-	f.writeAgent("gentle-ai-worker", "openai/defined");
+	f.writeAgent("drakonc-ai-worker", "openai/defined");
 	assert.deepEqual(
-		resolveEffectiveAgentModel("gentle-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree, fallback: orchestrator })?.model,
+		resolveEffectiveAgentModel("drakonc-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree, fallback: orchestrator })?.model,
 		{ provider: "openai", id: "defined" },
 	);
 });
 
 test("an unrouted agent inherits the fallback session model", () => {
 	const f = fixture("inherit");
-	f.writeAgent("gentle-ai-worker");
+	f.writeAgent("drakonc-ai-worker");
 	assert.deepEqual(
-		resolveEffectiveAgentModel("gentle-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree, fallback: orchestrator }),
-		{ agent: "gentle-ai-worker", model: orchestrator, inherited: true },
+		resolveEffectiveAgentModel("drakonc-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree, fallback: orchestrator }),
+		{ agent: "drakonc-ai-worker", model: orchestrator, inherited: true },
 	);
 	assert.deepEqual(
-		resolveEffectiveAgentModel("gentle-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree }),
-		{ agent: "gentle-ai-worker", model: undefined, inherited: true },
+		resolveEffectiveAgentModel("drakonc-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree }),
+		{ agent: "drakonc-ai-worker", model: undefined, inherited: true },
 	);
 });
 
 test("an undiscovered agent resolves to undefined", () => {
 	const f = fixture("missing-agent");
 	assert.equal(
-		resolveEffectiveAgentModel("gentle-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree, fallback: orchestrator }),
+		resolveEffectiveAgentModel("drakonc-ai-worker", { roots: f.roots, pinCwd: f.cwd, configHome: f.configHome, resolveWorktree: f.resolveWorktree, fallback: orchestrator }),
 		undefined,
 	);
 });
@@ -105,9 +105,9 @@ test("resolvePinnedAgentProfile returns the launch profile with its model and th
 
 test("resolveAgentHomeDirectory follows the environment, expands tildes, and keeps explicit overrides literal", () => {
 	const home = "/home/tester";
-	assert.equal(resolveAgentHomeDirectory({ env: { GENTLE_PI_AGENT_HOME: "/opt/agents" }, home }), resolve("/opt/agents"));
+	assert.equal(resolveAgentHomeDirectory({ env: { DRAKONC_PI_AGENT_HOME: "/opt/agents" }, home }), resolve("/opt/agents"));
 	assert.equal(resolveAgentHomeDirectory({ env: { PI_CODING_AGENT_DIR: "~/pi-agent" }, home }), resolve(join(home, "pi-agent")));
-	assert.equal(resolveAgentHomeDirectory({ env: { GENTLE_PI_AGENT_HOME: "~" }, home }), resolve(home));
-	assert.equal(resolveAgentHomeDirectory({ env: { GENTLE_PI_AGENT_HOME: "/ignored" }, home, homeOverridden: true }), resolve(join(home, ".pi", "agent")));
+	assert.equal(resolveAgentHomeDirectory({ env: { DRAKONC_PI_AGENT_HOME: "~" }, home }), resolve(home));
+	assert.equal(resolveAgentHomeDirectory({ env: { DRAKONC_PI_AGENT_HOME: "/ignored" }, home, homeOverridden: true }), resolve(join(home, ".pi", "agent")));
 	assert.equal(resolveAgentHomeDirectory({ env: {}, home, agentHome: "/explicit" }), resolve("/explicit"));
 });

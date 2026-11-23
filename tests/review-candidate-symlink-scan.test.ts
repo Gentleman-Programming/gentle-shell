@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { CandidateTreeSymlinkScanner } from "../lib/review-candidate-symlink-scan.ts";
 
 function store(t: test.TestContext): string {

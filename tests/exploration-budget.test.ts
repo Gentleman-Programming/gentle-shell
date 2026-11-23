@@ -42,7 +42,7 @@ test("ignore child, aborted, non-discovery, error, stale and duplicate results a
 	assert.equal(budget.result("s", event("old")), undefined);
 	for (const [id, name, error, primary, aborted] of [
 		["child", "read", false, false, false], ["aborted", "read", false, true, true],
-		["failed", "read", true, true, false], ["review", "gentle_review", false, true, false],
+		["failed", "read", true, true, false], ["review", "drakonc_review", false, true, false],
 		["write", "write", false, true, false], ["bash", "bash", false, true, false],
 	] as const) {
 		budget.call("s", id);
@@ -95,7 +95,7 @@ test("read-only memory recall counts and memory mutation or diagnostics never co
 test("nested reads inside review, mutation or verification are not discovery", () => {
 	const budget = createExplorationBudget();
 	budget.start("s");
-	for (const [i, name] of ["gentle_review", "write", "verification"].entries()) {
+	for (const [i, name] of ["drakonc_review", "write", "verification"].entries()) {
 		const parent = `p${i}`;
 		budget.call("s", parent, name);
 		budget.call("s", `${parent}/1`, "read", parent);

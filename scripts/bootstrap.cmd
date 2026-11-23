@@ -3,19 +3,19 @@ setlocal DisableDelayedExpansion
 rem Trusted extracted/checkout bundle only. Never pipe a remote script here.
 rem Fixed stock PowerShell commands; paths are environment DATA, not PS source.
 rem Each invocation is below CMD's logical command length limit.
-set "GENTLE_BOOTSTRAP_BUNDLE=%~dp0.."
-set "GENTLE_BOOTSTRAP_TOOLS=%LOCALAPPDATA%\.gentle-shell-bootstrap-tools.%RANDOM%.%RANDOM%.%RANDOM%"
-set "GENTLE_BOOTSTRAP_FALLBACK_TOOLS=%USERPROFILE%\.gentle-shell-bootstrap-tools.%RANDOM%.%RANDOM%.%RANDOM%"
-set "GENTLE_BOOTSTRAP_OWNED="
-set "GENTLE_BOOTSTRAP_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
-if not exist "%GENTLE_BOOTSTRAP_PS%" goto unavailable
+set "DRAKONC_BOOTSTRAP_BUNDLE=%~dp0.."
+set "DRAKONC_BOOTSTRAP_TOOLS=%LOCALAPPDATA%\.drakonc-shell-bootstrap-tools.%RANDOM%.%RANDOM%.%RANDOM%"
+set "DRAKONC_BOOTSTRAP_FALLBACK_TOOLS=%USERPROFILE%\.drakonc-shell-bootstrap-tools.%RANDOM%.%RANDOM%.%RANDOM%"
+set "DRAKONC_BOOTSTRAP_OWNED="
+set "DRAKONC_BOOTSTRAP_PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%DRAKONC_BOOTSTRAP_PS%" goto unavailable
 
 rem Bundle/dependency checks precede ALL acquisition and per-user writes.
-"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
+"%DRAKONC_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
-  "$bundle = [IO.Path]::GetFullPath($env:GENTLE_BOOTSTRAP_BUNDLE);" ^
-  "foreach ($file in @('bin/gentle-shell-install.mjs','package.json','scripts/installer-downloads.mjs','scripts/installer-windows.mjs','scripts/installer-windows-artifacts.json')) {" ^
+  "$bundle = [IO.Path]::GetFullPath($env:DRAKONC_BOOTSTRAP_BUNDLE);" ^
+  "foreach ($file in @('bin/drakonc-shell-install.mjs','package.json','scripts/installer-downloads.mjs','scripts/installer-windows.mjs','scripts/installer-windows-artifacts.json')) {" ^
   "  $item = Get-Item -LiteralPath (Join-Path $bundle $file) -Force;" ^
   "  if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsafe bundle file' };" ^
   "};" ^
@@ -37,13 +37,13 @@ rem Failures append one fixed reason code (the failed check), then one line per
 rem candidate naming its folder and, for acl-mask, the principal and its rights;
 rem other exceptions report unexpected-<step>. ACLs use .NET, not Security-module
 rem cmdlets: PowerShell 7's inherited PSModulePath breaks their 5.1 autoload.
-"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
+"%DRAKONC_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { $claimed = $false; $step = 'policy'; $tools = $null; $tried = @(); try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'policy' };" ^
   "$me = [Security.Principal.WindowsIdentity]::GetCurrent().User;" ^
   "$trusted = @($me.Value,'S-1-5-18','S-1-5-32-544','S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');" ^
   "$owners = @($me.Value,'S-1-5-18','S-1-5-32-544'); $account = { param($sid) try { ' (' + $sid.Translate([Security.Principal.NTAccount]).Value + ')' } catch { '' } };" ^
-  "$candidates = @(,@($env:GENTLE_BOOTSTRAP_TOOLS,$env:LOCALAPPDATA)); if ($env:GENTLE_BOOTSTRAP_FALLBACK_TOOLS) { $candidates += ,@($env:GENTLE_BOOTSTRAP_FALLBACK_TOOLS,$env:USERPROFILE) };" ^
+  "$candidates = @(,@($env:DRAKONC_BOOTSTRAP_TOOLS,$env:LOCALAPPDATA)); if ($env:DRAKONC_BOOTSTRAP_FALLBACK_TOOLS) { $candidates += ,@($env:DRAKONC_BOOTSTRAP_FALLBACK_TOOLS,$env:USERPROFILE) };" ^
   "for ($index = 0; $index -lt $candidates.Count; $index++) { $base = $candidates[$index][1]; $detail = ''; try {" ^
   "  $step = 'path-mismatch'; $tools = [IO.Path]::GetFullPath($candidates[$index][0]); $path = [IO.Directory]::GetParent($tools).FullName;" ^
   "  if (-not [IO.Path]::IsPathRooted($base) -or $tools.StartsWith('\\') -or $path -ne [IO.Path]::GetFullPath($base)) { throw 'path-mismatch' };" ^
@@ -69,7 +69,7 @@ rem cmdlets: PowerShell 7's inherited PSModulePath breaks their 5.1 autoload.
   "$verified = [IO.Directory]::GetAccessControl($tools); if (-not $verified.AreAccessRulesProtected) { throw 'protected-dacl' };" ^
   "if ($verified.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'private-owner' };" ^
   "foreach ($rule in $verified.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if ($rule.AccessControlType -ne 'Allow' -or @($me.Value,'S-1-5-18','S-1-5-32-544') -notcontains $rule.IdentityReference.Value) { throw 'private-ace' } };" ^
-  "$step = 'marker'; $null = New-Item -ItemType File -Path (Join-Path $tools '.bootstrap-owned') -Value 'gentle-pi prerequisite tooling only';" ^
+  "$step = 'marker'; $null = New-Item -ItemType File -Path (Join-Path $tools '.bootstrap-owned') -Value 'drakonc-pi prerequisite tooling only';" ^
   "if ($index -gt 0) { exit 2 };" ^
   "} catch { $reason = 'unexpected-' + $step; if ($_.Exception.Message -cmatch '^(policy|path-mismatch|home-owner|ancestor-reparse|ancestor-owner|acl-mask|collision|protected-dacl|private-owner|private-ace)$') { $reason = $_.Exception.Message };" ^
   "if ($step -cmatch '^(create|private-acl|marker)$') { $tried += ($tools + ': ' + $reason) };" ^
@@ -79,32 +79,32 @@ if errorlevel 2 goto fallbackclaimed
 if errorlevel 1 goto failed
 goto claimed
 :fallbackclaimed
-set "GENTLE_BOOTSTRAP_TOOLS=%GENTLE_BOOTSTRAP_FALLBACK_TOOLS%"
+set "DRAKONC_BOOTSTRAP_TOOLS=%DRAKONC_BOOTSTRAP_FALLBACK_TOOLS%"
 :claimed
-set "GENTLE_BOOTSTRAP_FALLBACK_TOOLS="
-set "GENTLE_BOOTSTRAP_OWNED=1"
+set "DRAKONC_BOOTSTRAP_FALLBACK_TOOLS="
+set "DRAKONC_BOOTSTRAP_OWNED=1"
 
 rem Select an existing native Node without invoking any command interpreter shim.
 rem Absence authorizes pinned acquisition, and so does an older stable Node or one
 rem whose storage the probe below cannot trust: it is never replaced or run again.
-"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
+"%DRAKONC_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
   "$command = $null; try { $command = Get-Command node.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1 } catch [Management.Automation.CommandNotFoundException] { $command = $null };" ^
-  "if ($null -ne $command) { $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($command.Source); $record = [IO.File]::Open((Join-Path $env:GENTLE_BOOTSTRAP_TOOLS '.node-target'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); try { $record.Write($bytes,0,$bytes.Length) } finally { $record.Dispose() } };" ^
+  "if ($null -ne $command) { $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($command.Source); $record = [IO.File]::Open((Join-Path $env:DRAKONC_BOOTSTRAP_TOOLS '.node-target'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); try { $record.Write($bytes,0,$bytes.Length) } finally { $record.Dispose() } };" ^
   "} catch { [Console]::Error.WriteLine('Bootstrap: existing Node resolution failed or policy denied it.'); exit 1 } }"
 if errorlevel 1 goto failed
 
 :acquirenode
 rem Fixed official ZIP transport: no redirects, bounded bytes/time, no TLS changes.
 rem Integrity is verified before ZIP processing or executable publication.
-"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
+"%DRAKONC_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
-  "$tools = $env:GENTLE_BOOTSTRAP_TOOLS; if (Test-Path -LiteralPath (Join-Path $tools '.node-target')) { exit 0 };" ^
+  "$tools = $env:DRAKONC_BOOTSTRAP_TOOLS; if (Test-Path -LiteralPath (Join-Path $tools '.node-target')) { exit 0 };" ^
   "$architecture = $env:PROCESSOR_ARCHITECTURE; if ($env:PROCESSOR_ARCHITEW6432) { $architecture = $env:PROCESSOR_ARCHITEW6432 };" ^
   "switch ($architecture) { 'AMD64' { $arch = 'x64' } 'ARM64' { $arch = 'arm64' } default { throw 'Unsupported architecture' } };" ^
-  "$pins = Get-Content -LiteralPath (Join-Path $env:GENTLE_BOOTSTRAP_BUNDLE 'scripts/installer-windows-artifacts.json') -Raw | ConvertFrom-Json; $pin = $pins.node.$arch;" ^
+  "$pins = Get-Content -LiteralPath (Join-Path $env:DRAKONC_BOOTSTRAP_BUNDLE 'scripts/installer-windows-artifacts.json') -Raw | ConvertFrom-Json; $pin = $pins.node.$arch;" ^
   "$stem = 'node-v24.21.0-win-' + $arch;" ^
   "if ($pins.node.version -ne '24.21.0' -or $pin.url -ne ('https://nodejs.org/dist/v24.21.0/' + $stem + '.zip') -or $pin.sha256 -notmatch '^[a-f0-9]{64}$' -or $pins.node.maxBytes -ne 104857600) { throw 'Artifact pin rejected' };" ^
   "$request = [Net.HttpWebRequest]::Create($pin.url); $request.AllowAutoRedirect = $false; $request.Timeout = 60000; $request.ReadWriteTimeout = 10000;" ^
@@ -123,10 +123,10 @@ if errorlevel 1 goto failed
 
 rem Inspect the entire ZIP namespace before extracting ONLY its regular node.exe.
 rem Reject links, Windows device/ADS names, traversal and case aliases.
-"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
+"%DRAKONC_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
-  "$tools = $env:GENTLE_BOOTSTRAP_TOOLS; if (Test-Path -LiteralPath (Join-Path $tools '.node-target')) { exit 0 };" ^
+  "$tools = $env:DRAKONC_BOOTSTRAP_TOOLS; if (Test-Path -LiteralPath (Join-Path $tools '.node-target')) { exit 0 };" ^
   "Add-Type -AssemblyName System.IO.Compression.FileSystem;" ^
   "$stem = (Get-Content -LiteralPath (Join-Path $tools '.node-stem') -Raw).Trim();" ^
   "$zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $tools 'node.zip'));" ^
@@ -164,10 +164,10 @@ rem The user's Node (no .node-stem) is left as it is when it is an older stable
 rem version, or when its storage fails the reparse/owner/ACL checks before it ever
 rem runs: its record is removed and the pinned Node is acquired as when absent.
 rem The acquired Node still has to pass every check; unknown versions still refuse.
-"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
+"%DRAKONC_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { $child = $null; $started = $false; $acquired = $true; $step = 'policy'; try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'policy' };" ^
-  "$step = 'target'; $tools = $env:GENTLE_BOOTSTRAP_TOOLS; $record = Join-Path $tools '.node-target'; if (-not [IO.File]::Exists($record)) { throw 'missing-target' }; $acquired = Test-Path -LiteralPath (Join-Path $tools '.node-stem');" ^
+  "$step = 'target'; $tools = $env:DRAKONC_BOOTSTRAP_TOOLS; $record = Join-Path $tools '.node-target'; if (-not [IO.File]::Exists($record)) { throw 'missing-target' }; $acquired = Test-Path -LiteralPath (Join-Path $tools '.node-stem');" ^
   "$node = [IO.File]::ReadAllText($record,[Text.Encoding]::UTF8).TrimEnd([char]13,[char]10); if (-not $node) { throw 'missing-target' };" ^
   "$item = Get-Item -LiteralPath $node -Force; if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'unsafe-target' };" ^
   "if (-not [IO.Path]::IsPathRooted($node) -or $node.StartsWith('\\')) { throw 'unsafe-path' };" ^
@@ -197,43 +197,43 @@ rem The acquired Node still has to pass every check; unknown versions still refu
   "  } }; Start-Sleep -Milliseconds 10;" ^
   "}; if ($child.ExitCode -ne 0) { throw 'exit-code' };" ^
   "$step = 'version'; $version = $text.Trim(); if ($version -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { throw 'version-format' };" ^
-  "$actual = [Version]$version.Substring(1); $metadata = Get-Content -LiteralPath (Join-Path $env:GENTLE_BOOTSTRAP_BUNDLE 'package.json') -Raw | ConvertFrom-Json;" ^
+  "$actual = [Version]$version.Substring(1); $metadata = Get-Content -LiteralPath (Join-Path $env:DRAKONC_BOOTSTRAP_BUNDLE 'package.json') -Raw | ConvertFrom-Json;" ^
   "if ($acquired -and $version -ne 'v24.21.0') { throw 'acquired-version' };" ^
   "if ($actual -lt [Version]'24.3.0' -or -not (@($metadata.engines.node -split '\s*\|\|\s*' | Where-Object { $floor = [Version]$_.TrimStart('^', '>', '='); $actual -ge $floor -and (-not $_.StartsWith('^') -or $actual.Major -eq $floor.Major) }).Count -gt 0)) { if ($acquired) { throw 'engine' }; [IO.File]::Delete((Join-Path $tools '.node-target')) };" ^
   "} catch { $reason = 'unexpected-' + $step; if ($_.Exception.Message -cmatch '^(policy|missing-target|unsafe-target|unsafe-path|(target|parent|ancestor)-(reparse|owner|acl-mask)|no-start|deadline|output-limit|exit-code|version-format|engine|acquired-version)$') { $reason = $_.Exception.Message };" ^
-  "if (-not $acquired -and $reason -cmatch '^(unsafe-target|unsafe-path|(target|parent|ancestor)-(reparse|owner|acl-mask))$') { [IO.File]::Delete((Join-Path $env:GENTLE_BOOTSTRAP_TOOLS '.node-target')) }" ^
+  "if (-not $acquired -and $reason -cmatch '^(unsafe-target|unsafe-path|(target|parent|ancestor)-(reparse|owner|acl-mask))$') { [IO.File]::Delete((Join-Path $env:DRAKONC_BOOTSTRAP_TOOLS '.node-target')) }" ^
   "else { [Console]::Error.WriteLine('Bootstrap: Node version, execution, deadline, output bound or policy check failed; refusing replacement. Reason: ' + $reason); exit 1 } }" ^
   "finally { try { if ($child) { if ($started -and -not $child.HasExited) { $child.Kill(); if (-not $child.WaitForExit(1000)) { throw 'Child termination unconfirmed' } }; $child.Dispose() } } catch { [Console]::Error.WriteLine('Bootstrap: direct-child termination could not be confirmed.'); exit 1 } } }"
 if errorlevel 1 goto failed
-if not exist "%GENTLE_BOOTSTRAP_TOOLS%\.node-target" goto acquirenode
+if not exist "%DRAKONC_BOOTSTRAP_TOOLS%\.node-target" goto acquirenode
 
 rem Launch the existing Node helper with data arguments; no shell evaluation.
 rem Interactive wizard duration is intentionally unbounded. Only child PATH changes.
-"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
+"%DRAKONC_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
-  "$tools = $env:GENTLE_BOOTSTRAP_TOOLS; $record = Join-Path $tools '.node-target'; $node = [IO.File]::ReadAllText($record,[Text.Encoding]::UTF8).TrimEnd([char]13,[char]10);" ^
+  "$tools = $env:DRAKONC_BOOTSTRAP_TOOLS; $record = Join-Path $tools '.node-target'; $node = [IO.File]::ReadAllText($record,[Text.Encoding]::UTF8).TrimEnd([char]13,[char]10);" ^
   "$env:PATH = [IO.Path]::GetDirectoryName($node) + ';' + $env:PATH;" ^
-  "$helper = Join-Path $env:GENTLE_BOOTSTRAP_BUNDLE 'scripts/installer-downloads.mjs';" ^
+  "$helper = Join-Path $env:DRAKONC_BOOTSTRAP_BUNDLE 'scripts/installer-downloads.mjs';" ^
   "if (Test-Path -LiteralPath (Join-Path $tools 'node.zip')) { Remove-Item -LiteralPath (Join-Path $tools 'node.zip') };" ^
-  "& $node $helper '--bootstrap-windows' $env:GENTLE_BOOTSTRAP_BUNDLE $tools; if ($LASTEXITCODE -ne 0) { throw 'Helper failed' };" ^
+  "& $node $helper '--bootstrap-windows' $env:DRAKONC_BOOTSTRAP_BUNDLE $tools; if ($LASTEXITCODE -ne 0) { throw 'Helper failed' };" ^
   "} catch { [Console]::Error.WriteLine('Bootstrap: prerequisite helper/wizard failed or managed policy denied execution.'); exit 1 } }"
 if errorlevel 1 goto failed
 
 rem Success: node/npm/pnpm now persist under PNPM_HOME or were already the user's.
 rem Remove only our exact claimed, marked root; Directory.Delete does not recurse
 rem through reparse points. A removal problem never fails the installation.
-"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
+"%DRAKONC_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
-  "$tools = [IO.Path]::GetFullPath($env:GENTLE_BOOTSTRAP_TOOLS); $parent = [IO.Directory]::GetParent($tools).FullName;" ^
-  "if ($tools.StartsWith('\\') -or ($parent -ne [IO.Path]::GetFullPath($env:LOCALAPPDATA) -and $parent -ne [IO.Path]::GetFullPath($env:USERPROFILE)) -or -not [IO.Path]::GetFileName($tools).StartsWith('.gentle-shell-bootstrap-tools.',[StringComparison]::Ordinal)) { throw 'Cleanup target rejected' };" ^
+  "$tools = [IO.Path]::GetFullPath($env:DRAKONC_BOOTSTRAP_TOOLS); $parent = [IO.Directory]::GetParent($tools).FullName;" ^
+  "if ($tools.StartsWith('\\') -or ($parent -ne [IO.Path]::GetFullPath($env:LOCALAPPDATA) -and $parent -ne [IO.Path]::GetFullPath($env:USERPROFILE)) -or -not [IO.Path]::GetFileName($tools).StartsWith('.drakonc-shell-bootstrap-tools.',[StringComparison]::Ordinal)) { throw 'Cleanup target rejected' };" ^
   "$item = Get-Item -LiteralPath $tools -Force;" ^
   "if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Cleanup target rejected' };" ^
   "$marker = Get-Item -LiteralPath (Join-Path $tools '.bootstrap-owned') -Force;" ^
-  "if ($marker.PSIsContainer -or ($marker.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-Content -LiteralPath $marker.FullName -Raw) -ne 'gentle-pi prerequisite tooling only') { throw 'Cleanup marker rejected' };" ^
+  "if ($marker.PSIsContainer -or ($marker.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-Content -LiteralPath $marker.FullName -Raw) -ne 'drakonc-pi prerequisite tooling only') { throw 'Cleanup marker rejected' };" ^
   "[IO.Directory]::Delete($tools, $true);" ^
-  "} catch { $message = 'Bootstrap: installation finished, but temporary tools could not be removed: ' + $env:GENTLE_BOOTSTRAP_TOOLS;" ^
+  "} catch { $message = 'Bootstrap: installation finished, but temporary tools could not be removed: ' + $env:DRAKONC_BOOTSTRAP_TOOLS;" ^
   "if ([Console]::IsErrorRedirected) { $bytes = [Text.Encoding]::UTF8.GetBytes($message + [Environment]::NewLine); $stderr = [Console]::OpenStandardError(); $stderr.Write($bytes, 0, $bytes.Length); $stderr.Flush() } else { [Console]::Error.WriteLine($message) }; exit 1 } }"
 endlocal & exit /b 0
 
@@ -241,14 +241,14 @@ endlocal & exit /b 0
 >&2 echo Bootstrap: stock Windows PowerShell is unavailable. No acquisition attempted.
 :failed
 rem Never scan/reuse/clean other attempts. Only our successfully claimed root.
-if not defined GENTLE_BOOTSTRAP_OWNED goto finishfailure
-"%GENTLE_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
+if not defined DRAKONC_BOOTSTRAP_OWNED goto finishfailure
+"%DRAKONC_BOOTSTRAP_PS%" -NoLogo -NoProfile -NonInteractive -Command ^
   "& { try { $ErrorActionPreference = 'Stop';" ^
   "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'Managed policy constraint' };" ^
-  "$tools = $env:GENTLE_BOOTSTRAP_TOOLS; $item = Get-Item -LiteralPath $tools -Force;" ^
+  "$tools = $env:DRAKONC_BOOTSTRAP_TOOLS; $item = Get-Item -LiteralPath $tools -Force;" ^
   "if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Cleanup target rejected' };" ^
   "$marker = Get-Item -LiteralPath (Join-Path $tools '.bootstrap-owned') -Force;" ^
-  "if ($marker.PSIsContainer -or ($marker.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-Content -LiteralPath $marker.FullName -Raw) -ne 'gentle-pi prerequisite tooling only') { throw 'Cleanup marker rejected' };" ^
+  "if ($marker.PSIsContainer -or ($marker.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-Content -LiteralPath $marker.FullName -Raw) -ne 'drakonc-pi prerequisite tooling only') { throw 'Cleanup marker rejected' };" ^
   "Remove-Item -LiteralPath $tools -Recurse -Force;" ^
   "} catch { [Console]::Error.WriteLine('Bootstrap: attempt-owned cleanup unavailable; no other storage touched.'); exit 1 } }"
 :finishfailure

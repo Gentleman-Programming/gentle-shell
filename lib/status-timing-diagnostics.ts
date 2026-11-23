@@ -14,7 +14,7 @@ interface StatusSample {
 	outcome: Outcome;
 }
 interface Summary {
-	schema: "gentle-pi.status-timing/v1";
+	schema: "drakonc-pi.status-timing/v1";
 	host_total_ms: number;
 	dispatch_ms: number;
 	sidebar_ms: number;
@@ -98,7 +98,7 @@ export class StatusTimingDiagnostics {
 			this.reset(ctx);
 			this.armed = !!this.session;
 			ctx.ui.notify(this.armed
-				? "STATUS timing armed for the next separately authorized STATUS-bearing tool call. No STATUS is invoked or retried. Use /gentle:status-timing show to consult the completed summary."
+				? "STATUS timing armed for the next separately authorized STATUS-bearing tool call. No STATUS is invoked or retried. Use /drakonc:status-timing show to consult the completed summary."
 				: "STATUS timing requires a live session.", "info");
 		} else if (action === "disable") {
 			this.reset(ctx);
@@ -106,7 +106,7 @@ export class StatusTimingDiagnostics {
 		} else if (action === "show") {
 			ctx.ui.notify(this.last ? JSON.stringify(this.last, null, 2) : `No completed STATUS timing summary. Diagnostic is ${this.armed ? "armed" : "off"}.`, "info");
 		} else {
-			ctx.ui.notify("Unknown /gentle:status-timing sub-action. Use enable, disable, or show.", "warning");
+			ctx.ui.notify("Unknown /drakonc:status-timing sub-action. Use enable, disable, or show.", "warning");
 		}
 	}
 	tool<TParams extends TSchema, TDetails>(definition: ToolDefinition<TParams, TDetails>): ToolDefinition<TParams, TDetails> {
@@ -126,7 +126,7 @@ export class StatusTimingDiagnostics {
 						return true;
 					},
 					claimed: false, started: 0, lastNativeEnd: 0,
-					summary: { schema: "gentle-pi.status-timing/v1", host_total_ms: 0, dispatch_ms: 0, sidebar_ms: 0, completion_ms: 0, truncated: false, statuses: [] },
+					summary: { schema: "drakonc-pi.status-timing/v1", host_total_ms: 0, dispatch_ms: 0, sidebar_ms: 0, completion_ms: 0, truncated: false, statuses: [] },
 				};
 				this.active.add(host);
 				host.started = now(host);

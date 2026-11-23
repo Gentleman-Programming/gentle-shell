@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const { runVoiceWorker } = createRequire(import.meta.url)("../scripts/voice-worker.cjs");
 
-const SCHEMA = "gentle.voice/v1";
+const SCHEMA = "drakonc.voice/v1";
 const SHERPA_ENTRY = "node_modules/sherpa-onnx-node/non-streaming-asr.js";
 const CPAL_ENTRY = "node_modules/node-cpal/index.js";
 const PULSE_ENTRY = "node_modules/node-cpal/backend-pulseaudio.js";

@@ -1,13 +1,13 @@
 // Narrow update ownership proof. Deliberately independent of Shell upgrade/uninstall.
 import { posix, win32 } from 'node:path';
-import { bundledUpdatePlan } from '../runtime/gentle-shell-bundled.mjs';
+import { bundledUpdatePlan } from '../runtime/drakonc-shell-bundled.mjs';
 import { setupErrorDetail } from './installer-runner.mjs';
 
 const PI = '@earendil-works/pi-coding-agent';
-const SHELL = 'gentle-pi';
+const SHELL = 'drakonc-pi';
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const succeeded = result => result?.code === 0 && !result.timedOut && result.signal == null;
-const refusal = detail => new Error(`gentle-shell update: ownership ${detail}; update Pi with the package manager or source checkout that supplies the selected runtime. No installation changed.`);
+const refusal = detail => new Error(`drakonc-shell update: ownership ${detail}; update Pi with the package manager or source checkout that supplies the selected runtime. No installation changed.`);
 const LINKED = /^(?:file|link|workspace):/i;
 const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 // A main-channel Shell (`<version>-main.<sha12>`, scripts/main-channel.mjs
@@ -42,7 +42,7 @@ function canonicalWith(adapters, path) {
  };
 }
 
-/** The cli.js a selected PATH or GENTLE_SHELL_PI executable runs: itself when
+/** The cli.js a selected PATH or DRAKONC_SHELL_PI executable runs: itself when
  * it is the entry (npm's bin symlink resolves there), otherwise the single
  * target its shim names, relative to the shim's directory. Anything else
  * cannot be matched against a listed package and is refused.
@@ -143,14 +143,15 @@ async function listedEntries(groups, {adapters, path, key, canonical}) {
  * ownership. An adjacent runtime is owned by the Shell group that resolved
  * it: updating a separate global Pi never changes what that Shell runs.
  */
-/** Where `gentle-shell upgrade --channel main` packed this Shell version: the
- * same config home as scripts/main-channel.mjs configHome. A relative config
+/** Where `drakonc-shell upgrade --channel main` packed this Shell version: the
+ * same config home as scripts/main-channel.mjs configHome (an explicit
+ * DRAKONC_PI_CONFIG_HOME, else ~/.drakonc-shell/drakonc-ai). A relative config
  * home is refused, not resolved: `upgrade` resolved it from its own working
  * directory, so it names no single folder, and the package manager runs from
  * the neutral cwd.
  */
 function mainBuildTarball(version, {env, home, path}) {
- const config = env?.GENTLE_PI_CONFIG_HOME || (typeof home === 'string' ? path.join(home, '.pi', 'gentle-ai') : null);
+ const config = env?.DRAKONC_PI_CONFIG_HOME || (typeof home === 'string' ? path.join(home, '.drakonc-shell', 'drakonc-ai') : null);
  if (!config || !path.isAbsolute(config)) throw refusal('cannot locate the main-channel build without an absolute config home');
  return path.join(config, 'main', 'packages', `${SHELL}-${version}.tgz`);
 }
@@ -278,7 +279,7 @@ export async function resolveUpdateOwner({runtime, packageRoot, platform = proce
      continue;
     }
     // Reinstalling the same Shell version re-resolves its peer; `update`
-    // never upgrades Shell itself (that is `gentle-shell upgrade`).
+    // never upgrades Shell itself (that is `drakonc-shell upgrade`).
     if (typeof manifest.version !== 'string') throw refusal('listed Shell version is missing');
     artifact = MAIN_BUILD.test(manifest.version);
     spec = artifact ? mainBuildTarball(manifest.version, {env, home, path}) : `${SHELL}@${manifest.version}`;
@@ -307,9 +308,9 @@ function viewIn(owner, input, args) {
 // Only a stable registry tag may become an install argument; never trust arbitrary output.
 async function latestPublishedPi(owner, input) {
  const result = await viewIn(owner, input, [`${PI}@latest`, 'version']);
- if (!succeeded(result) || result.truncated) throw new Error(`gentle-shell update: the latest published Pi could not be resolved (${owner.name} view failed). No installation changed.`);
+ if (!succeeded(result) || result.truncated) throw new Error(`drakonc-shell update: the latest published Pi could not be resolved (${owner.name} view failed). No installation changed.`);
  const version = String(result.stdout ?? '').trim();
- if (!STABLE.test(version)) throw new Error(`gentle-shell update: the latest published Pi version ${JSON.stringify(version)} was rejected. No installation changed.`);
+ if (!STABLE.test(version)) throw new Error(`drakonc-shell update: the latest published Pi version ${JSON.stringify(version)} was rejected. No installation changed.`);
  return version;
 }
 
@@ -327,7 +328,7 @@ async function publishedDependencies(owner, input, name, version) {
   if (!succeeded(result) || result.truncated || !object(manifest) || manifest.name !== name || manifest.version !== version ||
    !object(dependencies) || Object.values(dependencies).some(range => typeof range !== 'string')) throw new Error('invalid');
   return Object.entries(dependencies).filter(([dependency, range]) => SIBLING.test(dependency) && dependency !== PI && STABLE.test(range));
- } catch { throw new Error(`gentle-shell update: the published dependencies of ${name === PI ? 'Pi ' : `${name}@`}${version} could not be verified. No installation changed.`); }
+ } catch { throw new Error(`drakonc-shell update: the published dependencies of ${name === PI ? 'Pi ' : `${name}@`}${version} could not be verified. No installation changed.`); }
 }
 
 /** Every Pi-scope package, as [name, version], that the selected Pi pins to an
@@ -344,7 +345,7 @@ async function piSiblings(owner, input, version) {
   const level = [];
   for (const [name, exact] of pending) {
    if (found.has(`${name}@${exact}`)) continue;
-   if (found.size >= MAX_SIBLINGS) throw new Error(`gentle-shell update: Pi ${version} pins more than ${MAX_SIBLINGS} @earendil-works packages; their release age could not be verified. No installation changed.`);
+   if (found.size >= MAX_SIBLINGS) throw new Error(`drakonc-shell update: Pi ${version} pins more than ${MAX_SIBLINGS} @earendil-works packages; their release age could not be verified. No installation changed.`);
    found.set(`${name}@${exact}`, [name, exact]);
    level.push([name, exact]);
   }
@@ -370,7 +371,7 @@ async function piAgeExclusion(owner, input, siblings) {
  const scope = owner.sourceRoot ? ['--dir', owner.sourceRoot, ...owner.sourceOptions] : ['--global'];
  const result = await input.adapters.run(owner.command, [...owner.prefix, 'config', 'get', 'minimumReleaseAgeExclude', '--json', ...scope],
   {deadlineMs:30_000, cwd:owner.sourceRoot ?? input.cwd, ...(owner.sourceEnv ? {env:owner.sourceEnv} : {})});
- const invalid = () => new Error('gentle-shell update: pnpm release-age exclusions could not be verified. No installation changed.');
+ const invalid = () => new Error('drakonc-shell update: pnpm release-age exclusions could not be verified. No installation changed.');
  let entries;
  try {
   const text = String(result.stdout ?? '').trim();
@@ -456,7 +457,7 @@ export async function updateSelectedPi(input) {
  catch (error) { throw error.message?.includes('ownership') ? error : refusal('could not be resolved'); }
  if (owner.artifact) {
   try { await input.adapters.fs.realpath(owner.spec); }
-  catch { throw new Error(`gentle-shell update: the main-channel build ${owner.spec} is missing, and this unpublished build cannot be reinstalled from the registry; run 'gentle-shell upgrade --channel release' and then 'gentle-shell upgrade --channel main' to rebuild it. No installation changed.`); }
+  catch { throw new Error(`drakonc-shell update: the main-channel build ${owner.spec} is missing, and this unpublished build cannot be reinstalled from the registry; run 'drakonc-shell upgrade --channel release' and then 'drakonc-shell upgrade --channel main' to rebuild it. No installation changed.`); }
  }
  const latest = await latestPublishedPi(owner, input);
  const siblings = owner.name === 'pnpm' || owner.sourceSiblings?.length ? await piSiblings(owner, input, latest) : [];
@@ -467,7 +468,7 @@ export async function updateSelectedPi(input) {
  // exact global Pi version is transient, not a source manifest pin.
  const spec = owner.package === PI ? `${PI}@${latest}` : owner.spec;
  const args = owner.args ? owner.args.flatMap(arg => arg === PI ? [`${PI}@${latest}`, ...siblingSpecs] : [arg])
-  : (owner.name === 'pnpm' ? ['add', '-g', spec, ...(owner.package === SHELL ? ['--allow-build=gentle-pi'] : [])] : ['install', '-g', spec, ...(owner.package === PI ? ['--ignore-scripts'] : [])]);
+  : (owner.name === 'pnpm' ? ['add', '-g', spec, ...(owner.package === SHELL ? ['--allow-build=drakonc-pi'] : [])] : ['install', '-g', spec, ...(owner.package === PI ? ['--ignore-scripts'] : [])]);
  args.push(...ageExclusion);
  const result = await input.adapters.run(owner.command, [...owner.prefix, ...args], {deadlineMs:20 * 60_000, cwd: owner.sourceRoot ?? input.cwd, stderrTail:4096, ...(owner.sourceEnv ? {env:owner.sourceEnv} : {})});
  if (!succeeded(result)) {
@@ -476,16 +477,16 @@ export async function updateSelectedPi(input) {
   // error line in either stream wins over a stderr warning, stderr's on a tie.
   const output = [result?.stdout, result?.stderrTail].filter(text => typeof text === 'string').join('\n');
   const detail = setupErrorDetail(output, input.home, input.platform);
-  throw new Error(`gentle-shell update: ${owner.name} (${[owner.command, ...owner.prefix].join(' ')}) could not install ${owner.sourceRoot ? [`${PI}@${latest}`, ...siblingSpecs].join(', ') : spec}${detail ? `\n${detail}` : ''}`);
+  throw new Error(`drakonc-shell update: ${owner.name} (${[owner.command, ...owner.prefix].join(' ')}) could not install ${owner.sourceRoot ? [`${PI}@${latest}`, ...siblingSpecs].join(', ') : spec}${detail ? `\n${detail}` : ''}`);
  }
  if (owner.sourceRoot) {
   const {path, key} = pathsFor(input.platform ?? process.platform);
   const canonical = canonicalWith(input.adapters, path);
   let sameLink = false;
   try { sameLink = key(await canonical(owner.linkPath)) === key(owner.sourceRoot); } catch { /* checked below */ }
-  if (!sameLink) throw new Error('gentle-shell update: the Shell link changed during the source update; inspect the installation before retrying.');
-  if (await input.adapters.fs.readFile(path.join(owner.sourceRoot, 'package.json'), 'utf8') !== owner.manifest) throw new Error('gentle-shell update: the source manifest changed during the update; inspect the checkout before retrying.');
-  if (owner.sourceConfig !== undefined && await input.adapters.fs.readFile(path.join(owner.sourceRoot, 'pnpm-workspace.yaml'), 'utf8') !== owner.sourceConfig) throw new Error('gentle-shell update: the source pnpm configuration changed during the update; inspect the checkout before retrying.');
+  if (!sameLink) throw new Error('drakonc-shell update: the Shell link changed during the source update; inspect the installation before retrying.');
+  if (await input.adapters.fs.readFile(path.join(owner.sourceRoot, 'package.json'), 'utf8') !== owner.manifest) throw new Error('drakonc-shell update: the source manifest changed during the update; inspect the checkout before retrying.');
+  if (owner.sourceConfig !== undefined && await input.adapters.fs.readFile(path.join(owner.sourceRoot, 'pnpm-workspace.yaml'), 'utf8') !== owner.sourceConfig) throw new Error('drakonc-shell update: the source pnpm configuration changed during the update; inspect the checkout before retrying.');
   let after = null;
   try {
    const peer = await adjacentPeer({shellRoot:owner.sourceRoot, adapters:input.adapters, path, key, canonical});
@@ -493,15 +494,15 @@ export async function updateSelectedPi(input) {
    if (peer && key(peer.cli) === key(nested)) after = peer.manifest.version ?? null;
   } catch { /* Never invent readback after a successful manager invocation. */ }
   const location = `${owner.name} updated ${PI} in ${owner.sourceRoot}`;
-  if (after !== null && after !== latest) throw new Error(`gentle-shell update: ${owner.name} supplied Pi ${after}, not the latest published Pi ${latest}; inspect the source checkout before retrying.`);
-  if (after === null) input.out?.(`${location}. The Pi version could not be read back; run 'gentle-shell --version' to check it.`);
+  if (after !== null && after !== latest) throw new Error(`drakonc-shell update: ${owner.name} supplied Pi ${after}, not the latest published Pi ${latest}; inspect the source checkout before retrying.`);
+  if (after === null) input.out?.(`${location}. The Pi version could not be read back; run 'drakonc-shell --version' to check it.`);
   else input.out?.(`${location}; the selected Pi is ${after === input.currentVersion ? 'still' : 'now'} ${after}${after !== input.currentVersion && input.currentVersion !== undefined ? ` (was ${input.currentVersion})` : ''}.`);
   return 0;
  }
  const after = await suppliedPiVersion(owner, input);
  const before = input.currentVersion;
- if (after !== null && after !== latest) throw new Error(`gentle-shell update: ${owner.name} supplied Pi ${after}, not the latest published Pi ${latest}; inspect the installation before retrying.`);
- if (after === null) input.out?.(`${owner.name} installed ${spec}. The Pi version it now supplies could not be read back; run 'gentle-shell --version' to check it.`);
+ if (after !== null && after !== latest) throw new Error(`drakonc-shell update: ${owner.name} supplied Pi ${after}, not the latest published Pi ${latest}; inspect the installation before retrying.`);
+ if (after === null) input.out?.(`${owner.name} installed ${spec}. The Pi version it now supplies could not be read back; run 'drakonc-shell --version' to check it.`);
  else if (before !== undefined && after === before) input.out?.(`${owner.name} installed ${spec}, and the selected Pi is still ${after}.`);
  else input.out?.(`${owner.name} installed ${spec}; the selected Pi is now ${after}${before !== undefined ? ` (was ${before})` : ''}.`);
  return 0;

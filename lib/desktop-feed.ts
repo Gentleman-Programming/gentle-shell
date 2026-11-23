@@ -1,9 +1,9 @@
-// Gentle Shell Desktop feed (odd/tasks/herdr-desktop.md T4, S2): the pure half
-// of the per-session snapshot publisher. Every live Gentle Shell session writes
+// Drakonc Shell Desktop feed (odd/tasks/herdr-desktop.md T4, S2): the pure half
+// of the per-session snapshot publisher. Every live Drakonc Shell session writes
 // one bounded JSON document describing what its TUI shows, so the Herdr app
 // mods (S5, S7) can render the same information out of process.
 //
-// Everything here is pure: the extension (extensions/gentle-desktop-feed.ts)
+// Everything here is pure: the extension (extensions/drakonc-desktop-feed.ts)
 // collects raw state from the existing owners and hands it to
 // `buildDesktopFeedSnapshot`, which only shapes and bounds it. Nothing here
 // reads files, spawns processes or holds timers of its own.
@@ -22,7 +22,7 @@ import type { AgentModelConfig } from "./model-routing-authority.ts";
 import { CODEX_PROVIDER, providerNote, USAGE_FETCH_FAILED_NOTE } from "./shell-usage.ts";
 import { FINISHED_STATUSES } from "./agents-protocol.ts";
 
-export const DESKTOP_FEED_SCHEMA = "gentle-shell.desktop-feed/v1";
+export const DESKTOP_FEED_SCHEMA = "drakonc-shell.desktop-feed/v1";
 /** Coalescing window: a burst of changes becomes one write at most this late. */
 export const DESKTOP_FEED_DEBOUNCE_MS = 250;
 /**
@@ -102,7 +102,7 @@ export const DESKTOP_FEED_BUILTIN_COMMANDS: ReadonlyArray<{ name: string; descri
 ];
 
 /** The desktop RPC's own machine channel: not a command a person runs. */
-const HIDDEN_COMMANDS = new Set(["gentle:desktop"]);
+const HIDDEN_COMMANDS = new Set(["drakonc:desktop"]);
 
 /** One entry of pi's command registry (`pi.getCommands()`), as far as the snapshot reads it. */
 export interface DesktopFeedCommandInput {
@@ -127,7 +127,7 @@ export interface DesktopFeedIdentity {
 	mode: string;
 	/**
 	 * The absolute agent dir this snapshot lives under (`<agentDir>/desktop/sessions`): the bundled
-	 * `~/.gentle-shell/agent`, the Pi extension's `~/.pi/agent`, or a custom home. Readers send the
+	 * `~/.drakonc-shell/agent`, the Pi extension's `~/.pi/agent`, or a custom home. Readers send the
 	 * session's actions to this dir's inbox.
 	 */
 	agentDir: string;
@@ -192,7 +192,7 @@ export interface DesktopFeedProfileItem {
 	tier: "standard" | "fast" | null;
 	mode: string;
 	orchestrator: (DesktopFeedProfileRoute & { tier: string | null }) | null;
-	/** One row per agent role, alphabetical, as the /gentle:profiles table lists them. */
+	/** One row per agent role, alphabetical, as the /drakonc:profiles table lists them. */
 	roles: Array<DesktopFeedProfileRoute & { agent: string }>;
 	truncated: boolean;
 }
@@ -215,16 +215,16 @@ export interface DesktopFeedSnapshot {
 		effort: string | null;
 		profile: { name: string | null; tier: "standard" | "fast" | null };
 	};
-	/** No reachable owner today: the persona lives inside gentle-ai.ts (see the T4 report). */
+	/** No reachable owner today: the persona lives inside drakonc-ai.ts (see the T4 report). */
 	persona: null;
 	context: { percent: number | null; tokens: number | null; window: number | null } | null;
 	cost: { total: number; subscription: boolean };
 	/**
-	 * The TUI usage panel (alt+u, /gentle:usage): the session's provider first (its fields at the
+	 * The TUI usage panel (alt+u, /drakonc:usage): the session's provider first (its fields at the
 	 * top level, as before), and every provider the panel lists in `providers`, from the same owner.
 	 */
 	usage: (DesktopFeedUsageEntry & { providers: DesktopFeedUsageEntry[] }) | null;
-	/** The saved model profiles (/gentle:profiles), or null when the store cannot be read. */
+	/** The saved model profiles (/drakonc:profiles), or null when the store cannot be read. */
 	profiles: {
 		/** The profile this session routes with (its configured name, without the label's marker). */
 		active: string | null;

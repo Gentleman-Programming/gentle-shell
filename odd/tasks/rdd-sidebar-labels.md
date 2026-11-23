@@ -1,6 +1,6 @@
 # RDD sidebar labels
 
-Locator: `odd/tasks/rdd-sidebar-labels.md` (worktree `gentle-pi-worktrees/rdd-sidebar-labels`, branch `feat/rdd-sidebar-labels` from `origin/main` 49c171ab4). Runs in parallel with `feat/rdd-section-visibility` (isolated worktree, user-approved); both touch the RDD group in `lib/shell-bar.ts`, the parent resolves the overlap when integrating.
+Locator: `odd/tasks/rdd-sidebar-labels.md` (worktree `drakonc-pi-worktrees/rdd-sidebar-labels`, branch `feat/rdd-sidebar-labels` from `origin/main` 49c171ab4). Runs in parallel with `feat/rdd-section-visibility` (isolated worktree, user-approved); both touch the RDD group in `lib/shell-bar.ts`, the parent resolves the overlap when integrating.
 
 ## Objective
 
@@ -51,7 +51,7 @@ Scope line: known scope renders `first.ts +N files` (singular `+1 file`); unknow
 - T1 (delegated writer, uncommitted, awaiting parent commit): labels replaced per table; `candidateScope` renders `first +1 file` / `first +N files`; `shell-bar.ts` RDD group omits the scope line when scope is `REVIEW_SCOPE_UNAVAILABLE`. Diff: 4 files, +70/−34.
   - RED: focused suites 56 tests, 7 failing on new/updated assertions (label table, `+N files`, sentinel omission).
   - GREEN: focused suites 56/56 pass.
-  - Full suite: 3974 tests, 3929 pass, 2 fail, 43 skipped. Failing: `tests/gentle-shell.test.ts:370` and `:392` assert `/Checking/` (old `checking` label, now `Updating…`); outside T1's allowed surfaces, needs a one-word assertion update (`/Updating…/`).
+  - Full suite: 3974 tests, 3929 pass, 2 fail, 43 skipped. Failing: `tests/drakonc-shell.test.ts:370` and `:392` assert `/Checking/` (old `checking` label, now `Updating…`); outside T1's allowed surfaces, needs a one-word assertion update (`/Updating…/`).
   - `check-types`: 188 recorded, no regressions. `check-provider-contract`: pass. `runtime-harness`: exit 0.
 
 ## Delivery
@@ -60,7 +60,7 @@ Forecast ~60 lines; single PR.
 
 ## Closure evidence
 
-- Supersedes the writer's partial Progress note: the two `tests/gentle-shell.test.ts` assertions (lines 370, 392) that still matched the old `Checking` label were updated by the parent to `Updating…`.
-- Commit `66f574b56`. Route: delegated direct (gentle-ai-worker) plus a parent mechanical test-string fix.
-- Checks: focused 279/279 (gentle-shell, review-sidebar-state, shell-bar); unit stage 3931 pass / 0 fail / 43 skipped; check-types no regressions; provider-contract pass; harness exit 0.
+- Supersedes the writer's partial Progress note: the two `tests/drakonc-shell.test.ts` assertions (lines 370, 392) that still matched the old `Checking` label were updated by the parent to `Updating…`.
+- Commit `66f574b56`. Route: delegated direct (drakonc-ai-worker) plus a parent mechanical test-string fix.
+- Checks: focused 279/279 (drakonc-shell, review-sidebar-state, shell-bar); unit stage 3931 pass / 0 fail / 43 skipped; check-types no regressions; provider-contract pass; harness exit 0.
 - Native review `review-f837dc6e7581e272` (medium, reliability) approved and acknowledged.

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createDesktopFeedExtension, type DesktopFeedOptions } from "../extensions/gentle-desktop-feed.ts";
+import { createDesktopFeedExtension, type DesktopFeedOptions } from "../extensions/drakonc-desktop-feed.ts";
 import { createDesktopFeedScheduler, type DesktopFeedSnapshot, type DesktopFeedTimers } from "../lib/desktop-feed.ts";
 import { createDesktopFeedStore, desktopFeedFile } from "../lib/desktop-feed-store.ts";
 import { createUntrackedLineCounter } from "../lib/desktop-feed-sources.ts";
@@ -20,7 +20,7 @@ import { collectSessionStats } from "../lib/shell-stats.ts";
 // cheap on pi's event loop.
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
-const GENTLE_ENV = { PI_PROGRAM_STATUS_APP: "gentle-shell", HERDR_ENV: "1", HERDR_PANE_ID: "t7" };
+const DRAKONC_ENV = { PI_PROGRAM_STATUS_APP: "drakonc-shell", HERDR_ENV: "1", HERDR_PANE_ID: "t7" };
 const START = Date.UTC(2026, 10, 15, 12, 0, 0);
 
 /** Timers that honour their delay on a virtual clock. */
@@ -63,7 +63,7 @@ function fakePi() {
 		},
 		registerCommand() {},
 		getThinkingLevel: () => "high",
-		getCommands: () => { commandCalls += 1; return [{ name: "gentle:changes", description: "Open the changes panel", source: "extension" }]; },
+		getCommands: () => { commandCalls += 1; return [{ name: "drakonc:changes", description: "Open the changes panel", source: "extension" }]; },
 	} as unknown as ExtensionAPI;
 	const fire = (name: string, event: unknown, ctx: unknown) => { for (const fn of handlers.get(name) ?? []) fn(event, ctx); };
 	return { pi, fire, emit: (name: string, data: unknown) => (pi.events as any).emit(name, data), get commandCalls() { return commandCalls; } };
@@ -123,7 +123,7 @@ function harness(t: test.TestContext, options: { entries?: number; files?: numbe
 	const writes: Array<{ at: number; value: DesktopFeedSnapshot }> = [];
 	const files = options.files ?? 0;
 	createDesktopFeedExtension({
-		env: GENTLE_ENV,
+		env: DRAKONC_ENV,
 		agentDir,
 		now: clock.now,
 		timers: clock.timers,
@@ -236,8 +236,8 @@ test("S13: a permission mode change publishes within 50 ms", async (t) => {
 		dispose: () => {},
 	};
 	const h = harness(t);
-	// The permission owner answers discovery on the bus, as gentle-shell's does.
-	(h.pi.events as any).on("gentle:yolo:host-ui", (request: any) => { request.respond(adapter); });
+	// The permission owner answers discovery on the bus, as drakonc-shell's does.
+	(h.pi.events as any).on("drakonc:yolo:host-ui", (request: any) => { request.respond(adapter); });
 	await h.start();
 	assert.equal(h.read().permission?.mode, "normal");
 	assert.ok(observer, "the feed observes the permission owner");
@@ -294,7 +294,7 @@ test("S13: pi's command registry is read once per session start, not per flush",
 	for (let i = 0; i < 20; i++) { h.ctx.entries.push(assistant(i)); h.fire("message_end", { message: { role: "assistant" } }, h.ctx); h.clock.advance(1100); }
 	assert.ok(h.writes.length > 5);
 	assert.equal(h.commandCalls, calls, "no registry read per flush");
-	assert.equal(h.read().commands.items.some((item) => item.name === "gentle:changes"), true);
+	assert.equal(h.read().commands.items.some((item) => item.name === "drakonc:changes"), true);
 	h.fire("resources_discover", { type: "resources_discover", cwd: "/w", reason: "reload" }, h.ctx);
 	h.clock.advance(1100);
 	assert.equal(h.commandCalls, calls + 1, "rediscovered resources refresh the registry");

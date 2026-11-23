@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
 const tracking = readFileSync(new URL("../assets/orchestrator-tracking.md", import.meta.url), "utf8");
 const lockedSemver = (JSON.parse(readFileSync(new URL("../contracts/review-provider-contract-mirror/provider-contract.lock.json", import.meta.url), "utf8")) as { contract_semver: string }).contract_semver;

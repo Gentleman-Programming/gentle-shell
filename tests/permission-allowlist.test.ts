@@ -3,13 +3,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
 const { confirmCommand, evaluateGuardedCommand, loadRuntimeGuardrailsConfig, saveGuardedCommandAllowAlways } = __testing as {
 	confirmCommand: (command: string, ctx: unknown, events: unknown, herdrLifecycle: unknown, yoloActive?: boolean, autoGate?: unknown, superActive?: boolean) => Promise<{ block: true; reason: string } | undefined>;
 	evaluateGuardedCommand: (command: string, config: { autonomousMode: boolean; guardedCommands: Record<string, string>; guardedCommandVariants?: Record<string, string> }) => { action: string; dataLoss?: boolean; key?: string };
-	loadRuntimeGuardrailsConfig: (cwd: string, options?: { gentlePiConfigHome?: string }) => { autonomousMode: boolean; guardedCommands: Record<string, string>; guardedCommandVariants?: Record<string, string> };
-	saveGuardedCommandAllowAlways: (key: string, options?: { gentlePiConfigHome?: string }, variant?: string) => boolean;
+	loadRuntimeGuardrailsConfig: (cwd: string, options?: { drakoncPiConfigHome?: string }) => { autonomousMode: boolean; guardedCommands: Record<string, string>; guardedCommandVariants?: Record<string, string> };
+	saveGuardedCommandAllowAlways: (key: string, options?: { drakoncPiConfigHome?: string }, variant?: string) => boolean;
 };
 
 interface StoredConfig {
@@ -34,17 +34,17 @@ interface Harness {
 
 function makeHarness(): Harness {
 	const home = mkdtempSync(join(tmpdir(), "permission-allowlist-"));
-	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	const previousConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
 	const harness: Harness = {
 		home,
 		selectCalls: [],
 		confirmCalls: [],
 		pendingSelection: undefined as string | undefined,
 		selectWith(value: string | undefined) { harness.pendingSelection = value; },
-		setConfigHome() { process.env.GENTLE_PI_CONFIG_HOME = home; },
+		setConfigHome() { process.env.DRAKONC_PI_CONFIG_HOME = home; },
 		restoreConfigHome() {
-			if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-			else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+			if (previousConfigHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+			else process.env.DRAKONC_PI_CONFIG_HOME = previousConfigHome;
 		},
 		ctx(sessionManager: object = { id: "manager" }) {
 			return {
@@ -120,8 +120,8 @@ test("a git -C push shares the plain variant across operands in one session", as
 	const harness = makeHarness();
 	harness.setConfigHome();
 	try {
-		const original = "git -C /home/ricardo/Trabajo/IAI/gentle-companion push origin feat/upstream-v0.4.2-01-integration:refs/heads/feat/upstream-v0.4.2-01-integration";
-		const changed = "git -C /home/ricardo/Trabajo/IAI/gentle-companion push origin feat/upstream-v0.4.2-02-next:refs/heads/feat/upstream-v0.4.2-02-next";
+		const original = "git -C /home/ricardo/Trabajo/IAI/drakonc-companion push origin feat/upstream-v0.4.2-01-integration:refs/heads/feat/upstream-v0.4.2-01-integration";
+		const changed = "git -C /home/ricardo/Trabajo/IAI/drakonc-companion push origin feat/upstream-v0.4.2-02-next:refs/heads/feat/upstream-v0.4.2-02-next";
 		const otherDirectory = "git -C /tmp/other-repo push origin main:release";
 		const manager = { id: "wc1" };
 		harness.selectWith("Allow for this session");
@@ -139,8 +139,8 @@ test("a git -C plain Always persists and reloads in a new session", async () => 
 	const harness = makeHarness();
 	harness.setConfigHome();
 	try {
-		const original = "git -C /home/ricardo/Trabajo/IAI/gentle-companion push origin feat/upstream-v0.4.2-01-integration:refs/heads/feat/upstream-v0.4.2-01-integration";
-		const changed = "git -C /home/ricardo/Trabajo/IAI/gentle-companion push origin feat/upstream-v0.4.2-02-next:refs/heads/feat/upstream-v0.4.2-02-next";
+		const original = "git -C /home/ricardo/Trabajo/IAI/drakonc-companion push origin feat/upstream-v0.4.2-01-integration:refs/heads/feat/upstream-v0.4.2-01-integration";
+		const changed = "git -C /home/ricardo/Trabajo/IAI/drakonc-companion push origin feat/upstream-v0.4.2-02-next:refs/heads/feat/upstream-v0.4.2-02-next";
 		harness.selectWith("Always allow git push");
 		assert.equal(await harness.run(original, { id: "wp1" }), undefined);
 		assert.deepEqual(readStoredConfig(harness.home).guardedCommandVariants, { "gitPush:plain": "allow" });
@@ -148,8 +148,8 @@ test("a git -C plain Always persists and reloads in a new session", async () => 
 		const next = { id: "wp2" };
 		assert.equal(await harness.run(changed, next), undefined);
 		harness.selectWith("Deny");
-		assert.ok((await harness.run("git -C /home/ricardo/Trabajo/IAI/gentle-companion push --delete origin old", next))?.block);
-		assert.ok((await harness.run("git -C /home/ricardo/Trabajo/IAI/gentle-companion push --mirror origin", next))?.block);
+		assert.ok((await harness.run("git -C /home/ricardo/Trabajo/IAI/drakonc-companion push --delete origin old", next))?.block);
+		assert.ok((await harness.run("git -C /home/ricardo/Trabajo/IAI/drakonc-companion push --mirror origin", next))?.block);
 		assert.equal(harness.selectCalls.length, 3);
 	} finally { harness.restoreConfigHome(); rmSync(harness.home, { recursive: true, force: true }); }
 });
@@ -324,7 +324,7 @@ test("invalid variant config entries are ignored", () => {
 				"gitPush:--force": "confirm",
 			},
 		}));
-		const config = loadRuntimeGuardrailsConfig(home, { gentlePiConfigHome: home });
+		const config = loadRuntimeGuardrailsConfig(home, { drakoncPiConfigHome: home });
 		assert.deepEqual(config.guardedCommandVariants, { "gitPush:--delete": "allow" }, "only allow entries are honored");
 		assert.equal(evaluateGuardedCommand("git push origin main", config).action, "confirm");
 		assert.equal(evaluateGuardedCommand("git push --delete origin old", config).action, "allow");
@@ -338,7 +338,7 @@ test("saveGuardedCommandAllowAlways refuses to rewrite a malformed config", () =
 	try {
 		mkdirSync(home, { recursive: true });
 		writeFileSync(join(home, "runtime-guardrails.json"), "{ not json");
-		assert.equal(saveGuardedCommandAllowAlways("gitPush", { gentlePiConfigHome: home }), false);
+		assert.equal(saveGuardedCommandAllowAlways("gitPush", { drakoncPiConfigHome: home }), false);
 		assert.equal(readFileSync(join(home, "runtime-guardrails.json"), "utf8"), "{ not json");
 	} finally { rmSync(home, { recursive: true, force: true }); }
 });

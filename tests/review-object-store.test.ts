@@ -10,7 +10,7 @@ import { ReviewGraphObjectStoreV1, ReviewObjectStoreError, type ReviewObjectStor
 const hash = "a".repeat(64);
 
 function temporaryRoot(): string {
-	return mkdtempSync(join(tmpdir(), "gentle-review-object-"));
+	return mkdtempSync(join(tmpdir(), "drakonc-review-object-"));
 }
 
 function genesis() {
@@ -28,7 +28,7 @@ test("repository factory resolves the graph object path beneath the exact common
 		execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "foundation"], { cwd: repository });
 		const store = ReviewGraphObjectStoreV1.forRepository(repository);
 		const commonDirectory = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: repository, encoding: "utf8" }).trim();
-		assert.equal(store.root, join(commonDirectory, "gentle-ai", "reviews", "graph-v1"));
+		assert.equal(store.root, join(commonDirectory, "drakonc-ai", "reviews", "graph-v1"));
 	} finally {
 		rmSync(parent, { recursive: true, force: true });
 	}

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 import {
 	PARAKEET_MODEL_MANIFEST,
 	VOICE_TARGETS,
@@ -15,7 +15,7 @@ import {
 } from "./voice-artifacts.ts";
 
 // Explicit acquisition and status of the optional voice runtime and model (S1-S3).
-// Nothing runs at import: /gentle:voice calls these on request. A component is
+// Nothing runs at import: /drakonc:voice calls these on request. A component is
 // downloaded into a private staging directory under the voice home, verified by
 // size and digest while it streams, and published with a single rename, with its
 // install marker written last. A failure removes only that staging directory, so
@@ -90,7 +90,7 @@ export interface VoiceComponentStatus {
 	reason?: string;
 }
 
-const MARKER = ".gentle-voice.json";
+const MARKER = ".drakonc-voice.json";
 const MARKER_SCHEMA = 1;
 const MAX_REDIRECTS = 5;
 const IDLE_MS = 60_000;
@@ -98,9 +98,9 @@ const TOTAL_MS: Record<VoiceComponentKind, number> = { runtime: 20 * 60_000, mod
 const SAFE_ID = /^[a-z0-9][a-z0-9._-]*$/;
 const SAFE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-// Everything voice owns lives in one directory of the Gentle AI config home.
+// Everything voice owns lives in one directory of the Drakonc AI config home.
 export function resolveVoiceHome(env: NodeJS.ProcessEnv = process.env): string {
-	return join(gentlePiConfigHome(env), "voice");
+	return join(drakoncPiConfigHome(env), "voice");
 }
 
 export function voiceComponentPath(voiceHome: string, kind: VoiceComponentKind, manifest: { id: string }): string {

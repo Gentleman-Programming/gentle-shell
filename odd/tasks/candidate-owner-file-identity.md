@@ -27,4 +27,4 @@ Additional controlled root-replacement regression retains the Git pointer and in
 - `node scripts/build-runtime-modules.mjs --check`: 8 generated modules match; one-shot metrics sources validated.
 - `git diff --check`: passed. Native Windows CI is unavailable locally; modeled precision evidence does not measure the original NTFS identifiers. Review-ready uncommitted diff only; delivery and independent verification remain parent-owned.
 
-Rollback boundary: owner-module precision changes and their regression. Marker JSON, public APIs, privacy/ACL/registration/dead-owner gates must remain unchanged. CodeGraph at parent cwd indexes gentle-ai, not this repository; child CodeGraph unavailable/uninitialized, scoped known-path fallback used.
+Rollback boundary: owner-module precision changes and their regression. Marker JSON, public APIs, privacy/ACL/registration/dead-owner gates must remain unchanged. CodeGraph at parent cwd indexes drakonc-ai, not this repository; child CodeGraph unavailable/uninitialized, scoped known-path fallback used.

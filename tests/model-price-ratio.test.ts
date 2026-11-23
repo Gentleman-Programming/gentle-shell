@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { computeModelPriceRatio, modelRoutingLine, renderModelRoutingLine, type ModelCost, type ModelPriceLookup } from "../lib/model-price-ratio.ts";
 
-// gentle-shell#1731 S3/AC3: the runtime computes the orchestrator/worker price
+// drakonc-shell#1731 S3/AC3: the runtime computes the orchestrator/worker price
 // ratio from catalog prices and renders it as one fact line; the model never
 // estimates it.
 

@@ -18,11 +18,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { installerPaths } from "./verify-package-files.mjs";
 
 /** Stable names, so `releases/latest/download/<name>` always points at the newest release. */
-const MACOS_ASSET = "gentle-shell-installer-macos.zip";
-const WINDOWS_ASSET = "gentle-shell-installer-windows.zip";
-const LINUX_ASSET = "gentle-shell-installer-linux.tar.gz";
+const MACOS_ASSET = "drakonc-shell-installer-macos.zip";
+const WINDOWS_ASSET = "drakonc-shell-installer-windows.zip";
+const LINUX_ASSET = "drakonc-shell-installer-linux.tar.gz";
 export const INSTALLER_ASSETS = Object.freeze([MACOS_ASSET, WINDOWS_ASSET, LINUX_ASSET]);
-export const INSTALLER_CHECKSUMS = "gentle-shell-installers-SHA256SUMS.txt";
+export const INSTALLER_CHECKSUMS = "drakonc-shell-installers-SHA256SUMS.txt";
 
 // Static and dynamic imports, and files a module reads next to itself through
 // `new URL("./file.ext", import.meta.url)`. Folder URLs (a trailing slash) are not
@@ -53,7 +53,7 @@ export function bundleFiles(root) {
 
 const unixLauncher = (title) => [
 	"#!/bin/sh",
-	`# ${title}: double-click to install or update Gentle Shell.`,
+	`# ${title}: double-click to install or update Drakonc Shell.`,
 	"# It runs the bundled bootstrap, which opens the installation wizard in your browser.",
 	'cd "$(dirname "$0")" || exit 1',
 	'sh "./installer/scripts/bootstrap.sh"',
@@ -69,7 +69,7 @@ const unixLauncher = (title) => [
 
 const windowsLauncher = [
 	"@echo off",
-	"rem Double-click to install or update Gentle Shell.",
+	"rem Double-click to install or update Drakonc Shell.",
 	"rem It runs the bundled bootstrap, which opens the installation wizard in your browser.",
 	'call "%~dp0installer\\scripts\\bootstrap.cmd"',
 	"echo.",
@@ -103,7 +103,7 @@ function stage(root, folder, files, launcher) {
 /** Builds the three downloads and their checksums into `outDir`; returns their paths. */
 export function buildInstallerBundles({ root, outDir }) {
 	const files = bundleFiles(root);
-	const work = mkdtempSync(join(tmpdir(), "gentle-shell-installers-"));
+	const work = mkdtempSync(join(tmpdir(), "drakonc-shell-installers-"));
 	try {
 		mkdirSync(outDir, { recursive: true });
 		const zipped = (asset, folder, launcher) => {
@@ -111,11 +111,11 @@ export function buildInstallerBundles({ root, outDir }) {
 			rmSync(join(outDir, asset), { force: true });
 			run("zip", ["-q", "-r", join(outDir, asset), folder], join(work, asset));
 		};
-		zipped(MACOS_ASSET, "Gentle Shell Installer", { name: "Install Gentle Shell.command", content: unixLauncher("macOS") });
-		zipped(WINDOWS_ASSET, "Gentle Shell Installer", { name: "Install Gentle Shell.cmd", content: windowsLauncher });
+		zipped(MACOS_ASSET, "Drakonc Shell Installer", { name: "Install Drakonc Shell.command", content: unixLauncher("macOS") });
+		zipped(WINDOWS_ASSET, "Drakonc Shell Installer", { name: "Install Drakonc Shell.cmd", content: windowsLauncher });
 		const linux = join(work, LINUX_ASSET);
-		stage(root, join(linux, "gentle-shell-installer"), files, { name: "install-gentle-shell.sh", content: unixLauncher("Linux") });
-		run("tar", ["-czf", join(outDir, LINUX_ASSET), "gentle-shell-installer"], linux);
+		stage(root, join(linux, "drakonc-shell-installer"), files, { name: "install-drakonc-shell.sh", content: unixLauncher("Linux") });
+		run("tar", ["-czf", join(outDir, LINUX_ASSET), "drakonc-shell-installer"], linux);
 		const sums = INSTALLER_ASSETS.map((asset) => `${createHash("sha256").update(readFileSync(join(outDir, asset))).digest("hex")}  ${asset}\n`);
 		writeFileSync(join(outDir, INSTALLER_CHECKSUMS), sums.join(""));
 		return [...INSTALLER_ASSETS, INSTALLER_CHECKSUMS].map((asset) => join(outDir, asset));

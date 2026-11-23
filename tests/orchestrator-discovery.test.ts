@@ -42,11 +42,11 @@ test("published headers retain the frozen legacy schema-1 contract after metadat
 	t.after(() => publisher.dispose());
 	publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
 	const name = `${publisher.target.sessionHash}.${publisher.target.incarnation}.header.json`;
-	const header = JSON.parse(readFileSync(join(profile, "gentle-agents", "presence", name), "utf8"));
+	const header = JSON.parse(readFileSync(join(profile, "drakonc-agents", "presence", name), "utf8"));
 	assertLegacyHeader(header);
 	assert.throws(() => assertLegacyHeader({ ...header, discovery: {} }));
 	assert.throws(() => assertLegacyHeader({ ...header, schema: 2 }));
-	const sidecar = join(profile, "gentle-agents", "presence", name.replace("header.json", "discovery.json"));
+	const sidecar = join(profile, "drakonc-agents", "presence", name.replace("header.json", "discovery.json"));
 	const value = JSON.parse(readFileSync(sidecar, "utf8"));
 	for (const invalid of ["{broken", JSON.stringify({ ...value, generation: 999 }), JSON.stringify({ ...value, incarnation: "other" }), JSON.stringify({ ...value, metadata: {} })]) {
 		writeFileSync(sidecar, invalid);
@@ -61,11 +61,11 @@ test("a live peer that predates discovery publication keeps its legacy header la
 	const profile = fixture(t);
 	// A long-lived peer started before discovery publication shipped heartbeats
 	// the schema-1 header only and never writes a discovery sidecar.
-	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "gentle-shell", activity: [] });
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "drakonc-shell", activity: [] });
 	t.after(() => publisher.dispose());
 	const [candidate] = discoverOrchestrators(profile, [peer]);
 	assert.equal(candidate.freshness, "unknown");
-	assert.equal(candidate.legacyLabel, "gentle-shell");
+	assert.equal(candidate.legacyLabel, "drakonc-shell");
 	assert.equal(candidate.workspace, undefined);
 	assert.equal(candidate.publication, undefined);
 	// An old heartbeat is not a live legacy peer.
@@ -73,14 +73,14 @@ test("a live peer that predates discovery publication keeps its legacy header la
 });
 test("a present but invalid or foreign discovery sidecar never yields a legacy label", (t) => {
 	const profile = fixture(t);
-	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "gentle-shell", activity: [] });
+	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "drakonc-shell", activity: [] });
 	t.after(() => publisher.dispose());
 	publisher.updateDiscovery(peer, { workspace: "/repo", tasks: [] });
 	// Metadata bound to another activation fails closed, without a label.
 	const foreign = discoverOrchestrators(profile, [{ ...peer, endpoint: "/socket/replacement" }])[0];
 	assert.equal(foreign.freshness, "unknown");
 	assert.equal(foreign.legacyLabel, undefined);
-	const sidecar = join(profile, "gentle-agents", "presence", `${publisher.target.sessionHash}.${publisher.target.incarnation}.discovery.json`);
+	const sidecar = join(profile, "drakonc-agents", "presence", `${publisher.target.sessionHash}.${publisher.target.incarnation}.discovery.json`);
 	writeFileSync(sidecar, "{broken");
 	const broken = discoverOrchestrators(profile, [peer])[0];
 	assert.equal(broken.freshness, "unknown");
@@ -135,7 +135,7 @@ test("published notes detach, age independently, and fail unknown without hiding
 	assert.equal(selected().state?.ownerReply, false);
 	assert.equal(discoverOrchestrators(profile, [{ ...peer, endpoint: "/replacement" }])[0].state, undefined);
 	const header = listPresence(profile).entries[0];
-	const path = join(profile, "gentle-agents", "presence", `${header.sessionHash}.${header.incarnation}.discovery.json`);
+	const path = join(profile, "drakonc-agents", "presence", `${header.sessionHash}.${header.incarnation}.discovery.json`);
 	const value = JSON.parse(readFileSync(path, "utf8"));
 	for (const invalid of [{ ...value.metadata.state, authority: "grant" }, { ...value.metadata.state, sessionId: "other" },
 		{ ...value.metadata.state, cwd: "relative/repo" }, { ...value.metadata.state, cwd: "/repo\u00a0name" },
@@ -166,7 +166,7 @@ test("published notes detach, age independently, and fail unknown without hiding
 for (const failure of ["unwritable", "symlink"] as const) test(`optional catalog ${failure} failure preserves discovery and legacy activity`, { skip: process.platform === "win32" }, (t) => {
 	const profile = fixture(t);
 	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Review", activity: [] });
-	const catalog = join(profile, "gentle-agents", "catalog");
+	const catalog = join(profile, "drakonc-agents", "catalog");
 	if (failure === "symlink") symlinkSync(profile, catalog, "dir");
 	else { mkdirSync(catalog, { mode: 0o700 }); chmodSync(catalog, 0o500); }
 	try {
@@ -196,7 +196,7 @@ test("missing and ambiguous metadata never hide routing IDs", (t) => {
 		assert.equal(discoverOrchestrators(profile, [peer])[0].freshness, "unknown");
 		assert.throws(() => publishers[0].updateDiscovery(peer, { workspace: "/repo", tasks: [{ id: "x", label: "x", status: "invented", cwd: "/repo" }] }), /malformed/);
 	} finally { publishers.forEach(publisher => publisher.dispose()); }
-	writeFileSync(join(profile, "gentle-agents", "presence", "invalid.header.json"), "{not-json");
+	writeFileSync(join(profile, "drakonc-agents", "presence", "invalid.header.json"), "{not-json");
 	assert.equal(discoverOrchestrators(profile, [peer])[0].freshness, "unknown");
 });
 
@@ -228,7 +228,7 @@ test("malformed scope alone falls back unknown; heartbeat retains Git resolution
 	publisher.refreshLabel();
 	assert.equal(discoverOrchestrators(profile, [peer])[0].scope?.host.resolvedAt, 1);
 	const name = `${publisher.target.sessionHash}.${publisher.target.incarnation}.discovery.json`;
-	const path = join(profile, "gentle-agents", "presence", name);
+	const path = join(profile, "drakonc-agents", "presence", name);
 	const value = JSON.parse(readFileSync(path, "utf8"));
 	value.metadata.scope.host.root = "/repo\nother";
 	writeFileSync(path, JSON.stringify(value));

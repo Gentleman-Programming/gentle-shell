@@ -10,9 +10,9 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
  const adjacent = source || scenario.startsWith('adjacent');
  const npm = source || scenario.startsWith('npm-');
  const nodeModules = '/global/v11/selected/node_modules';
- const shellRoot = '/store/shell-peer/node_modules/gentle-pi';
+ const shellRoot = '/store/shell-peer/node_modules/drakonc-pi';
  const piRoot = adjacent ? '/store/shell-peer/node_modules/' + PI : '/store/pi/node_modules/' + PI;
- const target = adjacent ? 'gentle-pi' : PI;
+ const target = adjacent ? 'drakonc-pi' : PI;
  const dependencies: Record<string, object> = {[target]:{path: `${nodeModules}/${target}`,
   ...(scenario === 'npm-link' ? {link:true} : {}),
   ...(scenario === 'npm-file' || source ? {resolved:'file:/source/pi'} : {})}};
@@ -29,7 +29,7 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
  }
  const roots = [nodeModules, '/global/v11/other/node_modules', shellRoot, piRoot, `${piRoot}/dist/bundle/cli.js`, `${shellRoot}/.git`, `${shellRoot}/package.json`, `${shellRoot}/package-lock.json`];
  const bootstrap = `import { registerHooks } from 'node:module';
- const original = ${JSON.stringify(new URL('../bin/gentle-shell.mjs', import.meta.url).href)};
+ const original = ${JSON.stringify(new URL('../bin/drakonc-shell.mjs', import.meta.url).href)};
  registerHooks({load(url, context, next) {
   if (url === original) {
    let source = next(url, context).source.toString();
@@ -46,7 +46,7 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
  const links = ${JSON.stringify(links)}, roots = ${JSON.stringify(roots)};
  globalThis.fakeAdapters = {
   fs: { realpath: async p => { if (links[p]) return links[p]; if (roots.includes(p)) return p; throw Object.assign(new Error('ENOENT ' + p), {code:'ENOENT'}); },
-   readFile: async p => { if (p === '${shellRoot}/package.json') return JSON.stringify({name:'gentle-pi',version:'4.1.0', ...(${source} ? {packageManager:'npm@11.1.1',devDependencies:{'${PI}':'^1.2.0'}} : {})}); if(p === '${piRoot}/package.json') return JSON.stringify({name:'${PI}',version:'1.2.0',bin:{pi:'dist/bundle/cli.js'}}); if (${source} && p === '${shellRoot}/package-lock.json') return '{}'; throw Object.assign(new Error('ENOENT ' + p), {code:'ENOENT'}); } },
+   readFile: async p => { if (p === '${shellRoot}/package.json') return JSON.stringify({name:'drakonc-pi',version:'4.1.0', ...(${source} ? {packageManager:'npm@11.1.1',devDependencies:{'${PI}':'^1.2.0'}} : {})}); if(p === '${piRoot}/package.json') return JSON.stringify({name:'${PI}',version:'1.2.0',bin:{pi:'dist/bundle/cli.js'}}); if (${source} && p === '${shellRoot}/package-lock.json') return '{}'; throw Object.assign(new Error('ENOENT ' + p), {code:'ENOENT'}); } },
   which: async n => n === '${npm ? 'npm' : 'pnpm'}' ? '/fake/' + n : null,
   run: async (cmd, args, options) => {
    if(args.includes('list') || args.includes('ls')) return {code:0,stdout:${JSON.stringify(listing)}};
@@ -57,13 +57,13 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
   }
  };
  await import(original);`;
- return spawnSync(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(bootstrap)}`, 'bin/gentle-shell.mjs', ...args], {encoding:'utf8'});
+ return spawnSync(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(bootstrap)}`, 'bin/drakonc-shell.mjs', ...args], {encoding:'utf8'});
 }
 
 for (const scenario of ['owned','adjacent','separate']) test(`public linked-store update succeeds for ${scenario}`, () => {
  const result = launch(['update'], scenario);
  assert.equal(result.status, 0, result.stderr);
- assert.match(result.stdout, scenario === 'adjacent' ? /MUTATION \["add","-g","gentle-pi@4\.1\.0","--allow-build=gentle-pi",/ : /MUTATION \["add","-g","@earendil-works\/pi-coding-agent@1\.2\.0",/);
+ assert.match(result.stdout, scenario === 'adjacent' ? /MUTATION \["add","-g","drakonc-pi@4\.1\.0","--allow-build=drakonc-pi",/ : /MUTATION \["add","-g","@earendil-works\/pi-coding-agent@1\.2\.0",/);
  assert.match(result.stdout, /--config\.minimum-release-age-exclude=@earendil-works\/pi-coding-agent/);
  assert.doesNotMatch(result.stdout, /FORWARD/);
  // The fake manager changes nothing, and the selected version matches latest.
@@ -76,8 +76,8 @@ for (const all of [false, true]) test(`public source-linked update uses the chec
  const result = launch(all ? ['update', '--all'] : ['update'], 'source');
  assert.equal(result.status, 0, result.stderr);
  assert.equal(result.stderr, '');
- assert.match(result.stdout, /MUTATION \["install","@earendil-works\/pi-coding-agent@1\.2\.0","--no-save","--ignore-scripts","--global=false","--prefix","\/store\/shell-peer\/node_modules\/gentle-pi","--workspaces=false","--no-audit","--no-fund"\]/);
- assert.match(result.stdout, /CWD \/store\/shell-peer\/node_modules\/gentle-pi/);
+ assert.match(result.stdout, /MUTATION \["install","@earendil-works\/pi-coding-agent@1\.2\.0","--no-save","--ignore-scripts","--global=false","--prefix","\/store\/shell-peer\/node_modules\/drakonc-pi","--workspaces=false","--no-audit","--no-fund"\]/);
+ assert.match(result.stdout, /CWD \/store\/shell-peer\/node_modules\/drakonc-pi/);
  assert.doesNotMatch(result.stdout, /"-g"|@latest/);
  assert.equal(result.stdout.includes('FORWARD ["update","--extensions"]'), all);
 });
@@ -118,7 +118,7 @@ test('public update rejects a prerelease latest tag before mutation', () => {
  const result = launch(['update'], 'unstable');
  assert.equal(result.status, 1);
  assert.equal(result.stdout, '');
- assert.equal(result.stderr, 'gentle-shell update: the latest published Pi version "1.3.0-rc.1" was rejected. No installation changed.\n');
+ assert.equal(result.stderr, 'drakonc-shell update: the latest published Pi version "1.3.0-rc.1" was rejected. No installation changed.\n');
 });
 
 // `update` is how an old Pi gets replaced, so the minimum-version gate must not block it.

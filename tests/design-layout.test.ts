@@ -10,7 +10,7 @@ import { DESIGN_LAYOUT_COORDINATE_MAX, DESIGN_LAYOUT_MAX_POSITIONS, DesignLayout
 // chosen. Validated whole before it is written; a file that cannot be read is no layout, never an error.
 
 function designRoot(t: TestContext) {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-design-layout-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-design-layout-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const root = join(dir, "design");
 	mkdirSync(join(root, "alpha"), { recursive: true });

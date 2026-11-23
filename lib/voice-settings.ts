@@ -1,22 +1,22 @@
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 
 // The persisted push-to-talk toggle (hold Space to dictate). It lives in the
-// Gentle AI config home next to the other per-feature preference files, never
+// Drakonc AI config home next to the other per-feature preference files, never
 // inside the voice directory, so reading it touches no voice install. A
 // missing, malformed or foreign file reads as off.
 
-export const VOICE_SETTINGS_SCHEMA = "gentle-pi.voice-settings/v1";
+export const VOICE_SETTINGS_SCHEMA = "drakonc-pi.voice-settings/v1";
 export const VOICE_SETTINGS_FILE = "voice-settings.json";
 
 export interface VoiceSettingsOptions {
 	env?: NodeJS.ProcessEnv;
-	gentlePiConfigHome?: string;
+	drakoncPiConfigHome?: string;
 }
 
-const homeFor = (options: VoiceSettingsOptions) => options.gentlePiConfigHome ?? gentlePiConfigHome(options.env);
+const homeFor = (options: VoiceSettingsOptions) => options.drakoncPiConfigHome ?? drakoncPiConfigHome(options.env);
 
 export function parseVoiceSettingsFile(raw: string): boolean | undefined {
 	try {

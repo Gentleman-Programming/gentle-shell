@@ -16,7 +16,7 @@ const previousHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROF
 process.env.HOME = osHome;
 process.env.USERPROFILE = osHome;
 const { default: promptHistoryExtension } = await import("../extensions/history/index.ts");
-const { setBundledInstallForTesting } = await import("../lib/gentle-shell-bundled.ts");
+const { setBundledInstallForTesting } = await import("../lib/drakonc-shell-bundled.ts");
 after(() => {
   for (const [name, value] of Object.entries(previousHome)) {
     if (value === undefined) delete process.env[name];
@@ -37,11 +37,11 @@ function load(env: NodeJS.ProcessEnv) {
     registerCommand: () => {},
   };
   promptHistoryExtension(pi as never, {
-    env: { GENTLE_PI_HISTORY_CAPTURE: "1", ...env },
+    env: { DRAKONC_PI_HISTORY_CAPTURE: "1", ...env },
     cwd: "/pi-history-test/project-agent-home",
     instanceId: "inst-agent-home",
     now: () => 1700000000000,
-    gentlePiConfigHome: fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-agent-home-config-")),
+    drakoncPiConfigHome: fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-agent-home-config-")),
   });
   return async (prompt: string) => {
     await new Promise((resolve) => setImmediate(resolve));
@@ -61,7 +61,7 @@ test("outside a bundled install prompt history stays under ~/.pi/agent, whatever
   const agentHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-agent-home-"));
   t.after(() => fs.rmSync(agentHome, { recursive: true, force: true }));
   // The isolated launcher's home, and a prefix variable this package is not installed in.
-  await load({ PI_CODING_AGENT_DIR: agentHome, GENTLE_SHELL_PREFIX: agentHome })("isolated home prompt");
+  await load({ PI_CODING_AGENT_DIR: agentHome, DRAKONC_SHELL_PREFIX: agentHome })("isolated home prompt");
   assert.ok(holds(path.join(osHome, ".pi", "agent", "history"), "isolated home prompt"));
   assert.equal(fs.existsSync(path.join(agentHome, "history")), false);
 });
@@ -75,7 +75,7 @@ test("in a bundled install prompt history lives under the agent home Pi runs wit
     setBundledInstallForTesting(undefined);
     for (const dir of [agentHome, prefix]) fs.rmSync(dir, { recursive: true, force: true });
   });
-  await load({ PI_CODING_AGENT_DIR: agentHome, GENTLE_SHELL_PREFIX: prefix })("bundled prompt");
+  await load({ PI_CODING_AGENT_DIR: agentHome, DRAKONC_SHELL_PREFIX: prefix })("bundled prompt");
   assert.ok(holds(path.join(agentHome, "history"), "bundled prompt"));
   assert.equal(holds(path.join(osHome, ".pi", "agent", "history"), "bundled prompt"), false);
 });

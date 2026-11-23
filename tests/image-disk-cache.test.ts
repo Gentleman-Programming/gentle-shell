@@ -7,16 +7,16 @@ import { ImageDiskCache, defaultCacheRoot } from "../lib/image-disk-cache.ts";
 import { ImageAttachments } from "../lib/image-attachments.ts";
 
 function tempRoot(): string {
-	return mkdtempSync(join(tmpdir(), "gentle-image-cache-"));
+	return mkdtempSync(join(tmpdir(), "drakonc-image-cache-"));
 }
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 test("the cache root honours XDG_CACHE_HOME and falls back to ~/.cache", () => {
 	const xdg = join(tmpdir(), "custom-cache");
-	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: xdg }, "/home/u"), join(xdg, "gentle-shell", "images"));
-	assert.equal(defaultCacheRoot({}, "/home/u"), join("/home/u", ".cache", "gentle-shell", "images"));
-	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: "" }, "/home/u"), join("/home/u", ".cache", "gentle-shell", "images"));
+	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: xdg }, "/home/u"), join(xdg, "drakonc-shell", "images"));
+	assert.equal(defaultCacheRoot({}, "/home/u"), join("/home/u", ".cache", "drakonc-shell", "images"));
+	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: "" }, "/home/u"), join("/home/u", ".cache", "drakonc-shell", "images"));
 });
 
 test("a session id cannot escape its own directory", () => {
@@ -83,7 +83,7 @@ test("the sweep removes stale sessions and keeps fresh ones", () => {
 });
 
 test("a relative XDG_CACHE_HOME is ignored, as the spec requires", () => {
-	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: "cache" }, "/home/u"), join("/home/u", ".cache", "gentle-shell", "images"));
+	assert.equal(defaultCacheRoot({ XDG_CACHE_HOME: "cache" }, "/home/u"), join("/home/u", ".cache", "drakonc-shell", "images"));
 });
 
 test("runtime cache changes work: setCache reports paths, dropping it stops them", () => {
@@ -140,7 +140,7 @@ test("the sweep leaves a directory that also holds a file it did not write", () 
 
 test("the sweep never deletes outside the cache root", () => {
 	const root = tempRoot();
-	const outside = mkdtempSync(join(tmpdir(), "gentle-outside-"));
+	const outside = mkdtempSync(join(tmpdir(), "drakonc-outside-"));
 	mkdirSync(join(outside, "victim"));
 	assert.equal(ImageDiskCache.sweepStale(outside, 0), 0);
 	assert.ok(existsSync(join(outside, "victim")), "a foreign directory is left alone");

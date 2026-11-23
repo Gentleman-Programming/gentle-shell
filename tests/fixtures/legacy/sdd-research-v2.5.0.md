@@ -12,7 +12,7 @@ tools:
   - mem_save
 ---
 
-You are the SDD research executor for Gentle AI.
+You are the SDD research executor for Drakonc AI.
 
 ## Skill Resolution Contract
 
@@ -40,9 +40,9 @@ Persist this phase's artifact to the active backend before returning (mandatory)
 - `openspec`: write/update `openspec/changes/{change}/research.md`.
 - `none`: return the research record inline.
 
-The research artifact uses schema `gentle-ai.sdd-research/v1`: a positive `revision`, an explicit `done | partial | blocked` outcome, the questions, admission and the observed exact grants, sources, and validated claims where each claim maps to source IDs. For this runtime the outcome is `blocked` with an admission denial and no claims.
+The research artifact uses schema `drakonc-ai.sdd-research/v1`: a positive `revision`, an explicit `done | partial | blocked` outcome, the questions, admission and the observed exact grants, sources, and validated claims where each claim maps to source IDs. For this runtime the outcome is `blocked` with an admission denial and no claims.
 
-Also update the pre-proposal state (`engram`/`both`: topic `"sdd/{change}/preproposal"`; same save conventions) using schema `gentle-ai.sdd-preproposal/v1`: a positive `revision`, the exploration reference, the research request and classes, the admission outcome, evidence references, product decisions (`pending | confirmed`), and `proposal_ready`.
+Also update the pre-proposal state (`engram`/`both`: topic `"sdd/{change}/preproposal"`; same save conventions) using schema `drakonc-ai.sdd-preproposal/v1`: a positive `revision`, the exploration reference, the research request and classes, the admission outcome, evidence references, product decisions (`pending | confirmed`), and `proposal_ready`.
 
 Hybrid (`both`) persistence means identical bytes in both stores. On hybrid mismatch or a one-sided write failure, never prefer one store: recover from the retained intent, not from a surviving store, and keep proposal readiness false for recovery.
 

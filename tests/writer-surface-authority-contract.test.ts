@@ -38,7 +38,7 @@ const parentSurfaces: Record<string, string> = {
 	"orchestrator-full-delegation-card.md": sectionOf(read("assets/orchestrator-full-delegation-card.md"), SURFACES),
 	"rendered full delegation card": sectionOf(renderFullDelegationCard(ASSETS) as string, SURFACES),
 };
-const worker = read("assets/agents/gentle-ai-worker.md");
+const worker = read("assets/agents/drakonc-ai-worker.md");
 const workerContext = sectionOf(worker, "## Context contract");
 const workerRules = sectionOf(worker, "## Implementation rules");
 const workerInteraction = sectionOf(worker, "## Interaction contract");

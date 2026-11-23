@@ -12,7 +12,7 @@ const root = join(fileURLToPath(new URL("..", import.meta.url)));
 
 // Browser installation wizard: bootstrap scripts, entry, host and static assets.
 export const installerPaths = Object.freeze([
-  "bin/gentle-shell-install.mjs",
+  "bin/drakonc-shell-install.mjs",
   "scripts/installer-server.mjs",
   "scripts/installer-runner.mjs",
   "scripts/installer-preflight.mjs",
@@ -35,11 +35,11 @@ export const installerPaths = Object.freeze([
 export const designCanvasAssetPaths = Object.freeze(Object.keys(DESIGN_CANVAS_ASSETS).map((name) => `assets/design-canvas/${name}`));
 
 export const requiredPaths = [
-  "bin/gentle-shell.mjs",
+  "bin/drakonc-shell.mjs",
   ...installerPaths,
-  "extensions/gentle-notifications.ts",
-  "extensions/gentle-star-prompt.ts",
-  "extensions/gentle-tower.ts",
+  "extensions/drakonc-notifications.ts",
+  "extensions/drakonc-star-prompt.ts",
+  "extensions/drakonc-tower.ts",
   "lib/tower-server.ts",
   "lib/notification-audio.ts",
   "lib/notification-audio-native.ts",
@@ -61,7 +61,7 @@ export const requiredPaths = [
   "assets/sounds/LICENSE.md",
   "docs/sound-notifications.md",
   "docs/sound-notifications-proposal.md",
-  "extensions/gentle-voice.ts",
+  "extensions/drakonc-voice.ts",
   "lib/voice-artifacts.ts",
   "lib/voice-command.ts",
   "lib/voice-install.ts",
@@ -72,8 +72,8 @@ export const requiredPaths = [
   // would notice it missing from the packed tarball.
   "scripts/voice-worker.cjs",
   "docs/voice.md",
-  "extensions/gentle-design.ts",
-  "lib/gentle-design.ts",
+  "extensions/drakonc-design.ts",
+  "lib/drakonc-design.ts",
   // The design canvas server reads its page and scripts from assets/ by path.
   "lib/design-canvas-server.ts",
   "lib/design-canvas-assets.ts",
@@ -98,9 +98,9 @@ export const requiredPaths = [
   "assets/orchestrator-prompts.md",
   "assets/orchestrator-memory.md",
   "assets/orchestrator-skills.md",
-  "assets/agents/gentle-ai-explore.md",
-  "assets/agents/gentle-ai-verify.md",
-  "assets/agents/gentle-ai-worker.md",
+  "assets/agents/drakonc-ai-explore.md",
+  "assets/agents/drakonc-ai-verify.md",
+  "assets/agents/drakonc-ai-worker.md",
   "assets/agents/jd-fix-agent.md",
   "assets/agents/jd-judge-a.md",
   "assets/agents/jd-judge-b.md",
@@ -118,20 +118,20 @@ export const requiredPaths = [
   "docs/native-authority-architecture.md",
   "docs/skill-style-guide.md",
   "docs/review-integration.md",
-  "extensions/gentle-ai.ts",
+  "extensions/drakonc-ai.ts",
   "extensions/resume-hint.ts",
   "extensions/session-scratch.ts",
   "extensions/skill-registry.ts",
   "lib/child-package-injection.ts",
-  "lib/gentle-ai-binary.ts",
-  "lib/gentle-shell-launcher.ts",
-  "lib/gentle-shell-desktop.ts",
-  "lib/gentle-shell-bundled.ts",
-  "lib/gentle-shell-startup-update.ts",
-  "lib/gentle-shell-update-panel.ts",
-  "lib/gentle-shell-startup-flow.ts",
-  "lib/gentle-shell-resume-hint.ts",
-  "lib/gentle-shell-import-pi.ts",
+  "lib/drakonc-ai-binary.ts",
+  "lib/drakonc-shell-launcher.ts",
+  "lib/drakonc-shell-desktop.ts",
+  "lib/drakonc-shell-bundled.ts",
+  "lib/drakonc-shell-startup-update.ts",
+  "lib/drakonc-shell-update-panel.ts",
+  "lib/drakonc-shell-startup-flow.ts",
+  "lib/drakonc-shell-resume-hint.ts",
+  "lib/drakonc-shell-import-pi.ts",
   "lib/native-review-cli.ts",
   "lib/review-coordinator.ts",
 	"lib/review-candidate-symlink-scan.ts",
@@ -145,16 +145,16 @@ export const requiredPaths = [
   "lib/telemetry-trigger.ts",
   "lib/session-scratch.ts",
 	"runtime/child-package-injection.mjs",
-	"runtime/gentle-ai-binary.mjs",
-	"runtime/gentle-shell-launcher.mjs",
-	"runtime/gentle-shell-desktop.mjs",
-	"runtime/gentle-shell-bundled.mjs",
-	"runtime/gentle-shell-startup-update.mjs",
-	"runtime/gentle-shell-update-panel.mjs",
-	"runtime/gentle-shell-startup-flow.mjs",
-	"runtime/gentle-shell-resume-hint.mjs",
-	"runtime/gentle-shell-uninstall.mjs",
-	"runtime/gentle-shell-import-pi.mjs",
+	"runtime/drakonc-ai-binary.mjs",
+	"runtime/drakonc-shell-launcher.mjs",
+	"runtime/drakonc-shell-desktop.mjs",
+	"runtime/drakonc-shell-bundled.mjs",
+	"runtime/drakonc-shell-startup-update.mjs",
+	"runtime/drakonc-shell-update-panel.mjs",
+	"runtime/drakonc-shell-startup-flow.mjs",
+	"runtime/drakonc-shell-resume-hint.mjs",
+	"runtime/drakonc-shell-uninstall.mjs",
+	"runtime/drakonc-shell-import-pi.mjs",
 	"runtime/native-review-cli.mjs",
 	"runtime/status-timing-diagnostics.mjs",
 	"runtime/review-integration-v2.mjs",
@@ -171,8 +171,8 @@ export const requiredPaths = [
 	"runtime/tower-launch.mjs",
   "scripts/check-provider-contract.mjs",
   "scripts/download-progress.mjs",
-  "scripts/gentle-ai-installer.mjs",
-  "scripts/install-gentle-ai.mjs",
+  "scripts/drakonc-ai-installer.mjs",
+  "scripts/install-drakonc-ai.mjs",
   "scripts/install-tui-mode-setting.mjs",
   "scripts/prepare-verifier.mjs",
   "scripts/mirror-provider-contract.mjs",
@@ -185,7 +185,7 @@ export const requiredPaths = [
   "tests/fixtures/provider-contract-bundle/v1.1.0/vectors/lens.json",
   "tests/fixtures/provider-contract-bundle/v1.1.0/vectors/refuter.json",
   "tests/fixtures/provider-contract-bundle/v1.1.0/vectors/targeted-validator.json",
-  // Provider contract mirror (gentle-pi#311 P1/P2). Presence is enforced here;
+  // Provider contract mirror (drakonc-pi#311 P1/P2). Presence is enforced here;
   // exact bytes are pinned by the lock-driven scripts/check-provider-contract.mjs
   // drift check, which runs in the same pnpm test flow.
   "contracts/review-provider-contract-mirror/provider-contract.lock.json",
@@ -208,12 +208,12 @@ export const requiredPaths = [
   "skills/cognitive-doc-design/SKILL.md",
   "skills/comment-writer/SKILL.md",
   "skills/design/SKILL.md",
-  "skills/gentle-ui-design/SKILL.md",
-  "skills/gentle-ui-design/references/task-and-content.md",
-  "skills/gentle-ui-design/references/browse-and-compare.md",
-  "skills/gentle-ui-design/references/composition-and-feedback.md",
-  "skills/gentle-ui-design/references/adaptive-interfaces.md",
-  "skills/gentle-ai/SKILL.md",
+  "skills/drakonc-ui-design/SKILL.md",
+  "skills/drakonc-ui-design/references/task-and-content.md",
+  "skills/drakonc-ui-design/references/browse-and-compare.md",
+  "skills/drakonc-ui-design/references/composition-and-feedback.md",
+  "skills/drakonc-ui-design/references/adaptive-interfaces.md",
+  "skills/drakonc-ai/SKILL.md",
   "skills/issue-creation/SKILL.md",
   "skills/issue-creation/references/delegated-workflow-actions.md",
   "skills/judgment-day/SKILL.md",
@@ -352,27 +352,27 @@ export function reconcileContractsOnDisk(packageRoot, hashes) {
   };
 }
 
-// Compares every location that pins the Gentle AI version against the one
-// authoritative constant (scripts/gentle-ai-installer.mjs INSTALLER_VERSION),
+// Compares every location that pins the Drakonc AI version against the one
+// authoritative constant (scripts/drakonc-ai-installer.mjs INSTALLER_VERSION),
 // returning a mismatch message per drifted location instead of a boolean.
 // This replaces a textual `.includes(...)` grep that could not have caught
-// the documented incident (scripts/install-gentle-ai.mjs header comment):
+// the documented incident (scripts/install-drakonc-ai.mjs header comment):
 // two hardcoded version copies drifted apart, and the installer reported
 // installing one version while writing another to disk. A textual grep only
 // verifies a string appears in a file; it cannot verify that two values
 // agree, which is exactly what this function checks instead.
-export function gentleAiVersionPinMismatches({ installerVersion, releaseBaseUrl, windowsSourceTag, libGentleAiVersion }) {
+export function drakoncAiVersionPinMismatches({ installerVersion, releaseBaseUrl, windowsSourceTag, libDrakoncAiVersion }) {
   const mismatches = [];
-  if (libGentleAiVersion !== installerVersion) {
+  if (libDrakoncAiVersion !== installerVersion) {
     mismatches.push(
-      `lib/gentle-ai-binary.ts GENTLE_AI_VERSION ("${libGentleAiVersion}") does not match the authoritative scripts/gentle-ai-installer.mjs INSTALLER_VERSION ("${installerVersion}")`,
+      `lib/drakonc-ai-binary.ts DRAKONC_AI_VERSION ("${libDrakoncAiVersion}") does not match the authoritative scripts/drakonc-ai-installer.mjs INSTALLER_VERSION ("${installerVersion}")`,
     );
   }
   if (!releaseBaseUrl.includes(`/v${installerVersion}/`)) {
     mismatches.push(`RELEASE_BASE_URL ("${releaseBaseUrl}") does not pin the authoritative v${installerVersion}`);
   }
   if (windowsSourceTag !== `v${installerVersion}`) {
-    mismatches.push(`GENTLE_AI_WINDOWS_SOURCE_TAG ("${windowsSourceTag}") does not match the authoritative v${installerVersion}`);
+    mismatches.push(`DRAKONC_AI_WINDOWS_SOURCE_TAG ("${windowsSourceTag}") does not match the authoritative v${installerVersion}`);
   }
   return mismatches;
 }
@@ -423,7 +423,7 @@ export function reconcileGeneratedRuntimeSources(packageRoot, sources, paths) {
   return { drifted };
 }
 
-// Gentle Tower: /gentle:tower serves this built web app. It is a build output
+// Drakonc Tower: /drakonc:tower serves this built web app. It is a build output
 // (gitignored), so it is required only when the caller built it first:
 // prepack and prepublishOnly pass --with-built-web right after `pnpm build:tower`.
 export const builtWebPaths = Object.freeze(["web/tower/dist/index.html"]);
@@ -446,14 +446,14 @@ export function packedFileList(packageRoot) {
 
 async function main() {
   if (existsSync(join(root, "extensions/sdd-init.ts"))) {
-    console.error("gentle-pi package must not restore the retired SDD init extension");
+    console.error("drakonc-pi package must not restore the retired SDD init extension");
     process.exit(1);
   }
 
   const missing = missingRequiredPaths(root, packageRequiredPaths());
 
   if (missing.length > 0) {
-    console.error("gentle-pi package is missing required Pi resources:");
+    console.error("drakonc-pi package is missing required Pi resources:");
     for (const relativePath of missing) {
       console.error(`- ${relativePath}`);
     }
@@ -466,13 +466,13 @@ async function main() {
     try {
       packed = packedFileList(root);
     } catch (error) {
-      console.error(`gentle-pi could not list the files npm would pack: ${error.message}`);
+      console.error(`drakonc-pi could not list the files npm would pack: ${error.message}`);
       console.error("\nRefusing to pack/publish without checking the built web app is included.");
       process.exit(1);
     }
     const excluded = builtWebPaths.filter((relativePath) => !packed.has(relativePath));
     if (excluded.length > 0) {
-      console.error("gentle-pi built web files exist on disk but npm pack excludes them:");
+      console.error("drakonc-pi built web files exist on disk but npm pack excludes them:");
       for (const relativePath of excluded) console.error(`- ${relativePath}`);
       console.error("\nCheck the nested .gitignore/.npmignore beside them (web/tower/.npmignore must not ignore dist/).");
       process.exit(1);
@@ -481,7 +481,7 @@ async function main() {
 
   const { unlistedOnDisk, listedButMissing } = reconcileContractsOnDisk(root, contractHashes);
   if (unlistedOnDisk.length > 0 || listedButMissing.length > 0) {
-    console.error("gentle-pi packaged contracts/ tree has drifted from contractHashes:");
+    console.error("drakonc-pi packaged contracts/ tree has drifted from contractHashes:");
     for (const relativePath of unlistedOnDisk) console.error(`- unlisted-on-disk: ${relativePath}`);
     for (const relativePath of listedButMissing) console.error(`- listed-but-missing: ${relativePath}`);
     console.error("\nRefusing to pack/publish an unreconciled contracts/ tree.");
@@ -491,7 +491,7 @@ async function main() {
   const generatedRuntimeSources = extractGeneratedRuntimeSources(root);
   const { drifted } = reconcileGeneratedRuntimeSources(root, generatedRuntimeSources, requiredPaths);
   if (drifted.length > 0) {
-    console.error("gentle-pi generated runtime sources, runtime/*.mjs, and requiredPaths have drifted apart:");
+    console.error("drakonc-pi generated runtime sources, runtime/*.mjs, and requiredPaths have drifted apart:");
     for (const entry of drifted) {
       const where = [];
       if (!entry.inSources) where.push("missing from generator sources");
@@ -509,24 +509,24 @@ async function main() {
   });
 
   if (driftedContracts.length > 0) {
-    console.error("gentle-pi packaged contract bytes drifted from the vendored contract hash baseline:");
+    console.error("drakonc-pi packaged contract bytes drifted from the vendored contract hash baseline:");
     for (const drift of driftedContracts) console.error(`- ${drift.relativePath}: expected ${drift.expected}, got ${drift.actual}`);
     process.exit(1);
   }
 
   // Release guard: refuse to pack/publish while any installer digest is not a real
   // pinned SHA-256 (for example the pre-release pending sentinel).
-  const { GENTLE_AI_RELEASE_ASSETS, INSTALLER_VERSION, RELEASE_BASE_URL, GENTLE_AI_WINDOWS_SOURCE_TAG } = await import(
-    new URL("./gentle-ai-installer.mjs", import.meta.url)
+  const { DRAKONC_AI_RELEASE_ASSETS, INSTALLER_VERSION, RELEASE_BASE_URL, DRAKONC_AI_WINDOWS_SOURCE_TAG } = await import(
+    new URL("./drakonc-ai-installer.mjs", import.meta.url)
   );
-  const unpinnedDigests = Object.entries(GENTLE_AI_RELEASE_ASSETS).flatMap(([target, asset]) =>
+  const unpinnedDigests = Object.entries(DRAKONC_AI_RELEASE_ASSETS).flatMap(([target, asset]) =>
     [["sha256", asset.sha256], ["binarySha256", asset.binarySha256]]
       .filter(([, digest]) => !/^[0-9a-f]{64}$/.test(digest))
       .map(([field]) => `${target}.${field}`));
   if (unpinnedDigests.length > 0) {
-    console.error("gentle-pi Gentle AI release digests are not pinned SHA-256 values:");
+    console.error("drakonc-pi Drakonc AI release digests are not pinned SHA-256 values:");
     for (const entry of unpinnedDigests) console.error(`- ${entry}`);
-    console.error("Refusing to pack/publish until scripts/gentle-ai-installer.mjs pins the published release digests (checksums.txt archives for a stable, SHA256SUMS.txt raw binaries for a prerelease).");
+    console.error("Refusing to pack/publish until scripts/drakonc-ai-installer.mjs pins the published release digests (checksums.txt archives for a stable, SHA256SUMS.txt raw binaries for a prerelease).");
     process.exit(1);
   }
 
@@ -536,25 +536,25 @@ async function main() {
     env: { ...process.env, NODE_NO_WARNINGS: "1" },
   });
   if (generatedRuntimeCheck.status !== 0) {
-    console.error("gentle-pi generated runtime does not match its TypeScript sources:");
+    console.error("drakonc-pi generated runtime does not match its TypeScript sources:");
     console.error((generatedRuntimeCheck.stderr || generatedRuntimeCheck.stdout || "unknown generator failure").trim());
     process.exit(1);
   }
 
-  const { GENTLE_AI_VERSION } = await import(new URL("../runtime/gentle-ai-binary.mjs", import.meta.url));
-  const versionMismatches = gentleAiVersionPinMismatches({
+  const { DRAKONC_AI_VERSION } = await import(new URL("../runtime/drakonc-ai-binary.mjs", import.meta.url));
+  const versionMismatches = drakoncAiVersionPinMismatches({
     installerVersion: INSTALLER_VERSION,
     releaseBaseUrl: RELEASE_BASE_URL,
-    windowsSourceTag: GENTLE_AI_WINDOWS_SOURCE_TAG,
-    libGentleAiVersion: GENTLE_AI_VERSION,
+    windowsSourceTag: DRAKONC_AI_WINDOWS_SOURCE_TAG,
+    libDrakoncAiVersion: DRAKONC_AI_VERSION,
   });
   if (versionMismatches.length > 0) {
-    console.error("gentle-pi Gentle AI version pins have drifted from the authoritative INSTALLER_VERSION:");
+    console.error("drakonc-pi Drakonc AI version pins have drifted from the authoritative INSTALLER_VERSION:");
     for (const mismatch of versionMismatches) console.error(`- ${mismatch}`);
     process.exit(1);
   }
 
-  console.log(`gentle-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} byte-pinned package contract artifacts; Gentle AI v${INSTALLER_VERSION} runtime pin).`);
+  console.log(`drakonc-pi package resource check passed (${requiredPaths.length} files; ${Object.keys(contractHashes).length} byte-pinned package contract artifacts; Drakonc AI v${INSTALLER_VERSION} runtime pin).`);
 }
 
 const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;

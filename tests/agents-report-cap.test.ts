@@ -15,7 +15,7 @@ test("a report at the cap or one byte under is returned unchanged", () => {
 		const capped = capReport(report, 100, "t1");
 		assert.equal(capped.text, report);
 		assert.equal(capped.truncated, false);
-		assert.deepEqual(withReportCap({ gentleAgents: { taskId: "t1" } }, capped), { gentleAgents: { taskId: "t1" } });
+		assert.deepEqual(withReportCap({ drakoncAgents: { taskId: "t1" } }, capped), { drakoncAgents: { taskId: "t1" } });
 	}
 });
 
@@ -26,7 +26,7 @@ test("a report over the cap keeps its head, cut at a line boundary near the cap,
 	const capped = capReport(report, 1000, "t9");
 	assert.equal(capped.text, `${"a".repeat(900)}\n\n${notice(900, 2048, 3901, "t9")}\n\n${"b".repeat(2048)}`);
 	assert.deepEqual([capped.truncated, capped.reportBytes, capped.deliveredBytes], [true, 3901, 2948]);
-	assert.deepEqual(withReportCap({ gentleAgents: { taskId: "t9", status: "completed" } }, capped), { gentleAgents: { taskId: "t9", status: "completed", reportTruncated: true, reportBytes: 3901, reportDeliveredBytes: 2948 } });
+	assert.deepEqual(withReportCap({ drakoncAgents: { taskId: "t9", status: "completed" } }, capped), { drakoncAgents: { taskId: "t9", status: "completed", reportTruncated: true, reportBytes: 3901, reportDeliveredBytes: 2948 } });
 	// A line break farther back than the window (a quarter of the cap, at most 512 bytes) is not used: the cut stays at the cap.
 	const far = capReport(`${"a".repeat(400)}\n${"b".repeat(3000)}`, 1000, "t9");
 	assert.equal(far.text, `${"a".repeat(400)}\n${"b".repeat(599)}\n\n${notice(1000, 2048, 3401, "t9")}\n\n${"b".repeat(2048)}`);
@@ -46,7 +46,7 @@ test("a report whose part after the head fits the tail allowance is delivered wh
 	const fits = `${"a".repeat(1000)}${"b".repeat(REPORT_TAIL_BYTES)}`;
 	const whole = capReport(fits, 1000, "t3");
 	assert.deepEqual([whole.text, whole.truncated, whole.deliveredBytes], [fits, false, 3048]);
-	assert.deepEqual(withReportCap({ gentleAgents: { taskId: "t3" } }, whole), { gentleAgents: { taskId: "t3" } });
+	assert.deepEqual(withReportCap({ drakoncAgents: { taskId: "t3" } }, whole), { drakoncAgents: { taskId: "t3" } });
 	const over = capReport(`${fits}b`, 1000, "t3");
 	assert.equal(over.text, `${"a".repeat(1000)}\n\n${notice(1000, 2048, 3049, "t3")}\n\n${"b".repeat(2048)}`);
 });
@@ -114,7 +114,7 @@ test("strict-JSON agents and single JSON documents are never truncated; prose ke
 		const capped = capReport(`not json ${"x".repeat(4000)}`, 1000, "t5", agent);
 		assert.equal(capped.truncated, false, agent);
 	}
-	for (const agent of ["explore", "gentle-ai-worker", "reviewer", "judge"]) assert.equal(isStrictJsonAgent(agent), false, agent);
+	for (const agent of ["explore", "drakonc-ai-worker", "reviewer", "judge"]) assert.equal(isStrictJsonAgent(agent), false, agent);
 	for (const report of [json, `\n${json}\n`, `\`\`\`json\n${json}\n\`\`\``, JSON.stringify([json])]) {
 		const capped = capReport(report, 1000, "t5", "explore");
 		assert.equal(capped.text, report);

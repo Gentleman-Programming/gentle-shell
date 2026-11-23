@@ -1,6 +1,6 @@
 // Model-facing surface of background jobs: the `bash_background`, `job_stop`,
 // and `job_list` tools, the exit notice text, and its transcript card.
-// Delivery of the notice belongs to the caller (Gentle Agents' parent
+// Delivery of the notice belongs to the caller (Drakonc Agents' parent
 // delivery router), so this module never sends messages itself.
 
 import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -9,7 +9,7 @@ import { MONITOR_BATCH_MS, MONITOR_FLOOD_LINES, MONITOR_FLOOD_WINDOW_MS, MONITOR
 import { CARD_TONE, renderCard, type CardTheme } from "./shell-card.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
-export const JOB_NOTICE_TYPE = "gentle-jobs.notice";
+export const JOB_NOTICE_TYPE = "drakonc-jobs.notice";
 export const JOB_GLYPH = "⧗";
 
 export function formatJobDuration(ms: number): string {
@@ -76,7 +76,7 @@ function listLine(job: JobRecord, now: number): string {
 
 type ToolText = { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> };
 const text = (value: string, details: Record<string, unknown> = {}): ToolText => ({ content: [{ type: "text", text: value }], details });
-export const jobDetails = (job: JobRecord, event?: "events" | MonitorStopReason) => ({ gentleJobs: { jobId: job.id, kind: job.kind, label: job.label, status: job.status, exitCode: job.exitCode ?? null, outputPath: job.outputPath, ...(event ? { event } : {}) } });
+export const jobDetails = (job: JobRecord, event?: "events" | MonitorStopReason) => ({ drakoncJobs: { jobId: job.id, kind: job.kind, label: job.label, status: job.status, exitCode: job.exitCode ?? null, outputPath: job.outputPath, ...(event ? { event } : {}) } });
 
 export interface BackgroundJobToolsOptions {
 	registry: JobRegistry;
@@ -185,12 +185,12 @@ export function registerBackgroundJobTools(pi: ExtensionAPI, options: Background
 			const jobs = registry.list(options.sessionId(ctx));
 			if (jobs.length === 0) return text("No background jobs in this session.");
 			const now = options.now();
-			return text(jobs.map((job) => listLine(job, now)).join("\n"), { gentleJobs: { count: jobs.length } });
+			return text(jobs.map((job) => listLine(job, now)).join("\n"), { drakoncJobs: { count: jobs.length } });
 		},
 	});
 
 	pi.registerMessageRenderer(JOB_NOTICE_TYPE, (message, renderOptions, theme) => {
-		const details = (message.details as { gentleJobs?: { label?: string; status?: string; exitCode?: number | null; kind?: string; event?: string } } | undefined)?.gentleJobs;
+		const details = (message.details as { drakoncJobs?: { label?: string; status?: string; exitCode?: number | null; kind?: string; event?: string } } | undefined)?.drakoncJobs;
 		const content = typeof message.content === "string" ? message.content : message.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 		const lines = sanitizeTerminalText(content).split("\n");
 		const tone = details?.event === "events" ? CARD_TONE.INFO

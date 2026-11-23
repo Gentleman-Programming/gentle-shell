@@ -8,7 +8,7 @@ import {
 	keymapCommand, keymapSource, normalizeKeyId, readKeymaps, resetKeymap, writeKeymaps, type PiKeybindings,
 } from "../lib/keymaps.ts";
 
-// The keymap registry every Gentle shortcut reads: environment variable
+// The keymap registry every Drakonc shortcut reads: environment variable
 // first (unchanged behavior), then the saved keymaps.json, then the default.
 
 const DEFAULTS: Record<string, string | undefined> = {
@@ -17,7 +17,7 @@ const DEFAULTS: Record<string, string | undefined> = {
 };
 
 function scratch(): string {
-	return mkdtempSync(join(tmpdir(), "gentle-keymaps-"));
+	return mkdtempSync(join(tmpdir(), "drakonc-keymaps-"));
 }
 
 /** Pi's default bindings for the few ids the checks look at. */
@@ -36,22 +36,22 @@ test("a saved key replaces the default, null disables it, and the environment st
 	assert.equal(effectiveKey("commands", {}, bindings), "alt+j");
 	assert.equal(keymapSource("commands", {}, bindings), "saved");
 	assert.equal(effectiveKey("changes", {}, bindings), undefined);
-	assert.equal(effectiveKey("commands", { GENTLE_PI_COMMANDS_KEY: "alt+x" }, bindings), "alt+x");
-	assert.equal(keymapSource("commands", { GENTLE_PI_COMMANDS_KEY: "alt+x" }, bindings), "env");
-	assert.equal(effectiveKey("commands", { GENTLE_PI_COMMANDS_KEY: "off" }, bindings), undefined);
-	assert.equal(effectiveKey("commands", { GENTLE_PI_COMMANDS_KEY: "" }, bindings), undefined);
+	assert.equal(effectiveKey("commands", { DRAKONC_PI_COMMANDS_KEY: "alt+x" }, bindings), "alt+x");
+	assert.equal(keymapSource("commands", { DRAKONC_PI_COMMANDS_KEY: "alt+x" }, bindings), "env");
+	assert.equal(effectiveKey("commands", { DRAKONC_PI_COMMANDS_KEY: "off" }, bindings), undefined);
+	assert.equal(effectiveKey("commands", { DRAKONC_PI_COMMANDS_KEY: "" }, bindings), undefined);
 	assert.equal(keymapSource("usage", {}, bindings), "default");
 	assert.equal(keymapSource("stats.view", {}, bindings), "none");
 });
 
 test("any palette command gets a command keymap id, built-in commands reuse their action", () => {
-	assert.equal(commandKeymapId("gentle:changes"), "changes");
-	assert.equal(commandKeymapId("gentle:design"), "command:gentle:design");
-	assert.equal(keymapCommand("command:gentle:design"), "gentle:design");
+	assert.equal(commandKeymapId("drakonc:changes"), "changes");
+	assert.equal(commandKeymapId("drakonc:design"), "command:drakonc:design");
+	assert.equal(keymapCommand("command:drakonc:design"), "drakonc:design");
 	assert.equal(keymapCommand("changes"), undefined);
-	const bindings = { "command:gentle:design": "alt+d", "command:gentle:vim": null };
-	assert.equal(effectiveKey("command:gentle:design", {}, bindings), "alt+d");
-	assert.deepEqual(commandKeymapIds(bindings), ["command:gentle:design"]);
+	const bindings = { "command:drakonc:design": "alt+d", "command:drakonc:vim": null };
+	assert.equal(effectiveKey("command:drakonc:design", {}, bindings), "alt+d");
+	assert.deepEqual(commandKeymapIds(bindings), ["command:drakonc:design"]);
 });
 
 test("key ids are normalized and only modified keys or function keys can be assigned", () => {
@@ -68,9 +68,9 @@ test("key ids are normalized and only modified keys or function keys can be assi
 test("checks block Pi's reserved keys and environment-controlled actions, and confirm a moved key", () => {
 	assert.deepEqual(checkKeymap("commands", "ctrl+k", {}, {}, PI_KEYS), { kind: "blocked", message: "ctrl+k is reserved by Pi (tui.editor.deleteToLineEnd); choose another key." });
 	assert.equal(checkKeymap("commands", "ctrl+shift+p", {}, {}, PI_KEYS).kind, "blocked");
-	assert.deepEqual(checkKeymap("commands", "alt+j", { GENTLE_PI_COMMANDS_KEY: "alt+k" }, {}, PI_KEYS), { kind: "blocked", message: "Command palette is set by GENTLE_PI_COMMANDS_KEY; unset it to change the key here." });
+	assert.deepEqual(checkKeymap("commands", "alt+j", { DRAKONC_PI_COMMANDS_KEY: "alt+k" }, {}, PI_KEYS), { kind: "blocked", message: "Command palette is set by DRAKONC_PI_COMMANDS_KEY; unset it to change the key here." });
 	assert.deepEqual(checkKeymap("commands", "alt+g", {}, {}, PI_KEYS), { kind: "confirm", message: "alt+g is used by Browse changes. Move it to Command palette?", displaces: "changes" });
-	assert.equal(checkKeymap("command:gentle:design", "alt+d", {}, { "command:gentle:vim": "alt+d" }, PI_KEYS).kind, "confirm");
+	assert.equal(checkKeymap("command:drakonc:design", "alt+d", {}, { "command:drakonc:vim": "alt+d" }, PI_KEYS).kind, "confirm");
 	assert.deepEqual(checkKeymap("commands", "alt+left", {}, {}, PI_KEYS), { kind: "confirm", message: "alt+left is Pi's tui.editor.cursorWordLeft. Use it for Command palette instead?" });
 	assert.deepEqual(checkKeymap("commands", "alt+j", {}, {}, PI_KEYS), { kind: "ok" });
 	assert.deepEqual(checkKeymap("commands", "alt+k", {}, {}, PI_KEYS), { kind: "ok" }, "its own key is not a conflict");

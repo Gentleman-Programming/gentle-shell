@@ -7,7 +7,7 @@ const repoRoot = join(import.meta.dirname, "..");
 const skill = readFileSync(join(repoRoot, "skills", "issue-creation", "SKILL.md"), "utf8");
 
 test("preserves the prefixed skill identity and complete Issue Form metadata", () => {
-	assert.match(skill, /^name: gentle-ai-issue-creation$/m);
+	assert.match(skill, /^name: drakonc-ai-issue-creation$/m);
 	assert.match(skill, /^description: ".+"$/m);
 	assert.match(skill, /^  version: "1\.3"$/m);
 });

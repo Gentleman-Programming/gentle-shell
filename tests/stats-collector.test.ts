@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { aggregateStats, createStatsLoader, currentSessionStats, hasReadableSessionsRoot, parseSessionLines, shiftDay, STATS_RANGE, STATS_SCOPE, weekdayOf, type StatsFilter } from "../lib/stats-collector.ts";
 import { SESSION_CHANGE_ENTRY } from "../lib/session-changes.ts";
 
-// The /gentle:stats collector: a streaming loader over Pi's session files and
+// The /drakonc:stats collector: a streaming loader over Pi's session files and
 // pure aggregation over the parsed records. Fixtures carry exact numbers so
 // every figure the panel shows is pinned here.
 
@@ -32,8 +32,8 @@ test("loader reads top-level session files only and tolerates malformed lines", 
 
 test("loader returns nothing for a missing or empty sessions root", async () => {
 	const loader = createStatsLoader();
-	assert.deepEqual(await loader.load([join(tmpdir(), "gentle-stats-missing-root")]), []);
-	assert.deepEqual(await loader.load([mkdtempSync(join(tmpdir(), "gentle-stats-empty-"))]), []);
+	assert.deepEqual(await loader.load([join(tmpdir(), "drakonc-stats-missing-root")]), []);
+	assert.deepEqual(await loader.load([mkdtempSync(join(tmpdir(), "drakonc-stats-empty-"))]), []);
 	assert.deepEqual(await loader.load([]), []);
 });
 
@@ -59,7 +59,7 @@ test("a duplicate session keeps the copy with the most usage records, then the l
 		assert.deepEqual(sessions.find((session) => session.id === "bbb")!.messages.map((message) => message.total), [30, 70, 100]);
 		assert.equal(sessions.filter((session) => session.id === "aaa" || session.id === "bbb").length, 2);
 	}
-	const root = mkdtempSync(join(tmpdir(), "gentle-stats-tie-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-stats-tie-"));
 	const header = (id: string) => JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-09-01T00:00:00.000Z", cwd: "/t" });
 	const usage = (at: string, total: number) => JSON.stringify({ type: "message", timestamp: at, message: { role: "assistant", model: "m", usage: { output: total } } });
 	const write = (dir: string, name: string, lines: string[]) => { mkdirSync(join(root, dir), { recursive: true }); writeFileSync(join(root, dir, name), `${lines.join("\n")}\n`); };
@@ -74,9 +74,9 @@ test("a duplicate session keeps the copy with the most usage records, then the l
 });
 
 test("alias roots (trailing slash, dot segments, symlinks) and missing roots never double count", async () => {
-	const link = join(mkdtempSync(join(tmpdir(), "gentle-stats-alias-")), "sessions-link");
+	const link = join(mkdtempSync(join(tmpdir(), "drakonc-stats-alias-")), "sessions-link");
 	symlinkSync(SESSIONS, link, "dir");
-	const missing = join(tmpdir(), "gentle-stats-missing-root");
+	const missing = join(tmpdir(), "drakonc-stats-missing-root");
 	const once = aggregateStats(await createStatsLoader().load([SESSIONS]), filter());
 	const aliased = aggregateStats(await createStatsLoader().load([SESSIONS, `${SESSIONS}/`, join(SESSIONS, "..", "sessions"), link, missing]), filter());
 	assert.deepEqual(aliased.totals, once.totals);
@@ -211,9 +211,9 @@ test("concurrent loads of the same roots share one in-flight scan; a later load 
 });
 
 test("hasReadableSessionsRoot is true only when at least one root is a readable directory", async (t) => {
-	const missing = join(tmpdir(), "gentle-stats-missing-root");
-	const fileRoot = mkdtempSync(join(tmpdir(), "gentle-stats-file-"));
-	const emptyRoot = mkdtempSync(join(tmpdir(), "gentle-stats-empty-"));
+	const missing = join(tmpdir(), "drakonc-stats-missing-root");
+	const fileRoot = mkdtempSync(join(tmpdir(), "drakonc-stats-file-"));
+	const emptyRoot = mkdtempSync(join(tmpdir(), "drakonc-stats-empty-"));
 	t.after(() => { rmSync(fileRoot, { recursive: true, force: true }); rmSync(emptyRoot, { recursive: true, force: true }); });
 	const file = join(fileRoot, "not-a-dir");
 	writeFileSync(file, "x");
@@ -241,7 +241,7 @@ function probeSession(root: string, cwd: string, id: string, usages: string[]): 
 }
 
 function probeFixture(t: { after(fn: () => void): void }, name: string): { root: string; a: string } {
-	const root = mkdtempSync(join(tmpdir(), `gentle-stats-probe-${name}-`));
+	const root = mkdtempSync(join(tmpdir(), `drakonc-stats-probe-${name}-`));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const a = probeSession(root, "/home/u/secret/alpha", "sid-a", [probeUsage("2026-10-09T10:00:00.000Z", "m1", 100), probeUsage("2026-10-08T10:00:00.000Z", "m2", 50)]);
 	probeSession(root, "/home/u/secret/beta", "sid-b", [probeUsage("2026-09-01T10:00:00.000Z", "m1", 70)]);
@@ -282,7 +282,7 @@ test("a same-size rewrite with a new mtime is re-read", async (t) => {
 
 test("concurrent loads of different roots never share a scan and each answers its own roots", async (t) => {
 	const A = probeFixture(t, "rootsA").root;
-	const B = mkdtempSync(join(tmpdir(), "gentle-stats-probe-rootsB-"));
+	const B = mkdtempSync(join(tmpdir(), "drakonc-stats-probe-rootsB-"));
 	t.after(() => rmSync(B, { recursive: true, force: true }));
 	probeSession(B, "/home/u/only-b", "sid-only-b", [probeUsage("2026-10-09T10:00:00.000Z", "mb", 1)]);
 	const loader = createStatsLoader();

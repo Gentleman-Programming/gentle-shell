@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Maintainer provider-relay matrix (gentle-pi#311, first direct work unit).
+// Maintainer provider-relay matrix (drakonc-pi#311, first direct work unit).
 //
 // Read-only maintainer harness driving the REAL Pi host relay
 // (lib/review-host-relay.ts#runReviewHostRelaySlot) through explicit
@@ -15,8 +15,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, resolve } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError, classifyReviewHostRelayRefusal, resolveReviewHostRelaySubmission, runReviewHostRelaySlot } from "../../lib/review-host-relay.ts";
-import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "../../lib/review-relay-contract.ts";
-export const DESCRIPTOR_SCHEMA = "gentle-pi.maintainer.provider-relay-descriptor/v1";
+import { DRAKONC_PI_REVIEW_RELAY_CONTRACT, DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV } from "../../lib/review-relay-contract.ts";
+export const DESCRIPTOR_SCHEMA = "drakonc-pi.maintainer.provider-relay-descriptor/v1";
 export const PROVIDER_ROLE_VECTOR_KINDS = Object.freeze(["provider-role-refuter", "provider-role-validator"]);
 export const CASE_KINDS = Object.freeze(["relay-unavailable", "positive-lens", ...PROVIDER_ROLE_VECTOR_KINDS]);
 export const PROVIDER_ROLE_VECTOR_VERB = Object.freeze({ "provider-role-refuter": "capture-refuter", "provider-role-validator": "capture-validation" });
@@ -62,9 +62,9 @@ export class ProviderRoleVectorError extends Error {
 // The positive lens runs only when explicitly armed: the organic journey
 // needs a real capable binary, a real pi, and a real review session. Without
 // the arm the runner blocks the positive leg before materialize.
-export const ARM_POSITIVE_ENV = "GENTLE_PI_MAINTAINER_ARM_POSITIVE";
+export const ARM_POSITIVE_ENV = "DRAKONC_PI_MAINTAINER_ARM_POSITIVE";
 export const POSITIVE_JOURNEY_COMMAND =
-	"GENTLE_PI_MAINTAINER_ARM_POSITIVE=1 node --experimental-strip-types scripts/maintainer/provider-relay-matrix.mjs --descriptor <descriptor.json>  # needs a real capable gentle-ai binary + real pi on PATH + real binding tokens from a live review session (gentle-ai review status --next-transition)";
+	"DRAKONC_PI_MAINTAINER_ARM_POSITIVE=1 node --experimental-strip-types scripts/maintainer/provider-relay-matrix.mjs --descriptor <descriptor.json>  # needs a real capable drakonc-ai binary + real pi on PATH + real binding tokens from a live review session (drakonc-ai review status --next-transition)";
 export class DescriptorValidationError extends Error {
 	constructor(message) {
 		super(message);
@@ -89,17 +89,17 @@ const exactKeys = (obj, allowed, label) => {
 // the completing form is provably bindable before any process launches.
 export function validateDescriptor(value) {
 	if (!isObj(value)) fail("descriptor must be a JSON object");
-	exactKeys(value, new Set(["schema", "gentleAiExecutable", "reviewerSelection", "cases"]), "descriptor");
+	exactKeys(value, new Set(["schema", "drakoncAiExecutable", "reviewerSelection", "cases"]), "descriptor");
 	if (value.schema !== DESCRIPTOR_SCHEMA) fail(`descriptor.schema must be exactly "${DESCRIPTOR_SCHEMA}"`);
-	if (!isStr(value.gentleAiExecutable) || !isAbsolute(value.gentleAiExecutable)) fail("descriptor.gentleAiExecutable must be a non-empty absolute path; the runner never re-resolves the production binary");
-	// gentle-pi#311 P4: the positive-lens journey used to need a declared real
+	if (!isStr(value.drakoncAiExecutable) || !isAbsolute(value.drakoncAiExecutable)) fail("descriptor.drakoncAiExecutable must be a non-empty absolute path; the runner never re-resolves the production binary");
+	// drakonc-pi#311 P4: the positive-lens journey used to need a declared real
 	// `pi` binary; lens captures now run in-process, so it instead needs a
 	// "provider/id" reviewer selection the armed run resolves through a
 	// scripted-but-real completion (never a fake pi child).
 	if (!isStr(value.reviewerSelection)) fail("descriptor.reviewerSelection must be a non-empty string");
 	if (!Array.isArray(value.cases) || value.cases.length === 0) fail("descriptor.cases must be a non-empty array");
 	const seen = new Set();
-	return { schema: value.schema, gentleAiExecutable: value.gentleAiExecutable, reviewerSelection: value.reviewerSelection, cases: value.cases.map((entry, index) => {
+	return { schema: value.schema, drakoncAiExecutable: value.drakoncAiExecutable, reviewerSelection: value.reviewerSelection, cases: value.cases.map((entry, index) => {
 			if (!isObj(entry)) fail(`descriptor.cases[${index}] must be an object`);
 			if (!isStr(entry.name)) fail(`descriptor.cases[${index}].name must be a non-empty string`);
 			if (seen.has(entry.name)) fail(`descriptor.cases[${index}].name "${entry.name}" is duplicated`);
@@ -209,33 +209,33 @@ export function resolveDeclaredExecutable(executable) {
 	}
 	return null;
 }
-const missingReason = (executable, label) => `${label} "${executable}" is not an existing executable; arm the descriptor with a real binary, or set GENTLE_PI_REQUIRE_MAINTAINER=1 to fail instead of block.`;
+const missingReason = (executable, label) => `${label} "${executable}" is not an existing executable; arm the descriptor with a real binary, or set DRAKONC_PI_REQUIRE_MAINTAINER=1 to fail instead of block.`;
 // A reviewer registry whose `find` always misses. Mirrors the pre-in-process
 // "unlaunchable pi" trick this replaced: the maintainer-declared `kind` is
-// not evidence that the declared gentle-ai binary is actually incapable, so
+// not evidence that the declared drakonc-ai binary is actually incapable, so
 // a `relay-unavailable` negative control against a mis-declared CAPABLE
 // binary must still never complete a reviewer or submit anything. Resolving
 // nothing guarantees a typed MODEL_NOT_FOUND refusal before any completion
 // or submission, so the control cannot become a hidden real mutation even
-// against a binary that turns out to be capable (gentle-pi#311 P4).
+// against a binary that turns out to be capable (drakonc-pi#311 P4).
 function unresolvableReviewerRegistry() {
 	return {
 		find: () => undefined,
 		getApiKeyAndHeaders: async () => ({ ok: false, error: "the relay-unavailable negative control never resolves a reviewer" }),
 	};
 }
-// The armed, organic positive-lens journey needs the real gentle-ai binary's
+// The armed, organic positive-lens journey needs the real drakonc-ai binary's
 // materialize/submit protocol exercised end-to-end, but this harness cannot
 // assume a maintainer's real provider credentials. Instead of a fake pi
 // child, this registers pi-ai's own faux provider -- the SAME api-registry
 // the real `completeSimple` dispatches through in production -- so the real
 // `runInProcessReviewer` -> real `completeSimple` path runs with no network.
-// The scripted response reads the frozen prompt's `GENTLE_AI_REVIEW_BINDING`
-// line for the subject_hash and its `GENTLE_AI_REVIEW_CONTEXT` line for the
+// The scripted response reads the frozen prompt's `DRAKONC_AI_REVIEW_BINDING`
+// line for the subject_hash and its `DRAKONC_AI_REVIEW_CONTEXT` line for the
 // changed-path manifest, and answers with every field the reviewer result
 // contract requires -- subject_hash, a completed inspection over exactly the
 // frozen paths, findings, evidence -- so the real Go admission accepts it
-// (gentle-pi#311 P4). Not unregistered: each
+// (drakonc-pi#311 P4). Not unregistered: each
 // call uses a fresh random api id, and this runs at most once per short-lived
 // process (the CLI's single `main()` or one test), so a leaked entry in the
 // process-global api-registry is harmless.
@@ -259,14 +259,14 @@ function armedFauxReviewerRegistry(reviewerSelection) {
 	}
 	const provider = reviewerSelection.slice(0, separatorIndex);
 	const modelId = reviewerSelection.slice(separatorIndex + 1);
-	const api = `gentle-pi-maintainer-faux-reviewer-${randomUUID()}`;
+	const api = `drakonc-pi-maintainer-faux-reviewer-${randomUUID()}`;
 	const faux = registerFauxProvider({ api, provider, models: [{ id: modelId }] });
 	faux.setResponses([(context) => {
 		const content = context.messages[0]?.content;
 		const textPart = Array.isArray(content) ? content.find((part) => part.type === "text") : undefined;
 		const promptText = textPart?.text ?? "";
-		const binding = frozenPromptMarkerJson(promptText, "GENTLE_AI_REVIEW_BINDING");
-		const frozenContext = frozenPromptMarkerJson(promptText, "GENTLE_AI_REVIEW_CONTEXT");
+		const binding = frozenPromptMarkerJson(promptText, "DRAKONC_AI_REVIEW_BINDING");
+		const frozenContext = frozenPromptMarkerJson(promptText, "DRAKONC_AI_REVIEW_CONTEXT");
 		const manifest = Array.isArray(frozenContext?.changed_path_manifest) ? frozenContext.changed_path_manifest : [];
 		const paths = manifest.map((entry) => entry?.path).filter((path) => typeof path === "string" && path.length > 0);
 		return fauxAssistantMessage(JSON.stringify({
@@ -293,12 +293,12 @@ function terminateRoleProcessTree(child) {
 export async function runProviderRoleVector(request) {
 	const verb = PROVIDER_ROLE_VECTOR_VERB[request.kind];
 	if (verb === undefined) throw new TypeError(`runProviderRoleVector received an unknown role vector kind: ${request.kind}`);
-	if (request.signal?.aborted) throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_ABORTED, "launch", "gentle-ai role vector was aborted before launch", { mutationOutcome: "none" });
-	const argv = ["review", verb, ...request.argumentTokens], env = { ...process.env, ...request.env, [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT };
+	if (request.signal?.aborted) throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_ABORTED, "launch", "drakonc-ai role vector was aborted before launch", { mutationOutcome: "none" });
+	const argv = ["review", verb, ...request.argumentTokens], env = { ...process.env, ...request.env, [DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV]: DRAKONC_PI_REVIEW_RELAY_CONTRACT };
 	let capture, launched = false;
 	try {
 		capture = await new Promise((resolve, reject) => {
-			const child = spawn(request.gentleAiExecutable, argv, { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true, ...(process.platform === "win32" ? {} : { detached: true }) });
+			const child = spawn(request.drakoncAiExecutable, argv, { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true, ...(process.platform === "win32" ? {} : { detached: true }) });
 			launched = child.pid !== undefined;
 			const stdout = [], stderr = []; let stdoutBytes = 0, stderrBytes = 0, terminationCause = null, treeTerminationFailed = false, settled = false;
 			const captured = (exitCode) => ({ stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), exitCode, terminationCause, treeTerminationFailed });
@@ -320,25 +320,25 @@ export async function runProviderRoleVector(request) {
 			if (request.signal?.aborted) abort(); else request.signal?.addEventListener("abort", abort, { once: true });
 		});
 	} catch (error) {
-		if (request.signal?.aborted && launched) throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_ABORTED, "execute", "gentle-ai role vector was aborted after launch", { mutationOutcome: "unknown" });
-		throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_LAUNCH_FAILED, "launch", `gentle-ai role vector could not start: ${error instanceof Error ? error.message : String(error)}`);
+		if (request.signal?.aborted && launched) throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_ABORTED, "execute", "drakonc-ai role vector was aborted after launch", { mutationOutcome: "unknown" });
+		throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_LAUNCH_FAILED, "launch", `drakonc-ai role vector could not start: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	const stderrText = capture.stderr.toString("utf8");
-	if (capture.treeTerminationFailed) throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_TERMINATION_FAILED, "execute", "gentle-ai role vector tree termination could not be confirmed; re-query negotiated STATUS before any retry", { exitCode: capture.exitCode, stderr: stderrText, mutationOutcome: "unknown" });
-	if (capture.terminationCause === "abort") throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_ABORTED, "execute", "gentle-ai role vector was aborted after launch", { exitCode: capture.exitCode, stderr: stderrText, mutationOutcome: "unknown" });
-	if (capture.terminationCause === "stdout" || capture.terminationCause === "stderr") throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_OUTPUT_OVERFLOW, "execute", `gentle-ai role vector ${capture.terminationCause} exceeded the ${ROLE_STREAM_MAX_BYTES}-byte limit; re-query negotiated STATUS before any retry`, { exitCode: capture.exitCode, stderr: stderrText });
-	if (capture.terminationCause === "timeout") throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_TIMED_OUT, "execute", "gentle-ai role vector exceeded its outer watchdog; re-query negotiated STATUS before any retry, and the same transcript must not relaunch blindly", { exitCode: capture.exitCode, stderr: stderrText, timedOut: true });
+	if (capture.treeTerminationFailed) throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_TERMINATION_FAILED, "execute", "drakonc-ai role vector tree termination could not be confirmed; re-query negotiated STATUS before any retry", { exitCode: capture.exitCode, stderr: stderrText, mutationOutcome: "unknown" });
+	if (capture.terminationCause === "abort") throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_ABORTED, "execute", "drakonc-ai role vector was aborted after launch", { exitCode: capture.exitCode, stderr: stderrText, mutationOutcome: "unknown" });
+	if (capture.terminationCause === "stdout" || capture.terminationCause === "stderr") throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_OUTPUT_OVERFLOW, "execute", `drakonc-ai role vector ${capture.terminationCause} exceeded the ${ROLE_STREAM_MAX_BYTES}-byte limit; re-query negotiated STATUS before any retry`, { exitCode: capture.exitCode, stderr: stderrText });
+	if (capture.terminationCause === "timeout") throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_TIMED_OUT, "execute", "drakonc-ai role vector exceeded its outer watchdog; re-query negotiated STATUS before any retry, and the same transcript must not relaunch blindly", { exitCode: capture.exitCode, stderr: stderrText, timedOut: true });
 	if (capture.exitCode !== 0) {
 		const refusal = classifyReviewHostRelayRefusal(stderrText);
 		if (refusal === "handshake") throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.HANDSHAKE_REFUSED, "execute", stderrText, { exitCode: capture.exitCode, stderr: stderrText });
-		if (refusal === "unknown-flag") throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_SURFACE_UNAVAILABLE, "execute", "the declared gentle-ai binary lacks the provider role capture surface", { exitCode: capture.exitCode, stderr: stderrText });
-		throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_FAILED, "execute", "gentle-ai role vector failed", { exitCode: capture.exitCode, stderr: stderrText });
+		if (refusal === "unknown-flag") throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_SURFACE_UNAVAILABLE, "execute", "the declared drakonc-ai binary lacks the provider role capture surface", { exitCode: capture.exitCode, stderr: stderrText });
+		throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_FAILED, "execute", "drakonc-ai role vector failed", { exitCode: capture.exitCode, stderr: stderrText });
 	}
-	if (capture.stdout.length === 0) throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.EMPTY_ARTIFACT, "execute", "gentle-ai role vector produced no artifact bytes; re-query negotiated STATUS before any retry", { exitCode: 0, stderr: stderrText, mutationOutcome: "unknown" });
+	if (capture.stdout.length === 0) throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.EMPTY_ARTIFACT, "execute", "drakonc-ai role vector produced no artifact bytes; re-query negotiated STATUS before any retry", { exitCode: 0, stderr: stderrText, mutationOutcome: "unknown" });
 	let artifact;
-	try { artifact = JSON.parse(capture.stdout.toString("utf8")); } catch (error) { throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_FAILED, "execute", `gentle-ai role vector returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`, { exitCode: 0, stderr: stderrText }); }
+	try { artifact = JSON.parse(capture.stdout.toString("utf8")); } catch (error) { throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_FAILED, "execute", `drakonc-ai role vector returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`, { exitCode: 0, stderr: stderrText }); }
 	const expectedRole = PROVIDER_ROLE_VECTOR_ROLE[request.kind];
-	if (!isObj(artifact) || artifact.schema !== PROVIDER_ROLE_CAPTURE_ARTIFACT_SCHEMA || artifact.role !== expectedRole || artifact.captured !== true || !isStr(artifact.lineage_id) || !REQUEST_HASH_RE.test(artifact.target_identity)) throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_FAILED, "execute", "gentle-ai role vector returned an artifact that does not match the expected typed shape", { exitCode: 0, stderr: stderrText });
+	if (!isObj(artifact) || artifact.schema !== PROVIDER_ROLE_CAPTURE_ARTIFACT_SCHEMA || artifact.role !== expectedRole || artifact.captured !== true || !isStr(artifact.lineage_id) || !REQUEST_HASH_RE.test(artifact.target_identity)) throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_FAILED, "execute", "drakonc-ai role vector returned an artifact that does not match the expected typed shape", { exitCode: 0, stderr: stderrText });
 	return { schema: artifact.schema, lineageId: artifact.lineage_id, targetIdentity: artifact.target_identity, role: artifact.role, captured: true };
 }
 // Runs the matrix against the REAL relay. A case that cannot run honestly is
@@ -354,19 +354,19 @@ export async function runMatrix(descriptor, options = {}) {
 	const roleRunner = options.roleRunner ?? runProviderRoleVector;
 	const verdicts = [];
 	for (const caseEntry of descriptor.cases) {
-		const gentleAiPath = resolveDeclaredExecutable(descriptor.gentleAiExecutable);
-		if (gentleAiPath === null) {
-			verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", reason: missingReason(descriptor.gentleAiExecutable, "gentleAiExecutable") });
+		const drakoncAiPath = resolveDeclaredExecutable(descriptor.drakoncAiExecutable);
+		if (drakoncAiPath === null) {
+			verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", reason: missingReason(descriptor.drakoncAiExecutable, "drakoncAiExecutable") });
 			continue;
 		}
 		// Self-contained role vectors require explicit arming and a real provider result.
 		if (PROVIDER_ROLE_VECTOR_KINDS.includes(caseEntry.kind)) {
 			if (!positiveArmed) {
-				verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", reason: `${caseEntry.kind} case is not explicitly armed; set ${ARM_POSITIVE_ENV}=1 with a real capable gentle-ai binary, a real pi, and a real review session (real binding tokens from \`gentle-ai review status --next-transition\`) to run the organic role vector. The runner never synthesizes a provider verdict.`, command: POSITIVE_JOURNEY_COMMAND });
+				verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", reason: `${caseEntry.kind} case is not explicitly armed; set ${ARM_POSITIVE_ENV}=1 with a real capable drakonc-ai binary, a real pi, and a real review session (real binding tokens from \`drakonc-ai review status --next-transition\`) to run the organic role vector. The runner never synthesizes a provider verdict.`, command: POSITIVE_JOURNEY_COMMAND });
 				continue;
 			}
 			try {
-				const artifact = await roleRunner({ kind: caseEntry.kind, argumentTokens: caseEntry.argumentTokens, gentleAiExecutable: gentleAiPath, ...(caseEntry.validationRequest === undefined ? {} : { validationRequest: caseEntry.validationRequest }), ...(options.signal === undefined ? {} : { signal: options.signal }) });
+				const artifact = await roleRunner({ kind: caseEntry.kind, argumentTokens: caseEntry.argumentTokens, drakoncAiExecutable: drakoncAiPath, ...(caseEntry.validationRequest === undefined ? {} : { validationRequest: caseEntry.validationRequest }), ...(options.signal === undefined ? {} : { signal: options.signal }) });
 				if (artifact.lineageId !== caseEntry.lineage || artifact.targetIdentity !== caseEntry.targetIdentity) {
 					throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_FAILED, "execute", `role vector returned a stale artifact: expected lineage=${caseEntry.lineage} target=${caseEntry.targetIdentity}, got lineage=${artifact.lineageId} target=${artifact.targetIdentity}`);
 				}
@@ -374,9 +374,9 @@ export async function runMatrix(descriptor, options = {}) {
 			} catch (error) {
 				if (error instanceof ProviderRoleVectorError) {
 					if (error.kind === ROLE_VECTOR_FAILURE.HANDSHAKE_REFUSED) {
-						verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", stage: error.stage, mutationOutcome: error.mutationOutcome, reason: `the declared gentle-ai binary refused relay-contract negotiation: ${error.message}`, command: POSITIVE_JOURNEY_COMMAND });
+						verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", stage: error.stage, mutationOutcome: error.mutationOutcome, reason: `the declared drakonc-ai binary refused relay-contract negotiation: ${error.message}`, command: POSITIVE_JOURNEY_COMMAND });
 					} else if (error.kind === ROLE_VECTOR_FAILURE.ROLE_SURFACE_UNAVAILABLE) {
-						verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", stage: error.stage, mutationOutcome: error.mutationOutcome, reason: `the declared gentle-ai binary lacks the provider role capture surface: ${error.message}`, command: POSITIVE_JOURNEY_COMMAND });
+						verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", stage: error.stage, mutationOutcome: error.mutationOutcome, reason: `the declared drakonc-ai binary lacks the provider role capture surface: ${error.message}`, command: POSITIVE_JOURNEY_COMMAND });
 					} else {
 						verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "fail", reason: `role vector error kind=${error.kind} stage=${error.stage} mutationOutcome=${error.mutationOutcome}: ${error.message}`, stderr: error.stderr, timedOut: error.timedOut });
 					}
@@ -389,7 +389,7 @@ export async function runMatrix(descriptor, options = {}) {
 		// The positive lens needs an explicit arm; the negative control never
 		// resolves a reviewer (fails closed at the reviewer stage or earlier).
 		if (caseEntry.kind === "positive-lens" && !positiveArmed) {
-			verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", reason: `positive-lens case is not explicitly armed; set ${ARM_POSITIVE_ENV}=1 with a real capable gentle-ai binary and a real review session (real binding tokens from \`gentle-ai review status --next-transition\`) to run the organic journey. The runner never synthesizes a provider result.`, command: POSITIVE_JOURNEY_COMMAND });
+			verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", reason: `positive-lens case is not explicitly armed; set ${ARM_POSITIVE_ENV}=1 with a real capable drakonc-ai binary and a real review session (real binding tokens from \`drakonc-ai review status --next-transition\`) to run the organic journey. The runner never synthesizes a provider result.`, command: POSITIVE_JOURNEY_COMMAND });
 			continue;
 		}
 		// `relay-unavailable` is a NEGATIVE CONTROL: it must never complete a
@@ -405,7 +405,7 @@ export async function runMatrix(descriptor, options = {}) {
 		// reviewer stage anyway), while a capable one fails closed at the
 		// reviewer stage as kind=reviewer-model-not-found stage=pi
 		// mutationOutcome=none, with zero completion and zero submission
-		// (gentle-pi#311 P4, superseding the pre-in-process "unlaunchable pi").
+		// (drakonc-pi#311 P4, superseding the pre-in-process "unlaunchable pi").
 		try {
 			// A malformed `reviewerSelection` (caught here rather than at
 			// descriptor-validation time, since it is only ever exercised by an
@@ -415,7 +415,7 @@ export async function runMatrix(descriptor, options = {}) {
 			const request = {
 				captureArgumentTokens: caseEntry.captureArgumentTokens,
 				submission: caseEntry.submission,
-				gentleAiExecutable: gentleAiPath,
+				drakoncAiExecutable: drakoncAiPath,
 				reviewerRegistry,
 				selection: descriptor.reviewerSelection,
 				routingKey: "review-relay-matrix",
@@ -438,7 +438,7 @@ export async function runMatrix(descriptor, options = {}) {
 						verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "fail", reason: `expected relay-unavailable at materialize with zero mutation, got kind=${error.kind} stage=${error.stage} mutationOutcome=${error.mutationOutcome}`, stderr: error.stderr });
 					}
 				} else if (error.kind === REVIEW_HOST_RELAY_FAILURE.RELAY_UNAVAILABLE) {
-					verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", stage: error.stage, reason: `the declared gentle-ai binary lacks the pi host relay surface: ${error.message}`, command: POSITIVE_JOURNEY_COMMAND });
+					verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "blocked", stage: error.stage, reason: `the declared drakonc-ai binary lacks the pi host relay surface: ${error.message}`, command: POSITIVE_JOURNEY_COMMAND });
 				} else {
 					verdicts.push({ name: caseEntry.name, kind: caseEntry.kind, verdict: "fail", reason: `relay error kind=${error.kind} stage=${error.stage} mutationOutcome=${error.mutationOutcome}: ${error.message}`, stderr: error.stderr });
 				}

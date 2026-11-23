@@ -1,6 +1,6 @@
 # Last-event closure fixture provenance
 
-Captured 2026-08-23 from `gentle-ai dev` at the maintainer-provided disposable sandbox candidate `gentle-ai-dev`.
+Captured 2026-08-23 from `drakonc-ai dev` at the maintainer-provided disposable sandbox candidate `drakonc-ai-dev`.
 
 Commands were run against disposable Git repositories with isolated `HOME` and `TMPDIR` beneath `.scratch/issue-404-fixtures`:
 

@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildPiInvocation } from "../../lib/gentle-shell-launcher.ts";
+import { buildPiInvocation } from "../../lib/drakonc-shell-launcher.ts";
 
-const piRoot = process.env.GENTLE_MCP_STATUS_PI_ROOT;
+const piRoot = process.env.DRAKONC_MCP_STATUS_PI_ROOT;
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 test("Shell child invocation receives native sanitized MCP snapshots and events", {
-	skip: !piRoot && "Set GENTLE_MCP_STATUS_PI_ROOT to a built Pi coding-agent package with the status API",
+	skip: !piRoot && "Set DRAKONC_MCP_STATUS_PI_ROOT to a built Pi coding-agent package with the status API",
 }, () => {
 	if (!piRoot) throw new Error("Pi status runtime was not selected");
 	const root = mkdtempSync(join(tmpdir(), "shell-mcp-status-"));

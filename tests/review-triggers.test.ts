@@ -168,7 +168,7 @@ test("documentation-like executable and configuration paths remain non-trivial",
 		{ path: "requirements.txt", executableChanged: false, configurationChanged: true },
 		{ path: "CMakeLists.txt", executableChanged: false, configurationChanged: true },
 		{ path: "assets/agents/review-risk.md", executableChanged: true, configurationChanged: false },
-		{ path: "skills/gentle-ai/SKILL.md", executableChanged: true, configurationChanged: false },
+		{ path: "skills/drakonc-ai/SKILL.md", executableChanged: true, configurationChanged: false },
 		{ path: "src/pages/dashboard.mdx", executableChanged: true, configurationChanged: false },
 		{ path: "README.sh", executableChanged: true, configurationChanged: false },
 	] as const) {

@@ -9,7 +9,7 @@ import { createVoiceSession, VoiceSessionError, type VoiceSessionErrorCode, type
 import { readVoicePushToTalk, writeVoicePushToTalk } from "./voice-settings.ts";
 import { pushToTalkStatus, VoiceDictationView, VoiceProgressView, type VoiceViewTheme } from "./voice-ui.ts";
 
-// /gentle:voice (S1-S3): the only entry point to optional local dictation. It
+// /drakonc:voice (S1-S3): the only entry point to optional local dictation. It
 // shows status, downloads the pinned runtime and model after an explicit
 // confirmation, and records one dictation whose transcript is pasted into the
 // editor draft, never submitted. Registration does nothing else: the platform
@@ -22,7 +22,7 @@ import { pushToTalkStatus, VoiceDictationView, VoiceProgressView, type VoiceView
 // installed is checked at the first hold, and a missing install disarms it.
 // A hold shares the single-operation lock with the command.
 
-export const VOICE_COMMAND_NAME = "gentle:voice";
+export const VOICE_COMMAND_NAME = "drakonc:voice";
 
 // The part of VoiceSession the command drives.
 export interface VoiceDictation {
@@ -62,7 +62,7 @@ const START = "Start dictation";
 const STATUS = "Show status and notices";
 const DISABLE_PUSH_TO_TALK = "Disable push-to-talk (hold Space)";
 const ENABLE_PUSH_TO_TALK = "Enable push-to-talk (hold Space)";
-const STATUS_KEY = "gentle-voice";
+const STATUS_KEY = "drakonc-voice";
 
 const INSTALL_MESSAGES: Record<VoiceInstallErrorCode, string> = {
 	aborted: "Voice download was cancelled. Unfinished files were removed; completed components are kept.",
@@ -79,13 +79,13 @@ const INSTALL_MESSAGES: Record<VoiceInstallErrorCode, string> = {
 type DictationStart = "command" | "hold";
 
 // What the user can do about a session failure, by platform where it differs.
-// Gentle AI never runs an installer for any of these.
+// Drakonc AI never runs an installer for any of these.
 function sessionAction(code: VoiceSessionErrorCode, platform: string, start: DictationStart): string | undefined {
 	switch (code) {
 		case "not-installed":
 		case "runtime-invalid":
 		case "model-invalid":
-			return "Run /gentle:voice and download it again.";
+			return "Run /drakonc:voice and download it again.";
 		case "runtime-load":
 			if (platform === "linux") return "Install the ALSA library (libasound.so.2, for example the libasound2 or alsa-lib package), then try again.";
 			if (platform === "win32") return "Install the Microsoft Visual C++ Redistributable (x64) from Microsoft, then try again.";
@@ -97,7 +97,7 @@ function sessionAction(code: VoiceSessionErrorCode, platform: string, start: Dic
 				? "Allow microphone access for this terminal in System Settings > Privacy & Security > Microphone, then try again."
 				: "Check that the default microphone is available, then try again.";
 		case "node-version":
-			return "Run Gentle AI with Node 22 or newer.";
+			return "Run Drakonc AI with Node 22 or newer.";
 		case "empty-audio":
 		case "no-speech":
 			return start === "hold" ? "Keep holding Space until recording starts, then speak." : "Speak after recording starts, then press Enter.";
@@ -184,8 +184,8 @@ function runDictation(createSession: NonNullable<VoiceCommandDeps["createSession
 }
 
 const PREREQUISITE_ACTIONS: Partial<Record<string, string>> = {
-	linux: "Gentle AI never installs system libraries; install ALSA with your package manager if loading fails.",
-	win32: "Gentle AI never installs the Visual C++ runtime; install it from Microsoft if loading fails.",
+	linux: "Drakonc AI never installs system libraries; install ALSA with your package manager if loading fails.",
+	win32: "Drakonc AI never installs the Visual C++ runtime; install it from Microsoft if loading fails.",
 };
 
 const runtimeBytes = (target: VoiceTarget) => voiceRuntimeManifest(target).packages.reduce((sum, pkg) => sum + pkg.size, 0);
@@ -272,7 +272,7 @@ export function registerVoiceCommand(pi: ExtensionAPI, deps: VoiceCommandDeps = 
 	let active: Run | undefined;
 
 	const command = async (ctx: ExtensionCommandContext): Promise<void> => {
-		if (env.GENTLE_PI_AGENTS_CHILD === "1") {
+		if (env.DRAKONC_PI_AGENTS_CHILD === "1") {
 			if (ctx.hasUI) ctx.ui.notify("Voice dictation is not available in delegated sessions.", "warning");
 			return;
 		}
@@ -381,9 +381,9 @@ export function registerVoiceCommand(pi: ExtensionAPI, deps: VoiceCommandDeps = 
 					arm(ctx);
 				}
 			} catch {
-				/* push-to-talk stays off; /gentle:voice still dictates */
+				/* push-to-talk stays off; /drakonc:voice still dictates */
 			}
-			say(enabled ? "Voice dictation is installed. Hold Space in the editor to dictate, or run /gentle:voice and choose Start dictation." : "Voice dictation is installed. Run /gentle:voice and choose Start dictation.", "info");
+			say(enabled ? "Voice dictation is installed. Hold Space in the editor to dictate, or run /drakonc:voice and choose Start dictation." : "Voice dictation is installed. Run /drakonc:voice and choose Start dictation.", "info");
 		}
 	};
 
@@ -489,7 +489,7 @@ export function registerVoiceCommand(pi: ExtensionAPI, deps: VoiceCommandDeps = 
 		if (installed === "checking") installed = found;
 		if (checkGeneration !== generation || armed !== current || found) return;
 		disarm();
-		current.ctx.ui.notify("Push-to-talk is paused: voice dictation is not installed. Run /gentle:voice to download it.", "warning");
+		current.ctx.ui.notify("Push-to-talk is paused: voice dictation is not installed. Run /drakonc:voice to download it.", "warning");
 	};
 
 	const startHold = (current: Armed): boolean => {
@@ -565,7 +565,7 @@ export function registerVoiceCommand(pi: ExtensionAPI, deps: VoiceCommandDeps = 
 	});
 	pi.on("session_start", (_event, ctx) => {
 		disarm();
-		if (env.GENTLE_PI_AGENTS_CHILD === "1" || !ctx?.hasUI || ctx.mode !== "tui") return;
+		if (env.DRAKONC_PI_AGENTS_CHILD === "1" || !ctx?.hasUI || ctx.mode !== "tui") return;
 		if (readToggle()) arm(ctx);
 	});
 	pi.on("session_shutdown", () => {

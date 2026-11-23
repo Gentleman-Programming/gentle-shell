@@ -8,19 +8,19 @@ import test from "node:test";
 import type { Api, AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { __testing, createGentleAiExtension } from "../../extensions/gentle-ai.ts";
-import { resolveGentleAiBinary } from "../../lib/gentle-ai-binary.ts";
+import { __testing, createDrakoncAiExtension } from "../../extensions/drakonc-ai.ts";
+import { resolveDrakoncAiBinary } from "../../lib/drakonc-ai-binary.ts";
 import type { InProcessReviewerRegistry } from "../../lib/inprocess-reviewer.ts";
 import { NativeReviewCliV216, type ExecFileAdapter, type NativeReviewCli } from "../../lib/native-review-cli.ts";
 import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError, reviewHostRelaySlots, runReviewHostRelaySlot } from "../../lib/review-host-relay.ts";
-import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "../../lib/review-relay-contract.ts";
+import { DRAKONC_PI_REVIEW_RELAY_CONTRACT, DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV } from "../../lib/review-relay-contract.ts";
 import { decodeReviewConsentV3, decodeReviewStatusV3 } from "../../lib/review-integration-v2.ts";
 import { requireDevBinary } from "../support/native-binary-gate.ts";
 
-// gentle-pi#311 P4 / P3: lens captures run one in-process reviewer completion
+// drakonc-pi#311 P4 / P3: lens captures run one in-process reviewer completion
 // through the live model registry (lib/inprocess-reviewer.ts), with no child
 // process, no `piExecutable`/`-e` forwarding, and no extension allowlist.
-// gentle-ai's v9 contract makes the refuter and targeted-validator role
+// drakonc-ai's v9 contract makes the refuter and targeted-validator role
 // captures host-mediated the same way (P3): each carries a submission
 // descriptor alongside `--materialize=true`, runs through the SAME relay
 // seam, and reaches the SAME `fauxReviewerFor` fixture — there is no
@@ -29,12 +29,12 @@ import { requireDevBinary } from "../support/native-binary-gate.ts";
 // every one of these legs.
 
 // ---------------------------------------------------------------------------
-// Fake reviewer registry (gentle-pi#311 P4) — registers pi-ai's own faux
+// Fake reviewer registry (drakonc-pi#311 P4) — registers pi-ai's own faux
 // provider, the SAME api-registry the real `completeSimple` dispatches
 // through in production, so the real `runInProcessReviewer` -> real
 // `completeSimple` path runs end-to-end with no network and no child
 // process. The scripted response reads the frozen prompt's
-// `GENTLE_AI_REVIEW_BINDING` line for the subject_hash the real Go admission
+// `DRAKONC_AI_REVIEW_BINDING` line for the subject_hash the real Go admission
 // requires, exactly like the fake pi child this replaced. `enqueue` must be
 // called once per expected completion (the faux provider's response queue is
 // FIFO and errors once exhausted).
@@ -55,7 +55,7 @@ function fauxReviewerFor(buildResponseText: (subjectHash: string | undefined, pr
 			const promptText = (textPart as { text?: string } | undefined)?.text ?? "";
 			const newline = promptText.indexOf("\n");
 			const firstLine = newline === -1 ? promptText : promptText.slice(0, newline);
-			const prefix = "GENTLE_AI_REVIEW_BINDING ";
+			const prefix = "DRAKONC_AI_REVIEW_BINDING ";
 			const subjectHash = firstLine.startsWith(prefix) ? (JSON.parse(firstLine.slice(prefix.length)) as { subject_hash?: string }).subject_hash : undefined;
 			calls.push({ promptText, subjectHash });
 			return fauxAssistantMessage(buildResponseText(subjectHash, promptText));
@@ -88,8 +88,8 @@ function corroboratingRefuterFixture() {
 	});
 }
 
-const DEV_BINARY = process.env.GENTLE_AI_DEV_BINARY;
-const RELAY_DEV_BINARY = process.env.GENTLE_PI_GENTLE_AI_DEV_BINARY;
+const DEV_BINARY = process.env.DRAKONC_AI_DEV_BINARY;
+const RELAY_DEV_BINARY = process.env.DRAKONC_PI_DRAKONC_AI_DEV_BINARY;
 const primaryDevBinaryGate = requireDevBinary({
 	devBinaryPath: DEV_BINARY,
 	exists: typeof DEV_BINARY === "string" && DEV_BINARY.length > 0 && isAbsolute(DEV_BINARY) && existsSync(DEV_BINARY),
@@ -157,10 +157,10 @@ function reviewEnvironment(home: string): NodeJS.ProcessEnv {
 		USERPROFILE: home,
 		APPDATA: join(home, "AppData", "Roaming"),
 		LOCALAPPDATA: join(home, "AppData", "Local"),
-		GENTLE_AI_HOME: join(home, "gentle-ai"),
-		GENTLE_AI_PI_CONFIG_DIR: join(home, "pi-native"),
+		DRAKONC_AI_HOME: join(home, "drakonc-ai"),
+		DRAKONC_AI_PI_CONFIG_DIR: join(home, "pi-native"),
 		XDG_CONFIG_HOME: join(home, "config"),
-		[GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT,
+		[DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV]: DRAKONC_PI_REVIEW_RELAY_CONTRACT,
 	};
 }
 
@@ -196,15 +196,15 @@ interface RegisteredReviewTools {
 
 function reviewToolsForNative(nativeReviewCli: NativeReviewCli): RegisteredReviewTools {
 	const tools = new Map<string, RegisteredTool>();
-	createGentleAiExtension({ nativeReviewCli } as unknown as Parameters<typeof createGentleAiExtension>[0])({
+	createDrakoncAiExtension({ nativeReviewCli } as unknown as Parameters<typeof createDrakoncAiExtension>[0])({
 		on() {},
 		registerTool(definition: RegisteredTool & { name: string }) { tools.set(definition.name, definition); },
 		registerCommand() {},
 	} as unknown as ExtensionAPI);
-	const controller = tools.get("gentle_review");
-	const capture = tools.get("gentle_review_capture");
-	assert.ok(controller, "gentle_review controller must be registered");
-	assert.ok(capture, "gentle_review_capture must be registered");
+	const controller = tools.get("drakonc_review");
+	const capture = tools.get("drakonc_review_capture");
+	assert.ok(controller, "drakonc_review controller must be registered");
+	assert.ok(capture, "drakonc_review_capture must be registered");
 	return { controller: controller!, capture: capture! };
 }
 
@@ -327,8 +327,8 @@ function sessionContext(cwd: string): ExtensionContext {
 // does not manufacture the remaining reviewer, refuter, validator, or approval
 // transitions.
 test("dev-binary: Pi host relay captures one real B-target slot from an A-session without reoffering it", { skip: !RUNNABLE }, async (t) => {
-	const sessionA = repository(t, "gentle-pi-relay-session-a-");
-	const targetB = repository(t, "gentle-pi-relay-target-b-");
+	const sessionA = repository(t, "drakonc-pi-relay-session-a-");
+	const targetB = repository(t, "drakonc-pi-relay-target-b-");
 	const nestedTarget = join(targetB, "nested");
 	mkdirSync(nestedTarget);
 	const workflowDirectory = join(targetB, ".github", "workflows");
@@ -346,10 +346,10 @@ test("dev-binary: Pi host relay captures one real B-target slot from an A-sessio
 	const isolatedHome = join(sessionA, "home");
 	mkdirSync(isolatedHome);
 	const environment = reviewEnvironment(isolatedHome);
-	assert.ok(DEV_BINARY, "GENTLE_AI_DEV_BINARY is required for this devtest");
-	assert.ok(RELAY_DEV_BINARY, "GENTLE_PI_GENTLE_AI_DEV_BINARY is required for this devtest");
+	assert.ok(DEV_BINARY, "DRAKONC_AI_DEV_BINARY is required for this devtest");
+	assert.ok(RELAY_DEV_BINARY, "DRAKONC_PI_DRAKONC_AI_DEV_BINARY is required for this devtest");
 	assert.equal(realpathSync(RELAY_DEV_BINARY!), realpathSync(DEV_BINARY!), "the devtest and production override must name the same candidate");
-	assert.equal(realpathSync(resolveGentleAiBinary()), realpathSync(RELAY_DEV_BINARY!), "production binary resolution must select the candidate realpath");
+	assert.equal(realpathSync(resolveDrakoncAiBinary()), realpathSync(RELAY_DEV_BINARY!), "production binary resolution must select the candidate realpath");
 	enableGlobalReview(RELAY_DEV_BINARY!, sessionA, canonicalB, environment);
 	const inspected = await crossRepositoryController(RELAY_DEV_BINARY!, sessionA, environment).execute(
 		"inspect-target-b-from-session-a",
@@ -398,7 +398,7 @@ test("dev-binary: Pi host relay captures one real B-target slot from an A-sessio
 	assert.ok(slot.submission, "the real Pi slot must include Go's provider-owned submission form");
 	assert.ok(slot.subjectHash, "the real Pi slot must include its artifact subject hash");
 
-	// gentle-pi#311 P4: the reviewer completion runs in-process — a fake
+	// drakonc-pi#311 P4: the reviewer completion runs in-process — a fake
 	// registry replaces the fake `pi` binary this devtest used to spawn for
 	// the lens capture. There is no child process and no scratch sandbox to
 	// isolate or clean up for this leg any more.
@@ -417,7 +417,7 @@ test("dev-binary: Pi host relay captures one real B-target slot from an A-sessio
 		reviewerRegistry: reviewer.registry,
 		selection: reviewer.selection,
 		routingKey: reviewer.routingKey,
-		gentleAiTimeoutMs: 30_000,
+		drakoncAiTimeoutMs: 30_000,
 		piTimeoutMs: 30_000,
 	});
 	assert.ok(relay.promptByteLength > 0);
@@ -443,10 +443,10 @@ test("dev-binary: Pi host relay captures one real B-target slot from an A-sessio
 });
 
 test("dev-binary: committed-range START preserves selected untracked content without dirty tracked noise", { skip: !RUNNABLE }, async (t) => {
-	const cwd = repository(t, "gentle-pi-committed-selected-");
-	const home = mkdtempSync(join(tmpdir(), "gentle-pi-committed-selected-home-"));
+	const cwd = repository(t, "drakonc-pi-committed-selected-");
+	const home = mkdtempSync(join(tmpdir(), "drakonc-pi-committed-selected-home-"));
 	t.after(() => { rmSync(home, { recursive: true, force: true }); });
-	const environment = { ...reviewEnvironment(home), GENTLE_PI_CONFIG_HOME: join(home, "config"), GENTLE_PI_AGENT_HOME: join(home, "agent"), PI_CODING_AGENT_DIR: join(home, "agent") };
+	const environment = { ...reviewEnvironment(home), DRAKONC_PI_CONFIG_HOME: join(home, "config"), DRAKONC_PI_AGENT_HOME: join(home, "agent"), PI_CODING_AGENT_DIR: join(home, "agent") };
 	const binary = RELAY_DEV_BINARY!;
 	const baseRef = git(cwd, "rev-parse", "HEAD");
 	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
@@ -478,12 +478,12 @@ test("dev-binary: committed-range START preserves selected untracked content wit
 	assert.deepEqual({ status: git(cwd, "status", "--porcelain=v1"), tree: git(cwd, "write-tree"), content: readFileSync(join(cwd, "app.ts"), "utf8") }, before);
 });
 
-// gentle-pi#522 / #524: a reviewer whose bytes gentle-ai refuses at admission
+// drakonc-pi#522 / #524: a reviewer whose bytes drakonc-ai refuses at admission
 // is a proven non-mutation. The real binary states that the lens slot was not
 // consumed; the host must relay that refusal and its continuation instead of
 // an unknown outcome the contract forbids replaying.
 test("dev-binary: a garbage reviewer result is refused at admission as a proven non-mutation and the same slot is reoffered", { skip: !RUNNABLE }, async (t) => {
-	const cwd = repository(t, "gentle-pi-relay-refused-");
+	const cwd = repository(t, "drakonc-pi-relay-refused-");
 	const workflowDirectory = join(cwd, ".github", "workflows");
 	mkdirSync(workflowDirectory, { recursive: true });
 	const workflow = join(workflowDirectory, "relay.yml");
@@ -495,12 +495,12 @@ test("dev-binary: a garbage reviewer result is refused at admission as a proven 
 	// The isolated home and the fake reviewer live outside the candidate so
 	// the repository stays free of untracked paths and START needs no
 	// intended-untracked selection.
-	const scratch = mkdtempSync(join(tmpdir(), "gentle-pi-relay-refused-scratch-"));
+	const scratch = mkdtempSync(join(tmpdir(), "drakonc-pi-relay-refused-scratch-"));
 	t.after(() => rmSync(scratch, { recursive: true, force: true }));
 	const isolatedHome = join(scratch, "home");
 	mkdirSync(isolatedHome);
 	const environment = reviewEnvironment(isolatedHome);
-	assert.ok(RELAY_DEV_BINARY, "GENTLE_PI_GENTLE_AI_DEV_BINARY is required for this devtest");
+	assert.ok(RELAY_DEV_BINARY, "DRAKONC_PI_DRAKONC_AI_DEV_BINARY is required for this devtest");
 	enableGlobalReview(RELAY_DEV_BINARY!, cwd, canonical, environment);
 
 	const nativeCalls: NativeProcessCall[] = [];
@@ -516,7 +516,7 @@ test("dev-binary: a garbage reviewer result is refused at admission as a proven 
 	const reviewerBinding = collectBindingsFor(status, "review.capture-result")[0];
 	assert.ok(reviewerBinding, "current STATUS must publish a reviewer capture binding");
 	const subjectHash = collectBindingArgument(reviewerBinding!, "subject-hash");
-	// gentle-pi#311 P4: the in-process reviewer completion produces the
+	// drakonc-pi#311 P4: the in-process reviewer completion produces the
 	// garbage text directly (no fake `pi` binary); Go's real admission still
 	// refuses it exactly as before.
 	const reviewer = fauxReviewerFor(() => "not json at all");
@@ -527,12 +527,12 @@ test("dev-binary: a garbage reviewer result is refused at admission as a proven 
 		try {
 			return await runReviewHostRelaySlot({
 				...request,
-				gentleAiExecutable: RELAY_DEV_BINARY!,
+				drakoncAiExecutable: RELAY_DEV_BINARY!,
 				environment,
 				reviewerRegistry: reviewer.registry,
 				selection: reviewer.selection,
 				routingKey: reviewer.routingKey,
-				gentleAiTimeoutMs: 30_000,
+				drakoncAiTimeoutMs: 30_000,
 				piTimeoutMs: 30_000,
 			});
 		} catch (error) {
@@ -549,7 +549,7 @@ test("dev-binary: a garbage reviewer result is refused at admission as a proven 
 	assert.equal(relayError.kind, REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED);
 	assert.equal(relayError.stage, "submit");
 	assert.equal(relayError.exitCode, 1);
-	assert.equal(relayError.mutationOutcome, "none", "gentle-ai's typed admission refusal proves the slot was not consumed");
+	assert.equal(relayError.mutationOutcome, "none", "drakonc-ai's typed admission refusal proves the slot was not consumed");
 	assert.match(relayError.stderr, /reviewer payload contains no complete JSON object/);
 	assert.match(relayError.stderr, /\[invalid_request\]/);
 
@@ -571,10 +571,10 @@ test("dev-binary: a garbage reviewer result is refused at admission as a proven 
 });
 
 test("dev-binary: Pi returns a terminal single-lens escalation from the real committed candidate capture", { skip: !RUNNABLE }, async (t) => {
-	const cwd = repository(t, "gentle-pi-escalation-");
-	const home = mkdtempSync(join(tmpdir(), "gentle-pi-escalation-home-"));
+	const cwd = repository(t, "drakonc-pi-escalation-");
+	const home = mkdtempSync(join(tmpdir(), "drakonc-pi-escalation-home-"));
 	t.after(() => { rmSync(home, { recursive: true, force: true }); __testing.setReviewHostRelayRunnerForTesting(); });
-	const environment = { ...reviewEnvironment(home), GENTLE_PI_CONFIG_HOME: join(home, "config"), GENTLE_PI_AGENT_HOME: join(home, "agent") }, binary = RELAY_DEV_BINARY!;
+	const environment = { ...reviewEnvironment(home), DRAKONC_PI_CONFIG_HOME: join(home, "config"), DRAKONC_PI_AGENT_HOME: join(home, "agent") }, binary = RELAY_DEV_BINARY!;
 	const baseRef = git(cwd, "rev-parse", "HEAD");
 	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n");
 	git(cwd, "add", "app.ts");
@@ -600,7 +600,7 @@ test("dev-binary: Pi returns a terminal single-lens escalation from the real com
 	}));
 	__testing.setReviewHostRelayRunnerForTesting(async (request) => {
 		reviewer.enqueue();
-		return await runReviewHostRelaySlot({ ...request, gentleAiExecutable: binary, environment, reviewerRegistry: reviewer.registry, selection: reviewer.selection, routingKey: reviewer.routingKey });
+		return await runReviewHostRelaySlot({ ...request, drakoncAiExecutable: binary, environment, reviewerRegistry: reviewer.registry, selection: reviewer.selection, routingKey: reviewer.routingKey });
 	});
 	const parameters = { lineageId: lineage, workspaceRoot: cwd, collectBinding: binding };
 	const forecast = record((await capture.execute("escalation-forecast", parameters, undefined, undefined, context)).details, "escalation forecast");
@@ -625,12 +625,12 @@ test("dev-binary: Pi returns a terminal single-lens escalation from the real com
 	assert.deepEqual(nativeStatus.escalation, closure.escalation);
 });
 
-// gentle-pi#998: real admitted validator rejection must survive Pi's closure decoder.
+// drakonc-pi#998: real admitted validator rejection must survive Pi's closure decoder.
 test("dev-binary: Pi preserves targeted-validator rejection evidence in an escalated correction closure", { skip: !RUNNABLE }, async (t) => {
-	const cwd = repository(t, "gentle-pi-validator-rejection-");
-	const home = mkdtempSync(join(tmpdir(), "gentle-pi-validator-rejection-home-"));
+	const cwd = repository(t, "drakonc-pi-validator-rejection-");
+	const home = mkdtempSync(join(tmpdir(), "drakonc-pi-validator-rejection-home-"));
 	t.after(() => { rmSync(home, { recursive: true, force: true }); __testing.setReviewHostRelayRunnerForTesting(); });
-	const environment = { ...reviewEnvironment(home), GENTLE_PI_CONFIG_HOME: join(home, "config"), GENTLE_PI_AGENT_HOME: join(home, "agent"), PI_CODING_AGENT_DIR: join(home, "agent") };
+	const environment = { ...reviewEnvironment(home), DRAKONC_PI_CONFIG_HOME: join(home, "config"), DRAKONC_PI_AGENT_HOME: join(home, "agent"), PI_CODING_AGENT_DIR: join(home, "agent") };
 	const binary = RELAY_DEV_BINARY!;
 	assert.equal(realpathSync(binary), realpathSync(DEV_BINARY!));
 	// Four original changed lines provide the two-line bounded correction below.
@@ -663,7 +663,7 @@ test("dev-binary: Pi preserves targeted-validator rejection evidence in an escal
 		assert.ok(selected, "validator fixture must be bound before capture");
 		relayRoles.push(request.routingKey!);
 		selected.enqueue();
-		const relay = await runReviewHostRelaySlot({ ...request, gentleAiExecutable: binary, environment, reviewerRegistry: selected.registry, selection: selected.selection, routingKey: request.routingKey });
+		const relay = await runReviewHostRelaySlot({ ...request, drakoncAiExecutable: binary, environment, reviewerRegistry: selected.registry, selection: selected.selection, routingKey: request.routingKey });
 		if (request.routingKey === "review-validator") emittedClosure = record(JSON.parse(relay.submission) as unknown, "native rejection submission");
 		return relay;
 	});
@@ -754,8 +754,8 @@ test("dev-binary: Pi preserves targeted-validator rejection evidence in an escal
 // reviewers are the fixed faux registries below; no real model, provider, or
 // profile is selected.
 test("dev-binary: Pi controller keeps an explicit B root and selected-untracked binding through host-mediated validation approval", { skip: !RUNNABLE }, async (t) => {
-	const sessionA = repository(t, "gentle-pi-combined-session-a-");
-	const targetB = repository(t, "gentle-pi-combined-target-b-");
+	const sessionA = repository(t, "drakonc-pi-combined-session-a-");
+	const targetB = repository(t, "drakonc-pi-combined-target-b-");
 	const nestedTarget = join(targetB, "nested", "target");
 	mkdirSync(nestedTarget, { recursive: true });
 	const workflowDirectory = join(targetB, ".github", "workflows");
@@ -781,7 +781,7 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 	const isolatedHome = join(sessionA, "home");
 	mkdirSync(isolatedHome);
 	const environment = reviewEnvironment(isolatedHome);
-	assert.ok(RELAY_DEV_BINARY, "GENTLE_PI_GENTLE_AI_DEV_BINARY is required for this devtest");
+	assert.ok(RELAY_DEV_BINARY, "DRAKONC_PI_DRAKONC_AI_DEV_BINARY is required for this devtest");
 	// Establish this fixture's starting mode instead of assuming a native release default.
 	candidateJson(RELAY_DEV_BINARY!, sessionA, ["review", "mode", "disable", "--scope", "global", "--cwd", canonicalB, "--json"], environment);
 	const isolatedModeBefore = record(candidateJson(RELAY_DEV_BINARY!, sessionA, ["review", "mode", "status", "--cwd", canonicalB, "--json"], environment), "isolated mode before setup");
@@ -847,8 +847,8 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 		evidence_class: "deterministic",
 		causal_disposition: "introduced",
 	}];
-	// gentle-pi#311 P4 / P3: the lens reviewer capture runs in-process through
-	// a fake registry. gentle-ai's v9 contract makes the targeted-validator
+	// drakonc-pi#311 P4 / P3: the lens reviewer capture runs in-process through
+	// a fake registry. drakonc-ai's v9 contract makes the targeted-validator
 	// role host-mediated too (there is no Go-owned pi subprocess left to fake
 	// on PATH for it), so it reaches the SAME relay seam below through its own
 	// faux reviewer, armed once its request-hash and target identity are
@@ -872,12 +872,12 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 		selected.enqueue();
 		return await runReviewHostRelaySlot({
 			...request,
-			gentleAiExecutable: RELAY_DEV_BINARY!,
+			drakoncAiExecutable: RELAY_DEV_BINARY!,
 			environment,
 			reviewerRegistry: selected.registry,
 			selection: selected.selection,
 			routingKey: request.routingKey,
-			gentleAiTimeoutMs: 30_000,
+			drakoncAiTimeoutMs: 30_000,
 			piTimeoutMs: 30_000,
 		});
 	});
@@ -972,7 +972,7 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 	assert.ok(reviewerCaptureCount > 0);
 	assert.equal(relayTargetRoots.length, reviewerCaptureCount + refuterReviewer.calls.length);
 	assert.ok(relayTargetRoots.every((root) => root === canonicalB), "every reviewer relay leg must stay bound to B");
-	// gentle-pi#311 P4: the reviewer completion runs in-process — there is no
+	// drakonc-pi#311 P4: the reviewer completion runs in-process — there is no
 	// subprocess log, argv, or scratch sandbox to assert for this leg any
 	// more; `reviewer.calls` is the in-process equivalent record.
 	assert.equal(reviewer.calls.length, reviewerCaptureCount);
@@ -1019,7 +1019,7 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 	const validatorBinding = collectBindingFor(validationStatus.details, "review.capture-validation");
 	const validatorInput = parsedCollectBinding(validatorBinding);
 	assert.equal(validatorInput.captureOperation, "review.capture-validation");
-	// gentle-pi#311 P3: gentle-ai's v9 contract renders the targeted-validator
+	// drakonc-pi#311 P3: drakonc-ai's v9 contract renders the targeted-validator
 	// role host-mediated too, carrying a submission descriptor alongside
 	// --materialize=true exactly like a lens capture-result materialize slot.
 	const validatorSubmission = record(validatorInput.submission, "host-mediated targeted-validator submission");
@@ -1100,19 +1100,19 @@ test("dev-binary: Pi controller keeps an explicit B root and selected-untracked 
 	assert.equal(validationClosure.operation, "review/capture-validation");
 	assert.equal(validationClosure.state, "approved");
 
-	// gentle-pi#311 P3: the targeted validator now completes in-process
+	// drakonc-pi#311 P3: the targeted validator now completes in-process
 	// through the same host relay seam as the lens reviewer above — there is
 	// no Go-owned pi subprocess, no PATH fixture, and no scratch sandbox to
 	// assert for this leg any more; it never reaches the native adapter's
 	// own `review capture-validation` invocation, since the relay spawns
-	// gentle-ai itself for both materialize and submit.
+	// drakonc-ai itself for both materialize and submit.
 	assert.equal(validatorReviewer.calls.length, 1, "the in-process targeted validator must complete exactly once");
 	assert.ok(validatorReviewer.calls[0]!.promptText.includes(validatorRequestHash), "the targeted-validator prompt must retain the provider request hash");
 	assert.equal(nativeCalls.some((call) => call.arguments[0] === "review" && call.arguments[1] === "capture-validation"), false, "the targeted validator must not reach the native adapter directly");
 
 	// Approval no longer burns on its own: it commits one pending
 	// acknowledgement and waits for the host to run that exact invocation
-	// (gentle-ai #3851). The lineage is still live here on purpose, and running
+	// (drakonc-ai #3851). The lineage is still live here on purpose, and running
 	// the provider's own tokens is what ends it.
 	const pendingAcknowledgement = record(validationClosure.acknowledgement, "approved acknowledgement continuation");
 	assert.equal(pendingAcknowledgement.operation, "review.acknowledge-approved");

@@ -25,16 +25,16 @@ const REPO_ROOT = join(import.meta.dirname, "..");
 const ASSETS = join(REPO_ROOT, "assets");
 const MODES = ["organic", "full-delegation"] as const;
 const ACTIVE_TOOLS = ["read", "bash", "edit", "write", "subagent_run"] as const;
-const INTERACTIVE_HOST_ENV = "GENTLE_SHELL_INTERACTIVE_HOST";
+const INTERACTIVE_HOST_ENV = "DRAKONC_SHELL_INTERACTIVE_HOST";
 
 // Isolate config/home state before the extensions that read it are imported.
 const scratch = mkdtempSync(join(tmpdir(), "decision-routing-"));
 const project = join(scratch, "project");
-process.env.GENTLE_PI_CONFIG_HOME = join(scratch, "config");
+process.env.DRAKONC_PI_CONFIG_HOME = join(scratch, "config");
 const previousInteractiveHost = process.env[INTERACTIVE_HOST_ENV];
 const { default: askUserChoice } = await import("../extensions/ask-user-choice.ts");
 const { default: askUserQuestion } = await import("../extensions/ask-user-question.ts");
-const { __testing } = await import("../extensions/gentle-ai.ts");
+const { __testing } = await import("../extensions/drakonc-ai.ts");
 
 after(() => {
 	if (previousInteractiveHost === undefined) delete process.env[INTERACTIVE_HOST_ENV];
@@ -53,7 +53,7 @@ const CANONICAL_ROUTE = [
 ] as const;
 
 function render(mode: (typeof MODES)[number]): string {
-	return __testing.buildGentlePrompt("gentleman", project, ACTIVE_TOOLS, undefined, undefined, mode).replaceAll(ASSETS, "/a");
+	return __testing.buildDrakoncPrompt("drakoncman", project, ACTIVE_TOOLS, undefined, undefined, mode).replaceAll(ASSETS, "/a");
 }
 
 test("S4: the rendered primary prompt carries the canonical decision route in both modes", () => {

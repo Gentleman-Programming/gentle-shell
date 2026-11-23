@@ -110,7 +110,7 @@ test("bridge is lazy and spawns owned Node with fixed flags, scrubbed env and Li
 	assert.deepEqual(call.options.stdio, ["ignore", "pipe", "pipe"]);
 	assert.equal(call.options.shell, false); assert.equal(call.options.windowsHide, true); assert.equal(call.options.detached, false);
 	const env = call.options.env as NodeJS.ProcessEnv;
-	assert.equal(env.NODE_NO_WARNINGS, "1"); assert.equal(env.GENTLE_PI_AGENTS_CHILD, "1");
+	assert.equal(env.NODE_NO_WARNINGS, "1"); assert.equal(env.DRAKONC_PI_AGENTS_CHILD, "1");
 	assert.equal(env.NODE_OPTIONS, undefined); assert.equal(env.DEBUG, undefined); assert.equal(env.PULSE_SERVER, "unix:/tmp/x");
 	assert.deepEqual(player.getNativeFormats(), []); // default unavailable until a real probe
 	children[0]!.stdout.emit("data", okProbe());
@@ -317,7 +317,7 @@ test("child environment is an allowlist: Pulse vars kept, credentials and debug 
 	assert.equal(env.XDG_RUNTIME_DIR, "/r"); assert.equal(env.XDG_CONFIG_HOME, "/cfg"); assert.equal(env.HOME, "/h"); assert.equal(env.LANG, "C");
 	for (const drop of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY", "NODE_OPTIONS", "NODE_PATH", "DEBUG", "PATH"])
 		assert.equal(env[drop], undefined, drop);
-	assert.equal(env.NODE_NO_WARNINGS, "1"); assert.equal(env.GENTLE_PI_AGENTS_CHILD, "1");
+	assert.equal(env.NODE_NO_WARNINGS, "1"); assert.equal(env.DRAKONC_PI_AGENTS_CHILD, "1");
 });
 
 test("real worker probe against a fake Unix socket authenticates without CREATE", async () => {
@@ -362,7 +362,7 @@ test("real worker rejects invalid WAV before opening the socket", async () => {
 /** Direct serve-protocol check: bounded fail-closed requests, private per-play failures, stdin EOF teardown. */
 test("real serve worker fails closed on protocol violations and exits on stdin EOF", async () => {
 	const workerPath = fileURLToPath(new URL("../lib/notification-pulse-worker.ts", import.meta.url));
-	const serveEnv = { ...process.env, NODE_NO_WARNINGS: "1", GENTLE_PI_AGENTS_CHILD: "1" };
+	const serveEnv = { ...process.env, NODE_NO_WARNINGS: "1", DRAKONC_PI_AGENTS_CHILD: "1" };
 	const spawnServe = () => spawn(process.execPath, ["--experimental-strip-types", workerPath, "serve"],
 		{ stdio: ["pipe", "pipe", "pipe"], env: serveEnv });
 	const collect = (child: ReturnType<typeof spawn>): string[] => {
@@ -383,16 +383,16 @@ test("real serve worker fails closed on protocol violations and exits on stdin E
 	const crashingLines = collect(crashing);
 	crashing.stdin!.write("not json\n");
 	assert.equal(await exited(crashing), 1);
-	assert.deepEqual(await crashingLines, [JSON.stringify({ schema: "gentle.audio.pulse/v1", ok: false })]);
+	assert.deepEqual(await crashingLines, [JSON.stringify({ schema: "drakonc.audio.pulse/v1", ok: false })]);
 	// (b) A schema-valid request for a missing snapshot fails privately and the worker keeps serving.
 	const serving = spawnServe();
 	const servingLines = collect(serving);
-	for (const path of ["/nonexistent/gentle-a.wav", "/nonexistent/gentle-b.wav"])
-		serving.stdin!.write(`${JSON.stringify({ schema: "gentle.audio.pulse/v1", op: "play", path })}\n`);
+	for (const path of ["/nonexistent/drakonc-a.wav", "/nonexistent/drakonc-b.wav"])
+		serving.stdin!.write(`${JSON.stringify({ schema: "drakonc.audio.pulse/v1", op: "play", path })}\n`);
 	await new Promise(resolve => setTimeout(resolve, 1200));
 	assert.deepEqual(servingLines, [
-		JSON.stringify({ schema: "gentle.audio.pulse/v1", ok: false }),
-		JSON.stringify({ schema: "gentle.audio.pulse/v1", ok: false }),
+		JSON.stringify({ schema: "drakonc.audio.pulse/v1", ok: false }),
+		JSON.stringify({ schema: "drakonc.audio.pulse/v1", ok: false }),
 	]);
 	// (c) stdin EOF (owner death) is a clean exit.
 	serving.stdin!.end();

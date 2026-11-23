@@ -2,24 +2,24 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>A · Inspector — Gentle Shell Desktop</title>
+<title>A · Inspector — Drakonc Shell Desktop</title>
 <style>
 /*@BASE*/
-/* Palette: surfaces from themes/Gentleman-Cute.json (the Gentle Shell TUI theme); text, accent and
+/* Palette: surfaces from themes/Drakoncman-Cute.json (the Drakonc Shell TUI theme); text, accent and
    state colors are design/system.md tokens (identical values in that theme). Each var names the
    Herdr theme role it maps to, so mods read them with theme() and never hard-code a hex.
    Buildable with Herdr mods: flex boxes, text, inline SVG icons, borders, radius, native markdown.
    No blur, backdrop filters, gradients or web-only effects. */
 :root {
 	color-scheme: dark;
-	--canvas: #060407;      /* Gentleman-Cute bg          → Herdr "canvas" / "background" */
-	--chrome: #100A0F;      /* Gentleman-Cute bgPanel     → "chrome" */
+	--canvas: #060407;      /* Drakoncman-Cute bg          → Herdr "canvas" / "background" */
+	--chrome: #100A0F;      /* Drakoncman-Cute bgPanel     → "chrome" */
 	--surface: #20161e;     /* system.md --surface        → "surface" (cards) */
 	--raised: #241822;      /* system.md --surface-1      → "raised" (chips, inputs) */
-	--user: #2A1523;        /* Gentleman-Cute userMessageBg */
-	--selected: #28121E;    /* Gentleman-Cute selection   → "selected" / "hover" */
-	--line: #2A1720;        /* Gentleman-Cute borderSubtle → "border" */
-	--line-strong: #563040; /* Gentleman-Cute border      → card borders that must read */
+	--user: #2A1523;        /* Drakoncman-Cute userMessageBg */
+	--selected: #28121E;    /* Drakoncman-Cute selection   → "selected" / "hover" */
+	--line: #2A1720;        /* Drakoncman-Cute borderSubtle → "border" */
+	--line-strong: #563040; /* Drakoncman-Cute border      → card borders that must read */
 	--text: #f6eff3;        /* system.md --text           → "foreground" */
 	--muted: #a78e9b;       /* system.md --text-muted     → "muted" */
 	--faint: #76616b;       /* system.md --text-faint     → decorative only */
@@ -111,7 +111,7 @@ body:has(#map:checked) [data-block]::after {
 .perm-menu [aria-checked="true"] svg { color: var(--accent); }
 .perm-menu .warnline b { color: var(--warn); } .perm-menu .errline b { color: var(--err); }
 
-/* Chat log (gentle-chat mod) */
+/* Chat log (drakonc-chat mod) */
 .log { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 0 22px; scroll-behavior: auto; }
 .log-in { max-width: 780px; margin: 0 auto; padding: 0 28px; display: flex; flex-direction: column; gap: 14px; }
 .earlier { align-self: center; margin: 0; }
@@ -326,29 +326,29 @@ button.fact:hover { background: var(--selected); }
 	<label class="map-toggle"><input type="checkbox" id="map"> Show Herdr blocks</label>
 </header>
 
-<main class="window" aria-label="Gentle Shell Desktop window">
+<main class="window" aria-label="Drakonc Shell Desktop window">
 	<div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
 
 	<nav class="sidebar" aria-label="Spaces and agents" data-n="1" data-block="column sidebar">
 		<div class="brand" data-n="1a" data-block="block brand · workspace-chrome">
-			<svg class="i mark" aria-hidden="true"><use href="#i-mark"/></svg><b>Gentle Shell</b>
+			<svg class="i mark" aria-hidden="true"><use href="#i-mark"/></svg><b>Drakonc Shell</b>
 		</div>
-		<section class="sb-sec" aria-labelledby="sp-h" data-n="1b" data-block="block spaces · gentle-spaces (skin of spaces)">
+		<section class="sb-sec" aria-labelledby="sp-h" data-n="1b" data-block="block spaces · drakonc-spaces (skin of spaces)">
 			<header><h2 class="eyebrow" id="sp-h">Projects</h2><button class="icon-btn" aria-label="Open a project"><svg class="i s"><use href="#i-plus"/></svg></button></header>
 			<ul style="list-style:none;margin:0;padding:0">
-				<li><button class="space" aria-current="true"><span class="av">gp</span><span class="grow">gentle-pi<small>3 sessions · $4.74 today</small></span><span class="count" title="1 session needs you">1</span></button></li>
-				<li><button class="space"><span class="av">ga</span><span class="grow">gentle-ai<small>1 session · idle</small></span></button></li>
-				<li><button class="space"><span class="av">hz</span><span class="grow">herdr-zoo<small>No Gentle Shell session</small></span></button></li>
+				<li><button class="space" aria-current="true"><span class="av">gp</span><span class="grow">drakonc-pi<small>3 sessions · $4.74 today</small></span><span class="count" title="1 session needs you">1</span></button></li>
+				<li><button class="space"><span class="av">ga</span><span class="grow">drakonc-ai<small>1 session · idle</small></span></button></li>
+				<li><button class="space"><span class="av">hz</span><span class="grow">herdr-zoo<small>No Drakonc Shell session</small></span></button></li>
 			</ul>
 		</section>
 		<section class="sb-sec" aria-labelledby="ag-h" data-n="1c" data-block="block agents · agents (built-in)">
 			<header><h2 class="eyebrow" id="ag-h">Agents</h2><span class="dim" style="font-size:11.5px">Needs you first</span></header>
-			<button class="agent-row"><span>T5 · Chat switch</span><span class="state need">Needs you</span><small>gentle-shell · gentle-pi · t2</small></button>
-			<button class="agent-row"><span>Review follow-up</span><span class="state work">Working</span><small>gentle-shell · gentle-pi · t4</small></button>
-			<button class="agent-row"><span>Desktop recipe</span><span class="state idle">Idle</span><small>gentle-shell · gentle-pi · t5</small></button>
-			<button class="agent-row"><span>Release notes</span><span class="state idle">Idle</span><small>gentle-shell · gentle-ai · t1</small></button>
+			<button class="agent-row"><span>T5 · Chat switch</span><span class="state need">Needs you</span><small>drakonc-shell · drakonc-pi · t2</small></button>
+			<button class="agent-row"><span>Review follow-up</span><span class="state work">Working</span><small>drakonc-shell · drakonc-pi · t4</small></button>
+			<button class="agent-row"><span>Desktop recipe</span><span class="state idle">Idle</span><small>drakonc-shell · drakonc-pi · t5</small></button>
+			<button class="agent-row"><span>Release notes</span><span class="state idle">Idle</span><small>drakonc-shell · drakonc-ai · t1</small></button>
 		</section>
-		<footer class="sb-foot" aria-label="Plan usage" data-n="1d" data-block="block sidebar-footer · gentle-usage">
+		<footer class="sb-foot" aria-label="Plan usage" data-n="1d" data-block="block sidebar-footer · drakonc-usage">
 			<p class="eyebrow">Plan usage · Claude Max</p>
 			<div class="usage"><span>5h</span><span class="bar accent"><i style="width:46%"></i></span><span class="num">46%</span></div>
 			<div class="usage"><span>7d</span><span class="bar"><i style="width:22%"></i></span><span class="num">22%</span></div>
@@ -357,16 +357,16 @@ button.fact:hover { background: var(--selected); }
 	</nav>
 
 	<div class="workcol">
-		<div class="tabs" role="tablist" aria-label="Sessions in gentle-pi" data-n="2" data-block="block tabs · tabs (built-in)">
+		<div class="tabs" role="tablist" aria-label="Sessions in drakonc-pi" data-n="2" data-block="block tabs · tabs (built-in)">
 			<button class="tab" role="tab" aria-selected="true"><span class="state need"><span class="sr">Needs you</span></span><span class="grow">T5 · Chat | Terminal switch</span></button>
 			<button class="tab" role="tab" aria-selected="false"><span class="state work"><span class="sr">Working</span></span><span class="grow">Review follow-up #1858</span></button>
 			<button class="tab" role="tab" aria-selected="false"><span class="state idle"><span class="sr">Idle</span></span><span class="grow">Desktop recipe</span></button>
-			<button class="icon-btn tab-add" aria-label="New Gentle Shell session"><svg class="i s"><use href="#i-plus"/></svg></button>
+			<button class="icon-btn tab-add" aria-label="New Drakonc Shell session"><svg class="i s"><use href="#i-plus"/></svg></button>
 		</div>
 
 		<div class="body" data-n="3" data-block="row work-body">
-			<section class="views" aria-label="Session" data-n="4" data-block="stack views → block chat · gentle-chat">
-				<header class="chat-head" data-n="4a" data-block="gentle-chat · header">
+			<section class="views" aria-label="Session" data-n="4" data-block="stack views → block chat · drakonc-chat">
+				<header class="chat-head" data-n="4a" data-block="drakonc-chat · header">
 					<div class="head-row">
 						<h1 class="who" style="margin:0;font-size:14px;font-weight:600">T5 · Chat | Terminal switch</h1>
 <!--@SWITCH-->
@@ -377,10 +377,10 @@ button.fact:hover { background: var(--selected); }
 <!--/@SWITCH-->
 					</div>
 					<div class="head-row">
-						<p class="crumbs"><svg class="i s"><use href="#i-folder"/></svg>gentle-pi <span class="sep">/</span> <svg class="i s"><use href="#i-branch"/></svg>feat/herdr-gentle-shell <span class="sep">·</span> <span>7 changed</span></p>
+						<p class="crumbs"><svg class="i s"><use href="#i-folder"/></svg>drakonc-pi <span class="sep">/</span> <svg class="i s"><use href="#i-branch"/></svg>feat/herdr-drakonc-shell <span class="sep">·</span> <span>7 changed</span></p>
 					<div class="facts-row">
-						<button class="fact" title="Model · effort · profile (opens /gentle:models)"><span class="k">Model</span>Opus 5.5 · high · balanced</button>
-						<button class="fact" title="Persona (opens /gentle:persona)"><svg class="i s dim"><use href="#i-user"/></svg>Gentleman</button>
+						<button class="fact" title="Model · effort · profile (opens /drakonc:models)"><span class="k">Model</span>Opus 5.5 · high · balanced</button>
+						<button class="fact" title="Persona (opens /drakonc:persona)"><svg class="i s dim"><use href="#i-user"/></svg>Drakoncman</button>
 						<span class="fact" title="Context window"><span class="k">Ctx</span><span class="bar info" role="img" aria-label="Context 38 percent of 400k"><i style="width:38%"></i></span><span class="num">38%</span></span>
 						<span class="fact"><span class="k">Cost</span><span class="num">$3.42</span></span>
 						<details class="perm">
@@ -398,22 +398,22 @@ button.fact:hover { background: var(--selected); }
 					</div>
 				</header>
 
-				<div class="log" data-view="chat" tabindex="0" aria-label="Conversation" data-n="4b" data-block="gentle-chat · log (v_virtual_list + TextView.markdown)">
+				<div class="log" data-view="chat" tabindex="0" aria-label="Conversation" data-n="4b" data-block="drakonc-chat · log (v_virtual_list + TextView.markdown)">
 					<div class="log-in">
 <!--@CHAT-->
 						<p class="earlier"><button>Show earlier (12 messages)</button></p>
 						<article class="msg-user" aria-label="You">
-							<div class="bubble">Implement T5: the <b>Chat | Terminal</b> switch in <code class="mono">gentle-chat</code>. The way back from the terminal can't rely on the stack's <code class="mono">tabs</code> header — Herdr 0.1.15 rejects it.</div>
+							<div class="bubble">Implement T5: the <b>Chat | Terminal</b> switch in <code class="mono">drakonc-chat</code>. The way back from the terminal can't rely on the stack's <code class="mono">tabs</code> header — Herdr 0.1.15 rejects it.</div>
 							<div class="meta">You · 14:02</div>
 						</article>
-						<article class="msg-ai" aria-label="Gentle Shell">
+						<article class="msg-ai" aria-label="Drakonc Shell">
 							<details class="think"><summary><svg class="i s chev"><use href="#i-chev"/></svg>Thought for 14s</summary>
 								<div class="think-body">The CLI <code>layout.select</code> did nothing in L7 because t2 is not in a window space. From inside the mod, <code>run("layout.select")</code> targets the shown layout, so Chat → Terminal works. The way back needs a control that stays visible while the terminal is shown: the pane header.</div>
 							</details>
 							<details class="tool-group"><summary><svg class="i s chev"><use href="#i-chev"/></svg><span class="add">✓</span> Explored the spike · 3 reads, 1 search <span class="dim">0.8s</span></summary>
 								<div class="tool-list">
-									<details class="tool"><summary><span class="ok">✓</span><span class="tn">read</span><span class="ta">herdr/mods/gentle-chat/main.js · 299 lines</span><svg class="i s chev"><use href="#i-chev"/></svg></summary><div class="tool-body"><pre>export default class GentleChat extends View { … }</pre></div></details>
-									<details class="tool"><summary><span class="ok">✓</span><span class="tn">read</span><span class="ta">herdr/layouts/gentle-shell.json · 266 lines</span><svg class="i s chev"><use href="#i-chev"/></svg></summary></details>
+									<details class="tool"><summary><span class="ok">✓</span><span class="tn">read</span><span class="ta">herdr/mods/drakonc-chat/main.js · 299 lines</span><svg class="i s chev"><use href="#i-chev"/></svg></summary><div class="tool-body"><pre>export default class DrakoncChat extends View { … }</pre></div></details>
+									<details class="tool"><summary><span class="ok">✓</span><span class="tn">read</span><span class="ta">herdr/layouts/drakonc-shell.json · 266 lines</span><svg class="i s chev"><use href="#i-chev"/></svg></summary></details>
 									<details class="tool"><summary><span class="ok">✓</span><span class="tn">read</span><span class="ta">herdr-zoo/mods/claude-chat/main.js · 412 lines</span><svg class="i s chev"><use href="#i-chev"/></svg></summary></details>
 									<details class="tool"><summary><span class="ok">✓</span><span class="tn">grep</span><span class="ta">"layout.select" herdr/ herdr-zoo/ · 6 matches</span><svg class="i s chev"><use href="#i-chev"/></svg></summary></details>
 								</div>
@@ -427,7 +427,7 @@ button.fact:hover { background: var(--selected); }
 								</ol>
 							</div>
 							<details class="tool diff" open>
-								<summary><span class="ok">✓</span><span class="tn">edit</span><span class="ta">herdr/mods/gentle-chat/main.js</span><span class="num add">+18</span><span class="num del">−6</span><svg class="i s chev"><use href="#i-chev"/></svg></summary>
+								<summary><span class="ok">✓</span><span class="tn">edit</span><span class="ta">herdr/mods/drakonc-chat/main.js</span><span class="num add">+18</span><span class="num del">−6</span><svg class="i s chev"><use href="#i-chev"/></svg></summary>
 								<div class="tool-body">
 <div class="hunk" role="img" aria-label="Diff hunk: one helper added, two lines replaced by three">
 <div class="h"><span class="ln"></span><span class="sg"></span><span>@@ -181,8 +181,10 @@ header(t, agent, working)</span></div>
@@ -443,12 +443,12 @@ button.fact:hover { background: var(--selected); }
 									<div class="diff-foot"><span>Hunk 1 of 3</span><span style="display:flex;gap:6px"><button class="btn">Next hunk</button><button class="btn">Open in Changes</button></span></div>
 								</div>
 							</details>
-							<details class="tool"><summary><span class="ok">✓</span><span class="tn">bash</span><span class="ta">herdr-app check herdr/mods/gentle-chat</span><span class="dim">check passed · 1.9s</span><svg class="i s chev"><use href="#i-chev"/></svg></summary><div class="tool-body"><pre>check passed (gentle-chat: 1 view, 0 errors, 0 warnings)</pre></div></details>
+							<details class="tool"><summary><span class="ok">✓</span><span class="tn">bash</span><span class="ta">herdr-app check herdr/mods/drakonc-chat</span><span class="dim">check passed · 1.9s</span><svg class="i s chev"><use href="#i-chev"/></svg></summary><div class="tool-body"><pre>check passed (drakonc-chat: 1 view, 0 errors, 0 warnings)</pre></div></details>
 							<section class="sub" aria-label="Subagent writer">
 								<h3><span class="role">writer</span>Add the Chat button to the pane header mod</h3>
 								<div class="facts"><span class="state work">Running · 3m 12s</span><span>Sonnet 5.5</span><span class="num">$0.41</span><span>todo 2/4</span></div>
 								<div class="acts"><button class="btn">View</button><button class="btn danger"><svg class="i s"><use href="#i-stop"/></svg>Stop</button></div>
-								<div class="last">› bash herdr-app check herdr/mods/pane-gentle</div>
+								<div class="last">› bash herdr-app check herdr/mods/pane-drakonc</div>
 							</section>
 						</article>
 						<section class="ask" role="group" aria-labelledby="ask-q">
@@ -466,16 +466,16 @@ button.fact:hover { background: var(--selected); }
 					</div>
 				</div>
 <!--@TERM-->
-				<pre class="tui" data-view="term" hidden aria-label="Gentle Shell terminal (real TUI in a Herdr pane)"><span class="m"> gentle-pi  feat/herdr-gentle-shell ●7   T5 · Chat | Terminal switch          Opus 5.5 high · ctx 38% · $3.42</span>
+				<pre class="tui" data-view="term" hidden aria-label="Drakonc Shell terminal (real TUI in a Herdr pane)"><span class="m"> drakonc-pi  feat/herdr-drakonc-shell ●7   T5 · Chat | Terminal switch          Opus 5.5 high · ctx 38% · $3.42</span>
 <span class="m"> ─────────────────────────────────────────────────────────────────────────────────────────────────────</span>
- <span class="p">›</span> Implement T5: the Chat | Terminal switch in gentle-chat. The way back from the terminal
+ <span class="p">›</span> Implement T5: the Chat | Terminal switch in drakonc-chat. The way back from the terminal
    can't rely on the stack's tabs header — Herdr 0.1.15 rejects it.
 
  <span class="m">▸ Thought for 14s</span>
  <span class="g">✓</span> Explored the spike · 3 reads, 1 search
    The forward switch already works from inside the mod; what is missing is the way back.
- <span class="g">✓</span> edit herdr/mods/gentle-chat/main.js <span class="g">+18</span> <span style="color:var(--err)">−6</span>
- <span class="g">✓</span> bash herdr-app check herdr/mods/gentle-chat  <span class="m">check passed · 1.9s</span>
+ <span class="g">✓</span> edit herdr/mods/drakonc-chat/main.js <span class="g">+18</span> <span style="color:var(--err)">−6</span>
+ <span class="g">✓</span> bash herdr-app check herdr/mods/drakonc-chat  <span class="m">check passed · 1.9s</span>
  <span class="b">◐</span> writer  Add the Chat button to the pane header mod      <span class="m">3m 12s · $0.41</span>
 
  <span class="y">?</span> How should the Terminal view offer the way back to Chat?
@@ -490,12 +490,12 @@ button.fact:hover { background: var(--selected); }
 <span class="m"> AUTO · ODD Build T5 · writer 58 tok/s · jobs 1 · 5h 46%</span></pre>
 <!--/@TERM-->
 <!--@COMPOSER-->
-				<form class="composer" data-view="chat" onsubmit="return false" aria-label="Message composer" data-n="4c" data-block="gentle-chat · composer (Input + Button)">
+				<form class="composer" data-view="chat" onsubmit="return false" aria-label="Message composer" data-n="4c" data-block="drakonc-chat · composer (Input + Button)">
 					<div class="composer-in">
 						<div class="field">
 							<button type="button" class="icon-btn" aria-label="Attach image"><svg class="i"><use href="#i-clip"/></svg></button>
 							<label class="sr" for="msg">Message</label>
-							<textarea id="msg" rows="2" placeholder="Answer above, or message Gentle Shell…  / for commands"></textarea>
+							<textarea id="msg" rows="2" placeholder="Answer above, or message Drakonc Shell…  / for commands"></textarea>
 							<button type="submit" class="send"><svg class="i s"><use href="#i-send"/></svg>Send</button>
 						</div>
 						<div class="hints"><span><kbd>Enter</kbd> send</span><span><kbd>⇧ Enter</kbd> new line</span><span><kbd>/</kbd> commands</span><span><kbd>⌘J</kbd> Terminal</span><span style="margin-left:auto">Esc Esc stops the agent</span></div>
@@ -504,7 +504,7 @@ button.fact:hover { background: var(--selected); }
 <!--/@COMPOSER-->
 			</section>
 
-			<aside class="inspector" aria-label="Inspector" data-n="5" data-block="column panel → stack panel-body · gentle-inspector">
+			<aside class="inspector" aria-label="Inspector" data-n="5" data-block="column panel → stack panel-body · drakonc-inspector">
 				<div class="itabs" role="tablist" aria-label="Inspector views">
 					<button class="itab" role="tab" id="t-changes" aria-controls="p-changes" aria-selected="true"><svg class="i"><use href="#i-diff"/></svg>Changes<span class="c">7</span></button>
 					<button class="itab" role="tab" id="t-todo" aria-controls="p-todo" aria-selected="false"><svg class="i"><use href="#i-todo"/></svg>Todo<span class="c need">3/6</span></button>
@@ -513,25 +513,25 @@ button.fact:hover { background: var(--selected); }
 					<button class="itab" role="tab" id="t-review" aria-controls="p-review" aria-selected="false"><svg class="i"><use href="#i-review"/></svg>Review<span class="c">ready</span></button>
 					<button class="itab" role="tab" id="t-session" aria-controls="p-session" aria-selected="false"><svg class="i"><use href="#i-stats"/></svg>Session<span class="c">18 turns</span></button>
 				</div>
-				<section class="ipanel" role="tabpanel" id="p-changes" aria-labelledby="t-changes" data-n="5a" data-block="block changes · gentle-changes">
+				<section class="ipanel" role="tabpanel" id="p-changes" aria-labelledby="t-changes" data-n="5a" data-block="block changes · drakonc-changes">
 					<h2>Changes <button class="btn">Open diff viewer</button></h2>
 <!--@CHANGES-->
 					<div class="pn">
 						<div class="pn-sum"><b>7 files</b><span class="num add">+255</span><span class="num del">−25</span></div>
-						<p class="pn-note">Worktree <code>.worktrees/herdr-gentle-shell</code> · uncommitted</p>
+						<p class="pn-note">Worktree <code>.worktrees/herdr-drakonc-shell</code> · uncommitted</p>
 						<ul aria-label="Changed files">
-							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">herdr/mods/gentle-chat/</span>main.js</span><span class="num add">+42</span><span class="num del">−11</span></button></li>
-							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">herdr/mods/gentle-chat/</span>feed.js</span><span class="num add">+8</span><span class="num del">−2</span></button></li>
-							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">herdr/mods/gentle-chat/</span>session.js</span><span class="num add">+3</span><span class="num del">−1</span></button></li>
-							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">herdr/layouts/</span>gentle-shell.json</span><span class="num add">+12</span><span class="num del">−4</span></button></li>
-							<li><button class="row"><span class="fst a" aria-label="Added">A</span><span class="grow fp"><span class="dir">herdr/mods/pane-gentle/</span>main.js</span><span class="num add">+64</span><span class="num del">−0</span></button></li>
+							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">herdr/mods/drakonc-chat/</span>main.js</span><span class="num add">+42</span><span class="num del">−11</span></button></li>
+							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">herdr/mods/drakonc-chat/</span>feed.js</span><span class="num add">+8</span><span class="num del">−2</span></button></li>
+							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">herdr/mods/drakonc-chat/</span>session.js</span><span class="num add">+3</span><span class="num del">−1</span></button></li>
+							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">herdr/layouts/</span>drakonc-shell.json</span><span class="num add">+12</span><span class="num del">−4</span></button></li>
+							<li><button class="row"><span class="fst a" aria-label="Added">A</span><span class="grow fp"><span class="dir">herdr/mods/pane-drakonc/</span>main.js</span><span class="num add">+64</span><span class="num del">−0</span></button></li>
 							<li><button class="row"><span class="fst a" aria-label="Added">A</span><span class="grow fp"><span class="dir">lib/</span>desktop-snapshot.ts</span><span class="num add">+120</span><span class="num del">−0</span></button></li>
 							<li><button class="row"><span class="fst m" aria-label="Modified">M</span><span class="grow fp"><span class="dir">odd/tasks/</span>herdr-desktop.md</span><span class="num add">+6</span><span class="num del">−7</span></button></li>
 						</ul>
 					</div>
 <!--/@CHANGES-->
 				</section>
-				<section class="ipanel" role="tabpanel" id="p-todo" aria-labelledby="t-todo" hidden data-n="5b" data-block="block todo · gentle-todo">
+				<section class="ipanel" role="tabpanel" id="p-todo" aria-labelledby="t-todo" hidden data-n="5b" data-block="block todo · drakonc-todo">
 					<h2>Todo</h2>
 <!--@TODO-->
 					<div class="pn">
@@ -547,7 +547,7 @@ button.fact:hover { background: var(--selected); }
 					</div>
 <!--/@TODO-->
 				</section>
-				<section class="ipanel" role="tabpanel" id="p-agents" aria-labelledby="t-agents" hidden data-n="5c" data-block="block subagents · gentle-subagents">
+				<section class="ipanel" role="tabpanel" id="p-agents" aria-labelledby="t-agents" hidden data-n="5c" data-block="block subagents · drakonc-subagents">
 					<h2>Agents <span class="dim num" style="font-weight:400">$0.49 spent</span></h2>
 <!--@AGENTS-->
 					<div class="pn">
@@ -561,19 +561,19 @@ button.fact:hover { background: var(--selected); }
 					</div>
 <!--/@AGENTS-->
 				</section>
-				<section class="ipanel" role="tabpanel" id="p-jobs" aria-labelledby="t-jobs" hidden data-n="5d" data-block="block jobs · gentle-jobs">
+				<section class="ipanel" role="tabpanel" id="p-jobs" aria-labelledby="t-jobs" hidden data-n="5d" data-block="block jobs · drakonc-jobs">
 					<h2>Jobs</h2>
 <!--@JOBS-->
 					<div class="pn">
 						<p class="subhead">Running</p>
 						<div class="job"><code>bun test tests/desktop-snapshot.test.ts</code><button class="btn danger">Cancel</button><div class="facts"><span class="state work">Running</span><span class="num">0:42</span></div></div>
 						<p class="subhead">Finished</p>
-						<div class="job"><code>herdr-app check herdr/mods/gentle-chat</code><span></span><div class="facts"><span class="state done">Passed</span><span class="num">0:09</span><span>2 min ago</span></div></div>
+						<div class="job"><code>herdr-app check herdr/mods/drakonc-chat</code><span></span><div class="facts"><span class="state done">Passed</span><span class="num">0:09</span><span>2 min ago</span></div></div>
 						<div class="job"><code>bun test tests/feed.test.ts</code><button class="btn">Output</button><div class="facts"><span class="state fail">Failed · 1 test</span><span class="num">0:06</span><span>9 min ago</span></div></div>
 					</div>
 <!--/@JOBS-->
 				</section>
-				<section class="ipanel" role="tabpanel" id="p-review" aria-labelledby="t-review" hidden data-n="5e" data-block="block review · gentle-review">
+				<section class="ipanel" role="tabpanel" id="p-review" aria-labelledby="t-review" hidden data-n="5e" data-block="block review · drakonc-review">
 					<h2>Review</h2>
 <!--@REVIEW-->
 					<div class="pn">
@@ -583,7 +583,7 @@ button.fact:hover { background: var(--selected); }
 					</div>
 <!--/@REVIEW-->
 				</section>
-				<section class="ipanel" role="tabpanel" id="p-session" aria-labelledby="t-session" hidden data-n="5f" data-block="block session · gentle-stats">
+				<section class="ipanel" role="tabpanel" id="p-session" aria-labelledby="t-session" hidden data-n="5f" data-block="block session · drakonc-stats">
 					<h2>Session</h2>
 <!--@STATS-->
 					<div class="pn">
@@ -596,7 +596,7 @@ button.fact:hover { background: var(--selected); }
 					<div class="pn" style="margin-top:14px">
 						<p class="subhead">Integrations</p>
 						<ul>
-							<li class="row"><svg class="i s dim"><use href="#i-db"/></svg><span class="grow">Engram · project gentle-pi</span><span class="state done">Connected</span></li>
+							<li class="row"><svg class="i s dim"><use href="#i-db"/></svg><span class="grow">Engram · project drakonc-pi</span><span class="state done">Connected</span></li>
 							<li class="row"><svg class="i s dim"><use href="#i-plug"/></svg><span class="grow">MCP · codegraph</span><span class="state done">Ready</span></li>
 							<li class="row"><svg class="i s dim"><use href="#i-plug"/></svg><span class="grow">MCP · context7</span><span class="state done">Ready</span></li>
 							<li class="row"><svg class="i s dim"><use href="#i-plug"/></svg><span class="grow">MCP · tubemaster</span><span class="state idle">Not loaded</span></li>
@@ -608,7 +608,7 @@ button.fact:hover { background: var(--selected); }
 			</aside>
 		</div>
 
-		<footer class="status" aria-label="Status" data-n="6" data-block="block status · gentle-status (replaces workspace-status)">
+		<footer class="status" aria-label="Status" data-n="6" data-block="block status · drakonc-status (replaces workspace-status)">
 			<span class="phase">ODD <b>Build</b> · T5 of 9</span>
 			<span class="state work">writer streaming · <span class="num">58 tok/s</span></span>
 			<span class="state need">Main agent waiting for your answer</span>
@@ -623,27 +623,27 @@ button.fact:hover { background: var(--selected); }
 <section class="legend" aria-label="Herdr build map">
 	<h2>Herdr build map</h2>
 	<table>
-		<thead><tr><th>#</th><th>Region</th><th>Layout node (herdr/layouts/gentle-shell.json)</th><th>Content</th><th>gpui pieces</th><th>Data</th></tr></thead>
+		<thead><tr><th>#</th><th>Region</th><th>Layout node (herdr/layouts/drakonc-shell.json)</th><th>Content</th><th>gpui pieces</th><th>Data</th></tr></thead>
 		<tbody>
 			<tr><td>1</td><td>Sidebar</td><td><code>column sidebar</code> 252 px, min 44</td><td>—</td><td>—</td><td>—</td></tr>
 			<tr><td>1a</td><td>Brand + traffic lights</td><td><code>block brand</code> 46 px, <code>window_drag</code></td><td>built-in <code>workspace-chrome</code></td><td>svg mark, text</td><td>—</td></tr>
-			<tr><td>1b</td><td>Projects (Herdr spaces)</td><td><code>block spaces</code></td><td>new <code>gentle-spaces</code> (skin of built-in <code>spaces</code>)</td><td>v_flex rows</td><td>herdr <code>spaces()</code> + snapshot cost/needs-you</td></tr>
+			<tr><td>1b</td><td>Projects (Herdr spaces)</td><td><code>block spaces</code></td><td>new <code>drakonc-spaces</code> (skin of built-in <code>spaces</code>)</td><td>v_flex rows</td><td>herdr <code>spaces()</code> + snapshot cost/needs-you</td></tr>
 			<tr><td>1c</td><td>Agents, needs-you first</td><td><code>block agents</code></td><td>built-in <code>agents</code></td><td>rows, status dot + label</td><td>herdr <code>agents()</code> (reporter already live)</td></tr>
-			<tr><td>1d</td><td>Plan usage 5h / 7d</td><td><code>block sidebar-footer</code> 92 px</td><td>new <code>gentle-usage</code></td><td>Progress</td><td>snapshot usage</td></tr>
+			<tr><td>1d</td><td>Plan usage 5h / 7d</td><td><code>block sidebar-footer</code> 92 px</td><td>new <code>drakonc-usage</code></td><td>Progress</td><td>snapshot usage</td></tr>
 			<tr><td>2</td><td>Sessions as tabs</td><td><code>block tabs</code> 42 px</td><td>built-in <code>tabs</code></td><td>—</td><td>herdr tabs; title from <code>report_agent_session</code></td></tr>
-			<tr><td>4</td><td>Chat ⇄ Terminal</td><td><code>stack views</code> (children <code>chat</code>, <code>main</code>), switched by <code>run("layout.select")</code></td><td><code>gentle-chat</code> / tab terminals with <code>pane</code> header</td><td>—</td><td>session JSONL (T1)</td></tr>
-			<tr><td>4a</td><td>Session header</td><td>inside <code>gentle-chat</code></td><td>header row</td><td>h_flex, Progress, Popover menu, ToggleGroup</td><td>snapshot (model, persona, ctx, cost, permission)</td></tr>
-			<tr><td>4b</td><td>Conversation</td><td>inside <code>gentle-chat</code></td><td>log</td><td>v_virtual_list, TextView.markdown, Collapsible</td><td>session; question payload from snapshot</td></tr>
-			<tr><td>4c</td><td>Composer</td><td>inside <code>gentle-chat</code></td><td>composer</td><td>Textarea, Button</td><td><code>hc send</code>; answers via action (T7)</td></tr>
-			<tr><td>5</td><td>Inspector</td><td><code>column panel</code> 372 px (min 280) → <code>stack panel-body</code></td><td>tab header inside <code>gentle-inspector</code>, one block per tab</td><td>Tabs</td><td>—</td></tr>
-			<tr><td>5a–f</td><td>Changes · Todo · Agents · Jobs · Review · Session</td><td>children of <code>panel-body</code></td><td><code>gentle-changes</code> (or built-in <code>changes</code> for the diff viewer), <code>gentle-todo</code>, <code>gentle-subagents</code>, <code>gentle-jobs</code>, <code>gentle-review</code>, <code>gentle-stats</code></td><td>rows, Progress, Button</td><td>snapshot; stop/cancel/review via action</td></tr>
-			<tr><td>6</td><td>Status bar</td><td><code>block status</code> 28 px</td><td>new <code>gentle-status</code> (replaces <code>workspace-status</code>)</td><td>h_flex text</td><td>snapshot phase, TPS, jobs</td></tr>
+			<tr><td>4</td><td>Chat ⇄ Terminal</td><td><code>stack views</code> (children <code>chat</code>, <code>main</code>), switched by <code>run("layout.select")</code></td><td><code>drakonc-chat</code> / tab terminals with <code>pane</code> header</td><td>—</td><td>session JSONL (T1)</td></tr>
+			<tr><td>4a</td><td>Session header</td><td>inside <code>drakonc-chat</code></td><td>header row</td><td>h_flex, Progress, Popover menu, ToggleGroup</td><td>snapshot (model, persona, ctx, cost, permission)</td></tr>
+			<tr><td>4b</td><td>Conversation</td><td>inside <code>drakonc-chat</code></td><td>log</td><td>v_virtual_list, TextView.markdown, Collapsible</td><td>session; question payload from snapshot</td></tr>
+			<tr><td>4c</td><td>Composer</td><td>inside <code>drakonc-chat</code></td><td>composer</td><td>Textarea, Button</td><td><code>hc send</code>; answers via action (T7)</td></tr>
+			<tr><td>5</td><td>Inspector</td><td><code>column panel</code> 372 px (min 280) → <code>stack panel-body</code></td><td>tab header inside <code>drakonc-inspector</code>, one block per tab</td><td>Tabs</td><td>—</td></tr>
+			<tr><td>5a–f</td><td>Changes · Todo · Agents · Jobs · Review · Session</td><td>children of <code>panel-body</code></td><td><code>drakonc-changes</code> (or built-in <code>changes</code> for the diff viewer), <code>drakonc-todo</code>, <code>drakonc-subagents</code>, <code>drakonc-jobs</code>, <code>drakonc-review</code>, <code>drakonc-stats</code></td><td>rows, Progress, Button</td><td>snapshot; stop/cancel/review via action</td></tr>
+			<tr><td>6</td><td>Status bar</td><td><code>block status</code> 28 px</td><td>new <code>drakonc-status</code> (replaces <code>workspace-status</code>)</td><td>h_flex text</td><td>snapshot phase, TPS, jobs</td></tr>
 		</tbody>
 	</table>
 	<h2>Parity (odd/tasks/herdr-desktop-parity.md) → place in A</h2>
 	<ul class="parity">
 		<li><b>Project, branch, dirty</b> — 4a crumbs</li>
-		<li><b>Model, effort, profile</b> — 4a Model (opens /gentle:models)</li>
+		<li><b>Model, effort, profile</b> — 4a Model (opens /drakonc:models)</li>
 		<li><b>Persona</b> — 4a</li>
 		<li><b>Session name</b> — 2 tab + 4a title</li>
 		<li><b>Context % + window</b> — 4a Ctx gauge (tooltip 152k / 400k)</li>
@@ -665,7 +665,7 @@ button.fact:hover { background: var(--selected); }
 		<li><b>Messages, tool calls, thinking</b> — 4b</li>
 		<li><b>Questions (ask_user_*, subagent select)</b> — 4b question card</li>
 		<li><b>Review consent prompt</b> — same card in 4b, “Needs your consent” in 5e</li>
-		<li><b>Profiles, models, fallbacks</b> — 4a Model → /gentle:models</li>
+		<li><b>Profiles, models, fallbacks</b> — 4a Model → /drakonc:models</li>
 		<li><b>Customize, theme</b> — theme sync; ⌘K</li>
 		<li><b>Palette, guide, stats, history, music…</b> — ⌘K sends the slash command</li>
 		<li><b>Notifications</b> — Herdr native on needs-you / done</li>

@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-// gentle-shell#2926: pnpm 11 runs an implicit `pnpm install` before
+// drakonc-shell#2926: pnpm 11 runs an implicit `pnpm install` before
 // `pnpm run`/`pnpm exec` unless verifyDepsBeforeRun is off. In a worktree whose
 // node_modules links to another checkout that install tries to purge the shared
 // node_modules and aborts without a TTY. These pins keep the setting, keep it

@@ -1,9 +1,9 @@
 ---
-name: gentle-ai-rdd-defect-workflow
+name: drakonc-ai-rdd-defect-workflow
 description: "Trigger: fixing RDD defects (review authority, receipts/lineage, correction/recovery, delivery gate). Not for using or toggling RDD."
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "1.0"
 ---
 

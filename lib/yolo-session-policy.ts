@@ -4,28 +4,28 @@ import { sidebarState } from "./shell-sidebar.ts";
 import { appendSystemPromptOnce, type AppendableSystemPromptOptions } from "./append-system-prompt.ts";
 import { sameReviewSessionIdentity, resolveCanonicalGitRepositoryIdentity, type ReviewSessionIdentity } from "./review-session-standing-permission.ts";
 import { realpath } from "node:fs/promises";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 import { isInteractiveMode } from "./rpc-host.ts";
 import { isPermissionMode, resolvePermissionModePolicy, writePermissionModePolicy, type PermissionMode } from "./permission-mode-policy.ts";
 export type { PermissionMode } from "./permission-mode-policy.ts";
-export const MODE_STATUS_KEY = "gentle:mode";
+export const MODE_STATUS_KEY = "drakonc:mode";
 export const AUTO_MODE_NOTICE = "Auto uses additional model calls with separate usage accounting; hard safety and independent consent remain.";
 
-export const YOLO_STATUS_KEY = "gentle:yolo";
+export const YOLO_STATUS_KEY = "drakonc:yolo";
 export const YOLO_STATUS_TEXT = "🚀 YOLO ON 🔥 — destructive confirmations remain";
 export const SUPER_YOLO_STATUS_TEXT = "💥 SUPER YOLO ON — no permission prompts; private paths stay blocked";
-export const SUPER_YOLO_DIRECTIVE = `<gentle-super-yolo-session>
+export const SUPER_YOLO_DIRECTIVE = `<drakonc-super-yolo-session>
 SUPER YOLO session standing permission is ON, authorized by the human for this live primary session and canonical workspace. No permission questions are asked in this mode: proceed through ordinary and destructive shell work (including rm, resets, force operations and configured-guard confirmations) without confirmation dialogs, and make implementation and delivery choices directly.
 The ONLY hard line is private material: never read, print, copy, transmit or commit secrets or private credentials — .env files, .ssh, keychains, *.pem/*.key/*.p12/*.pfx, auth.json, secrets/ directories, cloud credential files. If a task seems to need them, stop and ask the human.
 This does NOT override explicit human restrictions in the live conversation, and never auto-answers permission-mode selections, ask_user tools, provider consent, maintenance/recovery authorization or opaque-token decisions. Children remain bounded by their delegated task; they receive no independent delivery grant or Super Yolo inheritance.
-</gentle-super-yolo-session>`;
-export const YOLO_DIRECTIVE = `<gentle-yolo-session>
+</drakonc-super-yolo-session>`;
+export const YOLO_DIRECTIVE = `<drakonc-yolo-session>
 YOLO session standing permission is ON, authorized by the human for this live primary session and canonical workspace (directly or through a trusted global default).
 Qualify the default commit, push and PR confirmation clauses: for ordinary already-scoped implementation, checks, commits, non-force pushes and PR creation, this activation supplies standing permission instead of repeated permission questions. Make ordinary reversible implementation choices without needless interviews.
-Quoted, cited, logged or analyzed destructive text is not an execution: the mandatory destructive confirmations apply only to commands this session actually runs, never to destructive commands appearing inside issue bodies, file contents, documentation, transcripts or command output. Reading and listing non-sensitive material outside the workspace — including Gentle AI's own skills, docs and configuration — is covered by this standing permission; do not ask permission for those reads. Sensitive-path and private-credential blocks still win.
+Quoted, cited, logged or analyzed destructive text is not an execution: the mandatory destructive confirmations apply only to commands this session actually runs, never to destructive commands appearing inside issue bodies, file contents, documentation, transcripts or command output. Reading and listing non-sensitive material outside the workspace — including Drakonc AI's own skills, docs and configuration — is covered by this standing permission; do not ask permission for those reads. Sensitive-path and private-credential blocks still win.
 This does NOT override explicit human restrictions, repository policy, project trust, configured confirmations or blocks, or the authorized task scope. Ask before scope expansion, privacy-sensitive disclosure, genuinely unresolved consequential product choices, or ambiguous destinations or credentials. Never invent destinations or credentials.
 Destructive/data-loss confirmations remain mandatory and independent. Never auto-answer ask_user tools, provider consent, maintenance/recovery authorization or opaque-token decisions. Review standing permission and RDD are unchanged. Children remain bounded by their delegated task; they receive no independent delivery grant or YOLO inheritance.
-</gentle-yolo-session>`;
+</drakonc-yolo-session>`;
 
 /** Legacy standalone API; separate from review grants and their registry. */
 export class YoloSessionPolicy {
@@ -69,7 +69,7 @@ const HUMAN_ACTION = { on: "on", off: "off", toggle: "" } as const;
 type HumanAction = (typeof HUMAN_ACTION)[keyof typeof HUMAN_ACTION];
 export const YOLO_DISPLAY = { on: "ON", off: "OFF", unavailable: "UNAVAILABLE" } as const;
 export type YoloDisplay = (typeof YOLO_DISPLAY)[keyof typeof YOLO_DISPLAY];
-const HOST_UI_CHANNEL = "gentle:yolo:host-ui";
+const HOST_UI_CHANNEL = "drakonc:yolo:host-ui";
 const DISCOVERY_TIMEOUT_MS = 100;
 export interface YoloUiAdapter {
 	read(): Promise<YoloDisplay>;
@@ -144,7 +144,7 @@ const sameModeIdentity = (left: ModeIdentity, right: ModeIdentity): boolean =>
 /** UI/slash authoring only. Defaults are read from the dedicated trusted user store. */
 export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessEnv,
 	options: { onChange?: () => void; resolveIdentity?: typeof resolveCanonicalGitRepositoryIdentity } = {}): YoloSessionController {
-	const store = { gentlePiConfigHome: gentlePiConfigHome(env) };
+	const store = { drakoncPiConfigHome: drakoncPiConfigHome(env) };
 	let generation = 0;
 	let ownerGeneration = 0;
 	let liveMode: PermissionMode = "normal";
@@ -163,7 +163,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 	let capturedMode: (ModeIdentity & { cwd: string; generation: number; admission: string }) | undefined;
 	// Rendered strings last published for each context; identical repaints are skipped.
 	const published = new WeakMap<ExtensionContext, { yolo: string | undefined; modeText: string }>();
-	const primary = () => env.GENTLE_PI_AGENTS_CHILD !== "1";
+	const primary = () => env.DRAKONC_PI_AGENTS_CHILD !== "1";
 	// The TUI stays the standard interactive host. The Desktop app's own RPC
 	// process is the other one, and only when it sets the interactive-host marker:
 	// headless RPC children keep the marker stripped, so they stay closed exactly
@@ -356,7 +356,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 			});
 		} catch { /* obsolete trusted context: discovery expires closed */ }
 	});
-	pi.registerCommand("gentle:mode", {
+	pi.registerCommand("drakonc:mode", {
 		description: "Permissions: normal|auto|yolo|super-yolo|status; default normal|auto|yolo|super-yolo saves for new primary sessions.",
 		handler: async (args, ctx) => {
 			const words = args.trim().split(/\s+/);
@@ -371,10 +371,10 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 				else notify(ctx, "Mode unchanged — interactive primary session required or the session changed.", true);
 				return;
 			}
-				notify(ctx, "Use /gentle:mode normal|auto|yolo|super-yolo|status or /gentle:mode default normal|auto|yolo|super-yolo. State unchanged.", true);
+				notify(ctx, "Use /drakonc:mode normal|auto|yolo|super-yolo|status or /drakonc:mode default normal|auto|yolo|super-yolo. State unchanged.", true);
 		},
 	});
-	pi.registerCommand("gentle:yolo", {
+	pi.registerCommand("drakonc:yolo", {
 		description: "Choose a session permission mode; enable|disable|status remain available as explicit shortcuts.",
 		handler: async (args, ctx) => {
 			const action = args.trim() || "status";
@@ -397,7 +397,7 @@ export function registerYoloSessionPolicy(pi: ExtensionAPI, env: NodeJS.ProcessE
 				return;
 			}
 			if (action !== "enable" && action !== "disable" && action !== "status") {
-				notify(ctx, "Use /gentle:yolo enable|disable|status. State unchanged.", true); return;
+				notify(ctx, "Use /drakonc:yolo enable|disable|status. State unchanged.", true); return;
 			}
 			if (action === "status") {
 				const state = await mode(ctx);

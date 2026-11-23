@@ -5,8 +5,8 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
-import { PI_SUBCOMMANDS } from "../lib/gentle-shell-launcher.ts";
-import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { PI_SUBCOMMANDS } from "../lib/drakonc-shell-launcher.ts";
+import { drakoncPiConfigHome } from "../lib/agent-home.ts";
 import { isChildSession } from "../lib/child-session.ts";
 
 
@@ -15,6 +15,7 @@ import { BANNER_COLORS, DEFAULT_BANNER_CONFIG, type BannerColor, type BannerConf
 // Desktop config store); this module keeps exporting it for its callers.
 export { BANNER_COLORS, DEFAULT_BANNER_CONFIG, type BannerColor, type BannerConfig };
 const BANNER_PALETTES: Record<BannerColor, { rose: [number, number, number]; label: [number, number, number]; value: [number, number, number]; logoFresh: [number, number, number]; logoDim: [number, number, number] }> = {
+  red: { rose: [255, 77, 94], label: [255, 137, 147], value: [230, 237, 247], logoFresh: [255, 77, 94], logoDim: [110, 36, 50] },
   pink: { rose: [255, 118, 195], label: [200, 100, 160], value: [255, 140, 210], logoFresh: [255, 138, 206], logoDim: [95, 30, 60] },
   cyan: { rose: [95, 210, 255], label: [85, 170, 205], value: [130, 225, 255], logoFresh: [105, 220, 255], logoDim: [25, 80, 100] },
   yellow: { rose: [255, 210, 95], label: [210, 165, 65], value: [255, 225, 135], logoFresh: [255, 215, 105], logoDim: [105, 75, 25] },
@@ -22,48 +23,62 @@ const BANNER_PALETTES: Record<BannerColor, { rose: [number, number, number]; lab
 };
 
 const TEXT_LOGO = [
-  "                  ▄▄▄▀▀▀▀▀██                                ▄▄▀▄▄          ▄▄█▀▀▀██   ▄▄▀██               ▄▄▀▄▄   ▄▄▀▄▄",
-  "              ▄▄█▀▀▒▒▒▒▒▄▄█▀▒                   ▄██     ▄▄█▀█▄█▀▒▒       ▄█▀▀▒▒▒▄█▀▒ ▄██▄█▀▒           ▄▄█▀█▄█▀▄▄█▀█▄█▀▒",
-  "          ▄▄██▀▒▒▒▒▒▄▄▄▀▀▒▒▒▒        ▄▄▄  ▀▀▀▀██▀▀▀▀▀███▀█▄▀▀▒▒▒▒      ██▄▄▒▒▒▒▒▒▒ ▄██▀▀▒▒▒          ▄██▀█▄▀▀▄██▀█▄▀▀▒▒▒",
-  "        ▄██▀▒▒▒▒     ▒▒▄▄█ ▄▄▄▀██ ▄▄▄▀▀▀▄  ▄██▀▒▒▒▒▄██▀▀▀▒▄▄███         ▀▀▀██▄▄  ▄██▀▒▄▄▀██   ▄▄▀▀██ ██▀▀▀▒▒▒██▀▀▀▒▒▒",
-  "       ██▀▒▒▒     ▄▄▄███▀▄██▀▀▀▄▄██▀▀▄█▀▄▄██▀▒▒▒▄▄██▀▒▒▄██▀▀▀▄▄      ▄▄     ▀██▄▄██▀▄██▀██▒  ▄██▄▄▀▒ █▀▒▒▒   █▀▒▒▒",
-  "       ▀█▄▄▄▄▄▀▀▀█▄▄███▄▒▀▀▀▀▀▀▒▀▀▒▒▀▀▀▀▒██▄▄▀▀▀ ▀█▄▀▀▀ ▀▀▀▀▀▒▒      ▀█▄▄▄▄█▀▀▒▒▀▀▒▒▀▀▒ ██▄▄▀▀█▄▄▄▄▀▀█▄▄▀▀▀▄▄▀█▄▄▀▀▀",
-  "        ▒▄▄▄█▀▀▀█▄█▀▀▒▒▒▒ ▒▒▒▒▒▒ ▒▒  ▒▒▒▒ ▒▒▒▒▒▒▒ ▒▒▒▒▒▒ ▒▒▒▒▒        ▒▀▀▀▀▒▒▒▒  ▒▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒",
-  "     ▄▄▀▀ ▒▒▒▒▄██▀▒▒▒▒",
-  "   ▄█ ▒▒▒▄▄██▀▀▒▒▒▒",
-  "    ▀▀▀▀▀▀▒▒▒▒▒▒",
-  "     ▒▒▒▒▒▒",
+  "████   ████    ███   █   █   ███   █   █   ████        ████  █   █  █████  █      █    ",
+  "█   █  █   █  █   █  █  █   █   █  ██  █  █           █      █   █  █      █      █    ",
+  "█   █  ████   █████  ███    █   █  █ █ █  █            ███   █████  ████   █      █    ",
+  "█   █  █ █    █   █  █  █   █   █  █  ██  █               █  █   █  █      █      █    ",
+  "████   █  ██  █   █  █   █   ███   █   █   ████       ████   █   █  █████  █████  █████"
 ];
 
-const ROSE_LARGE_RAW = [
-  "             ⣠⣾⣷⣶⣦⣤⣤⣄⣠⣄⣀  ⢀⣀⣀",
-  "          ⢀⣴⣿⣿⠿⣋⣭⣭⣯⣭⣍⣭⣿⣟⠛⠛⠿⣿⣷⣄",
-  "      ⢀⣴⣾⡟⢻⣿⡟⠁⣼⣿⠏⣵⢻⣿⣻⣿⣿⢿⡻⣿⣿⣶⡌⢿⣿⣷⣦⣤⡄",
-  "   ⣤⣶⣾⣿⣿⠏ ⠈⢿⣄ ⢹⣏⠠⠟⣾⣿⣿⣿⣿⣿⠷⣏⣼⠟⢡⣿⡟⠋⢻⣿⣿⡄",
-  "   ⠈⣿⣿⣿⣿⡆   ⣽⢧⡘⠈⠳⣦⣍⠛⠛⢦⣉⣴⣛⣫⣭⣴⡟⠋  ⣾⣿⣿⡿",
-  "   ⢀⠹⣿⣿⣿⣷⣤⡄ ⠋ ⠙⢆ ⣠⠴⠟⠛⣛⣛⣛⠟⠋⠁⠺⡇ ⣀⣴⣿⣿⡟⠁",
-  "   ⠈⣀⠈⠛⠷⠿⣿⣿⣷⣤⣀ ⢠⠋   ⠈⠉⠉    ⣠⣴⣥⠾⠛⠉⣰⣿⣷",
-  "          ⠹⣯⣝⠛⠛⠷⢶⣤⣤⣀   ⢀⡠⠖⠋⠉⢉⣀⣀⣴⣾⣿⠿⠟⠃",
-  "             ⠘⠻⢿⣦⣄⡀  ⠉⠛⢦⠠⢊⠤⠴⢒⣛⣛⣩⣽⡿⠟⠁",
-  "        ⠶⢶⣤⣄⡀⠨⠭⠽⠟⣓⢦⣀⠈⢇⡥⠖⠛⠋⠉⠉",
-  "           ⠈⢷ ⠐⠂⢤⣽⣄ ⠰⡎⠙⠳⣄⡀ ⠈⢣⠘⢦⠋",
-  "            ⠈⢳⣀⡒⠉⠉⣉⠙⡲⣽⣄ ⣏⠳⡄ ⠘⡇ ⡾⠁",
-  "              ⠛⠻⢦⣄⣉⡁⣀⣀⣈⣙⣺⣌⡇⢠⢀⡇⡾",
-  "                   ⠈⠉    ⠈⠳⡄⣸⢱⠇",
-  "                           ⡷⠡⡯⢖⠉",
-  "                        ⢀⡴⢪⠔⣉⠔⠋",
-  "                           ⠐⠈",
+// Ilustración del dragón del banner: cabeza de perfil derivada de la imagen
+// realista de referencia de marca (raster generado fuera del repositorio),
+// segmentada por diferencia de color con el fondo, sombreada con umbral
+// adaptativo local y tramado ordenado, y codificada como Braille (2x4 puntos por
+// celda). La variante amplia conserva las 17 filas de la rosa original para no
+// mover los umbrales de disposición; la compacta reduce la misma silueta a 8
+// filas. Solo Braille y espacios: una celda de ancho, sin tabuladores ni
+// caracteres anchos.
+export const DRAGON_LARGE_RAW = [
+  "  ⢈⡻⣦⣀",
+  "  ⠈⠳⣍⠻⣷⣤⣀",
+  "⣄⣀  ⠘⢳⣌⠹⢿⣿⣷⣶⣦⣤⣄⡀",
+  "⠘⢻⣿⣷⣶⣤⣽⣧⣄⣀⠉⠙⠛⢿⣿⣿⣿⣷⣤",
+  " ⠈⠛⠶⣬⣍⣙⣙⠙⠙⠛⠶⢤⡀⠈⠙⠛⡽⢻⣷⣤⣄⡀",
+  "    ⠠⣤⣬⡉⠻⢷⡔⠷⢌⣑⣢⡀  ⠘⠁⣹⡿⣝⣆⣠",
+  "  ⢀⣀⣄⣀⣩⣟⠳⣞⣼⣷⣿⡿⠟⠛   ⠐⠁⠉⢛⠛⢿⣶⣄⣀",
+  " ⢠⣬⣭⣭⡯⢉⣵⠟⠛⠋ ⢀⣀⢤⣀⣀⣀ ⢄⣤⣀⢀  ⠈⠙⠻⣦⣄",
+  "⠈⢈⣹⡗⢀⡜⠉⠁ ⢀⢀⠒⠛⠁ ⠹⣄⡼⠉⠑⠒⠤⢥⣴⡐⢠⣇⣀⡈⠛⣷⣄",
+  "⢉⠍⠉⢐⠝⠁ ⢀⣴⢝⠿      ⢐⢀⠂⢄⠐ ⢁⠙⠦⠿⢶⣿⣀ ⠙⢷⣤⡀",
+  "⠐⠃⠰⠇ ⢀⢐⢗⡿⠃        ⠐⢤⠄⠐⠙⠒⠌⠑⢾⣟⣝⢿⣿⣿⣞⠛⢿⣿⣆",
+  "⢀⣔  ⢀⣼⠍⠊     ⢀ ⣠⣤⣀⣀⡀⣀⣀⣈⠙⠛⢕⣒⠒⠬⢥⠥⢤⣝⣛⢤⡤⢬⣤",
+  "⣞⢀⡀⢐⢿⠕⠁   ⢀⣠⠾⠛⠉⠉ ⠉⠉⠟⠛⠯⠙⠿⠶⢦⣭⣕⡒⠅⠈⠐ ⢭⣑⠛⣦⠘",
+  "⠉⢀⡝⢙⠕    ⣄⣿⠉               ⠈⠙⠛⠶⢲⣄ ⢙⣹⠇",
+  "⢔⠐⣤⠟⠁  ⢀⣾⡯⠉                     ⠉⠛⠉⠁",
+  "⢀⢘⠝⠁⣖  ⣾⠛",
+  "⠁ ⠁⠐⠁ ⡜⠏",
+];
+
+// Variante compacta para terminales estrechas: misma silueta reducida.
+export const DRAGON_COMPACT_RAW = [
+  " ⠺⣷⣤⣀⡀",
+  "⢲⣦⣬⣷⣝⡛⠿⢷⣶⣤⡀",
+  " ⠉⠻⣷⣲⣭⣕⣠⡀⠉⢻⣷⣦⡀",
+  "⢠⣼⠿⣺⠟⠛⢉⢭⡅⢀⢤⣄⠈⢛⠷⣤⡀",
+  " ⢋⠚⢀⣴⠗   ⢁  ⠉⢘⣿⣮⣙⢦⣄⡀",
+  "⡄ ⣴⠟⠁ ⣀⣤⠤⠤⣤⣤⣔⣢⡭⠭⠭⢥⢭⣥",
+  "⠁⣙⠅ ⣠⠾⠁      ⠈⠉⠛⠳⢮⠽⠃",
+  " ⠁⠆⢰⠋",
 ];
 
 function rgb(r: number, g: number, b: number, text: string): string {
   return `\x1b[38;2;${r};${g};${b}m${text}\x1b[39m`;
 }
 
-function gentleAiConfigHome(): string {
-  return gentlePiConfigHome(process.env);
+function drakoncAiConfigHome(): string {
+  return drakoncPiConfigHome(process.env);
 }
 
-function bannerConfigPath(configHome = gentleAiConfigHome()): string {
+function bannerConfigPath(configHome = drakoncAiConfigHome()): string {
   return join(configHome, "banner.json");
 }
 
@@ -79,7 +94,7 @@ function normalizeBannerConfig(value: unknown): BannerConfig {
 
 // Modal mutations must not turn an unreadable or malformed existing file into defaults.
 // Legacy banner commands retain their original tolerant read behavior below.
-export async function readBannerConfigForEdit(configHome = gentleAiConfigHome()): Promise<BannerConfig> {
+export async function readBannerConfigForEdit(configHome = drakoncAiConfigHome()): Promise<BannerConfig> {
   const path = bannerConfigPath(configHome);
   let raw: string;
   try {
@@ -98,7 +113,7 @@ export async function readBannerConfigForEdit(configHome = gentleAiConfigHome())
   return { showRose: config.showRose, showTextLogo: config.showTextLogo, color: config.color as BannerColor };
 }
 
-export async function readBannerConfig(configHome = gentleAiConfigHome()): Promise<BannerConfig> {
+export async function readBannerConfig(configHome = drakoncAiConfigHome()): Promise<BannerConfig> {
   try {
     return normalizeBannerConfig(JSON.parse(await readFile(bannerConfigPath(configHome), "utf8")));
   } catch {
@@ -106,7 +121,7 @@ export async function readBannerConfig(configHome = gentleAiConfigHome()): Promi
   }
 }
 
-export async function writeBannerConfig(config: BannerConfig, configHome = gentleAiConfigHome()): Promise<void> {
+export async function writeBannerConfig(config: BannerConfig, configHome = drakoncAiConfigHome()): Promise<void> {
   const path = bannerConfigPath(configHome);
   await mkdir(join(path, ".."), { recursive: true });
   await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
@@ -198,7 +213,7 @@ function buildLetterSpans(bounds: Span, weights: number[]): Span[] {
 
 const LOGO_BOUNDS = computeLogoBounds(TEXT_LOGO);
 // Variable-width script regions, including the gap before Shell and shadows.
-const LETTER_WEIGHTS = [22, 9, 8, 9, 8, 9, 10, 13, 8, 8, 13]; // G E N T L E S H E L L
+const LETTER_WEIGHTS = [7, 7, 7, 7, 7, 7, 7, 12, 7, 7, 7, 7]; // D R A K O N C S H E L L
 const LETTER_SPANS = buildLetterSpans(LOGO_BOUNDS, LETTER_WEIGHTS);
 
 function letterIndexAtX(x: number): number {
@@ -581,10 +596,10 @@ export function readGitBranch(cwd: string, run: typeof execFile = execFile, time
 }
 
 // Pi dispatches its subcommands purely on the first argument, so only that
-// token decides. Flag values such as the package directory the Gentle Shell
+// token decides. Flag values such as the package directory the Drakonc Shell
 // launcher injects with `-e <dir>` must not be mistaken for a subcommand.
-const GUIDE_COMMAND = "gentle:guide";
-export const GUIDE_REMINDER = "Tip: run /gentle:guide for a guided tour of Gentle Shell";
+const GUIDE_COMMAND = "drakonc:guide";
+export const GUIDE_REMINDER = "Consejo: ejecuta /drakonc:guide para un recorrido guiado por Drakonc Shell";
 
 export function isPiCliSubcommandInvocation(argv: readonly string[]): boolean {
   const first = argv[2];
@@ -592,14 +607,14 @@ export function isPiCliSubcommandInvocation(argv: readonly string[]): boolean {
 }
 
 export default function (pi: ExtensionAPI) {
-  // Delegated rpc children report hasUI=true but have no terminal (gentle-shell#1690, #3386).
+  // Delegated rpc children report hasUI=true but have no terminal (drakonc-shell#1690, #3386).
   if (isChildSession()) return;
   let disposeHeader = () => {};
   pi.on("session_shutdown", () => disposeHeader());
   const notifyBannerConfig = (ctx: any, config: BannerConfig) => {
     ctx.ui.notify(
       [
-        `Startup banner: rose=${config.showRose ? "on" : "off"}, text logo=${config.showTextLogo ? "on" : "off"}, color=${config.color}`,
+        `Startup banner: dragon=${config.showRose ? "on" : "off"}, text logo=${config.showTextLogo ? "on" : "off"}, color=${config.color}`,
         `Config: ${bannerConfigPath()}`,
         "Changes apply on the next startup banner render.",
       ].join("\n"),
@@ -609,16 +624,16 @@ export default function (pi: ExtensionAPI) {
 
   const registerBannerCommand = (name: string) => {
     pi.registerCommand(name, {
-      description: "Configure the Gentle Pi startup banner.",
+      description: "Configure the Drakonc Pi startup banner.",
       handler: async (_args, ctx) => {
         const config = await readBannerConfig();
         const selected = await ctx.ui.select("Startup banner", [
-          `Rose: ${config.showRose ? "on" : "off"}`,
+          `Dragon: ${config.showRose ? "on" : "off"}`,
           `Text logo: ${config.showTextLogo ? "on" : "off"}`,
           `Color: ${config.color}`,
         ]);
         if (!selected) return;
-        if (selected.startsWith("Rose:")) config.showRose = !config.showRose;
+        if (selected.startsWith("Dragon:")) config.showRose = !config.showRose;
         else if (selected.startsWith("Text logo:")) config.showTextLogo = !config.showTextLogo;
         else if (selected.startsWith("Color:")) {
           const color = await ctx.ui.select("Startup banner color", [...BANNER_COLORS]);
@@ -632,7 +647,7 @@ export default function (pi: ExtensionAPI) {
   };
   const registerToggleCommand = (name: string, key: "showRose" | "showTextLogo") => {
     pi.registerCommand(name, {
-      description: `Toggle startup banner ${key === "showRose" ? "rose" : "text logo"}.`,
+      description: `Toggle startup banner ${key === "showRose" ? "dragon" : "text logo"}.`,
       handler: async (_args, ctx) => {
         const config = await readBannerConfig();
         config[key] = !config[key];
@@ -659,16 +674,16 @@ export default function (pi: ExtensionAPI) {
       },
     });
   };
-  registerBannerCommand("gentle:banner");
-  registerToggleCommand("gentle:toggle-rose", "showRose");
-  registerToggleCommand("gentle:toggle-text-logo", "showTextLogo");
-  registerColorCommand("gentle:banner-color");
+  registerBannerCommand("drakonc:banner");
+  registerToggleCommand("drakonc:toggle-dragon", "showRose");
+  registerToggleCommand("drakonc:toggle-text-logo", "showTextLogo");
+  registerColorCommand("drakonc:banner-color");
 
   pi.on("session_start", async (_event, ctx) => {
     disposeHeader();
     if (!ctx.hasUI) return;
     // Delegated rpc children report hasUI=true but have no terminal to paint
-    // (gentle-shell#1690); do not rely on a piped stdout lacking rows/columns.
+    // (drakonc-shell#1690); do not rely on a piped stdout lacking rows/columns.
     if (isChildSession()) return;
 
     // CLI subcommands such as `pi update` or `pi install` skip the animated intro.
@@ -687,7 +702,8 @@ export default function (pi: ExtensionAPI) {
     // clearing stdout here would leave its previous-frame cache out of sync.
     const bannerConfig = await readBannerConfig();
     const palette = BANNER_PALETTES[bannerConfig.color];
-    const roseBase = padLines(normalizeAscii(ROSE_LARGE_RAW));
+    const roseBase = padLines(normalizeAscii(DRAGON_LARGE_RAW));
+    const roseCompactBase = padLines(normalizeAscii(DRAGON_COMPACT_RAW));
     const logoBase = padLines(TEXT_LOGO);
     void warmupLetterStrokes();
 
@@ -716,7 +732,7 @@ export default function (pi: ExtensionAPI) {
       (async () => {
         try {
           // Same global mcp.json Pi itself loads: <agentDir>/mcp.json, which
-          // follows PI_CODING_AGENT_DIR (for example the Gentle Shell home).
+          // follows PI_CODING_AGENT_DIR (for example the Drakonc Shell home).
           const raw = await readFile(
             join(getAgentDir(), "mcp.json"),
             "utf8",
@@ -868,9 +884,9 @@ export default function (pi: ExtensionAPI) {
                   }
                 } else {
                   b.addRow();
-                  b.add("accent", "✿ ");
-                  b.add("value", "Gentle Shell");
-                  b.add("accent", " ✿");
+                  b.add("accent", "◆ ");
+                  b.add("value", "Drakonc Shell");
+                  b.add("accent", " ◆");
                   b.center(width);
                 }
               }
@@ -898,8 +914,17 @@ export default function (pi: ExtensionAPI) {
                 b.center(width);
               }
             } else {
+              // La rama apilada elige la variante amplia, la compacta o ninguna
+              // según el ancho disponible (D4); el modo lado a lado usa la amplia.
+              const dragonArt = !bannerConfig.showRose
+                ? undefined
+                : width >= roseBase.width + 2
+                  ? roseBase
+                  : width >= roseCompactBase.width + 2
+                    ? roseCompactBase
+                    : undefined;
               const showBanner = bannerConfig.showTextLogo && width >= logoBase.width + 2;
-              const showRose = bannerConfig.showRose && width >= roseBase.width + 2;
+              const showRose = dragonArt !== undefined;
               if (showBanner) {
                 for (let logoI = 0; logoI < logoBase.lines.length; logoI++) {
                   const logoLine = logoBase.lines[logoI];
@@ -915,17 +940,17 @@ export default function (pi: ExtensionAPI) {
                 }
               } else if (bannerConfig.showTextLogo) {
                 b.addRow();
-                b.add("accent", "✿ ");
-                b.add("value", "Gentle Shell");
-                b.add("accent", " ✿");
+                b.add("accent", "◆ ");
+                b.add("value", "Drakonc Shell");
+                b.add("accent", " ◆");
                 b.center(width);
                 if (showRose) {
                   b.addRow();
                   b.center(width);
                 }
               }
-              if (showRose) {
-                for (const roseLine of roseBase.lines) {
+              if (dragonArt) {
+                for (const roseLine of dragonArt.lines) {
                   b.addRow();
                   b.add("rose", roseLine);
                   b.center(width);

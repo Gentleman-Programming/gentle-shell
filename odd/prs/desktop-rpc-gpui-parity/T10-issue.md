@@ -9,11 +9,11 @@
 
 ### Problem or opportunity
 
-`get_usage_stats` reports tokens per day and per model only, so gentle-shell-gpui cannot chart cost per day or split usage by provider.
+`get_usage_stats` reports tokens per day and per model only, so drakonc-shell-gpui cannot chart cost per day or split usage by provider.
 
 ### Proposed outcome
 
-`byDay` rows gain `cost`; a bounded `byProvider` (50 rows) with `truncated.byProvider`. Computed by the same `aggregateStats` the `/gentle:stats` panel uses.
+`byDay` rows gain `cost`; a bounded `byProvider` (50 rows) with `truncated.byProvider`. Computed by the same `aggregateStats` the `/drakonc:stats` panel uses.
 
 ### Alternatives considered
 
@@ -21,4 +21,4 @@ _No response_
 
 ### Additional context
 
-Part of the gentle-shell-gpui parity work: each piece replaces an app-side workaround (reading private files, prompt-text commands, or parsing terminal output). Implementation branch: `feat/desktop-rpc-read-gaps`.
+Part of the drakonc-shell-gpui parity work: each piece replaces an app-side workaround (reading private files, prompt-text commands, or parsing terminal output). Implementation branch: `feat/desktop-rpc-read-gaps`.

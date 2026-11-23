@@ -1,10 +1,10 @@
-// Gentle Desktop agent-definitions bridge: answers `list_agent_definitions`
+// Drakonc Desktop agent-definitions bridge: answers `list_agent_definitions`
 // from the existing owners and projects their result with
 // `lib/desktop-rpc-agent-definitions.ts`.
 //
 // The roots are the same ones `subagent_list_agents` discovers from
-// (`extensions/gentle-agents.ts`): the session cwd, the agent home resolved by
-// `resolveAgentHomeDirectory`, and the Gentle config home for tool overlays.
+// (`extensions/drakonc-agents.ts`): the session cwd, the agent home resolved by
+// `resolveAgentHomeDirectory`, and the Drakonc config home for tool overlays.
 // The default orchestrator is read from Pi's `settings.json` in that agent
 // home. Every read is fresh: definitions are plain files re-read on each call,
 // and nothing is written or cached.
@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DesktopRpcOutcome } from "./desktop-rpc.ts";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 import { resolveAgentHomeDirectory } from "./agent-model-resolution.ts";
 import { discoverAgents, loadAgentsConfig, type DiscoveryRoots } from "./agents-config.ts";
 import { readOrchestratorSettings } from "./profiles-orchestrator.ts";
@@ -35,7 +35,7 @@ const defaultLocation: AgentDefinitionsLocationFactory = (context) => {
 	const home = homedir();
 	const agentHome = resolveAgentHomeDirectory({ env: process.env, home });
 	return {
-		roots: { cwd: context.sessionManager?.getCwd?.() ?? context.cwd, home, agentHome, configHome: gentlePiConfigHome() },
+		roots: { cwd: context.sessionManager?.getCwd?.() ?? context.cwd, home, agentHome, configHome: drakoncPiConfigHome() },
 		orchestratorSettingsPath: join(agentHome, "settings.json"),
 	};
 };

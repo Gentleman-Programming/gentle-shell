@@ -1,12 +1,12 @@
-Captured from a real gentle-ai binary, not hand-authored.
+Captured from a real drakonc-ai binary, not hand-authored.
 
-binary:  gentle-ai 2.5.0-rc.1.0.20260827194839-f654764e231f (published prerelease channel)
+binary:  drakonc-ai 2.5.0-rc.1.0.20260827194839-f654764e231f (published prerelease channel)
 date:    2026-08-28
-command: gentle-ai sdd-status agent-builder --cwd <repo> --json --instructions
-repo:    a gentle-ai checkout with an OpenSpec-backed change present
+command: drakonc-ai sdd-status agent-builder --cwd <repo> --json --instructions
+repo:    a drakonc-ai checkout with an OpenSpec-backed change present
 
-Why this fixture exists: gentle-ai commit 3c4c7fb6 (2026-08-24, "refactor(sdd)!:
-replace status v1 with clean v2") moved SchemaVersion from 1 to 2. gentle-pi had
+Why this fixture exists: drakonc-ai commit 3c4c7fb6 (2026-08-24, "refactor(sdd)!:
+replace status v1 with clean v2") moved SchemaVersion from 1 to 2. drakonc-pi had
 no v2 decoder, so lib/native-review-cli.ts rejected every current status with
 IDENTITY_MISMATCH on `body.schemaVersion !== 1`.
 

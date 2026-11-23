@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createDesktopFeedExtension } from "../extensions/gentle-desktop-feed.ts";
+import { createDesktopFeedExtension } from "../extensions/drakonc-desktop-feed.ts";
 import { buildDesktopFeedSnapshot, type DesktopFeedInput, type DesktopFeedSnapshot, type DesktopFeedTimers } from "../lib/desktop-feed.ts";
 import { createDesktopFeedStore, desktopFeedFile } from "../lib/desktop-feed-store.ts";
 import { DESKTOP_AGENTS_SERVICE_CHANNEL, DESKTOP_AGENTS_SERVICE_SCHEMA, type DesktopAgentEntry } from "../lib/desktop-rpc-agents.ts";
@@ -19,10 +19,10 @@ import { DESKTOP_JOBS_SERVICE_CHANNEL, DESKTOP_JOBS_SERVICE_SCHEMA, type Desktop
 
 const NOW = Date.UTC(2026, 10, 16, 12, 0, 0);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
-const GENTLE_ENV = { PI_PROGRAM_STATUS_APP: "gentle-shell" };
+const DRAKONC_ENV = { PI_PROGRAM_STATUS_APP: "drakonc-shell" };
 
 const agent = (id: string, status: DesktopAgentEntry["status"]): DesktopAgentEntry => ({
-	id, agent: "gentle-writer", status, model: "sonnet",
+	id, agent: "drakonc-writer", status, model: "sonnet",
 	lastStep: status === "running" ? "writing" : status === "completed" ? "completed" : status === "queued" ? "queued" : status === "waiting" ? "waiting" : "failed",
 	usage: { total: 10, cost: 0.01 },
 });
@@ -123,7 +123,7 @@ function harness(t: test.TestContext) {
 		getThinkingLevel: () => "high",
 	} as unknown as ExtensionAPI;
 	const fire = (name: string, event: unknown, ctx: unknown) => { for (const fn of handlers.get(name) ?? []) fn(event, ctx); };
-	// The agents and jobs owners answer discovery on the bus, as gentle-agents does.
+	// The agents and jobs owners answer discovery on the bus, as drakonc-agents does.
 	const owners = { agents: [] as DesktopAgentEntry[], jobs: [] as DesktopJobEntry[], agentObservers: new Set<(id: string) => void>(), jobObservers: new Set<(id: string) => void>() };
 	pi.events.on(DESKTOP_AGENTS_SERVICE_CHANNEL, (payload) => (payload as { respond(service: unknown): void }).respond({
 		schema: DESKTOP_AGENTS_SERVICE_SCHEMA,
@@ -142,7 +142,7 @@ function harness(t: test.TestContext) {
 	const clock = virtualClock();
 	const writes: Array<{ at: number; value: DesktopFeedSnapshot }> = [];
 	createDesktopFeedExtension({
-		env: GENTLE_ENV, agentDir, now: clock.now, timers: clock.timers, activityClock: clock.now,
+		env: DRAKONC_ENV, agentDir, now: clock.now, timers: clock.timers, activityClock: clock.now,
 		git: () => async () => ({ stdout: "", code: 128 }), rootExists: () => true, parentOf: async () => undefined,
 		profile: () => ({ name: undefined, tier: undefined }), realpath: (path) => path, sweep: () => {}, actionWatch: () => () => {},
 		store: (dir, sessionId) => {

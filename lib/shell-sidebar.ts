@@ -3,9 +3,9 @@ import type { PanelSummary } from "./shell-panel.ts";
 
 // Store on the terminal, not a module singleton: extension loaders may isolate
 // modules, while Pi keeps this terminal across regular/fullscreen transitions.
-const STATE = Symbol.for("gentle-pi.experimental-sidebar.state");
+const STATE = Symbol.for("drakonc-pi.experimental-sidebar.state");
 /** In-process notification after a visual preference is persisted. */
-export const VISUAL_SETTINGS_CHANGED = "gentle-pi.visual-settings-changed";
+export const VISUAL_SETTINGS_CHANGED = "drakonc-pi.visual-settings-changed";
 export interface SidebarState {
 	active: boolean;
 	visibility?: { todo?: boolean };
@@ -14,7 +14,7 @@ export interface SidebarState {
 	 * Columns the fullscreen rail reserves at the right edge (rail plus gap)
 	 * while `active && ownsHost()`. Overlays read it to stay inside the editor
 	 * column (the prompt-history picker's right margin) without importing
-	 * gentle-shell.
+	 * drakonc-shell.
 	 */
 	railColumns?: number;
 	/** True while Status placement is "hidden": the bottom Status bar paints nothing at any width or mode. */
@@ -56,7 +56,7 @@ export interface SidebarRail extends Component {
 	surface?: "panel";
 	/** A one-row digest for the mobile work row; undefined when the section has nothing live. */
 	summary?(): PanelSummary | undefined;
-	/** Opens the section's own view (Agents: /gentle:agents); a tap on the mobile work row runs it when this section leads the row. */
+	/** Opens the section's own view (Agents: /drakonc:agents); a tap on the mobile work row runs it when this section leads the row. */
 	open?(): void;
 	/** "Needs you" rows the panel editor draws right above its rule (an agent asking the user); [] when none. */
 	alert?(width: number): string[];

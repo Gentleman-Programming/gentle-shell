@@ -177,7 +177,7 @@ try {
   $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
   $trusted = @($me, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');
   $account = { param($sid) try { $sid.Translate([Security.Principal.NTAccount]).Value } catch { '' } };
-  $path = [IO.Path]::GetFullPath($env:GENTLE_WINDOWS_CHECK);
+  $path = [IO.Path]::GetFullPath($env:DRAKONC_WINDOWS_CHECK);
   $depth = 0;
   while ($path) {
     $role = 'ancestor'; if ($depth -eq 0) { $role = 'target' } elseif ($depth -eq 1) { $role = 'parent' };
@@ -209,7 +209,7 @@ if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { 'unsafe:po
 $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
 $trusted = @($me, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464');
 $account = { param($sid) try { $sid.Translate([Security.Principal.NTAccount]).Value } catch { '' } };
-foreach ($start in $env:GENTLE_WINDOWS_CHECKS.Split('|')) {
+foreach ($start in $env:DRAKONC_WINDOWS_CHECKS.Split('|')) {
   $detail = '';
   try {
     $path = [IO.Path]::GetFullPath($start);
@@ -264,7 +264,7 @@ function windowsPowerShell(env, script, data, processAdapter) {
 export function verifyWindowsStorage(path, env, processAdapter = windowsProcessCheck) {
 	if (process.platform !== "win32") throw new Error("Native Windows storage verification unavailable");
 	if (!win32.isAbsolute(path) || path.startsWith("\\\\")) throw new Error("Unsafe Windows storage path");
-	windowsStorageEvidence(windowsPowerShell(env, aclCheck, { GENTLE_WINDOWS_CHECK: path }, processAdapter));
+	windowsStorageEvidence(windowsPowerShell(env, aclCheck, { DRAKONC_WINDOWS_CHECK: path }, processAdapter));
 }
 
 /** Walks every path (local drive paths, never holding `|`) in one Windows
@@ -280,7 +280,7 @@ export function verifyWindowsStorageMany(paths, env, { processAdapter = windowsP
 	if (paths.some((path) => typeof path !== "string" || !/^[A-Za-z]:\\/.test(path) || /[|\x00-\x1f]/.test(path))) throw new Error("Unsafe Windows storage path");
 	if (paths.length === 0) return [];
 	const rejected = () => new Error("Windows ACL evidence rejected");
-	const lines = windowsPowerShell(env, aclCheckMany, { GENTLE_WINDOWS_CHECKS: paths.join("|") }, processAdapter).split(/\r?\n/);
+	const lines = windowsPowerShell(env, aclCheckMany, { DRAKONC_WINDOWS_CHECKS: paths.join("|") }, processAdapter).split(/\r?\n/);
 	if (lines.length !== paths.length) throw rejected();
 	return lines.map((line, index) => {
 		if (line === "safe") return null;
@@ -294,7 +294,7 @@ export function verifyWindowsStorageMany(paths, env, { processAdapter = windowsP
 
 // S6: the wizard's PNPM_HOME on Windows. pnpm runs and persists binaries there,
 // so it gets the same walk as the bootstrap's tools directory before consent.
-export const privatePnpmHome = Object.freeze({ directory: ".pnpm", marker: ".gentle-shell-pnpm-home", text: "gentle-pi private pnpm home", temp: "tmp" });
+export const privatePnpmHome = Object.freeze({ directory: ".pnpm", marker: ".drakonc-shell-pnpm-home", text: "drakonc-pi private pnpm home", temp: "tmp" });
 const hostHomeFs = Object.freeze({
 	/** "missing", "directory" or "file" (neither a link), or "other". */
 	kind(path) {
@@ -405,14 +405,14 @@ $target = $null; $created = $false;
 try {
   if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw 'policy' };
   $me = [Security.Principal.WindowsIdentity]::GetCurrent().User;
-  $target = [IO.Path]::GetFullPath($env:GENTLE_WINDOWS_PNPM_HOME); if ($target.StartsWith('\')) { throw 'foreign' };
-  $marker = Join-Path $target '.gentle-shell-pnpm-home'; $result = 'claimed';
+  $target = [IO.Path]::GetFullPath($env:DRAKONC_WINDOWS_PNPM_HOME); if ($target.StartsWith('\')) { throw 'foreign' };
+  $marker = Join-Path $target '.drakonc-shell-pnpm-home'; $result = 'claimed';
   if (Test-Path -LiteralPath $target) {
     $item = Get-Item -LiteralPath $target -Force; if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'foreign' };
     if (@(Get-ChildItem -LiteralPath $target -Force).Count -ne 0) {
       if (-not (Test-Path -LiteralPath $marker)) { throw 'foreign' };
       $file = Get-Item -LiteralPath $marker -Force;
-      if ($file.PSIsContainer -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-Content -LiteralPath $marker -Raw) -ne 'gentle-pi private pnpm home') { throw 'foreign' };
+      if ($file.PSIsContainer -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (Get-Content -LiteralPath $marker -Raw) -ne 'drakonc-pi private pnpm home') { throw 'foreign' };
       $result = 'kept';
     };
   } else { $null = New-Item -ItemType Directory -Path $target; $created = $true };
@@ -425,7 +425,7 @@ try {
     $verified = [IO.Directory]::GetAccessControl($target); if (-not $verified.AreAccessRulesProtected) { throw 'protected-dacl' };
     if ($verified.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me.Value) { throw 'private-owner' };
     foreach ($rule in $verified.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if ($rule.AccessControlType -ne 'Allow' -or @($me.Value,'S-1-5-18','S-1-5-32-544') -notcontains $rule.IdentityReference.Value) { throw 'private-ace' } };
-    $null = New-Item -ItemType File -Path $marker -Value 'gentle-pi private pnpm home';
+    $null = New-Item -ItemType File -Path $marker -Value 'drakonc-pi private pnpm home';
   };
   $temp = Join-Path $target 'tmp';
   if (Test-Path -LiteralPath $temp) { $folder = Get-Item -LiteralPath $temp -Force; if (-not $folder.PSIsContainer -or ($folder.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'foreign' } } else { $null = New-Item -ItemType Directory -Path $temp };
@@ -441,7 +441,7 @@ try {
 export function ensureWindowsPnpmHome(home, env, { processAdapter = windowsProcessCheck, storage = verifyWindowsStorage, platform = process.platform } = {}) {
 	if (platform !== "win32") throw new Error("Native Windows storage verification unavailable");
 	if (!win32.isAbsolute(home) || home.startsWith("\\\\")) throw new Error("Unsafe Windows storage path");
-	const output = windowsPowerShell(env, pnpmHomeClaim, { GENTLE_WINDOWS_PNPM_HOME: home }, processAdapter);
+	const output = windowsPowerShell(env, pnpmHomeClaim, { DRAKONC_WINDOWS_PNPM_HOME: home }, processAdapter);
 	if (output !== "claimed" && output !== "kept") {
 		const check = /^unsafe:(policy|foreign|protected-dacl|private-owner|private-ace)$/.exec(output)?.[1];
 		throw Object.assign(new Error("Windows PNPM_HOME claim rejected"), check ? { check } : {});
@@ -454,8 +454,8 @@ export function ensureWindowsPnpmHome(home, env, { processAdapter = windowsProce
 // The same claim for another private folder (the bundled install's prefix): only
 // the folder, its marker file and the marker text differ, and they travel as
 // environment data like every other path.
-const privateFolderClaim = [["$env:GENTLE_WINDOWS_PNPM_HOME", "$env:GENTLE_WINDOWS_PRIVATE_FOLDER"],
-	["'.gentle-shell-pnpm-home'", "$env:GENTLE_WINDOWS_PRIVATE_MARKER"], ["'gentle-pi private pnpm home'", "$env:GENTLE_WINDOWS_PRIVATE_TEXT"]]
+const privateFolderClaim = [["$env:DRAKONC_WINDOWS_PNPM_HOME", "$env:DRAKONC_WINDOWS_PRIVATE_FOLDER"],
+	["'.drakonc-shell-pnpm-home'", "$env:DRAKONC_WINDOWS_PRIVATE_MARKER"], ["'drakonc-pi private pnpm home'", "$env:DRAKONC_WINDOWS_PRIVATE_TEXT"]]
 	.reduce((script, [from, to]) => {
 		if (!script.includes(from)) throw new Error("Windows private folder claim template changed");
 		return script.replaceAll(from, to);
@@ -468,7 +468,7 @@ export function ensureWindowsPrivateFolder(folder, env, { marker, text, processA
 	if (platform !== "win32") throw new Error("Native Windows storage verification unavailable");
 	if (!win32.isAbsolute(folder) || folder.startsWith("\\\\")) throw new Error("Unsafe Windows storage path");
 	if (!/^\.[a-z][a-z-]*$/.test(marker) || !/^[a-z][a-z -]*$/.test(text)) throw new Error("Unsafe Windows private folder marker");
-	const output = windowsPowerShell(env, privateFolderClaim, { GENTLE_WINDOWS_PRIVATE_FOLDER: folder, GENTLE_WINDOWS_PRIVATE_MARKER: marker, GENTLE_WINDOWS_PRIVATE_TEXT: text }, processAdapter);
+	const output = windowsPowerShell(env, privateFolderClaim, { DRAKONC_WINDOWS_PRIVATE_FOLDER: folder, DRAKONC_WINDOWS_PRIVATE_MARKER: marker, DRAKONC_WINDOWS_PRIVATE_TEXT: text }, processAdapter);
 	if (output !== "claimed" && output !== "kept") {
 		const check = /^unsafe:(policy|foreign|protected-dacl|private-owner|private-ace)$/.exec(output)?.[1];
 		throw Object.assign(new Error("Windows private folder claim rejected"), check ? { check } : {});
@@ -761,7 +761,7 @@ export async function bootstrapWindows({ bundle, tools, env }) {
 	let step = "bundle";
 	try {
 		if (process.platform !== "win32") throw new Error("Windows bootstrap requires native Windows");
-		for (const file of ["package.json", "bin/gentle-shell-install.mjs", "scripts/installer-downloads.mjs", "scripts/installer-windows.mjs", "scripts/installer-windows-artifacts.json"]) {
+		for (const file of ["package.json", "bin/drakonc-shell-install.mjs", "scripts/installer-downloads.mjs", "scripts/installer-windows.mjs", "scripts/installer-windows-artifacts.json"]) {
 			if (!regular(join(bundle, file))) throw new Error("Required wizard bundle file missing");
 		}
 		const metadata = JSON.parse(readFileSync(join(bundle, "package.json"), "utf8"));
@@ -772,9 +772,9 @@ export async function bootstrapWindows({ bundle, tools, env }) {
 		// Fixed data handoff for the future T5 entry. No caller-controlled command text.
 		step = "launch";
 		// A native pnpm.exe is handed off as the command itself, a JS entry with its Node.
-		const handoff = result.prefix.length === 0 ? { GENTLE_INSTALL_PNPM_COMMAND: result.command }
-			: { GENTLE_INSTALL_PNPM_NODE: result.command, GENTLE_INSTALL_PNPM_ENTRY: result.prefix[0] };
-		const inherited = Object.entries(result.env).filter(([key]) => !/^GENTLE_INSTALL_PNPM_(?:NODE|ENTRY|COMMAND)$/i.test(key));
+		const handoff = result.prefix.length === 0 ? { DRAKONC_INSTALL_PNPM_COMMAND: result.command }
+			: { DRAKONC_INSTALL_PNPM_NODE: result.command, DRAKONC_INSTALL_PNPM_ENTRY: result.prefix[0] };
+		const inherited = Object.entries(result.env).filter(([key]) => !/^DRAKONC_INSTALL_PNPM_(?:NODE|ENTRY|COMMAND)$/i.test(key));
 		await launchWizard({ bundle, env: { ...Object.fromEntries(inherited), ...handoff } });
 	} catch (error) {
 		throw Object.assign(new Error("Windows bootstrap rejected"), { reason: windowsBootstrapReason(error, step) });

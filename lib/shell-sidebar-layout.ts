@@ -94,7 +94,7 @@ type PreparedRail = {
 	headerActive: boolean;
 	presentation?: SidebarPresentation;
 };
-const CACHE = Symbol.for("gentle-pi.experimental-sidebar.cache");
+const CACHE = Symbol.for("drakonc-pi.experimental-sidebar.cache");
 
 function sidebarCache(tui: TUI): SidebarCache {
 	const terminal = tui.terminal as unknown as Record<symbol, SidebarCache>;

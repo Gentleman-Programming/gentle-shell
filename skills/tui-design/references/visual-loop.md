@@ -1,8 +1,8 @@
 # Visual Loop (eyes)
 
-## Gentle Shell harness
+## Drakonc Shell harness
 
-From a Gentle Shell checkout that has `scripts/shell-snapshot.mjs`:
+From a Drakonc Shell checkout that has `scripts/shell-snapshot.mjs`:
 
 ```bash
 node scripts/shell-snapshot.mjs --latest-rich                 # newest session with todos and subagents
@@ -11,9 +11,9 @@ node scripts/shell-snapshot.mjs --latest-rich --cols 139 --rows 40   # just belo
 node scripts/shell-snapshot.mjs --latest-rich --cols 80 --rows 24    # narrow
 ```
 
-- It forks the session into a `/tmp/gentle-eyes.*` scratch dir (`--fork --session-dir`), so the source session is never written.
-- It launches the checkout's own `bin/gentle-shell.mjs` in fullscreen under ttyd and headless Chrome, and prints PNG paths; read them with the image-capable read tool.
-- It strips inherited agent variables (`PI_*`, `GENTLE_PI_*`, `GENTLE_SHELL_*`, `HERDR_*`); without that a shell launched from an agent acts as a child and never mounts the rail.
+- It forks the session into a `/tmp/drakonc-eyes.*` scratch dir (`--fork --session-dir`), so the source session is never written.
+- It launches the checkout's own `bin/drakonc-shell.mjs` in fullscreen under ttyd and headless Chrome, and prints PNG paths; read them with the image-capable read tool.
+- It strips inherited agent variables (`PI_*`, `DRAKONC_PI_*`, `DRAKONC_SHELL_*`, `HERDR_*`); without that a shell launched from an agent acts as a child and never mounts the rail.
 - Never type prompts into the captured shell: it inherits the user's permission mode.
 - Remove the scratch dirs it reports when done.
 
@@ -29,4 +29,4 @@ vhs 0.12.0 produced no output on this machine; prefer the harness.
 
 ## Mockups first
 
-For redesigns, draw directions with `gentle-design` before code. Constrain artboards to the terminal: a fixed monospace grid in `ch` units at the real column count, theme colors only, no font sizes or radii, glyphs from the DESIGN.md family. Then match the implementation screenshot to the chosen artboard.
+For redesigns, draw directions with `drakonc-design` before code. Constrain artboards to the terminal: a fixed monospace grid in `ch` units at the real column count, theme colors only, no font sizes or radii, glyphs from the DESIGN.md family. Then match the implementation screenshot to the chosen artboard.

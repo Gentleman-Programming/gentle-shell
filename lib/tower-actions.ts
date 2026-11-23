@@ -1,4 +1,4 @@
-// Gentle Tower actions: the closed set of things the web view may ask a floor
+// Drakonc Tower actions: the closed set of things the web view may ask a floor
 // to do. The server only validates and queues; the session re-validates and
 // executes with its own authority. Inbox: <hub>/../inbox/<sessionId>/, 0700/0600.
 
@@ -52,24 +52,24 @@ export function parseTowerAction(value: unknown): TowerAction | undefined {
 }
 
 export function towerInboxDir(hubDir: string, sessionId: string): string {
-	if (!okId(sessionId)) throw new Error(`Gentle Tower: unsafe session id ${JSON.stringify(sessionId)}`);
+	if (!okId(sessionId)) throw new Error(`Drakonc Tower: unsafe session id ${JSON.stringify(sessionId)}`);
 	return join(dirname(hubDir), "inbox", sessionId);
 }
 
 function privateDir(dir: string) {
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const st = lstatSync(dir);
-	if (!st.isDirectory() || st.isSymbolicLink()) throw new Error(`Gentle Tower: inbox is not a directory: ${dir}`);
+	if (!st.isDirectory() || st.isSymbolicLink()) throw new Error(`Drakonc Tower: inbox is not a directory: ${dir}`);
 	if ((st.mode & 0o077) !== 0) chmodSync(dir, 0o700);
 }
 
 let sequence = 0;
 export function writeTowerAction(hubDir: string, action: TowerSessionAction): string {
 	const checked = parseTowerAction(action);
-	if (!checked || checked.type === "new-floor") throw new Error("Gentle Tower: invalid action");
+	if (!checked || checked.type === "new-floor") throw new Error("Drakonc Tower: invalid action");
 	const body = JSON.stringify(checked);
 	// The session drops a larger file unread, so it is refused here, before it is queued.
-	if (Buffer.byteLength(body) > TOWER_ACTION_MAX_BYTES) throw new Error(`Gentle Tower: action too large (${Buffer.byteLength(body)} bytes)`);
+	if (Buffer.byteLength(body) > TOWER_ACTION_MAX_BYTES) throw new Error(`Drakonc Tower: action too large (${Buffer.byteLength(body)} bytes)`);
 	const dir = towerInboxDir(hubDir, checked.sessionId);
 	privateDir(dir);
 	const id = `${Date.now().toString().padStart(15, "0")}-${String(sequence++ % 1e6).padStart(6, "0")}-${randomBytes(6).toString("hex")}`;

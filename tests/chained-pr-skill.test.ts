@@ -64,7 +64,7 @@ test("single PR avoids chain artifacts and least-recommended advice is scoped", 
 
 test("size exceptions follow destination policy, not a universal label gate", () => {
 	for (const text of [skill, details, workUnits]) {
-		assert.match(text, /size:exception.*Gentle-owned.*not.*universal/i);
+		assert.match(text, /size:exception.*Drakonc-owned.*not.*universal/i);
 		assert.match(text, /destination repository's documented contribution\/size policy/i);
 		assert.match(text, /(?:never|do not).*request.*(?:create|add).*label.*generic/i);
 	}

@@ -365,12 +365,12 @@ test("the hover and selected outlines take the canvas theme's colors from gd:mod
 	const look = () => [inspector.hoverBox.style.border, inspector.hoverBox.style.background, inspector.selectedBox.style.border, inspector.selectedBox.style.background];
 	const outlines = (accent: string, wash: string, focus: string) => [`2px solid ${accent}`, wash, `2px solid ${focus}`, wash];
 	const neutral = outlines("#8ab4ff", "rgba(138, 180, 255, 0.12)", "#ffd479");
-	const gentleman = outlines("#f095c8", "rgba(240, 149, 200, 0.12)", "#e0c27a");
+	const drakoncman = outlines("#f095c8", "rgba(240, 149, 200, 0.12)", "#e0c27a");
 	assert.deepEqual(look(), neutral, "Neutral's outlines until the canvas says otherwise");
 	inspector.fromParent({ type: "gd:mode", enabled: true, colors: { accent: "#f095c8", wash: "rgba(240, 149, 200, 0.12)", focus: "#e0c27a" } });
-	assert.deepEqual(look(), gentleman);
+	assert.deepEqual(look(), drakoncman);
 	inspector.fromParent({ type: "gd:mode", enabled: true });
-	assert.deepEqual(look(), gentleman, "a gd:mode without colors keeps them");
+	assert.deepEqual(look(), drakoncman, "a gd:mode without colors keeps them");
 	for (const colors of [
 		{ accent: "red; background: url(x)", wash: "url(javascript:alert(1))", focus: "#12345" },
 		{ accent: "rgb(1, 2)", wash: "rgba(1, 2, 3, 4, 5)", focus: "var(--x)" },
@@ -378,13 +378,13 @@ test("the hover and selected outlines take the canvas theme's colors from gd:mod
 		{ accent: 255, wash: null, focus: ["#fff"] },
 	]) {
 		inspector.fromParent({ type: "gd:mode", enabled: true, colors });
-		assert.deepEqual(look(), gentleman, JSON.stringify(colors));
+		assert.deepEqual(look(), drakoncman, JSON.stringify(colors));
 	}
 	inspector.fromParent({ type: "gd:mode", enabled: true, colors: "#fff" });
-	assert.deepEqual(look(), gentleman, "colors must be an object");
+	assert.deepEqual(look(), drakoncman, "colors must be an object");
 	// Only a message from the canvas (the parent) changes them.
 	inspector.fire("message", { source: {}, data: { type: "gd:mode", enabled: true, colors: { accent: "#000", wash: "#000", focus: "#000" } } });
-	assert.deepEqual(look(), gentleman, "another window's gd:mode changes nothing");
+	assert.deepEqual(look(), drakoncman, "another window's gd:mode changes nothing");
 	// A valid one is taken even next to an invalid one; #rgb, #rrggbbaa and rgb() are colors.
 	inspector.fromParent({ type: "gd:mode", enabled: true, colors: { accent: "#abc", wash: "bad", focus: "#11223344" } });
 	assert.deepEqual(look(), outlines("#abc", "rgba(240, 149, 200, 0.12)", "#11223344"));
@@ -413,18 +413,18 @@ test("outline colors reject CSS-injection strings and non-strings, keep colors a
 	const look = () => [inspector.hoverBox.style.border, inspector.hoverBox.style.background, inspector.selectedBox.style.border, inspector.selectedBox.style.background].join("|");
 	assert.equal(look(), "2px solid #8ab4ff|rgba(138, 180, 255, 0.12)|2px solid #ffd479|rgba(138, 180, 255, 0.12)");
 	inspector.fromParent({ type: "gd:colors", colors: { accent: "#f095c8", wash: "rgba(240, 149, 200, 0.12)", focus: "#e0c27a" } });
-	const gentleman = look();
+	const drakoncman = look();
 	for (const bad of ["#fff;x", "#fff\n", " #fff", "rgb(1,2,3)\u0000", "rgb(1,2,3)}*{x:y", "rgb(1,2,3)/**/", "hsl(1, 2%, 3%)", "currentColor", "\\23 fff", `rgb(1.${"0".repeat(60)}, 2, 3)`, 1, null, ["#fff"], new String("#fff")]) {
 		inspector.fromParent({ type: "gd:colors", colors: { accent: bad, wash: bad, focus: bad } });
-		assert.equal(look(), gentleman, String(bad));
+		assert.equal(look(), drakoncman, String(bad));
 	}
 	inspector.fromParent({ type: "gd:colors", colors: structuredClone(JSON.parse('{"__proto__":{"accent":"#000"},"constructor":"#000","border":"#000"}')) });
-	assert.equal(look(), gentleman, "foreign and prototype keys are ignored");
+	assert.equal(look(), drakoncman, "foreign and prototype keys are ignored");
 	inspector.fire("message", { source: null, data: { type: "gd:colors", colors: { accent: "#123" } } });
-	assert.equal(look(), gentleman, "only the parent counts");
+	assert.equal(look(), drakoncman, "only the parent counts");
 	// canvas-export.js posts gd:mode without colors around an export.
 	inspector.fromParent({ type: "gd:mode", enabled: false });
-	assert.equal(look(), gentleman, "an export's gd:mode keeps the theme's colors");
+	assert.equal(look(), drakoncman, "an export's gd:mode keeps the theme's colors");
 });
 
 test("in focus mode the inspector leaves the wheel to the artboard and never pans the canvas", () => {

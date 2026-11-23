@@ -1,9 +1,9 @@
 ---
-name: gentle-ai-cognitive-doc-design
+name: drakonc-ai-cognitive-doc-design
 description: "Design docs that reduce cognitive load. Trigger: writing guides, READMEs, RFCs, onboarding, architecture, or review-facing docs."
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "1.0"
 ---
 

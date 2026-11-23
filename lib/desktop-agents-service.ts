@@ -1,6 +1,6 @@
-// Gentle Desktop subagents bridge: reaches the existing agents owner (the
+// Drakonc Desktop subagents bridge: reaches the existing agents owner (the
 // single parent-session `TaskStore` plus the parent `AgentRunner`, inside
-// `extensions/gentle-agents.ts`) through a defensive, versioned owner-service
+// `extensions/drakonc-agents.ts`) through a defensive, versioned owner-service
 // event/adapter — the agents analogue of the jobs `discoverDesktopJobsService`
 // seam. It never starts, stops, or spawns a subagent itself and keeps no
 // second store or runner: every list, cancel, and thread read is the owner's own

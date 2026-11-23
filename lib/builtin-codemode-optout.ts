@@ -2,18 +2,18 @@ import { chmodSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync,
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 
-// gentle-pi replaces Pi's replaceable builtin codemode with its compact
+// drakonc-pi replaces Pi's replaceable builtin codemode with its compact
 // renderer (lib/codemode-renderer.ts), and Pi warns at every startup when a
 // builtin loses its tool to another extension. Pi's only per-builtin opt-out
 // is a `-builtin:<name>` entry in the settings `extensions` array. The
-// gentle-shell launcher adds it silently to homes it owns (bin/gentle-shell.mjs,
+// drakonc-shell launcher adds it silently to homes it owns (bin/drakonc-shell.mjs,
 // #1612); a user-owned Pi home only gets it after the user accepts a
 // one-time prompt, and a declined prompt is remembered per settings file.
 export const BUILTIN_CODEMODE_EXTENSION = "builtin:codemode";
 export const BUILTIN_CODEMODE_OPTOUT_ENTRY = `-${BUILTIN_CODEMODE_EXTENSION}`;
-export const BUILTIN_CODEMODE_OPTOUT_SCHEMA = "gentle-pi.builtin-codemode-optout/v1";
+export const BUILTIN_CODEMODE_OPTOUT_SCHEMA = "drakonc-pi.builtin-codemode-optout/v1";
 
 export type BuiltinCodemodeOptOutOutcome =
 	| "no-ui"
@@ -27,7 +27,7 @@ export type BuiltinCodemodeOptOutOutcome =
 export interface BuiltinCodemodeOptOutOptions {
 	/** Pi agent dir whose settings.json receives the entry; defaults to getAgentDir(). */
 	agentDir?: string;
-	/** gentle-pi config home holding the remembered decline; defaults to gentlePiConfigHome(). */
+	/** drakonc-pi config home holding the remembered decline; defaults to drakoncPiConfigHome(). */
 	configHome?: string;
 	/** Effective (merged) settings `extensions`, e.g. from pi.getSettings(). */
 	effectiveExtensions?: unknown;
@@ -47,7 +47,7 @@ export function hasExplicitBuiltinEntry(extensions: unknown, builtin = BUILTIN_C
 	return Array.isArray(extensions) && extensions.some((entry) => typeof entry === "string" && entry.replace(/^[+!-]/, "") === builtin);
 }
 
-// Pure: mirrors withBuiltinExtensionExcluded in bin/gentle-shell.mjs. Returns
+// Pure: mirrors withBuiltinExtensionExcluded in bin/drakonc-shell.mjs. Returns
 // `settingsText` with `-<builtin>` appended to its `extensions` array (created
 // when absent), or undefined when nothing should change — the text does not
 // parse as a JSON object, `extensions` exists but is not an array, or the
@@ -69,7 +69,7 @@ export function withBuiltinExtensionExcluded(settingsText: string, builtin = BUI
 	return settingsText.endsWith("\n") ? `${serialized}\n` : serialized;
 }
 
-export function builtinCodemodeOptOutStatePath(configHome = gentlePiConfigHome()): string {
+export function builtinCodemodeOptOutStatePath(configHome = drakoncPiConfigHome()): string {
 	return join(configHome, "builtin-codemode-optout.json");
 }
 
@@ -112,7 +112,7 @@ function recordDeclined(configHome: string, settingsPath: string): void {
 function writeSettingsAtomically(path: string, data: string): void {
 	const target = realpathSync(path);
 	const mode = statSync(target).mode & 0o777;
-	const temporary = join(dirname(target), `.${basename(target)}.gentle-pi-${randomUUID()}.tmp`);
+	const temporary = join(dirname(target), `.${basename(target)}.drakonc-pi-${randomUUID()}.tmp`);
 	try {
 		writeFileSync(temporary, data, { flag: "wx" });
 		chmodSync(temporary, mode);
@@ -124,9 +124,9 @@ function writeSettingsAtomically(path: string, data: string): void {
 
 function promptMessage(settingsPath: string): string {
 	return [
-		"Pi warns at startup that the builtin codemode extension was not loaded, because gentle-pi replaces it with its compact codemode renderer.",
-		`Adding "${BUILTIN_CODEMODE_OPTOUT_ENTRY}" to the "extensions" list in ${settingsPath} silences that warning from the next launch. gentle-pi keeps its compact codemode either way.`,
-		"Nothing is written unless you accept. If you decline, gentle-pi will not ask again.",
+		"Pi warns at startup that the builtin codemode extension was not loaded, because drakonc-pi replaces it with its compact codemode renderer.",
+		`Adding "${BUILTIN_CODEMODE_OPTOUT_ENTRY}" to the "extensions" list in ${settingsPath} silences that warning from the next launch. drakonc-pi keeps its compact codemode either way.`,
+		"Nothing is written unless you accept. If you decline, drakonc-pi will not ask again.",
 	].join("\n\n");
 }
 
@@ -138,7 +138,7 @@ export async function offerBuiltinCodemodeOptOut(ctx: BuiltinCodemodeOptOutConte
 		if (!ctx.hasUI || ctx.mode !== "tui") return "no-ui";
 		if (hasExplicitBuiltinEntry(options.effectiveExtensions)) return "explicit-entry";
 		const settingsPath = resolve(options.agentDir ?? getAgentDir(), "settings.json");
-		const configHome = options.configHome ?? gentlePiConfigHome();
+		const configHome = options.configHome ?? drakoncPiConfigHome();
 		const currentText = readIfExists(settingsPath);
 		if (currentText === undefined) return "unwritable";
 		try {
@@ -150,7 +150,7 @@ export async function offerBuiltinCodemodeOptOut(ctx: BuiltinCodemodeOptOutConte
 		const accepted = (await ctx.ui.confirm("Silence Pi's builtin codemode warning?", promptMessage(settingsPath))) === true;
 		if (!accepted) {
 			recordDeclined(configHome, settingsPath);
-			ctx.ui.notify(`gentle-pi will not ask again. To silence the warning later, add "${BUILTIN_CODEMODE_OPTOUT_ENTRY}" to "extensions" in ${settingsPath}.`, "info");
+			ctx.ui.notify(`drakonc-pi will not ask again. To silence the warning later, add "${BUILTIN_CODEMODE_OPTOUT_ENTRY}" to "extensions" in ${settingsPath}.`, "info");
 			return "declined";
 		}
 		// The dialog may have stayed open while the file changed; re-read it.

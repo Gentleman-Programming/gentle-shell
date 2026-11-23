@@ -27,7 +27,7 @@ const TEXT = Object.freeze({
 	confirmLabel: (number) => `Confirm removing part ${number}`,
 	cancel: "Cancel",
 	partTitle: "Build only this element in the project; the field is an optional note",
-	partOffline: "The canvas is not connected to a Pi session; open it with /gentle:design open",
+	partOffline: "The canvas is not connected to a Pi session; open it with /drakonc:design open",
 	noteTooLong: (max) => `The note can have at most ${max} characters.`,
 	sending: "Sending…",
 	sentShort: "Sent to the session",
@@ -35,7 +35,7 @@ const TEXT = Object.freeze({
 	queued: (title) => `Queued: the session will build only this part of ${title} after its current task.`,
 	notSent: (why) => `Not sent: ${why}`,
 	sendErrors: {
-		"implement-part-unavailable": "the canvas is not connected to a Pi session; open it with /gentle:design open.",
+		"implement-part-unavailable": "the canvas is not connected to a Pi session; open it with /drakonc:design open.",
 		"invalid-file": "that artboard is no longer in the design.",
 		"invalid-selector": "this element's selector cannot be sent.",
 		"invalid-excerpt": "this element's text cannot be sent.",

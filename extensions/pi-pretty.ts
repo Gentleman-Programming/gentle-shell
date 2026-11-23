@@ -7,7 +7,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { bundledGentlePiAgentHome } from "../lib/agent-home.ts";
+import { bundledDrakoncPiAgentHome } from "../lib/agent-home.ts";
 import { keepNativeWorkingRow, shellEnabled } from "../lib/shell-bar.ts";
 import {
 	mergeDisabledTools,
@@ -37,11 +37,11 @@ async function loadPiPrettyExtension(): Promise<PiPrettyExtension> {
 
 // S9: pi-pretty keeps its FFF database under deps.sdk.getAgentDir(), falling
 // back to $HOME/.pi/agent whatever agent home Pi runs with. In a bundled
-// Gentle Shell it gets the agent home; a deps.sdk also replaces the host tool
+// Drakonc Shell it gets the agent home; a deps.sdk also replaces the host tool
 // factories it would otherwise import, so the same five come along. Elsewhere,
 // and for a host that already passes its own sdk, Pi's deps stay unchanged.
 function withAgentHome(deps: unknown, env: NodeJS.ProcessEnv): unknown {
-	const agentHome = bundledGentlePiAgentHome(env);
+	const agentHome = bundledDrakoncPiAgentHome(env);
 	const given = (deps ?? {}) as { sdk?: unknown };
 	if (agentHome === undefined || given.sdk !== undefined) return deps;
 	return {
@@ -57,15 +57,15 @@ function withAgentHome(deps: unknown, env: NodeJS.ProcessEnv): unknown {
 	};
 }
 
-export default async function gentlePiPrettyExtension(
+export default async function drakoncPiPrettyExtension(
 	pi: unknown,
 	deps?: unknown,
 	bundled?: PiPrettyExtension,
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<unknown> {
-	// gentle-shell#1690: a delegated child has no transcript to prettify, and
+	// drakonc-shell#1690: a delegated child has no transcript to prettify, and
 	// the upstream fallback would start its own file indexing in every child.
-	if (env.GENTLE_PI_AGENTS_CHILD === "1") return undefined;
+	if (env.DRAKONC_PI_AGENTS_CHILD === "1") return undefined;
 	if (quietToolsEnabled()) {
 		process.env.PRETTY_DISABLE_TOOLS = mergeDisabledTools(
 			process.env.PRETTY_DISABLE_TOOLS,
@@ -78,7 +78,7 @@ export default async function gentlePiPrettyExtension(
 	const api = pi as ExtensionAPI;
 	// Scope interception to this bundled dependency, never to the shared host UI.
 	// Its tools/autocomplete/status APIs pass through; prompt ownership stays with
-	// Gentle Shell (or a genuine third-party editor). This also blocks stale restores.
+	// Drakonc Shell (or a genuine third-party editor). This also blocks stale restores.
 	const owned = new Set(["setEditorComponent", "setWorkingIndicator", "setWorkingMessage", "setWorkingVisible"]);
 	const delegated = new Proxy(api, {
 		get(target, key) {
@@ -98,7 +98,7 @@ export default async function gentlePiPrettyExtension(
 	});
 	// pi-pretty's hidden-thinking API is global. Its best-effort private per-row
 	// patch can miss the host's actual component class and then animate every
-	// historical Thinking row. Gentle Shell chooses the robust presentation:
+	// historical Thinking row. Drakonc Shell chooses the robust presentation:
 	// keep collapsed labels static while preserving the separate working frame.
 	const previousThinkingIndicator = process.env.PRETTY_THINKING_INDICATOR;
 	process.env.PRETTY_THINKING_INDICATOR = "off";
@@ -109,7 +109,7 @@ export default async function gentlePiPrettyExtension(
 		if (previousThinkingIndicator === undefined) delete process.env.PRETTY_THINKING_INDICATOR;
 		else process.env.PRETTY_THINKING_INDICATOR = previousThinkingIndicator;
 	}
-	// GentlePromptEditor already carries the live working state in its frame.
+	// DrakoncPromptEditor already carries the live working state in its frame.
 	// Hide Pi's separate loader row to avoid repeating Thinking above the input;
 	// transcript thinking blocks remain untouched as historical reasoning markers.
 	// Inside Herdr the row stays: its native Pi detection reads it.

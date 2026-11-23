@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { NativeReviewCliError, NativeReviewIntegrationError, NATIVE_REVIEW_ERROR_CODE, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewFailureV2 } from "../lib/review-integration-v2.ts";
 import { withReviewBlocker } from "../lib/review-blocker.ts";
@@ -59,7 +59,7 @@ test("timed_out diagnostics use timeout guidance without granting a retry", () =
 });
 
 test("a read-only inventory timeout says the read can be rerun without granting an automatic retry", () => {
-	const before = { status: "blocked", outcome: "native-status-timed-out", inventory_complete: false, diagnostics: { timed_out: true }, next_action: "rerun-native-status", remediation_command: "gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition" };
+	const before = { status: "blocked", outcome: "native-status-timed-out", inventory_complete: false, diagnostics: { timed_out: true }, next_action: "rerun-native-status", remediation_command: "drakonc-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition" };
 	const { blocker, ...preserved } = withReviewBlocker(before);
 	assert.deepEqual(preserved, before);
 	assert.deepEqual(blocker, {

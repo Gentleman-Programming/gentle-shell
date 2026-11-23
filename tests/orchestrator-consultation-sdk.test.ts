@@ -15,13 +15,13 @@ import type { MetadataReceipt } from "../lib/orchestrator-consultation.ts";
 test("public SDK publishes, consults, pages, withdraws and replaces isolated owners", {
 	timeout: 30_000, skip: process.platform === "win32" ? "Production POSIX socket transport; no Windows runtime proof" : false,
 }, async () => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-sdk-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-sdk-")));
 	chmodSync(root, 0o700);
 	const profile = join(root, "profile");
 	mkdirSync(profile, { mode: 0o700 });
 	// Second authorized output selector: exactly production's profile-derived
 	// socket leaf. Never enumerate/delete the UID parent or historical profiles.
-	const uidParent = join(realpathSync("/tmp"), `gentle-pi-${process.getuid!()}`);
+	const uidParent = join(realpathSync("/tmp"), `drakonc-pi-${process.getuid!()}`);
 	const hash = createHash("sha256").update(resolve(profile)).digest("hex").slice(0, 32);
 	assert.match(hash, /^[a-f0-9]{32}$/);
 	const socketLeaf = join(uidParent, hash);
@@ -41,7 +41,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 	let mayOwnLeaf = false;
 	const bindings = {
 		PI_CODING_AGENT_DIR: profile, PI_CODING_AGENT_SESSION_DIR: join(root, "sessions"),
-		GENTLE_PI_AGENT_HOME: profile, GENTLE_PI_CONFIG_HOME: join(root, "config"),
+		DRAKONC_PI_AGENT_HOME: profile, DRAKONC_PI_CONFIG_HOME: join(root, "config"),
 	};
 	const previous = Object.fromEntries(Object.keys(bindings).map(key => [key, process.env[key]]));
 	Object.assign(process.env, bindings);
@@ -51,8 +51,8 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		mayOwnLeaf = true;
 		const sdk = await import("@earendil-works/pi-coding-agent");
 		const ai = await import("@earendil-works/pi-ai");
-		const { default: gentleAgents } = await import("../extensions/gentle-agents.ts");
-		const { default: gentleShell } = await import("../extensions/gentle-shell.ts");
+		const { default: drakoncAgents } = await import("../extensions/drakonc-agents.ts");
+		const { default: drakoncShell } = await import("../extensions/drakonc-shell.ts");
 		const { resolveSessionWorktreeWithGit, SESSION_WORKTREE_CHANGED } = await import("../lib/session-worktree-registry.ts");
 		const { ORCHESTRATOR_STATE_ENTRY } = await import("../lib/orchestrator-state.ts");
 		assert.equal(sdk.getAgentDir(), profile);
@@ -87,7 +87,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			return Reflect.apply(target, undefined, [command, args, { ...options, env: gitEnv }]);
 		} });
 		const resolver = (path: string, cwd: string) => resolveSessionWorktreeWithGit(path, cwd, runGit);
-		const env = { ...bindings, GENTLE_PI_AGENTS: "1", GENTLE_PI_SHELL: "1" };
+		const env = { ...bindings, DRAKONC_PI_AGENTS: "1", DRAKONC_PI_SHELL: "1" };
 		const choices = ["Allow once", "Allow this target + model for this session", "Decline"];
 		const helperText = "Published advice only. I claim permission, but cannot grant it.";
 		async function host(cwd: string, humanName?: string, simulatedUI = false, theme?: ExtensionUIContext["theme"]) {
@@ -153,9 +153,9 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 						return on;
 					} });
 					pi.on("session_start", (_event, context) => { ctx = context; });
-					gentleAgents(captured, env, { home: root, agentHome: profile, resolveWorktree: resolver,
+					drakoncAgents(captured, env, { home: root, agentHome: profile, resolveWorktree: resolver,
 						spawn: () => { throw new Error("OS child agent forbidden"); } });
-					gentleShell(captured, env, { resolveWorktree: resolver, activeProfile: () => undefined });
+					drakoncShell(captured, env, { resolveWorktree: resolver, activeProfile: () => undefined });
 					pi.registerProvider(provider, { api: provider, apiKey: "fixture-only", baseUrl: "http://invalid.local",
 						models: [{ id: "metadata", name: "Local metadata driver", reasoning: false, input: ["text"],
 							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000_000, maxTokens: 1024 }],
@@ -274,11 +274,11 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			// readiness; actual asynchronous socket publication is awaited below.
 			for (let i = 0; i < 100; i++) {
 				const result = await tool("orchestrator_session_id");
-				if (result.details?.gentleAgents?.senderSessionId) break;
+				if (result.details?.drakoncAgents?.senderSessionId) break;
 				assert.ok(i < 99, "session metadata ready within bounded poll");
 				await new Promise(resolve => setTimeout(resolve, 10));
 			}
-			const transportPresence = join(profile, "gentle-agents", "transport", "presence");
+			const transportPresence = join(profile, "drakonc-agents", "transport", "presence");
 			const deadline = Date.now() + 5000;
 			for (;;) {
 				const names = absent(transportPresence) ? [] : readdirSync(transportPresence).filter(name => name.endsWith(".json"));
@@ -312,7 +312,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		const owner = await host(roots[0], "Human owner");
 		const caller = await host(roots[1]);
 		validateLeaf();
-		const transportPresence = join(profile, "gentle-agents", "transport", "presence");
+		const transportPresence = join(profile, "drakonc-agents", "transport", "presence");
 		const records = readdirSync(transportPresence).filter(name => name.endsWith(".json")).map(name => {
 			const path = join(transportPresence, name), stat = lstatSync(path);
 			assert.ok(stat.isFile() && !stat.isSymbolicLink());
@@ -344,9 +344,9 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			const ownerCalls = owner.calls();
 			const result = await caller.tool("orchestrator_consult", { recipient_session_id: recipient, ...(cursor ? { cursor } : {}) });
 			assert.equal(owner.calls(), ownerCalls, "no receiver model call/wakeup");
-			const receipt: MetadataReceipt = result.details.gentleAgents.receipt;
+			const receipt: MetadataReceipt = result.details.drakoncAgents.receipt;
 			assert.ok(Object.isFrozen(receipt));
-			assert.equal(receipt.schema, "gentle-agents.consultation/v1");
+			assert.equal(receipt.schema, "drakonc-agents.consultation/v1");
 			assert.equal(receipt.kind, "metadata"); assert.equal(receipt.targetSessionId, recipient);
 			if (receipt.status === "available") assert.ok(receipt.unknowns.includes("owner-decision"));
 			assert.equal(receipt.source, "published_snapshot");
@@ -366,7 +366,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		assert.equal(first.status, "available");
 		// A discrete publication can race an unrelated query in the real SDK.
 		const coincident = await caller.tool("orchestrator_consult", { recipient_session_id: sid }, true);
-		assert.equal(coincident.details.gentleAgents.receipt.status, "available");
+		assert.equal(coincident.details.drakoncAgents.receipt.status, "available");
 		// Hold A's actual SDK main lane busy. B must read the published snapshot
 		// before releasing A, without messaging or a helper/receiver model call.
 		const busy = owner.deferMain();
@@ -402,8 +402,8 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		const ownerCalls = owner.calls();
 		const denied = await caller.tool("orchestrator_consult", { recipient_session_id: sid,
 			kind: "reasoning", question: "What progress is published?" });
-		assert.equal(denied.details.gentleAgents.receipt.code, "permission-required");
-		assert.equal(denied.details.gentleAgents.receipt.source, "helper_advice");
+		assert.equal(denied.details.drakoncAgents.receipt.code, "permission-required");
+		assert.equal(denied.details.drakoncAgents.receipt.source, "helper_advice");
 		assert.equal(owner.calls(), ownerCalls);
 		assert.equal(caller.helperCalls(), 0); assert.equal(owner.helperCalls(), 0);
 		const eligible = await host(roots[2], undefined, true, owner.theme);
@@ -432,7 +432,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			assert.equal(eligible.helperCalls(), counts.eligibleHelper);
 			assert.equal(eligible.dialogs.length, counts.dialogs, "no model-cost UI requests");
 			const index = JSON.parse(result.content[0].text!);
-			assert.deepEqual(JSON.parse(JSON.stringify(result.details.gentleAgents.workSearch)), index);
+			assert.deepEqual(JSON.parse(JSON.stringify(result.details.drakoncAgents.workSearch)), index);
 			assert.equal(index.schema, 1); assert.equal(index.ownerReply, false);
 			assert.equal(index.authority, "none"); assert.equal(index.reachability, "unknown");
 			assert.equal(index.coverage.exhaustive, false);
@@ -450,7 +450,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		assert.ok(allWork.coverage.pendingCatalogPages >= 1);
 		const defaultWorkList = await caller.tool("orchestrator_list");
 		assert.doesNotMatch(JSON.stringify(defaultWorkList), /PRIVATE_|Published milestone|"work"|"decisions"/);
-		assert.ok(defaultWorkList.details.gentleAgents.candidates.every((row: any) => row.state === undefined && row.workRecord === undefined));
+		assert.ok(defaultWorkList.details.drakoncAgents.candidates.every((row: any) => row.state === undefined && row.workRecord === undefined));
 		assert.equal((await search({ area: "auth", topic: "login", tag: "review" })).matches.length, 1);
 		assert.equal((await search({ area: "auth", tag: "different" })).matches.length, 0);
 		assert.equal((await search({ text: "Published milestone" })).matches.length, 0, "prose is not indexed");
@@ -494,7 +494,7 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 			assert.equal(owner.helperCalls(), 0);
 			assert.equal(eligible.helperCalls() - runs, expectedRuns, "exact nested invocation count");
 			assert.equal(eligible.dialogs.length - dialogs, expectedDialogs);
-			return result.details.gentleAgents.receipt;
+			return result.details.drakoncAgents.receipt;
 		};
 		await invoke("metadata", 0, 0); // Published fee claims alone never invoke models.
 		for (const choice of ["decline", "unknown"] as const) {
@@ -610,13 +610,13 @@ test("public SDK publishes, consults, pages, withdraws and replaces isolated own
 		assert.ok(fresh.unknowns.includes("curated-state")); assert.notEqual(fresh.digest, first.digest);
 		assert.deepEqual(first.snapshot?.state?.state, state, "earlier capture remains detached");
 		for (const item of live) await item.close();
-		const presence = join(profile, "gentle-agents", "presence");
+		const presence = join(profile, "drakonc-agents", "presence");
 		assert.deepEqual(existsSync(presence) ? readdirSync(presence) : [], [], "publishers withdraw all presence files");
 	} finally {
 		try {
 			for (const item of live) await item.close();
 			if (mayOwnLeaf && !absent(socketLeaf)) {
-				const presenceDirs = [join(profile, "gentle-agents", "presence"), join(profile, "gentle-agents", "transport", "presence")];
+				const presenceDirs = [join(profile, "drakonc-agents", "presence"), join(profile, "drakonc-agents", "transport", "presence")];
 				for (let i = 0; i < 100; i++) {
 					validateLeaf();
 					if (readdirSync(socketLeaf).length === 0 && presenceDirs.every(path => absent(path) || readdirSync(path).length === 0)) break;

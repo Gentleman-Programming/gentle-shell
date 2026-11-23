@@ -3,11 +3,11 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { NATIVE_REVIEW_MODE_SOURCE, NativeReviewCliV216, type ExecFileAdapter, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { REVIEW_ASSESSMENT_SCHEMA } from "../lib/review-risk-assessment.ts";
 
-// gentle-ai#6203: an agent escalation is forwarded to native assess so native
+// drakonc-ai#6203: an agent escalation is forwarded to native assess so native
 // raises the tier to high and reports review due. Due stays computed natively.
 
 const envelope = (risk: string, due?: boolean) => JSON.stringify({
@@ -23,7 +23,7 @@ async function assessArgs(escalate: { item: number; reason: string } | undefined
 			calls.push(request.arguments);
 			return { stdout: envelope("medium"), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 		};
-		const cli = new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
+		const cli = new NativeReviewCliV216(adapter, "/package/.drakonc-ai/drakonc-ai", 30_000, 1024 * 1024);
 		await cli.assess({ cwd, ...(escalate === undefined ? {} : { escalate }) } as never);
 		assert.equal(calls.length, 1);
 		return calls[0].slice(0, calls[0].length);
@@ -54,12 +54,12 @@ function tool(assess: NativeReviewCli["assess"]) {
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: NATIVE_REVIEW_MODE_SOURCE.GLOBAL } }),
 		assess,
 	};
-	createGentleAiExtension({ nativeReviewCli: nativeReviewCli as NativeReviewCli })(pi);
-	return tools.get("gentle_review");
+	createDrakoncAiExtension({ nativeReviewCli: nativeReviewCli as NativeReviewCli })(pi);
+	return tools.get("drakonc_review");
 }
 const ctx = { cwd: process.cwd() } as ExtensionContext;
 
-test("gentle_review assess forwards the parsed escalate and reports native reviewDue true", async () => {
+test("drakonc_review assess forwards the parsed escalate and reports native reviewDue true", async () => {
 	const seen: unknown[] = [];
 	const t = tool(async (request) => {
 		seen.push((request as { escalate?: unknown }).escalate);
@@ -75,7 +75,7 @@ test("gentle_review assess forwards the parsed escalate and reports native revie
 	assert.equal(d.plan.independentVerifier, true);
 });
 
-test("gentle_review assess without escalate passes no escalate; invalid escalate is rejected before native", async () => {
+test("drakonc_review assess without escalate passes no escalate; invalid escalate is rejected before native", async () => {
 	const seen: unknown[] = [];
 	let calls = 0;
 	const t = tool(async (request) => {
@@ -94,6 +94,6 @@ test("guidance says an escalation makes native review due and a verifier never r
 	const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 	assert.match(read("assets/orchestrator.md"), /RDD on: `escalate` makes review due\./);
 	assert.match(read("assets/orchestrator-verification.md"), /With RDD on it also makes native review due, which a verifier never replaces\./);
-	assert.match(read("extensions/gentle-ai.ts"), /An escalation is also forwarded to native assess, which raises the tier to high and reports reviewDue true/);
+	assert.match(read("extensions/drakonc-ai.ts"), /An escalation is also forwarded to native assess, which raises the tier to high and reports reviewDue true/);
 	assert.match(read("docs/delegated-verification.md"), /--escalate-item <1-6> --escalate-reason <text>/);
 });

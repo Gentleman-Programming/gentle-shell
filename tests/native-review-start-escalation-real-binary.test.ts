@@ -6,10 +6,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { createNativeReviewCli, createNodeExecFileAdapter, NativeReviewConsentRequiredError } from "../lib/native-review-cli.ts";
 
-// gentle-ai#6203: against the real provider (gentle-ai main) an agent-escalated
+// drakonc-ai#6203: against the real provider (drakonc-ai main) an agent-escalated
 // medium candidate's START reports risk high. Stops at the consent question: no
 // reviewer capture, and consent is never answered.
-const binary = process.env.GENTLE_AI_REAL_BINARY ?? join(process.env.HOME ?? "", "go", "bin", "gentle-ai");
+const binary = process.env.DRAKONC_AI_REAL_BINARY ?? join(process.env.HOME ?? "", "go", "bin", "drakonc-ai");
 
 test("real provider: START carries the escalation so the consent reads high; without it medium", { skip: !existsSync(binary) }, async () => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "gp-escalate-")));

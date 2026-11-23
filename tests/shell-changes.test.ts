@@ -133,13 +133,13 @@ test("the changes digest moves with every per-file detail the renderer consumes"
 });
 
 test("changesSummary and the widget describe the session at a glance", () => {
-	const model = changesModel([file("extensions/gentle-shell.ts", 31, 0, CHANGE_STATUS.ADDED), file("lib/shell-bar.ts", 9, 7), file("tests/x.test.ts", 2, 0)]);
+	const model = changesModel([file("extensions/drakonc-shell.ts", 31, 0, CHANGE_STATUS.ADDED), file("lib/shell-bar.ts", 9, 7), file("tests/x.test.ts", 2, 0)]);
 	assert.equal(changesSummary(model), "3 files · +42 −7");
 	assert.equal(changesSummary(changesModel([file("a.ts", 1, 0)])), "1 file · +1 −0");
 
 	const [line, ...rest] = renderChangesWidget(model, plainTheme, 120);
 	assert.equal(rest.length, 0);
-	assert.match(line, /^✎ 3 files · \+42 −7 · extensions\/gentle-shell\.ts · lib\/shell-bar\.ts · tests\/x\.test\.ts {2,}\/gentle:changes$/);
+	assert.match(line, /^✎ 3 files · \+42 −7 · extensions\/drakonc-shell\.ts · lib\/shell-bar\.ts · tests\/x\.test\.ts {2,}\/drakonc:changes$/);
 	assert.equal(visibleWidth(line), 120, "the command sits on the right edge");
 });
 
@@ -148,12 +148,12 @@ test("renderChangesWidget colors counts by direction and yields nothing when cle
 	const [line] = renderChangesWidget(model, taggedTheme, 400);
 	assert.match(line, /<accent>✎<\/accent>/);
 	assert.match(line, /<success>\+1<\/success> <error>−2<\/error>/);
-	assert.match(line, /<dim>\/gentle:changes<\/dim>$/);
+	assert.match(line, /<dim>\/drakonc:changes<\/dim>$/);
 	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 120), []);
 });
 
 // The unborn state (no commits yet) is silence in the idle bar: the widget
-// renders only tracked files, and /gentle:changes explains the state on demand.
+// renders only tracked files, and /drakonc:changes explains the state on demand.
 test("renderChangesWidget stays silent when nothing is tracked", () => {
 	assert.deepEqual(renderChangesWidget(emptyChanges(), plainTheme, 120), []);
 	assert.deepEqual(renderChangesWidget(emptyChanges(), taggedTheme, 400), []);
@@ -164,7 +164,7 @@ test("renderChangesWidget drops the file list before truncating on narrow termin
 	const model = changesModel([file("a/very/long/path/one.ts", 1, 0), file("a/very/long/path/two.ts", 1, 0)]);
 	const [line] = renderChangesWidget(model, plainTheme, 40);
 	assert.equal(visibleWidth(line), 40);
-	assert.match(line, /^✎ 2 files · \+2 −0 +\/gentle:changes$/);
+	assert.match(line, /^✎ 2 files · \+2 −0 +\/drakonc:changes$/);
 	assert.doesNotMatch(line, /one\.ts/);
 	const [tiny] = renderChangesWidget(model, plainTheme, 20);
 	assert.ok(visibleWidth(tiny) <= 20);
@@ -579,7 +579,7 @@ test("registered roots remain scannable during metadata discovery failure", asyn
 });
 
 test("isolated Git worktrees include preexisting dirty files only after root registration", async (t) => {
-	const temporary = await mkdtemp(join(tmpdir(), "gentle-shell-worktrees-"));
+	const temporary = await mkdtemp(join(tmpdir(), "drakonc-shell-worktrees-"));
 	// Every repository, linked root and Git configuration belongs to this fixture.
 	t.after(() => rm(temporary, { recursive: true, force: true }));
 	const fixture = await realpath(temporary);

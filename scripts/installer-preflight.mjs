@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import {
 	INSTALLER_VERSION,
-	GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION,
-} from "./gentle-ai-installer.mjs";
+	DRAKONC_AI_WINDOWS_MINIMUM_GO_VERSION,
+} from "./drakonc-ai-installer.mjs";
 import { artifactFor, goPinVersion, nodeRequirementClauses, nodeRequirementSatisfied } from "./installer-downloads.mjs";
 
 // Read package metadata only: never import the launcher or execute postinstall.
@@ -24,8 +24,8 @@ export const requirements = Object.freeze({
 	// pnpm pack can omit packageManager; acquisition still has a verified pin.
 	pnpm: metadata.packageManager?.replace(/^pnpm@/, "") ?? artifactFor("pnpm").version,
 	shell: metadata.version,
-	gentleAi: INSTALLER_VERSION,
-	go: GENTLE_AI_WINDOWS_MINIMUM_GO_VERSION,
+	drakoncAi: INSTALLER_VERSION,
+	go: DRAKONC_AI_WINDOWS_MINIMUM_GO_VERSION,
 });
 
 /** Legacy Pi pin retained for verified distribution and compatibility checks.
@@ -41,7 +41,7 @@ export const PI_INSTALL_VERSION = "1.6.0";
  */
 export const persistencePins = Object.freeze({ node: "24.21.0", npm: "11.19.0", pnpm: requirements.pnpm });
 
-/** Go the installer downloads only to build Gentle AI, when a build needs Go and
+/** Go the installer downloads only to build Drakonc AI, when a build needs Go and
  * the user's Go is missing, older than requirements.go or unchecked (installer-downloads.mjs).
  */
 export const goAcquisition = Object.freeze({ version: goPinVersion });
@@ -76,12 +76,12 @@ export function pnpmGlobalBin({ platform, env }) {
 	return { pnpmHome, path: bin, onPath: entries.some((entry) => comparable(entry) === comparable(bin)) };
 }
 
-const probeNames = ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin", "setup"];
+const probeNames = ["node", "pnpm", "pi", "shell", "drakoncAi", "go", "globalBin", "setup"];
 
 /** Collect with caller-owned read-only probes; no default process/home adapters.
  * A tool probe returns { available, version, usable }; missing is available:false.
  * pnpm also needs compatible:true (runtime/capability evidence), shell global:true,
- * and Gentle AI compatible:true (normal binary resolver/integrity evidence).
+ * and Drakonc AI compatible:true (normal binary resolver/integrity evidence).
  * Node may add persistent (resolvable from the user's PATH without bootstrap
  * tool directories) and npm (a usable npm resolves there) booleans; pnpm may
  * add persistent (resolvable from the user's PATH). A bootstrap-only Node or
@@ -192,7 +192,7 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	// A blocked Windows PNPM_HOME decision: no probe ran, so it is the only blocker.
 	const homeBlocked = pnpmHomeBlocker(inventory);
 	if (homeBlocked) return { tools: homeBlocked.record ? { pnpmHome: homeBlocked.record } : {}, blockers: [homeBlocked.blocker], actions, ready: false };
-	// An installed Gentle Shell whose owner (pnpm or npm) is known is updated with
+	// An installed Drakonc Shell whose owner (pnpm or npm) is known is updated with
 	// that package manager instead of blocking: older, unusable or main-channel
 	// versions on release, and any version on main. A current pnpm-owned Shell
 	// keeps the pinned-stack checks below; a current npm-owned one needs nothing.
@@ -205,10 +205,10 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	const npmCurrent = ownedShell && !update && shellSeen.owner === "npm";
 	function record(name, status, required) {
 		tools[name] = { status, ...(required ? { required } : {}) };
-		// Gentle AI and setup are only checked for the pinned pnpm Shell, so their
+		// Drakonc AI and setup are only checked for the pinned pnpm Shell, so their
 		// unknown status adds nothing once that Shell blocks or is not the pinned one.
 		const shellBlocks = tools.shell?.status === "incompatible" || tools.shell?.status === "unknown" || update !== null || npmCurrent;
-		const derived = status === "unknown" && (name === "gentleAi" || name === "setup") && shellBlocks;
+		const derived = status === "unknown" && (name === "drakoncAi" || name === "setup") && shellBlocks;
 		if (!derived && (status === "unknown" || status === "incompatible")) {
 			blockers.push({ code: `${status}-tool`, tool: name });
 		}
@@ -254,11 +254,11 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 			...(name === "node" && seen.foundInGlobalBin === true ? { foundInGlobalBin: true } : {}) };
 		replacedRuntimes.push(name);
 	}
-	record("gentleAi", classify(inventory.gentleAi, requirements.gentleAi, (o) => o.compatible, true), requirements.gentleAi);
-	const needsNative = tools.gentleAi.status === "unavailable";
-	// The main channel builds Gentle AI from source on every platform.
-	// gentle-pi's postinstall always builds Gentle AI from source on Windows, even
-	// next to an installed gentle-ai, so installing or updating the Shell needs Go,
+	record("drakoncAi", classify(inventory.drakoncAi, requirements.drakoncAi, (o) => o.compatible, true), requirements.drakoncAi);
+	const needsNative = tools.drakoncAi.status === "unavailable";
+	// The main channel builds Drakonc AI from source on every platform.
+	// drakonc-pi's postinstall always builds Drakonc AI from source on Windows, even
+	// next to an installed drakonc-ai, so installing or updating the Shell needs Go,
 	// as does provisioning a missing native binary; main always does.
 	const installsShell = tools.shell.status === "unavailable";
 	const windowsBuild = platform === "win32" && (update !== null || (!npmCurrent && (installsShell || needsNative)));
@@ -290,7 +290,7 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	// Windows only (S6 notice, never a blocker): reused tools whose folders another
 	// account can change, from the inventory's one `folders` walk. Only tools this
 	// plan uses as they are: the user's Node and its npm, a Go a build reuses, a Pi
-	// kept as it is, and an npm-owned Gentle Shell that is kept or updated by npm.
+	// kept as it is, and an npm-owned Drakonc Shell that is kept or updated by npm.
 	const folders = platform === "win32" && plainRecord(inventory.folders) ? inventory.folders : null;
 	if (folders) {
 		const userNode = tools.node.status === "reusable" && tools.node.found === undefined && inventory.node?.persistent === true;
@@ -307,12 +307,12 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	// Setup recovery: the setup probe proved the pinned stack this pnpm installed
 	// (an earlier run stopped in setup), so only the public setup is rerun.
 	const recovering = inventory.setup?.available === true && inventory.setup.recoverable === true &&
-		["pi", "shell", "gentleAi"].every((name) => tools[name].status === "reusable");
+		["pi", "shell", "drakoncAi"].every((name) => tools[name].status === "reusable");
 	let setupStatus = "unknown";
 	if (missingShell || needsNative || inventory.setup === false || recovering) setupStatus = "needs-setup";
 	else if (inventory.setup === true) setupStatus = "reusable";
 	record("setup", setupStatus);
-	// Runtimes are persisted only while installing Gentle Shell (the runner's
+	// Runtimes are persisted only while installing Drakonc Shell (the runner's
 	// persistence variants): with an existing Shell, updated or current, a replaced
 	// Node or pnpm keeps blocking as before. A setup recovery persists nothing and
 	// runs with the bootstrap's copy.
@@ -330,7 +330,7 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 		actions.splice(at, 0, { id: "acquire-go", kind: "acquire", target: "go", version: goAcquisition.version },
 			{ id: "verify-go", kind: "verify", target: "go" });
 	}
-	// Existing Gentle Shell: update it (installing a missing Pi or updating an older
+	// Existing Drakonc Shell: update it (installing a missing Pi or updating an older
 	// one first), then set it up. A current npm Shell only gets its Pi updated or
 	// the installer's Pi added.
 	if (update || npmCurrent) {
@@ -358,7 +358,7 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	// The pinned Go comes before anything is persisted or installed, so a failed
 	// download leaves this computer as it was.
 	const goAt = actions.length;
-	// A bootstrap Node lives in a temporary tools directory, and Gentle AI's Engram
+	// A bootstrap Node lives in a temporary tools directory, and Drakonc AI's Engram
 	// step needs a working npm: persist what is missing under PNPM_HOME through
 	// pnpm itself. A persistent Node is never replaced or shadowed. A recovery
 	// never persists: the earlier run did that before installing the stack.
@@ -382,16 +382,16 @@ export function planPreflight(inventory, { channel = "release" } = {}) {
 	if (installPi) action("install-pi", "install-global", "pi", requirements.pi);
 	if (updatePi) action("update-pi", "upgrade", "pi", "latest");
 	if (missingShell) action("install-shell", "install-global", "shell", requirements.shell);
-	// Global gentle-pi postinstall owns native provisioning when Shell is missing.
+	// Global drakonc-pi postinstall owns native provisioning when Shell is missing.
 	// Otherwise the later runner must reuse that existing installer, not duplicate it.
-	if (needsNative && !missingShell) action("provision-native", "existing-installer", "gentleAi", requirements.gentleAi);
+	if (needsNative && !missingShell) action("provision-native", "existing-installer", "drakoncAi", requirements.drakoncAi);
 	if (tools.setup.status !== "reusable") action("setup-shell", "normal-setup", "shell");
 	action("verify-readiness", "verify", "stack");
 	// Main overlays the verified release installation with both latest main commits;
-	// a stack that is already set up installs nothing (`gentle-shell upgrade --channel main` switches it).
+	// a stack that is already set up installs nothing (`drakonc-shell upgrade --channel main` switches it).
 	const mainBuild = main && actions.length > 1;
 	if (mainBuild) {
-		action("build-gentle-ai-main", "build-native-main", "gentleAi");
+		action("build-drakonc-ai-main", "build-native-main", "drakoncAi");
 		action("install-shell-main", "install-global", "shell");
 		action("record-channel", "configure", "channel");
 	}

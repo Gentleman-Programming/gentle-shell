@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { __testing, createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { NativeReviewIntegrationError, NativeReviewCliError, NATIVE_REVIEW_ERROR_CODE, NATIVE_REVIEW_OPERATION, NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { ReviewContinuationRegistry } from "../lib/review-continuation-registry.ts";
@@ -40,8 +40,8 @@ function runtime(
 	const tools = new Map<string, RegisteredTool>();
 	let toolCall: ToolCallHandler | undefined;
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
-	const dependencies = { nativeReviewCli, candidateViews, processEnv: { GENTLE_PI_AGENTS_CHILD: "0" } } as unknown as Parameters<typeof createGentleAiExtension>[0];
-	createGentleAiExtension(dependencies)({
+	const dependencies = { nativeReviewCli, candidateViews, processEnv: { DRAKONC_PI_AGENTS_CHILD: "0" } } as unknown as Parameters<typeof createDrakoncAiExtension>[0];
+	createDrakoncAiExtension(dependencies)({
 		on(name: string, handler: ToolCallHandler) {
 			if (name === "tool_call") toolCall = handler;
 			handlers.set(name, handler as unknown as (event: unknown, ctx: ExtensionContext) => unknown);
@@ -49,7 +49,7 @@ function runtime(
 		registerTool(definition: RegisteredTool & { name: string }) { tools.set(definition.name, definition); },
 		registerCommand() {},
 	} as unknown as ExtensionAPI);
-	const controller = tools.get("gentle_review");
+	const controller = tools.get("drakonc_review");
 	assert.ok(controller);
 	assert.ok(toolCall);
 	return { controller, toolCall, async lifecycle(name, event, ctx) { await handlers.get(name)?.(event, ctx); } };
@@ -60,10 +60,10 @@ function context(cwd: string): ExtensionContext {
 }
 
 test("repository preparation retains capture routes in the session registry used by later STATUS", async t => {
-	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-preparation-registry-")));
+	const fixture = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-preparation-registry-")));
 	const cwd = join(fixture, "project");
 	mkdirSync(cwd);
-	const homes = { HOME: join(fixture, "home"), USERPROFILE: join(fixture, "home"), GENTLE_PI_AGENT_HOME: join(fixture, "agents"), PI_CODING_AGENT_DIR: join(fixture, "agents"), GENTLE_PI_CONFIG_HOME: join(fixture, "config"), GENTLE_PI_GENTLE_AI_DEV_BINARY: "" };
+	const homes = { HOME: join(fixture, "home"), USERPROFILE: join(fixture, "home"), DRAKONC_PI_AGENT_HOME: join(fixture, "agents"), PI_CODING_AGENT_DIR: join(fixture, "agents"), DRAKONC_PI_CONFIG_HOME: join(fixture, "config"), DRAKONC_PI_DRAKONC_AI_DEV_BINARY: "" };
 	for (const path of new Set(Object.values(homes).filter(Boolean))) mkdirSync(path, { recursive: true });
 	const previous = Object.fromEntries(Object.keys(homes).map(key => [key, process.env[key]]));
 	Object.assign(process.env, homes);
@@ -109,7 +109,7 @@ test("repository preparation retains capture routes in the session registry used
 	} finally { await h.lifecycle("session_shutdown", { reason: "quit" }, session); }
 });
 
-function repository(t: test.TestContext, prefix = "gentle-pi-workspace-root-"): string {
+function repository(t: test.TestContext, prefix = "drakonc-pi-workspace-root-"): string {
 	const cwd = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
 	t.after(() => {
 		if (process.platform !== "win32") {
@@ -127,7 +127,7 @@ function repository(t: test.TestContext, prefix = "gentle-pi-workspace-root-"): 
 for (const operation of ["inspect", "start"] as const) {
 	for (const mode of ["on", "off", "unknown", "missing", "malformed", "throws"] as const) {
 		test(`non-Git ${operation} requires validated RDD on: ${mode}`, async () => {
-			const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-bootstrap-target-")));
+			const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-bootstrap-target-")));
 			writeFileSync(join(cwd, "candidate.txt"), "unchanged candidate\n");
 			const requests: string[] = [];
 			const native = fakeNative({
@@ -158,13 +158,13 @@ for (const operation of ["inspect", "start"] as const) {
 for (const operation of ["inspect", "start"] as const) {
 	for (const transition of ["shutdown", "replacement", "same-manager-rebind", "changed-id", "cancelled", "live"] as const) {
 		test(`explicit non-Git ${operation} pins lifecycle across held mode: ${transition}`, async t => {
-			const fixture = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-explicit-lifecycle-")));
+			const fixture = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-explicit-lifecycle-")));
 			const home = join(fixture, "home");
 			const project = join(fixture, "project");
 			mkdirSync(home); mkdirSync(project);
 			writeFileSync(join(project, "candidate.txt"), "unchanged candidate\n");
-			const previous = { HOME: process.env.HOME, GENTLE_PI_AGENT_HOME: process.env.GENTLE_PI_AGENT_HOME, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME };
-			Object.assign(process.env, { HOME: home, GENTLE_PI_AGENT_HOME: join(fixture, "agent"), GENTLE_PI_CONFIG_HOME: join(fixture, "config") });
+			const previous = { HOME: process.env.HOME, DRAKONC_PI_AGENT_HOME: process.env.DRAKONC_PI_AGENT_HOME, DRAKONC_PI_CONFIG_HOME: process.env.DRAKONC_PI_CONFIG_HOME };
+			Object.assign(process.env, { HOME: home, DRAKONC_PI_AGENT_HOME: join(fixture, "agent"), DRAKONC_PI_CONFIG_HOME: join(fixture, "config") });
 			t.after(() => {
 				for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 				rmSync(fixture, { recursive: true, force: true });
@@ -223,7 +223,7 @@ for (const operation of ["inspect", "start"] as const) {
 }
 
 test("invalid bootstrap target selectors reject before native STATUS", async () => {
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-bootstrap-invalid-")));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-bootstrap-invalid-")));
 	let statusCalls = 0;
 	const native = fakeNative({
 		reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } }),
@@ -345,7 +345,7 @@ test("request context expands home paths and forwards the canonical external fil
 
 test("repository discovery ignores ambient Git root overrides", async (t) => {
 	const sessionRoot = repository(t);
-	const targetRoot = repository(t, "gentle-pi-isolated-target-");
+	const targetRoot = repository(t, "drakonc-pi-isolated-target-");
 	const previous = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE };
 	t.after(() => {
 		for (const [key, value] of Object.entries(previous)) {
@@ -361,7 +361,7 @@ test("repository discovery ignores ambient Git root overrides", async (t) => {
 });
 
 test("non-Git bound and maintenance routes cannot use preparation entry", async () => {
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-bootstrap-bound-")));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-bootstrap-bound-")));
 	let statusCalls = 0;
 	const native = fakeNative({ targetStatus: async () => { statusCalls += 1; throw new Error("must not reach STATUS"); } });
 	for (const parameters of [
@@ -374,7 +374,7 @@ test("non-Git bound and maintenance routes cannot use preparation entry", async 
 });
 
 function addWorktree(t: test.TestContext, cwd: string, branch: string): string {
-	const parent = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-workspace-worktrees-")));
+	const parent = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-workspace-worktrees-")));
 	t.after(() => {
 		try { execFileSync("git", ["worktree", "remove", "--force", join(parent, branch)], { cwd }); } catch {}
 		rmSync(parent, { recursive: true, force: true });
@@ -543,7 +543,7 @@ test("INSPECT and STATUS operate on the explicit workspace root while the sessio
 	assert.deepEqual(observedCwds, [realpathSync(worktree), realpathSync(worktree), sessionCwd]);
 });
 
-// gentle-pi#599: inspect without an explicit workspaceRoot against a parent
+// drakonc-pi#599: inspect without an explicit workspaceRoot against a parent
 // repository that wraps an untracked nested Git repository fails at the
 // native preflight with a decoded, actionable `invalid_request` envelope. The
 // facade used to discard that envelope's cause, code, retry_safe, and
@@ -586,7 +586,7 @@ test("inspect without workspaceRoot preserves the native invalid_request cause f
 	assert.equal(details.next_action, "correct_request");
 });
 
-// gentle-shell#213: the host-side 30 s budget on a read-only STATUS/inspect
+// drakonc-shell#213: the host-side 30 s budget on a read-only STATUS/inspect
 // read used to dead-end in the corrupt-authority outcome with no runnable
 // step. A read-only inventory timeout names the read-only command to rerun.
 function hostStatusTimeout(): NativeReviewCliError {
@@ -608,7 +608,7 @@ for (const operation of ["status", "inspect"] as const) test(`a host timeout on 
 	assert.equal(details.mutation_performed, false);
 	assert.equal(details.mutation_outcome, "none");
 	assert.equal(details.next_action, "rerun-native-status");
-	assert.equal(details.remediation_command, "gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition");
+	assert.equal(details.remediation_command, "drakonc-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition");
 	assert.equal((details.diagnostics as Record<string, unknown>)?.timed_out, true);
 	const blocker = details.blocker as Record<string, unknown>;
 	assert.equal(blocker.category, "provider-unavailable");
@@ -739,8 +739,8 @@ test("an omitted workspaceRoot canonicalizes a nested same-worktree session befo
 });
 
 test("an explicit nested foreign workspace root canonically owns inspect, status, and START", async (t) => {
-	const sessionCwd = repository(t, "gentle-pi-session-a-");
-	const target = repository(t, "gentle-pi-target-b-");
+	const sessionCwd = repository(t, "drakonc-pi-session-a-");
+	const target = repository(t, "drakonc-pi-target-b-");
 	const nested = join(target, "nested");
 	mkdirSync(nested);
 	writeFileSync(join(target, "app.ts"), "export const value = 2; // target B\n");
@@ -816,10 +816,10 @@ test("STATUS relays exclude selection and rejects malformed input before native 
 });
 
 test("an explicit foreign workspace root works when the Pi session cwd is not a Git repository", async (t) => {
-	const target = repository(t, "gentle-pi-target-b-non-git-session-");
+	const target = repository(t, "drakonc-pi-target-b-non-git-session-");
 	const nested = join(target, "nested");
 	mkdirSync(nested);
-	const nonGit = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-non-git-session-")));
+	const nonGit = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-non-git-session-")));
 	t.after(() => rmSync(nonGit, { recursive: true, force: true }));
 	const observed: string[] = [];
 	const { controller } = runtime(fakeNative({
@@ -834,8 +834,8 @@ test("an explicit foreign workspace root works when the Pi session cwd is not a 
 });
 
 test("omitted workspaceRoot fails closed for the same lineage bound to two target repositories", async (t) => {
-	const rootA = repository(t, "gentle-pi-ambiguous-a-");
-	const rootB = repository(t, "gentle-pi-ambiguous-b-");
+	const rootA = repository(t, "drakonc-pi-ambiguous-a-");
+	const rootB = repository(t, "drakonc-pi-ambiguous-b-");
 	const candidateViews = new CandidateViewRegistry();
 	const viewA = candidateViews.create({ contributorRoot: rootA });
 	const viewB = candidateViews.create({ contributorRoot: rootB });
@@ -863,7 +863,7 @@ test("omitted workspaceRoot fails closed for the same lineage bound to two targe
 test("workspaceRoot fails closed before any native call for invalid target paths", async (t) => {
 	const sessionCwd = repository(t);
 	const worktree = addWorktree(t, sessionCwd, "feat-guard");
-	const nonGit = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-non-git-")));
+	const nonGit = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-non-git-")));
 	t.after(() => rmSync(nonGit, { recursive: true, force: true }));
 	const filePath = join(worktree, "app.ts");
 	let nativeCalls = 0;

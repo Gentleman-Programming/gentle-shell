@@ -102,7 +102,7 @@ test("real Windows cleanup preserves the worktree after Git failure and parent r
 	}, () => {}), /controlled Git failure/);
 	assert.ok(existsSync(f.view.root)); assert.ok(existsSync(f.marker));
 	const parent = dirname(f.view.root); const saved = `${parent}.saved`;
-	const expectedParent = join(f.commonDir, "gentle-ai", "candidate-views");
+	const expectedParent = join(f.commonDir, "drakonc-ai", "candidate-views");
 	let replacementLockToken: string | undefined;
 	let replacementRemovals = 0;
 	try {
@@ -111,7 +111,7 @@ test("real Windows cleanup preserves the worktree after Git failure and parent r
 			return f.git(...args);
 		}, () => {
 			assert.equal(realpathSync(parent), expectedParent);
-			assert.equal(dirname(saved), join(f.commonDir, "gentle-ai"));
+			assert.equal(dirname(saved), join(f.commonDir, "drakonc-ai"));
 			assert.equal(existsSync(saved), false);
 			replacementLockToken = readFileSync(`${f.view.root}.reaper-lock`, "utf8");
 			renameSync(parent, saved); mkdirSync(parent);

@@ -4,12 +4,12 @@ Prepare the minimal single/group capture fix without treating volatile route met
 
 ## Scope and boundaries
 
-- Approved issue: Gentleman-Programming/gentle-shell#1316; related cluster: gentle-ai#4498.
+- Approved issue: Drakoncman-Programming/drakonc-shell#1316; related cluster: drakonc-ai#4498.
 - Branch: `fix/1316-native-status-capture`, dedicated isolated worktree.
 - Original base: `664bfdd295e3bd3b2f291344e77bda94f58d5931`.
 - Current update target: `4b6b148b7dbd741b3097c00d5888f0209a567f94` (one unrelated upstream commit, including runtime-harness changes).
 - PR #1542 remains draft diagnostics only; this fix does not claim to identify every reported miss branch.
-- Allowed implementation: `extensions/gentle-ai.ts` and the native/host-relay routing tests. No telemetry, persistence, TTL, retries, flags or new native states.
+- Allowed implementation: `extensions/drakonc-ai.ts` and the native/host-relay routing tests. No telemetry, persistence, TTL, retries, flags or new native states.
 
 Fresh Pi-bound STATUS must validate exact current-target lineage/target/binding before relay or capture. Recover committed selectors only from matching trusted routes/candidate projections. Preserve group order/completeness, stale/foreign/terminal rejection, forecast acknowledgement, no-replay rules, registration collisions and downstream selector continuity. Align binding publication and registration eligibility.
 
@@ -47,7 +47,7 @@ Fresh Pi-bound STATUS must validate exact current-target lineage/target/binding 
 | Standalone original harness | Candidate and clean base both fail empty persona assertion; later full-suite phases remain unverified |
 | Genuine Pi wiring | Runtime3 loaded registered tools through SDK loader/AgentSession and passed recovery/negative fixtures; fake STATUS, no native-provider E2E claim |
 
-Operator logs retained outside the repository use prefixes `gentle-1316-independent-verify`, `gentle-1316-clean-base-` and `gentle-1316-final-recheck-`. Runtime3 log is evidence only: the temporary script was subsequently extended into failed runtime4 and must not be rerun against shared Git. Future dispatch-hydration experiments require an independent temporary Git common-directory.
+Operator logs retained outside the repository use prefixes `drakonc-1316-independent-verify`, `drakonc-1316-clean-base-` and `drakonc-1316-final-recheck-`. Runtime3 log is evidence only: the temporary script was subsequently extended into failed runtime4 and must not be rerun against shared Git. Future dispatch-hydration experiments require an independent temporary Git common-directory.
 
 ## Next step and rollback
 

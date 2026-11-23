@@ -259,7 +259,7 @@ export class NotificationPlayer {
 		const useNative = format === "wav" && discovered.native.length > 0;
 		const executable = !useNative && discovered.system?.formats.includes(format) ? discovered.system.executable : undefined;
 		if (!useNative && !executable) throw new Error("Notification audio: no backend supports the format");
-		const directory = await this.io.mkdtemp(join(this.options.tempRoot ?? tmpdir(), "gentle-notification-"));
+		const directory = await this.io.mkdtemp(join(this.options.tempRoot ?? tmpdir(), "drakonc-notification-"));
 		const snapshot = join(directory, `sound.${format}`);
 		// Early returns below leave this inner function only; the cleanup verdict is decided after it.
 		const playSnapshot = async (): Promise<void> => {

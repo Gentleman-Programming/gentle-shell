@@ -12,7 +12,7 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /** UI chains settle across a load-dependent number of turns: wait on the
  * observable state instead of assuming a fixed tick count landed the async
- * step (gentle-shell#2498). The deadline keeps a broken chain failing fast. */
+ * step (drakonc-shell#2498). The deadline keeps a broken chain failing fast. */
 const settleUntil = async (predicate: () => boolean, what: string): Promise<void> => {
 	const deadline = Date.now() + 5000;
 	while (!predicate() && Date.now() < deadline) await tick();

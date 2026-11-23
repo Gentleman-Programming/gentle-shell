@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Sequential test-suite runner for `pnpm test` (gentle-pi#1285).
+// Sequential test-suite runner for `pnpm test` (drakonc-pi#1285).
 //
 // `pnpm test` used to chain its three stages with `&&`, so any stage-1
 // failure — including a known-flaky unit test — silently suppressed the
@@ -19,6 +19,9 @@ export const DEFAULT_STAGES = Object.freeze([
 	{ name: "unit-tests", command: "node --experimental-strip-types --test tests/*.test.ts" },
 	{ name: "provider-contract", command: "pnpm run check:provider-contract" },
 	{ name: "runtime-harness", command: "pnpm run test:harness" },
+	// Fuentes de instalación (D4 de publicar-paquetes-drakonc): fijación de cada
+	// fuente y nombres `drakonc-*` publicados.
+	{ name: "install-sources", command: "node scripts/check-install-sources.mjs" },
 ]);
 
 export async function runStage(stage) {
@@ -27,17 +30,17 @@ export async function runStage(stage) {
 	try {
 		// Unit fixtures must not inherit the terminal's Git overrides, child-session
 		// identity, launcher marker, or guardrails. Later stages retain their env.
-		configHome = stage.name === "unit-tests" ? mkdtempSync(join(tmpdir(), "gentle-pi-unit-config-")) : undefined;
+		configHome = stage.name === "unit-tests" ? mkdtempSync(join(tmpdir(), "drakonc-pi-unit-config-")) : undefined;
 		const env = configHome ? Object.fromEntries(Object.entries(process.env).filter(([key]) => {
 			const normalizedKey = key.toUpperCase();
-			return !normalizedKey.startsWith("GIT_") && !normalizedKey.startsWith("GENTLE_PI_AGENTS_") &&
-				normalizedKey !== "GENTLE_PI_CONFIG_HOME" && normalizedKey !== "GENTLE_SHELL_CONFIG_HOME";
+			return !normalizedKey.startsWith("GIT_") && !normalizedKey.startsWith("DRAKONC_PI_AGENTS_") &&
+				normalizedKey !== "DRAKONC_PI_CONFIG_HOME" && normalizedKey !== "DRAKONC_SHELL_CONFIG_HOME";
 		})) : process.env;
-		if (configHome) env.GENTLE_PI_CONFIG_HOME = configHome;
+		if (configHome) env.DRAKONC_PI_CONFIG_HOME = configHome;
 		// Unix sockets have short path limits; an inherited TMPDIR can already be
 		// too long. Use the short system temp root on POSIX and a private directory
 		// on every platform, removed even when stage setup or execution fails.
-		unitTmp = configHome ? mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "gentle-pi-unit-tmp-")) : undefined;
+		unitTmp = configHome ? mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "drakonc-pi-unit-tmp-")) : undefined;
 		if (unitTmp) {
 			env.TMPDIR = unitTmp;
 			// Node's Windows tmpdir() uses TEMP/TMP, not TMPDIR.
@@ -51,7 +54,7 @@ export async function runStage(stage) {
 		// by path: a host-level global ignore (e.g. ".agents/" in ~/.gitconfig or the
 		// XDG ignore file) made `git add -A` inside fixtures drop an untracked
 		// symlink target, so the candidate view materialized a dangling link and the
-		// suite saw an ENOENT (gentle-shell#2552). Pin every remaining config source
+		// suite saw an ENOENT (drakonc-shell#2552). Pin every remaining config source
 		// to an empty file for the stage; fixtures that need identity pass -c flags.
 		if (configHome) {
 			const emptyGitConfig = join(configHome, "empty.gitconfig");

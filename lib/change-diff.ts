@@ -1,4 +1,4 @@
-// One changed file's unified diff, shared by the `/gentle:changes` panel and
+// One changed file's unified diff, shared by the `/drakonc:changes` panel and
 // the Desktop RPC `get_change_diff` method so both show the same text: a
 // tracked file is `git diff HEAD -- path`, an untracked one is a no-index diff
 // against an empty file. The caller's GitRunner owns the root and the output

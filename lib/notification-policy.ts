@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, posix, win32 } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 import type { TaskStatus } from "./agents-protocol.ts";
 
-export const NOTIFICATION_SCHEMA = "gentle-shell.notifications/v1";
+export const NOTIFICATION_SCHEMA = "drakonc-shell.notifications/v1";
 /** Contract vocabulary, NOT proof of runtime support. Adapters must verify producers before UI exposure. */
 const SUBAGENT_STATUSES = ["queued", "running", "waiting", "completed", "failed", "cancelled", "timed_out"] as const satisfies readonly TaskStatus[];
 export type NotificationEvent = "session.started" | "session.shutdown" | "context.high"
@@ -54,7 +54,7 @@ export interface NotificationIO {
 	unlink(path: string): void;
 }
 export interface NotificationOptions {
-	gentlePiConfigHome?: string;
+	drakoncPiConfigHome?: string;
 	pathFlavor?: NotificationPathFlavor;
 	io?: NotificationIO;
 }
@@ -119,7 +119,7 @@ export function restoreNotificationPreset(settings: NotificationSettings): Notif
 	return { ...structuredClone(DEFAULT_NOTIFICATION_SETTINGS), enabled: settings.enabled };
 }
 export function resolveNotificationSettings(options: NotificationOptions = {}): NotificationResolution {
-	const globalFile = join(options.gentlePiConfigHome || gentlePiConfigHome(), "notifications.json");
+	const globalFile = join(options.drakoncPiConfigHome || drakoncPiConfigHome(), "notifications.json");
 	try {
 		const settings = parseNotificationSettingsFile((options.io ?? DEFAULT_IO).readFile(globalFile), options.pathFlavor);
 		return { settings: settings ?? structuredClone(DEFAULT_NOTIFICATION_SETTINGS), source: "global_file", malformed: settings === undefined, readError: false, globalFile };
@@ -132,7 +132,7 @@ export function resolveNotificationSettings(options: NotificationOptions = {}): 
 export function writeNotificationSettings(settings: NotificationSettings, options: NotificationOptions = {}): string {
 	if (!isNotificationSettings(settings, options.pathFlavor)) throw new TypeError("Invalid notification settings");
 	const io = options.io ?? DEFAULT_IO;
-	const home = options.gentlePiConfigHome || gentlePiConfigHome();
+	const home = options.drakoncPiConfigHome || drakoncPiConfigHome();
 	const path = join(home, "notifications.json");
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	io.mkdir(home);

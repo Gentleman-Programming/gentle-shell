@@ -6,10 +6,10 @@ import { changesModel, type ChangedFile, type WorktreeChanges } from "./shell-ch
 import { SESSION_WORKTREE_ENTRY } from "./session-worktree-registry.ts";
 
 // Captured write/edit evidence of a session and its subagents. It feeds
-// session statistics and tells /gentle:changes which roots the session
+// session statistics and tells /drakonc:changes which roots the session
 // touched; the files Changes lists always come from Git.
-export const SESSION_CHANGE_ENTRY = "gentle-pi.session-change/v1";
-export const SESSION_CHANGE_RELAY = "gentle-pi:child-session-change";
+export const SESSION_CHANGE_ENTRY = "drakonc-pi.session-change/v1";
+export const SESSION_CHANGE_RELAY = "drakonc-pi:child-session-change";
 export const MAX_CHANGE_BYTES = 64 * 1024;
 const MAX_RECORDS = 256;
 const MAX_SESSION_BYTES = 4 * 1024 * 1024;

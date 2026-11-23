@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
-import { gentlePiConfigHome } from "../lib/agent-home.ts";
+import { drakoncPiConfigHome } from "../lib/agent-home.ts";
 import type { VoiceModelManifest, VoiceNpmPackage, VoiceRuntimeManifest } from "../lib/voice-artifacts.ts";
 import {
 	installVoiceModel,
@@ -108,9 +108,9 @@ async function rejects(promise: Promise<unknown>, code: string): Promise<VoiceIn
 	assert.fail(`expected ${code}`);
 }
 
-test("the voice home lives under the Gentle AI config home and reports components as missing", async (t) => {
-	const env = { GENTLE_PI_CONFIG_HOME: join(repoRoot, "tmp", "voice-config") };
-	assert.equal(resolveVoiceHome(env), join(gentlePiConfigHome(env), "voice"));
+test("the voice home lives under the Drakonc AI config home and reports components as missing", async (t) => {
+	const env = { DRAKONC_PI_CONFIG_HOME: join(repoRoot, "tmp", "voice-config") };
+	assert.equal(resolveVoiceHome(env), join(drakoncPiConfigHome(env), "voice"));
 	const voiceHome = scratch(t);
 	const status = await readVoiceComponentStatus({ voiceHome, kind: "model", manifest: modelManifest() });
 	assert.equal(status.state, "missing");

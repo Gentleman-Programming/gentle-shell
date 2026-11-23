@@ -10,8 +10,8 @@
 // session_shutdown GC/compaction.
 //
 // Capture is OPT-IN: nothing is recorded unless an explicit
-// GENTLE_PI_HISTORY_CAPTURE=1|true|on, or (with no explicit env value) the
-// persisted Gentle → Customize preference, turns it on. The selector honors
+// DRAKONC_PI_HISTORY_CAPTURE=1|true|on, or (with no explicit env value) the
+// persisted Drakonc → Customize preference, turns it on. The selector honors
 // the same gate: with capture off, opening the selector is a no-op — no
 // registry entry, no writer init, no store reads, no deletes. Turning
 // capture off only stops NEW captures; files already written stay on disk
@@ -37,7 +37,7 @@ import {
   type TuiMouseEvent,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { bundledGentlePiAgentHome, gentlePiConfigHome } from "../../lib/agent-home.ts";
+import { bundledDrakoncPiAgentHome, drakoncPiConfigHome } from "../../lib/agent-home.ts";
 import {
   historyCaptureEnabled,
   historyCaptureEnvOverride,
@@ -134,8 +134,8 @@ const SESSIONS_ROOT = join(AGENT_DIR, "sessions");
 
 export interface HistoryDeps {
   env?: NodeJS.ProcessEnv;
-  /** Gentle config home holding the Customize preference (default: from env). */
-  gentlePiConfigHome?: string;
+  /** Drakonc config home holding the Customize preference (default: from env). */
+  drakoncPiConfigHome?: string;
   root?: string;
   cwd?: string;
   instanceId?: string;
@@ -145,18 +145,18 @@ export interface HistoryDeps {
 }
 
 /**
- * Strict opt-in: an explicit GENTLE_PI_HISTORY_CAPTURE value (1|true|on or
+ * Strict opt-in: an explicit DRAKONC_PI_HISTORY_CAPTURE value (1|true|on or
  * 0|false|off, case-insensitive) wins; otherwise the persisted Customize
- * preference under the Gentle config home decides; a missing, malformed or
+ * preference under the Drakonc config home decides; a missing, malformed or
  * unreadable preference is off. Read per call so a Customize toggle applies
  * without restart. Turning capture off stops new captures; files already on
  * disk are left untouched (deletes run from the selector while capture is on).
  */
 export function captureEnabled(
   env: NodeJS.ProcessEnv = process.env,
-  configHome: string = gentlePiConfigHome(env),
+  configHome: string = drakoncPiConfigHome(env),
 ): boolean {
-  return historyCaptureEnabled({ env, gentlePiConfigHome: configHome });
+  return historyCaptureEnabled({ env, drakoncPiConfigHome: configHome });
 }
 
 /**
@@ -169,13 +169,13 @@ function captureDisabledMessage(
   configHome: string,
 ): string {
   if (historyCaptureEnvOverride(env) === "off") {
-    return "Prompt history is disabled by GENTLE_PI_HISTORY_CAPTURE, which overrides the Gentle → Customize → History preference.";
+    return "Prompt history is disabled by DRAKONC_PI_HISTORY_CAPTURE, which overrides the Drakonc → Customize → History preference.";
   }
-  const preference = resolveHistoryCapturePolicy({ gentlePiConfigHome: configHome });
+  const preference = resolveHistoryCapturePolicy({ drakoncPiConfigHome: configHome });
   if (preference.malformed) {
-    return `Prompt history is disabled because the Gentle → Customize → History preference is invalid or unreadable: ${preference.globalFile}. Fix or remove that file, or set GENTLE_PI_HISTORY_CAPTURE=1.`;
+    return `Prompt history is disabled because the Drakonc → Customize → History preference is invalid or unreadable: ${preference.globalFile}. Fix or remove that file, or set DRAKONC_PI_HISTORY_CAPTURE=1.`;
   }
-  return "Prompt history is disabled. Turn on \"Prompt history capture\" in Gentle → Customize → History, or set GENTLE_PI_HISTORY_CAPTURE=1.";
+  return "Prompt history is disabled. Turn on \"Prompt history capture\" in Drakonc → Customize → History, or set DRAKONC_PI_HISTORY_CAPTURE=1.";
 }
 
 // ---------------------------------------------------------------------------
@@ -1203,7 +1203,7 @@ async function runPromptHistorySelection(
         // (compositeOverlays filters visible entries first), and re-reads
         // margin per layout resolution — the getter below therefore stays
         // live: resizing across the sidebar breakpoint re-seats the picker
-        // while it stays open. While the gentle-shell fullscreen sidebar
+        // while it stays open. While the drakonc-shell fullscreen sidebar
         // paints, the margin confines width "100%" (and the bottom-center
         // anchor) to the editor column, less 1 column of padding; 0 keeps
         // the native full-window behavior.
@@ -1315,14 +1315,14 @@ export default function promptHistoryExtension(
   deps: HistoryDeps = {},
 ): void {
   const env = deps.env ?? process.env;
-  const configHome = deps.gentlePiConfigHome ?? gentlePiConfigHome(env);
+  const configHome = deps.drakoncPiConfigHome ?? drakoncPiConfigHome(env);
   // Per-prompt gate: re-read so a Customize toggle applies live. A delegated
   // child never captures: its prompt is a delegation brief, not user history,
-  // and the parent owns the store's init and GC (gentle-shell#1690).
-  const capturing = () => env.GENTLE_PI_AGENTS_CHILD !== "1" && captureEnabled(env, configHome);
-  // S9: a bundled Gentle Shell keeps the whole store in the agent home Pi runs
+  // and the parent owns the store's init and GC (drakonc-shell#1690).
+  const capturing = () => env.DRAKONC_PI_AGENTS_CHILD !== "1" && captureEnabled(env, configHome);
+  // S9: a bundled Drakonc Shell keeps the whole store in the agent home Pi runs
   // with; everywhere else it stays under ~/.pi/agent, where existing ones live.
-  const bundledAgentDir = bundledGentlePiAgentHome(env);
+  const bundledAgentDir = bundledDrakoncPiAgentHome(env);
   const root = deps.root ?? (bundledAgentDir === undefined ? PI_HISTORY_ROOT : join(bundledAgentDir, "history"));
   const cwd = deps.cwd ?? process.cwd();
   const instanceId = deps.instanceId ?? randomUUID();

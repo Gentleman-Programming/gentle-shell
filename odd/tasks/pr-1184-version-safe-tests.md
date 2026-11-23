@@ -4,17 +4,17 @@
 Update and publish the existing PR's test fixtures so its Windows retry coverage remains valid after integration with current upstream main.
 
 ## Problem and rationale
-PR head `b9651c55c8126587578d10c606cb2f3a0d1278be` adds tests coupled to Gentle AI 3.1.0, while upstream main pins 4.0.0. Conflict-free Git integration does not reconcile failure-hook destinations, manifests, module paths, or cleanup-prefix assertions. CI run 35337767970 ended `action_required` with zero jobs; CodeRabbit success is not functional verification.
+PR head `b9651c55c8126587578d10c606cb2f3a0d1278be` adds tests coupled to Drakonc AI 3.1.0, while upstream main pins 4.0.0. Conflict-free Git integration does not reconcile failure-hook destinations, manifests, module paths, or cleanup-prefix assertions. CI run 35337767970 ended `action_required` with zero jobs; CodeRabbit success is not functional verification.
 
 ## Authorization and constraints
 - User selected prepare, test, and publish to existing PR #1184.
 - No PR merge, force push, external workflow approval, or unrelated source changes.
 - Use the isolated same-clone Orca worktree; preserve the dirty parent checkout.
-- Existing PR target: `mvanhorn/gentle-shell`, branch `fix/946-windows-bundle-publication-retry`, original head above. Recheck before publishing and require an additive fast-forward.
+- Existing PR target: `mvanhorn/drakonc-shell`, branch `fix/946-windows-bundle-publication-retry`, original head above. Recheck before publishing and require an additive fast-forward.
 - One writer at a time. Native review only under the user-owned switch; functional checks remain required.
 
 ## Scope
-- Authoritative installer constants and their use by the added retry tests in `tests/gentle-ai-installer.test.ts`.
+- Authoritative installer constants and their use by the added retry tests in `tests/drakonc-ai-installer.test.ts`.
 - Integrate upstream main into this PR branch additively, never reverting its current installer pin or unrelated changes.
 - No change to retry behavior except conflict reconciliation preserving both approved histories. Escalate unexpected conflicts.
 - This task document records progress and verification.
@@ -36,7 +36,7 @@ PR head `b9651c55c8126587578d10c606cb2f3a0d1278be` adds tests coupled to Gentle 
 - Publish only after required checks and authority outcomes are known; fail closed on uncertain push results.
 
 ## Verification plan
-- Focused: `node --experimental-strip-types --test tests/gentle-ai-installer.test.ts` (bounded timeout).
+- Focused: `node --experimental-strip-types --test tests/drakonc-ai-installer.test.ts` (bounded timeout).
 - Structural: `git diff --check`; generated runtime consistency when applicable.
 - Broader checks: inspect the integrated repository runner and avoid installation/native builds or unbounded process spawning; report unavailable prerequisites rather than substitute unrelated environments.
 - Test-first applies: integration exposes the stale fixture bug; observe failure before edits, then fix and rerun.

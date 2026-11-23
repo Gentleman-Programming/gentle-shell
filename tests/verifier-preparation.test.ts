@@ -10,7 +10,7 @@ import test from "node:test";
 const helper = new URL("../scripts/prepare-verifier.mjs", import.meta.url);
 const env = { ...process.env, GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 function fixture(t: any) {
-	const root = mkdtempSync(join(tmpdir(), "gentle-verifier-prep-")), source = join(root, "source");
+	const root = mkdtempSync(join(tmpdir(), "drakonc-verifier-prep-")), source = join(root, "source");
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	mkdirSync(source);
 	const git = (...args: string[]) => execFileSync("git", args, { cwd: source, env, encoding: "utf8" }).trim();
@@ -66,12 +66,12 @@ test("#3009: actual preparer preserves Git publication, baseline, index and requ
 
 test("#3009: the documented Bash call creates its own scratch before preparation", { skip: process.platform === "win32" }, t => {
 	const f = fixture(t), before = f.snapshot();
-	const prompt = readFileSync(new URL("../assets/agents/gentle-ai-verify.md", import.meta.url), "utf8");
-	const example = prompt.match(/`(s=\$\(mktemp -d\) && node "\$GENTLE_PI_VERIFIER_PREPARER"[^`]+)`/)?.[1];
+	const prompt = readFileSync(new URL("../assets/agents/drakonc-ai-verify.md", import.meta.url), "utf8");
+	const example = prompt.match(/`(s=\$\(mktemp -d\) && node "\$DRAKONC_PI_VERIFIER_PREPARER"[^`]+)`/)?.[1];
 	assert.ok(example);
 	const plan = JSON.stringify({ include: ["selected [x].cjs", "node_modules/local-dep"], checks: ["node probe.cjs"], baseline: f.baseline });
 	const command = example.replace(/'[^']*'$/, `'${plan}'`);
-	const childEnv: NodeJS.ProcessEnv = { ...env, GENTLE_PI_VERIFIER_PREPARER: fileURLToPath(helper), TMPDIR: f.root };
+	const childEnv: NodeJS.ProcessEnv = { ...env, DRAKONC_PI_VERIFIER_PREPARER: fileURLToPath(helper), TMPDIR: f.root };
 	delete childEnv.s;
 	const result = spawnSync("bash", ["-c", command], { cwd: f.source, env: childEnv, encoding: "utf8" });
 	assert.equal(result.status, 0, result.stderr);
@@ -228,7 +228,7 @@ test("#3009: scratch permits linked ancestors but rejects the final directory li
 	assert.deepEqual(f.snapshot(), before);
 });
 
-// gentle-shell#3401: the sensitive-path policy governs what the preparer stages.
+// drakonc-shell#3401: the sensitive-path policy governs what the preparer stages.
 const addTracked = (f: ReturnType<typeof fixture>, files: Record<string, string>) => {
 	for (const [path, text] of Object.entries(files)) {
 		mkdirSync(join(f.source, path, ".."), { recursive: true });
@@ -261,7 +261,7 @@ test("#3401 S3: tracked sensitive files prepare ready, are skipped, reported, an
 	assert.deepEqual(f.snapshot(), before);
 });
 
-test("#3401 S3: a repository tracking a fixture key file prepares ready (gentle-pi's own case)", t => {
+test("#3401 S3: a repository tracking a fixture key file prepares ready (drakonc-pi's own case)", t => {
 	const f = fixture(t);
 	addTracked(f, { "tests/fixtures/x/proxy.key": "dummy\n" });
 	f.git("commit", "-qm", "track fixture key");

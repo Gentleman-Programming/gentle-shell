@@ -5,7 +5,7 @@ import {
 } from "./keymaps.ts";
 import type { CustomizeInline, CustomizeRow } from "./visual-customize-view.ts";
 
-// The Keymaps category of /gentle:customize: one row per Gentle action and
+// The Keymaps category of /drakonc:customize: one row per Drakonc action and
 // per palette command without a built-in action. Enter captures the next key
 // press, ⌫ disables the key, r restores the default. Every change goes to
 // keymaps.json (lib/keymaps.ts) and applies after /reload, which the last

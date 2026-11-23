@@ -1,18 +1,18 @@
-// Gentle Desktop session-profile binding slice: which profile this session
+// Drakonc Desktop session-profile binding slice: which profile this session
 // routes its subagents with, a change event, and a clear.
 //
 // The read is the single rule launch, status, and the Desktop feed already use
 // (`resolveSessionProfile`), so the answer always agrees with what a launch
 // would do, including a binding chosen in the terminal or restored on resume.
 // The event follows every write to the binding store
-// (`observeSessionProfileBindings`). The clear is the `/gentle:profiles clear`
+// (`observeSessionProfileBindings`). The clear is the `/drakonc:profiles clear`
 // owner action, reached through the profiles owner service.
 //
 // Publishing a profile to the repository is not here: that is the repository
 // pin, written with `set_config` store `pins` (`{ source: "repo", profile }`).
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 import type { DesktopRpcOutcome } from "./desktop-rpc.ts";
 import { discoverDesktopProfilesService } from "./desktop-rpc-profiles.ts";
 import { observeSessionProfileBindings } from "./session-profile-binding.ts";
@@ -30,7 +30,7 @@ export const PROFILE_BINDING_BUSY = { code: "profile_apply_busy", message: "A pr
 /**
  * `explicit`: chosen for this session; `inherited`: the profile the session
  * started with (frozen at its start); `follow`: follows the shared layers live
- * (`GENTLE_PI_PROFILE_FOLLOW`); `live`: a child session reading the layers.
+ * (`DRAKONC_PI_PROFILE_FOLLOW`); `live`: a child session reading the layers.
  */
 export type DesktopProfileBindingKind = "explicit" | "inherited" | "follow" | "live";
 export type DesktopProfileBindingOrigin = "session" | "local" | "repo" | "global";
@@ -65,7 +65,7 @@ export function readDesktopProfileBinding(cwd: string, sessionId: string, option
 	const env = options.env ?? process.env;
 	let identity: WorktreeIdentity | undefined;
 	try { identity = (options.resolveWorktree ?? resolveSessionWorktree)(cwd, cwd); } catch { identity = undefined; }
-	const configHome = options.configHome ?? gentlePiConfigHome(env);
+	const configHome = options.configHome ?? drakoncPiConfigHome(env);
 	return projectProfileBinding(resolveSessionProfile({ sessionId, cwd, configHome, resolveWorktree: () => identity, env }));
 }
 

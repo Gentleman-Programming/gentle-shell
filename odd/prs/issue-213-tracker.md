@@ -47,7 +47,7 @@ main
 ```
 
 ## Published children
-1. https://github.com/Gentleman-Programming/gentle-shell/pull/1951 — diagnostics -> tracker.
-2. https://github.com/Gentleman-Programming/gentle-shell/pull/1953 — fixtures -> diagnostics.
+1. https://github.com/Drakoncman-Programming/drakonc-shell/pull/1951 — diagnostics -> tracker.
+2. https://github.com/Drakoncman-Programming/drakonc-shell/pull/1953 — fixtures -> diagnostics.
 
 Review/integrate children in order. The tracker remains draft/no-merge.

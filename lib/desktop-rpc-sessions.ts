@@ -1,4 +1,4 @@
-// Gentle Desktop sessions slice: the pure contract shared by the Desktop
+// Drakonc Desktop sessions slice: the pure contract shared by the Desktop
 // bridge (`lib/desktop-sessions-service.ts`) and its tests.
 //
 // Nothing here reads a session file or switches a session. It only names the
@@ -237,7 +237,7 @@ export function desktopSessionsErrorLine(requestId: string | null, error: { code
 	return JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, kind: "response", requestId, ok: false, error: { code: error.code, message: error.message } });
 }
 
-/** The correlation id of a raw `/gentle:desktop` request, or `null` when it has none. */
+/** The correlation id of a raw `/drakonc:desktop` request, or `null` when it has none. */
 export function desktopRequestId(raw: string): string | null {
 	try {
 		const value: unknown = JSON.parse(raw);

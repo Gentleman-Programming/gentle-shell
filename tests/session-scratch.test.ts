@@ -20,7 +20,7 @@ type Command = { description?: string; handler: (args: string, ctx: ExtensionCon
 interface Fixture { root: string; base: string; configHome: string; cwd: string; work: string }
 
 function fixture(t: TestContext): Fixture {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-session-scratch-test-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-session-scratch-test-")));
 	const fx = { root, base: join(root, "tmp"), configHome: join(root, "config"), cwd: join(root, "project"), work: join(root, "work") };
 	for (const path of [fx.base, fx.configHome, fx.cwd, fx.work]) mkdirSync(path, { recursive: true });
 	t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -49,7 +49,7 @@ function session(fx: Fixture, options: Options = {}) {
 	const commands = new Map<string, Command>();
 	const notes: string[] = [];
 	const confirms: string[] = [];
-	const env: NodeJS.ProcessEnv = options.env ?? { TMPDIR: options.tmp ?? fx.base, GENTLE_PI_CONFIG_HOME: fx.configHome, ...(options.child ? { GENTLE_PI_AGENTS_CHILD: "1" } : {}) };
+	const env: NodeJS.ProcessEnv = options.env ?? { TMPDIR: options.tmp ?? fx.base, DRAKONC_PI_CONFIG_HOME: fx.configHome, ...(options.child ? { DRAKONC_PI_AGENTS_CHILD: "1" } : {}) };
 	const pi = {
 		on: (name: string, handler: Handler) => { handlers.set(name, handler); },
 		registerCommand: (name: string, command: Command) => { commands.set(name, command); },
@@ -76,7 +76,7 @@ function session(fx: Fixture, options: Options = {}) {
 			effect?.();
 			return await emit("tool_result", { type: "tool_result", toolName, toolCallId, input: { command }, content: [], isError });
 		},
-		run: async (args: string) => { await commands.get("gentle:scratch")!.handler(args, ctx); return notes.at(-1) ?? ""; },
+		run: async (args: string) => { await commands.get("drakonc:scratch")!.handler(args, ctx); return notes.at(-1) ?? ""; },
 	};
 }
 
@@ -131,7 +131,7 @@ test("S9: TMPDIR keeps the inherited spelling while the ledger records real path
 	const fx = fixture(t);
 	const link = join(fx.root, "tmp-link");
 	symlinkSync(fx.base, link, "dir");
-	const env: NodeJS.ProcessEnv = { TMPDIR: link, GENTLE_PI_CONFIG_HOME: fx.configHome };
+	const env: NodeJS.ProcessEnv = { TMPDIR: link, DRAKONC_PI_CONFIG_HOME: fx.configHome };
 	const first = session(fx, { env, factory: await loadInstance("spelling-a") });
 	await first.start();
 	const scratch = env.TMPDIR!;
@@ -180,7 +180,7 @@ test("S2: a child session creates no scratch, ledger, capture, or command", asyn
 	const s = session(fx, { child: true });
 	await s.start();
 	assert.equal(s.env.TMPDIR, fx.base);
-	assert.equal(s.commands.has("gentle:scratch"), false);
+	assert.equal(s.commands.has("drakonc:scratch"), false);
 	assert.equal(s.handlers.size, 0);
 	assert.deepEqual(readdirSync(fx.base), []);
 	assert.equal(existsSync(join(fx.configHome, "scratch")), false);
@@ -218,7 +218,7 @@ test("S2/S5: reload keeps the same scratch; quit removes it and restores TMPDIR"
 
 test("S2/S5: a reload into a fresh module instance recovers the live scratch from the ledger and quit removes it once", async (t) => {
 	const fx = fixture(t);
-	const env: NodeJS.ProcessEnv = { TMPDIR: fx.base, GENTLE_PI_CONFIG_HOME: fx.configHome };
+	const env: NodeJS.ProcessEnv = { TMPDIR: fx.base, DRAKONC_PI_CONFIG_HOME: fx.configHome };
 	const first = session(fx, { env, factory: await loadInstance("first") });
 	await first.start();
 	const scratch = env.TMPDIR!;
@@ -243,7 +243,7 @@ test("S2/S5: a reload into a fresh module instance recovers the live scratch fro
 
 test("S5: startup never removes a scratch of this process that TMPDIR no longer points into", async (t) => {
 	const fx = fixture(t);
-	const env: NodeJS.ProcessEnv = { TMPDIR: fx.base, GENTLE_PI_CONFIG_HOME: fx.configHome };
+	const env: NodeJS.ProcessEnv = { TMPDIR: fx.base, DRAKONC_PI_CONFIG_HOME: fx.configHome };
 	const first = session(fx, { env, factory: await loadInstance("keep-a") });
 	await first.start();
 	const scratch = env.TMPDIR!;
@@ -431,7 +431,7 @@ test("S5: the sweep refuses a symlinked scratch, a scratch outside the recorded 
 	symlinkSync(victim, link, "dir");
 	writeForeignLedger(fx, { sessionId: "evil-link", scratchDir: link });
 	writeForeignLedger(fx, { sessionId: "evil-outside", scratchDir: victim });
-	const otherNames = ["gentle-pi-session-evil-prefix-BBBBBB", "gp-1234abcd-BBBBBB", "gpBBBBBBB", "gpBBBBB", "xpBBBBBB"].map((name) => join(fx.base, name));
+	const otherNames = ["drakonc-pi-session-evil-prefix-BBBBBB", "gp-1234abcd-BBBBBB", "gpBBBBBBB", "gpBBBBB", "xpBBBBBB"].map((name) => join(fx.base, name));
 	for (const [index, dir] of otherNames.entries()) {
 		mkdirSync(dir);
 		writeFileSync(join(dir, "keep.txt"), "x");
@@ -744,9 +744,9 @@ test("S6/S8: the command help names list and clean", async (t) => {
 	const fx = fixture(t);
 	const s = session(fx);
 	await s.start();
-	assert.match(s.commands.get("gentle:scratch")!.description ?? "", /list\|clean/);
+	assert.match(s.commands.get("drakonc:scratch")!.description ?? "", /list\|clean/);
 	assert.equal(await s.run("bogus"), SCRATCH_COMMAND_USAGE);
-	assert.match(SCRATCH_COMMAND_USAGE, /^Usage: \/gentle:scratch \[list\|clean\]/);
+	assert.match(SCRATCH_COMMAND_USAGE, /^Usage: \/drakonc:scratch \[list\|clean\]/);
 	await s.shutdown();
 });
 
@@ -758,16 +758,16 @@ test("S8: the reference documents the scratch dir, ledger, automatic cleanup, sw
 		"`version`", "`sessionId`", "`pid`", "`processStartedAt`", "`processStartToken`", "`cwd`", "`tempRoot`", "`inherited`", "`scratchDir`", "`artifacts`", "`git clone ... [<dir>]`", "`git worktree add ... <path>`",
 		"did not exist before the command", "recovers the live scratch from the ledger", "never removes a scratch of its own process",
 		"At session shutdown", "older than one hour", "never follows symlinks", "directly under the temp root its ledger recorded", "the ledger of a live session",
-		"`/gentle:scratch list`", "`/gentle:scratch clean`", "no uncommitted changes and no unpushed commits", "ignored files inside them are deleted too", "`git worktree remove`", "Without a UI",
+		"`/drakonc:scratch list`", "`/drakonc:scratch clean`", "no uncommitted changes and no unpushed commits", "ignored files inside them are deleted too", "`git worktree remove`", "Without a UI",
 	]) assert.ok(section.includes(term), `scratch reference missing ${term}`);
-	assert.match(reference, /\| `\/gentle:scratch` +\| Lists \(`list`, the default\) or cleans \(`clean`\)/);
+	assert.match(reference, /\| `\/drakonc:scratch` +\| Lists \(`list`, the default\) or cleans \(`clean`\)/);
 	for (const line of SCRATCH_COMMAND_USAGE.split("\n").slice(1)) {
 		const [action] = line.trim().split(/\s+/);
-		assert.ok(section.includes(`\`/gentle:scratch ${action}\``), `reference missing the ${action} action from the help`);
+		assert.ok(section.includes(`\`/drakonc:scratch ${action}\``), `reference missing the ${action} action from the help`);
 	}
 });
 
-// Native review advisories of gentle-shell#2300 (odd/tasks/scratch-review-advisories.md).
+// Native review advisories of drakonc-shell#2300 (odd/tasks/scratch-review-advisories.md).
 
 // R3-pid-reuse-liveness: a pid the system reused for another process made an
 // ended session look live, so its scratch was never swept. The comparison uses
@@ -872,7 +872,7 @@ test("advisories S5: clean keeps the live scratch's entries changed within the m
 // recorded the old scratch as the inherited TMPDIR and nested the new one in it.
 test("advisories S6: a reload that cannot recover the scratch restores the ledger's inherited TMPDIR", async (t) => {
 	const fx = fixture(t);
-	const env: NodeJS.ProcessEnv = { TMPDIR: fx.base, GENTLE_PI_CONFIG_HOME: fx.configHome };
+	const env: NodeJS.ProcessEnv = { TMPDIR: fx.base, DRAKONC_PI_CONFIG_HOME: fx.configHome };
 	const first = session(fx, { env, factory: await loadInstance("fallback-a") });
 	await first.start();
 	const old = env.TMPDIR!;
@@ -891,12 +891,12 @@ test("advisories S6: a reload fallback whose ledger recorded TMPDIR unset create
 	if (process.platform === "win32") { t.skip("os.tmpdir() reads TMP/TEMP differently on Windows"); return; }
 	const fx = fixture(t);
 	// os.tmpdir() falls back to TMP when TMPDIR is unset, which keeps the fixture under its root.
-	const saved = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_PI_AGENTS_CHILD: process.env.GENTLE_PI_AGENTS_CHILD };
+	const saved = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, DRAKONC_PI_CONFIG_HOME: process.env.DRAKONC_PI_CONFIG_HOME, DRAKONC_PI_AGENTS_CHILD: process.env.DRAKONC_PI_AGENTS_CHILD };
 	t.after(() => { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
 	delete process.env.TMPDIR;
-	delete process.env.GENTLE_PI_AGENTS_CHILD; // The test runner may itself run inside a subagent.
+	delete process.env.DRAKONC_PI_AGENTS_CHILD; // The test runner may itself run inside a subagent.
 	process.env.TMP = fx.base;
-	process.env.GENTLE_PI_CONFIG_HOME = fx.configHome;
+	process.env.DRAKONC_PI_CONFIG_HOME = fx.configHome;
 	const first = session(fx, { env: process.env, factory: await loadInstance("unset-a") });
 	await first.start();
 	const old = process.env.TMPDIR!;
@@ -914,7 +914,7 @@ test("advisories S6: a reload fallback whose ledger recorded TMPDIR unset create
 
 test("advisories S6: a reload without a readable ledger never inherits a gpXXXXXX TMPDIR", async (t) => {
 	const fx = fixture(t);
-	const env: NodeJS.ProcessEnv = { TMPDIR: fx.base, GENTLE_PI_CONFIG_HOME: fx.configHome };
+	const env: NodeJS.ProcessEnv = { TMPDIR: fx.base, DRAKONC_PI_CONFIG_HOME: fx.configHome };
 	const first = session(fx, { env, factory: await loadInstance("lost-a") });
 	await first.start();
 	const old = env.TMPDIR!;

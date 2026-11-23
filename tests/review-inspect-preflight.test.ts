@@ -4,10 +4,10 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 
-// gentle-ai#2196: inspect must not advertise a review.start whose candidate-view
+// drakonc-ai#2196: inspect must not advertise a review.start whose candidate-view
 // materialization is already known to fail. START verifies cheap non-mutating
 // invariants (candidate owner parent privacy, symlink capability for trees that
 // track symlinks); inspect runs the same non-persistent checks before a ready
@@ -50,10 +50,10 @@ const inspect = (root: string, native: NativeReviewCli) =>
 const posix = process.platform !== "win32";
 
 for (const quota of [{ name: "plain", untrackedScope: undefined }] as const) {
-	test(`inspect withholds a ready START advertisement when the candidate owner parent is not private (${quota.name}, gentle-ai#2196)`, { skip: posix ? false : "POSIX privacy modes are unavailable on Windows" }, async t => {
+	test(`inspect withholds a ready START advertisement when the candidate owner parent is not private (${quota.name}, drakonc-ai#2196)`, { skip: posix ? false : "POSIX privacy modes are unavailable on Windows" }, async t => {
 		const { root } = fixtureRepository(false);
 		t.after(() => rmSync(root, { recursive: true, force: true }));
-		const views = join(root, ".git", "gentle-ai", "candidate-views");
+		const views = join(root, ".git", "drakonc-ai", "candidate-views");
 		mkdirSync(views, { recursive: true, mode: 0o700 });
 		chmodSync(views, 0o777);
 		const result = await inspect(root, readyNative(git(root, "rev-parse", "HEAD^{tree}")));
@@ -65,13 +65,13 @@ for (const quota of [{ name: "plain", untrackedScope: undefined }] as const) {
 	});
 }
 
-test("inspect withholds a ready START advertisement for any other candidate owner failure START would repeat (gentle-ai#2196)", { skip: posix ? false : "POSIX symlinked owner parent fixture" }, async t => {
+test("inspect withholds a ready START advertisement for any other candidate owner failure START would repeat (drakonc-ai#2196)", { skip: posix ? false : "POSIX symlinked owner parent fixture" }, async t => {
 	const { root, candidateTree } = fixtureRepository(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const elsewhere = join(root, ".git", "elsewhere");
 	mkdirSync(elsewhere, { mode: 0o700 });
-	mkdirSync(join(root, ".git", "gentle-ai"), { mode: 0o700 });
-	symlinkSync(elsewhere, join(root, ".git", "gentle-ai", "candidate-views"));
+	mkdirSync(join(root, ".git", "drakonc-ai"), { mode: 0o700 });
+	symlinkSync(elsewhere, join(root, ".git", "drakonc-ai", "candidate-views"));
 	const result = await inspect(root, readyNative(candidateTree));
 	assert.equal(result.status, "blocked");
 	assert.equal(result.outcome, "candidate-view-preflight-blocked");
@@ -82,7 +82,7 @@ test("inspect withholds a ready START advertisement for any other candidate owne
 
 const unprivileged = posix && process.getuid?.() !== 0;
 
-test("inspect withholds a ready START advertisement when the missing owner parent cannot be created under its nearest existing ancestor (gentle-ai#2196)", { skip: unprivileged ? false : "needs POSIX permission bits enforced for this process" }, async t => {
+test("inspect withholds a ready START advertisement when the missing owner parent cannot be created under its nearest existing ancestor (drakonc-ai#2196)", { skip: unprivileged ? false : "needs POSIX permission bits enforced for this process" }, async t => {
 	const { root, candidateTree } = fixtureRepository(false);
 	const commonDir = join(root, ".git");
 	t.after(() => {
@@ -98,10 +98,10 @@ test("inspect withholds a ready START advertisement when the missing owner paren
 	assert.deepEqual(result.diagnostics, { code: "candidate-owner-preparation-failed", message: "candidate view owner preparation failed (EACCES)" });
 	assert.equal(result.mutation_performed, false);
 	assert.equal(result.lineage_created, false);
-	assert.equal(existsSync(join(commonDir, "gentle-ai")), false, "the preflight creates nothing");
+	assert.equal(existsSync(join(commonDir, "drakonc-ai")), false, "the preflight creates nothing");
 });
 
-test("inspect withholds a ready START advertisement when the frozen tree tracks symlinks this process cannot create (gentle-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {
+test("inspect withholds a ready START advertisement when the frozen tree tracks symlinks this process cannot create (drakonc-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {
 	const { root, candidateTree } = fixtureRepository(true);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	__testing.setCandidateViewSymlinkProbeForTesting(() => { throw new Error("EPERM (probe)"); });
@@ -113,7 +113,7 @@ test("inspect withholds a ready START advertisement when the frozen tree tracks 
 	assert.match(String((result.diagnostics as { message?: string }).message), /enable symlink capability out of band before retrying START/);
 });
 
-test("a blocked inspect result carries no executable START transition but keeps the native status data (gentle-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {
+test("a blocked inspect result carries no executable START transition but keeps the native status data (drakonc-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {
 	const { root, candidateTree } = fixtureRepository(true);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	__testing.setCandidateViewSymlinkProbeForTesting(() => { throw new Error("EPERM (probe)"); });
@@ -125,7 +125,7 @@ test("a blocked inspect result carries no executable START transition but keeps 
 	assert.equal(JSON.stringify(result).includes("review.start"), false, "no nested field may still advertise review.start");
 });
 
-test("a frozen tree without symlinks never consults the symlink capability probe (gentle-ai#2196)", async t => {
+test("a frozen tree without symlinks never consults the symlink capability probe (drakonc-ai#2196)", async t => {
 	const { root, candidateTree } = fixtureRepository(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	let probed = 0;
@@ -136,7 +136,7 @@ test("a frozen tree without symlinks never consults the symlink capability probe
 	assert.equal(result.status, "ready", "a healthy candidate keeps its advertisement");
 });
 
-test("a healthy worktree keeps the ready START advertisement (gentle-ai#2196)", { skip: posix ? false : "real symlink probe depends on runner capability" }, async t => {
+test("a healthy worktree keeps the ready START advertisement (drakonc-ai#2196)", { skip: posix ? false : "real symlink probe depends on runner capability" }, async t => {
 	const { root, candidateTree } = fixtureRepository(true);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const result = await inspect(root, readyNative(candidateTree));
@@ -144,7 +144,7 @@ test("a healthy worktree keeps the ready START advertisement (gentle-ai#2196)", 
 	assert.equal(result.outcome, undefined);
 });
 
-test("the symlink capability probe samples the filesystem that will hold the candidate view, never tmpdir (gentle-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {
+test("the symlink capability probe samples the filesystem that will hold the candidate view, never tmpdir (drakonc-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {
 	const { root, candidateTree } = fixtureRepository(true);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	let probeRoot: string | undefined;
@@ -158,7 +158,7 @@ test("the symlink capability probe samples the filesystem that will hold the can
 	assert.ok(probeRoot!.startsWith(join(root, ".git")), `probe must run inside the candidate-view filesystem, saw: ${probeRoot}`);
 });
 
-test("inspect withholds the ready START advertisement when the symlink capability stays unconfirmed (gentle-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {
+test("inspect withholds the ready START advertisement when the symlink capability stays unconfirmed (drakonc-ai#2196)", { skip: posix ? false : "fixture needs a tracked symlink" }, async t => {
 	const { root, candidateTree } = fixtureRepository(true);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	__testing.setCandidateViewSymlinkProbeForTesting(() => {
@@ -173,7 +173,7 @@ test("inspect withholds the ready START advertisement when the symlink capabilit
 	assert.equal(result.lineage_created, false);
 });
 
-test("an incomplete symlink scan never claims a symlink-free tree and keeps the advertisement; START owns unreadable trees (gentle-ai#2196)", async t => {
+test("an incomplete symlink scan never claims a symlink-free tree and keeps the advertisement; START owns unreadable trees (drakonc-ai#2196)", async t => {
 	const { root } = fixtureRepository(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	let probed = 0;
@@ -186,7 +186,7 @@ test("an incomplete symlink scan never claims a symlink-free tree and keeps the 
 	assert.equal(probed, 0, "an unconfirmed scan never consults the capability probe");
 });
 
-test("the scan classification itself is a tri-state: unreadable trees are unconfirmed, never symlink-free (gentle-ai#2196)", async t => {
+test("the scan classification itself is a tri-state: unreadable trees are unconfirmed, never symlink-free (drakonc-ai#2196)", async t => {
 	const { root } = fixtureRepository(true);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	assert.equal(__testing.scanCandidateTreeForSymlinks(root, git(root, "rev-parse", "HEAD^{tree}")), "tracks-symlinks");

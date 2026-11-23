@@ -8,7 +8,7 @@
 #   default     bundle = `git archive HEAD`
 #   --worktree  bundle = tracked files as they are in the working tree,
 #               including uncommitted modifications (untracked files excluded)
-# GENTLE_ACCEPTANCE_KEEP=1 keeps a failed run's container for inspection.
+# DRAKONC_ACCEPTANCE_KEEP=1 keeps a failed run's container for inspection.
 set -eu
 fail() { printf 'acceptance: %s\n' "$1" >&2; exit 1; }
 note() { printf 'acceptance: %s\n' "$1"; }
@@ -20,19 +20,19 @@ case $# in
 esac
 image=debian:bookworm-slim
 # Upper bound for the whole installation inside the container.
-install_limit=${GENTLE_ACCEPTANCE_INSTALL_SECONDS:-1500}
-case $install_limit in ''|*[!0-9]*) fail 'GENTLE_ACCEPTANCE_INSTALL_SECONDS must be a whole number';; esac
+install_limit=${DRAKONC_ACCEPTANCE_INSTALL_SECONDS:-1500}
+case $install_limit in ''|*[!0-9]*) fail 'DRAKONC_ACCEPTANCE_INSTALL_SECONDS must be a whole number';; esac
 command -v docker >/dev/null 2>&1 || fail 'Docker is required; refusing to run anything on the host'
 docker info >/dev/null 2>&1 || fail 'Docker daemon is unavailable; refusing to run anything on the host'
 command -v git >/dev/null 2>&1 || fail 'git is required to package the bundle'
 repo=$(git rev-parse --show-toplevel) || fail 'run from inside the repository'
 started=$(date +%s)
 elapsed() { printf '%ss' "$(( $(date +%s) - started ))"; }
-name=gentle-install-acceptance-$$-$started
+name=drakonc-install-acceptance-$$-$started
 container=
 passed=0
 cleanup() {
-    if [ -n "$container" ] && [ "$passed" = 0 ] && [ "${GENTLE_ACCEPTANCE_KEEP:-}" = 1 ]; then
+    if [ -n "$container" ] && [ "$passed" = 0 ] && [ "${DRAKONC_ACCEPTANCE_KEEP:-}" = 1 ]; then
         printf 'acceptance: kept %s; inspect with: docker exec -it -u tester %s bash; remove with: docker rm -f %s\n' "$container" "$container" "$container" >&2
     elif [ -n "$container" ]; then
         docker rm -f "$container" >/dev/null 2>&1 || printf 'acceptance: could not remove container %s\n' "$container" >&2
@@ -44,15 +44,15 @@ trap 'exit 1' HUP INT TERM
 note "image $image, bundle from $source_mode"
 docker run -d --name "$name" --pull missing "$image" sleep infinity >/dev/null || fail 'cannot start the container'
 container=$name
-# Clean machine: no Node, npm, pnpm, Pi or Gentle Shell. curl and CA roots are
+# Clean machine: no Node, npm, pnpm, Pi or Drakonc Shell. curl and CA roots are
 # bootstrap prerequisites that a stock Debian desktop already has.
 docker exec "$container" sh -c 'export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends ca-certificates curl >/dev/null
     useradd --create-home --shell /bin/bash tester
     mkdir /opt/bundle
-    for tool in node npm pnpm pi gentle-shell; do if command -v "$tool" >/dev/null; then echo "unexpected $tool" >&2; exit 1; fi; done' \
+    for tool in node npm pnpm pi drakonc-shell; do if command -v "$tool" >/dev/null; then echo "unexpected $tool" >&2; exit 1; fi; done' \
     || fail 'container preparation failed'
-# gentle-shell setup makes 2 anonymous GitHub API requests (upstream Gentle AI's
+# drakonc-shell setup makes 2 anonymous GitHub API requests (upstream Drakonc AI's
 # latest-engram lookup), limited to 60 per hour per public IP. /rate_limit does
 # not consume quota. Stop early instead of failing deep inside setup.
 quota=$(docker exec "$container" sh -c 'curl -fsS --max-time 20 -H "Accept: application/vnd.github+json" https://api.github.com/rate_limit' | tr -d ' \n') \
@@ -99,7 +99,7 @@ say "session URL after ${waited}s"
 origin=${url%%/session*}
 jar=$HOME/acceptance-cookies
 curl -fsS -c "$jar" -b "$jar" -o /dev/null "$url" || stop 'session redemption failed'
-api() { curl -fsS -b "$jar" -H 'X-Gentle-Install: 1' "$@"; }
+api() { curl -fsS -b "$jar" -H 'X-Drakonc-Install: 1' "$@"; }
 post() { api -X POST -H "Origin: $origin" -H 'Content-Type: application/json' --data "$1" "$origin$2"; }
 plan=$(api "$origin/api/plan") || stop 'plan request failed'
 case $plan in *'"blockers":[]'*) ;; *) stop "plan has blockers: $plan";; esac
@@ -140,10 +140,10 @@ note "bootstrap and wizard finished in $(( $(date +%s) - bootstrap_started ))s"
 # must be gone. bash -i without a terminal warns about job control; harmless.
 checks=$(cat <<'CHECKS'
 set -eu
-for tool in node npm pnpm gentle-shell; do printf '%s -> %s\n' "$tool" "$(command -v "$tool")"; done
+for tool in node npm pnpm drakonc-shell; do printf '%s -> %s\n' "$tool" "$(command -v "$tool")"; done
 printf 'node %s, npm %s, pnpm %s\n' "$(node --version)" "$(npm --version)" "$(pnpm --version)"
-gentle-shell --version
-for dir in "$HOME"/.gentle-shell-bootstrap-tools.*; do
+drakonc-shell --version
+for dir in "$HOME"/.drakonc-shell-bootstrap-tools.*; do
     if [ -e "$dir" ] || [ -L "$dir" ]; then echo "bootstrap tools left behind: $dir" >&2; exit 1; fi
 done
 echo 'bootstrap tools removed'
@@ -152,10 +152,10 @@ CHECKS
 docker exec -u tester -w /home/tester "$container" bash -ic "$checks" || fail "fresh-terminal checks failed after $(elapsed)"
 # Informational: pnpm setup edits only ~/.bashrc, which non-interactive login
 # shells skip on Debian (see docs/install-wizard.md).
-if docker exec -u tester -w /home/tester "$container" bash -lc 'command -v gentle-shell' >/dev/null 2>&1; then
-    note 'bash -lc resolves gentle-shell'
+if docker exec -u tester -w /home/tester "$container" bash -lc 'command -v drakonc-shell' >/dev/null 2>&1; then
+    note 'bash -lc resolves drakonc-shell'
 else
-    note 'bash -lc does not resolve gentle-shell (expected: ~/.profile is not edited)'
+    note 'bash -lc does not resolve drakonc-shell (expected: ~/.profile is not edited)'
 fi
 passed=1
 note "PASS in $(elapsed)"

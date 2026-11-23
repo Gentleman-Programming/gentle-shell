@@ -25,10 +25,11 @@ import {
 	type ShellBarTheme,
 } from "../lib/shell-bar.ts";
 import { REVIEW_SCOPE_UNAVAILABLE } from "../lib/review-sidebar-state.ts";
+import type { ProviderUsage } from "../lib/shell-usage.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 
-// The Gentle Shell bar replaces pi's three-line footer with one line of
+// The Drakonc Shell bar replaces pi's three-line footer with one line of
 // segments. Rendering is pure so it can be verified without a TUI.
 
 const taggedTheme: ShellBarTheme = {
@@ -87,7 +88,7 @@ function bodyText(row: string): string {
 
 function model(overrides: Partial<ShellBarModel> = {}): ShellBarModel {
 	return {
-		cwd: "~/work/gentle-pi",
+		cwd: "~/work/drakonc-pi",
 		branch: "main",
 		dirty: undefined,
 		sessionName: undefined,
@@ -219,7 +220,7 @@ test("renderShellBar renders one line with the segments in order", () => {
 	assert.equal(rest.length, 0);
 	assert.equal(
 		line,
-		"✿ gentle shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub",
+		"🐉 drakonc shell ⟡ ~/work/drakonc-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub",
 	);
 });
 
@@ -232,7 +233,7 @@ test("renderShellBar paints the context gauge with the given gauge roles", () =>
 
 test("renderShellBar colors the brand, model, effort, and gauge by role", () => {
 	const [line] = renderShellBar(model(), taggedTheme, 400);
-	assert.match(line, /<accent>✿ gentle shell<\/accent>/);
+	assert.match(line, /<accent>🐉 drakonc<\/accent> <text>shell<\/text>/);
 	assert.match(line, /<text>gpt-5\.5<\/text>/);
 	assert.match(line, /<syntaxFunction>medium<\/syntaxFunction>/);
 	assert.match(line, /<accent>▰▰▰▰<\/accent><border>▱▱▱▱<\/border>/);
@@ -241,7 +242,7 @@ test("renderShellBar colors the brand, model, effort, and gauge by role", () => 
 
 test("renderShellBar shows the branch as dirty-neutral and omits it outside git", () => {
 	const [line] = renderShellBar(model({ branch: null }), plainTheme, 160);
-	assert.match(line, /⟡ ~\/work\/gentle-pi ⟡/);
+	assert.match(line, /⟡ ~\/work\/drakonc-pi ⟡/);
 });
 
 test("renderShellBar shows the session dirty count next to the branch", () => {
@@ -314,13 +315,17 @@ test("renderShellBar right-aligns the session name when it fits", () => {
 });
 
 test("renderShellBar drops only compaction detail when that makes room for the session name", () => {
-	const data = model({ cwd: "~/work/gentle-pi", branch: "main", modelId: "gpt-5.5", effort: "medium", sessionName: "Review",
+	const data = model({ cwd: "~/work/drakonc-pi", branch: "main", modelId: "gpt-5.5", effort: "medium", sessionName: "Review",
 		contextPercent: 59, contextWindow: 1_048_576, contextHeadroom: 12_146, costTotal: 0, subscription: false });
-	const left = "✿ gentle shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▰▱▱▱ 59%";
+	const left = "🐉 drakonc shell ⟡ ~/work/drakonc-pi main ⟡ gpt-5.5 · medium ⟡ ctx ▰▰▰▰▰▱▱▱ 59%";
+	const cost = " ⟡ $0.000";
+	// El glifo de marca ocupa dos celdas: a 94 columnas ya no cabe el nombre de la
+	// sesión; a 98 sí, con cuatro de relleno; a 120 además se conserva el detalle
+	// de compactación, con nueve de relleno.
 	assert.deepEqual([94, 98, 120].map(width => renderShellBar(data, plainTheme, width)[0]), [
-		left + " ⟡ $0.000   Review",
-		left + " ⟡ $0.000       Review",
-		left + " (12k to compact) ⟡ $0.000" + " ".repeat(12) + "Review",
+		left + cost,
+		left + cost + "    Review",
+		left + " (12k to compact)" + cost + "         Review",
 	]);
 });
 
@@ -339,10 +344,10 @@ test("renderShellBar repaints extension statuses in the bar role, discarding col
 test("renderShellBar compacts the path and branch before it sacrifices an extension status", () => {
 	const long = model({ branch: "fix/shell-bar-status-ansi", dirty: 2, statuses: ["MCP: 3/3 servers"] });
 	const [full] = renderShellBar(long, plainTheme, 160);
-	assert.match(full, /~\/work\/gentle-pi fix\/shell-bar-status-ansi ±2 .* MCP: 3\/3 servers$/);
+	assert.match(full, /~\/work\/drakonc-pi fix\/shell-bar-status-ansi ±2 .* MCP: 3\/3 servers$/);
 	const [compact] = renderShellBar(long, plainTheme, 118);
 	assert.ok(visibleWidth(compact) <= 118, `line overflowed: ${visibleWidth(compact)}`);
-	assert.match(compact, /⟡ gentle-pi fix\/shell-bar-… ±2 ⟡/);
+	assert.match(compact, /⟡ drakonc-pi fix\/shell-bar-… ±2 ⟡/);
 	assert.match(compact, /MCP: 3\/3 servers$/);
 });
 
@@ -355,18 +360,18 @@ test("renderShellBar drops the session name, then trailing segments, before trun
 
 	const [atFifty] = renderShellBar(wide, plainTheme, 50);
 	assert.ok(visibleWidth(atFifty) <= 50, `line overflowed: ${visibleWidth(atFifty)}`);
-	assert.match(atFifty, /^✿ gentle shell/);
+	assert.match(atFifty, /^🐉 drakonc shell/);
 });
 
-test("shellEnabled stays off inside a Gentle Agents child", () => {
-	assert.equal(shellEnabled({ GENTLE_PI_AGENTS_CHILD: "1" }), false);
+test("shellEnabled stays off inside a Drakonc Agents child", () => {
+	assert.equal(shellEnabled({ DRAKONC_PI_AGENTS_CHILD: "1" }), false);
 });
 
-test("shellEnabled honors GENTLE_PI_SHELL=0", () => {
+test("shellEnabled honors DRAKONC_PI_SHELL=0", () => {
 	assert.equal(shellEnabled({}), true);
-	assert.equal(shellEnabled({ GENTLE_PI_SHELL: "1" }), true);
-	assert.equal(shellEnabled({ GENTLE_PI_SHELL: "0" }), false);
-	assert.equal(shellEnabled({ GENTLE_PI_SHELL: "false" }), false);
+	assert.equal(shellEnabled({ DRAKONC_PI_SHELL: "1" }), true);
+	assert.equal(shellEnabled({ DRAKONC_PI_SHELL: "0" }), false);
+	assert.equal(shellEnabled({ DRAKONC_PI_SHELL: "false" }), false);
 });
 
 test("renderShellSidebarBar draws panel section headers, never a card frame", () => {
@@ -387,7 +392,7 @@ test("the rail Status orders Changes before Integrations and keeps the location 
 	}
 	assert.match(text, /2 files/);
 	assert.match(text, /\+7 −3/);
-	assert.match(text, /\/gentle:changes/);
+	assert.match(text, /\/drakonc:changes/);
 	assert.match(text, /MCP connected/);
 	assert.doesNotMatch(text, /main|Branch|Project/, "location lives in the header row, once");
 	for (const width of [1, 8, 24, 46]) assert.ok(renderShellSidebarBar(data, plainTheme, width).every((line) => visibleWidth(line) <= width));
@@ -469,7 +474,7 @@ test("the rail Status drops model, usage and session identity, keeping Changes a
 test("buildShellHeaderModel keeps only the header's fields from the bar model", () => {
 	const header = buildShellHeaderModel(model({ profile: "team", statuses: ["MCP: 3 servers"] }));
 	assert.deepEqual(header, {
-		cwd: "~/work/gentle-pi",
+		cwd: "~/work/drakonc-pi",
 		branch: "main",
 		dirty: undefined,
 		modelId: "gpt-5.5",
@@ -486,7 +491,7 @@ test("buildShellHeaderModel keeps only the header's fields from the bar model", 
 test("renderShellHeaderBar draws the brand, identity, and right-aligned counters (plus the standing usage segment) in one line", () => {
 	const header = buildShellHeaderModel(model({ profile: "team" }));
 	const { text: line } = renderShellHeaderBar(header, plainTheme, 120);
-	const left = "✿ Gentle Shell ⟡ ~/work/gentle-pi main ⟡ gpt-5.5 · medium · team";
+	const left = "🐉 Drakonc Shell ⟡ ~/work/drakonc-pi main ⟡ gpt-5.5 · medium · team";
 	const right = "ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub ⟡ usage";
 	assert.equal(line, left + " ".repeat(120 - visibleWidth(left) - visibleWidth(right)) + right);
 	assert.equal(visibleWidth(line), 120);
@@ -503,21 +508,21 @@ test("renderShellHeaderBar colors the brand bold and by role", () => {
 	const bolding = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `**${text}**` };
 	const header = buildShellHeaderModel(model());
 	const { text: line } = renderShellHeaderBar(header, bolding, 120);
-	assert.match(line, /<accent>\*\*✿ Gentle Shell\*\*<\/accent>/);
+	assert.match(line, /<accent>\*\*🐉 Drakonc\*\*<\/accent> <text>\*\*Shell\*\*<\/text>/);
 });
 
 test("renderShellHeaderBar drops the profile, then the effort, then the whole location before the right group", () => {
 	const withProfile = buildShellHeaderModel(model({ profile: "team" }));
 	const { text: wide } = renderShellHeaderBar(withProfile, plainTheme, 120);
 	assert.match(wide, /gpt-5\.5 · medium · team/);
-	assert.match(wide, /~\/work\/gentle-pi main/);
+	assert.match(wide, /~\/work\/drakonc-pi main/);
 	assert.match(wide, /ctx ▰▰▰▰▱▱▱▱ 45% ⟡ \$9\.49 sub ⟡ usage$/);
 
 	// 100 cols: the profile no longer fits, but effort and location still do.
 	const { text: noProfile } = renderShellHeaderBar(withProfile, plainTheme, 100);
 	assert.doesNotMatch(noProfile, /team/);
 	assert.match(noProfile, /gpt-5\.5 · medium/);
-	assert.match(noProfile, /~\/work\/gentle-pi main/);
+	assert.match(noProfile, /~\/work\/drakonc-pi main/);
 	assert.equal(visibleWidth(noProfile), 100);
 
 	// 90 cols: effort goes too, only the bare model id remains next to location.
@@ -525,30 +530,30 @@ test("renderShellHeaderBar drops the profile, then the effort, then the whole lo
 	assert.doesNotMatch(noEffort, /medium/);
 	assert.doesNotMatch(noEffort, /team/);
 	assert.match(noEffort, /gpt-5\.5/);
-	assert.match(noEffort, /~\/work\/gentle-pi main/);
+	assert.match(noEffort, /~\/work\/drakonc-pi main/);
 	assert.equal(visibleWidth(noEffort), 90);
 
 	// 82 cols: the whole location segment goes; brand and model survive with the counters.
 	const { text: noLocation } = renderShellHeaderBar(withProfile, plainTheme, 82);
-	assert.doesNotMatch(noLocation, /~\/work\/gentle-pi/);
+	assert.doesNotMatch(noLocation, /~\/work\/drakonc-pi/);
 	assert.match(noLocation, /gpt-5\.5/);
-	assert.match(noLocation, /✿ Gentle Shell/);
+	assert.match(noLocation, /🐉 Drakonc Shell/);
 	assert.match(noLocation, /ctx ▰▰▰▰▱▱▱▱ 45% ⟡ \$9\.49 sub ⟡ usage$/);
 	assert.equal(visibleWidth(noLocation), 82);
 
 	// 60 cols: even the standing usage segment is gone now; brand+model and ctx/cost survive.
 	const { text: noUsage } = renderShellHeaderBar(withProfile, plainTheme, 60);
-	assert.doesNotMatch(noUsage, /~\/work\/gentle-pi/);
+	assert.doesNotMatch(noUsage, /~\/work\/drakonc-pi/);
 	assert.doesNotMatch(noUsage, /usage/);
 	assert.match(noUsage, /gpt-5\.5/);
-	assert.match(noUsage, /✿ Gentle Shell/);
+	assert.match(noUsage, /🐉 Drakonc Shell/);
 	assert.match(noUsage, /ctx ▰▰▰▰▱▱▱▱ 45% ⟡ \$9\.49 sub$/);
 	assert.equal(visibleWidth(noUsage), 60);
 });
 
 test("renderShellHeaderBar returns an empty string only once the brand itself cannot fit", () => {
 	assert.equal(renderShellHeaderBar(buildShellHeaderModel(model()), plainTheme, 3).text, "");
-	assert.match(renderShellHeaderBar(buildShellHeaderModel(model()), plainTheme, 40).text, /✿ Gentle Shell/);
+	assert.match(renderShellHeaderBar(buildShellHeaderModel(model()), plainTheme, 40).text, /🐉 Drakonc Shell/);
 });
 
 // T8: the usage segment. It rides after cost in the right group, shows every
@@ -580,7 +585,7 @@ test("header retains effort without location when it fits beside full usage wind
 		const right = density === "minimal"
 			? "ctx 45% ⟡ $9.49 sub ⟡ usage 5h 26% · week 12%"
 			: "ctx ▰▰▰▰▱▱▱▱ 45% ⟡ $9.49 sub ⟡ usage 5h ▰▰▱▱▱▱▱▱ 26% · week ▰▱▱▱▱▱▱▱ 12% · alt+u";
-		const left = density === "minimal" ? "gpt-5.5 · medium" : "✿ Gentle Shell ⟡ gpt-5.5 · medium";
+		const left = density === "minimal" ? "gpt-5.5 · medium" : "🐉 Drakonc Shell ⟡ gpt-5.5 · medium";
 		const width = visibleWidth(left) + 2 + visibleWidth(right);
 		const result = renderShellHeaderBar(header, plainTheme, width, "alt+u", settings);
 		assert.equal(result.text, left + "  " + right, density);
@@ -601,13 +606,13 @@ test("header retains effort without location when it fits beside full usage wind
 });
 
 test("single top and below-input chrome includes the project identity without duplicating split", () => {
-	const cwd = "~/work/gentle-pi/.worktrees/庫-shell-ui-feedback";
+	const cwd = "~/work/drakonc-pi/.worktrees/庫-shell-ui-feedback";
 	const data = model({ cwd, branch: "feature/main", dirty: 3, permission: { mode: "SUPER-YOLO" }, profile: "current", profileTier: "fast", usage: USAGE_TWO_WINDOWS, jobs: [{ id: "one", label: "job", startedAt: 1 }] });
 	for (const headerPlacement of ["top", "below-input"] as const) for (const density of ["comfortable", "compact", "minimal"] as const) {
 		const settings = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement, density };
 		const chrome = renderShellChromeBar(data, plainTheme, 240, "alt+u", settings, undefined, { jobs: true });
 		const row = chrome.rows[chrome.headerRow]!;
-		assert.match(row, /✿ 庫-shell-ui-feedback  ~\/work\/gentle-pi\/\.worktrees\/庫-shell-ui-feedback/, `${headerPlacement}/${density}: folder and abbreviated path`);
+		assert.match(row, /🐉 庫-shell-ui-feedback  ~\/work\/drakonc-pi\/\.worktrees\/庫-shell-ui-feedback/, `${headerPlacement}/${density}: folder and abbreviated path`);
 		assert.match(row, /feature\/main ±3/);
 		assert.match(row, /💥 SUPER-YOLO/);
 		assert.match(row, /⧗ 1 job/);
@@ -628,7 +633,7 @@ test("single top and below-input chrome includes the project identity without du
 	const split = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "split" as const };
 	const title = renderShellTitleRow(data, plainTheme, 240);
 	const bar = renderShellChromeBar(data, plainTheme, 240, "alt+u", split, undefined).rows.join("\n");
-	assert.match(title, /✿ 庫-shell-ui-feedback  ~\/work\/gentle-pi\/\.worktrees\/庫-shell-ui-feedback/);
+	assert.match(title, /🐉 庫-shell-ui-feedback  ~\/work\/drakonc-pi\/\.worktrees\/庫-shell-ui-feedback/);
 	assert.doesNotMatch(bar, /庫-shell-ui-feedback|~\/work/);
 	assert.match(bar, /gpt-5\.5 · medium · Fast · current/);
 });
@@ -637,7 +642,7 @@ test("project identity yields before live values, and folder text is terminal-sa
 	const data = model({ cwd: "~/work/\x1b[31mproject\x1b[0m\nname", branch: "feature/" + "long-".repeat(20), dirty: 3, permission: { mode: "YOLO" }, profileTier: "fast", usage: USAGE_TWO_WINDOWS });
 	const settings = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "top" as const, density: "minimal" as const };
 	const wide = renderShellChromeBar(data, plainTheme, 300, "alt+u", settings, undefined);
-	assert.match(wide.rows[0]!, /✿ project name  ~\/work\/project name/);
+	assert.match(wide.rows[0]!, /🐉 project name  ~\/work\/project name/);
 	assert.doesNotMatch(wide.rows[0]!, /\x1b|\n/);
 	const narrow = renderShellChromeBar(data, plainTheme, 105, "alt+u", settings, undefined);
 	const row = narrow.rows[0]!;
@@ -651,7 +656,7 @@ test("project identity yields before live values, and folder text is terminal-sa
 });
 
 test("project path then name yield without displacing existing live values at any width", () => {
-	const data = model({ cwd: "~/work/gentle-pi/.worktrees/folder", branch: "feature/main", dirty: 3, permission: { mode: "YOLO" }, profile: "current", profileTier: "fast", usage: USAGE_TWO_WINDOWS });
+	const data = model({ cwd: "~/work/drakonc-pi/.worktrees/folder", branch: "feature/main", dirty: 3, permission: { mode: "YOLO" }, profile: "current", profileTier: "fast", usage: USAGE_TWO_WINDOWS });
 	for (const headerPlacement of ["top", "below-input"] as const) for (const density of ["comfortable", "compact", "minimal"] as const) {
 		let full = false, nameOnly = false, noIdentity = false;
 		for (let width = 1; width <= 240; width++) {
@@ -663,8 +668,8 @@ test("project path then name yield without displacing existing live values at an
 			for (const value of ["feature/main", "±3", "🔥 YOLO", "gpt-5.5", "medium", "Fast", "current", "45%", "$9.49 sub", "usage", "26%", "12%"]) {
 				if (prior.includes(value)) assert.ok(row.includes(value), `${headerPlacement}/${density}/${width}: identity must not displace ${value}`);
 			}
-			if (row.includes("✿ folder  ~/work/gentle-pi/.worktrees/folder")) full = true;
-			else if (row.includes("✿ folder")) nameOnly = true;
+			if (row.includes("🐉 folder  ~/work/drakonc-pi/.worktrees/folder")) full = true;
+			else if (row.includes("🐉 folder")) nameOnly = true;
 			else noIdentity = true;
 		}
 		assert.ok(full && nameOnly && noIdentity, `${headerPlacement}/${density}: full → name → absent as the available space falls`);
@@ -672,7 +677,7 @@ test("project path then name yield without displacing existing live values at an
 	const mobile = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "top" as const };
 	const title = renderShellTitleRow(data, plainTheme, 120, { model: true });
 	const bottom = renderShellStatusBar(data, plainTheme, 120, "alt+u", mobile, undefined, { jobs: true }).rows[0]!;
-	assert.match(title, /✿ folder  ~\/work\/gentle-pi\/\.worktrees\/folder/);
+	assert.match(title, /🐉 folder  ~\/work\/drakonc-pi\/\.worktrees\/folder/);
 	assert.doesNotMatch(bottom, /folder|~\/work/, "the narrow mobile title already owns the identity");
 });
 
@@ -681,12 +686,12 @@ test("project identity respects model and usage visibility", () => {
 	for (const headerPlacement of ["top", "below-input"] as const) {
 		const hiddenModel = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, modelDetails: false } };
 		const row = renderShellChromeBar(data, plainTheme, 160, "alt+u", hiddenModel, undefined).rows[1]!;
-		assert.match(row, /✿ project  ~\/work\/project/);
+		assert.match(row, /🐉 project  ~\/work\/project/);
 		assert.doesNotMatch(row, /gpt-5\.5|medium|Fast/);
 		assert.match(row, /ctx.*45%.*\$9\.49 sub.*usage/);
 		const hiddenUsage = { ...hiddenModel, visibility: { ...hiddenModel.visibility, modelDetails: true, usageCost: false } };
 		const chrome = renderShellChromeBar(data, plainTheme, 160, "alt+u", hiddenUsage, undefined);
-		assert.match(chrome.rows[chrome.headerRow]!, /✿ project  ~\/work\/project.*gpt-5\.5 · medium · Fast/);
+		assert.match(chrome.rows[chrome.headerRow]!, /🐉 project  ~\/work\/project.*gpt-5\.5 · medium · Fast/);
 		assert.doesNotMatch(chrome.rows[chrome.headerRow]!, /ctx|\$9\.49|usage|alt\+u/);
 		assert.equal(chrome.usageSpan, undefined);
 	}
@@ -694,12 +699,12 @@ test("project identity respects model and usage visibility", () => {
 
 test("below-input float and narrow fallback keep the same folder and path identity", (t) => {
 	const settings = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
-	const data = model({ cwd: "~/work/gentle-pi/.worktrees/shell-ui-feedback", usage: USAGE_TWO_WINDOWS });
+	const data = model({ cwd: "~/work/drakonc-pi/.worktrees/shell-ui-feedback", usage: USAGE_TWO_WINDOWS });
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const chrome = renderShellBelowInputFloat(data, withBackground(plainTheme), 240, "alt+u", settings);
 	assert.ok(chrome);
 	const row = stripAnsi(chrome.rows[chrome.headerRow]!);
-	assert.match(row, /✿ shell-ui-feedback  ~\/work\/gentle-pi\/\.worktrees\/shell-ui-feedback/);
+	assert.match(row, /🐉 shell-ui-feedback  ~\/work\/drakonc-pi\/\.worktrees\/shell-ui-feedback/);
 	assert.match(row, /main/);
 	assert.match(row, /gpt-5\.5 · medium/);
 	assert.ok(chrome.usageSpan);
@@ -708,7 +713,7 @@ test("below-input float and narrow fallback keep the same folder and path identi
 	assert.equal(shellHeaderUsageHit(chrome, chrome.usageSpan.start, chrome.headerRow - 1), false);
 	const neon = renderShellBottomOnlyBar(data, plainTheme, 240, "alt+u", settings);
 	assert.equal(neon.length, 1);
-	assert.match(neon[0]!, /✿ shell-ui-feedback  ~\/work\/gentle-pi\/\.worktrees\/shell-ui-feedback/);
+	assert.match(neon[0]!, /🐉 shell-ui-feedback  ~\/work\/drakonc-pi\/\.worktrees\/shell-ui-feedback/);
 	assert.match(neon[0]!, /main.*gpt-5\.5 · medium/);
 });
 
@@ -770,6 +775,50 @@ test("renderShellHeaderBar's usage span always points at the usage text, not ctx
 		assert.match(text.slice(usageSpan.start, usageSpan.end), /^usage/);
 		assert.equal(usageSpan.end, visibleWidth(text), "the usage segment always ends at the right edge");
 	}
+});
+
+// OpenCode Go llega por el contrato de fuentes de uso (el paquete de terceros
+// publica 5h, week y 30d): la barra no conoce al proveedor y aun asi pinta
+// exactamente las ventanas que entrega.
+
+const OPENCODE_GO_WINDOWS: ProviderUsage = {
+	provider: "opencode-go",
+	plan: undefined,
+	fetchedAt: 0,
+	limits: [{ name: "opencode-go", limitReached: false, windows: [
+		{ label: "5h", usedPercent: 0, windowSeconds: 18_000, resetAt: null },
+		{ label: "week", usedPercent: 11, windowSeconds: 604_800, resetAt: null },
+		{ label: "30d", usedPercent: 5, windowSeconds: 2_592_000, resetAt: null },
+	] }],
+};
+
+test("renderShellHeaderBar draws an OpenCode Go source's three windows with the shortcut hint", () => {
+	const header = buildShellHeaderModel(model({ usage: OPENCODE_GO_WINDOWS }));
+	const { text, usageSpan } = renderShellHeaderBar(header, plainTheme, 200, "alt+u");
+	assert.match(text, /usage 5h ▱▱▱▱▱▱▱▱ 0% · week ▰▱▱▱▱▱▱▱ 11% · 30d ▱▱▱▱▱▱▱▱ 5% · alt\+u$/);
+	assert.ok(usageSpan);
+	assert.equal(text.slice(usageSpan.start, usageSpan.end), "usage 5h ▱▱▱▱▱▱▱▱ 0% · week ▰▱▱▱▱▱▱▱ 11% · 30d ▱▱▱▱▱▱▱▱ 5% · alt+u");
+});
+
+test("a source that reports a single window never invents week or 30d", () => {
+	const single: ProviderUsage = { ...OPENCODE_GO_WINDOWS, limits: [{ name: "opencode-go", limitReached: false, windows: [OPENCODE_GO_WINDOWS.limits[0]!.windows[0]!] }] };
+	const { text } = renderShellHeaderBar(buildShellHeaderModel(model({ usage: single })), plainTheme, 200, "alt+u");
+	assert.match(text, /usage 5h ▱▱▱▱▱▱▱▱ 0% · alt\+u$/);
+	assert.doesNotMatch(text, /week|30d/);
+});
+
+test("the usage segment prints the effective shortcut, including a redefined one", () => {
+	const header = buildShellHeaderModel(model({ usage: USAGE_TWO_WINDOWS }));
+	for (const hint of ["alt+u", "alt+y"]) {
+		const { text } = renderShellHeaderBar(header, plainTheme, 140, hint);
+		assert.ok(text.endsWith(`· ${hint}`), text);
+	}
+});
+
+test("a model without an effort level prints no effort separator", () => {
+	const [line] = renderShellBar(model({ modelId: "glm5.3", effort: undefined, usage: undefined }), plainTheme, 200);
+	assert.match(line, /⟡ glm5\.3 ⟡ ctx/);
+	assert.doesNotMatch(line, /glm5\.3 ·/);
 });
 
 test("renderShellHeaderRule paints one full-width line in the editor frame color", () => {
@@ -1060,7 +1109,7 @@ test("unified below-input float includes optional Changes inside one painted gro
 
 // The idle Changes row exists only when files are actually tracked; an empty
 // capture — including an unborn-only root, which the tracker never scans — is
-// silence (explained by /gentle:changes on demand), never an instruction row.
+// silence (explained by /drakonc:changes on demand), never an instruction row.
 test("the below-input float shows no Changes row without tracked files", (t) => {
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const theme = withBackground(plainTheme);
@@ -1083,15 +1132,15 @@ test("fullscreen bars outside the rail never list the integrations: they live on
 	const previous = cardStyle();
 	t.after(() => setCardStyle(previous));
 	const painted = { ...plainTheme, bg: (_role: string, text: string) => `\x1b[48;5;22m${text}\x1b[49m` };
-	const data = model({ statuses: ["🧠 gentle-pi · ready", "MCP connected"] });
+	const data = model({ statuses: ["🧠 drakonc-pi · ready", "MCP connected"] });
 	const presentation = { ...DEFAULT_VISUAL_SETTINGS, headerPlacement: "below-input" as const };
 	for (const style of [CARD_STYLE.NEON, CARD_STYLE.FLOAT]) {
 		setCardStyle(style);
 		const rows = renderShellBottomOnlyBar(data, painted as never, 120, "alt+u", presentation).map(stripAnsi).join("\n");
-		assert.doesNotMatch(rows, /gentle-pi · ready|MCP connected/, `${style}: no integrations in the bottom bar`);
+		assert.doesNotMatch(rows, /drakonc-pi · ready|MCP connected/, `${style}: no integrations in the bottom bar`);
 		assert.match(rows, /ctx/, `${style}: the bar itself stays`);
 	}
 	setCardStyle(CARD_STYLE.FLOAT);
 	const float = renderShellBelowInputFloat(data, painted as never, 120, "alt+u", presentation)!;
-	assert.doesNotMatch(float.rows.map(stripAnsi).join("\n"), /gentle-pi · ready|MCP connected/, "no integrations under the input");
+	assert.doesNotMatch(float.rows.map(stripAnsi).join("\n"), /drakonc-pi · ready|MCP connected/, "no integrations under the input");
 });

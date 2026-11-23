@@ -18,13 +18,13 @@ import { sidebarPart, sidebarState } from "../lib/shell-sidebar.ts";
 
 // Sidebar-aware overlay margin (restored from Carolina's #1394 work,
 // e2cca1f9b^). The history extension reads the terminal-owned sidebar state
-// contract (lib/shell-sidebar.ts) without importing gentle-shell; the rail
+// contract (lib/shell-sidebar.ts) without importing drakonc-shell; the rail
 // width comes from the published `railColumns` field instead of a constant
 // duplicated in the history extension.
 
 function terminalWithState(state: unknown): object {
   return {
-    [Symbol.for("gentle-pi.experimental-sidebar.state")]: state,
+    [Symbol.for("drakonc-pi.experimental-sidebar.state")]: state,
   } as object;
 }
 
@@ -34,7 +34,7 @@ const OWNING = {
   railColumns: SIDEBAR_RAIL_COLUMNS,
 };
 
-test("the published rail reservation pins the gentle-shell rail geometry (RAIL_WIDTH 50 + GAP 3)", () => {
+test("the published rail reservation pins the drakonc-shell rail geometry (RAIL_WIDTH 50 + GAP 3)", () => {
   assert.equal(SIDEBAR_RAIL_COLUMNS, 53);
 });
 
@@ -125,7 +125,7 @@ test("a throwing ownsHost degrades to 0 instead of breaking the picker", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Seam: the real gentle-shell sidebar publishes the reservation it paints.
+// Seam: the real drakonc-shell sidebar publishes the reservation it paints.
 // ---------------------------------------------------------------------------
 
 const NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
@@ -201,8 +201,8 @@ async function captureOverlayOptions(terminal: object): Promise<OverlayOptions> 
       },
     } as never,
     {
-      env: { GENTLE_PI_HISTORY_CAPTURE: "1" },
-      gentlePiConfigHome: fs.mkdtempSync(
+      env: { DRAKONC_PI_HISTORY_CAPTURE: "1" },
+      drakoncPiConfigHome: fs.mkdtempSync(
         path.join(os.tmpdir(), "pi-history-margin-config-"),
       ),
       root,

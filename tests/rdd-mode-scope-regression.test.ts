@@ -18,7 +18,7 @@ test("public mode clients snapshot scopes and reject requests without file or pr
 	];
 
 	for (const make of factories) {
-		const root = mkdtempSync(join(tmpdir(), "gentle-rdd-scope-"));
+		const root = mkdtempSync(join(tmpdir(), "drakonc-rdd-scope-"));
 		t.after(() => rmSync(root, { recursive: true, force: true }));
 		const file = join(root, "state.json");
 		writeFileSync(file, '{"global":"on","clone":""}\n');
@@ -66,7 +66,7 @@ test("public mode clients snapshot scopes and reject requests without file or pr
 		};
 		const client = make(execute, () => {
 			resolutions++;
-			return "/fixture/gentle-ai";
+			return "/fixture/drakonc-ai";
 		});
 		assert.ok(client.reviewMode);
 		const mode = client.reviewMode.bind(client);

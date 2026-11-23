@@ -13,11 +13,11 @@ async function fixture(t: any, options: {directSiblings?: Record<string, string>
  t.after(() => fs.rm(temp, {recursive: true, force: true}));
  const root = join(temp, 'checkout');
  const modules = join(temp, 'global', 'node_modules');
- const link = join(modules, 'gentle-pi');
+ const link = join(modules, 'drakonc-pi');
  const peer = join(root, 'node_modules', PI);
  const manager = options.manager ?? 'pnpm';
  const lock = manager === 'npm' ? 'package-lock.json' : 'pnpm-lock.yaml';
- const manifest = JSON.stringify({name: 'gentle-pi', version: '4.4.0', packageManager: `${manager}@11.1.1`, devDependencies: {[PI]: options.range ?? '^1.0.0', ...options.directSiblings}});
+ const manifest = JSON.stringify({name: 'drakonc-pi', version: '4.4.0', packageManager: `${manager}@11.1.1`, devDependencies: {[PI]: options.range ?? '^1.0.0', ...options.directSiblings}});
  await fs.mkdir(join(root, '.git'), {recursive: true});
  await fs.mkdir(modules, {recursive: true});
  await fs.mkdir(join(peer, 'dist', 'bundle'), {recursive: true});
@@ -46,7 +46,7 @@ async function fixture(t: any, options: {directSiblings?: Record<string, string>
    calls.push({command, args, cwd, ...(env ? {env} : {})});
    if (args.includes('list') && args.includes('--recursive')) return {code:0, stdout:JSON.stringify(options.multipleProjects ? [{path:root},{path:join(temp,'other-project')}] : [{path:root}])};
    if (args.includes('list')) return {code: 0, stdout: JSON.stringify([{path: join(temp, 'pnpm'), dependencies: {}}])};
-   if (args.includes('ls')) return {code: 0, stdout: JSON.stringify({path: join(temp, 'global'), dependencies: {'gentle-pi': {path: link, resolved: 'file:../../checkout'}}})};
+   if (args.includes('ls')) return {code: 0, stdout: JSON.stringify({path: join(temp, 'global'), dependencies: {'drakonc-pi': {path: link, resolved: 'file:../../checkout'}}})};
    if (args.includes('--version')) return {code: 0, stdout: `${options.managerVersion ?? '11.1.1'}\n`};
    // `view <Pi>@<version> --json` reads the selected version's published manifest.
    const spec = args[args.indexOf('view') + 1] ?? '', at = spec.lastIndexOf('@');
@@ -144,7 +144,7 @@ test('source pnpm also exempts only the Pi-scope packages the selected Pi pins e
 for (const [name, manifestView] of Object.entries({'a failed lookup': {code:1, stdout:''}, 'unparsable output': {code:0, stdout:'not json'},
  'another package': {code:0, stdout:JSON.stringify({name:'other', version:'2.0.0'})}, 'list-shaped dependencies': {code:0, stdout:JSON.stringify({name:PI, version:'2.0.0', dependencies:['@earendil-works/pi-ai']})}})) test(`source pnpm refuses without mutation when the selected Pi manifest has ${name}`, async t => {
  const f = await fixture(t, {configOnly:true, latest:'2.0.0', manifestView});
- await assert.rejects(updateSelectedPi(f.input), {message:'gentle-shell update: the published dependencies of Pi 2.0.0 could not be verified. No installation changed.'});
+ await assert.rejects(updateSelectedPi(f.input), {message:'drakonc-shell update: the published dependencies of Pi 2.0.0 could not be verified. No installation changed.'});
  assert.deepEqual(f.updates, []);
  assert.deepEqual(f.output, []);
  assert.deepEqual(await f.snapshot(), f.before);
@@ -162,7 +162,7 @@ test('source pnpm merges siblings into the checkout\'s versioned exclusions and 
 test('source pnpm refuses without mutation when a transitively pinned sibling cannot be read', async t => {
  const {'@earendil-works/pi-telemetry@2.0.0': _missing, ...siblings} = SIBLINGS;
  const f = await fixture(t, {configOnly:true, latest:'2.0.0', piDependencies:DEPENDENCIES, siblingDependencies:siblings});
- await assert.rejects(updateSelectedPi(f.input), {message:'gentle-shell update: the published dependencies of @earendil-works/pi-telemetry@2.0.0 could not be verified. No installation changed.'});
+ await assert.rejects(updateSelectedPi(f.input), {message:'drakonc-shell update: the published dependencies of @earendil-works/pi-telemetry@2.0.0 could not be verified. No installation changed.'});
  assert.deepEqual(f.updates, []);
  assert.deepEqual(f.output, []);
  assert.deepEqual(await f.snapshot(), f.before);
@@ -283,7 +283,7 @@ test('source update cannot claim success when its global Shell link disappeared'
 
 test('source update failure with siblings names every spec from the same command', async t => {
  const f = await fixture(t, {manager: 'npm', fail: true, latest:'1.6.0', piDependencies:{'@earendil-works/pi-ai':'1.6.0','@earendil-works/pi-tui':'1.6.0'}, siblingDependencies:{'@earendil-works/pi-ai@1.6.0':{}, '@earendil-works/pi-tui@1.6.0':{}}, directSiblings:{'@earendil-works/pi-ai':'*','@earendil-works/pi-tui':'*'}});
- await assert.rejects(updateSelectedPi(f.input), {message:`gentle-shell update: npm (/fake/npm) could not install ${PI}@1.6.0, @earendil-works/pi-ai@1.6.0, @earendil-works/pi-tui@1.6.0\nnpm error fixture install failed`});
+ await assert.rejects(updateSelectedPi(f.input), {message:`drakonc-shell update: npm (/fake/npm) could not install ${PI}@1.6.0, @earendil-works/pi-ai@1.6.0, @earendil-works/pi-tui@1.6.0\nnpm error fixture install failed`});
  assert.equal(f.updates.length, 1);
 });
 
@@ -292,7 +292,7 @@ const REAL_SIBLINGS = {'@earendil-works/pi-ai@1.6.0':{'@earendil-works/pi-schema
 const scoped = (args: string[]) => args.filter(a => a.startsWith('@earendil-works/'));
 for (const manager of ['pnpm', 'npm']) test(`source ${manager}: the real Shell manifest moves exactly pi-ai and pi-tui under Pi 1.6.0 and keeps the wildcard exclusion`, async t => {
  const f = await fixture(t, {manager, configOnly: manager === 'pnpm', latest:'1.6.0', piDependencies:REAL_PI, siblingDependencies:REAL_SIBLINGS, excludeOutput:'["@earendil-works/*"]\n'});
- const text = JSON.stringify({name:'gentle-pi', version:'4.9.0', packageManager:`${manager}@11.1.1`, peerDependencies:{[PI]:'>=1.2.0','@earendil-works/pi-ai':'*','@earendil-works/pi-tui':'*'}, devDependencies:{[PI]:'>=1.2.0','@earendil-works/pi-ai':'>=1.2.0','@earendil-works/pi-tui':'>=1.2.0'}}, null, '\t') + '\n';
+ const text = JSON.stringify({name:'drakonc-pi', version:'4.9.0', packageManager:`${manager}@11.1.1`, peerDependencies:{[PI]:'>=1.2.0','@earendil-works/pi-ai':'*','@earendil-works/pi-tui':'*'}, devDependencies:{[PI]:'>=1.2.0','@earendil-works/pi-ai':'>=1.2.0','@earendil-works/pi-tui':'>=1.2.0'}}, null, '\t') + '\n';
  await fs.writeFile(join(f.root, 'package.json'), text);
  assert.equal(await updateSelectedPi(f.input), 0);
  assert.deepEqual(scoped(f.updates[0].args), [`${PI}@1.6.0`, '@earendil-works/pi-ai@1.6.0', '@earendil-works/pi-tui@1.6.0']);
@@ -303,13 +303,13 @@ for (const manager of ['pnpm', 'npm']) test(`source ${manager}: the real Shell m
 });
 for (const manager of ['pnpm', 'npm']) test(`source ${manager}: only declared, exactly pinned stable siblings move; peer-only, unpinned, ranged and prerelease stay`, async t => {
  const f = await fixture(t, {manager, latest:'2.0.0', piDependencies:{...DEPENDENCIES, '@earendil-works/pi-peeronly':'2.0.0'}, siblingDependencies:{...SIBLINGS, '@earendil-works/pi-peeronly@2.0.0':{}}});
- await fs.writeFile(join(f.root, 'package.json'), JSON.stringify({name:'gentle-pi', version:'4.4.0', packageManager:`${manager}@11.1.1`, dependencies:{'@earendil-works/pi-ai':'*', [PI]:'^1.0.0'}, optionalDependencies:{'@earendil-works/pi-schema':'*','@earendil-works/pi-ai':'*'}, peerDependencies:{'@earendil-works/pi-peeronly':'*'}, devDependencies:{[PI]:'^1.0.0','@earendil-works/pi-unrelated':'1.0.0','@earendil-works/pi-ranged':'^2.0.0','@earendil-works/pi-next':'*','@earendil-works/pi-tui':'*'}}));
+ await fs.writeFile(join(f.root, 'package.json'), JSON.stringify({name:'drakonc-pi', version:'4.4.0', packageManager:`${manager}@11.1.1`, dependencies:{'@earendil-works/pi-ai':'*', [PI]:'^1.0.0'}, optionalDependencies:{'@earendil-works/pi-schema':'*','@earendil-works/pi-ai':'*'}, peerDependencies:{'@earendil-works/pi-peeronly':'*'}, devDependencies:{[PI]:'^1.0.0','@earendil-works/pi-unrelated':'1.0.0','@earendil-works/pi-ranged':'^2.0.0','@earendil-works/pi-next':'*','@earendil-works/pi-tui':'*'}}));
  assert.equal(await updateSelectedPi(f.input), 0);
  assert.deepEqual(scoped(f.updates[0].args).sort(), [`${PI}@2.0.0`,'@earendil-works/pi-ai@2.0.0','@earendil-works/pi-schema@2.0.0','@earendil-works/pi-tui@2.0.0'].sort());
 });
 test('source npm with declared siblings refuses without mutation when a pinned sibling manifest is unreadable', async t => {
  const {'@earendil-works/pi-tui@2.0.0': _gone, ...partial} = SIBLINGS;
  const f = await fixture(t, {manager:'npm', latest:'2.0.0', piDependencies:DEPENDENCIES, siblingDependencies:partial, directSiblings:{'@earendil-works/pi-ai':'*'}});
- await assert.rejects(updateSelectedPi(f.input), {message:'gentle-shell update: the published dependencies of @earendil-works/pi-tui@2.0.0 could not be verified. No installation changed.'});
+ await assert.rejects(updateSelectedPi(f.input), {message:'drakonc-shell update: the published dependencies of @earendil-works/pi-tui@2.0.0 could not be verified. No installation changed.'});
  assert.deepEqual(f.updates, []); assert.deepEqual(await f.snapshot(), f.before);
 });

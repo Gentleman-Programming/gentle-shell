@@ -14,13 +14,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 interface RecordedRequest { systemPrompt: string; tools: string[]; toolResults: Array<{ name: string; isError: boolean; text: string }> }
 interface Step { prompt: string; call?: { name: string; arguments: JsonObject }; before?: () => void }
 
-const DESIGN_TOOLS = ["gentle_design", "gentle_design_comments"];
+const DESIGN_TOOLS = ["drakonc_design", "drakonc_design_comments"];
 
 async function runSession(root: string, label: string, options: { codemode: boolean; design?: boolean; env?: NodeJS.ProcessEnv; steps: Step[] }): Promise<{ requests: RecordedRequest[]; errors: string[]; cwd: string }> {
 	const sdk = await import("@earendil-works/pi-coding-agent");
 	const ai = await import("@earendil-works/pi-ai");
-	const { default: gentleDesign } = await import("../extensions/gentle-design.ts");
-	const { default: gentleGuide } = await import("../extensions/gentle-guide.ts");
+	const { default: drakoncDesign } = await import("../extensions/drakonc-design.ts");
+	const { default: drakoncGuide } = await import("../extensions/drakonc-guide.ts");
 	const { registerCompactCodemode } = await import("../lib/codemode-renderer.ts");
 	const cwd = join(root, `repo-${label}`);
 	mkdirSync(cwd);
@@ -36,8 +36,8 @@ async function runSession(root: string, label: string, options: { codemode: bool
 		cwd, agentDir: join(root, "profile"), settingsManager: settings,
 		noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 		extensionFactories: [(pi: ExtensionAPI) => {
-			gentleDesign(pi, { env: options.env ?? {} });
-			gentleGuide(pi, options.env ?? {});
+			drakoncDesign(pi, { env: options.env ?? {} });
+			drakoncGuide(pi, options.env ?? {});
 			registerCompactCodemode(pi);
 			pi.registerProvider("hidden-fixture", {
 				api: "hidden-fixture", apiKey: "fixture-only", baseUrl: "http://invalid.local",
@@ -74,7 +74,7 @@ async function runSession(root: string, label: string, options: { codemode: bool
 	assert.deepEqual(loader.getExtensions().errors, []);
 	const { session } = await sdk.createAgentSession({
 		cwd, agentDir: join(root, "profile"), modelRuntime: runtime, model: model as never, thinkingLevel: "off", resourceLoader: loader,
-		tools: ["read", ...DESIGN_TOOLS, "gentle_guide", ...(options.codemode ? ["codemode"] : [])],
+		tools: ["read", ...DESIGN_TOOLS, "drakonc_guide", ...(options.codemode ? ["codemode"] : [])],
 		sessionManager: sdk.SessionManager.inMemory(cwd), settingsManager: settings,
 	});
 	try {
@@ -92,21 +92,21 @@ async function runSession(root: string, label: string, options: { codemode: bool
 }
 
 function fixture(t: { after: (fn: () => void) => void }): string {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-hidden-tools-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-hidden-tools-")));
 	mkdirSync(join(root, "profile"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	return root;
 }
 
 const codemodeCall = (code: string) => ({ name: "codemode", arguments: { code } });
-const DESIGN_ROUTE = /gentle_design and gentle_design_comments are not declared in this run: call them from codemode, such as `tools\.gentle_design\(\{ action: "list" \}\)`\./;
-const GUIDE_ROUTE = /gentle_guide is not declared: call it from codemode/;
+const DESIGN_ROUTE = /drakonc_design and drakonc_design_comments are not declared in this run: call them from codemode, such as `tools\.drakonc_design\(\{ action: "list" \}\)`\./;
+const GUIDE_ROUTE = /drakonc_guide is not declared: call it from codemode/;
 
 test("with codemode and no design/ the design and guide tools leave the request, stay callable from codemode, and the list is stable", { timeout: 60_000 }, async (t) => {
 	const root = fixture(t);
 	const run = await runSession(root, "hidden", { codemode: true, steps: [
-		{ prompt: "Start the tour.", call: codemodeCall('return await tools.gentle_guide({ action: "start" });') },
-		{ prompt: "List the designs.", call: codemodeCall('return await tools.gentle_design({ action: "list" });') },
+		{ prompt: "Start the tour.", call: codemodeCall('return await tools.drakonc_guide({ action: "start" });') },
+		{ prompt: "List the designs.", call: codemodeCall('return await tools.drakonc_design({ action: "list" });') },
 	] });
 	assert.deepEqual(run.errors, []);
 	assert.equal(run.requests.length, 4, "a tool turn and a reply turn per prompt");
@@ -114,14 +114,14 @@ test("with codemode and no design/ the design and guide tools leave the request,
 		assert.deepEqual(request.tools, ["read", "codemode"], "only the reachable declarations are sent");
 		assert.match(request.systemPrompt, DESIGN_ROUTE);
 		assert.match(request.systemPrompt, GUIDE_ROUTE);
-		assert.doesNotMatch(request.systemPrompt, /- gentle_guide: /, "a hidden tool's snippet leaves the tool list too");
+		assert.doesNotMatch(request.systemPrompt, /- drakonc_guide: /, "a hidden tool's snippet leaves the tool list too");
 	}
 	assert.equal(new Set(run.requests.map((request) => JSON.stringify(request.tools))).size, 1, "consecutive requests carry the same tool list");
 	assert.equal(new Set(run.requests.map((request) => request.systemPrompt)).size, 1, "and the same system prompt");
 	const [guide, design] = [run.requests[1].toolResults.at(-1)!, run.requests[3].toolResults.at(-1)!];
 	assert.equal(guide.name, "codemode");
 	assert.equal(guide.isError, false);
-	assert.match(guide.text, /Script completed[\s\S]*Tour steps: /, "the hidden guide tool ran from codemode");
+	assert.match(guide.text, /Script completed[\s\S]*Pasos del recorrido: /, "the hidden guide tool ran from codemode");
 	assert.equal(design.isError, false);
 	assert.match(design.text, /Script completed[\s\S]*design/i, "the hidden design tool ran from codemode");
 	assert.doesNotMatch(design.text, /not a function|is not defined|unknown tool/i);
@@ -132,7 +132,7 @@ test("without codemode every tool stays a direct declaration and no route is nam
 	const run = await runSession(root, "direct", { codemode: false, steps: [{ prompt: "hello" }, { prompt: "again" }] });
 	assert.deepEqual(run.errors, []);
 	for (const request of run.requests) {
-		assert.deepEqual([...request.tools].sort(), ["gentle_design", "gentle_design_comments", "gentle_guide", "read"]);
+		assert.deepEqual([...request.tools].sort(), ["drakonc_design", "drakonc_design_comments", "drakonc_guide", "read"]);
 		assert.doesNotMatch(request.systemPrompt, DESIGN_ROUTE);
 		assert.doesNotMatch(request.systemPrompt, GUIDE_ROUTE);
 	}
@@ -142,7 +142,7 @@ test("with a design/ directory the design tools are declared; one appearing mid-
 	const root = fixture(t);
 	const present = await runSession(root, "present", { codemode: true, design: true, steps: [{ prompt: "hello" }] });
 	assert.deepEqual(present.errors, []);
-	assert.deepEqual([...present.requests[0].tools].sort(), ["codemode", "gentle_design", "gentle_design_comments", "read"]);
+	assert.deepEqual([...present.requests[0].tools].sort(), ["codemode", "drakonc_design", "drakonc_design_comments", "read"]);
 	assert.doesNotMatch(present.requests[0].systemPrompt, DESIGN_ROUTE);
 	assert.match(present.requests[0].systemPrompt, GUIDE_ROUTE, "the guide stays behind codemode");
 
@@ -155,15 +155,15 @@ test("with a design/ directory the design tools are declared; one appearing mid-
 	const [first, second, third] = appearing.requests;
 	assert.deepEqual(first.tools, ["read", "codemode"]);
 	assert.deepEqual(second.tools, first.tools, "unchanged state keeps the list");
-	assert.deepEqual([...third.tools].sort(), ["codemode", "gentle_design", "gentle_design_comments", "read"], "the next run after design/ appears declares them");
+	assert.deepEqual([...third.tools].sort(), ["codemode", "drakonc_design", "drakonc_design_comments", "read"], "the next run after design/ appears declares them");
 	assert.doesNotMatch(third.systemPrompt, DESIGN_ROUTE);
 });
 
 test("delegated children keep the design tools declared", { timeout: 60_000 }, async (t) => {
 	const root = fixture(t);
-	const run = await runSession(root, "child", { codemode: true, env: { GENTLE_PI_AGENTS_CHILD: "1" }, steps: [{ prompt: "hello" }] });
+	const run = await runSession(root, "child", { codemode: true, env: { DRAKONC_PI_AGENTS_CHILD: "1" }, steps: [{ prompt: "hello" }] });
 	assert.deepEqual(run.errors, []);
-	assert.deepEqual([...run.requests[0].tools].sort(), ["codemode", "gentle_design", "gentle_design_comments", "read"]);
+	assert.deepEqual([...run.requests[0].tools].sort(), ["codemode", "drakonc_design", "drakonc_design_comments", "read"]);
 	assert.doesNotMatch(run.requests[0].systemPrompt, DESIGN_ROUTE);
 });
 
@@ -172,17 +172,17 @@ test("delegated children keep the design tools declared", { timeout: 60_000 }, a
 test("a hidden tool called directly by name still runs", { timeout: 60_000 }, async (t) => {
 	const root = fixture(t);
 	const run = await runSession(root, "direct-call", { codemode: true, steps: [
-		{ prompt: "Start the tour.", call: { name: "gentle_guide", arguments: { action: "start" } } },
-		{ prompt: "List the designs.", call: { name: "gentle_design", arguments: { action: "list" } } },
+		{ prompt: "Start the tour.", call: { name: "drakonc_guide", arguments: { action: "start" } } },
+		{ prompt: "List the designs.", call: { name: "drakonc_design", arguments: { action: "list" } } },
 	] });
 	assert.deepEqual(run.errors, []);
 	assert.deepEqual(run.requests[0].tools, ["read", "codemode"], "both tools are hidden while the call is made");
 	assert.deepEqual(run.requests[2].tools, ["read", "codemode"]);
 	const [guide, design] = [run.requests[1].toolResults.at(-1)!, run.requests[3].toolResults.at(-1)!];
-	assert.equal(guide.name, "gentle_guide");
+	assert.equal(guide.name, "drakonc_guide");
 	assert.equal(guide.isError, false);
-	assert.match(guide.text, /Tour steps: /);
-	assert.equal(design.name, "gentle_design");
+	assert.match(guide.text, /Pasos del recorrido: /);
+	assert.equal(design.name, "drakonc_design");
 	assert.equal(design.isError, false);
 	assert.match(design.text, /No designs in design\/ yet/);
 });

@@ -60,7 +60,7 @@ test("ordinary branch without family remains absent despite disk sibling", (t) =
 });
 
 test("omitted data is terminal invalid or unsupported, never older resurrection", (t) => {
-	for (const identifier of [customType, "gentle-pi.session-profile/v9"]) {
+	for (const identifier of [customType, "drakonc-pi.session-profile/v9"]) {
 		const selected = { ...entry(), customType: identifier, data: undefined };
 		const result = fixture(t, [entry("older"), selected]).read();
 		assert.equal(
@@ -99,7 +99,7 @@ test("future newest is terminal; sibling records never win", (t) => {
 	const older = entry("older");
 	const future = {
 		...entry("future"),
-		customType: "gentle-pi.session-profile/v2",
+		customType: "drakonc-pi.session-profile/v2",
 	};
 	const f = fixture(
 		t,

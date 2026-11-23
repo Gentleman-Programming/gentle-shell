@@ -1,13 +1,13 @@
 // Per-repository agent-model profile pins.
 //
-// `/gentle:profiles` applies a profile globally: it rewrites `models.json`, the
+// `/drakonc:profiles` applies a profile globally: it rewrites `models.json`, the
 // agent frontmatter, `subagents.json`, and the orchestrator in `settings.json`.
 // Two repositories worked in parallel therefore fight over one global routing.
 // A pin re-anchors only the subagent routing of one repository to a named profile
 // from the global store, at launch time, without materialising anything:
 //
-//   local pin         <git-common-dir>/gentle-ai/profile-pin.json
-//   repo declaration  <worktree-root>/.pi/gentle-ai/profile.json
+//   local pin         <git-common-dir>/drakonc-ai/profile-pin.json
+//   repo declaration  <worktree-root>/.pi/drakonc-ai/profile.json
 //
 // The local pin sits inside the Git common directory, so it is invisible to Git
 // and shared by every worktree of the clone; the repo declaration is an ordinary
@@ -19,7 +19,7 @@
 // reserved orchestrator key, so a pin never moves the orchestrator model.
 //
 // `evaluateProfilePin` is the single precedence rule. The launch resolver below and
-// the `/gentle:profiles` panel both go through it, so the layer a launch uses and the
+// the `/drakonc:profiles` panel both go through it, so the layer a launch uses and the
 // layer the panel reports can never disagree.
 
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
@@ -28,7 +28,7 @@ import { isValidProfileName, profileRoleEntries, profilesFilePath, readProfilesF
 import type { AgentModelConfig } from "./model-routing-authority.ts";
 import { resolveSessionWorktree, type WorktreeIdentity, type WorktreeResolver } from "./session-worktree-registry.ts";
 
-export const PROFILE_PIN_KIND = "gentle-pi.agent_model_profile_pin";
+export const PROFILE_PIN_KIND = "drakonc-pi.agent_model_profile_pin";
 export const PROFILE_PIN_VERSION = 1;
 // Ordered root .gitignore rules that expose only the committable declaration.
 // Git cannot re-include a file while an excluded parent directory remains hidden,
@@ -36,9 +36,9 @@ export const PROFILE_PIN_VERSION = 1;
 export const REPO_PROFILE_DECLARATION_GITIGNORE_RULES = [
 	"!.pi/",
 	".pi/*",
-	"!.pi/gentle-ai/",
-	".pi/gentle-ai/*",
-	"!.pi/gentle-ai/profile.json",
+	"!.pi/drakonc-ai/",
+	".pi/drakonc-ai/*",
+	"!.pi/drakonc-ai/profile.json",
 ] as const;
 
 export interface AgentProfilePinFile {
@@ -108,11 +108,11 @@ export interface ProfilePinResolution extends ProfilePinSelection {
 }
 
 export function localProfilePinPath(commonDir: string): string {
-	return join(commonDir, "gentle-ai", "profile-pin.json");
+	return join(commonDir, "drakonc-ai", "profile-pin.json");
 }
 
 export function repoProfileDeclarationPath(worktreeRoot: string): string {
-	return join(worktreeRoot, ".pi", "gentle-ai", "profile.json");
+	return join(worktreeRoot, ".pi", "drakonc-ai", "profile.json");
 }
 
 // Fixed key order plus a trailing newline keeps the artifact byte-identical for the
@@ -181,7 +181,7 @@ export function readProfilePin(path: string): string | undefined {
 let profilePinWorktreeResolver: WorktreeResolver = resolveSessionWorktree;
 
 /**
- * Test seam, mirroring the other injectable seams in `lib/`: the `/gentle:profiles`
+ * Test seam, mirroring the other injectable seams in `lib/`: the `/drakonc:profiles`
  * panel resolves the pin through the ambient resolver, and a test must not depend
  * on where the test runner's working directory happens to sit. The launch path
  * passes its own resolver instead, so it needs no seam.
@@ -190,7 +190,7 @@ export function setProfilePinWorktreeResolverForTesting(resolver?: WorktreeResol
 	profilePinWorktreeResolver = resolver ?? resolveSessionWorktree;
 }
 
-function gentlePiWorktreeIdentity(
+function drakoncPiWorktreeIdentity(
 	cwd: string,
 	resolveWorktree: WorktreeResolver,
 ): WorktreeIdentity | undefined {
@@ -212,7 +212,7 @@ export function readProfilePinStatus(
 	cwd: string,
 	resolveWorktree: WorktreeResolver = profilePinWorktreeResolver,
 ): ProfilePinStatus | undefined {
-	const identity = gentlePiWorktreeIdentity(cwd, resolveWorktree);
+	const identity = drakoncPiWorktreeIdentity(cwd, resolveWorktree);
 	if (!identity) return undefined;
 	const localPath = localProfilePinPath(identity.commonDir);
 	const repoPath = repoProfileDeclarationPath(identity.root);

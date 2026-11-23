@@ -1,9 +1,10 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { BRAND_GLYPH } from "./brand-glyph.ts";
 import { renderUsagePanel, type ActiveProvider, type UsagePanelScope, type UsageSourceRegistry, type UsageStore, type UsageTheme } from "./shell-usage.ts";
 import type { GaugePaint } from "./shell-gauge.ts";
 import { paintHoverable } from "./shell-hover.ts";
 
-// Gentle Shell subscriptions overlay: a framed panel over the usage store.
+// Drakonc Shell subscriptions overlay: a framed panel over the usage store.
 // It reads the store on every render, so a refresh only needs to record.
 
 export interface UsageViewDeps {
@@ -25,8 +26,8 @@ export interface UsageViewDeps {
 	requestRender(): void;
 }
 
-const TITLE = "✿ Subscriptions";
-const REFRESHING = "✿ Subscriptions · refreshing…";
+const TITLE = `${BRAND_GLYPH} Subscriptions`;
+const REFRESHING = `${BRAND_GLYPH} Subscriptions · refreshing…`;
 const FRAME_ROLE = "border";
 const TITLE_ROLE = "customMessageLabel";
 const KEY_ROLE = "accent";

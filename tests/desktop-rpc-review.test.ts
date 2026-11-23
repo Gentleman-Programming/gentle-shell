@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET } from "../lib/desktop-rpc.ts";
 import {
 	DESKTOP_REVIEW_EVENTS,
@@ -26,7 +26,7 @@ import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 // #3324 (odd/tasks/desktop-rpc-review-mode.md, S1-S6): Desktop reads and
 // toggles the user-owned review (RDD) switch through the same native adapter
 // the TUI uses, with a confirmation step, fail-closed reads, and no CLI detail
-// on the wire. Nothing here runs the real gentle-ai binary: every owner below
+// on the wire. Nothing here runs the real drakonc-ai binary: every owner below
 // is a fake service or a fake native adapter.
 
 const context = { cwd: "/repo" } as unknown as ExtensionContext;
@@ -127,10 +127,10 @@ test("get_review_mode fails closed to unknown on a failed, timed-out, or malform
 	malformed.nextRead = { kind: "status", status: { global: "maybe", cloneLocal: "", effective: "on", source: "default" } as unknown as DesktopReviewOwnerStatus };
 	assert.deepEqual(await bridgeWith(malformed).handle("get_review_mode", {}), { ok: true, data: UNKNOWN_MODE }, "an unrecognized owner value is never echoed");
 
-	const throwing = { ...fakeOwner(), read: async () => { throw new Error("spawn C:\\Users\\me\\gentle-ai.exe ETIMEDOUT"); } } satisfies DesktopReviewService;
+	const throwing = { ...fakeOwner(), read: async () => { throw new Error("spawn C:\\Users\\me\\drakonc-ai.exe ETIMEDOUT"); } } satisfies DesktopReviewService;
 	const outcome = await bridgeWith(throwing).handle("get_review_mode", {});
 	assert.deepEqual(outcome, { ok: true, data: UNKNOWN_MODE });
-	assert.doesNotMatch(JSON.stringify(outcome), /gentle-ai|Users|ETIMEDOUT/);
+	assert.doesNotMatch(JSON.stringify(outcome), /drakonc-ai|Users|ETIMEDOUT/);
 });
 
 test("get_review_mode answers review_unavailable when the owner, host, or command is missing", async () => {
@@ -262,7 +262,7 @@ test("clone enable under a global off says so, applies the owner's no-op, and em
 	const message = (confirm.data as { confirmation: { message: string } }).confirmation.message;
 	assert.match(message, /off machine-wide/);
 	assert.match(message, /cannot override/);
-	assert.doesNotMatch(message, /gentle-ai|--scope|\//, "no command line or path in the dialog");
+	assert.doesNotMatch(message, /drakonc-ai|--scope|\//, "no command line or path in the dialog");
 	const token = (confirm.data as { confirmation: { token: string } }).confirmation.token;
 	const applied = await bridge.handle("set_review_mode", { enabled: true, scope: "clone", confirmationToken: token });
 	const mode = { effective: "disabled", source: "global", scopes: { global: "disabled", clone: "unset" } };
@@ -297,10 +297,10 @@ test("a failed write answers review_unavailable with no event and no owner detai
 	const throwing = fakeOwner();
 	const third = bridgeWith(throwing);
 	const thirdToken = await confirmToken(third, { enabled: false, scope: "global" });
-	throwing.write = async () => { throw new Error("gentle-ai review mode disable --scope global --cwd /home/me/repo exited 1"); };
+	throwing.write = async () => { throw new Error("drakonc-ai review mode disable --scope global --cwd /home/me/repo exited 1"); };
 	const outcome = await third.handle("set_review_mode", { enabled: false, scope: "global", confirmationToken: thirdToken });
 	assert.deepEqual(outcome, { ok: false, error: UNCONFIRMED });
-	assert.doesNotMatch(JSON.stringify(outcome), /gentle-ai|--scope|home/);
+	assert.doesNotMatch(JSON.stringify(outcome), /drakonc-ai|--scope|home/);
 });
 
 test("an unreadable re-read after a write answers unknown with no event", async () => {
@@ -366,7 +366,7 @@ function desktopHarness(t: test.TestContext, owner?: DesktopReviewService) {
 	let next = 0;
 	const invoke = async (method: string, params: Record<string, unknown> = {}) => {
 		next += 1;
-		await commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: `review-${next}`, method, params }), ctx);
+		await commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: `review-${next}`, method, params }), ctx);
 	};
 	return { lines, invoke };
 }
@@ -413,7 +413,7 @@ test("a confirmed change publishes its response before one review_mode_changed e
 	assert.equal(app.lines[5]!.data.changed, false);
 });
 
-// ---- The real owner: extensions/gentle-ai.ts over a fake native adapter ----
+// ---- The real owner: extensions/drakonc-ai.ts over a fake native adapter ----
 
 function fakeNativeReviewCli(global: Scope = "", cloneLocal: Scope = "") {
 	const state = { global, cloneLocal };
@@ -438,11 +438,11 @@ function fakeNativeReviewCli(global: Scope = "", cloneLocal: Scope = "") {
 
 async function realOwner(t: test.TestContext, native: ReturnType<typeof fakeNativeReviewCli> | null, env: NodeJS.ProcessEnv = {}) {
 	const configHome = mkdtempSync(join(tmpdir(), "desktop-rpc-review-config-"));
-	const previousConfig = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	const previousConfig = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
 	t.after(() => {
-		if (previousConfig === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousConfig;
+		if (previousConfig === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousConfig;
 		rmSync(configHome, { recursive: true, force: true });
 	});
 	const listeners = new Map<string, Array<(payload: unknown) => void>>();
@@ -455,7 +455,7 @@ async function realOwner(t: test.TestContext, native: ReturnType<typeof fakeNati
 			emit(channel: string, payload: unknown) { for (const listener of listeners.get(channel) ?? []) listener(payload); },
 		},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: native?.cli ?? null, processEnv: { GENTLE_AI_TELEMETRY: "0", ...env } })(pi);
+	createDrakoncAiExtension({ nativeReviewCli: native?.cli ?? null, processEnv: { DRAKONC_AI_TELEMETRY: "0", ...env } })(pi);
 	const ctx = { cwd: "/fixture/repo", hasUI: true, mode: "rpc", sessionManager: { getSessionId: () => "desktop-review", getCwd: () => "/fixture/repo" }, ui: { notify() {} } } as unknown as ExtensionContext;
 	const bridge = new DesktopReviewBridge(pi);
 	bridge.attach(ctx);
@@ -495,25 +495,25 @@ test("the real owner answers review_unavailable without a native adapter or with
 
 	for (const code of [NATIVE_REVIEW_ERROR_CODE.UNAVAILABLE, NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, NATIVE_REVIEW_ERROR_CODE.PACKAGE_BINARY_MISSING]) {
 		const native = fakeNativeReviewCli();
-		native.failWith = new NativeReviewCliError(code, NATIVE_REVIEW_OPERATION.MODE, false, false, "native process could not start at C:\\tools\\gentle-ai.exe");
+		native.failWith = new NativeReviewCliError(code, NATIVE_REVIEW_OPERATION.MODE, false, false, "native process could not start at C:\\tools\\drakonc-ai.exe");
 		const { bridge } = await realOwner(t, native);
 		const outcome = await bridge.handle("get_review_mode", {});
 		assert.deepEqual(outcome, { ok: false, error: UNAVAILABLE }, code);
-		assert.doesNotMatch(JSON.stringify(outcome), /gentle-ai|tools/);
+		assert.doesNotMatch(JSON.stringify(outcome), /drakonc-ai|tools/);
 	}
 });
 
 test("the real owner fails closed to unknown on a native failure or timeout", async (t) => {
 	const failing = fakeNativeReviewCli();
-	failing.failWith = new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, NATIVE_REVIEW_OPERATION.MODE, true, false, "gentle-ai exited 1: /home/me/.config");
+	failing.failWith = new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, NATIVE_REVIEW_OPERATION.MODE, true, false, "drakonc-ai exited 1: /home/me/.config");
 	const first = await realOwner(t, failing);
 	const outcome = await first.bridge.handle("get_review_mode", {});
 	assert.deepEqual(outcome, { ok: true, data: UNKNOWN_MODE });
-	assert.doesNotMatch(JSON.stringify(outcome), /gentle-ai|home/);
+	assert.doesNotMatch(JSON.stringify(outcome), /drakonc-ai|home/);
 
 	const hanging = fakeNativeReviewCli();
 	hanging.hang = true;
-	const second = await realOwner(t, hanging, { GENTLE_PI_RDD_STATUS_TIMEOUT_MS: "30" });
+	const second = await realOwner(t, hanging, { DRAKONC_PI_RDD_STATUS_TIMEOUT_MS: "30" });
 	const started = Date.now();
 	assert.deepEqual(await second.bridge.handle("get_review_mode", {}), { ok: true, data: UNKNOWN_MODE });
 	assert.ok(Date.now() - started < 2000, "the read is bounded by the status timeout");
@@ -521,7 +521,7 @@ test("the real owner fails closed to unknown on a native failure or timeout", as
 
 test("a subagent child never answers the review owner seam", async (t) => {
 	const native = fakeNativeReviewCli();
-	const { pi, ctx } = await realOwner(t, native, { GENTLE_PI_AGENTS_CHILD: "1" });
+	const { pi, ctx } = await realOwner(t, native, { DRAKONC_PI_AGENTS_CHILD: "1" });
 	assert.equal(await discoverDesktopReviewService(pi, ctx), undefined);
 	assert.deepEqual(native.calls, []);
 });
@@ -535,7 +535,7 @@ function probeOwner(initial: S, opts: { writeGate?: Promise<void>; throwOn?: "re
 	const writes: unknown[] = [];
 	const service = {
 		schema: DESKTOP_REVIEW_SERVICE_SCHEMA,
-		async read() { if (opts.throwOn === "read") throw new Error("C:\\secret\\path gentle-ai review mode status --json"); return { kind: "status" as const, status: { ...state } }; },
+		async read() { if (opts.throwOn === "read") throw new Error("C:\\secret\\path drakonc-ai review mode status --json"); return { kind: "status" as const, status: { ...state } }; },
 		async write(req: { enabled: boolean; scope: "clone" | "global" }) {
 			writes.push(req);
 			if (opts.writeGate) await opts.writeGate;
@@ -619,7 +619,7 @@ test("P5 gate released on read throw, write throw, and discover throw; no detail
 		const token = desktopReviewModeConfirmation({ enabled: false, scope: "clone" }, ON).token;
 		const r = await b.handle("set_review_mode", { enabled: false, scope: "clone", confirmationToken: token }) as any;
 		assert.equal(r.ok, false); assert.equal(r.error.code, "review_unavailable");
-		assert.doesNotMatch(JSON.stringify(r), /secret|gentle-ai|boom/);
+		assert.doesNotMatch(JSON.stringify(r), /secret|drakonc-ai|boom/);
 		assert.equal(beginDesktopReviewModeSet(), true); endDesktopReviewModeSet();
 	}
 	const b = new DesktopReviewBridge({} as never, { discover: async () => { throw new Error("x"); } });
@@ -632,7 +632,7 @@ test("P5 gate released on read throw, write throw, and discover throw; no detail
 test("P6 read throw on get -> effective unknown, no detail", async () => {
 	const { service } = probeOwner(ON, { throwOn: "read" });
 	const r = await probeBridge(service).handle("get_review_mode", {}) as any;
-	assert.equal(r.data.effective, "unknown"); assert.doesNotMatch(JSON.stringify(r), /secret|gentle-ai/);
+	assert.equal(r.data.effective, "unknown"); assert.doesNotMatch(JSON.stringify(r), /secret|drakonc-ai/);
 });
 
 test("P7 reset during a pending discover returns unavailable and never writes", async () => {

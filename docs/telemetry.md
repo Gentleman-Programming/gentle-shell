@@ -1,7 +1,7 @@
 # Telemetry
 
 Runtime usage telemetry is best effort: an available usage event gets at most one
-asynchronous attempt through `gentle-ai telemetry runtime send --json`. Busy,
+asynchronous attempt through `drakonc-ai telemetry runtime send --json`. Busy,
 failed, disabled, or cancelled attempts are discarded silently. There is no
 metrics disk storage, outbox, retry, backoff, cooldown, daemon, or session reconstruction.
 
@@ -58,37 +58,37 @@ row with zero response-token coverage, never substituted for per-response eviden
   Child completion tombstones are capped at 256 per extension session. Source IDs
   stay local and are never exported. No session history is read or reconstructed.
 
-## What Gentle Pi does
+## What Drakonc Pi does
 
-On activation of a primary session (not a named-agent session), Gentle Pi resolves the package-local `gentle-ai` binary (honoring a registered dev-binary override, same as every other native call) and spawns:
+On activation of a primary session (not a named-agent session), Drakonc Pi resolves the package-local `drakonc-ai` binary (honoring a registered dev-binary override, same as every other native call) and spawns:
 
 ```text
-gentle-ai telemetry trigger --json
+drakonc-ai telemetry trigger --json
 ```
 
 - detached, with stdout/stderr discarded (`stdio: "ignore"`);
-- a 3 s deadline: a runaway process is killed, but Gentle Pi never waits for it to exit;
+- a 3 s deadline: a runaway process is killed, but Drakonc Pi never waits for it to exit;
 - at most once per process, regardless of how many sessions or sub-agents run afterward.
 
-Rate limiting, enrollment, and every opt-out live entirely in `gentle-ai`; calling the trigger once per session start is safe by construction. A missing binary, an older binary without the `telemetry` verb (which prints `unknown telemetry command` and exits non-zero), or a spawn failure are all treated as "nothing to do" and never affect activation or surface an error to the user.
+Rate limiting, enrollment, and every opt-out live entirely in `drakonc-ai`; calling the trigger once per session start is safe by construction. A missing binary, an older binary without the `telemetry` verb (which prints `unknown telemetry command` and exits non-zero), or a spawn failure are all treated as "nothing to do" and never affect activation or surface an error to the user.
 
-Install counts for `gentle-pi` and `gentle-engram` come from npm download statistics; neither package emits an install event of its own.
+Install counts for `drakonc-pi` and `drakonc-engram` come from npm download statistics; neither package emits an install event of its own.
 
 ## The trigger contract
 
-`gentle-ai telemetry trigger --json` always exits `0` and prints one line of JSON:
+`drakonc-ai telemetry trigger --json` always exits `0` and prints one line of JSON:
 
 ```json
-{"schema":"gentle-ai.telemetry-trigger/v1","decision":"enrolled|sent_install|sent_heartbeat|rate_limited|backoff|disabled","source":"<deciding source>"}
+{"schema":"drakonc-ai.telemetry-trigger/v1","decision":"enrolled|sent_install|sent_heartbeat|rate_limited|backoff|disabled","source":"<deciding source>"}
 ```
 
-`gentle-ai telemetry status|enable|disable|preview [--json]` exist for the opt-out flow; `status --json` prints `gentle-ai.telemetry-status/v1`. Gentle Pi's `/gentle:telemetry` slash command runs these in the foreground (bounded to 5 s) through the same binary resolver and relays the result.
+`drakonc-ai telemetry status|enable|disable|preview [--json]` exist for the opt-out flow; `status --json` prints `drakonc-ai.telemetry-status/v1`. Drakonc Pi's `/drakonc:telemetry` slash command runs these in the foreground (bounded to 5 s) through the same binary resolver and relays the result.
 
 ## Opting out
 
 Any of the following disables the nudge or the underlying telemetry:
 
-- `/gentle:telemetry disable` — asks the local `gentle-ai` binary to disable telemetry. `/gentle:telemetry status` and `/gentle:telemetry preview` inspect it without leaving Pi.
-- `DO_NOT_TRACK=1` — Gentle Pi does not spawn the trigger at all; `gentle-ai` also honors this standard independently.
-- `GENTLE_AI_TELEMETRY=0` — same effect, `gentle-ai`'s own environment switch.
-- `CI=true` — Gentle Pi does not spawn the trigger in automated/CI runs, since they are not a real usage signal.
+- `/drakonc:telemetry disable` — asks the local `drakonc-ai` binary to disable telemetry. `/drakonc:telemetry status` and `/drakonc:telemetry preview` inspect it without leaving Pi.
+- `DO_NOT_TRACK=1` — Drakonc Pi does not spawn the trigger at all; `drakonc-ai` also honors this standard independently.
+- `DRAKONC_AI_TELEMETRY=0` — same effect, `drakonc-ai`'s own environment switch.
+- `CI=true` — Drakonc Pi does not spawn the trigger in automated/CI runs, since they are not a real usage signal.

@@ -11,14 +11,14 @@ routing, with whole-profile precedence and no ambient account substitution.
 The native single and grouped review capture paths call
 `reviewHostRelaySelection` with `readModelConfig(cwd)`, which reads only the
 global `models.json`. A repository that pins a profile via
-`gentle-ai/profile-pin.json` (local) or `.pi/gentle-ai/profile.json` (repo
+`drakonc-ai/profile-pin.json` (local) or `.pi/drakonc-ai/profile.json` (repo
 declaration) still launches its reviewers with the global routing, so two
 repositories worked in parallel fight over one global reviewer configuration —
-the exact problem the pin was introduced to solve (gentle-shell#1544).
+the exact problem the pin was introduced to solve (drakonc-shell#1544).
 
 ## Scope
 
-- In `extensions/gentle-ai.ts`: use `pinnedEffectiveModelConfig(cwd) ??
+- In `extensions/drakonc-ai.ts`: use `pinnedEffectiveModelConfig(cwd) ??
   readModelConfig(cwd)` at both `reviewHostRelaySelection` callsites (single
   capture and grouped capture). The existing resolver precedence (local pin >
   repo declaration > global, with sibling-worktree-aware common-dir

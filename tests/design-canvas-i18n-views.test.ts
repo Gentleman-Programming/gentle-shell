@@ -6,7 +6,7 @@ import { findAll, flush, handoffDoc, loadCanvas, memoryStorage, texts, withClass
 // S2, S8, S9): each in Spanish after choosing Español in Settings, the exact English again after English, relabeled
 // in place without reloading a frame. Every assertion compares strings, numbers or booleans, never fake elements.
 
-const LANGUAGE_KEY = "gentle-design:language";
+const LANGUAGE_KEY = "drakonc-design:language";
 const LAYOUT_URL = "/t/api/designs/alpha/layout";
 const COMPARE = { "/t/api/designs/alpha/handoffs": handoffDoc("01-a.html", { "01-a.html": { status: "implemented", previewUrl: "http://localhost:5173/login" } }) };
 

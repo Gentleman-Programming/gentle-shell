@@ -4,12 +4,12 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { __testing, createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { localProfilePinPath, repoProfileDeclarationPath, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { createProfile, emptyProfilesFile, profilesFilePath, writeProfilesFileSync } from "../lib/agent-profiles.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
-import { GENTLE_AI_DEV_BINARY_ENV, resolveGentleAiDevBinaryOverride } from "../lib/gentle-ai-binary.ts";
+import { DRAKONC_AI_DEV_BINARY_ENV, resolveDrakoncAiDevBinaryOverride } from "../lib/drakonc-ai-binary.ts";
 import { NativeReviewIntegrationError, type NativeReviewCli, type NativeReviewUnachievableLensCaptureArtifact, type NativeReviewUnachievableLensCaptureRequest } from "../lib/native-review-cli.ts";
 import { REVIEW_HOST_RELAY_FAILURE, REVIEW_HOST_RELAY_PI_TIMEOUT_ENV, REVIEW_HOST_RELAY_PI_TIMEOUT_MAX_MS, REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE, REVIEW_HOST_RELAY_UNAVAILABLE_MESSAGE, ReviewHostRelayError, type ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
 import { decodeReviewFailureV2, decodeReviewNextTransitionV3, decodeReviewStatusV3, type ReviewArtifactSubjectV2, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
@@ -30,7 +30,7 @@ const PHASE_REVISION = `sha256:${"3".repeat(64)}`;
 const TREE = "2".repeat(40);
 
 function repository(t: test.TestContext): string {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-relay-routing-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-relay-routing-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	execFileSync("git", ["init", "-b", "main"], { cwd });
 	writeFileSync(join(cwd, "app.ts"), "export const value = 1;\n");
@@ -167,7 +167,7 @@ function providerRefuterRequiredStatus(lineageId: string): ReviewStatusV3 {
 	};
 }
 
-// gentle-pi#311 P3: gentle-ai's v9 contract renders the refuter and
+// drakonc-pi#311 P3: drakonc-ai's v9 contract renders the refuter and
 // targeted-validator role captures host-mediated, exactly like a lens
 // materialize slot, instead of the self-contained --execute=true vector
 // `providerRefuterRequiredStatus` above models.
@@ -379,7 +379,7 @@ test("one materialize binding routes exactly one provider slot through the host 
 	assert.equal((result.host_relay as { transport: string }).transport, "pi_host_relay");
 });
 
-// gentle-pi#311 P3: a v9 host-mediated refuter/targeted-validator slot reuses
+// drakonc-pi#311 P3: a v9 host-mediated refuter/targeted-validator slot reuses
 // this exact relay machinery — the only role-specific part reachable from
 // here is the fixed routing key it resolves through, since it carries no
 // per-slot lens identity.
@@ -708,7 +708,7 @@ test("a transport failure stops the selected capture without auto-follow", async
 	assert.equal(harness.statusCalls.length, 1, "no automatic relaunch after transport failure");
 });
 
-// gentle-pi#522 / #524: a submission Go refused at admission is a proven
+// drakonc-pi#522 / #524: a submission Go refused at admission is a proven
 // non-mutation. The model must see the refusal text, mutation_outcome none,
 // and a continuation for the reoffered slot, never an unknown outcome that the
 // contract forbids replaying.
@@ -742,7 +742,7 @@ test("a submission whose outcome is genuinely indeterminate still reconciles thr
 	const pending = finalizeStatus(lineageId, [relayCollectInput(lineageId, "review-risk", 0)]);
 	const harness = nativeHarness([pending, pending]);
 	__testing.setReviewHostRelayRunnerForTesting(async () => {
-		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", "gentle-ai capture submission exceeded its 120000ms bound after 120004ms", { exitCode: null, stderr: "", timedOut: true, elapsedMs: 120_004, timeoutMs: 120_000 });
+		throw new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", "drakonc-ai capture submission exceeded its 120000ms bound after 120004ms", { exitCode: null, stderr: "", timedOut: true, elapsedMs: 120_004, timeoutMs: 120_000 });
 	});
 
 	const result = await runCapture(cwd, harness, lineageId);
@@ -778,7 +778,7 @@ test("a relay timeout reports its one-slot measurements and no auto-follow", asy
 	assert.equal(harness.statusCalls.length, 1);
 });
 
-// gentle-pi#638: the typed stop a provider renders after a host declared a
+// drakonc-pi#638: the typed stop a provider renders after a host declared a
 // slot unachievable, built through the production decoder so the routing
 // tests exercise the same typed shape the extension consumes.
 function unachievableStopStatus(lineageId: string, lens: ReviewArtifactSubjectV2["lens"], order: number, reason = "relay_transport_bound_exceeded"): ReviewStatusV3 {
@@ -820,7 +820,7 @@ function unachievableArtifact(lineageId: string, lens: ReviewArtifactSubjectV2["
 	return { schema: "gentle-ai.review-capture-unachievable/v1", lineageId, targetIdentity: SHA, lens, selectedOrder: order, reason, recorded: true };
 }
 
-// gentle-pi#638: a deterministic pi timeout is declared unachievable through
+// drakonc-pi#638: a deterministic pi timeout is declared unachievable through
 // the native verb, and one bound STATUS re-query renders the typed stop with
 // its withdraw binding instead of reoffering the same slot.
 test("a deterministic pi timeout declares the slot unachievable and renders the typed stop", async (t) => {
@@ -849,13 +849,13 @@ test("a deterministic pi timeout declares the slot unachievable and renders the 
 	assert.match(slots[0]!.withdraw, /capture-unachievable.*--withdraw=true/);
 	assert.match(String(result.next_action), /withdraw/);
 	assert.equal(result.mutation_performed, true);
-	// gentle-pi#822: the native declaration was recorded, so the flow reports the mutation as committed, not none.
+	// drakonc-pi#822: the native declaration was recorded, so the flow reports the mutation as committed, not none.
 	assert.equal(result.mutation_outcome, "committed");
 	assert.equal(harness.statusCalls.length, 2, "one selection STATUS plus exactly one bound re-query");
 	assert.equal(harness.statusCalls.at(-1)?.agent, "pi", "the bound re-query preserves the Pi host runtime");
 });
 
-// gentle-pi#638: generic admission rejections describe the submitted reviewer
+// drakonc-pi#638: generic admission rejections describe the submitted reviewer
 // bytes, not a deterministic failure of the provider-bound slot. A fresh
 // reviewer can repair malformed JSON or a binding mismatch, so both retain the
 // ordinary exact-reoffer path and must never declare the slot unachievable.
@@ -886,7 +886,7 @@ test("repairable submission refusals retain the exact-slot retry path", async (t
 	}
 });
 
-// gentle-pi#822: a stop carrying slots that do not match the identity this
+// drakonc-pi#822: a stop carrying slots that do not match the identity this
 // session declared is a reconciliation failure — never a success rendering
 // someone else's withdraw command.
 test("a stop whose slots do not match the declared identity reports a reconciliation failure", async (t) => {
@@ -915,7 +915,7 @@ test("a stop whose slots do not match the declared identity reports a reconcilia
 	assert.equal(harness.statusCalls.length, 2, "the bound re-query still runs exactly once");
 });
 
-// gentle-pi#822: with several declared entries on the stop, only the matching
+// drakonc-pi#822: with several declared entries on the stop, only the matching
 // identity is exposed — never the withdraw commands of other runs.
 test("a stop carrying several declared slots exposes only the one this session declared", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
@@ -942,7 +942,7 @@ test("a stop carrying several declared slots exposes only the one this session d
 	assert.equal(result.mutation_outcome, "committed");
 });
 
-// gentle-pi#822 (CodeRabbit finding): success must be proven by the unachievable_lens_slot stop itself — a bound STATUS that comes back with a collect reoffer instead of the stop is a reconciliation failure, never a silent success with no withdraw command.
+// drakonc-pi#822 (CodeRabbit finding): success must be proven by the unachievable_lens_slot stop itself — a bound STATUS that comes back with a collect reoffer instead of the stop is a reconciliation failure, never a silent success with no withdraw command.
 test("a bound STATUS that reoffers the collect transition instead of the stop reports a reconciliation failure", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 	const cwd = repository(t);
@@ -966,7 +966,7 @@ test("a bound STATUS that reoffers the collect transition instead of the stop re
 	assert.equal(harness.statusCalls.length, 2, "the bound re-query still runs exactly once");
 });
 
-// gentle-pi#822 (CodeRabbit finding): the same proof requirement covers every STATUS shape that is not the stop — a foreign stop reason code or no transition at all.
+// drakonc-pi#822 (CodeRabbit finding): the same proof requirement covers every STATUS shape that is not the stop — a foreign stop reason code or no transition at all.
 test("a bound STATUS stop with a foreign reason code or no transition reports a reconciliation failure", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 	const cwd = repository(t);
@@ -1001,7 +1001,7 @@ test("a bound STATUS stop with a foreign reason code or no transition reports a 
 	assert.equal(bareHarness.statusCalls.length, 2);
 });
 
-// gentle-pi#822: STATUS for one lineage renders only that lineage's withdraw
+// drakonc-pi#822: STATUS for one lineage renders only that lineage's withdraw
 // command as the hint; a request for an unlisted lineage omits the hint rather
 // than surfacing a potentially unrelated withdraw command.
 test("an unachievable stop renders the withdraw hint only for the requested lineage", async (t) => {
@@ -1065,7 +1065,7 @@ test("a refused declaration surfaces both failures instead of the transport fall
 	assert.match(String(result.next_action), /fresh STATUS/);
 });
 
-// gentle-pi#822 (outside-diff finding): the declaration failure's own envelope carries the mutation truth — a failure AFTER the provider recorded the declaration reports committed, never a hardcoded none.
+// drakonc-pi#822 (outside-diff finding): the declaration failure's own envelope carries the mutation truth — a failure AFTER the provider recorded the declaration reports committed, never a hardcoded none.
 test("a declaration failure whose envelope already committed propagates its mutation state", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 	const cwd = repository(t);
@@ -1087,7 +1087,7 @@ test("a declaration failure whose envelope already committed propagates its muta
 	assert.equal(harness.statusCalls.length, 1, "a committed outcome needs no reconciliation re-query");
 });
 
-// gentle-pi#822 (outside-diff finding): an unknown declaration outcome is proven or disproven by one bound STATUS re-query without ever changing the failure outcome.
+// drakonc-pi#822 (outside-diff finding): an unknown declaration outcome is proven or disproven by one bound STATUS re-query without ever changing the failure outcome.
 test("an unknown declaration outcome is proven committed by one bound STATUS re-query", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 	const cwd = repository(t);
@@ -1111,7 +1111,7 @@ test("an unknown declaration outcome is proven committed by one bound STATUS re-
 	assert.equal(harness.statusCalls.at(-1)?.agent, "pi", "the reconciliation re-query preserves the Pi host runtime");
 });
 
-// gentle-pi#822 (outside-diff finding): a malformed declaration error with no envelope at all keeps the conservative none outcome and performs no re-query.
+// drakonc-pi#822 (outside-diff finding): a malformed declaration error with no envelope at all keeps the conservative none outcome and performs no re-query.
 test("a malformed declaration error without an envelope keeps mutation none", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 	const cwd = repository(t);
@@ -1195,9 +1195,9 @@ test("collect inputs without the provider-issued materialize token never reach t
 	assert.equal(relayCalls, 0);
 });
 
-// gentle-shell#1544: the relay's reviewer selection must honor the repository
+// drakonc-shell#1544: the relay's reviewer selection must honor the repository
 // profile pin. These tests isolate the global config home via
-// GENTLE_PI_CONFIG_HOME so the pin's precedence over (and independence from)
+// DRAKONC_PI_CONFIG_HOME so the pin's precedence over (and independence from)
 // models.json is observable without touching the operator's real
 // configuration; repository(t) supplies the Git identity the pin resolver reads.
 const GLOBAL_MODELS: AgentModelConfig = {
@@ -1219,22 +1219,22 @@ const PINNED_COMPLETE: AgentModelConfig = {
 const PINNED_PARTIAL: AgentModelConfig = { "review-risk": { model: "pinned/risk-model" } };
 
 function pinFixture(t: test.TestContext, globalModels: AgentModelConfig | "absent" = GLOBAL_MODELS): string {
-	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-pin-config-"));
-	const previous = process.env.GENTLE_PI_CONFIG_HOME;
-	const previousDevBinary = process.env[GENTLE_AI_DEV_BINARY_ENV];
+	const configHome = mkdtempSync(join(tmpdir(), "drakonc-pi-relay-pin-config-"));
+	const previous = process.env.DRAKONC_PI_CONFIG_HOME;
+	const previousDevBinary = process.env[DRAKONC_AI_DEV_BINARY_ENV];
 	// Redirecting the config home hides the ambient dev-binary registration, and
-	// the pinned runtime refuses a symlinked .gentle-ai directory; resolve the
+	// the pinned runtime refuses a symlinked .drakonc-ai directory; resolve the
 	// override while the ambient config home is still visible, then carry it
 	// through the env activation path so the real relay path resolves its
 	// executable the same way it does outside this fixture.
-	const devBinary = resolveGentleAiDevBinaryOverride()?.path;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
-	if (devBinary !== undefined) process.env[GENTLE_AI_DEV_BINARY_ENV] = devBinary;
+	const devBinary = resolveDrakoncAiDevBinaryOverride()?.path;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
+	if (devBinary !== undefined) process.env[DRAKONC_AI_DEV_BINARY_ENV] = devBinary;
 	t.after(() => {
-		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previous;
-		if (previousDevBinary === undefined) delete process.env[GENTLE_AI_DEV_BINARY_ENV];
-		else process.env[GENTLE_AI_DEV_BINARY_ENV] = previousDevBinary;
+		if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previous;
+		if (previousDevBinary === undefined) delete process.env[DRAKONC_AI_DEV_BINARY_ENV];
+		else process.env[DRAKONC_AI_DEV_BINARY_ENV] = previousDevBinary;
 		rmSync(configHome, { recursive: true, force: true });
 	});
 	let store = emptyProfilesFile();
@@ -1409,19 +1409,19 @@ test("a pinned profile missing a required group role is refused typed before any
 	assert.equal(authAttempts, 0, "the typed refusal fires before any provider auth");
 });
 
-// gentle-pi#2271: review-refuter and review-validator are provider review
+// drakonc-pi#2271: review-refuter and review-validator are provider review
 // roles, not installable agents, so nothing seeds their routing entries and
 // profiles never carry them. When the routing snapshot in effect (saved
 // routing, pin, or session binding) has no model for one of them, the relay
 // uses Pi's persisted default model, as the routing panel already promises.
 // Lens reviewers keep their fail-closed rule.
 function isolatedAgentHome(t: test.TestContext, settings?: Record<string, unknown>): void {
-	const agentHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-agent-home-"));
-	const previous = process.env.GENTLE_PI_AGENT_HOME;
-	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	const agentHome = mkdtempSync(join(tmpdir(), "drakonc-pi-relay-agent-home-"));
+	const previous = process.env.DRAKONC_PI_AGENT_HOME;
+	process.env.DRAKONC_PI_AGENT_HOME = agentHome;
 	t.after(() => {
-		if (previous === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previous;
 		rmSync(agentHome, { recursive: true, force: true });
 	});
 	if (settings !== undefined) writeFileSync(join(agentHome, "settings.json"), `${JSON.stringify(settings, null, 2)}\n`);
@@ -1467,7 +1467,7 @@ test("a pinned profile that omits the refuter role uses Pi's persisted default m
 test("a configured review-refuter routing entry still wins over Pi's persisted default", async (t) => {
 	const cwd = pinFixture(t);
 	isolatedAgentHome(t, PI_DEFAULT_SETTINGS);
-	writeFileSync(join(process.env.GENTLE_PI_CONFIG_HOME!, "models.json"), `${JSON.stringify({ ...GLOBAL_MODELS, "review-refuter": { model: "global/refuter-model", thinking: "high" } }, null, 2)}\n`);
+	writeFileSync(join(process.env.DRAKONC_PI_CONFIG_HOME!, "models.json"), `${JSON.stringify({ ...GLOBAL_MODELS, "review-refuter": { model: "global/refuter-model", thinking: "high" } }, null, 2)}\n`);
 
 	const relayed = await relayedRefuterRequest(t, cwd, "relay-role-configured");
 
@@ -1495,10 +1495,10 @@ test("a lens slot with no routing entry never borrows Pi's persisted default mod
 	assert.equal(relayed[0]!.selection, undefined);
 });
 
-// gentle-shell#2742, section 7: reviewers check session profile authority as
+// drakonc-shell#2742, section 7: reviewers check session profile authority as
 // launches do. A saved Pi session whose newest record is the given one.
 function profileSession(t: test.TestContext, customType: string, data: unknown): SessionManager {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-pi-relay-session-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-pi-relay-session-"));
 	t.after(() => { rmSync(dir, { recursive: true, force: true }); resetSessionProfileBindingsForTesting(); resetFrozenInheritedProfilesForTesting(); });
 	const manager = SessionManager.create(dir, join(dir, "sessions"));
 	manager.appendMessage({ role: "user", content: "fixture", timestamp: 1 });
@@ -1516,7 +1516,7 @@ for (const role of ["lens", "refuter", "validator"] as const)
 		t.after(() => __testing.setReviewHostRelayRunnerForTesting());
 		const cwd = pinFixture(t);
 		isolatedAgentHome(t, PI_DEFAULT_SETTINGS);
-		const manager = profileSession(t, "gentle-pi.session-profile/v99", { kind: "future" });
+		const manager = profileSession(t, "drakonc-pi.session-profile/v99", { kind: "future" });
 		const lineageId = `relay-authority-${role}`;
 		const input = role === "lens" ? relayCollectInput(lineageId, "review-risk", 0) : role === "refuter" ? hostMediatedRefuterCollectInput(lineageId) : hostMediatedValidatorCollectInput(lineageId);
 		const harness = nativeHarness([finalizeStatus(lineageId, [input]), finalizeStatus(lineageId, [input])]);
@@ -1545,7 +1545,7 @@ function providerRoleVectorInput(lineageId: string, captureOperation: string): R
 for (const captureOperation of ["review.capture-refuter", "review.capture-validation"])
 	test(`unavailable session profile authority blocks a self-contained ${captureOperation} vector before Go spawns its reviewer, then the same binding resumes`, async (t) => {
 		const cwd = pinFixture(t);
-		const manager = profileSession(t, "gentle-pi.session-profile/v99", { kind: "future" });
+		const manager = profileSession(t, "drakonc-pi.session-profile/v99", { kind: "future" });
 		const lineageId = `relay-authority-${captureOperation}`, input = providerRoleVectorInput(lineageId, captureOperation);
 		const harness = nativeHarness([finalizeStatus(lineageId, [input]), finalizeStatus(lineageId, [input])]);
 		let spawned = 0;
@@ -1566,7 +1566,7 @@ for (const captureOperation of ["review.capture-refuter", "review.capture-valida
 test("unavailable session profile authority blocks a grouped capture before any reviewer run, then the same group resumes", async (t) => {
 	t.after(() => __testing.setReviewHostRelayGroupRunnersForTesting());
 	const cwd = pinFixture(t);
-	const manager = profileSession(t, "gentle-pi.session-profile/v99", { kind: "future" });
+	const manager = profileSession(t, "drakonc-pi.session-profile/v99", { kind: "future" });
 	const lineageId = "relay-authority-group", inputs = groupInputs(lineageId);
 	const harness = nativeHarness([finalizeStatus(lineageId, inputs), finalizeStatus(lineageId, inputs), ...inputs.map((_input, index) => finalizeStatus(lineageId, inputs.slice(index))), finalizeStatus(lineageId)]);
 	let relays = 0;
@@ -1586,19 +1586,19 @@ test("unavailable session profile authority blocks a grouped capture before any 
 });
 
 // The registered tools read the session manager from Pi's ctx, as a real turn does.
-for (const name of ["gentle_review_capture", "gentle_review_capture_group"])
+for (const name of ["drakonc_review_capture", "drakonc_review_capture_group"])
 	test(`the registered ${name} tool blocks on the unavailable authority of ctx.sessionManager`, async (t) => {
 		t.after(() => { __testing.setReviewHostRelayRunnerForTesting(); __testing.setReviewHostRelayGroupRunnersForTesting(); });
 		const cwd = pinFixture(t);
-		const manager = profileSession(t, "gentle-pi.session-profile/v99", { kind: "future" });
-		const lineageId = `relay-authority-tool-${name}`, inputs = name === "gentle_review_capture" ? [relayCollectInput(lineageId, "review-risk", 0)] : groupInputs(lineageId);
+		const manager = profileSession(t, "drakonc-pi.session-profile/v99", { kind: "future" });
+		const lineageId = `relay-authority-tool-${name}`, inputs = name === "drakonc_review_capture" ? [relayCollectInput(lineageId, "review-risk", 0)] : groupInputs(lineageId);
 		const harness = nativeHarness([finalizeStatus(lineageId, inputs)]);
 		let relays = 0;
 		__testing.setReviewHostRelayRunnerForTesting(async () => { relays += 1; return { promptByteLength: 64, resultByteLength: 32, submission: "{}" }; });
 		__testing.setReviewHostRelayGroupRunnersForTesting(async (requests) => { relays += requests.length; return requests.map(prepared); }, async () => ({ promptByteLength: 64, resultByteLength: 32, submission: "{}" }));
 		const tools = new Map<string, { execute: (id: string, params: unknown, signal: undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<{ details: Record<string, unknown> }> }>();
-		createGentleAiExtension({ nativeReviewCli: harness.native })({ on() {}, registerTool(definition: { name: string }) { tools.set(definition.name, definition as never); }, registerCommand() {} } as unknown as ExtensionAPI);
-		const params = name === "gentle_review_capture" ? { lineageId, collectBinding: JSON.stringify(inputs[0]), reviewerRunAcknowledged: true } : { lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true };
+		createDrakoncAiExtension({ nativeReviewCli: harness.native })({ on() {}, registerTool(definition: { name: string }) { tools.set(definition.name, definition as never); }, registerCommand() {} } as unknown as ExtensionAPI);
+		const params = name === "drakonc_review_capture" ? { lineageId, collectBinding: JSON.stringify(inputs[0]), reviewerRunAcknowledged: true } : { lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true };
 
 		const { details } = await tools.get(name)!.execute("call-1", params, undefined, undefined, { cwd, hasUI: false, sessionManager: manager } as unknown as ExtensionContext);
 
@@ -1613,7 +1613,7 @@ test("a review without a session id runs as today, with no record to distrust", 
 	const harness = nativeHarness([finalizeStatus(lineageId, [input])]);
 	const relayed: ReviewHostRelayRequest[] = [];
 	__testing.setReviewHostRelayRunnerForTesting(async (request) => { relayed.push(request); return { promptByteLength: 64, resultByteLength: 32, submission: '{"admission_decision":"completed"}' }; });
-	const unsaved = { getSessionId: () => "", getBranch: () => [{ type: "custom", customType: "gentle-pi.session-profile/v99", data: { kind: "future" } }], getSessionFile: () => undefined };
+	const unsaved = { getSessionId: () => "", getBranch: () => [{ type: "custom", customType: "drakonc-pi.session-profile/v99", data: { kind: "future" } }], getSessionFile: () => undefined };
 
 	const result = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(input), reviewerRunAcknowledged: true }, cwd, harness.native, undefined, undefined, undefined, false, undefined, undefined, undefined, unsaved as never);
 
@@ -1621,7 +1621,7 @@ test("a review without a session id runs as today, with no record to distrust", 
 	assert.equal(relayed[0]!.selection, "global/risk-model");
 });
 
-// gentle-shell#2742, section 8: a startup record carries the profile's
+// drakonc-shell#2742, section 8: a startup record carries the profile's
 // orchestrator, so the provider review roles fall back to it as they do for
 // Use in this session; launch routing still ignores the key.
 test("a startup record's orchestrator feeds the provider review roles while launches ignore it", async (t) => {
@@ -1642,17 +1642,17 @@ test("a startup record's orchestrator feeds the provider review roles while laun
 	const routing = __testing.readReviewerModelConfig(cwd, sessionId);
 	assert.equal(__testing.reviewHostRelaySelection("review-validator", routing).selection, "team/orchestrator");
 	assert.equal(__testing.reviewHostRelaySelection("risk", routing).selection, "team/risk-model");
-	const resolution = resolveSessionProfile({ sessionId, cwd, configHome: process.env.GENTLE_PI_CONFIG_HOME! });
-	assert.deepEqual([resolution.kind, sessionProfileRoutingAt(resolution, { cwd, configHome: process.env.GENTLE_PI_CONFIG_HOME! })], ["inherited", { "review-risk": { model: "team/risk-model" } }], "launch routing stays role-only");
+	const resolution = resolveSessionProfile({ sessionId, cwd, configHome: process.env.DRAKONC_PI_CONFIG_HOME! });
+	assert.deepEqual([resolution.kind, sessionProfileRoutingAt(resolution, { cwd, configHome: process.env.DRAKONC_PI_CONFIG_HOME! })], ["inherited", { "review-risk": { model: "team/risk-model" } }], "launch routing stays role-only");
 });
 
-// gentle-shell#2163: with no binding, pin or frozen profile the reviewer reads
+// drakonc-shell#2163: with no binding, pin or frozen profile the reviewer reads
 // the same global effective routing the models panel shows and launches use
 // (#1731), so a lens routed only through subagents.json is not refused. An
 // explicit snapshot stays whole and fail-closed (#1544/#2477).
 function agentHomeRouting(t: test.TestContext, modelProfiles: Record<string, unknown>): void {
 	isolatedAgentHome(t);
-	const agentHome = process.env.GENTLE_PI_AGENT_HOME!;
+	const agentHome = process.env.DRAKONC_PI_AGENT_HOME!;
 	mkdirSync(join(agentHome, "agents"), { recursive: true });
 	for (const name of Object.keys(modelProfiles)) writeFileSync(join(agentHome, "agents", `${name}.md`), `---\nname: ${name}\ndescription: fixture lens\n---\nReview.\n`);
 	writeFileSync(join(agentHome, "subagents.json"), `${JSON.stringify({ model_profiles: modelProfiles }, null, 2)}\n`);
@@ -1691,7 +1691,7 @@ test("an explicit session binding that omits a lens still refuses, naming the bi
 
 	const result = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(input), reviewerRunAcknowledged: true }, cwd, harness.native, undefined, undefined, undefined, false, registry, sessionId, undefined, manager) as Record<string, unknown>;
 
-	assert.equal(resolveSessionProfile({ sessionId, cwd, configHome: process.env.GENTLE_PI_CONFIG_HOME! }).kind, "explicit");
+	assert.equal(resolveSessionProfile({ sessionId, cwd, configHome: process.env.DRAKONC_PI_CONFIG_HOME! }).kind, "explicit");
 	assert.equal(__testing.readReviewerModelConfig(cwd, sessionId)["review-resilience"], undefined, "neither models.json nor subagents.json fills the binding's gap");
 	assert.equal(result.status, "blocked");
 	assert.equal((result.failure as { kind?: string } | undefined)?.kind, "reviewer-config-invalid");
@@ -1733,7 +1733,7 @@ test("an unpinned reviewer never reads routing from the reviewed target's own pr
 test("an unpinned reviewer never reads routing from a same-clone worktree target's project agents", (t) => {
 	const session = pinFixture(t, "absent");
 	agentHomeRouting(t, { "review-risk": {} });
-	const parent = mkdtempSync(join(tmpdir(), "gentle-pi-relay-worktree-"));
+	const parent = mkdtempSync(join(tmpdir(), "drakonc-pi-relay-worktree-"));
 	t.after(() => rmSync(parent, { recursive: true, force: true }));
 	const target = join(parent, "writer");
 	execFileSync("git", ["worktree", "add", "-q", "-b", "writer", target], { cwd: session });

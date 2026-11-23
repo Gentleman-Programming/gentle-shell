@@ -4,7 +4,7 @@ import type { DesignHandoffDelivery } from "./design-handoffs.ts";
 
 // The single owner of design/<slug>/parts.json (canvas-implement-part): the parts of artboards handed to the session
 // one at a time ("Implement only this"), each with the agent's progress. Unlike handoffs.json it never chooses an
-// artboard, so the other directions stay open. The canvas server and the gentle_design tool write through this module,
+// artboard, so the other directions stay open. The canvas server and the drakonc_design tool write through this module,
 // in the same per-file queue as comments.json and handoffs.json, re-reading the file before every write and replacing
 // it with a temp file + rename. A file this module cannot parse is reported and never overwritten.
 // "Remove" on the canvas (removeSent) clears a part the agent never reported: only a part still `sent` (queued or not),

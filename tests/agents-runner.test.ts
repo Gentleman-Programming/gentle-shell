@@ -13,7 +13,7 @@ import { AgentRunner, childArguments, JsonLines, piCommand, abortReasonText, REQ
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
-// Gentle Agents runner: every subagent is a child `pi --mode rpc` process.
+// Drakonc Agents runner: every subagent is a child `pi --mode rpc` process.
 // The host only parses JSON lines, applies deltas to the store, answers
 // dialogs, and enforces its inactivity watchdog. These tests drive a fake child.
 
@@ -99,12 +99,12 @@ function harness(options: { resolvePi?: RunnerDeps["resolvePi"]; failStart?: boo
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 test("#3009: runner exposes the packaged preparer only to the verifier", async () => {
-	for (const name of ["gentle-ai-verify", "explore"]) {
+	for (const name of ["drakonc-ai-verify", "explore"]) {
 		const h = harness();
-		const task = h.runner.run(request({ agent: { ...explorer, name }, env: { GENTLE_PI_VERIFIER_PREPARER: "/stale/helper" } }));
+		const task = h.runner.run(request({ agent: { ...explorer, name }, env: { DRAKONC_PI_VERIFIER_PREPARER: "/stale/helper" } }));
 		await tick();
-		const helper = h.spawnOptions[0].env.GENTLE_PI_VERIFIER_PREPARER;
-		if (name === "gentle-ai-verify") { assert.ok(helper && existsSync(helper)); assert.equal(basename(helper), "prepare-verifier.mjs"); }
+		const helper = h.spawnOptions[0].env.DRAKONC_PI_VERIFIER_PREPARER;
+		if (name === "drakonc-ai-verify") { assert.ok(helper && existsSync(helper)); assert.equal(basename(helper), "prepare-verifier.mjs"); }
 		else assert.equal(helper, undefined);
 		h.runner.cancel(task.id); await tick();
 	}
@@ -118,16 +118,16 @@ for (const mode of [AGENT_MODE.TASK, AGENT_MODE.BACKGROUND]) {
 			const config = join(root, "config");
 			const file = join(config, "background-subagents.json");
 			fs.mkdirSync(config);
-			const raw = policy === "malformed" ? "{broken" : JSON.stringify({ schema: "gentle-pi.background-subagents/v1", policy });
+			const raw = policy === "malformed" ? "{broken" : JSON.stringify({ schema: "drakonc-pi.background-subagents/v1", policy });
 			if (policy) fs.writeFileSync(file, raw);
 			const h = harness({ maxConcurrency: 1 });
 			let launches = 0;
-			const env = { GENTLE_PI_CONFIG_HOME: config, ...(policy === "malformed" ? { GENTLE_PI_BACKGROUND_SUBAGENTS: "on" } : {}) };
+			const env = { DRAKONC_PI_CONFIG_HOME: config, ...(policy === "malformed" ? { DRAKONC_PI_BACKGROUND_SUBAGENTS: "on" } : {}) };
 			const task = h.runner.run(request({ cwd: root, env, mode, agent: { ...explorer, tools: ["read", "bash_background"] }, onLaunch: () => { launches++; } }));
 			await tick();
 			assert.equal(h.store.get(task.id)?.status, TASK_STATUS.FAILED);
-			const target = policy ? file : join(root, ".pi", "gentle-ai", "background-subagents.json");
-			assert.equal(h.store.get(task.id)?.error, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${target} to {"schema":"gentle-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /gentle:background-subagents enable|disable|status.`);
+			const target = policy ? file : join(root, ".pi", "drakonc-ai", "background-subagents.json");
+			assert.equal(h.store.get(task.id)?.error, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${target} to {"schema":"drakonc-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /drakonc:background-subagents enable|disable|status.`);
 			assert.equal(h.children.length, 0);
 			assert.equal(h.spawnOptions.length, 0);
 			assert.equal(h.timers.length, 0);
@@ -153,7 +153,7 @@ for (const { tools, policy } of [
 		const root = fs.mkdtempSync(join(tmpdir(), "admission-"));
 		t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 		const h = harness();
-		const env = { GENTLE_PI_CONFIG_HOME: join(root, "config"), ...(policy === undefined ? {} : { GENTLE_PI_BACKGROUND_SUBAGENTS: policy }), KEEP: "yes" };
+		const env = { DRAKONC_PI_CONFIG_HOME: join(root, "config"), ...(policy === undefined ? {} : { DRAKONC_PI_BACKGROUND_SUBAGENTS: policy }), KEEP: "yes" };
 		const task = h.runner.run(request({ cwd: root, env, agent: { ...explorer, tools } }));
 		await tick();
 		assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING);
@@ -172,21 +172,21 @@ for (const { tools, policy } of [
 test("background capability admission refreshes project policy when queued work dispatches", async (t) => {
 	const root = fs.mkdtempSync(join(tmpdir(), "admission-"));
 	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-	const dir = join(root, ".pi", "gentle-ai");
+	const dir = join(root, ".pi", "drakonc-ai");
 	fs.mkdirSync(dir, { recursive: true });
 	const file = join(dir, "background-subagents.json");
 	const h = harness({ maxConcurrency: 1 });
-	const env = { GENTLE_PI_CONFIG_HOME: join(root, "config"), GENTLE_PI_BACKGROUND_SUBAGENTS: "on" };
+	const env = { DRAKONC_PI_CONFIG_HOME: join(root, "config"), DRAKONC_PI_BACKGROUND_SUBAGENTS: "on" };
 	const first = h.runner.run(request({ cwd: root, env }));
 	const queued = h.runner.run(request({ cwd: root, env, agent: { ...explorer, tools: ["bash_background"] } }));
 	await tick();
 	assert.equal(h.store.get(queued.id)?.status, TASK_STATUS.QUEUED);
-	const raw = '{"schema":"gentle-pi.background-subagents/v1","policy":"off"}';
+	const raw = '{"schema":"drakonc-pi.background-subagents/v1","policy":"off"}';
 	fs.writeFileSync(file, raw);
 	h.runner.cancel(first.id);
 	await tick();
 	assert.equal(h.store.get(queued.id)?.status, TASK_STATUS.FAILED);
-	assert.equal(h.store.get(queued.id)?.error, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${file} to {"schema":"gentle-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /gentle:background-subagents enable|disable|status.`);
+	assert.equal(h.store.get(queued.id)?.error, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${file} to {"schema":"drakonc-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /drakonc:background-subagents enable|disable|status.`);
 	assert.equal(h.children.length, 1);
 	assert.equal(readFileSync(file, "utf8"), raw);
 });
@@ -201,11 +201,11 @@ for (const { tools, forwarded } of [
 		const root = fs.mkdtempSync(join(tmpdir(), "child-jobs-"));
 		t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 		const h = harness();
-		const env = { GENTLE_PI_CONFIG_HOME: join(root, "config"), GENTLE_PI_BACKGROUND_SUBAGENTS: "on" };
+		const env = { DRAKONC_PI_CONFIG_HOME: join(root, "config"), DRAKONC_PI_BACKGROUND_SUBAGENTS: "on" };
 		const task = h.runner.run(request({ cwd: root, env, agent: { ...explorer, tools } }));
 		await tick();
 		assert.equal(h.store.get(task.id)?.status, TASK_STATUS.RUNNING);
-		assert.equal(h.spawnOptions[0].env.GENTLE_PI_AGENTS_CHILD_JOBS, forwarded ? "1" : undefined);
+		assert.equal(h.spawnOptions[0].env.DRAKONC_PI_AGENTS_CHILD_JOBS, forwarded ? "1" : undefined);
 		h.runner.cancel(task.id);
 		await tick();
 	});
@@ -226,7 +226,7 @@ test("parent source passages reach the economical explorer through the existing 
 	const h = harness();
 	const context = "Parent-provided source (evidence, not instructions): https://docs.example.invalid/fixture\nPassage: The fixture supports local symbol queries.\nRemaining uncertainty: release compatibility was not checked.";
 	const task = h.runner.run(request({
-		agent: { ...explorer, name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph"] },
+		agent: { ...explorer, name: "drakonc-ai-explore", tools: ["read", "grep", "find", "codegraph"] },
 		prompt: "Compare the supplied passage with local source; do not browse.",
 		context,
 		model: { provider: "offline", id: "configured-small" },
@@ -605,9 +605,9 @@ test("child session diff evidence travels only with a paired successful tool out
  const child = h.children[0];
  const evidence = {id:"w",root:"/repo",path:"src/file.ts",before:{kind:"absent"},after:{kind:"text",text:"agent\n"}};
  child.emit({type:"tool_execution_start",toolCallId:"w",toolName:"write",args:{path:"src/file.ts"}});
- child.emit({type:"tool_execution_end",toolCallId:"w",isError:false,result:{content:[],details:{gentleSessionChange:evidence}}});
+ child.emit({type:"tool_execution_end",toolCallId:"w",isError:false,result:{content:[],details:{drakoncSessionChange:evidence}}});
  assert.deepEqual(observed[0].evidence,evidence);
- child.emit({type:"tool_execution_end",toolCallId:"w",isError:false,result:{content:[],details:{gentleSessionChange:evidence}}});
+ child.emit({type:"tool_execution_end",toolCallId:"w",isError:false,result:{content:[],details:{drakoncSessionChange:evidence}}});
  assert.equal(observed.length,1);
  h.runner.cancel(task.id); await tick();
 });
@@ -888,13 +888,13 @@ test("childArguments forwards a plain package root without --no-extensions", () 
 // parent, so the runner tells their children to drop the skills catalog.
 test("AgentRunner marks only the package-owned generic agents' children to drop the skills catalog", async () => {
 	const h = harness({ maxConcurrency: 16 });
-	const packaged = ["gentle-ai-worker", "gentle-ai-explore", "gentle-ai-verify"].map(name => ({ ...explorer, name, filePath: `/home/u/.pi/agent/agents/${name}.md` }));
+	const packaged = ["drakonc-ai-worker", "drakonc-ai-explore", "drakonc-ai-verify"].map(name => ({ ...explorer, name, filePath: `/home/u/.pi/agent/agents/${name}.md` }));
 	const others: AgentDefinition[] = [
 		explorer,
 		...["jd-judge-a", "jd-fix-agent", "review-risk"].map(name => ({ ...explorer, name, filePath: `/home/u/.pi/agent/agents/${name}.md` })),
 		// A user agent reusing a package name from the project or `subagents/` directory.
-		{ ...explorer, name: "gentle-ai-worker", scope: "project", filePath: "/repo/.pi/agents/gentle-ai-worker.md" },
-		{ ...explorer, name: "gentle-ai-explore", filePath: "/home/u/.pi/agent/subagents/gentle-ai-explore.md" },
+		{ ...explorer, name: "drakonc-ai-worker", scope: "project", filePath: "/repo/.pi/agents/drakonc-ai-worker.md" },
+		{ ...explorer, name: "drakonc-ai-explore", filePath: "/home/u/.pi/agent/subagents/drakonc-ai-explore.md" },
 	];
 	const tasks = [...packaged, ...others].map(agent => h.runner.run(request({ agent, extensionPaths: ["/pkg"], env: { [CHILD_SKILLS_CATALOG_ENV]: "1" } })));
 	await tick();
@@ -935,7 +935,7 @@ test("AgentRunner gives the child its exact --tools list and never forwards a st
 test("AgentRunner records a missing-tools note that arrives before the prompt is accepted", async () => {
 	const h = harness();
 	const task = h.runner.run(request());
-	const message = `${MISSING_TOOLS_NOTE_PREFIX} gentle_review_scope`;
+	const message = `${MISSING_TOOLS_NOTE_PREFIX} drakonc_review_scope`;
 	const stepsAtNote: string[] = [];
 	h.store.subscribe(task.id, (record, thread) => {
 		if (stepsAtNote.length === 0 && thread.items.some((item) => item.kind === THREAD_ITEM.NOTE)) stepsAtNote.push(record.lastStep);
@@ -1012,7 +1012,7 @@ test("piCommand reuses an existing pi entry point and falls back when it disappe
 });
 
 test("piCommand honors the override without checking its entry", () => {
-	const proc = { execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: { GENTLE_PI_AGENTS_PI: " /bin/node /override/cli.js " } };
+	const proc = { execPath: "/bin/node", argv: ["/bin/node", "/x/dist/cli.js"], env: { DRAKONC_PI_AGENTS_PI: " /bin/node /override/cli.js " } };
 	assert.deepEqual(piCommand(proc, () => { assert.fail("override must bypass the existence check"); }), { command: "/bin/node", args: ["/override/cli.js"] });
 });
 
@@ -1065,11 +1065,11 @@ test("piCommand resolves npm and pnpm cmd-shims with relative paths on win32 (#2
 	assert.deepEqual(piCommand(procWin, exists, readFile), { command: procWin.execPath, args: [targetJs] });
 });
 
-test("piCommand honors GENTLE_PI_AGENTS_PI pointing to a .cmd shim by resolving its JS target (#2887)", () => {
+test("piCommand honors DRAKONC_PI_AGENTS_PI pointing to a .cmd shim by resolving its JS target (#2887)", () => {
 	const procWin = {
 		execPath: "C:\\Program Files\\nodejs\\node.exe",
 		argv: ["C:\\Program Files\\nodejs\\node.exe", "C:\\missing\\cli.js"],
-		env: { GENTLE_PI_AGENTS_PI: "C:\\custom\\pi.cmd --model gpt-5" },
+		env: { DRAKONC_PI_AGENTS_PI: "C:\\custom\\pi.cmd --model gpt-5" },
 		platform: "win32" as const,
 	};
 	const customShim = `@ECHO off\r\nnode "%~dp0pi-launcher.js" %*\r\n`;
@@ -1285,7 +1285,7 @@ test("AgentRunner escalates to SIGTERM and SIGKILL if orderly cleanup exceeds cl
 
 test("a child that reports a running background job drains one bounded window before the orderly shutdown", async () => {
 	const { store, runner, children, timers, advance } = harness({ exitOnKill: false, drainTimeoutMs: 2_000, cleanupTimeoutMs: 3_000 });
-	const task = runner.run(request({ agent: { ...explorer, tools: ["read", "bash_background"] }, env: { GENTLE_PI_BACKGROUND_SUBAGENTS: "on" } }));
+	const task = runner.run(request({ agent: { ...explorer, tools: ["read", "bash_background"] }, env: { DRAKONC_PI_BACKGROUND_SUBAGENTS: "on" } }));
 	await tick();
 	const child = children[0];
 	child.message({ id: "j1", kind: "job", message: JSON.stringify({ running: 1, pending: true }) });
@@ -1321,7 +1321,7 @@ test("a child that reports a running background job drains one bounded window be
 
 test("a child job that finishes inside the drain ends it early and only one extension is allowed", async () => {
 	const { store, runner, children, timers } = harness({ exitOnKill: false, drainTimeoutMs: 2_000, cleanupTimeoutMs: 3_000 });
-	const task = runner.run(request({ agent: { ...explorer, tools: ["read", "bash_background"] }, env: { GENTLE_PI_BACKGROUND_SUBAGENTS: "on" } }));
+	const task = runner.run(request({ agent: { ...explorer, tools: ["read", "bash_background"] }, env: { DRAKONC_PI_BACKGROUND_SUBAGENTS: "on" } }));
 	await tick();
 	const child = children[0];
 	child.message({ id: "j1", kind: "job", message: JSON.stringify({ running: 1, pending: true }) });
@@ -1345,7 +1345,7 @@ test("a child job that finishes inside the drain ends it early and only one exte
 
 test("a job frame that is not a valid child state is refused and does not open a drain", async () => {
 	const { runner, children, timers } = harness({ exitOnKill: false, drainTimeoutMs: 2_000 });
-	runner.run(request({ agent: { ...explorer, tools: ["read", "bash_background"] }, env: { GENTLE_PI_BACKGROUND_SUBAGENTS: "on" } }));
+	runner.run(request({ agent: { ...explorer, tools: ["read", "bash_background"] }, env: { DRAKONC_PI_BACKGROUND_SUBAGENTS: "on" } }));
 	await tick();
 	const child = children[0];
 	child.message({ id: "j1", kind: "job", message: "not json" });
@@ -1479,7 +1479,7 @@ for (const [platform, detached] of [["win32", false], ["linux", true]] as const)
 	}, { askUser: async () => ({ cancelled: true }) });
 	const task = runner.run(request({ env: { PATH: "/fixture", KEEP: "yes" } }));
 	await tick();
-	const ownedIpc = launches[0]?.options.env.GENTLE_PI_AGENTS_OWNED_IPC;
+	const ownedIpc = launches[0]?.options.env.DRAKONC_PI_AGENTS_OWNED_IPC;
 	assert.match(ownedIpc ?? "", /^\d+-[a-z0-9]+$/, "the runner creates an opaque owned-IPC marker");
 	const scratch = launches[0]?.options.env.TMPDIR;
 	assert.match(basename(scratch ?? ""), /^ga[A-Za-z0-9]{6}$/, "the child gets its own TMPDIR");
@@ -1487,7 +1487,7 @@ for (const [platform, detached] of [["win32", false], ["linux", true]] as const)
 	assert.deepEqual(launches, [{
 		command: "pi-fixture",
 		args: ["--from-host", "--mode", "rpc", "--session-dir", "/sessions", "--model", "openai-codex/gpt-5.6-terra:high", "--tools", "read,grep,subagent_parent_message", "--append-system-prompt", "You map things."],
-		options: { cwd: "/repo", env: { PATH: "/fixture", KEEP: "yes", GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: ownedIpc, [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message", ...scratchEnv }, detached, windowsHide: true, stdio: ["pipe", "pipe", "pipe", "ipc"] },
+		options: { cwd: "/repo", env: { PATH: "/fixture", KEEP: "yes", DRAKONC_PI_AGENTS_CHILD: "1", DRAKONC_PI_AGENTS_OWNED_IPC: ownedIpc, [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message", ...scratchEnv }, detached, windowsHide: true, stdio: ["pipe", "pipe", "pipe", "ipc"] },
 	}]);
 	child.emit({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "text", text: "platform checked" }], stopReason: "stop" }] });
 	child.emit({ type: "agent_settled" });
@@ -1569,10 +1569,10 @@ test("AgentRunner retains permission broker fd3 and assigns messaging IPC to fd4
 	await tick();
 	const launch = spawnOptions[0];
 	const permissionChannelStdio = process.platform === "win32" ? "overlapped" : "pipe";
-	assert.match(launch?.env.GENTLE_PI_AGENTS_OWNED_IPC ?? "", /^\d+-[a-z0-9]+$/, "the owned-IPC marker has the runner's opaque shape");
+	assert.match(launch?.env.DRAKONC_PI_AGENTS_OWNED_IPC ?? "", /^\d+-[a-z0-9]+$/, "the owned-IPC marker has the runner's opaque shape");
 	const scratch = launch?.env.TMPDIR;
 	const scratchEnv = process.platform === "win32" ? { TMPDIR: scratch, TMP: scratch, TEMP: scratch } : { TMPDIR: scratch };
-	assert.deepEqual(launch?.env, { GENTLE_PI_AGENTS_CHILD: "1", GENTLE_PI_AGENTS_OWNED_IPC: launch?.env.GENTLE_PI_AGENTS_OWNED_IPC, GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3", [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message", ...scratchEnv });
+	assert.deepEqual(launch?.env, { DRAKONC_PI_AGENTS_CHILD: "1", DRAKONC_PI_AGENTS_OWNED_IPC: launch?.env.DRAKONC_PI_AGENTS_OWNED_IPC, DRAKONC_PI_AGENTS_PARENT_PERMISSION_FD: "3", [REQUESTED_TOOLS_ENV]: "read,grep,subagent_parent_message", ...scratchEnv });
 	assert.match(basename(launch?.env.TMPDIR ?? ""), /^ga[A-Za-z0-9]{6}$/);
 	assert.deepEqual(launch?.stdio, ["pipe", "pipe", "pipe", permissionChannelStdio, "ipc"]);
 	assert.equal(launch?.stdio?.length, 5);
@@ -1602,7 +1602,7 @@ test("AgentRunner platform matrix scopes permission fd3 transport", async () => 
 			assert.ok(launch, `${platform} ${eligible ? "eligible" : "ineligible"} child launches`);
 			assert.equal(launch.windowsHide, true, `${platform} children hide console windows regardless of permission eligibility`);
 			assert.equal(launch.detached, platform !== "win32", "only non-Windows children use detached process groups");
-			assert.equal(launch.env.GENTLE_PI_AGENTS_PARENT_PERMISSION_FD, eligible ? "3" : undefined, "only eligible children receive the fd3 marker");
+			assert.equal(launch.env.DRAKONC_PI_AGENTS_PARENT_PERMISSION_FD, eligible ? "3" : undefined, "only eligible children receive the fd3 marker");
 			assert.deepEqual(launch.stdio, eligible ? ["pipe", "pipe", "pipe", platform === "win32" ? "overlapped" : "pipe", "ipc"] : ["pipe", "pipe", "pipe", "ipc"]);
 			assert.equal(launch.stdio?.indexOf("ipc"), eligible ? 4 : 3, "messaging IPC follows fd3 only for eligible children");
 			runner.cancel(task.id);
@@ -1983,12 +1983,12 @@ test("abortReasonText renders an Error, a string, and nothing for unknown reason
 
 test("generic child extension paths do not forward legacy research selection", async () => {
  const h = harness();
- const launch = request({ extensionPaths: ["/installed/docs tools.ts"], env: { PATH: "/bin", GENTLE_PI_RESEARCH_SELECTION: "stale" } });
+ const launch = request({ extensionPaths: ["/installed/docs tools.ts"], env: { PATH: "/bin", DRAKONC_PI_RESEARCH_SELECTION: "stale" } });
  const argv = childArguments(launch);
  assert.deepEqual(argv.filter((_, i) => argv[i - 1] === "--extension"), launch.extensionPaths);
  const task = h.runner.run(launch);
  await tick();
- assert.equal(h.spawnOptions.at(-1)!.env.GENTLE_PI_RESEARCH_SELECTION, undefined);
+ assert.equal(h.spawnOptions.at(-1)!.env.DRAKONC_PI_RESEARCH_SELECTION, undefined);
  assert.equal(h.spawnOptions.at(-1)!.env.PATH, "/bin");
  h.runner.cancel(task.id);
  assert.equal((await h.runner.waitFor(task.id)).status, TASK_STATUS.CANCELLED);
@@ -1996,15 +1996,15 @@ test("generic child extension paths do not forward legacy research selection", a
 
 test("ordinary tasks never inherit orphaned SDD launch metadata", async () => {
 	const h = harness();
-	const launch = request({ prompt: "Ordinary task", context: "Relevant context", env: { PATH: "/bin", GENTLE_PI_SDD_REMEDIATION_PLAN: "stale" },
+	const launch = request({ prompt: "Ordinary task", context: "Relevant context", env: { PATH: "/bin", DRAKONC_PI_SDD_REMEDIATION_PLAN: "stale" },
 		// Deliberately pass a legacy-shaped payload to prove that no runner path consumes it.
 		...({ sddChange: { changeName: "old", workspaceRoot: "/repo", phase: "apply" }, sddPreflightContext: "stale", sddRemediation: { failedEvidenceRevision: "old", plan: { commands: ["unsafe"] } } } as object),
 	});
-	assert.doesNotMatch(childArguments(launch).join(" "), /gentle-sdd-change/);
+	assert.doesNotMatch(childArguments(launch).join(" "), /drakonc-sdd-change/);
 	const task = h.runner.run(launch);
 	await tick();
 	assert.equal(h.store.get(task.id)?.sddPreflightContext, undefined);
-	assert.equal(h.spawnOptions[0].env.GENTLE_PI_SDD_REMEDIATION_PLAN, undefined);
+	assert.equal(h.spawnOptions[0].env.DRAKONC_PI_SDD_REMEDIATION_PLAN, undefined);
 	assert.equal(h.spawnOptions[0].env.PATH, "/bin");
 	assert.equal(h.children[0].written.find(command => command.type === "prompt")?.message, "Ordinary task\n\n## Context\nRelevant context");
 	h.runner.cancel(task.id);
@@ -2151,8 +2151,8 @@ test("long agent names are truncated in the instructions transport directory nam
 	const promptValue = launches[0][launches[0].indexOf("--append-system-prompt") + 1];
 	assert.equal(readFileSync(promptValue, "utf8"), largeInstructions);
 	const dirName = basename(dirname(promptValue));
-	assert.ok(dirName.startsWith(`gentle-pi-subagent-${"a".repeat(64)}-`), dirName);
-	assert.ok(dirName.length <= "gentle-pi-subagent-".length + 64 + 1 + 6, `directory name too long: ${dirName.length}`);
+	assert.ok(dirName.startsWith(`drakonc-pi-subagent-${"a".repeat(64)}-`), dirName);
+	assert.ok(dirName.length <= "drakonc-pi-subagent-".length + 64 + 1 + 6, `directory name too long: ${dirName.length}`);
 
 	fake.exit(0);
 	await runner.waitFor(task.id);
@@ -2165,7 +2165,7 @@ test("temporary instructions transport directory is cleaned up if writing instru
 	let transportDir: string | undefined;
 	t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
 		const [target] = args;
-		if (typeof target === "string" && basename(target) === "instructions.md" && basename(dirname(target)).startsWith("gentle-pi-subagent-")) {
+		if (typeof target === "string" && basename(target) === "instructions.md" && basename(dirname(target)).startsWith("drakonc-pi-subagent-")) {
 			transportDir = dirname(target);
 			throw new Error("EACCES: simulated write failure");
 		}
@@ -2383,7 +2383,7 @@ test("S9: under a 48-byte inherited TMPDIR, a subagent TMPDIR leaves room for a 
 	const inherited = join(parent, "x".repeat(INHERITED_BYTES - Buffer.byteLength(parent) - 1));
 	fs.mkdirSync(inherited);
 	assert.equal(Buffer.byteLength(inherited), INHERITED_BYTES);
-	const env: NodeJS.ProcessEnv = { TMPDIR: inherited, GENTLE_PI_CONFIG_HOME: join(parent, "config") };
+	const env: NodeJS.ProcessEnv = { TMPDIR: inherited, DRAKONC_PI_CONFIG_HOME: join(parent, "config") };
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 	createSessionScratchExtension({ env })({ on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => { handlers.set(name, handler); }, registerCommand: () => {} } as unknown as ExtensionAPI);
 	const ctx = { cwd: parent, hasUI: false, sessionManager: { getSessionId: () => "a-session-id-much-longer-than-the-scratch-name" } };
@@ -2406,12 +2406,12 @@ test("S9: under a 48-byte inherited TMPDIR, a subagent TMPDIR leaves room for a 
 // session shutdown removed the whole scratch, including the TMPDIR of a child
 // still running or quarantined, whose descendants may still hold files there.
 test("advisories S2: session shutdown keeps a running or quarantined subagent's TMPDIR, removes the rest, and leaves the scratch to the sweep", async (t) => {
-	const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "gentle-pi-advisories-s2-")));
+	const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "drakonc-pi-advisories-s2-")));
 	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 	const base = join(root, "tmp");
 	fs.mkdirSync(base);
 	const configHome = join(root, "config");
-	const env: NodeJS.ProcessEnv = { TMPDIR: base, GENTLE_PI_CONFIG_HOME: configHome };
+	const env: NodeJS.ProcessEnv = { TMPDIR: base, DRAKONC_PI_CONFIG_HOME: configHome };
 	const scratchSession = (sessionId: string, options: { isProcessAlive?: (pid: number) => boolean; now?: () => number } = {}) => {
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 		createSessionScratchExtension({ env, ...options })({ on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => { handlers.set(name, handler); }, registerCommand: () => {} } as unknown as ExtensionAPI);

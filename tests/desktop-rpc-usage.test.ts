@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
-import gentleShell from "../extensions/gentle-shell.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
+import drakoncShell from "../extensions/drakonc-shell.ts";
 import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET, DesktopRpcRouter, type DesktopRpcDomain } from "../lib/desktop-rpc.ts";
 import {
 	DESKTOP_USAGE_EVENT,
@@ -525,14 +525,14 @@ test("discoverDesktopUsageService accepts the versioned adapter and ignores malf
 
 	// A wrong-schema or missing-method responder is ignored and the discovery times out closed.
 	listeners.set(DESKTOP_USAGE_SERVICE_CHANNEL, (payload) => {
-		(payload as { respond(service: unknown): void }).respond({ schema: "gentle-pi.desktop-usage-service/v0", read: () => ({ providers: [] }) });
+		(payload as { respond(service: unknown): void }).respond({ schema: "drakonc-pi.desktop-usage-service/v0", read: () => ({ providers: [] }) });
 	});
 	assert.equal(await discoverDesktopUsageService(pi, ctx), undefined);
 });
 
 // ---- Real owner service: Claude 5h/7d windows from response headers ----
 
-function gentleShellHarness(t: test.TestContext) {
+function drakoncShellHarness(t: test.TestContext) {
 	const home = mkdtempSync(join(tmpdir(), "desktop-usage-owner-"));
 	t.after(() => rmSync(home, { recursive: true, force: true }));
 	const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
@@ -554,7 +554,7 @@ function gentleShellHarness(t: test.TestContext) {
 		appendEntry(_customType: string, _data: unknown) {},
 		async exec(_command: string, _args: string[]) { return { stdout: "", stderr: "", code: 0, killed: false }; },
 	} as unknown as ExtensionAPI;
-	gentleShell(pi, { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+	drakoncShell(pi, { DRAKONC_PI_CONFIG_HOME: home, DRAKONC_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
 		fetch: (async (...args: unknown[]) => { fetchCalls.push(args); throw new Error("network forbidden in test"); }) as unknown as typeof fetch,
 		now: () => NOW,
 		resolveWorktree: () => ({ root: "/repo", commonDir: "/repo/.git" }),
@@ -582,7 +582,7 @@ function gentleShellHarness(t: test.TestContext) {
 }
 
 test("the real owner service delivers Claude 5h/7d windows from response headers as structured rate_limit snapshots", async (t) => {
-	const { pi, handlers, ctx } = gentleShellHarness(t);
+	const { pi, handlers, ctx } = drakoncShellHarness(t);
 	const service = await discoverDesktopUsageService(pi, ctx);
 	assert.ok(service, "the owner seam must answer in-process");
 
@@ -613,7 +613,7 @@ test("the real owner service delivers Claude 5h/7d windows from response headers
 });
 
 test("the real owner answers an out-of-scope refresh without attempting a fetch", async (t) => {
-	const { pi, ctx, fetchCalls } = gentleShellHarness(t);
+	const { pi, ctx, fetchCalls } = drakoncShellHarness(t);
 	const service = await discoverDesktopUsageService(pi, ctx);
 	assert.ok(service);
 	// The session model is anthropic, so openai-codex is outside the scope.
@@ -645,7 +645,7 @@ test("the Desktop transport advertises the usage methods and rate_limit event", 
 	const widgets: Array<{ key: string; lines: string[] }> = [];
 	const ctx = { mode: "rpc", ui: { setWidget(key: string, lines: string[]) { widgets.push({ key, lines }); } } };
 	events.get("session_start")?.({}, ctx);
-	await commands.get("gentle:desktop")!.handler(
+	await commands.get("drakonc:desktop")!.handler(
 		JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "cap-1", method: "capabilities", params: {} }),
 		ctx,
 	);
@@ -705,7 +705,7 @@ test("get_subscription_usage answers usage_unavailable through the transport wit
 	const widgets: Array<{ key: string; lines: string[] }> = [];
 	const ctx = { mode: "rpc", ui: { setWidget(key: string, lines: string[]) { widgets.push({ key, lines }); } } };
 	events.get("session_start")?.({}, ctx);
-	await commands.get("gentle:desktop")!.handler(
+	await commands.get("drakonc:desktop")!.handler(
 		JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "usage-1", method: "get_subscription_usage", params: {} }),
 		ctx,
 	);

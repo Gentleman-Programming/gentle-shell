@@ -4,8 +4,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createChildContextExtension } from "../extensions/child-context.ts";
 import { CHILD_SKILLS_CATALOG_ENV } from "../lib/agents-runner.ts";
 
-// The runner marks the children of gentle-ai-worker, gentle-ai-explore and
-// gentle-ai-verify: their parent injects exact skill paths, so the hook empties
+// The runner marks the children of drakonc-ai-worker, drakonc-ai-explore and
+// drakonc-ai-verify: their parent injects exact skill paths, so the hook empties
 // Pi's skills list and the `<available_skills>` section is never sent.
 type BeforeAgentStart = (event: unknown, ctx: unknown) => unknown;
 
@@ -17,14 +17,14 @@ function beforeAgentStart(env: NodeJS.ProcessEnv): BeforeAgentStart {
 }
 
 function event() {
-	const skills = [{ name: "gentle-ai", filePath: "/pkg/skills/gentle-ai/SKILL.md" }, { name: "user-skill", filePath: "/home/u/.agents/skills/user-skill/SKILL.md" }];
+	const skills = [{ name: "drakonc-ai", filePath: "/pkg/skills/drakonc-ai/SKILL.md" }, { name: "user-skill", filePath: "/home/u/.agents/skills/user-skill/SKILL.md" }];
 	const contextFiles = [{ path: "/repo/AGENTS.md", content: "# Plain\n" }];
 	return { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "", contextFiles, skills } };
 }
 
-for (const agent of ["gentle-ai-worker", "gentle-ai-explore", "gentle-ai-verify"]) {
+for (const agent of ["drakonc-ai-worker", "drakonc-ai-explore", "drakonc-ai-verify"]) {
 	test(`a marked ${agent} child sends no skills catalog`, async () => {
-		const handler = beforeAgentStart({ GENTLE_PI_AGENTS_CHILD: "1", [CHILD_SKILLS_CATALOG_ENV]: "1" });
+		const handler = beforeAgentStart({ DRAKONC_PI_AGENTS_CHILD: "1", [CHILD_SKILLS_CATALOG_ENV]: "1" });
 		const e = event();
 		const skills = e.systemPromptOptions.skills;
 		assert.equal(await handler(e, {}), undefined);
@@ -36,20 +36,20 @@ for (const agent of ["gentle-ai-worker", "gentle-ai-explore", "gentle-ai-verify"
 
 test("an unmarked child (any other agent) keeps its skills catalog", async () => {
 	const e = event();
-	await beforeAgentStart({ GENTLE_PI_AGENTS_CHILD: "1" })(e, {});
-	assert.deepEqual(e.systemPromptOptions.skills.map(skill => skill.name), ["gentle-ai", "user-skill"]);
+	await beforeAgentStart({ DRAKONC_PI_AGENTS_CHILD: "1" })(e, {});
+	assert.deepEqual(e.systemPromptOptions.skills.map(skill => skill.name), ["drakonc-ai", "user-skill"]);
 });
 
 test("a primary session keeps its skills catalog even with a stray marker", async () => {
-	for (const env of [{ [CHILD_SKILLS_CATALOG_ENV]: "1" }, { GENTLE_PI_AGENTS_CHILD: "0", [CHILD_SKILLS_CATALOG_ENV]: "1" }]) {
+	for (const env of [{ [CHILD_SKILLS_CATALOG_ENV]: "1" }, { DRAKONC_PI_AGENTS_CHILD: "0", [CHILD_SKILLS_CATALOG_ENV]: "1" }]) {
 		const e = event();
 		await beforeAgentStart(env)(e, {});
-		assert.deepEqual(e.systemPromptOptions.skills.map(skill => skill.name), ["gentle-ai", "user-skill"]);
+		assert.deepEqual(e.systemPromptOptions.skills.map(skill => skill.name), ["drakonc-ai", "user-skill"]);
 	}
 });
 
 test("the skills hook never throws on missing or malformed options", async () => {
-	const handler = beforeAgentStart({ GENTLE_PI_AGENTS_CHILD: "1", [CHILD_SKILLS_CATALOG_ENV]: "1" });
+	const handler = beforeAgentStart({ DRAKONC_PI_AGENTS_CHILD: "1", [CHILD_SKILLS_CATALOG_ENV]: "1" });
 	for (const e of [undefined, {}, { systemPromptOptions: null }, { systemPromptOptions: { skills: "x" } }]) {
 		await assert.doesNotReject(async () => handler(e, {}));
 	}

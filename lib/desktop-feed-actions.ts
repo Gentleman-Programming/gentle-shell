@@ -1,4 +1,4 @@
-// Gentle Shell Desktop actions (odd/tasks/herdr-desktop.md T7, S2/S5): the
+// Drakonc Shell Desktop actions (odd/tasks/herdr-desktop.md T7, S2/S5): the
 // Herdr app mods ask a live session to act by dropping one small JSON file in
 // the session's private inbox, `<agentDir>/desktop/inbox/<session>/<id>.json`;
 // the session answers in `<agentDir>/desktop/outbox/<session>/<id>.json`.
@@ -20,13 +20,13 @@
 // submitted (steering while the agent works, as Enter does in the TUI), never
 // while a question, prompt or consent is open, and only for plain text, prompt
 // templates and skills: pi's built-in commands, extension commands (TUI code
-// with their own authority, /gentle:mode among them) and `!` shell lines stay
+// with their own authority, /drakonc:mode among them) and `!` shell lines stay
 // in that session's terminal. `answer_question { via: "session" }` answers an
 // ask tool question through the tool's own handle (lib/desktop-feed-answers.ts)
 // under the same rules as the key path.
 //
 // Any process of the same user can write the inbox, the agent's own tools
-// included (the guard in extensions/gentle-ai.ts denies the folder to the
+// included (the guard in extensions/drakonc-ai.ts denies the folder to the
 // agent's file and shell tools, but a shell can always spell a path some other
 // way, and a detached process outlives the turn). So a permission ESCALATION is
 // refused when its file was written while the agent, a background job or a
@@ -36,7 +36,7 @@
 //
 // S12: `refresh_usage` is the TUI usage panel's `r` (the usage owner's forced
 // refresh, as desktop RPC `refresh_subscription_usage`), and `apply_profile` is
-// /gentle:profiles' "Use in this session" (its own apply, as desktop RPC
+// /drakonc:profiles' "Use in this session" (its own apply, as desktop RPC
 // `apply_profile` with mode `session`; never the global default). A profile
 // changes which models the agent and its subagents run, so, like an escalation,
 // it is refused when its file was written while the session could act.
@@ -49,8 +49,8 @@ import { clipText, DESKTOP_FEED_BUILTIN_COMMANDS, type DesktopFeedTimers } from 
 import { desktopFeedFile, desktopFeedName, desktopFeedProcessGone } from "./desktop-feed-store.ts";
 import { isPermissionMode } from "./permission-mode-policy.ts";
 
-export const DESKTOP_ACTION_SCHEMA = "gentle-shell.desktop-action/v1";
-export const DESKTOP_ACTION_RESULT_SCHEMA = "gentle-shell.desktop-action-result/v1";
+export const DESKTOP_ACTION_SCHEMA = "drakonc-shell.desktop-action/v1";
+export const DESKTOP_ACTION_RESULT_SCHEMA = "drakonc-shell.desktop-action-result/v1";
 export const DESKTOP_ACTION_KINDS = ["set_permission_mode", "cancel_job", "cancel_subagent", "answer_question", "abort_turn", "send_prompt", "refresh_usage", "apply_profile"] as const;
 export type DesktopActionKind = (typeof DESKTOP_ACTION_KINDS)[number];
 
@@ -312,7 +312,7 @@ export interface DesktopActionOwners {
 	answerQuestion?(toolCallId: string, answer: { option?: number; text?: string }): boolean;
 	/** The usage owner's forced refresh (the TUI panel's r), for the whole scope or one provider (S12). */
 	refreshUsage?(provider: string | undefined): Promise<DesktopRpcOutcome | undefined>;
-	/** /gentle:profiles' "Use in this session" through its own apply (S12). */
+	/** /drakonc:profiles' "Use in this session" through its own apply (S12). */
 	applyProfile?(name: string, confirmation: string | undefined): Promise<DesktopRpcOutcome | undefined>;
 }
 
@@ -324,7 +324,7 @@ const PI_BUILTIN_COMMANDS: ReadonlySet<string> = new Set([
 const TERMINAL_COMMAND = fail("terminal_command", "Open that session's terminal to run /commands.");
 const TERMINAL_SHELL = fail("terminal_command", "Open that session's terminal to run ! shell commands.");
 const QUESTION_OPEN = fail("question_open", "Answer the open question first.");
-const NO_PROMPTS = fail("unsupported", "This session takes no prompts from the desktop. Update Gentle Shell and restart it.");
+const NO_PROMPTS = fail("unsupported", "This session takes no prompts from the desktop. Update Drakonc Shell and restart it.");
 const SESSION_COMPACTING = fail("session_compacting", "Pi is compacting this session and already holds one prompt for after it; send this one when compaction ends.");
 const ANSWER_IN_SESSION_TERMINAL = fail("answer_in_terminal", "Answer this question in that session's terminal.");
 
@@ -396,7 +396,7 @@ export function createDesktopActivityTimeline(clock: () => number = Date.now, gr
 	};
 }
 
-const NO_OWNER = fail("unsupported", "This session cannot run this action. Update Gentle Shell and restart it.");
+const NO_OWNER = fail("unsupported", "This session cannot run this action. Update Drakonc Shell and restart it.");
 
 const ESCALATION_WHILE_BUSY = fail("escalation_while_busy", "Raising the permission mode is refused while the agent, a background job or a subagent is running, or within 2 s after; try again when the session is idle.");
 
@@ -461,7 +461,7 @@ export async function runDesktopAction(action: DesktopAction, owners: DesktopAct
 				if (!owners.refreshUsage) return NO_OWNER;
 				return fromOwner(await owners.refreshUsage(action.args.provider as string | undefined));
 			case "apply_profile":
-				// Same as /gentle:profiles in the TUI: allowed while the session works; the owner decides.
+				// Same as /drakonc:profiles in the TUI: allowed while the session works; the owner decides.
 				if (!owners.applyProfile) return NO_OWNER;
 				return fromOwner(await owners.applyProfile(action.args.name as string, action.args.confirmation as string | undefined));
 		}

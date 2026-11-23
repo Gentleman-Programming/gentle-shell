@@ -2,7 +2,7 @@
 
 Reference: `design/herdr-desktop/01-inspector.html` (direction A, S7/S8). Line numbers below are
 lines of that file. Scope: sidebar (1a-1d), session tabs (2), inspector (5, 5a-5f), status bar (6)
-and the layout. The centre column (4, `gentle-chat`) is T5.
+and the layout. The centre column (4, `drakonc-chat`) is T5.
 
 ## Method
 
@@ -26,33 +26,33 @@ the app (the macOS window has no such border). Inside it the app is 1598×998, s
 coordinates below are given relative to the inner edge (x − 1, y − 1). In a 1600×1000 Herdr
 window the two flexible regions (the views stack and the agents list) take the extra 2 px.
 
-## Layout (`herdr/layouts/gentle-shell.json`)
+## Layout (`herdr/layouts/drakonc-shell.json`)
 
 | Region | Artboard (measured) | Layout node |
 |---|---|---|
 | Sidebar | `.sidebar` 252 incl. 1px right border, bg `--chrome` (l.225) | `column sidebar` `px 251` + root `divider 1 border` = 252; `background chrome`, `resizable false` |
-| 1a Brand | `.brand` h 46 (l.226) | `block brand` `px 46`, `window_drag`, `gentle-sidebar {part: brand}` |
+| 1a Brand | `.brand` h 46 (l.226) | `block brand` `px 46`, `window_drag`, `drakonc-sidebar {part: brand}` |
 | traffic lights | `.lights` left 14, top 17 (l.227) | root `traffic_lights [14, 17]` |
-| 1b Projects | `.sb-sec` 200.25 for 3 spaces: pad 10 + header 38 + 3 × 48.75 + pad 6 (l.231-233) | `block spaces` `px 200.25`; `gentle-spaces` resizes it to its rows (`layout.resize`, up to 6 rows, then it scrolls) |
-| 1c Agents | `.sb-sec` takes the rest (l.231) | `block agents` `weight 1`, `gentle-agents` |
-| 1d Plan usage | `.sb-foot` 111.15: border 1 + pad 10 + 15.4 + 3 × (7 + 17.25) + pad 12 (l.244) | `block sidebar-footer` `px 111`, `gentle-sidebar {part: usage}` (the legend's "92 px" is not what the artboard renders) |
-| 2 Tabs | `.tabs` h 42 incl. 1px bottom border (l.251) | `block tabs` `px 42`, `window_drag`, `gentle-tabs` |
+| 1b Projects | `.sb-sec` 200.25 for 3 spaces: pad 10 + header 38 + 3 × 48.75 + pad 6 (l.231-233) | `block spaces` `px 200.25`; `drakonc-spaces` resizes it to its rows (`layout.resize`, up to 6 rows, then it scrolls) |
+| 1c Agents | `.sb-sec` takes the rest (l.231) | `block agents` `weight 1`, `drakonc-agents` |
+| 1d Plan usage | `.sb-foot` 111.15: border 1 + pad 10 + 15.4 + 3 × (7 + 17.25) + pad 12 (l.244) | `block sidebar-footer` `px 111`, `drakonc-sidebar {part: usage}` (the legend's "92 px" is not what the artboard renders) |
+| 2 Tabs | `.tabs` h 42 incl. 1px bottom border (l.251) | `block tabs` `px 42`, `window_drag`, `drakonc-tabs` |
 | 3 Work body | `.body` padding 8, gap 8 (l.257) | `row work-body` `padding 8`, `gap 8` |
 | 4 Views | `.views` flex 1, border 1 `--line`, radius 10, bg `--canvas` (l.258) | `stack views` unchanged (chat block over the `main` terminal block, T5's) |
-| 5 Inspector | `.inspector` w 372, border 1 `--line`, radius 10, bg `--chrome` (l.271) | `column panel` `px 372`, `min 280`, `max 900`, `radius 10`, `border 1 border`, `background chrome` → `block inspector` `gentle-inspector` |
-| 6 Status | `.status` h 28 incl. 1px top border (l.281) | `block status` `px 28`, `gentle-status` |
+| 5 Inspector | `.inspector` w 372, border 1 `--line`, radius 10, bg `--chrome` (l.271) | `column panel` `px 372`, `min 280`, `max 900`, `radius 10`, `border 1 border`, `background chrome` → `block inspector` `drakonc-inspector` |
+| 6 Status | `.status` h 28 incl. 1px top border (l.281) | `block status` `px 28`, `drakonc-status` |
 
 The old `panel-body` stack (Herdr's `files` / `changes` mods, hidden) is gone: the inspector is
-always shown, as in the artboard, and `gentle-tabs` has no Files/Changes toggles. `"header":
+always shown, as in the artboard, and `drakonc-tabs` has no Files/Changes toggles. `"header":
 "tabs"` is not used on any stack (Herdr 0.1.15 rejects it, L7); the inspector draws its own strip.
 
 ## Colours
 
-(S14: these values now live in `herdr/themes/gentle-shell-dark.json` `colors`, chosen by the layout
-root `"theme": { "light": "gentle-shell-light", "dark": "gentle-shell-dark" }`; the resolved roles
+(S14: these values now live in `herdr/themes/drakonc-shell-dark.json` `colors`, chosen by the layout
+root `"theme": { "light": "drakonc-shell-light", "dark": "drakonc-shell-dark" }`; the resolved roles
 are the same. See `FIDELITY-light.md`.) The layout root `colors` sets the Herdr theme roles to the artboard values, so the mods read
-`theme()` names; `gentle-tokens/tokens.js` `HEX` is the fallback and holds the colours with no
-role. Values equal T5's `LAYOUT_COLORS` (`herdr/mods/gentle-chat/tokens.js`) role by role (checked
+`theme()` names; `drakonc-tokens/tokens.js` `HEX` is the fallback and holds the colours with no
+role. Values equal T5's `LAYOUT_COLORS` (`herdr/mods/drakonc-chat/tokens.js`) role by role (checked
 by script: 20/20 identical); the layout adds `idle` and `selection`.
 
 | Token | Hex | Theme role (layout `colors`) | Artboard |
@@ -93,40 +93,40 @@ and `card`.
 
 ## Matched values by region
 
-### 1a Brand (`gentle-sidebar`, part brand)
+### 1a Brand (`drakonc-sidebar`, part brand)
 - Row 46 high, `padding 0 14px 0 78px`, gap 10, items centred (l.226); full screen: left 14.
 - Mark: 26 px, `--accent`, the `i-mark` path (l.289) as `icons/mark.svg` (l.229).
-- "Gentle Shell": 700 13px/19.5 `--text` (l.230).
+- "Drakonc Shell": 700 13px/19.5 `--text` (l.230).
 
-### 1b Projects (`gentle-spaces`)
+### 1b Projects (`drakonc-spaces`)
 - Section padding 10 10 6 (l.231); header padding 0 6 6, eyebrow left, 32 px icon button right (l.232, `.icon-btn` l.181: 32×32, radius 8, muted, hover `--selected` + text).
 - Eyebrow "PROJECTS": 600 11px/15.4 mono, uppercase, `--muted` (l.100).
 - Row: 231 wide, 48.75 high (6 + 19.5 + 17.25 + 6), padding 6, gap 10, radius 6 (l.233); hover and current `--selected`; current: 2 px `--accent` left edge (l.235).
-- Avatar: 22×22, radius 6, `--raised`, 700 10.5px mono, `--muted`; current `--accent-soft` (l.236-237). Two letters: "gentle-pi" → "gp".
+- Avatar: 22×22, radius 6, `--raised`, 700 10.5px mono, `--muted`; current `--accent-soft` (l.236-237). Two letters: "drakonc-pi" → "gp".
 - Name 13px/19.5 `--text`; second line 11.5px/17.25 `--muted` (l.239).
 - Needs-you count: 600 11px mono `--warn` (l.240).
 - Plus icon 13 px (`svg.i.s` l.44).
 
-### 1c Agents (`gentle-agents`)
+### 1c Agents (`drakonc-agents`)
 - Header: eyebrow "AGENTS" left, "Needs you first" 11.5px `--muted` right (l.344).
 - Row: 48.75 high, padding 6, radius 6, title 13px/19.5 left, state right, gap 8, second line 11.5px `--muted` "app · space · address" (l.241-243); hover / focused `--selected`.
 - Order: needs you, done, working, idle, then the latest change (Herdr `agents` priority sort); `setAgentOrder` keeps agent.next/prev in that order.
 - State (l.79-87): 12px label, gap 6, 7 px dot; idle a 5 px ring with a 1.5 px border; working pulses opacity 1 → .35 every 1.6 s with the native `.loop` (no timer).
 
-### 1d Plan usage (`gentle-sidebar`, part usage)
+### 1d Plan usage (`drakonc-sidebar`, part usage)
 - `border-top 1 --line`, padding 10 16 12, gap 7, 12px (l.244).
 - "PLAN USAGE · <plan>" eyebrow; rows 22 | 1fr | 36, gap 8 (l.245); label 11px mono `--muted` (l.246); bar 4 px pill on `--raised`, first window `--accent`, second `--muted` (l.89-90); value 11.5px mono right (l.247).
 - Reset line 11.5px `--muted`, space-between, gear 13 px → `app.settings` (l.248, l.355).
 
-### 2 Session tabs (`gentle-tabs`)
+### 2 Session tabs (`drakonc-tabs`)
 - Bar: `--chrome`, 1 px bottom `--line`, padding 0 10, gap 2, tabs on the bottom edge (l.251).
 - Tab: 34 high, padding 0 12, gap 8, top radius 8, 12.5px, max 260, `--muted`, hover `--text` (l.252).
 - Active: `--canvas` fill, `--text`, 2 px `--accent` top edge, 1 px `--line` sides (l.254).
 - State dot as in 1c, the word as tooltip (the artboard puts it in a `.sr` span).
-- Add: 32×32 icon button, margin 0 0 4 4 (l.256), plus 13 px; starts a `gentle-shell` tab.
+- Add: 32×32 icon button, margin 0 0 4 4 (l.256), plus 13 px; starts a `drakonc-shell` tab.
 - Measured: first tab x 262 (10 + inner), y 7, h 34; add button y 5…37.
 
-### 5 Inspector (`gentle-inspector`)
+### 5 Inspector (`drakonc-inspector`)
 - Strip: padding 6 6 0, gap 2, 1 px bottom `--line` (l.272); six tabs flex 1 (58 px each at 370 inner), column, gap 2, padding 6 2 7, top radius 6, 11px/16.5, 15 px icon, count 600 10.5px mono (l.273, l.276); total 66 high (6 + 59 + 1).
 - Selected: `--text` and a 2 px `--accent` bottom edge (l.275); hover `--text` on `--selected` (l.274).
 - Count colours: `--warn` (needs you), `--info` (running), else `--muted` (l.277).
@@ -138,7 +138,7 @@ and `card`.
 - 5e Review: state box padding 10, gap 10, 1 px `--line`, radius 8, 15 px shield icon, label 600 13px, scope `--muted` (l.220-221); key/value rows gap 4 12, key `--muted`, value mono right (l.217-218); "Start review" `.btn.primary` (`--accent` fill, `#1a1218` 600, l.94) and "Skip for this change".
 - 5f Session: key/value Turns, Tool calls, Duration, Cost, Subagent spend; "BY MODEL" subhead + "model · N turns" rows; "INTEGRATIONS" block 14 below (l.595).
 
-### 6 Status (`gentle-status`)
+### 6 Status (`drakonc-status`)
 - 28 high, padding 0 14, gap 18, 1 px top `--line`, `--chrome`, 12px `--muted` (l.281).
 - "ODD" `--text` + phase 600 `--accent` (l.282); work state; needs-you state in `--warn`; "Jobs N running · M done" with mono numbers; spacer (l.283); `⌘K` kbd (1 px `--line-strong`, radius 5, 11px, l.47) + "Commands" → `app.palette`, the key read from `keys()` like Herdr's `workspace-status`.
 
@@ -158,22 +158,22 @@ Data (the T4 snapshot has no field for it; shown as an empty state or left out, 
 9. Subagents: no task title and `role` is always null (docs/desktop-feed.md): the card shows the agent name as the role tag and no bold title; no start time, so no "Running · 3m 12s" (shown: "Running · <step>").
 10. Status bar TPS ("58 tok/s"): no TPS in the snapshot; shown only if a future snapshot carries `activity.tps`. The streaming item names the session, not the subagent ("writer streaming").
 11. "ODD Build · T5 of 9": the snapshot has the ODD phase word (`implementing`, …) and the todo list, not the ODD task id: the bar says "ODD Implementing · todo 4 of 6".
-12. Review: the RDD row shows `gentle-ai review mode status` ("on · global") and is the review switch; no lens count ("Reviewers 2 lenses").
+12. Review: the RDD row shows `drakonc-ai review mode status` ("on · global") and is the review switch; no lens count ("Reviewers 2 lenses").
 13. Integrations and other statuses (Engram, MCP, "music paused", status bar "Engram · MCP 2/3"): `integrations` / `statuses` are always null today; the Session tab says "Engram and MCP status are not published by this session yet" and the status bar leaves the item out.
 14. Jobs: a finished job's "Failed · 1 test" detail is not in the snapshot; it says "Failed · exit N".
 
-Actions (T7, `actions.js`, docs/desktop-feed.md "Actions"): Stop subagent and Cancel job are desktop actions through the session's owners; Open diff viewer and change rows type `/gentle:changes`, View `/gentle:agents`, Output `/gentle:jobs` into the terminal and show it; Start review / Skip show the Terminal, where the review consent stays your answer; the RDD value runs `gentle-ai review mode enable|disable --cwd <project>` after a confirmation dialog.
+Actions (T7, `actions.js`, docs/desktop-feed.md "Actions"): Stop subagent and Cancel job are desktop actions through the session's owners; Open diff viewer and change rows type `/drakonc:changes`, View `/drakonc:agents`, Output `/drakonc:jobs` into the terminal and show it; Start review / Skip show the Terminal, where the review consent stays your answer; the RDD value runs `drakonc-ai review mode enable|disable --cwd <project>` after a confirmation dialog.
 
 ## Token modules
 
-- Canonical: `herdr/mods/gentle-tokens/tokens.js` (palette, fonts, `.state`, `.bar`, `.btn`, `.eyebrow`, `kbd`, formats) and `herdr/mods/gentle-tokens/snapshot.js` (snapshot reader over every agent dir in `agentRoots()`; `gentle-chat/session.js` imports `readFeeds` / `matchFeed` from its copy, `targetTerminal` mirrors `GentleChat.target()`).
-- gpui-shell refuses imports outside a mod's folder (`Module ../b/x.js resolves outside the application directory`, observed with `herdr-app check`), so `gentle-sidebar`, `gentle-spaces`, `gentle-agents`, `gentle-tabs`, `gentle-inspector`, `gentle-status`, `gentle-palette` and `gentle-chat` carry byte-identical copies (`cmp` clean). `gentle-tokens` has a small `main.js` (a token swatch, `place: none`) so the folder is a valid mod.
+- Canonical: `herdr/mods/drakonc-tokens/tokens.js` (palette, fonts, `.state`, `.bar`, `.btn`, `.eyebrow`, `kbd`, formats) and `herdr/mods/drakonc-tokens/snapshot.js` (snapshot reader over every agent dir in `agentRoots()`; `drakonc-chat/session.js` imports `readFeeds` / `matchFeed` from its copy, `targetTerminal` mirrors `DrakoncChat.target()`).
+- gpui-shell refuses imports outside a mod's folder (`Module ../b/x.js resolves outside the application directory`, observed with `herdr-app check`), so `drakonc-sidebar`, `drakonc-spaces`, `drakonc-agents`, `drakonc-tabs`, `drakonc-inspector`, `drakonc-status`, `drakonc-palette` and `drakonc-chat` carry byte-identical copies (`cmp` clean). `drakonc-tokens` has a small `main.js` (a token swatch, `place: none`) so the folder is a valid mod.
 - Each mod folder has a `.gitignore` for the `gpui-kit.d.ts` / `jsconfig.json` that `herdr-app check` writes.
 - Data refresh: `watchFolder(<agentDir>/desktop/sessions)` for each agent dir plus a 10 s fallback timer; redraw only when a snapshot changed. Extra timers: the inspector redraws each second only while the Jobs tab shows a running job; the usage footer once a minute (its reset countdown).
 
 ## Live side-by-side (1908×1019, S8)
 
-Same method as `herdr/mods/gentle-chat/FIDELITY.md` (headless artboard at 1908×1019 against
+Same method as `herdr/mods/drakonc-chat/FIDELITY.md` (headless artboard at 1908×1019 against
 `herdr-app shot`, PIL samples at the same logical coordinates). Region edges measured equal:
 sidebar 0…251 + 1px rule, work body padding 8 (card 261…1519, inspector 1528…1899), tab bar
 0…41 + rule at 41, active tab 7…41 with its 2px accent at 7…9, inspector strip 51…116 + rule,
@@ -187,7 +187,7 @@ Differences found, and what happened to each:
    byte-identical across minutes and a mod reinstall). With the window in front, the strip
    listed both tabs and every mod followed the focused tab (t6).
 2. Fixed: the + button sat at the far right of the bar; it follows the last tab (l.256).
-3. Fixed: tabs and the agents list showed the terminal title `π - herdr-gentle-shell`; they show
+3. Fixed: tabs and the agents list showed the terminal title `π - herdr-drakonc-shell`; they show
    the session name, else the tab's given name, else the title without `π - `.
 4. Fixed: Projects row "1 session · idle"; now sessions + live spend ("2 sessions · $5.78").
 5. Fixed: Changes showed untracked files as `U +0 −0`. The publisher now counts their lines
@@ -196,7 +196,7 @@ Differences found, and what happened to each:
    `--ok` as the artboard, and a file without counts shows none. Live: the running sessions
    loaded the old publisher, so t5 and t6 still publish `+0` until they restart (not restarted:
    they are the person's sessions).
-6. Fixed: subagent role tag was the agent name (`GENTLE-AI-WORKER`); it is the role
+6. Fixed: subagent role tag was the agent name (`DRAKONC-AI-WORKER`); it is the role
    (`WORKER`, `EXPLORE`), as the chat card. Model names are shortened (`Opus 5.5`, not
    `claude-bridge/claude-opus-5-5`), in the Agents tab and the Session tab's By model.
 7. Fixed: the current todo used `--info` while the session worked; the artboard's `.now` is
@@ -214,24 +214,24 @@ Differences found, and what happened to each:
 
 ## T10 parity additions (S9)
 
-- **Status bar "⌘K Commands"** (l.618): the hint reads the binding of `mod.open:gentle-palette`
-  (herdr/keys.json binds ⌘K in `layout:gentle-shell`; unbound, it shows the artboard's ⌘K, which
-  the chat binds while it has the keyboard). A click opens the Gentle palette instead of Herdr's.
-  The bar also takes `gentle-status.toggle` (Chat ↔ Terminal) and `gentle-status.stop`
+- **Status bar "⌘K Commands"** (l.618): the hint reads the binding of `mod.open:drakonc-palette`
+  (herdr/keys.json binds ⌘K in `layout:drakonc-shell`; unbound, it shows the artboard's ⌘K, which
+  the chat binds while it has the keyboard). A click opens the Drakonc palette instead of Herdr's.
+  The bar also takes `drakonc-status.toggle` (Chat ↔ Terminal) and `drakonc-status.stop`
   (`abort_turn`; a refusal is a toast): it is always mounted, the chat is not (a hidden stack
   child gets no key commands). Seen live: toggle both ways, stop refused while idle.
-- **Tab bar "+"**: starts `gentle-shell` in the shown space and its folder (`tab.new {argv, space,
-  folder}`). Seen live: the same arguments started gentle-shell in the space's folder (t12,
+- **Tab bar "+"**: starts `drakonc-shell` in the shown space and its folder (`tab.new {argv, space,
+  folder}`). Seen live: the same arguments started drakonc-shell in the space's folder (t12,
   closed again); the click itself could not be synthesized (System Events clicks do not reach
   GPUI views).
-- **gentle-palette** (new, `mods/gentle-palette`): the "⌘K Commands" palette the artboard
+- **drakonc-palette** (new, `mods/drakonc-palette`): the "⌘K Commands" palette the artboard
   promises (l.618, l.669-670) but does not draw. A top popup, 620 px wide, 64 px from the top:
   the `.perm-menu` surface (`--raised`, 6px padding), a search field in the `.field` look
   (38 px, radius 12, 1px `--accent`, `--canvas` fill, `i-search`, kbd Esc), `.eyebrow` group
   titles (Needs you in `--warn`, Session, View, Permission, Commands), rows 7px 8px radius 6
   with an 18px icon column, 13px semibold label (commands mono 12.5), 12px muted detail, a kbd
   or a faint mono source tag on the right; a 440 px list; a hints row. Seen live: filtering
-  ("gentle:status", "/name"), running `/gentle:status` and `/gentle:changes` (Terminal shown with
+  ("drakonc:status", "/name"), running `/drakonc:status` and `/drakonc:changes` (Terminal shown with
   the result), `/name` from the Terminal (Chat shown, "/name " in the composer), Normal and
   Super-YOLO (Herdr's confirm dialog first), Esc. It carries byte-identical copies of tokens.js,
   snapshot.js and actions.js.

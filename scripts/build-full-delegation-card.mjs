@@ -99,7 +99,7 @@ export function renderFullDelegationCard(assetsDir) {
 		["report the capability gap; a fired trigger is never replaced by inline work.", "report the capability gap; never do the work yourself instead."],
 	], delegationSource);
 	const surfaces = section(writer, "#### Allowed edit surfaces (MANDATORY)", writerSource);
-	const background = marked(reference, "gentle-pi:background-subagents", referenceSource);
+	const background = marked(reference, "drakonc-pi:background-subagents", referenceSource);
 
 	return [
 		"# Orchestrator — Full Delegation Card (lazy-loaded)",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 // The chat mod's pure session reader (no host imports): what each tool's collapsed row says.
-import { createFeed, ingest, summarize } from "../herdr/mods/gentle-chat/feed.js";
+import { createFeed, ingest, summarize } from "../herdr/mods/drakonc-chat/feed.js";
 
 // S15 (odd/tasks/herdr-desktop.md, xabilarra's report): the minimal view gives every tool a
 // readable one-line summary beside its name, never the raw JSON of its arguments. The expanded
@@ -32,8 +32,8 @@ test("S15: questions show their question text", () => {
 });
 
 test("S15: subagents, jobs, web, memory, codemode and review tools say what they do", () => {
-	assert.equal(summarize("subagent_run", { agent: "gentle-writer", label: "S15 publisher", task: "Implement…" }), "gentle-writer · S15 publisher");
-	assert.equal(summarize("subagent_run", { agent: "gentle-writer", task: "Fix the bug\nthen test" }), "gentle-writer · Fix the bug");
+	assert.equal(summarize("subagent_run", { agent: "drakonc-writer", label: "S15 publisher", task: "Implement…" }), "drakonc-writer · S15 publisher");
+	assert.equal(summarize("subagent_run", { agent: "drakonc-writer", task: "Fix the bug\nthen test" }), "drakonc-writer · Fix the bug");
 	assert.equal(summarize("bash_background", { command: "npm test", label: "unit tests" }), "unit tests");
 	assert.equal(summarize("monitor", { command: "gh run watch 1", label: "CI", timeout_seconds: 60 }), "CI");
 	assert.equal(summarize("bash_background", { command: "npm test" }), "npm test");
@@ -46,8 +46,8 @@ test("S15: subagents, jobs, web, memory, codemode and review tools say what they
 	assert.equal(summarize("mem_search", { query: "desktop feed", limit: 5 }), "desktop feed");
 	assert.equal(summarize("mem_get_observation", { id: 42 }), "#42");
 	assert.equal(summarize("codemode", { code: "\n// read the graph\nconst r = await codegraph.search({ q: 'x' });\nreturn r;" }), "const r = await codegraph.search({ q: 'x' });");
-	assert.equal(summarize("gentle_review", { operation: "assess" }), "assess");
-	assert.equal(summarize("gentle_review_run", { operation: "start", input: "{\"mode\":\"ordinary\"}" }), "start");
+	assert.equal(summarize("drakonc_review", { operation: "assess" }), "assess");
+	assert.equal(summarize("drakonc_review_run", { operation: "start", input: "{\"mode\":\"ordinary\"}" }), "start");
 });
 
 test("S15: the existing summaries stay as they were", () => {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createDesktopFeedExtension, type DesktopFeedOptions } from "../extensions/gentle-desktop-feed.ts";
+import { createDesktopFeedExtension, type DesktopFeedOptions } from "../extensions/drakonc-desktop-feed.ts";
 import {
 	answerKeys,
 	createDesktopActionInbox,
@@ -34,7 +34,7 @@ import { QuestionnaireView, type QuestionnaireResult } from "../lib/questionnair
 
 const NOW = Date.UTC(2026, 10, 15, 12, 0, 0);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 120));
-const GENTLE_ENV = { PI_PROGRAM_STATUS_APP: "gentle-shell", HERDR_ENV: "1", HERDR_PANE_ID: "t7" };
+const DRAKONC_ENV = { PI_PROGRAM_STATUS_APP: "drakonc-shell", HERDR_ENV: "1", HERDR_PANE_ID: "t7" };
 const DEAD_PID = 99_999_999;
 
 function fakeTimers() {
@@ -280,7 +280,7 @@ function sessionHarness(t: test.TestContext, options: { mode?: string; job?: str
 	let mode = options.mode ?? "normal";
 	const setModes: string[] = [];
 	const permissionObservers: Array<() => void> = [];
-	bus.on("gentle:yolo:host-ui", (payload) => {
+	bus.on("drakonc:yolo:host-ui", (payload) => {
 		(payload as { respond(adapter: unknown): void }).respond({
 			read: async () => (mode === "normal" ? "OFF" : "ON"),
 			readSnapshot: async () => ({ yolo: mode === "normal" ? "OFF" : "ON", mode, defaultMode: "normal" }),
@@ -306,7 +306,7 @@ function sessionHarness(t: test.TestContext, options: { mode?: string; job?: str
 	bus.on(DESKTOP_AGENTS_SERVICE_CHANNEL, (payload) => {
 		(payload as { respond(service: unknown): void }).respond({
 			schema: DESKTOP_AGENTS_SERVICE_SCHEMA,
-			read: () => ({ sessionId: "sess-1", agents: [{ id: "a1", agent: "gentle-writer", status: state.agent, model: "sonnet", lastStep: "writing", usage: { total: 1, cost: 0 } }] }),
+			read: () => ({ sessionId: "sess-1", agents: [{ id: "a1", agent: "drakonc-writer", status: state.agent, model: "sonnet", lastStep: "writing", usage: { total: 1, cost: 0 } }] }),
 			cancel: () => ({ kind: "not_found" }),
 			observe: (fn: (sessionId: string) => void) => { agentsChanged = fn; return () => {}; },
 			dispose: () => {},
@@ -320,7 +320,7 @@ function sessionHarness(t: test.TestContext, options: { mode?: string; job?: str
 	const prompts: string[] = [];
 	let confirmAnswer = true;
 	createDesktopFeedExtension({
-		env: GENTLE_ENV,
+		env: DRAKONC_ENV,
 		agentDir,
 		now: () => NOW,
 		activityClock: () => Date.now() + offset,
@@ -436,7 +436,7 @@ test("S2: an escalation from an idle session runs through the owner once", async
 	assert.deepEqual(h.setModes, ["super-yolo"]);
 	assert.equal(h.snapshot().permission!.mode, "super-yolo");
 	assert.equal(h.prompts.length, 1, "the human confirmed it in the session UI");
-	assert.match(h.prompts[0]!, /Gentle Shell Desktop/);
+	assert.match(h.prompts[0]!, /Drakonc Shell Desktop/);
 	assert.match(h.prompts[0]!, /super-yolo/);
 	const lower = await h.act("set_permission_mode", { mode: "normal" });
 	assert.equal(lower.ok, true);
@@ -493,9 +493,9 @@ test("S5: a provider consent relayed through ask_user_choice is answered only in
 	const h = sessionHarness(t);
 	await h.start();
 	h.fire("agent_start", {});
-	// gentle_review returned the unresolved consent envelope; the model relays it.
+	// drakonc_review returned the unresolved consent envelope; the model relays it.
 	const details = { operation: "start", status: "blocked", outcome: "native-review-consent-required", consent: { ...consentEnvelope, consentBinding: "binding-1" }, consent_binding: "binding-1" };
-	h.fire("tool_execution_end", { toolCallId: "r1", toolName: "gentle_review", isError: false, result: { content: [{ type: "text", text: JSON.stringify(details) }], details } });
+	h.fire("tool_execution_end", { toolCallId: "r1", toolName: "drakonc_review", isError: false, result: { content: [{ type: "text", text: JSON.stringify(details) }], details } });
 	// Neutral option tokens: only the relay path marks it.
 	h.fire("tool_execution_start", { toolCallId: "ask-1", toolName: "ask_user_choice", args: relayedArgs((_choice) => "opaque-token") });
 	await h.flush();
@@ -552,7 +552,7 @@ test("S5: a provider consent relayed in the next agent run through ask_user_ques
 	await h.start();
 	h.fire("agent_start", {});
 	const details = { operation: "start", status: "blocked", outcome: "native-review-consent-required", consent: { ...consentEnvelope, consentBinding: "binding-2" }, consent_binding: "binding-2" };
-	h.fire("tool_execution_end", { toolCallId: "r2", toolName: "gentle_review", isError: false, result: { content: [{ type: "text", text: JSON.stringify(details) }], details } });
+	h.fire("tool_execution_end", { toolCallId: "r2", toolName: "drakonc_review", isError: false, result: { content: [{ type: "text", text: JSON.stringify(details) }], details } });
 	h.fire("agent_settled", {});
 	// The next run relays it with a neutral questionnaire.
 	h.fire("agent_start", {});

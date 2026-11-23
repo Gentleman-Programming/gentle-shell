@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-// gentle-shell#1731 T29 (L66): in the targeted bench (B, pi --mode json,
+// drakonc-shell#1731 T29 (L66): in the targeted bench (B, pi --mode json,
 // background policy off) the parallelism reason fired for two independent
 // features, but the writers ran one after the other in task mode: no
 // parallelism, only subagent overhead (x5 took 10.9 min vs 4.5 inline). The

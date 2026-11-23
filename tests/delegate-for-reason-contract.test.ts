@@ -3,11 +3,11 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { HIGH_RISK_ITEMS } from "../lib/review-risk-assessment.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
-// gentle-shell#1731: the delegated writer fires on named reasons (parallelism,
+// drakonc-shell#1731: the delegated writer fires on named reasons (parallelism,
 // context), never on task size. A large task keeps the ODD logbook (#1494
 // resume test) and works inline when no reason fires. T24 (L49) turned the
 // cost reason off: a price ratio never fires the Writer rule, while configured
@@ -19,7 +19,7 @@ const core = read("assets/orchestrator.md");
 const delegation = readDelegationDetail();
 const writer = read("assets/orchestrator-writer.md");
 const verification = read("assets/orchestrator-verification.md");
-const skill = read("skills/gentle-ai/SKILL.md");
+const skill = read("skills/drakonc-ai/SKILL.md");
 
 function lineStarting(text: string, prefix: string): string {
 	const line = text.split("\n").find((entry) => entry.startsWith(prefix));
@@ -48,7 +48,7 @@ test("AC1: the core writer rule fires on named reasons, never on size or file co
 	}
 	assert.match(coreWriter, /(?:a small change to one module or one command is done inline even when several such changes are independent|Small module or command changes stay inline, even when independent)/);
 	assert.match(coreWriter, /(?:a delivery that depends on an earlier one is not independent|dependent deliveries are not independent)/);
-	assert.ok(!core.includes("large task → one bounded `gentle-ai-worker` per task"), "core keeps the size-based writer rule");
+	assert.ok(!core.includes("large task → one bounded `drakonc-ai-worker` per task"), "core keeps the size-based writer rule");
 	assert.ok(
 		core.includes("large tasks get ODD tracking and workers only by the Writer rule, else inline"),
 		"core Task Size must keep tracking for large tasks and run them inline without a writer reason",
@@ -74,7 +74,7 @@ test("AC1: the lazy writer trigger names its reasons and keeps the logbook on th
 	assert.ok(skill.includes("a writer reason (parallel units or context)"), "the skill must name the writer reasons");
 });
 
-// S9 canon change (gentle-ai 87a3b2eb): the lazy trigger mirrors the canon's
+// S9 canon change (drakonc-ai 87a3b2eb): the lazy trigger mirrors the canon's
 // behavior unit and size threshold instead of "clearly heavier than starting a
 // subagent; medium tasks included".
 test("AC2: parallelism needs 2+ independent behavior units, disjoint surfaces, each worth several minutes", () => {
@@ -117,14 +117,14 @@ test("T24/L49: configured per-agent model routing still applies to writers launc
 test("AC4: verification stays risk-gated and the writer reasons never include risk", () => {
 	assert.ok(
 		core.includes(
-			"3. **Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `gentle-ai-verify`; else inline; see `orchestrator-verification.md`. RDD on: `escalate` makes review due.",
+			"3. **Verification rule** — only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `drakonc-ai-verify`; else inline; see `orchestrator-verification.md`. RDD on: `escalate` makes review due.",
 		),
 		"core Verification rule changed",
 	);
 	assert.ok(
 		delegation.includes(
-			// S9 canon change (gentle-ai 6b9a71ef): only a named high-risk item adds the verifier.
-			"3. **Verification rule** (gentle-pi#661/#662, RDD-aware): only a change whose Risk line names a high-risk item (Task Size, assess `escalate` when RDD is on or unknown) gets an independent `gentle-ai-verify` run after the change's own checks, as rarely as possible; otherwise whoever made the change runs its focused test and suite inline, small tasks included.",
+			// S9 canon change (drakonc-ai 6b9a71ef): only a named high-risk item adds the verifier.
+			"3. **Verification rule** (drakonc-pi#661/#662, RDD-aware): only a change whose Risk line names a high-risk item (Task Size, assess `escalate` when RDD is on or unknown) gets an independent `drakonc-ai-verify` run after the change's own checks, as rarely as possible; otherwise whoever made the change runs its focused test and suite inline, small tasks included.",
 		),
 		"lazy Verification rule changed",
 	);
@@ -143,7 +143,7 @@ function sectionFrom(text: string, heading: string): string {
 	return text.slice(start, next < 0 ? undefined : next + 1);
 }
 
-const reviewSection = (): string => sectionFrom(verification, "## Parallel review protocol (gentle-shell#1731)");
+const reviewSection = (): string => sectionFrom(verification, "## Parallel review protocol (drakonc-shell#1731)");
 
 function reviewItem(prefix: string): string {
 	return lineStarting(reviewSection(), prefix);
@@ -231,7 +231,7 @@ test("T11/S4: the parent hands verify the whole spec, authorizes its probes and 
 		"the baseline commit",
 		"probes on isolated state",
 		"typecheck",
-		"`gentle-ai-verify` holds the checklist",
+		"`drakonc-ai-verify` holds the checklist",
 		"every in-scope unmet item before closing the unit",
 		// P8 C2: writers never commit; the parent owns git and commits only when a commit is authorized (P16).
 		"the writer adds its probes as regression tests; the parent commits when a commit is authorized.",
@@ -364,14 +364,14 @@ test("P6: the lazy Writer trigger names every route the runtime admits", () => {
 // so the single-writer wording relaxes to disjoint surfaces or isolated worktrees.
 test("AC6: parallel writers need disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees", () => {
 	const rule = "arallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees";
-	const harness = read("extensions/gentle-ai.ts");
+	const harness = read("extensions/drakonc-ai.ts");
 	const docs = read("docs/readme-reference.md");
 	assert.ok(core.includes(`- P${rule}.`), "core Safety must carry the relaxed writer rule");
 	// S11 T3: deduplicated. The harness principle repeated core Safety in the same
 	// parent prompt; the rendered prompt now carries the rule once, from Safety.
 	assert.ok(!harness.includes(rule), "harness principles restate the core Safety writer rule");
-	for (const persona of ["gentleman", "neutral"] as const) {
-		assert.equal(__testing.buildGentlePrompt(persona).split(rule).length - 1, 1, `[${persona}] the parent prompt must carry the writer rule once`);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		assert.equal(__testing.buildDrakoncPrompt(persona).split(rule).length - 1, 1, `[${persona}] the parent prompt must carry the writer rule once`);
 	}
 	for (const [path, text] of Object.entries({ core, delegation, skill, docs })) {
 		assert.ok(text.includes(rule), `${path} is missing the relaxed writer rule`);

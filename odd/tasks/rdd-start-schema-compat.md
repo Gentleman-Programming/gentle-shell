@@ -24,10 +24,10 @@ Make the canonical Pi review decoder accept the provider-owned generated-path ma
 
 | Claim | Current anchor | Evidence |
 | --- | --- | --- |
-| Direct committed-only START reaches the provider consent contract. | Provider-issued `review.status` transition executed unchanged | Detached `7d6d3ec5..` over `d8d6aba1..` returned `gentle-ai.review-integration.consent/v3`, high risk, 6 files, 282 lines, including `pnpm-lock.yaml`. |
+| Direct committed-only START reaches the provider consent contract. | Provider-issued `review.status` transition executed unchanged | Detached `7d6d3ec5..` over `d8d6aba1..` returned `drakonc-ai.review-integration.consent/v3`, high risk, 6 files, 282 lines, including `pnpm-lock.yaml`. |
 | The facade fails only after the host grants that same candidate and decodes START/v4. | `lib/native-review-cli.ts:2237-2255` | Consent is discriminated before START decoding; the later response enters `decodeReviewStartResponse`. |
 | START manifests share one strict entry decoder. | `lib/review-integration-v2.ts:1152-1164`, `1256`, `1313-1321` | `decodeChangedPathEntry` is reused by START/v3 and START/v4 and rejects every undeclared key. |
-| The provider emits a `generated` marker for recognized generated paths. | Reproduction plus issue #1239 comment | The isolated range contains `pnpm-lock.yaml`; direct consent succeeds, while `gentle_review start` returns `schema-incompatible`, no known lineage, and reconciles to the unchanged start route. The captured decoder diagnosis in #1239 is `start.changed_path_manifest[...].generated is not allowed`. |
+| The provider emits a `generated` marker for recognized generated paths. | Reproduction plus issue #1239 comment | The isolated range contains `pnpm-lock.yaml`; direct consent succeeds, while `drakonc_review start` returns `schema-incompatible`, no known lineage, and reconciles to the unchanged start route. The captured decoder diagnosis in #1239 is `start.changed_path_manifest[...].generated is not allowed`. |
 | Existing tests do not lock the marker contract. | `tests/review-integration-v2.test.ts:350-373` and repository grep | START manifest invariants are tested, but no generated-path marker case exists. |
 
 ### Claim-versus-code mismatch
@@ -50,7 +50,7 @@ A provider START/v4 response and Pi's canonical START decoder must describe the 
 
 ## Route and checks
 
-- Route: delegated `gentle-ai-worker` because the implementation changes a production decoder and its test.
+- Route: delegated `drakonc-ai-worker` because the implementation changes a production decoder and its test.
 - Trigger evidence: multi-file write rule (2 non-trivial files).
 - TDD mode: strict, source `explicit user request`.
 - Exact RED/GREEN runner: `node --experimental-strip-types --test tests/review-integration-v2.test.ts`.
@@ -60,7 +60,7 @@ A provider START/v4 response and Pi's canonical START decoder must describe the 
 ## Progress
 
 - 2026-09-22: read-only mechanism map completed.
-- 2026-09-22: exact isolated reproduction completed in `/tmp/gentle-shell-rdd-start-schema-repro`; direct native START returned consent/v3, while `gentle_review start` returned `schema-incompatible` with `mutation_outcome: unknown` and reconciliation showing no candidate/lineage.
+- 2026-09-22: exact isolated reproduction completed in `/tmp/drakonc-shell-rdd-start-schema-repro`; direct native START returned consent/v3, while `drakonc_review start` returned `schema-incompatible` with `mutation_outcome: unknown` and reconciliation showing no candidate/lineage.
 
 ## Evidence
 

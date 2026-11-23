@@ -10,10 +10,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import childContextExtension, { createChildContextExtension } from "../extensions/child-context.ts";
 
 function block(name: string, body: string): string {
-	return `<!-- gentle-ai:${name} -->\n${body}\n<!-- /gentle-ai:${name} -->`;
+	return `<!-- drakonc-ai:${name} -->\n${body}\n<!-- /drakonc-ai:${name} -->`;
 }
 
-// Synthetic file shaped like a gentle-ai managed AGENTS.md: unmanaged project
+// Synthetic file shaped like a drakonc-ai managed AGENTS.md: unmanaged project
 // text, kept blocks, orchestrator-only blocks, the engram-protocol block, a
 // nested kept block inside agent-routing, and a nested orchestrator-only block
 // inside sdd-orchestrator.
@@ -79,8 +79,8 @@ test("filters a realistic managed AGENTS.md: nested kept blocks survive, nested 
 	const output = stripOrchestratorOnlyBlocks(REALISTIC_AGENTS_MD);
 	assert.equal(output, EXPECTED_REALISTIC);
 	assert.doesNotMatch(output, /COORDINATOR|sdd-model-assignments|Implementation Routing|4-file rule/);
-	assert.doesNotMatch(output, /gentle-ai:engram-protocol/);
-	assert.match(output, /<!-- gentle-ai:remote-authorization -->\n## Remote operation authorization/);
+	assert.doesNotMatch(output, /drakonc-ai:engram-protocol/);
+	assert.match(output, /<!-- drakonc-ai:remote-authorization -->\n## Remote operation authorization/);
 });
 
 test("drops engram-protocol while codegraph-guidance and unknown managed blocks stay byte-for-byte", () => {
@@ -122,18 +122,18 @@ test("collapses only blank lines left by a removal to at most one", () => {
 	assert.equal(stripOrchestratorOnlyBlocks(trailing), "Last line\n");
 });
 
-test("non gentle-ai HTML comments are plain text", () => {
+test("non drakonc-ai HTML comments are plain text", () => {
 	const input = "<!-- section:model-capable -->\nkeep\n<!-- /section:model-capable -->\n<!-- orchestrator -->\n";
 	assert.equal(stripOrchestratorOnlyBlocks(input), input);
 });
 
 test("markers mentioned inline or inside fenced code are plain text", () => {
 	const input = [
-		"Managed blocks start with `<!-- gentle-ai:orchestrator -->` in prose.",
+		"Managed blocks start with `<!-- drakonc-ai:orchestrator -->` in prose.",
 		"```markdown",
-		"<!-- gentle-ai:orchestrator -->",
+		"<!-- drakonc-ai:orchestrator -->",
 		"example",
-		"<!-- /gentle-ai:orchestrator -->",
+		"<!-- /drakonc-ai:orchestrator -->",
 		"```",
 		"",
 	].join("\n");
@@ -142,12 +142,12 @@ test("markers mentioned inline or inside fenced code are plain text", () => {
 
 test("unbalanced, mismatched, or duplicate-open markers leave the file unchanged", () => {
 	const cases = [
-		`${block("codegraph-guidance", "cg")}\n<!-- gentle-ai:orchestrator -->\nno close\n`,
-		`<!-- /gentle-ai:orchestrator -->\n${block("agent-routing", "x")}\n`,
-		`<!-- gentle-ai:orchestrator -->\nx\n<!-- /gentle-ai:agent-routing -->\n`,
-		`<!-- gentle-ai:agent-routing -->\n<!-- gentle-ai:remote-authorization -->\nx\n<!-- /gentle-ai:agent-routing -->\n<!-- /gentle-ai:remote-authorization -->\n`,
-		`<!-- gentle-ai:orchestrator -->\n<!-- gentle-ai:orchestrator -->\nx\n<!-- /gentle-ai:orchestrator -->\n`,
-		`<!-- gentle-ai:orchestrator -->\n<!-- gentle-ai:orchestrator -->\nx\n<!-- /gentle-ai:orchestrator -->\n<!-- /gentle-ai:orchestrator -->\n`,
+		`${block("codegraph-guidance", "cg")}\n<!-- drakonc-ai:orchestrator -->\nno close\n`,
+		`<!-- /drakonc-ai:orchestrator -->\n${block("agent-routing", "x")}\n`,
+		`<!-- drakonc-ai:orchestrator -->\nx\n<!-- /drakonc-ai:agent-routing -->\n`,
+		`<!-- drakonc-ai:agent-routing -->\n<!-- drakonc-ai:remote-authorization -->\nx\n<!-- /drakonc-ai:agent-routing -->\n<!-- /drakonc-ai:remote-authorization -->\n`,
+		`<!-- drakonc-ai:orchestrator -->\n<!-- drakonc-ai:orchestrator -->\nx\n<!-- /drakonc-ai:orchestrator -->\n`,
+		`<!-- drakonc-ai:orchestrator -->\n<!-- drakonc-ai:orchestrator -->\nx\n<!-- /drakonc-ai:orchestrator -->\n<!-- /drakonc-ai:orchestrator -->\n`,
 	];
 	for (const input of cases) assert.equal(stripOrchestratorOnlyBlocks(input), input);
 });
@@ -167,7 +167,7 @@ test("filterChildContextFiles returns filtered copies, never mutates inputs, and
 	const files = Object.freeze([
 		Object.freeze({ path: "/home/AGENTS.md", content: REALISTIC_AGENTS_MD }),
 		Object.freeze({ path: "/repo/AGENTS.md", content: "# Plain\n" }),
-		Object.freeze({ path: "/repo/sub/AGENTS.md", content: "<!-- gentle-ai:orchestrator -->\nunbalanced\n" }),
+		Object.freeze({ path: "/repo/sub/AGENTS.md", content: "<!-- drakonc-ai:orchestrator -->\nunbalanced\n" }),
 	]);
 	const result = filterChildContextFiles(files);
 	assert.notEqual(result.files, files);
@@ -225,7 +225,7 @@ test("the child-context extension registers only before_agent_start", () => {
 
 for (const scenario of ["child", "primary"] as const) {
 	test(`the child-context extension ${scenario === "child" ? "filters" : "leaves"} context files on the shared options object for a ${scenario} session`, async () => {
-		const { handlers } = childContextHandlers(scenario === "child" ? { GENTLE_PI_AGENTS_CHILD: "1" } : { GENTLE_PI_AGENTS_CHILD: "0" });
+		const { handlers } = childContextHandlers(scenario === "child" ? { DRAKONC_PI_AGENTS_CHILD: "1" } : { DRAKONC_PI_AGENTS_CHILD: "0" });
 		const contextFiles = [
 			{ path: "/home/AGENTS.md", content: REALISTIC_AGENTS_MD },
 			{ path: "/repo/CLAUDE.md", content: "# Plain\n" },
@@ -251,7 +251,7 @@ for (const scenario of ["child", "primary"] as const) {
 
 // The engram-protocol block is dropped from every injected context file, at any
 // depth: the file on disk keeps it for runtimes that read it as a workspace
-// file, and gentle-engram injects its own protocol every turn.
+// file, and drakonc-engram injects its own protocol every turn.
 const PROJECT_WITH_ENGRAM = `# Plain\n\n${block("engram-protocol", "project engram")}\n`;
 const PROJECT_WITHOUT_ENGRAM = "# Plain\n";
 
@@ -269,9 +269,9 @@ async function runChildStart(env: NodeJS.ProcessEnv, project: string) {
 }
 
 test("a child drops the engram-protocol block from every loaded file, at any depth", async () => {
-	const { contextFiles, systemPromptOptions, rerun } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, PROJECT_WITH_ENGRAM);
+	const { contextFiles, systemPromptOptions, rerun } = await runChildStart({ DRAKONC_PI_AGENTS_CHILD: "1" }, PROJECT_WITH_ENGRAM);
 	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [EXPECTED_REALISTIC, PROJECT_WITHOUT_ENGRAM]);
-	assert.match(systemPromptOptions.contextFiles[0].content, /<!-- gentle-ai:remote-authorization -->\n## Remote operation authorization/);
+	assert.match(systemPromptOptions.contextFiles[0].content, /<!-- drakonc-ai:remote-authorization -->\n## Remote operation authorization/);
 	assert.equal(contextFiles[0].content, REALISTIC_AGENTS_MD, "the loaded entries are never mutated");
 	assert.equal(contextFiles[1].content, PROJECT_WITH_ENGRAM, "the loaded entries are never mutated");
 	const filtered = systemPromptOptions.contextFiles;
@@ -280,7 +280,7 @@ test("a child drops the engram-protocol block from every loaded file, at any dep
 });
 
 test("a child with no engram-protocol block anywhere still loses nothing else", async () => {
-	const { systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "1" }, PROJECT_WITHOUT_ENGRAM);
+	const { systemPromptOptions } = await runChildStart({ DRAKONC_PI_AGENTS_CHILD: "1" }, PROJECT_WITHOUT_ENGRAM);
 	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [EXPECTED_REALISTIC, PROJECT_WITHOUT_ENGRAM]);
 });
 
@@ -294,13 +294,13 @@ test("filterChildContextFiles drops engram-protocol from files at the same level
 });
 
 test("outside a child session the child-context extension leaves context files untouched", async () => {
-	const { contextFiles, systemPromptOptions } = await runChildStart({ GENTLE_PI_AGENTS_CHILD: "0" }, PROJECT_WITH_ENGRAM);
+	const { contextFiles, systemPromptOptions } = await runChildStart({ DRAKONC_PI_AGENTS_CHILD: "0" }, PROJECT_WITH_ENGRAM);
 	assert.equal(systemPromptOptions.contextFiles, contextFiles);
 	assert.deepEqual(systemPromptOptions.contextFiles.map((file) => file.content), [REALISTIC_AGENTS_MD, PROJECT_WITH_ENGRAM]);
 });
 
 test("the child-context extension never throws on missing or malformed options", async () => {
-	const { handlers } = childContextHandlers({ GENTLE_PI_AGENTS_CHILD: "1" });
+	const { handlers } = childContextHandlers({ DRAKONC_PI_AGENTS_CHILD: "1" });
 	const handler = handlers.get("before_agent_start")!;
 	await assert.doesNotReject(async () => handler({}, {}));
 	await assert.doesNotReject(async () => handler({ systemPromptOptions: null }, {}));

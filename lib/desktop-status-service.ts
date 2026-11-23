@@ -1,5 +1,5 @@
-// Gentle Desktop package-status bridge: reaches the `/gentle:status` owner in
-// `extensions/gentle-ai.ts` through a versioned owner-service event/adapter and
+// Drakonc Desktop package-status bridge: reaches the `/drakonc:status` owner in
+// `extensions/drakonc-ai.ts` through a versioned owner-service event/adapter and
 // answers `get_status` with its re-validated, path-free status.
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";

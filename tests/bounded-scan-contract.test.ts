@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-// gentle-shell#2686: on network-mounted workspaces a single unbounded recursive
+// drakonc-shell#2686: on network-mounted workspaces a single unbounded recursive
 // scan (`grep -r … .`) over raw `bash` cost up to 24.8 minutes (21–75× SMB I/O),
 // and six such calls turned a trivial verification into a 49.6-minute wait. The
 // dedicated `grep`/`find` tools honour `.gitignore`, and a
@@ -14,8 +14,8 @@ import test from "node:test";
 // These are instruction-delivery contracts, not proof of model adherence.
 
 const read = (relative: string): string => readFileSync(join(import.meta.dirname, "..", relative), "utf8");
-const verify = read("assets/agents/gentle-ai-verify.md");
-const worker = read("assets/agents/gentle-ai-worker.md");
+const verify = read("assets/agents/drakonc-ai-verify.md");
+const worker = read("assets/agents/drakonc-ai-worker.md");
 
 function containsAll(text: string, clauses: readonly string[], label: string): void {
 	const folded = text.toLowerCase();

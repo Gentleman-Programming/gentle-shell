@@ -12,7 +12,7 @@ import {
 //
 //   tests/native-review-parity-runtime.test.ts
 //     const test = resolvedBinary === undefined ? baseTest.skip : baseTest;
-//   tests/gentle-ai-binary.test.ts
+//   tests/drakonc-ai-binary.test.ts
 //     const verifiedBinaryTest = releaseDigestsPinned && existsSync(...) ? test : test.skip;
 //
 // Both skip silently when the pinned runtime is absent, so a fresh clone or a
@@ -20,17 +20,17 @@ import {
 // of the thing those suites exist to cover. That is exactly how an earlier
 // protocol-minor gap stayed hidden: the suite reported 0 fail while every test
 // in it had skipped. The gate keeps the local convenience and removes the
-// silence -- under GENTLE_PI_REQUIRE_NATIVE_BINARY=1 an absent binary is a
+// silence -- under DRAKONC_PI_REQUIRE_NATIVE_BINARY=1 an absent binary is a
 // failure, not a skip.
 
-const PINNED = { resolvedBinary: "/tmp/gentle-ai", digestsPinned: true } as const;
+const PINNED = { resolvedBinary: "/tmp/drakonc-ai", digestsPinned: true } as const;
 
 test("the env var name is the one CI sets", () => {
-	assert.equal(REQUIRE_NATIVE_BINARY_ENV, "GENTLE_PI_REQUIRE_NATIVE_BINARY");
+	assert.equal(REQUIRE_NATIVE_BINARY_ENV, "DRAKONC_PI_REQUIRE_NATIVE_BINARY");
 });
 
 test("a resolved binary with pinned digests runs, and names no skip reason", () => {
-	for (const env of [{}, { GENTLE_PI_REQUIRE_NATIVE_BINARY: "1" }]) {
+	for (const env of [{}, { DRAKONC_PI_REQUIRE_NATIVE_BINARY: "1" }]) {
 		const gate = requireNativeBinary({ ...PINNED, env });
 		assert.equal(gate.run, true);
 		assert.equal(Object.hasOwn(gate, "reason"), false);
@@ -60,14 +60,14 @@ test("without the env var unpinned digests yield a skip with a distinct reason",
 
 test("under the env var an unresolved binary throws instead of skipping", () => {
 	assert.throws(
-		() => requireNativeBinary({ resolvedBinary: undefined, digestsPinned: true, env: { GENTLE_PI_REQUIRE_NATIVE_BINARY: "1" } }),
+		() => requireNativeBinary({ resolvedBinary: undefined, digestsPinned: true, env: { DRAKONC_PI_REQUIRE_NATIVE_BINARY: "1" } }),
 		(error: unknown) => error instanceof NativeBinaryUnavailableError && /binary/i.test((error as Error).message),
 	);
 });
 
 test("under the env var unpinned digests throw instead of skipping", () => {
 	assert.throws(
-		() => requireNativeBinary({ ...PINNED, digestsPinned: false, env: { GENTLE_PI_REQUIRE_NATIVE_BINARY: "1" } }),
+		() => requireNativeBinary({ ...PINNED, digestsPinned: false, env: { DRAKONC_PI_REQUIRE_NATIVE_BINARY: "1" } }),
 		(error: unknown) => error instanceof NativeBinaryUnavailableError && /digest/i.test((error as Error).message),
 	);
 });
@@ -76,10 +76,10 @@ test("only an exact \"1\" arms the gate, so a stray value cannot silently disarm
 	// A truthy-looking value that is not "1" must not be treated as armed, and
 	// must not be treated as arming either: the contract is one exact value.
 	for (const value of ["0", "", "true", "yes", "false"]) {
-		const gate = requireNativeBinary({ resolvedBinary: undefined, digestsPinned: true, env: { GENTLE_PI_REQUIRE_NATIVE_BINARY: value } });
+		const gate = requireNativeBinary({ resolvedBinary: undefined, digestsPinned: true, env: { DRAKONC_PI_REQUIRE_NATIVE_BINARY: value } });
 		assert.equal(gate.run, false, `${JSON.stringify(value)} must not arm the gate`);
 	}
-	assert.throws(() => requireNativeBinary({ resolvedBinary: undefined, digestsPinned: true, env: { GENTLE_PI_REQUIRE_NATIVE_BINARY: "1" } }), NativeBinaryUnavailableError);
+	assert.throws(() => requireNativeBinary({ resolvedBinary: undefined, digestsPinned: true, env: { DRAKONC_PI_REQUIRE_NATIVE_BINARY: "1" } }), NativeBinaryUnavailableError);
 });
 
 // Phase 13.12/13.13 follow-up: the same loud-skip gate, extended to the
@@ -88,48 +88,48 @@ test("only an exact \"1\" arms the gate, so a stray value cannot silently disarm
 // keeps skipping silently by default.
 
 test("the dev-binary env var name is distinct from the pinned-binary one", () => {
-	assert.equal(REQUIRE_DEV_BINARY_ENV, "GENTLE_PI_REQUIRE_DEV_BINARY");
+	assert.equal(REQUIRE_DEV_BINARY_ENV, "DRAKONC_PI_REQUIRE_DEV_BINARY");
 	assert.notEqual(REQUIRE_DEV_BINARY_ENV, REQUIRE_NATIVE_BINARY_ENV);
 });
 
 test("an existing dev binary path runs, and names no skip reason", () => {
-	for (const env of [{}, { GENTLE_PI_REQUIRE_DEV_BINARY: "1" }]) {
-		const gate = requireDevBinary({ devBinaryPath: "/opt/dev/gentle-ai", exists: true, env });
+	for (const env of [{}, { DRAKONC_PI_REQUIRE_DEV_BINARY: "1" }]) {
+		const gate = requireDevBinary({ devBinaryPath: "/opt/dev/drakonc-ai", exists: true, env });
 		assert.equal(gate.run, true);
 		assert.equal(Object.hasOwn(gate, "reason"), false);
 	}
 });
 
-test("without the env var a missing GENTLE_AI_DEV_BINARY yields a skip carrying a concrete reason", () => {
+test("without the env var a missing DRAKONC_AI_DEV_BINARY yields a skip carrying a concrete reason", () => {
 	const gate = requireDevBinary({ devBinaryPath: undefined, exists: false, env: {} });
 	assert.equal(gate.run, false);
-	assert.match(gate.reason as string, /GENTLE_AI_DEV_BINARY/);
+	assert.match(gate.reason as string, /DRAKONC_AI_DEV_BINARY/);
 	assert.match(gate.reason as string, new RegExp(REQUIRE_DEV_BINARY_ENV));
 });
 
 test("without the env var a set but non-existent dev binary path yields a distinct skip reason", () => {
 	const missingVar = requireDevBinary({ devBinaryPath: undefined, exists: false, env: {} });
-	const badPath = requireDevBinary({ devBinaryPath: "/no/such/gentle-ai", exists: false, env: {} });
+	const badPath = requireDevBinary({ devBinaryPath: "/no/such/drakonc-ai", exists: false, env: {} });
 	assert.equal(badPath.run, false);
 	assert.ok("reason" in missingVar);
-	assert.match(badPath.reason as string, /\/no\/such\/gentle-ai/);
+	assert.match(badPath.reason as string, /\/no\/such\/drakonc-ai/);
 	assert.notEqual(badPath.reason, missingVar.reason, "the two causes must be distinguishable in output");
 });
 
 test("under the env var a missing dev binary throws instead of skipping", () => {
 	assert.throws(
-		() => requireDevBinary({ devBinaryPath: undefined, exists: false, env: { GENTLE_PI_REQUIRE_DEV_BINARY: "1" } }),
-		(error: unknown) => error instanceof NativeBinaryUnavailableError && /GENTLE_AI_DEV_BINARY/.test((error as Error).message),
+		() => requireDevBinary({ devBinaryPath: undefined, exists: false, env: { DRAKONC_PI_REQUIRE_DEV_BINARY: "1" } }),
+		(error: unknown) => error instanceof NativeBinaryUnavailableError && /DRAKONC_AI_DEV_BINARY/.test((error as Error).message),
 	);
 	assert.throws(
-		() => requireDevBinary({ devBinaryPath: "/no/such/gentle-ai", exists: false, env: { GENTLE_PI_REQUIRE_DEV_BINARY: "1" } }),
-		(error: unknown) => error instanceof NativeBinaryUnavailableError && /\/no\/such\/gentle-ai/.test((error as Error).message),
+		() => requireDevBinary({ devBinaryPath: "/no/such/drakonc-ai", exists: false, env: { DRAKONC_PI_REQUIRE_DEV_BINARY: "1" } }),
+		(error: unknown) => error instanceof NativeBinaryUnavailableError && /\/no\/such\/drakonc-ai/.test((error as Error).message),
 	);
 });
 
-test("GENTLE_PI_REQUIRE_NATIVE_BINARY never arms the dev-binary gate, and vice versa", () => {
-	assert.equal(requireDevBinary({ devBinaryPath: undefined, exists: false, env: { GENTLE_PI_REQUIRE_NATIVE_BINARY: "1" } }).run, false);
-	assert.equal(requireNativeBinary({ resolvedBinary: undefined, digestsPinned: true, env: { GENTLE_PI_REQUIRE_DEV_BINARY: "1" } }).run, false);
+test("DRAKONC_PI_REQUIRE_NATIVE_BINARY never arms the dev-binary gate, and vice versa", () => {
+	assert.equal(requireDevBinary({ devBinaryPath: undefined, exists: false, env: { DRAKONC_PI_REQUIRE_NATIVE_BINARY: "1" } }).run, false);
+	assert.equal(requireNativeBinary({ resolvedBinary: undefined, digestsPinned: true, env: { DRAKONC_PI_REQUIRE_DEV_BINARY: "1" } }).run, false);
 });
 
 test("the gate reads the passed env, never the ambient process env", () => {

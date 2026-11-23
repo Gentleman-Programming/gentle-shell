@@ -2,7 +2,7 @@ import { closeSync, openSync, readdirSync, readSync, statSync, type Dirent } fro
 import { join } from "node:path";
 
 // Design sources (S13): the files a design-system sync reads, found by a
-// bounded, deterministic walk of the project, so the gentle_design tool can
+// bounded, deterministic walk of the project, so the drakonc_design tool can
 // say whether design/system.md is missing or older than them.
 //
 // A design source is:

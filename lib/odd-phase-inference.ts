@@ -1,6 +1,6 @@
-// Deterministic ODD phase inference from observed tool activity. The Gentle
+// Deterministic ODD phase inference from observed tool activity. The Drakonc
 // Shell working label used to depend only on the model calling
-// gentle_odd_phase, which models routinely skip; the tools the primary
+// drakonc_odd_phase, which models routinely skip; the tools the primary
 // session actually runs are a reliable, observable signal instead.
 //
 // The mapping is deliberately conservative: an unknown tool, unknown subagent
@@ -19,16 +19,16 @@ const TOOL_PHASES: Readonly<Record<string, OddPhase>> = {
 	ask_user_choice: "deciding",
 	ask_user_question: "deciding",
 	todo: "planning",
-	gentle_review: "checking",
-	gentle_review_scope: "checking",
-	gentle_review_capture: "checking",
-	gentle_review_capture_group: "checking",
+	drakonc_review: "checking",
+	drakonc_review_scope: "checking",
+	drakonc_review_capture: "checking",
+	drakonc_review_capture_group: "checking",
 };
 
 const DELEGATED_PHASES: Readonly<Record<string, OddPhase>> = {
-	"gentle-ai-worker": "implementing",
-	"gentle-ai-verify": "checking",
-	"gentle-ai-explore": "exploring",
+	"drakonc-ai-worker": "implementing",
+	"drakonc-ai-verify": "checking",
+	"drakonc-ai-explore": "exploring",
 };
 
 const WRITE_TOOLS = new Set(["edit", "write"]);

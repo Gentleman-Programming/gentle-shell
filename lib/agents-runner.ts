@@ -10,7 +10,7 @@ import { Duplex, type Readable, type Writable } from "node:stream";
 import { stripVTControlCharacters } from "node:util";
 import { fileURLToPath } from "node:url";
 import { withoutInteractiveHost } from "./rpc-host.ts";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 import { resolveBackgroundSubagentsPolicy } from "./background-subagents-policy.ts";
 import { childPackageExtensionArgs } from "./child-package-injection.ts";
 import { AGENT_MODE, formatModelRef, parseModelRef, type AgentDefinition, type AgentMode, type ModelRef } from "./agents-config.ts";
@@ -20,7 +20,7 @@ import { isFinished, normalizeRpcEvent, ToolArgumentProgress, TASK_EVENT, TASK_S
 import { WriterSurfaceRegistry, writerSurfaceConflictMessage } from "./writer-surfaces.ts";
 import { holdSubagentScratch, releaseSubagentScratch, SUBAGENT_SCRATCH_PREFIX } from "./session-scratch.ts";
 
-// Gentle Agents runner. Every subagent is its own `pi --mode rpc` process:
+// Drakonc Agents runner. Every subagent is its own `pi --mode rpc` process:
 // the host never runs subagent work on the TUI thread. It writes JSON
 // commands, reads JSON lines, applies deltas to the store, answers dialogs,
 // and enforces an inactivity watchdog per task.
@@ -159,7 +159,7 @@ export interface TaskRequest {
 	noExtensions?: boolean;
 	// Parsed `## Allowed edit surfaces` of a bounded writer. While the task is
 	// queued or running it claims them in `cwd`; run() rejects an overlapping
-	// claim (gentle-shell#1731). Read-only agents leave this unset.
+	// claim (drakonc-shell#1731). Read-only agents leave this unset.
 	writerSurfaces?: readonly string[];
 	// Canonical worktree root the claim is keyed to; the parent computes it before
 	// run() so admission stays synchronous. Defaults to `cwd`.
@@ -264,15 +264,15 @@ const FILE_MODE = 0o600;
 // UTF-8 bytes, not characters: argv size is what kills the child on macOS.
 export const MAX_INLINE_INSTRUCTIONS_BYTES = 1000;
 const MAX_TRANSPORT_PREFIX_CHARS = 64;
-const CHILD_MARKER = "GENTLE_PI_AGENTS_CHILD";
-const IPC_MARKER = "GENTLE_PI_AGENTS_OWNED_IPC";
+const CHILD_MARKER = "DRAKONC_PI_AGENTS_CHILD";
+const IPC_MARKER = "DRAKONC_PI_AGENTS_OWNED_IPC";
 /** Forwarded to the child only when a declared `bash_background` admitted its policy (#2266). */
-export const CHILD_JOBS_ENV = "GENTLE_PI_AGENTS_CHILD_JOBS";
+export const CHILD_JOBS_ENV = "DRAKONC_PI_AGENTS_CHILD_JOBS";
 const PARENT_NOTIFICATION_TOOL = "subagent_parent_message";
 /** The exact --tools list, so the child can report requested names Pi dropped silently (#1690). */
-export const REQUESTED_TOOLS_ENV = "GENTLE_PI_AGENTS_REQUESTED_TOOLS";
+export const REQUESTED_TOOLS_ENV = "DRAKONC_PI_AGENTS_REQUESTED_TOOLS";
 /** Set only for the package-owned generic agents: the child drops Pi's skills catalog. */
-export const CHILD_SKILLS_CATALOG_ENV = "GENTLE_PI_AGENTS_NO_SKILLS_CATALOG";
+export const CHILD_SKILLS_CATALOG_ENV = "DRAKONC_PI_AGENTS_NO_SKILLS_CATALOG";
 const DEFAULT_TOOLS: readonly string[] = [];
 const TERMINATION_GRACE_MS = 250;
 const GROUP_CONFIRM_MS = 25;
@@ -367,7 +367,7 @@ function requestedWebPackagePaths(request: TaskRequest): string[] {
 // catalog (extensions/child-context.ts). Identified by name plus the global
 // `agents/` directory the package installs into; a project or `subagents/`
 // agent reusing a name keeps the catalog.
-const NO_SKILLS_CATALOG_AGENTS = new Set(["gentle-ai-worker", "gentle-ai-explore", "gentle-ai-verify"]);
+const NO_SKILLS_CATALOG_AGENTS = new Set(["drakonc-ai-worker", "drakonc-ai-explore", "drakonc-ai-verify"]);
 
 function dropsSkillsCatalog(agent: TaskRequest["agent"]): boolean {
 	return NO_SKILLS_CATALOG_AGENTS.has(agent.name) && agent.scope === "global" &&
@@ -498,7 +498,7 @@ export function piCommand(
 	exists: (path: string) => boolean = existsSync,
 	readFile: (path: string) => string = (p) => readFileSync(p, "utf8"),
 ): PiCommand {
-	const override = proc.env.GENTLE_PI_AGENTS_PI?.trim();
+	const override = proc.env.DRAKONC_PI_AGENTS_PI?.trim();
 	if (override) {
 		const [command, ...args] = override.split(/\s+/);
 		if (/\.(?:cmd|bat)$/i.test(command) && exists(command)) {
@@ -743,20 +743,20 @@ export class AgentRunner {
 			...request.env,
 			[CHILD_MARKER]: "1",
 			[IPC_MARKER]: `${this.deps.now()}-${Math.random().toString(36).slice(2)}`,
-			...(hasParentPermissionChannel ? { GENTLE_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}),
+			...(hasParentPermissionChannel ? { DRAKONC_PI_AGENTS_PARENT_PERMISSION_FD: "3" } : {}),
 		});
 		// Do not forward stale legacy child selection or authorization.
-		delete env.GENTLE_PI_SDD_REMEDIATION_PLAN;
-		delete env.GENTLE_PI_RESEARCH_SELECTION;
-		if (request.agent.name === "gentle-ai-verify") env.GENTLE_PI_VERIFIER_PREPARER = fileURLToPath(new URL("../scripts/prepare-verifier.mjs", import.meta.url));
-		else delete env.GENTLE_PI_VERIFIER_PREPARER;
+		delete env.DRAKONC_PI_SDD_REMEDIATION_PLAN;
+		delete env.DRAKONC_PI_RESEARCH_SELECTION;
+		if (request.agent.name === "drakonc-ai-verify") env.DRAKONC_PI_VERIFIER_PREPARER = fileURLToPath(new URL("../scripts/prepare-verifier.mjs", import.meta.url));
+		else delete env.DRAKONC_PI_VERIFIER_PREPARER;
 		const tools = requestedTools(request);
 		if (request.agent.tools.includes("bash_background")) {
-			const policy = resolveBackgroundSubagentsPolicy(request.cwd, { env: request.env, gentlePiConfigHome: gentlePiConfigHome(request.env) });
+			const policy = resolveBackgroundSubagentsPolicy(request.cwd, { env: request.env, drakoncPiConfigHome: drakoncPiConfigHome(request.env) });
 			if (policy.policy === "off") {
 				const file = policy.source === "global_file" ? policy.globalFile : policy.projectFile;
 				this.store.update(id, { status: TASK_STATUS.RUNNING, startedAt: this.deps.now(), lastStep: "starting" });
-				this.finish(id, TASK_STATUS.FAILED, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${file} to {"schema":"gentle-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /gentle:background-subagents enable|disable|status.`);
+				this.finish(id, TASK_STATUS.FAILED, `could not start pi: explicit tool bash_background requires background-subagents policy on. Set ${file} to {"schema":"drakonc-pi.background-subagents/v1","policy":"on"}; inspect or change policy with /drakonc:background-subagents enable|disable|status.`);
 				return;
 			}
 			// Admission passed: the child registers its own private job tools and is
@@ -772,7 +772,7 @@ export class AgentRunner {
 		if (Buffer.byteLength(request.agent.instructions, "utf8") > MAX_INLINE_INSTRUCTIONS_BYTES) {
 			try {
 				const prefix = (request.agent.name || "instructions").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, MAX_TRANSPORT_PREFIX_CHARS);
-				instructionsTransportDir = mkdtempSync(join(tmpdir(), `gentle-pi-subagent-${prefix}-`));
+				instructionsTransportDir = mkdtempSync(join(tmpdir(), `drakonc-pi-subagent-${prefix}-`));
 				try { chmodSync(instructionsTransportDir, DIR_MODE); } catch { /* best effort */ }
 				instructionsTransportPath = join(instructionsTransportDir, "instructions.md");
 				writeFileSync(instructionsTransportPath, request.agent.instructions, { mode: FILE_MODE, encoding: "utf8" });
@@ -1229,7 +1229,7 @@ export class AgentRunner {
 				const task = this.store.get(id);
 				if (mutation && task && raw.isError === false && !event.isError) {
 					try {
-						const evidence = (raw.result as { details?: { gentleSessionChange?: unknown } } | undefined)?.details?.gentleSessionChange;
+						const evidence = (raw.result as { details?: { drakoncSessionChange?: unknown } } | undefined)?.details?.drakoncSessionChange;
 						const observed = isSessionChangeEvidence(evidence) && evidence.id === mutation.toolCallId ? { ...mutation, evidence: structuredClone(evidence) } : mutation;
 						void Promise.resolve(this.hooks.onSuccessfulMutation?.(task, observed)).catch(() => {});
 					}

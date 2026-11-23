@@ -3,7 +3,7 @@ import test from "node:test";
 import { initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, TuiAltScreen } from "@earendil-works/pi-tui";
 import { createChatViewport } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/chat-viewport.js";
-import { buildShellBarModel, type ShellFooterData } from "../extensions/gentle-shell.ts";
+import { buildShellBarModel, type ShellFooterData } from "../extensions/drakonc-shell.ts";
 import { createQuietToolRenderer } from "../extensions/quiet-tools.ts";
 
 initTheme("dark");

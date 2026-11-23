@@ -18,7 +18,7 @@ function fixture(t: test.TestContext) {
 	const profile = fs.mkdtempSync(join(fs.realpathSync(tmpdir()), "presence-test-"));
 	// Each fixture owns precisely these files; never traverse a linked directory.
 	t.after(() => {
-		const root = join(profile, "gentle-agents");
+		const root = join(profile, "drakonc-agents");
 		if (fs.existsSync(root) && !fs.lstatSync(root).isSymbolicLink()) {
 			for (const name of fs.readdirSync(root)) {
 				const path = join(root, name);
@@ -68,8 +68,8 @@ test("warm-cache flush performs no synchronous ancestor validation", (t) => {
 		ancestors.add(path);
 		if (dirname(path) === path) break;
 	}
-	ancestors.add(join(absolute, "gentle-agents"));
-	ancestors.add(join(absolute, "gentle-agents", "presence"));
+	ancestors.add(join(absolute, "drakonc-agents"));
+	ancestors.add(join(absolute, "drakonc-agents", "presence"));
 	const probes: string[] = [];
 	const originalLstat = fsSync.lstatSync;
 	const spy = t.mock.method(fsSync, "lstatSync", (path: Parameters<typeof fsSync.lstatSync>[0], ...args: unknown[]) => {
@@ -93,7 +93,7 @@ test("a vanished storage tree skips publication without crashing and revalidates
 		return interval(callback, ms);
 	});
 	const pub = publisher(t, profile);
-	const root = join(profile, "gentle-agents", "presence");
+	const root = join(profile, "drakonc-agents", "presence");
 	for (const name of fs.readdirSync(root)) fs.unlinkSync(join(root, name));
 	fs.rmdirSync(root);
 	heartbeat!();
@@ -149,7 +149,7 @@ test("first publication lands immediately after start() with no heartbeat wait",
 	assert.equal(presence.readDiscovery(profile, header)?.workspace, "/repo");
 	assert.equal(presence.readDiscovery(profile, header)?.tasks[0].id, "child");
 	const catalog = JSON.parse(fs.readFileSync(
-		join(profile, "gentle-agents", "catalog", `${header.sessionHash}.${header.incarnation}.json`), "utf8"));
+		join(profile, "drakonc-agents", "catalog", `${header.sessionHash}.${header.incarnation}.json`), "utf8"));
 	assert.equal(catalog.schema, 1);
 	assert.deepEqual(catalog.catalog.tasks.map((row: { id: string }) => row.id), ["child"]);
 });
@@ -178,8 +178,8 @@ function publisher(t: test.TestContext, profile: string, activity = rows()) {
 
 function paths(profile: string, header: { sessionHash: string; incarnation: string }) {
 	const stem = `${header.sessionHash}.${header.incarnation}`;
-	return { header: join(profile, "gentle-agents", "presence", `${stem}.header.json`),
-		activity: join(profile, "gentle-agents", "presence", `${stem}.activity.json`) };
+	return { header: join(profile, "drakonc-agents", "presence", `${stem}.header.json`),
+		activity: join(profile, "drakonc-agents", "presence", `${stem}.activity.json`) };
 }
 
 function header(profile: string) {
@@ -215,7 +215,7 @@ test("headers are private, lightweight, sanitized and recent at the inclusive TT
 	assert.equal(listPresence(profile, 115_001).entries[0].recent, false);
 	assert.equal(listPresence(profile, 99_999).entries[0].recent, false);
 	if (process.platform !== "win32") {
-		assert.equal(fs.statSync(join(profile, "gentle-agents", "presence")).mode & 0o777, 0o700);
+		assert.equal(fs.statSync(join(profile, "drakonc-agents", "presence")).mode & 0o777, 0o700);
 		assert.equal(fs.statSync(paths(profile, h).header).mode & 0o777, 0o600);
 	}
 });
@@ -321,7 +321,7 @@ test("reader rejects malformed, oversized, wrong digest/schema and unsafe exact 
 test("bounded directory scan reports overflow and ignores partial/temp files", (t) => {
 	const profile = fixture(t);
 	publisher(t, profile);
-	const root = join(profile, "gentle-agents", "presence");
+	const root = join(profile, "drakonc-agents", "presence");
 	fs.writeFileSync(join(root, ".partial.tmp"), "{");
 	assert.equal(listPresence(profile).rejected, 0);
 	for (let i = 0; i < 130; i++) fs.writeFileSync(join(root, `junk-${i}`), "{}");
@@ -356,18 +356,18 @@ test("symlinks, hardlinks, directories and non-private managed roots fail closed
 	fs.mkdirSync(p.activity);
 	assert.equal(readActivity(profile, h).unavailable, "unsafe-file");
 	fs.rmdirSync(p.activity);
-	fs.chmodSync(join(profile, "gentle-agents", "presence"), 0o755);
+	fs.chmodSync(join(profile, "drakonc-agents", "presence"), 0o755);
 	assert.equal(listPresence(profile).unavailable, "unsafe-directory");
-	fs.rmdirSync(join(profile, "gentle-agents", "presence"));
-	fs.symlinkSync(profile, join(profile, "gentle-agents", "presence"));
+	fs.rmdirSync(join(profile, "drakonc-agents", "presence"));
+	fs.symlinkSync(profile, join(profile, "drakonc-agents", "presence"));
 	assert.equal(listPresence(profile).unavailable, "unsafe-directory");
 	assert.throws(() => publisher(t, profile), /unsafe-directory/);
-	fs.unlinkSync(join(profile, "gentle-agents", "presence"));
-	fs.chmodSync(join(profile, "gentle-agents"), 0o777);
+	fs.unlinkSync(join(profile, "drakonc-agents", "presence"));
+	fs.chmodSync(join(profile, "drakonc-agents"), 0o777);
 	assert.equal(listPresence(profile).unavailable, "unsafe-directory", "shared root cannot be writable by other users");
-	fs.chmodSync(join(profile, "gentle-agents"), 0o700);
-	fs.rmdirSync(join(profile, "gentle-agents"));
-	fs.symlinkSync(profile, join(profile, "gentle-agents"));
+	fs.chmodSync(join(profile, "drakonc-agents"), 0o700);
+	fs.rmdirSync(join(profile, "drakonc-agents"));
+	fs.symlinkSync(profile, join(profile, "drakonc-agents"));
 	assert.throws(() => publisher(t, profile), /unsafe-directory/, "shared root cannot be a symlink");
 });
 
@@ -399,7 +399,7 @@ test("history created under umask 022 coexists with a dedicated private presence
 	const mask = process.umask(0o022);
 	try { await saveTask(historyDir(profile, profile), task, store.thread(task.id)); }
 	finally { process.umask(mask); }
-	const shared = join(profile, "gentle-agents");
+	const shared = join(profile, "drakonc-agents");
 	const before = fs.statSync(shared).mode;
 	if (process.platform !== "win32") assert.equal(before & 0o777, 0o755);
 	const pub = publisher(t, profile);
@@ -436,7 +436,7 @@ test("bounded continuation reaches a live peer beyond 128 stale headers without 
 	const pub = publisher(t, profile);
 	const { recent: _recent, ...base } = header(profile);
 	pub.dispose();
-	const root = join(profile, "gentle-agents", "presence");
+	const root = join(profile, "drakonc-agents", "presence");
 	fs.mkdirSync(root, { recursive: true, mode: 0o700 });
 	for (let i = 0; i < 140; i++) {
 		const h = { ...base, incarnation: randomUUID(), heartbeat: 0 };
@@ -505,6 +505,6 @@ if (process.env.PRESENCE_TEST_CHILD === "1") {
 		assert.deepEqual(listPresence(profile).entries.map((h) => h.incarnation), [survivor.incarnation]);
 		assert.ok(readActivity(profile, survivor).activity);
 		await new Promise<void>((resolve) => { children[1].once("exit", () => resolve()); children[1].send("dispose"); });
-		assert.deepEqual(fs.readdirSync(join(profile, "gentle-agents", "presence")), []);
+		assert.deepEqual(fs.readdirSync(join(profile, "drakonc-agents", "presence")), []);
 	});
 }

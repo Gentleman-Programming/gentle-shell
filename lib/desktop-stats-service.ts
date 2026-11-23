@@ -1,5 +1,5 @@
-// Gentle Desktop usage-stats bridge: reaches the existing `/gentle:stats`
-// owner (inside `extensions/gentle-stats.ts`, with its single size/mtime-cached
+// Drakonc Desktop usage-stats bridge: reaches the existing `/drakonc:stats`
+// owner (inside `extensions/drakonc-stats.ts`, with its single size/mtime-cached
 // loader) through a defensive, versioned owner-service event/adapter — the
 // stats analogue of the jobs `discoverDesktopJobsService` seam. It never reads
 // a session file itself and keeps no second cache: every answer is the owner's

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -24,7 +24,7 @@ test("ODD continuity persists the task file and complete Engram mirror across re
 test("optional research stays output-only and delegates to a general worker", () => {
 	const delegation = readDelegationDetail();
 	// P5b: the named-uncertainty rule is stated once, in always-on step 3.
-	assert.match(__testing.buildGentlePrompt("gentleman"), /Recommend optional research only for a named uncertainty/);
+	assert.match(__testing.buildDrakoncPrompt("drakoncman"), /Recommend optional research only for a named uncertainty/);
 	assert.doesNotMatch(delegation, /Recommend optional research only for a named uncertainty/);
 	assert.match(delegation, /Forward these research instructions to an existing fresh general exploration\/research worker/);
 	assert.match(delegation, /Research remains read-only and requires no new persistence or readiness machinery/);
@@ -32,11 +32,11 @@ test("optional research stays output-only and delegates to a general worker", ()
 });
 
 test("applicability, fallback and honest evidence flow through ODD actors", () => {
-	const wrapper = read("extensions/gentle-ai.ts");
+	const wrapper = read("extensions/drakonc-ai.ts");
 	const delegation = readDelegationDetail();
 	const support = read("assets/support/strict-tdd.md");
-	const worker = read("assets/agents/gentle-ai-worker.md");
-	const verifier = read("assets/agents/gentle-ai-verify.md");
+	const worker = read("assets/agents/drakonc-ai-worker.md");
+	const verifier = read("assets/agents/drakonc-ai-verify.md");
 	assert.match(wrapper, /behavior changes with applicable runnable deterministic tests and a clear expected outcome/);
 	// P5b (C3): the applicability rule lives in the always-on principle; the lazy modules forward it.
 	assert.match(wrapper, /Test presence alone does not establish applicability/);
@@ -59,12 +59,12 @@ test("retired SDD routes and assets are absent while ODD entry and generic worke
 	// S11 T3: deduplicated. The core's "ODD (Default Workflow, harness section
 	// above) is mandatory on every request" restated the harness; the mandatory
 	// ODD entry is stated once, in the harness that renders above the core.
-	assert.match(read("extensions/gentle-ai.ts"), /Default workflow: Organic Driven Development \(MANDATORY\)\nOrganic Driven Development \(ODD\) is the predefined workflow of this orchestrator\. Every request enters it/);
+	assert.match(read("extensions/drakonc-ai.ts"), /Default workflow: Organic Driven Development \(MANDATORY\)\nOrganic Driven Development \(ODD\) is the predefined workflow of this orchestrator\. Every request enters it/);
 	assert.doesNotMatch(core, /ODD \(Default Workflow, harness section above\)/);
 	assert.match(delegation, /generic writer chain is unavailable/);
 	for (const path of [
-		"assets/agents/gentle-ai-worker.md",
-		"assets/agents/gentle-ai-verify.md",
+		"assets/agents/drakonc-ai-worker.md",
+		"assets/agents/drakonc-ai-verify.md",
 		"assets/support/strict-tdd.md",
 	]) assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), true, path);
 	for (const path of [
@@ -76,7 +76,7 @@ test("retired SDD routes and assets are absent while ODD entry and generic worke
 		"assets/chains/sdd-plan.chain.md",
 		"assets/chains/sdd-verify.chain.md",
 	]) assert.equal(existsSync(new URL(`../${path}`, import.meta.url)), false, path);
-	assert.doesNotMatch(core + delegation + read("extensions/gentle-ai.ts"), /(?:\/sdd-(?:init|explore|status|apply|verify|archive)|sdd-full\.chain|sdd-orchestrator-workflow\.md)/);
+	assert.doesNotMatch(core + delegation + read("extensions/drakonc-ai.ts"), /(?:\/sdd-(?:init|explore|status|apply|verify|archive)|sdd-full\.chain|sdd-orchestrator-workflow\.md)/);
 });
 
 test("ODD projects blocked and dropped tasks to the todo list on a change of plan (#1814, #1820)", () => {

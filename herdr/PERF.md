@@ -1,6 +1,6 @@
-# Gentle Shell Desktop — performance (S13)
+# Drakonc Shell Desktop — performance (S13)
 
-What the `gentle-shell` layout costs Herdr app, before and after the S13 pass, measured on the
+What the `drakonc-shell` layout costs Herdr app, before and after the S13 pass, measured on the
 live window (Herdr app 0.1.15, macOS, window in front, 1890×2014 frame), 2026-11-15.
 
 ## How it was measured
@@ -8,12 +8,12 @@ live window (Herdr app 0.1.15, macOS, window in front, 1890×2014 frame), 2026-1
 - **CPU**: `ps -o %cpu= -p $(pgrep -x herdr-app)` once per second for 20 s, averaged. The window
   was brought to the front with `osascript … set frontmost`; no keys or clicks were sent.
 - **Reference**: the same with Herdr's own `main` layout
-  (`herdr-app do layout.switch '{"name":"main"}'`, then back to `gentle-shell`).
+  (`herdr-app do layout.switch '{"name":"main"}'`, then back to `drakonc-shell`).
 - **RSS**: `ps -o rss=` of `herdr-app`.
 - **Child processes**: every process whose parent is `herdr-app`, sampled with `ps -A` every
   20 ms for 60 s (short-lived ones can be missed, so it is a lower bound; the same sampler before
   and after).
-- **Latency**: a scratch agent dir (listed in `gentle-shell-roots.json`) with a copied 8 MB session
+- **Latency**: a scratch agent dir (listed in `drakonc-shell-roots.json`) with a copied 8 MB session
   JSONL and a snapshot whose pid was a `sleep`; a user line appended to the copy, then
   `herdr-app shot` every ~25 ms until the chat column changed. Question latency: the scratch
   snapshot's `pendingQuestion` toggled (atomic rename), same timing. Nothing was sent to a real
@@ -54,8 +54,8 @@ Measured by turning things off one at a time:
 ## What changed
 
 - **One reader** (`snapshot.js`, byte-identical in every mod): only the status bar's FeedSource
-  (`gentle-status`, always mounted) watches the snapshot folders, reads them and runs `ps`; it
-  publishes `gentle-shell.feeds` (`{ digest, at, feeds }`) and then `gentle-shell.feeds.digest`
+  (`drakonc-status`, always mounted) watches the snapshot folders, reads them and runs `ps`; it
+  publishes `drakonc-shell.feeds` (`{ digest, at, feeds }`) and then `drakonc-shell.feeds.digest`
   in shared state only when the digest (each live session's agent dir, id and `updatedAt`)
   changes. Setting shared state re-renders every mod, so the others have no timer, watch or `ps`:
   they compare the small digest and read the big value only when it changed. A copy in a layout
@@ -87,8 +87,8 @@ click. Measured the same way (2026-11-15, Herdr app 0.1.16, an idle session show
 
 No timer, watch, poll or animation was added. "Working · 2 agents" / "Waiting on 2 agents" are
 words the publisher already writes in the snapshot (`activity.label`), read in render; the pinned
-Needs you section is computed from the shared feeds in gentle-spaces' render; the notification is
-the feed leader's (gentle-status): it runs only when its read changed, as the publish does.
+Needs you section is computed from the shared feeds in drakonc-spaces' render; the notification is
+the feed leader's (drakonc-status): it runs only when its read changed, as the publish does.
 Measured the same way (2026-11-16, Herdr app 0.1.16, window in front): an idle Herdr session
 shown 0.34 % and 0.14 %, Herdr's `main` layout 0.37 %. While a TUI session wrote a long reply
 and a toast showed, 3.6 % (the chat redrawing what the session wrote, not idle).
@@ -101,5 +101,5 @@ and a toast showed, 3.6 % (the chat redrawing what the session wrote, not idle).
   sessions), rewritten when a snapshot changes. At startup the followers show the last persisted
   feeds until the status bar's first read (milliseconds).
 - A session with a snapshot starts from its tail: a tool result whose call is before the tail is
-  not drawn until "Show earlier messages" reaches it. A session without a snapshot (an older Gentle
+  not drawn until "Show earlier messages" reaches it. A session without a snapshot (an older Drakonc
   Shell) is still read whole, since its header facts (cost, model, name) come from the file.

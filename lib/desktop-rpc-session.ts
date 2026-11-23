@@ -1,6 +1,6 @@
-// Gentle Desktop session-state slice (#3319): the pure contract shared by the
+// Drakonc Desktop session-state slice (#3319): the pure contract shared by the
 // Desktop bridge (`lib/desktop-session-service.ts`) and the owner seam inside
-// `extensions/gentle-desktop-feed.ts`.
+// `extensions/drakonc-desktop-feed.ts`.
 //
 // The feed extension already computes the whole session projection the TUI
 // sidebar and the Herdr feed show (`buildDesktopFeedSnapshot`). This module
@@ -16,10 +16,10 @@ export const DESKTOP_SESSION_EVENT = "session_snapshot";
 export const DESKTOP_SESSION_EVENTS = [DESKTOP_SESSION_EVENT] as const;
 
 // The versioned owner-service discovery seam (the session analogue of
-// `gentle:desktop:jobs-service`). The schema string guards the adapter against
+// `drakonc:desktop:jobs-service`). The schema string guards the adapter against
 // drift; the bridge ignores any responder whose shape does not match.
-export const DESKTOP_SESSION_SERVICE_SCHEMA = "gentle-pi.desktop-session-service/v1";
-export const DESKTOP_SESSION_SERVICE_CHANNEL = "gentle:desktop:session-service";
+export const DESKTOP_SESSION_SERVICE_SCHEMA = "drakonc-pi.desktop-session-service/v1";
+export const DESKTOP_SESSION_SERVICE_CHANNEL = "drakonc:desktop:session-service";
 
 /** The feed sections a client may request, in their canonical wire order. */
 export const DESKTOP_SESSION_SECTIONS = [

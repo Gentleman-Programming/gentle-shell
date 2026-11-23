@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ContextUsage, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import {
 	CONTEXT_BACKSTOP_FRACTION_ENV,
 	CONTEXT_BACKSTOP_TOKENS_ENV,
@@ -68,11 +68,11 @@ type Patch = { content?: Array<{ type: string; text?: string }>; structuredConte
 function session(t: TestContext, child: boolean, options: { now?: () => number; minIntervalMs?: number } = {}) {
 	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "context-backstop-")));
 	const configHome = mkdtempSync(join(tmpdir(), "context-backstop-config-"));
-	const previous = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	const previous = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
 	t.after(() => {
-		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previous;
 		rmSync(cwd, { recursive: true, force: true });
 		rmSync(configHome, { recursive: true, force: true });
 	});
@@ -81,9 +81,9 @@ function session(t: TestContext, child: boolean, options: { now?: () => number; 
 	// Semantic tests without options keep per-call measuring (minIntervalMs 0); callers that pass
 	// options (a fake clock) keep the production window resolution.
 	const measureOptions = Object.keys(options).length === 0 ? { minIntervalMs: 0 } : options;
-	createGentleAiExtension({
+	createDrakoncAiExtension({
 		nativeReviewCli: null,
-		processEnv: { GENTLE_PI_AGENTS_CHILD: child ? "1" : "0", GENTLE_AI_TELEMETRY: "0" },
+		processEnv: { DRAKONC_PI_AGENTS_CHILD: child ? "1" : "0", DRAKONC_AI_TELEMETRY: "0" },
 		contextBackstopMeasure: measureOptions,
 	})(pi);
 	let usage: ContextUsage | undefined = { tokens: 10_000, contextWindow: 1_000_000, percent: 1 };

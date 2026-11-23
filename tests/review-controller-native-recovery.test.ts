@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { __testing, createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import {
 	NativeReviewCliError,
 	NativeReviewCliV216,
@@ -33,7 +33,7 @@ function queuedAdapter(results: readonly QueuedResult[]): {
 }
 
 function client(adapter: ExecFileAdapter): NativeReviewCliV216 {
-	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai");
+	return new NativeReviewCliV216(adapter, "/package/.drakonc-ai/drakonc-ai");
 }
 
 const SHA = `sha256:${"a".repeat(64)}`;
@@ -98,7 +98,7 @@ test("native abandon carries the exact discarded-work authorization and audit re
 	}
 });
 
-// gentle-ai 0ed9225f ("close on the last causal event") removed evidence records
+// drakonc-ai 0ed9225f ("close on the last causal event") removed evidence records
 // from CompactDiscardedWorkSummary, so the native v2 gate verifies an exact
 // EIGHT-line binding with no evidence_records_present line. The facade-side
 // derivation must match that contract byte-for-byte or native rejects every
@@ -133,7 +133,7 @@ test("native authority inventory remains a strict read-only maintenance surface"
 		complete: true,
 		authoritative: true,
 		status: "active",
-		entries: [{ version: "compact-v2", path: ".git/gentle-ai/reviews/current.json", status: "active", lineage_id: "current", state: "reviewing", revision: "revision-1", problems: [] }],
+		entries: [{ version: "compact-v2", path: ".git/drakonc-ai/reviews/current.json", status: "active", lineage_id: "current", state: "reviewing", revision: "revision-1", problems: [] }],
 		locks: [],
 		diagnostics: [],
 	}) }]);
@@ -240,12 +240,12 @@ function recoveryStatus(options: {
 
 function registeredController(nativeReviewCli: import("../lib/native-review-cli.ts").NativeReviewCli) {
 	const tools = new Map<string, { execute: (toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<{ details?: unknown }> }>();
-	createGentleAiExtension({ nativeReviewCli })({
+	createDrakoncAiExtension({ nativeReviewCli })({
 		on() {},
 		registerTool(definition: { name: string; execute: (toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<{ details?: unknown }> }) { tools.set(definition.name, definition); },
 		registerCommand() {},
 	} as unknown as ExtensionAPI);
-	const controller = tools.get("gentle_review");
+	const controller = tools.get("drakonc_review");
 	assert.ok(controller);
 	return controller;
 }
@@ -528,11 +528,11 @@ test("RECOVER requires a live UI decision", async () => {
 });
 
 // Adapter-level ABANDON battery (reviewer input on #1668): the registered
-// gentle_review tool driven through the real NativeReviewCliV216 adapter, so
+// drakonc_review tool driven through the real NativeReviewCliV216 adapter, so
 // the native status decoder and the exact abandon argv are exercised, not a
 // faked NativeReviewCli surface.
-const ELIGIBLE_ENTRY = { version: "compact-v2", path: ".git/gentle-ai/reviews/current.json", status: "active", lineage_id: "stranded", state: "correction_required", revision: SHA, snapshot_identity: SHA2, problems: [], discarded_work: { captured_lens_results: ["00-review-risk", "01-review-resilience"], findings_present: true } };
-const INCOMPLETE_DUPLICATE = { version: "compact-v2", path: ".git/gentle-ai/reviews/duplicate.json", status: "incomplete-store-entry", lineage_id: "stranded", problems: [] };
+const ELIGIBLE_ENTRY = { version: "compact-v2", path: ".git/drakonc-ai/reviews/current.json", status: "active", lineage_id: "stranded", state: "correction_required", revision: SHA, snapshot_identity: SHA2, problems: [], discarded_work: { captured_lens_results: ["00-review-risk", "01-review-resilience"], findings_present: true } };
+const INCOMPLETE_DUPLICATE = { version: "compact-v2", path: ".git/drakonc-ai/reviews/duplicate.json", status: "incomplete-store-entry", lineage_id: "stranded", problems: [] };
 const ABANDON_RECORD = { operation: "review/abandon", record: { schema: "gentle-ai.review-reclaim-audit/v1", lineage_id: "stranded", status: "committed" } };
 
 function statusStdout(entries: object[], repository: string = process.cwd(), authoritative: boolean = true): string {
@@ -663,10 +663,10 @@ test("removed recovery verbs are refused as unsupported operations, never routed
 		);
 	}
 	let published: readonly string[] = [];
-	createGentleAiExtension({ nativeReviewCli: native })({
+	createDrakoncAiExtension({ nativeReviewCli: native })({
 		on() {},
 		registerTool(definition: { name: string; parameters: { properties: { operation: { enum: readonly string[] } } } }) {
-			if (definition.name === "gentle_review") published = definition.parameters.properties.operation.enum;
+			if (definition.name === "drakonc_review") published = definition.parameters.properties.operation.enum;
 		},
 		registerCommand() {},
 	} as unknown as ExtensionAPI);
@@ -675,7 +675,7 @@ test("removed recovery verbs are refused as unsupported operations, never routed
 });
 
 test("REPAIR on a legacy-looking status performs no store mutation", async () => {
-	const repo = mkdtempSync(join(tmpdir(), "gentle-repair-legacy-"));
+	const repo = mkdtempSync(join(tmpdir(), "drakonc-repair-legacy-"));
 	try {
 		execFileSync("git", ["init", "-q", repo]);
 		const before = readdirSync(repo, { recursive: true }).sort();

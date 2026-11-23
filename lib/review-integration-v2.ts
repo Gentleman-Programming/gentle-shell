@@ -103,8 +103,8 @@ const FAILURE_OPERATIONS = Object.freeze([
 ] as const);
 const REQUIRED_GATES = Object.freeze(["post-apply", "pre-commit", "pre-push", "pre-pr", "release"] as const);
 const REQUIRED_PROJECTIONS = Object.freeze(Object.values(REVIEW_PROJECTION));
-// gentle-ai v4.6.0 is the minimum supported native binary (frozen contracts,
-// gentle-ai#6203): it advertises exactly capabilities/v2.6, protocol 2.6, and
+// drakonc-ai v4.6.0 is the minimum supported native binary (frozen contracts,
+// drakonc-ai#6203): it advertises exactly capabilities/v2.6, protocol 2.6, and
 // answers status/v9. Older advertisements are refused with an actionable error
 // instead of being decoded, so no earlier minor needs its own requirement set.
 export const REVIEW_MINIMUM_NATIVE_VERSION = "v4.6.0";
@@ -151,7 +151,7 @@ const REQUIRED_MANDATORY_FEATURES = Object.freeze([
 	"target_scoped_status",
 	"uniform_failure_envelope",
 ] as const);
-// Legacy-v1 review authority is no longer supported. gentle-ai v4.6.0 still
+// Legacy-v1 review authority is no longer supported. drakonc-ai v4.6.0 still
 // announces this mandatory feature, so it is tolerated (not required): a
 // provider may announce it or not.
 const TOLERATED_LEGACY_MANDATORY_FEATURE = "legacy_v1_target_scoped_read_only";
@@ -160,10 +160,10 @@ const CAPABILITIES_IDENTITY = Object.freeze({
 	optionalFeatureFloor: 14,
 });
 function capabilitiesTooOldMessage(schema: string): string {
-	return `gentle-ai native review ${schema.slice("gentle-ai.review-integration.".length)} is older than the supported v2.6 (gentle-ai ${REVIEW_MINIMUM_NATIVE_VERSION}); update gentle-ai or remove the dev-binary override`;
+	return `drakonc-ai native review ${schema.slice("gentle-ai.review-integration.".length)} is older than the supported v2.6 (drakonc-ai ${REVIEW_MINIMUM_NATIVE_VERSION}); update drakonc-ai or remove the dev-binary override`;
 }
 export function reviewStatusTooOldMessage(schema: string): string {
-	return `gentle-ai native review ${schema.slice("gentle-ai.review-integration.".length)} is older than the supported v9 (gentle-ai ${REVIEW_MINIMUM_NATIVE_VERSION}); update gentle-ai or remove the dev-binary override`;
+	return `drakonc-ai native review ${schema.slice("gentle-ai.review-integration.".length)} is older than the supported v9 (drakonc-ai ${REVIEW_MINIMUM_NATIVE_VERSION}); update drakonc-ai or remove the dev-binary override`;
 }
 // The exact too-old messages above carry no paths or provider text, so a
 // decoded version-incompatible error may relay one verbatim as remediation.
@@ -172,11 +172,11 @@ export function reviewContractTooOldRemediation(message: unknown): string | unde
 	if (typeof message !== "string") return undefined;
 	// Same predicates as the decoders: status/vN with N < 9, capabilities/v2 or
 	// v2.N with N below the minimum minor. A not-older version never matches.
-	const status = /^gentle-ai native review status\/v([0-9]+) is older than/.exec(message);
+	const status = /^drakonc-ai native review status\/v([0-9]+) is older than/.exec(message);
 	if (status !== null) {
 		return Number(status[1]) < 9 && reviewStatusTooOldMessage(`gentle-ai.review-integration.status/v${status[1]}`) === message ? message : undefined;
 	}
-	const capabilities = /^gentle-ai native review capabilities\/v2(?:\.([0-9]+))? is older than/.exec(message);
+	const capabilities = /^drakonc-ai native review capabilities\/v2(?:\.([0-9]+))? is older than/.exec(message);
 	if (capabilities === null || Number(capabilities[1] ?? 0) >= REVIEW_MINIMUM_CAPABILITIES_MINOR) return undefined;
 	const schema = `gentle-ai.review-integration.capabilities/v2${capabilities[1] === undefined ? "" : `.${capabilities[1]}`}`;
 	return capabilitiesTooOldMessage(schema) === message ? message : undefined;
@@ -279,7 +279,7 @@ export interface ReviewRepositoryContextV2 {
 	handle: string;
 	revision: string;
 	targetIdentity: string;
-	// Optional additive members on the same start/v3 identity (gentle-ai main,
+	// Optional additive members on the same start/v3 identity (drakonc-ai main,
 	// Go `ReviewRepositoryContextReference` with `omitempty`): the compact
 	// effects event this context applied and its recorded outcome. Ground
 	// truth is the captured granted start from a 2.4.0-main binary
@@ -352,7 +352,7 @@ export interface ReviewStatusFrozenV1 {
 	tier: RiskLevel;
 	originalChangedLines: number;
 	correctionBudget: number;
-	/** Digest of the frozen changed-path manifest; binds manifest-less capture inputs (gentle-ai#3922). */
+	/** Digest of the frozen changed-path manifest; binds manifest-less capture inputs (drakonc-ai#3922). */
 	changedPathManifestSha256?: string;
 }
 
@@ -376,7 +376,7 @@ export interface ReviewNextTransitionExecuteV3 {
 }
 
 // Provider-owned completing form for a host-mediated capture slot
-// (gentle-pi#311 P4). The provider issues the exact operation and argument
+// (drakonc-pi#311 P4). The provider issues the exact operation and argument
 // tokens that submit the captured bytes; the host substitutes only the
 // artifact location into the declared {{value}} slot and never synthesizes
 // or filters the form itself.
@@ -402,15 +402,15 @@ export interface ReviewCaptureSubmissionV1 {
 	values: readonly ReviewCaptureSubmissionValueV1[];
 }
 
-// The two non-lens provider role capture operations (gentle-pi#311 P4-roles;
-// provider side gentle-ai#3264). An older gentle-ai still renders each one as
+// The two non-lens provider role capture operations (drakonc-pi#311 P4-roles;
+// provider side drakonc-ai#3264). An older drakonc-ai still renders each one as
 // a self-contained authority-advancing vector: binding tokens plus
 // `--agent=pi --execute=true`, with NO submission descriptor — executing the
 // exact rendered tokens makes Go materialize the role prompt, run its own
 // locked-down pi subprocess, and admit the verdict itself.
 //
-// gentle-ai's v9 contract makes both roles host-mediated exactly like a lens
-// materialize slot instead (gentle-pi#311 P3): the collect input carries
+// drakonc-ai's v9 contract makes both roles host-mediated exactly like a lens
+// materialize slot instead (drakonc-pi#311 P3): the collect input carries
 // `--materialize=true` (never alongside `--execute`) plus a provider-owned
 // `submission` descriptor, and the host completes the frozen prompt
 // in-process and submits the result through that exact descriptor. The two
@@ -426,7 +426,7 @@ export const REVIEW_PROVIDER_ROLE_CAPTURE_OPERATIONS = Object.freeze(Object.valu
 
 // status/v5 structural surfaces. Pi has no consumer for these yet; they are
 // decoded strictly (exact key sets per the vendored status-v5.schema.json and
-// correction-plan-request.schema.json on gentle-ai main) and carried through
+// correction-plan-request.schema.json on drakonc-ai main) and carried through
 // so a v5 provider payload is never rejected for being newer than v3.
 export interface ReviewForecastStepV1 {
 	step: 1;
@@ -524,7 +524,7 @@ export interface ReviewCollectInputV3 {
 	validationRequest?: ReviewTargetedValidationRequestV1;
 }
 
-// gentle-pi#627: the exact `gentle-ai sync` invocation that resolves a stale
+// drakonc-pi#627: the exact `drakonc-ai sync` invocation that resolves a stale
 // managed-asset set (STATUS next_transition stop, and START's preflight
 // failure envelope both carry this same shape).
 export interface ReviewManagedAssetsContinuationV1 {
@@ -534,7 +534,7 @@ export interface ReviewManagedAssetsContinuationV1 {
 	staleAssets?: readonly string[];
 }
 
-// gentle-pi#638: one selected lens slot the host declared unachievable
+// drakonc-pi#638: one selected lens slot the host declared unachievable
 // through the native capture-unachievable verb, mirrored from Go's
 // ReviewUnachievableLensSlot (internal/cli/review_next_transition.go). The
 // withdraw form is deliberately narrower than a full execute transition:
@@ -633,7 +633,7 @@ export interface ReviewStatusV3 {
 	/** status/v7 only: the eligible untracked-path inventory digest, absent on the `staged` projection. */
 	eligibleUntrackedInventory?: string;
 	/**
-	 * status/v9 opt-in (`--non-blocking-findings`, gentle-ai#6088): the admitted
+	 * status/v9 opt-in (`--non-blocking-findings`, drakonc-ai#6088): the admitted
 	 * findings of a compact correction_required or escalated authority that are
 	 * neither to correct nor unresolved, with the reviewer's claim. Display
 	 * data only; nothing routes on it.
@@ -681,11 +681,11 @@ export interface ReviewConsentV2 {
 	value: string;
 	riskEvidence: readonly string[];
 	choices: readonly [ReviewConsentChoiceV2, ReviewConsentChoiceV2];
-	offPath: { note: string; command: "gentle-ai review mode disable" };
+	offPath: { note: string; command: "drakonc-ai review mode disable" };
 	raw: Readonly<Record<string, unknown>>;
 }
 
-// consent/v3 (gentle-ai >= 2.3.0, capabilities/v2.1+): the same per-candidate
+// consent/v3 (drakonc-ai >= 2.3.0, capabilities/v2.1+): the same per-candidate
 // blocking question with one net-new required member, the provider-fixed
 // `agent` runtime binding. Everything shared with v2 keeps its exact shape so
 // consumers of either identity read one structural surface.
@@ -776,7 +776,7 @@ export interface ReviewFailureV2 {
 	causeCategory?: ReviewFailureCauseCategoryV2;
 	cause?: string;
 	context?: ReviewFailureContextV2;
-	/** code=managed_assets_outdated only: the sync continuation (gentle-pi#627). */
+	/** code=managed_assets_outdated only: the sync continuation (drakonc-pi#627). */
 	continuation?: ReviewManagedAssetsContinuationV1;
 	raw: Readonly<Record<string, unknown>>;
 }
@@ -1016,7 +1016,7 @@ function decodeOptionalFeature(value: unknown, label: string): { name: string; s
 export function decodeReviewCapabilitiesV2(value: unknown, verifiedExecutableDigest: string): ReviewCapabilitiesV2 {
 	const requiredFields = ["schema", "contract", "protocol", "package", "build", "executable", "operations", "gates", "projections", "schemas", "features", "compatibility"] as const;
 	const body = exactRecord(value, "capabilities", requiredFields, ["bootstrap"]);
-	// Only capabilities/v2.6 (gentle-ai v4.6.0, the minimum supported native
+	// Only capabilities/v2.6 (drakonc-ai v4.6.0, the minimum supported native
 	// binary) decodes; an older minor is refused with an actionable message.
 	const older = typeof body.schema === "string" ? /^gentle-ai\.review-integration\.capabilities\/v2(?:\.([0-9]+))?$/.exec(body.schema) : null;
 	if (older !== null && Number(older[1] ?? 0) < REVIEW_MINIMUM_CAPABILITIES_MINOR) throw new ReviewNativeContractTooOldError(capabilitiesTooOldMessage(body.schema as string));
@@ -1028,6 +1028,8 @@ export function decodeReviewCapabilitiesV2(value: unknown, verifiedExecutableDig
 	if (protocol.major !== 2 || protocol.minor !== REVIEW_MINIMUM_CAPABILITIES_MINOR) throw new TypeError("incompatible review integration protocol");
 
 	const packageIdentity = exactRecord(body.package, "capabilities.package", ["name", "version", "release_channel"]);
+	// El companion instalado se llama drakonc-ai, pero su paquete Go se identifica
+	// como `gentle-ai`: es el nombre que llega en el anuncio y el que hay que aceptar.
 	if (packageIdentity.name !== "gentle-ai") throw new TypeError("capabilities package identity mismatch");
 	const packageVersion = nonempty(packageIdentity.version, "capabilities.package.version");
 	enumeration(packageIdentity.release_channel, ["development", "prerelease", "stable"] as const, "capabilities.package.release_channel");
@@ -1483,17 +1485,17 @@ function decodeCaptureSubmission(value: unknown, label: string, v5: boolean, v6:
 	// status/v5: the live 2.4.0-main binary emits the materialize
 	// capture-result submission as a SINGULAR `value` object carrying a
 	// `schema` key (captured 2026-08-16 from 2.4.0-main.b1afef46; the
-	// emitter has been singular since gentle-ai f1a95179). The form is
+	// emitter has been singular since drakonc-ai f1a95179). The form is
 	// closed to that exact captured shape and normalizes into the typed
 	// one-entry values array the host relay already consumes. A payload
 	// carrying both wire forms at once matches no captured shape and falls
 	// through to the legacy decoder, which rejects the unknown `value` key.
 	//
-	// gentle-ai's v9 contract renders the same singular-value shape for the
+	// drakonc-ai's v9 contract renders the same singular-value shape for the
 	// two host-mediated provider role operations (capture-refuter,
 	// capture-validation): they carry a `schema` key exactly like
 	// capture-result, since both bind one artifact-path-or-stdin value, never
-	// the correction-plan's numeric bounds (gentle-pi#311 P3).
+	// the correction-plan's numeric bounds (drakonc-pi#311 P3).
 	if (v5 && typeof value === "object" && value !== null && "value" in value && !("values" in value)) {
 		const submission = exactRecord(value, label, ["operation_token", "argument_tokens", "value"]);
 		const operationToken = enumeration(submission.operation_token, ["capture-result", "capture-correction-plan", "capture-refuter", "capture-validation"] as const, `${label}.operation_token`);
@@ -1536,7 +1538,7 @@ function decodeCaptureSubmission(value: unknown, label: string, v5: boolean, v6:
 }
 
 // v5-only structural decoders, exact to the vendored status-v5.schema.json
-// and correction-plan-request.schema.json on gentle-ai main.
+// and correction-plan-request.schema.json on drakonc-ai main.
 
 function decodeProviderTask(value: unknown, label: string): ReviewProviderTaskV1 {
 	const task = exactRecord(value, label, ["agent", "role", "prompt"]);
@@ -1706,12 +1708,12 @@ function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: bool
 		sha256(argumentsList[5]!.value, `${label}.arguments[5].value`);
 	}
 
-	// gentle-pi#311 P4-roles / P3: the two non-lens provider role capture
+	// drakonc-pi#311 P4-roles / P3: the two non-lens provider role capture
 	// operations render either wire form on one input, never both at once.
-	// An older gentle-ai renders a SELF-CONTAINED authority-advancing vector
+	// An older drakonc-ai renders a SELF-CONTAINED authority-advancing vector
 	// (binding tokens + --agent=pi --execute=true, no submission): executing
 	// the exact rendered tokens makes Go materialize the role prompt, run its
-	// own locked-down pi subprocess, and admit the raw verdict. gentle-ai's
+	// own locked-down pi subprocess, and admit the raw verdict. drakonc-ai's
 	// v9 contract instead renders a HOST-MEDIATED form: the same binding
 	// tokens plus --materialize=true (never --execute) and a provider-owned
 	// submission descriptor, exactly like a lens capture-result materialize
@@ -1750,7 +1752,7 @@ function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: bool
 	}
 	if (isRoleCaptureOperation && input.submission !== undefined) {
 		// A submission descriptor only ever rides the v9 host-mediated form
-		// (gentle-ai's v9 provider contract; the sibling branch ahead of the
+		// (drakonc-ai's v9 provider contract; the sibling branch ahead of the
 		// currently-released v8). A v8-or-earlier provider (status/v3..v8) never
 		// renders one, even if it happened to carry a submission-shaped payload,
 		// so this is gated on v9 specifically — not on v5, which v8 already
@@ -1777,7 +1779,7 @@ function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: bool
 	if (captureOperation === "review.capture-result") {
 		// changed_path_manifest is optional here: the artifact subject's
 		// changed_path_manifest_sha256 already binds the frozen manifest, and
-		// gentle-ai stops inlining one copy per lens (gentle-ai#3922).
+		// drakonc-ai stops inlining one copy per lens (drakonc-ai#3922).
 		if (input.artifact_subject === undefined || input.base_tree === undefined || input.candidate_tree === undefined) {
 			throw new TypeError(`${label} requires artifact_subject, base_tree, and candidate_tree`);
 		}
@@ -1789,7 +1791,7 @@ function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: bool
 		? ["review.capture-result", "review.capture-correction-plan", ...(v6 ? ["external.select_intended_untracked"] : [])]
 		: ["review.capture-result"];
 	// Role operations are gated above by the materialize/execute discriminator
-	// instead of this allowlist: an older gentle-ai's self-contained vector
+	// instead of this allowlist: an older drakonc-ai's self-contained vector
 	// legitimately carries no submission regardless of v5/v6, so they cannot
 	// simply join the list the way every other submission-carrying operation
 	// does.
@@ -1817,9 +1819,9 @@ function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: bool
 	};
 }
 
-// gentle-pi#627: gentle-ai's managed-assets continuation (STATUS next_transition
+// drakonc-pi#627: drakonc-ai's managed-assets continuation (STATUS next_transition
 // stop reason_code=managed_assets_outdated, and START's preflight failure
-// envelope) names the exact `gentle-ai sync` invocation that resolves a stale
+// envelope) names the exact `drakonc-ai sync` invocation that resolves a stale
 // managed-asset set without abandoning the frozen candidate. Decoded verbatim
 // from internal/cli/review_operation_contract.go's ReviewManagedAssetsContinuation.
 export function decodeReviewManagedAssetsContinuationV1(value: unknown, label: string): ReviewManagedAssetsContinuationV1 {
@@ -1842,13 +1844,13 @@ export function decodeReviewNextTransitionV3(value: unknown, options: { v9?: boo
 	const kind = enumeration(transition.kind, ["execute", "collect", "stop"] as const, "next_transition.kind");
 	const reasonCode = text(transition.reason_code, "next_transition.reason_code", { minimum: 1, pattern: /^[a-z0-9_]+$/ });
 	const continuation = transition.continuation === undefined ? undefined : decodeReviewManagedAssetsContinuationV1(transition.continuation, "next_transition.continuation");
-	// gentle-pi#627: continuation is optional on every status version an older
-	// gentle-ai may emit a managed_assets_outdated stop with no continuation at
+	// drakonc-pi#627: continuation is optional on every status version an older
+	// drakonc-ai may emit a managed_assets_outdated stop with no continuation at
 	// all, and decode must not refuse the whole envelope for that. When present
 	// it is only valid on a stop with this exact reason_code.
 	if (continuation !== undefined && !(kind === "stop" && reasonCode === "managed_assets_outdated")) throw new TypeError("next_transition.continuation is only valid for a stop transition with reason_code managed_assets_outdated");
 
-	// gentle-pi#638: the unachievable stop names one entry per declared slot, each carrying its complete withdraw command (schemas/status-v7.schema.json, the stop variant). Like the continuation, the field is only valid on its own exact stop reason code, and an entry is refused rather than silently dropped when the provider drifts.
+	// drakonc-pi#638: the unachievable stop names one entry per declared slot, each carrying its complete withdraw command (schemas/status-v7.schema.json, the stop variant). Like the continuation, the field is only valid on its own exact stop reason code, and an entry is refused rather than silently dropped when the provider drifts.
 	let unachievableLensSlots: readonly ReviewUnachievableLensSlotV3[] | undefined;
 	if (transition.unachievable_lens_slots !== undefined) {
 		if (!(kind === "stop" && reasonCode === "unachievable_lens_slot")) throw new TypeError("next_transition.unachievable_lens_slots is only valid for a stop transition with reason_code unachievable_lens_slot");
@@ -1916,7 +1918,7 @@ function decodeUnachievableLensSlot(value: unknown, label: string): ReviewUnachi
 	const subjectHash = sha256(body.subject_hash, `${label}.subject_hash`);
 	const reason = nonempty(body.reason, `${label}.reason`);
 	const detail = body.detail === undefined ? undefined : nonempty(body.detail, `${label}.detail`);
-	// gentle-pi#822: Go refuses a CAPTURE_UNACHIEVABLE detail above 512 UTF-8 bytes, so the stop decoder mirrors the same bound — measured in bytes, not UTF-16 code units — and a STATUS stop can never carry a detail this client would have refused to declare.
+	// drakonc-pi#822: Go refuses a CAPTURE_UNACHIEVABLE detail above 512 UTF-8 bytes, so the stop decoder mirrors the same bound — measured in bytes, not UTF-16 code units — and a STATUS stop can never carry a detail this client would have refused to declare.
 	if (detail !== undefined && Buffer.byteLength(detail, "utf8") > REVIEW_INTEGRATION_UNACHIEVABLE_LENS_DETAIL_LIMIT) throw new TypeError(`${label}.detail exceeds ${REVIEW_INTEGRATION_UNACHIEVABLE_LENS_DETAIL_LIMIT} bytes`);
 	const withdraw = exactRecord(body.withdraw, `${label}.withdraw`, ["operation", "command", "arguments", "binding"]);
 	const operation = enumeration(withdraw.operation, ["review.capture-unachievable"] as const, `${label}.withdraw.operation`);
@@ -1933,7 +1935,7 @@ function decodeUnachievableLensSlot(value: unknown, label: string): ReviewUnachi
 	const targetIdentity = sha256(binding.target_identity, `${label}.withdraw.binding.target_identity`);
 	const lineageId = binding.lineage_id === undefined ? undefined : lineage(binding.lineage_id, `${label}.withdraw.binding.lineage_id`);
 	const revision = binding.revision === undefined ? undefined : sha256(binding.revision, `${label}.withdraw.binding.revision`);
-	// gentle-pi#822: the withdraw form names the slot identity twice — as named arguments and as the binding object — and the two renderings must agree before the slot decodes. Strict equality also enforces both-or-neither on the optional lineage and revision fields, so a partially rendered binding never slips through and restart cannot withdraw a different slot. Each identity argument must appear EXACTLY once: a first-match lookup let a duplicate {name} entry smuggle a second value past the identity checks.
+	// drakonc-pi#822: the withdraw form names the slot identity twice — as named arguments and as the binding object — and the two renderings must agree before the slot decodes. Strict equality also enforces both-or-neither on the optional lineage and revision fields, so a partially rendered binding never slips through and restart cannot withdraw a different slot. Each identity argument must appear EXACTLY once: a first-match lookup let a duplicate {name} entry smuggle a second value past the identity checks.
 	const withdrawIdentityArgument = (name: string): ReviewTransitionArgumentV3 | undefined => {
 		const matches = arguments_.filter((argument) => argument.name === name);
 		if (matches.length > 1) throw new TypeError(`${label}.withdraw.arguments ${name} must appear exactly once`);
@@ -1947,7 +1949,7 @@ function decodeUnachievableLensSlot(value: unknown, label: string): ReviewUnachi
 	if (withdrawLineage?.value !== lineageId) throw new TypeError(`${label}.withdraw.arguments lineage does not match the withdraw binding lineage_id`);
 	const withdrawExpectedRevision = withdrawIdentityArgument("expected-revision");
 	if (withdrawExpectedRevision?.value !== revision) throw new TypeError(`${label}.withdraw.arguments expected-revision does not match the withdraw binding revision`);
-	// gentle-pi#822: command is executable authority, not a display hint. Every
+	// drakonc-pi#822: command is executable authority, not a display hint. Every
 	// provider-issued argument token must be the canonical --name=value rendering,
 	// and command must render the canonical operation plus those tokens exactly in
 	// order. This rejects omitted tokens, a second command, suffixes, and shell
@@ -2005,7 +2007,7 @@ function decodeEligibility(value: unknown, label: string): void {
 // ---------------------------------------------------------------------------
 
 export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
-	// Only status/v9 (gentle-ai v4.6.0, the minimum supported native binary)
+	// Only status/v9 (drakonc-ai v4.6.0, the minimum supported native binary)
 	// decodes. An older status identity is refused with an actionable message
 	// before any structural check, so an old binary never surfaces an opaque
 	// "not allowed"/"unsupported" decode error. v9 is the full surface: the
@@ -2100,7 +2102,7 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 		? decodeReviewEscalationV1(body.escalation, "status.escalation")
 		: undefined;
 
-	// status/v7 top-level optional digest (gentle-ai v2.6.0): resolves #4066's
+	// status/v7 top-level optional digest (drakonc-ai v2.6.0): resolves #4066's
 	// closed loop where `sdd-attempt finish` named a digest status never
 	// published. Absent on the `staged` projection, which never resolves an
 	// inventory, so it stays structurally optional rather than a required v7
@@ -2109,7 +2111,7 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 		? sha256(body.eligible_untracked_inventory, "status.eligible_untracked_inventory")
 		: undefined;
 
-	// status/v9 opt-in (gentle-ai#6088): the same rule as the provider's schema,
+	// status/v9 opt-in (drakonc-ai#6088): the same rule as the provider's schema,
 	// a current compact-v2 authority in correction_required or escalated.
 	let nonBlockingFindings: ReviewNonBlockingFindingsV1 | undefined;
 	if (Object.hasOwn(body, "non_blocking_findings")) {
@@ -2212,7 +2214,7 @@ function decodeConsentSemantics(body: Record<string, unknown>): Omit<ReviewConse
 		value: nonempty(body.value, "consent.value"),
 		riskEvidence: stringArray(body.risk_evidence, "consent.risk_evidence"),
 		choices: [granted, declined],
-		offPath: { note: nonempty(offPathSource.note, "consent.off_path.note"), command: "gentle-ai review mode disable" },
+		offPath: { note: nonempty(offPathSource.note, "consent.off_path.note"), command: "drakonc-ai review mode disable" },
 	};
 }
 
@@ -2230,10 +2232,10 @@ export function decodeReviewConsentV2(value: unknown): ReviewConsentV2 {
 	};
 }
 
-// consent/v3 (gentle-ai >= 2.3.0): the v2 surface plus the required, fixed
+// consent/v3 (drakonc-ai >= 2.3.0): the v2 surface plus the required, fixed
 // `agent` runtime binding. Ground truth is the captured envelope from a
 // 2.4.0-main binary (tests/fixtures/devbinary/consent-v3.captured.json) plus
-// gentle-ai main contracts/review-integration/v2/schemas/consent-v3.schema.json.
+// drakonc-ai main contracts/review-integration/v2/schemas/consent-v3.schema.json.
 // The choice-invocation shape deliberately stays the shared v2 pattern: the
 // published v3 schema demands an `--agent claude-code` token that the live
 // emitter omits when the caller declared no --agent, so the capture is
@@ -2320,8 +2322,8 @@ export function decodeReviewFailureV2(value: unknown): ReviewFailureV2 {
 	if (body.request_digest !== undefined && operation === REVIEW_INTEGRATION_OPERATION.REPAIR && body.progress_identity === undefined) {
 		throw new TypeError("failure.request_digest with review.repair requires progress_identity");
 	}
-	// gentle-pi#627: continuation is optional on every version — an older
-	// gentle-ai may emit managed_assets_outdated with no continuation, and
+	// drakonc-pi#627: continuation is optional on every version — an older
+	// drakonc-ai may emit managed_assets_outdated with no continuation, and
 	// decode must not refuse the whole envelope for that. When present it is
 	// only valid on this exact code.
 	if (body.continuation !== undefined && code !== "managed_assets_outdated") throw new TypeError("failure.continuation is only valid for code managed_assets_outdated");
@@ -2617,10 +2619,10 @@ export function assertReviewApprovedAcknowledgementExecuteV1(
 }
 
 // ---------------------------------------------------------------------------
-// review-acknowledged/v1 — the answer the burn prints (gentle-ai #3947)
+// review-acknowledged/v1 — the answer the burn prints (drakonc-ai #3947)
 // ---------------------------------------------------------------------------
 
-// Until gentle-ai #3947 a successful `review acknowledge-approved` burned its
+// Until drakonc-ai #3947 a successful `review acknowledge-approved` burned its
 // authority in silence and a host could only infer the burn from a later
 // STATUS offering a fresh START. From main commit bc9f74d2 the command prints
 // exactly this envelope on success. Like result-artifact/v2 it carries no

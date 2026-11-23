@@ -7,7 +7,7 @@ import { buildKeymapRows, type KeymapRowsOptions } from "../lib/keymaps-customiz
 import type { CustomizeInline, CustomizeRow } from "../lib/visual-customize-view.ts";
 import type { PiKeybindings } from "../lib/keymaps.ts";
 
-// The Keymaps category of /gentle:customize: one row per action and palette
+// The Keymaps category of /drakonc:customize: one row per action and palette
 // command; Enter captures the next key, ⌫ disables, r restores the default.
 
 const homes: string[] = [];
@@ -19,13 +19,13 @@ const PI_KEYS: PiKeybindings = {
 };
 
 function setup(env: NodeJS.ProcessEnv = {}) {
-	const configHome = mkdtempSync(join(tmpdir(), "gentle-keymaps-customize-"));
+	const configHome = mkdtempSync(join(tmpdir(), "drakonc-keymaps-customize-"));
 	homes.push(configHome);
 	const notices: Array<{ message: string; type: string }> = [];
 	let reloads = 0;
 	const options: KeymapRowsOptions = {
 		env, configHome, keybindings: () => PI_KEYS,
-		commands: [{ command: "gentle:changes", label: "Browse changes" }, { command: "gentle:design", label: "Design · HTML artboards" }],
+		commands: [{ command: "drakonc:changes", label: "Browse changes" }, { command: "drakonc:design", label: "Design · HTML artboards" }],
 		notify: (message, type) => notices.push({ message, type }),
 		reload: () => { reloads += 1; },
 	};
@@ -45,13 +45,13 @@ function inline(key: string | undefined, yes = true, asked: string[] = []): Cust
 }
 
 test("every action and palette command has a Keymaps row with its current key, plus a reload row", () => {
-	const { rows } = setup({ GENTLE_PI_AGENTS_VIEW_KEY: "alt+w" });
+	const { rows } = setup({ DRAKONC_PI_AGENTS_VIEW_KEY: "alt+w" });
 	assert.ok(rows.every((row) => row.category === "Keymaps"));
 	assert.deepEqual(rows.map(label), [
 		"Command palette: alt+k", "Browse changes: alt+g", "Subscription usage: alt+u", "Cycle visual preset: alt+l",
-		"Subagents overlay: alt+w (GENTLE_PI_AGENTS_VIEW_KEY)", "Stop active subagents: alt+s", "Collapse the agents card: ctrl+shift+a",
+		"Subagents overlay: alt+w (DRAKONC_PI_AGENTS_VIEW_KEY)", "Stop active subagents: alt+s", "Collapse the agents card: ctrl+shift+a",
 		"Collapse the jobs card: ctrl+shift+j", "Collapse the todo list: ctrl+shift+t", "Usage stats: none",
-		"/gentle:design · Design · HTML artboards: none", "Reload now to apply keymap changes",
+		"/drakonc:design · Design · HTML artboards: none", "Reload now to apply keymap changes",
 	]);
 });
 
@@ -61,20 +61,20 @@ test("Enter captures a key, saves it, and tells the user to reload", async () =>
 	assert.deepEqual(saved(), { commands: "alt+j" });
 	assert.equal(label(row("Command palette")), "Command palette: alt+j");
 	assert.deepEqual(notices.at(-1), { message: "Command palette: alt+j. Run /reload to apply it.", type: "info" });
-	await row("/gentle:design").action(inline("\x1bd"));
-	assert.deepEqual(saved(), { commands: "alt+j", "command:gentle:design": "alt+d" });
+	await row("/drakonc:design").action(inline("\x1bd"));
+	assert.deepEqual(saved(), { commands: "alt+j", "command:drakonc:design": "alt+d" });
 	await row("Usage stats").action(inline(undefined));
-	assert.deepEqual(saved(), { commands: "alt+j", "command:gentle:design": "alt+d" }, "a cancelled capture saves nothing");
+	assert.deepEqual(saved(), { commands: "alt+j", "command:drakonc:design": "alt+d" }, "a cancelled capture saves nothing");
 });
 
 test("a reserved key, a typing key or an environment-controlled action is refused and saves nothing", async () => {
-	const { row, notices, saved } = setup({ GENTLE_PI_AGENTS_VIEW_KEY: "alt+w" });
+	const { row, notices, saved } = setup({ DRAKONC_PI_AGENTS_VIEW_KEY: "alt+w" });
 	await row("Command palette").action(inline("\x0b"));
 	assert.deepEqual(notices.at(-1), { message: "ctrl+k is reserved by Pi (tui.editor.deleteToLineEnd); choose another key.", type: "warning" });
 	await row("Command palette").action(inline("a"));
 	assert.match(notices.at(-1)!.message, /a is needed for typing/);
 	await row("Subagents overlay").action(inline("\x1bv"));
-	assert.deepEqual(notices.at(-1), { message: "Subagents overlay is set by GENTLE_PI_AGENTS_VIEW_KEY; unset it to change the key here.", type: "warning" });
+	assert.deepEqual(notices.at(-1), { message: "Subagents overlay is set by DRAKONC_PI_AGENTS_VIEW_KEY; unset it to change the key here.", type: "warning" });
 	assert.equal(saved(), undefined);
 });
 

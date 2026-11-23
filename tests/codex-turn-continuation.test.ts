@@ -5,10 +5,10 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type AssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { VERIFIER_SETTLE_REMINDER_TYPE } from "../lib/verifier-settle-reminder.ts";
 
-const continuation = "gentle-pi.codex-turn-continuation";
+const continuation = "drakonc-pi.codex-turn-continuation";
 const codexApi = "openai-codex-responses";
 const update = (text = "I’ll check the file.") => ({ ...fauxAssistantMessage(text), endTurn: false });
 const finished = () => ({ ...fauxAssistantMessage("Done."), endTurn: true });
@@ -16,13 +16,13 @@ const finished = () => ({ ...fauxAssistantMessage("Done."), endTurn: true });
 async function host(t: TestContext, api = codexApi, extra: ExtensionFactory[] = []) {
 	const cwd = mkdtempSync(join(tmpdir(), "codex-turn-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
-	const env = { PI_CODING_AGENT_DIR: cwd, GENTLE_PI_AGENT_HOME: cwd, GENTLE_PI_CONFIG_HOME: cwd };
+	const env = { PI_CODING_AGENT_DIR: cwd, DRAKONC_PI_AGENT_HOME: cwd, DRAKONC_PI_CONFIG_HOME: cwd };
 	for (const [key, value] of Object.entries(env)) {
 		const previous = process.env[key];
 		process.env[key] = value;
 		t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
 	}
-	const gentle = createGentleAiExtension({
+	const drakonc = createDrakoncAiExtension({
 		nativeReviewCli: null, candidateViews: null, processEnv: env,
 		resolveTelemetryTriggerBinary: () => { throw new Error("offline fixture"); },
 	});
@@ -36,7 +36,7 @@ async function host(t: TestContext, api = codexApi, extra: ExtensionFactory[] = 
 	const settingsManager = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } });
 	const resourceLoader = new DefaultResourceLoader({
 		cwd, agentDir: cwd, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-		extensionFactories: [...extra, gentle],
+		extensionFactories: [...extra, drakonc],
 	});
 	await resourceLoader.reload();
 	const manager = SessionManager.inMemory(cwd);

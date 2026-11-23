@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import { DESKTOP_RPC_SCHEMA } from "../lib/desktop-rpc.ts";
 import {
 	AGENT_DEFINITIONS_UNAVAILABLE,
@@ -73,7 +73,7 @@ function harness(t: test.TestContext, location: AgentDefinitionsLocationFactory)
 	return {
 		widgets,
 		invoke(requestId: string, params: Record<string, unknown>, method = "list_agent_definitions") {
-			return commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }), ctx);
+			return commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }), ctx);
 		},
 		last() { return JSON.parse(widgets.at(-1)!); },
 	};

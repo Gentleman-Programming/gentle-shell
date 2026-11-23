@@ -54,7 +54,7 @@ const bounded = async <T>(label: string, operation: Promise<T>) => {
 
 function child(agentHome: string, spawnProcess: SpawnProcess = defaultSpawn) {
 	const process = spawnProcess(globalThis.process.execPath, ["--experimental-strip-types", fixture], {
-		env: { GENTLE_AGENT_HOME: agentHome }, stdio: ["pipe", "pipe", "pipe"],
+		env: { DRAKONC_AGENT_HOME: agentHome }, stdio: ["pipe", "pipe", "pipe"],
 	});
 	const replies = new Map<string, Pending>();
 	const callbacks: Callback[] = [];

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension, __testing } from "../extensions/drakonc-ai.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,10 +18,10 @@ import {
 } from "../lib/native-review-cli.ts";
 
 // ---------------------------------------------------------------------------
-// gentle-pi#661: the always-on parent prompt renders a second status line,
+// drakonc-pi#661: the always-on parent prompt renders a second status line,
 // `Receipt-driven development: on|off (decided by <source>)`, next to
 // `Background subagent policy`, sourced from the native review mode status
-// reader (`gentle-ai review mode status --json`, schema
+// reader (`drakonc-ai review mode status --json`, schema
 // `gentle-ai.rdd-mode-status/v1`, decoded to `NativeReviewModeStatus`).
 //
 // `getOrchestratorPrompt`/`renderOrchestratorPrompt` stay synchronous and
@@ -206,10 +206,10 @@ test("cancellation is reported separately from a native timeout without inventin
 test("RDD status timeout configuration stays bounded and rejects invalid values", () => {
 	assert.equal(resolveRddStatusTimeoutMs({}), 3000);
 	for (const value of ["0", "-1", "1.5", " 4000", "1e3", "10001", "Infinity", "999999999999999999999"]) {
-		assert.equal(resolveRddStatusTimeoutMs({ GENTLE_PI_RDD_STATUS_TIMEOUT_MS: value }), 3000, value);
+		assert.equal(resolveRddStatusTimeoutMs({ DRAKONC_PI_RDD_STATUS_TIMEOUT_MS: value }), 3000, value);
 	}
 	for (const value of ["1", "4000", "10000"]) {
-		assert.equal(resolveRddStatusTimeoutMs({ GENTLE_PI_RDD_STATUS_TIMEOUT_MS: value }), Number(value));
+		assert.equal(resolveRddStatusTimeoutMs({ DRAKONC_PI_RDD_STATUS_TIMEOUT_MS: value }), Number(value));
 	}
 });
 
@@ -243,8 +243,8 @@ test("primary prompt uses its configured deadline and memoizes an unresponsive p
 		registerCommand() {}, registerTool() {}, registerMessageRenderer() {}, registerFlag() {},
 		events: { emit() {}, on: () => () => {} }, getActiveTools: () => [],
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: cli, candidateViews: null,
-		processEnv: { GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_RDD_STATUS_TIMEOUT_MS: "7000" },
+	createDrakoncAiExtension({ nativeReviewCli: cli, candidateViews: null,
+		processEnv: { DRAKONC_PI_CONFIG_HOME: home, DRAKONC_PI_RDD_STATUS_TIMEOUT_MS: "7000" },
 		resolveTelemetryTriggerBinary: () => { throw new Error("disabled in test"); },
 	})(pi);
 	t.mock.method(AbortSignal, "timeout", (ms: number) => { deadlines.push(ms); return controller.signal; });
@@ -264,7 +264,7 @@ test("primary prompt uses its configured deadline and memoizes an unresponsive p
 });
 
 test("resolveRddModeStatus resolves to undefined within the deadline when reviewMode never settles", async () => {
-	// gentle-pi#661 native-review escalation: a hung `gentle-ai` child must
+	// drakonc-pi#661 native-review escalation: a hung `drakonc-ai` child must
 	// not stall session start. resolveRddModeStatus races the call against
 	// its own abort listener, so this holds even for a stub reviewMode that
 	// itself ignores the passed `signal`, as a real hung child process would
@@ -356,7 +356,7 @@ test("getOrchestratorPrompt renders the resolved RDD status line next to the bac
 });
 
 test("getOrchestratorPrompt defaults to the worst-case unknown RDD status line (budget-critical path)", () => {
-	// gentle-pi#661 follow-up: the no-argument default must BE the worst case
+	// drakonc-pi#661 follow-up: the no-argument default must BE the worst case
 	// the byte budget in tests/orchestrator-budget.test.ts measures, so a
 	// caller that never resolves a status renders the longest line rather
 	// than none at all.
@@ -404,7 +404,7 @@ test("the on and off renders are never longer than the unknown (worst-case) rend
 	}
 });
 
-// gentle-shell#1029: the rendered RDD line is part of the cached system-prompt
+// drakonc-shell#1029: the rendered RDD line is part of the cached system-prompt
 // prefix. A re-read after the TTL that fails or times out must not flip a
 // known on/off line to "unknown" and back: the last successfully read status
 // stays until the native reader reports a different status.
@@ -474,7 +474,7 @@ test("resolveRddModeStatus stays unknown when no status was ever read", async ()
 	assert.equal(await resolveRddModeStatus(cli, "/repo-never-known"), undefined);
 });
 
-// gentle-shell#2250: the one-shot unavailable notice must name the cause so a
+// drakonc-shell#2250: the one-shot unavailable notice must name the cause so a
 // user on a slow or foreign-owned filesystem can tell a timeout from a native
 // refusal instead of reading a generic "absent, timed out, or failed".
 function captureNotices(): { ctx: { hasUI: true; ui: { notify(message: string, level: string): void } }; messages: string[] } {
@@ -497,7 +497,7 @@ test("the unavailable notice names the native failure and its stderr", async () 
 	});
 	assert.equal(await resolveRddModeStatus(cli, "/repo-native-failure", undefined, Date.now, ctx as never), undefined);
 	assert.equal(messages.length, 1);
-	assert.match(messages[0], /status is unavailable: native `gentle-ai review mode status` failed \(non-zero, exit 1\): fatal: detected dubious ownership in repository\./);
+	assert.match(messages[0], /status is unavailable: native `drakonc-ai review mode status` failed \(non-zero, exit 1\): fatal: detected dubious ownership in repository\./);
 	assert.match(messages[0], /keeps the last known status/);
 });
 
@@ -511,7 +511,7 @@ test("the unavailable notice reports a timeout distinctly", async () => {
 		clearTimeout(keepalive);
 	}
 	assert.equal(messages.length, 1);
-	assert.match(messages[0], new RegExp(`status is unavailable: native \`gentle-ai review mode status\` did not answer within ${RDD_STATUS_TIMEOUT_MS} ms\.`));
+	assert.match(messages[0], new RegExp(`status is unavailable: native \`drakonc-ai review mode status\` did not answer within ${RDD_STATUS_TIMEOUT_MS} ms\.`));
 });
 
 test("the unavailable notice reports an absent native review CLI", async () => {
@@ -519,7 +519,7 @@ test("the unavailable notice reports an absent native review CLI", async () => {
 	const { ctx, messages } = captureNotices();
 	await resolveRddModeStatus(null, "/repo-absent", undefined, Date.now, ctx as never);
 	assert.equal(messages.length, 1);
-	assert.match(messages[0], /status is unavailable: the native gentle-ai review CLI is not available\./);
+	assert.match(messages[0], /status is unavailable: the native drakonc-ai review CLI is not available\./);
 });
 
 test("the unavailable notice still fires only once per session", async () => {

@@ -138,7 +138,7 @@ export interface DesktopDirectoryWatcherOptions {
  * platforms never report one.
  *
  * A target directory that does not exist yet (a project without `.pi/`, a fresh
- * `<git common dir>/gentle-ai/`) is watched through its nearest existing
+ * `<git common dir>/drakonc-ai/`) is watched through its nearest existing
  * ancestor, non-recursively, for the creation of the next path segment only.
  * When that segment appears, the ancestor watcher is closed and the target is
  * armed again one level closer, until the real directory is watched; each

@@ -14,9 +14,9 @@ import { domainHashV1 } from "../lib/review-canonical.ts";
 import { canonicalHash } from "../lib/review-transaction.ts";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const { createGentleAiExtension } = await import(pathToFileURL(join(ROOT, "extensions/gentle-ai.ts")).href);
+const { createDrakoncAiExtension } = await import(pathToFileURL(join(ROOT, "extensions/drakonc-ai.ts")).href);
 const EXTENSIONS = [
-	"extensions/gentle-ai.ts",
+	"extensions/drakonc-ai.ts",
 	"extensions/nan-provider.ts",
 	"extensions/quiet-tools.ts",
 	"extensions/skill-registry.ts",
@@ -24,37 +24,39 @@ const EXTENSIONS = [
 ];
 
 const EXPECTED_BANNER_COMMANDS = [
-	"gentle:banner",
-	"gentle:toggle-rose",
-	"gentle:toggle-text-logo",
-	"gentle:banner-color",
+	"drakonc:banner",
+	"drakonc:toggle-dragon",
+	"drakonc:toggle-text-logo",
+	"drakonc:banner-color",
 ];
 
 const EXPECTED_COMMANDS = [
-	"gentle:install-delegation",
-	"gentle:install-review",
-	"gentle:profiles",
-	"gentle:persona",
-	"gentle:status",
-	"gentle:doctor",
+	"drakonc:install-delegation",
+	"drakonc:install-review",
+	"drakonc:profiles",
+	"drakonc:persona",
+	"drakonc:status",
+	"drakonc:doctor",
 	"skill-registry:refresh",
 	...EXPECTED_BANNER_COMMANDS,
 ];
 
 const FORBIDDEN_COMPAT_COMMANDS = [
-	"gentle:install-assets",
-	// Retired: /gentle:profiles opens the same models screen.
-	"gentle:models",
-	"gentle-ai:models",
-	"gentleman:models",
-	"gentle-ai:persona",
-	"gentleman:persona",
-	"gentle-ai:status",
-	"gentle-ai:doctor",
-	"gentle-ai:banner",
-	"gentle-ai:toggle-rose",
-	"gentle-ai:toggle-text-logo",
-	"gentle-ai:banner-color",
+	"drakonc:install-assets",
+	// Retired: /drakonc:profiles opens the same models screen.
+	"drakonc:models",
+	"drakonc-ai:models",
+	"drakoncman:models",
+	"drakonc-ai:persona",
+	"drakoncman:persona",
+	"drakonc-ai:status",
+	"drakonc-ai:doctor",
+	"drakonc-ai:banner",
+	"drakonc-ai:toggle-rose",
+	"drakonc-ai:toggle-text-logo",
+	"drakonc-ai:banner-color",
+	// Renombrado: el comando de banner habla de dragón y el alias viejo ya no se registra.
+	"drakonc:toggle-rose",
 ];
 
 function createPi() {
@@ -198,7 +200,7 @@ function gitSync(cwd, ...arguments_) {
 }
 
 async function tempWorkspace() {
-	return mkdtemp(join(tmpdir(), "gentle-pi-runtime-"));
+	return mkdtemp(join(tmpdir(), "drakonc-pi-runtime-"));
 }
 
 function restoreWorkspaceWritePermissions(cwd) {
@@ -213,15 +215,15 @@ function restoreWorkspaceWritePermissions(cwd) {
 const ownedFixtureRoots = [];
 const previousFixtureEnvironment = new Map([
 	"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR",
-	"GENTLE_PI_CONFIG_HOME", "GENTLE_PI_AGENT_HOME", "GENTLE_PI_TEST_ASSETS_DIR",
-	"GENTLE_PI_AGENTS_PARENT_PERMISSION_FD",
+	"DRAKONC_PI_CONFIG_HOME", "DRAKONC_PI_AGENT_HOME", "DRAKONC_PI_TEST_ASSETS_DIR",
+	"DRAKONC_PI_AGENTS_PARENT_PERMISSION_FD",
 ].map((key) => [key, process.env[key]]));
 
 async function loadExtensions(pi, fixtureDependencies) {
 	for (const [index, rel] of EXTENSIONS.entries()) {
 		const mod = await import(`${pathToFileURL(join(ROOT, rel)).href}?runtime-harness=${index}`);
 		assert.equal(typeof mod.default, "function", `${rel} must export a default function`);
-		if (rel === "extensions/gentle-ai.ts") createGentleAiExtension(fixtureDependencies)(pi);
+		if (rel === "extensions/drakonc-ai.ts") createDrakoncAiExtension(fixtureDependencies)(pi);
 		else mod.default(pi);
 	}
 }
@@ -233,24 +235,24 @@ async function run() {
 	ownedFixtureRoots.push(globalAgentHome);
 	const ambientTestAssetsDir = await tempWorkspace();
 	ownedFixtureRoots.push(ambientTestAssetsDir);
-	process.env.GENTLE_PI_CONFIG_HOME = globalConfigHome;
-	process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
-	process.env.GENTLE_PI_TEST_ASSETS_DIR = ambientTestAssetsDir;
+	process.env.DRAKONC_PI_CONFIG_HOME = globalConfigHome;
+	process.env.DRAKONC_PI_AGENT_HOME = globalAgentHome;
+	process.env.DRAKONC_PI_TEST_ASSETS_DIR = ambientTestAssetsDir;
 	process.env.HOME = globalAgentHome;
 	process.env.USERPROFILE = globalAgentHome;
 	process.env.XDG_CONFIG_HOME = join(globalAgentHome, "xdg");
 	process.env.PI_CODING_AGENT_DIR = join(globalAgentHome, "pi");
 	// Discovery still exercises the default exports under the actual worker
 	// role, but must never acquire the worker's parent-permission channel.
-	delete process.env.GENTLE_PI_AGENTS_PARENT_PERMISSION_FD;
+	delete process.env.DRAKONC_PI_AGENTS_PARENT_PERMISSION_FD;
 	const fixtureDependencies = {
 		nativeReviewCli: {},
 		processEnv: {
 			HOME: globalAgentHome, USERPROFILE: globalAgentHome,
-			GENTLE_PI_CONFIG_HOME: globalConfigHome, GENTLE_PI_AGENT_HOME: globalAgentHome,
+			DRAKONC_PI_CONFIG_HOME: globalConfigHome, DRAKONC_PI_AGENT_HOME: globalAgentHome,
 			PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
 			XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-			GENTLE_PI_AGENTS_CHILD: "0", GENTLE_AI_TELEMETRY: "0",
+			DRAKONC_PI_AGENTS_CHILD: "0", DRAKONC_AI_TELEMETRY: "0",
 		},
 		resolveTelemetryTriggerBinary: () => join(globalAgentHome, "never-executed"),
 		telemetryTriggerSpawn: () => assert.fail("Runtime fixtures must not spawn telemetry"),
@@ -261,7 +263,7 @@ async function run() {
 	await loadExtensions(pi, fixtureDependencies);
 	assert.equal(providers.get("nan")?.getModels()[0]?.api, "openai-completions", "runtime extension loading registers the NaN provider");
 
-	// gentle-pi#404: a collect binding that returns the native last-event
+	// drakonc-pi#404: a collect binding that returns the native last-event
 	// closure must terminate after one capture. It must not re-enter a public
 	// lifecycle mutation or synthesize a follow-up transition.
 	{
@@ -337,12 +339,12 @@ async function run() {
 			},
 		};
 		const lastEventPi = createPi();
-		createGentleAiExtension({ ...fixtureDependencies, nativeReviewCli })(lastEventPi.pi);
-		const controller = lastEventPi.tools.get("gentle_review");
-		const capture = lastEventPi.tools.get("gentle_review_capture");
+		createDrakoncAiExtension({ ...fixtureDependencies, nativeReviewCli })(lastEventPi.pi);
+		const controller = lastEventPi.tools.get("drakonc_review");
+		const capture = lastEventPi.tools.get("drakonc_review_capture");
 		assert.ok(controller, "runtime must register the public status controller");
 		assert.ok(capture, "runtime must register the one-slot capture tool");
-		assert.equal(lastEventPi.tools.get("gentle_review_capture_group")?.executionMode, "sequential", "runtime must register grouped capture with bounded foreground concurrency");
+		assert.equal(lastEventPi.tools.get("drakonc_review_capture_group")?.executionMode, "sequential", "runtime must register grouped capture with bounded foreground concurrency");
 		assert.equal(controller.parameters.properties.operation.enum.includes("finalize"), false);
 		assert.equal(controller.parameters.properties.operation.enum.includes("validate"), false);
 
@@ -380,12 +382,17 @@ async function run() {
 	for (const name of FORBIDDEN_COMPAT_COMMANDS) {
 		assert.equal(commands.has(name), false, `compat command should not be registered: ${name}`);
 	}
+	assert.equal(
+		commands.has("drakonc:toggle-rose"),
+		false,
+		"el nombre viejo del toggle de banner no debe registrarse: sólo existe drakonc:toggle-dragon",
+	);
 	// Retired SDD command entry points must not register, regardless of unrelated prompt text.
 	for (const name of [
-		"gentle:install-sdd", "gentle:sdd-preflight", "gentle-sdd-status",
-		"gentle-sdd-continue", "gentle-sdd-init", "sdd-init", "sdd-continue",
-		"sdd-status", "gentle-ai:install-sdd", "gentle-ai:sdd-preflight",
-		"gentle-ai:sdd-status", "gentle-ai:sdd-continue",
+		"drakonc:install-sdd", "drakonc:sdd-preflight", "drakonc-sdd-status",
+		"drakonc-sdd-continue", "drakonc-sdd-init", "sdd-init", "sdd-continue",
+		"sdd-status", "drakonc-ai:install-sdd", "drakonc-ai:sdd-preflight",
+		"drakonc-ai:sdd-status", "drakonc-ai:sdd-continue",
 	]) {
 		assert.equal(commands.has(name), false, `retired SDD command registered: ${name}`);
 	}
@@ -394,10 +401,10 @@ async function run() {
 	assert.ok(hooks.has("session_shutdown"), "missing session_shutdown hook");
 	assert.ok(hooks.has("input"), "missing live input provenance hook");
 	for (const text of [
-		"/sdd-init", "/sdd-continue", "/sdd-status", "/gentle-sdd-init",
-		"/gentle-sdd-continue", "/gentle-sdd-status", "/gentle:install-sdd",
-		"/gentle:sdd-preflight", "/gentle-ai:install-sdd", "/gentle-ai:sdd-preflight",
-		"/gentle-ai:sdd-status", "/gentle-ai:sdd-continue",
+		"/sdd-init", "/sdd-continue", "/sdd-status", "/drakonc-sdd-init",
+		"/drakonc-sdd-continue", "/drakonc-sdd-status", "/drakonc:install-sdd",
+		"/drakonc:sdd-preflight", "/drakonc-ai:install-sdd", "/drakonc-ai:sdd-preflight",
+		"/drakonc-ai:sdd-status", "/drakonc-ai:sdd-continue",
 		"Inspect this project without changing files.", "/ordinary-unregistered-command",
 	]) {
 		const event = { text, source: "interactive", images: [] };
@@ -423,10 +430,10 @@ async function run() {
 	assert.equal(typeof codemode.renderResult, "function");
 	assert.equal(typeof codemode.prepareLoadout, "function", "upstream loadout policy must survive decoration");
 	assert.deepEqual(pi.getActiveTools(), ["read", "bash", "edit", "write"], "card registration must not change tool activation");
-	assert.ok(tools.has("gentle_review"), "missing registered bounded review controller tool");
-	assert.ok(tools.has("gentle_review_scope"), "missing registered bounded review scope tool");
+	assert.ok(tools.has("drakonc_review"), "missing registered bounded review controller tool");
+	assert.ok(tools.has("drakonc_review_scope"), "missing registered bounded review scope tool");
 	assert.deepEqual(
-		tools.get("gentle_review").parameters.properties.operation.enum.filter((operation) => operation.includes("supersession") || operation === "supersede" || operation.includes("reconcile")),
+		tools.get("drakonc_review").parameters.properties.operation.enum.filter((operation) => operation.includes("supersession") || operation === "supersede" || operation.includes("reconcile")),
 		[],
 		"runtime controller must not expose supersession or authority reconciliation",
 	);
@@ -475,7 +482,7 @@ async function run() {
 	const promptCwd = await tempWorkspace();
 	try {
 		const promptHook = hooks.get("before_agent_start")[0];
-		// gentle-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
+		// drakonc-shell#1485: pi-claude-bridge drops a handler-returned systemPrompt
 		// and forwards only structured systemPromptOptions, so the harness must
 		// land in appendSystemPrompt and the hook must never return a replacement.
 		const promptEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
@@ -483,11 +490,11 @@ async function run() {
 		assert.equal(promptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
 		assert.equal(promptEvent.systemPrompt, "base", "the original systemPrompt field must be left untouched");
 		const promptAppended = promptEvent.systemPromptOptions.appendSystemPrompt;
-		assert.match(promptAppended, /el Gentleman/);
+		assert.match(promptAppended, /el Drakoncman/);
 		assert.match(promptAppended, /Organic Driven Development/);
 		assert.doesNotMatch(promptAppended, /## SDD Research Capabilities/);
 		assert.match(promptAppended, /review execution contract/);
-		assert.doesNotMatch(await readFile(join(ROOT, "extensions", "gentle-ai.ts"), "utf8"), /readCommandSddStatus/);
+		assert.doesNotMatch(await readFile(join(ROOT, "extensions", "drakonc-ai.ts"), "utf8"), /readCommandSddStatus/);
 		assert.match(promptAppended + delegationDetail, /do not pass the `model` parameter by default/);
 		assert.doesNotMatch(promptAppended, /Every Agent tool call MUST include `model`/);
 		assert.ok(
@@ -499,9 +506,9 @@ async function run() {
 		assert.doesNotMatch(
 			promptAppended,
 			new RegExp(ambientTestAssetsDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-			"normal runtime must ignore ambient GENTLE_PI_TEST_ASSETS_DIR",
+			"normal runtime must ignore ambient DRAKONC_PI_TEST_ASSETS_DIR",
 		);
-		delete process.env.GENTLE_PI_TEST_ASSETS_DIR;
+		delete process.env.DRAKONC_PI_TEST_ASSETS_DIR;
 		await rm(ambientTestAssetsDir, { recursive: true, force: true });
 		await writeFile(
 			join(globalConfigHome, "persona.json"),
@@ -521,10 +528,10 @@ async function run() {
 		const subagentPromptResult = await promptHook(subagentEvent, createCtx(promptCwd));
 		assert.equal(subagentPromptResult, undefined, "before_agent_start must not return a replacement systemPrompt");
 		assert.equal(subagentEvent.systemPromptOptions.appendSystemPrompt, "", "a named agent gets nothing appended");
-		await mkdir(join(promptCwd, ".pi", "gentle-ai"), { recursive: true });
+		await mkdir(join(promptCwd, ".pi", "drakonc-ai"), { recursive: true });
 		await writeFile(
-			join(promptCwd, ".pi", "gentle-ai", "persona.json"),
-			'{"mode":"gentleman"}\n',
+			join(promptCwd, ".pi", "drakonc-ai", "persona.json"),
+			'{"mode":"drakoncman"}\n',
 		);
 		const localOverrideEvent = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
 		const localOverridePromptResult = await promptHook(localOverrideEvent, createCtx(promptCwd));
@@ -535,13 +542,13 @@ async function run() {
 		);
 		const personaCtx = createCtx(promptCwd, true);
 		personaCtx.ui.select = async () => "neutral";
-		await commands.get("gentle:persona").handler("", personaCtx);
+		await commands.get("drakonc:persona").handler("", personaCtx);
 		assert.equal(
 			await readFile(join(globalConfigHome, "persona.json"), "utf8"),
 			'{\n  "mode": "neutral"\n}\n',
 		);
 		assert.equal(
-			await readFile(join(promptCwd, ".pi", "gentle-ai", "persona.json"), "utf8"),
+			await readFile(join(promptCwd, ".pi", "drakonc-ai", "persona.json"), "utf8"),
 			'{\n  "mode": "neutral"\n}\n',
 		);
 		assert.match(personaCtx.ui.notifications.at(-1).message, /Global config:/);
@@ -584,14 +591,14 @@ async function run() {
 		assert.equal(reviewDispatch.task, "review", "blocked review dispatch must not mutate child input");
 
 		for (const [agent, label, task] of [
-			["gentle-ai-worker", "missing", "Implement the requested change."],
-			["gentle-ai-worker", "absolute", "## Allowed edit surfaces\n/tmp/outside.ts"],
-			["gentle-ai-worker", "Windows absolute", "## Allowed edit surfaces\nC:\\outside.ts"],
-			["gentle-ai-worker", "prose instead of paths", "## Allowed edit surfaces\nThe parent will determine the paths."],
-			["gentle-ai-worker", "repository root", "## Allowed edit surfaces\n."],
-			["gentle-ai-worker", "bare repository root", "## Allowed edit surfaces\n./"],
-			["gentle-ai-worker", "normalized bare repository root", "## Allowed edit surfaces\n.//"],
-			["gentle-ai-worker", "equivalent normalized bare repository root", "## Allowed edit surfaces\n././/"],
+			["drakonc-ai-worker", "missing", "Implement the requested change."],
+			["drakonc-ai-worker", "absolute", "## Allowed edit surfaces\n/tmp/outside.ts"],
+			["drakonc-ai-worker", "Windows absolute", "## Allowed edit surfaces\nC:\\outside.ts"],
+			["drakonc-ai-worker", "prose instead of paths", "## Allowed edit surfaces\nThe parent will determine the paths."],
+			["drakonc-ai-worker", "repository root", "## Allowed edit surfaces\n."],
+			["drakonc-ai-worker", "bare repository root", "## Allowed edit surfaces\n./"],
+			["drakonc-ai-worker", "normalized bare repository root", "## Allowed edit surfaces\n.//"],
+			["drakonc-ai-worker", "equivalent normalized bare repository root", "## Allowed edit surfaces\n././/"],
 			["worker", "generic writer missing", "Implement the requested change."],
 		]) {
 			const writerDispatch = { agent, task, mode: "task" };
@@ -611,14 +618,14 @@ async function run() {
 		await mkdir(join(toolCwd, "odd", "tasks"), { recursive: true });
 		await writeFile(join(toolCwd, "odd", "tasks", "harness.md"), "# Harness\n");
 		const undocumentedWriter = await toolHook(
-			{ toolName: "subagent_run", input: { agent: "gentle-ai-worker", task: "Implement the requested change.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts", mode: "task" } },
+			{ toolName: "subagent_run", input: { agent: "drakonc-ai-worker", task: "Implement the requested change.\n\n## Allowed edit surfaces\nextensions/drakonc-ai.ts", mode: "task" } },
 			createCtx(toolCwd),
 		);
 		assert.equal(undocumentedWriter?.block, true, "an undocumented writer must be blocked before dispatch");
 		assert.match(undocumentedWriter?.reason ?? "", /write this unit inline yourself/);
 		const scopedWriterDispatch = {
-			agent: "gentle-ai-worker",
-			task: "Spec: odd/tasks/harness.md, T1. Implement the requested change.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs",
+			agent: "drakonc-ai-worker",
+			task: "Spec: odd/tasks/harness.md, T1. Implement the requested change.\n\n## Allowed edit surfaces\nextensions/drakonc-ai.ts\ntests/runtime-harness.mjs",
 			mode: "task",
 		};
 		assert.equal(
@@ -643,7 +650,7 @@ async function run() {
 			"a writer may dispatch when context carries narrow task-scoped repository-relative paths",
 		);
 
-		const canonicalFrozenFindingRow = '{"id":"JD-A-001","lens":"judgment-day","location":"extensions/gentle-ai.ts:1","severity":"CRITICAL","status_at_freeze":"open","evidence_class":"deterministic","evidence_claim":"The frozen finding has concrete user impact."}';
+		const canonicalFrozenFindingRow = '{"id":"JD-A-001","lens":"judgment-day","location":"extensions/drakonc-ai.ts:1","severity":"CRITICAL","status_at_freeze":"open","evidence_class":"deterministic","evidence_claim":"The frozen finding has concrete user impact."}';
 		const canonicalFrozenFindingRows = [JSON.parse(canonicalFrozenFindingRow)];
 		const canonicalFrozenLedgerHash = canonicalHash(canonicalFrozenFindingRows);
 		const canonicalJdFixTask = [
@@ -663,7 +670,7 @@ async function run() {
 			canonicalFrozenFindingRow,
 			"",
 			"## Allowed edit surfaces",
-			"extensions/gentle-ai.ts",
+			"extensions/drakonc-ai.ts",
 			"tests/runtime-harness.mjs",
 		].join("\n");
 		const orderedFrozenFindingRows = [
@@ -677,7 +684,7 @@ async function run() {
 			.replace(canonicalFrozenFindingRow, reversedFrozenFindingRows.map((row) => JSON.stringify(row)).join("\n"));
 		const incorrectFrozenLedgerHash = `${canonicalFrozenLedgerHash.slice(0, -1)}${canonicalFrozenLedgerHash.endsWith("0") ? "1" : "0"}`;
 		for (const [label, input] of [
-			["missing activation", { agent: "jd-fix-agent", task: "## Allowed edit surfaces\nextensions/gentle-ai.ts", mode: "task" }],
+			["missing activation", { agent: "jd-fix-agent", task: "## Allowed edit surfaces\nextensions/drakonc-ai.ts", mode: "task" }],
 			["duplicate activation", { agent: "jd-fix-agent", task: `${canonicalJdFixTask}\n\n## Judgment Day activation\nUser explicitly requested Judgment Day.`, mode: "task" }],
 			["missing severe IDs", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("## Exact authorized severe IDs\n- `JD-A-001`\n", ""), mode: "task" }],
 			["duplicate severe ID bindings", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("- `JD-A-001`", "- `JD-A-001`\n- `JD-A-001`"), mode: "task" }],
@@ -703,9 +710,9 @@ async function run() {
 			["non-open frozen row", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("\"status_at_freeze\":\"open\"", "\"status_at_freeze\":\"closed\""), mode: "task" }],
 			["non-severe frozen row", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("\"severity\":\"CRITICAL\"", "\"severity\":\"WARNING\""), mode: "task" }],
 			["empty frozen evidence", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("\"evidence_claim\":\"The frozen finding has concrete user impact.\"", "\"evidence_claim\":\"\""), mode: "task" }],
-			["missing edit surface", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs", ""), mode: "task" }],
-			["invalid edit surface", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("## Allowed edit surfaces\nextensions/gentle-ai.ts", "## Allowed edit surfaces\n."), mode: "task" }],
-			["mixed", { agent: ["jd-fix-agent", "gentle-ai-worker"], task: canonicalJdFixTask, mode: "task" }],
+			["missing edit surface", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("## Allowed edit surfaces\nextensions/drakonc-ai.ts\ntests/runtime-harness.mjs", ""), mode: "task" }],
+			["invalid edit surface", { agent: "jd-fix-agent", task: canonicalJdFixTask.replace("## Allowed edit surfaces\nextensions/drakonc-ai.ts", "## Allowed edit surfaces\n."), mode: "task" }],
+			["mixed", { agent: ["jd-fix-agent", "drakonc-ai-worker"], task: canonicalJdFixTask, mode: "task" }],
 			["agent array", { agent: ["jd-fix-agent"], task: canonicalJdFixTask, mode: "task" }],
 			["agents array", { agents: ["jd-fix-agent"], task: canonicalJdFixTask, mode: "task" }],
 			["duplicate agent binding", { agent: "jd-fix-agent", agents: "jd-fix-agent", task: canonicalJdFixTask, mode: "task" }],
@@ -728,16 +735,16 @@ async function run() {
 			[
 				"valid scope followed by a repository-root scope",
 				{
-					agent: "gentle-ai-worker",
-					task: "Spec: odd/tasks/harness.md, T4.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\n\n## Allowed edit surfaces\n.",
+					agent: "drakonc-ai-worker",
+					task: "Spec: odd/tasks/harness.md, T4.\n\n## Allowed edit surfaces\nextensions/drakonc-ai.ts\n\n## Allowed edit surfaces\n.",
 					mode: "task",
 				},
 			],
 			[
 				"valid task scope plus invalid context scope",
 				{
-					agent: "gentle-ai-worker",
-					task: "Spec: odd/tasks/harness.md, T5.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts",
+					agent: "drakonc-ai-worker",
+					task: "Spec: odd/tasks/harness.md, T5.\n\n## Allowed edit surfaces\nextensions/drakonc-ai.ts",
 					context: "## Allowed edit surfaces\n.",
 					mode: "task",
 				},
@@ -745,8 +752,8 @@ async function run() {
 			[
 				"conflicting valid task and context scopes",
 				{
-					agent: "gentle-ai-worker",
-					task: "Spec: odd/tasks/harness.md, T6.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts",
+					agent: "drakonc-ai-worker",
+					task: "Spec: odd/tasks/harness.md, T6.\n\n## Allowed edit surfaces\nextensions/drakonc-ai.ts",
 					context: "## Allowed edit surfaces\ntests/runtime-harness.mjs",
 					mode: "task",
 				},
@@ -760,8 +767,8 @@ async function run() {
 				{
 					toolName: "subagent_run",
 					input: {
-						agent: "gentle-ai-worker",
-						task: "Spec: odd/tasks/harness.md, T3.\n\n## Allowed edit surfaces\nextensions/gentle-ai.ts\ntests/runtime-harness.mjs\n\n## Allowed edit surfaces\n- `tests/runtime-harness.mjs`\n- `extensions/gentle-ai.ts`",
+						agent: "drakonc-ai-worker",
+						task: "Spec: odd/tasks/harness.md, T3.\n\n## Allowed edit surfaces\nextensions/drakonc-ai.ts\ntests/runtime-harness.mjs\n\n## Allowed edit surfaces\n- `tests/runtime-harness.mjs`\n- `extensions/drakonc-ai.ts`",
 						mode: "task",
 					},
 				},
@@ -875,14 +882,14 @@ async function run() {
 	// strictly between the controller-owned candidate binding and reviewer
 	// dispatch must diverge the live candidate tree from the frozen one, and
 	// dispatch must fail closed rather than expose a substituted view to the
-	// lens sub-agent. This drives the real `createGentleAiExtension` tool_call
+	// lens sub-agent. This drives the real `createDrakoncAiExtension` tool_call
 	// wiring (not the bare library function tested in
 	// tests/review-candidate-view.test.ts) with an injected candidate-view
 	// registry, so the actual production dispatch path is exercised.
 	const candidateDriftCwd = await tempWorkspace();
 	try {
-		const { createGentleAiExtension } = await import(
-			pathToFileURL(join(ROOT, "extensions/gentle-ai.ts")).href
+		const { createDrakoncAiExtension } = await import(
+			pathToFileURL(join(ROOT, "extensions/drakonc-ai.ts")).href
 		);
 		const { CandidateViewRegistry } = await import(
 			pathToFileURL(join(ROOT, "lib/review-candidate-view.ts")).href
@@ -903,7 +910,7 @@ async function run() {
 		registry.bindCurrent({ token: view.token, lineageId: "harness-candidate-drift", selectedLenses: ["review-risk"] });
 
 		const dispatchPi = createPi();
-		createGentleAiExtension({ ...fixtureDependencies, candidateViews: registry })(dispatchPi.pi);
+		createDrakoncAiExtension({ ...fixtureDependencies, candidateViews: registry })(dispatchPi.pi);
 		const dispatchToolHook = dispatchPi.hooks.get("tool_call")[0];
 
 		// The contributor edits the tracked file strictly after the candidate
@@ -937,18 +944,18 @@ async function run() {
 	const bannerCwd = await tempWorkspace();
 	try {
 		const ctx = createCtx(bannerCwd, true);
-		await commands.get("gentle:toggle-rose").handler("", ctx);
+		await commands.get("drakonc:toggle-dragon").handler("", ctx);
 		let bannerConfig = JSON.parse(await readFile(join(globalConfigHome, "banner.json"), "utf8"));
 		assert.equal(bannerConfig.showRose, false);
 		assert.equal(bannerConfig.showTextLogo, true);
-		assert.equal(bannerConfig.color, "pink");
-		await commands.get("gentle:toggle-text-logo").handler("", ctx);
+		assert.equal(bannerConfig.color, "red");
+		await commands.get("drakonc:toggle-text-logo").handler("", ctx);
 		bannerConfig = JSON.parse(await readFile(join(globalConfigHome, "banner.json"), "utf8"));
 		assert.equal(bannerConfig.showTextLogo, false);
-		await commands.get("gentle:banner-color").handler("cyan", ctx);
+		await commands.get("drakonc:banner-color").handler("cyan", ctx);
 		bannerConfig = JSON.parse(await readFile(join(globalConfigHome, "banner.json"), "utf8"));
 		assert.equal(bannerConfig.color, "cyan");
-		await commands.get("gentle:banner").handler("", ctx);
+		await commands.get("drakonc:banner").handler("", ctx);
 		bannerConfig = JSON.parse(await readFile(join(globalConfigHome, "banner.json"), "utf8"));
 		assert.equal(bannerConfig.showRose, true);
 	} finally {
@@ -958,8 +965,8 @@ async function run() {
 
 	// issue-301: cancelling the color picker must be a no-op — no write,
 	// no notify, and the previously saved color must survive byte/semantically
-	// unchanged. Covers both entry points: /gentle:banner-color picker
-	// (cancelled), and /gentle:banner -> Color row -> nested picker (cancelled).
+	// unchanged. Covers both entry points: /drakonc:banner-color picker
+	// (cancelled), and /drakonc:banner -> Color row -> nested picker (cancelled).
 	// Also covers an invalid non-empty argument, which must still open the
 	// picker and treat its cancellation as a no-op.
 	const cancelPickerCwd = await tempWorkspace();
@@ -975,30 +982,30 @@ async function run() {
 
 		const cancelCtx = createCtx(cancelPickerCwd, true);
 
-		// (a) /gentle:banner-color picker cancelled: seeded color unchanged, no notify.
+		// (a) /drakonc:banner-color picker cancelled: seeded color unchanged, no notify.
 		cancelCtx.ui.notifications.length = 0;
 		cancelCtx.ui.selections.length = 0;
 		cancelCtx.ui.select = async (label, options) => {
 			cancelCtx.ui.selections.push({ label, options });
 			return undefined;
 		};
-		await commands.get("gentle:banner-color").handler("", cancelCtx);
+		await commands.get("drakonc:banner-color").handler("", cancelCtx);
 		let afterCancel = await readFile(bannerConfigPath, "utf8");
 		assert.equal(afterCancel, seededJson, "banner-color cancel must not rewrite banner.json");
 		assert.equal(cancelCtx.ui.selections.length, 1, "banner-color cancel must open the picker once");
 		assert.equal(cancelCtx.ui.notifications.length, 0, "banner-color cancel must not notify");
 
-		// (d) invalid non-empty /gentle:banner-color input still opens picker;
+		// (d) invalid non-empty /drakonc:banner-color input still opens picker;
 		//     cancelling it is a no-op.
 		cancelCtx.ui.notifications.length = 0;
 		cancelCtx.ui.selections.length = 0;
-		await commands.get("gentle:banner-color").handler("purple", cancelCtx);
+		await commands.get("drakonc:banner-color").handler("purple", cancelCtx);
 		afterCancel = await readFile(bannerConfigPath, "utf8");
 		assert.equal(afterCancel, seededJson, "banner-color invalid+cancel must not rewrite banner.json");
 		assert.equal(cancelCtx.ui.selections.length, 1, "invalid banner-color arg must still open the picker");
 		assert.equal(cancelCtx.ui.notifications.length, 0, "banner-color invalid+cancel must not notify");
 
-		// (b) /gentle:banner selects the Color row, then the nested picker is
+		// (b) /drakonc:banner selects the Color row, then the nested picker is
 		//     cancelled: seeded color unchanged, no notify. The outer select
 		//     returns the Color row; the nested select returns undefined.
 		cancelCtx.ui.notifications.length = 0;
@@ -1011,7 +1018,7 @@ async function run() {
 			// Second call: nested color picker -> cancel (undefined).
 			return selectCall === 1 ? options[options.length - 1] : undefined;
 		};
-		await commands.get("gentle:banner").handler("", cancelCtx);
+		await commands.get("drakonc:banner").handler("", cancelCtx);
 		afterCancel = await readFile(bannerConfigPath, "utf8");
 		assert.equal(afterCancel, seededJson, "banner Color-row cancel must not rewrite banner.json");
 		assert.equal(cancelCtx.ui.selections.length, 2, "banner Color-row flow must open outer then nested picker");
@@ -1028,17 +1035,17 @@ async function run() {
 
 	const noUiCwd = await tempWorkspace();
 	const startupAgentHome = join(noUiCwd, "agent-home");
-	process.env.GENTLE_PI_AGENT_HOME = startupAgentHome;
+	process.env.DRAKONC_PI_AGENT_HOME = startupAgentHome;
 	try {
 		const globalAgentHome = startupAgentHome;
 		for (const handler of hooks.get("session_start")) {
 			await handler({ reason: "startup" }, createCtx(noUiCwd, false));
 		}
-		for (const diagnostic of ["gentle:status", "gentle:doctor"]) {
+		for (const diagnostic of ["drakonc:status", "drakonc:doctor"]) {
 			const ctx = createCtx(noUiCwd, true);
 			await commands.get(diagnostic).handler("", ctx);
 		}
-		// gentle-pi#311 P5: the Pi-authored adversarial role agents are retired;
+		// drakonc-pi#311 P5: the Pi-authored adversarial role agents are retired;
 		// installation must not (re)create them.
 		const installedRefuterPath = join(globalAgentHome, "agents", "review-refuter.md");
 		assert.equal(existsSync(installedRefuterPath), false, "the retired review-refuter agent must not be installed");
@@ -1047,11 +1054,11 @@ async function run() {
 			false,
 			"the retired review-validator agent must not be installed",
 		);
-		const installedExplorePath = join(globalAgentHome, "agents", "gentle-ai-explore.md");
+		const installedExplorePath = join(globalAgentHome, "agents", "drakonc-ai-explore.md");
 		assert.equal(existsSync(installedExplorePath), true);
 		assert.deepEqual(
 			readAgentDefinition(await readFile(installedExplorePath, "utf8")),
-			{ name: "gentle-ai-explore", tools: ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"] },
+			{ name: "drakonc-ai-explore", tools: ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"] },
 			"isolated package installation must declare the explorer's local and direct web scope",
 		);
 		const installedRiskSource = await readFile(
@@ -1060,7 +1067,7 @@ async function run() {
 		);
 		assert.match(installedRiskSource, /exactly once against the supplied `initial_review_tree`/);
 		assert.match(installedRiskSource, /cannot authorize transitions, fixes, receipts, gates, or delivery/);
-		const managedAssetsManifestPath = join(globalAgentHome, "gentle-ai", "managed-assets.json");
+		const managedAssetsManifestPath = join(globalAgentHome, "drakonc-ai", "managed-assets.json");
 		const managedAssetsManifest = JSON.parse(
 			await readFile(managedAssetsManifestPath, "utf8"),
 		);
@@ -1098,7 +1105,7 @@ async function run() {
 		}
 		assert.equal(existsSync(retiredManagedValidatorPath), false, "review retirement still runs at startup");
 		const driftCtx = createCtx(noUiCwd, true);
-		await commands.get("gentle:status").handler("", driftCtx);
+		await commands.get("drakonc:status").handler("", driftCtx);
 		assert.doesNotMatch(driftCtx.ui.notifications.at(-1).message, /install-(delegation|review) --force/);
 		assert.equal(
 			await readFile(installedRefuterPath, "utf8"),
@@ -1134,7 +1141,7 @@ async function run() {
 			"a user-authored same-path retired asset must stay unowned",
 		);
 	} finally {
-		process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
+		process.env.DRAKONC_PI_AGENT_HOME = globalAgentHome;
 		await rm(noUiCwd, { recursive: true, force: true });
 	}
 
@@ -1142,17 +1149,17 @@ async function run() {
 		const fixture = await tempWorkspace();
 		const agentHome = join(fixture, "agent-home");
 		const representatives = {
-			delegation: "gentle-ai-worker.md",
+			delegation: "drakonc-ai-worker.md",
 			review: "review-risk.md",
 		};
 		try {
-			process.env.GENTLE_PI_AGENT_HOME = agentHome;
-			process.env.GENTLE_PI_CONFIG_HOME = join(fixture, "config");
-			await mkdir(process.env.GENTLE_PI_CONFIG_HOME);
-			await writeFile(join(process.env.GENTLE_PI_CONFIG_HOME, "models.json"),
+			process.env.DRAKONC_PI_AGENT_HOME = agentHome;
+			process.env.DRAKONC_PI_CONFIG_HOME = join(fixture, "config");
+			await mkdir(process.env.DRAKONC_PI_CONFIG_HOME);
+			await writeFile(join(process.env.DRAKONC_PI_CONFIG_HOME, "models.json"),
 				JSON.stringify({ [representatives[owner].replace(/\.md$/, "")]: "test/installer-must-not-apply" }));
 			const ctx = createCtx(fixture, true);
-			const command = commands.get(`gentle:install-${owner}`);
+			const command = commands.get(`drakonc:install-${owner}`);
 			assert.ok(command, `missing owner installer: ${owner}`);
 			await command.handler("", ctx);
 			for (const [candidate, name] of Object.entries(representatives)) {
@@ -1164,7 +1171,7 @@ async function run() {
 			const selectedPath = join(agentHome, "agents", representatives[owner]);
 			const packaged = await readFile(selectedPath, "utf8");
 			assert.doesNotMatch(packaged, /test\/installer-must-not-apply/);
-			const manifestPath = join(agentHome, "gentle-ai", "managed-assets.json");
+			const manifestPath = join(agentHome, "drakonc-ai", "managed-assets.json");
 			const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 			for (const [candidate, name] of Object.entries(representatives)) {
 				const stale = `stale managed ${candidate}\n`;
@@ -1189,76 +1196,76 @@ async function run() {
 			assert.equal(await readFile(selectedPath, "utf8"), userEdit);
 			assert.equal(existsSync(join(agentHome, "subagents.json")), false,
 				"owner installers must not apply model routing");
-			await commands.get("gentle:status").handler("", ctx);
+			await commands.get("drakonc:status").handler("", ctx);
 			const label = owner;
 			assert.ok(ctx.ui.notifications.at(-1).message.includes(`Global ${label} user overrides: 1 file(s)`));
 		} finally {
-			process.env.GENTLE_PI_CONFIG_HOME = globalConfigHome;
-			process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
+			process.env.DRAKONC_PI_CONFIG_HOME = globalConfigHome;
+			process.env.DRAKONC_PI_AGENT_HOME = globalAgentHome;
 			await rm(fixture, { recursive: true, force: true });
 		}
 	}
 
 	const repairFixture = await tempWorkspace();
 	try {
-		process.env.GENTLE_PI_AGENT_HOME = join(repairFixture, "agent-home");
+		process.env.DRAKONC_PI_AGENT_HOME = join(repairFixture, "agent-home");
 		const ctx = createCtx(repairFixture, true);
-		for (const diagnostic of ["gentle:status", "gentle:doctor"]) {
+		for (const diagnostic of ["drakonc:status", "drakonc:doctor"]) {
 			await commands.get(diagnostic).handler("", ctx);
 			const message = ctx.ui.notifications.at(-1).message;
-			assert.match(message, /Global delegation assets stale: [1-9]\d* file\(s\).*\/gentle:install-delegation --force/,
+			assert.match(message, /Global delegation assets stale: [1-9]\d* file\(s\).*\/drakonc:install-delegation --force/,
 				`${diagnostic} must provide a repair for missing delegation assets`);
-			assert.match(message, /Global review assets stale: [1-9]\d* file\(s\).*\/gentle:install-review --force/,
+			assert.match(message, /Global review assets stale: [1-9]\d* file\(s\).*\/drakonc:install-review --force/,
 				`${diagnostic} must provide a repair for missing review assets`);
 			assert.doesNotMatch(message, /install-sdd --force/);
 		}
-		await commands.get("gentle:install-delegation").handler("", ctx);
-		await commands.get("gentle:install-review").handler("", ctx);
-		const manifest = JSON.parse(await readFile(join(process.env.GENTLE_PI_AGENT_HOME, "gentle-ai", "managed-assets.json"), "utf8"));
+		await commands.get("drakonc:install-delegation").handler("", ctx);
+		await commands.get("drakonc:install-review").handler("", ctx);
+		const manifest = JSON.parse(await readFile(join(process.env.DRAKONC_PI_AGENT_HOME, "drakonc-ai", "managed-assets.json"), "utf8"));
 		for (const key of Object.keys(manifest.assets)) {
-			await rm(join(process.env.GENTLE_PI_AGENT_HOME, key));
+			await rm(join(process.env.DRAKONC_PI_AGENT_HOME, key));
 		}
-		for (const diagnostic of ["gentle:status", "gentle:doctor"]) {
+		for (const diagnostic of ["drakonc:status", "drakonc:doctor"]) {
 			await commands.get(diagnostic).handler("", ctx);
 			const message = ctx.ui.notifications.at(-1).message;
-			assert.match(message, /Global delegation assets stale: [1-9]\d* file\(s\).*\/gentle:install-delegation --force/);
-			assert.match(message, /Global review assets stale: [1-9]\d* file\(s\).*\/gentle:install-review --force/);
+			assert.match(message, /Global delegation assets stale: [1-9]\d* file\(s\).*\/drakonc:install-delegation --force/);
+			assert.match(message, /Global review assets stale: [1-9]\d* file\(s\).*\/drakonc:install-review --force/);
 			assert.doesNotMatch(message, /install-sdd --force|on demand/,
 				"managed installation evidence must survive missing delegation and review files");
 		}
 	} finally {
-		process.env.GENTLE_PI_AGENT_HOME = globalAgentHome;
+		process.env.DRAKONC_PI_AGENT_HOME = globalAgentHome;
 		await rm(repairFixture, { recursive: true, force: true });
 	}
 
 	const staleAssetsCwd = await tempWorkspace();
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
 	const previousHome = process.env.HOME;
 	const previousUserProfile = process.env.USERPROFILE;
 	try {
-		process.env.GENTLE_PI_AGENT_HOME = join(staleAssetsCwd, "agent-home");
+		process.env.DRAKONC_PI_AGENT_HOME = join(staleAssetsCwd, "agent-home");
 		process.env.HOME = staleAssetsCwd;
 		process.env.USERPROFILE = staleAssetsCwd;
 		const ctx = createCtx(staleAssetsCwd, true);
-		await commands.get("gentle:doctor").handler("", ctx);
-		assert.match(ctx.ui.notifications.at(-1).message, /el Gentleman doctor/);
+		await commands.get("drakonc:doctor").handler("", ctx);
+		assert.match(ctx.ui.notifications.at(-1).message, /el Drakoncman doctor/);
 		assert.match(ctx.ui.notifications.at(-1).message, /Sensitive-path guard active/);
-		for (const diagnostic of ["gentle:status", "gentle:doctor"]) {
+		for (const diagnostic of ["drakonc:status", "drakonc:doctor"]) {
 			await commands.get(diagnostic).handler("", ctx);
 			const message = ctx.ui.notifications.at(-1).message;
 			assert.match(message, /Organic Driven Development \(ODD\): active/);
 			assert.doesNotMatch(message, /OpenSpec|openspec\/config\.yaml|SDD/);
 		}
 		pi.setActiveTools([{ name: "engram.mem_save" }]);
-		await commands.get("gentle:doctor").handler("", ctx);
+		await commands.get("drakonc:doctor").handler("", ctx);
 		assert.match(ctx.ui.notifications.at(-1).message, /Engram memory tools active/);
 		pi.setActiveTools([{ name: "engram_mem_save" }]);
-		await commands.get("gentle:doctor").handler("", ctx);
+		await commands.get("drakonc:doctor").handler("", ctx);
 		assert.match(ctx.ui.notifications.at(-1).message, /Engram memory tools not active in this session/);
 	} finally {
 		pi.setActiveTools(["read", "bash", "edit", "write"]);
-		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousAgentHome === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 		if (previousHome === undefined) delete process.env.HOME;
 		else process.env.HOME = previousHome;
 		if (previousUserProfile === undefined) delete process.env.USERPROFILE;
@@ -1269,13 +1276,13 @@ async function run() {
 	const legacyModelsCwd = await tempWorkspace();
 	try {
 		await mkdir(join(legacyModelsCwd, ".pi", "agents"), { recursive: true });
-		await mkdir(join(legacyModelsCwd, ".pi", "gentle-ai"), { recursive: true });
+		await mkdir(join(legacyModelsCwd, ".pi", "drakonc-ai"), { recursive: true });
 		await writeFile(
 			join(legacyModelsCwd, ".pi", "agents", "sdd-apply.md"),
 			`---\nname: sdd-apply\ndescription: Apply phase\n---\n\nbody\n`,
 		);
 		await writeFile(
-			join(legacyModelsCwd, ".pi", "gentle-ai", "models.json"),
+			join(legacyModelsCwd, ".pi", "drakonc-ai", "models.json"),
 			JSON.stringify({ "sdd-apply": "legacy/provider-model" }, null, 2),
 		);
 		const legacyCtx = createCtx(legacyModelsCwd, true);
@@ -1313,7 +1320,7 @@ async function run() {
 			modelPanelOpened = true;
 			return Promise.resolve({ type: "close" });
 		};
-		await commands.get("gentle:profiles").handler("", legacyCtx);
+		await commands.get("drakonc:profiles").handler("", legacyCtx);
 		assert.equal(modelPanelOpened, true);
 		assert.equal(await readFile(globalModelsPath, "utf8"), "{ invalid json");
 		await writeFile(globalModelsPath, JSON.stringify({}, null, 2));
@@ -1600,7 +1607,7 @@ async function run() {
 		assert.match(preservedProjectSubagentWorker, /thinking: medium/);
 		await writeFile(globalModelsPath, JSON.stringify({ worker: {} }, null, 2));
 		await hooks.get("session_start")[0]({ reason: "startup" }, createCtx(modelsCwd, true));
-		// gentle-ai#4946: startup/reload never treats persisted inherit as
+		// drakonc-ai#4946: startup/reload never treats persisted inherit as
 		// deletion approval, including for previously materialized routing.
 		// Explicit panel saves and confirmed profile replacement still clear.
 		const preservedClearProfiles = JSON.parse(
@@ -1634,7 +1641,7 @@ async function run() {
 			{ provider: "safe", id: "model" },
 			{ provider: "evil\u001b]52;c;Zm9v\u0007", id: "model" },
 		];
-		// /gentle:profiles opens the models screen on the profile this repository
+		// /drakonc:profiles opens the models screen on the profile this repository
 		// resolves: one table, profiles as tabs. Its render contract: a bordered
 		// card filling the terminal, scroll indicators for long agent lists, and
 		// sanitized labels everywhere, including the model card.
@@ -1676,7 +1683,7 @@ async function run() {
 				panel.handleInput("\u001b"); // close the card
 				panel.handleInput("\u001b"); // close the screen: nothing changed, one esc is enough
 			});
-		await commands.get("gentle:profiles").handler("", ctx);
+		await commands.get("drakonc:profiles").handler("", ctx);
 		assert.equal(panelVisits, 1, "closing an unchanged screen ends the command");
 
 		await hooks.get("session_start")[0]({ reason: "startup" }, ctx);
@@ -1688,7 +1695,7 @@ async function run() {
 		assert.doesNotMatch(legacyAppliedAgent, /thinking:/);
 
 		// Save writes the table into the profile store only (kind
-		// gentle-pi.agent_model_profiles). Global models.json, subagents.json, and
+		// drakonc-pi.agent_model_profiles). Global models.json, subagents.json, and
 		// agent frontmatter stay untouched — Make default is the guarded global apply.
 		const projectSubagentsBefore = await readFile(
 			join(modelsCwd, ".pi", "subagents.json"),
@@ -1720,12 +1727,12 @@ async function run() {
 				}
 				panel.handleInput("\u001b");
 			});
-		await commands.get("gentle:profiles").handler("", ctx);
+		await commands.get("drakonc:profiles").handler("", ctx);
 		assert.equal(saveVisits, 2, "Save reopens the screen once before it closes");
 
 		const profilesPath = join(globalConfigHome, "profiles.json");
 		const savedStore = JSON.parse(await readFile(profilesPath, "utf8"));
-		assert.equal(savedStore.kind, "gentle-pi.agent_model_profiles");
+		assert.equal(savedStore.kind, "drakonc-pi.agent_model_profiles");
 		assert.equal(savedStore.version, 1);
 		assert.deepEqual(savedStore.profiles.current["sdd-apply"], { model: "safe/model", thinking: "high" });
 		assert.deepEqual(savedStore.profiles.current["project-special"], { model: "safe/model", thinking: "high" });
@@ -1735,7 +1742,7 @@ async function run() {
 			"Save must keep routing edits in the profile store, not write global models.json",
 		);
 		assert.equal(
-			existsSync(join(modelsCwd, ".pi", "gentle-ai", "models.json")),
+			existsSync(join(modelsCwd, ".pi", "drakonc-ai", "models.json")),
 			false,
 			"Save must keep routing edits in the profile store, not per project",
 		);
@@ -1777,7 +1784,7 @@ async function run() {
 				}
 				panel.handleInput("\u001b");
 			});
-		await commands.get("gentle:profiles").handler("", ctx);
+		await commands.get("drakonc:profiles").handler("", ctx);
 		assert.equal(customVisits, 3);
 		const customSavedStore = JSON.parse(await readFile(profilesPath, "utf8"));
 		assert.deepEqual(customSavedStore.profiles.current["sdd-apply"], {
@@ -1802,7 +1809,7 @@ async function run() {
 				}
 				panel.handleInput("\u001b"); // nothing changed: one esc closes
 			});
-		await commands.get("gentle:profiles").handler("", ctx);
+		await commands.get("drakonc:profiles").handler("", ctx);
 		assert.equal(invalidCustomVisits, 2);
 		const rejectedCustomStore = JSON.parse(await readFile(profilesPath, "utf8"));
 		assert.deepEqual(rejectedCustomStore.profiles.current["sdd-apply"], {
@@ -1816,22 +1823,22 @@ async function run() {
 			screenOpened = true;
 			return Promise.resolve({ type: "close" });
 		};
-		await commands.get("gentle:profiles").handler("export-routing", ctx);
+		await commands.get("drakonc:profiles").handler("export-routing", ctx);
 		const exported = JSON.parse(await readFile(join(globalConfigHome, "models.export.json"), "utf8"));
-		assert.equal(exported.kind, "gentle-pi.agent_model_routing");
+		assert.equal(exported.kind, "drakonc-pi.agent_model_routing");
 		assert.equal(exported.version, 1);
 		assert.deepEqual(exported.agents["sdd-apply"], { model: "openai/gpt-5" }, "export reads the saved global routing");
 
 		await writeFile(
 			join(globalConfigHome, "models.export.json"),
 			JSON.stringify({
-				kind: "gentle-pi.agent_model_routing",
+				kind: "drakonc-pi.agent_model_routing",
 				version: 1,
 				agents: { "sdd-apply": { model: "restore/provider", thinking: "high" } },
 			}, null, 2),
 		);
 		ctx.ui.confirm = async () => true;
-		await commands.get("gentle:profiles").handler("restore-routing", ctx);
+		await commands.get("drakonc:profiles").handler("restore-routing", ctx);
 		assert.equal(screenOpened, false, "export and restore never open the screen");
 		const restoredConfig = JSON.parse(await readFile(globalModelsPath, "utf8"));
 		assert.deepEqual(restoredConfig["sdd-apply"], { model: "restore/provider", thinking: "high" });
@@ -1862,7 +1869,7 @@ async function run() {
 				}
 				panel.handleInput("\u001b");
 			});
-		await commands.get("gentle:profiles").handler("", ctx);
+		await commands.get("drakonc:profiles").handler("", ctx);
 		assert.equal(maxVisits, 2);
 		const maxStore = JSON.parse(await readFile(profilesPath, "utf8"));
 		assert.equal(maxStore.profiles.current["sdd-apply"].thinking, "max");

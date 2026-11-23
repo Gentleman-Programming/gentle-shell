@@ -5,12 +5,12 @@ import { TASK_STATUS, TaskStore } from "../lib/agents-protocol.ts";
 import { AgentRunner, type TaskRequest } from "../lib/agents-runner.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 
-// gentle-shell#1731 T4 (S2, AC6): the runner admits a writer only while no
+// drakonc-shell#1731 T4 (S2, AC6): the runner admits a writer only while no
 // queued or running writer in the same worktree root claims an overlapping
 // `## Allowed edit surfaces` entry. Admission and registration happen in the
 // same synchronous run() call, and every terminal path releases the claim.
 
-const worker: AgentDefinition = { name: "gentle-ai-worker", description: "writes", filePath: "/a/worker.md", scope: "global", instructions: "You write.", model: undefined, thinking: undefined, mode: undefined, tools: ["read", "edit", "write"] };
+const worker: AgentDefinition = { name: "drakonc-ai-worker", description: "writes", filePath: "/a/worker.md", scope: "global", instructions: "You write.", model: undefined, thinking: undefined, mode: undefined, tools: ["read", "edit", "write"] };
 const explorer: AgentDefinition = { ...worker, name: "explore", description: "maps", tools: ["read"] };
 
 function writer(surfaces: string[], overrides: Partial<TaskRequest> = {}): TaskRequest {

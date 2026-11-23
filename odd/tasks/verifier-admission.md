@@ -1,19 +1,19 @@
 # Runtime admission for independent verifiers
 
-Objective: the independent verifier (`gentle-ai-verify`) runs only for changes that declare a named high-risk item,
+Objective: the independent verifier (`drakonc-ai-verify`) runs only for changes that declare a named high-risk item,
 the same way S16 admission keeps small-task writers inline. Branch `feat/harness-r1-runtime-checks` (harness roadmap
 R1, same single PR). Runner: `pnpm test`.
 
 ## Specs
 
-- S1 (user, verbatim): "Me gusta dale" — accepting the proposal: "en la sesión primaria, `gentle-ai-verify` se admite
+- S1 (user, verbatim): "Me gusta dale" — accepting the proposal: "en la sesión primaria, `drakonc-ai-verify` se admite
   solo si la tarea declara un ítem de alto riesgo (una línea `Risk: item N`), pertenece a un documento de feature, o
   el contexto pasó el backstop. Si no, se rechaza con 'verificá inline: focused test + suite'. Es genérico (cualquier
   modelo)."
-- S2 Evidence: bench gate run `gate-p50-r1` x5 run 2 launched `gentle-ai-verify` on a small, not high-risk task
+- S2 Evidence: bench gate run `gate-p50-r1` x5 run 2 launched `drakonc-ai-verify` on a small, not high-risk task
   (USD 0.20 of a USD 0.63 cell); the verification rule in the prompt says an independent verifier runs only for a
   named high-risk item.
-- S3 Admission: in the primary session, a `subagent_run` launch of `gentle-ai-verify` (and the generic `verify`
+- S3 Admission: in the primary session, a `subagent_run` launch of `drakonc-ai-verify` (and the generic `verify`
   alias if one exists in the agent catalog) is admitted only when (a) its task or context has a line declaring a
   named high-risk item from the Task Size list, in the form `Risk: item N` with N in 1-6 (several items allowed, e.g.
   `Risk: item 2, item 3 (reason)`); or (b) it carries an existing feature-document task line as writer admission
@@ -40,10 +40,10 @@ R1, same single PR). Runner: `pnpm test`.
   recorded in the bench roadmap L18: the earlier "retry after rejection" reading was wrong (the two writer launches
   were one parallel batch); the real waste was the verifier launch on a small task.
 - L2 (T1, 2026-10-15): `lib/verifier-admission.ts` `rejectUnriskedVerifierLaunch` gates primary `subagent_run` launches
-  of `gentle-ai-verify` (the catalog has no generic `verify` alias): admitted by a line starting `Risk: item N`
+  of `drakonc-ai-verify` (the catalog has no generic `verify` alias): admitted by a line starting `Risk: item N`
   (N 1-6, optional list marker), by a feature-document task line through the new shared
   `namesExistingFeatureDocumentTask` (writer admission now uses it too), or by `contextBackstopReached`; wired after
-  writer admission in the `extensions/gentle-ai.ts` `tool_call` handler. Prompt: core rule 3 ", as rarely as
+  writer admission in the `extensions/drakonc-ai.ts` `tool_call` handler. Prompt: core rule 3 ", as rarely as
   possible" became ", runtime-enforced" (rendered core 9094 B at the 128-char root, budget 9100 B; the long-root case
   was at 9099 B before, so the `Risk: item N` detail went to `orchestrator-verification.md`, 7497/7500 B); the
   normative-section hash pin and the two exact-text pins were updated. Docs: third admission paragraph in

@@ -34,7 +34,7 @@ function memoryIO() {
 	};
 	return { files, calls, io, setReadFailure: (code: string) => { readFailure = code; }, failRename: () => { renameFailure = true; } };
 }
-const options = (io: NotificationIO) => ({ gentlePiConfigHome: "/config", io });
+const options = (io: NotificationIO) => ({ drakoncPiConfigHome: "/config", io });
 
 test("preset cannot be mutated globally at any depth", () => {
 	assert.throws(() => { DEFAULT_NOTIFICATION_SETTINGS.enabled = true; }, TypeError);
@@ -44,15 +44,15 @@ test("preset cannot be mutated globally at any depth", () => {
 });
 
 test("empty explicit home falls back to official global home for reads and writes", () => {
-	const previous = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = "/official";
+	const previous = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = "/official";
 	try {
 		const fs = memoryIO();
-		assert.equal(resolveNotificationSettings({ gentlePiConfigHome: "", io: fs.io }).globalFile, "/official/notifications.json");
-		assert.equal(writeNotificationSettings(DEFAULT_NOTIFICATION_SETTINGS, { gentlePiConfigHome: "", io: fs.io }), "/official/notifications.json");
+		assert.equal(resolveNotificationSettings({ drakoncPiConfigHome: "", io: fs.io }).globalFile, "/official/notifications.json");
+		assert.equal(writeNotificationSettings(DEFAULT_NOTIFICATION_SETTINGS, { drakoncPiConfigHome: "", io: fs.io }), "/official/notifications.json");
 	} finally {
-		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previous;
 	}
 });
 
@@ -127,8 +127,8 @@ test("every contractual event is independent and both inclusive timing boundarie
 });
 
 test("global environment home is respected and a saved off file only reads", () => {
-	const previous = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = "/override";
+	const previous = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = "/override";
 	try {
 		const fs = memoryIO();
 		fs.files.set("/override/notifications.json", document(DEFAULT_NOTIFICATION_SETTINGS));
@@ -137,8 +137,8 @@ test("global environment home is respected and a saved off file only reads", () 
 		assert.equal(result.source, "global_file"); assert.equal(result.settings.enabled, false);
 		assert.deepEqual(fs.calls, [{ operation: "read", path: result.globalFile }]);
 	} finally {
-		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previous;
 	}
 });
 

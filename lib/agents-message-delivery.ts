@@ -1,4 +1,4 @@
-// Gentle Agents subagent message delivery queue (issue #1162).
+// Drakonc Agents subagent message delivery queue (issue #1162).
 //
 // Background and foreground child notifications and queries used to be handed
 // straight to the host as `deliverAs: "followUp"` messages. Because the host
@@ -97,7 +97,7 @@ export function createAgentMessageQueue(): AgentMessageQueue {
 				parentSessionId: task.parentSessionId,
 				display: false,
 				details: {
-					gentleAgents: {
+					drakoncAgents: {
 						taskId: task.id,
 						agent: task.agent,
 						parentSessionId: task.parentSessionId,
@@ -121,7 +121,7 @@ export function createAgentMessageQueue(): AgentMessageQueue {
 				requestId,
 				display: true,
 				details: {
-					gentleAgents: {
+					drakoncAgents: {
 						taskId: task.id,
 						agent: task.agent,
 						parentSessionId: task.parentSessionId,
@@ -151,9 +151,9 @@ export function createAgentMessageQueue(): AgentMessageQueue {
 				expiredQueries.add(queryKey(taskId, requestId));
 				return;
 			}
-			if (queued.details.gentleAgents && (queued.details.gentleAgents as { expired?: boolean }).expired) return;
+			if (queued.details.drakoncAgents && (queued.details.drakoncAgents as { expired?: boolean }).expired) return;
 			queued.content = `${queued.content}\n${EXPIRED_QUERY_LINE}`;
-			queued.details = { gentleAgents: { ...(queued.details.gentleAgents as Record<string, unknown>), expired: true } };
+			queued.details = { drakoncAgents: { ...(queued.details.drakoncAgents as Record<string, unknown>), expired: true } };
 		},
 
 		invalidateTask(taskId) {

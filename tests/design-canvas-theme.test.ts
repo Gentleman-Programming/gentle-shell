@@ -6,11 +6,11 @@ import vm from "node:vm";
 import { DESIGN_CANVAS_ASSETS } from "../lib/design-canvas-assets.ts";
 import { cssTokens, findAll, loadCanvas, memoryStorage, read, texts, withClass, type FakeElement } from "./support/design-canvas-dom.ts";
 
-// The canvas theme (canvas-theme.js): Gentleman or Neutral, radio items under a Theme heading in the
+// The canvas theme (canvas-theme.js): Drakoncman or Neutral, radio items under a Theme heading in the
 // rail's Settings, saved in this browser and applied at once through :root[data-theme] in canvas.css.
 
-const THEME_KEY = "gentle-design:theme";
-const THEME_ITEMS = ["Gentleman", "Neutral"];
+const THEME_KEY = "drakonc-design:theme";
+const THEME_ITEMS = ["Drakoncman", "Neutral"];
 const LANGUAGE_ITEMS = ["Español", "English", "Match the browser"];
 
 /** The canvas with an in-memory (or throwing) localStorage; `stored` seeds the theme entry. */
@@ -41,7 +41,7 @@ function choose(canvas: Canvas, label: string) {
 	item.dispatch("keydown", { key: "Enter", shiftKey: false });
 }
 
-test("Settings offers Gentleman and Neutral as radio items under a Theme heading, before the language; Neutral is the default", async () => {
+test("Settings offers Drakoncman and Neutral as radio items under a Theme heading, before the language; Neutral is the default", async () => {
 	const canvas = await loadTheme();
 	assert.equal(theme(canvas), null, "Neutral is :root's own palette: no data-theme");
 	const items = openSettings(canvas);
@@ -56,39 +56,39 @@ test("Settings offers Gentleman and Neutral as radio items under a Theme heading
 	// The note speaks of the language only: the theme radios are not described by it.
 	assert.deepEqual(items.slice(3, 5).map((item) => item.getAttribute("aria-describedby")), [null, null]);
 	assert.deepEqual(items.slice(5).map((item) => item.getAttribute("aria-describedby")), ["gd-menu-note", "gd-menu-note", "gd-menu-note"]);
-	// Gentleman leads with the mustache from the page's sprite, Neutral with a half-filled circle.
+	// Drakoncman leads with the mustache from the page's sprite, Neutral with a half-filled circle.
 	const icons = items.slice(3, 5).map((item) => findAll(item, (element) => element.localName === "use")[0]?.getAttribute("href"));
 	assert.deepEqual(icons, ["#i-mustache", "#i-contrast"]);
 });
 
-test("choosing Gentleman applies it at once and saves it; Neutral goes back to :root and saves that", async () => {
+test("choosing Drakoncman applies it at once and saves it; Neutral goes back to :root and saves that", async () => {
 	const canvas = await loadTheme();
-	choose(canvas, "Gentleman");
+	choose(canvas, "Drakoncman");
 	assert.equal(menuEl(canvas).hidden, true);
-	assert.equal(theme(canvas), "gentleman");
-	assert.deepEqual(canvas.themeWrites(), ["gentleman"]);
+	assert.equal(theme(canvas), "drakoncman");
+	assert.deepEqual(canvas.themeWrites(), ["drakoncman"]);
 	assert.deepEqual(openSettings(canvas).slice(3, 5).map((item) => item.getAttribute("aria-checked")), ["true", "false"]);
 	canvas.document.activeElement!.dispatch("keydown", { key: "Escape", shiftKey: false });
 	choose(canvas, "Neutral");
 	assert.equal(theme(canvas), null);
-	assert.deepEqual(canvas.themeWrites(), ["gentleman", "neutral"]);
+	assert.deepEqual(canvas.themeWrites(), ["drakoncman", "neutral"]);
 });
 
 test("the saved theme applies on load; an unknown or unreadable one is Neutral, and storage that refuses a write still switches the page", async () => {
-	assert.equal(theme(await loadTheme({ stored: "gentleman" })), "gentleman");
+	assert.equal(theme(await loadTheme({ stored: "drakoncman" })), "drakoncman");
 	assert.equal(theme(await loadTheme({ stored: "neutral" })), null);
 	assert.equal(theme(await loadTheme({ stored: "pink" })), null);
 	assert.equal(theme(await loadTheme({ broken: true })), null);
 	const full = await loadTheme({ full: true });
-	choose(full, "Gentleman");
-	assert.equal(theme(full), "gentleman", "the choice holds for this page");
+	choose(full, "Drakoncman");
+	assert.equal(theme(full), "drakoncman", "the choice holds for this page");
 });
 
-test("in Spanish the heading is Tema and Neutral is Neutro; Gentleman keeps its name", async () => {
+test("in Spanish the heading is Tema and Neutral is Neutro; Drakoncman keeps its name", async () => {
 	const canvas = await loadTheme();
 	choose(canvas, "Español");
 	const items = openSettings(canvas);
-	assert.deepEqual(labels(items.slice(3, 5)), ["Gentleman", "Neutro"]);
+	assert.deepEqual(labels(items.slice(3, 5)), ["Drakoncman", "Neutro"]);
 	assert.equal(withClass(menuEl(canvas), "gd-menu-heading")[0].textContent, "Tema");
 });
 
@@ -103,11 +103,11 @@ test("the ⋯ export menu has no group, heading, note or aria-describedby", asyn
 });
 
 test("a saved theme must match exactly: case, spaces or other keys make it Neutral", async () => {
-	for (const stored of ["Gentleman", " gentleman", "", "__proto__"]) assert.equal(theme(await loadTheme({ stored })), null, JSON.stringify(stored));
+	for (const stored of ["Drakoncman", " drakoncman", "", "__proto__"]) assert.equal(theme(await loadTheme({ stored })), null, JSON.stringify(stored));
 });
 
-test("from a saved Gentleman, Neutral removes data-theme and saves neutral", async () => {
-	const canvas = await loadTheme({ stored: "gentleman" });
+test("from a saved Drakoncman, Neutral removes data-theme and saves neutral", async () => {
+	const canvas = await loadTheme({ stored: "drakoncman" });
 	assert.deepEqual(openSettings(canvas).slice(3, 5).map((item) => item.getAttribute("aria-checked")), ["true", "false"]);
 	canvas.document.activeElement!.dispatch("keydown", { key: "Escape", shiftKey: false });
 	choose(canvas, "Neutral");
@@ -115,7 +115,7 @@ test("from a saved Gentleman, Neutral removes data-theme and saves neutral", asy
 	assert.deepEqual(canvas.themeWrites(), ["neutral"]);
 });
 
-test("canvas.css: Gentleman sets every color token of :root on --gd-* names, and no rule hard-codes main's accent", () => {
+test("canvas.css: Drakoncman sets every color token of :root on --gd-* names, and no rule hard-codes main's accent", () => {
 	const css = read("canvas.css");
 	const block = (selector: string) => {
 		const start = css.indexOf(`${selector} {`);
@@ -123,7 +123,7 @@ test("canvas.css: Gentleman sets every color token of :root on --gd-* names, and
 		return css.slice(start, css.indexOf("}", start));
 	};
 	const names = (text: string) => [...text.matchAll(/(--gd-[\w-]+):/g)].map((match) => match[1]).sort();
-	assert.deepEqual(names(block(':root[data-theme="gentleman"]')), names(block(":root")));
+	assert.deepEqual(names(block(':root[data-theme="drakoncman"]')), names(block(":root")));
 	// Past :root, main's accent and the pin's outline are only read through their tokens.
 	const rules = css.slice(css.indexOf("}") + 1);
 	assert.ok(!/rgba\(138, 180, 255/.test(rules), "the shield's wash is a token");
@@ -131,14 +131,14 @@ test("canvas.css: Gentleman sets every color token of :root on --gd-* names, and
 });
 
 test("the docs describe the theme radios and where the choice is saved", () => {
-	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
-	for (const part of ["**Theme**", "**Gentleman**", "**Neutral**", "`gentle-design:theme`"]) assert.ok(docs.includes(part), `the docs mention ${part}`);
+	const docs = readFileSync(fileURLToPath(new URL("../docs/drakonc-shell.md", import.meta.url)), "utf8");
+	for (const part of ["**Theme**", "**Drakoncman**", "**Neutral**", "`drakonc-design:theme`"]) assert.ok(docs.includes(part), `the docs mention ${part}`);
 });
 
 // The Comment mode outlines inside an artboard (inspector.js) are canvas chrome: gd:mode carries the theme's
 // colors, read from canvas.css (--gd-accent, --gd-highlight-wash, --gd-focus). Neutral's are main's outlines.
 const NEUTRAL = { accent: "#8ab4ff", wash: "rgba(138, 180, 255, 0.12)", focus: "#ffd479" };
-const GENTLEMAN = { accent: "#f095c8", wash: "rgba(240, 149, 200, 0.12)", focus: "#e0c27a" };
+const DRAKONCMAN = { accent: "#f095c8", wash: "rgba(240, 149, 200, 0.12)", focus: "#e0c27a" };
 const lastMode = (frame: FakeElement) => frame.contentWindow!.posted.filter((message) => message.type === "gd:mode").at(-1);
 
 const lastPosted = (frame: FakeElement) => frame.contentWindow!.posted.at(-1);
@@ -148,26 +148,26 @@ test("gd:mode carries the theme's outline colors, and choosing a theme sends onl
 	for (const frame of canvas.frames()) frame.dispatch("load");
 	for (const frame of canvas.frames()) assert.deepEqual(lastMode(frame), { type: "gd:mode", enabled: false, inspect: false, colors: NEUTRAL });
 	const modes = canvas.frames().map((frame) => frame.contentWindow!.posted.filter((message) => message.type === "gd:mode").length);
-	choose(canvas, "Gentleman");
-	for (const frame of canvas.frames()) assert.deepEqual(lastPosted(frame), { type: "gd:colors", colors: GENTLEMAN });
+	choose(canvas, "Drakoncman");
+	for (const frame of canvas.frames()) assert.deepEqual(lastPosted(frame), { type: "gd:colors", colors: DRAKONCMAN });
 	assert.deepEqual(canvas.frames().map((frame) => frame.contentWindow!.posted.filter((message) => message.type === "gd:mode").length), modes, "no gd:mode: the frame's mode and outlines stay");
 	canvas.document.getElementById("gd-comment").dispatch("click");
-	for (const frame of canvas.frames()) assert.deepEqual(lastMode(frame), { type: "gd:mode", enabled: true, inspect: false, colors: GENTLEMAN }, "Comment mode keeps the theme");
+	for (const frame of canvas.frames()) assert.deepEqual(lastMode(frame), { type: "gd:mode", enabled: true, inspect: false, colors: DRAKONCMAN }, "Comment mode keeps the theme");
 	choose(canvas, "Neutral");
 	for (const frame of canvas.frames()) assert.deepEqual(lastPosted(frame), { type: "gd:colors", colors: NEUTRAL });
 });
 
-test("a saved Gentleman reaches each frame's first gd:mode; with no readable colors gd:mode leaves them out", async () => {
-	const canvas = await loadTheme({ stored: "gentleman" });
+test("a saved Drakoncman reaches each frame's first gd:mode; with no readable colors gd:mode leaves them out", async () => {
+	const canvas = await loadTheme({ stored: "drakoncman" });
 	for (const frame of canvas.frames()) frame.dispatch("load");
-	for (const frame of canvas.frames()) assert.deepEqual(lastMode(frame), { type: "gd:mode", enabled: false, inspect: false, colors: GENTLEMAN });
+	for (const frame of canvas.frames()) assert.deepEqual(lastMode(frame), { type: "gd:mode", enabled: false, inspect: false, colors: DRAKONCMAN });
 	// No getComputedStyle (or a stylesheet not applied yet): the frames keep the outlines they have.
 	const bare = await loadCanvas();
 	for (const frame of bare.frames()) frame.dispatch("load");
 	for (const frame of bare.frames()) assert.deepEqual(lastMode(frame), { type: "gd:mode", enabled: false, inspect: false });
 });
 
-// theme-early.js: a classic script in index.html's <head> that paints a saved Gentleman before the first frame;
+// theme-early.js: a classic script in index.html's <head> that paints a saved Drakoncman before the first frame;
 // canvas-theme.js (startTheme) stays the source of truth for the store.
 function runEarly(localStorage: unknown) {
 	const attributes = new Map<string, string>();
@@ -188,10 +188,10 @@ test("index.html loads theme-early.js as a classic, synchronous script in <head>
 	assert.equal(DESIGN_CANVAS_ASSETS["theme-early.js"], "text/javascript; charset=utf-8", "allowlisted, served as JavaScript");
 });
 
-test("theme-early.js sets data-theme only for a saved gentleman, and leaves Neutral on anything else or any error", () => {
+test("theme-early.js sets data-theme only for a saved drakoncman, and leaves Neutral on anything else or any error", () => {
 	const storage = (value: string | null) => ({ getItem: (key: string) => (key === THEME_KEY ? value : null) });
-	assert.equal(runEarly(storage("gentleman")), "gentleman");
-	for (const value of ["neutral", "Gentleman", " gentleman", "", "pink", null]) assert.equal(runEarly(storage(value)), null, JSON.stringify(value));
+	assert.equal(runEarly(storage("drakoncman")), "drakoncman");
+	for (const value of ["neutral", "Drakoncman", " drakoncman", "", "pink", null]) assert.equal(runEarly(storage(value)), null, JSON.stringify(value));
 	assert.equal(runEarly({ getItem() { throw new Error("denied"); } }), null, "getItem throws");
 	assert.equal(runEarly(new Error("SecurityError")), null, "reaching localStorage throws");
 	assert.equal(runEarly(undefined), null, "no localStorage");

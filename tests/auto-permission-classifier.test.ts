@@ -198,7 +198,7 @@ test("generic tool metadata is bounded untrusted context, not available tools or
 
 test("task memory policy uses bounded host destination evidence without promoting narration",async()=>{
  const f=fixture();
- const memoryContext={provider:"gentle-engram",operation:"mem_save",project:"workspace",cwd:"/workspace"};
+ const memoryContext={provider:"drakonc-engram",operation:"mem_save",project:"workspace",cwd:"/workspace"};
  const pending=f.run({action:{toolName:"mem_save",input:{project:"workspace",cwd:"/workspace",content:"Parser finding"}},memoryContext} as any);
  const payload=JSON.parse(f.calls[0].context.messages[0].content as string);
  assert.deepEqual(payload.memoryContext,memoryContext);

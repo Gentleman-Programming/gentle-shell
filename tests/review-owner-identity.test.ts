@@ -11,7 +11,7 @@ function fixture(t: test.TestContext) {
 	fs.mkdirSync(resolve("tmp"), { recursive: true });
 	const base = fs.realpathSync(fs.mkdtempSync(join(resolve("tmp"), "owner-identity-")));
 	const commonDir = join(base, "common");
-	const parent = join(commonDir, "gentle-ai", "candidate-views");
+	const parent = join(commonDir, "drakonc-ai", "candidate-views");
 	fs.mkdirSync(parent, { recursive: true });
 	const boundary = [commonDir, dirname(parent), parent];
 	let user = "S-1-5-21-1-2-3-1001";
@@ -32,13 +32,13 @@ function fixture(t: test.TestContext) {
 		}
 		if (name === "powershell.exe") {
 			const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le");
-			if (script.includes("gentle-pi.windows-acl-probe/v1")) {
+			if (script.includes("drakonc-pi.windows-acl-probe/v1")) {
 				probes.user++;
 				if (identityFailure === "user") throw Object.assign(new Error("fixture user unavailable"), { code: "EACCES" });
 				probes.administrator++;
 				if (identityFailure === "administrator") throw Object.assign(new Error("fixture administrator unavailable"), { code: "EACCES" });
 				const requests = JSON.parse(options.input) as { path: string; kind: string }[];
-				return JSON.stringify({ schema: "gentle-pi.windows-acl-probe/v1", user, localAdministrator: "S-1-5-21-1-2-3-500", entries: requests.map((request, index) => {
+				return JSON.stringify({ schema: "drakonc-pi.windows-acl-probe/v1", user, localAdministrator: "S-1-5-21-1-2-3-500", entries: requests.map((request, index) => {
 					probes.owner.push(request.path); probes.dacl.push(request.path);
 					const directory = request.kind === "directory";
 					const flags = directory ? "OICI" : "ID";
@@ -47,11 +47,11 @@ function fixture(t: test.TestContext) {
 				}) });
 			}
 			if (script.includes("SetAccessControl")) {
-				probes.enforce.push(options.env.GENTLE_PI_CANDIDATE_ACL_PATH);
-				probes.sddl.push(options.env.GENTLE_PI_CANDIDATE_ACL_SDDL);
+				probes.enforce.push(options.env.DRAKONC_PI_CANDIDATE_ACL_PATH);
+				probes.sddl.push(options.env.DRAKONC_PI_CANDIDATE_ACL_SDDL);
 				return "";
 			}
-			const path = options.env.GENTLE_PI_CANDIDATE_OWNER_PATH;
+			const path = options.env.DRAKONC_PI_CANDIDATE_OWNER_PATH;
 			probes.owner.push(path);
 			return (replacedMarker && path.endsWith(".owner.json")) || path === foreignPath ? "S-1-5-21-9-8-7-1002" : user;
 		}

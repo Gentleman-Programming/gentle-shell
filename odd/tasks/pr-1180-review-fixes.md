@@ -11,9 +11,9 @@ The review raised six findings. Four of them are real: the period allowance igno
 ## Scope
 
 - `lib/shell-usage.ts` — effective allowance, strict read for metered entries, family rung.
-- `extensions/gentle-shell.ts` — per-provider refresh window.
-- `tests/shell-usage.test.ts`, `tests/gentle-shell.test.ts` — regression coverage for each.
-- `docs/gentle-shell.md`, `odd/tasks/nan-usage-sidebar.md`, `odd/tasks/nan-usage-active-model.md` — the contract wording the fixes now match.
+- `extensions/drakonc-shell.ts` — per-provider refresh window.
+- `tests/shell-usage.test.ts`, `tests/drakonc-shell.test.ts` — regression coverage for each.
+- `docs/drakonc-shell.md`, `odd/tasks/nan-usage-sidebar.md`, `odd/tasks/nan-usage-active-model.md` — the contract wording the fixes now match.
 
 ## Constraints
 
@@ -41,8 +41,8 @@ The review raised six findings. Four of them are real: the period allowance igno
 
 ## Verification evidence
 
-- PR1180-1 RED: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/gentle-shell.test.ts` — 4 failed, 66 passed: `parseNanQuota weights the period window by the effective allowance`, `parseNanQuota refuses a payload that hides a metered model's usage`, `renderUsageBar prefers the active model's family before the account total`, `a provider switch refreshes the new provider inside the same window`.
-- PR1180-2 GREEN: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/gentle-shell.test.ts tests/shell-bar.test.ts tests/shell-usage-view.test.ts` — 97 passed, 0 failed.
+- PR1180-1 RED: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/drakonc-shell.test.ts` — 4 failed, 66 passed: `parseNanQuota weights the period window by the effective allowance`, `parseNanQuota refuses a payload that hides a metered model's usage`, `renderUsageBar prefers the active model's family before the account total`, `a provider switch refreshes the new provider inside the same window`.
+- PR1180-2 GREEN: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/drakonc-shell.test.ts tests/shell-bar.test.ts tests/shell-usage-view.test.ts` — 97 passed, 0 failed.
 - Full suite: `pnpm test` — exit 0, 2701 tests, 2663 passed, 0 failed, 38 skipped; provider contract mirror check passed and the runtime harness ran clean.
 - Typecheck: `pnpm run typecheck` — exit 0, 197 recorded diagnostics, no regressions.
 - Commits: `fix(shell): read the NaN allowance the dashboard reads` (parser, ladder, docs, this document) and `fix(shell): refresh each usage provider on its own clock` (extension and its test).
@@ -61,8 +61,8 @@ One finding, posted in the review body because it fell outside the diff: `allowa
 The gate answers "does this provider report allowances", never "are there enough rows to sort", so it now accepts a non-empty set. The change also moves that provider's sidebar onto the panel's rows, which is what the docs promise for a provider with per-model allowances.
 
 - RED: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/shell-bar.test.ts` — 2 failed, 50 passed. `a single metered allowance still takes the family and account names` drew `glm5.3-flash ▰▰▱▱▱▱▱▱ 20%` where the family was expected, and `sidebar treats one metered NaN allowance as a per-model provider` drew the bar's one-line meter with the `4h` tail instead of the panel's rows.
-- GREEN: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/shell-bar.test.ts tests/gentle-shell.test.ts tests/shell-usage-view.test.ts` — 99 passed, 0 failed.
-- Two existing footer assertions in `tests/gentle-shell.test.ts` were updated on purpose: their fixture pairs a session model with no NaN allowance with a single-model NaN payload, so the footer now names the account total instead of echoing `glm5.3`. The acceptance criterion that said "existing tests need no edit" is corrected in `odd/tasks/nan-usage-active-model.md`.
+- GREEN: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/shell-bar.test.ts tests/drakonc-shell.test.ts tests/shell-usage-view.test.ts` — 99 passed, 0 failed.
+- Two existing footer assertions in `tests/drakonc-shell.test.ts` were updated on purpose: their fixture pairs a session model with no NaN allowance with a single-model NaN payload, so the footer now names the account total instead of echoing `glm5.3`. The acceptance criterion that said "existing tests need no edit" is corrected in `odd/tasks/nan-usage-active-model.md`.
 - Commit: `fix(shell): read one metered allowance as per-model data`.
 
 ## Next step

@@ -9,7 +9,7 @@
 
 ### Problem or opportunity
 
-gentle-shell-gpui toggles background subagents by sending `/gentle:background-subagents enable|disable` as prompt text and reads the policy by opening `background-subagents.json` itself.
+drakonc-shell-gpui toggles background subagents by sending `/drakonc:background-subagents enable|disable` as prompt text and reads the policy by opening `background-subagents.json` itself.
 
 ### Proposed outcome
 
@@ -22,4 +22,4 @@ Writing the project file too: rejected, the command only writes the machine-wide
 
 ### Additional context
 
-Part of the gentle-shell-gpui parity work: each piece replaces an app-side workaround (reading private files, prompt-text commands, or parsing terminal output). Implementation branch: `feat/desktop-rpc-background-subagents`.
+Part of the drakonc-shell-gpui parity work: each piece replaces an app-side workaround (reading private files, prompt-text commands, or parsing terminal output). Implementation branch: `feat/desktop-rpc-background-subagents`.

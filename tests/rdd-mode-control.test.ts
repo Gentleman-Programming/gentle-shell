@@ -5,12 +5,12 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension, __testing } from "../extensions/drakonc-ai.ts";
 import type { NativeReviewCli, NativeReviewModeRequest, NativeReviewModeResult } from "../lib/native-review-cli.ts";
 import { discoverRddModeControl } from "../lib/rdd-mode-control.ts";
 
 const OPTIONS = ["Enable RDD for this repository", "Disable RDD for this repository", "Enable RDD machine-wide", "Disable RDD machine-wide"];
-const CHANNEL = "gentle:rdd:host-ui";
+const CHANNEL = "drakonc:rdd:host-ui";
 type Handler = (event: any, context: any) => any;
 type Mode = "" | "on" | "off";
 
@@ -21,11 +21,11 @@ function deferred<T>() {
 }
 
 function fixture(t: TestContext, initial: Mode = "on") {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-rdd-selector-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-rdd-selector-")));
 	const home = join(root, "home");
 	const config = join(root, "config");
 	mkdirSync(home); mkdirSync(config);
-	const env = { HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: join(root, "xdg"), PI_CODING_AGENT_DIR: home, GENTLE_PI_AGENT_HOME: home, GENTLE_PI_CONFIG_HOME: config, GENTLE_AI_TELEMETRY: "0" };
+	const env = { HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: join(root, "xdg"), PI_CODING_AGENT_DIR: home, DRAKONC_PI_AGENT_HOME: home, DRAKONC_PI_CONFIG_HOME: config, DRAKONC_AI_TELEMETRY: "0" };
 	const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
 	Object.assign(process.env, env);
 	__testing.clearRddStatusMemoForTesting();
@@ -106,7 +106,7 @@ function fixture(t: TestContext, initial: Mode = "on") {
 			registerTool(tool: { name: string; execute: (...args: any[]) => Promise<any> }) { tools.set(tool.name, tool); },
 			registerMessageRenderer() {}, appendEntry() {}, getActiveTools: () => [], getThinkingLevel: () => "off",
 		} as unknown as ExtensionAPI;
-		createGentleAiExtension({ nativeReviewCli: options.unavailable ? null : native, candidateViews: null, processEnv: { ...env, GENTLE_PI_AGENTS_CHILD: options.child ? "1" : "0" }, resolveTelemetryTriggerBinary: () => { throw new Error("disabled"); } })(pi);
+		createDrakoncAiExtension({ nativeReviewCli: options.unavailable ? null : native, candidateViews: null, processEnv: { ...env, DRAKONC_PI_AGENTS_CHILD: options.child ? "1" : "0" }, resolveTelemetryTriggerBinary: () => { throw new Error("disabled"); } })(pi);
 		const emit = async (name: string, event: unknown = {}) => { for (const handler of handlers.get(name) ?? []) await handler(event, ctx); };
 		return {
 			cwd, ctx, manager, ui, notices, prompts, commands, tools, pi, emit,
@@ -132,12 +132,12 @@ const report = (mode: string, source: string) => ({ message: `receipt-driven dev
 test("registered selector displays effective source and applies only explicit repository choices", async (t) => {
 	const f = fixture(t); const h = f.host(); await h.start();
 	h.select(async () => OPTIONS[1]);
-	await h.command("gentle:rdd");
+	await h.command("drakonc:rdd");
 	assert.deepEqual(h.prompts, [{ title: "Receipt-driven development: on (decided by global)", options: OPTIONS }]);
 	assert.deepEqual(h.notices.at(-1), report("off", "clone_local"));
 	assert.deepEqual(f.writes, [{ cwd: h.cwd, operation: "disable" }]);
 	h.select(async () => OPTIONS[0]);
-	await h.command("gentle:rdd");
+	await h.command("drakonc:rdd");
 	assert.deepEqual(h.notices.at(-1), report("on", "global"));
 	assert.deepEqual(f.writes, [{ cwd: h.cwd, operation: "disable" }, { cwd: h.cwd, operation: "enable" }]);
 	assert.deepEqual(f.calls.map(({ operation }) => operation), ["status", "disable", "status", "enable"]);
@@ -145,13 +145,13 @@ test("registered selector displays effective source and applies only explicit re
 
 test("machine-wide changes require the exact named menu choice and retain clone precedence", async (t) => {
 	const f = fixture(t, "off"); const h = f.host(); await h.start();
-	h.select(async () => OPTIONS[0]); await h.command("gentle:rdd");
+	h.select(async () => OPTIONS[0]); await h.command("drakonc:rdd");
 	assert.deepEqual(h.notices.at(-1), { message: "receipt-driven development: off (decided by global)\nThe repository setting cannot override machine-wide RDD off.", type: "warning" });
-	h.select(async () => OPTIONS[2]); await h.command("gentle:rdd");
+	h.select(async () => OPTIONS[2]); await h.command("drakonc:rdd");
 	assert.deepEqual(h.notices.at(-1), report("on", "global"));
-	h.select(async () => OPTIONS[1]); await h.command("gentle:rdd");
-	h.select(async () => OPTIONS[3]); await h.command("gentle:rdd");
-	h.select(async () => OPTIONS[2]); await h.command("gentle:rdd");
+	h.select(async () => OPTIONS[1]); await h.command("drakonc:rdd");
+	h.select(async () => OPTIONS[3]); await h.command("drakonc:rdd");
+	h.select(async () => OPTIONS[2]); await h.command("drakonc:rdd");
 	assert.deepEqual(h.notices.at(-1), { message: "receipt-driven development: off (decided by clone_local)\nThe repository override still keeps RDD off.", type: "warning" });
 	assert.deepEqual(f.writes, [
 		{ cwd: h.cwd, operation: "enable" }, { cwd: h.cwd, operation: "enable", scope: "global" },
@@ -162,12 +162,12 @@ test("machine-wide changes require the exact named menu choice and retain clone 
 
 test("RDD choices do not grant review consent or alter permission modes", async (t) => {
 	const f = fixture(t); const h = f.host(); await h.start();
-	await h.command("gentle:mode", "status"); const permission = h.notices.at(-1);
-	await h.command("gentle:review-session-permission", "status"); const consent = h.notices.at(-1);
-	h.select(async () => OPTIONS[3]); await h.command("gentle:rdd");
+	await h.command("drakonc:mode", "status"); const permission = h.notices.at(-1);
+	await h.command("drakonc:review-session-permission", "status"); const consent = h.notices.at(-1);
+	h.select(async () => OPTIONS[3]); await h.command("drakonc:rdd");
 	assert.deepEqual(h.notices.at(-1), report("off", "global"));
-	await h.command("gentle:mode", "status"); assert.deepEqual(h.notices.at(-1), permission);
-	await h.command("gentle:review-session-permission", "status"); assert.deepEqual(h.notices.at(-1), consent);
+	await h.command("drakonc:mode", "status"); assert.deepEqual(h.notices.at(-1), permission);
+	await h.command("drakonc:review-session-permission", "status"); assert.deepEqual(h.notices.at(-1), consent);
 	assert.equal(h.confirmations(), 0);
 	assert.deepEqual(f.writes, [{ cwd: h.cwd, operation: "disable", scope: "global" }]);
 	assert.deepEqual(f.assesses, []); assert.deepEqual(f.targets, []);
@@ -176,24 +176,24 @@ test("RDD choices do not grant review consent or alter permission modes", async 
 test("cancellation and forged options or arguments leave mode and counters unchanged", async (t) => {
 	const f = fixture(t); const h = f.host(); await h.start();
 	const state = f.state();
-	await h.command("gentle:rdd");
+	await h.command("drakonc:rdd");
 	assert.deepEqual(h.notices, []); assert.deepEqual(f.writes, []); assert.deepEqual(f.state(), state);
 	assert.deepEqual(f.calls, [{ cwd: h.cwd, operation: "status" }]);
-	h.select(async () => "enable"); await h.command("gentle:rdd");
+	h.select(async () => "enable"); await h.command("drakonc:rdd");
 	assert.deepEqual(h.notices.at(-1), { message: "RDD unchanged: unrecognized selection.", type: "warning" });
 	const count = f.calls.length;
-	await h.command("gentle:rdd", "enable --global");
-	assert.deepEqual(h.notices.at(-1), { message: "Use /gentle:rdd without arguments to open the interactive selector. RDD unchanged.", type: "warning" });
+	await h.command("drakonc:rdd", "enable --global");
+	assert.deepEqual(h.notices.at(-1), { message: "Use /drakonc:rdd without arguments to open the interactive selector. RDD unchanged.", type: "warning" });
 	assert.equal(f.calls.length, count); assert.deepEqual(f.writes, []); assert.deepEqual(f.state(), state);
 });
 
 test("provider failures and invalid status do not write or retry", async (t) => {
 	const f = fixture(t); const h = f.host(); await h.start(); const state = f.state();
-	f.fail("read"); await h.command("gentle:rdd");
+	f.fail("read"); await h.command("drakonc:rdd");
 	assert.deepEqual(h.notices.at(-1), { message: "fixture status failed", type: "error" });
-	f.fail("malformed"); await h.command("gentle:rdd");
-	assert.deepEqual(h.notices.at(-1), { message: "Gentle AI review mode returned an invalid status; RDD unchanged.", type: "error" });
-	f.fail("write"); h.select(async () => OPTIONS[3]); await h.command("gentle:rdd");
+	f.fail("malformed"); await h.command("drakonc:rdd");
+	assert.deepEqual(h.notices.at(-1), { message: "Drakonc AI review mode returned an invalid status; RDD unchanged.", type: "error" });
+	f.fail("write"); h.select(async () => OPTIONS[3]); await h.command("drakonc:rdd");
 	assert.deepEqual(h.notices.at(-1), { message: "fixture write refused", type: "error" });
 	assert.deepEqual(f.calls.map(({ operation }) => operation), ["status", "status", "status", "disable"]);
 	assert.equal(h.prompts.length, 1); assert.deepEqual(f.writes, []); assert.deepEqual(f.state(), state);
@@ -203,10 +203,10 @@ test("unavailable, headless and child hosts do not open or mutate", async (t) =>
 	const f = fixture(t);
 	for (const options of [{ unavailable: true }, { mode: "print", hasUI: false }, { mode: "rpc", child: true }]) {
 		const h = f.host(options); await h.start(); const calls = f.calls.length; const state = f.state();
-		h.select(async () => OPTIONS[3]); await h.command("gentle:rdd");
+		h.select(async () => OPTIONS[3]); await h.command("drakonc:rdd");
 		assert.equal(h.prompts.length, 0); assert.equal(f.calls.length, calls); assert.deepEqual(f.writes, []); assert.deepEqual(f.state(), state);
 		assert.deepEqual(h.notices.at(-1), options.unavailable
-			? { message: "Gentle AI review mode is not available with the currently negotiated native version.", type: "info" }
+			? { message: "Drakonc AI review mode is not available with the currently negotiated native version.", type: "info" }
 			: options.hasUI === false ? undefined : { message: "RDD unchanged: an interactive primary session is required.", type: "warning" });
 	}
 });
@@ -215,11 +215,11 @@ test("session, workspace, UI and shutdown changes reject stale selections", asyn
 	const f = fixture(t);
 	for (const cause of ["session", "cwd", "manager-cwd", "ui", "shutdown"] as const) {
 		const h = f.host(); await h.start(); const state = f.state();
-		assert.ok(h.commands.has("gentle:rdd"));
+		assert.ok(h.commands.has("drakonc:rdd"));
 		const priorCalls = f.calls.length;
 		const answer = deferred<string | undefined>(); const opened = deferred<void>();
 		h.select(() => { opened.resolve(); return answer.promise; });
-		const action = h.command("gentle:rdd");
+		const action = h.command("drakonc:rdd");
 		await Promise.race([opened.promise, action]);
 		assert.equal(h.prompts.length, 1);
 		if (cause === "session") h.setId("another-session");
@@ -238,7 +238,7 @@ test("shutdown during startup does not revive a stale UI owner", async (t) => {
 	const startup = h.start();
 	await h.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
 	await startup;
-	h.select(async () => OPTIONS[3]); await h.command("gentle:rdd");
+	h.select(async () => OPTIONS[3]); await h.command("drakonc:rdd");
 	assert.deepEqual(h.prompts, []); assert.deepEqual(f.calls, []); assert.deepEqual(f.writes, []);
 	assert.equal(await discoverRddModeControl(h.pi), undefined);
 });
@@ -265,8 +265,8 @@ test("a global change suppresses a stale selector status before the menu opens",
 	const f = fixture(t, "off"); const first = f.host(); const second = f.host();
 	await first.start(); await second.start();
 	const pending = f.hold();
-	const opening = first.command("gentle:rdd"); await pending.started;
-	second.select(async () => OPTIONS[2]); await second.command("gentle:rdd");
+	const opening = first.command("drakonc:rdd"); await pending.started;
+	second.select(async () => OPTIONS[2]); await second.command("drakonc:rdd");
 	pending.read.resolve({ operation: "status", scope: "clone", status: { global: "off", cloneLocal: "", effective: "off", source: "global" } });
 	await opening;
 	assert.deepEqual(first.prompts, []); assert.deepEqual(first.notices, []);
@@ -280,10 +280,10 @@ test("a machine-wide change invalidates a selection already open in another cwd"
 	await first.start(); await second.start();
 	const answer = deferred<string | undefined>(); const opened = deferred<void>();
 	first.select(() => { opened.resolve(); return answer.promise; });
-	const opening = first.command("gentle:rdd");
+	const opening = first.command("drakonc:rdd");
 	await Promise.race([opened.promise, opening]);
 	assert.equal(first.prompts.length, 1);
-	second.select(async () => OPTIONS[3]); await second.command("gentle:rdd");
+	second.select(async () => OPTIONS[3]); await second.command("drakonc:rdd");
 	answer.resolve(OPTIONS[2]); await opening;
 	assert.deepEqual(first.notices, []);
 	assert.deepEqual(second.notices, [report("off", "global")]);
@@ -296,8 +296,8 @@ test("a later write suppresses an obsolete in-flight mutation response without r
 	await first.start(); await second.start();
 	first.select(async () => OPTIONS[1]);
 	const pending = f.holdWrite();
-	const earlier = first.command("gentle:rdd"); await pending.started;
-	second.select(async () => OPTIONS[3]); await second.command("gentle:rdd");
+	const earlier = first.command("drakonc:rdd"); await pending.started;
+	second.select(async () => OPTIONS[3]); await second.command("drakonc:rdd");
 	pending.write.resolve({ operation: "disable", scope: "clone", status: { global: "on", cloneLocal: "off", effective: "off", source: "clone_local" } });
 	await earlier;
 	assert.deepEqual(first.notices, []);
@@ -308,7 +308,7 @@ test("a later write suppresses an obsolete in-flight mutation response without r
 
 test("a session change after dispatch suppresses the reply but never retries the write", { timeout: 30_000 }, async (t) => {
 	const f = fixture(t); const h = f.host(); await h.start(); h.select(async () => OPTIONS[3]);
-	const pending = f.holdWrite(); const action = h.command("gentle:rdd"); await pending.started;
+	const pending = f.holdWrite(); const action = h.command("drakonc:rdd"); await pending.started;
 	h.setId("replacement");
 	pending.write.resolve({ operation: "disable", scope: "global", status: { global: "off", cloneLocal: "", effective: "off", source: "global" } });
 	await action;
@@ -323,11 +323,11 @@ test("global change invalidates a direct ASSESS read in a previously unseen cwd"
 	// or changing Git data. The native provider remains an in-memory fixture.
 	const assessmentCwd = process.cwd();
 	Object.assign(other.ctx, { cwd: assessmentCwd }); other.setManagerCwd(assessmentCwd);
-	assert.ok(owner.commands.has("gentle:rdd"));
+	assert.ok(owner.commands.has("drakonc:rdd"));
 	const pending = f.hold();
-	const assessment = other.tools.get("gentle_review")!.execute("race", { operation: "assess" }, undefined, undefined, other.ctx);
+	const assessment = other.tools.get("drakonc_review")!.execute("race", { operation: "assess" }, undefined, undefined, other.ctx);
 	await pending.started;
-	owner.select(async () => OPTIONS[2]); await owner.command("gentle:rdd");
+	owner.select(async () => OPTIONS[2]); await owner.command("drakonc:rdd");
 	pending.read.resolve({ operation: "status", scope: "clone", status: { global: "off", cloneLocal: "", effective: "off", source: "global" } });
 	const result = await assessment;
 	assert.equal(result.details.rddLine, "unknown");
@@ -355,7 +355,7 @@ test("SDK sessions refresh pinned prompt state across cwd after an explicit glob
 		const model = { id: "driver", name: "Fixture driver", provider, api: provider, baseUrl: "http://invalid.local", reasoning: false, input: ["text"], contextWindow: 1_000_000, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } as const;
 		const loader = new sdk.DefaultResourceLoader({ cwd, agentDir: join(cwd, "agent"), settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 			extensionFactories: [(pi) => {
-				createGentleAiExtension({ nativeReviewCli: f.native, candidateViews: null, processEnv: { ...process.env, GENTLE_PI_AGENTS_CHILD: "0", GENTLE_AI_TELEMETRY: "0" }, resolveTelemetryTriggerBinary: () => { throw new Error("disabled"); } })(pi);
+				createDrakoncAiExtension({ nativeReviewCli: f.native, candidateViews: null, processEnv: { ...process.env, DRAKONC_PI_AGENTS_CHILD: "0", DRAKONC_AI_TELEMETRY: "0" }, resolveTelemetryTriggerBinary: () => { throw new Error("disabled"); } })(pi);
 				pi.registerProvider(provider, { api: provider, apiKey: "fixture-only", baseUrl: "http://invalid.local", models: [{ id: model.id, name: model.name, reasoning: false, input: ["text"], cost: model.cost, contextWindow: model.contextWindow, maxTokens: model.maxTokens }],
 					streamSimple(_model, context) {
 						requests.push(ai.getCurrentSystemPrompt(context.messages));
@@ -368,7 +368,7 @@ test("SDK sessions refresh pinned prompt state across cwd after an explicit glob
 			}],
 		});
 		await loader.reload(); assert.deepEqual(loader.getExtensions().errors, []);
-		const { session } = await sdk.createAgentSession({ cwd, agentDir: join(cwd, "agent"), modelRuntime: runtime, model: model as never, thinkingLevel: "off", resourceLoader: loader, tools: ["read", "gentle_review"], sessionManager: sdk.SessionManager.inMemory(cwd), settingsManager: settings });
+		const { session } = await sdk.createAgentSession({ cwd, agentDir: join(cwd, "agent"), modelRuntime: runtime, model: model as never, thinkingLevel: "off", resourceLoader: loader, tools: ["read", "drakonc_review"], sessionManager: sdk.SessionManager.inMemory(cwd), settingsManager: settings });
 		const errors: string[] = [];
 		await session.bindExtensions({ mode: "rpc", uiContext: ui as never, onError: (error) => errors.push(error.error) });
 		return { session, requests, notices, errors, select: (value: string) => { answer = value; }, prompt: (text: string) => session.prompt(text, { source: "interactive" }) };
@@ -377,12 +377,12 @@ test("SDK sessions refresh pinned prompt state across cwd after an explicit glob
 	try {
 		await first.prompt("Initial A"); await second.prompt("Initial B");
 		assert.match(second.requests.at(-1)!, /Receipt-driven development: on \(decided by global\)/);
-		first.select(OPTIONS[3]!); await first.prompt("/gentle:rdd");
+		first.select(OPTIONS[3]!); await first.prompt("/drakonc:rdd");
 		assert.deepEqual(first.notices.at(-1), report("off", "global"));
 		await second.prompt("After machine-wide off");
 		assert.match(second.requests.at(-1)!, /Receipt-driven development: off \(decided by global\)/);
 		assert.ok(second.requests.at(-1)!.includes("RDD off does not require an assessment"));
-		first.select(OPTIONS[2]!); await first.prompt("/gentle:rdd");
+		first.select(OPTIONS[2]!); await first.prompt("/drakonc:rdd");
 		assert.deepEqual(first.notices.at(-1), report("on", "global"));
 		await second.prompt("After machine-wide on");
 		assert.match(second.requests.at(-1)!, /Receipt-driven development: on \(decided by global\)/);
@@ -396,11 +396,11 @@ test("SDK sessions refresh pinned prompt state across cwd after an explicit glob
 
 test("existing review-mode retains clone-default requests and exact notices", async (t) => {
 	const f = fixture(t, ""); const h = f.host(); await h.start();
-	await h.command("gentle:review-mode", "disable");
+	await h.command("drakonc:review-mode", "disable");
 	assert.deepEqual(h.notices.at(-1), report("off", "clone_local"));
-	await h.command("gentle:review-mode", "enable");
+	await h.command("drakonc:review-mode", "enable");
 	assert.deepEqual(h.notices.at(-1), report("on", "default"));
-	await h.command("gentle:review-mode", "status");
+	await h.command("drakonc:review-mode", "status");
 	assert.deepEqual(h.notices.at(-1), report("on", "default"));
 	assert.deepEqual(f.calls, [{ cwd: h.cwd, operation: "disable" }, { cwd: h.cwd, operation: "enable" }, { cwd: h.cwd, operation: "status" }]);
 	assert.deepEqual(f.writes, f.calls.slice(0, 2));

@@ -1,8 +1,8 @@
 {
-	"name": "gentle-tower-web",
+	"name": "drakonc-tower-web",
 	"private": true,
 	"type": "module",
-	"description": "Gentle Tower: the web view of every Gentle Shell session. Built into dist/ and served by /gentle:tower.",
+	"description": "Drakonc Tower: the web view of every Drakonc Shell session. Built into dist/ and served by /drakonc:tower.",
 	"scripts": {
 		"dev": "vite",
 		"build": "tsc --noEmit && vite build",

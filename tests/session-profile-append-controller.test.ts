@@ -231,7 +231,7 @@ for (const status of ["bound", "cleared", "invalid", "unsupported"] as const) {
   if (status === "bound") f.controller.bind("old", {});
   else
    f.append(
-    status === "unsupported" ? "gentle-pi.session-profile/v2" : customType,
+    status === "unsupported" ? "drakonc-pi.session-profile/v2" : customType,
     status === "cleared" ? { kind: "clear" } : {},
    );
   f.mode = "throw-no-advance";
@@ -248,7 +248,7 @@ for (const previous of ["cleared", "invalid", "unsupported"] as const) {
    const f = fixture();
    f.mode = "disk";
    f.append(
-    previous === "unsupported" ? "gentle-pi.session-profile/v2" : customType,
+    previous === "unsupported" ? "drakonc-pi.session-profile/v2" : customType,
     previous === "cleared" ? { kind: "clear" } : {},
    );
    f.mode = "throw";
@@ -296,7 +296,7 @@ test("pending selection revoked by branch switch cannot return from older memory
  f.rows = rows;
  assert.equal(f.controller.refresh().status, "indeterminate");
 });
-for (const terminal of [customType, "gentle-pi.session-profile/v2"]) {
+for (const terminal of [customType, "drakonc-pi.session-profile/v2"]) {
  test(`new terminal ${terminal} never resurrects pending or disk older binding`, () => {
   const f = fixture();
   f.controller.bind("pending", {});

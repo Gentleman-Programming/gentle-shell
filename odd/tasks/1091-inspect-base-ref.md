@@ -2,7 +2,7 @@
 
 ## Objective
 
-Make `gentle_review` inspect honor an explicit committed-range selector so the candidate inspected before START matches the `baseRef` and `committedOnly` inputs START will use.
+Make `drakonc_review` inspect honor an explicit committed-range selector so the candidate inspected before START matches the `baseRef` and `committedOnly` inputs START will use.
 
 ## Problem
 
@@ -10,7 +10,7 @@ The Pi facade's inspect branch currently derives negotiated STATUS from only `cw
 
 ## Why
 
-Gentle-shell issue #1091 reports `candidate-target-projection-drift` when reviewing one exact committed range. Current-source triage for Gentle AI #4504 item 4 confirms the facade asymmetry and found no direct inspect-to-START parity test.
+Drakonc-shell issue #1091 reports `candidate-target-projection-drift` when reviewing one exact committed range. Current-source triage for Drakonc AI #4504 item 4 confirms the facade asymmetry and found no direct inspect-to-START parity test.
 
 ## Scope
 
@@ -22,16 +22,16 @@ Gentle-shell issue #1091 reports `candidate-target-projection-drift` when review
 
 ## Constraints
 
-- Allowed edit surfaces: `extensions/gentle-ai.ts`, `tests/review-controller-native-routing.test.ts`, `tests/native-review-cli.test.ts` only if required, and this task document.
+- Allowed edit surfaces: `extensions/drakonc-ai.ts`, `tests/review-controller-native-routing.test.ts`, `tests/native-review-cli.test.ts` only if required, and this task document.
 - Do not alter provider-owned target identities, bindings, consent, or lifecycle authority.
-- Do not modify Gentle AI or any prepared worktree.
+- Do not modify Drakonc AI or any prepared worktree.
 - Technical artifacts remain in English.
 - No push or pull request without separate authorization.
 
 ## TDD
 
 - Mode: strict TDD enabled.
-- Source: project testing configuration persisted for gentle-pi (`strict_tdd: true`).
+- Source: project testing configuration persisted for drakonc-pi (`strict_tdd: true`).
 - Focused runner: `node --experimental-strip-types --test tests/review-controller-native-routing.test.ts`.
 - Required cycle: RED → GREEN → REFACTOR.
 
@@ -50,13 +50,13 @@ Gentle-shell issue #1091 reports `candidate-target-projection-drift` when review
 
 ## Progress
 
-- Canonical issue identified as `Gentleman-Programming/gentle-shell#1091`; no duplicate issue was created.
+- Canonical issue identified as `Drakoncman-Programming/drakonc-shell#1091`; no duplicate issue was created.
 - Tracking created before the first source or test write.
 - Strict TDD RED confirmed the controller dropped the explicit inspect selector and accepted malformed selector input.
 - Minimal implementation and focused GREEN complete.
 - Independent verification passed every acceptance criterion. A low test-coverage note was closed by asserting symbolic `HEAD` canonicalization and selector retention across both intended-untracked STATUS reads.
 - Work-unit commit: `19932eacd8612cda070d23c73e452cc8a4b80791` (`fix(review): align inspect committed range`).
-- Engram mirror pending: the active Pi session is bound to the `gentle-ai` Engram project and refused a cross-project write.
+- Engram mirror pending: the active Pi session is bound to the `drakonc-ai` Engram project and refused a cross-project write.
 
 ## Checks
 
@@ -66,7 +66,7 @@ Gentle-shell issue #1091 reports `candidate-target-projection-drift` when review
 - Native selector coverage: `node --experimental-strip-types --test --test-name-pattern='negotiated STATUS (forwards|emits)' tests/native-review-cli.test.ts` — 2 passed, 0 failed.
 - Typecheck: `pnpm run typecheck` — 197 recorded diagnostics, no regressions; two existing file/code pairs improved.
 - Formatting integrity: `git diff --check` — passed.
-- Scope check: only `extensions/gentle-ai.ts`, `tests/review-controller-native-routing.test.ts`, and this task document are changed.
+- Scope check: only `extensions/drakonc-ai.ts`, `tests/review-controller-native-routing.test.ts`, and this task document are changed.
 - Independent verification: PASS for all five acceptance criteria; 71 controller tests, 2 native selector tests, typecheck ratchet, and diff check passed.
 - Follow-up verification: symbolic base canonicalization plus both initial/second STATUS selector assertions — 3 passed, 0 failed; typecheck and diff check passed; no remaining candidate-caused findings.
 

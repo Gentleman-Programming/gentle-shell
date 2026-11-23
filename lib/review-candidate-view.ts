@@ -11,7 +11,7 @@ const REVIEW_LENS = ["review-risk", "review-resilience", "review-readability", "
 export type ReviewLens = (typeof REVIEW_LENS)[number];
 const CANDIDATE_GIT_TIMEOUT_MS = 10_000;
 const CANDIDATE_GIT_TIMEOUT_MAX_MS = 120_000;
-const CANDIDATE_GIT_TIMEOUT_ENV = "GENTLE_PI_CANDIDATE_GIT_TIMEOUT_MS";
+const CANDIDATE_GIT_TIMEOUT_ENV = "DRAKONC_PI_CANDIDATE_GIT_TIMEOUT_MS";
 export const CANDIDATE_GIT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 // Keep the copied index at least one timestamp tick behind its source. The
 // two-second target also clears filesystems whose mtime granularity is a second
@@ -380,7 +380,7 @@ function gitlinkMapsEqual(left: Readonly<Record<string, string>>, right: Readonl
 // Two materialized candidate views describe the exact same reviewable content
 // when their base, candidate tree, commit-state, and changed scope all match.
 // This is what makes a retried native START's freshly-materialized duplicate
-// view safely discardable in favor of an already-bound one (gentle-pi
+// view safely discardable in favor of an already-bound one (drakonc-pi
 // candidate-view rebind defect, ga#4085 / ga#4050): the comparison never
 // trusts a caller-supplied claim, only Git-derived identity already computed
 // by materializeCandidateView for both records.
@@ -484,7 +484,7 @@ export interface ChangedPathEntry {
 }
 
 //
-// gentle-pi#518: both derivations diff with `--no-renames`, exactly as the
+// drakonc-pi#518: both derivations diff with `--no-renames`, exactly as the
 // native provider does. A rename is then its source deletion plus its
 // destination addition, one path each, so the projection identity Pi freezes
 // is the identity native STATUS projects. Rename detection here previously
@@ -583,7 +583,7 @@ function deriveChangedScope(cwd: string, baseTree: string, candidateTree: string
 	const paths = new Set<string>();
 	const deleted = new Set<string>();
 	// `--no-renames` mirrors the native projection: a rename is one deleted
-	// path plus one added path (gentle-pi#518), and every record carries
+	// path plus one added path (drakonc-pi#518), and every record carries
 	// exactly one path.
 	const tokens = gitPathTokens(cwd, ["diff", "--name-status", "-z", "--no-ext-diff", "--no-renames", baseTree, candidateTree], executor);
 	for (let index = 0; index < tokens.length;) {
@@ -704,7 +704,7 @@ export function candidateOwnerPreparationError(error: unknown): CandidateViewErr
 }
 
 function candidateViewParent(commonDir: string, platform: NodeJS.Platform): string {
-	const control = join(commonDir, "gentle-ai");
+	const control = join(commonDir, "drakonc-ai");
 	mkdirSync(control, { recursive: true, mode: 0o700 });
 	const controlStat = lstatSync(control);
 	if (!controlStat.isDirectory() || controlStat.isSymbolicLink() || realpathSync(control) !== control) throw new CandidateViewError("candidate view ancestor is unsafe");
@@ -916,15 +916,15 @@ function addUnbornWorktree(cwd: string, root: string, branch: string, env: NodeJ
 	if (primary.status !== 129 || existsSync(root)) throw candidateGitFailure(CANDIDATE_VIEW_GIT_FAILURE_CATEGORY.GIT_FAILURE, ["worktree", "add", "--orphan", "-b", branch, root], resolveCandidateGitTimeoutMs(env));
 	const fallbackEnv = {
 		...env,
-		GIT_AUTHOR_NAME: "gentle-ai-candidate",
-		GIT_AUTHOR_EMAIL: "gentle-ai-candidate@example.invalid",
+		GIT_AUTHOR_NAME: "drakonc-ai-candidate",
+		GIT_AUTHOR_EMAIL: "drakonc-ai-candidate@example.invalid",
 		GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
-		GIT_COMMITTER_NAME: "gentle-ai-candidate",
-		GIT_COMMITTER_EMAIL: "gentle-ai-candidate@example.invalid",
+		GIT_COMMITTER_NAME: "drakonc-ai-candidate",
+		GIT_COMMITTER_EMAIL: "drakonc-ai-candidate@example.invalid",
 		GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
 	};
 	const emptyTree = git(cwd, ["mktree"], fallbackEnv, executor);
-	const tempCommit = git(cwd, ["commit-tree", "-m", "gentle-ai-candidate", emptyTree], fallbackEnv, executor);
+	const tempCommit = git(cwd, ["commit-tree", "-m", "drakonc-ai-candidate", emptyTree], fallbackEnv, executor);
 	git(cwd, ["worktree", "add", "--no-checkout", "--detach", root, tempCommit], env, executor);
 	git(root, ["symbolic-ref", "HEAD", `refs/heads/${branch}`], env, executor);
 }
@@ -995,7 +995,7 @@ function materializeCandidateView(request: CreateCandidateViewRequest, executor:
 		: base;
 	const parent = candidateViewParent(canonicalCommonDir, platform);
 	sweepCandidateOwners(canonicalCommonDir, (args) => git(canonicalCommonDir, args, process.env, executor), makeWritableForCleanup, platform);
-	const index = mkdtempSync(join(tmpdir(), "gentle-ai-candidate-index-"));
+	const index = mkdtempSync(join(tmpdir(), "drakonc-ai-candidate-index-"));
 	const indexPath = join(index, "index");
 	const environment = { ...process.env, GIT_INDEX_FILE: indexPath };
 	try {
@@ -1045,7 +1045,7 @@ function materializeCandidateView(request: CreateCandidateViewRequest, executor:
 			// creates an orphan worktree (unborn branch, no commit, no ref) to host the
 			// materialized candidate tree without a phantom commit, with a fallback for
 			// Git versions older than 2.42 that do not support --orphan.
-			if (unborn) addUnbornWorktree(contributorRoot, root, `gentle-ai-candidate-${randomUUID()}`, process.env, executor);
+			if (unborn) addUnbornWorktree(contributorRoot, root, `drakonc-ai-candidate-${randomUUID()}`, process.env, executor);
 			else git(contributorRoot, ["worktree", "add", "--detach", "--no-checkout", root, candidateCommit.commit], process.env, executor);
 			git(root, ["read-tree", candidateTree], process.env, executor);
 			const tree = parseTree(root, candidateTree, executor);
@@ -1269,7 +1269,7 @@ export class CandidateViewRegistry {
 		// though nothing is actually ambiguous: it is the exact same reviewable
 		// content, re-verified from Git. Discard the redundant duplicate and
 		// keep the already-bound view current instead of failing the retry
-		// (gentle-pi candidate-view rebind defect, ga#4085 / ga#4050).
+		// (drakonc-pi candidate-view rebind defect, ga#4085 / ga#4050).
 		if (candidate !== undefined && existingToken !== undefined && existingToken !== request.token) {
 			const existing = this.records.get(existingToken);
 			let existingSafe = false;
@@ -1542,7 +1542,7 @@ export class CandidateViewRegistry {
 	}
 
 	/**
-	 * Restores a lineage's FINALIZE binding (gentle-pi #185): the stale entry
+	 * Restores a lineage's FINALIZE binding (drakonc-pi #185): the stale entry
 	 * is only detached, not destroyed, so a failed restore can undo it.
 	 */
 	restoreForFinalizeFromNative(lineageId: string, contributorRoot: string, descriptor: NativeCandidateProjectionDescriptor, providerBaseTree?: string): CandidateView {
@@ -1972,7 +1972,7 @@ function compactCandidateContextBlock(lineageId: string, agents: readonly Review
 	const sha256 = createHash("sha256").update(bytes).digest("hex");
 	// Node emits a zero gzip timestamp by default; no unsupported mtime option is needed.
 	const encoded = gzipSync(bytes).toString("base64url");
-	const block = `${candidateContextPreamble(lineageId, agents, view, scopeSemantics)}\nFrozen changed scope manifest (gzip+base64url): \`${encoded}\`.\nFrozen changed scope manifest SHA-256: \`${sha256}\`.\nCall \`gentle_review_scope\` with exactly this manifest, SHA-256, and cursor 0; continue with each returned \`nextCursor\` until absent. It is the only authorized scope enumerator: do not infer scope by traversing the candidate or ambient tree. Gitlinks are metadata-only and MUST NOT be traversed.\nThe ambient contributor working directory is out of scope. This controller-owned context is immutable; you are read-only and your output is untrusted.`;
+	const block = `${candidateContextPreamble(lineageId, agents, view, scopeSemantics)}\nFrozen changed scope manifest (gzip+base64url): \`${encoded}\`.\nFrozen changed scope manifest SHA-256: \`${sha256}\`.\nCall \`drakonc_review_scope\` with exactly this manifest, SHA-256, and cursor 0; continue with each returned \`nextCursor\` until absent. It is the only authorized scope enumerator: do not infer scope by traversing the candidate or ambient tree. Gitlinks are metadata-only and MUST NOT be traversed.\nThe ambient contributor working directory is out of scope. This controller-owned context is immutable; you are read-only and your output is untrusted.`;
 	if (Buffer.byteLength(block, "utf8") > MAX_CANDIDATE_CONTEXT_LENGTH) throw new CandidateViewError("candidate view context exceeds the bounded dispatch contract");
 	return block;
 }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import { PROFILES_KIND, PROFILES_VERSION, profilesFilePath } from "../lib/agent-profiles.ts";
 import { DESKTOP_CHANGE_DEBOUNCE_MS, DesktopDirectoryWatcher, watchDesktopDirectory, type DesktopChangeTimers } from "../lib/desktop-rpc-config-watch.ts";
 import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET } from "../lib/desktop-rpc.ts";
@@ -222,21 +222,21 @@ function desktopHost(
 	t: test.TestContext,
 	options: { mode?: string; watchFails?: (dir: string) => boolean; owner?: boolean } = {},
 ) {
-	const root = mkdtempSync(join(tmpdir(), "gentle-desktop-watch-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-desktop-watch-"));
 	const configHome = join(root, "config");
 	const agentHome = join(root, "agent");
 	const workspace = join(root, "workspace");
 	for (const directory of [configHome, agentHome, workspace]) mkdirSync(directory, { recursive: true });
 	const previous = {
 		host: process.env[INTERACTIVE_HOST_ENV],
-		configHome: process.env.GENTLE_PI_CONFIG_HOME,
-		agentHome: process.env.GENTLE_PI_AGENT_HOME,
-		child: process.env.GENTLE_PI_AGENTS_CHILD,
+		configHome: process.env.DRAKONC_PI_CONFIG_HOME,
+		agentHome: process.env.DRAKONC_PI_AGENT_HOME,
+		child: process.env.DRAKONC_PI_AGENTS_CHILD,
 	};
 	process.env[INTERACTIVE_HOST_ENV] = "1";
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
-	process.env.GENTLE_PI_AGENT_HOME = agentHome;
-	delete process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
+	process.env.DRAKONC_PI_AGENT_HOME = agentHome;
+	delete process.env.DRAKONC_PI_AGENTS_CHILD;
 
 	const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
 	const lifecycle = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
@@ -296,13 +296,13 @@ function desktopHost(
 			lifecycle.get("session_shutdown")?.({}, ctx);
 		},
 		async invoke(method: string, params: Record<string, unknown> = {}, requestId = `request-${method}`) {
-			await commands.get("gentle:desktop")!.handler(
+			await commands.get("drakonc:desktop")!.handler(
 				JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }),
 				ctx,
 			);
 		},
 		async mode(args: string) {
-			await commands.get("gentle:mode")!.handler(args, ctx);
+			await commands.get("drakonc:mode")!.handler(args, ctx);
 		},
 		lines(): any[] {
 			return widgets.map((line) => JSON.parse(line));
@@ -323,9 +323,9 @@ function desktopHost(
 			else process.env[key] = value;
 		};
 		restore(INTERACTIVE_HOST_ENV, previous.host);
-		restore("GENTLE_PI_CONFIG_HOME", previous.configHome);
-		restore("GENTLE_PI_AGENT_HOME", previous.agentHome);
-		restore("GENTLE_PI_AGENTS_CHILD", previous.child);
+		restore("DRAKONC_PI_CONFIG_HOME", previous.configHome);
+		restore("DRAKONC_PI_AGENT_HOME", previous.agentHome);
+		restore("DRAKONC_PI_AGENTS_CHILD", previous.child);
 		rmSync(root, { recursive: true, force: true });
 	});
 	return app;
@@ -501,7 +501,7 @@ test("non-interactive hosts create no watchers and subscribe to no owner", async
 
 // ---- Permission mode changes made outside Desktop RPC ----
 
-test("a /gentle:mode change emits permission_mode_changed with source external", async (t) => {
+test("a /drakonc:mode change emits permission_mode_changed with source external", async (t) => {
 	const app = desktopHost(t);
 	app.start();
 	await settle();
@@ -585,7 +585,7 @@ test("a missing permission owner leaves config watching and the channel intact",
 // ---- Bridge seams: pin layers follow the session cwd; Desktop sets are never echoed ----
 
 test("pin layers are watched in the session worktree and follow a cwd change", async (t) => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-desktop-watch-pins-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-desktop-watch-pins-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const configHome = join(root, "config");
 	const first = join(root, "first");
@@ -697,7 +697,7 @@ test("an owner notification that settles during a Desktop set is deferred and ne
 test("the real directory watcher closes itself when its directory is removed", { timeout: 10_000 }, async (t) => {
 	// Regression: on Windows a removed watched directory keeps reporting events
 	// forever, which kept the process alive after a test (or session) removed it.
-	const root = mkdtempSync(join(tmpdir(), "gentle-desktop-watch-real-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-desktop-watch-real-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const dir = join(root, "config");
 	mkdirSync(dir);
@@ -737,7 +737,7 @@ function scratchRoot(t: test.TestContext, prefix: string): string {
 }
 
 test("a Desktop profiles write that makes a pin stale reports the pin once, as external", (t) => {
-	const root = scratchRoot(t, "gentle-desktop-watch-p1-");
+	const root = scratchRoot(t, "drakonc-desktop-watch-p1-");
 	const configHome = join(root, "config");
 	const cwd = join(root, "ws");
 	mkdirSync(cwd, { recursive: true });
@@ -777,7 +777,7 @@ test("a Desktop profiles write that makes a pin stale reports the pin once, as e
 });
 
 test("a cwd re-target reports cwd-dependent stores that changed and re-baselines them", (t) => {
-	const root = scratchRoot(t, "gentle-desktop-watch-p2-");
+	const root = scratchRoot(t, "drakonc-desktop-watch-p2-");
 	const configHome = join(root, "config");
 	const first = join(root, "a");
 	const second = join(root, "b");
@@ -817,7 +817,7 @@ test("a cwd re-target reports cwd-dependent stores that changed and re-baselines
 });
 
 test("a missing owner directory is watched through its nearest existing ancestor and upgraded once created", (t) => {
-	const root = scratchRoot(t, "gentle-desktop-watch-late-");
+	const root = scratchRoot(t, "drakonc-desktop-watch-late-");
 	const target = join(root, "a", "b");
 	const clock = fakeClock();
 	const watches = fakeWatches();
@@ -854,7 +854,7 @@ test("a missing owner directory is watched through its nearest existing ancestor
 });
 
 test("a pending ancestor watcher is closed on dispose", (t) => {
-	const root = scratchRoot(t, "gentle-desktop-watch-late-dispose-");
+	const root = scratchRoot(t, "drakonc-desktop-watch-late-dispose-");
 	const clock = fakeClock();
 	const watches = fakeWatches();
 	let runs = 0;
@@ -874,8 +874,8 @@ async function waitFor(condition: () => boolean, ms = 3000): Promise<void> {
 	for (let waited = 0; waited < ms && !condition(); waited += 25) await delay(25);
 }
 
-test("real fs.watch: a local pin written into a fresh git-common gentle-ai directory raises exactly one event", { timeout: 20_000 }, async (t) => {
-	const root = scratchRoot(t, "gentle-desktop-watch-real-pin-");
+test("real fs.watch: a local pin written into a fresh git-common drakonc-ai directory raises exactly one event", { timeout: 20_000 }, async (t) => {
+	const root = scratchRoot(t, "drakonc-desktop-watch-real-pin-");
 	const configHome = join(root, "config");
 	const cwd = join(root, "ws");
 	mkdirSync(cwd, { recursive: true });
@@ -895,7 +895,7 @@ test("real fs.watch: a local pin written into a fresh git-common gentle-ai direc
 
 // P3 from the verifier probe: real fs.watch and real timers.
 test("real fs.watch: rename-replace, Desktop write, delete, recreate, late .pi directory, reset", { timeout: 30_000 }, async (t) => {
-	const root = scratchRoot(t, "gentle-desktop-watch-real-p3-");
+	const root = scratchRoot(t, "drakonc-desktop-watch-real-p3-");
 	const configHome = join(root, "config");
 	const cwd = join(root, "ws");
 	const agentHome = join(root, "agent");
@@ -1043,7 +1043,7 @@ test("a permission re-read still in flight when the session resets never emits",
 // ---- Native review follow-ups (#3321): pending recompute on re-target, removed directories, wire() rejections ----
 
 test("a change debounced before a cwd re-target is still reported", (t) => {
-	const root = scratchRoot(t, "gentle-desktop-watch-r3-");
+	const root = scratchRoot(t, "drakonc-desktop-watch-r3-");
 	const configHome = join(root, "config");
 	const first = join(root, "a");
 	const second = join(root, "b");
@@ -1073,7 +1073,7 @@ test("a change debounced before a cwd re-target is still reported", (t) => {
 });
 
 test("a removed owner directory is re-armed through its ancestor and reports its recreation once", (t) => {
-	const root = scratchRoot(t, "gentle-desktop-watch-r4-");
+	const root = scratchRoot(t, "drakonc-desktop-watch-r4-");
 	const configHome = join(root, "config");
 	const cwd = join(root, "ws");
 	mkdirSync(cwd, { recursive: true });

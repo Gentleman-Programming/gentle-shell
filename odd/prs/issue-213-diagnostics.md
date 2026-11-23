@@ -12,7 +12,7 @@ Refs #213 — approved issue. This does not close it or claim the initiating tim
 - [x] New feature (`type:feature`)
 
 ## Summary
-- Add one-shot, session-only `/gentle:status-timing enable|disable|show`, off by default, with bounded memory-only monotonic summaries.
+- Add one-shot, session-only `/drakonc:status-timing enable|disable|show`, off by default, with bounded memory-only monotonic summaries.
 - Observe the next authorized STATUS-bearing call, including the public plain facade, without changing deadlines, argv/protocol, authority, consent, elapsed ledger or results/errors.
 - Keep source, generated runtime, package inventory, tests and docs together.
 
@@ -21,7 +21,7 @@ Refs #213 — approved issue. This does not close it or claim the initiating tim
 | --- | --- |
 | `lib/status-timing-diagnostics.ts`, `runtime/status-timing-diagnostics.mjs` | Bounded observation and lifecycle clearing |
 | `lib/native-review-cli.ts`, `runtime/native-review-cli.mjs` | Resolution/adapter observation, including plain STATUS |
-| `extensions/gentle-ai.ts`, `lib/review-sidebar-state.ts` | Session command and host/sidebar stages |
+| `extensions/drakonc-ai.ts`, `lib/review-sidebar-state.ts` | Session command and host/sidebar stages |
 | `scripts/build-runtime-modules.mjs`, `scripts/verify-package-files.mjs` | Generation and resource inventory |
 | `tests/status-timing-diagnostics.test.ts`, `tests/verify-package-files.test.ts` | Regression coverage |
 | `README.md`, `docs/readme-reference.md` | Command documentation and limitations |
@@ -43,7 +43,7 @@ Refs #213 — approved issue. This does not close it or claim the initiating tim
 ## Chain Context
 | Field | Value |
 | --- | --- |
-| Tracker PR | https://github.com/Gentleman-Programming/gentle-shell/pull/1950 |
+| Tracker PR | https://github.com/Drakoncman-Programming/drakonc-shell/pull/1950 |
 | Position | 1 of 2 children |
 | Base | `feat/213-status-timing` |
 | Depends on | Draft tracker |

@@ -39,7 +39,7 @@ test("a real failed OS spawn has no pid and is retained as a launch failure", as
 	const store = new TaskStore();
 	let launched = false;
 	const runner = new AgentRunner(store, { maxConcurrency: 1, stallTimeoutMs: 1000 }, {
-		spawn: (_command, _args, options) => nodeSpawn("/nonexistent/gentle-pi-child", [], { ...options, stdio: ["pipe", "pipe", "pipe", "ipc"] }),
+		spawn: (_command, _args, options) => nodeSpawn("/nonexistent/drakonc-pi-child", [], { ...options, stdio: ["pipe", "pipe", "pipe", "ipc"] }),
 		now: Date.now, schedule: (fn, ms) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); },
 		pi: { command: "unused", args: [] },
 	}, { askUser: async () => ({ cancelled: true }) });

@@ -1,12 +1,12 @@
 // The update facts `get_update_status` reports, read from the sources that
 // already own them. Nothing here re-implements a lookup or a comparison:
 //
-// - Gentle Shell's version is this package's own `package.json`; its install
+// - Drakonc Shell's version is this package's own `package.json`; its install
 //   channel comes from `runningBundledPrefix` (a bundled prefix), Pi's own
 //   package listing (gentle-pi loaded as the `npm:gentle-pi` Pi package, the
-//   way the Gentle AI managed stack declares it), or `readChannel` (the
-//   release/main record `gentle-shell upgrade` keeps).
-// - Gentle Shell's latest release is `latestRelease` (the lookup `gentle-shell
+//   way the Drakonc AI managed stack declares it), or `readChannel` (the
+//   release/main record `drakonc-shell upgrade` keeps).
+// - Drakonc Shell's latest release is `latestRelease` (the lookup `drakonc-shell
 //   upgrade` and the bundled startup notice use) and the latest main commit is
 //   `resolveMainCommit`; the cached answer is the launcher's
 //   `startupReleaseCheck` record, parsed by `parseStartupReleaseCache`.
@@ -23,9 +23,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DefaultPackageManager, getAgentDir, SettingsManager, VERSION } from "@earendil-works/pi-coding-agent";
 import { boundedVersion, packageDisplayName, type PackageKind, type ShellChannel } from "./desktop-rpc-updates.ts";
-import { runningBundledPrefix } from "./gentle-shell-bundled.ts";
-import { launcherConfigPath, parseRawLauncherConfig } from "./gentle-shell-launcher.ts";
-import { findStartupUpdate, parseStartupReleaseCache, type StartupReleaseCache } from "./gentle-shell-startup-update.ts";
+import { runningBundledPrefix } from "./drakonc-shell-bundled.ts";
+import { launcherConfigPath, parseRawLauncherConfig } from "./drakonc-shell-launcher.ts";
+import { findStartupUpdate, parseStartupReleaseCache, type StartupReleaseCache } from "./drakonc-shell-startup-update.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -81,7 +81,7 @@ export async function isNewerRelease(current: string, latest: string, nowMs: num
 	return offer !== undefined;
 }
 
-/** A main-channel install is current when its version carries the latest commit, as `gentle-shell upgrade --channel main` checks. */
+/** A main-channel install is current when its version carries the latest commit, as `drakonc-shell upgrade --channel main` checks. */
 export function isCurrentMain(current: string, commit: string): boolean {
 	return current.endsWith(`-main.${commit.slice(0, 12)}`);
 }
@@ -189,7 +189,7 @@ export function defaultUpdateSources(input: DefaultUpdateSourcesInput): UpdateSo
 					const parsed = parsePiSource(packageManager(), entry.source);
 					return parsed?.type === "npm" && parsed.name === "gentle-pi" && typeof entry.installedPath === "string" && safeRealpath(entry.installedPath) === own;
 				});
-				if (managed) return "gentle-ai-managed";
+				if (managed) return "drakonc-ai-managed";
 			} catch {
 				/* An unreadable package listing says nothing about the channel. */
 			}
@@ -203,7 +203,7 @@ export function defaultUpdateSources(input: DefaultUpdateSourcesInput): UpdateSo
 		},
 		shellReleaseCache() {
 			try {
-				const override = env.GENTLE_SHELL_CONFIG;
+				const override = env.DRAKONC_SHELL_CONFIG;
 				const path = override !== undefined && override.length > 0 ? override : launcherConfigPath(input.home);
 				return parseStartupReleaseCache(parseRawLauncherConfig(readFileSync(path, "utf8")).startupReleaseCheck);
 			} catch {

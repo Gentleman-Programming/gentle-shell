@@ -7,14 +7,14 @@ import test, { after } from "node:test";
 import type { AssistantMessage, Tool } from "@earendil-works/pi-ai";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { createCoordinatorRuntime, type CoordinatorRuntimeOptions } from "./support/review-coordinator-runtime.ts";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { NativeReviewConsentRequiredError } from "../lib/native-review-cli.ts";
 import { decodeReviewConsentV3 } from "../lib/review-integration-v2.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { publishReviewerProgress } from "../lib/reviewer-stream.ts";
 import { readFileSync } from "node:fs";
 
-// odd/tasks/review-one-call.md: one gentle_review_run call drives an ordinary
+// odd/tasks/review-one-call.md: one drakonc_review_run call drives an ordinary
 // native review to its acknowledged approval (S2-S6).
 
 // One repository for every fixture run: the facade retains a lineage's
@@ -32,7 +32,7 @@ function scratchRepo(): string {
 async function runOnce(cwd: string, options: CoordinatorRuntimeOptions) {
 	const runtime = createCoordinatorRuntime(cwd, "coordinator", options);
 	try {
-		const result = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage });
+		const result = await runtime.invoke("drakonc_review_run", { lineageId: runtime.lineage });
 		return { result, displayed: runtime.forecasts.length, relayRuns: runtime.relayRuns(), closed: runtime.closed(), nativeCalls: [...runtime.nativeCalls], parentCalls: runtime.facadeCalls.map((call) => call.name) };
 	} finally { runtime.close(); }
 }
@@ -45,7 +45,7 @@ test("#2676: registered review-run forwards reviewer progress through nested cap
 		return { request, promptByteLength: 1, resultByteLength: 1 };
 	} });
 	try {
-		const tool = runtime.tools.get("gentle_review_run");
+		const tool = runtime.tools.get("drakonc_review_run");
 		const result = await tool.execute("progress-fixture", { lineageId: runtime.lineage }, undefined,
 			(update: { content: Array<{ text?: string }> }) => updates.push(update.content.map(item => item.text ?? "").join("\n")),
 			{ cwd, hasUI: false, sessionManager: { getSessionId: () => "fixture-live-driver", getBranch: () => [], getSessionFile: () => undefined } });
@@ -197,13 +197,13 @@ test("S5: routing ignores advisory_finding_claims", async () => {
 test("S2: an INSPECT that requests the intended-untracked selection returns selection-required with the facade envelope, without its nextStep", async () => {
 	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false, scenario: "untracked-selection" });
 	try {
-		const run = await runtime.invoke("gentle_review_run", { lenses: ["risk"], lensesReason: "fixture" });
+		const run = await runtime.invoke("drakonc_review_run", { lenses: ["risk"], lensesReason: "fixture" });
 		assert.equal(run.outcome, "selection-required", JSON.stringify(run));
 		assert.equal(run.result.operation, "inspect");
 		assert.equal(typeof run.result.selectionBinding, "string");
 		assert.equal(Object.hasOwn(run.result, "nextStep"), false);
 		assert.equal(Object.hasOwn(run.result, "collectBindings"), false);
-		assert.deepEqual(stepNames(run), ["gentle_review:assess", "gentle_review:inspect"], "no further facade call");
+		assert.deepEqual(stepNames(run), ["drakonc_review:assess", "drakonc_review:inspect"], "no further facade call");
 		assert.deepEqual(providerOperations(runtime.nativeCalls), ["assess"], "no provider operation after INSPECT");
 		assert.equal(runtime.relayRuns(), 0);
 	} finally { runtime.close(); }
@@ -218,7 +218,7 @@ test("S5: the review switch turned off after the approved closure returns blocke
 		mode: (_read, calls) => !resumed && calls.includes("capture:recorded-output") ? "off" : "on",
 	});
 	try {
-		const stopped = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage });
+		const stopped = await runtime.invoke("drakonc_review_run", { lineageId: runtime.lineage });
 		assert.equal(stopped.outcome, "blocked", JSON.stringify(stopped));
 		assert.equal(stopped.result.outcome, "review-mode-disabled");
 		assert.equal(runtime.closed(), false, "no acknowledgement while the switch is off");
@@ -226,7 +226,7 @@ test("S5: the review switch turned off after the approved closure returns blocke
 		assert.deepEqual(stopped.advisory_finding_claims, { F1: claim });
 		resumed = true;
 		const callsBefore = runtime.nativeCalls.length;
-		const closed = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage });
+		const closed = await runtime.invoke("drakonc_review_run", { lineageId: runtime.lineage });
 		assert.equal(closed.outcome, "closed", JSON.stringify(closed));
 		assert.ok(runtime.closed());
 		assert.deepEqual(runtime.nativeCalls.slice(callsBefore), ["status:approved", "status:approved", "acknowledge"], "the resume goes straight to the acknowledgement");
@@ -244,19 +244,19 @@ test("S5: the review switch turned off after the approved closure returns blocke
 const providerOperations = (calls: readonly string[]) => calls.filter((call) => !call.startsWith("status:"));
 const stepNames = (result: Record<string, any>) => result.metrics.steps.map((step: { tool: string; operation?: string }) => step.operation === undefined ? step.tool : `${step.tool}:${step.operation}`);
 
-test("S2: a review whose lens group reconciles and then needs the refuter closes in one gentle_review_run call", async () => {
+test("S2: a review whose lens group reconciles and then needs the refuter closes in one drakonc_review_run call", async () => {
 	const run = await runOnce(scratchRepo(), { hasUI: false, scenario: "refuter" });
 	assert.equal(run.result.outcome, "closed", JSON.stringify(run.result));
 	assert.ok(run.closed);
-	assert.deepEqual(run.parentCalls, ["gentle_review_run"], "one parent call");
+	assert.deepEqual(run.parentCalls, ["drakonc_review_run"], "one parent call");
 	assert.deepEqual(providerOperations(run.nativeCalls), ["capture-result:review-risk", "capture-result:review-reliability", "capture-refuter", "acknowledge"]);
 	assert.deepEqual(stepNames(run.result), [
-		"gentle_review:status",
-		"gentle_review_capture_group", "gentle_review_capture_group",
-		"gentle_review:status",
-		"gentle_review_capture", "gentle_review_capture",
-		"gentle_review:status",
-		"gentle_review:acknowledge-approved",
+		"drakonc_review:status",
+		"drakonc_review_capture_group", "drakonc_review_capture_group",
+		"drakonc_review:status",
+		"drakonc_review_capture", "drakonc_review_capture",
+		"drakonc_review:status",
+		"drakonc_review:acknowledge-approved",
 	]);
 	assert.equal(run.result.forecasts.length, 2, "the group and the refuter forecasts are both recorded");
 	assert.equal(run.relayRuns, 3);
@@ -269,7 +269,7 @@ test("S2: after a reconciled lens group, STATUS offering the same group again en
 	assert.deepEqual(providerOperations(run.nativeCalls), ["capture-result:review-risk", "capture-result:review-reliability"], "no capture runs twice");
 	assert.equal(run.relayRuns, 2);
 	assert.equal(run.closed, false);
-	assert.deepEqual(stepNames(run.result), ["gentle_review:status", "gentle_review_capture_group", "gentle_review_capture_group", "gentle_review:status"]);
+	assert.deepEqual(stepNames(run.result), ["drakonc_review:status", "drakonc_review_capture_group", "drakonc_review_capture_group", "drakonc_review:status"]);
 });
 
 test("S2/S6: RDD turned off right after the reconciled lens group stops before the refuter runs", async () => {
@@ -294,13 +294,13 @@ interface RecordedRequest { systemPrompt: string; tools: Tool[] }
 async function promptRequest(root: string, label: string, mode: "on" | "off", tools: string[], env: Record<string, string> = {}): Promise<RecordedRequest> {
 	const sdk = await import("@earendil-works/pi-coding-agent");
 	const ai = await import("@earendil-works/pi-ai");
-	const { createGentleAiExtension } = await import("../extensions/gentle-ai.ts");
+	const { createDrakoncAiExtension } = await import("../extensions/drakonc-ai.ts");
 	const cwd = join(root, `repo-${label}`);
 	mkdirSync(cwd);
 	execFileSync("git", ["init", "-q", "--initial-branch=fixture"], { cwd, env: { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } });
 	const profile = join(root, `profile-${label}`);
 	mkdirSync(profile);
-	const bindings = { PI_CODING_AGENT_DIR: profile, PI_CODING_AGENT_SESSION_DIR: join(root, `sessions-${label}`), GENTLE_PI_AGENT_HOME: profile, GENTLE_PI_CONFIG_HOME: join(root, "config") };
+	const bindings = { PI_CODING_AGENT_DIR: profile, PI_CODING_AGENT_SESSION_DIR: join(root, `sessions-${label}`), DRAKONC_PI_AGENT_HOME: profile, DRAKONC_PI_CONFIG_HOME: join(root, "config") };
 	const previous = Object.fromEntries(Object.keys(bindings).map((key) => [key, process.env[key]]));
 	Object.assign(process.env, bindings);
 	const requests: RecordedRequest[] = [];
@@ -316,7 +316,7 @@ async function promptRequest(root: string, label: string, mode: "on" | "off", to
 			cwd, agentDir: profile, settingsManager: settings,
 			noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 			extensionFactories: [(pi) => {
-				createGentleAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: { ...bindings, ...env, GENTLE_AI_TELEMETRY: "0" }, resolveTelemetryTriggerBinary: () => { throw new Error("fixture"); } })(pi);
+				createDrakoncAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: { ...bindings, ...env, DRAKONC_AI_TELEMETRY: "0" }, resolveTelemetryTriggerBinary: () => { throw new Error("fixture"); } })(pi);
 				pi.registerProvider("one-call-fixture", {
 					api: "one-call-fixture", apiKey: "fixture-only", baseUrl: "http://invalid.local",
 					models: [{ id: model.id, name: model.name, reasoning: false, input: ["text"], cost: model.cost, contextWindow: model.contextWindow, maxTokens: model.maxTokens }],
@@ -349,14 +349,14 @@ async function promptRequest(root: string, label: string, mode: "on" | "off", to
 	return requests[0]!;
 }
 
-const RUN_GUIDANCE = "To drive a due native ordinary review, prefer gentle_review_run over single review operations: it executes the same provider-issued lifecycle (assess, inspect, START, bound STATUS, captures, acknowledgement) in one call. Single operations remain for what its result hands back (the consent answer, the correction plan through gentle_review_capture, status and recovery), for a review the user explicitly asks for after not-due, and for ASSESS after a delegated writer.";
-const CONSENT_GUIDANCE = "On consent-required, relay the consent to the human and submit only the human's explicit answer, once, with gentle_review answer-consent. Never choose the answer yourself and never pass a consent answer to gentle_review_run.";
+const RUN_GUIDANCE = "To drive a due native ordinary review, prefer drakonc_review_run over single review operations: it executes the same provider-issued lifecycle (assess, inspect, START, bound STATUS, captures, acknowledgement) in one call. Single operations remain for what its result hands back (the consent answer, the correction plan through drakonc_review_capture, status and recovery), for a review the user explicitly asks for after not-due, and for ASSESS after a delegated writer.";
+const CONSENT_GUIDANCE = "On consent-required, relay the consent to the human and submit only the human's explicit answer, once, with drakonc_review answer-consent. Never choose the answer yourself and never pass a consent answer to drakonc_review_run.";
 const RUN_OUTCOMES = ["closed", "not-due", "assessment-unavailable", "request-context-requires-fresh-review", "consent-required", "input-required", "selection-required", "stopped", "handoff", "repeated-capture", "forecast", "binding-drift", "transition-limit", "cancelled", "blocked"];
 
 test("S3/S6: the run guidance keeps consent with the human, scopes the run to a due review and names every outcome", () => {
 	const tools = new Map<string, { description: string; promptGuidelines: string[] }>();
-	createGentleAiExtension({ nativeReviewCli: null, processEnv: {} })({ on() {}, registerCommand() {}, registerTool: (tool: never) => tools.set((tool as { name: string }).name, tool) } as never);
-	const run = tools.get("gentle_review_run")!;
+	createDrakoncAiExtension({ nativeReviewCli: null, processEnv: {} })({ on() {}, registerCommand() {}, registerTool: (tool: never) => tools.set((tool as { name: string }).name, tool) } as never);
+	const run = tools.get("drakonc_review_run")!;
 	assert.ok(run.promptGuidelines.includes(RUN_GUIDANCE));
 	assert.ok(run.promptGuidelines.includes(CONSENT_GUIDANCE));
 	assert.ok(run.promptGuidelines.includes("Supply the exact candidate selector and pertinent lenses with a reason. Resume with lineageId and the same workspaceRoot/baseRef after an answered consent or an authorized correction edit. Correction edits and maintenance remain explicit handoffs."));
@@ -367,24 +367,24 @@ test("S3/S6: the run guidance keeps consent with the human, scopes the run to a 
 	assert.match(run.description, /maintenance/);
 });
 
-test("S2/S3: RDD on declares gentle_review_run with its one-call guidance; RDD off leaves the request byte-identical", { timeout: 60_000 }, async (t) => {
+test("S2/S3: RDD on declares drakonc_review_run with its one-call guidance; RDD off leaves the request byte-identical", { timeout: 60_000 }, async (t) => {
 	const root = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "rdd-one-call-sdk-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const family = ["read", "gentle_review", "gentle_review_capture", "gentle_review_capture_group", "gentle_review_scope"];
-	const on = await promptRequest(root, "on", "on", [...family, "gentle_review_run"]);
+	const family = ["read", "drakonc_review", "drakonc_review_capture", "drakonc_review_capture_group", "drakonc_review_scope"];
+	const on = await promptRequest(root, "on", "on", [...family, "drakonc_review_run"]);
 	assert.match(on.systemPrompt, /Receipt-driven development: on /);
-	assert.ok(on.tools.some((tool) => tool.name === "gentle_review_run"), "registered without GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR=1");
+	assert.ok(on.tools.some((tool) => tool.name === "drakonc_review_run"), "registered without DRAKONC_PI_EXPERIMENTAL_REVIEW_COORDINATOR=1");
 	assert.ok(on.systemPrompt.includes(RUN_GUIDANCE), "the run guidance renders while RDD is on");
 	// Equal-length labels: each session's repository path appears in its prompt.
-	const off = await promptRequest(root, "off-1", "off", [...family, "gentle_review_run"]);
+	const off = await promptRequest(root, "off-1", "off", [...family, "drakonc_review_run"]);
 	const offWithout = await promptRequest(root, "off-2", "off", family);
 	assert.match(off.systemPrompt, /Receipt-driven development: off /);
-	assert.equal(off.tools.some((tool) => tool.name === "gentle_review_run"), false);
-	assert.equal(off.systemPrompt.includes("gentle_review_run"), false);
+	assert.equal(off.tools.some((tool) => tool.name === "drakonc_review_run"), false);
+	assert.equal(off.systemPrompt.includes("drakonc_review_run"), false);
 	assert.equal(off.systemPrompt.replaceAll("off-1", "off-2"), offWithout.systemPrompt, "RDD off: the system prompt does not change by one byte");
 	assert.equal(JSON.stringify(off.tools), JSON.stringify(offWithout.tools), "RDD off: the declared tools do not change by one byte");
-	const optedOut = await promptRequest(root, "opt-out", "on", [...family, "gentle_review_run"], { GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "0" });
-	assert.equal(optedOut.tools.some((tool) => tool.name === "gentle_review_run"), false, "GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR=0 opts out");
+	const optedOut = await promptRequest(root, "opt-out", "on", [...family, "drakonc_review_run"], { DRAKONC_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "0" });
+	assert.equal(optedOut.tools.some((tool) => tool.name === "drakonc_review_run"), false, "DRAKONC_PI_EXPERIMENTAL_REVIEW_COORDINATOR=0 opts out");
 });
 
 // S6: the run never answers the START consent. A provider START that requires
@@ -419,8 +419,8 @@ function consentHarness(root: string) {
 	} as unknown as NativeReviewCli;
 	const tools = new Map<string, any>();
 	const candidateViews = new CandidateViewRegistry();
-	createGentleAiExtension({ nativeReviewCli: native, candidateViews, processEnv: { GENTLE_AI_TELEMETRY: "0" } })({ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool), events: { emit() {} } } as never);
-	return { cwd, answers, candidateViews, run: tools.get("gentle_review_run") };
+	createDrakoncAiExtension({ nativeReviewCli: native, candidateViews, processEnv: { DRAKONC_AI_TELEMETRY: "0" } })({ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool), events: { emit() {} } } as never);
+	return { cwd, answers, candidateViews, run: tools.get("drakonc_review_run") };
 }
 
 test("S6: START consent returns consent-required without a UI and when the human cancels; no consent answer is sent", async (t) => {
@@ -446,30 +446,30 @@ test("S6: START consent returns consent-required without a UI and when the human
 		const result = (await h.run.execute("consent", { lenses: ["risk"], lensesReason: "consent fixture" }, undefined, () => {}, ctx)).details;
 		assert.equal(result.outcome, "consent-required", `${label}: ${JSON.stringify(result)}`);
 		assert.deepEqual(h.answers, [], label);
-		assert.deepEqual(result.metrics.steps.map((step: { tool: string; operation?: string }) => `${step.tool}:${step.operation}`), ["gentle_review:assess", "gentle_review:inspect", "gentle_review:start"], label);
+		assert.deepEqual(result.metrics.steps.map((step: { tool: string; operation?: string }) => `${step.tool}:${step.operation}`), ["drakonc_review:assess", "drakonc_review:inspect", "drakonc_review:start"], label);
 		assert.equal(prompts, hasUI ? 1 : 0, `${label}: the consent dialog is shown only with a UI`);
 	}
 });
 
-test("gentle_review_run forwards escalate to native assess and proceeds past not-due", async () => {
+test("drakonc_review_run forwards escalate to native assess and proceeds past not-due", async () => {
 	const cwd = scratchRepo();
 	const escalate = { item: 3, reason: "touches the auth boundary" };
 	const runtime = createCoordinatorRuntime(cwd, "coordinator", { mediumAssess: true, hasUI: false });
 	try {
-		const result = await runtime.invoke("gentle_review_run", { escalate });
+		const result = await runtime.invoke("drakonc_review_run", { escalate });
 		assert.notEqual((result as { details?: { outcome?: string } }).details?.outcome ?? (result as { outcome?: string }).outcome, "not-due");
 		const assess = runtime.nativeRequests.find((entry) => entry.operation === "assess")!.request as { escalate?: unknown };
 		assert.deepEqual(assess.escalate, escalate);
 	} finally { runtime.close(); }
 });
 
-test("gentle_review_run never sends the escalation to a host STATUS; over an existing lineage it behaves exactly like without it", async () => {
+test("drakonc_review_run never sends the escalation to a host STATUS; over an existing lineage it behaves exactly like without it", async () => {
 	const escalate = { item: 3, reason: "touches the auth boundary" };
 	const outcomes: unknown[] = [];
 	for (const extra of [{}, { escalate }]) {
 		const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { hasUI: false });
 		try {
-			const result = await runtime.invoke("gentle_review_run", extra) as { details?: { outcome?: string }; outcome?: string };
+			const result = await runtime.invoke("drakonc_review_run", extra) as { details?: { outcome?: string }; outcome?: string };
 			outcomes.push(result.details?.outcome ?? result.outcome);
 			for (const entry of runtime.nativeRequests.filter((request) => request.operation === "target-status")) assert.equal("escalate" in (entry.request as object), false, "no host STATUS carries the escalation");
 		} finally { runtime.close(); }
@@ -478,30 +478,30 @@ test("gentle_review_run never sends the escalation to a host STATUS; over an exi
 	assert.notEqual(outcomes[0], "blocked");
 });
 
-test("gentle_review_run with a due escalation sends it to assess and START only, never to a host STATUS", async () => {
+test("drakonc_review_run with a due escalation sends it to assess and START only, never to a host STATUS", async () => {
 	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { mediumAssess: true, hasUI: false });
 	try {
-		await runtime.invoke("gentle_review_run", { escalate: { item: 3, reason: "touches the auth boundary" } }).catch(() => undefined);
+		await runtime.invoke("drakonc_review_run", { escalate: { item: 3, reason: "touches the auth boundary" } }).catch(() => undefined);
 		assert.ok(runtime.nativeRequests.some((entry) => entry.operation === "assess" && (entry.request as { escalate?: unknown }).escalate !== undefined));
 		for (const entry of runtime.nativeRequests.filter((request) => request.operation === "target-status")) assert.equal("escalate" in (entry.request as object), false, "no host STATUS carries the escalation");
 	} finally { runtime.close(); }
 });
 
-test("gentle_review_run without escalate keeps a medium candidate not-due", async () => {
+test("drakonc_review_run without escalate keeps a medium candidate not-due", async () => {
 	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { mediumAssess: true, hasUI: false });
 	try {
-		const result = await runtime.invoke("gentle_review_run", {}) as { details?: { outcome?: string }; outcome?: string };
+		const result = await runtime.invoke("drakonc_review_run", {}) as { details?: { outcome?: string }; outcome?: string };
 		assert.equal(result.details?.outcome ?? result.outcome, "not-due");
 		const assess = runtime.nativeRequests.find((entry) => entry.operation === "assess")!.request as { escalate?: unknown };
 		assert.equal(assess.escalate, undefined);
 	} finally { runtime.close(); }
 });
 
-test("gentle_review_run rejects an invalid escalate before any native call", async () => {
+test("drakonc_review_run rejects an invalid escalate before any native call", async () => {
 	const runtime = createCoordinatorRuntime(scratchRepo(), "coordinator", { mediumAssess: true, hasUI: false });
 	try {
 		for (const escalate of [{ item: 7, reason: "x" }, { item: 2, reason: "  " }, { item: 2, reason: "é".repeat(251) }, { item: 2, reason: "two\nlines" }, { item: 2 }, "high"]) {
-			await assert.rejects(Promise.resolve().then(() => runtime.invoke("gentle_review_run", { escalate })), /escalate/);
+			await assert.rejects(Promise.resolve().then(() => runtime.invoke("drakonc_review_run", { escalate })), /escalate/);
 		}
 		assert.deepEqual(runtime.nativeRequests.filter((entry) => entry.operation === "assess"), []);
 	} finally { runtime.close(); }

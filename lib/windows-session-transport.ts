@@ -31,7 +31,7 @@ const RPC_DEADLINE_MS = 2_000;
 const STARTUP_DEADLINE_MS = 30_000;
 const CALLBACK_DEADLINE_MS = 2_000;
 const SHUTDOWN_GRACE_MS = 500;
-const PIPE = /^\\\\\.\\pipe\\gentle-pi-[A-Za-z0-9-]{1,96}$/;
+const PIPE = /^\\\\\.\\pipe\\drakonc-pi-[A-Za-z0-9-]{1,96}$/;
 const SESSION = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 type HostState = Readonly<{ state: "partial" }> | Readonly<{ state: "initialized"; bootstrap: "complete" }> | Readonly<{ state: "initialized"; bootstrap: "complete"; entries: number }>;

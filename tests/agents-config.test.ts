@@ -24,14 +24,14 @@ import {
 import type { AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { THINKING_LEVELS } from "../lib/model-routing-authority.ts";
 
-// Gentle Agents configuration: markdown agent definitions (the same files
-// gentle-ai installs) and subagents.json, both parsed without touching pi.
+// Drakonc Agents configuration: markdown agent definitions (the same files
+// drakonc-ai installs) and subagents.json, both parsed without touching pi.
 
-const root = mkdtempSync(join(tmpdir(), "gentle-agents-config-"));
+const root = mkdtempSync(join(tmpdir(), "drakonc-agents-config-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 
 const EXPLORER = `---
-name: gentle-ai-explore
+name: drakonc-ai-explore
 description: Read-only exploration and mapping.
 model: openai-codex/gpt-5.6-terra
 thinking: high
@@ -58,10 +58,10 @@ test("parseModelRef splits provider/id and accepts a bare id", () => {
 	assert.equal(parseModelRef("   "), undefined);
 });
 
-test("parseAgentDefinition builds a definition from the gentle-ai agent format", () => {
-	const agent = parseAgentDefinition(EXPLORER, "/home/x/.pi/agent/agents/gentle-ai-explore.md", "global");
+test("parseAgentDefinition builds a definition from the drakonc-ai agent format", () => {
+	const agent = parseAgentDefinition(EXPLORER, "/home/x/.pi/agent/agents/drakonc-ai-explore.md", "global");
 	assert.ok(!("error" in agent));
-	assert.equal(agent.name, "gentle-ai-explore");
+	assert.equal(agent.name, "drakonc-ai-explore");
 	assert.equal(agent.description, "Read-only exploration and mapping.");
 	assert.deepEqual(agent.model, { provider: "openai-codex", id: "gpt-5.6-terra" });
 	assert.equal(agent.thinking, "high");
@@ -158,7 +158,7 @@ test("discoverAgents merges the four directories with project over global and su
 	writeFileSync(join(cwd, ".pi/agents/broken.md"), "---\nthinking: nope\n---\nx");
 	writeFileSync(join(cwd, ".pi/agents/notes.txt"), "ignored");
 	const { agents, errors } = discoverAgents({ cwd, home });
-	assert.deepEqual(agents.map((agent) => `${agent.name}:${agent.description}:${agent.scope}`), ["gentle-ai-explore:Read-only exploration and mapping.:global", "shared:project agents:project"]);
+	assert.deepEqual(agents.map((agent) => `${agent.name}:${agent.description}:${agent.scope}`), ["drakonc-ai-explore:Read-only exploration and mapping.:global", "shared:project agents:project"]);
 	assert.equal(errors.length, 1);
 	assert.match(errors[0], /broken\.md/);
 	assert.deepEqual(discoverAgents({ cwd: join(root, "empty"), home: join(root, "nohome") }), { agents: [], errors: [], notices: [] });
@@ -225,7 +225,7 @@ test("parseAgentsConfig bounds the delivered child report at 16,384 bytes unless
 });
 
 test("resolveAgentProfile prefers the profile, then the definition, then the defaults", () => {
-	const config = parseAgentsConfig({ default_model: "openai-codex/gpt-6-astra", default_effort: "medium", model_profiles: { "gentle-ai-explore": { effort: "high" } } }, undefined);
+	const config = parseAgentsConfig({ default_model: "openai-codex/gpt-6-astra", default_effort: "medium", model_profiles: { "drakonc-ai-explore": { effort: "high" } } }, undefined);
 	const explore = parseAgentDefinition(EXPLORER, "/x/explore.md", "global");
 	assert.ok(!("error" in explore));
 	assert.deepEqual(resolveAgentProfile(explore, config), { model: { provider: "openai-codex", id: "gpt-5.6-terra" }, thinking: "high", source: { model: "definition", thinking: "profile" } });
@@ -268,7 +268,7 @@ test("a pinned profile replaces subagent routing and leaves every other default 
 // being silently ignored while the child inherits the orchestrator model.
 test("unmatchedProfileKeys reports profile keys that match no discovered agent", () => {
 	const worker = {
-		name: "gentle-ai-worker",
+		name: "drakonc-ai-worker",
 		description: "",
 		filePath: "/x/worker.md",
 		scope: "global" as const,
@@ -278,7 +278,7 @@ test("unmatchedProfileKeys reports profile keys that match no discovered agent",
 		mode: undefined,
 		tools: [],
 	};
-	const explore = { ...worker, name: "gentle-ai-explore" };
+	const explore = { ...worker, name: "drakonc-ai-explore" };
 	const profiles = {
 		worker: { model: { provider: "nan", id: "glm5.3" }, thinking: undefined },
 		WORKER: { model: { provider: "nan", id: "glm5.3" }, thinking: undefined },
@@ -286,14 +286,14 @@ test("unmatchedProfileKeys reports profile keys that match no discovered agent",
 		explore: { model: undefined, thinking: undefined },
 	};
 	assert.deepEqual(unmatchedProfileKeys(profiles, [worker, explore]), [
-		{ key: "worker", suggestion: "gentle-ai-worker" },
-		{ key: "WORKER", suggestion: "gentle-ai-worker" },
+		{ key: "worker", suggestion: "drakonc-ai-worker" },
+		{ key: "WORKER", suggestion: "drakonc-ai-worker" },
 		{ key: "review_risk", suggestion: undefined },
-		{ key: "explore", suggestion: "gentle-ai-explore" },
+		{ key: "explore", suggestion: "drakonc-ai-explore" },
 	]);
 	// A key that exactly matches an agent name never reports, and an empty
 	// profile set reports nothing.
-	assert.deepEqual(unmatchedProfileKeys({ "gentle-ai-worker": { model: undefined, thinking: undefined } }, [worker]), []);
+	assert.deepEqual(unmatchedProfileKeys({ "drakonc-ai-worker": { model: undefined, thinking: undefined } }, [worker]), []);
 	assert.deepEqual(unmatchedProfileKeys({}, [worker]), []);
 });
 
@@ -305,10 +305,10 @@ test("staleRoutingKeys returns sorted unmatched keys with no suggestion", () => 
 });
 
 test("staleRoutingKeys excludes exact matches and near-miss suggestions", () => {
-	const agents = [{ name: "gentle-ai-worker" }, { name: "gentle-ai-explore" }];
+	const agents = [{ name: "drakonc-ai-worker" }, { name: "drakonc-ai-explore" }];
 	assert.deepEqual(staleRoutingKeys({
-		"gentle-ai-worker": {}, worker: {}, WORKER: {},
-		"GENTLE-AI-WORKER": {}, explore: {}, review_risk: {},
+		"drakonc-ai-worker": {}, worker: {}, WORKER: {},
+		"DRAKONC-AI-WORKER": {}, explore: {}, review_risk: {},
 	}, agents), ["review_risk"]);
 });
 
@@ -357,7 +357,7 @@ test("removeRoutingKeys preserves identity for empty or absent selections", () =
 
 test("removeRoutingKeysFromProfilesFile changes only affected profiles and preserves metadata", () => {
 	const file: AgentProfilesFile = {
-		kind: "gentle-pi.agent_model_profiles", version: 1, active: "primary",
+		kind: "drakonc-pi.agent_model_profiles", version: 1, active: "primary",
 		profiles: {
 			primary: { stale: { model: "old" }, keep: { model: "live" } },
 			secondary: { stale: {}, another: {} },
@@ -381,7 +381,7 @@ test("removeRoutingKeysFromProfilesFile changes only affected profiles and prese
 
 test("removeRoutingKeysFromProfilesFile preserves identity when no profile changes", () => {
 	const file: AgentProfilesFile = {
-		kind: "gentle-pi.agent_model_profiles", version: 1, profiles: { main: { keep: {} } },
+		kind: "drakonc-pi.agent_model_profiles", version: 1, profiles: { main: { keep: {} } },
 	};
 	assert.equal(removeRoutingKeysFromProfilesFile(file, []), file);
 	assert.equal(removeRoutingKeysFromProfilesFile(file, ["missing"]), file);
@@ -394,7 +394,7 @@ test("removeRoutingKeysFromProfilesFile preserves identity when no profile chang
 // routing exactly as before the fix.
 test("resolveAgentProfile never resolves through the suggestion mapping", () => {
 	const worker = {
-		name: "gentle-ai-worker",
+		name: "drakonc-ai-worker",
 		description: "",
 		filePath: "/x/worker.md",
 		scope: "global" as const,
@@ -411,10 +411,10 @@ test("resolveAgentProfile never resolves through the suggestion mapping", () => 
 	const resolved = resolveAgentProfile(worker, config);
 	assert.equal(resolved.model?.provider, "openai-codex", "the short key must not route; the agent frontmatter model wins");
 	assert.equal(resolved.source.model, "definition");
-	assert.ok(unmatchedProfileKeys(config.modelProfiles, [worker]).some((entry) => entry.key === "worker" && entry.suggestion === "gentle-ai-worker"), "the same short key is still reported with its suggestion");
+	assert.ok(unmatchedProfileKeys(config.modelProfiles, [worker]).some((entry) => entry.key === "worker" && entry.suggestion === "drakonc-ai-worker"), "the same short key is still reported with its suggestion");
 });
 
-// gentle-shell#3386: an unknown frontmatter key was silently dropped.
+// drakonc-shell#3386: an unknown frontmatter key was silently dropped.
 test("S5: an unknown frontmatter key warns with the key and the file, and the agent still loads", () => {
 	const home = join(root, "unknown-key-home");
 	const cwd = join(root, "unknown-key-project");

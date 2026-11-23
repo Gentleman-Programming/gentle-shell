@@ -4,9 +4,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
-// gentle-ai R3 (odd/tasks/pi-routing-from-bundle.md): the harness ODD step
+// drakonc-ai R3 (odd/tasks/pi-routing-from-bundle.md): the harness ODD step
 // lines 1-7, the phase-reporting line, and the resume line come from the
 // mirrored provider contract bundle's routing/pi.md instead of a hand-copied
 // literal, and the rendered primary-session prompt stays byte-identical.
@@ -17,17 +17,17 @@ import { __testing } from "../extensions/gentle-ai.ts";
 // UPDATE_PRIMARY_SESSION_PROMPT_GOLDEN=1 and review the golden diff.
 
 const REPO_ROOT = join(import.meta.dirname, "..");
-const GOLDEN_PATH = join(REPO_ROOT, "tests", "fixtures", "primary-session-prompt", "gentleman.golden.md");
+const GOLDEN_PATH = join(REPO_ROOT, "tests", "fixtures", "primary-session-prompt", "drakoncman.golden.md");
 const ACTIVE_TOOLS = ["read", "bash", "edit", "write", "subagent_run"] as const;
 const MIRROR_ROOT = join(REPO_ROOT, "contracts", "review-provider-contract-mirror");
 
 let scratch: string;
 const previousEnvironment = new Map<string, string | undefined>();
 before(() => {
-	scratch = mkdtempSync(join(tmpdir(), "gentle-pi-primary-prompt-"));
-	for (const key of ["GENTLE_PI_CONFIG_HOME", "GENTLE_PI_BACKGROUND_SUBAGENTS"]) previousEnvironment.set(key, process.env[key]);
-	process.env.GENTLE_PI_CONFIG_HOME = join(scratch, "config");
-	delete process.env.GENTLE_PI_BACKGROUND_SUBAGENTS;
+	scratch = mkdtempSync(join(tmpdir(), "drakonc-pi-primary-prompt-"));
+	for (const key of ["DRAKONC_PI_CONFIG_HOME", "DRAKONC_PI_BACKGROUND_SUBAGENTS"]) previousEnvironment.set(key, process.env[key]);
+	process.env.DRAKONC_PI_CONFIG_HOME = join(scratch, "config");
+	delete process.env.DRAKONC_PI_BACKGROUND_SUBAGENTS;
 });
 after(() => {
 	for (const [key, value] of previousEnvironment) {
@@ -38,8 +38,8 @@ after(() => {
 });
 
 function renderPrimaryPrompt(): string {
-	const prompt = __testing.buildGentlePrompt("gentleman", join(scratch, "project"), ACTIVE_TOOLS);
-	return prompt.replaceAll(join(REPO_ROOT, "assets"), "{{GENTLE_PI_ASSETS_ROOT}}");
+	const prompt = __testing.buildDrakoncPrompt("drakoncman", join(scratch, "project"), ACTIVE_TOOLS);
+	return prompt.replaceAll(join(REPO_ROOT, "assets"), "{{DRAKONC_PI_ASSETS_ROOT}}");
 }
 
 function mirroredRoutingText(): string {
@@ -88,10 +88,10 @@ test("S3: the mirrored routing Close owns the authorized-work boundary without a
 	assert.ok(!routing.includes("never more verification"), "the canonical Close must not license a broad verification stop");
 });
 
-test("extensions/gentle-ai.ts no longer carries the ODD step lines as string literals", () => {
-	const source = readFileSync(join(REPO_ROOT, "extensions", "gentle-ai.ts"), "utf8");
-	for (const literal of ["1. **Authorize.**", "5. **Track before the first write.**", "7. **Close.**", "Phase reporting: the Gentle Shell prompt label", "Resume an interrupted feature with"]) {
-		assert.ok(!source.includes(literal), `extensions/gentle-ai.ts still hard-codes ${JSON.stringify(literal)}`);
+test("extensions/drakonc-ai.ts no longer carries the ODD step lines as string literals", () => {
+	const source = readFileSync(join(REPO_ROOT, "extensions", "drakonc-ai.ts"), "utf8");
+	for (const literal of ["1. **Authorize.**", "5. **Track before the first write.**", "7. **Close.**", "Phase reporting: the Drakonc Shell prompt label", "Resume an interrupted feature with"]) {
+		assert.ok(!source.includes(literal), `extensions/drakonc-ai.ts still hard-codes ${JSON.stringify(literal)}`);
 	}
 });
 
@@ -102,7 +102,7 @@ test("a changed mirrored routing block changes the rendered steps", () => {
 });
 
 test("a tampered or missing mirrored routing/pi.md fails closed with an explicit error", () => {
-	const unavailable = /Gentle Shell cannot render its ODD steps: the mirrored provider bundle's routing\/pi\.md is missing, unreadable, or fails digest verification/;
+	const unavailable = /Drakonc Shell cannot render its ODD steps: the mirrored provider bundle's routing\/pi\.md is missing, unreadable, or fails digest verification/;
 	assert.throws(() => __testing.readMirroredOddProtocolSteps(tempRoutingMirror(mirroredRoutingText(), "0".repeat(64))), unavailable);
 	assert.throws(() => __testing.readMirroredOddProtocolSteps(join(scratch, "absent-mirror")), unavailable);
 });

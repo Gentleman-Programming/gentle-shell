@@ -3,11 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
 const { classifyGuardedCommand, evaluateGuardedCommand, guardedCommandPreview, guardedCommandTitle, isReversibleYoloCommand, yoloConfiguredRestriction } = __testing;
 
-// gentle-shell#2172: YOLO waives every reversible push and non-interactive
+// drakonc-shell#2172: YOLO waives every reversible push and non-interactive
 // rebase segment; anything that deletes, rewrites or publishes keeps asking.
 test("YOLO waives reversible push and rebase segments after full evaluation (#2172)", () => {
 	const config = { autonomousMode: false, guardedCommands: {} };
@@ -66,7 +66,7 @@ test("YOLO waives recursive removal of own temp scratch only", () => {
 	};
 	const waived = (command: string) => isReversibleYoloCommand(command, evaluateGuardedCommand(command, config), fs);
 	for (const command of [
-		"rm -rf /tmp/tmp.8phya1BpFr /tmp/tmp.LKd1kBX8Rw /tmp/tmp.C94OVzf01o /tmp/ctx-backstop-pnpm-test.log; cd /home/gentleman/work/gentle-pi-worktrees/harness-r1 && git log --oneline -1",
+		"rm -rf /tmp/tmp.8phya1BpFr /tmp/tmp.LKd1kBX8Rw /tmp/tmp.C94OVzf01o /tmp/ctx-backstop-pnpm-test.log; cd /home/drakoncman/work/drakonc-pi-worktrees/harness-r1 && git log --oneline -1",
 		"rm -rf /tmp/tmp.abcdef1234", "rm -rf /tmp/ctx-backstop-pnpm-test.log", "rm -rf /tmp/latest", "rm -rf /tmp/tmp.gone1234",
 		"rm -r -f -- /var/tmp/tmp.zzzzzz", "rm -rf /tmp/tmp.abcdef1234 && git push -u origin feature/x",
 		"rm -rf /tmp/tmp.abcdef1234 && rm -rf /tmp/tmp.gone1234\nrm -rf /tmp/latest || git log --oneline -1",
@@ -89,8 +89,8 @@ test("YOLO waives recursive removal of own temp scratch only", () => {
 		"rm -rf /tmp/tmp.gone1234; mv /home/u/data /tmp/tmp.abcdef1234; rm -rf /tmp/tmp.abcdef1234",
 	]) assert.equal(waived(command), false, command);
 	// A tmpdir under home would make top-level repository files look like scratch.
-	const underHome = { ...fs, home: "/home/gentleman", tmpdir: "/home/gentleman/work/repo", lstat: () => entry("file") };
-	assert.equal(isReversibleYoloCommand("rm -rf /home/gentleman/work/repo/README.md", evaluateGuardedCommand("rm -rf /home/gentleman/work/repo/README.md", config), underHome), false);
+	const underHome = { ...fs, home: "/home/drakoncman", tmpdir: "/home/drakoncman/work/repo", lstat: () => entry("file") };
+	assert.equal(isReversibleYoloCommand("rm -rf /home/drakoncman/work/repo/README.md", evaluateGuardedCommand("rm -rf /home/drakoncman/work/repo/README.md", config), underHome), false);
 	// A missing uid (no POSIX ownership) never proves own scratch.
 	assert.equal(isReversibleYoloCommand("rm -rf /tmp/tmp.abcdef1234", evaluateGuardedCommand("rm -rf /tmp/tmp.abcdef1234", config), { ...fs, uid: undefined }), false);
 });
@@ -118,7 +118,7 @@ test("YOLO waives push and rebase segments with harmless redirections and read-o
 	]) assert.equal(waived(command), false, command);
 });
 
-// gentle-shell#2174: a guarded word inside an argument of a known data command
+// drakonc-shell#2174: a guarded word inside an argument of a known data command
 // (search, print, view, non-executing edit) is text, not an operation. Every
 // opaque form keeps today's lexical match.
 test("guarded words inside data-command arguments are not guarded operations (#2174)", () => {
@@ -179,7 +179,7 @@ test("guarded words inside data-command arguments are not guarded operations (#2
 	] as const) assert.equal(classifyGuardedCommand(command, config), expected, command);
 });
 
-// gentle-shell#1202: a read-only git or gh segment elsewhere on the line does not
+// drakonc-shell#1202: a read-only git or gh segment elsewhere on the line does not
 // make the data commands' arguments executable. Anything that can run or re-route
 // text keeps the lexical guard.
 test("guarded words inside data-command arguments stay prose next to read-only git and gh segments (#1202)", () => {
@@ -235,7 +235,7 @@ test("guarded words inside data-command arguments stay prose next to read-only g
 	] as const) assert.equal(classifyGuardedCommand(command, config), expected, command);
 });
 
-// gentle-shell#1202 S6/S7: through the same evaluation path the extension uses.
+// drakonc-shell#1202 S6/S7: through the same evaluation path the extension uses.
 test("YOLO still waives a reversible push on a line whose grep pattern mentions the phrase (#1202)", () => {
 	const config = { autonomousMode: false, guardedCommands: {} };
 	const waived = (command: string) => isReversibleYoloCommand(command, evaluateGuardedCommand(command, config));
@@ -273,23 +273,23 @@ test("YOLO preserves explicit push restrictions in either config layer independe
 	const cwd = join(root, "repo");
 	const home = join(root, "home");
 	try {
-		const pushOnly = (): unknown => yoloConfiguredRestriction(cwd, ["gitPush"], { gentlePiConfigHome: home });
+		const pushOnly = (): unknown => yoloConfiguredRestriction(cwd, ["gitPush"], { drakoncPiConfigHome: home });
 		assert.equal(pushOnly(), undefined);
 		writeConfig(home, "runtime-guardrails.json", { autonomousMode: false, guardedCommands: { gitPush: "confirm" } });
-		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { autonomousMode: true, guardedCommands: { gitPush: "allow" } });
+		writeConfig(cwd, ".pi/drakonc-ai/runtime-guardrails.json", { autonomousMode: true, guardedCommands: { gitPush: "allow" } });
 		assert.equal(pushOnly(), "confirm");
 		writeConfig(home, "runtime-guardrails.json", { autonomousMode: true, guardedCommands: { gitPush: "allow" } });
 		assert.equal(pushOnly(), undefined);
-		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { guardedCommands: { gitPush: "block" } });
+		writeConfig(cwd, ".pi/drakonc-ai/runtime-guardrails.json", { guardedCommands: { gitPush: "block" } });
 		assert.equal(pushOnly(), "block");
-		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { guardedCommands: { gitPush: "confirm" } });
+		writeConfig(cwd, ".pi/drakonc-ai/runtime-guardrails.json", { guardedCommands: { gitPush: "confirm" } });
 		assert.equal(pushOnly(), "confirm");
-		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", null);
+		writeConfig(cwd, ".pi/drakonc-ai/runtime-guardrails.json", null);
 		assert.equal(pushOnly(), "confirm");
-		// gentle-shell#2172: a rebase rule restricts only commands that rebase.
-		writeConfig(cwd, ".pi/gentle-ai/runtime-guardrails.json", { guardedCommands: { gitRebase: "block" } });
+		// drakonc-shell#2172: a rebase rule restricts only commands that rebase.
+		writeConfig(cwd, ".pi/drakonc-ai/runtime-guardrails.json", { guardedCommands: { gitRebase: "block" } });
 		assert.equal(pushOnly(), undefined, "a rebase rule does not restrict a push-only command");
-		assert.equal(yoloConfiguredRestriction(cwd, ["gitPush", "gitRebase"], { gentlePiConfigHome: home }), "block");
+		assert.equal(yoloConfiguredRestriction(cwd, ["gitPush", "gitRebase"], { drakoncPiConfigHome: home }), "block");
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -326,7 +326,7 @@ test("quoted separator arguments cannot waive hard denial or invent destruction"
 	}
 });
 
-// gentle-pi#2285: compound bodies, backticks and eval reach the data-loss
+// drakonc-pi#2285: compound bodies, backticks and eval reach the data-loss
 // boundary, while the YOLO scratch waiver still covers leading direct `rm` only.
 test("removal after reserved words, in backticks and in eval needs fresh confirmation and is never scratch-waived", () => {
 	const config = { autonomousMode: true, guardedCommands: { gitPush: "allow" as const } };
@@ -361,7 +361,7 @@ test("removal after reserved words, in backticks and in eval needs fresh confirm
 // ---------------------------------------------------------------------------
 
 function makeTmpDir(): string {
-	return mkdtempSync(join(tmpdir(), "gentle-pi-autonomous-"));
+	return mkdtempSync(join(tmpdir(), "drakonc-pi-autonomous-"));
 }
 
 function writeConfig(dir: string, relPath: string, content: unknown): void {
@@ -675,7 +675,7 @@ test("loadRuntimeGuardrailsConfig: returns off config when no file exists", () =
 	const dir = makeTmpDir();
 	try {
 		const config = __testing.loadRuntimeGuardrailsConfig(dir, {
-			gentlePiConfigHome: join(dir, "global-config"),
+			drakoncPiConfigHome: join(dir, "global-config"),
 		});
 		assert.equal(config.autonomousMode, false);
 	} finally {
@@ -683,19 +683,19 @@ test("loadRuntimeGuardrailsConfig: returns off config when no file exists", () =
 	}
 });
 
-test("loadRuntimeGuardrailsConfig: env var GENTLE_PI_AUTONOMOUS_MODE=1 activates mode", () => {
-	const original = process.env.GENTLE_PI_AUTONOMOUS_MODE;
-	process.env.GENTLE_PI_AUTONOMOUS_MODE = "1";
+test("loadRuntimeGuardrailsConfig: env var DRAKONC_PI_AUTONOMOUS_MODE=1 activates mode", () => {
+	const original = process.env.DRAKONC_PI_AUTONOMOUS_MODE;
+	process.env.DRAKONC_PI_AUTONOMOUS_MODE = "1";
 	const dir = makeTmpDir();
 	try {
 		const config = __testing.loadRuntimeGuardrailsConfig(dir, {
-			gentlePiConfigHome: join(dir, "global-config"),
+			drakoncPiConfigHome: join(dir, "global-config"),
 		});
 		assert.equal(config.autonomousMode, true);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
-		if (original === undefined) delete process.env.GENTLE_PI_AUTONOMOUS_MODE;
-		else process.env.GENTLE_PI_AUTONOMOUS_MODE = original;
+		if (original === undefined) delete process.env.DRAKONC_PI_AUTONOMOUS_MODE;
+		else process.env.DRAKONC_PI_AUTONOMOUS_MODE = original;
 	}
 });
 
@@ -708,7 +708,7 @@ test("loadRuntimeGuardrailsConfig: global config file activates autonomous mode"
 			guardedCommands: { gitPush: "allow" },
 		});
 		const config = __testing.loadRuntimeGuardrailsConfig(join(dir, "project"), {
-			gentlePiConfigHome: globalConfigDir,
+			drakoncPiConfigHome: globalConfigDir,
 		});
 		assert.equal(config.autonomousMode, true);
 		assert.equal(config.guardedCommands.gitPush, "allow");
@@ -727,13 +727,13 @@ test("loadRuntimeGuardrailsConfig: project config overrides global config", () =
 			autonomousMode: true,
 			guardedCommands: { gitPush: "allow", npmPublish: "confirm" },
 		});
-		writeConfig(projectDir, join(".pi", "gentle-ai", "runtime-guardrails.json"), {
+		writeConfig(projectDir, join(".pi", "drakonc-ai", "runtime-guardrails.json"), {
 			autonomousMode: true,
 			guardedCommands: { gitPush: "confirm", npmPublish: "block" },
 		});
 
 		const config = __testing.loadRuntimeGuardrailsConfig(projectDir, {
-			gentlePiConfigHome: globalConfigDir,
+			drakoncPiConfigHome: globalConfigDir,
 		});
 		assert.equal(config.autonomousMode, true);
 		assert.equal(config.guardedCommands.gitPush, "confirm");
@@ -752,7 +752,7 @@ test("loadRuntimeGuardrailsConfig: invalid JSON in config fails safe (autonomous
 		writeFileSync(configPath, "{ not valid json }");
 
 		const config = __testing.loadRuntimeGuardrailsConfig(join(dir, "project"), {
-			gentlePiConfigHome: globalConfigDir,
+			drakoncPiConfigHome: globalConfigDir,
 		});
 		assert.equal(config.autonomousMode, false);
 	} finally {
@@ -767,7 +767,7 @@ test("loadRuntimeGuardrailsConfig: non-object JSON fails safe", () => {
 		writeConfig(globalConfigDir, "runtime-guardrails.json", [1, 2, 3]);
 
 		const config = __testing.loadRuntimeGuardrailsConfig(join(dir, "project"), {
-			gentlePiConfigHome: globalConfigDir,
+			drakoncPiConfigHome: globalConfigDir,
 		});
 		assert.equal(config.autonomousMode, false);
 	} finally {
@@ -788,14 +788,14 @@ test("loadRuntimeGuardrailsConfig: invalid project config fails safe (autonomous
 		const projectConfigPath = join(
 			projectDir,
 			".pi",
-			"gentle-ai",
+			"drakonc-ai",
 			"runtime-guardrails.json",
 		);
 		mkdirSync(dirname(projectConfigPath), { recursive: true });
 		writeFileSync(projectConfigPath, "{ bad json }");
 
 		const config = __testing.loadRuntimeGuardrailsConfig(projectDir, {
-			gentlePiConfigHome: globalConfigDir,
+			drakoncPiConfigHome: globalConfigDir,
 		});
 		assert.equal(config.autonomousMode, false);
 	} finally {
@@ -907,51 +907,51 @@ test("classifyGuardedCommand: autonomousMode=true, empty guardedCommands, gitPus
 // Fix 5c: env var negatives — only "1" activates autonomous mode
 // ---------------------------------------------------------------------------
 
-test("loadRuntimeGuardrailsConfig: GENTLE_PI_AUTONOMOUS_MODE=0 does NOT activate autonomous mode", () => {
-	const original = process.env.GENTLE_PI_AUTONOMOUS_MODE;
-	process.env.GENTLE_PI_AUTONOMOUS_MODE = "0";
+test("loadRuntimeGuardrailsConfig: DRAKONC_PI_AUTONOMOUS_MODE=0 does NOT activate autonomous mode", () => {
+	const original = process.env.DRAKONC_PI_AUTONOMOUS_MODE;
+	process.env.DRAKONC_PI_AUTONOMOUS_MODE = "0";
 	const dir = makeTmpDir();
 	try {
 		const config = __testing.loadRuntimeGuardrailsConfig(dir, {
-			gentlePiConfigHome: join(dir, "global-config"),
+			drakoncPiConfigHome: join(dir, "global-config"),
 		});
 		assert.equal(config.autonomousMode, false);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
-		if (original === undefined) delete process.env.GENTLE_PI_AUTONOMOUS_MODE;
-		else process.env.GENTLE_PI_AUTONOMOUS_MODE = original;
+		if (original === undefined) delete process.env.DRAKONC_PI_AUTONOMOUS_MODE;
+		else process.env.DRAKONC_PI_AUTONOMOUS_MODE = original;
 	}
 });
 
-test("loadRuntimeGuardrailsConfig: GENTLE_PI_AUTONOMOUS_MODE=true does NOT activate autonomous mode", () => {
-	const original = process.env.GENTLE_PI_AUTONOMOUS_MODE;
-	process.env.GENTLE_PI_AUTONOMOUS_MODE = "true";
+test("loadRuntimeGuardrailsConfig: DRAKONC_PI_AUTONOMOUS_MODE=true does NOT activate autonomous mode", () => {
+	const original = process.env.DRAKONC_PI_AUTONOMOUS_MODE;
+	process.env.DRAKONC_PI_AUTONOMOUS_MODE = "true";
 	const dir = makeTmpDir();
 	try {
 		const config = __testing.loadRuntimeGuardrailsConfig(dir, {
-			gentlePiConfigHome: join(dir, "global-config"),
+			drakoncPiConfigHome: join(dir, "global-config"),
 		});
 		assert.equal(config.autonomousMode, false);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
-		if (original === undefined) delete process.env.GENTLE_PI_AUTONOMOUS_MODE;
-		else process.env.GENTLE_PI_AUTONOMOUS_MODE = original;
+		if (original === undefined) delete process.env.DRAKONC_PI_AUTONOMOUS_MODE;
+		else process.env.DRAKONC_PI_AUTONOMOUS_MODE = original;
 	}
 });
 
-test("loadRuntimeGuardrailsConfig: GENTLE_PI_AUTONOMOUS_MODE='' does NOT activate autonomous mode", () => {
-	const original = process.env.GENTLE_PI_AUTONOMOUS_MODE;
-	process.env.GENTLE_PI_AUTONOMOUS_MODE = "";
+test("loadRuntimeGuardrailsConfig: DRAKONC_PI_AUTONOMOUS_MODE='' does NOT activate autonomous mode", () => {
+	const original = process.env.DRAKONC_PI_AUTONOMOUS_MODE;
+	process.env.DRAKONC_PI_AUTONOMOUS_MODE = "";
 	const dir = makeTmpDir();
 	try {
 		const config = __testing.loadRuntimeGuardrailsConfig(dir, {
-			gentlePiConfigHome: join(dir, "global-config"),
+			drakoncPiConfigHome: join(dir, "global-config"),
 		});
 		assert.equal(config.autonomousMode, false);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
-		if (original === undefined) delete process.env.GENTLE_PI_AUTONOMOUS_MODE;
-		else process.env.GENTLE_PI_AUTONOMOUS_MODE = original;
+		if (original === undefined) delete process.env.DRAKONC_PI_AUTONOMOUS_MODE;
+		else process.env.DRAKONC_PI_AUTONOMOUS_MODE = original;
 	}
 });
 
@@ -968,7 +968,7 @@ test("loadRuntimeGuardrailsConfig: autonomousMode:1 (number) in JSON does NOT ac
 			guardedCommands: {},
 		});
 		const config = __testing.loadRuntimeGuardrailsConfig(join(dir, "project"), {
-			gentlePiConfigHome: globalConfigDir,
+			drakoncPiConfigHome: globalConfigDir,
 		});
 		assert.equal(config.autonomousMode, false);
 	} finally {
@@ -985,7 +985,7 @@ test('loadRuntimeGuardrailsConfig: autonomousMode:"true" (string) in JSON does N
 			guardedCommands: {},
 		});
 		const config = __testing.loadRuntimeGuardrailsConfig(join(dir, "project"), {
-			gentlePiConfigHome: globalConfigDir,
+			drakoncPiConfigHome: globalConfigDir,
 		});
 		assert.equal(config.autonomousMode, false);
 	} finally {
@@ -1002,14 +1002,14 @@ test("loadRuntimeGuardrailsConfig: autonomousMode:{} (object) in JSON does NOT a
 			guardedCommands: {},
 		});
 		const config = __testing.loadRuntimeGuardrailsConfig(join(dir, "project"), {
-			gentlePiConfigHome: globalConfigDir,
+			drakoncPiConfigHome: globalConfigDir,
 		});
 		assert.equal(config.autonomousMode, false);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
-// evaluateBashPolicies — ordered bash command policy seam (gentle-pi#405 S1)
+// evaluateBashPolicies — ordered bash command policy seam (drakonc-pi#405 S1)
 // ---------------------------------------------------------------------------
 
 type BashPolicySeamArgs = Parameters<typeof __testing.evaluateBashPolicies>;
@@ -1116,7 +1116,7 @@ test("evaluateBashPolicies: forwards superYoloActive to every policy", async () 
 });
 
 test("evaluateBashPolicies: real runtime-guardrails policy defers a non-guarded command to the Auto gate", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-ai-bash-policy-auto-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-ai-bash-policy-auto-"));
 	try {
 		const seam = makeBashPolicySeamHarness(cwd);
 		let gateCalls = 0;
@@ -1204,8 +1204,8 @@ test("evaluateBashPolicies: allow verdict from the last policy returns undefined
 
 test("evaluateBashPolicies: real runtime-guardrails policy blocks hard-deny commands through the seam", async () => {
 	const dir = makeTmpDir();
-	const originalConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = join(dir, "config-home");
+	const originalConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = join(dir, "config-home");
 	try {
 		const seam = makeBashPolicySeamHarness(dir);
 		const result = await __testing.evaluateBashPolicies(
@@ -1219,16 +1219,16 @@ test("evaluateBashPolicies: real runtime-guardrails policy blocks hard-deny comm
 		assert.match(result?.reason ?? "", /destructive/);
 	} finally {
 		if (originalConfigHome === undefined)
-			delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = originalConfigHome;
+			delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = originalConfigHome;
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
 test("evaluateBashPolicies: real runtime-guardrails policy allows a non-guarded command through the seam", async () => {
 	const dir = makeTmpDir();
-	const originalConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = join(dir, "config-home");
+	const originalConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = join(dir, "config-home");
 	try {
 		const seam = makeBashPolicySeamHarness(dir);
 		const result = await __testing.evaluateBashPolicies(
@@ -1241,8 +1241,8 @@ test("evaluateBashPolicies: real runtime-guardrails policy allows a non-guarded 
 		assert.equal(result, undefined);
 	} finally {
 		if (originalConfigHome === undefined)
-			delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = originalConfigHome;
+			delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = originalConfigHome;
 		rmSync(dir, { recursive: true, force: true });
 	}
 });

@@ -148,17 +148,17 @@ function relayFixture(t: test.TestContext, rejectSubmission = false): ReviewHost
 	// native state, real model, credentials or network are involved.
 	writeFileSync(join(cwd, "review"), `const fs=require('node:fs');const args=process.argv.slice(2);if(args.includes('--materialize=true'))process.stdout.write('PRIVATE FROZEN PROMPT');else{const input=args.find(v=>v.startsWith('--input=')).slice(8);fs.writeFileSync('submitted.raw',fs.readFileSync(input));${rejectSubmission ? "process.stderr.write('fixture refused [invalid_request]');process.exitCode=1;" : "process.stdout.write('{\"admission_decision\":\"completed\"}');"}}`);
 	return { captureArgumentTokens: ["--agent=pi", "--materialize=true"], submission: { operationToken: "capture-result", argumentTokens: ["--input={{value}}"], values: [{ slot: "reviewer_result", domain: "artifact_path_or_stdin", substitutionLocation: 0 }] },
-		gentleAiExecutable: process.execPath, targetCwd: cwd, reviewerRegistry: deps().registry,
-		selection: request.selection, routingKey: request.routingKey, environment: { ...process.env }, gentleAiTimeoutMs: 5_000, piTimeoutMs: 30_000 };
+		drakoncAiExecutable: process.execPath, targetCwd: cwd, reviewerRegistry: deps().registry,
+		selection: request.selection, routingKey: request.routingKey, environment: { ...process.env }, drakoncAiTimeoutMs: 5_000, piTimeoutMs: 30_000 };
 }
 
 for (const phase of ["first-output", "stream-idle"] as const) {
 	test(`#2676: production relay preserves ${phase} evidence and never submits a stalled stream`, async t => {
 		const fixture = relayFixture(t), stream = createAssistantMessageEventStream();
 		let calls = 0;
-		fixture.environment!.GENTLE_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS = "1000";
-		fixture.environment!.GENTLE_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS = "20";
-		if (phase === "first-output") fixture.environment!.GENTLE_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS = "20";
+		fixture.environment!.DRAKONC_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS = "1000";
+		fixture.environment!.DRAKONC_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS = "20";
+		if (phase === "first-output") fixture.environment!.DRAKONC_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS = "20";
 		const registry = { ...fixture.reviewerRegistry!, getProvider: () => ({ streamSimple: () => {
 			calls++;
 			if (phase === "stream-idle") stream.push({ type: "thinking_delta", contentIndex: 0, delta: "PRIVATE THINKING", partial: assistant() as never });

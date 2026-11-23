@@ -1,14 +1,14 @@
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 
-// The conversation card content level chosen in Gentle → Customize. `default`
+// The conversation card content level chosen in Drakonc → Customize. `default`
 // keeps the quiet tools' result previews; `minimal` draws every quiet tool
 // card as the command alone. A missing file means minimal, the default; a
 // malformed or unreadable one also reads as minimal, and the writer refuses
 // to replace it so a hand edit is never lost. There is no environment override.
-export const CARD_CONTENT_SCHEMA = "gentle-pi.card-content/v1";
+export const CARD_CONTENT_SCHEMA = "drakonc-pi.card-content/v1";
 const CARD_CONTENT_FILE = "card-content.json";
 
 export const CARD_CONTENT = {
@@ -20,7 +20,7 @@ export type CardContent = (typeof CARD_CONTENT)[keyof typeof CARD_CONTENT];
 /** What a missing or unreadable preference means: command-only cards. `default` names the preview level. */
 export const DEFAULT_CARD_CONTENT: CardContent = CARD_CONTENT.MINIMAL;
 
-interface CardContentOptions { gentlePiConfigHome?: string }
+interface CardContentOptions { drakoncPiConfigHome?: string }
 
 export interface CardContentResolution {
 	content: CardContent;
@@ -43,7 +43,7 @@ export function parseCardContentFile(raw: string): CardContent | undefined {
 }
 
 export function resolveCardContent(options: CardContentOptions = {}): CardContentResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), CARD_CONTENT_FILE);
+	const globalFile = join(options.drakoncPiConfigHome ?? drakoncPiConfigHome(), CARD_CONTENT_FILE);
 	try {
 		const content = parseCardContentFile(readFileSync(globalFile, "utf8"));
 		return { content: content ?? DEFAULT_CARD_CONTENT, source: "global_file", malformed: content === undefined, globalFile };
@@ -55,8 +55,8 @@ export function resolveCardContent(options: CardContentOptions = {}): CardConten
 
 export function writeCardContent(content: CardContent, options: CardContentOptions = {}): string {
 	if (!isCardContent(content)) throw new TypeError("Invalid card content");
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
-	const current = resolveCardContent({ gentlePiConfigHome: home });
+	const home = options.drakoncPiConfigHome ?? drakoncPiConfigHome();
+	const current = resolveCardContent({ drakoncPiConfigHome: home });
 	if (current.malformed) throw new Error(`Cannot update malformed or unreadable card content preference: ${current.globalFile}`);
 	const path = current.globalFile;
 	const temporary = `${path}.${randomUUID()}.tmp`;
@@ -71,11 +71,11 @@ export function writeCardContent(content: CardContent, options: CardContentOptio
 }
 
 // Pi loads every extension with its own module cache, so the renderers in
-// quiet-tools and the customize command in gentle-shell never share a module
+// quiet-tools and the customize command in drakonc-shell never share a module
 // instance. The process-wide slot keeps one live content level per process,
-// exactly like the card style slot; an unset slot (no Gentle Shell resolution
+// exactly like the card style slot; an unset slot (no Drakonc Shell resolution
 // yet, e.g. a host without it) reads as the `default` preview level.
-const CARD_CONTENT_SLOT = Symbol.for("gentle-pi.card-content");
+const CARD_CONTENT_SLOT = Symbol.for("drakonc-pi.card-content");
 const contentState = globalThis as typeof globalThis & { [CARD_CONTENT_SLOT]?: unknown };
 
 export function cardContent(): CardContent {

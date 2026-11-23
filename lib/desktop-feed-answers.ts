@@ -1,4 +1,4 @@
-// Gentle Shell Desktop answers for sessions outside Herdr app (odd/tasks/herdr-desktop.md
+// Drakonc Shell Desktop answers for sessions outside Herdr app (odd/tasks/herdr-desktop.md
 // T11, S10). The ask tools (extensions/ask-user-choice.ts, ask-user-question.ts) register one
 // handle per open TUI list, by tool call id, in a process-wide registry (not on the event bus:
 // the tools' bus traffic stays exactly as it was); the desktop feed looks the open question's
@@ -9,7 +9,7 @@
 // multi-question or multi-select list); the handle only refuses what its list cannot take.
 
 /** One registry per process, whichever copy of this module an extension loaded. */
-const REGISTRY = Symbol.for("gentle-pi.desktop.ask-answer-handles/v1");
+const REGISTRY = Symbol.for("drakonc-pi.desktop.ask-answer-handles/v1");
 /** Open lists remembered at most; finished ones are dropped at the next registration. */
 const MAX_HANDLES = 16;
 

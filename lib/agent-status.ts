@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 export interface AgentStatus {
-	schema: "gentle-shell.agent-status/v1";
-	agent: "gentle-shell" | "pi";
+	schema: "drakonc-shell.agent-status/v1";
+	agent: "drakonc-shell" | "pi";
 	session: string;
 	pid: number;
 	cwd: string;
@@ -15,7 +15,7 @@ export interface AgentStatus {
 const ORPHAN_AGE_MS = 24 * 60 * 60 * 1000;
 const ORPHAN_MAX_BYTES = 64 * 1024;
 export function agentStatus(input: Omit<AgentStatus, "schema" | "updatedAt">, now: number): AgentStatus {
-	return { schema: "gentle-shell.agent-status/v1", ...input, updatedAt: new Date(now).toISOString() };
+	return { schema: "drakonc-shell.agent-status/v1", ...input, updatedAt: new Date(now).toISOString() };
 }
 
 /** Private, best-effort store. No destination file is ever opened for writing. */

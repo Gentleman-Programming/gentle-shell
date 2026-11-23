@@ -1,4 +1,4 @@
-// Session-bound active profiles (gentle-shell#1064, slice 1).
+// Session-bound active profiles (drakonc-shell#1064, slice 1).
 //
 // One parent Pi session may bind one saved profile for its own launches without
 // touching any shared state: no clone pin (`p`), no repository declaration (`P`),
@@ -13,7 +13,7 @@
 // `moduleCache: false` (loader.js `loadExtensionModule`), so a module-local Map
 // would be re-evaluated per entrypoint: the panel writes one copy while the
 // launch, usage, and status readers hold their own empty copies
-// (gentle-shell#1558). The store therefore lives on `globalThis` behind a
+// (drakonc-shell#1558). The store therefore lives on `globalThis` behind a
 // `Symbol.for` key, which every evaluation of this module in one process
 // resolves to the same symbol and therefore the same shared Map.
 import type { AgentModelConfig } from "./model-routing-authority.ts";
@@ -22,7 +22,7 @@ import type { SessionProfileOrigin, SessionProfileStartupState } from "./session
 /**
  * A session's bound profile: its saved name plus the routing snapshot taken at
  * bind time, the origin of the record it came from (`user` for an explicit
- * choice) and, when known, the startup state the record carried (gentle-shell#2742).
+ * choice) and, when known, the startup state the record carried (drakonc-shell#2742).
  */
 export interface SessionProfileBinding {
 	readonly name: string;
@@ -37,7 +37,7 @@ export interface SessionProfileBindingProvenance {
 	startup?: SessionProfileStartupState;
 }
 
-const bindingsRegistryKey = Symbol.for("gentle-pi:session-profile-bindings");
+const bindingsRegistryKey = Symbol.for("drakonc-pi:session-profile-bindings");
 
 /** The one process-wide binding store, shared across every extension entrypoint that imports this module. */
 function bindingsBySession(): Map<string, SessionProfileBinding> {
@@ -47,8 +47,8 @@ function bindingsBySession(): Map<string, SessionProfileBinding> {
 }
 
 // Sessions whose newest record says they started without a profile
-// (gentle-shell#2742), kept apart from the bindings because no profile is bound.
-const startupNoneRegistryKey = Symbol.for("gentle-pi:session-profile-startup-none");
+// (drakonc-shell#2742), kept apart from the bindings because no profile is bound.
+const startupNoneRegistryKey = Symbol.for("drakonc-pi:session-profile-startup-none");
 
 function startupNoneSessions(): Set<string> {
 	const holder = globalThis as { [startupNoneRegistryKey]?: Set<string> };
@@ -57,7 +57,7 @@ function startupNoneSessions(): Set<string> {
 
 // Observers of binding changes (the Desktop `profile_binding_changed` event),
 // shared on `globalThis` for the same reason as the store itself.
-const observersRegistryKey = Symbol.for("gentle-pi:session-profile-binding-observers");
+const observersRegistryKey = Symbol.for("drakonc-pi:session-profile-binding-observers");
 
 function bindingObservers(): Set<(sessionId: string) => void> {
 	const holder = globalThis as { [observersRegistryKey]?: Set<(sessionId: string) => void> };
@@ -72,7 +72,7 @@ function notifyBindingChange(sessionId: string): void {
 
 /**
  * Observe every write to the binding store (bind, clear, recorded startup
- * without a profile), whoever made it: the `/gentle:profiles` screen, a resume,
+ * without a profile), whoever made it: the `/drakonc:profiles` screen, a resume,
  * or the Desktop. The observer receives the session id only and reads the
  * resulting state itself. Returns the unsubscribe function.
  */

@@ -337,7 +337,7 @@ test("rail orders live work first, then Status, without standalone changes", (t)
 		sidebarPart(f.tui, key, { render: () => [key, ""], invalidate() {} });
 	}
 	t.after(installSidebar(f.tui, theme));
-	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["✿ Gentle Shell ✿", "", "todo", "", "agents", "", "Status"]);
+	assert.deepEqual(rail(f).render(50).map((line) => line.trim()), ["◆ Drakonc Shell ◆", "", "todo", "", "agents", "", "Status"]);
 });
 
 test("branding belongs to scroll content before Status, never transcript or narrow bottom", (t) => {
@@ -345,14 +345,14 @@ test("branding belongs to scroll content before Status, never transcript or narr
 	t.after(installSidebar(f.tui, theme));
 	const scroll = rail(f);
 	const lines = scroll.render(50);
-	const brandIndex = lines.findIndex((line) => line.includes("✿ Gentle Shell ✿"));
+	const brandIndex = lines.findIndex((line) => line.includes("◆ Drakonc Shell ◆"));
 	assert.ok(brandIndex >= 0 && brandIndex < lines.findIndex((line) => line.includes("Status")));
 	assert.doesNotMatch(lines.join("\n"), /[\u2800-\u28ff]/);
 	const heading = lines[brandIndex];
 	const usableWidth = scroll.getContentWidth(50) - 2;
-	const spare = usableWidth - visibleWidth("✿ Gentle Shell ✿");
+	const spare = usableWidth - visibleWidth("◆ Drakonc Shell ◆");
 	const scrollbarWidth = 50 - scroll.getContentWidth(50);
-	assert.equal(heading, " ".repeat(1 + Math.floor(spare / 2)) + "✿ Gentle Shell ✿" + " ".repeat(1 + Math.ceil(spare / 2) + scrollbarWidth));
+	assert.equal(heading, " ".repeat(1 + Math.floor(spare / 2)) + "◆ Drakonc Shell ◆" + " ".repeat(1 + Math.ceil(spare / 2) + scrollbarWidth));
 	assert.deepEqual(f.root.render(), ["transcript"]);
 	scroll.updateLayout(lines.length, 2, () => {});
 	scroll.scrollBy(9);
@@ -1015,7 +1015,7 @@ test("an active header wraps the hstack in a vstack and removes the banner from 
 	assert.equal(hstack.type, "hstack");
 	const scroll = railWithHeader(f);
 	const rail = scroll.render(50);
-	assert.doesNotMatch(rail.join("\n"), /✿ Gentle Shell ✿/, "the header carries the brand now, not the banner");
+	assert.doesNotMatch(rail.join("\n"), /◆ Drakonc Shell ◆/, "the header carries the brand now, not the banner");
 	assert.equal(rail[0]?.trim(), "", "the rail starts with a spacer below the full-width title");
 	assert.match(rail[1]!, /Status/, "the first section follows the spacer");
 });
@@ -1082,7 +1082,7 @@ test("float rail alignment preserves fallback banners and neon bytes across live
 		t.after(installSidebar(f.tui, theme));
 		const baseline = railWithHeader(f).render(50);
 		if (header) assert.deepEqual(baseline, [" ".repeat(50), " TODO ", "", " Status "], "the rail keeps its own spacer under the split title");
-		else assert.match(baseline.join("\n"), /✿ Gentle Shell ✿/);
+		else assert.match(baseline.join("\n"), /◆ Drakonc Shell ◆/);
 		setCardStyle(CARD_STYLE.FLOAT);
 		assert.deepEqual(railWithHeader(f).render(50), baseline, "the active split header keeps the same rail in both styles");
 		setCardStyle(CARD_STYLE.NEON);
@@ -1121,7 +1121,7 @@ test("without a registered header the rail keeps the banner and the plain hstack
 	const node = f.root[NODE]() as unknown as { type: string };
 	assert.equal(node.type, "hstack");
 	const scroll = rail(f);
-	assert.match(scroll.render(50).join("\n"), /✿ Gentle Shell ✿/);
+	assert.match(scroll.render(50).join("\n"), /◆ Drakonc Shell ◆/);
 });
 
 test("a header too narrow to show anything falls back to the plain hstack and the banner", (t) => {
@@ -1131,7 +1131,7 @@ test("a header too narrow to show anything falls back to the plain hstack and th
 	const node = f.root[NODE]() as unknown as { type: string };
 	assert.equal(node.type, "hstack", "a blank header line does not earn its own row");
 	const scroll = rail(f);
-	assert.match(scroll.render(50).join("\n"), /✿ Gentle Shell ✿/);
+	assert.match(scroll.render(50).join("\n"), /◆ Drakonc Shell ◆/);
 });
 
 test("header content changes reach the header row while an unrelated part is untouched", (t) => {
@@ -1474,7 +1474,7 @@ test("a transparent rail draws every section as its own card in the transcript's
 		setChromeSurface("transparent");
 		const f = fixture("fullscreen", 160);
 		const received: TuiMouseEvent[] = [];
-		const lines = (width: number) => [`\x1b[35m▾\x1b[39m CHANGES${" ".repeat(width - 14)}clean`, "  no changes", "", `▾ INTEGRATIONS${" ".repeat(width - 15)}1`, "  - gentle-pi · ready", "", "  ctrl+shift+t todos"];
+		const lines = (width: number) => [`\x1b[35m▾\x1b[39m CHANGES${" ".repeat(width - 14)}clean`, "  no changes", "", `▾ INTEGRATIONS${" ".repeat(width - 15)}1`, "  - drakonc-pi · ready", "", "  ctrl+shift+t todos"];
 		// Like NativePointerRegion and the Status targets: the event must fall inside
 		// the frame the part rendered (its width, all its rows), or it is ignored.
 		const rendered = new Set<number>();

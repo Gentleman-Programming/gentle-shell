@@ -14,7 +14,7 @@ import { bundledFailedSteps, bundledPlan, runBundledInstall } from "../scripts/b
 
 const assetsDir = fileURLToPath(new URL("../assets/install-wizard/", import.meta.url));
 const read = (name: string) => readFileSync(join(assetsDir, name), "utf8");
-const API = { "x-gentle-install": "1" };
+const API = { "x-drakonc-install": "1" };
 const BIN = "/home/u/.local/share/pnpm/bin";
 // Backtick segments render as <code> elements, so rendered text has no backticks.
 const plain = (value: string) => value.replaceAll("`", "");
@@ -61,7 +61,7 @@ const cleanInventory = {
 	pnpm: { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false },
 	pi: { available: false },
 	shell: { available: false },
-	gentleAi: { available: false },
+	drakoncAi: { available: false },
 	go: { available: false },
 	globalBin: { available: true, path: BIN, writable: true, onPath: false },
 	setup: false,
@@ -314,7 +314,7 @@ test("wizard.js and wizard.css use no HTML injection, dynamic code, inline style
 test("the reference hero glow sits behind the panel as a decorative, static pseudo-element", () => {
 	const css = read("wizard.css").replace(/\s+/g, " ").replace(/\s*,\s*/g, ",");
 	const rule = css.match(/\.view::before \{([^}]*)\}/)?.[1] ?? "";
-	assert.ok(rule.includes("radial-gradient(38% 50% at 30% 30%,#f095c838,#0000 70%),radial-gradient(30% 40% at 75% 40%,#b4e7c71f,#0000 70%)"),
+	assert.ok(rule.includes("radial-gradient(38% 50% at 30% 30%,#ff4d5e38,#0000 70%),radial-gradient(30% 40% at 75% 40%,#b4e7c71f,#0000 70%)"),
 		"reference gradients");
 	assert.match(rule, /pointer-events: none/);
 	assert.match(rule, /filter: blur\(/);
@@ -397,7 +397,7 @@ test("the review screen notes a missing Git and stays installable", async () => 
 	const node = wizard.renderPlan(new FakeDocument(), model, { install() {}, reload() {}, close() {} });
 	assert.match(node.textContent, /Git not found/);
 	assert.match(node.textContent, /sudo apt-get install -y git/);
-	assert.ok(button(node, "Install Gentle Shell"), "still installable");
+	assert.ok(button(node, "Install Drakonc Shell"), "still installable");
 	const plain = wizard.planModel(await serverPlanView({ git: { available: true } }));
 	assert.equal(plain.gitNotice, null);
 	assert.doesNotMatch(wizard.renderPlan(new FakeDocument(), plain, { install() {}, reload() {}, close() {} }).textContent, /Git not found/);
@@ -416,7 +416,7 @@ test("the review screen shows the notice about reused tools in folders another a
 	const node = wizard.renderPlan(new FakeDocument(), model, { install() {}, reload() {}, close() {} });
 	assert.match(node.textContent, /Tools in folders other accounts can change/);
 	assert.ok(node.textContent.includes("S-1-5-21-1-2-3-1002 (PC\\other) can change C:\\Users\\m\\AppData\\Roaming"));
-	assert.ok(button(node, "Install Gentle Shell"), "still installable");
+	assert.ok(button(node, "Install Drakonc Shell"), "still installable");
 	const plain = wizard.planModel(await serverPlanView(windows));
 	assert.equal(plain.notice, null);
 	assert.doesNotMatch(wizard.renderPlan(new FakeDocument(), plain, { install() {}, reload() {}, close() {} }).textContent, /other accounts can change/);
@@ -425,7 +425,7 @@ test("the review screen shows the notice about reused tools in folders another a
 test("a recoverable stack is reviewed as completing setup, not as a reinstall", async () => {
 	const view = await serverPlanView({ pi: { available: true, version: "1.2.0", usable: true },
 		shell: { available: true, version: requirements.shell, usable: true, global: true },
-		gentleAi: { available: true, version: requirements.gentleAi, usable: true, compatible: true },
+		drakoncAi: { available: true, version: requirements.drakoncAi, usable: true, compatible: true },
 		setup: { available: true, recoverable: true } });
 	const model = wizard.planModel(view);
 	assert.equal(model.kind, "recovery");
@@ -433,9 +433,9 @@ test("a recoverable stack is reviewed as completing setup, not as a reinstall", 
 	assert.equal(model.steps.includes("install-global"), false);
 	assert.equal(model.disclosures[1].changes, false);
 	const node = wizard.renderPlan(new FakeDocument(), model, { install() {}, reload() {}, close() {} });
-	assert.match(node.textContent, /Gentle Shell is already installed; this completes setup/);
+	assert.match(node.textContent, /Drakonc Shell is already installed; this completes setup/);
 	assert.ok(button(node, "Complete setup"));
-	assert.equal(button(node, "Install Gentle Shell"), undefined);
+	assert.equal(button(node, "Install Drakonc Shell"), undefined);
 	assert.equal(/Review the installation plan|Installation steps/.test(node.textContent), false);
 	// A clean plan keeps the installation wording.
 	assert.equal(wizard.planModel(await serverPlanView()).kind, "install");
@@ -460,7 +460,7 @@ test("planModel turns preflight blockers into guidance and offers no install", a
 });
 
 test("expectedSteps mirrors the runner sequence and every step has a label", () => {
-	const base = ["install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"];
+	const base = ["install-global", "verify-global-list", "verify-shell-bin", "verify-drakonc-ai", "shell-setup"];
 	assert.deepEqual(wizard.expectedSteps(["install-pi", "install-shell", "setup-shell", "verify-readiness"]),
 		["check-npm", "check-global-bin", "check-existing-stack", ...base]);
 	assert.deepEqual(wizard.expectedSteps(["setup-global-bin", "persist-node", "persist-package-managers", "configure-npm-prefix", "install-pi",
@@ -478,7 +478,7 @@ test("expectedSteps mirrors the runner sequence and every step has a label", () 
 		["check-global-bin", "check-existing-stack", "persist-package-managers", "check-npm", "verify-persistent-pnpm", ...base]);
 	// Setup recovery: the installed stack is re-verified, never reinstalled.
 	const recovery = ["check-npm", "check-global-bin", "check-recoverable-stack", "verify-global-list", "verify-shell-bin",
-		"verify-gentle-ai", "shell-setup"];
+		"verify-drakonc-ai", "shell-setup"];
 	assert.deepEqual(wizard.expectedSteps(["setup-shell", "verify-readiness"]), recovery);
 	assert.deepEqual(wizard.expectedSteps(["setup-global-bin", "setup-shell", "verify-readiness"]), [...recovery, "persist-path"]);
 	const known = new Set([...failedSteps, "check-global-bin", "check-existing-stack", "check-recoverable-stack"]);
@@ -489,7 +489,7 @@ test("expectedSteps mirrors the runner sequence and every step has a label", () 
 	assert.equal(wizard.stepLabel("not-a-step"), "not-a-step");
 });
 
-const mainIds = ["build-gentle-ai-main", "install-shell-main", "record-channel"];
+const mainIds = ["build-drakonc-ai-main", "install-shell-main", "record-channel"];
 const goReady = { go: { available: true, version: "1.26.0", usable: true } };
 
 test("planModel carries the plan's channel, release unless the host says main", async () => {
@@ -499,11 +499,11 @@ test("planModel carries the plan's channel, release unless the host says main", 
 });
 
 test("expectedSteps places the main steps after the release verification and before setup", () => {
-	const verified = ["install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai"];
+	const verified = ["install-global", "verify-global-list", "verify-shell-bin", "verify-drakonc-ai"];
 	assert.deepEqual(wizard.expectedSteps(["install-pi", "install-shell", "setup-shell", "verify-readiness", ...mainIds]),
 		["check-npm", "check-global-bin", "check-existing-stack", ...verified, ...mainIds, "shell-setup"]);
 	assert.deepEqual(wizard.expectedSteps(["setup-shell", "verify-readiness", ...mainIds]),
-		["check-npm", "check-global-bin", "check-recoverable-stack", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", ...mainIds, "shell-setup"]);
+		["check-npm", "check-global-bin", "check-recoverable-stack", "verify-global-list", "verify-shell-bin", "verify-drakonc-ai", ...mainIds, "shell-setup"]);
 	for (const id of mainIds) assert.notEqual(wizard.stepLabel(id), id, `label for ${id}`);
 });
 
@@ -511,15 +511,15 @@ test("expectedSteps runs the pinned Go acquisition after the pre-install checks 
 	const go = ["acquire-go", "verify-go"];
 	assert.deepEqual(wizard.expectedSteps([...go, "install-pi", "install-shell", "setup-shell", "verify-readiness", ...mainIds]),
 		["check-npm", "check-global-bin", "check-existing-stack", ...go, "install-global", "verify-global-list", "verify-shell-bin",
-			"verify-gentle-ai", ...mainIds, "shell-setup"]);
+			"verify-drakonc-ai", ...mainIds, "shell-setup"]);
 	// Like the runner, the pinned Go comes before the runtime is persisted.
 	assert.deepEqual(wizard.expectedSteps(["setup-global-bin", ...go, "persist-node", "persist-package-managers", "configure-npm-prefix",
 		"install-pi", "install-shell", "setup-shell", "verify-readiness", ...mainIds]),
 		["check-global-bin", "check-existing-stack", ...go, "persist-node", "persist-package-managers", "verify-persistent-runtime", "check-npm",
-			"configure-npm-prefix", "install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", ...mainIds, "shell-setup", "persist-path"]);
+			"configure-npm-prefix", "install-global", "verify-global-list", "verify-shell-bin", "verify-drakonc-ai", ...mainIds, "shell-setup", "persist-path"]);
 	assert.deepEqual(wizard.expectedSteps([...go, "persist-pnpm", "install-pi", "install-shell", "setup-shell", "verify-readiness"]),
 		["check-npm", "check-global-bin", "check-existing-stack", ...go, "persist-pnpm", "verify-persistent-pnpm", "install-global",
-			"verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"]);
+			"verify-global-list", "verify-shell-bin", "verify-drakonc-ai", "shell-setup"]);
 	assert.deepEqual(wizard.expectedSteps([...go, "update-shell-main", "setup-shell", "verify-readiness"]),
 		["check-npm", "check-global-bin", "check-installed-shell", ...go, "update-shell", "verify-updated-shell", "shell-setup"]);
 	for (const id of go) assert.notEqual(wizard.stepLabel(id), id, `label for ${id}`);
@@ -545,37 +545,37 @@ test("the review screen offers the release and main channels and reloads the pla
 	const plans = ui.server.calls.filter((call) => call.url.startsWith("/api/plan")).map((call) => call.url);
 	assert.deepEqual(plans, ["/api/plan?channel=release", "/api/plan?channel=main"]);
 	assert.deepEqual(radios().map((radio) => [radio.getAttribute("value"), radio.checked === true]), [["release", false], ["main", true]]);
-	assert.ok(ui.view.textContent.includes(plain(main.actions.find((action: { id: string }) => action.id === "build-gentle-ai-main").description)));
+	assert.ok(ui.view.textContent.includes(plain(main.actions.find((action: { id: string }) => action.id === "build-drakonc-ai-main").description)));
 });
 
-test("an already set-up computer points to gentle-shell upgrade, and to its main channel when main is chosen", () => {
-	for (const [channel, expected] of [["release", "Run gentle-shell in a terminal. To upgrade, run gentle-shell upgrade."],
-		["main", "Run gentle-shell in a terminal. To follow main, run gentle-shell upgrade --channel main."]]) {
+test("an already set-up computer points to drakonc-shell upgrade, and to its main channel when main is chosen", () => {
+	for (const [channel, expected] of [["release", "Run drakonc-shell in a terminal. To upgrade, run drakonc-shell upgrade."],
+		["main", "Run drakonc-shell in a terminal. To follow main, run drakonc-shell upgrade --channel main."]]) {
 		const document = new FakeDocument();
 		const model = wizard.planModel({ planId: "p", ready: true, channel, actions: [{ id: "verify-readiness", description: "Verify." }], blockers: [] });
 		const view = wizard.renderPlan(document, model, { install: () => {}, reload: () => {}, close: () => {} });
 		assert.ok(view.textContent.includes(expected), channel);
 	}
-	assert.equal(guidance.blocked["existing-stack"], "Pi or Gentle Shell is already installed globally. Nothing was changed; use `gentle-shell upgrade` instead.");
-	assert.ok(guidance.blocked["unsupported-plan"].includes("Use `gentle-shell upgrade` or follow the README."));
+	assert.equal(guidance.blocked["existing-stack"], "Pi or Drakonc Shell is already installed globally. Nothing was changed; use `drakonc-shell upgrade` instead.");
+	assert.ok(guidance.blocked["unsupported-plan"].includes("Use `drakonc-shell upgrade` or follow the README."));
 });
 
-test("expectedSteps mirrors the shell-only installation and the update of an existing Gentle Shell", () => {
+test("expectedSteps mirrors the shell-only installation and the update of an existing Drakonc Shell", () => {
 	assert.deepEqual(wizard.expectedSteps(["install-shell", "setup-shell", "verify-readiness"]),
-		["check-npm", "check-global-bin", "check-existing-shell", "install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"]);
+		["check-npm", "check-global-bin", "check-existing-shell", "install-global", "verify-global-list", "verify-shell-bin", "verify-drakonc-ai", "shell-setup"]);
 	assert.deepEqual(wizard.expectedSteps(["install-pi", "update-shell-release", "setup-shell", "verify-readiness"]),
-		["check-npm", "check-global-bin", "check-installed-shell", "install-pi", "update-shell", "verify-updated-shell", "verify-gentle-ai", "shell-setup"]);
+		["check-npm", "check-global-bin", "check-installed-shell", "install-pi", "update-shell", "verify-updated-shell", "verify-drakonc-ai", "shell-setup"]);
 	assert.deepEqual(wizard.expectedSteps(["update-shell-main", "setup-shell", "verify-readiness"]),
 		["check-npm", "check-global-bin", "check-installed-shell", "update-shell", "verify-updated-shell", "shell-setup"]);
 });
 
-test("expectedSteps checks, updates and verifies an older Pi before any Gentle Shell step", () => {
+test("expectedSteps checks, updates and verifies an older Pi before any Drakonc Shell step", () => {
 	assert.deepEqual(wizard.expectedSteps(["update-pi", "install-shell", "setup-shell", "verify-readiness"]),
 		["check-npm", "check-global-bin", "check-existing-shell", "check-installed-pi", "update-pi", "verify-updated-pi", "install-global",
-			"verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"]);
+			"verify-global-list", "verify-shell-bin", "verify-drakonc-ai", "shell-setup"]);
 	assert.deepEqual(wizard.expectedSteps(["update-pi", "update-shell-release", "setup-shell", "verify-readiness"]),
 		["check-npm", "check-global-bin", "check-installed-shell", "check-installed-pi", "update-pi", "verify-updated-pi", "update-shell",
-			"verify-updated-shell", "verify-gentle-ai", "shell-setup"]);
+			"verify-updated-shell", "verify-drakonc-ai", "shell-setup"]);
 	assert.deepEqual(wizard.expectedSteps(["update-pi", "verify-readiness"]),
 		["check-npm", "check-global-bin", "check-installed-pi", "update-pi", "verify-updated-pi"]);
 	// The installer's Pi added on its own, next to an older one that neither pnpm nor npm owns.
@@ -594,7 +594,7 @@ test("a plan that only updates an older Pi is reviewed as a Pi update, with an U
 	const view = wizard.renderPlan(document, model, { install: () => {}, reload: () => {}, close: () => {} });
 	assert.ok(headings(view)[0].textContent.includes("Update Pi"));
 	assert.ok(button(view, "Update Pi"));
-	assert.equal(button(view, "Install Gentle Shell"), undefined);
+	assert.equal(button(view, "Install Drakonc Shell"), undefined);
 	const alongside = wizard.planModel({ planId: "p", blockers: [], actions: [{ id: "install-pi", description: "Install Pi." },
 		{ id: "verify-readiness", description: "Verify." }] });
 	assert.equal(alongside.kind, "install-pi");
@@ -604,7 +604,7 @@ test("a plan that only updates an older Pi is reviewed as a Pi update, with an U
 	// The same plan serves a missing Pi and an older one neither pnpm nor npm owns.
 	assert.ok(installView.textContent.includes("Pi is missing or older than it needs"));
 	assert.equal(installView.textContent.includes("needs a newer Pi"), false);
-	// Combined with a Gentle Shell installation or update, the plan keeps its usual kind.
+	// Combined with a Drakonc Shell installation or update, the plan keeps its usual kind.
 	const install = wizard.planModel({ planId: "p", blockers: [], actions: [{ id: "update-pi" }, { id: "install-shell" }, { id: "setup-shell" },
 		{ id: "verify-readiness" }] });
 	assert.equal(install.kind, "install");
@@ -619,9 +619,9 @@ test("an update plan is reviewed as an update, with an Update button", () => {
 		actions: [{ id: "update-shell-release", description: "Update." }, { id: "setup-shell", description: "Setup." }, { id: "verify-readiness", description: "Verify." }] });
 	assert.equal(model.kind, "update");
 	const view = wizard.renderPlan(document, model, { install: () => {}, reload: () => {}, close: () => {} });
-	assert.ok(headings(view)[0].textContent.includes("Update Gentle Shell"));
-	assert.ok(button(view, "Update Gentle Shell"));
-	assert.equal(button(view, "Install Gentle Shell"), undefined);
+	assert.ok(headings(view)[0].textContent.includes("Update Drakonc Shell"));
+	assert.ok(button(view, "Update Drakonc Shell"));
+	assert.equal(button(view, "Install Drakonc Shell"), undefined);
 });
 
 test("a blocked main plan still lets the user switch back to release", async () => {
@@ -659,12 +659,12 @@ test("progressModel shows done, failed, in-progress and pending steps without re
 test("outcomeModel covers every runner outcome, blocked reason and failed step with the server guidance", () => {
 	const ready = wizard.outcomeModel({ outcome: "ready", completed: ["install-global"], guidance: guidance.outcomes.ready });
 	assert.equal(ready.tone, "success");
-	assert.equal(ready.command, "gentle-shell");
+	assert.equal(ready.command, "drakonc-shell");
 	assert.equal(ready.guidance, guidance.outcomes.ready);
 	const terminal = wizard.outcomeModel({ outcome: "terminal-action-required", action: "open-new-terminal", npmPrefix: "configured",
 		completed: ["persist-path"], guidance: guidance.outcomes["terminal-action-required"] });
 	assert.equal(terminal.tone, "success");
-	assert.equal(terminal.command, "gentle-shell");
+	assert.equal(terminal.command, "drakonc-shell");
 	assert.match(terminal.title, /new terminal/i);
 	assert.ok(terminal.next.some((line: string) => /open a new terminal/i.test(line)));
 	assert.ok(terminal.notes.some((line: string) => /npm/i.test(line)));
@@ -694,10 +694,10 @@ test("a failed setup shows its last error as labelled plain text", () => {
 	assert.equal(model.detail, hostile);
 	assert.equal(model.guidance, guidance.setupRateLimit);
 	const node = wizard.renderOutcome(document, model, { close() {} });
-	const section = all(node, "section").find((element) => element.textContent.startsWith("Last error from gentle-shell setup"));
+	const section = all(node, "section").find((element) => element.textContent.startsWith("Last error from drakonc-shell setup"));
 	assert.ok(section, "labelled detail section");
 	const label = all(section, "h2")[0];
-	assert.equal(label.textContent, "Last error from gentle-shell setup");
+	assert.equal(label.textContent, "Last error from drakonc-shell setup");
 	assert.equal(section.getAttribute("aria-labelledby"), label.getAttribute("id"));
 	// Backticks stay literal: the detail is one text node, never `rich` code spans or markup.
 	const codes = all(section, "code");
@@ -710,7 +710,7 @@ test("a failed setup shows its last error as labelled plain text", () => {
 	assert.equal(persist.detail, pnpmDetail);
 	assert.equal(persist.detailCommand, "pnpm setup");
 	// The Go download's folder conflict is labelled with that step.
-	const goDetail = "Conflicting Go destination: ~/.pi/gentle-ai/tools/go/1.25.14";
+	const goDetail = "Conflicting Go destination: ~/.pi/drakonc-ai/tools/go/1.25.14";
 	const go = wizard.outcomeModel({ outcome: "failed", failedStep: "acquire-go", completed: [], guidance: guidance.goDestinationConflict, detail: goDetail });
 	assert.equal(go.detail, goDetail);
 	assert.equal(go.detailCommand, "the Go download");
@@ -718,10 +718,10 @@ test("a failed setup shows its last error as labelled plain text", () => {
 	const persistSection = all(persistNode, "section").find((element) => element.textContent.startsWith("Last error from pnpm setup"));
 	assert.ok(persistSection, "pnpm setup detail section");
 	assert.equal(all(persistSection, "code")[0].textContent, pnpmDetail);
-	assert.doesNotMatch(persistNode.textContent, /Last error from gentle-shell setup/);
+	assert.doesNotMatch(persistNode.textContent, /Last error from drakonc-shell setup/);
 	// The install, main-channel and update steps label their detail with what failed.
-	for (const [step, label] of [["install-global", "pnpm add -g"], ["install-shell-main", "the Gentle Shell main install"],
-		["build-gentle-ai-main", "the Gentle AI main build"], ["update-shell", "the Gentle Shell update"]]) {
+	for (const [step, label] of [["install-global", "pnpm add -g"], ["install-shell-main", "the Drakonc Shell main install"],
+		["build-drakonc-ai-main", "the Drakonc AI main build"], ["update-shell", "the Drakonc Shell update"]]) {
 		const failed = wizard.outcomeModel({ outcome: "failed", failedStep: step, completed: [], guidance: "g", detail: hostile });
 		assert.deepEqual([failed.detail, failed.detailCommand], [hostile, label], step);
 		const rendered = wizard.renderOutcome(document, failed, { close() {} });
@@ -740,7 +740,7 @@ test("a failed setup shows its last error as labelled plain text", () => {
 	]) {
 		const other = wizard.outcomeModel(outcome);
 		assert.equal(other.detail, null, JSON.stringify(outcome));
-		assert.doesNotMatch(wizard.renderOutcome(document, other, { close() {} }).textContent, /Last error from gentle-shell setup/);
+		assert.doesNotMatch(wizard.renderOutcome(document, other, { close() {} }).textContent, /Last error from drakonc-shell setup/);
 	}
 });
 
@@ -857,7 +857,7 @@ test("happy path: plan, consent required before the request, progress polling, o
 	assert.equal(ui.document.activeElement, headings(ui.view)[0], "focus moves to the new step heading");
 	assert.ok(ui.view.textContent.includes(plain(view.profileChange.description)));
 	assert.ok(ui.view.textContent.includes(plain(view.persistence.description)));
-	for (const call of ui.server.calls) assert.equal(call.headers["X-Gentle-Install"], "1");
+	for (const call of ui.server.calls) assert.equal(call.headers["X-Drakonc-Install"], "1");
 
 	const install = button(ui.view, "Install") as FakeElement;
 	const consent = all(ui.view, "input").find((input) => input.getAttribute("type") === "checkbox") as FakeElement;
@@ -893,7 +893,7 @@ test("happy path: plan, consent required before the request, progress polling, o
 	assert.equal(third.ms, 750, "a quiet poll backs off by 1.5x");
 	assert.equal(ui.timers.pending().length, 0, "polling stops on the final outcome");
 	assert.match(headings(ui.view)[0].textContent, /new terminal/i);
-	assert.ok(ui.view.textContent.includes("gentle-shell"));
+	assert.ok(ui.view.textContent.includes("drakonc-shell"));
 	assert.equal(ui.document.activeElement, headings(ui.view)[0]);
 
 	dispatch(button(ui.view, "Close installer") as FakeElement, "click");
@@ -1131,7 +1131,7 @@ test("Copy writes the command through the injected clipboard and reports success
 	const copy = button(ok.view, "Copy") as FakeElement;
 	dispatch(copy, "click");
 	await flush();
-	assert.deepEqual(writes, ["gentle-shell"]);
+	assert.deepEqual(writes, ["drakonc-shell"]);
 	assert.equal(copy.textContent, "Copied");
 	assert.equal(ok.status.textContent, "Command copied.");
 
@@ -1150,7 +1150,7 @@ test("Copy writes the command through the injected clipboard and reports success
 	await none.app.start();
 	await flush();
 	assert.equal(button(none.view, "Copy"), undefined, "no clipboard, no Copy button");
-	assert.ok(none.view.textContent.includes("gentle-shell"), "the command is still shown");
+	assert.ok(none.view.textContent.includes("drakonc-shell"), "the command is still shown");
 });
 
 test("the PNPM_HOME blocker and the private PNPM_HOME step have labels", () => {
@@ -1172,7 +1172,7 @@ test("expectedSteps mirrors runBundledInstall's step order, and every bundled st
 	// The runner logs exactly that order.
 	const layout = prefixLayout({ platform: "linux", env: {}, home: "/home/u" });
 	const distribution = { status: "published", manifest: { shell: "4.1.0", pi: "1.0.2" }, lockfile: "lock" };
-	const path = { kind: "profile", path: "/home/u/.bashrc", line: "export PATH=x # gentle-shell bundled install", create: false };
+	const path = { kind: "profile", path: "/home/u/.bashrc", line: "export PATH=x # drakonc-shell bundled install", create: false };
 	const plan = bundledPlan({ platform: "linux", distribution, layout, path });
 	const logged: string[] = [];
 	const operations = { claimPrefix: () => layout, userNpmrc: () => "", writeNpmrcAuth: () => {}, ensureRuntime: async () => ({ go: null }), installVersion: async () => ({}),
@@ -1185,19 +1185,19 @@ test("expectedSteps mirrors runBundledInstall's step order, and every bundled st
 test("planModel and renderPlan present the bundled install as one self-contained product", () => {
 	const view = { planId: "p", ready: false, bundled: true, channel: "release", blockers: [],
 		actions: bundledIds.map((id) => ({ id, description: `${id} text` })),
-		profileChange: { changesProfile: true, command: null, binDir: "/home/u/.gentle-shell/bin", description: "adds one line" },
-		persistence: { tools: ["node", "npm", "pnpm"], pnpmHome: "/home/u/.gentle-shell", description: "Your own Node.js, npm, pnpm, Go and Pi are not used or changed." } };
+		profileChange: { changesProfile: true, command: null, binDir: "/home/u/.drakonc-shell/bin", description: "adds one line" },
+		persistence: { tools: ["node", "npm", "pnpm"], pnpmHome: "/home/u/.drakonc-shell", description: "Your own Node.js, npm, pnpm, Go and Pi are not used or changed." } };
 	const model = wizard.planModel(view);
 	assert.equal(model.kind, "bundled");
 	const runtimes = model.disclosures.find((item: { id: string }) => item.id === "persistence");
-	assert.equal(runtimes.title, "Gentle Shell's own runtimes");
+	assert.equal(runtimes.title, "Drakonc Shell's own runtimes");
 	assert.equal(runtimes.state, "Uses its own node, npm, pnpm");
-	assert.equal(runtimes.detail, "/home/u/.gentle-shell");
+	assert.equal(runtimes.detail, "/home/u/.drakonc-shell");
 	assert.deepEqual(model.steps, wizard.expectedSteps(bundledIds));
 	const node = wizard.renderPlan(new FakeDocument(), model, { install() {}, reload() {}, close() {} });
-	assert.match(node.textContent, /Install Gentle Shell as one self-contained product/);
+	assert.match(node.textContent, /Install Drakonc Shell as one self-contained product/);
 	assert.match(node.textContent, /your own Node\.js, npm, pnpm, Go and Pi are not used or changed/i);
-	assert.match(node.textContent, /Install Gentle Shell/);
+	assert.match(node.textContent, /Install Drakonc Shell/);
 	// The default fresh-install path notes a missing Git too.
 	const withGit = wizard.renderPlan(new FakeDocument(), wizard.planModel({ ...view, gitNotice: { description: "Git was not found on this computer." } }),
 		{ install() {}, reload() {}, close() {} });
@@ -1206,11 +1206,11 @@ test("planModel and renderPlan present the bundled install as one self-contained
 });
 
 test("outcomeModel gives the PATH line to add when the bundled install may not edit the profile", () => {
-	const line = 'export PATH="/home/u/.gentle-shell/bin:$PATH" # gentle-shell bundled install';
+	const line = 'export PATH="/home/u/.drakonc-shell/bin:$PATH" # drakonc-shell bundled install';
 	const model = wizard.outcomeModel({ outcome: "terminal-action-required", action: "add-path-line", pathLine: { file: "/home/u/.zshrc", line },
 		completed: ["claim-prefix"], guidance: guidance.outcomes["add-path-line"] });
 	assert.equal(model.tone, "success");
-	assert.equal(model.title, "Add Gentle Shell to your PATH");
+	assert.equal(model.title, "Add Drakonc Shell to your PATH");
 	assert.equal(model.command, line);
 	assert.ok(model.next.some((text: string) => text.includes("/home/u/.zshrc")));
 	assert.ok(model.next.some((text: string) => /open a new terminal/i.test(text)));
@@ -1218,7 +1218,7 @@ test("outcomeModel gives the PATH line to add when the bundled install may not e
 		"pnpm install");
 });
 
-// T3: a migration checks the new launcher, then removes the old global gentle-pi last.
+// T3: a migration checks the new launcher, then removes the old global drakonc-pi last.
 test("expectedSteps mirrors a migration's steps, and a failed removal shows its exact command", async () => {
 	const ids = [...bundledIds, "remove-global-shell"];
 	const steps = ["claim-prefix", "copy-npm-settings", "install-runtime", "install-version", "activate-version", "write-launcher", "verify-launcher", "bundled-path",
@@ -1227,7 +1227,7 @@ test("expectedSteps mirrors a migration's steps, and a failed removal shows its 
 	for (const id of ["verify-launcher", "remove-global-shell"]) assert.notEqual(wizard.stepLabel(id), id, `label for ${id}`);
 	const layout = prefixLayout({ platform: "linux", env: {}, home: "/home/u" });
 	const distribution = { status: "published", manifest: { shell: "4.1.0", pi: "1.0.2" }, lockfile: "lock" };
-	const path = { kind: "profile", path: "/home/u/.bashrc", line: "export PATH=x # gentle-shell bundled install", create: false };
+	const path = { kind: "profile", path: "/home/u/.bashrc", line: "export PATH=x # drakonc-shell bundled install", create: false };
 	const plan = bundledPlan({ platform: "linux", distribution, layout, path, migrate: { manager: "pnpm", removal: "plan" } });
 	assert.deepEqual(plan.actions.map((action: { id: string }) => action.id), ids);
 	const logged: string[] = [];
@@ -1237,13 +1237,13 @@ test("expectedSteps mirrors a migration's steps, and a failed removal shows its 
 	await runBundledInstall({ plan, consent: true }, { platform: "linux", arch: "x64", env: {}, home: "/home/u", distribution, operations,
 		removeGlobal: async () => true, log: (entry: { step: string }) => logged.push(entry.step) });
 	assert.deepEqual(logged, steps);
-	const model = wizard.outcomeModel({ outcome: "ready", completed: [], guidance: "g", removeCommand: "pnpm remove -g gentle-pi" });
-	assert.ok(model.notes.some((note: string) => note.includes("`pnpm remove -g gentle-pi`")));
+	const model = wizard.outcomeModel({ outcome: "ready", completed: [], guidance: "g", removeCommand: "pnpm remove -g drakonc-pi" });
+	assert.ok(model.notes.some((note: string) => note.includes("`pnpm remove -g drakonc-pi`")));
 	assert.deepEqual(wizard.outcomeModel({ outcome: "ready", completed: [], guidance: "g" }).notes, []);
 	// B3: a failed migration step shows the host's detail line.
 	for (const id of ["claim-prefix", "copy-npm-settings", "install-runtime", "activate-version", "write-launcher", "verify-launcher", "bundled-path"]) {
-		const failed = wizard.outcomeModel({ outcome: "failed", failedStep: id, completed: [], guidance: "g", detail: "Unsafe bundled prefix: ~/.gentle-shell" });
-		assert.equal(failed.detail, "Unsafe bundled prefix: ~/.gentle-shell", id);
+		const failed = wizard.outcomeModel({ outcome: "failed", failedStep: id, completed: [], guidance: "g", detail: "Unsafe bundled prefix: ~/.drakonc-shell" });
+		assert.equal(failed.detail, "Unsafe bundled prefix: ~/.drakonc-shell", id);
 		assert.equal(typeof failed.detailCommand, "string", id);
 	}
 });

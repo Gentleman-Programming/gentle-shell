@@ -7,8 +7,8 @@ import { NativeReviewCliV216, NativeReviewIntegrationError, type ExecFileAdapter
 import { statusV9 } from "./support/status-v9.ts";
 
 // odd/tasks/review-one-call.md T11 (S5), L18: contracted STATUS asks for the
-// non-blocking findings (gentle-ai#6088) only when the caller requests them.
-// gentle-ai v4.6.0 (the minimum supported binary) always understands the flag,
+// non-blocking findings (drakonc-ai#6088) only when the caller requests them.
+// drakonc-ai v4.6.0 (the minimum supported binary) always understands the flag,
 // so a refusal of it is an ordinary failure and is never retried without it.
 
 const scratch = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "native-nbf-")));
@@ -16,7 +16,7 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 let binaries = 0;
 /** A package-local executable stand-in; only its path and bytes identify it. */
 function binary(content = `fixture-${binaries}`): string {
-	const path = join(scratch, `gentle-ai-${binaries++}`);
+	const path = join(scratch, `drakonc-ai-${binaries++}`);
 	writeFileSync(path, content);
 	return path;
 }
@@ -67,7 +67,7 @@ test("any other STATUS failure is not retried and keeps its error", async () => 
 	}
 });
 
-test("the flag rides only Gentle Shell's own contracted STATUS, never a provider-issued selection submission", async () => {
+test("the flag rides only Drakonc Shell's own contracted STATUS, never a provider-issued selection submission", async () => {
 	const queue = adapter([{ body: statusBody }]);
 	const cli = new NativeReviewCliV216(queue.adapter, binary(), 30_000, 1024 * 1024);
 	await cli.targetStatus({ cwd: "/repo", nonBlockingFindings: true, intendedUntrackedSelection: {

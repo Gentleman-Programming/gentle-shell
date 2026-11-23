@@ -24,8 +24,8 @@ test("a child process cannot overwrite the primary process phase even with the s
 test("separate extension loaders share only the active session's ODD phase and redraw", async () => {
 	const aiLoader = createJiti(import.meta.url, { moduleCache: false });
 	const shellLoader = createJiti(import.meta.url, { moduleCache: false });
-	const { createGentleAiExtension } = await aiLoader.import<typeof import("../extensions/gentle-ai.ts")>("../extensions/gentle-ai.ts");
-	const { default: shell } = await shellLoader.import<typeof import("../extensions/gentle-shell.ts")>("../extensions/gentle-shell.ts");
+	const { createDrakoncAiExtension } = await aiLoader.import<typeof import("../extensions/drakonc-ai.ts")>("../extensions/drakonc-ai.ts");
+	const { default: shell } = await shellLoader.import<typeof import("../extensions/drakonc-shell.ts")>("../extensions/drakonc-shell.ts");
 	const aiRegistry = (await aiLoader.import<typeof import("../lib/odd-phase.ts")>("../lib/odd-phase.ts")).oddPhaseRegistry;
 	const shellRegistry = (await shellLoader.import<typeof import("../lib/odd-phase.ts")>("../lib/odd-phase.ts")).oddPhaseRegistry;
 	const tools = new Map<string, {
@@ -42,7 +42,7 @@ test("separate extension loaders share only the active session's ODD phase and r
 		events: { on: () => () => {}, emit() {} },
 		exec: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
 	};
-	createGentleAiExtension({ nativeReviewCli: null } as never)(pi as never);
+	createDrakoncAiExtension({ nativeReviewCli: null } as never)(pi as never);
 	shell(pi as never, {}, { resolveWorktree: (path: string) => ({ root: path, commonDir: path }), gitRunner: () => async () => ({ stdout: "", stderr: "", code: 0, killed: false }), devBinary: () => undefined } as never);
 	let sessionId: string | undefined = "primary-loader-test";
 	let editorFactory: ((tui: unknown, theme: unknown, bindings: unknown) => { render(width: number): string[]; setAnimationPolicy(policy: string): void; dispose(): void }) | undefined;
@@ -63,16 +63,16 @@ test("separate extension loaders share only the active session's ODD phase and r
 	let editor: ReturnType<NonNullable<typeof editorFactory>> | undefined;
 	try {
 		await fire("session_start");
-		assert.ok(editorFactory, "Gentle Shell should install its prompt");
+		assert.ok(editorFactory, "Drakonc Shell should install its prompt");
 		editor = editorFactory({ terminal: { rows: 40, columns: 120 }, requestRender() { redraws++; } }, { borderColor: (text: string) => text, selectList: {} }, { matches: () => false });
 		editor.setAnimationPolicy("potato");
 		await fire("agent_start");
 		const render = () => stripAnsi(editor!.render(60)[0]!);
 		assert.match(render(), /working…/);
-		assert.ok(tools.get("gentle_odd_phase"));
-		const report = (phase: string) => tools.get("gentle_odd_phase")!.execute("call", { phase }, undefined, undefined, ctx);
+		assert.ok(tools.get("drakonc_odd_phase"));
+		const report = (phase: string) => tools.get("drakonc_odd_phase")!.execute("call", { phase }, undefined, undefined, ctx);
 		redraws = 0;
-		const phaseTool = tools.get("gentle_odd_phase")!;
+		const phaseTool = tools.get("drakonc_odd_phase")!;
 		const successful = await report("authorizing");
 		assert.equal(phaseTool.renderShell, "self", "Pi must not paint its default tool card");
 		const toolTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
@@ -145,12 +145,12 @@ test("separate extension loaders share only the active session's ODD phase and r
 });
 
 // The label follows the primary session's own tool activity without any
-// gentle_odd_phase call; an explicit report still refines it.
+// drakonc_odd_phase call; an explicit report still refines it.
 test("tool activity in the primary session drives the working label across extension loaders", async () => {
 	const aiLoader = createJiti(import.meta.url, { moduleCache: false });
 	const shellLoader = createJiti(import.meta.url, { moduleCache: false });
-	const { createGentleAiExtension } = await aiLoader.import<typeof import("../extensions/gentle-ai.ts")>("../extensions/gentle-ai.ts");
-	const { default: shell } = await shellLoader.import<typeof import("../extensions/gentle-shell.ts")>("../extensions/gentle-shell.ts");
+	const { createDrakoncAiExtension } = await aiLoader.import<typeof import("../extensions/drakonc-ai.ts")>("../extensions/drakonc-ai.ts");
+	const { default: shell } = await shellLoader.import<typeof import("../extensions/drakonc-shell.ts")>("../extensions/drakonc-shell.ts");
 	const registry = (await aiLoader.import<typeof import("../lib/odd-phase.ts")>("../lib/odd-phase.ts")).oddPhaseRegistry;
 	const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
 	const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
@@ -161,7 +161,7 @@ test("tool activity in the primary session drives the working label across exten
 		events: { on: () => () => {}, emit() {} },
 		exec: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
 	};
-	createGentleAiExtension({ nativeReviewCli: null } as never)(pi as never);
+	createDrakoncAiExtension({ nativeReviewCli: null } as never)(pi as never);
 	shell(pi as never, {}, { resolveWorktree: (path: string) => ({ root: path, commonDir: path }), gitRunner: () => async () => ({ stdout: "", stderr: "", code: 0, killed: false }), devBinary: () => undefined } as never);
 	let sessionId = "tool-activity-loader-test";
 	let redraws = 0;
@@ -183,7 +183,7 @@ test("tool activity in the primary session drives the working label across exten
 	let editor: ReturnType<NonNullable<typeof editorFactory>> | undefined;
 	try {
 		await fire("session_start");
-		assert.ok(editorFactory, "Gentle Shell should install its prompt");
+		assert.ok(editorFactory, "Drakonc Shell should install its prompt");
 		editor = editorFactory({ terminal: { rows: 40, columns: 120 }, requestRender() { redraws++; } }, { borderColor: (text: string) => text, selectList: {} }, { matches: () => false });
 		editor.setAnimationPolicy("potato");
 		await fire("agent_start");
@@ -204,7 +204,7 @@ test("tool activity in the primary session drives the working label across exten
 		await tool("bash", { command: "git push" });
 		await tool("unknown_tool", {});
 		assert.match(render(), /planning…/, "unknown tools and ambiguous commands leave the label unchanged");
-		await tool("subagent_run", { agent: "gentle-ai-worker", mode: "task", task: "implement" });
+		await tool("subagent_run", { agent: "drakonc-ai-worker", mode: "task", task: "implement" });
 		assert.match(render(), /implementing…/, "foreground worker launch replaces stale planning");
 		redraws = 0;
 		await tool("read", { path: "lib/odd-phase.ts" });
@@ -212,25 +212,25 @@ test("tool activity in the primary session drives the working label across exten
 		await tool("write", { path: "odd/tasks/feature.md" });
 		assert.match(render(), /implementing…/, "incidental reads and task bookkeeping cannot hide worker activity");
 		assert.equal(redraws, 0, "ignored signals do not redraw the editor");
-		await tool("subagent_run", { agent: "gentle-ai-verify", mode: "background", task: "verify" });
+		await tool("subagent_run", { agent: "drakonc-ai-verify", mode: "background", task: "verify" });
 		assert.match(render(), /checking…/, "background verifier launch replaces active implementation");
 		assert.equal(redraws, 1, "phase change redraws even under potato animation");
 		await tool("read", { path: "tests/odd-phase.test.ts" });
 		await tool("todo", {});
 		assert.match(render(), /checking…/);
-		await tool("subagent_run", { agent: "unknown", task: "gentle-ai-worker implementing" });
+		await tool("subagent_run", { agent: "unknown", task: "drakonc-ai-worker implementing" });
 		assert.match(render(), /checking…/, "unknown agent prose is not evidence");
-		await tool("subagent_run", { agent: "gentle-ai-explore", mode: "task" });
+		await tool("subagent_run", { agent: "drakonc-ai-explore", mode: "task" });
 		assert.match(render(), /exploring…/, "later delegated exploration is a real phase transition");
-		await tool("subagent_run", { agent: "gentle-ai-worker", mode: "background" });
+		await tool("subagent_run", { agent: "drakonc-ai-worker", mode: "background" });
 		assert.match(render(), /implementing…/, "background worker replaces stale exploring");
-		await tool("subagent_run", { agent: "gentle-ai-verify", mode: "task" });
+		await tool("subagent_run", { agent: "drakonc-ai-verify", mode: "task" });
 		assert.match(render(), /checking…/, "foreground verifier replaces stale work");
 		await tool("edit", { path: "lib/odd-phase.ts" });
 		assert.match(render(), /implementing…/, "a subsequent source edit can restart implementation");
 
-		await tools.get("gentle_odd_phase")!.execute("call", { phase: "researching" }, undefined, undefined, ctx);
-		await tool("gentle_odd_phase", { phase: "researching" });
+		await tools.get("drakonc_odd_phase")!.execute("call", { phase: "researching" }, undefined, undefined, ctx);
+		await tool("drakonc_odd_phase", { phase: "researching" });
 		await tool("grep", { pattern: "x" });
 		assert.match(render(), /researching…/, "an explicit phase survives a following grep");
 		await tool("edit", { path: "lib/odd-phase.ts" });
@@ -239,10 +239,10 @@ test("tool activity in the primary session drives the working label across exten
 		await fire("agent_start");
 		assert.match(render(), /working…/, "a new turn starts unlabeled");
 		const childCtx = { ...ctx, mode: "rpc" };
-		await fire("tool_execution_start", { type: "tool_execution_start", toolCallId: "child", toolName: "subagent_run", args: { agent: "gentle-ai-worker" } }, childCtx);
+		await fire("tool_execution_start", { type: "tool_execution_start", toolCallId: "child", toolName: "subagent_run", args: { agent: "drakonc-ai-worker" } }, childCtx);
 		assert.equal(registry.get(sessionId), undefined, "a headless RPC (subagent) process never infers a phase");
 		sessionId = "other-session";
-		await tool("subagent_run", { agent: "gentle-ai-verify" });
+		await tool("subagent_run", { agent: "drakonc-ai-verify" });
 		assert.equal(registry.get("tool-activity-loader-test"), undefined, "another session cannot relabel the primary session");
 		assert.equal(registry.get(sessionId), "checking");
 	} finally {

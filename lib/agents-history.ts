@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promise
 import { join } from "node:path";
 import { emptyThread, isFinished, type TaskRecord, type TaskThread } from "./agents-protocol.ts";
 
-// Gentle Agents history: one JSON file per finished task, written by the
+// Drakonc Agents history: one JSON file per finished task, written by the
 // host after the child is gone and read back lazily when the overlay opens
 // or a tool asks for a task from an earlier session. Everything is async so
 // the terminal never waits on disk.
@@ -16,7 +16,7 @@ const FILE_SUFFIX = ".json";
 const SAFE_ID = /^[a-z0-9-]+$/i;
 
 export function historyDir(home: string, agentHome = join(home, ".pi", "agent")): string {
-	return join(agentHome, "gentle-agents", "tasks");
+	return join(agentHome, "drakonc-agents", "tasks");
 }
 
 function fileFor(dir: string, id: string): string {

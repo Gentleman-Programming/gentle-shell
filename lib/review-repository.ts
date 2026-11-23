@@ -52,7 +52,7 @@ export function reviewGitEnvironment(): NodeJS.ProcessEnv {
 		const normalizedKey = key.toUpperCase();
 		// The three config-file keys are pinned unconditionally below, so an
 		// inherited value cannot redirect these Git calls; the unit-test runner
-		// pins them for hermeticity (gentle-shell#2552). Routing-critical keys
+		// pins them for hermeticity (drakonc-shell#2552). Routing-critical keys
 		// still fail closed.
 		if (normalizedKey === "GIT_CONFIG_GLOBAL" || normalizedKey === "GIT_CONFIG_SYSTEM" || normalizedKey === "GIT_CONFIG_NOSYSTEM") continue;
 		if (UNSAFE_GIT_ENVIRONMENT.has(normalizedKey) || /^GIT_CONFIG_(?:KEY|VALUE)_/.test(normalizedKey)) throw new ReviewRepositoryError("REVIEW_GIT_ENV_UNSAFE: inherited Git routing/configuration override is present");
@@ -263,7 +263,7 @@ function probeLiveRepositoryV1(cwd: string): LiveRepositoryProbeV1 {
 	if (oneGitLine(cwd, ["rev-parse", "--is-shallow-repository"]) !== "false") {
 		throw new ReviewRepositoryError("Shallow repositories cannot establish review authority");
 	}
-	const storeRoot = assertManagedStorePathV1(canonicalCommonDirectory, join(canonicalCommonDirectory, "gentle-ai", "reviews"));
+	const storeRoot = assertManagedStorePathV1(canonicalCommonDirectory, join(canonicalCommonDirectory, "drakonc-ai", "reviews"));
 	const liveAnchors = gitLines(cwd, ["rev-list", "--max-parents=0", "--all"]).toSorted();
 	if (liveAnchors.length === 0) throw new ReviewRepositoryError("Repository root commit anchors are required");
 	if (new Set(liveAnchors).size !== liveAnchors.length || liveAnchors.some((anchor) => !OBJECT_ID.test(anchor))) {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { GENTLE_AI_VERSION } from "../lib/gentle-ai-binary.ts";
+import { DRAKONC_AI_VERSION } from "../lib/drakonc-ai-binary.ts";
 import { capabilitiesV26 } from "./support/capabilities-v26.ts";
 import { statusV9 } from "./support/status-v9.ts";
 import {
@@ -20,7 +20,7 @@ const executableDigest = "dcc846103b16d365eaeeb9d7f289c23fc4f2897f23def1cb3fe7f0
 
 function capabilities(): Record<string, unknown> {
 	const value = capabilitiesV26(fixture<Record<string, unknown>>("capabilities.fixture.json"));
-	(value.package as Record<string, unknown>).version = GENTLE_AI_VERSION;
+	(value.package as Record<string, unknown>).version = DRAKONC_AI_VERSION;
 	return value;
 }
 
@@ -89,11 +89,11 @@ function queuedAdapter(outputs: readonly Record<string, unknown>[]): { adapter: 
 }
 
 function client(adapter: ExecFileAdapter): NativeReviewCliV216 {
-	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024, async () => undefined);
+	return new NativeReviewCliV216(adapter, "/package/.drakonc-ai/drakonc-ai", 30_000, 1024 * 1024, async () => undefined);
 }
 
 function runtimeClient(adapter: ExecFileAdapter): RuntimeNativeReviewCliV216 {
-	return new RuntimeNativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024, async () => undefined);
+	return new RuntimeNativeReviewCliV216(adapter, "/package/.drakonc-ai/drakonc-ai", 30_000, 1024 * 1024, async () => undefined);
 }
 
 test("negotiated ordinary START executes the complete STATUS-rendered relay vector and preserves the consent envelope", async () => {
@@ -273,7 +273,7 @@ test("a consent invocation binding mismatch is a typed pre-native error that nev
 	const consent = (await import("../lib/review-integration-v2.ts")).decodeReviewConsentV2(fixture<Record<string, unknown>>("consent.fixture.json"));
 	const queue = queuedAdapter([]);
 	await assert.rejects(
-		() => client(queue.adapter).answerConsent!({ cwd: "/repo/.git/gentle-ai/candidate-views/a1c7fdae", consent, answer: "granted" }),
+		() => client(queue.adapter).answerConsent!({ cwd: "/repo/.git/drakonc-ai/candidate-views/a1c7fdae", consent, answer: "granted" }),
 		(error: unknown) => {
 			assert.ok(error instanceof NativeReviewConsentBindingError);
 			assert.equal(error.name, "NativeReviewConsentBindingError");
@@ -420,8 +420,8 @@ test("declined consent decodes the provider's explicit empty authority fields wi
 //
 // Fixture provenance: consent-v3.captured.json, start-v3-consent-granted
 // .captured.json, and start-v3-consent-declined.captured.json were captured
-// 2026-08-16 from the real binary at /home/gentleman/.cargo/bin/gentle-ai
-// reporting "gentle-ai 2.4.0-main.b1afef46"; full capture commands are
+// 2026-08-16 from the real binary at /home/drakoncman/.cargo/bin/drakonc-ai
+// reporting "drakonc-ai 2.4.0-main.b1afef46"; full capture commands are
 // documented in tests/review-integration-v2-forward.test.ts.
 
 const devbinaryFixtureRoot = join(process.cwd(), "tests", "fixtures", "devbinary");

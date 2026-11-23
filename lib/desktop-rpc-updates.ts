@@ -1,9 +1,9 @@
-// Gentle Desktop update-status slice: the pure contract shared by the Desktop
+// Drakonc Desktop update-status slice: the pure contract shared by the Desktop
 // bridge (`lib/desktop-updates-service.ts`) and the update sources it reads
 // (`lib/update-status.ts`).
 //
 // Nothing here reaches the network or the filesystem. The sources supply what
-// Gentle Shell's own channel and version resolution and Pi's own package
+// Drakonc Shell's own channel and version resolution and Pi's own package
 // update check already know; this module only parses the request and projects
 // those facts into the safe, bounded Desktop shape. It never decides that
 // something is up to date without a successful lookup.
@@ -23,13 +23,13 @@ export const DESKTOP_UPDATES_NAME_LIMIT = 128;
 export const DESKTOP_UPDATES_VERSION_LIMIT = 64;
 
 /**
- * How this Gentle Shell was installed, from the existing resolvers: a bundled
+ * How this Drakonc Shell was installed, from the existing resolvers: a bundled
  * prefix (`runningBundledPrefix`), gentle-pi loaded as a Pi package
- * (`npm:gentle-pi`, the way the Gentle AI managed stack declares it), or the
- * release/main channel record `gentle-shell upgrade` keeps (`readChannel`).
+ * (`npm:gentle-pi`, the way the Drakonc AI managed stack declares it), or the
+ * release/main channel record `drakonc-shell upgrade` keeps (`readChannel`).
  * `unknown` when the channel record cannot be read.
  */
-export type ShellChannel = "release" | "main" | "bundled" | "gentle-ai-managed" | "unknown";
+export type ShellChannel = "release" | "main" | "bundled" | "drakonc-ai-managed" | "unknown";
 export type ItemState = "update_available" | "up_to_date" | "unknown";
 /**
  * Pi's package check only says which packages have a newer version, and it
@@ -43,14 +43,14 @@ export type PackageKind = "npm" | "git" | "local" | "unknown";
 
 /** Fixed command text per kind of install; never built from user input. */
 export const SHELL_UPDATE_COMMANDS: Readonly<Record<ShellChannel, string | null>> = Object.freeze({
-	release: "gentle-shell upgrade",
-	main: "gentle-shell upgrade --channel main",
-	bundled: "gentle-shell upgrade",
-	"gentle-ai-managed": "gentle-shell update --extensions",
+	release: "drakonc-shell upgrade",
+	main: "drakonc-shell upgrade --channel main",
+	bundled: "drakonc-shell upgrade",
+	"drakonc-ai-managed": "drakonc-shell update --extensions",
 	unknown: null,
 });
-export const PI_UPDATE_COMMAND = "gentle-shell update";
-export const PACKAGES_UPDATE_COMMAND = "gentle-shell update --extensions";
+export const PI_UPDATE_COMMAND = "drakonc-shell update";
+export const PACKAGES_UPDATE_COMMAND = "drakonc-shell update --extensions";
 
 export interface DesktopUpdatesQuery {
 	refresh: boolean;
@@ -99,7 +99,7 @@ export interface DesktopUpdateStatus {
 	refreshed: boolean;
 	/** `PI_OFFLINE` is set: no lookup runs, and nothing is reported as up to date by a check. */
 	offline: boolean;
-	gentleShell: DesktopShellUpdate;
+	drakoncShell: DesktopShellUpdate;
 	pi: DesktopPiUpdate;
 	packages: DesktopPackagesUpdate;
 }

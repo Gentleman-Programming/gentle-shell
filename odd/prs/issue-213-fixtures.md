@@ -20,14 +20,14 @@ Refs #213 — approved issue. This does not close it or claim the initiating tim
 | Path | Change |
 | --- | --- |
 | `tests/card-style-policy.test.ts` | EACCES fixture; only physical chmod probe is POSIX-specific |
-| `tests/gentle-shell-bin.test.ts` | Platform PATH executable and environment |
-| `tests/gentle-shell-launcher.test.ts` | Nine absolute-path fixtures |
+| `tests/drakonc-shell-bin.test.ts` | Platform PATH executable and environment |
+| `tests/drakonc-shell-launcher.test.ts` | Nine absolute-path fixtures |
 | `odd/tasks/status-timing-publication.md` | Publication evidence |
 
 ## Test plan
 - RED focal: 1 PASS / 3 FAIL; later scoped regression: 210 PASS / 9 FAIL.
-- `node --experimental-strip-types --test --test-name-pattern="denied preference read|invalid or unreadable preference files|a genuinely absent adjacent peer|malformed adjacent metadata" tests/card-style-policy.test.ts tests/gentle-shell-bin.test.ts`: **4/4 PASS**, no skips.
-- `node --experimental-strip-types --test tests/card-style-policy.test.ts tests/gentle-shell-launcher.test.ts`: **219/219 PASS**, no skips.
+- `node --experimental-strip-types --test --test-name-pattern="denied preference read|invalid or unreadable preference files|a genuinely absent adjacent peer|malformed adjacent metadata" tests/card-style-policy.test.ts tests/drakonc-shell-bin.test.ts`: **4/4 PASS**, no skips.
+- `node --experimental-strip-types --test tests/card-style-policy.test.ts tests/drakonc-shell-launcher.test.ts`: **219/219 PASS**, no skips.
 - Independent verifier repeated both commands: **PASS**, no candidate-caused blocker.
 - `node scripts/check-types.mjs`: 186 baseline diagnostics, no regressions.
 - `git diff --check`: PASS. POSIX inspected, not executed.
@@ -43,10 +43,10 @@ Refs #213 — approved issue. This does not close it or claim the initiating tim
 ## Chain Context
 | Field | Value |
 | --- | --- |
-| Tracker PR | https://github.com/Gentleman-Programming/gentle-shell/pull/1950 |
+| Tracker PR | https://github.com/Drakoncman-Programming/drakonc-shell/pull/1950 |
 | Position | 2 of 2 children |
 | Base | `feat/213-status-timing-diagnostics` |
-| Depends on | https://github.com/Gentleman-Programming/gentle-shell/pull/1951 |
+| Depends on | https://github.com/Drakoncman-Programming/drakonc-shell/pull/1951 |
 | Follow-up | Integrate children in order; tracker stays draft |
 | Review budget | 82 fixture lines plus bounded publication metadata / 400 |
 | Starts at | Diagnostics `69932a04` |

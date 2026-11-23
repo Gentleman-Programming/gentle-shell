@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { NATIVE_REVIEW_MODE_SOURCE, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import {
 	decodeAgentRiskEscalation,
@@ -11,7 +11,7 @@ import {
 	verificationRisk,
 } from "../lib/review-risk-assessment.ts";
 
-// gentle-shell#1494 S6: the agent may raise a candidate's risk to high by
+// drakonc-shell#1494 S6: the agent may raise a candidate's risk to high by
 // citing one item of the shared high-risk list, never lower it. The raise
 // travels inside the existing assess call; no new operation. Verification by
 // named risk: that escalation is now the only way to get the independent
@@ -72,13 +72,13 @@ function assessTool(nativeRisk: "passive" | "medium" | "high" = "medium"): { exe
 			candidate: { kind: "current-changes", baseRef: undefined },
 		}),
 	};
-	createGentleAiExtension({ nativeReviewCli: nativeReviewCli as NativeReviewCli })(pi);
-	return tools.get("gentle_review");
+	createDrakoncAiExtension({ nativeReviewCli: nativeReviewCli as NativeReviewCli })(pi);
+	return tools.get("drakonc_review");
 }
 
 const ctx = { cwd: process.cwd() } as ExtensionContext;
 
-test("gentle_review assess: an agent escalation raises a medium candidate to high and records why", async () => {
+test("drakonc_review assess: an agent escalation raises a medium candidate to high and records why", async () => {
 	const tool = assessTool();
 	const input = JSON.stringify({ writerModelId: "openai/gpt-6.1-sol", writerEffort: "high", escalate: { item: 2, reason: "weakens the permission check in utils.ts" } });
 	const { details } = await tool.execute("esc-1", { operation: "assess", input }, undefined, undefined, ctx);
@@ -89,7 +89,7 @@ test("gentle_review assess: an agent escalation raises a medium candidate to hig
 	assert.equal(plan.plan.independentVerifier, true, "a raised candidate always gets the independent verifier");
 });
 
-test("gentle_review assess: without an escalation the native tier stands", async () => {
+test("drakonc_review assess: without an escalation the native tier stands", async () => {
 	const tool = assessTool();
 	const input = JSON.stringify({ writerModelId: "openai/gpt-6.1-sol", writerEffort: "high" });
 	const { details } = await tool.execute("esc-2", { operation: "assess", input }, undefined, undefined, ctx);
@@ -100,7 +100,7 @@ test("gentle_review assess: without an escalation the native tier stands", async
 	assert.equal(plan.plan.independentVerifier, false);
 });
 
-test("gentle_review assess: a malformed escalation is rejected instead of ignored", async () => {
+test("drakonc_review assess: a malformed escalation is rejected instead of ignored", async () => {
 	const tool = assessTool();
 	await assert.rejects(
 		() => tool.execute("esc-3", { operation: "assess", input: JSON.stringify({ escalate: { item: 9, reason: "x" } }) }, undefined, undefined, ctx),
@@ -112,21 +112,21 @@ test("the rule text tells the agent when and how to escalate, and that it never 
 	const { readFileSync } = await import("node:fs");
 	const verification = readFileSync(new URL("../assets/orchestrator-verification.md", import.meta.url), "utf8");
 	const tracking = readFileSync(new URL("../assets/orchestrator-tracking.md", import.meta.url), "utf8");
-	const extension = readFileSync(new URL("../extensions/gentle-ai.ts", import.meta.url), "utf8");
+	const extension = readFileSync(new URL("../extensions/drakonc-ai.ts", import.meta.url), "utf8");
 	assert.match(verification, /"escalate": \{"item": <1-6>, "reason": "<one line>"\}/);
 	assert.match(verification, /never lowers a tier/);
 	assert.match(tracking, /assess `escalate` field \(`orchestrator-verification\.md`\); never lower one/);
 	assert.match(extension, /\{"escalate":\{"item":1-6,"reason":"<one line>"\}\}/);
 });
 
-test("gentle_review assess: agentEscalation says whether the escalation changed the tier", async () => {
+test("drakonc_review assess: agentEscalation says whether the escalation changed the tier", async () => {
 	const tool = assessTool();
 	const input = JSON.stringify({ escalate: { item: 4, reason: "reorders an async write" } });
 	const { details } = await tool.execute("esc-5", { operation: "assess", input }, undefined, undefined, ctx);
 	assert.equal((details as { agentEscalation: { applied: boolean } }).agentEscalation.applied, true, "medium raised to high is applied");
 });
 
-test("gentle_review assess: a native high without an escalation informs only and adds no verifier", async () => {
+test("drakonc_review assess: a native high without an escalation informs only and adds no verifier", async () => {
 	const tool = assessTool("high");
 	for (const writer of [{ writerModelId: "openai/gpt-6.1-sol", writerEffort: "high" }, { writerModelId: "openai/gpt-5-mini", writerEffort: "low" }]) {
 		const { details } = await tool.execute("esc-6", { operation: "assess", input: JSON.stringify(writer) }, undefined, undefined, ctx);
@@ -138,7 +138,7 @@ test("gentle_review assess: a native high without an escalation informs only and
 	}
 });
 
-test("gentle_review assess: an escalation over a native high is what adds the verifier", async () => {
+test("drakonc_review assess: an escalation over a native high is what adds the verifier", async () => {
 	const tool = assessTool("high");
 	const input = JSON.stringify({ escalate: { item: 1, reason: "rewrites stored records" } });
 	const { details } = await tool.execute("esc-7", { operation: "assess", input }, undefined, undefined, ctx);

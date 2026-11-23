@@ -1,10 +1,10 @@
-// Maintainer provider-relay matrix — behavior-first tests (gentle-pi#311).
+// Maintainer provider-relay matrix — behavior-first tests (drakonc-pi#311).
 //
 // `pnpm test` never picks this up: it globs `tests/*.test.ts` only, and this
 // file lives one directory deeper and ends in `.maintest.ts`. It runs only
 // via `pnpm run test:maintainer`. Strict validation + no-production-resolution
 // always run; real-binary tests run only when env-supplied maintainer binaries
-// exist (self-skip; fail-loud under GENTLE_PI_REQUIRE_MAINTAINER=1). Never fakes
+// exist (self-skip; fail-loud under DRAKONC_PI_REQUIRE_MAINTAINER=1). Never fakes
 // green. Tests never hardcode machine-specific paths; the verifier supplies
 // them via env. The baseline is described generically; external evidence
 // establishes whether it is the immutable RC8 runtime.
@@ -15,18 +15,18 @@ import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
 import test from "node:test";
 import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError, runReviewHostRelaySlot } from "../../lib/review-host-relay.ts";
 import { ARM_POSITIVE_ENV, CASE_KINDS, DEFAULT_ROLE_VECTOR_TIMEOUT_MS, DESCRIPTOR_SCHEMA, DescriptorValidationError, POSITIVE_JOURNEY_COMMAND, PROVIDER_ROLE_CAPTURE_ARTIFACT_SCHEMA, PROVIDER_ROLE_VECTOR_KINDS, PROVIDER_ROLE_VECTOR_ROLE, PROVIDER_ROLE_VECTOR_VERB, ProviderRoleVectorError, ROLE_STREAM_MAX_BYTES, ROLE_VECTOR_FAILURE, loadDescriptor, resolveDeclaredExecutable, runMatrix, runProviderRoleVector, validateDescriptor } from "../../scripts/maintainer/provider-relay-matrix.mjs";
-const BASELINE_ENV = "GENTLE_PI_MAINTAINER_BASELINE_BINARY";
-const CAPABLE_ENV = "GENTLE_PI_MAINTAINER_CAPABLE_BINARY";
-const REQUIRE_ENV = "GENTLE_PI_REQUIRE_MAINTAINER";
+const BASELINE_ENV = "DRAKONC_PI_MAINTAINER_BASELINE_BINARY";
+const CAPABLE_ENV = "DRAKONC_PI_MAINTAINER_CAPABLE_BINARY";
+const REQUIRE_ENV = "DRAKONC_PI_REQUIRE_MAINTAINER";
 // Every declared-but-nonexistent executable path these tests use lives inside
 // one private sandbox. A predictable /tmp path is squattable: another user can
 // pre-create it between runs, and a test that resolves it would then spawn a
 // file it never wrote. mkdtemp's unpredictable name plus 0700 removes that.
-const SANDBOX = mkdtempSync(join(tmpdir(), "gentle-pi-maintainer-sandbox-"));
+const SANDBOX = mkdtempSync(join(tmpdir(), "drakonc-pi-maintainer-sandbox-"));
 chmodSync(SANDBOX, 0o700);
 process.on("exit", () => rmSync(SANDBOX, { recursive: true, force: true }));
 const sandboxPath = (name: string) => join(SANDBOX, name);
-const PLACEHOLDER_BINARY = sandboxPath("not-a-real-gentle-ai-binary");
+const PLACEHOLDER_BINARY = sandboxPath("not-a-real-drakonc-ai-binary");
 const baselineBinary = process.env[BASELINE_ENV];
 const capableBinary = process.env[CAPABLE_ENV];
 const armed = process.env[REQUIRE_ENV] === "1";
@@ -60,7 +60,7 @@ const REVIEWER_SELECTION = "test-provider/test-model";
 function descriptor(overrides = {}) {
 	return {
 		schema: DESCRIPTOR_SCHEMA,
-		gentleAiExecutable: PLACEHOLDER_BINARY,
+		drakoncAiExecutable: PLACEHOLDER_BINARY,
 		reviewerSelection: REVIEWER_SELECTION,
 		cases: [{ name: "baseline-negative-control", kind: "relay-unavailable", captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }],
 		...overrides,
@@ -73,7 +73,7 @@ function rejects(obj, fragment) {
 	assert.throws(() => validateDescriptor(obj), (error) => error instanceof Error && error instanceof DescriptorValidationError && error.message.includes(fragment));
 }
 function tempDescriptor(t, obj) {
-	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-maintainer-"));
+	const directory = mkdtempSync(join(tmpdir(), "drakonc-pi-maintainer-"));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
 	const path = join(directory, "d.json");
 	writeFileSync(path, JSON.stringify(obj));
@@ -91,9 +91,9 @@ test("valid descriptor validates and returns a normalized copy", () => {
 	assert.deepEqual(d.cases[0]!.submission.values, SUBMISSION.values);
 });
 test("rejects malformed descriptor fields with exact-shape errors (no defaults, no production resolution)", () => {
-	rejects({ ...descriptor(), schema: "gentle-pi.maintainer.provider-relay-descriptor/v2" }, "descriptor.schema must be exactly");
-	rejects({ ...descriptor(), gentleAiExecutable: "gentle-ai" }, "absolute path");
-	rejects({ ...descriptor(), gentleAiExecutable: undefined }, "absolute path");
+	rejects({ ...descriptor(), schema: "drakonc-pi.maintainer.provider-relay-descriptor/v2" }, "descriptor.schema must be exactly");
+	rejects({ ...descriptor(), drakoncAiExecutable: "drakonc-ai" }, "absolute path");
+	rejects({ ...descriptor(), drakoncAiExecutable: undefined }, "absolute path");
 	rejects({ ...descriptor(), extra: 1 }, "descriptor.extra");
 	rejects({ ...descriptor(), cases: [{ ...descriptor().cases[0]!, extra: 1 }] }, "extra");
 	assert.deepEqual([...CASE_KINDS], ["relay-unavailable", "positive-lens", ...PROVIDER_ROLE_VECTOR_KINDS]);
@@ -123,9 +123,9 @@ function roleDescriptor(kind: "provider-role-refuter" | "provider-role-validator
 	const tokens = kind === "provider-role-refuter" ? REFUTER_TOKENS : VALIDATOR_TOKENS;
 	const entry: Record<string, unknown> = { name: `${kind}-case`, kind, argumentTokens: [...tokens] };
 	if (kind === "provider-role-validator") entry.validationRequest = structuredClone(VALIDATION_REQUEST);
-	return { schema: DESCRIPTOR_SCHEMA, gentleAiExecutable: PLACEHOLDER_BINARY, reviewerSelection: REVIEWER_SELECTION, cases: [entry], ...overrides };
+	return { schema: DESCRIPTOR_SCHEMA, drakoncAiExecutable: PLACEHOLDER_BINARY, reviewerSelection: REVIEWER_SELECTION, cases: [entry], ...overrides };
 }
-const ROLE_STUB_BINARY = sandboxPath("gentle-ai-role-stub");
+const ROLE_STUB_BINARY = sandboxPath("drakonc-ai-role-stub");
 writeFileSync(ROLE_STUB_BINARY, "stub");
 test("role vector descriptors validate and return a normalized copy with exact provider tokens", () => {
 	assert.deepEqual([...PROVIDER_ROLE_VECTOR_KINDS], ["provider-role-refuter", "provider-role-validator"]);
@@ -162,11 +162,11 @@ test("targeted-validator descriptor requires exactly one request hash matching v
 });
 
 test("refuter vector: runMatrix executes exactly once through review.capture-refuter with exact provider tokens and returns the typed artifact", async () => {
-	const calls: Array<{ kind: string; argumentTokens: readonly string[]; gentleAiExecutable: string; validationRequest?: unknown }> = [];
-	const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-refuter"), gentleAiExecutable: ROLE_STUB_BINARY }), {
+	const calls: Array<{ kind: string; argumentTokens: readonly string[]; drakoncAiExecutable: string; validationRequest?: unknown }> = [];
+	const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-refuter"), drakoncAiExecutable: ROLE_STUB_BINARY }), {
 		armPositive: true,
 		roleRunner: async (request) => {
-			calls.push({ kind: request.kind, argumentTokens: request.argumentTokens, gentleAiExecutable: request.gentleAiExecutable, ...(request.validationRequest === undefined ? {} : { validationRequest: request.validationRequest }) });
+			calls.push({ kind: request.kind, argumentTokens: request.argumentTokens, drakoncAiExecutable: request.drakoncAiExecutable, ...(request.validationRequest === undefined ? {} : { validationRequest: request.validationRequest }) });
 			return { schema: PROVIDER_ROLE_CAPTURE_ARTIFACT_SCHEMA, lineageId: ROLE_LINEAGE, targetIdentity: ROLE_TARGET, role: "refuter", captured: true };
 		},
 	});
@@ -176,7 +176,7 @@ test("refuter vector: runMatrix executes exactly once through review.capture-ref
 	assert.deepEqual(calls[0]!.argumentTokens, [...REFUTER_TOKENS]);
 	assert.ok(calls[0]!.argumentTokens.includes("--execute=true"));
 	assert.ok(!calls[0]!.argumentTokens.includes("--materialize=true"));
-	assert.equal(calls[0]!.gentleAiExecutable, ROLE_STUB_BINARY);
+	assert.equal(calls[0]!.drakoncAiExecutable, ROLE_STUB_BINARY);
 	assert.equal(verdict!.verdict, "pass");
 	assert.equal(verdict!.role, "refuter");
 	assert.equal(verdict!.captured, true);
@@ -185,7 +185,7 @@ test("refuter vector: runMatrix executes exactly once through review.capture-ref
 });
 test("validator vector: runMatrix executes exactly once through review.capture-validation and preserves the request-hash binding", async () => {
 	const calls: Array<{ kind: string; argumentTokens: readonly string[]; validationRequest?: unknown }> = [];
-	const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-validator"), gentleAiExecutable: ROLE_STUB_BINARY }), {
+	const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-validator"), drakoncAiExecutable: ROLE_STUB_BINARY }), {
 		armPositive: true,
 		roleRunner: async (request) => {
 			calls.push({ kind: request.kind, argumentTokens: request.argumentTokens, ...(request.validationRequest === undefined ? {} : { validationRequest: request.validationRequest }) });
@@ -203,7 +203,7 @@ test("validator vector: runMatrix executes exactly once through review.capture-v
 });
 test("an unarmed role vector blocks loudly and never fakes green (no model launch)", async () => {
 	const calls: unknown[] = [];
-	const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-refuter"), gentleAiExecutable: ROLE_STUB_BINARY }), {
+	const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-refuter"), drakoncAiExecutable: ROLE_STUB_BINARY }), {
 		roleRunner: async () => { calls.push("ran"); return ROLE_ARTIFACT; },
 	});
 	assert.equal(calls.length, 0, "an unarmed role vector must never reach the runner");
@@ -213,17 +213,17 @@ test("an unarmed role vector blocks loudly and never fakes green (no model launc
 });
 test("handshake refusal reports relay-contract negotiation, distinct from a missing role surface", async () => {
 	for (const [kind, message] of [[ROLE_VECTOR_FAILURE.HANDSHAKE_REFUSED, "relay handshake refused"], [ROLE_VECTOR_FAILURE.ROLE_SURFACE_UNAVAILABLE, "missing role surface"]] as const) {
-		const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-refuter"), gentleAiExecutable: ROLE_STUB_BINARY }), { armPositive: true, roleRunner: async () => { throw new ProviderRoleVectorError(kind, "execute", message); } });
+		const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-refuter"), drakoncAiExecutable: ROLE_STUB_BINARY }), { armPositive: true, roleRunner: async () => { throw new ProviderRoleVectorError(kind, "execute", message); } });
 		assert.equal(verdict!.verdict, "blocked"); assert.match(verdict!.reason, kind === ROLE_VECTOR_FAILURE.HANDSHAKE_REFUSED ? /relay-contract negotiation/ : /provider role capture surface/);
 	}
 });
 test("negative control: an unsupported role surface fails closed with zero role invocation and no mutation", async () => {
 	const calls: unknown[] = [];
-	const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-refuter"), gentleAiExecutable: ROLE_STUB_BINARY }), {
+	const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-refuter"), drakoncAiExecutable: ROLE_STUB_BINARY }), {
 		armPositive: true,
 		roleRunner: async (request) => {
 			calls.push(request);
-			throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_SURFACE_UNAVAILABLE, "execute", "the declared gentle-ai binary lacks the provider role capture surface");
+			throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_SURFACE_UNAVAILABLE, "execute", "the declared drakonc-ai binary lacks the provider role capture surface");
 		},
 	});
 	assert.equal(calls.length, 1, "the runner was probed exactly once to detect the missing surface");
@@ -235,10 +235,10 @@ test("negative control: an unsupported role surface fails closed with zero role 
 	assert.notEqual(verdict!.verdict, "fail");
 });
 test("negative control: a role vector failure (not surface-unavailable) is reported as fail, never pass", async () => {
-	const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-refuter"), gentleAiExecutable: ROLE_STUB_BINARY }), {
+	const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-refuter"), drakoncAiExecutable: ROLE_STUB_BINARY }), {
 		armPositive: true,
 		roleRunner: async () => {
-			throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_FAILED, "execute", "gentle-ai role vector failed");
+			throw new ProviderRoleVectorError(ROLE_VECTOR_FAILURE.ROLE_FAILED, "execute", "drakonc-ai role vector failed");
 		},
 	});
 	assert.equal(verdict!.verdict, "fail");
@@ -246,7 +246,7 @@ test("negative control: a role vector failure (not surface-unavailable) is repor
 });
 test("runProviderRoleVector treats a prelaunch abort as not-started with no mutation", async () => {
 	const controller = new AbortController(); controller.abort();
-	await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: process.execPath, signal: controller.signal }), (error) => isRoleError(error) && error.kind === ROLE_VECTOR_FAILURE.ROLE_ABORTED && error.stage === "launch" && error.mutationOutcome === "none");
+	await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, drakoncAiExecutable: process.execPath, signal: controller.signal }), (error) => isRoleError(error) && error.kind === ROLE_VECTOR_FAILURE.ROLE_ABORTED && error.stage === "launch" && error.mutationOutcome === "none");
 });
 function roleChild(t: test.TestContext, name: string, source: string) {
 	const path = sandboxPath(`${name} preload.cjs`), savedNodeOptions = process.env.NODE_OPTIONS; writeFileSync(path, `const roleArgv = ["review", ...process.argv.slice(2)], Module = require("node:module"), resolveFilename = Module._resolveFilename; Module._resolveFilename = function (request, ...args) { return /[\\\\/]review$/.test(request) ? ${JSON.stringify(path)} : resolveFilename.call(this, request, ...args); }; ${source}`);
@@ -255,7 +255,7 @@ function roleChild(t: test.TestContext, name: string, source: string) {
 test("runProviderRoleVector executes both real stub-child verbs and decodes snake_case artifacts", async (t) => {
 	for (const kind of PROVIDER_ROLE_VECTOR_KINDS) {
 		const log = sandboxPath(`${kind}.json`), child = roleChild(t, `${kind}.cjs`, `const fs = require("node:fs"), refuter = roleArgv[1] === "capture-refuter"; fs.writeFileSync(${JSON.stringify(sandboxPath("ROLE_LOG_PLACEHOLDER"))}.replace("ROLE_LOG_PLACEHOLDER", ${JSON.stringify(`${kind}.json`)}), JSON.stringify(roleArgv)); process.stdout.write(JSON.stringify({ schema: ${JSON.stringify(PROVIDER_ROLE_CAPTURE_ARTIFACT_SCHEMA)}, lineage_id: ${JSON.stringify(ROLE_LINEAGE)}, target_identity: ${JSON.stringify(ROLE_TARGET)}, role: refuter ? "refuter" : "targeted-validator", captured: true })); process.exit(0);`);
-		const artifact = await runProviderRoleVector({ kind, argumentTokens: kind === "provider-role-refuter" ? REFUTER_TOKENS : VALIDATOR_TOKENS, gentleAiExecutable: child.executable, env: child.env });
+		const artifact = await runProviderRoleVector({ kind, argumentTokens: kind === "provider-role-refuter" ? REFUTER_TOKENS : VALIDATOR_TOKENS, drakoncAiExecutable: child.executable, env: child.env });
 		assert.deepEqual(JSON.parse(readFileSync(log, "utf8")), ["review", PROVIDER_ROLE_VECTOR_VERB[kind], ...(kind === "provider-role-refuter" ? REFUTER_TOKENS : VALIDATOR_TOKENS)]);
 		assert.deepEqual(artifact, { schema: PROVIDER_ROLE_CAPTURE_ARTIFACT_SCHEMA, lineageId: ROLE_LINEAGE, targetIdentity: ROLE_TARGET, role: PROVIDER_ROLE_VECTOR_ROLE[kind], captured: true });
 	}
@@ -263,19 +263,19 @@ test("runProviderRoleVector executes both real stub-child verbs and decodes snak
 test("runProviderRoleVector rejects malformed artifact binding shape before stale binding comparison", async (t) => {
 	for (const malformed of [{ lineage_id: "", target_identity: ROLE_TARGET }, { lineage_id: ROLE_LINEAGE, target_identity: "not-a-sha256" }]) {
 		const child = roleChild(t, `malformed-${malformed.lineage_id || "lineage"}.cjs`, `process.stdout.write(JSON.stringify({ schema: ${JSON.stringify(PROVIDER_ROLE_CAPTURE_ARTIFACT_SCHEMA)}, role: "refuter", captured: true, ...${JSON.stringify(malformed)} })); process.exit(0);`);
-		await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: child.executable, env: child.env }), (error) => isRoleError(error) && error.kind === ROLE_VECTOR_FAILURE.ROLE_FAILED && /typed shape/.test(error.message));
+		await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, drakoncAiExecutable: child.executable, env: child.env }), (error) => isRoleError(error) && error.kind === ROLE_VECTOR_FAILURE.ROLE_FAILED && /typed shape/.test(error.message));
 	}
 });
 test("runProviderRoleVector classifies an empty successful artifact as unknown and requires STATUS re-query", async (t) => {
 	const child = roleChild(t, "empty-artifact.cjs", "process.exit(0);");
-	await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: child.executable, env: child.env }), (caught) => {
+	await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, drakoncAiExecutable: child.executable, env: child.env }), (caught) => {
 		assert.ok(isRoleError(caught)); assert.equal(caught.kind, ROLE_VECTOR_FAILURE.EMPTY_ARTIFACT); assert.equal(caught.stage, "execute"); assert.equal(caught.mutationOutcome, "unknown"); assert.match(caught.message, /re-query negotiated STATUS before any retry/); return true;
 	});
 });
 test("runProviderRoleVector bounds each output stream before JSON or exit handling", async (t) => {
 	for (const stream of ["stdout", "stderr"] as const) {
 		const child = roleChild(t, `overflow-${stream}.cjs`, `process.${stream}.write("x".repeat(${ROLE_STREAM_MAX_BYTES + 1})); setInterval(() => {}, 1_000);`);
-		await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: child.executable, env: child.env, timeoutMs: 1_000 }), (error) => isRoleError(error) && error.kind === ROLE_VECTOR_FAILURE.ROLE_OUTPUT_OVERFLOW && error.mutationOutcome === "unknown");
+		await assert.rejects(runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, drakoncAiExecutable: child.executable, env: child.env, timeoutMs: 1_000 }), (error) => isRoleError(error) && error.kind === ROLE_VECTOR_FAILURE.ROLE_OUTPUT_OVERFLOW && error.mutationOutcome === "unknown");
 	}
 });
 async function descendantPid(path: string) {
@@ -290,7 +290,7 @@ async function assertReaped(pid: number) {
 test("role watchdog and abort reap descendants on every platform", async (t) => {
 	for (const mode of ["watchdog", "abort"] as const) await t.test(mode, async (t) => {
 		const grandchild = sandboxPath(`role-grandchild-${mode}.pid`), child = roleChild(t, `hang-role-child-${mode}.cjs`, `const fs = require("node:fs"), { spawn } = require("node:child_process"), grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", env: { ...process.env, NODE_OPTIONS: "" } }); fs.writeFileSync(${JSON.stringify(sandboxPath("ROLE_PID_PLACEHOLDER"))}.replace("ROLE_PID_PLACEHOLDER", ${JSON.stringify(`role-grandchild-${mode}.pid`)}), String(grandchild.pid)); setInterval(() => {}, 1000);`), controller = new AbortController();
-		const run = runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: child.executable, env: child.env, timeoutMs: 1_000, signal: controller.signal }), pid = await descendantPid(grandchild);
+		const run = runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, drakoncAiExecutable: child.executable, env: child.env, timeoutMs: 1_000, signal: controller.signal }), pid = await descendantPid(grandchild);
 		t.after(() => { if (pid > 0) try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } });
 		assert.ok(DEFAULT_ROLE_VECTOR_TIMEOUT_MS > 600_000, "the outer 900s watchdog FIRES after the provider-owned 600s deadline with setup/cancellation margin");
 		if (mode === "abort") controller.abort();
@@ -301,7 +301,7 @@ test("role watchdog and abort reap descendants on every platform", async (t) => 
 test("failed tree termination settles despite a surviving descendant retaining inherited pipes", async (t) => {
 	const grandchild = sandboxPath("role-pipe-holder.pid"), controller = new AbortController();
 	const child = roleChild(t, "pipe-holder-role-child.cjs", `const fs = require("node:fs"), { spawn } = require("node:child_process"), grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit", env: { ...process.env, NODE_OPTIONS: "" } }); fs.writeFileSync(${JSON.stringify(sandboxPath("ROLE_PID_PLACEHOLDER"))}.replace("ROLE_PID_PLACEHOLDER", ${JSON.stringify("role-pipe-holder.pid")}), String(grandchild.pid)); setInterval(() => {}, 1000);`);
-	const run = runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, gentleAiExecutable: child.executable, env: child.env, signal: controller.signal, terminateProcessTree: (process) => { process.kill("SIGKILL"); return false; } });
+	const run = runProviderRoleVector({ kind: "provider-role-refuter", argumentTokens: REFUTER_TOKENS, drakoncAiExecutable: child.executable, env: child.env, signal: controller.signal, terminateProcessTree: (process) => { process.kill("SIGKILL"); return false; } });
 	const pid = await descendantPid(grandchild); t.after(() => { try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } });
 	const started = Date.now(); controller.abort(); await assert.rejects(run, (error) => isRoleError(error) && error.kind === ROLE_VECTOR_FAILURE.ROLE_TERMINATION_FAILED && error.stage === "execute" && error.mutationOutcome === "unknown");
 	assert.ok(Date.now() - started < 500, "failed tree termination must not wait for descendant-held pipes to close"); assert.doesNotThrow(() => process.kill(pid, 0), "the fixture descendant must survive while retaining inherited pipes");
@@ -318,7 +318,7 @@ test("stale-target fail-closed: missing or duplicate required binding tokens are
 test("stale-target fail-closed: a returned artifact with mismatched lineage or target fails, never passes", async () => {
 	const stale = `sha256:${"f".repeat(64)}`;
 	for (const [lineageId, targetIdentity] of [[stale, ROLE_TARGET], [ROLE_LINEAGE, stale]] as const) {
-		const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-refuter"), gentleAiExecutable: ROLE_STUB_BINARY }), {
+		const [verdict] = await runMatrix(validateDescriptor({ ...roleDescriptor("provider-role-refuter"), drakoncAiExecutable: ROLE_STUB_BINARY }), {
 			armPositive: true,
 			roleRunner: async () => ({ schema: PROVIDER_ROLE_CAPTURE_ARTIFACT_SCHEMA, lineageId, targetIdentity, role: "refuter", captured: true }),
 		});
@@ -332,9 +332,9 @@ test("stale-target fail-closed: a returned artifact with mismatched lineage or t
 // never falls through to the package-local production binary.
 // ---------------------------------------------------------------------------
 test("runMatrix uses only the declared executable, never the production resolver", async () => {
-	const [verdict] = await runMatrix(validateDescriptor({ ...descriptor(), gentleAiExecutable: sandboxPath("not-a-gentle-ai-binary") }));
+	const [verdict] = await runMatrix(validateDescriptor({ ...descriptor(), drakoncAiExecutable: sandboxPath("not-a-drakonc-ai-binary") }));
 	assert.equal(verdict!.verdict, "blocked");
-	assert.match(verdict!.reason, /gentleAiExecutable/);
+	assert.match(verdict!.reason, /drakoncAiExecutable/);
 	assert.notEqual(verdict!.verdict, "pass");
 });
 test("resolveDeclaredExecutable checks absolute paths verbatim and bare names on PATH only", () => {
@@ -352,16 +352,16 @@ test("resolveDeclaredExecutable checks absolute paths verbatim and bare names on
 // deterministic and needs no arming.
 // ---------------------------------------------------------------------------
 function capableStubHarness(t: test.TestContext) {
-	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-maintainer-capable-stub-"));
+	const directory = mkdtempSync(join(tmpdir(), "drakonc-pi-maintainer-capable-stub-"));
 	chmodSync(directory, 0o700);
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
 	const materializeLog = join(directory, "materialized");
 	const submitLog = join(directory, "submitted");
-	const gentleAi = join(directory, "gentle-ai");
+	const drakoncAi = join(directory, "drakonc-ai");
 	// Deliberately CAPABLE: it honours --materialize=true and would accept a
 	// submission, exactly like a binary a maintainer mis-declared as incapable.
 	writeFileSync(
-		gentleAi,
+		drakoncAi,
 		`#!/usr/bin/env node
 const fs = require("node:fs");
 const argv = process.argv.slice(2);
@@ -375,17 +375,17 @@ process.stdout.write(JSON.stringify({ schema: "gentle-ai.review-result-artifact/
 process.exit(0);
 `,
 	);
-	chmodSync(gentleAi, 0o755);
-	return { gentleAi, materializeLog, submitLog };
+	chmodSync(drakoncAi, 0o755);
+	return { drakoncAi, materializeLog, submitLog };
 }
-// gentle-pi#311 P4: lens captures no longer spawn a pi child, so the
+// drakonc-pi#311 P4: lens captures no longer spawn a pi child, so the
 // mis-declared-capable negative control no longer needs an "unlaunchable pi"
 // fixture -- it must instead fail closed at the reviewer-registry stage
 // (`unresolvableReviewerRegistry`, provider-relay-matrix.mjs), before any
 // completion or submission.
 test("a relay-unavailable case against a CAPABLE binary fails closed at the reviewer stage: zero completion, zero submission", async (t) => {
 	const stub = capableStubHarness(t);
-	const [verdict] = await runMatrix(validateDescriptor({ ...descriptor(), gentleAiExecutable: stub.gentleAi }));
+	const [verdict] = await runMatrix(validateDescriptor({ ...descriptor(), drakoncAiExecutable: stub.drakoncAi }));
 	// The declared binary really is capable, so the negative control cannot
 	// pass — but it must fail WITHOUT mutating anything.
 	assert.equal(verdict!.verdict, "fail");
@@ -397,7 +397,7 @@ test("a relay-unavailable case against a CAPABLE binary fails closed at the revi
 	assert.equal(existsSync(stub.materializeLog), true);
 });
 // ---------------------------------------------------------------------------
-// gentle-pi#311 P4: the two "resolve-once" tests this section held (a POSIX
+// drakonc-pi#311 P4: the two "resolve-once" tests this section held (a POSIX
 // subprocess proof and a platform-neutral boundary proof) verified that a
 // bare `pi` PATH declaration was resolved exactly once and never re-resolved
 // between precheck and launch (issue #324). Lens captures now run in-process
@@ -407,15 +407,15 @@ test("a relay-unavailable case against a CAPABLE binary fails closed at the revi
 // positive-lens journey's new wiring (the in-process reviewer registry built
 // from `descriptor.reviewerSelection`) is covered below instead.
 // ---------------------------------------------------------------------------
-test("armed positive-lens: runMatrix completes end-to-end through the in-process reviewer registry against a stub gentle-ai binary", async (t) => {
-	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-maintainer-armed-positive-"));
+test("armed positive-lens: runMatrix completes end-to-end through the in-process reviewer registry against a stub drakonc-ai binary", async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "drakonc-pi-maintainer-armed-positive-"));
 	chmodSync(directory, 0o700);
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
 	const materializeLog = join(directory, "materialized");
 	const submitLog = join(directory, "submitted");
-	const gentleAi = join(directory, "gentle-ai");
-	// A capable gentle-ai: materialize returns a frozen prompt carrying the
-	// real GENTLE_AI_REVIEW_BINDING and GENTLE_AI_REVIEW_CONTEXT lines
+	const drakoncAi = join(directory, "drakonc-ai");
+	// A capable drakonc-ai: materialize returns a frozen prompt carrying the
+	// real DRAKONC_AI_REVIEW_BINDING and DRAKONC_AI_REVIEW_CONTEXT lines
 	// (exactly what Go embeds in production) so the armed in-process reviewer
 	// can echo the subject_hash and the changed-path manifest the submission
 	// expects. Submit does NOT accept unconditionally: it reads the --input
@@ -425,10 +425,10 @@ test("armed positive-lens: runMatrix completes end-to-end through the in-process
 	// fails here instead of only against the real binary.
 	const subjectHash = `sha256:${"a".repeat(64)}`;
 	const manifestPaths = ["lib/review-host-relay.ts", "docs/review-integration.md"];
-	const bindingLine = `GENTLE_AI_REVIEW_BINDING {"subject_hash":"${subjectHash}"}`;
-	const contextLine = `GENTLE_AI_REVIEW_CONTEXT ${JSON.stringify({ changed_path_manifest: manifestPaths.map((path) => ({ path, status: "modified" })) })}`;
+	const bindingLine = `DRAKONC_AI_REVIEW_BINDING {"subject_hash":"${subjectHash}"}`;
+	const contextLine = `DRAKONC_AI_REVIEW_CONTEXT ${JSON.stringify({ changed_path_manifest: manifestPaths.map((path) => ({ path, status: "modified" })) })}`;
 	writeFileSync(
-		gentleAi,
+		drakoncAi,
 		`#!/usr/bin/env node
 const fs = require("node:fs");
 const argv = process.argv.slice(2);
@@ -454,10 +454,10 @@ process.stdout.write(JSON.stringify({ schema: "gentle-ai.review-result-artifact/
 process.exit(0);
 `,
 	);
-	chmodSync(gentleAi, 0o755);
+	chmodSync(drakoncAi, 0o755);
 	const [verdict] = await runMatrix(validateDescriptor({
 		...descriptor(),
-		gentleAiExecutable: gentleAi,
+		drakoncAiExecutable: drakoncAi,
 		cases: [{ name: "armed-positive-lens", kind: "positive-lens", captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }],
 	}), { armPositive: true });
 	assert.equal(verdict!.verdict, "pass", JSON.stringify(verdict));
@@ -478,7 +478,7 @@ test("armed positive-lens: a malformed reviewerSelection blocks with a clear rea
 	const stub = capableStubHarness(t);
 	const [verdict] = await runMatrix(validateDescriptor({
 		...descriptor({ reviewerSelection: "not-a-provider-slash-id" }),
-		gentleAiExecutable: stub.gentleAi,
+		drakoncAiExecutable: stub.drakoncAi,
 		cases: [{ name: "malformed-reviewer-selection", kind: "positive-lens", captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }],
 	}), { armPositive: true });
 	assert.equal(verdict!.verdict, "fail");
@@ -489,15 +489,15 @@ test("armed positive-lens: a malformed reviewerSelection blocks with a clear rea
 // ---------------------------------------------------------------------------
 // Negative control — a baseline runtime without --materialize fails closed as
 // relay-unavailable with zero Pi launch and zero submission. The baseline is
-// env-supplied (GENTLE_PI_MAINTAINER_BASELINE_BINARY); external evidence
+// env-supplied (DRAKONC_PI_MAINTAINER_BASELINE_BINARY); external evidence
 // establishes whether it is the immutable RC8 runtime. Self-skip / fail-loud.
 // ---------------------------------------------------------------------------
 const baselineArmed = typeof baselineBinary === "string" && baselineBinary.length > 0 && baselineBinary.startsWith("/") && existsSync(baselineBinary);
-const baselineReason = () => `${BASELINE_ENV} is unset or not an existing absolute path; supply the baseline gentle-ai binary (external evidence establishes whether it is RC8), or set ${REQUIRE_ENV}=1 to fail instead of skip.`;
+const baselineReason = () => `${BASELINE_ENV} is unset or not an existing absolute path; supply the baseline drakonc-ai binary (external evidence establishes whether it is RC8), or set ${REQUIRE_ENV}=1 to fail instead of skip.`;
 if (!baselineArmed && armed) throw new Error(baselineReason());
 if (!baselineArmed) console.log(`tests/maintainer/provider-relay.maintest.ts: ${baselineReason()}`);
 function baselineDescriptor(kind: "relay-unavailable" | "positive-lens" = "relay-unavailable") {
-	return validateDescriptor({ ...descriptor(), gentleAiExecutable: baselineBinary, cases: [{ name: "baseline-negative-control", kind, captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }] });
+	return validateDescriptor({ ...descriptor(), drakoncAiExecutable: baselineBinary, cases: [{ name: "baseline-negative-control", kind, captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }] });
 }
 test("negative control: runMatrix proves the baseline fails closed as relay-unavailable with zero mutation", { skip: !baselineArmed }, async () => {
 	const [verdict] = await runMatrix(baselineDescriptor());
@@ -512,7 +512,7 @@ test("negative control: the real relay returns a typed relay-unavailable error b
 	// pi launch; RELAY_UNAVAILABLE at materialize proves Pi never launched.
 	let caught: unknown;
 	try {
-		await runReviewHostRelaySlot({ captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION), gentleAiExecutable: baselineBinary! });
+		await runReviewHostRelaySlot({ captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION), drakoncAiExecutable: baselineBinary! });
 	} catch (error) {
 		caught = error;
 	}
@@ -533,16 +533,16 @@ test("negative control: an armed positive-lens against the baseline blocks becau
 // Honest positive arming/skip — the organic journey needs a real capable
 // binary and a real review session (lifecycle machinery beyond this work
 // unit); the reviewer leg itself runs through the in-process registry built
-// from `descriptor.reviewerSelection` (gentle-pi#311 P4), never a real pi
+// from `descriptor.reviewerSelection` (drakonc-pi#311 P4), never a real pi
 // child. The runner blocks the positive leg before materialize unless armed.
 // These tests run WITHOUT the arm (the verifier arms it).
 // ---------------------------------------------------------------------------
 const capableArmed = typeof capableBinary === "string" && capableBinary.length > 0 && capableBinary.startsWith("/") && existsSync(capableBinary);
-const capableReason = () => `${CAPABLE_ENV} is unset or not an existing absolute path; supply a capable gentle-ai binary (local build of origin/main with the pi host-relay surface), or set ${REQUIRE_ENV}=1 to fail instead of skip.`;
+const capableReason = () => `${CAPABLE_ENV} is unset or not an existing absolute path; supply a capable drakonc-ai binary (local build of origin/main with the pi host-relay surface), or set ${REQUIRE_ENV}=1 to fail instead of skip.`;
 if (!capableArmed && armed) throw new Error(capableReason());
 if (!capableArmed) console.log(`tests/maintainer/provider-relay.maintest.ts: ${capableReason()}`);
-function positiveDescriptor(gentleAi = capableBinary) {
-	return validateDescriptor({ ...descriptor(), gentleAiExecutable: gentleAi!, cases: [{ name: "positive-lens-relay", kind: "positive-lens", captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }] });
+function positiveDescriptor(drakoncAi = capableBinary) {
+	return validateDescriptor({ ...descriptor(), drakoncAiExecutable: drakoncAi!, cases: [{ name: "positive-lens-relay", kind: "positive-lens", captureArgumentTokens: [...CAPTURE_TOKENS], submission: structuredClone(SUBMISSION) }] });
 }
 test("positive arming/skip: an unarmed positive leg blocks loudly and never fakes green", { skip: !capableArmed }, async () => {
 	const [verdict] = await runMatrix(positiveDescriptor());
@@ -556,5 +556,5 @@ test("positive arming/skip: an unarmed positive leg blocks loudly and never fake
 test("positive arming/skip: the exact next evidence command is surfaced for the separate verifier", { skip: !capableArmed }, async () => {
 	const [verdict] = await runMatrix(positiveDescriptor());
 	assert.match(verdict!.command!, /node --experimental-strip-types scripts\/maintainer\/provider-relay-matrix.mjs --descriptor/);
-	assert.match(verdict!.command!, /GENTLE_PI_MAINTAINER_ARM_POSITIVE=1/);
+	assert.match(verdict!.command!, /DRAKONC_PI_MAINTAINER_ARM_POSITIVE=1/);
 });

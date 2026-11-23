@@ -16,14 +16,14 @@ test("the package check runs on a Node without TypeScript type stripping", async
 	const result = spawnSync(process.execPath, ["--no-experimental-strip-types", "scripts/verify-package-files.mjs"], { cwd: root, encoding: "utf8" });
 	assert.equal(result.stderr, "");
 	assert.equal(result.status, 0);
-	assert.match(result.stdout, /^gentle-pi package resource check passed/);
+	assert.match(result.stdout, /^drakonc-pi package resource check passed/);
 	const runtime = await import("../runtime/design-canvas-assets.mjs");
 	assert.deepEqual(runtime.DESIGN_CANVAS_ASSETS, DESIGN_CANVAS_ASSETS, "the generated module lists the same assets");
 	assert.ok(requiredPaths.includes("runtime/design-canvas-assets.mjs"));
 });
 
 test("the package check requires the voice command, its modules and the worker script", () => {
-	const voice = ["extensions/gentle-voice.ts", "lib/voice-command.ts", "lib/voice-session.ts", "lib/voice-ui.ts", "scripts/voice-worker.cjs", "docs/voice.md"];
+	const voice = ["extensions/drakonc-voice.ts", "lib/voice-command.ts", "lib/voice-session.ts", "lib/voice-ui.ts", "scripts/voice-worker.cjs", "docs/voice.md"];
 	for (const path of voice) assert.ok(requiredPaths.includes(path), `${path} is required`);
 	assert.deepEqual(missingRequiredPaths(root, voice), []);
 });
@@ -44,7 +44,7 @@ const designCanvas = [
 
 // The design command names its skill file by path when Pi has not loaded it.
 test("the package check requires the design command, its helpers and its skill", () => {
-	const design = ["extensions/gentle-design.ts", "lib/gentle-design.ts", "lib/design-sources.ts", "skills/design/SKILL.md", ...designCanvas];
+	const design = ["extensions/drakonc-design.ts", "lib/drakonc-design.ts", "lib/design-sources.ts", "skills/design/SKILL.md", ...designCanvas];
 	for (const path of design) assert.ok(requiredPaths.includes(path), `${path} is required`);
 	assert.deepEqual(missingRequiredPaths(root, design), []);
 });

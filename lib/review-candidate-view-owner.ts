@@ -34,7 +34,7 @@ const WINDOWS_SYSTEM_DIRECTORY = "\\\\?\\GLOBALROOT\\SystemRoot\\System32";
 // or weakened because it happens after the probe returns.
 const WINDOWS_SYSTEM_PROBE_TIMEOUT_MS = 15_000;
 const WINDOWS_SYSTEM_PROBE_TIMEOUT_MAX_MS = 120_000;
-const WINDOWS_SYSTEM_PROBE_TIMEOUT_ENV = "GENTLE_PI_CANDIDATE_WINDOWS_PROBE_TIMEOUT_MS";
+const WINDOWS_SYSTEM_PROBE_TIMEOUT_ENV = "DRAKONC_PI_CANDIDATE_WINDOWS_PROBE_TIMEOUT_MS";
 
 export function resolveWindowsSystemProbeTimeoutMs(environment: NodeJS.ProcessEnv = process.env): number {
 	const value = environment[WINDOWS_SYSTEM_PROBE_TIMEOUT_ENV];
@@ -157,7 +157,7 @@ export function decodeWindowsAclProbe(payload: string, count: number): WindowsAc
 	try { parsed = JSON.parse(payload); } catch { throw invalid(); }
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw invalid();
 	const value = parsed as Record<string, unknown>;
-	if (Object.keys(value).sort().join(",") !== "entries,localAdministrator,schema,user" || value.schema !== "gentle-pi.windows-acl-probe/v1" ||
+	if (Object.keys(value).sort().join(",") !== "entries,localAdministrator,schema,user" || value.schema !== "drakonc-pi.windows-acl-probe/v1" ||
 		typeof value.user !== "string" || !isWindowsSid(value.user) || typeof value.localAdministrator !== "string" || !isWindowsSid(value.localAdministrator) ||
 		!Array.isArray(value.entries) || value.entries.length !== count) throw invalid();
 	const entries = value.entries.map((entry: unknown, index) => {
@@ -190,7 +190,7 @@ $entries=@(for($i=0;$i -lt $requests.Count;$i++) {
   else { throw 'Invalid object kind' }
   [pscustomobject]@{index=$i;owner=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value;dacl=$acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)}
 })
-@{schema='gentle-pi.windows-acl-probe/v1';user=$user;localAdministrator=$administrator;entries=$entries} | ConvertTo-Json -Compress -Depth 4`;
+@{schema='drakonc-pi.windows-acl-probe/v1';user=$user;localAdministrator=$administrator;entries=$entries} | ConvertTo-Json -Compress -Depth 4`;
 	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
 	let output: string;
 	try {
@@ -213,12 +213,12 @@ function assertWindowsAclObservations(requests: readonly { path: string; kind: W
 function windowsOwnerSid(path: string, kind: WindowsObjectKind): string {
 	if (path.length === 0 || path.length > 32767 || path.includes("\0")) throw new WindowsOwnerValidationError();
 	const script = kind === "file"
-		? "$ErrorActionPreference='Stop';$acl=[System.IO.File]::GetAccessControl($env:GENTLE_PI_CANDIDATE_OWNER_PATH,[System.Security.AccessControl.AccessControlSections]::Owner);$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value"
-		: "$ErrorActionPreference='Stop';$acl=[System.IO.Directory]::GetAccessControl($env:GENTLE_PI_CANDIDATE_OWNER_PATH,[System.Security.AccessControl.AccessControlSections]::Owner);$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value";
+		? "$ErrorActionPreference='Stop';$acl=[System.IO.File]::GetAccessControl($env:DRAKONC_PI_CANDIDATE_OWNER_PATH,[System.Security.AccessControl.AccessControlSections]::Owner);$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value"
+		: "$ErrorActionPreference='Stop';$acl=[System.IO.Directory]::GetAccessControl($env:DRAKONC_PI_CANDIDATE_OWNER_PATH,[System.Security.AccessControl.AccessControlSections]::Owner);$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value";
 	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
 	let output: string;
 	try {
-		output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, GENTLE_PI_CANDIDATE_OWNER_PATH: path } }));
+		output = withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, DRAKONC_PI_CANDIDATE_OWNER_PATH: path } }));
 	} catch {
 		throw new WindowsOwnerValidationError();
 	}
@@ -239,9 +239,9 @@ function enforcePrivateWindowsDacl(path: string, identity: WindowsAclIdentity): 
 	validatePrivateWindowsOwner(windowsOwnerSid(path, "directory"), identity.user);
 	const { user, localAdministrator } = identity;
 	const sddl = `D:P(A;OICI;FA;;;${user})(A;OICI;FA;;;${WINDOWS_SYSTEM})(A;OICI;FA;;;${WINDOWS_ADMINISTRATORS})`;
-	const script = "$ErrorActionPreference='Stop';$acl=New-Object System.Security.AccessControl.DirectorySecurity;$acl.SetSecurityDescriptorSddlForm($env:GENTLE_PI_CANDIDATE_ACL_SDDL,[System.Security.AccessControl.AccessControlSections]::Access);[System.IO.Directory]::SetAccessControl($env:GENTLE_PI_CANDIDATE_ACL_PATH,$acl)";
+	const script = "$ErrorActionPreference='Stop';$acl=New-Object System.Security.AccessControl.DirectorySecurity;$acl.SetSecurityDescriptorSddlForm($env:DRAKONC_PI_CANDIDATE_ACL_SDDL,[System.Security.AccessControl.AccessControlSections]::Access);[System.IO.Directory]::SetAccessControl($env:DRAKONC_PI_CANDIDATE_ACL_PATH,$acl)";
 	const systemRoot = dirname(dirname(windowsSystemExecutable("whoami.exe")));
-	withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, GENTLE_PI_CANDIDATE_ACL_PATH: path, GENTLE_PI_CANDIDATE_ACL_SDDL: sddl } }));
+	withWindowsSystemProbeRetry(() => execFileSync(windowsSystemExecutable("WindowsPowerShell\\v1.0\\powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", timeout: resolveWindowsSystemProbeTimeoutMs(), maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, SystemRoot: systemRoot, DRAKONC_PI_CANDIDATE_ACL_PATH: path, DRAKONC_PI_CANDIDATE_ACL_SDDL: sddl } }));
 	assertPrivateWindowsDacl(path, "directory", true, identity);
 }
 
@@ -251,7 +251,7 @@ function privateWindowsDacl(path: string, kind: WindowsObjectKind, protectedDacl
 }
 
 function privateWindowsCandidateOwnerBoundary(commonDir: string, enforce = false): WindowsAclIdentity | undefined {
-	const boundary = [commonDir, join(commonDir, "gentle-ai"), join(commonDir, "gentle-ai", "candidate-views")];
+	const boundary = [commonDir, join(commonDir, "drakonc-ai"), join(commonDir, "drakonc-ai", "candidate-views")];
 	if (testingWindowsAclAuthority !== undefined) {
 		for (const path of boundary) testingWindowsAclAuthority(path);
 		return;
@@ -312,7 +312,7 @@ export class PosixCandidateOwnerParentChmodIneffectiveError extends Error {
 }
 
 function posixPrivateModeProbe(path: string): boolean {
-	const probe = join(path, `.gentle-ai-chmod-probe-${randomUUID()}`);
+	const probe = join(path, `.drakonc-ai-chmod-probe-${randomUUID()}`);
 	try {
 		mkdirSync(probe, { mode: 0o700 });
 		return (lstatSync(probe).mode & 0o777) === 0o700;
@@ -344,9 +344,9 @@ function directory(path: string, privateMode = false, platform: NodeJS.Platform 
 
 function checkedCandidateOwnerParent(commonDir: string, platform: NodeJS.Platform): { parent: string; windowsIdentity?: WindowsAclIdentity } {
 	directory(commonDir, false, platform);
-	const control = join(commonDir, "gentle-ai");
+	const control = join(commonDir, "drakonc-ai");
 	directory(control, false, platform);
-	const parent = join(commonDir, "gentle-ai", "candidate-views");
+	const parent = join(commonDir, "drakonc-ai", "candidate-views");
 	if (platform === "win32") {
 		directory(parent, false, platform);
 		const windowsIdentity = privateWindowsCandidateOwnerBoundary(commonDir);
@@ -362,9 +362,9 @@ export function assertCandidateOwnerParent(commonDir: string, platform: NodeJS.P
 
 export function prepareCandidateOwnerParent(commonDir: string, platform: NodeJS.Platform = process.platform): string {
 	directory(commonDir, false, platform);
-	const control = join(commonDir, "gentle-ai");
+	const control = join(commonDir, "drakonc-ai");
 	directory(control, false, platform);
-	const parent = join(commonDir, "gentle-ai", "candidate-views");
+	const parent = join(commonDir, "drakonc-ai", "candidate-views");
 	directory(parent, false, platform);
 	if (platform === "win32") {
 		privateWindowsCandidateOwnerBoundary(commonDir, true);

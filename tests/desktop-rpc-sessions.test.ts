@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET } from "../lib/desktop-rpc.ts";
 import {
 	DESKTOP_SESSIONS_EVENTS,
@@ -71,7 +71,7 @@ interface Root {
 function makeRoot(t: test.TestContext): Root {
 	const root = mkdtempSync(join(tmpdir(), "desktop-rpc-sessions-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const projectCwd = join(root, "work", "gentle-shell");
+	const projectCwd = join(root, "work", "drakonc-shell");
 	const otherCwd = join(root, "work", "other-app");
 	mkdirSync(projectCwd, { recursive: true });
 	mkdirSync(otherCwd, { recursive: true });
@@ -172,7 +172,7 @@ function harness(t: test.TestContext, location: SessionLocation, options: { swit
 		start() { fire("session_start", ctx); },
 		async invoke(request: unknown, targetCtx: any = ctx) {
 			const raw = typeof request === "string" ? request : JSON.stringify(request);
-			await commands.get("gentle:desktop")!.handler(raw, targetCtx);
+			await commands.get("drakonc:desktop")!.handler(raw, targetCtx);
 		},
 		payloads(): any[] {
 			return widgets.map((call) => {
@@ -272,8 +272,8 @@ test("switch params are exactly an id plus an optional scope; anything else is i
 });
 
 test("the project display name is the last path segment, never a path", () => {
-	assert.equal(sessionProjectName("/home/me/work/gentle-shell"), "gentle-shell");
-	assert.equal(sessionProjectName("C:\\Users\\me\\dev\\gentle-shell\\"), "gentle-shell");
+	assert.equal(sessionProjectName("/home/me/work/drakonc-shell"), "drakonc-shell");
+	assert.equal(sessionProjectName("C:\\Users\\me\\dev\\drakonc-shell\\"), "drakonc-shell");
 	assert.equal(sessionProjectName(""), "unknown");
 	assert.equal(sessionProjectName("C:\\"), "unknown");
 	assert.equal(sessionProjectName("/"), "unknown");
@@ -300,7 +300,7 @@ test("list_sessions returns the project's sessions newest first through Pi's own
 		modified: seeded.base + 120_000 + 2000,
 		messageCount: 2,
 		firstMessage: "newest",
-		project: "gentle-shell",
+		project: "drakonc-shell",
 		current: true,
 	});
 	assert.equal(middle.name, "Release prep");
@@ -324,7 +324,7 @@ test("list_sessions scope all covers a custom session directory across projects"
 	assert.equal(response.ok, true, JSON.stringify(response));
 	assert.deepEqual(
 		response.data.sessions.map((session: any) => [session.id, session.project]),
-		[["s-foreign", "other-app"], ["s-new", "gentle-shell"], ["s-mid", "gentle-shell"], ["s-old", "gentle-shell"]],
+		[["s-foreign", "other-app"], ["s-new", "drakonc-shell"], ["s-mid", "drakonc-shell"], ["s-old", "drakonc-shell"]],
 	);
 	assertNoPrivateFields(app.payloads(), root);
 });
@@ -346,7 +346,7 @@ test("list_sessions with the default session directory reads Pi's per-project di
 	const project = responseFor(app.payloads(), "list-project");
 	const all = responseFor(app.payloads(), "list-all");
 	assert.deepEqual(project.data.sessions.map((session: any) => session.id), ["d-project"]);
-	assert.deepEqual(all.data.sessions.map((session: any) => [session.id, session.project, session.current]), [["d-other", "other-app", false], ["d-project", "gentle-shell", true]]);
+	assert.deepEqual(all.data.sessions.map((session: any) => [session.id, session.project, session.current]), [["d-other", "other-app", false], ["d-project", "drakonc-shell", true]]);
 	assertNoPrivateFields(app.payloads(), root);
 });
 

@@ -1,6 +1,6 @@
-// Gentle Desktop design-canvas slice: the pure contract shared by the Desktop
+// Drakonc Desktop design-canvas slice: the pure contract shared by the Desktop
 // bridge (`lib/desktop-design-service.ts`) and the owner seam inside
-// `extensions/gentle-design.ts`.
+// `extensions/drakonc-design.ts`.
 //
 // Nothing here opens a server, opens a browser, or reaches the network. It
 // only names the wire shapes, projects the owner's actual canvas state into
@@ -15,10 +15,10 @@ export const DESKTOP_DESIGN_EVENT = "design_canvas";
 export const DESKTOP_DESIGN_EVENTS = [DESKTOP_DESIGN_EVENT] as const;
 
 // The versioned owner-service discovery seam (the design analogue of the usage
-// `gentle:desktop:usage-service` adapter). The schema string guards the adapter
+// `drakonc:desktop:usage-service` adapter). The schema string guards the adapter
 // against drift; the bridge ignores any responder whose shape does not match.
-export const DESKTOP_DESIGN_SERVICE_SCHEMA = "gentle-pi.desktop-design-service/v1";
-export const DESKTOP_DESIGN_SERVICE_CHANNEL = "gentle:desktop:design-service";
+export const DESKTOP_DESIGN_SERVICE_SCHEMA = "drakonc-pi.desktop-design-service/v1";
+export const DESKTOP_DESIGN_SERVICE_CHANNEL = "drakonc:desktop:design-service";
 
 export type DesktopDesignTransition = "open" | "refresh" | "stop";
 

@@ -61,7 +61,7 @@ const TEXT = Object.freeze({
 });
 
 // "on" while Technical details is on in this browser; anything else (or nothing) is off.
-const TECHNICAL_KEY = "gentle-design:technical";
+const TECHNICAL_KEY = "drakonc-design:technical";
 const TOKEN_NAME = /^--[A-Za-z0-9_-]+$/;
 const LIMITS = { tokens: 500, selector: 500, excerpt: 300, comment: 2000, label: 80, family: 300 };
 // The panel's size before it is laid out, its gap to the frame and the viewport's edges, and how long it

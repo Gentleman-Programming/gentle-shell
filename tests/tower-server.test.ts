@@ -13,16 +13,16 @@ const servers: TowerServer[] = [];
 after(async () => { for (const s of servers) await s.close(); roots.forEach((r) => rmSync(r, { recursive: true, force: true })); });
 
 function setup() {
-	const root = mkdtempSync(join(tmpdir(), "gentle-tower-srv-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-tower-srv-"));
 	roots.push(root);
 	const hub = join(root, "sessions");
 	const web = join(root, "web");
 	mkdirSync(web);
-	writeFileSync(join(web, "index.html"), "<!doctype html><title>Gentle Tower</title>");
+	writeFileSync(join(web, "index.html"), "<!doctype html><title>Drakonc Tower</title>");
 	writeFileSync(join(root, "secret.txt"), "do not serve");
 	return { hub, web, root };
 }
-const snap = (id: string, name: string) => buildTowerSnapshot({ sessionId: id, sessionName: name, cwd: "/w/gentle-ai", stats: { cost: 0.1, input: 1, output: 1 }, todos: [], agents: [], now: 1 });
+const snap = (id: string, name: string) => buildTowerSnapshot({ sessionId: id, sessionName: name, cwd: "/w/drakonc-ai", stats: { cost: 0.1, input: 1, output: 1 }, todos: [], agents: [], now: 1 });
 
 function get(port: number, path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string; type?: string }> {
 	return new Promise((resolve, reject) => {
@@ -53,7 +53,7 @@ test("binds to localhost and serves the app only with the token", async () => {
 	assert.equal((await get(s.port, "/?t=tok-123")).status, 403);
 	const ok = await get(s.port, "/tok-123/");
 	assert.equal(ok.status, 200);
-	assert.match(ok.body, /Gentle Tower/);
+	assert.match(ok.body, /Drakonc Tower/);
 	assert.match(ok.type ?? "", /text\/html/);
 });
 

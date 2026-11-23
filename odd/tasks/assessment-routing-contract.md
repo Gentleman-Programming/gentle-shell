@@ -1,13 +1,13 @@
 # Assessment routing contract (issue #1175)
 
-Locator: `odd/tasks/assessment-routing-contract.md` · Engram mirror: `odd/assessment-routing-contract/tasks` (project `gentle-pi`)
+Locator: `odd/tasks/assessment-routing-contract.md` · Engram mirror: `odd/assessment-routing-contract/tasks` (project `drakonc-pi`)
 
-Issue: https://github.com/Gentleman-Programming/gentle-shell/issues/1175 (`status:approved`, expanded with the three changes)
+Issue: https://github.com/Drakoncman-Programming/drakonc-shell/issues/1175 (`status:approved`, expanded with the three changes)
 Branch: `fix/assessment-routing-contract` (base `origin/main` ecf23cf66)
 
 ## Objective
 
-Make `gentle_review` ASSESS compatible with the native assessment contract, reuse the
+Make `drakonc_review` ASSESS compatible with the native assessment contract, reuse the
 runtime-resolved writer profile and validated native closure evidence instead of model
 re-declarations, and align the verification policy across the tool description,
 `assets/orchestrator-delegation.md`, and `docs/delegated-verification.md`.
@@ -25,7 +25,7 @@ re-declarations, and align the verification policy across the tool description,
 
 ## Scope and constraints
 
-- Gentle Shell only; no Go changes (stop and explain if Go is required).
+- Drakonc Shell only; no Go changes (stop and explain if Go is required).
 - Accept supported older envelopes without inventing fields or authority; validate
   supported extra fields; never rebuild opaque native continuations.
 - Closure must match the exact candidate; unknown/changed/mismatched evidence stays
@@ -45,27 +45,27 @@ re-declarations, and align the verification policy across the tool description,
 - [x] T3 — Consistent verification policy in tool description, asset, and docs (+ tests if pinned). Commit `8cc8eb03d`.
 - [ ] T4 — Single PR against `main` closing #1175 with real check evidence.
 
-Route per task: delegated direct (one `gentle-ai-worker` at a time; 2+ non-trivial files).
+Route per task: delegated direct (one `drakonc-ai-worker` at a time; 2+ non-trivial files).
 
 ## Candidate allowed edit surfaces (confirmed per task before launch)
 
 - lib/review-risk-assessment.ts
-- extensions/gentle-ai.ts
+- extensions/drakonc-ai.ts
 - assets/orchestrator-delegation.md
 - docs/delegated-verification.md
 - lib/agents-runner.ts (only if needed to reach existing facts)
 - focused tests (assessment, routing, verification facts)
 - runtime/review-risk-assessment.mjs (generated via `pnpm run build:runtime-modules`)
 - T2 additions approved by the user (2026-09-30): lib/review-reminder-receipt.ts,
-  extensions/gentle-agents.ts, tests/review-reminder-receipt.test.ts
+  extensions/drakonc-agents.ts, tests/review-reminder-receipt.test.ts
 
 ## Mapped facts (read-only scout, 2026-09-30)
 
 - Native `candidate.consumed=true` is written only inside the approved-acknowledgement burn
-  (gentle-ai `compact_burn.go`: approved state + exact target identity + ack token) and is
-  exact-candidate closure evidence. `review_due`/`consumed` landed in gentle-ai 874719ae0,
+  (drakonc-ai `compact_burn.go`: approved state + exact target identity + ack token) and is
+  exact-candidate closure evidence. `review_due`/`consumed` landed in drakonc-ai 874719ae0,
   not contained in the pinned v3.7.0, so older envelopes must stay accepted.
-- The resolved writer model/thinking lives on the gentle-agents `TaskRecord`; gentle-ai.ts
+- The resolved writer model/thinking lives on the drakonc-agents `TaskRecord`; drakonc-ai.ts
   cannot reach it. Bridge: carry it on the existing review-mutation receipt.
 - `assets/orchestrator-delegation.md` sentences are pinned by
   `tests/rdd-aware-verification-contract.test.ts`; `docs/delegated-verification.md` is not pinned.
@@ -126,7 +126,7 @@ plus independent verifier; RDD is on globally, native review consent stays human
 
 - T2 (route: delegated direct, writer trigger: 5 non-trivial files; risk: high):
   - Writer muo1lj47-3-z917. RED: 14/91 failing in review-risk-assessment (3 decoder
-    consistency, 11 ASSESS closure/profile); receipt and gentle-agents tests failed at module
+    consistency, 11 ASSESS closure/profile); receipt and drakonc-agents tests failed at module
     load (missing `pendingReviewMutationProfiles` export). GREEN: 91/91, 7/7, 11/11.
   - Behavior: `closed` derived only from same-call `candidate.consumed === true`; caller
     `closed` without it → `unknown`; explicit or memo declined/unavailable wins; contradictory
@@ -137,7 +137,7 @@ plus independent verifier; RDD is on globally, native review consent stays human
   - `check:runtime-modules`: match (writer + parent). `typecheck`: no regressions (writer).
   - Native review: lineage review-ef46f7c571859929, medium, review-reliability, approved,
     acknowledged, authority burned for target sha256:b94ff88a…. Advisory non-blocking:
-    R3-001 lib/review-reminder-receipt.ts:88-93 (WARNING), R3-002 extensions/gentle-ai.ts:973,
+    R3-001 lib/review-reminder-receipt.ts:88-93 (WARNING), R3-002 extensions/drakonc-ai.ts:973,
     R3-003 :920-937, R3-004 :898-902 (SUGGESTION).
   - Commit `1ac00aa33` tree ac4cd04d… equals the reviewed candidate tree.
   - Authored lines: ~672 (excluding runtime/), mostly tests. Running total ~1022 > forecast.
@@ -155,7 +155,7 @@ plus independent verifier; RDD is on globally, native review consent stays human
     tests/rdd-aware-verification-contract.test.ts:253-271/:287-293; R3-003, R3-004 SUGGESTION.
   - Commit `8cc8eb03d` tree 4fb83b28… equals the reviewed candidate tree. Authored lines: 109.
 - Running authored total: ~1125 lines excluding runtime/.
-- Branch verification (independent gentle-ai-verify muo29oc6-5-b4s4, status partial):
+- Branch verification (independent drakonc-ai-verify muo29oc6-5-b4s4, status partial):
   - `pnpm run check:provider-contract`: exit 0. `pnpm run typecheck`: exit 0, no regressions.
   - `pnpm run check:runtime-modules`: exit 0. `node scripts/verify-package-files.mjs`: exit 0.
   - `node --experimental-strip-types --test tests/*.test.ts`: did not finish locally (hang).

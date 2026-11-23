@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // extension: Pi aliases ES imports of host packages, but nothing else
 // resolves them (#1586). Reproduce that layout with an ESM-only alias.
 test("vim adapter loads without an extension-local pi-tui and fails closed without a verified version", (t) => {
-  const root = mkdtempSync(join(tmpdir(), "gentle-vim-host-resolution-"));
+  const root = mkdtempSync(join(tmpdir(), "drakonc-vim-host-resolution-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, "lib"));
   copyFileSync(fileURLToPath(new URL("../lib/vim-editor-adapter.ts", import.meta.url)), join(root, "lib", "vim-editor-adapter.ts"));

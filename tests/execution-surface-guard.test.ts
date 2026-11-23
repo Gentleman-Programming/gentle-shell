@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { EXTERNAL_FALLBACK_PROHIBITED, evaluateExecutionSurfaceTool } from "../lib/execution-surface-guard.ts";
 
-// gentle-shell#379: a tool call that asks to open an external project pane is
+// drakonc-shell#379: a tool call that asks to open an external project pane is
 // classified by its own input property, never by the tool name.
 
-const reason = (toolName: string) => `Gentle AI blocked an execution-surface escalation. code=${EXTERNAL_FALLBACK_PROHIBITED} tool=${toolName} property=openProjectPaneIfMissing next=Run the work through subagent_* or the native Agent in the current runtime; if neither is available, stop and tell the user.`;
+const reason = (toolName: string) => `Drakonc AI blocked an execution-surface escalation. code=${EXTERNAL_FALLBACK_PROHIBITED} tool=${toolName} property=openProjectPaneIfMissing next=Run the work through subagent_* or the native Agent in the current runtime; if neither is available, stop and tell the user.`;
 
 test("the stable code names the external fallback prohibition", () => {
-	assert.equal(EXTERNAL_FALLBACK_PROHIBITED, "gentle-ai.execution-surface.external-fallback-prohibited");
+	assert.equal(EXTERNAL_FALLBACK_PROHIBITED, "drakonc-ai.execution-surface.external-fallback-prohibited");
 });
 
 for (const [label, input] of [
@@ -37,7 +37,7 @@ for (const [label, value] of [
 	});
 }
 
-test("only an own openProjectPaneIfMissing other than false blocks (gentle-shell#379)", () => {
+test("only an own openProjectPaneIfMissing other than false blocks (drakonc-shell#379)", () => {
 	for (const value of ["false", "0", "", 0, undefined, [true]]) {
 		assert.equal(evaluateExecutionSurfaceTool("t", { openProjectPaneIfMissing: value })?.block, true, String(value));
 	}
@@ -48,7 +48,7 @@ test("only an own openProjectPaneIfMissing other than false blocks (gentle-shell
 // Pi structuredClones tool args before the hook, and structuredClone drops a
 // JSON-parsed __proto__ key's prototype, so a prototype-only property never
 // reaches the tool as a pane request and is not a bypass.
-test("a structuredCloned __proto__ pane request carries no property and is not blocked (gentle-shell#379)", () => {
+test("a structuredCloned __proto__ pane request carries no property and is not blocked (drakonc-shell#379)", () => {
 	const cloned = structuredClone(JSON.parse('{"__proto__":{"openProjectPaneIfMissing":true}}'));
 	assert.equal(cloned.openProjectPaneIfMissing, undefined);
 	assert.equal(evaluateExecutionSurfaceTool("t", cloned), undefined);

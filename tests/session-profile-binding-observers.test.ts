@@ -10,7 +10,7 @@ import {
 	resetSessionProfileBindingsForTesting,
 } from "../lib/session-profile-binding.ts";
 
-// Binding-store observers (gentle-shell-gpui parity, T1, L32): every launch and
+// Binding-store observers (drakonc-shell-gpui parity, T1, L32): every launch and
 // resume path writes this store, so an observer can never break a write.
 
 test("a throwing observer never breaks a binding write, and the others still hear every write", (t) => {

@@ -1,9 +1,9 @@
 ---
-name: gentle-ai-issue-creation
+name: drakonc-ai-issue-creation
 description: "Create and triage GitHub issues from repository evidence. Trigger: issue creation, bug reports, feature requests, or issue approval."
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "1.3"
 ---
 
@@ -77,7 +77,7 @@ REPO_ROOT="$(cd "$REPO_ROOT" && pwd -P)" || exit 1
 if [ "$REPO_ROOT" = "/" ]; then
   printf '%s\n' "Temporary directory is inside the repository" >&2; exit 1
 fi
-TMP_DIR="$(TMPDIR=/tmp mktemp -d /tmp/gentle-ai-issue.XXXXXXXX)" || exit 1
+TMP_DIR="$(TMPDIR=/tmp mktemp -d /tmp/drakonc-ai-issue.XXXXXXXX)" || exit 1
 trap 'rm -rf -- "$TMP_DIR"' EXIT
 TMP_DIR_REAL="$(cd "$TMP_DIR" && pwd -P)" || exit 1
 case "$TMP_DIR_REAL/" in

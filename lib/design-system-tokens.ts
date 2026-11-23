@@ -2,7 +2,7 @@ import { realpath, stat } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { readDesignFile } from "./design-comments.ts";
 
-// The design tokens of design/system.md (written by /gentle:design sync), read-only. The canvas
+// The design tokens of design/system.md (written by /drakonc:design sync), read-only. The canvas
 // inspector compares what an artboard renders with them. A token is a table row whose first cell is a
 // backticked CSS custom property (`--name`) and whose second cell is its backticked value, filed under
 // the `##` section it appears in. The file is the project's own markdown, so nothing here may fail the

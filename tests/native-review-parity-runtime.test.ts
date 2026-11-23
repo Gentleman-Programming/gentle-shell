@@ -8,12 +8,12 @@ import baseTest from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import {
-	GENTLE_AI_DEV_BINARY_ENV,
-	resolveGentleAiBinary,
-	type GentleAiDevBinaryEnvironment,
-} from "../lib/gentle-ai-binary.ts";
+	DRAKONC_AI_DEV_BINARY_ENV,
+	resolveDrakoncAiBinary,
+	type DrakoncAiDevBinaryEnvironment,
+} from "../lib/drakonc-ai-binary.ts";
 import { createNodeExecFileAdapter, NativeReviewCliV216 } from "../lib/native-review-cli.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
@@ -23,13 +23,13 @@ import { requireNativeBinary } from "./support/native-binary-gate.ts";
 
 const execFileAsync = promisify(execFile);
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const pinnedBinaryHome = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-pinned-runtime-home-")));
-const pinnedBinaryEnvironment: GentleAiDevBinaryEnvironment = {
+const pinnedBinaryHome = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-pinned-runtime-home-")));
+const pinnedBinaryEnvironment: DrakoncAiDevBinaryEnvironment = {
 	env: { ...process.env },
 	home: pinnedBinaryHome,
 };
-delete pinnedBinaryEnvironment.env[GENTLE_AI_DEV_BINARY_ENV];
-delete pinnedBinaryEnvironment.env.GENTLE_PI_CONFIG_HOME;
+delete pinnedBinaryEnvironment.env[DRAKONC_AI_DEV_BINARY_ENV];
+delete pinnedBinaryEnvironment.env.DRAKONC_PI_CONFIG_HOME;
 baseTest.after(() => rmSync(pinnedBinaryHome, { recursive: true, force: true }));
 // The parity suite exercises the published official binary; it skips while a
 // re-pinned release's archives and digest table are still pending, because the
@@ -38,7 +38,7 @@ baseTest.after(() => rmSync(pinnedBinaryHome, { recursive: true, force: true }))
 // the package pin, while explicit dev-binary behavior belongs to its own suite.
 const resolvedBinary = (() => {
 	try {
-		return resolveGentleAiBinary(packageRoot, process.platform, undefined, pinnedBinaryEnvironment);
+		return resolveDrakoncAiBinary(packageRoot, process.platform, undefined, pinnedBinaryEnvironment);
 	} catch {
 		return undefined;
 	}
@@ -59,7 +59,7 @@ interface RegisteredController {
 }
 
 // Every test in this file drives the real pinned binary through a full review
-// lifecycle, and gentle-ai v2.4.0 made receipt-driven development opt-in: an
+// lifecycle, and drakonc-ai v2.4.0 made receipt-driven development opt-in: an
 // install whose global mode was never set now resolves to off, and START is
 // rejected before it reaches any of the behavior these tests exist to check.
 //
@@ -71,15 +71,15 @@ interface RegisteredController {
 // machine state is not evidence either way.
 //
 // So each test owns a sandbox HOME and opts in the same way a user does,
-// exactly as gentle-ai did for its own lifecycle fixtures in the commit that
+// exactly as drakonc-ai did for its own lifecycle fixtures in the commit that
 // flipped the default. The extension-registered controller path inherits this
 // process environment, so HOME and XDG state are restored afterwards. The
 // global enable runs from a disposable repository: this package worktree may
 // intentionally have clone-local mode off, which must never participate in the
 // fixture's lifecycle.
 async function reviewEnabledHome(t: baseTest.TestContext): Promise<string> {
-	const home = await realpath(await mkdtemp(join(tmpdir(), "gentle-pi-review-home-")));
-	const lifecycleCwd = await realpath(await mkdtemp(join(tmpdir(), "gentle-pi-review-lifecycle-")));
+	const home = await realpath(await mkdtemp(join(tmpdir(), "drakonc-pi-review-home-")));
+	const lifecycleCwd = await realpath(await mkdtemp(join(tmpdir(), "drakonc-pi-review-lifecycle-")));
 	const xdgConfigHome = join(home, ".config");
 	const xdgDataHome = join(home, ".local", "share");
 	const xdgCacheHome = join(home, ".cache");
@@ -138,8 +138,8 @@ test("SDK explicit review delegates enabled-only non-Git preparation to the pinn
 	}
 	const home = await reviewEnabledHome(t);
 	for (const [key, value] of Object.entries({
-		GENTLE_PI_AGENT_HOME: join(home, "agent"), PI_CODING_AGENT_DIR: join(home, "agent"),
-		GENTLE_PI_CONFIG_HOME: join(home, "pi-config"), PI_OFFLINE: "1",
+		DRAKONC_PI_AGENT_HOME: join(home, "agent"), PI_CODING_AGENT_DIR: join(home, "agent"),
+		DRAKONC_PI_CONFIG_HOME: join(home, "pi-config"), PI_OFFLINE: "1",
 		GENTLE_PI_REVIEW_RELAY_CONTRACT: "invalid-ambient-relay",
 	})) {
 		previous[key] = process.env[key];
@@ -153,7 +153,7 @@ test("SDK explicit review delegates enabled-only non-Git preparation to the pinn
 	const version = await run(binary, ["version"], home);
 	t.diagnostic(`native binary=${binary}; version=${version.stdout.trim()}`);
 	const calls: string[][] = [];
-	const agentDir = process.env.GENTLE_PI_AGENT_HOME!;
+	const agentDir = process.env.DRAKONC_PI_AGENT_HOME!;
 	await mkdir(agentDir, { recursive: true });
 	const modelRuntime = await ModelRuntime.create({
 		authPath: join(agentDir, "empty-auth.json"), modelsPath: null,
@@ -172,7 +172,7 @@ test("SDK explicit review delegates enabled-only non-Git preparation to the pinn
 		}, binary);
 		const resourceLoader = new DefaultResourceLoader({
 			cwd, agentDir, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-			extensionFactories: [createGentleAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: {} })],
+			extensionFactories: [createDrakoncAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: {} })],
 		});
 		await resourceLoader.reload();
 		assert.deepEqual(resourceLoader.getExtensions().errors, []);
@@ -183,8 +183,8 @@ test("SDK explicit review delegates enabled-only non-Git preparation to the pinn
 		try {
 			await session.bindExtensions({ mode: "print" });
 			assert.equal(calls.slice(before).some(args => args[0] === "review" && args[1] === "status"), false, "passive non-Git startup cannot prepare");
-			session.setActiveToolsByName(["gentle_review"]);
-			const inspect = session.agent.state.tools.find(tool => tool.name === "gentle_review");
+			session.setActiveToolsByName(["drakonc_review"]);
+			const inspect = session.agent.state.tools.find(tool => tool.name === "drakonc_review");
 			assert.ok(inspect, "real SDK registers the facade");
 			await inspect.execute("explicit-review", { operation: "inspect", workspaceRoot: cwd });
 			assert.equal(session.messages.length, 0, "explicit review entry must not begin a model turn");
@@ -203,7 +203,7 @@ test("SDK explicit review delegates enabled-only non-Git preparation to the pinn
 	assert.equal(await readFile(join(plain, "candidate.txt"), "utf8"), "candidate bytes\n");
 	assert.notEqual((await run("git", ["rev-parse", "--verify", "HEAD"], plain, true)).exitCode, 0, "HEAD remains unborn");
 	assert.equal((await run("git", ["remote"], plain)).stdout, "");
-	assert.equal(existsSync(join(plain, ".git", "gentle-ai", "reviews")), false, "entry does not create review lineage storage");
+	assert.equal(existsSync(join(plain, ".git", "drakonc-ai", "reviews")), false, "entry does not create review lineage storage");
 	const nested = join(plain, "nested");
 	await mkdir(nested);
 	await startup(nested);
@@ -235,11 +235,11 @@ test("generated runtime decoder consumes the captured terminal closure directly"
 	assert.equal(runtime.state, "approved");
 });
 
-test("registered gentle_review surfaces the package-pinned Pi transport refusal before native START for a safe internal symlink candidate", async (t) => {
+test("registered drakonc_review surfaces the package-pinned Pi transport refusal before native START for a safe internal symlink candidate", async (t) => {
 	await reviewEnabledHome(t);
 	const handshakeLessEnvironment = { ...process.env };
 	delete handshakeLessEnvironment.GENTLE_PI_REVIEW_RELAY_CONTRACT;
-	const workspace = await realpath(await mkdtemp(join(tmpdir(), "gentle-pi-v215-symlink-candidate-")));
+	const workspace = await realpath(await mkdtemp(join(tmpdir(), "drakonc-pi-v215-symlink-candidate-")));
 	const repository = join(workspace, "repository");
 	t.after(async () => {
 		// Candidate views are intentionally read-only. Restore test-workspace write
@@ -261,7 +261,7 @@ test("registered gentle_review surfaces the package-pinned Pi transport refusal 
 
 	await run("git", ["init", "--initial-branch=main"], repository);
 	await run("git", ["config", "user.email", "test@example.invalid"], repository);
-	await run("git", ["config", "user.name", "Gentle Pi test"], repository);
+	await run("git", ["config", "user.name", "Drakonc Pi test"], repository);
 	await run("git", ["add", "--", "tracked.txt", ".agents", ".agent"], repository);
 	await run("git", ["commit", "-m", "base with internal skill symlink"], repository);
 	await writeFile(join(repository, "tracked.txt"), "candidate\n");
@@ -278,15 +278,15 @@ test("registered gentle_review surfaces the package-pinned Pi transport refusal 
 	});
 	const tools = new Map<string, RegisteredController>();
 	// The extension declares the relay handshake in the session environment on
-	// load (gentle-pi#550). Keep registration isolated in a throwaway environment
+	// load (drakonc-pi#550). Keep registration isolated in a throwaway environment
 	// and spawn the pinned binary with an explicit handshake-less environment so
 	// ambient valid relay configuration cannot change this fixture's behavior.
-	createGentleAiExtension({ nativeReviewCli: native, candidateViews, processEnv: {} } as Parameters<typeof createGentleAiExtension>[0])({
+	createDrakoncAiExtension({ nativeReviewCli: native, candidateViews, processEnv: {} } as Parameters<typeof createDrakoncAiExtension>[0])({
 		on() {},
 		registerTool(definition: RegisteredController & { name: string }) { tools.set(definition.name, definition); },
 		registerCommand() {},
 	} as unknown as ExtensionAPI);
-	const controller = tools.get("gentle_review");
+	const controller = tools.get("drakonc_review");
 	assert.ok(controller);
 
 	let returned: { details?: unknown } | undefined;

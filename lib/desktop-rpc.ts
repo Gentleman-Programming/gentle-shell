@@ -1,6 +1,6 @@
-export const DESKTOP_RPC_SCHEMA = "gentle-shell.desktop-rpc/v1";
-export const DESKTOP_RPC_COMMAND = "gentle:desktop";
-export const DESKTOP_RPC_WIDGET = "gentle-desktop-rpc";
+export const DESKTOP_RPC_SCHEMA = "drakonc-shell.desktop-rpc/v1";
+export const DESKTOP_RPC_COMMAND = "drakonc:desktop";
+export const DESKTOP_RPC_WIDGET = "drakonc-desktop-rpc";
 
 const MAX_REQUEST_BYTES = 64 * 1024;
 const DEFAULT_METHODS = ["capabilities", "get_snapshot"] as const;

@@ -8,13 +8,13 @@ Spec: `odd/tasks/cost-speed-painpoints.md`, T11, S13. Investigation only: no sou
 
 | Phase | First turn context (tokens) | Backstop (15% of 272k) | Notice | Delegated |
 |---|---|---|---|---|
-| base F1 O1-O3 | 43,794-43,855 | 40,800 | on the **first** tool result (turn 1), every run | 1 `gentle-ai-worker` (terra/max) at turn 4-5 |
-| base F2 O1-O3 | 44,202 | 40,800 | first tool result, every run | 1 `gentle-ai-worker` at turn 3-5 |
+| base F1 O1-O3 | 43,794-43,855 | 40,800 | on the **first** tool result (turn 1), every run | 1 `drakonc-ai-worker` (terra/max) at turn 4-5 |
+| base F2 O1-O3 | 44,202 | 40,800 | first tool result, every run | 1 `drakonc-ai-worker` at turn 3-5 |
 | after F1 O2-O4, F2 O1-O3 | 29,852-30,344 (max 32.8k-35.2k) | 40,800 | never | none |
 
 In the baseline, the parent context passed the backstop before any work had started. #3095 removed ~69 KB of `project_context` (79,229 → 10,586 B), which is about 14k tokens. After that change, the always-on context sits about 10.8k tokens below the threshold, so the F1 and F2 tasks never reach it.
 
-The runtime notice the baseline parent received, appended to its first tool result (`lib/context-backstop.ts:59`, wired at `extensions/gentle-ai.ts:12833`):
+The runtime notice the baseline parent received, appended to its first tool result (`lib/context-backstop.ts:59`, wired at `extensions/drakonc-ai.ts:12833`):
 
 > Context backstop: the parent context measures 43,855 tokens (16% of the 272,000-token context window), at or past the 40,800-token backstop: delegate the next bounded unit that needs several steps (its reads, edits, and checks) with a short handoff, while single small edits and state checks stay inline.
 
@@ -31,7 +31,7 @@ The parent's own reason, verbatim from each handoff:
 
 In F1 the parent then made the two remaining one-line fixes inline, as the notice's "single small edits ... stay inline" allows.
 
-**Sources.** The rule the parent followed is Gentle Shell's own:
+**Sources.** The rule the parent followed is Drakonc Shell's own:
 
 - the runtime notice (`lib/context-backstop.ts`);
 - mechanism 7 of the orchestrator prompt: "**Context backstop** — when the runtime signals it → delegate the next unit needing several steps." (`assets/orchestrator.md`);
@@ -41,12 +41,12 @@ Writer admission let the launch through for the same reason: `rejectUndocumented
 
 **Context-file candidates.** These were loaded in the baseline but were not the stated cause:
 
-- `~/work/gentle-pi/AGENTS.md`, `<!-- gentle-ai:agent-routing -->`: "delegate one narrow exploration when understanding needs 4+ files; delegate one writer for 2+ non-trivial files."
-- `~/AGENTS.md`: the `<!-- gentle-ai:orchestrator -->` "Agent Teams Lite — Orchestrator Instructions" block and its own `gentle-ai:agent-routing` block.
+- `~/work/drakonc-pi/AGENTS.md`, `<!-- drakonc-ai:agent-routing -->`: "delegate one narrow exploration when understanding needs 4+ files; delegate one writer for 2+ non-trivial files."
+- `~/AGENTS.md`: the `<!-- drakonc-ai:orchestrator -->` "Agent Teams Lite — Orchestrator Instructions" block and its own `drakonc-ai:agent-routing` block.
 
 No parent quoted or paraphrased them. In F1 a single file was edited, so the file-count rule could not even hold. They did contribute indirectly, because they made up most of the ~69 KB that pushed the always-on context past the backstop.
 
-After #3095 only `gentle-ai:engram-protocol` and `gentle-ai:remote-authorization` remain in the primary.
+After #3095 only `drakonc-ai:engram-protocol` and `drakonc-ai:remote-authorization` remain in the primary.
 
 **After phase.** The parent said nothing about routing: no mention of Task Size, the small path, or the Writer rule. Its thinking was summary titles only (0-60 characters per run). It announced plans such as "I’ll fix them individually ... leave tests unchanged" (after-F1-O2) and "I’ll keep loans separate from catalog ownership ... test rejection order" (after-F2-O2) and worked inline.
 
@@ -56,7 +56,7 @@ The exploration-budget notice ("Exploration budget: 4 tracked lookups ... Ongoin
 
 ## 2. State of each delegation reason after #3092, #3093, #3095 and #3096
 
-**How the prompts were compared.** The organic primary prompt was rendered with `__testing.buildGentlePrompt("gentleman", …, ["read","bash","edit","write","subagent_run"])`, the call `tests/primary-session-prompt.test.ts` makes, under `env -i` for both trees. The rendered files are in `prompts/organic-bench-{after,baseline}.md` (25,188 vs 25,490 B).
+**How the prompts were compared.** The organic primary prompt was rendered with `__testing.buildDrakoncPrompt("drakoncman", …, ["read","bash","edit","write","subagent_run"])`, the call `tests/primary-session-prompt.test.ts` makes, under `env -i` for both trees. The rendered files are in `prompts/organic-bench-{after,baseline}.md` (25,188 vs 25,490 B).
 
 The only differences:
 
@@ -72,21 +72,21 @@ Quotes as rendered after:
 
 - **Task Size (unchanged).** "A task is **small** when all three hold: 1. **Understood** … 2. **Contained risk** … 3. **Resumable from the diff** … The number of files, commands or tests, fixes, or a requested `todo` list never decides size. A task is **large** only when the resume test fails (multi-session work, external waits, deliverables the user wants apart (never several features asked at once), requirements compaction could lose); large tasks get ODD tracking and workers only by the Writer rule, else inline."
 - **Writer rule (unchanged).** "5. **Writer rule** — never by file count or a large task alone; only for a reason (`orchestrator-writer.md`): 2+ independent units of behavior, each heavier than a subagent start (several minutes of work: several files or roughly 100+ changed lines), launched together in background, else inline; Context backstop. Small module or command changes stay inline, even when independent." The lazy module adds: "Units of about 100 changed lines or less always run inline … The runtime admits writers only for a feature-document task or at the measured context backstop." `orchestrator-writer.md` adds: "With the Background subagent policy on, launch every independent unit in the same turn via `subagent_run` with `mode: "background"` … serial launches void the reason: if units cannot launch together, work inline."
-- **Evidence-budget rule (unchanged).** "understanding needs more than one read batch or >~5 sequential lookups → stop and delegate one `gentle-ai-explore`, handoff at most ~2k tokens with `path:line` evidence". Runtime side: `lib/exploration-budget.ts:54` sends the notice after more than 3 lookups or more than 40,000 bytes.
-- **Verification rule (unchanged).** "only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `gentle-ai-verify`; else inline". Runtime admission is in `lib/verifier-admission.ts`.
+- **Evidence-budget rule (unchanged).** "understanding needs more than one read batch or >~5 sequential lookups → stop and delegate one `drakonc-ai-explore`, handoff at most ~2k tokens with `path:line` evidence". Runtime side: `lib/exploration-budget.ts:54` sends the notice after more than 3 lookups or more than 40,000 bytes.
+- **Verification rule (unchanged).** "only a named high-risk item (assess `escalate` when RDD is on or unknown) → independent `drakonc-ai-verify`; else inline". Runtime admission is in `lib/verifier-admission.ts`.
 - **Context backstop (unchanged).** "7. **Context backstop** — when the runtime signals it → delegate the next unit needing several steps."
 
 **Runtime side of the context backstop.**
 
 - **Threshold:** `contextBackstopThreshold` = `min(cap, floor(fraction × contextWindow))`, with cap 150,000 and fraction 0.15. This gives 40,800 for the 272k window. It measures Pi's `ctx.getContextUsage()` for the whole context, **including the always-on system prompt and tools**.
 - **When it fires:** sampled at most once per 5 s per session on `tool_result` in the primary only. One notice per crossing, re-armed after dropping below.
-- **Per-run override without editing user config:** yes, through the environment variables `GENTLE_PI_CONTEXT_BACKSTOP_TOKENS`, `GENTLE_PI_CONTEXT_BACKSTOP_FRACTION` and `GENTLE_PI_CONTEXT_BACKSTOP_MEASURE_MS` (`lib/context-backstop.ts:14-17`). Writer and verifier admission read the same environment.
+- **Per-run override without editing user config:** yes, through the environment variables `DRAKONC_PI_CONTEXT_BACKSTOP_TOKENS`, `DRAKONC_PI_CONTEXT_BACKSTOP_FRACTION` and `DRAKONC_PI_CONTEXT_BACKSTOP_MEASURE_MS` (`lib/context-backstop.ts:14-17`). Writer and verifier admission read the same environment.
 - **Tests:**
   - `tests/context-backstop.test.ts`: 11 tests (threshold, env override, unknown tokens, one notice per crossing, children never notified, commit and write results, throttling);
   - `tests/writer-feature-document-admission.test.ts`: admission at the backstop, scales with the window, honors the environment;
   - `tests/full-delegation-notices.test.ts`: notice wording per mode;
   - `tests/odd-routing-contract.test.ts`: the prompt defers to the runtime signal;
-  - `tests/gentle-ai-exploration-budget.test.ts`: both notices compose.
+  - `tests/drakonc-ai-exploration-budget.test.ts`: both notices compose.
 
 **Could #3092, #3093, #3095 or #3096 suppress a legitimate delegation?** Not through rules or runtime: none of them changes a trigger, a threshold or admission.
 
@@ -104,7 +104,7 @@ Quotes as rendered after:
 - hidden suites (`hidden/f3`: semver 10, cron 9, calc 9) fail on the fixture (0/28, import errors);
 - the reference solution (`reference/f3`) passes 28/28.
 
-**Harness.** `run.sh` uses the same `env -i` discipline as the benchmark, a 2,400 s timeout and no retries. The harness repos are `~/work/gentle-pi/.worktrees/bench-runs/t11-*`. Runs were strictly sequential, one per tool call. Hashes are in `FROZEN.sha256`.
+**Harness.** `run.sh` uses the same `env -i` discipline as the benchmark, a 2,400 s timeout and no retries. The harness repos are `~/work/drakonc-pi/.worktrees/bench-runs/t11-*`. Runs were strictly sequential, one per tool call. Hashes are in `FROZEN.sha256`.
 
 | Run | Wall | Writers delegated | Launch | Parent's stated reason | Allowed edit surfaces | Rejected | Tokens parent / children | Cost parent / children / total | Hidden semver / cron / calc | Outside / commits |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -127,7 +127,7 @@ Public tests passed in every run: 20, 31, 43, 64 and 54 tests respectively. FD1'
 
 Organic cost 1.5-1.7x full delegation and about 2x bare, with the same quality. The parent carries 40-50k tokens per turn for 17-20 turns.
 
-**Context backstop probe** (`t11-F1-OP1`, organic F1, `GENTLE_PI_CONTEXT_BACKSTOP_TOKENS=31000`, no config edit). The notice appeared after turn 3: "Context backstop: the parent context measures 31,489 tokens (12% of the 272,000-token context window), at or past the 31,000-token backstop: delegate the next bounded unit that needs several steps …". The parent then made the three one-line fixes inline, as the notice's "single small edits … stay inline" allows. It had no next multi-step unit to delegate. 60.8 s, $0.885, tests pass, no commits.
+**Context backstop probe** (`t11-F1-OP1`, organic F1, `DRAKONC_PI_CONTEXT_BACKSTOP_TOKENS=31000`, no config edit). The notice appeared after turn 3: "Context backstop: the parent context measures 31,489 tokens (12% of the 272,000-token context window), at or past the 31,000-token backstop: delegate the next bounded unit that needs several steps …". The parent then made the three one-line fixes inline, as the notice's "single small edits … stay inline" allows. It had no next multi-step unit to delegate. 60.8 s, $0.885, tests pass, no commits.
 
 Delegation after the notice on a real multi-step unit is shown by F3 O1 and O2, where the threshold was crossed naturally.
 
@@ -184,4 +184,4 @@ Scratch `/private/tmp/delegation-check-KGPJRI`:
 - `sess/`, `out/` — sessions, stdout/stderr, status, tests, hidden results, `walls.txt`;
 - `runs-bare/`.
 
-Harness run repos: `~/work/gentle-pi/.worktrees/bench-runs/t11-F3-{O1,O2,FD1,FD2}` and `t11-F1-OP1`.
+Harness run repos: `~/work/drakonc-pi/.worktrees/bench-runs/t11-F3-{O1,O2,FD1,FD2}` and `t11-F1-OP1`.

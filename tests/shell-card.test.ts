@@ -7,7 +7,7 @@ import {
 } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
-// Cards are how Gentle notices look: the same rounded frame as the prompt,
+// Cards are how Drakonc notices look: the same rounded frame as the prompt,
 // with the title in the notice tone. They collapse to one body line when pi
 // asks for it.
 
@@ -31,9 +31,9 @@ const ansiTheme = {
 
 function card(overrides: Partial<Card> = {}): Card {
 	return {
-		title: "Gentle AI",
+		title: "Drakonc AI",
 		subtitle: "review preflight",
-		body: ["Receipt-driven development is enabled, and this worktree holds an unreviewed candidate.", "", "Call the gentle_review tool with inspect and follow the transition it returns."],
+		body: ["Receipt-driven development is enabled, and this worktree holds an unreviewed candidate.", "", "Call the drakonc_review tool with inspect and follow the transition it returns."],
 		tone: CARD_TONE.INFO,
 		...overrides,
 	};
@@ -41,11 +41,11 @@ function card(overrides: Partial<Card> = {}): Card {
 
 test("renderCard draws the rounded frame with the title in the top rule and wraps the body inside", () => {
 	const lines = renderCard(card(), plainTheme, 48, { expanded: true }).map(stripAnsi);
-	assert.match(lines[0], /^╭─ ✿ Gentle AI · review preflight ─+╮$/);
+	assert.match(lines[0], /^╭─ 🐉 Drakonc AI · review preflight ─+╮$/);
 	assert.match(lines[1], /^│ Receipt-driven development is enabled, and +│$/);
 	for (const line of lines) assert.equal(visibleWidth(line), 48, `"${line}" is not 48 wide`);
 	assert.ok(lines.some((line) => /^│ +│$/.test(line)), "blank body lines keep the frame");
-	assert.ok(lines.some((line) => line.includes("gentle_review")), "every paragraph is rendered when expanded");
+	assert.ok(lines.some((line) => line.includes("drakonc_review")), "every paragraph is rendered when expanded");
 	assert.match(lines[lines.length - 1], /^╰─+╯$/);
 });
 
@@ -60,18 +60,18 @@ test("renderCard uses the card tone across the full frame while preserving conte
 	// INFO paints the rose frame: the rounded border in the plain border role,
 	// the title in accent — the same look every sidebar card already used.
 	const info = renderCard(card(), taggedTheme, 80, { expanded: true });
-	assert.match(info[0], /^<border>╭<\/border><border>─ <\/border><accent>✿ Gentle AI<\/accent> <muted>·<\/muted> <muted>review preflight<\/muted><border> ─+<\/border><border>╮<\/border>$/);
+	assert.match(info[0], /^<border>╭<\/border><border>─ <\/border><accent>🐉 Drakonc AI<\/accent> <muted>·<\/muted> <muted>review preflight<\/muted><border> ─+<\/border><border>╮<\/border>$/);
 	assert.match(info[1], /^<border>│<\/border> <text>.*<border>│<\/border>$/);
 	assert.match(info[info.length - 1], /^<border>╰<\/border><border>─+╯<\/border>$/);
 
 	const warning = renderCard(card({ tone: CARD_TONE.WARNING, subtitle: undefined }), taggedTheme, 80, { expanded: true });
 	assert.match(warning[0], /^<warning>╭<\/warning>/);
-	assert.match(warning[0], /<warning>✿ Gentle AI<\/warning>/);
+	assert.match(warning[0], /<warning>🐉 Drakonc AI<\/warning>/);
 	assert.match(warning[1], /^<warning>│<\/warning> /);
 	assert.match(warning[warning.length - 1], /^<warning>╰<\/warning>/);
 
 	const error = renderCard(card({ tone: CARD_TONE.ERROR }), taggedTheme, 80, { expanded: true, hint: "ctrl+o to expand" });
-	assert.match(error[0], /^<error>╭<\/error><error>─ <\/error><error>✿ Gentle AI<\/error> <muted>·<\/muted> <muted>review preflight<\/muted><error> ─+<\/error> <dim>ctrl\+o to expand<\/dim> <error>╮<\/error>$/);
+	assert.match(error[0], /^<error>╭<\/error><error>─ <\/error><error>🐉 Drakonc AI<\/error> <muted>·<\/muted> <muted>review preflight<\/muted><error> ─+<\/error> <dim>ctrl\+o to expand<\/dim> <error>╮<\/error>$/);
 	assert.match(error[1], /^<error>│<\/error> <text>.*<error>│<\/error>$/);
 	assert.match(error[error.length - 1], /^<error>╰<\/error><error>─+╯<\/error>$/);
 	assert.equal(CARD_TONE.SUCCESS, "success");
@@ -79,7 +79,7 @@ test("renderCard uses the card tone across the full frame while preserving conte
 
 test("renderCard places a hint at the right end of the top rule without background fill", () => {
 	const lines = renderCard(card(), plainTheme, 60, { expanded: false, hint: "ctrl+o expand" });
-	assert.match(stripAnsi(lines[0]), /^╭─ ✿ Gentle AI · review preflight ─+ ctrl\+o expand ╮$/);
+	assert.match(stripAnsi(lines[0]), /^╭─ 🐉 Drakonc AI · review preflight ─+ ctrl\+o expand ╮$/);
 	assert.equal(visibleWidth(lines[0]), 60);
 
 	assert.doesNotMatch(lines.join("\n"), /\x1b\[44m/);
@@ -110,7 +110,7 @@ test("cards remain transparent across content resets and narrow widths", () => {
 test("renderCard accepts a custom glyph and an empty body", () => {
 	const lines = renderCard(card({ glyph: "✎", body: [] }), plainTheme, 40, { expanded: true }).map(stripAnsi);
 	assert.equal(lines.length, 2);
-	assert.match(lines[0], /^╭─ ✎ Gentle AI · review preflight ─+╮$/);
+	assert.match(lines[0], /^╭─ ✎ Drakonc AI · review preflight ─+╮$/);
 	assert.match(lines[1], /^╰─+╯$/);
 });
 
@@ -121,19 +121,19 @@ test("renderCard keeps the top rule at width with a two-cell glyph", () => {
 
 test("renderCard drops the hint before truncating title content", () => {
 	const lines = renderCard(card(), plainTheme, 40, { expanded: false, hint: "ctrl+o expand" }).map(stripAnsi);
-	assert.equal(lines[0], "╭─ ✿ Gentle AI · review preflight ─────╮");
+	assert.equal(lines[0], "╭─ 🐉 Drakonc AI · review preflight ───╮");
 	assert.ok(!lines[0].includes("ctrl+o"));
 	assert.equal(visibleWidth(lines[0]), 40);
 });
 
 test("renderCard truncates ANSI-styled title content at display width", () => {
 	const lines = renderCard(
-		card({ glyph: "\u{1F339}\uFE0E", title: "Gentle AI review", subtitle: "completed · review acknowledge approved" }),
+		card({ glyph: "\u{1F339}\uFE0E", title: "Drakonc AI review", subtitle: "completed · review acknowledge approved" }),
 		ansiTheme,
 		30,
 		{ expanded: false, hint: "ctrl+o to expand" },
 	);
-	assert.match(stripAnsi(lines[0]), /^╭─ 🌹︎ Gentle AI review.*╮$/);
+	assert.match(stripAnsi(lines[0]), /^╭─ 🌹︎ Drakonc AI review.*╮$/);
 	assert.ok(!stripAnsi(lines[0]).includes("ctrl+o"));
 	for (const line of lines) assert.equal(visibleWidth(line), 30, `"${stripAnsi(line)}" is not 30 wide`);
 });
@@ -245,7 +245,7 @@ function cellBackgrounds(line: string): (number | undefined)[] {
 const floatCard = (overrides: Partial<Card> = {}) => card({ title: "read", subtitle: undefined, glyph: "⌖", body: ["alpha", "beta"], tone: CARD_TONE.SUCCESS, ...overrides });
 
 test("card style defaults to the float style and lives in a process-wide slot", () => {
-	const slot = Symbol.for("gentle-pi.card-style");
+	const slot = Symbol.for("drakonc-pi.card-style");
 	const state = globalThis as typeof globalThis & { [slot]?: string };
 	// Own the slot for this test only, whatever earlier tests left behind.
 	const found = state[slot];

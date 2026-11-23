@@ -1,4 +1,4 @@
-import { gentleAiDevBinaryOverrideConfigured, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
+import { drakoncAiDevBinaryOverrideConfigured, resolveDrakoncAiBinary } from "./drakonc-ai-binary.ts";
 import { createNodeExecFileAdapter, type ExecFileAdapter } from "./native-review-cli.ts";
 
 export interface RuntimeMetricsPolicyDeps { resolve?: () => string; exec?: ExecFileAdapter }
@@ -7,13 +7,13 @@ export function runtimeMetricsEnvAllows(env: NodeJS.ProcessEnv): boolean {
 	// Unknown nonempty spellings veto too: never weaken a native environment veto.
 	const truthy = (value: string | undefined) => !["", "0", "false", "no", "off"].includes(value?.trim().toLowerCase() ?? "");
 	return !truthy(env.DO_NOT_TRACK) && !truthy(env.CI) && !truthy(env.GITHUB_ACTIONS)
-		&& env.GENTLE_AI_TELEMETRY?.trim() !== "0";
+		&& env.DRAKONC_AI_TELEMETRY?.trim() !== "0";
 }
 
 function publishedBinary(): string {
 	// This feature must not select an unpublished development binary or install one.
-	if (gentleAiDevBinaryOverrideConfigured()) throw new Error("Policy binary unavailable");
-	return resolveGentleAiBinary();
+	if (drakoncAiDevBinaryOverrideConfigured()) throw new Error("Policy binary unavailable");
+	return resolveDrakoncAiBinary();
 }
 
 /** Only a validated boolean crosses this boundary; never raw stdout or errors.
@@ -43,7 +43,7 @@ export async function readRuntimeMetricsPolicy(cwd: string,
 			return Object.keys(row).sort().join(",") === "enabled,operation,reason,schema,source"
 				&& row.schema === "gentle-ai.telemetry-policy/v1" && row.operation === "policy"
 				&& typeof row.enabled === "boolean" && row.enabled && row.reason === "enabled"
-				&& ["DO_NOT_TRACK", "GENTLE_AI_TELEMETRY", "CI", "state", "default"].includes(row.source as string);
+				&& ["DO_NOT_TRACK", "DRAKONC_AI_TELEMETRY", "CI", "state", "default"].includes(row.source as string);
 		};
 		return await Promise.race([probe(), deadline]);
 	} catch { return false; }

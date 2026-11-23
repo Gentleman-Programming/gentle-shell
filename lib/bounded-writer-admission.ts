@@ -7,7 +7,7 @@ import { resolveSessionWorktree, type WorktreeResolver } from "./session-worktre
 import type { MessageToolCall } from "./writer-batch-admission.ts";
 import { overlappingSurfaces } from "./writer-surfaces.ts";
 
-const WRITER_NAMES = ["gentle-ai-worker", "worker", "jd-fix-agent"];
+const WRITER_NAMES = ["drakonc-ai-worker", "worker", "jd-fix-agent"];
 // The rule sentence closes every rejection, after the specific problem (cost-speed P9b).
 export const WRITER_EDIT_SURFACE_REJECTION =
 	"Fix only that section, then relaunch with the rest of the task unchanged, never shortened or re-summarized; derive the surfaces from the task (narrow repository-relative paths or globs, one per line, until the next Markdown heading) and do not ask the human to author paths or globs.";
@@ -159,7 +159,7 @@ function shownEntry(line: string): string {
 // This is the same canonical parser used by both the tool hook and executor.
 // Prose cannot close the section, and repeated sections must agree exactly.
 // A rejection carries the concrete problem so the caller repairs only the
-// section instead of re-summarizing the whole task (gentle-shell#1713).
+// section instead of re-summarizing the whole task (drakonc-shell#1713).
 function parseAllowedEditSurfaces(values: readonly unknown[]): { paths: string[] } | { problem: string } {
 	let expected: string[] | undefined;
 	let section = 0;
@@ -317,7 +317,7 @@ export function isBoundedWriter(name: string): boolean {
 }
 
 export function isGenericBoundedWriter(name: string): boolean {
-	return name === "gentle-ai-worker" || name === "worker";
+	return name === "drakonc-ai-worker" || name === "worker";
 }
 
 // Source authorization is structural, never inferred from task prose. Deliberately

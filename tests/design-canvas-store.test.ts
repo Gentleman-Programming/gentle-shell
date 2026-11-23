@@ -173,8 +173,8 @@ test("the language changes only through setLanguage: the choice and the language
 test("the theme changes only through setTheme", () => {
 	const store = createStore();
 	assert.equal(store.state.theme, "neutral", "Neutral until the canvas reads the saved theme");
-	store.setTheme("gentleman");
-	assert.equal(store.state.theme, "gentleman");
+	store.setTheme("drakoncman");
+	assert.equal(store.state.theme, "drakoncman");
 	assert.throws(() => { (store.state as any).theme = "neutral"; }, TypeError);
 });
 

@@ -4,20 +4,20 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { CandidateViewRegistry, injectReviewCandidateView } from "../lib/review-candidate-view.ts";
 import type { ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
-// Live-confirmed adapter defects (2026-08-16, gentle-ai 2.4.0-main, Engram
+// Live-confirmed adapter defects (2026-08-16, drakonc-ai 2.4.0-main, Engram
 // #12461/#12466), both around a lineage recovered EXTERNALLY through native
-// `gentle-ai review recover` (disposition scope_changed):
+// `drakonc-ai review recover` (disposition scope_changed):
 //
 //   A. The controller never saw the successor's START, so direct reviewer
 //      dispatch refused with `no current controller-owned candidate view
 //      lineage binding` even though the controller itself had just decoded
 //      the successor's authoritative STATUS.
-//   B. `gentle_review finalize` on a lineage still at reviewer_results_required
+//   B. `drakonc_review finalize` on a lineage still at reviewer_results_required
 //      misrouted into the correction evidence-first-ordering lane and failed
 //      instead of surfacing the provider-offered review.capture-result step.
 
@@ -28,7 +28,7 @@ function git(cwd: string, ...arguments_: string[]): string {
 }
 
 function repository(t: test.TestContext): string {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-recovered-routing-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-recovered-routing-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	git(cwd, "init", "-b", "main");
 	writeFileSync(join(cwd, "tracked.txt"), "base\n");

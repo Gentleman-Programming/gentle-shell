@@ -55,11 +55,11 @@ function fixture() {
 		if (style === "symlink") symlinkSync(entry, join(bin, "pnpm"));
 		else writeFileSync(join(bin, "pnpm"), `#!/bin/sh\nexec '${entry}' "$@"\n${style === "shim" ? `# cmd-shim-target=${entry}\n` : ""}`, { mode: 0o755 });
 	};
-	const wizard = () => writeFileSync(join(bundle, "bin/gentle-shell-install.mjs"), "console.log('wizard-child:' + process.env.PATH);\n");
+	const wizard = () => writeFileSync(join(bundle, "bin/drakonc-shell-install.mjs"), "console.log('wizard-child:' + process.env.PATH);\n");
 	// A wizard that tampers with the ownership marker of the tools it runs from.
-	const markerRemovingWizard = () => writeFileSync(join(bundle, "bin/gentle-shell-install.mjs"), [
+	const markerRemovingWizard = () => writeFileSync(join(bundle, "bin/drakonc-shell-install.mjs"), [
 		"import { unlinkSync } from 'node:fs'; import { resolve, join } from 'node:path';",
-		"const bin = process.env.PATH.split(':').find((entry) => entry.includes('.gentle-shell-bootstrap-tools.'));",
+		"const bin = process.env.PATH.split(':').find((entry) => entry.includes('.drakonc-shell-bootstrap-tools.'));",
 		"unlinkSync(join(resolve(bin, '../..'), '.bootstrap-owned'));", ""].join("\n"));
 	const run = (extra: Record<string, string> = {}) => spawnSync("/bin/sh", [join(bundle, "scripts/bootstrap.sh")], {
 		env: { PATH: bin, HOME: home, ...extra }, encoding: "utf8", timeout: 15000,
@@ -328,14 +328,14 @@ posixTest("successful exit removes only the owned tools directory", () => {
 	const f = fixture();
 	try {
 		f.addPnpm(); f.wizard();
-		mkdirSync(join(f.home, ".gentle-shell-bootstrap-tools.unrelated"));
-		writeFileSync(join(f.home, ".gentle-shell-bootstrap-tools.unrelated/keep"), "preserve");
+		mkdirSync(join(f.home, ".drakonc-shell-bootstrap-tools.unrelated"));
+		writeFileSync(join(f.home, ".drakonc-shell-bootstrap-tools.unrelated/keep"), "preserve");
 		writeFileSync(join(f.home, "unrelated.txt"), "preserve");
 		const result = f.run();
 		assert.equal(result.status, 0, result.stderr);
 		assert.equal(result.stderr, "");
-		assert.deepEqual(readdirSync(f.home).sort(), [".gentle-shell-bootstrap-tools.unrelated", "unrelated.txt"]);
-		assert.equal(readFileSync(join(f.home, ".gentle-shell-bootstrap-tools.unrelated/keep"), "utf8"), "preserve");
+		assert.deepEqual(readdirSync(f.home).sort(), [".drakonc-shell-bootstrap-tools.unrelated", "unrelated.txt"]);
+		assert.equal(readFileSync(join(f.home, ".drakonc-shell-bootstrap-tools.unrelated/keep"), "utf8"), "preserve");
 	} finally { f.cleanup(); }
 });
 posixTest("tools removal failure after success keeps exit 0 and names the path", () => {
@@ -343,11 +343,11 @@ posixTest("tools removal failure after success keeps exit 0 and names the path",
 	try {
 		f.addPnpm(); f.wizard();
 		// Only removal of the tools root itself fails; staging/archive removal still works.
-		f.executable("rm", `case "$2" in */.gentle-shell-bootstrap-tools.*/*) ;; */.gentle-shell-bootstrap-tools.*) exit 1;; esac\nexec ${systemUtility("rm")} "$@"`);
+		f.executable("rm", `case "$2" in */.drakonc-shell-bootstrap-tools.*/*) ;; */.drakonc-shell-bootstrap-tools.*) exit 1;; esac\nexec ${systemUtility("rm")} "$@"`);
 		const result = f.run();
 		assert.equal(result.status, 0, result.stderr);
 		const [tools] = readdirSync(f.home);
-		assert.match(tools, /^\.gentle-shell-bootstrap-tools\./);
+		assert.match(tools, /^\.drakonc-shell-bootstrap-tools\./);
 		assert.ok(result.stderr.includes(`temporary tools could not be removed: ${join(f.home, tools)}`), result.stderr);
 	} finally { f.cleanup(); }
 });
@@ -357,7 +357,7 @@ posixTest("tools whose ownership marker vanished are kept after success with a n
 		f.addPnpm(); f.markerRemovingWizard();
 		const result = f.run();
 		assert.equal(result.status, 0, result.stderr);
-		assert.match(result.stderr, /temporary tools could not be removed: .*\.gentle-shell-bootstrap-tools\./);
+		assert.match(result.stderr, /temporary tools could not be removed: .*\.drakonc-shell-bootstrap-tools\./);
 		assert.equal(readdirSync(f.home).length, 1);
 	} finally { f.cleanup(); }
 });
@@ -393,7 +393,7 @@ posixTest("an older stable Node is left unchanged and a verified Node runs the h
 		writeFileSync(join(f.bin, "node"), older, { mode: 0o755 });
 		const result = f.run();
 		assert.equal(result.status, 0, result.stderr);
-		assert.match(result.stdout, /wizard-child:[^:\n]*\.gentle-shell-bootstrap-tools\.[^:\n]*\/node\/bin:/);
+		assert.match(result.stdout, /wizard-child:[^:\n]*\.drakonc-shell-bootstrap-tools\.[^:\n]*\/node\/bin:/);
 		assert.doesNotMatch(result.stderr, /user-node-ran/);
 		assert.equal(readFileSync(join(f.bin, "node"), "utf8"), older);
 		assert.deepEqual(readdirSync(f.home), [], "successful wizard exit removes the owned tools");
@@ -408,8 +408,8 @@ for (const [version, reused] of [["v22.19.0", true], ["v23.6.0", true], ["v23.0.
 			writeFileSync(join(f.bin, "node"), user, { mode: 0o755 });
 			const result = f.run();
 			assert.equal(result.status, 0, result.stderr);
-			if (reused) assert.doesNotMatch(result.stdout, /\.gentle-shell-bootstrap-tools\.[^:\n]*\/node\/bin/);
-			else assert.match(result.stdout, /wizard-child:[^:\n]*\.gentle-shell-bootstrap-tools\.[^:\n]*\/node\/bin:/);
+			if (reused) assert.doesNotMatch(result.stdout, /\.drakonc-shell-bootstrap-tools\.[^:\n]*\/node\/bin/);
+			else assert.match(result.stdout, /wizard-child:[^:\n]*\.drakonc-shell-bootstrap-tools\.[^:\n]*\/node\/bin:/);
 			assert.doesNotMatch(result.stderr, /user-node-ran/);
 			assert.equal(readFileSync(join(f.bin, "node"), "utf8"), user);
 		} finally { f.cleanup(); }
@@ -527,10 +527,10 @@ posixTest("the bootstrap claims private tools for the verified pnpm when the exi
 	const f = fixture();
 	try {
 		f.addPnpm("10.27.0", ">=18.12");
-		writeFileSync(join(f.bundle, "bin/gentle-shell-install.mjs"), "import { writeFileSync } from 'node:fs';\n" +
+		writeFileSync(join(f.bundle, "bin/drakonc-shell-install.mjs"), "import { writeFileSync } from 'node:fs';\n" +
 			`writeFileSync(${JSON.stringify(join(f.root, "wizard-path"))}, process.env.PATH);\n`);
 		await bootstrap(f.bundle, "", { env: { PATH: f.bin, HOME: f.home }, adapters: acquisitionAdapters() });
-		assert.match(readFileSync(join(f.root, "wizard-path"), "utf8"), /^[^:]*\.gentle-shell-bootstrap-tools\.[^:]*\/pnpm\/bin:/);
+		assert.match(readFileSync(join(f.root, "wizard-path"), "utf8"), /^[^:]*\.drakonc-shell-bootstrap-tools\.[^:]*\/pnpm\/bin:/);
 		assert.deepEqual(readdirSync(f.home), [], "the helper-created tools are removed after the wizard");
 	} finally { f.cleanup(); }
 });
@@ -723,7 +723,7 @@ posixTest("wizard child failure is propagated and missing entry is explicit", as
 	await assert.rejects(launchWizard({ bundle: "/missing-bundle", env: {} }), /wizard entry.*missing/i);
 	const f = fixture();
 	try {
-		writeFileSync(join(f.bundle, "bin/gentle-shell-install.mjs"), "process.exit(7);\n");
+		writeFileSync(join(f.bundle, "bin/drakonc-shell-install.mjs"), "process.exit(7);\n");
 		await assert.rejects(launchWizard({ bundle: f.bundle, env: {} }), /Wizard child failed/);
 		f.addPnpm();
 		assert.notEqual(f.run().status, 0);
@@ -834,7 +834,7 @@ for (const options of [{ names: "package/../escape" }, { names: "/absolute/path"
 	});
 }
 function silentWizard(bundle: string, body = "") {
-	writeFileSync(join(bundle, "bin/gentle-shell-install.mjs"), body);
+	writeFileSync(join(bundle, "bin/drakonc-shell-install.mjs"), body);
 }
 posixTest("helper-created pnpm tools are removed after a successful wizard exit", async (t) => {
 	const f = fixture();
@@ -857,7 +857,7 @@ posixTest("helper-created tools are removed after wizard failure and kept with a
 		const notices = t.mock.method(console, "error", () => {});
 		await bootstrap(f.bundle, "", { env: { PATH: f.bin, HOME: f.home }, adapters: acquisitionAdapters() });
 		const [tools] = readdirSync(f.home);
-		assert.match(tools, /^\.gentle-shell-bootstrap-tools\./);
+		assert.match(tools, /^\.drakonc-shell-bootstrap-tools\./);
 		assert.equal(notices.mock.callCount(), 1);
 		assert.ok(String(notices.mock.calls[0].arguments[0]).includes(`temporary tools could not be removed: ${join(f.home, tools)}`));
 	} finally { f.cleanup(); }
@@ -865,7 +865,7 @@ posixTest("helper-created tools are removed after wizard failure and kept with a
 posixTest("owned tools removal refuses anything but the exact marked private directory", () => {
 	const f = fixture();
 	try {
-		const marked = (name: string, marker = "gentle-pi prerequisite tooling only\n") => {
+		const marked = (name: string, marker = "drakonc-pi prerequisite tooling only\n") => {
 			const path = join(f.home, name);
 			mkdirSync(path, { mode: 0o700 });
 			writeFileSync(join(path, "keep"), "preserve");
@@ -873,20 +873,20 @@ posixTest("owned tools removal refuses anything but the exact marked private dir
 			return path;
 		};
 		const target = marked("target");
-		const link = join(f.home, ".gentle-shell-bootstrap-tools.link");
+		const link = join(f.home, ".drakonc-shell-bootstrap-tools.link");
 		symlinkSync(target, link);
-		const outside = join(f.root, ".gentle-shell-bootstrap-tools.outside");
-		mkdirSync(outside); writeFileSync(join(outside, ".bootstrap-owned"), "gentle-pi prerequisite tooling only\n");
-		const nested = join(marked(".gentle-shell-bootstrap-tools.parent"), ".gentle-shell-bootstrap-tools.child");
-		mkdirSync(nested); writeFileSync(join(nested, ".bootstrap-owned"), "gentle-pi prerequisite tooling only\n");
-		const markerLink = marked(".gentle-shell-bootstrap-tools.markerlink", "");
+		const outside = join(f.root, ".drakonc-shell-bootstrap-tools.outside");
+		mkdirSync(outside); writeFileSync(join(outside, ".bootstrap-owned"), "drakonc-pi prerequisite tooling only\n");
+		const nested = join(marked(".drakonc-shell-bootstrap-tools.parent"), ".drakonc-shell-bootstrap-tools.child");
+		mkdirSync(nested); writeFileSync(join(nested, ".bootstrap-owned"), "drakonc-pi prerequisite tooling only\n");
+		const markerLink = marked(".drakonc-shell-bootstrap-tools.markerlink", "");
 		symlinkSync(join(target, ".bootstrap-owned"), join(markerLink, ".bootstrap-owned"));
-		const refused = [link, outside, nested, marked("other-name"), marked(".gentle-shell-bootstrap-tools.nomarker", ""),
-			marked(".gentle-shell-bootstrap-tools.wrongmarker", "something else\n"), markerLink, `${f.home}/./.gentle-shell-bootstrap-tools.parent`, "", undefined];
+		const refused = [link, outside, nested, marked("other-name"), marked(".drakonc-shell-bootstrap-tools.nomarker", ""),
+			marked(".drakonc-shell-bootstrap-tools.wrongmarker", "something else\n"), markerLink, `${f.home}/./.drakonc-shell-bootstrap-tools.parent`, "", undefined];
 		for (const path of refused) assert.equal(removeOwnedTools(path, f.home), false, String(path));
 		assert.equal(readFileSync(join(target, "keep"), "utf8"), "preserve");
 		assert.ok(existsSync(outside) && existsSync(nested));
-		const owned = marked(".gentle-shell-bootstrap-tools.owned");
+		const owned = marked(".drakonc-shell-bootstrap-tools.owned");
 		assert.equal(removeOwnedTools(owned, f.home), true);
 		assert.equal(existsSync(owned), false);
 		assert.equal(removeOwnedTools(owned, f.home), false, "already removed");
@@ -1107,7 +1107,7 @@ test("fixed Engram descriptors are the GitHub release archives and checksums, an
 		const [platform, arch] = target.split("-");
 		const artifact = artifactFor("engram", platform, arch);
 		assert.equal(artifact.version, "3.7.2");
-		assert.equal(artifact.url, `https://github.com/Gentleman-Programming/engram/releases/download/v3.7.2/engram_3.7.2_${suffix}`);
+		assert.equal(artifact.url, `https://github.com/Drakoncman-Programming/engram/releases/download/v3.7.2/engram_3.7.2_${suffix}`);
 		assert.equal(artifact.integrity, `sha256-${sha256}`);
 		assert.deepEqual([artifact.size, artifact.maxBytes], [size, size]);
 		// GitHub serves release assets from its asset hosts.
@@ -1316,7 +1316,7 @@ test("an existing Go destination the installer did not publish is never replaced
 test("the pinned Go destination appears only complete and marked, so an interrupted run never leaves it half published", async () => {
 	const r = goRoot();
 	const destination = join(r.root, "1.25.14");
-	const marker = join(destination, ".gentle-shell-go");
+	const marker = join(destination, ".drakonc-shell-go");
 	const violations: string[] = [];
 	const originals = { mkdirSync: fs.mkdirSync, renameSync: fs.renameSync, writeFileSync: fs.writeFileSync };
 	// Every filesystem mutation is a point where the process could die: after each

@@ -12,7 +12,7 @@ import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 // With RDD on, the request is exactly what the registered tools declare. Both
 // paths run through a real Pi SDK session and inspect the provider request.
 
-const HIDDEN_WHEN_OFF = ["gentle_review_capture", "gentle_review_capture_group", "gentle_review_scope"] as const;
+const HIDDEN_WHEN_OFF = ["drakonc_review_capture", "drakonc_review_capture_group", "drakonc_review_scope"] as const;
 
 interface RecordedRequest { systemPrompt: string; tools: Tool[] }
 interface SessionRun {
@@ -67,7 +67,7 @@ async function runSession(
 ): Promise<SessionRun> {
 	const sdk = await import("@earendil-works/pi-coding-agent");
 	const ai = await import("@earendil-works/pi-ai");
-	const { createGentleAiExtension } = await import("../extensions/gentle-ai.ts");
+	const { createDrakoncAiExtension } = await import("../extensions/drakonc-ai.ts");
 	const cwd = join(root, `repo-${label}`);
 	mkdirSync(cwd);
 	const gitEnv = { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(root, "gitconfig") };
@@ -90,15 +90,15 @@ async function runSession(
 				run.registered.set(definition.name, definition);
 				return registerTool(definition as never);
 			}) as typeof pi.registerTool;
-			createGentleAiExtension({
+			createDrakoncAiExtension({
 				nativeReviewCli: nativeCli(mode, run.nativeCalls),
 				candidateViews: null,
-				processEnv: { ...bindings, GENTLE_AI_TELEMETRY: "0" },
+				processEnv: { ...bindings, DRAKONC_AI_TELEMETRY: "0" },
 				resolveTelemetryTriggerBinary: () => { throw new Error("fixture"); },
 			})(pi);
 			extra?.install(pi);
 			pi.on("tool_result", (event) => {
-				if (event.toolName === "gentle_review") run.assessResults.push({ isError: event.isError, details: event.details });
+				if (event.toolName === "drakonc_review") run.assessResults.push({ isError: event.isError, details: event.details });
 			});
 			pi.registerProvider("loadout-fixture", {
 				api: "loadout-fixture", apiKey: "fixture-only", baseUrl: "http://invalid.local",
@@ -132,11 +132,11 @@ async function runSession(
 	assert.deepEqual(loader.getExtensions().errors, []);
 	const { session } = await sdk.createAgentSession({
 		cwd, agentDir: bindings.PI_CODING_AGENT_DIR, modelRuntime: runtime, model: model as never, thinkingLevel: "off", resourceLoader: loader,
-		tools: ["read", "gentle_review", ...HIDDEN_WHEN_OFF, ...(extra?.tools ?? [])], sessionManager: manager, settingsManager: settings,
+		tools: ["read", "drakonc_review", ...HIDDEN_WHEN_OFF, ...(extra?.tools ?? [])], sessionManager: manager, settingsManager: settings,
 	});
 	try {
 		await session.bindExtensions({ mode: "json", onError: (error) => run.errors.push(error.error) });
-		next = { name: "gentle_review", arguments: { operation: "assess", input: { escalate: { item: 4, reason: "Fixture process concurrency boundary" } } } };
+		next = { name: "drakonc_review", arguments: { operation: "assess", input: { escalate: { item: 4, reason: "Fixture process concurrency boundary" } } } };
 		await session.prompt("Assess the current change.", { source: "interactive" });
 		beforeSecondPrompt();
 		await session.prompt("Report the plan.", { source: "interactive" });
@@ -150,12 +150,12 @@ async function runSession(
 const LEAN_GUIDELINE = /RDD off does not require an assessment/;
 
 function fixture(t: { after: (fn: () => void) => void }): { root: string; bindings: Record<string, string> } {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-review-loadout-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-review-loadout-")));
 	const profile = join(root, "profile");
 	mkdirSync(profile);
 	const bindings = {
 		PI_CODING_AGENT_DIR: profile, PI_CODING_AGENT_SESSION_DIR: join(root, "sessions"),
-		GENTLE_PI_AGENT_HOME: profile, GENTLE_PI_CONFIG_HOME: join(root, "config"),
+		DRAKONC_PI_AGENT_HOME: profile, DRAKONC_PI_CONFIG_HOME: join(root, "config"),
 	};
 	const previous = Object.fromEntries(Object.keys(bindings).map((key) => [key, process.env[key]]));
 	Object.assign(process.env, bindings);
@@ -170,7 +170,7 @@ function fixture(t: { after: (fn: () => void) => void }): { root: string; bindin
 }
 
 function registeredGuidelines(run: SessionRun): string[] {
-	const guidelines = ["gentle_review", ...HIDDEN_WHEN_OFF].flatMap((name) => run.registered.get(name)?.promptGuidelines ?? []);
+	const guidelines = ["drakonc_review", ...HIDDEN_WHEN_OFF].flatMap((name) => run.registered.get(name)?.promptGuidelines ?? []);
 	assert.ok(guidelines.length > 0);
 	return guidelines;
 }
@@ -183,15 +183,15 @@ function assertLeanRequest(request: RecordedRequest, run: SessionRun): void {
 	assert.match(request.systemPrompt, /tests, builds, and functional checks still run/);
 	for (const guideline of registeredGuidelines(run)) assert.equal(request.systemPrompt.includes(guideline), false, `RDD off must leave out: ${guideline.slice(0, 80)}`);
 	const names = request.tools.map((tool) => tool.name);
-	assert.ok(names.includes("gentle_review"));
+	assert.ok(names.includes("drakonc_review"));
 	for (const hidden of HIDDEN_WHEN_OFF) assert.equal(names.includes(hidden), false, `${hidden} is not declared while RDD is off`);
-	assert.doesNotMatch(request.tools.find((tool) => tool.name === "gentle_review")!.description, /gentle_review_capture/);
+	assert.doesNotMatch(request.tools.find((tool) => tool.name === "drakonc_review")!.description, /drakonc_review_capture/);
 }
 
 function assertRegisteredRequest(request: RecordedRequest, run: SessionRun): void {
 	for (const guideline of registeredGuidelines(run)) assert.ok(request.systemPrompt.includes(guideline), `the registered loadout keeps: ${guideline.slice(0, 80)}`);
 	assert.doesNotMatch(request.systemPrompt, LEAN_GUIDELINE);
-	for (const name of ["gentle_review", ...HIDDEN_WHEN_OFF]) {
+	for (const name of ["drakonc_review", ...HIDDEN_WHEN_OFF]) {
 		const declared = request.tools.find((tool) => tool.name === name);
 		assert.ok(declared, `${name} is declared`);
 		assert.equal(declared.description, run.registered.get(name)?.description);
@@ -213,7 +213,7 @@ test("RDD off: the parent request does not mandate ASSESS; RDD on keeps the regi
 	// ASSESS stays callable and returns its plan.
 	assert.equal(off.assessResults.length, 1);
 	assert.equal(off.assessResults[0].isError, false);
-	assert.equal((off.assessResults[0].details as { schema?: string }).schema, "gentle-pi.review-assessment-plan/v1");
+	assert.equal((off.assessResults[0].details as { schema?: string }).schema, "drakonc-pi.review-assessment-plan/v1");
 	const plan = off.assessResults[0].details as Record<string, unknown>;
 	assert.equal(plan.rddLine, "off");
 	assert.equal(plan.nativeRisk, "unassessable");
@@ -244,7 +244,7 @@ test("RDD off: the parent request does not mandate ASSESS; RDD on keeps the regi
 
 test("an unknown RDD line keeps the registered loadout; turning RDD on mid-session restores it at the next run", { timeout: 30_000 }, async (t) => {
 	const { root, bindings } = fixture(t);
-	const { __testing } = await import("../extensions/gentle-ai.ts");
+	const { __testing } = await import("../extensions/drakonc-ai.ts");
 	__testing.clearRddStatusMemoForTesting();
 	t.after(() => __testing.clearRddStatusMemoForTesting());
 
@@ -297,25 +297,25 @@ test("malformed fresh reads restore guidance while on and unknown preserve pinni
 // projection; it never replaces it, and the request stays stable across turns.
 test("RDD off: the review capture tools stay hidden beside a tool hidden behind codemode", { timeout: 30_000 }, async (t) => {
 	const { root, bindings } = fixture(t);
-	const { default: gentleGuide } = await import("../extensions/gentle-guide.ts");
+	const { default: drakoncGuide } = await import("../extensions/drakonc-guide.ts");
 	const { registerCompactCodemode } = await import("../lib/codemode-renderer.ts");
-	const extra = { tools: ["gentle_guide", "codemode"], install: (pi: import("@earendil-works/pi-coding-agent").ExtensionAPI) => { gentleGuide(pi, {}); registerCompactCodemode(pi); } };
+	const extra = { tools: ["drakonc_guide", "codemode"], install: (pi: import("@earendil-works/pi-coding-agent").ExtensionAPI) => { drakoncGuide(pi, {}); registerCompactCodemode(pi); } };
 	const off = await runSession(root, "off-codemode", bindings, () => "off", () => {}, extra);
 	assert.deepEqual(off.errors, []);
 	for (const request of off.requests) {
 		assertLeanRequest(request, off);
-		assert.match(request.systemPrompt, /gentle_review\* tools are model-only: use direct tool calls, never tools\.gentle_review\(\.\.\.\) in codemode/);
+		assert.match(request.systemPrompt, /drakonc_review\* tools are model-only: use direct tool calls, never tools\.drakonc_review\(\.\.\.\) in codemode/);
 		assert.match(request.systemPrompt, /ALL_TOOLS lists only callable tools; absence there does not mean the direct tool is unavailable/);
-		assert.match(request.tools.find(tool => tool.name === "gentle_review")!.description, /Call directly, never through codemode/);
+		assert.match(request.tools.find(tool => tool.name === "drakonc_review")!.description, /Call directly, never through codemode/);
 		const names = request.tools.map((tool) => tool.name);
-		assert.deepEqual(names, ["read", "gentle_review", "codemode"], "review capture tools and the guide are all left out");
+		assert.deepEqual(names, ["read", "drakonc_review", "codemode"], "review capture tools and the guide are all left out");
 	}
 	assert.equal(new Set(off.requests.map((request) => JSON.stringify(request.tools.map((tool) => tool.name)))).size, 1);
 	const on = await runSession(root, "on-codemode", bindings, () => "on", () => {}, extra);
 	assert.deepEqual(on.errors, []);
 	for (const request of on.requests) {
-		assert.deepEqual(request.tools.map((tool) => tool.name), ["read", "gentle_review", ...HIDDEN_WHEN_OFF, "codemode"], "RDD on declares the review family; the guide stays behind codemode");
-		assert.match(request.systemPrompt, /gentle_review\* tools are model-only: use direct tool calls/);
-		assert.match(request.tools.find(tool => tool.name === "gentle_review")!.description, /Call directly, never through codemode/);
+		assert.deepEqual(request.tools.map((tool) => tool.name), ["read", "drakonc_review", ...HIDDEN_WHEN_OFF, "codemode"], "RDD on declares the review family; the guide stays behind codemode");
+		assert.match(request.systemPrompt, /drakonc_review\* tools are model-only: use direct tool calls/);
+		assert.match(request.tools.find(tool => tool.name === "drakonc_review")!.description, /Call directly, never through codemode/);
 	}
 });

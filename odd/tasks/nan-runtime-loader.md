@@ -75,7 +75,7 @@ was used. All three stages were then executed by `scripts/run-test-suite.mjs` wi
 stage configuration using the package scripts' Node equivalents, without pnpm bootstrap.
 
 The two failures are `tests/agent-home.test.ts:36` (temporary HOME/config-home assertion) and
-`tests/gentle-ai-dev-binary-surfacing.test.ts:202` (unexpected startup override announcement).
+`tests/drakonc-ai-dev-binary-surfacing.test.ts:202` (unexpected startup override announcement).
 Both signatures also occur on clean baseline `6c844d7d` under the same inherited environment:
 the two-file comparison ran 9 tests, 7 passed and 2 failed, with zero skips. This establishes
 baseline occurrence, not their root causes or full baseline-suite health. All six new NaN

@@ -20,7 +20,7 @@ const pnpm = Object.freeze({
 	integrity: "sha512-0f319zxhe2T6GlaoHDyN/g6WbjOmAQqiVrUXrne+Idk+Ba/8DeGoOw5PKdVp9otEaujwaM1yR8C7PfD7TXvfmg==",
 	maxBytes: 32 * 1024 * 1024,
 });
-// Go toolchain used only to build Gentle AI: https://go.dev/dl/?mode=json&include=all
+// Go toolchain used only to build Drakonc AI: https://go.dev/dl/?mode=json&include=all
 // lists each archive's sha256 and size; every archive was downloaded and re-hashed
 // before pinning. go.dev/dl/<file> redirects to dl.google.com/go/<file>, and
 // download() refuses redirects, so the pins name the final URL.
@@ -38,7 +38,7 @@ const go = Object.freeze({
 });
 /** The Go version acquireGo publishes. */
 export const goPinVersion = go.version;
-// Engram for the bundled install (GENTLE_AI_ENGRAM_BIN and the agent's memory):
+// Engram for the bundled install (DRAKONC_AI_ENGRAM_BIN and the agent's memory):
 // the Gentleman-Programming/engram release gentle-ai 4.x installs (it takes the
 // latest core release). Each sha256 and size comes from the release's
 // checksums.txt and GitHub's asset digests; every archive was downloaded and
@@ -57,7 +57,7 @@ const engram = Object.freeze({
 });
 /** The Engram version the bundled install publishes under runtime/. */
 export const engramPinVersion = engram.version;
-// uv for the /gentle:music offer (installMusicPlayer), never part of the default
+// uv for the /drakonc:music offer (installMusicPlayer), never part of the default
 // install: the astral-sh/uv release. Each sha256 and size comes from GitHub's
 // asset digests; every archive was downloaded and re-hashed before pinning.
 const uv = Object.freeze({
@@ -336,9 +336,9 @@ function privateTools(home) {
 	if (!home || !home.startsWith("/") || realpathSync(home) !== resolve(home)) throw new Error("Unsafe tooling HOME");
 	const info = lstatSync(home);
 	if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o022)) throw new Error("Unsafe tooling HOME ownership");
-	const tools = mkdtempSync(join(home, ".gentle-shell-bootstrap-tools."));
+	const tools = mkdtempSync(join(home, ".drakonc-shell-bootstrap-tools."));
 	try {
-		writeFileSync(join(tools, ".bootstrap-owned"), "gentle-pi prerequisite tooling only\n", { mode: 0o600, flag: "wx" });
+		writeFileSync(join(tools, ".bootstrap-owned"), "drakonc-pi prerequisite tooling only\n", { mode: 0o600, flag: "wx" });
 		return tools;
 	} catch {
 		rmSync(tools, { recursive: true, force: true });
@@ -346,18 +346,18 @@ function privateTools(home) {
 	}
 }
 
-/** Remove only the exact private `$HOME/.gentle-shell-bootstrap-tools.*` directory
+/** Remove only the exact private `$HOME/.drakonc-shell-bootstrap-tools.*` directory
  * carrying this module's marker. rmSync never follows links inside it.
  * Returns false instead of throwing so success never turns into failure.
  */
 export function removeOwnedTools(tools, home) {
 	try {
 		if (typeof tools !== "string" || typeof home !== "string" || !home.startsWith("/") || resolve(tools) !== tools) return false;
-		if (dirname(tools) !== resolve(home) || !basename(tools).startsWith(".gentle-shell-bootstrap-tools.")) return false;
+		if (dirname(tools) !== resolve(home) || !basename(tools).startsWith(".drakonc-shell-bootstrap-tools.")) return false;
 		const info = lstatSync(tools);
 		if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid()) return false;
 		const marker = join(tools, ".bootstrap-owned");
-		if (!regular(marker) || readFileSync(marker, "utf8") !== "gentle-pi prerequisite tooling only\n") return false;
+		if (!regular(marker) || readFileSync(marker, "utf8") !== "drakonc-pi prerequisite tooling only\n") return false;
 		rmSync(tools, { recursive: true });
 		return true;
 	} catch {
@@ -557,7 +557,7 @@ function goZipEntries(bytes) {
 	return entries;
 }
 
-const GO_MARKER = ".gentle-shell-go";
+const GO_MARKER = ".drakonc-shell-go";
 /** An existing directory owned by this user that no one else can write to. */
 function privateDirectory(path) {
 	const info = stat(path);
@@ -581,7 +581,7 @@ export function installedGo(root, platform, arch, adapters = {}) {
 	}
 }
 
-/** The pinned Go, only to build Gentle AI: the copy installedGo finds, otherwise
+/** The pinned Go, only to build Drakonc AI: the copy installedGo finds, otherwise
  * the exact go.dev archive, verified (size and SHA-256) before it is read,
  * extracted in process into a private staging directory (regular files and
  * directories under `go/` only; no links, traversal or duplicates), checked
@@ -636,7 +636,7 @@ export async function acquireGo({ root, platform, arch, adapters = {} }) {
 
 /** No shell command or URL from the caller is executed: entry is fixed in bundle. */
 export async function launchWizard({ bundle, env }) {
-	const entry = join(bundle, "bin/gentle-shell-install.mjs");
+	const entry = join(bundle, "bin/drakonc-shell-install.mjs");
 	if (!regular(entry)) throw new Error("Future wizard entry is missing; no live wizard is available");
 	await new Promise((resolveChild, reject) => {
 		const child = spawn(process.execPath, [entry], { env, stdio: "inherit", shell: false });
@@ -647,7 +647,7 @@ export async function launchWizard({ bundle, env }) {
 
 /** `env` and transport/process adapters are injectable for local fixtures only. */
 export async function bootstrap(bundle, suppliedTools, { env = process.env, adapters = {} } = {}) {
-	const entry = join(bundle, "bin/gentle-shell-install.mjs");
+	const entry = join(bundle, "bin/drakonc-shell-install.mjs");
 	if (!regular(entry)) throw new Error("Future wizard entry is missing");
 	const metadata = JSON.parse(readFileSync(join(bundle, "package.json"), "utf8"));
 	if (!nodeRequirementSatisfied(metadata.engines?.node, process.versions.node)) throw new Error("Node requirement rejected");

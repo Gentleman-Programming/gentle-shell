@@ -1,5 +1,5 @@
 // Agent-model profiles: named, switchable snapshots of the global
-// `models.json` routing behind `/gentle:profiles`. The store lives at
+// `models.json` routing behind `/drakonc:profiles`. The store lives at
 // `<configHome>/profiles.json` and single-profile exports at
 // `<configHome>/profiles.export.json`. Everything here is pure except the two
 // path helpers and the thin read/write wrappers at the bottom; the extension
@@ -17,9 +17,9 @@ import {
 	type AgentRoutingEntry,
 } from "./model-routing-authority.ts";
 
-export const PROFILES_KIND = "gentle-pi.agent_model_profiles";
+export const PROFILES_KIND = "drakonc-pi.agent_model_profiles";
 export const PROFILES_VERSION = 1;
-export const PROFILE_EXPORT_KIND = "gentle-pi.agent_model_profile";
+export const PROFILE_EXPORT_KIND = "drakonc-pi.agent_model_profile";
 export const PROFILE_EXPORT_VERSION = 1;
 
 // The orchestrator workflow a profile opts into (full-delegation-mode S1).
@@ -602,7 +602,7 @@ export function buildProfileListItems(
 		// A pinned profile is the one this repository launches with, which is not the
 		// same thing as the globally active profile, so both are named. A session
 		// binding outranks the pin in this list (slice 1 stores it; slice 2,
-		// gentle-shell#1558, makes launches resolve it), so its marker wins on the
+		// drakonc-shell#1558, makes launches resolve it), so its marker wins on the
 		// same profile.
 		const label = name === sessionBound
 			? `${active} (session)`

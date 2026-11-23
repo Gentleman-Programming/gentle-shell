@@ -7,7 +7,7 @@ Provide a human-activated `/yolo on|off|status` command and a YOLO toggle beside
 Repeated commit/push/PR confirmations interrupt ordinary work. Existing shell safeguards do not recognize database DROP/TRUNCATE, so preserving them alone does not meet the requested safety boundary.
 
 ## Authorized scope and constraints
-- Isolated worktree: /Users/alanbuscaglia/work/gentle-pi-worktrees/yolo-mode
+- Isolated worktree: /Users/alanbuscaglia/work/drakonc-pi-worktrees/yolo-mode
 - Branch: feat/yolo-mode; starting revision: 290c0dc1352d65ed134bcf07187e81be955645a7.
 - Session-only, default off; explicit command activation, reversible, clone/session bound. No persisted global autonomy switch.
 - Ordinary commits, non-force pushes and PR preparation may proceed without repeated permission only inside the established task/repository/destination.
@@ -38,7 +38,7 @@ Repeated commit/push/PR confirmations interrupt ordinary work. Existing shell sa
 - [x] T3 — Add the same session YOLO control to the configuration/look-and-feel menu beside Vim.
   - Status: done.
   - Route: delegated direct; new menu mapping and multi-file writer triggers.
-  - Outcome: /gentle:customize → Editor has a visible YOLO ON/OFF · session only row immediately after Vim controls, synchronized with slash command and using the same primary/session/clone eligibility and revocation path.
+  - Outcome: /drakonc:customize → Editor has a visible YOLO ON/OFF · session only row immediately after Vim controls, synchronized with slash command and using the same primary/session/clone eligibility and revocation path.
   - Constraints: no persistent global/repository YOLO preference, independent grant, model-visible activation or weakened destructive/provider protections.
   - Risk: medium from native ASSESS over T3 diff; large writer self-verification stands, no independent verifier required by returned plan.
   - Checks: observed RED/GREEN, menu render/toggle/synchronization and unchanged guard/runtime tests, proportionate full/package checks and native review.
@@ -62,8 +62,8 @@ Repeated commit/push/PR confirmations interrupt ordinary work. Existing shell sa
 - T1 writer paused before edits because the parent supplied incorrect generated destinations for an unnecessary normalization command. Parent inspected scripts/build-runtime-modules.mjs: all eight inputs are outside T1 and remain unchanged; remove build:runtime-modules from required commands, retaining check:runtime-modules. No extra edit surfaces or product authorization are needed.
 
 - T1 source/tests/docs implemented: 378 authored changed lines. Observed RED, then focused GREEN (255/255). Package resource validation passed (155 resources).
-- Remaining primary regression run failed five fixtures under inherited GENTLE_PI_AGENTS_CHILD=1; this is not yet claimed resolved. pnpm tried implicit package-manager/dependency installation and aborted; no installation is authorized. Parent confirmed shared dependencies and worktree symlink remain intact.
-- Corrected verification uses env GENTLE_PI_AGENTS_CHILD=0 for primary-session regression fixtures and direct node scripts for runtime/typechecking (no install).
+- Remaining primary regression run failed five fixtures under inherited DRAKONC_PI_AGENTS_CHILD=1; this is not yet claimed resolved. pnpm tried implicit package-manager/dependency installation and aborted; no installation is authorized. Parent confirmed shared dependencies and worktree symlink remain intact.
+- Corrected verification uses env DRAKONC_PI_AGENTS_CHILD=0 for primary-session regression fixtures and direct node scripts for runtime/typechecking (no install).
 - Native ASSESS could not classify untracked scope; it returned unassessable/high-equivalent and requires independent verification. No review authority has been started.
 
 - Independent T1 commands passed (424 tests, runtime/typecheck/package checks, diff whitespace), but source tracing found wrapper option arity, quoted WHERE and separator-provenance bugs; T1 remains incomplete.
@@ -83,9 +83,9 @@ Repeated commit/push/PR confirmations interrupt ordinary work. Existing shell sa
 - Final verifier ran dedicated tests14/14 plus runtime/typecheck/resources and offline tarball inclusion check successfully. Full suite did NOT run: official wrapper includes pnpm commands. Parent inspected exported runTestSuite override API and authorizes equivalent direct-node stages; no install/source change required. T2 remains in progress until this proof.
 - User explicitly added YOLO to the same configuration/look-and-feel menu as Vim; accepted as T3 without discarding valid T1/T2 work. Same session policy is retained.
 
-- T3 map complete: /gentle:customize Editor rows in extensions/gentle-shell.ts; existing CustomizeRow supports dynamic synchronous labels, preview and async action. Reuse existing VisualCustomizeView, do not change persistent Vim/visual/profile writers.
+- T3 map complete: /drakonc:customize Editor rows in extensions/drakonc-shell.ts; existing CustomizeRow supports dynamic synchronous labels, preview and async action. Reuse existing VisualCustomizeView, do not change persistent Vim/visual/profile writers.
 - Same controller needs host-only callback discovery over pi.events, a shared human-action operation, display-only snapshot/observer refresh and late/reload/absent-owner fail-closed behavior. No synthetic user message or model-facing enable flag.
-- Derived T3 surfaces: lib/yolo-session-policy.ts, extensions/gentle-shell.ts, tests/yolo-customize.test.ts, tests/yolo-session-policy.test.ts, tests/yolo-mode.test.ts, tests/yolo-mode-runtime.test.ts, tests/gentle-shell.test.ts, README.md, docs/yolo-mode.md. Existing visual view is read-only reuse.
+- Derived T3 surfaces: lib/yolo-session-policy.ts, extensions/drakonc-shell.ts, tests/yolo-customize.test.ts, tests/yolo-session-policy.test.ts, tests/yolo-mode.test.ts, tests/yolo-mode-runtime.test.ts, tests/drakonc-shell.test.ts, README.md, docs/yolo-mode.md. Existing visual view is read-only reuse.
 
 - Equivalent full suite ran once: unit tests4371 (4326 passed,1 failed,44 skipped), provider contractPASS, runtime harnessFAIL. Candidate-linked failures: tests/review-controller-native-routing.test.ts lifecycle handler count expected1 observed2; runtime-harness legacy model routing invoked first session_start handler, now YOLO reset instead of existing startup logic. No baseline comparison claimed.
 - T2 remains incomplete. One scoped functional correction will preserve existing single-hook lifecycle by exposing controller reset and calling it from the primary extension's existing startup/shutdown hooks, rather than weakening native tests or changing the harness.
@@ -98,13 +98,13 @@ Repeated commit/push/PR confirmations interrupt ordinary work. Existing shell sa
 
 - T3 implemented (561 authored lines): same human action/controller, bounded host callback discovery, session/generation UI adapters, transition-only observers, Editor row, slash/menu sync, close/replacement disposal and docs. Parent spot-read confirmed original policy/guard independence and no persistent settings.
 - Observed RED367pass/7intendedfail after initial test-import issue; focused GREEN381/381. Full suite4338pass/3fail/44baseline platform-native skips; provider contract and runtime harnessPASS. Failures: two questionnaire privacy fixtures expected3 subscriptions, now4 due private host-discovery subscription; owner-first UI test waited for label update, not async action completion, before Space.
-- One scoped T3 test correction authorized: tests/gentle-ai.test.ts explicitly accounts for known private discovery channel without relaxing original privacy/balanced Herdr checks; tests/yolo-customize.test.ts uses a real completion barrier. Parent derives these surfaces within already-authorized feature; no new product scope or production-authority changes.
+- One scoped T3 test correction authorized: tests/drakonc-ai.test.ts explicitly accounts for known private discovery channel without relaxing original privacy/balanced Herdr checks; tests/yolo-customize.test.ts uses a real completion barrier. Parent derives these surfaces within already-authorized feature; no new product scope or production-authority changes.
 
 - T3 bounded test correction completed:46 additions+7 deletions=53 diff lines; totalT3602 authored lines excluding parent tracking. Exact subscription allowlist preserves original private/balanced Herdr assertions and adds no-leakage checks; both load orders wait for component readiness without mutating production.
 - Final focused471/471 and complete suite4341passed/0failed/44unchanged platform-native skips; provider contract/runtime harnessPASS. Runtime modules/typecheck ratchet187 diagnostics/resources/whitespacePASS; no source baseline or generated-byte changes.
 - SDK tests load both extensions in both orders on real event bus and drive real Theme/component rendering with stubbed terminal transport. Full interactive TUI and installed-consumer E2E remain explicitly unperformed; fixture reads an existing private busy latch and may need maintenance if component internals change.
 
-- T3 native reliability review approved; exact acknowledgement burned review-dd98d133087d4073 for target sha256:d1a717a9c7e4660ef674d498257b089a327cbab3ce35560a56a8b2f145f4752a (revision sha256:544f52d2ed7b87f5b4ca8e1703b1360b7d0ad3379e1632d2ca267ed658e2caf2). Advisory, non-blocking: R3-001 (extensions/gentle-shell.ts refresh path) and R3-002 (runtime test timing).
+- T3 native reliability review approved; exact acknowledgement burned review-dd98d133087d4073 for target sha256:d1a717a9c7e4660ef674d498257b089a327cbab3ce35560a56a8b2f145f4752a (revision sha256:544f52d2ed7b87f5b4ca8e1703b1360b7d0ad3379e1632d2ca267ed658e2caf2). Advisory, non-blocking: R3-001 (extensions/drakonc-shell.ts refresh path) and R3-002 (runtime test timing).
 - Parent spot check after commit: YOLO/guard focused tests 92/92 and offline archive inclusion check passed.
 - Not performed: installed-consumer packed E2E (requires dependency/native installation) and manual interactive terminal smoke.
 - Open advisory follow-ups: R3-newline-waiver, R3-ambient-guard-tests, R3-001, R3-002, R2-token-provenance, R2-wrapper-arity.

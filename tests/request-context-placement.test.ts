@@ -5,16 +5,16 @@ import { REPLY_LANGUAGE_ANCHOR_TYPE, placePersistedReplyAnchors } from "../lib/r
 import { placePersistedMessages, requestMessagePosition as key } from "../lib/request-context-placement.ts";
 
 // cost-speed-painpoints S15 (P1b), independent verifier probes (mwb7zm1y-1r-1unr). Two hooks save hidden
-// messages where their request carried them: gentle-ai places reply-language anchors, then gentle-todo places
+// messages where their request carried them: drakonc-ai places reply-language anchors, then drakonc-todo places
 // its snapshot and reminder. These cases pin `placePersistedMessages` with both kinds mixed, in the order Pi
 // runs the hooks; the seeded property pins its invariants over random transcripts.
 
 type Message = { role: string; content?: unknown; customType?: string; details?: unknown; timestamp?: number; toolCallId?: string; [key: string]: unknown };
 
-const TODO_TYPES: ReadonlySet<string> = new Set(["gentle-todo-state", "gentle-todo-reminder"]);
+const TODO_TYPES: ReadonlySet<string> = new Set(["drakonc-todo-state", "drakonc-todo-reminder"]);
 const ALL_TYPES: ReadonlySet<string> = new Set([REPLY_LANGUAGE_ANCHOR_TYPE, ...TODO_TYPES]);
 
-/** gentle-ai's `context_with_system` hook runs before gentle-todo's (extension load order). */
+/** drakonc-ai's `context_with_system` hook runs before drakonc-todo's (extension load order). */
 const hooks = (list: Message[]): Message[] => {
 	const anchored = placePersistedReplyAnchors(list) ?? list;
 	return placePersistedMessages(anchored, TODO_TYPES) ?? anchored;
@@ -22,7 +22,7 @@ const hooks = (list: Message[]): Message[] => {
 
 const label = (list: Message[]) => list.map((message) =>
 	message.customType === REPLY_LANGUAGE_ANCHOR_TYPE ? "ANCHOR"
-		: message.customType ? message.customType.replace("gentle-todo-", "")
+		: message.customType ? message.customType.replace("drakonc-todo-", "")
 			: message.role === "assistant" && message.content === "call" ? "A(call)"
 				: message.role === "assistant" ? "A" : message.role).join(" ");
 
@@ -35,7 +35,7 @@ const call2: Message = { role: "assistant", content: "call", timestamp: 20 };
 const result2: Message = { role: "toolResult", content: "r", timestamp: 21 };
 // Request k carried [sys, user, call, result, wake, ANCHOR (after wake), reminder (after the anchor)].
 const anchor: Message = { role: "custom", customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: "a", display: false, details: { after: key(wake), at: 10 }, timestamp: 10 };
-const reminder: Message = { role: "custom", customType: "gentle-todo-reminder", content: "r", display: false, details: { after: key(anchor), at: 11 }, timestamp: 11 };
+const reminder: Message = { role: "custom", customType: "drakonc-todo-reminder", content: "r", display: false, details: { after: key(anchor), at: 11 }, timestamp: 11 };
 // Pi saves both after the reply and its tool results, stamped later.
 const savedAnchor: Message = { ...anchor, timestamp: 22 };
 const savedReminder: Message = { ...reminder, timestamp: 23 };
@@ -55,7 +55,7 @@ test("P1b placement: after parallel tool results that share a timestamp, the rem
 	const parallel: Message = { role: "assistant", content: "call", timestamp: 40 };
 	const first: Message = { role: "toolResult", content: "a", timestamp: 41 };
 	const second: Message = { role: "toolResult", content: "b", timestamp: 41 };
-	const saved: Message = { role: "custom", customType: "gentle-todo-reminder", content: "r", details: { after: key(second), at: 42 }, timestamp: 50 };
+	const saved: Message = { role: "custom", customType: "drakonc-todo-reminder", content: "r", details: { after: key(second), at: 42 }, timestamp: 50 };
 	const placed = hooks([sys, user, parallel, first, second, call2, result2, saved]);
 	assert.equal(label(placed), "system user A(call) toolResult toolResult reminder A(call) toolResult");
 	assert.equal(placed[4], second, "never between a tool call and one of its results");
@@ -69,7 +69,7 @@ test("P1b placement: after a branch switch the message it followed is on the oth
 });
 
 test("P1b placement: an anchor saved before P1b, following a reminder that was never saved, stays put", () => {
-	const legacy: Message = { ...savedAnchor, details: { after: "custom|gentle-todo-reminder|999", at: 10 } };
+	const legacy: Message = { ...savedAnchor, details: { after: "custom|drakonc-todo-reminder|999", at: 10 } };
 	assert.equal(label(hooks([sys, user, call, result, wake, call2, result2, legacy])), "system user A(call) toolResult user A(call) toolResult ANCHOR");
 });
 

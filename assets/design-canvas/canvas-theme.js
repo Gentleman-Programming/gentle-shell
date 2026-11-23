@@ -1,22 +1,22 @@
-// The canvas theme: Gentleman (the Gentleman brand's pink on plum) or Neutral (the gray and blue
+// The canvas theme: Drakoncman (the Drakoncman brand's pink on plum) or Neutral (the gray and blue
 // of :root, the default), chosen in the rail's Settings, saved in this browser and applied at once.
-// canvas.css holds the palettes: Neutral is :root's own --gd-* tokens, Gentleman is
-// :root[data-theme="gentleman"], which sets every one of them; artboards keep their own colors, but the
+// canvas.css holds the palettes: Neutral is :root's own --gd-* tokens, Drakoncman is
+// :root[data-theme="drakoncman"], which sets every one of them; artboards keep their own colors, but the
 // Comment mode outlines drawn inside them are canvas chrome: gd:mode carries the theme's (canvas-boards.js),
 // and a change of theme sends only the new colors (gd:colors) to every frame. theme-early.js, a classic script in index.html's <head>,
-// paints a saved Gentleman before the first frame; startTheme() stays the source of truth for the store.
+// paints a saved Drakoncman before the first frame; startTheme() stays the source of truth for the store.
 
-// Every string the theme shows, in English; canvas-i18n-es.js has the Spanish. Gentleman is a name and stays as is.
+// Every string the theme shows, in English; canvas-i18n-es.js has the Spanish. Drakoncman is a name and stays as is.
 const TEXT = Object.freeze({
 	theme: "Theme",
-	gentleman: "Gentleman",
+	drakoncman: "Drakoncman",
 	neutral: "Neutral",
 });
 
-// The choice in this browser, for every design at this canvas address: "gentleman" or "neutral".
-const THEME_KEY = "gentle-design:theme";
+// The choice in this browser, for every design at this canvas address: "drakoncman" or "neutral".
+const THEME_KEY = "drakonc-design:theme";
 // Settings' theme radios, in order: the choice, its label and its icon.
-const THEMES = [["gentleman", "gentleman", "i-mustache"], ["neutral", "neutral", "i-contrast"]];
+const THEMES = [["drakoncman", "drakoncman", "i-mustache"], ["neutral", "neutral", "i-contrast"]];
 const CHOICES = THEMES.map(([choice]) => choice);
 const DEFAULT_THEME = "neutral";
 

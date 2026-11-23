@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { gentleAiBinaryPath } from "../runtime/gentle-ai-binary.mjs";
+import { drakoncAiBinaryPath } from "../runtime/drakonc-ai-binary.mjs";
 import { MainChannelError } from "../scripts/main-channel.mjs";
 import { goAcquisition, persistencePins, planPreflight, requirements } from "../scripts/installer-preflight.mjs";
 import {
@@ -11,12 +11,14 @@ import {
 	PI_PACKAGE as PI_PACKAGE_NAME,
 	blockedReasons,
 	childEnvironment,
+	DRAKONC_PI_PACKAGE_PUBLISHED,
 	failedSteps,
 	genuineNpm,
 	lookPath,
-	packageNativeGentleAi,
+	packageNativeDrakoncAi,
 	pnpmInvocation,
 	runStandardInstall as runUnobserved,
+	SHELL_NOT_PUBLISHED_MESSAGE,
 	setupErrorDetail,
 	upgradeInvocation,
 	windowsInvocation,
@@ -38,8 +40,8 @@ const BIN = `${PNPM_HOME}/bin`;
 const NODE = "/opt/node/bin/node";
 const ENTRY = "/tools/pnpm/bin/pnpm.mjs";
 const NPM_CLI = "/opt/node/lib/node_modules/npm/bin/npm-cli.js";
-const PACKAGE_ROOT = `${PNPM_HOME}/global/v11/node_modules/gentle-pi`;
-const SHELL_ENTRY = `${PACKAGE_ROOT}/bin/gentle-shell.mjs`;
+const PACKAGE_ROOT = `${PNPM_HOME}/global/v11/node_modules/drakonc-pi`;
+const SHELL_ENTRY = `${PACKAGE_ROOT}/bin/drakonc-shell.mjs`;
 
 const W_NODE_DIR = "C:\\Program Files\\nodejs";
 const W_NODE = `${W_NODE_DIR}\\node.exe`;
@@ -48,7 +50,7 @@ const W_NPM_CMD = `${W_NODE_DIR}\\npm.cmd`;
 const W_NPM_CLI = `${W_NODE_DIR}\\node_modules\\npm\\bin\\npm-cli.js`;
 const W_PNPM_HOME = "C:\\Users\\u\\AppData\\Local\\pnpm";
 const W_BIN = `${W_PNPM_HOME}\\bin`;
-const W_ROOT = `${W_PNPM_HOME}\\global\\v11\\node_modules\\gentle-pi`;
+const W_ROOT = `${W_PNPM_HOME}\\global\\v11\\node_modules\\drakonc-pi`;
 
 // Runtime persisted through pnpm: node in $PNPM_HOME/bin plus a pnpm-global npm shim.
 const PERSISTENT_NODE = `${BIN}/node`;
@@ -90,16 +92,16 @@ type Layout = { platform: string; node: string; entry: string; npmCli: string; s
 
 const npmPackage = JSON.stringify({ name: "npm", version: "11.19.0" });
 const pnpmPackage = JSON.stringify({ name: "pnpm", version: "11.1.1" });
-// pnpm 11 links gentle-pi's optional peer Pi beside gentle-pi in gentle-pi's own
+// pnpm 11 links drakonc-pi's optional peer Pi beside drakonc-pi in drakonc-pi's own
 // global group, at the latest version unless one is already there; the launcher
-// resolves that Pi (a nested node_modules first) from gentle-pi.
+// resolves that Pi (a nested node_modules first) from drakonc-pi.
 const piPackage = (version = PI_INSTALL_VERSION) => JSON.stringify({ name: "@earendil-works/pi-coding-agent", version });
 const besidePi = (root: string, sep = "/") => `${root.slice(0, root.lastIndexOf(sep))}${sep}@earendil-works${sep}pi-coding-agent${sep}package.json`;
 const nestedPi = (root: string) => `${root}/node_modules/@earendil-works/pi-coding-agent/package.json`;
 const posixLayout: Layout = {
 	platform: "linux", node: NODE, entry: ENTRY, npmCli: NPM_CLI, shellEntry: SHELL_ENTRY, bin: BIN, root: PACKAGE_ROOT,
-	env: { HOME, PATH: `${BIN}:/opt/node/bin:/usr/bin`, GENTLE_INSTALL_PNPM_NODE: NODE, GENTLE_INSTALL_PNPM_ENTRY: ENTRY },
-	files: ["/opt/node/bin/npm", NPM_CLI, `${BIN}/gentle-shell`],
+	env: { HOME, PATH: `${BIN}:/opt/node/bin:/usr/bin`, DRAKONC_INSTALL_PNPM_NODE: NODE, DRAKONC_INSTALL_PNPM_ENTRY: ENTRY },
+	files: ["/opt/node/bin/npm", NPM_CLI, `${BIN}/drakonc-shell`],
 	realpaths: { "/opt/node/bin/npm": NPM_CLI, [PNPM_HOME]: PNPM_HOME, [PACKAGE_ROOT]: PACKAGE_ROOT,
 		[`${BIN}/npm`]: `${BIN}/npm`, [PM_NPM_CLI]: PM_NPM_CLI, [STORE]: STORE, [STORE_PATH]: STORE_PATH, [STORE_PREFIX]: STORE_PREFIX,
 		[`${BIN}/pnpm`]: `${BIN}/pnpm`, [PM_PNPM_ENTRY]: PM_PNPM_ENTRY },
@@ -113,12 +115,12 @@ const posixLayout: Layout = {
 };
 // The user's Path already holds the global bin, spelled with different case.
 const windowsLayout: Layout = {
-	platform: "win32", node: W_NODE, entry: W_ENTRY, npmCli: W_NPM_CLI, shellEntry: `${W_ROOT}\\bin\\gentle-shell.mjs`,
+	platform: "win32", node: W_NODE, entry: W_ENTRY, npmCli: W_NPM_CLI, shellEntry: `${W_ROOT}\\bin\\drakonc-shell.mjs`,
 	bin: W_BIN, root: W_ROOT,
 	env: { LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local", USERPROFILE: "C:\\Users\\u",
 		Path: `c:\\users\\u\\appdata\\local\\PNPM\\bin\\;${W_NODE_DIR};C:\\Windows`,
-		GENTLE_INSTALL_PNPM_NODE: W_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_ENTRY },
-	files: [W_NODE, W_NPM_CMD, W_NPM_CLI, `${W_BIN}\\gentle-shell.cmd`],
+		DRAKONC_INSTALL_PNPM_NODE: W_NODE, DRAKONC_INSTALL_PNPM_ENTRY: W_ENTRY },
+	files: [W_NODE, W_NPM_CMD, W_NPM_CLI, `${W_BIN}\\drakonc-shell.cmd`],
 	realpaths: { [W_PNPM_HOME]: W_PNPM_HOME, [W_ROOT]: W_ROOT, [W_PM_NPM_CLI]: W_PM_NPM_CLI, [W_STORE]: W_STORE,
 		[W_STORE_PATH]: W_STORE_PATH, [W_STORE_PREFIX]: W_STORE_PREFIX, [W_PM_PNPM_ENTRY]: W_PM_PNPM_ENTRY },
 	texts: { [`${W_NODE_DIR}\\node_modules\\npm\\package.json`]: npmPackage, [W_NPM_CMD]: NODE_NPM_CMD, [`${W_BIN}\\npm.cmd`]: WINDOWS_SHIM,
@@ -135,13 +137,13 @@ const absent = { available: false };
 const tool = (version: string) => ({ available: true, version, usable: true });
 function plan(platform = "linux", change: object = {}) {
 	return planPreflight({ platform, arch: "x64", node: tool("24.18.0"), pnpm: { ...tool("11.1.1"), compatible: true },
-		pi: absent, shell: absent, gentleAi: absent, go: platform === "win32" ? tool("1.26.0") : absent,
+		pi: absent, shell: absent, drakoncAi: absent, go: platform === "win32" ? tool("1.26.0") : absent,
 		globalBin: { available: true, path: BIN, writable: true, onPath: true }, setup: false, ...change });
 }
 function listing(pi = PI_INSTALL_VERSION, shell = requirements.shell, path = PACKAGE_ROOT) {
 	return JSON.stringify([{ path: `${PNPM_HOME}/global/v11`, dependencies: {
 		"@earendil-works/pi-coding-agent": { version: pi },
-		"gentle-pi": { version: shell, path },
+		"drakonc-pi": { version: shell, path },
 	} }]);
 }
 
@@ -152,7 +154,7 @@ const emptyList = { code: 0, stdout: "[]" };
 
 function harness({ env = {}, results = {}, files = [] as string[], integrity = { ok: true } as object, layout = posixLayout,
 	realpaths: extraRealpaths = {} as Record<string, string>, texts: extraTexts = {} as Record<string, string>,
-	creates = layout.creates } = {}) {
+	creates = layout.creates, published = true } = {}) {
 	const calls: Call[] = [];
 	const logs: object[] = [];
 	const fileSet = new Set([...layout.files, ...files]);
@@ -165,7 +167,7 @@ function harness({ env = {}, results = {}, files = [] as string[], integrity = {
 		[PI_VIEW]: { code: 0, stdout: `${PI_INSTALL_VERSION}\n` },
 		add: { code: 0 },
 		[LIST]: [emptyList, { code: 0, stdout: listing(PI_INSTALL_VERSION, requirements.shell, layout.root) }],
-		"gentle-shell setup": { code: 0 },
+		"drakonc-shell setup": { code: 0 },
 		"pnpm setup": { code: 0 },
 		"runtime set node 24.21.0 -g": { code: 0 },
 		"add-pm": { code: 0 },
@@ -185,7 +187,7 @@ function harness({ env = {}, results = {}, files = [] as string[], integrity = {
 		if (args[0] === layout.pmNpmCli) return `pm-npm ${args.slice(1).join(" ")}`;
 		if (args[0] === layout.pmPnpmEntry) return `pm-pnpm ${args.slice(1).join(" ")}`;
 		if (command === layout.persistentNode) return `persistent-node ${args.join(" ")}`;
-		if (command === layout.node && args[0] === layout.shellEntry) return `gentle-shell ${args.slice(1).join(" ")}`;
+		if (command === layout.node && args[0] === layout.shellEntry) return `drakonc-shell ${args.slice(1).join(" ")}`;
 		const rest = command === layout.node && args[0] === layout.entry ? args.slice(1) : args;
 		if (rest[0] === "add") return ({ [PM_ADD]: "add-pm", [NPM_ADD]: "add-npm", [PNPM_ADD]: "add-pnpm" } as Record<string, string>)[rest.join(" ")] ?? "add";
 		if (rest.join(" ") === "setup") return "pnpm setup";
@@ -194,6 +196,10 @@ function harness({ env = {}, results = {}, files = [] as string[], integrity = {
 	const integrityCalls: object[] = [];
 	const adapters = {
 		platform: layout.platform,
+		// D6/S6: sin el paquete publicado el runner se detiene antes de cualquier
+		// add -g. Las pruebas de las demás rutas simulan el paquete ya publicado; el
+		// punto de partida real (`published: false`) se prueba aparte.
+		shellPackagePublished: published,
 		nodePath: layout.node,
 		env: { ...layout.env, ...env } as Record<string, string>,
 		run: async (command: string, args: string[], options: { env: Record<string, string>; deadlineMs: number; stderrTail?: number; cwd?: string }) => {
@@ -220,7 +226,7 @@ function harness({ env = {}, results = {}, files = [] as string[], integrity = {
 				return texts[path];
 			},
 		},
-		verifyGentleAi: async (request: object) => {
+		verifyDrakoncAi: async (request: object) => {
 			integrityCalls.push(request);
 			return integrity;
 		},
@@ -230,7 +236,7 @@ function harness({ env = {}, results = {}, files = [] as string[], integrity = {
 	return { adapters, calls, logs, pnpmCalls, integrityCalls };
 }
 
-const INSTALL = `add -g @earendil-works/pi-coding-agent@${PI_INSTALL_VERSION} gentle-pi@${requirements.shell} --allow-build=gentle-pi`;
+const INSTALL = `add -g @earendil-works/pi-coding-agent@${PI_INSTALL_VERSION} drakonc-pi@${requirements.shell} --allow-build=drakonc-pi`;
 const PM_ADD = "add -g npm@11.19.0 pnpm@11.1.1";
 const NPM_ADD = "add -g npm@11.19.0";
 const PNPM_ADD = "add -g pnpm@11.1.1";
@@ -244,6 +250,51 @@ test("declined or missing consent runs no commands", async () => {
 		assert.equal(result.reason, "consent-required");
 		assert.deepEqual(h.calls, []);
 	}
+});
+
+// D6/S6 de publicar-paquetes-drakonc: `drakonc-pi` no está publicado en npm, así
+// que ninguna ruta del instalador lo pide al registro ni cae al `gentle-pi`
+// original: se detiene antes de cualquier add -g, con el motivo por delante.
+test("an unpublished drakonc-pi stops a clean install before any command", async () => {
+	const h = harness({ published: false });
+	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
+	assert.equal(result.outcome, "blocked");
+	assert.equal(result.reason, "shell-not-published");
+	assert.equal(result.message, SHELL_NOT_PUBLISHED_MESSAGE);
+	assert.match(SHELL_NOT_PUBLISHED_MESSAGE, /^drakonc-pi aún no está publicado en npm; instala Drakonc Shell desde el repositorio github\.com\/drakonc\/drakonc-shell \(ver README\)$/);
+	assert.deepEqual(result.completed, []);
+	assert.deepEqual(h.calls, [], "no npm/pnpm command ran");
+	assert.deepEqual(h.logs, [{ step: "gate", status: "blocked", reason: "shell-not-published", message: SHELL_NOT_PUBLISHED_MESSAGE }]);
+});
+
+test("without an adapter override the publication gate uses the launcher's own flag", async () => {
+	const { adapters } = harness();
+	const { shellPackagePublished, ...realFlag } = adapters;
+	assert.equal(shellPackagePublished, true, "the harness simulates a published package");
+	assert.equal(typeof DRAKONC_PI_PACKAGE_PUBLISHED, "boolean");
+	const result = await runStandardInstall({ plan: plan(), consent: true }, realFlag);
+	if (DRAKONC_PI_PACKAGE_PUBLISHED) {
+		assert.notEqual(result.message, SHELL_NOT_PUBLISHED_MESSAGE);
+	} else {
+		assert.equal(result.reason, "shell-not-published");
+		assert.equal(result.message, SHELL_NOT_PUBLISHED_MESSAGE);
+	}
+});
+
+test("a published drakonc-pi keeps the single exact add -g", async () => {
+	const h = harness({ published: true });
+	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.equal(result.message, undefined);
+	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, PI_VIEW, INSTALL, LIST]);
+});
+
+test("a plan with nothing to install from the registry is not stopped by the publication gate", async () => {
+	const h = harness({ results: installedList, published: false });
+	const result = await runStandardInstall({ plan: recoveryPlan(), consent: true }, h.adapters);
+	assert.equal(result.outcome, "ready");
+	assert.notEqual(result.message, SHELL_NOT_PUBLISHED_MESSAGE);
+	assert.equal(h.pnpmCalls().some((call) => call.startsWith("add")), false);
 });
 
 test("caller-supplied commands, URLs, roots or env are rejected before any command", async () => {
@@ -284,8 +335,8 @@ test("preflight blockers and unsupported T4 plans are blocked before any command
 });
 
 // The installer's pinned Go: published under its own config directory, never on the user's PATH.
-const PINNED_GO = `${HOME}/.pi/gentle-ai/tools/go/${goAcquisition.version}/go/bin/go`;
-const W_PINNED_GO = `C:\\Users\\u\\.pi\\gentle-ai\\tools\\go\\${goAcquisition.version}\\go\\bin\\go.exe`;
+const PINNED_GO = `${HOME}/.drakonc-shell/drakonc-ai/tools/go/${goAcquisition.version}/go/bin/go`;
+const W_PINNED_GO = `C:\\Users\\u\\.drakonc-shell\\drakonc-ai\\tools\\go\\${goAcquisition.version}\\go\\bin\\go.exe`;
 const goVersion = (platform = "linux") => ({ code: 0, stdout: `go version go${goAcquisition.version} ${platform === "win32" ? "windows" : platform}/amd64\n` });
 /** A harness whose acquireGo publishes the pinned Go (or fails), counting calls. */
 function withGo<T extends { adapters: object }>(h: T, goPath: string | Error = PINNED_GO) {
@@ -309,14 +360,14 @@ test("Windows with a missing or older Go acquires the pinned Go after consent an
 		const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
 		assert.equal(result.outcome, "ready");
 		assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-existing-stack", "resolve-pi-version", "acquire-go", "verify-go",
-			"install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"]);
+			"install-global", "verify-global-list", "verify-shell-bin", "verify-drakonc-ai", "shell-setup"]);
 		assert.deepEqual(h.acquisitions, [1]);
 		const verify = h.calls.find((call) => call.command === W_PINNED_GO);
 		assert.deepEqual(verify?.args, ["version"]);
 		assert.equal(verify?.env.GOTOOLCHAIN, "local");
-		// gentle-pi's postinstall finds go.exe on PATH: the pinned Go comes first, only for that child.
+		// drakonc-pi's postinstall finds go.exe on PATH: the pinned Go comes first, only for that child.
 		const install = h.calls.find((call) => call.args[1] === "add");
-		assert.equal(install?.env.Path.split(";")[0], "C:\\Users\\u\\.pi\\gentle-ai\\tools\\go\\1.25.14\\go\\bin");
+		assert.equal(install?.env.Path.split(";")[0], "C:\\Users\\u\\.drakonc-shell\\drakonc-ai\\tools\\go\\1.25.14\\go\\bin");
 		assert.equal(install?.env.Path.split(";")[1], W_BIN);
 		for (const call of h.calls.filter((call) => call !== install && call !== verify)) assert.equal(call.env.Path.includes("tools\\go"), false);
 		assert.equal(h.adapters.env.Path.includes("tools\\go"), false, "the user's environment is unchanged");
@@ -375,7 +426,7 @@ test("Windows uses the case-insensitive Path key for the child env and bin -g co
 		assert.equal(call.env.PNPM_HOME, W_PNPM_HOME);
 		assert.equal(call.env.Path.split(";")[0], W_BIN);
 	}
-	assert.deepEqual(h.calls.at(-1)?.args, [`${W_ROOT}\\bin\\gentle-shell.mjs`, "setup"]);
+	assert.deepEqual(h.calls.at(-1)?.args, [`${W_ROOT}\\bin\\drakonc-shell.mjs`, "setup"]);
 	const missing = harness({ layout: windowsLayout, env: { Path: `${W_NODE_DIR};C:\\Windows` } });
 	const persisted = await runStandardInstall({ plan: plan("win32"), consent: true }, missing.adapters);
 	assert.equal(persisted.outcome, "terminal-action-required");
@@ -533,10 +584,10 @@ test("an extensionless native shim target runs only when the first PATHEXT match
 	}
 });
 
-// S8: how `gentle-shell upgrade` (and the wizard's update) runs npm and pnpm on Windows.
+// S8: how `drakonc-shell upgrade` (and the wizard's update) runs npm and pnpm on Windows.
 test("upgradeInvocation resolves npm and pnpm on Windows without cmd.exe, and is absent on POSIX", async () => {
 	for (const platform of ["linux", "darwin"]) assert.equal(upgradeInvocation({ platform, env: {}, ...windowsShapes().adapters }), undefined);
-	const env = { Path: `${W_BIN};${W_NODE_DIR}`, PATHEXT: ".COM;.EXE;.BAT;.CMD", GENTLE_INSTALL_PNPM_NODE: "C:\\Tools\\node.exe", GENTLE_INSTALL_PNPM_ENTRY: W_ENTRY };
+	const env = { Path: `${W_BIN};${W_NODE_DIR}`, PATHEXT: ".COM;.EXE;.BAT;.CMD", DRAKONC_INSTALL_PNPM_NODE: "C:\\Tools\\node.exe", DRAKONC_INSTALL_PNPM_ENTRY: W_ENTRY };
 	const exe = `${W_PNPM_HOME}\\global\\v11\\abc\\node_modules\\@pnpm\\exe\\pnpm.exe`;
 	const h = windowsShapes({ files: [W_NODE, W_NPM_CMD, W_NPM_CLI, `${W_BIN}\\pnpm.cmd`, exe, `${W_BIN}\\other.cmd`],
 		texts: { [W_NPM_CMD]: NODE_NPM_CMD, [`${W_BIN}\\pnpm.cmd`]: "@SETLOCAL\r\n@\"%~dp0\\..\\global\\v11\\abc\\node_modules\\@pnpm\\exe\\pnpm.exe\"   %*\r\n",
@@ -592,22 +643,22 @@ test("a Windows npm is usable only by behavior: a stable --version and one absol
 test("Windows hands a native pnpm.exe off as the command itself; nothing else is accepted in its place", async () => {
 	const exe = `${W_PNPM_HOME}\\pnpm.exe`;
 	const fs = { isFile: async () => false };
-	assert.deepEqual(await pnpmInvocation({ GENTLE_INSTALL_PNPM_COMMAND: exe }, "win32", fs), { command: exe, prefix: [] });
+	assert.deepEqual(await pnpmInvocation({ DRAKONC_INSTALL_PNPM_COMMAND: exe }, "win32", fs), { command: exe, prefix: [] });
 	for (const command of ["pnpm.exe", `${W_PNPM_HOME}\\pnpm.cmd`, `${W_PNPM_HOME}\\pnpm`, ""]) {
-		assert.equal(await pnpmInvocation({ GENTLE_INSTALL_PNPM_COMMAND: command }, "win32", fs), null, command);
+		assert.equal(await pnpmInvocation({ DRAKONC_INSTALL_PNPM_COMMAND: command }, "win32", fs), null, command);
 	}
 	// Node plus entry still wins, and POSIX never reads the Windows-only key.
-	assert.deepEqual(await pnpmInvocation({ GENTLE_INSTALL_PNPM_COMMAND: exe, GENTLE_INSTALL_PNPM_NODE: W_NODE, GENTLE_INSTALL_PNPM_ENTRY: W_ENTRY }, "win32", fs),
+	assert.deepEqual(await pnpmInvocation({ DRAKONC_INSTALL_PNPM_COMMAND: exe, DRAKONC_INSTALL_PNPM_NODE: W_NODE, DRAKONC_INSTALL_PNPM_ENTRY: W_ENTRY }, "win32", fs),
 		{ command: W_NODE, prefix: [W_ENTRY] });
-	assert.equal(await pnpmInvocation({ GENTLE_INSTALL_PNPM_COMMAND: "/opt/pnpm", PATH: "/usr/bin" }, "linux", fs), null);
-	const h = harness({ layout: windowsLayout, env: { GENTLE_INSTALL_PNPM_NODE: "", GENTLE_INSTALL_PNPM_ENTRY: "", GENTLE_INSTALL_PNPM_COMMAND: exe } });
+	assert.equal(await pnpmInvocation({ DRAKONC_INSTALL_PNPM_COMMAND: "/opt/pnpm", PATH: "/usr/bin" }, "linux", fs), null);
+	const h = harness({ layout: windowsLayout, env: { DRAKONC_INSTALL_PNPM_NODE: "", DRAKONC_INSTALL_PNPM_ENTRY: "", DRAKONC_INSTALL_PNPM_COMMAND: exe } });
 	const result = await runStandardInstall({ plan: plan("win32"), consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
 	assert.deepEqual(h.calls.filter((call) => call.command === exe).map((call) => call.args.join(" ")), ["bin -g", LIST, PI_VIEW, INSTALL, LIST]);
 });
 
 test("Windows without the direct pnpm handoff is blocked rather than spawning a .cmd shim", async () => {
-	const h = harness({ env: { GENTLE_INSTALL_PNPM_NODE: "", GENTLE_INSTALL_PNPM_ENTRY: "" } });
+	const h = harness({ env: { DRAKONC_INSTALL_PNPM_NODE: "", DRAKONC_INSTALL_PNPM_ENTRY: "" } });
 	h.adapters.platform = "win32";
 	h.adapters.env = { LOCALAPPDATA: "C:\\Users\\u\\AppData\\Local", Path: "C:\\Windows" };
 	const result = await runStandardInstall({ plan: plan("win32"), consent: true }, h.adapters);
@@ -685,7 +736,7 @@ test("verified clean install runs one exact add -g with a package-scoped build a
 	assert.equal(adds[0].command, NODE);
 	assert.deepEqual(h.calls.at(-1)?.args, [SHELL_ENTRY, "setup"]);
 	assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-existing-stack", "resolve-pi-version", "install-global",
-		"verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"]);
+		"verify-global-list", "verify-shell-bin", "verify-drakonc-ai", "shell-setup"]);
 	assert.deepEqual(h.integrityCalls, [{ packageRoot: PACKAGE_ROOT, platform: "linux", env: h.adapters.env, home: HOME }]);
 	assert.equal(JSON.stringify(h.logs).includes("11.19.0"), false);
 });
@@ -723,12 +774,12 @@ test("install nonzero, signal or deadline fails and reports completed steps", as
 	}
 });
 
-test("an existing global Pi or gentle-pi blocks before installation regardless of the plan", async () => {
+test("an existing global Pi or drakonc-pi blocks before installation regardless of the plan", async () => {
 	const existing = [
 		listing(),
 		JSON.stringify([{ dependencies: { "@earendil-works/pi-coding-agent": { version: "1.2.1" } } }]),
-		JSON.stringify([{ dependencies: {} }, { dependencies: { "gentle-pi": { version: "3.0.0" } } }]),
-		JSON.stringify([{ optionalDependencies: { "gentle-pi": { version: "4.0.0" } } }]),
+		JSON.stringify([{ dependencies: {} }, { dependencies: { "drakonc-pi": { version: "3.0.0" } } }]),
+		JSON.stringify([{ optionalDependencies: { "drakonc-pi": { version: "4.0.0" } } }]),
 	];
 	for (const stdout of existing) {
 		const h = harness({ results: { [LIST]: { code: 0, stdout } } });
@@ -755,10 +806,10 @@ test("a failed or unparseable pre-install global list blocks before mutation", a
 
 test("global list missing a package, wrong version or unconfined path fails", async () => {
 	const listings = [
-		JSON.stringify([{ dependencies: { "gentle-pi": { version: requirements.shell, path: PACKAGE_ROOT } } }]),
+		JSON.stringify([{ dependencies: { "drakonc-pi": { version: requirements.shell, path: PACKAGE_ROOT } } }]),
 		listing("0.99.1"),
 		listing(PI_INSTALL_VERSION, "3.0.0"),
-		listing(PI_INSTALL_VERSION, requirements.shell, "/elsewhere/gentle-pi"),
+		listing(PI_INSTALL_VERSION, requirements.shell, "/elsewhere/drakonc-pi"),
 		"not json",
 	];
 	for (const stdout of listings) {
@@ -770,9 +821,9 @@ test("global list missing a package, wrong version or unconfined path fails", as
 	}
 });
 
-test("missing gentle-shell bin in $PNPM_HOME/bin fails", async () => {
+test("missing drakonc-shell bin in $PNPM_HOME/bin fails", async () => {
 	const h = harness();
-	h.adapters.fs.isFile = async (path: string) => path !== `${BIN}/gentle-shell` && [NPM_CLI, "/opt/node/bin/npm"].includes(path);
+	h.adapters.fs.isFile = async (path: string) => path !== `${BIN}/drakonc-shell` && [NPM_CLI, "/opt/node/bin/npm"].includes(path);
 	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
 	assert.equal(result.outcome, "failed");
 	assert.equal(result.failedStep, "verify-shell-bin");
@@ -783,37 +834,37 @@ test("integrity failure or development override fails before setup", async () =>
 		const h = harness({ integrity });
 		const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
 		assert.equal(result.outcome, "failed");
-		assert.equal(result.failedStep, "verify-gentle-ai");
+		assert.equal(result.failedStep, "verify-drakonc-ai");
 		assert.equal(h.calls.some((call) => call.args[0] === SHELL_ENTRY), false);
 	}
 });
 
-test("gentle-shell setup nonzero, signal or deadline fails", async () => {
+test("drakonc-shell setup nonzero, signal or deadline fails", async () => {
 	for (const setup of [{ code: 2 }, { code: null, signal: "SIGTERM" }, { code: 0, timedOut: true }]) {
-		const h = harness({ results: { "gentle-shell setup": setup } });
+		const h = harness({ results: { "drakonc-shell setup": setup } });
 		const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
 		assert.equal(result.outcome, "failed");
 		assert.equal(result.failedStep, "shell-setup");
-		assert.ok(result.completed.includes("verify-gentle-ai"));
+		assert.ok(result.completed.includes("verify-drakonc-ai"));
 	}
 });
 
-test("a failed gentle-shell setup reports its last error line as a sanitized detail", async () => {
-	const stderrTail = `fetching engram\n\u001b[31mError: execute install pipeline: download engram binary: fetch latest engram version: GitHub API returned HTTP 403\u001b[0m (${HOME}/.gentle-shell/agent)\ninstalled via go install\n`;
-	const h = harness({ results: { "gentle-shell setup": { code: 1, stderrTail } } });
+test("a failed drakonc-shell setup reports its last error line as a sanitized detail", async () => {
+	const stderrTail = `fetching engram\n\u001b[31mError: execute install pipeline: download engram binary: fetch latest engram version: GitHub API returned HTTP 403\u001b[0m (${HOME}/.drakonc-shell/agent)\ninstalled via go install\n`;
+	const h = harness({ results: { "drakonc-shell setup": { code: 1, stderrTail } } });
 	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
 	assert.equal(result.outcome, "failed");
 	assert.equal(result.failedStep, "shell-setup");
-	assert.equal(result.detail, "Error: execute install pipeline: download engram binary: fetch latest engram version: GitHub API returned HTTP 403 (~/.gentle-shell/agent)");
+	assert.equal(result.detail, "Error: execute install pipeline: download engram binary: fetch latest engram version: GitHub API returned HTTP 403 (~/.drakonc-shell/agent)");
 	// The setup child gets its stderr tail captured, as pnpm's global add does (detail below).
 	assert.deepEqual(h.calls.filter((call) => call.stderrTail !== undefined).map((call) => [call.args.at(-1), call.stderrTail]),
-		[["--allow-build=gentle-pi", 4096], ["setup", 4096]]);
+		[["--allow-build=drakonc-pi", 4096], ["setup", 4096]]);
 	for (const setup of [{ code: 2 }, { code: 2, stderrTail: " \n\t\n" }]) {
-		const silent = await runStandardInstall({ plan: plan(), consent: true }, harness({ results: { "gentle-shell setup": setup } }).adapters);
+		const silent = await runStandardInstall({ plan: plan(), consent: true }, harness({ results: { "drakonc-shell setup": setup } }).adapters);
 		assert.equal(silent.failedStep, "shell-setup");
 		assert.equal("detail" in silent, false);
 	}
-	const succeeded = await runStandardInstall({ plan: plan(), consent: true }, harness({ results: { "gentle-shell setup": { code: 0, stderrTail: "Error: ignored" } } }).adapters);
+	const succeeded = await runStandardInstall({ plan: plan(), consent: true }, harness({ results: { "drakonc-shell setup": { code: 0, stderrTail: "Error: ignored" } } }).adapters);
 	assert.equal(succeeded.outcome, "ready");
 	assert.equal("detail" in succeeded, false);
 	// A step without a detail rule never carries one.
@@ -822,25 +873,25 @@ test("a failed gentle-shell setup reports its last error line as a sanitized det
 	assert.equal("detail" in early, false);
 });
 
-test("a gentle-shell setup detail is unchanged next to the pnpm install's own detail rule", async () => {
-	const stderrTail = `Error: GitHub API returned HTTP 403 (${HOME}/.gentle-shell/agent)\n`;
-	const h = harness({ results: { add: { code: 0, stdout: "Error: an earlier warning\n", stderrTail: "Error: ignored\n" }, "gentle-shell setup": { code: 1, stderrTail } } });
+test("a drakonc-shell setup detail is unchanged next to the pnpm install's own detail rule", async () => {
+	const stderrTail = `Error: GitHub API returned HTTP 403 (${HOME}/.drakonc-shell/agent)\n`;
+	const h = harness({ results: { add: { code: 0, stdout: "Error: an earlier warning\n", stderrTail: "Error: ignored\n" }, "drakonc-shell setup": { code: 1, stderrTail } } });
 	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
-	assert.deepEqual([result.outcome, result.failedStep, result.detail], ["failed", "shell-setup", "Error: GitHub API returned HTTP 403 (~/.gentle-shell/agent)"]);
+	assert.deepEqual([result.outcome, result.failedStep, result.detail], ["failed", "shell-setup", "Error: GitHub API returned HTTP 403 (~/.drakonc-shell/agent)"]);
 });
 
 // Observed shape: pnpm reports a failed postinstall on stdout, its own summary last.
-const PNPM_ADD_POSTINSTALL = `Progress: resolved 120, reused 119, downloaded 1, added 2\n.../gentle-pi postinstall: gentle-pi could not install its package-local Gentle AI v4.0.0 binary: Gentle AI Go SumDB source installation failed.\n.../gentle-pi postinstall:   caused by Error: Command failed: ${HOME}/go/bin/go install (code 1)\n.../gentle-pi postinstall:   root cause Error: go: open ${HOME}/x: The directory name is invalid.\n ELIFECYCLE  Command failed with exit code 1.\n`;
+const PNPM_ADD_POSTINSTALL = `Progress: resolved 120, reused 119, downloaded 1, added 2\n.../drakonc-pi postinstall: drakonc-pi could not install its package-local Drakonc AI v4.0.0 binary: Drakonc AI Go SumDB source installation failed.\n.../drakonc-pi postinstall:   caused by Error: Command failed: ${HOME}/go/bin/go install (code 1)\n.../drakonc-pi postinstall:   root cause Error: go: open ${HOME}/x: The directory name is invalid.\n ELIFECYCLE  Command failed with exit code 1.\n`;
 
-test("a failed pnpm install of Pi and Gentle Shell reports pnpm's last error line, from stderr else stdout", async () => {
+test("a failed pnpm install of Pi and Drakonc Shell reports pnpm's last error line, from stderr else stdout", async () => {
 	const h = harness({ results: { add: { code: 1, stdout: PNPM_ADD_POSTINSTALL, stderrTail: "" } } });
 	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
 	assert.equal(result.failedStep, "install-global");
-	assert.equal(result.detail, ".../gentle-pi postinstall:   root cause Error: go: open ~/x: The directory name is invalid.");
+	assert.equal(result.detail, ".../drakonc-pi postinstall:   root cause Error: go: open ~/x: The directory name is invalid.");
 	assert.deepEqual(h.calls.filter((call) => call.stderrTail !== undefined).map((call) => [call.args.slice(1).join(" "), call.stderrTail]), [[INSTALL, 4096]]);
 	const stderr = await runStandardInstall({ plan: plan(), consent: true }, harness({ results: { add: { code: 1, stdout: PNPM_ADD_POSTINSTALL,
-		stderrTail: `[ERR_PNPM_FETCH_404] GET https://registry.npmjs.org/gentle-pi: Not Found\n` } } }).adapters);
-	assert.equal(stderr.detail, "[ERR_PNPM_FETCH_404] GET https://registry.npmjs.org/gentle-pi: Not Found");
+		stderrTail: `[ERR_PNPM_FETCH_404] GET https://registry.npmjs.org/drakonc-pi: Not Found\n` } } }).adapters);
+	assert.equal(stderr.detail, "[ERR_PNPM_FETCH_404] GET https://registry.npmjs.org/drakonc-pi: Not Found");
 	const silent = await runStandardInstall({ plan: plan(), consent: true }, harness({ results: { add: { code: 1 } } }).adapters);
 	assert.deepEqual([silent.failedStep, "detail" in silent], ["install-global", false]);
 });
@@ -856,7 +907,7 @@ test("a failed pnpm setup reports its error line from stderr, else from stdout",
 	assert.equal(result.detail, "[ERR_PNPM_UNKNOWN_SHELL] Could not infer shell type.");
 	// Both fixed setup commands request the same bounded stderr tail, as pnpm's global add does.
 	assert.deepEqual(h.calls.filter((call) => call.stderrTail !== undefined).map((call) => [call.args.at(-1), call.stderrTail]),
-		[["--allow-build=gentle-pi", 4096], ["setup", 4096], ["setup", 4096]]);
+		[["--allow-build=drakonc-pi", 4096], ["setup", 4096], ["setup", 4096]]);
 	const stderr = await runStandardInstall({ plan: plan(), consent: true }, harness({ env: noPath,
 		results: { "pnpm setup": { code: 1, stdout: PNPM_SETUP_NO_SHELL, stderrTail: "Error: EACCES: permission denied, open '/home/u/.bashrc'\n" } } }).adapters);
 	assert.equal(stderr.detail, "Error: EACCES: permission denied, open '~/.bashrc'");
@@ -874,7 +925,7 @@ test("setup error detail picks the last Error line, else the last line, bounded 
 	assert.equal(setupErrorDetail("one\r\ntwo\r\n\r\n", HOME, "linux"), "two");
 	assert.equal(setupErrorDetail(`bad\u0000\u0007 \u009b31mtext\u001b]0;title\u0007 at ${HOME}/x and ${HOME}`, HOME, "linux"), "bad text at ~/x and ~");
 	assert.equal(setupErrorDetail("x".repeat(500), HOME, "linux")?.length, 300);
-	assert.equal(setupErrorDetail("C:\\USERS\\U\\.gentle-shell failed", "C:\\Users\\u", "win32"), "~\\.gentle-shell failed");
+	assert.equal(setupErrorDetail("C:\\USERS\\U\\.drakonc-shell failed", "C:\\Users\\u", "win32"), "~\\.drakonc-shell failed");
 	assert.equal(setupErrorDetail("/home/user/x", "/home/u", "linux"), "/home/user/x", "only the exact HOME path is replaced");
 	for (const empty of ["", "\n \n", "\u001b[0m", undefined, null, 42]) assert.equal(setupErrorDetail(empty, HOME, "linux"), null);
 	assert.equal(setupErrorDetail("Error: plain", undefined, "linux"), "Error: plain");
@@ -922,28 +973,28 @@ test("an unexpected adapter exception fails closed without leaking its message",
 });
 
 test("package-native integrity rejects development overrides and unverified package roots", async () => {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-runner-integrity-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-runner-integrity-"));
 	try {
-		const dev = join(dir, "dev-gentle-ai");
+		const dev = join(dir, "dev-drakonc-ai");
 		writeFileSync(dev, "#!/bin/sh\n");
 		chmodSync(dev, 0o755);
-		const overridden = await packageNativeGentleAi({ packageRoot: dir, platform: "linux", home: dir,
-			env: { GENTLE_PI_GENTLE_AI_DEV_BINARY: dev } });
+		const overridden = await packageNativeDrakoncAi({ packageRoot: dir, platform: "linux", home: dir,
+			env: { DRAKONC_PI_DRAKONC_AI_DEV_BINARY: dev } });
 		assert.deepEqual(overridden, { ok: false, reason: "development-override" });
-		const missing = await packageNativeGentleAi({ packageRoot: dir, platform: "linux", home: dir, env: {} });
+		const missing = await packageNativeDrakoncAi({ packageRoot: dir, platform: "linux", home: dir, env: {} });
 		assert.deepEqual(missing, { ok: false, reason: "package-native-unverified" });
 		const seen: unknown[][] = [];
-		const verified = await packageNativeGentleAi({ packageRoot: dir, platform: "linux", home: dir, env: {} },
-			(...args: unknown[]) => { seen.push(args); return gentleAiBinaryPath(dir, "linux"); });
+		const verified = await packageNativeDrakoncAi({ packageRoot: dir, platform: "linux", home: dir, env: {} },
+			(...args: unknown[]) => { seen.push(args); return drakoncAiBinaryPath(dir, "linux"); });
 		assert.deepEqual(verified, { ok: true });
 		assert.equal(seen.length, 1);
 		assert.deepEqual(seen[0].slice(0, 2), [dir, "linux"]);
 		assert.deepEqual(seen[0][3], { env: {}, home: dir });
-		const elsewhere = await packageNativeGentleAi({ packageRoot: dir, platform: "linux", home: dir, env: {} }, () => dev);
+		const elsewhere = await packageNativeDrakoncAi({ packageRoot: dir, platform: "linux", home: dir, env: {} }, () => dev);
 		assert.deepEqual(elsewhere, { ok: false, reason: "package-native-unverified" });
 		let called = false;
-		await packageNativeGentleAi({ packageRoot: dir, platform: "linux", home: dir, env: { GENTLE_PI_GENTLE_AI_DEV_BINARY: dev } },
-			() => { called = true; return gentleAiBinaryPath(dir, "linux"); });
+		await packageNativeDrakoncAi({ packageRoot: dir, platform: "linux", home: dir, env: { DRAKONC_PI_DRAKONC_AI_DEV_BINARY: dev } },
+			() => { called = true; return drakoncAiBinaryPath(dir, "linux"); });
 		assert.equal(called, false);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
@@ -962,7 +1013,7 @@ function persistedListing(root = PACKAGE_ROOT, home = PNPM_HOME) {
 	return JSON.stringify([
 		{ path: `${home}/global/v11/abc`, dependencies: { npm: { version: "11.19.0" }, pnpm: { version: "11.1.1" } } },
 		{ path: `${home}/global/v11/def`, dependencies: { "@earendil-works/pi-coding-agent": { version: PI_INSTALL_VERSION },
-			"gentle-pi": { version: requirements.shell, path: root } } },
+			"drakonc-pi": { version: requirements.shell, path: root } } },
 	]);
 }
 const persistedList = { [LIST]: [emptyList, { code: 0, stdout: persistedListing() }] };
@@ -980,7 +1031,7 @@ test("bootstrap-only Node persists node, npm and pnpm under PNPM_HOME before the
 	assert.equal(result.npmPrefix, "configured");
 	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, PI_VIEW, RUNTIME_SET, PM_ADD, "store path", INSTALL, LIST]);
 	assert.deepEqual(result.completed, [...PERSISTED_STEPS, "install-global", "verify-global-list", "verify-shell-bin",
-		"verify-gentle-ai", "shell-setup"]);
+		"verify-drakonc-ai", "shell-setup"]);
 	for (const call of h.calls.filter((c) => c.args[1] === "add" || c.args[1] === "runtime")) {
 		assert.equal(call.command, NODE);
 		assert.equal(call.args.some((arg) => /dangerously|allow-build=\*|--allow-build$|approve-builds/.test(arg)), false);
@@ -1191,20 +1242,20 @@ test("partial or altered persistence actions are rejected before any command", a
 	assert.deepEqual(h.calls, []);
 });
 
-test("gentle-shell setup receives no GENTLE_BOOTSTRAP_* or GENTLE_INSTALL_* keys", async () => {
-	const h = harness({ env: { GENTLE_BOOTSTRAP_TOOLS: "/home/u/.gentle-shell-bootstrap-tools.x", gentle_install_lower: "kept", KEEP: "1" } });
+test("drakonc-shell setup receives no DRAKONC_BOOTSTRAP_* or DRAKONC_INSTALL_* keys", async () => {
+	const h = harness({ env: { DRAKONC_BOOTSTRAP_TOOLS: "/home/u/.drakonc-shell-bootstrap-tools.x", drakonc_install_lower: "kept", KEEP: "1" } });
 	assert.equal((await runStandardInstall({ plan: plan(), consent: true }, h.adapters)).outcome, "ready");
 	const setup = h.calls.find((call) => call.args[0] === SHELL_ENTRY);
 	assert.ok(setup);
-	assert.deepEqual(Object.keys(setup.env).filter((key) => /^gentle_/i.test(key)), ["gentle_install_lower"]);
+	assert.deepEqual(Object.keys(setup.env).filter((key) => /^drakonc_/i.test(key)), ["drakonc_install_lower"]);
 	assert.equal(setup.env.KEEP, "1");
 	assert.equal(setup.env.PNPM_HOME, PNPM_HOME);
 	// pnpm still receives the bootstrap handoff; only setup is stripped.
-	assert.equal(h.calls.find((call) => call.args[1] === "add")?.env.GENTLE_INSTALL_PNPM_ENTRY, ENTRY);
-	const w = harness({ layout: windowsLayout, env: { gentle_bootstrap_tools: "C:\\x", Gentle_Install_Other: "y" } });
+	assert.equal(h.calls.find((call) => call.args[1] === "add")?.env.DRAKONC_INSTALL_PNPM_ENTRY, ENTRY);
+	const w = harness({ layout: windowsLayout, env: { drakonc_bootstrap_tools: "C:\\x", Drakonc_Install_Other: "y" } });
 	assert.equal((await runStandardInstall({ plan: plan("win32"), consent: true }, w.adapters)).outcome, "ready");
-	const wSetup = w.calls.find((call) => call.args[0] === `${W_ROOT}\\bin\\gentle-shell.mjs`);
-	assert.deepEqual(Object.keys(wSetup?.env ?? {}).filter((key) => /^gentle_/i.test(key)), []);
+	const wSetup = w.calls.find((call) => call.args[0] === `${W_ROOT}\\bin\\drakonc-shell.mjs`);
+	assert.deepEqual(Object.keys(wSetup?.env ?? {}).filter((key) => /^drakonc_/i.test(key)), []);
 });
 
 test("npm prefix compares with the store pnpm reports, not an assumed $PNPM_HOME/store", async () => {
@@ -1247,7 +1298,7 @@ test("a symlinked $PNPM_HOME/bin/npm must resolve inside PNPM_HOME to npm@11.19.
 // Node already persistent: only the missing package managers, in one add -g, never runtime set.
 const persistentNode = (npm: boolean) => ({ ...tool("24.18.0"), persistent: true, npm });
 const pnpmTool = (persistent: boolean) => ({ ...tool("11.1.1"), compatible: true, persistent });
-const AFTER_STACK = ["install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"];
+const AFTER_STACK = ["install-global", "verify-global-list", "verify-shell-bin", "verify-drakonc-ai", "shell-setup"];
 
 test("persistent Node adds only the missing npm and/or pnpm with exact fixed argv", async () => {
 	const cases: [boolean, boolean, string, string[]][] = [
@@ -1339,11 +1390,11 @@ test("gates without PNPM_HOME or an absolute host Node block before any command"
 // Setup recovery: the pinned stack this pnpm installed is present and only its setup did not finish.
 function recoveryPlan(platform = "linux", change: object = {}) {
 	return plan(platform, { pi: tool(PI_INSTALL_VERSION), shell: { ...tool(requirements.shell), global: true },
-		gentleAi: { ...tool(requirements.gentleAi), compatible: true }, setup: { available: true, recoverable: true }, ...change });
+		drakoncAi: { ...tool(requirements.drakoncAi), compatible: true }, setup: { available: true, recoverable: true }, ...change });
 }
 const installedList = { [LIST]: { code: 0, stdout: listing() } };
 const RECOVERY_STEPS = ["check-npm", "check-global-bin", "check-recoverable-stack", "verify-global-list", "verify-shell-bin",
-	"verify-gentle-ai", "shell-setup"];
+	"verify-drakonc-ai", "shell-setup"];
 const actionIds = (fixed: { actions: { id: string }[] }) => fixed.actions.map((action) => action.id);
 
 test("setup recovery re-verifies the installed stack and reruns setup without add -g", async () => {
@@ -1372,7 +1423,7 @@ test("setup recovery off PATH persists PATH, needs a new terminal, and reports f
 	assert.deepEqual(result.completed, [...RECOVERY_STEPS, "persist-path"]);
 	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, LIST, "setup"]);
 	const failures: [object, string][] = [
-		[{ "gentle-shell setup": { code: 1, stderrTail: "Error: API rate limit exceeded\n" } }, "shell-setup"],
+		[{ "drakonc-shell setup": { code: 1, stderrTail: "Error: API rate limit exceeded\n" } }, "shell-setup"],
 		[{ "pnpm setup": { code: 1 } }, "persist-path"],
 	];
 	for (const [results, step] of failures) {
@@ -1384,7 +1435,7 @@ test("setup recovery off PATH persists PATH, needs a new terminal, and reports f
 	}
 	const unverified = harness({ results: installedList, integrity: { ok: false } });
 	const failed = await runStandardInstall({ plan: recoveryPlan(), consent: true }, unverified.adapters);
-	assert.equal(failed.failedStep, "verify-gentle-ai");
+	assert.equal(failed.failedStep, "verify-drakonc-ai");
 	assert.equal(unverified.calls.some((call) => call.args[0] === SHELL_ENTRY), false);
 });
 
@@ -1402,14 +1453,14 @@ test("setup recovery blocks when the installed stack changed between plan and ru
 		"[]",
 		listing("1.2.1"),
 		listing(PI_INSTALL_VERSION, "3.0.0"),
-		listing(PI_INSTALL_VERSION, requirements.shell, "/elsewhere/gentle-pi"),
-		JSON.stringify([...stack, { dependencies: { "gentle-pi": { version: requirements.shell, path: PACKAGE_ROOT } } }]),
+		listing(PI_INSTALL_VERSION, requirements.shell, "/elsewhere/drakonc-pi"),
+		JSON.stringify([...stack, { dependencies: { "drakonc-pi": { version: requirements.shell, path: PACKAGE_ROOT } } }]),
 		JSON.stringify([...stack, { optionalDependencies: { "@earendil-works/pi-coding-agent": { version: PI_INSTALL_VERSION } } }]),
 		"{}",
 		"not json",
 	];
 	for (const stdout of changed) {
-		const h = harness({ results: { [LIST]: { code: 0, stdout } }, realpaths: { "/elsewhere/gentle-pi": "/elsewhere/gentle-pi" } });
+		const h = harness({ results: { [LIST]: { code: 0, stdout } }, realpaths: { "/elsewhere/drakonc-pi": "/elsewhere/drakonc-pi" } });
 		const result = await runStandardInstall({ plan: recoveryPlan(), consent: true }, h.adapters);
 		assert.equal(result.outcome, "blocked", stdout);
 		assert.equal(result.reason, "existing-stack-unverified", stdout);
@@ -1418,7 +1469,7 @@ test("setup recovery blocks when the installed stack changed between plan and ru
 		assert.equal(h.calls.some((call) => call.args[0] === SHELL_ENTRY), false);
 	}
 	// A root that now resolves outside PNPM_HOME through a symlink is not this pnpm's install.
-	const moved = harness({ results: installedList, realpaths: { [PACKAGE_ROOT]: "/elsewhere/gentle-pi" } });
+	const moved = harness({ results: installedList, realpaths: { [PACKAGE_ROOT]: "/elsewhere/drakonc-pi" } });
 	assert.equal((await runStandardInstall({ plan: recoveryPlan(), consent: true }, moved.adapters)).reason, "existing-stack-unverified");
 	const failing = harness({ results: { [LIST]: { code: 1, stdout: listing() } } });
 	assert.equal((await runStandardInstall({ plan: recoveryPlan(), consent: true }, failing.adapters)).reason, "global-list-unavailable");
@@ -1428,7 +1479,7 @@ test("the setup recovery variant is accepted only as a fixed set", async () => {
 	const clean = plan();
 	const descriptor = (id: string) => clean.actions.find((action: { id: string }) => action.id === id);
 	const persistNpm = { id: "persist-npm", kind: "install-global", target: "npm", version: "11.19.0" };
-	const provision = { id: "provision-native", kind: "existing-installer", target: "gentleAi", version: requirements.gentleAi };
+	const provision = { id: "provision-native", kind: "existing-installer", target: "drakoncAi", version: requirements.drakoncAi };
 	const base = recoveryPlan();
 	const offPath = recoveryPlan("linux", { globalBin: { available: true, path: BIN, writable: true, onPath: false } });
 	const variants = [
@@ -1457,8 +1508,8 @@ test("Windows setup recovery needs no Go: it never runs add -g, and the native b
 	assert.equal(result.outcome, "ready");
 	assert.deepEqual(result.completed, RECOVERY_STEPS);
 	assert.equal(h.pnpmCalls().some((call) => call.startsWith("add")), false);
-	assert.deepEqual(h.calls.at(-1)?.args, [`${W_ROOT}\\bin\\gentle-shell.mjs`, "setup"]);
-	// A clean Windows install still provides Go before gentle-pi's postinstall.
+	assert.deepEqual(h.calls.at(-1)?.args, [`${W_ROOT}\\bin\\drakonc-shell.mjs`, "setup"]);
+	// A clean Windows install still provides Go before drakonc-pi's postinstall.
 	assert.ok(plan("win32", { go: absent }).actions.some((action: { id: string }) => action.id === "acquire-go"));
 });
 
@@ -1466,11 +1517,11 @@ test("Windows setup recovery needs no Go: it never runs add -g, and the native b
 const AI_SHA = "1f9d5e6423e37f7d2316859045f379ba9b5d8c3a";
 const SHELL_SHA = "6e7e3a18f794223396527a54c7c36d19c7d236c6";
 const MAIN_VERSION = `${requirements.shell}-main.6e7e3a18f794`;
-const MAIN_ROOT = `${PNPM_HOME}/global/v11/def/node_modules/gentle-pi`;
-const MAIN_TGZ = `${HOME}/.pi/gentle-ai/main/packages/gentle-pi-${MAIN_VERSION}.tgz`;
+const MAIN_ROOT = `${PNPM_HOME}/global/v11/def/node_modules/drakonc-pi`;
+const MAIN_TGZ = `${HOME}/.drakonc-shell/drakonc-ai/main/packages/drakonc-pi-${MAIN_VERSION}.tgz`;
 function mainPlan(change: object = {}) {
 	return planPreflight({ platform: "linux", arch: "x64", node: tool("24.18.0"), pnpm: { ...tool("11.1.1"), compatible: true },
-		pi: absent, shell: absent, gentleAi: absent, go: tool("1.26.0"),
+		pi: absent, shell: absent, drakoncAi: absent, go: tool("1.26.0"),
 		globalBin: { available: true, path: BIN, writable: true, onPath: true }, setup: false, ...change }, { channel: "main" });
 }
 function mainChannel() {
@@ -1480,11 +1531,11 @@ function mainChannel() {
 		adapter: {
 			resolveCommit: async (repository: string) => {
 				calls.push(["resolveCommit", { repository }]);
-				return repository.endsWith("/gentle-ai") ? AI_SHA : SHELL_SHA;
+				return repository.endsWith("/drakonc-ai") ? AI_SHA : SHELL_SHA;
 			},
-			buildGentleAi: async (request: { commit: string; goPath: string; platform: string; ctx: object }) => {
-				calls.push(["buildGentleAi", { commit: request.commit, goPath: request.goPath, platform: request.platform, ctx: request.ctx }]);
-				return { binaryPath: "/main/gentle-ai", version: "4.0.1-0.20261008202137-1f9d5e6423e3" };
+			buildDrakoncAi: async (request: { commit: string; goPath: string; platform: string; ctx: object }) => {
+				calls.push(["buildDrakoncAi", { commit: request.commit, goPath: request.goPath, platform: request.platform, ctx: request.ctx }]);
+				return { binaryPath: "/main/drakonc-ai", version: "4.0.1-0.20261008202137-1f9d5e6423e3" };
 			},
 			packShell: async (request: { commit: string; ctx: object; platform: string }) => {
 				calls.push(["packShell", { commit: request.commit, ctx: request.ctx, platform: request.platform }]);
@@ -1496,32 +1547,32 @@ function mainChannel() {
 		},
 	};
 }
-const MAIN_ADD = `add -g ${MAIN_TGZ} --allow-build=gentle-pi`;
+const MAIN_ADD = `add -g ${MAIN_TGZ} --allow-build=drakonc-pi`;
 function mainHarness(mainListing = listing(PI_INSTALL_VERSION, MAIN_VERSION, MAIN_ROOT), extra: { texts?: Record<string, string>; results?: object } = {}) {
 	const h = harness({ files: ["/usr/bin/go"], realpaths: { [MAIN_ROOT]: MAIN_ROOT },
 		results: { [LIST]: [emptyList, { code: 0, stdout: listing() }, { code: 0, stdout: mainListing }],
-			[`${MAIN_ROOT}/bin/gentle-shell.mjs setup`]: { code: 0 } }, ...extra,
+			[`${MAIN_ROOT}/bin/drakonc-shell.mjs setup`]: { code: 0 } }, ...extra,
 		texts: { [besidePi(MAIN_ROOT)]: piPackage(), ...extra.texts } });
 	const main = mainChannel();
 	return { ...h, main, adapters: { ...h.adapters, mainChannel: main.adapter } };
 }
 
-test("the main plan builds Gentle AI and installs the main Shell after the verified release install, then sets up the main Shell", async () => {
+test("the main plan builds Drakonc AI and installs the main Shell after the verified release install, then sets up the main Shell", async () => {
 	const h = mainHarness();
 	const result = await runStandardInstall({ plan: mainPlan(), consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
 	assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-existing-stack", "resolve-pi-version", "install-global",
-		"verify-global-list", "verify-shell-bin", "verify-gentle-ai", "build-gentle-ai-main", "install-shell-main", "record-channel", "shell-setup"]);
+		"verify-global-list", "verify-shell-bin", "verify-drakonc-ai", "build-drakonc-ai-main", "install-shell-main", "record-channel", "shell-setup"]);
 	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, PI_VIEW, INSTALL, LIST, MAIN_ADD, LIST]);
 	const ctx = { env: h.adapters.env, home: HOME };
 	assert.deepEqual(h.main.calls, [
-		["resolveCommit", { repository: "Gentleman-Programming/gentle-ai" }],
-		["buildGentleAi", { commit: AI_SHA, goPath: "/usr/bin/go", platform: "linux", ctx }],
-		["resolveCommit", { repository: "Gentleman-Programming/gentle-shell" }],
+		["resolveCommit", { repository: "Drakoncman-Programming/drakonc-ai" }],
+		["buildDrakoncAi", { commit: AI_SHA, goPath: "/usr/bin/go", platform: "linux", ctx }],
+		["resolveCommit", { repository: "Drakoncman-Programming/drakonc-shell" }],
 		["packShell", { commit: SHELL_SHA, ctx, platform: "linux" }],
-		["writeChannel", { ctx, state: { channel: "main", shellCommit: SHELL_SHA, gentleAiCommit: AI_SHA } }],
+		["writeChannel", { ctx, state: { channel: "main", shellCommit: SHELL_SHA, drakoncAiCommit: AI_SHA } }],
 	]);
-	assert.deepEqual(h.calls.at(-1)?.args, [`${MAIN_ROOT}/bin/gentle-shell.mjs`, "setup"]);
+	assert.deepEqual(h.calls.at(-1)?.args, [`${MAIN_ROOT}/bin/drakonc-shell.mjs`, "setup"]);
 	// The release package's own integrity check ran before the override was registered.
 	assert.deepEqual(h.integrityCalls, [{ packageRoot: PACKAGE_ROOT, platform: "linux", env: h.adapters.env, home: HOME }]);
 });
@@ -1542,22 +1593,22 @@ test("the main build fails without Go on PATH and runs nothing after it", async 
 	const main = mainChannel();
 	const result = await runStandardInstall({ plan: mainPlan(), consent: true }, { ...h.adapters, mainChannel: main.adapter });
 	assert.equal(result.outcome, "failed");
-	assert.equal(result.failedStep, "build-gentle-ai-main");
+	assert.equal(result.failedStep, "build-drakonc-ai-main");
 	assert.deepEqual(main.calls.map(([name]) => name), []);
 });
 
-test("a main plan with a missing or older Go builds Gentle AI with the pinned Go and never runs the user's Go", async () => {
+test("a main plan with a missing or older Go builds Drakonc AI with the pinned Go and never runs the user's Go", async () => {
 	for (const go of [absent, tool("1.24.0")]) {
 		const fixed = mainPlan({ go });
 		assert.deepEqual(fixed.blockers, []);
 		const h = withGo(mainHarness(undefined, { results: { [LIST]: [emptyList, { code: 0, stdout: listing() },
-			{ code: 0, stdout: listing(PI_INSTALL_VERSION, MAIN_VERSION, MAIN_ROOT) }], [`${MAIN_ROOT}/bin/gentle-shell.mjs setup`]: { code: 0 },
+			{ code: 0, stdout: listing(PI_INSTALL_VERSION, MAIN_VERSION, MAIN_ROOT) }], [`${MAIN_ROOT}/bin/drakonc-shell.mjs setup`]: { code: 0 },
 			version: goVersion() } }));
 		const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
 		assert.equal(result.outcome, "ready");
 		assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-existing-stack", "resolve-pi-version", "acquire-go", "verify-go", "install-global",
-			"verify-global-list", "verify-shell-bin", "verify-gentle-ai", "build-gentle-ai-main", "install-shell-main", "record-channel", "shell-setup"]);
-		const build = h.main.calls.find(([name]) => name === "buildGentleAi")?.[1] as { goPath: string };
+			"verify-global-list", "verify-shell-bin", "verify-drakonc-ai", "build-drakonc-ai-main", "install-shell-main", "record-channel", "shell-setup"]);
+		const build = h.main.calls.find(([name]) => name === "buildDrakoncAi")?.[1] as { goPath: string };
 		assert.equal(build.goPath, PINNED_GO);
 		assert.equal(h.calls.some((call) => call.command === "/usr/bin/go"), false, "the user's Go is never run");
 	}
@@ -1576,41 +1627,41 @@ test("a failed pinned Go download stops before the runtime is persisted, so noth
 });
 
 test("a Go destination left by an earlier run fails acquire-go with the folder to remove, the home shortened to ~", async () => {
-	const folder = `${HOME}/.pi/gentle-ai/tools/go/${goAcquisition.version}`;
+	const folder = `${HOME}/.drakonc-shell/drakonc-ai/tools/go/${goAcquisition.version}`;
 	const h = withGo(mainHarness(), new Error("Go verified acquisition failed; nothing was published",
 		{ cause: new Error(`Conflicting Go destination: ${folder}`) }));
 	const result = await runStandardInstall({ plan: mainPlan({ go: absent }), consent: true }, h.adapters);
 	assert.equal(result.outcome, "failed");
 	assert.equal(result.failedStep, "acquire-go");
-	assert.equal(result.detail, `Conflicting Go destination: ~/.pi/gentle-ai/tools/go/${goAcquisition.version}`);
+	assert.equal(result.detail, `Conflicting Go destination: ~/.drakonc-shell/drakonc-ai/tools/go/${goAcquisition.version}`);
 });
 
 test("a failed main step reports the main channel's error and its cause, the home as ~, never another error's text", async () => {
 	const build = mainHarness();
-	build.adapters.mainChannel.buildGentleAi = async () => {
-		throw new MainChannelError("main-gentle-ai-build-failed", "go install github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@x failed",
+	build.adapters.mainChannel.buildDrakoncAi = async () => {
+		throw new MainChannelError("main-drakonc-ai-build-failed", "go install github.com/drakoncman-programming/drakonc-ai/v4/cmd/drakonc-ai@x failed",
 			new Error(`go: downloading golang.org/x/sys\ngolang.org/x/sys/cpu: fork/exec ${HOME}/.pi/asm: The directory name is invalid.`));
 	};
 	const built = await runStandardInstall({ plan: mainPlan(), consent: true }, build.adapters);
-	assert.deepEqual([built.failedStep, built.detail], ["build-gentle-ai-main", "golang.org/x/sys/cpu: fork/exec ~/.pi/asm: The directory name is invalid."]);
+	assert.deepEqual([built.failedStep, built.detail], ["build-drakonc-ai-main", "golang.org/x/sys/cpu: fork/exec ~/.pi/asm: The directory name is invalid."]);
 	const limited = mainHarness();
 	limited.adapters.mainChannel.resolveCommit = async (repository: string) => {
-		if (repository.endsWith("/gentle-ai")) return AI_SHA;
+		if (repository.endsWith("/drakonc-ai")) return AI_SHA;
 		throw new MainChannelError("main-commit-unavailable", `GitHub did not return the latest main commit of ${repository} (HTTP 403)`);
 	};
 	const resolved = await runStandardInstall({ plan: mainPlan(), consent: true }, limited.adapters);
 	assert.deepEqual([resolved.failedStep, resolved.detail],
-		["install-shell-main", "main-commit-unavailable: GitHub did not return the latest main commit of Gentleman-Programming/gentle-shell (HTTP 403)"]);
+		["install-shell-main", "main-commit-unavailable: GitHub did not return the latest main commit of Drakoncman-Programming/drakonc-shell (HTTP 403)"]);
 	// The main package's own pnpm add reports pnpm's line, as install-global does.
 	const add = mainHarness(undefined, { results: { [LIST]: [emptyList, { code: 0, stdout: listing() }], add: [{ code: 0 }, { code: 1, stdout: PNPM_ADD_POSTINSTALL }] } });
 	const added = await runStandardInstall({ plan: mainPlan(), consent: true }, add.adapters);
-	assert.deepEqual([added.failedStep, added.detail], ["install-shell-main", ".../gentle-pi postinstall:   root cause Error: go: open ~/x: The directory name is invalid."]);
+	assert.deepEqual([added.failedStep, added.detail], ["install-shell-main", ".../drakonc-pi postinstall:   root cause Error: go: open ~/x: The directory name is invalid."]);
 	assert.equal(add.calls.filter((call) => call.stderrTail === 4096 && call.args.includes(MAIN_TGZ)).length, 1);
 	// Any other error keeps its text out of the result.
 	const plain = mainHarness();
-	plain.adapters.mainChannel.buildGentleAi = async () => { throw new Error(`EACCES ${HOME}/.pi`); };
+	plain.adapters.mainChannel.buildDrakoncAi = async () => { throw new Error(`EACCES ${HOME}/.pi`); };
 	const hidden = await runStandardInstall({ plan: mainPlan(), consent: true }, plain.adapters);
-	assert.deepEqual([hidden.failedStep, "detail" in hidden], ["build-gentle-ai-main", false]);
+	assert.deepEqual([hidden.failedStep, "detail" in hidden], ["build-drakonc-ai-main", false]);
 });
 
 test("a channel that cannot be recorded fails the record step after the main Shell is installed", async () => {
@@ -1639,39 +1690,39 @@ test("a partial set of main steps is an unsupported plan", async () => {
 	assert.deepEqual(h.calls, []);
 });
 
-// --- Existing installations: install only Gentle Shell, or update it ----------------------------
+// --- Existing installations: install only Drakonc Shell, or update it ----------------------------
 function existingPlan(change: object, channel = "release") {
 	return planPreflight({ platform: "linux", arch: "x64", node: tool("24.18.0"), pnpm: { ...tool("11.1.1"), compatible: true },
-		pi: tool("1.2.0"), shell: absent, gentleAi: absent, go: tool("1.26.0"),
+		pi: tool("1.2.0"), shell: absent, drakoncAi: absent, go: tool("1.26.0"),
 		globalBin: { available: true, path: BIN, writable: true, onPath: true }, setup: false, ...change }, { channel });
 }
-const SHELL_ONLY_ADD = `add -g gentle-pi@${requirements.shell} --allow-build=gentle-pi`;
-const NPM_SHELL_ROOT = "/usr/local/lib/node_modules/gentle-pi";
+const SHELL_ONLY_ADD = `add -g drakonc-pi@${requirements.shell} --allow-build=drakonc-pi`;
+const NPM_SHELL_ROOT = "/usr/local/lib/node_modules/drakonc-pi";
 
-test("with a compatible Pi already installed, only Gentle Shell is added and Pi is left as it is", async () => {
-	// A pnpm Pi newer than PI_INSTALL_VERSION is kept too: gentle-pi gets its own pnpm group, nothing is replaced.
+test("with a compatible Pi already installed, only Drakonc Shell is added and Pi is left as it is", async () => {
+	// A pnpm Pi newer than PI_INSTALL_VERSION is kept too: drakonc-pi gets its own pnpm group, nothing is replaced.
 	for (const version of ["1.2.1", PI_INSTALL_VERSION]) {
 		const h = harness({ results: { [LIST]: [piOnlyList(version), { code: 0, stdout: listing(version) }], [SHELL_ONLY_ADD]: { code: 0 } } });
 		const result = await runStandardInstall({ plan: existingPlan({ pi: tool(version) }), consent: true }, h.adapters);
 		assert.equal(result.outcome, "ready", version);
 		assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, SHELL_ONLY_ADD, LIST]);
 		assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-existing-shell", "install-global",
-			"verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"]);
+			"verify-global-list", "verify-shell-bin", "verify-drakonc-ai", "shell-setup"]);
 		assert.equal(h.calls.some((call) => call.args.includes(`${PI_PACKAGE_NAME}@${PI_INSTALL_VERSION}`)), false);
 	}
 });
 
-test("adding only Gentle Shell still refuses a gentle-pi that pnpm already lists", async () => {
+test("adding only Drakonc Shell still refuses a drakonc-pi that pnpm already lists", async () => {
 	const h = harness({ results: { [LIST]: { code: 0, stdout: listing("1.2.1") } } });
 	const result = await runStandardInstall({ plan: existingPlan({}), consent: true }, h.adapters);
 	assert.deepEqual([result.outcome, result.reason], ["blocked", "existing-stack"]);
 	assert.equal(h.calls.some((call) => call.args[1] === "add"), false);
 });
 
-// --- The Pi that Gentle Shell runs: pnpm 11 installs every `add -g` argument as its own
-// group, so gentle-pi may get a newer Pi beside it than PI_INSTALL_VERSION (at least the minimum).
-test("Pi and gentle-pi are added as separate pnpm groups, so a later `pi update` keeps gentle-pi", async () => {
-	const separate = ["add", "-g", `${PI_PACKAGE_NAME}@${PI_INSTALL_VERSION}`, `gentle-pi@${requirements.shell}`, "--allow-build=gentle-pi"];
+// --- The Pi that Drakonc Shell runs: pnpm 11 installs every `add -g` argument as its own
+// group, so drakonc-pi may get a newer Pi beside it than PI_INSTALL_VERSION (at least the minimum).
+test("Pi and drakonc-pi are added as separate pnpm groups, so a later `pi update` keeps drakonc-pi", async () => {
+	const separate = ["add", "-g", `${PI_PACKAGE_NAME}@${PI_INSTALL_VERSION}`, `drakonc-pi@${requirements.shell}`, "--allow-build=drakonc-pi"];
 	const h = harness();
 	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
@@ -1682,8 +1733,8 @@ test("Pi and gentle-pi are added as separate pnpm groups, so a later `pi update`
 	assert.deepEqual(w.calls.filter((call) => call.args[1] === "add").map((call) => call.args.slice(1)), [separate]);
 });
 
-test("verify-global-list accepts the Pi the launcher runs beside gentle-pi at the minimum or newer, and reports one other than the pin", async () => {
-	// pnpm's latest peer beside gentle-pi (or nested in it): Gentle Shell runs it, and the outcome says which.
+test("verify-global-list accepts the Pi the launcher runs beside drakonc-pi at the minimum or newer, and reports one other than the pin", async () => {
+	// pnpm's latest peer beside drakonc-pi (or nested in it): Drakonc Shell runs it, and the outcome says which.
 	for (const texts of [{ [besidePi(PACKAGE_ROOT)]: piPackage("1.2.1") }, { [nestedPi(PACKAGE_ROOT)]: piPackage("1.2.1") },
 		{ [besidePi(PACKAGE_ROOT)]: piPackage(requirements.pi) }]) {
 		const h = harness({ texts });
@@ -1696,7 +1747,7 @@ test("verify-global-list accepts the Pi the launcher runs beside gentle-pi at th
 	assert.equal("piVersion" in (await runStandardInstall({ plan: plan(), consent: true }, harness().adapters)), false);
 	const wrong = [
 		{ [besidePi(PACKAGE_ROOT)]: piPackage("0.99.0") },
-		// A Pi nested in gentle-pi resolves first, even below the minimum.
+		// A Pi nested in drakonc-pi resolves first, even below the minimum.
 		{ [nestedPi(PACKAGE_ROOT)]: piPackage("0.99.0"), [besidePi(PACKAGE_ROOT)]: piPackage("1.2.1") },
 		{ [besidePi(PACKAGE_ROOT)]: piPackage("1.2.0-beta.1") },
 		{ [besidePi(PACKAGE_ROOT)]: JSON.stringify({ name: "not-pi", version: PI_INSTALL_VERSION }) },
@@ -1708,8 +1759,8 @@ test("verify-global-list accepts the Pi the launcher runs beside gentle-pi at th
 		assert.deepEqual([result.outcome, result.failedStep], ["failed", "verify-global-list"], JSON.stringify(texts));
 		assert.equal(h.calls.some((call) => call.args[0] === SHELL_ENTRY), false);
 	}
-	// No Pi beside gentle-pi at all: the launcher would run any `pi` on PATH.
-	const bare = `${PNPM_HOME}/global/v11/xyz/node_modules/gentle-pi`;
+	// No Pi beside drakonc-pi at all: the launcher would run any `pi` on PATH.
+	const bare = `${PNPM_HOME}/global/v11/xyz/node_modules/drakonc-pi`;
 	const missing = harness({ realpaths: { [bare]: bare },
 		results: { [LIST]: [emptyList, { code: 0, stdout: listing(PI_INSTALL_VERSION, requirements.shell, bare) }] } });
 	const failed = await runStandardInstall({ plan: plan(), consent: true }, missing.adapters);
@@ -1728,10 +1779,10 @@ test("the main Shell is added alone and its adjacent Pi is verified like the rel
 	assert.deepEqual([failed.outcome, failed.failedStep], ["failed", "install-shell-main"]);
 });
 
-test("a pnpm-owned Gentle Shell update is verified with a Pi at the minimum or newer beside it; an npm-owned one is not", async () => {
-	const OLD_ROOT = `${PNPM_HOME}/global/v11/old/node_modules/gentle-pi`;
+test("a pnpm-owned Drakonc Shell update is verified with a Pi at the minimum or newer beside it; an npm-owned one is not", async () => {
+	const OLD_ROOT = `${PNPM_HOME}/global/v11/old/node_modules/drakonc-pi`;
 	const fixed = existingPlan({ shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "pnpm" },
-		gentleAi: { available: null }, setup: { available: null } });
+		drakoncAi: { available: null }, setup: { available: null } });
 	const located = [{ root: OLD_ROOT, version: "3.9.0", owner: "pnpm" }, { root: PACKAGE_ROOT, version: requirements.shell, owner: "pnpm" }];
 	const h = updateHarness({ located, texts: { [besidePi(PACKAGE_ROOT)]: piPackage("1.2.1") } });
 	const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
@@ -1746,11 +1797,11 @@ test("a pnpm-owned Gentle Shell update is verified with a Pi at the minimum or n
 	// npm keeps resolving its own peer; nothing beside an npm Shell is read.
 	const npm = updateHarness();
 	const npmResult = await runStandardInstall({ plan: existingPlan({ shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" },
-		gentleAi: { available: null }, setup: { available: null } }), consent: true }, npm.adapters);
+		drakoncAi: { available: null }, setup: { available: null } }), consent: true }, npm.adapters);
 	assert.equal(npmResult.outcome, "ready");
 });
 
-test("a setup recovery accepts a newer Pi beside gentle-pi but not one below the minimum", async () => {
+test("a setup recovery accepts a newer Pi beside drakonc-pi but not one below the minimum", async () => {
 	const newer = harness({ results: installedList, texts: { [besidePi(PACKAGE_ROOT)]: piPackage("1.2.1") } });
 	assert.equal((await runStandardInstall({ plan: recoveryPlan(), consent: true }, newer.adapters)).outcome, "ready");
 	const h = harness({ results: installedList, texts: { [besidePi(PACKAGE_ROOT)]: piPackage("0.99.0") } });
@@ -1761,7 +1812,7 @@ test("a setup recovery accepts a newer Pi beside gentle-pi but not one below the
 
 function updateHarness({ located = [{ root: NPM_SHELL_ROOT, version: "3.9.0", owner: "npm" }, { root: NPM_SHELL_ROOT, version: requirements.shell, owner: "npm" }] as Array<object | null>,
 	upgrade = async () => true as boolean, results = {} as Record<string, Result>, texts = {} as Record<string, string> } = {}) {
-	const h = harness({ results: { [`${NPM_SHELL_ROOT}/bin/gentle-shell.mjs setup`]: { code: 0 }, ...results }, texts });
+	const h = harness({ results: { [`${NPM_SHELL_ROOT}/bin/drakonc-shell.mjs setup`]: { code: 0 }, ...results }, texts });
 	const upgrades: object[] = [];
 	let locates = 0;
 	const adapters = { ...h.adapters,
@@ -1773,28 +1824,28 @@ function updateHarness({ located = [{ root: NPM_SHELL_ROOT, version: "3.9.0", ow
 	return { ...h, adapters, upgrades };
 }
 
-test("an older Gentle Shell is updated to the latest release with its owner's logic, verified, then set up", async () => {
+test("an older Drakonc Shell is updated to the latest release with its owner's logic, verified, then set up", async () => {
 	const h = updateHarness();
 	const result = await runStandardInstall({ plan: existingPlan({ shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" },
-		gentleAi: { available: null }, setup: { available: null } }), consent: true }, h.adapters);
+		drakoncAi: { available: null }, setup: { available: null } }), consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
 	assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-installed-shell", "update-shell", "verify-updated-shell",
-		"verify-gentle-ai", "shell-setup"]);
+		"verify-drakonc-ai", "shell-setup"]);
 	assert.deepEqual(h.upgrades, [{ channel: "release", packageRoot: NPM_SHELL_ROOT, currentVersion: "3.9.0" }]);
 	assert.deepEqual(h.integrityCalls, [{ packageRoot: NPM_SHELL_ROOT, platform: "linux", env: h.adapters.env, home: HOME }]);
-	assert.deepEqual(h.calls.at(-1)?.args, [`${NPM_SHELL_ROOT}/bin/gentle-shell.mjs`, "setup"]);
+	assert.deepEqual(h.calls.at(-1)?.args, [`${NPM_SHELL_ROOT}/bin/drakonc-shell.mjs`, "setup"]);
 	assert.equal(h.calls.some((call) => call.args[1] === "add"), false);
 });
 
 test("updating to main requires a main version afterwards and skips the pinned binary check", async () => {
 	const mainVersion = `${requirements.shell}-main.6e7e3a18f794`;
 	const plan = existingPlan({ shell: { available: true, version: requirements.shell, usable: true, global: true, owner: "npm" },
-		gentleAi: { available: null }, setup: { available: null } }, "main");
+		drakoncAi: { available: null }, setup: { available: null } }, "main");
 	const h = updateHarness({ located: [{ root: NPM_SHELL_ROOT, version: requirements.shell, owner: "npm" }, { root: NPM_SHELL_ROOT, version: mainVersion, owner: "npm" }] });
 	const result = await runStandardInstall({ plan, consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
 	assert.deepEqual(h.upgrades, [{ channel: "main", packageRoot: NPM_SHELL_ROOT, currentVersion: requirements.shell }]);
-	assert.equal(result.completed.includes("verify-gentle-ai"), false);
+	assert.equal(result.completed.includes("verify-drakonc-ai"), false);
 	const stale = updateHarness({ located: [{ root: NPM_SHELL_ROOT, version: requirements.shell, owner: "npm" }] });
 	const failed = await runStandardInstall({ plan, consent: true }, stale.adapters);
 	assert.deepEqual([failed.outcome, failed.failedStep], ["failed", "verify-updated-shell"]);
@@ -1803,7 +1854,7 @@ test("updating to main requires a main version afterwards and skips the pinned b
 test("updating to main without a usable Go acquires the pinned Go first and hands it to the upgrade", async () => {
 	const mainVersion = `${requirements.shell}-main.6e7e3a18f794`;
 	const fixed = existingPlan({ shell: { available: true, version: requirements.shell, usable: true, global: true, owner: "npm" },
-		gentleAi: { available: null }, setup: { available: null }, go: absent }, "main");
+		drakoncAi: { available: null }, setup: { available: null }, go: absent }, "main");
 	assert.deepEqual(fixed.actions.map((action: { id: string }) => action.id), ["acquire-go", "verify-go", "update-shell-main", "setup-shell", "verify-readiness"]);
 	const h = withGo(updateHarness({ located: [{ root: NPM_SHELL_ROOT, version: requirements.shell, owner: "npm" }, { root: NPM_SHELL_ROOT, version: mainVersion, owner: "npm" }],
 		results: { version: goVersion() } }));
@@ -1813,29 +1864,29 @@ test("updating to main without a usable Go acquires the pinned Go first and hand
 	assert.deepEqual(h.upgrades, [{ channel: "main", packageRoot: NPM_SHELL_ROOT, currentVersion: requirements.shell, goPath: PINNED_GO }]);
 });
 
-test("a missing Pi is installed before the existing Gentle Shell is updated", async () => {
+test("a missing Pi is installed before the existing Drakonc Shell is updated", async () => {
 	const h = updateHarness();
 	const plan = existingPlan({ pi: absent, shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" },
-		gentleAi: { available: null }, setup: { available: null } });
+		drakoncAi: { available: null }, setup: { available: null } });
 	const result = await runStandardInstall({ plan, consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
 	assert.deepEqual(result.completed.slice(3, 6), ["resolve-pi-version", "install-pi", "update-shell"]);
 	assert.ok(h.pnpmCalls().includes(`add -g ${PI_PACKAGE_NAME}@${PI_INSTALL_VERSION}`));
 });
 
-test("a failed Pi installation stops before the existing Gentle Shell is touched", async () => {
+test("a failed Pi installation stops before the existing Drakonc Shell is touched", async () => {
 	const h = updateHarness({ results: { add: { code: 1 } } });
 	const plan = existingPlan({ pi: absent, shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" },
-		gentleAi: { available: null }, setup: { available: null } });
+		drakoncAi: { available: null }, setup: { available: null } });
 	const result = await runStandardInstall({ plan, consent: true }, h.adapters);
 	assert.deepEqual([result.outcome, result.failedStep], ["failed", "install-pi"]);
 	assert.deepEqual(h.upgrades, []);
 });
 
-test("an update stops before changing anything when the installed Gentle Shell or its owner cannot be confirmed", async () => {
+test("an update stops before changing anything when the installed Drakonc Shell or its owner cannot be confirmed", async () => {
 	const plan = existingPlan({ shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" },
-		gentleAi: { available: null }, setup: { available: null } });
-	for (const located of [[null], [{ root: "/home/u/work/gentle-pi", version: "3.9.0", owner: null }]]) {
+		drakoncAi: { available: null }, setup: { available: null } });
+	for (const located of [[null], [{ root: "/home/u/work/drakonc-pi", version: "3.9.0", owner: null }]]) {
 		const h = updateHarness({ located });
 		const result = await runStandardInstall({ plan, consent: true }, h.adapters);
 		assert.deepEqual([result.outcome, result.reason], ["blocked", "existing-stack-unverified"]);
@@ -1847,18 +1898,18 @@ test("an update stops before changing anything when the installed Gentle Shell o
 	assert.equal(JSON.stringify(result).includes("EACCES"), false);
 });
 
-test("a failed Gentle Shell update reports the upgrade's main-channel error, the home as ~", async () => {
+test("a failed Drakonc Shell update reports the upgrade's main-channel error, the home as ~", async () => {
 	const plan = existingPlan({ shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" },
-		gentleAi: { available: null }, setup: { available: null } });
+		drakoncAi: { available: null }, setup: { available: null } });
 	const h = updateHarness({ upgrade: async () => {
-		throw new MainChannelError("main-shell-pack-failed", "the Gentle Shell source archive could not be extracted",
+		throw new MainChannelError("main-shell-pack-failed", "the Drakonc Shell source archive could not be extracted",
 			new Error(`tar (child): Cannot connect to D: resolve failed\ntar: Error is not recoverable: exiting now (${HOME}/.pi)`));
 	} });
 	const result = await runStandardInstall({ plan, consent: true }, h.adapters);
 	assert.deepEqual([result.failedStep, result.detail], ["update-shell", "tar: Error is not recoverable: exiting now (~/.pi)"]);
 });
 
-// --- An older Pi: updated with the package manager that owns it, before any Gentle Shell step ------
+// --- An older Pi: updated with the package manager that owns it, before any Drakonc Shell step ------
 const PI_ROOT = `${PNPM_HOME}/global/v11/abc/node_modules/${PI_PACKAGE_NAME}`;
 const NEW_PI_ROOT = `${PNPM_HOME}/global/v11/def/node_modules/${PI_PACKAGE_NAME}`;
 const NPM_ROOT = "/usr/local/lib/node_modules";
@@ -1885,17 +1936,17 @@ test("global installer resolves latest stable Pi and installs its exact version"
 	const result = await runStandardInstall({ plan: plan(), consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
 	assert.equal(h.calls.filter((call) => call.args.includes("view")).length, 1);
-	assert.ok(h.pnpmCalls().includes(`add -g ${PI_PACKAGE_NAME}@1.9.0 gentle-pi@${requirements.shell} --allow-build=gentle-pi`));
+	assert.ok(h.pnpmCalls().includes(`add -g ${PI_PACKAGE_NAME}@1.9.0 drakonc-pi@${requirements.shell} --allow-build=drakonc-pi`));
 });
 
 test("global installer updates an older owned Pi to the exact resolved stable version", async () => {
 	const shell = { available: true, version: requirements.shell, usable: true, global: true, owner: "npm" };
-	const fixed = existingPlan({ pi: olderPi("pnpm"), shell, gentleAi: { available: null }, setup: { available: null } });
+	const fixed = existingPlan({ pi: olderPi("pnpm"), shell, drakoncAi: { available: null }, setup: { available: null } });
 	const h = locatingPi(harness({ results: { [PI_VIEW]: { code: 0, stdout: "1.9.0\n" } } }), [piBefore, { ...piAfter, version: "1.9.0" }]);
 	const result = await runStandardInstall({ plan: fixed, consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
 	assert.ok(h.pnpmCalls().includes(`add -g ${PI_PACKAGE_NAME}@1.9.0`));
-	assert.equal(h.calls.some((call) => call.args.includes(`gentle-pi@${requirements.shell}`)), false);
+	assert.equal(h.calls.some((call) => call.args.includes(`drakonc-pi@${requirements.shell}`)), false);
 });
 
 test("global installer refuses invalid latest Pi before any installation", async () => {
@@ -1906,13 +1957,13 @@ test("global installer refuses invalid latest Pi before any installation", async
 	assert.equal(h.integrityCalls.length, 0);
 });
 
-test("an older pnpm Pi is updated with pnpm and verified before only Gentle Shell is added", async () => {
+test("an older pnpm Pi is updated with pnpm and verified before only Drakonc Shell is added", async () => {
 	const h = locatingPi(harness({ results: { [LIST]: [piOnlyList("0.87.1"), { code: 0, stdout: listing(PI_INSTALL_VERSION) }] } }),
 		[piBefore, piAfter]);
 	const result = await runStandardInstall({ plan: existingPlan({ pi: olderPi("pnpm") }), consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
 	assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-existing-shell", "check-installed-pi", "resolve-pi-version", "update-pi",
-		"verify-updated-pi", "install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup"]);
+		"verify-updated-pi", "install-global", "verify-global-list", "verify-shell-bin", "verify-drakonc-ai", "shell-setup"]);
 	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, PI_VIEW, PI_UPDATE, SHELL_ONLY_ADD, LIST]);
 });
 
@@ -1934,7 +1985,7 @@ test("Windows: an older npm Pi is updated through what Node.js's npm.cmd runs, n
 	const npmPi = `${npmRoot}\\@earendil-works\\pi-coding-agent`;
 	const shell = { available: true, version: requirements.shell, usable: true, global: true, owner: "npm" };
 	const fixed = planPreflight({ platform: "win32", arch: "x64", node: tool("24.18.0"), pnpm: { ...tool("11.1.1"), compatible: true },
-		pi: olderPi("npm"), shell, gentleAi: absent, go: absent, globalBin: { available: true, path: W_BIN, writable: true, onPath: true }, setup: false });
+		pi: olderPi("npm"), shell, drakoncAi: absent, go: absent, globalBin: { available: true, path: W_BIN, writable: true, onPath: true }, setup: false });
 	assert.deepEqual(fixed.actions.map((action: { id: string }) => action.id), ["update-pi", "verify-readiness"]);
 	// npm reports its root in another case: the same directory on Windows.
 	for (const reported of [npmRoot, npmRoot.toLowerCase()]) {
@@ -1954,7 +2005,7 @@ test("Windows: an older npm Pi is updated through what Node.js's npm.cmd runs, n
 	assert.equal(foreign.calls.some((call) => call.args.includes("install")), false);
 });
 
-test("a failed or unverified Pi update stops before any Gentle Shell change", async () => {
+test("a failed or unverified Pi update stops before any Drakonc Shell change", async () => {
 	const plan = existingPlan({ pi: olderPi("pnpm") });
 	const failed = locatingPi(harness({ results: { [LIST]: piOnlyList("0.87.1"), add: { code: 1 } } }), [piBefore, piAfter]);
 	const result = await runStandardInstall({ plan, consent: true }, failed.adapters);
@@ -2011,14 +2062,14 @@ test("a Pi update is only accepted for a Pi that preflight found older and owned
 	}
 });
 
-test("an older Pi is updated before an existing Gentle Shell is updated; its failure leaves the Shell untouched", async () => {
+test("an older Pi is updated before an existing Drakonc Shell is updated; its failure leaves the Shell untouched", async () => {
 	const plan = existingPlan({ pi: olderPi("pnpm"), shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" },
-		gentleAi: { available: null }, setup: { available: null } });
+		drakoncAi: { available: null }, setup: { available: null } });
 	const h = locatingPi(updateHarness(), [piBefore, piAfter]);
 	const result = await runStandardInstall({ plan, consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
 	assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-installed-shell", "check-installed-pi", "resolve-pi-version", "update-pi",
-		"verify-updated-pi", "update-shell", "verify-updated-shell", "verify-gentle-ai", "shell-setup"]);
+		"verify-updated-pi", "update-shell", "verify-updated-shell", "verify-drakonc-ai", "shell-setup"]);
 	assert.deepEqual(h.pnpmCalls(), ["bin -g", PI_VIEW, PI_UPDATE]);
 	const failed = locatingPi(updateHarness({ results: { add: { code: 1 } } }), [piBefore, piAfter]);
 	const outcome = await runStandardInstall({ plan, consent: true }, failed.adapters);
@@ -2026,9 +2077,9 @@ test("an older Pi is updated before an existing Gentle Shell is updated; its fai
 	assert.deepEqual(failed.upgrades, []);
 });
 
-test("with a current Gentle Shell, only the older Pi is updated: no setup, PATH change or Go", async () => {
+test("with a current Drakonc Shell, only the older Pi is updated: no setup, PATH change or Go", async () => {
 	const shell = { available: true, version: requirements.shell, usable: true, global: true, owner: "npm" };
-	const plan = existingPlan({ pi: olderPi("npm"), shell, gentleAi: { available: null }, setup: { available: null } });
+	const plan = existingPlan({ pi: olderPi("npm"), shell, drakoncAi: { available: null }, setup: { available: null } });
 	assert.deepEqual(plan.actions.map((action: { id: string }) => action.id), ["update-pi", "verify-readiness"]);
 	const h = locatingPi(harness({ env: { PATH: "/opt/node/bin:/usr/bin" }, results: npmResults, realpaths: { [NPM_ROOT]: NPM_ROOT } }),
 		[npmPiBefore, npmPiAfter]);
@@ -2039,7 +2090,7 @@ test("with a current Gentle Shell, only the older Pi is updated: no setup, PATH 
 	assert.equal(h.integrityCalls.length, 0);
 	// Windows: a pnpm-owned Pi is updated through the pnpm handoff without Go.
 	const windows = planPreflight({ platform: "win32", arch: "x64", node: tool("24.18.0"), pnpm: { ...tool("11.1.1"), compatible: true },
-		pi: olderPi("pnpm"), shell, gentleAi: { available: null }, go: absent,
+		pi: olderPi("pnpm"), shell, drakoncAi: { available: null }, go: absent,
 		globalBin: { available: true, path: W_BIN, writable: true, onPath: true }, setup: { available: null } });
 	const w = locatingPi(harness({ layout: windowsLayout }), [{ ...piBefore, root: `${W_PNPM_HOME}\\global\\v11\\abc` }, { ...piAfter, root: `${W_PNPM_HOME}\\global\\v11\\def` }]);
 	const wResult = await runStandardInstall({ plan: windows, consent: true }, w.adapters);
@@ -2062,14 +2113,14 @@ test("an older Pi that neither pnpm nor npm owns gets the installer's Pi alongsi
 	const result = await runStandardInstall({ plan, consent: true }, h.adapters);
 	assert.equal(result.outcome, "ready");
 	assert.deepEqual(result.completed, ["check-npm", "check-global-bin", "check-existing-stack", "resolve-pi-version", "install-global", "verify-global-list",
-		"verify-shell-bin", "verify-gentle-ai", "shell-setup"]);
+		"verify-shell-bin", "verify-drakonc-ai", "shell-setup"]);
 	assert.deepEqual(h.pnpmCalls(), ["bin -g", LIST, PI_VIEW, INSTALL, LIST]);
 	assert.equal(touchesExternalPi(h.calls), false);
 });
 
-test("with a current Gentle Shell, only the installer's Pi is added next to the older one, then found in pnpm's list", async () => {
+test("with a current Drakonc Shell, only the installer's Pi is added next to the older one, then found in pnpm's list", async () => {
 	const shell = { available: true, version: requirements.shell, usable: true, global: true, owner: "npm" };
-	const plan = existingPlan({ pi: externalPi, shell, gentleAi: { available: null }, setup: { available: null } });
+	const plan = existingPlan({ pi: externalPi, shell, drakoncAi: { available: null }, setup: { available: null } });
 	assert.deepEqual(plan.actions.map((action: { id: string }) => action.id), ["install-pi", "verify-readiness"]);
 	const h = locatingPi(harness({ env: { PATH: "/opt/node/bin:/usr/bin" }, results: { [LIST]: emptyList } }), [piAfter]);
 	const result = await runStandardInstall({ plan, consent: true }, h.adapters);
@@ -2151,10 +2202,10 @@ test("a private PNPM_HOME that changed, or could not be claimed, stops before an
 });
 
 test("an update with a private PNPM_HOME still persists it with pnpm setup", async () => {
-	const root = "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\gentle-pi";
+	const root = "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\drakonc-pi";
 	const fixed = plan("win32", { pi: tool("1.2.0"), shell: { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" },
-		gentleAi: { available: null }, setup: { available: null } });
-	const h = preparing(harness({ layout: windowsLayout, env: { Path: `${W_NODE_DIR};C:\\Windows` }, results: { [`${root}\\bin\\gentle-shell.mjs setup`]: { code: 0 } } }));
+		drakoncAi: { available: null }, setup: { available: null } });
+	const h = preparing(harness({ layout: windowsLayout, env: { Path: `${W_NODE_DIR};C:\\Windows` }, results: { [`${root}\\bin\\drakonc-shell.mjs setup`]: { code: 0 } } }));
 	let locates = 0;
 	const located = [{ root, version: "3.9.0", owner: "npm" }, { root, version: requirements.shell, owner: "npm" }];
 	const adapters = { ...h.adapters, locateShell: async () => located[Math.min(locates++, 1)], upgradeShell: async () => true };
@@ -2178,7 +2229,7 @@ test("exported blocked reasons and failed steps match what the scenarios observe
 });
 
 // R2: in private mode the installer's children also get TEMP and TMP inside the
-// claimed private home, so a postinstall's os.tmpdir() (the Gentle AI source
+// claimed private home, so a postinstall's os.tmpdir() (the Drakonc AI source
 // build) never uses a %LOCALAPPDATA%\Temp another account may write.
 test("childEnvironment puts TEMP and TMP under a private Windows PNPM_HOME only", () => {
 	const globalBin = { pnpmHome: W_PNPM_HOME, path: W_BIN, onPath: false };

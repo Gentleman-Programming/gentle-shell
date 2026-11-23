@@ -1,15 +1,15 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// Gentle AI agent tool overlay: a load-time layer that adds/removes subagent
+// Drakonc AI agent tool overlay: a load-time layer that adds/removes subagent
 // tools without editing the package-owned agent files. Mirrors the routing
 // layer (`models.json`): applied at load, never written back, so package
-// ownership and upgrade behavior stay untouched (gentle-shell#3133).
+// ownership and upgrade behavior stay untouched (drakonc-shell#3133).
 //
 // Sources merge low -> high (higher wins on a per-tool conflict):
 //   1. extension drop-ins under `<configHome>/agent-overlays.d/*.json`
 //   2. global `<configHome>/tools.json`
-//   3. project `<cwd>/.pi/gentle-ai/tools.json`
+//   3. project `<cwd>/.pi/drakonc-ai/tools.json`
 
 export interface ToolOverlayEntry {
 	add: string[];
@@ -78,7 +78,7 @@ export function loadToolOverlays(configHome: string, cwd: string): ToolOverlayRe
 	const globalPath = join(configHome, "tools.json");
 	if (existsSync(globalPath)) sources.push(readOverlayFile(globalPath, notices));
 
-	const projectPath = join(cwd, ".pi", "gentle-ai", "tools.json");
+	const projectPath = join(cwd, ".pi", "drakonc-ai", "tools.json");
 	if (existsSync(projectPath)) sources.push(readOverlayFile(projectPath, notices));
 
 	for (const entries of sources) {

@@ -1,6 +1,6 @@
-// Gentle Desktop background-subagents slice: the pure contract shared by the
+// Drakonc Desktop background-subagents slice: the pure contract shared by the
 // Desktop bridge (`lib/desktop-background-subagents-service.ts`) and the
-// policy owner in `extensions/gentle-ai.ts` (`/gentle:background-subagents`).
+// policy owner in `extensions/drakonc-ai.ts` (`/drakonc:background-subagents`).
 //
 // The policy is a user-owned switch: the owner's command is the only writer,
 // and only on explicit invocation. A Desktop change therefore needs two calls,
@@ -16,8 +16,8 @@ export const DESKTOP_BACKGROUND_SUBAGENTS_METHODS = ["get_background_subagents",
 /** Every answer carries the state; this slice advertises no event. */
 export const DESKTOP_BACKGROUND_SUBAGENTS_EVENTS = [] as const;
 
-export const DESKTOP_BACKGROUND_SUBAGENTS_SERVICE_SCHEMA = "gentle-pi.desktop-background-subagents-service/v1";
-export const DESKTOP_BACKGROUND_SUBAGENTS_SERVICE_CHANNEL = "gentle:desktop:background-subagents-service";
+export const DESKTOP_BACKGROUND_SUBAGENTS_SERVICE_SCHEMA = "drakonc-pi.desktop-background-subagents-service/v1";
+export const DESKTOP_BACKGROUND_SUBAGENTS_SERVICE_CHANNEL = "drakonc:desktop:background-subagents-service";
 
 export const INVALID_GET_BACKGROUND_SUBAGENTS = { code: "invalid_request", message: "Invalid get_background_subagents parameters" } as const;
 export const INVALID_SET_BACKGROUND_SUBAGENTS = { code: "invalid_request", message: "Invalid set_background_subagents parameters" } as const;
@@ -89,7 +89,7 @@ export function parseSetBackgroundSubagentsParams(params: Record<string, unknown
 const SOURCE_LABEL: Record<BackgroundSubagentsWireSource, string> = {
 	project: "this project's file",
 	global: "the machine-wide file",
-	environment: "the GENTLE_PI_BACKGROUND_SUBAGENTS environment variable",
+	environment: "the DRAKONC_PI_BACKGROUND_SUBAGENTS environment variable",
 	default: "the built-in default",
 };
 
@@ -111,7 +111,7 @@ export function desktopBackgroundSubagentsToken(policy: BackgroundSubagentsPolic
 }
 
 // One Desktop change at a time per process, like the review switch.
-const SET_GATE = Symbol.for("gentle-pi.desktop-background-subagents.set-gate");
+const SET_GATE = Symbol.for("drakonc-pi.desktop-background-subagents.set-gate");
 type GateHost = typeof globalThis & { [SET_GATE]?: boolean };
 
 export function beginDesktopBackgroundSubagentsSet(): boolean {

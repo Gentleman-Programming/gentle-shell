@@ -1,7 +1,7 @@
 # Native notification audio backend — own Node Pulse client
 
 Locator: `odd/tasks/native-audio-backend.md`
-Worktree: `../gentle-shell-native-audio` (linked worktree of the main clone,
+Worktree: `../drakonc-shell-native-audio` (linked worktree of the main clone,
 sibling of the repository root)
 Branch: `feat/native-notification-audio`, base `9a1f8a75`. Worktree setup did
 **no install of its own** (real `node_modules` retained as ignored linked
@@ -42,7 +42,7 @@ evidence.** The P3 default-routing wiring is in L12.
 
 ## Objective
 
-Give Gentle Shell's existing notification audio an opt-in, dependency-free
+Give Drakonc Shell's existing notification audio an opt-in, dependency-free
 **native Linux/WSLg backend**: a minimal PulseAudio-wire v13 client written in
 our own Node code (built-in `node:net` Unix socket), replacing the external CLI
 player only where the native path is proven. Cross-platform targets are now
@@ -175,7 +175,7 @@ support.
 
 ## Protocol references (read-only, verified this turn)
 
-Local set under `/tmp/gentle-native-audio-reference/`: official
+Local set under `/tmp/drakonc-native-audio-reference/`: official
 `pulseaudio/pulseaudio` tag **v17.0**, fetched from
 `https://raw.githubusercontent.com/pulseaudio/pulseaudio/v17.0/<path>` (read-only,
 not a dependency, not executed, not vendored; upstream implementation is
@@ -298,7 +298,7 @@ only; **no probe evidence exists yet**.
 | **N1a** | Tagged tagstruct codec + bounded fake frames (no socket, no server). **[x] committed `b2bdee09`.** | `lib/notification-pulse-protocol.ts` (305), `tests/notification-pulse-protocol.test.ts` (213) | ≤400 forecast; **518 observed** | Round-trip encode/decode of the verified tags (`u32`, `u8`, `string`, `arbitrary`, `boolean`, `usec`, `sample_spec`, `cvolume`, `proplist`); command+tag prefix; bounded small frames; malformed/truncated fields fail closed. Unknown sample-format enum values may remain and block **N2**, not N1a. |
 | **N1b** | Client transport: Unix connect, AUTH (v13/256-byte cookie/no-SHM), SET_CLIENT_NAME, GET_SERVER_INFO/default-sink. Real **read-only** probe (no stream/sample). **[x] committed `7ea3e15a`.** | `lib/notification-pulse-client.ts` (+38), `tests/notification-pulse-client.test.ts` (356) | ≤400 forecast; **684 observed** | Fake-server golden tests plus a real read-only probe that returns server info without opening a stream; ERROR/REPLY/timeout/interspersed handling; cookie absent → 256 zero bytes → peer-credential or fail closed. |
 | **N2** | PCM flow + DRAIN + DELETE + cancel against a **fake Unix server, no audio**. **[x] committed `597e4d27`.** | `lib/notification-pulse-stream.ts` (212), `tests/notification-pulse-stream.test.ts` (275), `lib/notification-pulse-client.ts` (+38) | ≤600 forecast; **525 observed** | Strict WAV parse/mapping; CREATE v13 golden wire; REQUEST-driven aligned PCM memblocks; early/coalesced/unknown REQUEST; mismatched spec; budget/abort/backpressure; DRAIN+DELETE acks; bounded per-request deadline. |
-| **N3** | Bridge + standalone worker via owned `process.execPath` + fixed flags (source `.ts`, **no generated runtime**). **[x] committed `e368e74a`.** | `lib/notification-audio-native.ts` (149), `lib/notification-pulse-worker.ts` (66), `tests/notification-audio-native.test.ts` (246), `scripts/verify-package-files.mjs` (+5), `tests/package-manifest.test.ts` (+~28) | ≤400–600 forecast; **~489 observed** | Lazy no-IO bridge; Linux-only; scrubbed child env; bounded stdout/stderr; JSON `gentle.audio.pulse/v1`; SIGKILL once + settle on close; probe unavailable / play generic reject; real fake-socket worker probe (no CREATE) + fake PCM play (no OS audio); verifier 179. |
+| **N3** | Bridge + standalone worker via owned `process.execPath` + fixed flags (source `.ts`, **no generated runtime**). **[x] committed `e368e74a`.** | `lib/notification-audio-native.ts` (149), `lib/notification-pulse-worker.ts` (66), `tests/notification-audio-native.test.ts` (246), `scripts/verify-package-files.mjs` (+5), `tests/package-manifest.test.ts` (+~28) | ≤400–600 forecast; **~489 observed** | Lazy no-IO bridge; Linux-only; scrubbed child env; bounded stdout/stderr; JSON `drakonc.audio.pulse/v1`; SIGKILL once + settle on close; probe unavailable / play generic reject; real fake-socket worker probe (no CREATE) + fake PCM play (no OS audio); verifier 179. |
 | **N4** | Native-first Linux routing + CLI fallback + docs. **[x] committed `7f1b87ac` (parent).** | `lib/notification-audio.ts` (~130 changed), `lib/notification-audio-native.ts` (+20), tests `notification-audio`/`native`/`pulse-stream` (+~152), `README.md`, `docs/sound-notifications.md` | ~500 allowance; **~327 changed** | Aggregate capabilities; native WAV preferred, CLI OGG/FLAC retained; format validated before backend choice; native error never retries CLI; gate called once; all old tests inject a fake native (no real audio); 194 notif / 86 focused. |
 | **N5** | Default full / typecheck / package offline functional closure. **[x] functionally verified at L13** (historical L9 BLOCKED preserved as history, not rewritten). | docs + closure records only | 60–120 | Current candidate `env pnpm_config_verify_deps_before_run=false npm_config_verify_deps_before_run=false node scripts/run-test-suite.mjs` → **exit 0: unit 4993 total / 4959 pass / 0 fail / 34 skip**, provider-contract and runtime harness PASS (L13). `check-types` **186** no regressions; runtime **8**; verifier **180/69**; focused `package-manifest` **58**; writer focal **224** + Windows **27** + audio **25** + native **11** (combined **63**). The ordinary installed packed-package `test:packed-package` E2E was **NOT run** (no install). Historical `history-session-scan` L9 failure preserved as history. |
 
@@ -326,7 +326,7 @@ runtime 8 → 11–12) is retained only as provenance; it is not current source 
   `scripts/build-runtime-modules.mjs`, `lib/notification-service.ts` and
   `lib/notification-customize.ts` needed no native change.
 - Explicitly unchanged: `lib/notification-policy.ts` schema (no new `backend`
-  value), `lib/notification-scheduler.ts`, `extensions/gentle-notifications.ts`
+  value), `lib/notification-scheduler.ts`, `extensions/drakonc-notifications.ts`
   context guards, the six-control basic card, and the 9a1 OGG/FLAC validators.
 
 ## Uncertainties and open items
@@ -372,7 +372,7 @@ runtime 8 → 11–12) is retained only as provenance; it is not current source 
   NUEVOS PAQUETES"; start Linux/WSLg. Logged as relayed, not re-litigated.
 - Read (bounded): `lib/notification-audio.ts`, `lib/notification-service.ts`,
   `lib/notification-policy.ts`, `lib/notification-customize.ts` (guard/row
-  context), `extensions/gentle-notifications.ts`, `odd/tasks/sound-notifications.md`
+  context), `extensions/drakonc-notifications.ts`, `odd/tasks/sound-notifications.md`
   (S9/S12/S14–S17 + L7/L9), `docs/sound-notifications-proposal.md`,
   `scripts/build-runtime-modules.mjs`, `scripts/verify-package-files.mjs`.
 - Measured: `node scripts/verify-package-files.mjs` → 174 files / 69 pins
@@ -390,7 +390,7 @@ runtime 8 → 11–12) is retained only as provenance; it is not current source 
 
 ### N0b — Reference read, protocol appendix (this turn)
 
-- Local read-only set `/tmp/gentle-native-audio-reference/` = PulseAudio tag
+- Local read-only set `/tmp/drakonc-native-audio-reference/` = PulseAudio tag
   **v17.0**; all seven SHA-256 digests re-computed and equal to the parent list.
   Not a dependency, not executed, not vendored; upstream is LGPL-2.1+ and no
   implementation code was copied.
@@ -587,7 +587,7 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
   signal, gate)`, `getNativeFormats`), `NATIVE_PULSE_SCHEMA`; worker contract
   `node --experimental-strip-types --max-old-space-size=32
   lib/notification-pulse-worker.ts <probe|play> [snapshot]` emitting one line of
-  `gentle.audio.pulse/v1` JSON.
+  `drakonc.audio.pulse/v1` JSON.
 - N3 stays **unchecked** until the parent commits it. Next: **N4** routing/UI/
   lifecycle, not started (native audio app remains inactive; Linux first phase).
 
@@ -680,7 +680,7 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
   stale farm `node_modules/.modules.yaml`/`.pnpm-workspace-state` symlinks into a
   sibling `sound-notifications` root as needing install. It auto-downloaded the
   **pre-existing Go release v4** binary (17,109,176 bytes, SHA-verified) into the
-  native repo's `.gitignored` `.gentle-ai/v4.0.0` (+228 integrity); one local
+  native repo's `.gitignored` `.drakonc-ai/v4.0.0` (+228 integrity); one local
   install lock/tombstone race failed. The sibling's ignored modules metadata was
   overwritten (mtime 10:51) with symlinks unchanged; store reused 17, downloaded
   0, added 0. Tracked `package.json`/lockfile stayed clean — no new packages,
@@ -979,12 +979,12 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
   (`c398aadd`, L14); one Success case only — no Error/Attention, plain WSLg
   Pulse, macOS/Windows-host or Node 22 claim. The writer heard/ran nothing.
 - **Parent ran the trusted MAIN with no role-guard override:** new Herdr pane
-  `wK:pA` (`audio-modal-check`), isolated `mktemp -d /tmp/gentle-audio-modal.*`
-  config/agent dirs, `GENTLE_PI_CONFIG_HOME`/`GENTLE_PI_AGENT_HOME`,
+  `wK:pA` (`audio-modal-check`), isolated `mktemp -d /tmp/drakonc-audio-modal.*`
+  config/agent dirs, `DRAKONC_PI_CONFIG_HOME`/`DRAKONC_PI_AGENT_HOME`,
   `pi --no-extensions --session $TMP/agent/modal-session.jsonl -e
-  <abs>/extensions/gentle-notifications.ts -e <abs>/extensions/gentle-shell.ts`.
+  <abs>/extensions/drakonc-notifications.ts -e <abs>/extensions/drakonc-shell.ts`.
   The empty temp config uses real defaults (no speculative schema written).
-- **Observed by the parent (not the writer).** `/gentle:customize` shows six basic
+- **Observed by the parent (not the writer).** `/drakonc:customize` shows six basic
   rows: Off / Unmuted / Success `success` / Error `error` / Attention `attention`
   / Advanced folded; Enter on Mute observed muted, Enter restored unmuted,
   notifications **OFF throughout**; footers `applies 2/3/1 events`, `f assign / p test`.
@@ -994,7 +994,7 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
   (later-discovered testing-method defect). Audibility not established.
 - **Scope limits.** Mute was UI-state only — no physical-mute or auto-event
   verification; assignment cycling not independently tested.
-- **Global config unchanged:** `~/.pi/gentle-ai/notifications.json` sha256
+- **Global config unchanged:** `~/.pi/drakonc-ai/notifications.json` sha256
   `fc7d458ae0665e114a10c4314a21a389c56b0414f2e21bac677464247ae82fec`; `wK:p9`
   untouched. No further tests, sounds, panes, source edits or commits.
 
@@ -1007,9 +1007,9 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
 - **Old `wK:pA`** had closed by the next read; no actor inferred.
 - **User "vamos" authorized the real modal test.** Parent created a NEW trusted
   MAIN `wK:pB` (`wK:t8` Audio check) with a fresh isolated temp
-  `/tmp/gentle-audio-modal.UWbfTZ/config`+`agent`, `GENTLE_PI_CONFIG_HOME`/
-  `GENTLE_PI_AGENT_HOME` and a temporary `--no-extensions` session plus explicit
-  `-e gentle-notifications` + `gentle-shell` (same pattern as L15, not re-listed).
+  `/tmp/drakonc-audio-modal.UWbfTZ/config`+`agent`, `DRAKONC_PI_CONFIG_HOME`/
+  `DRAKONC_PI_AGENT_HOME` and a temporary `--no-extensions` session plus explicit
+  `-e drakonc-notifications` + `drakonc-shell` (same pattern as L15, not re-listed).
   Roles not overridden; child silent. Modal: six basic, default Off, unmuted,
   3 presets, Advanced folded.
 - **Actual `p` (send-keys) once each, 3 s wait each:** Success 3/6, Error 4/6,
@@ -1073,8 +1073,8 @@ these fixes; **no source implementation until the parent's explicit follow-up**.
   `openNotificationPanel` fallback still advertised `≤5 seconds`;
   `lib/notification-ui.ts` now says `≤10 seconds`. No behavior/validation change:
   the panel delegates to `service.validateFile` (already 10 s + 2 MiB +
-  `O_NOFOLLOW`) and `tests/gentle-shell.test.ts` still asserts the extension never
-  imports `notification-ui.ts`. The current `/gentle:customize` path
+  `O_NOFOLLOW`) and `tests/drakonc-shell.test.ts` still asserts the extension never
+  imports `notification-ui.ts`. The current `/drakonc:customize` path
   (`lib/notification-customize.ts`) was already 10 s.
 - **Author source validated read-only (no playback).** `[ruta local anonimizada]`
   opened `O_RDONLY|O_NOFOLLOW|O_NONBLOCK`, bounded ≤2 MiB, one read → regular file,

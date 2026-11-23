@@ -9,7 +9,7 @@ const DIR_MODE = 0o700, FILE_MODE = 0o600, MAX_RECORD_BYTES = 8192, MAX_ENTRIES 
 // liveness probe gets a short bounded connect attempt. A genuine flood of
 // live listeners stays over the cap and keeps failing busy, unchanged.
 const SWEEP_MAX_FILES = 4096, SWEEP_PROBE_TIMEOUT_MS = 1_000, SWEEP_PROBE_CONCURRENCY = 8;
-const RUNTIME_TMP = "/tmp", RUNTIME_PREFIX = "gentle-pi-", PROFILE_HASH_HEX_LENGTH = 32, SOCKET_NAME_BYTES = 27;
+const RUNTIME_TMP = "/tmp", RUNTIME_PREFIX = "drakonc-pi-", PROFILE_HASH_HEX_LENGTH = 32, SOCKET_NAME_BYTES = 27;
 const SESSION = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/, TOKEN = /^[A-Za-z0-9_-]{22}$/;
 const PRESENCE_FILE = /^([A-Za-z0-9][A-Za-z0-9_-]{0,127})\.([A-Za-z0-9_-]{22})\.json$/;
 const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
@@ -42,7 +42,7 @@ function boundary(error: unknown): never {
 	fail("io_error", "transport I/O failed");
 }
 
-// The agent profile and its shared Gentle Agents parent belong to the host
+// The agent profile and its shared Drakonc Agents parent belong to the host
 // runtime. Transport may validate them but must not tighten their permissions.
 async function parentDirectory(path: string) {
 	try {
@@ -89,7 +89,7 @@ export class SessionPresenceRegistry {
 	private readonly beforeCandidateOpen?: () => Promise<void>;
 
 	private constructor(agentHome: string, sockets: string, beforeCandidateOpen?: () => Promise<void>) {
-		const root = join(agentHome, "gentle-agents", "transport");
+		const root = join(agentHome, "drakonc-agents", "transport");
 		this.paths = Object.freeze({ root, presence: join(root, "presence"), sockets });
 		this.beforeCandidateOpen = beforeCandidateOpen;
 	}
@@ -98,7 +98,7 @@ export class SessionPresenceRegistry {
 		if (process.platform === "win32") fail("io_error", "transport I/O failed");
 		const home = resolve(agentHome);
 		await parentDirectory(home);
-		await parentDirectory(join(home, "gentle-agents"));
+		await parentDirectory(join(home, "drakonc-agents"));
 		const sockets = await runtimeSocketDirectory(home);
 		const registry = new SessionPresenceRegistry(home, sockets, beforeCandidateOpen);
 		await privateDirectory(registry.paths.root, true);
@@ -139,7 +139,7 @@ export class SessionPresenceRegistry {
 
 	// An over-cap failure is stale debris until proven otherwise: sessions that
 	// exit uncleanly never remove their record, so a long-lived profile accrues
-	// them until every scan fails busy (gentle-shell#2501: 133 records, oldest
+	// them until every scan fails busy (drakonc-shell#2501: 133 records, oldest
 	// four weeks old, 126 provably dead). Sweep once — bounded, liveness-based —
 	// and retry; a flood of live listeners stays over the cap and still fails.
 	private async withStaleSweep<T>(scan: () => Promise<T>): Promise<T> {
@@ -184,7 +184,7 @@ export class SessionPresenceRegistry {
 				}
 			}
 		} catch (error) { boundary(error); }
-		// gentle-shell#1443: advertises() only proves the socket file exists, not
+		// drakonc-shell#1443: advertises() only proves the socket file exists, not
 	// that its listener is alive — a session killed without unlinking would
 	// stay advertised forever otherwise. Probe each candidate once, bounded,
 	// with the sweep's own refusal-only liveness: provably dead records are

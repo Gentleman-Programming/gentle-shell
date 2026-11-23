@@ -796,7 +796,7 @@ export class VisualCustomizeView {
 		if (lines.length < capacity) lines.push(selected ? renderPaletteSelection(`${this.profileIndex + 1}/${items.length}: ${selected.name}`, inner, true, this.options.theme) : this.options.theme.fg("muted", "No saved profiles"));
 		const details = selected ? [
 			`Theme: ${selected.themeName}`,
-			`Animation: ${selected.animationPolicy} · Banner: rose ${selected.banner.showRose ? "on" : "off"}, logo ${selected.banner.showTextLogo ? "on" : "off"}, ${selected.banner.color}`,
+			`Animation: ${selected.animationPolicy} · Banner: dragon ${selected.banner.showRose ? "on" : "off"}, logo ${selected.banner.showTextLogo ? "on" : "off"}, ${selected.banner.color}`,
 			`Layout: ${selected.visual.statusPlacement} · ${selected.visual.headerPlacement} · ${selected.visual.density}`,
 			`Sections: ${Object.entries(selected.visual.visibility).map(([key, value]) => `${key}:${value ? "on" : "off"}`).join(" · ")}`,
 		] : [];

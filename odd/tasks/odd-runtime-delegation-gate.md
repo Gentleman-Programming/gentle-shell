@@ -2,13 +2,13 @@
 
 ## Objective
 
-Enforce Gentle Shell's ODD multi-file writer boundary at the runtime tool-call
+Enforce Drakonc Shell's ODD multi-file writer boundary at the runtime tool-call
 layer so the primary orchestrator cannot implement two or more non-trivial files
 inline after the prompt requires delegation.
 
 ## Problem and why
 
-gentle-pi 3.2.1 contains the mandatory 2+ file writer trigger, but ordinary
+drakonc-pi 3.2.1 contains the mandatory 2+ file writer trigger, but ordinary
 `edit` and `write` calls still pass through the host hook. Prompt/parity tests
 prove delivery of prose, not runtime enforcement. A production Gemini 3.8 Flash
 session therefore completed a monolithic multi-file implementation and later
@@ -18,7 +18,7 @@ acknowledged the routing violation. This is provider-independent host behavior.
 
 - Add a small runtime policy for primary-session direct `edit`/`write` routing.
 - Wire it into existing `before_agent_start`, `tool_call`, and successful
-  `tool_result` boundaries in `extensions/gentle-ai.ts`.
+  `tool_result` boundaries in `extensions/drakonc-ai.ts`.
 - Allow one canonical eligible repository path and repeated writes to that path;
   block the second distinct path before mutation with an actionable delegation
   continuation.
@@ -39,14 +39,14 @@ acknowledged the routing violation. This is provider-independent host behavior.
   durable authority. Preserve every existing sensitive-path, SDD-dispatch,
   writer-surface, bash-safety, and review-mutation hook.
 - The refusal names the self-service exit: delegate through `subagent_run`
-  (prefer `gentle-ai-worker`, then `worker`), or stop and report that no
+  (prefer `drakonc-ai-worker`, then `worker`), or stop and report that no
   delegation mechanism is callable.
 - Tests stay with behavior; no test-only or file-type commit.
 
 ## Authorized scope
 
 - `lib/odd-runtime-delegation-gate.ts` (new)
-- `extensions/gentle-ai.ts`
+- `extensions/drakonc-ai.ts`
 - `tests/odd-runtime-delegation-gate.test.ts` (new)
 - `tests/runtime-harness.mjs`
 - `docs/readme-reference.md`

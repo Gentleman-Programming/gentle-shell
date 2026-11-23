@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 import { ANIMATION_POLICY, type AnimationPolicy } from "./animation-policy.ts";
 import { isVisualSettings, normalizeVisualSettings, storedVisualSettings, type VisualSettings } from "./visual-customization-policy.ts";
 import type { BannerConfig } from "../extensions/startup-banner.ts";
 
-export const VISUAL_PROFILES_SCHEMA = "gentle-pi.visual-profiles/v1";
+export const VISUAL_PROFILES_SCHEMA = "drakonc-pi.visual-profiles/v1";
 const MAX_BYTES = 256_000;
 const MAX_PROFILES = 64;
 const NAME = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
@@ -28,7 +28,7 @@ export interface VisualProfile extends VisualProfileValues {
 }
 
 interface Options {
-	gentlePiConfigHome?: string;
+	drakoncPiConfigHome?: string;
 	replace?: boolean;
 }
 
@@ -62,7 +62,7 @@ function valid(v: unknown): v is VisualProfile {
 		exact(b, ["showRose", "showTextLogo", "color"]) &&
 		typeof b.showRose === "boolean" &&
 		typeof b.showTextLogo === "boolean" &&
-		["pink", "cyan", "yellow", "green"].includes(b.color as string) &&
+		["red", "pink", "cyan", "yellow", "green"].includes(b.color as string) &&
 		isVisualSettings(v.visual)
 	);
 }
@@ -101,7 +101,7 @@ export function parseVisualProfilesFile(raw: string): VisualProfile[] | undefine
 }
 
 export function readVisualProfiles(options: Options = {}): VisualProfilesResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), "visual-profiles.json");
+	const globalFile = join(options.drakoncPiConfigHome ?? drakoncPiConfigHome(), "visual-profiles.json");
 	let fd: number | undefined;
 	try {
 		try {
@@ -153,7 +153,7 @@ function existing(options: Options): VisualProfile[] {
 }
 
 function write(profiles: VisualProfile[], options: Options): string {
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.drakoncPiConfigHome ?? drakoncPiConfigHome();
 	const path = join(home, "visual-profiles.json");
 	const data = `${JSON.stringify({ schema: VISUAL_PROFILES_SCHEMA, profiles: profiles.map((profile) => ({ ...profile, visual: storedVisualSettings(profile.visual) })) })}\n`;
 	if (Buffer.byteLength(data) > MAX_BYTES) {

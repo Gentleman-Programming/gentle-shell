@@ -8,7 +8,7 @@ import { boardsOf, click, findAll, handoffDoc, loadCanvas, memoryStorage, read, 
 // Move, Comment, Overview and Settings; the ? list of keyboard shortcuts; single keys a
 // person can change, saved in this browser.
 
-const SHORTCUTS_KEY = "gentle-design:shortcuts";
+const SHORTCUTS_KEY = "drakonc-design:shortcuts";
 const SHORTCUT_IDS = ["navigate", "comment", "fit", "panel", "minimap", "help"];
 const DEFAULT_KEYS = ["V", "C", "F", "]", "M", "?"];
 const SYSTEM_REPLY = { "/t/api/system": { exists: true, file: "system.html", width: 1440, height: 1200 } };
@@ -259,7 +259,7 @@ test("Settings opens the shared menu with Design system board, Keyboard shortcut
 	assert.equal(menuEl(canvas).hidden, false);
 	assert.equal(settings.getAttribute("aria-expanded"), "true");
 	assert.equal(menuEl(canvas).getAttribute("aria-label"), "Settings");
-	assert.deepEqual(itemLabels(canvas), ["Design system board", "Keyboard shortcuts", "Technical details", "Gentleman", "Neutral", "Español", "English", "Match the browser"]);
+	assert.deepEqual(itemLabels(canvas), ["Design system board", "Keyboard shortcuts", "Technical details", "Drakoncman", "Neutral", "Español", "English", "Match the browser"]);
 	assert.deepEqual(items.map((item) => [item.localName, item.getAttribute("tabindex")]), Array(8).fill(["button", "-1"]));
 	const last = items[7];
 	// Each item leads with a sprite icon built in the SVG namespace of the page's sprite.
@@ -759,7 +759,7 @@ test("canvas-rail.js and canvas-menu.js keep their English strings grouped at th
 	}
 	const rail = read("canvas-rail.js");
 	assert.ok(rail.indexOf("const TEXT = Object.freeze({") >= 0 && rail.indexOf("const TEXT = Object.freeze({") < rail.indexOf("export function init"), "the rail's strings sit in one TEXT block before init");
-	assert.ok(rail.includes('"gentle-design:shortcuts"'));
+	assert.ok(rail.includes('"drakonc-design:shortcuts"'));
 });
 
 /** The body of the first `selector {` rule in canvas.css. */
@@ -787,12 +787,12 @@ test("canvas.css styles the rail, the menu and the shortcuts list on main's --gd
 });
 
 test("the docs describe the rail, the Settings menu and the changeable keys saved in this browser", () => {
-	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
-	const section = docs.slice(docs.indexOf("### Gentle Design"));
+	const docs = readFileSync(fileURLToPath(new URL("../docs/drakonc-shell.md", import.meta.url)), "utf8");
+	const section = docs.slice(docs.indexOf("### Drakonc Design"));
 	const start = section.indexOf("- **Tool rail**");
 	assert.ok(start >= 0, "a Tool rail entry");
 	const rail = section.slice(start, section.indexOf("\n", start));
-	for (const part of ["**Move** (`V`", "**Comment** (`C`)", "**Overview**", "(`F`)", "**Settings**", "**Design system board**", "**Keyboard shortcuts** (`?`)", "**Change**", "**Reset**", "**Restore defaults**", "`gentle-design:shortcuts`", "saved in this browser", "a new port", "`Tab` moves on and ends it", "holds for this page only", "AltGr", "Compare covers the rail", "`]`", "`Esc`, `Shift+Esc`, the arrows, `Space`, `Enter`, `Tab`"]) {
+	for (const part of ["**Move** (`V`", "**Comment** (`C`)", "**Overview**", "(`F`)", "**Settings**", "**Design system board**", "**Keyboard shortcuts** (`?`)", "**Change**", "**Reset**", "**Restore defaults**", "`drakonc-design:shortcuts`", "saved in this browser", "a new port", "`Tab` moves on and ends it", "holds for this page only", "AltGr", "Compare covers the rail", "`]`", "`Esc`, `Shift+Esc`, the arrows, `Space`, `Enter`, `Tab`"]) {
 		assert.ok(rail.includes(part), `the rail entry mentions ${part}`);
 	}
 	assert.ok(!/Appearance|Step-by-step/i.test(rail), "nothing that does not ship here");

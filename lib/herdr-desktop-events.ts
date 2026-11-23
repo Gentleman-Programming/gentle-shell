@@ -2,14 +2,14 @@ import type { TaskStatus } from "./agents-protocol.ts";
 import type { JobKind, JobStatus } from "./background-jobs.ts";
 
 /** Local display-only snapshots and lifecycle edges, never routing authority. */
-export const HERDR_DESKTOP_TASKS = "gentle-pi:herdr-desktop:tasks";
-export const HERDR_DESKTOP_TASKS_REQUEST = "gentle-pi:herdr-desktop:tasks-request";
-export const HERDR_DESKTOP_TASK_FINISHED = "gentle-pi:herdr-desktop:task-finished";
-export const HERDR_DESKTOP_JOBS = "gentle-pi:herdr-desktop:jobs";
-export const HERDR_DESKTOP_JOB_SETTLED = "gentle-pi:herdr-desktop:job-settled";
-export const HERDR_DESKTOP_CONSULT = "gentle-pi:herdr-desktop:consult";
-export const HERDR_DESKTOP_SEND = "gentle-pi:herdr-desktop:send";
-export const HERDR_DESKTOP_INBOUND = "gentle-pi:herdr-desktop:inbound";
+export const HERDR_DESKTOP_TASKS = "drakonc-pi:herdr-desktop:tasks";
+export const HERDR_DESKTOP_TASKS_REQUEST = "drakonc-pi:herdr-desktop:tasks-request";
+export const HERDR_DESKTOP_TASK_FINISHED = "drakonc-pi:herdr-desktop:task-finished";
+export const HERDR_DESKTOP_JOBS = "drakonc-pi:herdr-desktop:jobs";
+export const HERDR_DESKTOP_JOB_SETTLED = "drakonc-pi:herdr-desktop:job-settled";
+export const HERDR_DESKTOP_CONSULT = "drakonc-pi:herdr-desktop:consult";
+export const HERDR_DESKTOP_SEND = "drakonc-pi:herdr-desktop:send";
+export const HERDR_DESKTOP_INBOUND = "drakonc-pi:herdr-desktop:inbound";
 
 export interface HerdrDesktopTask {
 	id: string;

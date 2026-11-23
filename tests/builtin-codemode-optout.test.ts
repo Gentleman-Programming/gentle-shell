@@ -12,17 +12,17 @@ import {
 	withBuiltinExtensionExcluded,
 } from "../lib/builtin-codemode-optout.ts";
 
-// gentle-pi replaces Pi's builtin codemode with its compact renderer, so Pi
-// warns at every startup. In a user-owned Pi home gentle-pi may only add the
+// drakonc-pi replaces Pi's builtin codemode with its compact renderer, so Pi
+// warns at every startup. In a user-owned Pi home drakonc-pi may only add the
 // `-builtin:codemode` opt-out after the user accepts a one-time prompt.
 
 type Prompt = { title: string; message: string };
 
 function fixture(t: TestContext, settings?: string) {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-codemode-optout-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-codemode-optout-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const agentDir = join(root, "agent");
-	const configHome = join(root, "gentle-ai");
+	const configHome = join(root, "drakonc-ai");
 	mkdirSync(agentDir, { recursive: true });
 	const settingsPath = join(agentDir, "settings.json");
 	if (settings !== undefined) writeFileSync(settingsPath, settings);
@@ -65,7 +65,7 @@ const read = (path: string) => readFileSync(path, "utf8");
 
 test("the pure edit appends the opt-out and keeps every other key, indentation, and trailing newline", () => {
 	for (const [indent, newline] of [[4, "\n"], ["\t", "\n"], [undefined, ""]] as const) {
-		const original = { theme: "rose", extensions: ["./ext/a.ts", "!./ext/b.ts"], packages: ["npm:gentle-pi"] };
+		const original = { theme: "rose", extensions: ["./ext/a.ts", "!./ext/b.ts"], packages: ["npm:drakonc-pi"] };
 		const text = `${JSON.stringify(original, null, indent)}${newline}`;
 		const expected = { ...original, extensions: [...original.extensions, BUILTIN_CODEMODE_OPTOUT_ENTRY] };
 		assert.equal(withBuiltinExtensionExcluded(text), `${JSON.stringify(expected, null, indent)}${newline}`);
@@ -83,7 +83,7 @@ test("the pure edit refuses explicit entries, malformed JSON, non-object setting
 });
 
 test("accepting the prompt appends the opt-out to the agent settings.json and says when the warning goes away", async (t) => {
-	const original = `${JSON.stringify({ theme: "rose", extensions: ["./ext/a.ts"], packages: ["npm:gentle-pi"] }, null, 2)}\n`;
+	const original = `${JSON.stringify({ theme: "rose", extensions: ["./ext/a.ts"], packages: ["npm:drakonc-pi"] }, null, 2)}\n`;
 	const f = fixture(t, original);
 	const { ctx, prompts, notices } = interactive(true);
 
@@ -94,7 +94,7 @@ test("accepting the prompt appends the opt-out to the agent settings.json and sa
 	assert.match(prompts[0]!.message, /-builtin:codemode/);
 	assert.match(prompts[0]!.message, /Nothing is written unless you accept/);
 	assert.ok(prompts[0]!.message.includes(f.settingsPath));
-	const expected = { theme: "rose", extensions: ["./ext/a.ts", "-builtin:codemode"], packages: ["npm:gentle-pi"] };
+	const expected = { theme: "rose", extensions: ["./ext/a.ts", "-builtin:codemode"], packages: ["npm:drakonc-pi"] };
 	assert.equal(read(f.settingsPath), `${JSON.stringify(expected, null, 2)}\n`);
 	assert.match(notices.join("\n"), /next launch/);
 

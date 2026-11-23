@@ -21,7 +21,7 @@ export type SessionProfileAuthority =
 
 /** Publish only the returned detached snapshot, including preserved disk state
  * on append failure. Terminal invalid/future records never expose a fallback.
- * The record's origin and startup state travel with it (gentle-shell#2742), so
+ * The record's origin and startup state travel with it (drakonc-shell#2742), so
  * a startup record is never read as an explicit choice and a startup-none
  * clear stays distinct from a legacy clear.
  */
@@ -53,7 +53,7 @@ function noProfile(manager: SessionProfileLifecycleManager): boolean {
    return (
     value.type === "custom" &&
     typeof value.customType === "string" &&
-    value.customType.startsWith("gentle-pi.session-profile/")
+    value.customType.startsWith("drakonc-pi.session-profile/")
    );
   })
  );

@@ -44,7 +44,7 @@ function get(port: number, path: string): Promise<{ status: number; body: string
 }
 
 async function setup(engramUrl?: string) {
-	const root = mkdtempSync(join(tmpdir(), "gentle-tower-art-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-tower-art-"));
 	roots.push(root);
 	const project = join(root, "project");
 	mkdirSync(join(project, "docs"), { recursive: true });

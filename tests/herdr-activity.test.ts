@@ -180,7 +180,7 @@ test("CLI transport honors an explicit Herdr binary path without shell interpret
 });
 
 test("one metadata report sets or clears both tokens without changing semantic state", () => {
-	const base = ["pane", "report-metadata", "pane", "--source", "gentle:activity", "--agent", "pi", "--seq", "42", "--ttl-ms", "30000"];
+	const base = ["pane", "report-metadata", "pane", "--source", "drakonc:activity", "--agent", "pi", "--seq", "42", "--ttl-ms", "30000"];
 	assert.deepEqual(metadataArgs("pane", null, 42), [...base, "--clear-token", "summary", "--clear-token", "summary2"]);
 	assert.deepEqual(metadataArgs("pane", "◐ long\n  title", 42), [...base, "--token", "summary=◐ long", "--token", "summary2=  title"]);
 	assert.deepEqual(metadataArgs("pane", "◐ short", 42), [...base, "--token", "summary=◐ short", "--clear-token", "summary2"]);
@@ -261,15 +261,15 @@ test("setup hint states active publishing and gives read-only sidebar guidance",
 		"pass: Herdr task-summary publishing active",
 		"info: Herdr's default sidebar does not show task titles; add these two rows to the Agents sidebar rows in your Herdr config: ['$summary'], ['$summary2']",
 		"info: Sidebar rows belong to the config of the Herdr client that displays the session, including when Pi runs over SSH",
-		"info: After editing, reload or restart Herdr; Gentle Shell never changes Herdr config",
-		"info: Details: https://github.com/Gentleman-Programming/gentle-shell/blob/main/docs/readme-reference.md#herdr-active-work-summary",
+		"info: After editing, reload or restart Herdr; Drakonc Shell never changes Herdr config",
+		"info: Details: https://github.com/Drakoncman-Programming/drakonc-shell/blob/main/docs/readme-reference.md#herdr-active-work-summary",
 	]);
 });
 
 test("setup hint names why publishing is inactive and keeps the guidance", () => {
 	const reason = (env: NodeJS.ProcessEnv, interactive: boolean, socket: boolean) =>
 		herdrSetupHint(env, { interactive, isSocket: () => socket })[1];
-	assert.equal(reason({ ...herdrEnv, GENTLE_PI_AGENTS_CHILD: "1" }, true, true), "warn: Herdr task-summary publishing inactive: Gentle Agents child session");
+	assert.equal(reason({ ...herdrEnv, DRAKONC_PI_AGENTS_CHILD: "1" }, true, true), "warn: Herdr task-summary publishing inactive: Drakonc Agents child session");
 	assert.equal(reason(herdrEnv, false, true), "warn: Herdr task-summary publishing inactive: requires the interactive Pi TUI");
 	assert.equal(reason(herdrEnv, true, false), "warn: Herdr task-summary publishing inactive: HERDR_SOCKET_PATH is not a Unix socket");
 	assert.equal(herdrSetupHint(herdrEnv, { interactive: false, isSocket: () => true }).length, 6);

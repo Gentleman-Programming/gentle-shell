@@ -27,9 +27,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
 import { getThemeByName } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import fast from "../extensions/gentle-fast.ts";
-import gentleAgents from "../extensions/gentle-agents.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
+import fast from "../extensions/drakonc-fast.ts";
+import drakoncAgents from "../extensions/drakonc-agents.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { fakeChild } from "./agents-fake-child.ts";
 import { PROFILE_TIER_EVENT } from "../lib/openai-fast-tier.ts";
@@ -60,11 +60,11 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
  mkdirSync(config);
  mkdirSync(agentDir);
  const environment = {
-  GENTLE_PI_CONFIG_HOME: config,
-  GENTLE_PI_AGENT_HOME: agentDir,
+  DRAKONC_PI_CONFIG_HOME: config,
+  DRAKONC_PI_AGENT_HOME: agentDir,
   PI_CODING_AGENT_DIR: agentDir,
-  GENTLE_PI_AGENTS_CHILD: startup?.env?.GENTLE_PI_AGENTS_CHILD,
-  GENTLE_PI_PROFILE_FOLLOW: startup?.env?.GENTLE_PI_PROFILE_FOLLOW,
+  DRAKONC_PI_AGENTS_CHILD: startup?.env?.DRAKONC_PI_AGENTS_CHILD,
+  DRAKONC_PI_PROFILE_FOLLOW: startup?.env?.DRAKONC_PI_PROFILE_FOLLOW,
  };
  const originals = Object.fromEntries(Object.keys(environment).map((key) => [key, process.env[key]]));
  for (const [key, value] of Object.entries(environment)) {
@@ -88,7 +88,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
   writeFileSync(
    profilesPath,
    JSON.stringify({
-    kind: "gentle-pi.agent_model_profiles",
+    kind: "drakonc-pi.agent_model_profiles",
     version: 1,
     profiles,
     ...(active === undefined ? {} : { active }),
@@ -214,10 +214,10 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
     await loadExtensionFromFactory(
      (pi) => {
       currentApi = pi;
-      createGentleAiExtension({
+      createDrakoncAiExtension({
        nativeReviewCli: null,
        candidateViews: null,
-       processEnv: startup?.env ?? { GENTLE_PI_AGENTS_CHILD: "1" },
+       processEnv: startup?.env ?? { DRAKONC_PI_AGENTS_CHILD: "1" },
        resolveTelemetryTriggerBinary: () => {
         throw Error("disabled fixture telemetry");
        },
@@ -254,7 +254,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
     ),
    ];
    if (startup?.agents) loaded.push(await loadExtensionFromFactory(
-    (pi) => gentleAgents(pi, environment, {
+    (pi) => drakoncAgents(pi, environment, {
      home: root,
      agentHome: agentDir,
      env: environment,
@@ -354,13 +354,13 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
   session: AgentSession = runtime.session,
  ) => {
   selection = name;
-  const command = session.extensionRunner.getCommand("gentle:profiles");
+  const command = session.extensionRunner.getCommand("drakonc:profiles");
   assert.ok(command);
   await command.handler("", session.extensionRunner.createCommandContext());
  };
  const clear = () =>
   runtime.session.extensionRunner
-   .getCommand("gentle:profiles")!
+   .getCommand("drakonc:profiles")!
    .handler("clear", runtime.session.extensionRunner.createCommandContext());
  const binding = () =>
   readSessionProfileBinding(runtime.session.sessionManager.getSessionId());
@@ -517,7 +517,7 @@ for (const failure of ["before-append", "EISDIR"] as const)
 
 for (const customType of [
  SESSION_PROFILE_CUSTOM_TYPE,
- "gentle-pi.session-profile/v99",
+ "drakonc-pi.session-profile/v99",
 ])
  test(`U3 terminal invalid/future selection ${customType} blocks until explicit recovery`, async (t) => {
   const f = await fixture(t);
@@ -777,7 +777,7 @@ test(`A3 headless own start reports the switch outcome on stderr`, async (t) => 
  f.settingsUnchanged();
 });
 
-for (const env of [{ GENTLE_PI_PROFILE_FOLLOW: "1" }, { GENTLE_PI_AGENTS_CHILD: "1" }])
+for (const env of [{ DRAKONC_PI_PROFILE_FOLLOW: "1" }, { DRAKONC_PI_AGENTS_CHILD: "1" }])
  test(`A3 ${Object.keys(env)[0]} skips startup switching and freezing`, async (t) => {
   const f = await fixture(t, false, false, "live", { env });
   assert.equal(f.runtime.session.model?.id, "gpt-4o");
@@ -871,7 +871,7 @@ for (const active of ["live", undefined] as const)
   f.settingsUnchanged();
  });
 
-// gentle-shell#2742, section 3: a new session knows the startup state it froze.
+// drakonc-shell#2742, section 3: a new session knows the startup state it froze.
 const data = (entry: unknown) => (entry as { data?: unknown } | undefined)?.data;
 for (const active of ["live", undefined] as const)
  test(`A2 clear in a new session goes back to the startup ${active ?? "no profile"} and v1 replays it the same`, async (t) => {
@@ -909,7 +909,7 @@ test("A2 clear of an invalid newest entry in a new session writes the startup pr
  assert.equal(f.binding()?.origin, "global");
 });
 
-// Desktop clear_profile_binding through the real owner (gentle-shell-gpui parity, T1, L32).
+// Desktop clear_profile_binding through the real owner (drakonc-shell-gpui parity, T1, L32).
 for (const active of ["live", undefined] as const)
 	test(`Desktop clear through the real owner matches the terminal clear (${active ?? "none"})`, async (t) => {
 		const f = await fixture(t, false, false, active);

@@ -1,12 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 
 // ---------------------------------------------------------------------------
 // Background subagents policy — project > global > env > default off
 //
-// Pure resolver, extracted from extensions/gentle-ai.ts so the runtime side
-// (extensions/gentle-agents.ts) can read the effective policy without
+// Pure resolver, extracted from extensions/drakonc-ai.ts so the runtime side
+// (extensions/drakonc-agents.ts) can read the effective policy without
 // importing the pi extension surface. No pi imports belong in this file.
 // ---------------------------------------------------------------------------
 
@@ -34,12 +34,12 @@ export interface BackgroundSubagentsResolution {
 
 export interface LoadBackgroundSubagentsOptions {
 	/** Override the config home directory (used in tests to avoid touching ~/.pi). */
-	gentlePiConfigHome?: string;
+	drakoncPiConfigHome?: string;
 	/** Override the environment lookup (used in tests). */
 	env?: Record<string, string | undefined>;
 }
 
-export const BACKGROUND_SUBAGENTS_SCHEMA = "gentle-pi.background-subagents/v1";
+export const BACKGROUND_SUBAGENTS_SCHEMA = "drakonc-pi.background-subagents/v1";
 export const BACKGROUND_SUBAGENTS_FILE = "background-subagents.json";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -47,7 +47,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Strict decode of {"schema":"gentle-pi.background-subagents/v1","policy":"on"|"off"}.
+ * Strict decode of {"schema":"drakonc-pi.background-subagents/v1","policy":"on"|"off"}.
  * Any malformed shape (bad JSON, wrong schema, unknown keys, invalid policy)
  * returns undefined so the caller fails closed to "off".
  */
@@ -71,10 +71,10 @@ export function parseBackgroundSubagentsPolicyFile(
  * Resolve the background-subagents policy AND the source that decided it.
  *
  * Resolution order (first hit wins, mirroring loadRuntimeGuardrailsConfig):
- *   1. Project file `${cwd}/.pi/gentle-ai/background-subagents.json`
+ *   1. Project file `${cwd}/.pi/drakonc-ai/background-subagents.json`
  *   2. Global file `${configHome}/background-subagents.json`
- *      (configHome honors GENTLE_PI_CONFIG_HOME, default ~/.pi/gentle-ai)
- *   3. Env var GENTLE_PI_BACKGROUND_SUBAGENTS ("on" | "off")
+ *      (configHome honors DRAKONC_PI_CONFIG_HOME, default ~/.drakonc-shell/drakonc-ai)
+ *   3. Env var DRAKONC_PI_BACKGROUND_SUBAGENTS ("on" | "off")
  *   4. Default "off"
  *
  * A present-but-malformed file fails closed to "off" instead of falling
@@ -91,12 +91,12 @@ export function resolveBackgroundSubagentsPolicy(
 	options: LoadBackgroundSubagentsOptions = {},
 ): BackgroundSubagentsResolution {
 	const env = options.env ?? process.env;
-	const envValue = env.GENTLE_PI_BACKGROUND_SUBAGENTS;
+	const envValue = env.DRAKONC_PI_BACKGROUND_SUBAGENTS;
 	let projectFile = "";
 	let globalFile = "";
 	try {
-		const configHome = options.gentlePiConfigHome ?? gentlePiConfigHome();
-		projectFile = join(cwd, ".pi", "gentle-ai", BACKGROUND_SUBAGENTS_FILE);
+		const configHome = options.drakoncPiConfigHome ?? drakoncPiConfigHome();
+		projectFile = join(cwd, ".pi", "drakonc-ai", BACKGROUND_SUBAGENTS_FILE);
 		globalFile = join(configHome, BACKGROUND_SUBAGENTS_FILE);
 		const projectFileExists = existsSync(projectFile);
 		const globalFileExists = existsSync(globalFile);

@@ -44,8 +44,8 @@ function parseSetParams(params: Record<string, unknown>): { mode: unknown; persi
 /**
  * Desktop's permission surface over the existing YoloSessionController owner.
  *
- * The owner is reached only through its published `gentle:yolo:host-ui` adapter:
- * the same controller that answers `/gentle:mode`, so there is no parallel mode
+ * The owner is reached only through its published `drakonc:yolo:host-ui` adapter:
+ * the same controller that answers `/drakonc:mode`, so there is no parallel mode
  * store, no second file reader, and no filesystem watcher. Every mutation is
  * validated by the owner (interactive host, live session identity, atomic save);
  * this bridge only shapes owner results into the Desktop RPC contract.

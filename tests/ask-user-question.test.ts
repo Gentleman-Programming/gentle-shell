@@ -3,7 +3,7 @@ import test from "node:test";
 import { Container, stripTerminalSequences, Text, TuiAltScreen, visibleWidth, type Component, type Terminal } from "@earendil-works/pi-tui";
 import { createChatViewport } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/chat-viewport.js";
 import askUserQuestion, { askMultiSelect } from "../extensions/ask-user-question.ts";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 
 /** Plain theme fake: identity styling keeps rendered assertions readable. */
 interface Theme {
@@ -68,7 +68,7 @@ interface ExtensionSlot {
 	tools: Map<string, RegisteredTool>;
 }
 
-const OURS_PATH = "gentle-pi/extensions/ask-user-question.ts";
+const OURS_PATH = "drakonc-pi/extensions/ask-user-question.ts";
 
 function registerQuestionTool(slot?: ExtensionSlot, withHerdr = false): { tool: RegisteredTool; slot: ExtensionSlot; emitted: LifecycleEvent[] } {
 	const target: ExtensionSlot = slot ?? { path: OURS_PATH, tools: new Map() };
@@ -91,7 +91,7 @@ function registerQuestionTool(slot?: ExtensionSlot, withHerdr = false): { tool: 
 			},
 		},
 	};
-	if (withHerdr) createGentleAiExtension({ nativeReviewCli: null })(pi as never);
+	if (withHerdr) createDrakoncAiExtension({ nativeReviewCli: null })(pi as never);
 	askUserQuestion(pi as never);
 	const tool = target.tools.get("ask_user_question");
 	if (!tool) throw new Error("ask_user_question must register");
@@ -119,7 +119,7 @@ function run(tool: RegisteredTool, params: unknown, ctx: unknown): Promise<ToolR
 	return tool.execute("call", params, new AbortController().signal, undefined, ctx);
 }
 
-const INTERACTIVE_HOST_ENV = "GENTLE_SHELL_INTERACTIVE_HOST";
+const INTERACTIVE_HOST_ENV = "DRAKONC_SHELL_INTERACTIVE_HOST";
 
 /** Fake interactive-RPC-host ctx: scripted `select`/`input` answers, one per call. */
 function rpcHostContext(selectAnswers: readonly (string | undefined)[], inputAnswers: readonly (string | undefined)[] = []) {
@@ -276,8 +276,8 @@ test("ask_user_question resolves a single-select answer through RPC dialogs on a
 		{ questionIndex: 0, question: "Proceed?", kind: "option", answer: "Alpha" },
 	]);
 	assert.deepEqual(emitted, [
-		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: true } },
-		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: false } },
+		{ channel: "drakonc-pi:ask-user-question:blocked", data: { active: true } },
+		{ channel: "drakonc-pi:ask-user-question:blocked", data: { active: false } },
 	]);
 });
 
@@ -458,8 +458,8 @@ test("ask_user_question cancels through RPC dialogs like the TUI path when selec
 	assert.equal(result.content[0]?.text, "User cancelled the questionnaire");
 	assert.deepEqual(result.details, { cancelled: true });
 	assert.deepEqual(emitted, [
-		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: true } },
-		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: false } },
+		{ channel: "drakonc-pi:ask-user-question:blocked", data: { active: true } },
+		{ channel: "drakonc-pi:ask-user-question:blocked", data: { active: false } },
 	]);
 });
 
@@ -492,8 +492,8 @@ test("ask_user_question commits a single-select answer end-to-end", async () => 
 		{ questionIndex: 0, question: "Proceed?", kind: "option", answer: "Alpha" },
 	]);
 	assert.deepEqual(emitted, [
-		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: true } },
-		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: false } },
+		{ channel: "drakonc-pi:ask-user-question:blocked", data: { active: true } },
+		{ channel: "drakonc-pi:ask-user-question:blocked", data: { active: false } },
 	]);
 });
 
@@ -609,8 +609,8 @@ for (const multiSelect of [false, true]) {
 			assert.deepEqual(result.details.answers, [answer]);
 			assert.equal(result.content[0]?.text, multiSelect ? `1. Pick? — selected: ${label}` : `1. Pick? — ${label}`);
 			assert.deepEqual(emitted, [
-				{ channel: "gentle-pi:ask-user-question:blocked", data: { active: true } },
-				{ channel: "gentle-pi:ask-user-question:blocked", data: { active: false } },
+				{ channel: "drakonc-pi:ask-user-question:blocked", data: { active: true } },
+				{ channel: "drakonc-pi:ask-user-question:blocked", data: { active: false } },
 			]);
 		} finally { tui.stop(); }
 	});
@@ -724,8 +724,8 @@ test("ask_user_question reports cancellation without answers", async () => {
 	assert.equal(result.content[0]?.text, "User cancelled the questionnaire");
 	assert.deepEqual(result.details, { cancelled: true });
 	assert.deepEqual(emitted, [
-		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: true } },
-		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: false } },
+		{ channel: "drakonc-pi:ask-user-question:blocked", data: { active: true } },
+		{ channel: "drakonc-pi:ask-user-question:blocked", data: { active: false } },
 	]);
 });
 
@@ -739,8 +739,8 @@ test("ask_user_question settles its lifecycle after a custom UI error", async ()
 	);
 
 	assert.deepEqual(emitted, [
-		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: true } },
-		{ channel: "gentle-pi:ask-user-question:blocked", data: { active: false } },
+		{ channel: "drakonc-pi:ask-user-question:blocked", data: { active: true } },
+		{ channel: "drakonc-pi:ask-user-question:blocked", data: { active: false } },
 	]);
 });
 

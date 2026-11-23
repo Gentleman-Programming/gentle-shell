@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const sources = [
-	"gentle-ai-binary",
+	"drakonc-ai-binary",
 	"review-relay-contract",
 	"review-integration-v2",
 	"review-risk-assessment",
@@ -15,17 +15,17 @@ const sources = [
 	"status-timing-diagnostics",
 	"telemetry-trigger",
 	"child-package-injection",
-	"gentle-shell-launcher",
-	"gentle-shell-bundled",
-	"gentle-shell-startup-update",
-	"gentle-shell-update-panel",
-	"gentle-shell-startup-flow",
-	"gentle-shell-resume-hint",
-	"gentle-shell-uninstall",
-	"gentle-shell-import-pi",
-	"gentle-shell-desktop",
+	"drakonc-shell-launcher",
+	"drakonc-shell-bundled",
+	"drakonc-shell-startup-update",
+	"drakonc-shell-update-panel",
+	"drakonc-shell-startup-flow",
+	"drakonc-shell-resume-hint",
+	"drakonc-shell-uninstall",
+	"drakonc-shell-import-pi",
+	"drakonc-shell-desktop",
 	"design-canvas-assets",
-	// `gentle-shell tower` runs the Gentle Tower server without Pi.
+	// `drakonc-shell tower` runs the Drakonc Tower server without Pi.
 	"tower-snapshot",
 	"tower-hub",
 	"tower-presence",

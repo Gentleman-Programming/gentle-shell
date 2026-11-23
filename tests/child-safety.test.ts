@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createChildSafetyExtension } from "../extensions/child-safety.ts";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 
 type Handler = (event: { toolName: string; input: { command: string } }, ctx: ExtensionContext) => unknown;
 function harness(child: boolean, primary = false) {
@@ -16,8 +16,8 @@ function harness(child: boolean, primary = false) {
 		events: { on() {}, emit: (name: string, data: unknown) => events.push({ name, data }) },
 		registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {},
 	} as unknown as ExtensionAPI;
-	const env = { GENTLE_PI_AGENTS_CHILD: child ? "1" : "0" };
-	if (primary) createGentleAiExtension({ processEnv: env, nativeReviewCli: null })(pi);
+	const env = { DRAKONC_PI_AGENTS_CHILD: child ? "1" : "0" };
+	if (primary) createDrakoncAiExtension({ processEnv: env, nativeReviewCli: null })(pi);
 	else createChildSafetyExtension(env)(pi);
 	return { handlers, events };
 }
@@ -62,7 +62,7 @@ test("headless children reject corrected literal forms without prompting", async
 	}
 });
 
-// gentle-pi#2285: removal behind reserved words, in backticks or in eval is still data loss.
+// drakonc-pi#2285: removal behind reserved words, in backticks or in eval is still data loss.
 test("children block destruction after reserved words, in backticks and in eval", async () => {
 	for (const primary of [false, true]) {
 		const h = harness(true, primary);
@@ -132,13 +132,13 @@ test("children block recognized destructive commands sent to monitor too", async
 	assert.equal((result as { block?: boolean })?.block, true);
 });
 
-test("child safety blocks an external pane fallback by its input property (gentle-shell#379)", async () => {
+test("child safety blocks an external pane fallback by its input property (drakonc-shell#379)", async () => {
 	const h = harness(true);
 	const ctx = context(async () => { throw new Error("child must never prompt"); }, false);
 	const pane = { toolName: "synthetic_surface", input: { action: "send", cwd: "/tmp/other-repo", openProjectPaneIfMissing: true } } as unknown as ReturnType<typeof event>;
 	const result = await h.handlers[0](pane, ctx) as { block?: boolean; reason?: string };
 	assert.equal(result?.block, true);
-	assert.match(result?.reason ?? "", /code=gentle-ai\.execution-surface\.external-fallback-prohibited/);
+	assert.match(result?.reason ?? "", /code=drakonc-ai\.execution-surface\.external-fallback-prohibited/);
 	assert.equal(await h.handlers[0]({ toolName: "synthetic_surface", input: { action: "send" } } as unknown as ReturnType<typeof event>, ctx), undefined);
 	assert.equal(await h.handlers[0](event("pnpm test"), ctx), undefined);
 });

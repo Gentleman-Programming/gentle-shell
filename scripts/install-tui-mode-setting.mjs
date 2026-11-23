@@ -7,21 +7,21 @@ import { setTimeout as delay } from "node:timers/promises";
 
 // The two directory layouts Pi's own package manager creates when it installs
 // a package into an agent home: the npm-backed `npm/node_modules/<package>`
-// (user scope `<agent dir>/npm/node_modules/gentle-pi`, project scope
-// `.pi/npm/node_modules/gentle-pi`) and the git-backed
-// `git/github.com/Gentleman-Programming/<package>` layout. A path is checked
+// (user scope `<agent dir>/npm/node_modules/drakonc-pi`, project scope
+// `.pi/npm/node_modules/drakonc-pi`) and the git-backed
+// `git/github.com/Drakoncman-Programming/<package>` layout. A path is checked
 // for these sequences anywhere in its segments, not anchored to a specific
 // resolved agent home — unlike installTuiModeSetting's own ownership check.
 const PI_MANAGED_SEGMENT_SEQUENCES = [
 	["npm", "node_modules"],
-	["git", "github.com", "Gentleman-Programming"],
+	["git", "github.com", "Drakoncman-Programming"],
 ];
 
-// Gentle Shell's default theme (themes/Gentleman-Cute.json, "name":
-// "Gentleman-Cute"): applied by withIsolatedHomeDefaults below whenever a
+// Drakonc Shell's default theme (themes/Drakonc.json, "name":
+// "Drakonc"): applied by withIsolatedHomeDefaults below whenever a
 // home's settings do not already declare one, never overriding a user's own
 // choice.
-export const DEFAULT_THEME_NAME = "Gentleman-Cute";
+export const DEFAULT_THEME_NAME = "Drakonc";
 
 // Pure merge: returns `value` with fullscreen tuiMode always applied, and —
 // only when `value` does not already declare a "theme" key — the default
@@ -41,11 +41,11 @@ function containsSequence(segments, sequence) {
 	return false;
 }
 
-/** Gates the POSTINSTALL entry point only (scripts/install-gentle-ai.mjs), not
+/** Gates the POSTINSTALL entry point only (scripts/install-drakonc-ai.mjs), not
  * installTuiModeSetting or installIsolatedTuiModeSetting: true when
- * `packageDir` (the directory of the gentle-pi package actually running,
+ * `packageDir` (the directory of the drakonc-pi package actually running,
  * typically derived from that script's own import.meta.url) sits under one of
- * the directory layouts above. A plain `npm install -g gentle-pi`, a
+ * the directory layouts above. A plain `npm install -g drakonc-pi`, a
  * development git checkout, an `npx` cache directory, or a pnpm store never
  * match, so the postinstall entry skips writing the user's global Pi settings
  * for those instead of relying solely on installTuiModeSetting's own,
@@ -119,19 +119,19 @@ async function acquireLock(path) {
  */
 export async function installTuiModeSetting(options = {}) {
 	const env = options.env ?? process.env;
-	const requestedHome = resolve(env.GENTLE_PI_AGENT_HOME || env.PI_CODING_AGENT_DIR || join(options.home ?? homedir(), ".pi", "agent"));
+	const requestedHome = resolve(env.DRAKONC_PI_AGENT_HOME || env.PI_CODING_AGENT_DIR || join(options.home ?? homedir(), ".pi", "agent"));
 	const packageRoot = resolve(options.packageRoot ?? dirname(dirname(fileURLToPath(import.meta.url))));
 	let home;
 	try { home = realpathSync(requestedHome); }
 	catch (error) { if (error.code === "ENOENT") return { changed: false, recognized: false }; throw error; }
 	const installations = [
 		{
-			packageRoot: join(home, "npm", "node_modules", "gentle-pi"),
-			paths: [home, join(home, "npm"), join(home, "npm", "node_modules"), join(home, "npm", "node_modules", "gentle-pi")],
+			packageRoot: join(home, "npm", "node_modules", "drakonc-pi"),
+			paths: [home, join(home, "npm"), join(home, "npm", "node_modules"), join(home, "npm", "node_modules", "drakonc-pi")],
 		},
 		{
-			packageRoot: join(home, "git", "github.com", "Gentleman-Programming", "gentle-pi"),
-			paths: [home, join(home, "git"), join(home, "git", "github.com"), join(home, "git", "github.com", "Gentleman-Programming"), join(home, "git", "github.com", "Gentleman-Programming", "gentle-pi")],
+			packageRoot: join(home, "git", "github.com", "Drakoncman-Programming", "drakonc-pi"),
+			paths: [home, join(home, "git"), join(home, "git", "github.com"), join(home, "git", "github.com", "Drakoncman-Programming"), join(home, "git", "github.com", "Drakoncman-Programming", "drakonc-pi")],
 		},
 	];
 	// Canonical agent-home aliases (including macOS /var) are supported.
@@ -174,11 +174,11 @@ export async function installTuiModeSetting(options = {}) {
 }
 
 /** Writes tuiMode: "fullscreen" and — when the home has no theme of its own
- * yet — the default Gentle Shell theme (withIsolatedHomeDefaults,
- * DEFAULT_THEME_NAME above) into a directory gentle-shell's own isolated-home
+ * yet — the default Drakonc Shell theme (withIsolatedHomeDefaults,
+ * DEFAULT_THEME_NAME above) into a directory drakonc-shell's own isolated-home
  * bootstrap (T2) just created and owns. Unlike installTuiModeSetting, there is no
  * "physically installed under this home's npm/node_modules" ownership check to
- * satisfy: the caller already knows it created `dir` moments ago as gentle-shell's
+ * satisfy: the caller already knows it created `dir` moments ago as drakonc-shell's
  * dedicated agent home, so the only safety property that still matters is the one
  * every writer here needs — atomic, non-symlink, cooperative-lock-respecting.
  */

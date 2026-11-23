@@ -1,7 +1,7 @@
 # Prompt lifecycle: remaining delivery paths after #1631
 
 ## Objective
-Every model-visible message Gentle Agents hands to a parent session starts its turn through Pi's prompt lifecycle (`before_agent_start`), never through a direct `triggerTurn` run, in every host state. Held content always reaches the parent without waiting for an unrelated user prompt. Proven on the real Pi host, not only on the fake.
+Every model-visible message Drakonc Agents hands to a parent session starts its turn through Pi's prompt lifecycle (`before_agent_start`), never through a direct `triggerTurn` run, in every host state. Held content always reaches the parent without waiting for an unrelated user prompt. Proven on the real Pi host, not only on the fake.
 
 Scope after merging main 2fb7700a: cf3012f7 lets native providers continue through a hidden `triggerTurn` wake by design, so the prompt-lifecycle guarantee applies to the Claude Bridge selection; holds apply to every provider.
 
@@ -18,7 +18,7 @@ State of `main` at 2549f17a, before this change. The last column says which task
 | manual / pre-prompt threshold compaction, no run | false | false | hold, released by `session_compact(_failed)` | none | — |
 | `/tree` branch summarization, no run | false | false | hold | never released by an event: `session_tree` not handled; cancelled summarization emits no event at all | T2 (`session_tree` flush + held-only re-check) |
 | user prompt in its pre-run phase (input handlers, auth, model checks) | true | false | idle: wake sent | wake and user prompt both reach `Agent.prompt()`; loser throws and resets the winner's run flag | T3 (`input` start window) |
-| incoming orchestrator session message (transport listener in `gentle-agents.ts`) | any | any | not routed: `sendMessage(followUp, triggerTurn)` | idle: direct run without `before_agent_start` (#1528 on another path); no run + compacting: direct run during compaction | T1 (listener routed through `deliverOrchestratorMessage`) |
+| incoming orchestrator session message (transport listener in `drakonc-agents.ts`) | any | any | not routed: `sendMessage(followUp, triggerTurn)` | idle: direct run without `before_agent_start` (#1528 on another path); no run + compacting: direct run during compaction | T1 (listener routed through `deliverOrchestratorMessage`) |
 
 ## Tasks
 - [x] T1: Real-host prompt-lifecycle harness + route incoming orchestrator messages through the delivery router (run keeps followUp). PR A. Commits: 295c7a54 (stale history-restore guard), 27d32193 (router + tests + real-host harness).
@@ -38,15 +38,15 @@ Real-host harness `tests/agents-prompt-lifecycle-runtime.test.ts` (real AgentSes
 - idle orchestrator message: `provider request 0 must carry the before_agent_start system prompt marker`.
 - compaction without a run: `no provider request is issued for the message while compaction runs` (3 !== 2).
 - child completion to idle parent and message during an active run: green on base (regression guards: #1631 holds on the real host; the run route is unchanged).
-Unit tests in `tests/gentle-agents.test.ts` red on base: idle (`the message is stored without triggerTurn`), compaction hold (`no direct turn starts while the parent compacts`, 1 !== 0), stale ctx (`Missing expected rejection.`), session change (`the old session's held message is not replayed into the new one`, 1 !== 0), busy-then-boundary hold (verified red by the parent). The idle test also asserts that the wake text does not call a session message subagent output; red with the old wake text. The run-route test is a guard and is green on base by design.
+Unit tests in `tests/drakonc-agents.test.ts` red on base: idle (`the message is stored without triggerTurn`), compaction hold (`no direct turn starts while the parent compacts`, 1 !== 0), stale ctx (`Missing expected rejection.`), session change (`the old session's held message is not replayed into the new one`, 1 !== 0), busy-then-boundary hold (verified red by the parent). The idle test also asserts that the wake text does not call a session message subagent output; red with the old wake text. The run-route test is a guard and is green on base by design.
 Side finding fixed in the same change: `restoreSessionHistory` read `ctx.sessionManager` outside its try, so a shutdown before the disk read landed raised an unhandled rejection (stale ctx). The real-host file failed on it; reverting only that guard reproduces the file-level failure.
-Each commit passes on its own (295c7a54: gentle-agents 172/172). Real-host file stable over 5 consecutive runs.
+Each commit passes on its own (295c7a54: drakonc-agents 172/172). Real-host file stable over 5 consecutive runs.
 Clean-HOME `pnpm test`: 4574 tests, 4539 pass, 34 skipped, 1 fail (the known `npm pack --json` npm 12 failure); +10 tests vs baseline 4564. `pnpm run typecheck`: no regressions.
 Residual: a held orchestrator message is lost if the session is replaced before the boundary (sender already acknowledged), like pending child content. Receiver-side admission (#1518) is not implemented; the route decision is where it would plug in. T2 (release hold on `session_tree` / cancelled summarization) still applies to held orchestrator messages.
 
 ### Merge with main 2fb7700a
-- cf3012f7 split the idle wake: Claude Bridge keeps a user wake through the prompt lifecycle; native providers get a hidden `gentle-agents.wake` custom-message turn. The real-host harness now registers the faux provider as `claude-bridge`.
-- The bridge wake text is persisted per session (`gentle-agents.wake-identity`) and validated against `PARENT_WAKE_TEXT` on restore, so the wake text is no longer changed here and the idle test no longer asserts it.
+- cf3012f7 split the idle wake: Claude Bridge keeps a user wake through the prompt lifecycle; native providers get a hidden `drakonc-agents.wake` custom-message turn. The real-host harness now registers the faux provider as `claude-bridge`.
+- The bridge wake text is persisted per session (`drakonc-agents.wake-identity`) and validated against `PARENT_WAKE_TEXT` on restore, so the wake text is no longer changed here and the idle test no longer asserts it.
 - cf3012f7 also moved the `restoreSessionHistory` session check inside its try; main's version replaces this branch's guard.
 
 ### #1640 on main 9a4fb84f

@@ -1,10 +1,10 @@
 # Trademark Policy
 
-The gentle-shell and gentle-pi names and associated logos identify the official project and its maintainers. This policy explains their permitted use; it does not change the MIT license for the software.
+The drakonc-shell and drakonc-pi names and associated logos identify the official project and its maintainers. This policy explains their permitted use; it does not change the MIT license for the software.
 
 ## Covered marks
 
-**Alan Buscaglia** owns the **gentle-shell** and **gentle-pi** trademarks when they are used as project or package identifiers, together with their associated logos.
+**Alan Buscaglia** owns the **drakonc-shell** and **drakonc-pi** trademarks when they are used as project or package identifiers, together with their associated logos.
 
 This policy does not claim ownership of any third-party **Pi** names or marks.
 
@@ -16,11 +16,11 @@ The MIT copyright notice remains separate from trademark ownership. In particula
 
 ## Permitted references
 
-You may make truthful, nominative references to gentle-shell and gentle-pi, link to the official project, and make factual statements that a product is based on or compatible with gentle-shell or gentle-pi. These references must not be misleading or imply a relationship that does not exist.
+You may make truthful, nominative references to drakonc-shell and drakonc-pi, link to the official project, and make factual statements that a product is based on or compatible with drakonc-shell or drakonc-pi. These references must not be misleading or imply a relationship that does not exist.
 
 ## Forks and modified distributions
 
-Modified distributions and forks must use distinct primary names and branding. They may truthfully state that they are based on or compatible with gentle-shell or gentle-pi, provided that the statement does not imply that the distribution is official, sponsored, endorsed, certified, or partnered.
+Modified distributions and forks must use distinct primary names and branding. They may truthfully state that they are based on or compatible with drakonc-shell or drakonc-pi, provided that the statement does not imply that the distribution is official, sponsored, endorsed, certified, or partnered.
 
 ## Permission required
 

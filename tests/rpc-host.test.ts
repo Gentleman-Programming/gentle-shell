@@ -7,7 +7,7 @@ import {
 	withoutInteractiveHost,
 } from "../lib/rpc-host.ts";
 
-// Interactive host signal: the desktop app sets GENTLE_SHELL_INTERACTIVE_HOST=1
+// Interactive host signal: the desktop app sets DRAKONC_SHELL_INTERACTIVE_HOST=1
 // on the pi process it spawns directly (`--mode rpc`). Subagent children
 // spawned by lib/agents-runner.ts must never see it, so rpc without the
 // variable stays byte-identical to today's headless behaviour.

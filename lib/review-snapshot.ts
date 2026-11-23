@@ -188,7 +188,7 @@ function snapshotsRoot(root: string): string {
 	const gitPath = runGit(root, [
 		"rev-parse",
 		"--git-path",
-		"gentle-ai/reviews/snapshots",
+		"drakonc-ai/reviews/snapshots",
 	]);
 	return isAbsolute(gitPath) ? gitPath : resolve(root, gitPath);
 }
@@ -293,7 +293,7 @@ export function captureLiveReviewCandidateBinding(options: {
 	repositoryId: string;
 }): LiveReviewCandidateBinding {
 	const root = repositoryRoot(options.cwd);
-	const temporaryDirectory = mkdtempSync(join(tmpdir(), "gentle-ai-live-candidate-"));
+	const temporaryDirectory = mkdtempSync(join(tmpdir(), "drakonc-ai-live-candidate-"));
 	const temporaryIndex = join(temporaryDirectory, "index");
 	const temporaryObjectDirectory = join(temporaryDirectory, "objects");
 	mkdirSync(temporaryObjectDirectory, { mode: 0o700 });

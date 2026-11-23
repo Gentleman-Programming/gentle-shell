@@ -1,6 +1,6 @@
 # verifier-2478-diagnostics — strict Risk grammar diagnostics and post-denial disposition
 
-Objective: resolve gentle-shell issue #2478 points 1-4: placement-explicit rejection message, documented launch grammar, assessment≠admission clarification, and the supported post-denial disposition (Option A: no gate-level retry; new launch requires a new explicit user decision).
+Objective: resolve drakonc-shell issue #2478 points 1-4: placement-explicit rejection message, documented launch grammar, assessment≠admission clarification, and the supported post-denial disposition (Option A: no gate-level retry; new launch requires a new explicit user decision).
 Branch: fix/verifier-2478-diagnostics (from origin/main 4851dda5a). Runner: node --experimental-strip-types --test tests/verifier-admission.test.ts; typecheck node scripts/check-types.mjs.
 
 ## Specs
@@ -23,6 +23,6 @@ T3 [S1-S5] Focused suites, typecheck, independent verifier (Risk: item 3, change
 
 ## Log
 
-L1 (user request, verbatim): "ahora este https://github.com/Gentleman-Programming/gentle-shell/issues/2478" then "si" — approving Option A (document no gate-level disposition) plus improving the rejection message.
-L2: Issue #2478 approved (status:approved) via Alan-TheGentleman admin. Main already carries the S4 wording of #2652; pins are substring-based, so the message can be extended.
+L1 (user request, verbatim): "ahora este https://github.com/Drakoncman-Programming/drakonc-shell/issues/2478" then "si" — approving Option A (document no gate-level disposition) plus improving the rejection message.
+L2: Issue #2478 approved (status:approved) via Alan-TheDrakoncman admin. Main already carries the S4 wording of #2652; pins are substring-based, so the message can be extended.
 L3: Forecast ~70 authored lines (message + tests + docs sections) — single unit; Risk: item 3 (gate message others consume) → one independent verifier.

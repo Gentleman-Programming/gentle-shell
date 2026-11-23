@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createCompletionQueue, STALE_COMPLETION_MS } from "../lib/agents-completion-delivery.ts";
 
-// The completion queue owns Gentle Agents' pending background completions so a
+// The completion queue owns Drakonc Agents' pending background completions so a
 // completion is delivered at most once, promptly, and never replays state the
 // parent already consumed (issue #867).
 

@@ -2,11 +2,11 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { ActiveSessionClient, ActiveSessionClientError, ActiveSessionListener, SessionPresenceRegistry } from "../../lib/agents-session-transport.ts";
 
-const agentHome = process.env.GENTLE_AGENT_HOME;
+const agentHome = process.env.DRAKONC_AGENT_HOME;
 const CONTROL_BYTES = 16_384;
-if (!agentHome) throw new Error("GENTLE_AGENT_HOME is required");
+if (!agentHome) throw new Error("DRAKONC_AGENT_HOME is required");
 
-await mkdir(join(agentHome, "gentle-agents"), { recursive: true, mode: 0o755 });
+await mkdir(join(agentHome, "drakonc-agents"), { recursive: true, mode: 0o755 });
 const registry = await SessionPresenceRegistry.create(agentHome);
 let listener;
 let client;

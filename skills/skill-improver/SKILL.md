@@ -1,15 +1,15 @@
 ---
-name: gentle-ai-skill-improver
+name: drakonc-ai-skill-improver
 description: "Trigger: improve skills, audit skills, refactor skills, skill quality. Audit and upgrade existing LLM-first skills."
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "1.0"
 ---
 
 ## Activation Contract
 
-Use this skill when auditing, refactoring, normalizing, or improving existing `SKILL.md` files. Use `gentle-ai-skill-creator` when creating a brand-new skill from a reusable pattern.
+Use this skill when auditing, refactoring, normalizing, or improving existing `SKILL.md` files. Use `drakonc-ai-skill-creator` when creating a brand-new skill from a reusable pattern.
 
 ## Hard Rules
 

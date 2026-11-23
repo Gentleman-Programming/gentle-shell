@@ -10,8 +10,8 @@ Commit `b0a590be` checked `Object.keys(normalized).length === 0` to prompt for c
 
 ## Scope
 
-- In `extensions/gentle-ai.ts`, check whether any agent routes exist (excluding the reserved orchestrator key) before applying a profile.
-- Add regression coverage in `tests/gentle-ai.test.ts` for orchestrator-only profiles.
+- In `extensions/drakonc-ai.ts`, check whether any agent routes exist (excluding the reserved orchestrator key) before applying a profile.
+- Add regression coverage in `tests/drakonc-ai.test.ts` for orchestrator-only profiles.
 - Verify typecheck and tests.
 
 ## Constraints
@@ -32,15 +32,15 @@ Commit `b0a590be` checked `Object.keys(normalized).length === 0` to prompt for c
 
 The operator accepted independent nan QA findings on target `03ea59771bb7d18adc28f8702890b306bf7d1069`. The confirmation works, but the orchestrator-only message incorrectly promises an empty config and omits settings/live-session effects. Existing tests do not explicitly assert preservation of every affected surface or confirmed omitted-agent clearing.
 
-- Allowed source surfaces: `extensions/gentle-ai.ts`, `tests/gentle-ai.test.ts`.
-- Route: delegated `gentle-ai-worker`; multi-file writer trigger (two nontrivial source/test files).
+- Allowed source surfaces: `extensions/drakonc-ai.ts`, `tests/drakonc-ai.test.ts`.
+- Route: delegated `drakonc-ai-worker`; multi-file writer trigger (two nontrivial source/test files).
 - TDD: strict, retained from this feature document's Constraints; observe failing copy regression before changing production code, then GREEN.
-- Focused runner: `node --experimental-strip-types --test --test-name-pattern="profile" tests/gentle-ai.test.ts`.
-- Closure checks: `node --experimental-strip-types --test tests/gentle-ai.test.ts`; `node scripts/check-types.mjs`; `git diff --check`.
+- Focused runner: `node --experimental-strip-types --test --test-name-pattern="profile" tests/drakonc-ai.test.ts`.
+- Closure checks: `node --experimental-strip-types --test tests/drakonc-ai.test.ts`; `node scripts/check-types.mjs`; `git diff --check`.
 - Environment: target requires pi-coding-agent 0.99.1; parent dependencies previously contained 0.85.1. Use matching dependencies in an isolated test worktree, without installing or modifying operator routing.
 - Delivery strategy: ask-on-risk; forecast approximately 80–160 additional authored lines, one cohesive correction unit; no size-driven split required yet.
 - Local branch `pr-1384` fast-forwarded to updated PR head `03ea5977`; no history rewritten.
 - Progress: T3 verified locally. Writer (glm-4.7/high) observed RED for title and conditional live-switch wording, then GREEN. Independent nan/mimo-v2.6-flash QA observed focused 35/35 and full extension 94/94 tests, typecheck 187 baseline diagnostics/no regressions, and full-tree diff check exit 0 using pi 0.99.1 dependencies. Temporary test worktrees removed; parent dependencies and operator config unchanged.
-- T4 blocked: native assessment returned schema-incompatible/unassessable, requiring independent verification (completed). Native inspect then stopped with managed_assets_outdated, offering `/home/jbarbat/.local/share/gentle-ai/main/gentle-ai sync --agent pi`. No lineage started and no review approval obtained. Synchronizing installed assets is outside this source-only correction and awaits operator direction.
+- T4 blocked: native assessment returned schema-incompatible/unassessable, requiring independent verification (completed). Native inspect then stopped with managed_assets_outdated, offering `/home/jbarbat/.local/share/drakonc-ai/main/drakonc-ai sync --agent pi`. No lineage started and no review approval obtained. Synchronizing installed assets is outside this source-only correction and awaits operator direction.
 - Remaining checks: manual TUI Escape/cancel smoke and installed packed-package check not performed; no new CI run because corrections remain local.
 - Delivery: no correction commit, push or PR merge executed. Engram mirror unavailable (session already ended). Next step: operator decides whether to sync managed assets for native review and authorize delivery separately.

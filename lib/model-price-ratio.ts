@@ -1,4 +1,4 @@
-// gentle-shell#1731: the orchestrator/worker price ratio is a runtime fact.
+// drakonc-shell#1731: the orchestrator/worker price ratio is a runtime fact.
 // The harness renders it as one line computed from catalog prices, so the
 // model routes implementation by a number it never has to estimate.
 

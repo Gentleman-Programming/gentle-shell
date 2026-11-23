@@ -56,7 +56,7 @@ try {
 			$stage = 'source-contract'
 		} else {
 			$sourceExtracted = $true
-			$tempRoot = [IO.Path]::Combine([IO.Path]::GetTempPath(), ('gentle-pi-csharp-control-' + [Guid]::NewGuid().ToString('N')))
+			$tempRoot = [IO.Path]::Combine([IO.Path]::GetTempPath(), ('drakonc-pi-csharp-control-' + [Guid]::NewGuid().ToString('N')))
 			[void][IO.Directory]::CreateDirectory($tempRoot)
 			$tempFiles = [System.CodeDom.Compiler.TempFileCollection]::new($tempRoot, $false)
 			$parameters = [System.CodeDom.Compiler.CompilerParameters]::new()

@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
-// gentle-shell#1494: task size is decided by understanding, risk, and whether
+// drakonc-shell#1494: task size is decided by understanding, risk, and whether
 // the work can be resumed from the diff, never by counting files, commands,
 // fixes, or a requested todo list. Each mechanism (ask, explore, verify,
 // track, writer) turns on only by its own trigger.
@@ -15,8 +15,8 @@ const read = (relative: string): string => readFileSync(join(REPO_ROOT, relative
 
 const core = read("assets/orchestrator.md");
 const delegation = readDelegationDetail();
-const skill = read("skills/gentle-ai/SKILL.md");
-const extension = read("extensions/gentle-ai.ts");
+const skill = read("skills/drakonc-ai/SKILL.md");
+const extension = read("extensions/drakonc-ai.ts");
 
 function sectionOf(text: string, heading: string): string {
 	const start = text.indexOf(heading);
@@ -53,7 +53,7 @@ test("AC2: counts never classify, and the step-count classifier is gone", () => 
 	for (const [path, text] of Object.entries({ core, delegation, skill, extension, readme: read("docs/readme-reference.md") })) {
 		assert.ok(!text.includes("two or more meaningful implementation steps"), `${path} keeps the step-count classifier`);
 	}
-	const prompt = __testing.buildGentlePrompt("gentleman");
+	const prompt = __testing.buildDrakoncPrompt("drakoncman");
 	const classify = prompt.slice(prompt.indexOf("4. **Classify.**"), prompt.indexOf("5. **Track before the first write.**"));
 	assert.ok(classify.includes("Task Size"), "ODD step 4 must classify by the Task Size section");
 });
@@ -73,7 +73,7 @@ test("AC3: small work runs its checks inline and keeps test-first", () => {
 		assert.ok(!text.includes("only a read-only check within the evidence budget stays inline"), `${path} keeps the read-only-only inline check`);
 		assert.ok(!text.includes("Only a truly local read-only check within the evidence budget stays inline"), `${path} keeps the read-only-only inline check`);
 		assert.ok(!text.includes("running focused tests/builds"), `${path} still delegates focused test runs`);
-		assert.ok(!text.includes("command-running verification → `gentle-ai-verify`"), `${path} still routes every command-running check to a verifier`);
+		assert.ok(!text.includes("command-running verification → `drakonc-ai-verify`"), `${path} still routes every command-running check to a verifier`);
 	}
 });
 
@@ -104,7 +104,7 @@ test("AC4: each mechanism turns on only by its own trigger and size is re-evalua
 		// Verification by named risk: rule 3 names the escalated high-risk item.
 		"named high-risk item (assess `escalate` when RDD is on or unknown)",
 		"never by file count",
-		// gentle-shell#1731: the writer fires on reasons, not on size alone.
+		// drakonc-shell#1731: the writer fires on reasons, not on size alone.
 		"never by file count or a large task alone",
 	]) {
 		assert.ok(triggers.includes(clause), `mechanism list is missing: ${clause}`);
@@ -120,7 +120,7 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 		"**High risk**",
 		"hard to detect, hard to undo, or reaches beyond the change",
 		"(1) data or irreversible effects",
-		// gentle-shell#1731 T10: items 1 and 3 cover changing or breaking existing things, not adding.
+		// drakonc-shell#1731 T10: items 1 and 3 cover changing or breaking existing things, not adding.
 		"rewriting or deleting stored data, format changes, writing data without validation; not saving new records",
 		"(2) security",
 		"(3) changing or removing contracts others already consume",
@@ -144,10 +144,10 @@ test("AC5: the high-risk list lives once in the core, native tier wins, unclear 
 // AC7 (S7): the small path reads no lazy rule file, and each lazy module stays
 // small enough that one mechanism costs one bounded read instead of 49 KB.
 const MODULE_BUDGETS: Record<string, number> = {
-	// gentle-shell#1731 merge with main: main's session subject/state guidance plus the reason-based Writer rule (20,000 -> 20,500 B).
-	// gentle-shell#1269: capability-compatible routing rule checked before delegation (20,500 -> 20,800 B).
+	// drakonc-shell#1731 merge with main: main's session subject/state guidance plus the reason-based Writer rule (20,000 -> 20,500 B).
+	// drakonc-shell#1269: capability-compatible routing rule checked before delegation (20,500 -> 20,800 B).
 	// S9 canon change: conditional triggers, behavior-unit writer threshold, named-risk verifier, invariants,
-	// and the PRESERVE differential pointer mirrored from gentle-ai 5f6faa16 (20,800 -> 21,900 B).
+	// and the PRESERVE differential pointer mirrored from drakonc-ai 5f6faa16 (20,800 -> 21,900 B).
 	// Pain-point iteration S11 T2: the parent read this module in most runs and kept ~5K tokens of it in the
 	// transcript on every later call, so it became the lean delegation card (21,900 -> 7,000 B) and the
 	// reference material moved to orchestrator-delegation-reference.md, read only when a situation names it.
@@ -170,15 +170,15 @@ const MODULE_BUDGETS: Record<string, number> = {
 	// cost-speed P6 (X9): Task Size is named as the always-on section, not `orchestrator.md`, so full delegation can load
 	// this module without reaching the organic core (10,324 -> 10,308 B).
 	"orchestrator-tracking.md": 10_308,
-	// gentle-shell#1731 T3: parallel review protocol; lazy (delegation or high risk only), core and normative rule untouched.
-	// gentle-shell#1731 T11/T12: verify-per-unit timing and the every-S# verify handoff (6,000 -> 6,400 B).
-	// gentle-shell#1731 T15: one end-of-feature verify for same-model inline deliveries (6,400 -> 6,500 B).
-	// gentle-shell#1731 T23: bounded self-review and partial/blocked writer -> Needs your decision (7,000 -> 7,300 B).
+	// drakonc-shell#1731 T3: parallel review protocol; lazy (delegation or high risk only), core and normative rule untouched.
+	// drakonc-shell#1731 T11/T12: verify-per-unit timing and the every-S# verify handoff (6,000 -> 6,400 B).
+	// drakonc-shell#1731 T15: one end-of-feature verify for same-model inline deliveries (6,400 -> 6,500 B).
+	// drakonc-shell#1731 T23: bounded self-review and partial/blocked writer -> Needs your decision (7,000 -> 7,300 B).
 	// Verification by named risk: escalate-only tier table and the concrete-occasions rule (7,300 -> 7,500 B).
 	// The validated-off exception and its read-only fallback need 365 additional bytes (7,500 -> 7,900 B).
 	// Cost-speed S15 P16: the parent commits verifier probes only when a commit is authorized (+28 B), paid by two
 	// phrases that restated their sentence (-36 B): 8,656 -> 8,648 B.
-	// gentle-shell#3082: the terminal disposition exit stays self-contained in the lazy module (+233 B over 8,648):
+	// drakonc-shell#3082: the terminal disposition exit stays self-contained in the lazy module (+233 B over 8,648):
 	// 8,648 -> 8,900 B.
 	"orchestrator-verification.md": 8_900,
 	// Writer-rule fix (size threshold, one behavior per unit) and C3 (writer prompts name the helpers and
@@ -221,9 +221,9 @@ test("S11: the default delegation pointer resolves to the lean card and the refe
 	// Every core line that names a delegation module names the card, except the one reference pointer and the
 	// background-policy rules pointer (cost-speed S15 P5a, verdict X3: the background block lives in the reference).
 	const pointerLines = core.split("\n").filter((line) => line.includes("`orchestrator-delegation"));
-	const backgroundPointer = "{{GENTLE_PI_BACKGROUND_POLICY}}; rules: background block, `orchestrator-delegation-reference.md`.";
+	const backgroundPointer = "{{DRAKONC_PI_BACKGROUND_POLICY}}; rules: background block, `orchestrator-delegation-reference.md`.";
 	assert.ok(pointerLines.includes(backgroundPointer), "the background-policy rules pointer names the reference");
-	assert.ok(reference.includes("<!-- gentle-pi:background-subagents -->"), "the reference carries the background block");
+	assert.ok(reference.includes("<!-- drakonc-pi:background-subagents -->"), "the reference carries the background block");
 	const referenceLines = pointerLines.filter((line) => line.includes("`orchestrator-delegation-reference.md`") && line !== backgroundPointer);
 	assert.equal(referenceLines.length, 1, "the core names the reference exactly once besides the background pointer");
 	for (const name of ["Per-action table", "Work Routing Ladder", "Canonical Workflows"]) {
@@ -256,7 +256,7 @@ test("S11: the default delegation pointer resolves to the lean card and the refe
 	assert.ok(!reference.includes("#### Delegation Triggers"), "the triggers live once, in the card");
 });
 
-// gentle-shell#1269/#1598: the capability rule is the substantive part of the fix,
+// drakonc-shell#1269/#1598: the capability rule is the substantive part of the fix,
 // so losing it must fail a test instead of quietly passing the AC7 budget gate.
 // Focused on the two claims that carry the fix, not on the exact wording around them.
 test("delegation reports a capability gap instead of substituting inline work for a fired trigger", () => {
@@ -272,8 +272,8 @@ test("work usage stays complete in the human guide while routing precedence stay
 	// S11 T2: the work-publication pointer and the runtime bindings moved to the reference; the writer
 	// fallback stays in the card, so the counts read the card plus the reference.
 	const asset = `${read("assets/orchestrator-delegation.md")}\n${read("assets/orchestrator-delegation-reference.md")}`;
-	const guide = read("docs/gentle-agents-activity.md");
-	assert.ok(read("assets/orchestrator-delegation-reference.md").includes("tool schemas and `docs/gentle-agents-activity.md`"));
+	const guide = read("docs/drakonc-agents-activity.md");
+	assert.ok(read("assets/orchestrator-delegation-reference.md").includes("tool schemas and `docs/drakonc-agents-activity.md`"));
 	for (const clause of [
 		'`{"area":"Auth","topic":"Login","tags":["Review"],"refs":[{"kind":"issue","repository":"github.com/Owner/Repo","id":"12"}]}`',
 		'`filter: {"related_to":{"session_id":"<stable owner ID>"}}`',
@@ -283,7 +283,7 @@ test("work usage stays complete in the human guide while routing precedence stay
 		"confer no ownership, consent or permission. Querying needs no helper/model call.",
 	]) assert.ok(guide.includes(clause), `human guide must retain: ${clause}`);
 	assert.equal(asset.split("For a large task's bounded writes, prefer").length - 1, 1);
-	assert.equal(asset.split("Route generic exploration first to the installed package-owned `gentle-ai-explore`").length - 1, 1);
+	assert.equal(asset.split("Route generic exploration first to the installed package-owned `drakonc-ai-explore`").length - 1, 1);
 	assert.ok(asset.includes("Judgment Day phase roles are never generic fallbacks."));
 	assert.ok(asset.includes("same read-only mapping task and report the fallback."));
 });
@@ -315,11 +315,11 @@ test("T6: each delegation module carries its own clauses and names the modules i
 		// risk: the high row is reached only through escalate, not a native tier.
 		"orchestrator-verification.md": [
 			"| Tier | Verification (any RDD state) |",
-			"## Agent escalation (gentle-shell#1494)",
-			"## Parallel review protocol (gentle-shell#1731)",
+			"## Agent escalation (drakonc-shell#1494)",
+			"## Parallel review protocol (drakonc-shell#1731)",
 		],
 		"orchestrator-writer.md": ["#### Allowed edit surfaces (MANDATORY)", "#### Judgment Day fix dispatch"],
-		"orchestrator-prompts.md": ["### Lossless Blocking Prompts (MANDATORY)", "#### Gentle AI Provider Defect Handoff (MANDATORY)"],
+		"orchestrator-prompts.md": ["### Lossless Blocking Prompts (MANDATORY)", "#### Drakonc AI Provider Defect Handoff (MANDATORY)"],
 	};
 	for (const [file, clauses] of Object.entries(placement)) {
 		const text = read(`assets/${file}`);

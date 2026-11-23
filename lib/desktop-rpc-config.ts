@@ -1,4 +1,4 @@
-// Gentle Desktop config access (`get_config`) and the bounded write slice
+// Drakonc Desktop config access (`get_config`) and the bounded write slice
 // (`set_config`).
 //
 // Desktop names a store, never a path: this module maps each store identifier to
@@ -31,7 +31,7 @@ import { createHash } from "node:crypto";
 import { basename, dirname } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { managedAssetsManifestPath, readManagedAssetsManifestResult, type ManagedAssetsManifest } from "./agent-assets.ts";
-import { gentlePiConfigHome, resolveGentlePiAgentHome } from "./agent-home.ts";
+import { drakoncPiConfigHome, resolveDrakoncPiAgentHome } from "./agent-home.ts";
 import {
 	isValidProfileName,
 	normalizeProfilesFile,
@@ -174,8 +174,8 @@ function withRoots(context: ExtensionContext, overrides: DesktopConfigOverrides)
 	if (typeof context.cwd !== "string" || context.cwd.length === 0) return undefined;
 	return {
 		cwd: context.cwd,
-		configHome: overrides.configHome ?? gentlePiConfigHome(),
-		agentHome: overrides.agentHome ?? resolveGentlePiAgentHome(),
+		configHome: overrides.configHome ?? drakoncPiConfigHome(),
+		agentHome: overrides.agentHome ?? resolveDrakoncPiAgentHome(),
 		...(overrides.resolveWorktree === undefined ? {} : { resolveWorktree: overrides.resolveWorktree }),
 	};
 }
@@ -680,7 +680,7 @@ function planNotificationsWrite(data: unknown, root: DesktopConfigRoots, expecte
 	const conflict = revisionConflict(expected, writeRevision);
 	if (conflict) return { error: conflict };
 	const changed = currentValue === undefined || canonicalJson(currentValue) !== canonicalJson(settings);
-	return { target: "global", writeRevision, changed, write: () => { writeNotificationSettings(settings, { gentlePiConfigHome: root.configHome }); } };
+	return { target: "global", writeRevision, changed, write: () => { writeNotificationSettings(settings, { drakoncPiConfigHome: root.configHome }); } };
 }
 
 /**
@@ -753,7 +753,7 @@ function planPinsWrite(data: unknown, root: DesktopConfigRoots, expected: string
 	if (requested !== null) {
 		if (!isValidProfileName(requested)) return { error: INVALID_DATA };
 		profile = requested;
-		// The invariant the `/gentle:profiles` panel enforces: only a profile the store
+		// The invariant the `/drakonc:profiles` panel enforces: only a profile the store
 		// still defines can be pinned, so this channel never writes a stale pin.
 		const store = readProfilesFileResult(profilesFilePath(root.configHome));
 		if (store.status !== "valid" || !Object.prototype.hasOwnProperty.call(store.file.profiles, profile)) {

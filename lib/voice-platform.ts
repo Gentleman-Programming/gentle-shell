@@ -49,7 +49,7 @@ const NOT_VERIFIED = "Native loading and microphone capture have not been verifi
 const PREREQUISITES: Partial<Record<string, string[]>> = {
 	darwin: ["The native binaries target macOS 11 or newer on arm64 and macOS 10.12 or newer on x64; the macOS version is not checked."],
 	linux: ["Microphone capture needs the ALSA library libasound.so.2, which is not checked before loading."],
-	win32: ["The native binaries need the Microsoft Visual C++ runtime (vcruntime140.dll), which is not checked before loading and is never downloaded by Gentle AI."],
+	win32: ["The native binaries need the Microsoft Visual C++ runtime (vcruntime140.dll), which is not checked before loading and is never downloaded by Drakonc AI."],
 };
 
 // True when a dotted version is at least the minimum, compared numerically.

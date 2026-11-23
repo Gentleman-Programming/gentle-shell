@@ -50,7 +50,7 @@ const TEXT = Object.freeze({
 const LANGUAGES = [["es", "spanish"], ["en", "english"], ["auto", "auto"]];
 
 // The keys a person gave the single-key shortcuts in this browser, for every design at this canvas address: a JSON object, action id -> key.
-const SHORTCUTS_KEY = "gentle-design:shortcuts";
+const SHORTCUTS_KEY = "drakonc-design:shortcuts";
 // Never assignable: Esc, Shift+Esc, Enter, Tab, Space, the arrows and the zoom keys keep their meaning.
 const FIXED_KEYS = ["Escape", "Enter", "Tab", " ", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "+", "=", "-", "0"];
 const ARROW_KEYS = { ArrowLeft: "←", ArrowRight: "→", ArrowUp: "↑", ArrowDown: "↓" };

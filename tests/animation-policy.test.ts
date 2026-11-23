@@ -10,7 +10,7 @@ test("animation policy strictly accepts only the v1 schema and three modes", () 
 		assert.equal(parseAnimationPolicyFile(JSON.stringify({ schema: ANIMATION_SCHEMA, policy })), policy);
 	}
 	for (const raw of ["bad", "null", "[]", '{}', '{"policy":"potato"}', ...[
-		{ schema: "gentle-pi.animations/v2", policy: "potato" },
+		{ schema: "drakonc-pi.animations/v2", policy: "potato" },
 		{ schema: ANIMATION_SCHEMA, policy: "POTATO" },
 		{ schema: ANIMATION_SCHEMA, policy: false },
 		{ schema: ANIMATION_SCHEMA, policy: "quality", extra: true },
@@ -20,7 +20,7 @@ test("animation policy strictly accepts only the v1 schema and three modes", () 
 test("global policy defaults to quality, persists atomically, and attributes malformed input without rewriting", () => {
 	const home = mkdtempSync(join(tmpdir(), "gp-animations-"));
 	try {
-		const options = { gentlePiConfigHome: home };
+		const options = { drakoncPiConfigHome: home };
 		assert.equal(resolveAnimationPolicy(options).policy, "quality");
 		assert.equal(resolveAnimationPolicy(options).source, "default");
 		for (const policy of ["potato", "performance", "quality"] as const) {

@@ -3,7 +3,7 @@ Objective: preserve Shell-created memory across core upgrades and resolve sessio
 Delivery: single-pr (one per repository); no chain strategy; protected-label size exception not yet authorized. No release or real-data migration authorized. Runners: Node public launcher/plugin tests and Go affected-package tests. Provider forecast: 550–800 migration lines plus 450–700 private-lifecycle lines, including tests/docs, plus Shell integration; current uncommitted provider units exceed that forecast. Provider work-unit commits 1cd9105 (migration) and 35c1f77 (session-owned lifecycle) on fix/bundled-upgrade; the Shell work-unit commit holds this document. No push, PR or release has occurred.
 
 ## Specs
-S1. Reported environment: "Entorno: Linux, instalación bundled. Shell 4.1.0-1.0.0 → 4.2.0-1.2.0, Engram 3.3.2 → 3.4.0, gentle-engram@0.4.2." Reproduce against isolated state; distinguish source evidence from executed Linux reproduction.
+S1. Reported environment: "Entorno: Linux, instalación bundled. Shell 4.1.0-1.0.0 → 4.2.0-1.2.0, Engram 3.3.2 → 3.4.0, drakonc-engram@0.4.2." Reproduce against isolated state; distinguish source evidence from executed Linux reproduction.
 S2. "Procedencia desactualizada (principal): con el servidor detenido, engram-provenance.json conserva el coreSha256 del core 3.3.2. El upgrade instala el 3.4.0 sin volver a registrar la procedencia, así que Shell rechaza la base que él mismo creó, aunque ambos cores usan el mismo esquema (1)." Expected: "que el upgrade mantenga la memoria activa sobre una base creada por Shell (volviendo a verificar y registrar la procedencia, o con un comando de migración documentado)". Cover successful reopening/recovery and ensure rejected transitions leave existing data and provenance unchanged.
 S3. "Servidor huérfano: el engram-3.3.2 serve lanzado por Pi sigue vivo al cerrar la sesión y ocupa 127.0.0.1:7437. Shell lo detecta como desactualizado y hay que matarlo a mano." Expected: "que Pi no deje servidores de Engram corriendo." Cover normal exit, existing/shared server preservation, and reload where touched. Implementation must resolve session ownership rather than terminate a server by port or data-directory identity alone.
 S4. "engram compatibility solo devuelve unsafe or invalid fixture metadata, y el aviso pide actualizar el servidor, pero la instalación bundled no ofrece cómo." Provide accurate actionable guidance and document actual supported bundled recovery/migration commands; preserve fail-closed admission.
@@ -17,7 +17,7 @@ T4 | S1-S5 | independent delegated verifier (stored data, admission guard, concu
 
 ## Log
 L1. Original request (verbatim):
-me pasaron esto para que lo investiguemos Entorno: Linux, instalación bundled. Shell 4.1.0-1.0.0 → 4.2.0-1.2.0, Engram 3.3.2 → 3.4.0, gentle-engram@0.4.2.
+me pasaron esto para que lo investiguemos Entorno: Linux, instalación bundled. Shell 4.1.0-1.0.0 → 4.2.0-1.2.0, Engram 3.3.2 → 3.4.0, drakonc-engram@0.4.2.
 
  Problema
  Tras el upgrade, la memoria queda desactivada en cada arranque:

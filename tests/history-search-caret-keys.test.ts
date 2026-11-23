@@ -55,8 +55,8 @@ async function selectAfter(keys: string[]): Promise<string | null> {
       },
     } as never,
     {
-      env: { GENTLE_PI_HISTORY_CAPTURE: "1" },
-      gentlePiConfigHome: fs.mkdtempSync(
+      env: { DRAKONC_PI_HISTORY_CAPTURE: "1" },
+      drakoncPiConfigHome: fs.mkdtempSync(
         path.join(os.tmpdir(), "pi-history-caret-config-"),
       ),
       root,

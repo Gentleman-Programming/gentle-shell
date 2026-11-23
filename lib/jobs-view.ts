@@ -1,4 +1,4 @@
-// Background jobs overlay (`/gentle:jobs`): this session's jobs beside the
+// Background jobs overlay (`/drakonc:jobs`): this session's jobs beside the
 // selected job's command, status, output file, and output tail. It shares the
 // Agents overlay geometry and roles so both read as one family, but stays a
 // small standalone view: jobs have no peers, groups, or threads.

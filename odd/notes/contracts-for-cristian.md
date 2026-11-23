@@ -1,7 +1,7 @@
 # Contract notes for Cristian
 
-Running log of contract-relevant changes in gentle-pi (Gentle Shell) that the
-Gentle Cloud backend may consume. Each entry names its branch, what changed for
+Running log of contract-relevant changes in drakonc-pi (Drakonc Shell) that the
+Drakonc Cloud backend may consume. Each entry names its branch, what changed for
 a consumer, and what did not. Newest first.
 
 Status words: **public** = a consumer may rely on it; **internal** = documented
@@ -15,10 +15,10 @@ Builds on `feat/optional-parakeet-voice`.
 
 - **No change to any existing contract.** No RPC command or event, no model-callable tool,
   no change to the session protocol.
-- **TUI only, like `/gentle:voice`.** Push-to-talk listens to raw terminal input through
+- **TUI only, like `/drakonc:voice`.** Push-to-talk listens to raw terminal input through
   `ctx.ui.onTerminalInput`, which exists only in interactive mode. A workspace driven over
   RPC never arms it, so typing and input sent through RPC are unaffected.
-- **open:** the same note as before applies: browser push-to-talk for Gentle Cloud would
+- **open:** the same note as before applies: browser push-to-talk for Drakonc Cloud would
   need its own capture and a contract that does not exist yet.
 
 ### New preference file (internal, additive)
@@ -26,12 +26,12 @@ Builds on `feat/optional-parakeet-voice`.
 `<config home>/voice-settings.json`, next to the other per-feature preference files:
 
 ```json
-{ "schema": "gentle-pi.voice-settings/v1", "pushToTalk": true }
+{ "schema": "drakonc-pi.voice-settings/v1", "pushToTalk": true }
 ```
 
 - Exactly these two keys. Missing, malformed or foreign content reads as `pushToTalk: false`.
 - Written atomically (temporary file plus rename, mode `0600`).
-- Set to `true` after a successful voice download; toggled from `/gentle:voice`.
+- Set to `true` after a successful voice download; toggled from `/drakonc:voice`.
 - Read once at session start; no other startup IO for voice.
 - If a workspace image pre-seeds the config home, leaving this file out keeps push-to-talk off.
 
@@ -48,11 +48,11 @@ Builds on `feat/optional-parakeet-voice`.
 
 - **No change to any existing contract.** No new RPC command, RPC event, model-callable
   tool, settings key or config format. The `pi --mode rpc` session protocol is untouched.
-- **Voice does not work through RPC.** `/gentle:voice` runs only in an interactive TUI
+- **Voice does not work through RPC.** `/drakonc:voice` runs only in an interactive TUI
   parent session. RPC, print, JSON and delegated child sessions refuse it with a notice
-  and do no voice work. A Gentle Cloud workspace that drives Gentle Shell over RPC
+  and do no voice work. A Drakonc Cloud workspace that drives Drakonc Shell over RPC
   therefore gets no dictation from this feature.
-- **open:** browser dictation for Gentle Cloud. The browser would capture audio and the
+- **open:** browser dictation for Drakonc Cloud. The browser would capture audio and the
   backend (or browser) would transcribe it, then submit text through the existing
   session protocol. No contract exists for that yet; this feature does not define one.
 
@@ -60,7 +60,7 @@ Builds on `feat/optional-parakeet-voice`.
 
 | Item | Contract |
 |------|----------|
-| Command | `/gentle:voice`, registered by `extensions/gentle-voice.ts`. |
+| Command | `/drakonc:voice`, registered by `extensions/drakonc-voice.ts`. |
 | Where it runs | Interactive TUI parent sessions only. |
 | Result | The transcript is pasted into the editor draft through Pi's paste pipeline. It is never submitted automatically. |
 | Concurrency | One download or dictation at a time per Pi process; a second invocation is refused. |
@@ -69,9 +69,9 @@ Builds on `feat/optional-parakeet-voice`.
 ### Storage layout (internal)
 
 Everything lives under `<config home>/voice/`, where the config home is resolved by
-`gentlePiConfigHome()` (`lib/agent-home.ts`): `~/.pi/gentle-ai` by default, or
-`~/.gentle-shell/gentle-ai` for a standalone Gentle Shell home, or
-`GENTLE_PI_CONFIG_HOME` when set.
+`drakoncPiConfigHome()` (`lib/agent-home.ts`): `~/.pi/drakonc-ai` by default, or
+`~/.drakonc-shell/drakonc-ai` for a standalone Drakonc Shell home, or
+`DRAKONC_PI_CONFIG_HOME` when set.
 
 ```text
 voice/
@@ -104,7 +104,7 @@ Native Windows ARM64 and musl Linux are unsupported; WSL is unproven.
 - Node 22 or newer.
 - None of the five targets has been verified on real hardware yet.
 
-### Worker protocol `gentle.voice/v1` (internal)
+### Worker protocol `drakonc.voice/v1` (internal)
 
 The command talks to an isolated child process (`scripts/voice-worker.cjs`, started with
 `process.execPath`) over stdio, one JSON object per line. Documented here because it is the
@@ -115,7 +115,7 @@ only new wire format in this feature; it is **not** a public contract.
 | parent → worker | `start` (target, `maxRecordingMs`, `numThreads`, runtime and model roots), `stop`, `cancel` |
 | worker → parent | `recording`, `transcribing`, `result` (`text`, `truncated`), `error` (`code`) |
 
-Every message carries `"schema": "gentle.voice/v1"` and exactly its own keys; anything else
+Every message carries `"schema": "drakonc.voice/v1"` and exactly its own keys; anything else
 stops the worker. Bounds: 64 KiB per line, 16 lines per session, 16 KiB of transcript text.
 Defaults: 120 s recording limit, 120 s start timeout, 120 s transcription timeout, 2 s exit
 grace, 2 inference threads.

@@ -5,14 +5,14 @@ import { evaluateExecutionSurfaceTool } from "../lib/execution-surface-guard.ts"
 
 export function blockChildDestructiveCommand(command: string): ToolCallEventResult | undefined {
 	if (recognizeDestructiveCommands(command).length === 0) return undefined;
-	return { block: true, reason: "Gentle AI child safety blocked a recognized destructive command. Return an explicit safer plan to the parent; children cannot authorize data loss." };
+	return { block: true, reason: "Drakonc AI child safety blocked a recognized destructive command. Return an explicit safer plan to the parent; children cannot authorize data loss." };
 }
 
 // Explicitly loaded by package-owned children; package auto-discovery in the
 // primary is inert. No UI or inherited delivery permission can waive this guard.
 export function createChildSafetyExtension(env: NodeJS.ProcessEnv = process.env): (pi: ExtensionAPI) => void {
 	return (pi) => {
-		if (env.GENTLE_PI_AGENTS_CHILD !== "1") return;
+		if (env.DRAKONC_PI_AGENTS_CHILD !== "1") return;
 		pi.on("tool_call", (event) => {
 			const surfaceDenied = evaluateExecutionSurfaceTool(event.toolName, event.input);
 			if (surfaceDenied) return surfaceDenied;

@@ -4,7 +4,7 @@ Closes #ISSUE
 
 ## Summary
 
-- New `get_background_subagents` and `set_background_subagents` over a versioned owner service in `extensions/gentle-ai.ts` (refuses in subagent child processes).
+- New `get_background_subagents` and `set_background_subagents` over a versioned owner service in `extensions/drakonc-ai.ts` (refuses in subagent child processes).
 - Token bound to the request, the shown text, and the state; process-wide single-flight gate; no event (every answer carries the state).
 
 ## Test plan

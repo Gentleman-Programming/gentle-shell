@@ -1,9 +1,9 @@
 ---
-name: gentle-ai-work-unit-commits
+name: drakonc-ai-work-unit-commits
 description: "Trigger: commit splitting, chained PRs, keeping tests and docs with code. Plan commits as reviewable work units."
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "1.0"
 ---
 
@@ -67,7 +67,7 @@ The chosen `delivery_strategy` governs how commits group into PRs, and the budge
 - Up to about 400 forecast or running authored changed lines: keep work-unit commits inside one PR.
 - Above it: follow the selected `delivery_strategy` — ask on `ask-on-risk`, auto-slice with the cached chain choice on `auto-chain`, follow the destination repository's documented contribution/size policy on over-budget `single-pr`, or record an explicitly accepted policy exception on `exception-ok`. A single-PR selection does not itself accept an exception.
 - Risk never picks the delivery strategy; a unit whose Risk line names a high-risk item gets its own commit.
-- `size:exception` is a Gentle-owned repository policy, not a universal label requirement. Never request, create, or add the label for generic users unless the destination policy uses it; preserve its maintainer acceptance and protected-label authorization gates.
+- `size:exception` is a Drakonc-owned repository policy, not a universal label requirement. Never request, create, or add the label for generic users unless the destination policy uses it; preserve its maintainer acceptance and protected-label authorization gates.
 - Splitting is bounded: after one honest slicing pass, if no cohesive work-unit split fits the budget, stop and report the smallest honest count and rationale. Recommend an exception only where destination policy provides it. Do not iterate shrinking the code to reach the number.
 
 Each work unit should map cleanly to a commit or PR with:

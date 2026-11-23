@@ -13,7 +13,7 @@ import {
 } from "../lib/voice-artifacts.ts";
 import { diagnoseVoicePlatform, readVoicePlatformProbe } from "../lib/voice-platform.ts";
 
-// Optional voice (S1-S3): the platform diagnosis decides what /gentle:voice may offer.
+// Optional voice (S1-S3): the platform diagnosis decides what /drakonc:voice may offer.
 // It must name the five researched targets without ever claiming hardware-verified
 // support, and refuse the unproven ones with a reason instead of a broken install.
 

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import nodeTest from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import gentleVoice from "../extensions/gentle-voice.ts";
+import drakoncVoice from "../extensions/drakonc-voice.ts";
 import { VoiceInstallError, type VoiceInstallProgress, type VoiceInstallResult } from "../lib/voice-install.ts";
 import { VoiceSessionError, type VoiceSessionState, type VoiceTranscript } from "../lib/voice-session.ts";
 import { VOICE_COMMAND_NAME, type VoiceCommandDeps, type VoiceDictation } from "../lib/voice-command.ts";
 import type { PushToTalkTimers } from "../lib/voice-push-to-talk.ts";
 
-// /gentle:voice through its registered command, with fake UI, acquisition and
+// /drakonc:voice through its registered command, with fake UI, acquisition and
 // session adapters: nothing here downloads, loads native code or opens a
 // microphone.
 
@@ -19,7 +19,7 @@ const test = (name: string, fn: () => Promise<void>) => nodeTest(name, { timeout
 
 const ENTER = "\r";
 const ESC = "\x1b";
-const VOICE_HOME = "/home/user/.pi/gentle-ai/voice";
+const VOICE_HOME = "/home/user/.pi/drakonc-ai/voice";
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -97,7 +97,7 @@ function fakeContext(script: UiScript = {}, mode = "tui", hasUI = true) {
 					if (index >= 0) { listeners.splice(index, 1); terminal.unsubscribes++; }
 				};
 			},
-			setStatus: (key: string, text: string | undefined) => { if (key === "gentle-voice") statuses.push(text); },
+			setStatus: (key: string, text: string | undefined) => { if (key === "drakonc-voice") statuses.push(text); },
 		},
 	} as unknown as ExtensionCommandContext;
 	// Raw input as Pi's TUI routes it: listeners first, then the focused editor,
@@ -226,7 +226,7 @@ const pick = (pattern: RegExp) => (_title: string, options: string[]) => options
 
 function register(h: Harness) {
 	const pi = fakePi();
-	gentleVoice(pi.pi, h.deps);
+	drakoncVoice(pi.pi, h.deps);
 	return pi;
 }
 
@@ -236,11 +236,11 @@ async function run(pi: ReturnType<typeof fakePi>, ui: ReturnType<typeof fakeCont
 
 // --- registration and refusals ------------------------------------------------
 
-test("registers only /gentle:voice and does no voice work at registration or session start", async () => {
+test("registers only /drakonc:voice and does no voice work at registration or session start", async () => {
 	const h = harness();
 	const pi = register(h);
-	assert.equal(VOICE_COMMAND_NAME, "gentle:voice");
-	assert.deepEqual([...pi.commands.keys()], ["gentle:voice"]);
+	assert.equal(VOICE_COMMAND_NAME, "drakonc:voice");
+	assert.deepEqual([...pi.commands.keys()], ["drakonc:voice"]);
 	assert.match(pi.commands.get(VOICE_COMMAND_NAME)!.description, /dictation/i);
 	assert.equal(pi.counts.tools, 0, "no model-callable tool or shortcut");
 	await pi.fire("session_start");
@@ -248,7 +248,7 @@ test("registers only /gentle:voice and does no voice work at registration or ses
 });
 
 test("a delegated child session refuses before any probe, status read or UI", async () => {
-	const h = harness({ env: { GENTLE_PI_AGENTS_CHILD: "1" }, installed: true });
+	const h = harness({ env: { DRAKONC_PI_AGENTS_CHILD: "1" }, installed: true });
 	const pi = register(h);
 	const ui = fakeContext({ select: pick(/dictat/i) });
 	await run(pi, ui);
@@ -297,7 +297,7 @@ test("a missing install offers the download and declining it downloads nothing",
 	assert.match(message, /NVIDIA/);
 	assert.match(message, /Apache-2\.0/);
 	assert.match(message, /Visual C\+\+/);
-	assert.match(message, /not .*installed by Gentle AI|never (downloads|installs)/i);
+	assert.match(message, /not .*installed by Drakonc AI|never (downloads|installs)/i);
 	assert.ok(!h.calls.some((call) => call.startsWith("install:")));
 	assert.equal(ui.editor(), "draft: ");
 });
@@ -441,7 +441,7 @@ test("a session failure shows its fixed message with a user action and pastes no
 	assert.equal(ui.editor(), "draft: ");
 });
 
-test("a second /gentle:voice while one is active is refused with a notice", async () => {
+test("a second /drakonc:voice while one is active is refused with a notice", async () => {
 	const h = harness({ installed: true });
 	const pi = register(h);
 	const ui = fakeContext({ select: pick(/start dictation/i) });
@@ -588,7 +588,7 @@ test("startup arms push-to-talk only when enabled, reading the toggle and nothin
 });
 
 test("child sessions and non-TUI modes never arm or read the toggle", async () => {
-	const child = harness({ installed: true, pushToTalk: true, env: { GENTLE_PI_AGENTS_CHILD: "1" } });
+	const child = harness({ installed: true, pushToTalk: true, env: { DRAKONC_PI_AGENTS_CHILD: "1" } });
 	const childPi = register(child);
 	const childUi = fakeContext();
 	await startSession(childPi, childUi);
@@ -672,7 +672,7 @@ test("not installed: the hold types its spaces, notifies once and disarms", asyn
 	holdSpace(h, ui, 3, false);
 	assert.equal(ui.editor(), `draft: ${SPACE.repeat(8)}`, "all eight spaces typed normally");
 	assert.equal(h.sessions.length, 0);
-	assert.match(ui.notices[0]!.message, /\/gentle:voice/);
+	assert.match(ui.notices[0]!.message, /\/drakonc:voice/);
 	assert.equal(ui.terminal.unsubscribes, 1, "disarmed");
 	h.clock.advance(RELEASE);
 	holdSpace(h, ui, 4);
@@ -680,7 +680,7 @@ test("not installed: the hold types its spaces, notifies once and disarms", asyn
 	assert.equal(h.settings.writes.length, 0, "the saved choice is kept");
 });
 
-test("a hold while /gentle:voice is dictating does not start a second session", async () => {
+test("a hold while /drakonc:voice is dictating does not start a second session", async () => {
 	const h = harness({ installed: true, pushToTalk: true });
 	const pi = register(h);
 	const ui = fakeContext({ select: pick(/start dictation/i) });
@@ -712,7 +712,7 @@ test("session shutdown cancels a held dictation, disarms and drops a late transc
 	assert.ok(!session.calls.includes("stop"));
 });
 
-test("the /gentle:voice menu toggles push-to-talk, persists it and arms or disarms immediately", async () => {
+test("the /drakonc:voice menu toggles push-to-talk, persists it and arms or disarms immediately", async () => {
 	const h = harness({ installed: true, pushToTalk: true });
 	const pi = register(h);
 	const ui = fakeContext({ select: pick(/disable push-to-talk/i) });

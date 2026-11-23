@@ -16,7 +16,7 @@ import {
 	type InProcessReviewerRequest,
 } from "../lib/inprocess-reviewer.ts";
 
-// The in-process reviewer completion (gentle-ai#4611; gentle-pi#311 P1) runs
+// The in-process reviewer completion (drakonc-ai#4611; drakonc-pi#311 P1) runs
 // one reviewer role through pi's live model registry instead of a locked-down
 // `pi --print` child with extension discovery disabled. Every seam here is a
 // fake: no network, no pi process, no process.env reads.
@@ -299,7 +299,7 @@ test("empty-output evidence does not invent usage or missing thinking lengths", 
 	assert.deepEqual(refused.evidence?.content, { blocks: 1, textBlocks: 0, thinkingBlocks: 1, textChars: 0 });
 });
 
-// gentle-ai#6095: an empty completion is attributed to whatever the completion
+// drakonc-ai#6095: an empty completion is attributed to whatever the completion
 // itself proves — the model's spent output budget, or a provider response with
 // no completion at all — instead of the generic "produced no text", which left
 // the recorded facts uninterpreted. None of these refusals infers a candidate
@@ -906,7 +906,7 @@ test("concatenates only text parts, ignoring thinking parts, in order", async ()
 });
 
 // ---------------------------------------------------------------------------
-// Composed-provider routing (gentle-shell#1304)
+// Composed-provider routing (drakonc-shell#1304)
 //
 // pi-ai's `completeSimple` resolves against pi-ai's own builtin-only
 // `apiProviderRegistry`, so an extension-registered provider is unreachable
@@ -960,7 +960,7 @@ test("refuses instead of falling back when getProvider returns undefined for a m
 });
 
 // ---------------------------------------------------------------------------
-// Env-API-key contract when the registry resolves no apiKey (gentle-shell#1304,
+// Env-API-key contract when the registry resolves no apiKey (drakonc-shell#1304,
 // IRP-4)
 //
 // pi-ai's compat layer wraps every dispatch in `withEnvApiKey`

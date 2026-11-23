@@ -7,14 +7,14 @@ import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai";
 
 test("actual SDK gates direct and nested custom/MCP execution before side effects, with independent denied-call receipts",{timeout:20_000},async t=>{
  const root=mkdtempSync(join(tmpdir(),"auto-sdk-")),profile=join(root,"profile"),config=join(root,"config");mkdirSync(profile);
- const bindings={PI_CODING_AGENT_DIR:profile,PI_CODING_AGENT_SESSION_DIR:join(root,"sessions"),GENTLE_PI_AGENT_HOME:profile,GENTLE_PI_CONFIG_HOME:config};
+ const bindings={PI_CODING_AGENT_DIR:profile,PI_CODING_AGENT_SESSION_DIR:join(root,"sessions"),DRAKONC_PI_AGENT_HOME:profile,DRAKONC_PI_CONFIG_HOME:config};
  const previous=Object.fromEntries(Object.keys(bindings).map(key=>[key,process.env[key]]));Object.assign(process.env,bindings);
  t.after(()=>{for(const [key,value]of Object.entries(previous))if(value===undefined)delete process.env[key];else process.env[key]=value;rmSync(root,{recursive:true,force:true});});
  const sdk=await import("@earendil-works/pi-coding-agent"),ai=await import("@earendil-works/pi-ai");
  const {Type}=await import("typebox");
- const {createGentleAiExtension}=await import("../extensions/gentle-ai.ts");
+ const {createDrakoncAiExtension}=await import("../extensions/drakonc-ai.ts");
  const {writePermissionModePolicy}=await import("../lib/permission-mode-policy.ts");
- writePermissionModePolicy("auto",{gentlePiConfigHome:config});
+ writePermissionModePolicy("auto",{drakoncPiConfigHome:config});
  const requests:any[]=[],errors:string[]=[],executed:string[]=[],observed:any[]=[];
  const memoryExecuted:string[]=[],memorySources:any[]=[];
  let next:{name:string;arguments:any}|undefined,denied=false,calls=0;
@@ -23,7 +23,7 @@ test("actual SDK gates direct and nested custom/MCP execution before side effect
  const runtime=await sdk.ModelRuntime.create({credentials:new ai.InMemoryCredentialStore(),modelsPath:null,modelsStorePath:join(root,"models.json"),refreshOnCreate:false,allowModelNetwork:false});
  const loader=new sdk.DefaultResourceLoader({cwd:root,agentDir:profile,settingsManager:settings,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true,
   systemPrompt:"Execute one fixture tool, then finish. No external requests.",extensionFactories:[pi=>{
-   createGentleAiExtension({nativeReviewCli:null,candidateViews:null,processEnv:bindings,resolveTelemetryTriggerBinary:()=>{throw Error("fixture");},
+   createDrakoncAiExtension({nativeReviewCli:null,candidateViews:null,processEnv:bindings,resolveTelemetryTriggerBinary:()=>{throw Error("fixture");},
     autoPermissionClassifier:{cancel(){},run:async(request:any)=>{requests.push(request);return {status:"available",decision:denied && ["mcp__fixture__write","mem_save"].includes(request.action.toolName) ? "deny":"allow",reason:"Fixture policy",usage:{totalTokens:7,costTotal:0.01},usageKnown:true};}}})(pi);
    pi.on("tool_result",event=>{observed.push(event);});
    pi.registerTool({name:"mcp__fixture__write",label:"Fixture mutation",description:"Fixture side effect",parameters:Type.Object({value:Type.String()}),annotations:{destructiveHint:true},
@@ -58,7 +58,7 @@ test("actual SDK gates direct and nested custom/MCP execution before side effect
  assert.equal(requests.filter(r=>r.action.toolName==="mcp__fixture__write").length,4);
  assert.equal(observed.filter(e=>e.toolName==="mcp__fixture__write").length,2,"denied nested/direct calls have no tool_result");
  assert.deepEqual(observed.filter(e=>e.toolName==="nested_fixture").map(e=>e.isError),[false,true],"outer tool preserves nested success and denial outcomes");
- const receipts=manager.getEntries().filter((e:any)=>e.type==="custom"&&e.customType==="gentle-auto-permission") as any[];
+ const receipts=manager.getEntries().filter((e:any)=>e.type==="custom"&&e.customType==="drakonc-auto-permission") as any[];
  assert.equal(receipts.filter(e=>e.data.decision==="deny").length,2);
  assert.equal(receipts.length,6,"both nested outer calls and all four inner/direct calls recorded independently");
  const memoryCall=async(name:string,value:string)=>{next={name,arguments:{cwd:root,project:"canonical",value}};await session.prompt("Save this task finding only; respect memory restrictions.",{source:"interactive"});};

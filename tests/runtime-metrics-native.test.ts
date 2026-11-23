@@ -5,8 +5,8 @@ import { test } from "node:test";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setGentleAiDevBinaryEnvironmentForTesting } from "../lib/gentle-ai-binary.ts";
-import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
+import { setDrakoncAiDevBinaryEnvironmentForTesting } from "../lib/drakonc-ai-binary.ts";
+import { setBundledInstallForTesting } from "../lib/drakonc-shell-bundled.ts";
 import * as native from "../lib/runtime-metrics-native.ts";
 import { parseAgentClass, type RuntimeMetricBucket } from "../lib/runtime-metrics.ts";
 import { createHash } from "node:crypto";
@@ -202,7 +202,7 @@ test("production encoder reaches the fake one-shot child without a test encoding
 
 test("validated dev override reaches the one-shot child through the production resolver", async () => {
 	const file = realpathSync(process.execPath);
-	setGentleAiDevBinaryEnvironmentForTesting({ env: { GENTLE_PI_GENTLE_AI_DEV_BINARY: file }, home: "/unused" });
+	setDrakoncAiDevBinaryEnvironmentForTesting({ env: { DRAKONC_PI_DRAKONC_AI_DEV_BINARY: file }, home: "/unused" });
 	try {
 		const f = fixture();
 		const { resolve: _resolve, encode: _encode, ...deps } = f.deps;
@@ -214,20 +214,20 @@ test("validated dev override reaches the one-shot child through the production r
 		assert.deepEqual(f.calls[0][1], ["telemetry", "runtime", "send", "--json"]);
 		assert.equal(f.input(), fixturePayloads.batches[0]);
 	} finally {
-		setGentleAiDevBinaryEnvironmentForTesting(undefined);
+		setDrakoncAiDevBinaryEnvironmentForTesting(undefined);
 	}
 });
 
 test("invalid dev overrides fail closed without spawning or falling back", async () => {
 	for (const file of ["relative-binary", realpathSync(new URL(".", import.meta.url))]) {
-		setGentleAiDevBinaryEnvironmentForTesting({ env: { GENTLE_PI_GENTLE_AI_DEV_BINARY: file }, home: "/unused" });
+		setDrakoncAiDevBinaryEnvironmentForTesting({ env: { DRAKONC_PI_DRAKONC_AI_DEV_BINARY: file }, home: "/unused" });
 		try {
 			const f = fixture();
 			const { resolve: _resolve, ...deps } = f.deps;
 			assert.equal(await native.sendNativeRuntimeEvent([], "/fixture", deps), "discarded");
 			assert.equal(f.calls.length, 0);
 		} finally {
-			setGentleAiDevBinaryEnvironmentForTesting(undefined);
+			setDrakoncAiDevBinaryEnvironmentForTesting(undefined);
 		}
 	}
 });
@@ -279,26 +279,46 @@ test("spawn failure silently discards", async () => {
 
 // S9: this package running from a bundled install (the testing overlay stands
 // in for its location; the detection itself is tested with real installs in
-// gentle-ai-binary-isolation.test.ts) and the launcher's GENTLE_SHELL_PREFIX.
+// drakonc-ai-binary-isolation.test.ts) and the launcher's DRAKONC_SHELL_PREFIX.
+// The companion's own home is computed from the OS home, so a temporary HOME
+// keeps the expectation exact without touching the real one.
+function useTemporaryOsHome(t: { after: (fn: () => void) => void }): string {
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-ai-isolation-home-")));
+	const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	t.after(() => {
+		for (const [name, value] of Object.entries(previous)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		rmSync(home, { recursive: true, force: true });
+	});
+	return home;
+}
+
 function bundledIsolation(t: { after: (fn: () => void) => void }): { prefix: string; env: NodeJS.ProcessEnv } {
-	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-site-")));
+	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-ai-isolation-site-")));
 	setBundledInstallForTesting({ root: prefix });
 	t.after(() => {
 		setBundledInstallForTesting(undefined);
 		rmSync(prefix, { recursive: true, force: true });
 	});
-	return { prefix, env: { PATH: "/usr/bin", GENTLE_SHELL_PREFIX: prefix } };
+	return { prefix, env: { PATH: "/usr/bin", DRAKONC_SHELL_PREFIX: prefix } };
 }
 
-test("the one-shot send runs gentle-ai with Gentle AI's isolation variables only in a bundled install", async (t) => {
+test("the one-shot send runs drakonc-ai with Drakonc AI's isolation variables, inside a bundled install or not", async (t) => {
+	const osHome = useTemporaryOsHome(t);
 	const { prefix, env } = bundledIsolation(t);
-	for (const [given, home] of [[env, join(prefix, "gentle-ai")], [{ PATH: "/usr/bin" }, undefined]] as const) {
+	const standaloneHome = join(osHome, ".drakonc-shell", "drakonc-ai-home");
+	for (const [given, home] of [[env, join(prefix, "drakonc-ai")], [{ PATH: "/usr/bin" }, standaloneHome]] as const) {
 		const f = fixture();
 		const pending = native.sendNativeRuntimeEvent([], "/fixture", { ...f.deps, env: given });
 		const options = f.calls[0][2] as { env: NodeJS.ProcessEnv };
-		assert.equal(options.env.GENTLE_AI_HOME, home);
-		if (home === undefined) assert.equal(options.env, given, "the environment is passed unchanged");
-		else assert.equal(options.env.GENTLE_AI_NO_SELF_UPDATE, "1");
+		assert.equal(options.env.DRAKONC_AI_HOME, home);
+		assert.equal(options.env.GENTLE_AI_HOME, home, "the name the pinned gentle-ai reads");
+		assert.equal(options.env.DRAKONC_AI_NO_SELF_UPDATE, "1");
+		assert.equal(options.env.GENTLE_AI_NO_SELF_UPDATE, "1");
 		f.close();
 		assert.equal(await pending, "stored");
 	}

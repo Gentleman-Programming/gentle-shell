@@ -497,7 +497,7 @@ test("win32 native route plays a custom Windows WAV through the fake PowerShell 
 			return { stat: async () => ({ isFile: () => true, size: bytes.length }),
 				read: async buffer => { bytes.copy(buffer); return { bytesRead: bytes.length }; }, close: async () => {} };
 		},
-		mkdtemp: async () => "C:\\Temp\\gentle-notification-1", chmod: async () => {},
+		mkdtemp: async () => "C:\\Temp\\drakonc-notification-1", chmod: async () => {},
 		writeFile: async (path, data, options) => { writes.push({ path, bytes: data, mode: options.mode }); },
 		unlink: async path => { cleaned.push(path); }, rmdir: async path => { cleaned.push(path); },
 	};
@@ -522,7 +522,7 @@ test("win32 native route plays a custom Windows WAV through the fake PowerShell 
 	assert.deepEqual(call.args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
 	const script = Buffer.from(call.args[4]!, "base64").toString("utf16le");
 	const embedded = script.match(/FromBase64String\('([^']*)'\)/)?.[1];
-	assert.equal(Buffer.from(embedded!, "base64").toString("utf8"), "C:\\Temp\\gentle-notification-1/sound.wav");
+	assert.equal(Buffer.from(embedded!, "base64").toString("utf8"), "C:\\Temp\\drakonc-notification-1/sound.wav");
 	assert.ok(!script.includes("C:\\audio.wav"));
 	children[1]!.stdout.emit("data", WINDOWS_PLAY_ENVELOPE);
 	children[1]!.emit("close", 0);

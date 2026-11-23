@@ -1,7 +1,7 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext, InputEvent, ToolCallEvent, ToolCallEventResult, ToolResultEvent } from "@earendil-works/pi-coding-agent";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 import { AutoPermissionMemory } from "./auto-permission-memory.ts";
 import { projectToolContext } from "./auto-permission-tool-context.ts";
 import { subscribeHumanAnswers, type HumanAnswerReceipt } from "./auto-permission-answers.ts";
@@ -9,9 +9,9 @@ import { AUTO_PERMISSION_EVIDENCE_BYTES, AUTO_PERMISSION_EVIDENCE_LIMITS, resolv
 import { AUTO_PERMISSION_DIAGNOSTIC_PATHS, type AutoPermissionDiagnostic } from "./auto-permission-classifier.ts";
 import { appendSystemPromptOnce, type AppendableSystemPromptOptions } from "./append-system-prompt.ts";
 
-export const AUTO_DIRECTIVE = `<gentle-auto-permissions>
-Auto permission mode is active. Continue ordinary authorized work without routine permission questions. An independent classifier checks eligible tool actions before execution. A denial is a boundary, not an obstacle to evade: choose a materially safer alternative within the request; never hide the same effect behind another tool, script, or subagent. Ask the human only for unresolved consequential intent, explicit required consent, or when safe progress is blocked. Existing hard safety, explicit user restrictions, and native review/maintenance consent still apply. Never answer human consent tools yourself. Auto is not a sandbox, does not grant new task scope, and does not change Gentle Shell delegation.
-</gentle-auto-permissions>`;
+export const AUTO_DIRECTIVE = `<drakonc-auto-permissions>
+Auto permission mode is active. Continue ordinary authorized work without routine permission questions. An independent classifier checks eligible tool actions before execution. A denial is a boundary, not an obstacle to evade: choose a materially safer alternative within the request; never hide the same effect behind another tool, script, or subagent. Ask the human only for unresolved consequential intent, explicit required consent, or when safe progress is blocked. Existing hard safety, explicit user restrictions, and native review/maintenance consent still apply. Never answer human consent tools yourself. Auto is not a sandbox, does not grant new task scope, and does not change Drakonc Shell delegation.
+</drakonc-auto-permissions>`;
 export function updateAutoPrompt(options: AppendableSystemPromptOptions | undefined, active: boolean): void {
  if (!options) return;
  options.appendSystemPrompt = (options.appendSystemPrompt ?? "").replace(`\n\n${AUTO_DIRECTIVE}`, "").replace(AUTO_DIRECTIVE, "");
@@ -38,10 +38,10 @@ type BranchItem = {id: string; type: string; message?: {role: string; content: u
 type AuthoredInput = {text: string; order:number; before: Set<string>; entryId?: string; prompt?: string};
 // These are independent authority/dialog/delegation surfaces, not Auto approvals.
 const OWNED_CONTROL_TOOLS = new Set([
- "ask_user_choice", "ask_user_question", "gentle_review", "gentle_review_capture", "gentle_review_capture_group", "gentle_review_run",
+ "ask_user_choice", "ask_user_question", "drakonc_review", "drakonc_review_capture", "drakonc_review_capture_group", "drakonc_review_run",
  "subagent_run", "subagent_continue", "subagent_reply", "subagent_cancel", "subagent_send_message",
  "subagent_status", "subagent_result", "subagent_list_tasks", "subagent_list_agents",
- "gentle_odd_phase", "todo",
+ "drakonc_odd_phase", "todo",
 ]);
 const DENIAL_LIMIT = 3, TOTAL_DENIAL_LIMIT = 20;
 const MAX_AUTHORED_BYTES = 24_000;
@@ -235,7 +235,7 @@ export class AutoPermissionRuntime {
   options: {configHome?: string; retryDelaysMs?: number[]} = {}) {
   this.pi=pi;this.modes=modes;this.classifier=classifier;
   this.memory=new AutoPermissionMemory(()=>pi.getAllTools?.() ?? []);
-  this.configHome = resolve(options.configHome ?? gentlePiConfigHome());
+  this.configHome = resolve(options.configHome ?? drakoncPiConfigHome());
   this.retryDelaysMs = options.retryDelaysMs ?? PROVIDER_RETRY_DELAYS_MS;
  }
  private retryDelaysMs: number[];
@@ -369,7 +369,7 @@ export class AutoPermissionRuntime {
  private protectedMutation(event: Pick<ToolCallEvent,"toolName"|"input">, ctx: ExtensionContext): boolean {
   const args=event.input as Record<string,unknown>;
   if (!args || typeof args!=="object") return false;
-  const projectHome=resolve(ctx.cwd,".pi","gentle-ai");
+  const projectHome=resolve(ctx.cwd,".pi","drakonc-ai");
   if ((event.toolName==="write" || event.toolName==="edit") && typeof args.path==="string") {
    try {
     const target=canonical(resolve(ctx.cwd,args.path)),home=canonical(this.configHome);
@@ -395,11 +395,11 @@ export class AutoPermissionRuntime {
  private record(ctx: ExtensionContext, event: Pick<ToolCallEvent,"toolName"|"toolCallId">, result: Verdict, late=false, memoryContextAttached?: boolean): void {
   const usage=numericUsage(result.usage), diagnostic=safeDiagnostic(result.diagnostic);
   // Receipts carry no raw command, input, transcript, or provider-generated rationale.
-  try {this.pi.appendEntry("gentle-auto-permission",{schema:1,toolCallId:event.toolCallId,toolName:event.toolName,
+  try {this.pi.appendEntry("drakonc-auto-permission",{schema:1,toolCallId:event.toolCallId,toolName:event.toolName,
    status:result.status,decision:result.decision,code:result.code,usage,usageKnown:result.usageKnown,late,actualModel:result.actualModel,...(memoryContextAttached === undefined ? {} : {memoryContextAttached}),...(diagnostic ? {diagnostic} : {})});} catch { /* Missing persistence never creates permission. */ }
   if(!late)this.calls++;
   this.tokens+=usage.totalTokens ?? 0;this.cost+=usage.costTotal ?? 0;
-  try {ctx.ui.setStatus("gentle:auto-usage",`Auto checks ${this.calls} · ${this.tokens} tokens · $${this.cost.toFixed(4)} (separate)`);} catch { /* Headless. */ }
+  try {ctx.ui.setStatus("drakonc:auto-usage",`Auto checks ${this.calls} · ${this.tokens} tokens · $${this.cost.toFixed(4)} (separate)`);} catch { /* Headless. */ }
  }
  guard(event: Pick<ToolCallEvent,"toolName"|"input">, ctx: ExtensionContext): ToolCallEventResult | undefined {
   return this.protectedMutation(event,ctx) ? block("Permission configuration is human-controlled. Use the mode settings UI; model tools cannot change it.") : undefined;

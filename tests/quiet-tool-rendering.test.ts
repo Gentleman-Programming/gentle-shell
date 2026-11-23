@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initTheme, keyHint } from "@earendil-works/pi-coding-agent";
 import { imageFallback, visibleWidth } from "@earendil-works/pi-tui";
-import { cardBody, cardHint, cardTitle, cardTone } from "./gentle-card-text.ts";
+import { cardBody, cardHint, cardTitle, cardTone } from "./drakonc-card-text.ts";
 import { CARD_STYLE, cardStyle, setCardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { CARD_CONTENT, cardContent, setCardContent } from "../lib/card-content-policy.ts";
@@ -15,7 +15,7 @@ import productionQuietTools, {
 	countNonEmptyLines,
 	extractTextContent,
 	formatToolResultOutput,
-	gentleAiRoutineCommand,
+	drakoncAiRoutineCommand,
 	tailLines,
 } from "../extensions/quiet-tools.ts";
 
@@ -58,13 +58,13 @@ function routineRenderContext(overrides: Record<string, unknown> = {}) {
 
 // Content assertions read the quiet tool card content: the top rule becomes its
 // call text (glyph, fill, and hint dropped), sides are stripped, and the closing
-// rule is dropped. Gentle AI cards keep their raw frame for the card-text
+// rule is dropped. Drakonc AI cards keep their raw frame for the card-text
 // helpers, and the quiet card tests assert the raw frame via frameLines.
 // Legacy bash argument assertions drop its new identity prefix here; distinct
 // tool identity is asserted separately against the actual unmodified frame.
 // A pending call's `running…` row is frame chrome too, asserted separately.
 const TAG = "(?:</?[a-zA-Z]+>)*";
-const CARD_TOP = new RegExp(`^${TAG}╭─ ${TAG}[✿≡$⌕⌖☷✎+]${TAG} (.*?) ${TAG}─+${TAG}(?: .*? )?${TAG}╮${TAG}$`);
+const CARD_TOP = new RegExp(`^${TAG}╭─ ${TAG}[🐉≡$⌕⌖☷✎+]${TAG} (.*?) ${TAG}─+${TAG}(?: .*? )?${TAG}╮${TAG}$`, "u");
 const CARD_SIDE = new RegExp(`^${TAG}│${TAG} (.*) ${TAG}│${TAG}$`);
 const CARD_BOTTOM = new RegExp(`^${TAG}╰${TAG}─*${TAG}╯${TAG}$`);
 
@@ -178,20 +178,20 @@ async function withEnvAsync<T>(updates: Record<string, string | undefined>, run:
 // No executor, shellPath, or claim of production native-Bash UI parity.
 function quietTools(pi: any, resolveOverride?: any) {
 	productionQuietTools(pi, resolveOverride);
-	if (process.env.GENTLE_PI_QUIET_TOOLS !== "0") {
+	if (process.env.DRAKONC_PI_QUIET_TOOLS !== "0") {
 		pi.registerTool({ name: "bash", ...createQuietToolRenderer("bash", resolveOverride) });
 	}
 }
 
 function registeredQuietTools() {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	return tools;
 }
 
 function registeredQuietToolsWithResolver(resolveOverride: () => unknown) {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any, resolveOverride as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any, resolveOverride as any));
 	return tools;
 }
 
@@ -203,12 +203,12 @@ function assertGenericBash(tool: any, command: string): void {
 	const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
 	const output = renderToolResult(tool, textResult("original command output"), { expanded: true, isPartial: false }, { args: { command } });
 	assert.equal(call.trimEnd(), `$ ${command}`, command);
-	assert.doesNotMatch(call, /🌹/);
+	assert.doesNotMatch(call, /🐉/);
 	assert.match(output, /original command output/);
 }
 
 test("quiet tools register six overrides and codemode, never Bash", () => {
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => {
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => {
 		const { pi, tools } = createPi();
 
 		productionQuietTools(pi as any);
@@ -225,7 +225,7 @@ test("quiet tools register six overrides and codemode, never Bash", () => {
 });
 
 test("quiet tools never replace an existing native Bash tool", () => {
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => {
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => {
 		const { pi, tools } = createPi({ throwOnToolConflict: true });
 		const native = createSdkTool("bash");
 		pi.registerTool(native);
@@ -245,7 +245,7 @@ test("standalone Bash rendering fixture does not interpret shellPath", () => {
 });
 
 test("quiet tool rendering can be disabled by env", () => {
-	withEnv({ GENTLE_PI_QUIET_TOOLS: "0" }, () => {
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: "0" }, () => {
 		const { pi, tools } = createPi();
 
 		productionQuietTools(pi as any);
@@ -256,7 +256,7 @@ test("quiet tool rendering can be disabled by env", () => {
 
 test("pi-pretty suppresses overlapping tools before quiet tools register", async () => {
 	await withEnvAsync(
-		{ GENTLE_PI_AGENTS_CHILD: undefined, GENTLE_PI_QUIET_TOOLS: undefined, PRETTY_DISABLE_TOOLS: "multi_grep" },
+		{ DRAKONC_PI_AGENTS_CHILD: undefined, DRAKONC_PI_QUIET_TOOLS: undefined, PRETTY_DISABLE_TOOLS: "multi_grep" },
 		async () => {
 			const { pi, tools } = createPi({ throwOnToolConflict: true });
 
@@ -274,7 +274,7 @@ test("pi-pretty suppresses overlapping tools before quiet tools register", async
 
 test("pi-pretty preserves byte-exact model-visible read results when quiet tools suppress its renderer", async () => {
 	await withEnvAsync(
-		{ GENTLE_PI_AGENTS_CHILD: undefined, GENTLE_PI_QUIET_TOOLS: undefined, PRETTY_DISABLE_TOOLS: undefined },
+		{ DRAKONC_PI_AGENTS_CHILD: undefined, DRAKONC_PI_QUIET_TOOLS: undefined, PRETTY_DISABLE_TOOLS: undefined },
 		async () => {
 			const { pi, hooks } = createPi();
 			await piPretty(pi as any, fakePiPrettyDeps as any);
@@ -297,8 +297,8 @@ test("pi-pretty preserves byte-exact model-visible read results when quiet tools
 test("pi-pretty suppression is skipped when quiet tools are disabled", async () => {
 	await withEnvAsync(
 		{
-			GENTLE_PI_AGENTS_CHILD: undefined,
-			GENTLE_PI_QUIET_TOOLS: "0",
+			DRAKONC_PI_AGENTS_CHILD: undefined,
+			DRAKONC_PI_QUIET_TOOLS: "0",
 			PRETTY_DISABLE_TOOLS: undefined,
 			PRETTY_ENABLE_TOOLS: "ls",
 		},
@@ -318,7 +318,7 @@ test("pi-pretty suppression is skipped when quiet tools are disabled", async () 
 
 test("quiet tool rendering uses bounded previews while preserving search summaries", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 
 	const read = renderToString(
 		tools.get("read").renderResult(textResult("first line\nsecond line"), { expanded: false, isPartial: false }, passthroughTheme, {}),
@@ -489,61 +489,61 @@ test("quiet Bash normalizes compact JSON for bounded previews while keeping expa
 
 test("retired SDD commands use generic bash rendering while review remains private", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const bash = tools.get("bash");
 	for (const command of [
-		"gentle-ai sdd-status rose --json",
-		"env FOO=bar gentle-ai sdd-continue rose",
-		"gentle-ai sdd-attempt grant --authorization-root /root",
-		"./.gentle-ai/v2.2.0/gentle-ai sdd-status rose --json",
-		"C:\\package\\.gentle-ai\\v2.2.0\\gentle-ai.exe sdd-continue rose",
+		"drakonc-ai sdd-status rose --json",
+		"env FOO=bar drakonc-ai sdd-continue rose",
+		"drakonc-ai sdd-attempt grant --authorization-root /root",
+		"./.drakonc-ai/v2.2.0/drakonc-ai sdd-status rose --json",
+		"C:\\package\\.drakonc-ai\\v2.2.0\\drakonc-ai.exe sdd-continue rose",
 	]) {
-		assert.equal(gentleAiRoutineCommand({ command }), undefined, command);
+		assert.equal(drakoncAiRoutineCommand({ command }), undefined, command);
 		const call = renderToString(bash.renderCall({ command }, passthroughTheme, { args: { command } }));
 		assert.equal(call, `$ ${command}`);
 		const result = renderToString(bash.renderResult(textResult("ordinary output"), { expanded: false, isPartial: false }, passthroughTheme, { args: { command } }));
 		assert.match(result, /ordinary output/);
 	}
-	const review = "gentle-ai review status --next-transition";
-	assert.equal(gentleAiRoutineCommand({ command: review }), "review");
-	assert.equal(cardTitle(renderToString(bash.renderCall({ command: review }, passthroughTheme, { args: { command: review } }))), "🌹 rdd running · status");
+	const review = "drakonc-ai review status --next-transition";
+	assert.equal(drakoncAiRoutineCommand({ command: review }), "review");
+	assert.equal(cardTitle(renderToString(bash.renderCall({ command: review }, passthroughTheme, { args: { command: review } }))), "🐉 rdd running · status");
 });
 
-test("quiet tool rendering identifies only routine Gentle AI review commands", () => {
-	assert.equal(gentleAiRoutineCommand({ command: "/package/.gentle-ai/v2.2.0/gentle-ai review status --next-transition" }), "review");
-	assert.equal(gentleAiRoutineCommand({ command: ".\\.gentle-ai\\v2.2.0\\gentle-ai.exe review status --next-transition" }), "review");
-	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt acquire --change fix-rose" }), undefined);
-	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt settle --change fix-rose" }), undefined);
-	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai review status --next-transition" }), "review");
-	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai version" }), undefined);
-	assert.equal(gentleAiRoutineCommand({ command: "gentle-ai sdd-attempt inspect" }), undefined);
-	assert.equal(gentleAiRoutineCommand({ command: "/package/.gentle-ai/v2.2.0/gentle-ai-copy review status" }), undefined);
-	assert.equal(gentleAiRoutineCommand({ command: "echo gentle-ai review status" }), undefined);
+test("quiet tool rendering identifies only routine Drakonc AI review commands", () => {
+	assert.equal(drakoncAiRoutineCommand({ command: "/package/.drakonc-ai/v2.2.0/drakonc-ai review status --next-transition" }), "review");
+	assert.equal(drakoncAiRoutineCommand({ command: ".\\.drakonc-ai\\v2.2.0\\drakonc-ai.exe review status --next-transition" }), "review");
+	assert.equal(drakoncAiRoutineCommand({ command: "drakonc-ai sdd-attempt acquire --change fix-rose" }), undefined);
+	assert.equal(drakoncAiRoutineCommand({ command: "drakonc-ai sdd-attempt settle --change fix-rose" }), undefined);
+	assert.equal(drakoncAiRoutineCommand({ command: "drakonc-ai review status --next-transition" }), "review");
+	assert.equal(drakoncAiRoutineCommand({ command: "drakonc-ai version" }), undefined);
+	assert.equal(drakoncAiRoutineCommand({ command: "drakonc-ai sdd-attempt inspect" }), undefined);
+	assert.equal(drakoncAiRoutineCommand({ command: "/package/.drakonc-ai/v2.2.0/drakonc-ai-copy review status" }), undefined);
+	assert.equal(drakoncAiRoutineCommand({ command: "echo drakonc-ai review status" }), undefined);
 });
 
-test("quiet tool rendering refuses to compact composed Gentle AI shell commands", () => {
+test("quiet tool rendering refuses to compact composed Drakonc AI shell commands", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const commands = [
-		"gentle-ai review status --next-transition && rm -rf target",
-		"gentle-ai review status; rm -rf target",
-		"gentle-ai review status || rm -rf target",
-		"gentle-ai review status | tee status.json",
-		"gentle-ai review status & rm -rf target",
-		"gentle-ai review status\nrm -rf target",
-		"gentle-ai review status --next-transition $(rm -rf target)",
-		"gentle-ai review status --next-transition `rm -rf target`",
-		"gentle-ai review status --next-transition <(cat target)",
-		"gentle-ai review status --next-transition >(tee target)",
-		"gentle-ai review status --next-transition > status.json",
-		"gentle-ai review status --next-transition < status.json",
-		"gentle-ai review status $HOME",
-		"gentle-ai review status ${HOME}",
-		"gentle-ai review status\n",
+		"drakonc-ai review status --next-transition && rm -rf target",
+		"drakonc-ai review status; rm -rf target",
+		"drakonc-ai review status || rm -rf target",
+		"drakonc-ai review status | tee status.json",
+		"drakonc-ai review status & rm -rf target",
+		"drakonc-ai review status\nrm -rf target",
+		"drakonc-ai review status --next-transition $(rm -rf target)",
+		"drakonc-ai review status --next-transition `rm -rf target`",
+		"drakonc-ai review status --next-transition <(cat target)",
+		"drakonc-ai review status --next-transition >(tee target)",
+		"drakonc-ai review status --next-transition > status.json",
+		"drakonc-ai review status --next-transition < status.json",
+		"drakonc-ai review status $HOME",
+		"drakonc-ai review status ${HOME}",
+		"drakonc-ai review status\n",
 	];
 
 	for (const command of commands) {
-		assert.equal(gentleAiRoutineCommand({ command }), undefined, command);
+		assert.equal(drakoncAiRoutineCommand({ command }), undefined, command);
 		const call = renderToString(tools.get("bash").renderCall({ command }, passthroughTheme, {}));
 		const output = renderToString(tools.get("bash").renderResult(textResult("command output"), { expanded: true, isPartial: false }, passthroughTheme, { args: { command } }));
 		assert.equal(call.replace(/[ \t]+$/gm, "").trimEnd(), `$ ${command.trimEnd()}`);
@@ -551,11 +551,11 @@ test("quiet tool rendering refuses to compact composed Gentle AI shell commands"
 	}
 });
 
-test("quiet tool rendering previews direct Gentle AI results and preserves expanded errors", () => {
+test("quiet tool rendering previews direct Drakonc AI results and preserves expanded errors", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
-	const command = "gentle-ai review status --next-transition";
-	const rose = "\u{1F339}";
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	const command = "drakonc-ai review status --next-transition";
+	const dragon = "🐉";
 	const tool = tools.get("bash");
 	const failureText = "review status failed: authority unavailable\x1b[31m\nlineage=secret";
 	const expandHint = keyHint("app.tools.expand", "to expand");
@@ -568,9 +568,9 @@ test("quiet tool rendering previews direct Gentle AI results and preserves expan
 	const empty = renderToString(tool.renderResult(textResult(""), { expanded: false, isPartial: false }, passthroughTheme, { args: { command } }));
 	const nonText = renderToString(tool.renderResult({ content: [{ type: "image", data: "opaque", mimeType: "image/png" }] }, { expanded: false, isPartial: false }, passthroughTheme, { args: { command } }));
 
-	assert.equal([...rose].length, 1, "the rose is a plain emoji, no presentation selector");
-	assert.equal(visibleWidth(rose), 2);
-	assert.equal(cardTitle(call), `🌹 rdd running · status`);
+	assert.equal([...dragon].length, 1, "the dragon is a plain emoji, no presentation selector");
+	assert.equal(visibleWidth(dragon), 2);
+	assert.equal(cardTitle(call), `🐉 rdd running · status`);
 	assert.equal(cardBody(collapsed), "stop", "a JSON envelope collapses to its readable summary");
 	assert.doesNotMatch(collapsed, /\{"|next_transition/);
 	assert.equal(cardBody(expanded), '{\n  "next_transition": "stop"\n}', "expanded JSON is pretty-printed");
@@ -585,11 +585,11 @@ test("quiet tool rendering previews direct Gentle AI results and preserves expan
 	assert.equal(cardBody(nonText), "");
 });
 
-test("quiet tool rendering transitions one Gentle AI header through lifecycle states", () => {
+test("quiet tool rendering transitions one Drakonc AI header through lifecycle states", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const tool = tools.get("bash");
-	const command = "gentle-ai review status --cwd /repo/private-change";
+	const command = "drakonc-ai review status --cwd /repo/private-change";
 
 	const initial = tool.renderCall({ command }, statusTheme, routineRenderContext());
 	const initialText = renderToString(initial).trimEnd();
@@ -624,40 +624,40 @@ test("quiet tool rendering transitions one Gentle AI header through lifecycle st
 	assert.strictEqual(initial, running);
 	assert.strictEqual(running, completed);
 	assert.strictEqual(completed, failed);
-	assert.equal(cardTitle(initialText), "🌹 rdd running · status"); assert.equal(cardTone(initialText), "warning");
-	assert.equal(cardTitle(runningText), "🌹 rdd running · status"); assert.equal(cardTone(runningText), "warning");
-	assert.equal(cardTitle(completedText), "🌹 rdd status"); assert.equal(cardTone(completedText), "success");
-	assert.equal(cardTitle(failedText), "🌹 rdd failed · status"); assert.equal(cardTone(failedText), "error");
+	assert.equal(cardTitle(initialText), "🐉 rdd running · status"); assert.equal(cardTone(initialText), "warning");
+	assert.equal(cardTitle(runningText), "🐉 rdd running · status"); assert.equal(cardTone(runningText), "warning");
+	assert.equal(cardTitle(completedText), "🐉 rdd status"); assert.equal(cardTone(completedText), "success");
+	assert.equal(cardTitle(failedText), "🐉 rdd failed · status"); assert.equal(cardTone(failedText), "error");
 	assert.doesNotMatch(failedText, /private-change/);
 });
 
-test("quiet Bash keeps direct Gentle AI calls seamless while streaming", () => {
+test("quiet Bash keeps direct Drakonc AI calls seamless while streaming", () => {
 	const tool = registeredQuietTools().get("bash");
-	const rose = /🌹/;
+	const rose = /🐉/;
 	const render = (command: string, state: Record<string, unknown>, overrides: Record<string, unknown> = {}) => {
 		const component = tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, state, argsComplete: false, ...overrides }));
 		return [component, renderToString(component)] as const;
 	};
-	const command = "gentle-ai review status --token 'lineage-secret";
+	const command = "drakonc-ai review status --token 'lineage-secret";
 	const state = {};
 	const [preparing, collapsed] = render(command, state);
-	assert.equal(cardTitle(collapsed), "🌹 rdd preparing · status");
+	assert.equal(cardTitle(collapsed), "🐉 rdd preparing · status");
 	assert.doesNotMatch(collapsed, /token|lineage-secret/);
 	const expanded = render(command, state, { expanded: true, lastComponent: preparing })[1];
-	assert.equal(cardTitle(expanded), "🌹 rdd preparing · status"); assert.equal(cardBody(expanded), "$ gentle-ai review status --token 'lineage-secret");
+	assert.equal(cardTitle(expanded), "🐉 rdd preparing · status"); assert.equal(cardBody(expanded), "$ drakonc-ai review status --token 'lineage-secret");
 
-	const direct = "gentle-ai review status";
+	const direct = "drakonc-ai review status";
 	const [running, runningText] = render(direct, state, { argsComplete: true, executionStarted: true, lastComponent: preparing });
-	assert.strictEqual(running, preparing); assert.equal(cardTitle(runningText), "🌹 rdd running · status");
+	assert.strictEqual(running, preparing); assert.equal(cardTitle(runningText), "🐉 rdd running · status");
 	const genericState = {};
-	const [generic, genericText] = render("gentle-ai review status | cat", genericState);
+	const [generic, genericText] = render("drakonc-ai review status | cat", genericState);
 	assert.doesNotMatch(genericText, rose); assert.match(genericText, /\| cat/);
 	assert.doesNotMatch(render(direct, genericState, { argsComplete: true, lastComponent: generic })[1], rose);
 	assert.match(render(direct, {}, { argsComplete: true })[1], rose);
 
-	for (const malformed of ["gentle-ai\x1b[31m review status", 'gentle-ai review status "unfinished']) {
+	for (const malformed of ["drakonc-ai\x1b[31m review status", 'drakonc-ai review status "unfinished']) {
 		const text = render(malformed, {}, { argsComplete: true })[1];
-		assert.doesNotMatch(text, rose); assert.match(text, /\$ gentle-ai.*review status/);
+		assert.doesNotMatch(text, rose); assert.match(text, /\$ drakonc-ai.*review status/);
 	}
 	for (const bracket of ["[", "]"]) assert.match(render(`${direct} ${bracket}`, {})[1], rose);
 
@@ -668,54 +668,54 @@ test("quiet Bash keeps direct Gentle AI calls seamless while streaming", () => {
 	assert.match(cardBody(directResult), /direct result/);
 });
 
-test("quiet tool rendering displays only finite safe Gentle AI operation paths", () => {
+test("quiet tool rendering displays only finite safe Drakonc AI operation paths", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const tool = tools.get("bash");
 	const cases = [
-		["gentle-ai review capabilities --cwd /repo/private", "review capabilities"],
-		["gentle-ai review start --target sha256:secret --path src/private.ts", "review start"],
-		["gentle-ai review finalize --lineage lineage-secret --payload '{\"secret\":true}'", "review finalize"],
-		["gentle-ai review status --lineage lineage-secret", "review status"],
-		["gentle-ai review repair --reason private-reason", "review repair"],
-		["gentle-ai review invalidate --lineage lineage-secret", "review invalidate"],
-		["gentle-ai review abandon --lineage lineage-secret", "review abandon"],
-		["gentle-ai review recover --lineage lineage-secret", "review recover"],
-		["gentle-ai review reclaim --lineage lineage-secret", "review reclaim"],
-		["gentle-ai review validate --cwd /repo/private", "review validate"],
-		["gentle-ai review capture-result --input result.json", "review capture result"],
-		["gentle-ai review capture-refuter --input result.json", "review capture refuter"],
-		["gentle-ai review capture-validation --input result.json", "review capture validation"],
-		["gentle-ai review capture-evidence --input evidence.json", "review capture evidence"],
-		["gentle-ai review preserve-result --input result.json", "review preserve result"],
-		["gentle-ai review lens-context --lens reviewer", "review lens context"],
-		["gentle-ai review retry-final-verification --incident incident.json", "review retry final verification"],
-		["gentle-ai review store-reset --authorization secret", "review store reset"],
-		["gentle-ai review inspect-authority --path /repo/private", "review inspect authority"],
-		["gentle-ai review inspect-candidate --path /repo/private", "review inspect candidate"],
-		["gentle-ai review dispose-result --reference result-secret", "review dispose result"],
-		["gentle-ai review reopen-results --reference result-secret", "review reopen results"],
-		["gentle-ai review opencode-transport --payload secret", "review opencode transport"],
-		["gentle-ai review bind-sdd --change change-123 --lineage lineage-secret", "review bind sdd"],
-		["gentle-ai review mode enable --actor maintainer", "review mode enable"],
-		["gentle-ai review mode disable --actor maintainer", "review mode disable"],
-		["gentle-ai review mode status --json", "review mode status"],
-		["gentle-ai review validate --gate post-apply --cwd /repo/private", "review validate post apply"],
-		["gentle-ai review validate --gate pre-commit --cwd /repo/private", "review validate pre commit"],
-		["gentle-ai review validate --gate pre-push --cwd /repo/private", "review validate pre push"],
-		["gentle-ai review validate --gate pre-pr --cwd /repo/private", "review validate pre pr"],
-		["gentle-ai review validate --gate release --cwd /repo/private", "review validate release"],
-		["gentle-ai review schema capture-result-dry-run --path /tmp/private.json", "review schema capture result dry run"],
-		["gentle-ai review schema final-verification-incident --path /tmp/private.json", "review schema final verification incident"],
-		["gentle-ai review schema refuter --path /tmp/private.json", "review schema refuter"],
-		["gentle-ai review schema reviewer --path /tmp/private.json", "review schema reviewer"],
-		["gentle-ai review schema validator --path /tmp/private.json", "review schema validator"],
-		["gentle-ai review schema verification-evidence --path /tmp/private.json", "review schema verification evidence"],
-		["gentle-ai review schema verification-evidence-record --path /tmp/private.json", "review schema verification evidence record"],
-		["gentle-ai review unknown-operation --change change-123 --reason private-reason", "review"],
-		["gentle-ai review mode restart --actor maintainer", "review"],
-		["gentle-ai review validate --gate unknown-gate --cwd /repo/private", "review"],
-		["gentle-ai review schema unknown-schema --path /tmp/private.json", "review schema"],
+		["drakonc-ai review capabilities --cwd /repo/private", "review capabilities"],
+		["drakonc-ai review start --target sha256:secret --path src/private.ts", "review start"],
+		["drakonc-ai review finalize --lineage lineage-secret --payload '{\"secret\":true}'", "review finalize"],
+		["drakonc-ai review status --lineage lineage-secret", "review status"],
+		["drakonc-ai review repair --reason private-reason", "review repair"],
+		["drakonc-ai review invalidate --lineage lineage-secret", "review invalidate"],
+		["drakonc-ai review abandon --lineage lineage-secret", "review abandon"],
+		["drakonc-ai review recover --lineage lineage-secret", "review recover"],
+		["drakonc-ai review reclaim --lineage lineage-secret", "review reclaim"],
+		["drakonc-ai review validate --cwd /repo/private", "review validate"],
+		["drakonc-ai review capture-result --input result.json", "review capture result"],
+		["drakonc-ai review capture-refuter --input result.json", "review capture refuter"],
+		["drakonc-ai review capture-validation --input result.json", "review capture validation"],
+		["drakonc-ai review capture-evidence --input evidence.json", "review capture evidence"],
+		["drakonc-ai review preserve-result --input result.json", "review preserve result"],
+		["drakonc-ai review lens-context --lens reviewer", "review lens context"],
+		["drakonc-ai review retry-final-verification --incident incident.json", "review retry final verification"],
+		["drakonc-ai review store-reset --authorization secret", "review store reset"],
+		["drakonc-ai review inspect-authority --path /repo/private", "review inspect authority"],
+		["drakonc-ai review inspect-candidate --path /repo/private", "review inspect candidate"],
+		["drakonc-ai review dispose-result --reference result-secret", "review dispose result"],
+		["drakonc-ai review reopen-results --reference result-secret", "review reopen results"],
+		["drakonc-ai review opencode-transport --payload secret", "review opencode transport"],
+		["drakonc-ai review bind-sdd --change change-123 --lineage lineage-secret", "review bind sdd"],
+		["drakonc-ai review mode enable --actor maintainer", "review mode enable"],
+		["drakonc-ai review mode disable --actor maintainer", "review mode disable"],
+		["drakonc-ai review mode status --json", "review mode status"],
+		["drakonc-ai review validate --gate post-apply --cwd /repo/private", "review validate post apply"],
+		["drakonc-ai review validate --gate pre-commit --cwd /repo/private", "review validate pre commit"],
+		["drakonc-ai review validate --gate pre-push --cwd /repo/private", "review validate pre push"],
+		["drakonc-ai review validate --gate pre-pr --cwd /repo/private", "review validate pre pr"],
+		["drakonc-ai review validate --gate release --cwd /repo/private", "review validate release"],
+		["drakonc-ai review schema capture-result-dry-run --path /tmp/private.json", "review schema capture result dry run"],
+		["drakonc-ai review schema final-verification-incident --path /tmp/private.json", "review schema final verification incident"],
+		["drakonc-ai review schema refuter --path /tmp/private.json", "review schema refuter"],
+		["drakonc-ai review schema reviewer --path /tmp/private.json", "review schema reviewer"],
+		["drakonc-ai review schema validator --path /tmp/private.json", "review schema validator"],
+		["drakonc-ai review schema verification-evidence --path /tmp/private.json", "review schema verification evidence"],
+		["drakonc-ai review schema verification-evidence-record --path /tmp/private.json", "review schema verification evidence record"],
+		["drakonc-ai review unknown-operation --change change-123 --reason private-reason", "review"],
+		["drakonc-ai review mode restart --actor maintainer", "review"],
+		["drakonc-ai review validate --gate unknown-gate --cwd /repo/private", "review"],
+		["drakonc-ai review schema unknown-schema --path /tmp/private.json", "review schema"],
 	];
 
 	for (const [command, path] of cases) {
@@ -726,67 +726,67 @@ test("quiet tool rendering displays only finite safe Gentle AI operation paths",
 				routineRenderContext({ args: { command } }),
 			),
 		);
-		assert.equal(cardTitle(rendered), path === "review" ? "🌹 rdd running" : `🌹 rdd running · ${path.slice("review ".length)}`, command);
+		assert.equal(cardTitle(rendered), path === "review" ? "🐉 rdd running" : `🐉 rdd running · ${path.slice("review ".length)}`, command);
 		assert.doesNotMatch(rendered, /change-123|private|secret|lineage|sha256|result\.json|incident\.json/);
 	}
 });
 
-test("quiet tool rendering covers version and future standalone Gentle AI commands", () => {
+test("quiet tool rendering covers version and future standalone Drakonc AI commands", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const tool = tools.get("bash");
 	const cases = [
-		["gentle-ai version", "gentle-ai running · version"],
-		["gentle-ai future-command --authorization-root /repo/private", "gentle-ai running · command"],
-		["gentle-ai review future-operation --path /repo/private", "rdd running"],
-		["/package/.gentle-ai/v2.2.0/gentle-ai version", "gentle-ai running · version"],
-		["C:\\package\\.gentle-ai\\v2.2.0\\gentle-ai.exe future-command --root C:\\private", "gentle-ai running · command"],
+		["drakonc-ai version", "drakonc-ai running · version"],
+		["drakonc-ai future-command --authorization-root /repo/private", "drakonc-ai running · command"],
+		["drakonc-ai review future-operation --path /repo/private", "rdd running"],
+		["/package/.drakonc-ai/v2.2.0/drakonc-ai version", "drakonc-ai running · version"],
+		["C:\\package\\.drakonc-ai\\v2.2.0\\drakonc-ai.exe future-command --root C:\\private", "drakonc-ai running · command"],
 	] as const;
 
 	for (const [command, path] of cases) {
 		const rendered = renderToString(
 			tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command } })),
 		);
-		assert.equal(cardTitle(rendered), `🌹 ${path}`, command);
+		assert.equal(cardTitle(rendered), `🐉 ${path}`, command);
 		assert.doesNotMatch(rendered, /authorization-root|private|C:\\\\private/);
 	}
 });
 
-test("quiet tool rendering recognizes exact quoted, escaped, Windows, and command-prefixed Gentle AI executables", () => {
+test("quiet tool rendering recognizes exact quoted, escaped, Windows, and command-prefixed Drakonc AI executables", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const tool = tools.get("bash");
 	const routineCommands = [
-		"gentle-ai.exe version",
-		"'gentle-ai' version",
-		'"gentle-ai" version',
-		"'gentle-ai.exe' version",
-		'"gentle-ai.exe" version',
-		"gentle\\-ai version",
-		"gentle\\-ai\\.exe version",
-		"command -- gentle-ai version",
-		"command -- 'gentle-ai.exe' version",
-		"env gentle-ai version",
-		"FOO='a b' gentle-ai version",
-		'FOO="a b" gentle-ai version',
-		"env FOO='a b' gentle-ai version",
-		'env FOO="a b" gentle-ai version',
+		"drakonc-ai.exe version",
+		"'drakonc-ai' version",
+		'"drakonc-ai" version',
+		"'drakonc-ai.exe' version",
+		'"drakonc-ai.exe" version',
+		"drakonc\\-ai version",
+		"drakonc\\-ai\\.exe version",
+		"command -- drakonc-ai version",
+		"command -- 'drakonc-ai.exe' version",
+		"env drakonc-ai version",
+		"FOO='a b' drakonc-ai version",
+		'FOO="a b" drakonc-ai version',
+		"env FOO='a b' drakonc-ai version",
+		'env FOO="a b" drakonc-ai version',
 	] as const;
 
 	for (const command of routineCommands) {
 		const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
-		assert.equal(cardTitle(call), "🌹 gentle-ai running · version", command);
+		assert.equal(cardTitle(call), "🐉 drakonc-ai running · version", command);
 	}
 
-	for (const command of ["'gentle-ai-copy' version", '"gentle-ai-copy.exe" version', "'gentle-ai' version && echo done"] as const) {
+	for (const command of ["'drakonc-ai-copy' version", '"drakonc-ai-copy.exe" version', "'drakonc-ai' version && echo done"] as const) {
 		const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
 		assert.equal(call.trimEnd(), `$ ${command}`);
-		assert.doesNotMatch(call, /🌹/);
+		assert.doesNotMatch(call, /🐉/);
 	}
 });
 
 test("quiet tool rendering recognizes only the exact resolved dev binary", () => {
-	let devPath = "/home/devel/projects/gentle-ai/dist/gentle-ai-main";
+	let devPath = "/home/devel/projects/drakonc-ai/dist/drakonc-ai-main";
 	let resolutions = 0;
 	const tools = registeredQuietToolsWithResolver(() => {
 		resolutions += 1;
@@ -796,18 +796,18 @@ test("quiet tool rendering recognizes only the exact resolved dev binary", () =>
 	const cases = [
 		[`${devPath} review validate --gate pre-commit --cwd /repo/private`, "rdd running · validate pre commit"],
 		[`'${devPath}' review status --lineage secret`, "rdd running · status"],
-		[`"${devPath}" version`, "gentle-ai running · version"],
+		[`"${devPath}" version`, "drakonc-ai running · version"],
 		[`env FOO='a b' ${devPath} review capabilities`, "rdd running · capabilities"],
 	] as const;
 	for (const [command, operationPath] of cases) {
 		const call = renderToString(tool.renderCall({ command }, statusTheme, routineRenderContext({ args: { command } })));
-		assert.equal(cardTitle(call), `🌹 ${operationPath}`, command); assert.equal(cardTone(call), "warning", command);
-		assert.doesNotMatch(call, /gentle-ai-main|private|secret|hidden/);
+		assert.equal(cardTitle(call), `🐉 ${operationPath}`, command); assert.equal(cardTone(call), "warning", command);
+		assert.doesNotMatch(call, /drakonc-ai-main|private|secret|hidden/);
 	}
 	const command = `${devPath} review status --prompt hidden-prompt --lineage lineage-secret --body private-body`;
 	const lifecycleContext = routineRenderContext({ args: { command }, state: {} });
 	assert.match(renderToString(tool.renderCall({ command }, passthroughTheme, lifecycleContext)), /rdd running · status/);
-	devPath = "/new/dev/gentle-ai-main";
+	devPath = "/new/dev/drakonc-ai-main";
 	const refreshedCommand = `${devPath} review status --token token-secret`;
 	assert.match(renderToString(tool.renderCall({ command: refreshedCommand }, passthroughTheme, routineRenderContext({ args: { command: refreshedCommand } }))), /rdd running · status/);
 	assertGenericBash(tool, cases[2][0]);
@@ -824,11 +824,11 @@ test("quiet tool rendering recognizes only the exact resolved dev binary", () =>
 	assert.ok(resolutions > 1);
 });
 test("quiet tool rendering keeps unregistered dev lookalikes and composed calls generic", () => {
-	const devPath = "/home/devel/projects/gentle-ai/dist/gentle-ai-main";
+	const devPath = "/home/devel/projects/drakonc-ai/dist/drakonc-ai-main";
 	const active = registeredQuietToolsWithResolver(() => ({ source: "registration", origin: "test", path: devPath, sha256: "test" }));
 	for (const command of [
-		"gentle-ai-main review status",
-		"/tmp/alias/gentle-ai review status",
+		"drakonc-ai-main review status",
+		"/tmp/alias/drakonc-ai review status",
 		`${devPath}-sibling review status`, `${devPath}.bak review status`, `${devPath}x review status`,
 		`${devPath} review status | tee output`, `${devPath} review status && echo done`,
 		`'${devPath}' review status $(printf nested)`,
@@ -839,13 +839,13 @@ test("quiet tool rendering keeps unregistered dev lookalikes and composed calls 
 	let throwing: Map<string, any> | undefined;
 	assert.doesNotThrow(() => { throwing = registeredQuietToolsWithResolver(() => { throw new Error("invalid override"); }); });
 	assertGenericBash(throwing!.get("bash"), unresolved);
-	assertGenericBash(registeredQuietToolsWithResolver(() => ({ path: "relative/gentle-ai-main" })).get("bash"), unresolved);
+	assertGenericBash(registeredQuietToolsWithResolver(() => ({ path: "relative/drakonc-ai-main" })).get("bash"), unresolved);
 });
 test("quiet tool rendering previews routine partial content while the header owns state", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const tool = tools.get("bash");
-	const command = "gentle-ai review status --cwd /repo/private";
+	const command = "drakonc-ai review status --cwd /repo/private";
 
 	const expandHint = keyHint("app.tools.expand", "to expand");
 	const partial = renderToString(
@@ -902,9 +902,9 @@ test("quiet tool rendering previews routine partial content while the header own
 
 test("quiet tool rendering hides invocation arguments but previews result content without redaction", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const tool = tools.get("bash");
-	const command = "gentle-ai review finalize --prompt hidden-prompt --lineage lineage-secret --body private-body --authorization-root /private/root";
+	const command = "drakonc-ai review finalize --prompt hidden-prompt --lineage lineage-secret --body private-body --authorization-root /private/root";
 	const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
 	const collapsed = renderToString(
 		tool.renderResult(
@@ -915,7 +915,7 @@ test("quiet tool rendering hides invocation arguments but previews result conten
 		),
 	);
 
-	assert.equal(cardTitle(call), "🌹 rdd running · finalize");
+	assert.equal(cardTitle(call), "🐉 rdd running · finalize");
 	assert.match(cardBody(collapsed), /audit:/);
 	for (const forbidden of ["hidden-prompt", "lineage-secret", "private-body", "/private/root", "audit:"]) {
 		assert.doesNotMatch(call, new RegExp(forbidden));
@@ -925,19 +925,19 @@ test("quiet tool rendering hides invocation arguments but previews result conten
 
 test("quiet tool rendering keeps shell compositions, expansions, and lookalikes generic", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const tool = tools.get("bash");
 	const commands = [
-		"gentle-ai version && echo done",
-		"gentle-ai version; echo done",
-		"gentle-ai version | tee output",
-		"gentle-ai version $HOME",
-		"gentle-ai version $(printf nested)",
-		"gentle-ai sdd-attempt grant --change secret-change # ignored comment",
-		"gentle-ai sdd-attempt grant --authorization-root /private/root && echo done",
-		"gentle-ai sdd-attempt grant --authorization-root=/private/root | tee output",
-		"/package/.gentle-ai/v2.2.0/gentle-ai-copy version",
-		"echo gentle-ai version",
+		"drakonc-ai version && echo done",
+		"drakonc-ai version; echo done",
+		"drakonc-ai version | tee output",
+		"drakonc-ai version $HOME",
+		"drakonc-ai version $(printf nested)",
+		"drakonc-ai sdd-attempt grant --change secret-change # ignored comment",
+		"drakonc-ai sdd-attempt grant --authorization-root /private/root && echo done",
+		"drakonc-ai sdd-attempt grant --authorization-root=/private/root | tee output",
+		"/package/.drakonc-ai/v2.2.0/drakonc-ai-copy version",
+		"echo drakonc-ai version",
 	];
 
 	for (const command of commands) {
@@ -946,7 +946,7 @@ test("quiet tool rendering keeps shell compositions, expansions, and lookalikes 
 			tool.renderResult(textResult("original command output"), { expanded: true, isPartial: false }, passthroughTheme, { args: { command } }),
 		);
 		assert.equal(call.trimEnd(), `$ ${command}`);
-		assert.doesNotMatch(call, /🌹/);
+		assert.doesNotMatch(call, /🐉/);
 		assert.match(output, /original command output/);
 	}
 });
@@ -954,7 +954,7 @@ test("quiet tool rendering keeps shell compositions, expansions, and lookalikes 
 test("quiet Bash previews semantic lines for generic JSON output", () => {
 	const tools = registeredQuietTools();
 	const tool = tools.get("bash");
-	const command = "gentle-ai review capabilities --contract gentle-ai.review-integration/v2 | python3 -m json.tool";
+	const command = "drakonc-ai review capabilities --contract gentle-ai.review-integration/v2 | python3 -m json.tool";
 	const json = (value: unknown) => JSON.stringify(value, null, 2);
 	const object = json({ schema: "gentle-ai.review-integration/v2", contract: "review", protocol: { version: 2 }, payload: { items: [{ value: true }] } });
 	const error = json({ error: "failed", payload: { items: [{ code: 1 }] } });
@@ -971,7 +971,7 @@ test("quiet Bash previews semantic lines for generic JSON output", () => {
 	const collapsed = renderToolResult(tool, textResult(object), { expanded: false, isPartial: false }, { args: { command } });
 	const expanded = renderToolResult(tool, textResult(object), { expanded: true, isPartial: false }, { args: { command } });
 	assert.equal(call.trimEnd(), `$ ${command}`);
-	assert.doesNotMatch(call, /🌹/);
+	assert.doesNotMatch(call, /🐉/);
 	assert.doesNotMatch(collapsed, /^\n\s*[}\]]/);
 	const expandHint = keyHint("app.tools.expand", "to expand");
 	assert.equal(collapsed.split(expandHint).length - 1, 0);
@@ -1005,7 +1005,7 @@ test("quiet write expansion shows the complete written content without changing 
 });
 
 test("quiet write expansion renders content after a real built-in write", async () => {
-	const cwd = await mkdtemp(join(tmpdir(), "gentle-write-expanded-"));
+	const cwd = await mkdtemp(join(tmpdir(), "drakonc-write-expanded-"));
 	try {
 		const tool = registeredQuietTools().get("write");
 		const args = { path: "example.ts", content: "export const answer = 42;\n" };
@@ -1052,7 +1052,7 @@ test("quiet write expansion preserves failures, partial results and fallback con
 
 test("quiet tool rendering sanitizes collapsed output and call rows", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 
 	const collapsed = renderToString(
 		tools.get("bash").renderResult(textResult("safe\x1b[31mred\x1b[0m"), { expanded: false, isPartial: false }, passthroughTheme, { args: { command: "printf output" } }),
@@ -1079,7 +1079,7 @@ test("quiet tool rendering sanitizes only rendered fields", () => {
 
 test("quiet tool rendering call rows show tool calls without result output", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 
 	const readCall = renderToString(tools.get("read").renderCall({ path: "/tmp/example.ts", offset: 2, limit: 3 }, passthroughTheme, {}));
 	const bashCall = renderToString(tools.get("bash").renderCall({ command: "printf noisy", timeout: 5 }, passthroughTheme, {}));
@@ -1112,16 +1112,16 @@ test("quiet tool rendering limits collapsed visual rows at the actual width", ()
 	assert.ok(completed.every((line) => visibleWidth(line) <= narrowWidth));
 });
 
-test("quiet tool rendering classifies quoted and escaped literal shell metacharacters as direct Gentle AI calls", () => {
+test("quiet tool rendering classifies quoted and escaped literal shell metacharacters as direct Drakonc AI calls", () => {
 	const tool = registeredQuietTools().get("bash");
 	for (const command of [
-		"gentle-ai review status '--note=$|#;'",
-		'"gentle-ai" review status "literal \\$|#;"',
-		"gentle\\-ai review status escaped\\ space",
+		"drakonc-ai review status '--note=$|#;'",
+		'"drakonc-ai" review status "literal \\$|#;"',
+		"drakonc\\-ai review status escaped\\ space",
 	]) {
 		const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
 		const collapsed = renderToolResult(tool, textResult("private output"), { expanded: false, isPartial: false }, { args: { command } });
-		assert.match(call, /🌹 rdd running · status/, command);
+		assert.match(call, /🐉 rdd running · status/, command);
 		assert.match(collapsed, /private output/, command);
 	}
 });
@@ -1129,9 +1129,9 @@ test("quiet tool rendering classifies quoted and escaped literal shell metachara
 test("quiet tool rendering keeps unescaped expansions inside double quotes generic", () => {
 	const tool = registeredQuietTools().get("bash");
 	const commands = [
-		'gentle-ai review status "$VALUE"',
-		'gentle-ai review status "$(printf nested)"',
-		'gentle-ai review status "`printf nested`"',
+		'drakonc-ai review status "$VALUE"',
+		'drakonc-ai review status "$(printf nested)"',
+		'drakonc-ai review status "`printf nested`"',
 	] as const;
 
 	for (const command of commands) {
@@ -1142,20 +1142,20 @@ test("quiet tool rendering keeps unescaped expansions inside double quotes gener
 			{ expanded: false, isPartial: false },
 			{ args: { command } },
 		);
-		assert.equal(gentleAiRoutineCommand({ command }), undefined, command);
+		assert.equal(drakoncAiRoutineCommand({ command }), undefined, command);
 		assert.equal(call.trimEnd(), `$ ${command}`, command);
 		assert.match(collapsed, /original command output/, command);
 	}
 });
 
 test("quiet tool rendering recognizes a quoted exact dev override path containing spaces", () => {
-	const devPath = "/opt/Gentle AI/gentle-ai";
+	const devPath = "/opt/Drakonc AI/drakonc-ai";
 	const tool = registeredQuietToolsWithResolver(() => ({ path: devPath })).get("bash");
 	const command = `"${devPath}" review status "literal \\$|#;"`;
 	const call = renderToString(tool.renderCall({ command }, passthroughTheme, { args: { command } }));
 	const collapsed = renderToolResult(tool, textResult("private result"), { expanded: false, isPartial: false }, { args: { command } });
-	assert.equal(cardTitle(call), "🌹 rdd running · status");
-	assert.doesNotMatch(call, /\/opt\/Gentle AI\/gentle-ai|literal/);
+	assert.equal(cardTitle(call), "🐉 rdd running · status");
+	assert.doesNotMatch(call, /\/opt\/Drakonc AI\/drakonc-ai|literal/);
 	assert.match(collapsed, /private result/);
 });
 
@@ -1310,32 +1310,32 @@ test("quiet tool rendering preserves directional visual preview rows at narrow w
 test("quiet tool rendering fails closed on unquoted shell expansions", () => {
 	const bash = registeredQuietTools().get("bash");
 	for (const command of [
-		"gentle-ai review status *",
-		"gentle-ai review status ?",
-		"gentle-ai review status [a-z]",
-		"gentle-ai review status ~",
-		"gentle-ai review status {one,two}",
+		"drakonc-ai review status *",
+		"drakonc-ai review status ?",
+		"drakonc-ai review status [a-z]",
+		"drakonc-ai review status ~",
+		"drakonc-ai review status {one,two}",
 	]) {
-		assert.equal(gentleAiRoutineCommand({ command }), undefined, command);
+		assert.equal(drakoncAiRoutineCommand({ command }), undefined, command);
 		assertGenericBash(bash, command);
 	}
 
 	for (const command of [
-		"gentle-ai review status '*'",
-		"gentle-ai review status \"?\"",
-		"gentle-ai review status '[a-z]'",
-		"gentle-ai review status \"~\"",
-		"gentle-ai review status '{one,two}'",
-		"gentle-ai review status \\*",
-		"gentle-ai review status \\?",
-		"gentle-ai review status \\[a-z\\]",
-		"gentle-ai review status \\~",
-		"gentle-ai review status \\{one,two\\}",
+		"drakonc-ai review status '*'",
+		"drakonc-ai review status \"?\"",
+		"drakonc-ai review status '[a-z]'",
+		"drakonc-ai review status \"~\"",
+		"drakonc-ai review status '{one,two}'",
+		"drakonc-ai review status \\*",
+		"drakonc-ai review status \\?",
+		"drakonc-ai review status \\[a-z\\]",
+		"drakonc-ai review status \\~",
+		"drakonc-ai review status \\{one,two\\}",
 	]) {
 		const call = renderToString(bash.renderCall({ command }, passthroughTheme, { args: { command } }));
 		const collapsed = renderToolResult(bash, textResult("dummy-secret"), { expanded: false, isPartial: false }, { args: { command } });
-		assert.equal(gentleAiRoutineCommand({ command }), "review", command);
-		assert.match(call, /🌹 rdd running · status/, command);
+		assert.equal(drakoncAiRoutineCommand({ command }), "review", command);
+		assert.match(call, /🐉 rdd running · status/, command);
 		assert.match(collapsed, /dummy-secret/, command);
 	}
 });
@@ -1343,27 +1343,27 @@ test("quiet tool rendering fails closed on unquoted shell expansions", () => {
 test("quiet tool rendering redacts only exact package-local executable paths with spaces", () => {
 	const bash = registeredQuietTools().get("bash");
 	const validCommands = [
-		"'/opt/Gentle Package/.gentle-ai/v2.2.0/gentle-ai' review status --token single-secret",
-		'"/opt/Gentle Package/.gentle-ai/v2.2.0/gentle-ai" review status --token double-secret',
-		"/opt/Gentle\\ Package/.gentle-ai/v2.2.0/gentle-ai review status --token escaped-secret",
+		"'/opt/Drakonc Package/.drakonc-ai/v2.2.0/drakonc-ai' review status --token single-secret",
+		'"/opt/Drakonc Package/.drakonc-ai/v2.2.0/drakonc-ai" review status --token double-secret',
+		"/opt/Drakonc\\ Package/.drakonc-ai/v2.2.0/drakonc-ai review status --token escaped-secret",
 	] as const;
 	for (const command of validCommands) {
 		const call = renderToString(bash.renderCall({ command }, passthroughTheme, { args: { command } }));
 		const collapsed = renderToolResult(bash, textResult("dummy-secret"), { expanded: false, isPartial: false }, { args: { command } });
-		assert.equal(gentleAiRoutineCommand({ command }), "review", command);
-		assert.match(call, /🌹 rdd running · status/, command);
-		assert.doesNotMatch(call, /Gentle Package|secret/, command);
+		assert.equal(drakoncAiRoutineCommand({ command }), "review", command);
+		assert.match(call, /🐉 rdd running · status/, command);
+		assert.doesNotMatch(call, /Drakonc Package|secret/, command);
 		assert.match(collapsed, /dummy-secret/, command);
 	}
 
 	for (const command of [
-		"'/opt/Gentle Package/.gentle-ai/v2.2.0/gentle-ai-copy' review status --token copy-secret",
-		'"/opt/Gentle Package/.gentle-ai/v2.2.0/gentle-ai.exe.bak" review status --token backup-secret',
-		"/opt/Gentle\\ Package/.gentle-ai/v2.2.0/not-gentle-ai review status --token sibling-secret",
+		"'/opt/Drakonc Package/.drakonc-ai/v2.2.0/drakonc-ai-copy' review status --token copy-secret",
+		'"/opt/Drakonc Package/.drakonc-ai/v2.2.0/drakonc-ai.exe.bak" review status --token backup-secret',
+		"/opt/Drakonc\\ Package/.drakonc-ai/v2.2.0/not-drakonc-ai review status --token sibling-secret",
 	]) {
 		const call = renderToString(bash.renderCall({ command }, passthroughTheme, { args: { command } }));
 		const collapsed = renderToolResult(bash, textResult("dummy-secret"), { expanded: false, isPartial: false }, { args: { command } });
-		assert.equal(gentleAiRoutineCommand({ command }), undefined, command);
+		assert.equal(drakoncAiRoutineCommand({ command }), undefined, command);
 		assert.equal(call.trimEnd(), `$ ${command}`, command);
 		assert.match(collapsed, /dummy-secret/, command);
 	}
@@ -1372,20 +1372,20 @@ test("quiet tool rendering redacts only exact package-local executable paths wit
 test("quiet tool rendering respects command and env wrapper order", () => {
 	const bash = registeredQuietTools().get("bash");
 	for (const command of [
-		"FOO=bar command -- env BAR=baz gentle-ai review status",
-		"command -- env FOO=bar gentle-ai review status",
-		"env FOO=bar gentle-ai review status",
-		"command -- gentle-ai review status",
+		"FOO=bar command -- env BAR=baz drakonc-ai review status",
+		"command -- env FOO=bar drakonc-ai review status",
+		"env FOO=bar drakonc-ai review status",
+		"command -- drakonc-ai review status",
 	]) {
 		const call = renderToString(bash.renderCall({ command }, passthroughTheme, { args: { command } }));
 		const collapsed = renderToolResult(bash, textResult("dummy-secret"), { expanded: false, isPartial: false }, { args: { command } });
-		assert.equal(gentleAiRoutineCommand({ command }), "review", command);
-		assert.match(call, /🌹 rdd running · status/, command);
+		assert.equal(drakoncAiRoutineCommand({ command }), "review", command);
+		assert.match(call, /🐉 rdd running · status/, command);
 		assert.match(collapsed, /dummy-secret/, command);
 	}
 
-	const command = "env FOO=bar command -- gentle-ai review status";
-	assert.equal(gentleAiRoutineCommand({ command }), undefined);
+	const command = "env FOO=bar command -- drakonc-ai review status";
+	assert.equal(drakoncAiRoutineCommand({ command }), undefined);
 	assertGenericBash(bash, command);
 });
 
@@ -1393,28 +1393,28 @@ test("quiet tool rendering lets a final result promote a replayed call card to i
 	// The promotion invalidates after the render returns (a microtask), never inside it.
 	const flush = () => new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const tool = tools.get("bash");
-	const command = "gentle-ai review status";
+	const command = "drakonc-ai review status";
 	const state = {};
 	let invalidations = 0;
 	const replayed = routineRenderContext({ args: { command }, state, argsComplete: false, executionStarted: false, isPartial: false, invalidate: () => { invalidations += 1; } });
 
 	const call = tool.renderCall({ command }, statusTheme, replayed);
-	assert.equal(cardTitle(renderToString(call)), "🌹 rdd preparing · status");
+	assert.equal(cardTitle(renderToString(call)), "🐉 rdd preparing · status");
 	renderToString(tool.renderResult(textResult("done"), { expanded: false, isPartial: false }, statusTheme, replayed));
 	assert.equal(invalidations, 0, "never reentrant");
 	await flush();
 	assert.equal(invalidations, 1);
 	const promoted = tool.renderCall({ command }, statusTheme, { ...replayed, lastComponent: call });
 	assert.strictEqual(promoted, call);
-	assert.equal(cardTitle(renderToString(promoted)), "🌹 rdd status");
+	assert.equal(cardTitle(renderToString(promoted)), "🐉 rdd status");
 	assert.equal(cardTone(renderToString(promoted)), "success");
 
 	renderToString(tool.renderResult(textResult("boom"), { expanded: false, isPartial: false }, statusTheme, { ...replayed, isError: true }));
 	await flush();
 	assert.equal(invalidations, 2);
-	assert.equal(cardTitle(renderToString(tool.renderCall({ command }, statusTheme, { ...replayed, lastComponent: call }))), "🌹 rdd failed · status");
+	assert.equal(cardTitle(renderToString(tool.renderCall({ command }, statusTheme, { ...replayed, lastComponent: call }))), "🐉 rdd failed · status");
 	renderToString(tool.renderResult(textResult("boom"), { expanded: false, isPartial: false }, statusTheme, { ...replayed, isError: true }));
 	await flush();
 	assert.equal(invalidations, 2, "an unchanged outcome must not request another render");
@@ -1422,14 +1422,14 @@ test("quiet tool rendering lets a final result promote a replayed call card to i
 
 test("quiet tool rendering puts the expand key in the finished call card's top rule, not in the result", () => {
 	const { pi, tools } = createPi();
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	const tool = tools.get("bash");
-	const command = "gentle-ai review status";
+	const command = "drakonc-ai review status";
 	const running = renderToString(tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, executionStarted: true, isPartial: true })));
 	assert.equal(cardHint(running), undefined, "a running call has nothing to expand yet");
 	const completed = renderToString(tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, executionStarted: true, isPartial: false, expanded: false })));
 	assert.match(cardHint(completed) ?? "", /to expand$/);
-	assert.equal(cardTitle(completed), "🌹 rdd status");
+	assert.equal(cardTitle(completed), "🐉 rdd status");
 	const expanded = renderToString(tool.renderCall({ command }, passthroughTheme, routineRenderContext({ args: { command }, executionStarted: true, isPartial: false, expanded: true })));
 	assert.match(cardHint(expanded) ?? "", /to collapse$/);
 	const collapsedResult = renderToolResult(tool, textResult("{\"next_transition\":\"stop\"}"), { expanded: false, isPartial: false }, { args: { command } });
@@ -1490,7 +1490,7 @@ test("six quiet cards and standalone Bash fixture retain distinct identity and b
 		const body = frameLines(tool.renderResult(value, { expanded: false, isPartial: false }, passthroughTheme, ctx), 120).join("\n");
 		if (name !== "write") assert.match(body, name === "edit" ? /before|after/ : /useful row/);
 		for (const width of [0, 1, 2, 3, 4, 5, 6, 7, 8, 24]) {
-			const rows = frameLines(tool.renderResult(textResult("界e\u0301🌹".repeat(80)), { expanded: false, isPartial: false }, passthroughTheme, ctx), width);
+			const rows = frameLines(tool.renderResult(textResult("界e\u0301🐉".repeat(80)), { expanded: false, isPartial: false }, passthroughTheme, ctx), width);
 			assert.ok(rows.length <= 4);
 			assert.ok(rows.every((row) => visibleWidth(row) <= width));
 			assert.equal(rows.filter((row) => row.startsWith("╰")).length, width ? 1 : 0);
@@ -1523,7 +1523,7 @@ test("quiet tool calls draw a rounded petal card in the lifecycle tone", () => {
 	const empty = tools.get("grep").renderResult(textResult("No matches found"), { expanded: false, isPartial: false }, passthroughTheme, {}).render(width);
 	assert.deepEqual(empty, [`╰${"─".repeat(28)}╯`], "an empty result still closes the card");
 
-	// The expand key rides the top rule once the call finished, like the Gentle AI card.
+	// The expand key rides the top rule once the call finished, like the Drakonc AI card.
 	const wide = 80;
 	const expandKey = keyHint("app.tools.expand", "to expand").replace(/\x1b\[[0-9;]*m/g, "");
 	const finishedTop = bash.renderCall(args, passthroughTheme, routineRenderContext({ args, executionStarted: true, isPartial: false })).render(wide)[0] ?? "";
@@ -1624,7 +1624,7 @@ test("float quiet cards render the call and result as one panel with a single se
 	const width = 60;
 	const rows = withFloatCards(() => [
 		...read.renderCall({ path: "package.json" }, floatToolTheme, context).render(width),
-		...read.renderResult(textResult("{\n  \"name\": \"gentle-pi\""), { expanded: false, isPartial: false }, floatToolTheme, context).render(width),
+		...read.renderResult(textResult("{\n  \"name\": \"drakonc-pi\""), { expanded: false, isPartial: false }, floatToolTheme, context).render(width),
 	]);
 	const plain = rows.map(stripAnsi);
 	for (const line of rows) {
@@ -1637,7 +1637,7 @@ test("float quiet cards render the call and result as one panel with a single se
 	assert.match(plain[1]!, /^ ▎ ≡ read package\.json +.*to expand {4}$/);
 	assert.match(plain[2]!, /^ ▎ +$/);
 	assert.match(plain[3]!, /^ ▎ \{ +$/);
-	assert.match(plain[4]!, /^ ▎ {3}"name": "gentle-pi" +$/);
+	assert.match(plain[4]!, /^ ▎ {3}"name": "drakonc-pi" +$/);
 	assert.match(plain.at(-1)!, /^ ▎ +$/);
 	assert.equal(plain.length, 6);
 	assert.equal(plain[1]!.indexOf("≡"), plain[3]!.indexOf("{"), "the glyph starts in the body text column");
@@ -1736,7 +1736,7 @@ test("the default Card content preference restores result previews and native ba
 		(pi as any).registerToolRenderer = (resolver: (toolName: string, next: () => unknown) => unknown) => {
 			resolvers.push(resolver);
 		};
-		withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+		withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 		const native = { marker: "native" };
 		assert.equal(resolvers.at(-1)!("bash", () => native), native, "default content defers bash drawing to the native renderer");
 		assert.equal(resolvers.at(-1)!("read", () => native), native, "every other tool still defers");
@@ -1752,7 +1752,7 @@ test("the production factory takes over native bash drawing through a tool rende
 	(pi as any).registerToolRenderer = (resolver: (toolName: string, next: () => unknown) => unknown) => {
 		resolvers.push(resolver);
 	};
-	withEnv({ GENTLE_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
+	withEnv({ DRAKONC_PI_QUIET_TOOLS: undefined }, () => quietTools(pi as any));
 	assert.ok(resolvers.length >= 1, "quiet tools registers a tool renderer resolver");
 	const resolver = resolvers.at(-1)!;
 	const native = { marker: "native" };

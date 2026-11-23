@@ -80,11 +80,11 @@ test("explicit work topic refreshes the current alias when no subject is declare
 	const manager = { getSessionId: () => "owner", getCwd: () => "/repo", getBranch: () => entries };
 	const append = (customType: string, data: unknown) => entries.push({ type: "custom", customType, data });
 	cache.load(manager);
-	const work = { area: "gentle-shell", topic: "pr-2509-followup" };
+	const work = { area: "drakonc-shell", topic: "pr-2509-followup" };
 	cache.publish(manager, { work }, append, 10);
 	assert.deepEqual(cache.get(manager)?.aliases, { initialAlias: "pr-2509-followup", currentAlias: "pr-2509-followup" });
 	// Fresh topic on a later publication updates Current; Initial is retained.
-	cache.publish(manager, { work: { area: "gentle-shell", topic: "ci-watch" } }, append, 20);
+	cache.publish(manager, { work: { area: "drakonc-shell", topic: "ci-watch" } }, append, 20);
 	assert.deepEqual(cache.get(manager)?.aliases, { initialAlias: "pr-2509-followup", currentAlias: "ci-watch" });
 	// A state-only refresh never re-derives the alias from stored work.
 	cache.publish(manager, undefined, append, 30);

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 
 // Markers are assembled at runtime so no line of this file starts with one.
 const OPEN = "<".repeat(7), MID = "=".repeat(7), CLOSE = ">".repeat(7);
@@ -15,10 +15,10 @@ const CONFLICT = ["base", `${OPEN} ours`, "left", MID, "right", `${CLOSE} theirs
 function fixture(t: { after(fn: () => void): void }) {
 	const scratch = mkdtempSync(join(tmpdir(), "conflict-markers-"));
 	t.after(() => rmSync(scratch, { recursive: true, force: true }));
-	const previousConfig = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = join(scratch, "config");
-	mkdirSync(process.env.GENTLE_PI_CONFIG_HOME);
-	t.after(() => { if (previousConfig === undefined) delete process.env.GENTLE_PI_CONFIG_HOME; else process.env.GENTLE_PI_CONFIG_HOME = previousConfig; });
+	const previousConfig = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = join(scratch, "config");
+	mkdirSync(process.env.DRAKONC_PI_CONFIG_HOME);
+	t.after(() => { if (previousConfig === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME; else process.env.DRAKONC_PI_CONFIG_HOME = previousConfig; });
 	const repo = (name: string) => {
 		const root = join(scratch, name);
 		mkdirSync(root);
@@ -40,7 +40,7 @@ function hook(cwd: string, options: { mode?: Mode; child?: boolean } = {}) {
 		assess: async () => { throw new Error("no assessment in this fixture"); },
 	};
 	const pi = { on: (name: string, handler: Function) => handlers.set(name, handler), events: { emit() {} }, registerCommand() {}, registerTool() {} };
-	createGentleAiExtension({ nativeReviewCli: cli as never, processEnv: { GENTLE_AI_TELEMETRY: "0", ...(options.child ? { GENTLE_PI_AGENTS_CHILD: "1" } : {}) } })(pi as never);
+	createDrakoncAiExtension({ nativeReviewCli: cli as never, processEnv: { DRAKONC_AI_TELEMETRY: "0", ...(options.child ? { DRAKONC_PI_AGENTS_CHILD: "1" } : {}) } })(pi as never);
 	const ctx = { cwd, hasUI: true, sessionManager: { getSessionId: () => "markers", getCwd: () => cwd, getBranch: () => [], getEntries: () => [] }, ui: { notify() {}, confirm: async () => true } };
 	return async (command: string) => (await handlers.get("tool_call")!({ toolName: "bash", toolCallId: command, input: { command } }, ctx)) as { block?: boolean; reason?: string } | undefined;
 }
@@ -288,8 +288,8 @@ test("P9: a permission-mode change while the marker check runs blocks instead of
 	const pi = { on: (name: string, fn: Function) => handlers.set(name, [...handlers.get(name) ?? [], fn]), events: { on() { return () => {}; }, emit() {} },
 		registerCommand: (name: string, value: unknown) => commands.set(name, value), registerTool() {}, registerFlag() {}, registerMessageRenderer() {},
 		getActiveTools: () => [], appendEntry() {} };
-	createGentleAiExtension({ nativeReviewCli: { reviewMode: async () => ({ status: { effective: "off", global: "off", cloneLocal: "", source: "global" } }), assess: async () => { throw new Error("none"); } } as never,
-		processEnv: { GENTLE_AI_TELEMETRY: "0", GENTLE_PI_CONFIG_HOME: join(scratch, "config") }, candidateViews: null,
+	createDrakoncAiExtension({ nativeReviewCli: { reviewMode: async () => ({ status: { effective: "off", global: "off", cloneLocal: "", source: "global" } }), assess: async () => { throw new Error("none"); } } as never,
+		processEnv: { DRAKONC_AI_TELEMETRY: "0", DRAKONC_PI_CONFIG_HOME: join(scratch, "config") }, candidateViews: null,
 		resolveTelemetryTriggerBinary: () => { throw new Error("disabled"); } } as never)(pi as never);
 	const ctx = { cwd: root, mode: "tui", hasUI: true, sessionManager: manager, signal: new AbortController().signal,
 		ui: { notify() {}, setStatus() {}, setWidget() {}, confirm: async () => true } };
@@ -298,7 +298,7 @@ test("P9: a permission-mode change while the marker check runs blocks instead of
 		for (const fn of handlers.get("tool_call") ?? []) { const next = await fn({ toolName: "bash", toolCallId: "probe", input: { command } }, ctx); if (next !== undefined) output = next; }
 		return output as { block?: boolean; reason?: string } | undefined;
 	};
-	await commands.get("gentle:mode").handler("yolo", ctx);
+	await commands.get("drakonc:mode").handler("yolo", ctx);
 	assert.equal(await call("git commit -m clean"), undefined, "stable mode: a clean commit is allowed");
 	// Hold the marker check's first diff (its candidate pathspec is unique to the guard) and change the mode meanwhile.
 	const original = childProcess.execFile;
@@ -316,7 +316,7 @@ test("P9: a permission-mode change while the marker check runs blocks instead of
 	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 	const pending = call("git commit -m clean");
 	await Promise.race([reached, new Promise((_, reject) => setTimeout(() => reject(new Error("marker check never reached")), 3000))]);
-	await commands.get("gentle:mode").handler("normal", ctx);
+	await commands.get("drakonc:mode").handler("normal", ctx);
 	release();
 	const result = await pending;
 	assert.equal(result?.block, true, "a decision made under the earlier mode must not be returned");

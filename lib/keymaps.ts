@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseKey } from "@earendil-works/pi-tui";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 
-// User keymaps: the single registry every Gentle shortcut reads. Each action
+// User keymaps: the single registry every Drakonc shortcut reads. Each action
 // keeps its historical environment variable (which still wins, so existing
-// setups are unchanged) and its default key; `keymaps.json` under the Gentle
-// config home stores what the user assigned in /gentle:customize or the
+// setups are unchanged) and its default key; `keymaps.json` under the Drakonc
+// config home stores what the user assigned in /drakonc:customize or the
 // command palette. Pi reads extension shortcuts only at startup and on
 // /reload, so a saved change applies after a reload. Pure apart from the
 // read/write helpers, so the extensions and their tests share it.
@@ -28,21 +28,21 @@ export interface KeymapAction {
 }
 
 export const KEYMAP_ACTIONS: readonly KeymapAction[] = [
-	{ id: "commands", label: "Command palette", env: "GENTLE_PI_COMMANDS_KEY", defaultKey: "alt+k", command: "gentle:commands" },
-	{ id: "changes", label: "Browse changes", env: "GENTLE_PI_SHELL_CHANGES_KEY", defaultKey: "alt+g", command: "gentle:changes" },
-	{ id: "usage", label: "Subscription usage", env: "GENTLE_PI_SHELL_USAGE_KEY", defaultKey: "alt+u", command: "gentle:usage" },
-	{ id: "preset", label: "Cycle visual preset", env: "GENTLE_PI_SHELL_PRESET_KEY", defaultKey: "alt+l" },
-	{ id: "agents.view", label: "Subagents overlay", env: "GENTLE_PI_AGENTS_VIEW_KEY", defaultKey: "alt+a", command: "gentle:agents" },
-	{ id: "agents.stop", label: "Stop active subagents", env: "GENTLE_PI_AGENTS_STOP_KEY", defaultKey: "alt+s" },
-	{ id: "agents.collapse", label: "Collapse the agents card", env: "GENTLE_PI_AGENTS_KEY", defaultKey: "ctrl+shift+a" },
-	{ id: "jobs.collapse", label: "Collapse the jobs card", env: "GENTLE_PI_JOBS_KEY", defaultKey: "ctrl+shift+j" },
-	{ id: "todo.collapse", label: "Collapse the todo list", env: "GENTLE_PI_TODO_KEY", defaultKey: "ctrl+shift+t" },
-	{ id: "stats.view", label: "Usage stats", env: "GENTLE_PI_STATS_VIEW_KEY", command: "gentle:stats" },
+	{ id: "commands", label: "Command palette", env: "DRAKONC_PI_COMMANDS_KEY", defaultKey: "alt+k", command: "drakonc:commands" },
+	{ id: "changes", label: "Browse changes", env: "DRAKONC_PI_SHELL_CHANGES_KEY", defaultKey: "alt+g", command: "drakonc:changes" },
+	{ id: "usage", label: "Subscription usage", env: "DRAKONC_PI_SHELL_USAGE_KEY", defaultKey: "alt+u", command: "drakonc:usage" },
+	{ id: "preset", label: "Cycle visual preset", env: "DRAKONC_PI_SHELL_PRESET_KEY", defaultKey: "alt+l" },
+	{ id: "agents.view", label: "Subagents overlay", env: "DRAKONC_PI_AGENTS_VIEW_KEY", defaultKey: "alt+a", command: "drakonc:agents" },
+	{ id: "agents.stop", label: "Stop active subagents", env: "DRAKONC_PI_AGENTS_STOP_KEY", defaultKey: "alt+s" },
+	{ id: "agents.collapse", label: "Collapse the agents card", env: "DRAKONC_PI_AGENTS_KEY", defaultKey: "ctrl+shift+a" },
+	{ id: "jobs.collapse", label: "Collapse the jobs card", env: "DRAKONC_PI_JOBS_KEY", defaultKey: "ctrl+shift+j" },
+	{ id: "todo.collapse", label: "Collapse the todo list", env: "DRAKONC_PI_TODO_KEY", defaultKey: "ctrl+shift+t" },
+	{ id: "stats.view", label: "Usage stats", env: "DRAKONC_PI_STATS_VIEW_KEY", command: "drakonc:stats" },
 ];
 
 // Pi refuses extension shortcuts on these editor-global keybindings
 // (RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS in Pi's extension runner,
-// which is not exported): a Gentle keymap on one of their keys is skipped.
+// which is not exported): a Drakonc keymap on one of their keys is skipped.
 export const RESERVED_PI_KEYBINDINGS: readonly string[] = [
 	"app.interrupt", "app.clear", "app.exit", "app.suspend", "app.thinking.cycle",
 	"app.model.cycleForward", "app.model.cycleBackward", "app.model.select", "app.tools.expand",
@@ -173,7 +173,7 @@ export function keymapEnvLock(id: string, env: NodeJS.ProcessEnv): string | unde
 /**
  * Whether `key` can go on `id`: blocked when the action is controlled by its
  * environment variable or the key is one Pi reserves; a confirmation when the
- * key belongs to another Gentle action (which then loses it) or overrides a
+ * key belongs to another Drakonc action (which then loses it) or overrides a
  * non-reserved Pi keybinding.
  */
 export function checkKeymap(id: string, key: string, env: NodeJS.ProcessEnv, bindings: KeymapBindings, keybindings?: PiKeybindings): KeymapCheck {
@@ -271,9 +271,9 @@ export function readKeymaps(configHome: string): KeymapFile {
 	return { bindings: bindings ?? {}, path, malformed: bindings === undefined };
 }
 
-/** The keymaps file of the Gentle config home `env` resolves to. */
+/** The keymaps file of the Drakonc config home `env` resolves to. */
 export function loadKeymaps(env: NodeJS.ProcessEnv = process.env): KeymapFile {
-	return readKeymaps(gentlePiConfigHome(env));
+	return readKeymaps(drakoncPiConfigHome(env));
 }
 
 /** Same-directory rename, so a reader never sees a partially written file. */

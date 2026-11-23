@@ -1,11 +1,11 @@
 // Interactive RPC host signal: the desktop app sets this environment variable
-// on the pi process it spawns directly (`--mode rpc`), letting Gentle answer
+// on the pi process it spawns directly (`--mode rpc`), letting Drakonc answer
 // ask-user tools through pi's RPC dialogs and publish live subagent state.
 // `lib/agents-runner.ts` strips it from every subagent child env so headless
 // RPC children never see it and stay unaffected by this feature.
 
 /** Environment variable the desktop app sets on its own interactive pi process. */
-export const INTERACTIVE_HOST_ENV = "GENTLE_SHELL_INTERACTIVE_HOST";
+export const INTERACTIVE_HOST_ENV = "DRAKONC_SHELL_INTERACTIVE_HOST";
 
 /**
  * True only when running under `--mode rpc` with the interactive host

@@ -27,7 +27,7 @@ import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { NativePulseNotPermittedError } from "./notification-audio-native.ts";
 
-export const NATIVE_WINDOWS_SCHEMA = "gentle.audio.windows/v1";
+export const NATIVE_WINDOWS_SCHEMA = "drakonc.audio.windows/v1";
 /**
  * Trusted, frozen PowerShell executable. This literal intentionally duplicates
  * `FIXED_WINDOWS_POWERSHELL` in `lib/windows-session-transport.ts`: importing

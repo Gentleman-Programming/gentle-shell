@@ -1,6 +1,6 @@
 # Observe native MCP connection status
 
-Gentle Shell extensions use Pi's native MCP status API directly. No second MCP manager, polling command or installed-dependency patch is involved.
+Drakonc Shell extensions use Pi's native MCP status API directly. No second MCP manager, polling command or installed-dependency patch is involved.
 
 ## Availability
 
@@ -45,7 +45,7 @@ The API excludes credentials, configuration values, URLs, raw errors, stderr and
 Build the Pi coding-agent package containing the API, then run:
 
 ```bash
-GENTLE_MCP_STATUS_PI_ROOT=/path/to/pi/packages/coding-agent \
+DRAKONC_MCP_STATUS_PI_ROOT=/path/to/pi/packages/coding-agent \
   node --experimental-strip-types --test tests/maintainer/mcp-status.maintest.ts
 ```
 

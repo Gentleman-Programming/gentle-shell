@@ -1,4 +1,4 @@
-// Inputs of the vendored v1 session-profile chain (gentle-shell#2742, section 10).
+// Inputs of the vendored v1 session-profile chain (drakonc-shell#2742, section 10).
 // The `session-profile-*.ts` files beside this one are byte-identical copies of
 // the `lib/` modules of the last release before A2 except their import lines.
 // What A2 does not change is read live, so both versions see the same pins,

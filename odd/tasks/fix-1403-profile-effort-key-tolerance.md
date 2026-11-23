@@ -6,7 +6,7 @@ Fix silent dropping of the `effort` key in profile entries by accepting `effort`
 
 ## Problem
 
-In `subagents.json`, the field is called `effort`, and `extensions/gentle-ai.ts` writes `profile.effort = entry.thinking`. `lib/agents-config.ts` accepts `entry.effort ?? entry.thinking`.
+In `subagents.json`, the field is called `effort`, and `extensions/drakonc-ai.ts` writes `profile.effort = entry.thinking`. `lib/agents-config.ts` accepts `entry.effort ?? entry.thinking`.
 However, `normalizeRoutingEntry` in `lib/model-routing-authority.ts` only read `value.thinking`. When an operator creates or edits a profile with `{ model: "...", effort: "medium" }`, the `effort` key was silently dropped without warning in `readProfilesFileResult(...).drops`, causing the agent to resolve at the default thinking level.
 
 ## Scope

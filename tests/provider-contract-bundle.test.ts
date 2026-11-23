@@ -17,7 +17,7 @@ import {
 	verifyProviderContractBundleTree,
 } from "../lib/provider-contract-bundle.ts";
 
-// Fixture provenance: generated from gentle-ai main (contract 1.1.0) with
+// Fixture provenance: generated from drakonc-ai main (contract 1.1.0) with
 // `go run ./internal/providercontractbundlecmd generate --out <dir>`.
 const FIXTURE_ROOT = join(import.meta.dirname, "fixtures", "provider-contract-bundle", "v1.1.0");
 const FIXTURE_PATHS = [
@@ -35,9 +35,9 @@ function fixtureEntries(): Map<string, Buffer> {
 	return new Map(FIXTURE_PATHS.map((path) => [path, readFileSync(join(FIXTURE_ROOT, path))]));
 }
 
-// Fixture provenance: the real gentle-ai provider contract bundle 1.2.0
+// Fixture provenance: the real drakonc-ai provider contract bundle 1.2.0
 // release archive (contract semver 1.2.0), extracted. Adds `orchestration`
-// to the manifest: gentle-pi#560 / gentle-ai#4056, #4057.
+// to the manifest: drakonc-pi#560 / drakonc-ai#4056, #4057.
 const FIXTURE_1_2_0_ROOT = join(import.meta.dirname, "fixtures", "provider-contract-bundle", "v1.2.0");
 const FIXTURE_1_2_0_PATHS = [...FIXTURE_PATHS, "orchestration/pi.md"] as const;
 
@@ -45,8 +45,8 @@ function fixture120Entries(): Map<string, Buffer> {
 	return new Map(FIXTURE_1_2_0_PATHS.map((path) => [path, readFileSync(join(FIXTURE_1_2_0_ROOT, path))]));
 }
 
-// Fixture provenance: the gentle-ai provider contract bundle 1.4.0 archive
-// built by goreleaser (archives `review-provider-contract`) from gentle-ai
+// Fixture provenance: the drakonc-ai provider contract bundle 1.4.0 archive
+// built by goreleaser (archives `review-provider-contract`) from drakonc-ai
 // 9e6f24f6, extracted. Adds `routing` to the manifest: Pi's ODD routing steps.
 const FIXTURE_1_4_0_ROOT = join(import.meta.dirname, "fixtures", "provider-contract-bundle", "v1.4.0");
 const FIXTURE_1_4_0_PATHS = [...FIXTURE_1_2_0_PATHS, "routing/pi.md"] as const;
@@ -138,7 +138,7 @@ function fixtureArchive(): Buffer {
 }
 
 function withTemporaryDirectory<T>(run: (directory: string) => T): T {
-	const directory = mkdtempSync(join(tmpdir(), "gentle-pi-provider-bundle-"));
+	const directory = mkdtempSync(join(tmpdir(), "drakonc-pi-provider-bundle-"));
 	try {
 		return run(directory);
 	} finally {
@@ -177,7 +177,7 @@ test("verifies the generated 1.1.0 fixture tree and reports the exact contract s
 test("verifies the same bundle as an in-memory-read archive and reports the archive digest", () => {
 	withTemporaryDirectory((directory) => {
 		const archiveBytes = fixtureArchive();
-		const archivePath = join(directory, "gentle-ai-review-provider-contract-1.1.0.tar.gz");
+		const archivePath = join(directory, "drakonc-ai-review-provider-contract-1.1.0.tar.gz");
 		writeFileSync(archivePath, archiveBytes);
 		const { bundle, archiveSha256 } = verifyProviderContractBundleArchive(archivePath);
 		assert.equal(archiveSha256, sha256Hex(archiveBytes));
@@ -283,7 +283,7 @@ test("rejects duplicate manifest JSON keys", () => {
 test("rejects an unpinned transport capability", () => {
 	assertRejects(
 		withManifest(fixtureEntries(), (manifest) => {
-			manifest.transport_capability = "gentle-ai.provider-transport/v2";
+			manifest.transport_capability = "drakonc-ai.provider-transport/v2";
 		}),
 		"transport_capability must be pinned",
 	);
@@ -425,7 +425,7 @@ test("verifies the 1.4.0 fixture tree and exposes the mirrored pi routing text",
 
 test("verifies the 1.4.0 release archive in memory", () => {
 	withTemporaryDirectory((directory) => {
-		const archivePath = join(directory, "gentle-ai-review-provider-contract-1.4.0.tar.gz");
+		const archivePath = join(directory, "drakonc-ai-review-provider-contract-1.4.0.tar.gz");
 		writeFileSync(archivePath, buildTarGz([...fixture140Entries()].map(([name, bytes]) => ({ name, bytes }))));
 		const { bundle } = verifyProviderContractBundleArchive(archivePath);
 		assert.equal(bundle.contractSemver, "1.4.0");

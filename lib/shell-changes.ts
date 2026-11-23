@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-// Gentle Shell changes: the working tree against HEAD, new files included.
+// Drakonc Shell changes: the working tree against HEAD, new files included.
 // Git is the source of truth; this module turns raw `git diff --numstat` and
 // `git status --porcelain -z` output into a model and renders the widget.
 
@@ -46,7 +46,7 @@ interface NumstatEntry {
 	deleted: number;
 }
 
-export const CHANGES_COMMAND = "/gentle:changes";
+export const CHANGES_COMMAND = "/drakonc:changes";
 // One selected file's diff is the only bounded thing in Changes: past either
 // limit the panel shows DIFF_TOO_LARGE instead of buffering and coloring it.
 export const DIFF_MAX_BYTES = 1024 * 1024;
@@ -170,7 +170,7 @@ export function changesSummary(model: ChangesModel): string {
 // One line: summary, the files joined by dots, and the command pushed to
 // the right edge. The file list goes first when the terminal is narrow.
 // The idle widget exists only while files are tracked. An unborn root (no
-// commits yet) is silence here: /gentle:changes explains the state on demand,
+// commits yet) is silence here: /drakonc:changes explains the state on demand,
 // where the message has room and context.
 //
 // Both surfaces that paint it (the sidebar part and the below-input header
@@ -264,7 +264,7 @@ export async function foreignRootBranch(git: GitRunner): Promise<string | undefi
 // cheap verify answers "is there anything to diff against" before a scan.
 const HEAD_EXISTS_ARGS = ["rev-parse", "--verify", "-q", "HEAD"];
 
-// /gentle:changes: one group per registered root holding its working tree
+// /drakonc:changes: one group per registered root holding its working tree
 // against HEAD. A root whose Git fails (timed out, rejected) has no group but
 // is listed in failedRoots: a failed scan is never reported as a clean root.
 // A root with no commits has no group either, listed in unbornRoots: there is

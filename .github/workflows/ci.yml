@@ -37,7 +37,7 @@ jobs:
       - name: Run tests
         run: pnpm test
         env:
-          GENTLE_PI_REQUIRE_NATIVE_BINARY: "1"
+          DRAKONC_PI_REQUIRE_NATIVE_BINARY: "1"
 
       - name: Type check
         run: pnpm run typecheck
@@ -72,10 +72,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
         env:
-          GENTLE_PI_SKIP_GENTLE_AI_INSTALL: "1"
+          DRAKONC_PI_SKIP_DRAKONC_AI_INSTALL: "1"
 
       - name: Run Darwin session transport tests
-        run: pnpm exec node --experimental-strip-types --test tests/agents-session-transport.test.ts tests/agents-session-transport-process.test.ts tests/gentle-agents.test.ts
+        run: pnpm exec node --experimental-strip-types --test tests/agents-session-transport.test.ts tests/agents-session-transport-process.test.ts tests/drakonc-agents.test.ts
 
       - name: Run coordinator portability tests
         run: pnpm exec node --experimental-strip-types --test tests/review-coordinator-runtime.test.ts
@@ -231,7 +231,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
         env:
-          GENTLE_PI_SKIP_GENTLE_AI_INSTALL: "1"
+          DRAKONC_PI_SKIP_DRAKONC_AI_INSTALL: "1"
 
       - name: Run Windows Git authority probe
         shell: pwsh

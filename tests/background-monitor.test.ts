@@ -57,7 +57,7 @@ import { createMonitorController, MONITOR_BATCH_MS, type MonitorNotice } from ".
 
 // A fake clock and scheduler drive the controller; a fake shell feeds lines.
 function monitorHarness() {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-monitor-test-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-monitor-test-"));
 	let clock = 0;
 	const timers: Array<{ at: number; fn: () => void; live: boolean }> = [];
 	const schedule = (fn: () => void, ms: number) => {

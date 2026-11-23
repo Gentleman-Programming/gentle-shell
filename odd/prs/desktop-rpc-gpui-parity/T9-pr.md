@@ -4,7 +4,7 @@ Closes #ISSUE
 
 ## Summary
 
-- A versioned owner service in `extensions/gentle-ai.ts` reuses the command's helpers (asset counts extracted without changing its lines); the dev binary is resolved, never run.
+- A versioned owner service in `extensions/drakonc-ai.ts` reuses the command's helpers (asset counts extracted without changing its lines); the dev binary is resolved, never run.
 
 ## Test plan
 

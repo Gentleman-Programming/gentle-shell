@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 320" role="img" aria-labelledby="title desc">
+  <title id="title">Drakonc Shell</title>
+  <desc id="desc">Un dragón rojo sobre fondo azul oscuro, junto al nombre Drakonc Shell.</desc>
+  <rect width="720" height="320" rx="24" fill="#0d1526"/>
+  <path d="M82 232c-9-50 12-91 50-112l-9-39 42 22 36-32-5 39 37-11-20 31 26 22-36 7c-1 15-10 29-25 37l-30 15 16 13 27-5-19 24-42 2c-25 1-44-3-58-13 8 19 20 34 39 47-31-5-52-23-61-47z" fill="#ff4d5e"/>
+  <path d="M136 120c17 3 30 12 40 25l-17 5c-8-11-15-21-23-30zm52 17 10-6 9 6-9 4z" fill="#0d1526"/>
+  <path d="M99 208c15 13 31 18 54 19M151 174c11-10 22-15 37-16" fill="none" stroke="#ff8993" stroke-width="5" stroke-linecap="round"/>
+  <text x="275" y="151" fill="#e6edf7" font-family="system-ui, sans-serif" font-size="56" font-weight="700" letter-spacing="2">DRAKONC</text>
+  <text x="278" y="194" fill="#ff7782" font-family="system-ui, sans-serif" font-size="24" font-weight="600" letter-spacing="7">SHELL</text>
+  <path d="M279 215h300" stroke="#334158" stroke-width="2"/>
+  <text x="280" y="245" fill="#a9b7ca" font-family="system-ui, sans-serif" font-size="15" letter-spacing="1">TU ESPACIO DE DESARROLLO CON AGENTES</text>
+</svg>

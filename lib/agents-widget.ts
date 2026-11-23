@@ -1,16 +1,17 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { BRAND_GLYPH } from "./brand-glyph.ts";
 import { isFinished, TASK_STATUS, type TaskRecord, type TaskStatus } from "./agents-protocol.ts";
 import { formatCost, formatTokens } from "./shell-bar.ts";
 import { paintHoverable } from "./shell-hover.ts";
 import { CARD_TONE, paintSurfaceRow, panelExtraRows, panelHeaderRow, panelInnerWidth, renderCard, surfaceOpener, type CardTheme, type CardTone } from "./shell-card.ts";
 import { fitPanelLine, PANEL_ROW_INDENT, renderPanelHeader, renderPanelRow } from "./shell-panel.ts";
 
-// Gentle Agents widget: the card above the editor. Reads task records only
+// Drakonc Agents widget: the card above the editor. Reads task records only
 // (status, prompt, counters, timestamps), so drawing it costs nothing per
 // event. One row per task: glyph, agent, task summary, then
 // model · effort · tokens · cost · time right-aligned.
 
-export const AGENTS_GLYPH = "❀";
+export const AGENTS_GLYPH = BRAND_GLYPH;
 
 export interface AgentsWidgetOptions {
 	collapsed: boolean;
@@ -237,7 +238,7 @@ function taskText(task: TaskRecord): string {
 // surviving columns keep lining up: the task text goes first, then the
 // model·effort label, then tokens, then cost. Elapsed is the one value the
 // reader cannot rebuild from anything else on screen, so it is the last to go
-// (gentle-shell#1143). Only when even elapsed alone does not fit does the row
+// (drakonc-shell#1143). Only when even elapsed alone does not fit does the row
 // fall back to the clipped single-string label.
 function columns(tasks: readonly TaskRecord[], inner: number, now: number): Columns {
 	const name = Math.max(0, Math.min(NAME_MAX, inner - 3, Math.max(...tasks.map((task) => visibleWidth(task.agent)))));
@@ -356,12 +357,12 @@ export function renderAgentsCard(tasks: readonly TaskRecord[], theme: CardTheme,
 // rows and counts the rest.
 const SECTION_ROWS = 8;
 const KIND_MAX = 10;
-const AGENTS_VIEW = "/gentle:agents";
+const AGENTS_VIEW = "/drakonc:agents";
 const SECTION_ORDER: TaskStatus[] = [TASK_STATUS.WAITING, TASK_STATUS.RUNNING, TASK_STATUS.QUEUED, TASK_STATUS.FAILED, TASK_STATUS.TIMED_OUT];
 const SECTION_TEXT_ROLE: Partial<Record<TaskStatus, string>> = { [TASK_STATUS.WAITING]: "warning", [TASK_STATUS.QUEUED]: "muted", [TASK_STATUS.FAILED]: "error", [TASK_STATUS.TIMED_OUT]: "error" };
 
 function agentKind(agent: string): string {
-	return agent.replace(/^gentle-ai-/, "");
+	return agent.replace(/^drakonc-ai-/, "");
 }
 
 function sectionRight(task: TaskRecord, now: number): string {

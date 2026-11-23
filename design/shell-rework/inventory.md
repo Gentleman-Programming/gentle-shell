@@ -1,4 +1,4 @@
-# Gentle Shell capability inventory
+# Drakonc Shell capability inventory
 
 Everything the shell shows today, taken from code, so a redesign moves each piece instead of losing it.
 Priority: **1** always visible and glanced at constantly, **2** visible while relevant, **3** on demand.
@@ -14,14 +14,14 @@ Priority: **1** always visible and glanced at constantly, **2** visible while re
 | Vim mode | `INSERT` / `NORMAL` | constant when vim on | 1 | state row | `vim-editor-adapter.ts` |
 | Esc hints | `esc again to cancel`, `esc again to clear` | transient | 2 | state row | `DOUBLE_ESC_CANCEL_HINT` |
 | Image chips | `[Image#N]` atomic chips in the draft | occasional | 2 | inline in the input | `image-attachments.ts` |
-| Queued follow-up | text typed while the agent works, sent next turn | occasional | 2 | merged into the draft | `gentle-shell.ts:496` |
+| Queued follow-up | text typed while the agent works, sent next turn | occasional | 2 | merged into the draft | `drakonc-shell.ts:496` |
 | Logo | 4-row braille mark | always | 3 | left of the editor | prompt layout |
 
 ## 2. Header bar (top, one row today)
 
 | Element | Data | Freq | Prio | Notes |
 |---|---|---|---|---|
-| Brand | `✿ Gentle Shell` | always | 3 | |
+| Brand | `✿ Drakonc Shell` | always | 3 | |
 | Location | cwd, branch, dirty count | constant | 1 | dropped first when narrow |
 | Model | model id, effort | constant | 1 | `modelDetails` toggle |
 | Profile | `claude (session)` | occasional | 2 | dropped first when narrow |
@@ -35,9 +35,9 @@ Priority: **1** always visible and glanced at constantly, **2** visible while re
 | Group | Data | Freq | Prio | Notes |
 |---|---|---|---|---|
 | Project | cwd, branch, session name, profile | rare | 3 | **duplicates the header** |
-| Changes | `22 files · +802 −352` or `No captured changes`, `/gentle:changes` | after each turn | 2 | `changes` toggle |
+| Changes | `22 files · +802 −352` or `No captured changes`, `/drakonc:changes` | after each turn | 2 | `changes` toggle |
 | RDD review | `Reviewers running…`, `Review in progress`, `✓ Approved`, `Fixing findings…`, `Needs your consent`, `Outdated · code changed`, … + scope | while reviewing | 1 when `consent` | `rdd` toggle |
-| Integrations | free-form extension statuses: memory (`gentle-pi · saved #N`), permissions (`SUPER-YOLO`), auto-usage | rare | 2-3 | opaque strings from other extensions |
+| Integrations | free-form extension statuses: memory (`drakonc-pi · saved #N`), permissions (`SUPER-YOLO`), auto-usage | rare | 2-3 | opaque strings from other extensions |
 
 ## 4. Live work (rail cards)
 
@@ -53,7 +53,7 @@ User message, assistant text, `Thinking…`, tool cards (`ok · read · 11ms`, b
 
 ## 6. Overlays and views (on demand)
 
-Command palette (`/`), Changes view (`/gentle:changes`, per-file diff), Usage view (`alt+u`), Agents modal, History, Customize (`/gentle:customize`), Profiles, Persona, Review mode, consent prompts (`ask_user` choices), model selector.
+Command palette (`/`), Changes view (`/drakonc:changes`, per-file diff), Usage view (`alt+u`), Agents modal, History, Customize (`/drakonc:customize`), Profiles, Persona, Review mode, consent prompts (`ask_user` choices), model selector.
 
 ## 7. Settings that change the layout
 
@@ -61,7 +61,7 @@ Card style `neon`/`float`; density `comfortable`/`compact`/`minimal` (default co
 
 ## Presets (validated with the user)
 
-Priority 1 is confirmed: input and its state, vim mode, location (cwd, branch), model, context, and "needs you" alerts (agent waiting for an answer, RDD consent). Every element stays individually switchable in `/gentle:customize`, which also offers three presets:
+Priority 1 is confirmed: input and its state, vim mode, location (cwd, branch), model, context, and "needs you" alerts (agent waiting for an answer, RDD consent). Every element stays individually switchable in `/drakonc:customize`, which also offers three presets:
 
 | Preset | Shows | For |
 |---|---|---|

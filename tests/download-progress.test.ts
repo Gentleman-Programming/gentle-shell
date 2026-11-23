@@ -3,8 +3,8 @@ import test from "node:test";
 import { createDownloadProgress, formatDownloadProgress } from "../scripts/download-progress.mjs";
 
 test("formatDownloadProgress shows size, percent, rate and a bar with a known total", () => {
-	const line = formatDownloadProgress({ label: "gentle-ai v4.1.1", received: 3 * 1024 * 1024, total: 6 * 1024 * 1024, elapsedMs: 2000, width: 80 });
-	assert.match(line, /^gentle-ai v4\.1\.1 /);
+	const line = formatDownloadProgress({ label: "drakonc-ai v4.1.1", received: 3 * 1024 * 1024, total: 6 * 1024 * 1024, elapsedMs: 2000, width: 80 });
+	assert.match(line, /^drakonc-ai v4\.1\.1 /);
 	assert.match(line, /3\.0\/6\.0 MB/);
 	assert.match(line, / 50%/);
 	assert.match(line, /1\.5 MB\/s/);
@@ -51,7 +51,7 @@ test("createDownloadProgress done without any update writes nothing", () => {
 });
 
 test("formatDownloadProgress keeps the amount and percent visible when the label does not fit", () => {
-	const label = "Downloading Gentle AI v4.1.1";
+	const label = "Downloading Drakonc AI v4.1.1";
 	const known = formatDownloadProgress({ label, received: 3 * 1024 * 1024, total: 6 * 1024 * 1024, elapsedMs: 0, width: 23 });
 	assert.ok([...known].length <= 23, known);
 	assert.match(known, /3\.0\/6\.0 MB/);

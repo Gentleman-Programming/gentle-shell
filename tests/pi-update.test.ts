@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { managedUpdatePlan, updateSelectedPi } from '../scripts/pi-update.mjs';
-import { bundledUpdatePlan, bundledUpdateNext } from '../runtime/gentle-shell-bundled.mjs';
+import { bundledUpdatePlan, bundledUpdateNext } from '../runtime/drakonc-shell-bundled.mjs';
 
 const PI = '@earendil-works/pi-coding-agent';
 const CLI = 'dist/bundle/cli.js';
@@ -18,11 +18,11 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
  siblingDependencies = {} as Record<string, Record<string, unknown> | null>, excludeOutput = '["existing-fixture"]\n'} = {}) {
  const base = windows ? 'C:/pnpm' : '/pnpm';
  const home = windows ? 'C:/Users/u' : '/home/u';
- // The tarball `gentle-shell upgrade --channel main` packs, named after its version.
- const tarball = `${configHome || `${home}/.pi/gentle-ai`}/main/packages/gentle-pi-${shellVersion}.tgz`;
+ // The tarball `drakonc-shell upgrade --channel main` packs, named after its version.
+ const tarball = `${configHome || `${home}/.drakonc-shell/drakonc-ai`}/main/packages/drakonc-pi-${shellVersion}.tgz`;
  const storePi = (version: string) => `${base}/store/links/@earendil-works/pi-coding-agent/${version}/h/node_modules/${PI}`;
- const shellModules = npm ? `${base}/npm/lib/node_modules` : `${base}/store/links/@/gentle-pi/4.1.0/h1/node_modules`;
- const shell = `${shellModules}/gentle-pi`;
+ const shellModules = npm ? `${base}/npm/lib/node_modules` : `${base}/store/links/@/drakonc-pi/4.1.0/h1/node_modules`;
+ const shell = `${shellModules}/drakonc-pi`;
  const nestedPeer = `${shell}/node_modules/${PI}`;
  const g1 = npm ? shellModules : `${base}/global/v11/g1/node_modules`;
  const g2 = npm ? shellModules : `${base}/global/v11/g2/node_modules`;
@@ -41,7 +41,7 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
  const cwds: unknown[] = [];
  const runOptions: unknown[] = [];
  const entry = (pkg: string, modules: string, extra = {}) => ({[pkg]: {path: `${modules}/${pkg}`, ...extra}});
- const shellEntry = entry('gentle-pi', g1, linked ? {link: true} : {});
+ const shellEntry = entry('drakonc-pi', g1, linked ? {link: true} : {});
  const piEntry = entry(PI, g2, linked ? {resolved: 'file:/src/pi'} : {});
  const listing = () => {
   const deps = {...(groups !== 'pi' ? shellEntry : {}), ...(groups !== 'shell' ? piEntry : {}),
@@ -56,7 +56,7 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
   if (n === shimFile) return n;
   // Symlinked components inside a longer path resolve like the real filesystem does.
   if (n.startsWith(`${g2}/${PI}/`)) return (npm ? `${g2}/${PI}` : storePi(state.group)) + n.slice(`${g2}/${PI}`.length);
-  if (n === `${g1}/gentle-pi` || n === `${g1}/unrelated-tool` || n === `${g3}/unrelated-tool`) return n === `${g1}/gentle-pi` ? shell : n;
+  if (n === `${g1}/drakonc-pi` || n === `${g1}/unrelated-tool` || n === `${g3}/unrelated-tool`) return n === `${g1}/drakonc-pi` ? shell : n;
   if (n === `${g2}/${PI}`) return npm ? n : storePi(state.group);
   if (!npm && n === `${shellModules}/${PI}`) return storePi(state.peer);
   if (!npm && n === nestedPeer) throw new Error('ENOENT nested peer');
@@ -68,7 +68,7 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
  const readFile = async (value: string) => {
   const n = value.replaceAll('\\', '/');
   if (n === shimFile) return shimText;
-  if (n === `${shell}/package.json`) return JSON.stringify({name: 'gentle-pi', ...(shellVersion ? {version: shellVersion} : {})});
+  if (n === `${shell}/package.json`) return JSON.stringify({name: 'drakonc-pi', ...(shellVersion ? {version: shellVersion} : {})});
   if (n === `${g1}/unrelated-tool/package.json`) return JSON.stringify({name: 'unrelated-tool'});
   const version = n.startsWith(nestedPeer) ? state.peer : npm && n === `${g2}/${PI}/package.json` ? state.group : /pi-coding-agent\/([\d.]+)\/h\//.exec(n)?.[1];
   if (badManifest || unrelatedPeer) return JSON.stringify({name: unrelatedPeer ? 'other' : PI, version});
@@ -91,12 +91,12 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
   mutations.push(args);
   runOptions.push(options);
   if (installFailure) return {code: 1, stdout: installFailure.stdout ?? '', ...('stderrTail' in installFailure ? {stderrTail: installFailure.stderrTail} : {})};
-  if (args.some(arg => arg.startsWith('gentle-pi@') || arg.endsWith('.tgz'))) state.peer = peerAfter;
+  if (args.some(arg => arg.startsWith('drakonc-pi@') || arg.endsWith('.tgz'))) state.peer = peerAfter;
   if (args.some(arg => arg.startsWith(PI + '@'))) state.group = peerAfter;
   return {code: 0};
  };
- return {mutations, probes, out, cwds, runOptions, state, shell, selectedCli, tarball, input: {platform: windows ? 'win32' : 'linux', packageRoot: `${g1}/gentle-pi`, currentVersion: '1.1.0', cwd: '/neutral',
-  home, env: configHome ? {GENTLE_PI_CONFIG_HOME: configHome} : {},
+ return {mutations, probes, out, cwds, runOptions, state, shell, selectedCli, tarball, input: {platform: windows ? 'win32' : 'linux', packageRoot: `${g1}/drakonc-pi`, currentVersion: '1.1.0', cwd: '/neutral',
+  home, env: configHome ? {DRAKONC_PI_CONFIG_HOME: configHome} : {},
   runtime: runtime === 'adjacent' ? {kind: 'bundled', command: 'node', args: [selectedCli]} : {kind: runtime, command: shim ? shimFile : selectedCli, args: []},
   out: (line: string) => out.push(line),
   adapters: {which: async (name: string) => name === (npm ? 'npm' : 'pnpm') ? `/fake/${name}` : null, fs: {realpath, readFile}, run}}};
@@ -106,17 +106,17 @@ function fixture({windows = false, npm = false, runtime = 'adjacent', groups = '
 // group and linked store root may both change. A second row models a decoy.
 function supplierFixture({shell = false, decoyVersion = '1.0.0', selectedAfter = '2.0.0', shellVersion = '4.1.0',
  replaceGroup = false, withDecoy = true, post = 'normal'} = {}) {
- const pkg = shell ? 'gentle-pi' : PI;
+ const pkg = shell ? 'drakonc-pi' : PI;
  const state = {decoy:decoyVersion, selected:'1.0.0'};
  type Side = keyof typeof state;
  let updated = false;
  const group = (side: Side) => `/global/v11/${side}${side === 'selected' && updated && replaceGroup ? '-new' : ''}/node_modules`;
  const link = (side: Side) => `${group(side)}/${pkg}`;
  const shellModules = (side: Side) => `/store/${side}/shell/${shellVersion}/peer-${state[side]}/node_modules`;
- const shellRoot = (side: Side) => `${shellModules(side)}/gentle-pi`;
+ const shellRoot = (side: Side) => `${shellModules(side)}/drakonc-pi`;
  const piRoot = (side: Side) => shell ? `${shellModules(side)}/${PI}` : `/store/${side}/pi/${state[side]}/node_modules/${PI}`;
  const sides: Side[] = withDecoy ? ['decoy', 'selected'] : ['selected'];
- const tarball = `/home/u/.pi/gentle-ai/main/packages/gentle-pi-${shellVersion}.tgz`;
+ const tarball = `/home/u/.drakonc-shell/drakonc-ai/main/packages/drakonc-pi-${shellVersion}.tgz`;
  const data = {policy:'minimumReleaseAge: 4320', unrelated:'do not change', artifact:'original tarball bytes'};
  const listing = () => {
   const rows = sides.map(side => ({path:updated && side === 'selected' && post === 'foreign-listing' ? '/foreign/v11' : '/global/v11', private:true,
@@ -142,7 +142,7 @@ function supplierFixture({shell = false, decoyVersion = '1.0.0', selectedAfter =
  const readFile = async (value: string) => {
   if (value === tarball) return data.artifact;
   for (const side of sides) {
-   if (value === `${shellRoot(side)}/package.json`) return JSON.stringify({name:'gentle-pi', version:updated && side === 'selected' && post === 'wrong-shell' ? '9.0.0' : shellVersion});
+   if (value === `${shellRoot(side)}/package.json`) return JSON.stringify({name:'drakonc-pi', version:updated && side === 'selected' && post === 'wrong-shell' ? '9.0.0' : shellVersion});
    if (value === `${piRoot(side)}/package.json`) return JSON.stringify({name:updated && side === 'selected' && post === 'wrong-pi' ? 'other' : PI, version:state[side], bin:{pi:updated && side === 'selected' && post === 'wrong-bin' ? 'other.js' : CLI}});
   }
   throw Object.assign(new Error(`ENOENT ${value}`), {code:'ENOENT'});
@@ -219,8 +219,8 @@ for (const npm of [false, true]) test(`global ${npm ? 'npm' : 'pnpm'} refuses a 
 for (const windows of [false, true]) test(`an adjacent peer is refreshed by reinstalling its Shell package at the same version, never the separate global Pi (windows: ${windows})`, async () => {
  const f = fixture({windows});
  assert.equal(await updateSelectedPi(f.input), 0);
- assert.deepEqual(f.mutations, [['add', '-g', 'gentle-pi@4.1.0', '--allow-build=gentle-pi', ...AGE]]);
- assert.deepEqual(f.out, ['pnpm installed gentle-pi@4.1.0; the selected Pi is now 1.2.0 (was 1.1.0).']);
+ assert.deepEqual(f.mutations, [['add', '-g', 'drakonc-pi@4.1.0', '--allow-build=drakonc-pi', ...AGE]]);
+ assert.deepEqual(f.out, ['pnpm installed drakonc-pi@4.1.0; the selected Pi is now 1.2.0 (was 1.1.0).']);
  assert.equal(f.state.group, '1.1.0');
 });
 
@@ -237,8 +237,8 @@ for (const shell of [false, true]) test(`same global supplier is read back after
  const decoyBefore = await f.input.adapters.fs.readFile(`${f.piRoot('decoy')}/package.json`);
  const selectedRoot = shell ? f.shellRoot('selected') : f.piRoot('selected');
  const result = await captureUpdate(f.input, f.out);
- const spec = shell ? 'gentle-pi@4.1.0' : `${PI}@2.0.0`;
- assert.deepEqual(f.mutations, [['add', '-g', spec, ...(shell ? ['--allow-build=gentle-pi'] : []), ...AGE]]);
+ const spec = shell ? 'drakonc-pi@4.1.0' : `${PI}@2.0.0`;
+ assert.deepEqual(f.mutations, [['add', '-g', spec, ...(shell ? ['--allow-build=drakonc-pi'] : []), ...AGE]]);
  assert.deepEqual(f.state, {decoy:'1.0.0', selected:'2.0.0'});
  assert.equal(await f.input.adapters.fs.readFile(`${f.piRoot('decoy')}/package.json`), decoyBefore);
  assert.notEqual(shell ? f.shellRoot('selected') : f.piRoot('selected'), selectedRoot);
@@ -252,7 +252,7 @@ test('same global supplier still rejects a stale selected Pi when the decoy alre
  assert.deepEqual(f.mutations, [['add', '-g', `${PI}@2.0.0`, ...AGE]]);
  assert.deepEqual(f.state, {decoy:'2.0.0', selected:'1.0.0'});
  assert.equal(await f.input.adapters.fs.readFile(`${f.piRoot('decoy')}/package.json`), decoyBefore);
- assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'gentle-shell update: pnpm supplied Pi 1.0.0, not the latest published Pi 2.0.0; inspect the installation before retrying.\n'});
+ assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'drakonc-shell update: pnpm supplied Pi 1.0.0, not the latest published Pi 2.0.0; inspect the installation before retrying.\n'});
 });
 
 test('a single global Pi supplier still reports its new version after its store path changes', async () => {
@@ -268,12 +268,12 @@ test('a single global Pi supplier still reports its new version after its store 
 test('npm nests the peer under Shell and reinstalls Shell for it', async () => {
  const f = fixture({npm: true});
  assert.equal(await updateSelectedPi(f.input), 0);
- assert.deepEqual(f.mutations, [['install', '-g', 'gentle-pi@4.1.0']]);
- assert.deepEqual(f.out, ['npm installed gentle-pi@4.1.0; the selected Pi is now 1.2.0 (was 1.1.0).']);
+ assert.deepEqual(f.mutations, [['install', '-g', 'drakonc-pi@4.1.0']]);
+ assert.deepEqual(f.out, ['npm installed drakonc-pi@4.1.0; the selected Pi is now 1.2.0 (was 1.1.0).']);
 });
 
 // #2324: main-channel Shell versions are never published; only the tarball
-// `gentle-shell upgrade --channel main` packed can reinstall that exact build.
+// `drakonc-shell upgrade --channel main` packed can reinstall that exact build.
 const MAIN = '4.2.0-main.fb5e731119a7';
 const native = (path: string, windows: boolean) => windows ? path.replaceAll('/', '\\') : path;
 
@@ -283,9 +283,9 @@ for (const main of [false, true]) test(`pnpm reads a replaced ${main ? 'main art
  const data = {...f.data};
  const artifact = await f.input.adapters.fs.readFile(f.tarball);
  const result = await captureUpdate(f.input, f.out);
- const spec = main ? f.tarball : 'gentle-pi@4.1.0';
+ const spec = main ? f.tarball : 'drakonc-pi@4.1.0';
  assert.notEqual(f.group('selected'), beforeGroup);
- assert.deepEqual(f.mutations, [['add', '-g', spec, '--allow-build=gentle-pi', ...AGE]]);
+ assert.deepEqual(f.mutations, [['add', '-g', spec, '--allow-build=drakonc-pi', ...AGE]]);
  assert.deepEqual(f.state, {decoy:'1.0.0', selected:'2.0.0'});
  assert.deepEqual(f.data, data);
  assert.equal(await f.input.adapters.fs.readFile(f.tarball), artifact);
@@ -298,9 +298,9 @@ for (const shell of [false, true]) test(`a replaced ${shell ? 'Shell peer' : 'Pi
  const decoy = await f.input.adapters.fs.readFile(`${f.piRoot('decoy')}/package.json`);
  const data = {...f.data};
  const result = await captureUpdate(f.input, f.out);
- const spec = shell ? 'gentle-pi@4.1.0' : `${PI}@2.0.0`;
+ const spec = shell ? 'drakonc-pi@4.1.0' : `${PI}@2.0.0`;
  assert.notEqual(f.group('selected'), beforeGroup);
- assert.deepEqual(f.mutations, [['add', '-g', spec, ...(shell ? ['--allow-build=gentle-pi'] : []), ...AGE]]);
+ assert.deepEqual(f.mutations, [['add', '-g', spec, ...(shell ? ['--allow-build=drakonc-pi'] : []), ...AGE]]);
  assert.deepEqual(f.state, {decoy:'1.0.0', selected:'2.0.0'});
  assert.equal(await f.input.adapters.fs.readFile(`${f.piRoot('decoy')}/package.json`), decoy);
  assert.deepEqual(f.data, data);
@@ -312,12 +312,12 @@ for (const shell of [false, true]) test(`a replaced ${shell ? 'Shell peer' : 'Pi
  const decoy = await f.input.adapters.fs.readFile(`${f.piRoot('decoy')}/package.json`);
  const data = {...f.data};
  const result = await captureUpdate(f.input, f.out);
- const spec = shell ? 'gentle-pi@4.1.0' : `${PI}@2.0.0`;
- assert.deepEqual(f.mutations, [['add', '-g', spec, ...(shell ? ['--allow-build=gentle-pi'] : []), ...AGE]]);
+ const spec = shell ? 'drakonc-pi@4.1.0' : `${PI}@2.0.0`;
+ assert.deepEqual(f.mutations, [['add', '-g', spec, ...(shell ? ['--allow-build=drakonc-pi'] : []), ...AGE]]);
  assert.deepEqual(f.state, {decoy:'2.0.0', selected:'1.0.0'});
  assert.equal(await f.input.adapters.fs.readFile(`${f.piRoot('decoy')}/package.json`), decoy);
  assert.deepEqual(f.data, data);
- assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'gentle-shell update: pnpm supplied Pi 1.0.0, not the latest published Pi 2.0.0; inspect the installation before retrying.\n'});
+ assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'drakonc-shell update: pnpm supplied Pi 1.0.0, not the latest published Pi 2.0.0; inspect the installation before retrying.\n'});
 });
 
 for (const [post, shell, replaceGroup] of [
@@ -329,18 +329,18 @@ for (const [post, shell, replaceGroup] of [
  const decoy = await f.input.adapters.fs.readFile(`${f.piRoot('decoy')}/package.json`);
  const data = {...f.data};
  const result = await captureUpdate(f.input, f.out);
- const spec = shell ? 'gentle-pi@4.1.0' : `${PI}@2.0.0`;
- assert.deepEqual(f.mutations, [['add', '-g', spec, ...(shell ? ['--allow-build=gentle-pi'] : []), ...AGE]]);
+ const spec = shell ? 'drakonc-pi@4.1.0' : `${PI}@2.0.0`;
+ assert.deepEqual(f.mutations, [['add', '-g', spec, ...(shell ? ['--allow-build=drakonc-pi'] : []), ...AGE]]);
  assert.deepEqual(f.state, {decoy:'1.0.0', selected:'2.0.0'});
  assert.equal(await f.input.adapters.fs.readFile(`${f.piRoot('decoy')}/package.json`), decoy);
  assert.deepEqual(f.data, data);
- assert.deepEqual(result, {exitCode:0, stdout:`pnpm installed ${spec}. The Pi version it now supplies could not be read back; run 'gentle-shell --version' to check it.\n`, stderr:''});
+ assert.deepEqual(result, {exitCode:0, stdout:`pnpm installed ${spec}. The Pi version it now supplies could not be read back; run 'drakonc-shell --version' to check it.\n`, stderr:''});
 });
 
 for (const windows of [false, true]) test(`a main-channel Shell is reinstalled from its recorded tarball, never from the registry (windows: ${windows})`, async () => {
  const f = fixture({windows, shellVersion: MAIN});
  assert.equal(await updateSelectedPi(f.input), 0);
- assert.deepEqual(f.mutations, [['add', '-g', native(f.tarball, windows), '--allow-build=gentle-pi', ...AGE]]);
+ assert.deepEqual(f.mutations, [['add', '-g', native(f.tarball, windows), '--allow-build=drakonc-pi', ...AGE]]);
  assert.deepEqual(f.out, [`pnpm installed ${native(f.tarball, windows)}; the selected Pi is now 1.2.0 (was 1.1.0).`]);
  assert.equal(f.state.group, '1.1.0');
 });
@@ -351,10 +351,10 @@ test('npm reinstalls a main-channel Shell from its recorded tarball', async () =
  assert.deepEqual(f.mutations, [['install', '-g', f.tarball]]);
 });
 
-test('a main-channel tarball is found under GENTLE_PI_CONFIG_HOME', async () => {
+test('a main-channel tarball is found under DRAKONC_PI_CONFIG_HOME', async () => {
  const f = fixture({shellVersion: MAIN, configHome: '/custom/config'});
  assert.equal(await updateSelectedPi(f.input), 0);
- assert.deepEqual(f.mutations, [['add', '-g', '/custom/config/main/packages/gentle-pi-4.2.0-main.fb5e731119a7.tgz', '--allow-build=gentle-pi', ...AGE]]);
+ assert.deepEqual(f.mutations, [['add', '-g', '/custom/config/main/packages/drakonc-pi-4.2.0-main.fb5e731119a7.tgz', '--allow-build=drakonc-pi', ...AGE]]);
 });
 
 // Pi 1.5.2 pins its co-published @earendil-works packages exactly; pnpm's
@@ -370,8 +370,8 @@ for (const [name, options] of Object.entries({'global Pi': {runtime:'path'}, 'Sh
  assert.equal(await updateSelectedPi(f.input), 0);
  assert.deepEqual(f.probes.filter(args => args.includes('view') && args.includes('--json')),
   [PI, '@earendil-works/pi-ai', '@earendil-works/pi-tui', '@earendil-works/pi-schema'].map(name => ['view', `${name}@1.2.0`, '--json', '--config.global=true']));
- const spec = options.runtime ? `${PI}@1.2.0` : options.shellVersion ? f.tarball : 'gentle-pi@4.1.0';
- assert.deepEqual(f.mutations, [['add', '-g', spec, ...(options.runtime ? [] : ['--allow-build=gentle-pi']), ...SIBLING_AGE]]);
+ const spec = options.runtime ? `${PI}@1.2.0` : options.shellVersion ? f.tarball : 'drakonc-pi@4.1.0';
+ assert.deepEqual(f.mutations, [['add', '-g', spec, ...(options.runtime ? [] : ['--allow-build=drakonc-pi']), ...SIBLING_AGE]]);
 });
 
 test('global pnpm merges each sibling into its configured exclusion instead of being shadowed by it', async () => {
@@ -388,7 +388,7 @@ for (const existing of ['@earendil-works/pi-ai@^1.0.0', '@earendil-works/pi-ai@1
  const f = fixture({runtime:'path', piDependencies:DEPENDENCIES, siblingDependencies:SIBLINGS, excludeOutput:JSON.stringify(['existing-fixture', existing])});
  const result = await captureUpdate(f.input, f.out);
  assert.deepEqual(f.mutations, []);
- assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'gentle-shell update: pnpm release-age exclusions could not be verified. No installation changed.\n'});
+ assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'drakonc-shell update: pnpm release-age exclusions could not be verified. No installation changed.\n'});
 });
 
 test('global pnpm refuses before installing when a pinned sibling manifest cannot be read', async () => {
@@ -396,7 +396,7 @@ test('global pnpm refuses before installing when a pinned sibling manifest canno
  const result = await captureUpdate(f.input, f.out);
  assert.deepEqual(f.mutations, []);
  assert.deepEqual(f.state, {peer:'1.1.0', group:'1.1.0'});
- assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'gentle-shell update: the published dependencies of @earendil-works/pi-schema@1.2.0 could not be verified. No installation changed.\n'});
+ assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'drakonc-shell update: the published dependencies of @earendil-works/pi-schema@1.2.0 could not be verified. No installation changed.\n'});
 });
 
 test('global pnpm refuses an unbounded chain of pinned siblings without installing', async () => {
@@ -405,7 +405,7 @@ test('global pnpm refuses an unbounded chain of pinned siblings without installi
  const result = await captureUpdate(f.input, f.out);
  assert.deepEqual(f.mutations, []);
  assert.equal(f.probes.filter(args => args.includes('--json')).length, 33);
- assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'gentle-shell update: Pi 1.2.0 pins more than 32 @earendil-works packages; their release age could not be verified. No installation changed.\n'});
+ assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'drakonc-shell update: Pi 1.2.0 pins more than 32 @earendil-works packages; their release age could not be verified. No installation changed.\n'});
 });
 
 test('npm never reads the Pi manifest or passes pnpm release-age exclusions', async () => {
@@ -422,19 +422,19 @@ for (const [name, manifestView] of Object.entries({'a failed lookup': {code:1, s
  const result = await captureUpdate(f.input, f.out);
  assert.deepEqual(f.mutations, []);
  assert.deepEqual(f.state, {peer:'1.1.0', group:'1.1.0'});
- assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'gentle-shell update: the published dependencies of Pi 1.2.0 could not be verified. No installation changed.\n'});
+ assert.deepEqual(result, {exitCode:1, stdout:'', stderr:'drakonc-shell update: the published dependencies of Pi 1.2.0 could not be verified. No installation changed.\n'});
 });
 
 test('a missing main-channel tarball names the rebuild command and installs nothing', async () => {
  const f = fixture({shellVersion: MAIN, artifact: false});
- await assert.rejects(updateSelectedPi(f.input), {message: `gentle-shell update: the main-channel build ${f.tarball} is missing, and this unpublished build cannot be reinstalled from the registry; run 'gentle-shell upgrade --channel release' and then 'gentle-shell upgrade --channel main' to rebuild it. No installation changed.`});
+ await assert.rejects(updateSelectedPi(f.input), {message: `drakonc-shell update: the main-channel build ${f.tarball} is missing, and this unpublished build cannot be reinstalled from the registry; run 'drakonc-shell upgrade --channel release' and then 'drakonc-shell upgrade --channel main' to rebuild it. No installation changed.`});
  assert.deepEqual(f.mutations, []);
  assert.deepEqual(f.out, []);
 });
 
 // A relative config home names different folders for `upgrade` and `update`
 // run from different directories, and npm/pnpm resolve it from the neutral cwd.
-test('a relative GENTLE_PI_CONFIG_HOME is refused for a main-channel Shell without mutation', async () => {
+test('a relative DRAKONC_PI_CONFIG_HOME is refused for a main-channel Shell without mutation', async () => {
  const f = fixture({shellVersion: MAIN, configHome: 'relative/config'});
  await assert.rejects(updateSelectedPi(f.input), /ownership cannot locate the main-channel build without an absolute config home/);
  assert.deepEqual(f.mutations, []);
@@ -463,7 +463,7 @@ test('an npm PATH runtime updates the global Pi without its scripts', async () =
 test('an unchanged pnpm result reports the selected Pi without an obsolete release-age warning', async () => {
  const f = fixture({peerAfter: '1.1.0', latest: '1.1.0'});
  assert.equal(await updateSelectedPi(f.input), 0);
- assert.deepEqual(f.out, ['pnpm installed gentle-pi@4.1.0, and the selected Pi is still 1.1.0.']);
+ assert.deepEqual(f.out, ['pnpm installed drakonc-pi@4.1.0, and the selected Pi is still 1.1.0.']);
 });
 
 test('a manager that supplies a different Pi does not silently claim the latest update succeeded', async () => {
@@ -482,13 +482,13 @@ test('every package manager call runs from the neutral directory, never the proj
 test('an unreadable readback is reported, not invented', async () => {
  const f = fixture({readback: false});
  assert.equal(await updateSelectedPi(f.input), 0);
- assert.deepEqual(f.out, ['pnpm installed gentle-pi@4.1.0. The Pi version it now supplies could not be read back; run \'gentle-shell --version\' to check it.']);
+ assert.deepEqual(f.out, ['pnpm installed drakonc-pi@4.1.0. The Pi version it now supplies could not be read back; run \'drakonc-shell --version\' to check it.']);
 });
 
 test('separate aggregated groups do not block the Shell reinstall', async () => {
  const f = fixture({groups: 'separate'});
  assert.equal(await updateSelectedPi(f.input), 0);
- assert.deepEqual(f.mutations, [['add', '-g', 'gentle-pi@4.1.0', '--allow-build=gentle-pi', ...AGE]]);
+ assert.deepEqual(f.mutations, [['add', '-g', 'drakonc-pi@4.1.0', '--allow-build=drakonc-pi', ...AGE]]);
 });
 
 for (const [name, options] of Object.entries({
@@ -508,7 +508,7 @@ for (const [name, options] of Object.entries({
  assert.deepEqual(f.out, []);
 });
 
-for (const [name, options] of Object.entries({'pnpm POSIX shim': {shim: 'posix', runtime: 'path'}, 'Windows .CMD shim': {shim: 'windows', runtime: 'path', windows: true}, 'GENTLE_SHELL_PI shim override': {shim: 'posix', runtime: 'env'}})) test(`a ${name} resolves to the global Pi it runs`, async () => {
+for (const [name, options] of Object.entries({'pnpm POSIX shim': {shim: 'posix', runtime: 'path'}, 'Windows .CMD shim': {shim: 'windows', runtime: 'path', windows: true}, 'DRAKONC_SHELL_PI shim override': {shim: 'posix', runtime: 'env'}})) test(`a ${name} resolves to the global Pi it runs`, async () => {
  const f = fixture(options);
  assert.equal(await updateSelectedPi(f.input), 0);
  assert.deepEqual(f.mutations, [['add', '-g', `${PI}@1.2.0`, ...AGE]]);
@@ -531,31 +531,31 @@ test('an unrelated selected override cannot authorize the adjacent Shell group',
 // line of its own output; pnpm 11 prints ERR_PNPM_* on stdout, npm on stderr.
 test('a failed pnpm install names the pnpm it ran and its ERR_PNPM line from stdout', async () => {
  const f = fixture({shellVersion: MAIN, installFailure: {stderrTail: '',
-  stdout: `Progress: resolved 1\n\u001b[31m[ERR_PNPM_INVALID_VERSION_UNION]\u001b[39m Invalid versions union. Found: "gentle-pi@file:/home/u/x.tgz". Use exact versions only.\nDone\n`}});
- await assert.rejects(updateSelectedPi(f.input), {message: `gentle-shell update: pnpm (/fake/pnpm) could not install ${f.tarball}\n[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union. Found: "gentle-pi@file:~/x.tgz". Use exact versions only.`});
+  stdout: `Progress: resolved 1\n\u001b[31m[ERR_PNPM_INVALID_VERSION_UNION]\u001b[39m Invalid versions union. Found: "drakonc-pi@file:/home/u/x.tgz". Use exact versions only.\nDone\n`}});
+ await assert.rejects(updateSelectedPi(f.input), {message: `drakonc-shell update: pnpm (/fake/pnpm) could not install ${f.tarball}\n[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union. Found: "drakonc-pi@file:~/x.tgz". Use exact versions only.`});
  assert.deepEqual(f.runOptions, [{deadlineMs: 20 * 60_000, cwd: '/neutral', stderrTail: 4096}]);
  assert.deepEqual(f.out, []);
 });
 
 test('a failed npm install shows its stderr error line before stdout', async () => {
  const f = fixture({npm: true, installFailure: {stdout: 'unrelated', stderrTail: 'npm error code EACCES\nnpm error Error: EACCES: permission denied\nnpm error A complete log is in /home/u/.npm/x.log\n'}});
- await assert.rejects(updateSelectedPi(f.input), {message: 'gentle-shell update: npm (/fake/npm) could not install gentle-pi@4.1.0\nnpm error Error: EACCES: permission denied'});
+ await assert.rejects(updateSelectedPi(f.input), {message: 'drakonc-shell update: npm (/fake/npm) could not install drakonc-pi@4.1.0\nnpm error Error: EACCES: permission denied'});
  assert.deepEqual(f.out, []);
 });
 
 test('a failed install without output keeps the single line, naming the command it ran', async () => {
  const f = fixture({installFailure: {}});
- await assert.rejects(updateSelectedPi(f.input), {message: 'gentle-shell update: pnpm (/fake/pnpm) could not install gentle-pi@4.1.0'});
- assert.deepEqual(f.mutations, [['add', '-g', 'gentle-pi@4.1.0', '--allow-build=gentle-pi', ...AGE]]);
+ await assert.rejects(updateSelectedPi(f.input), {message: 'drakonc-shell update: pnpm (/fake/pnpm) could not install drakonc-pi@4.1.0'});
+ assert.deepEqual(f.mutations, [['add', '-g', 'drakonc-pi@4.1.0', '--allow-build=drakonc-pi', ...AGE]]);
 });
 
 test('a stderr warning never hides the ERR_PNPM line pnpm printed on stdout', async () => {
  const f = fixture({installFailure: {stderrTail: '(node:1) [DEP0040] DeprecationWarning: The `punycode` module is deprecated.\n',
   stdout: '[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union.\n'}});
- await assert.rejects(updateSelectedPi(f.input), {message: 'gentle-shell update: pnpm (/fake/pnpm) could not install gentle-pi@4.1.0\n[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union.'});
+ await assert.rejects(updateSelectedPi(f.input), {message: 'drakonc-shell update: pnpm (/fake/pnpm) could not install drakonc-pi@4.1.0\n[ERR_PNPM_INVALID_VERSION_UNION] Invalid versions union.'});
 });
 
 test('without any error line the last stderr line is shown', async () => {
  const f = fixture({installFailure: {stderrTail: 'killed\n', stdout: 'Progress: resolved 1\n'}});
- await assert.rejects(updateSelectedPi(f.input), {message: 'gentle-shell update: pnpm (/fake/pnpm) could not install gentle-pi@4.1.0\nkilled'});
+ await assert.rejects(updateSelectedPi(f.input), {message: 'drakonc-shell update: pnpm (/fake/pnpm) could not install drakonc-pi@4.1.0\nkilled'});
 });

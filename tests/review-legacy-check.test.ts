@@ -18,8 +18,8 @@ function repository(): string {
 
 test("pre-graph legacy review data refuses with the directories to remove and deletes nothing", () => {
 	const repo = repository();
-	const lineages = join(repo, ".git", "gentle-ai", "reviews", "lineages");
-	const locks = join(repo, ".git", "gentle-ai", "reviews", "locks");
+	const lineages = join(repo, ".git", "drakonc-ai", "reviews", "lineages");
+	const locks = join(repo, ".git", "drakonc-ai", "reviews", "locks");
 	mkdirSync(join(lineages, "old"), { recursive: true });
 	mkdirSync(locks, { recursive: true });
 	assert.throws(
@@ -33,6 +33,6 @@ test("pre-graph legacy review data refuses with the directories to remove and de
 test("a repository without legacy review data opens the graph store", () => {
 	const repo = repository();
 	assert.ok(ReviewTransactionStore.forRepository(repo));
-	mkdirSync(join(repo, ".git", "gentle-ai", "reviews", "control"), { recursive: true });
+	mkdirSync(join(repo, ".git", "drakonc-ai", "reviews", "control"), { recursive: true });
 	assert.ok(ReviewTransactionStore.forRepository(repo));
 });

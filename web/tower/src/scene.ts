@@ -29,7 +29,7 @@ const ROLE_LOOK: Record<string, Look> = {
 	worker: { shirt: "#c89a3a", hat: "hard", mustache: false },
 	verify: { shirt: "#d8d4e4", hat: "goggles", coat: true, mustache: false },
 };
-const lookFor = (a: TowerSubagent): Look => ROLE_LOOK[a.role] ?? { shirt: "#8a7a98", mustache: false };
+const lookFor = (a: TowerSubagent): Look => ROLE_LOOK[a.role] ?? { shirt: "#8a94a8", mustache: false };
 function animFor(p: Pick, roomId: RoomId, walking: boolean, reduce: boolean): Anim {
 	if (walking) return "walk";
 	if (reduce) return "idle";
@@ -130,8 +130,8 @@ export class TowerScene {
 	private drawHover() {
 		const g = this.glow.clear(), h = this.hovered, r = h?.rect();
 		if (!h || !r) { this.hovered = undefined; this.tip.hidden = true; this.tipText = ""; return; }
-		if (h.room) g.rect(r.x + .5, r.y + .5, r.w - 1, r.h - 1).fill({ color: 0xffb1dd, alpha: .1 }).stroke({ width: 1, color: 0xff76c3, alpha: .95 });
-		else g.roundRect(r.x - 1.5, r.y - 1.5, r.w + 3, r.h + 3, 2).fill({ color: 0xffb1dd, alpha: .14 }).stroke({ width: 1, color: 0xffb1dd });
+		if (h.room) g.rect(r.x + .5, r.y + .5, r.w - 1, r.h - 1).fill({ color: 0xff8993, alpha: .1 }).stroke({ width: 1, color: 0xff4d5e, alpha: .95 });
+		else g.roundRect(r.x - 1.5, r.y - 1.5, r.w + 3, r.h + 3, 2).fill({ color: 0xff8993, alpha: .14 }).stroke({ width: 1, color: 0xff8993 });
 		const text = h.label(), was = this.tipText;
 		if (!text) { this.tip.hidden = true; this.tipText = ""; return; }
 		if (text === was && !this.tip.hidden) return;
@@ -144,7 +144,7 @@ export class TowerScene {
 	}
 
 	async mount(host: HTMLElement): Promise<void> {
-		await this.app.init({ width: 720, height: 450, background: "#07040d", antialias: false, resolution: 1, autoDensity: false, preference: "webgl" });
+		await this.app.init({ width: 720, height: 450, background: "#0d1526", antialias: false, resolution: 1, autoDensity: false, preference: "webgl" });
 		host.appendChild(this.app.canvas);
 		this.app.stage.addChild(this.bg, this.notes, this.props, this.world, this.door, this.people, this.glow);
 		// A static stage makes passive decoration inherit interactivity, intercepting
@@ -175,7 +175,7 @@ export class TowerScene {
 		const key = `${project.cwd}|${project.sessions.length}|${colors.join()}|${reviewOn}|${Math.round(minHeight)}`;
 		if (key !== this.bgKey) {
 			this.bgKey = key;
-			const { canvas, layout } = paintBackground({ floors: project.sessions.length, colors, projectName: project.id, projectColor: colors[0] ?? "#f095c8", reviewOn, minHeight });
+			const { canvas, layout } = paintBackground({ floors: project.sessions.length, colors, projectName: project.id, projectColor: colors[0] ?? "#ff4d5e", reviewOn, minHeight });
 			this.layout = layout;
 			// Each background is a fresh canvas texture: free the one it replaces (never the shared character textures).
 			const previous = this.bg.texture;
@@ -216,7 +216,7 @@ export class TowerScene {
 		project.sessions.forEach((s, i) => {
 			const y0 = floorTop(L, i);
 			if (!s.basic) {
-				const meter = new Text({ text: `$${s.cost.total.toFixed(2)}`, style: { fontFamily: "Iosevka Term, JetBrains Mono, monospace", fontSize: 10, fontWeight: "800", fill: 0x1a1028 } });
+				const meter = new Text({ text: `$${s.cost.total.toFixed(2)}`, style: { fontFamily: "Iosevka Term, JetBrains Mono, monospace", fontSize: 10, fontWeight: "800", fill: 0x0d1526 } });
 				meter.eventMode = "none"; meter.resolution = 4; meter.x = engine.x + 44; meter.y = y0 + 30;
 				this.world.addChild(meter);
 			}
@@ -229,13 +229,13 @@ export class TowerScene {
 			};
 			// a diagram is pinned on the map corkboard
 			const d = newest("diagram");
-			if (d) { const g = new Graphics(); g.rect(map.x + 44, y0 + 28, 15, 11).fill(0x2a4a8a).rect(map.x + 46, y0 + 30, 4, 3).stroke({ width: .6, color: 0xcfe0ff }).rect(map.x + 52, y0 + 34, 4, 3).stroke({ width: .6, color: 0xcfe0ff }).circle(map.x + 51, y0 + 28, 1.6).fill(0xff76c3); hot(g, d); }
+			if (d) { const g = new Graphics(); g.rect(map.x + 44, y0 + 28, 15, 11).fill(0x2a4a8a).rect(map.x + 46, y0 + 30, 4, 3).stroke({ width: .6, color: 0xcfe0ff }).rect(map.x + 52, y0 + 34, 4, 3).stroke({ width: .6, color: 0xcfe0ff }).circle(map.x + 51, y0 + 28, 1.6).fill(0xff4d5e); hot(g, d); }
 			// a document lies on the workshop desk
 			const doc = newest("doc");
 			if (doc) { const g = new Graphics(); g.rect(shop.x + 66, y0 + 65, 11, 4).fill(0xe0b84a).rect(shop.x + 66, y0 + 67, 11, 1).fill(0xc89a3a); hot(g, doc); }
 			// an image hangs framed on the workshop wall
 			const img = newest("image");
-			if (img) { const g = new Graphics(); g.rect(shop.x + 44, y0 + 28, 13, 11).fill(0x8a6a4a).rect(shop.x + 45, y0 + 29, 11, 9).fill(0xe4dcee).rect(shop.x + 46, y0 + 30, 9, 2).fill(0x2a1838).rect(shop.x + 47, y0 + 35, 7, 2).fill(0xffb1dd); hot(g, img); }
+			if (img) { const g = new Graphics(); g.rect(shop.x + 44, y0 + 28, 13, 11).fill(0x8a6a4a).rect(shop.x + 45, y0 + 29, 11, 9).fill(0xd4deec).rect(shop.x + 46, y0 + 30, 9, 2).fill(0x0d1526).rect(shop.x + 47, y0 + 35, 7, 2).fill(0xff8993); hot(g, img); }
 		});
 	}
 
@@ -260,22 +260,22 @@ export class TowerScene {
 		g.on("pointertap", (e) => { e.stopPropagation(); this.onDoor(floor); });
 		this.door.addChild(g);
 		if (mode === "normal" || mode === "auto") {
-			const b = new AnimatedSprite(frames({ shirt: "#1e1828", orch: true }, this.reduce ? "idle" : "idle"));
+			const b = new AnimatedSprite(frames({ shirt: "#141e30", orch: true }, this.reduce ? "idle" : "idle"));
 			b.anchor.set(.5, 1); b.x = dx + 15; b.y = dy + 2; b.animationSpeed = FPS.idle / 60; if (!this.reduce) b.play();
 			this.hot(b, label); b.on("pointertap", (e) => { e.stopPropagation(); this.onDoor(floor); });
 			this.door.addChild(b);
 		}
 		const sign = mode === "yolo" ? "BRB" : mode === "super-yolo" ? "OPEN" : "";
 		if (sign) {
-			const t = new Text({ text: sign, style: { fontFamily: "Iosevka Term, JetBrains Mono, monospace", fontSize: mode === "yolo" ? 8 : 11, fontWeight: "800", fill: mode === "yolo" ? 0x1a1028 : 0xff718f, dropShadow: mode === "yolo" ? undefined : { color: 0xff718f, blur: 6, distance: 0, alpha: 1, angle: 0 } } });
+			const t = new Text({ text: sign, style: { fontFamily: "Iosevka Term, JetBrains Mono, monospace", fontSize: mode === "yolo" ? 8 : 11, fontWeight: "800", fill: mode === "yolo" ? 0x0d1526 : 0xff4d5e, dropShadow: mode === "yolo" ? undefined : { color: 0xff4d5e, blur: 6, distance: 0, alpha: 1, angle: 0 } } });
 			t.eventMode = "none"; t.resolution = 4;
-			if (mode === "yolo") { const plate = new Graphics().rect(dx + 4, dy - 22, 22, 10).fill(0xe4dcee); plate.eventMode = "none"; this.door.addChild(plate); t.x = dx + 7; t.y = dy - 21; }
+			if (mode === "yolo") { const plate = new Graphics().rect(dx + 4, dy - 22, 22, 10).fill(0xd4deec); plate.eventMode = "none"; this.door.addChild(plate); t.x = dx + 7; t.y = dy - 21; }
 			else { t.x = dx - 4; t.y = L.lobby - 6; }
 			this.door.addChild(t);
 		}
 	}
 
-	/** The MAP corkboard notes are the floor's tasks: tick when done, pink pin now, amber pin blocked. */
+	/** The MAP corkboard notes are the floor's tasks: tick when done, red pin now, amber pin blocked. */
 	private drawNotes(project: Project, L: Layout) {
 		const g = this.notes.clear(), map = room("map");
 		project.sessions.forEach((s, i) => {
@@ -285,7 +285,7 @@ export class TowerScene {
 				g.rect(x, y, 8, 8).fill(t.status === "done" ? 0xe8f4ec : t.status === "pending" ? 0xd8d0c4 : 0xf6eff3);
 				g.rect(x + 1, y + 3, 6, 1).fill(0x9a8aa0).rect(x + 1, y + 5, 4, 1).fill(0x9a8aa0);
 				if (t.status === "done") g.moveTo(x + 1.5, y + 4.5).lineTo(x + 3.5, y + 6.5).lineTo(x + 7, y + 1.5).stroke({ width: 1.2, color: 0x2a8a5a });
-				const pin = t.status === "in_progress" ? 0xff76c3 : t.status === "blocked" ? 0xe0c27a : t.status === "done" ? 0x5a9a6a : 0x8a7a8a;
+				const pin = t.status === "in_progress" ? 0xff4d5e : t.status === "blocked" ? 0xe0c27a : t.status === "done" ? 0x5a9a6a : 0x8a94a8;
 				g.circle(x + 4, y, 1.6).fill(pin);
 			});
 		});

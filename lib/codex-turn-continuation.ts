@@ -31,7 +31,7 @@ export function trackCodexTurnContinuation(pi: ExtensionAPI) {
 		// A bare assistant tail needs a model-visible entry for Pi to continue.
 		return {
 			entries: [...event.entries, {
-				type: "custom_message", customType: "gentle-pi.codex-turn-continuation",
+				type: "custom_message", customType: "drakonc-pi.codex-turn-continuation",
 				content: "Continue the current turn within the existing instructions.", display: false,
 			}],
 			continue: true,

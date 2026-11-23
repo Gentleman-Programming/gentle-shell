@@ -23,13 +23,13 @@ const { AssistantMessageComponent } = await hostImport("modes/interactive/compon
 const { createChatViewport } = await hostImport("modes/interactive/chat-viewport.js");
 const loader = createJiti(import.meta.url, { moduleCache: false, fsCache: false, virtualModules: VIRTUAL_MODULES, tryNative: false });
 const source = (path) => loader.import(resolve(config.root, path));
-const shell = await source("extensions/gentle-shell.ts");
+const shell = await source("extensions/drakonc-shell.ts");
 const quiet = await source("extensions/quiet-tools.ts");
 const bar = await source("lib/shell-bar.ts");
 const sidebar = await source("lib/shell-sidebar.ts");
 const layout = await source("lib/shell-sidebar-layout.ts");
 const cards = await source("lib/shell-card.ts");
-assert.equal(Object.getPrototypeOf(shell.GentlePromptEditor.prototype), pi.CustomEditor.prototype, "editor must extend this exact host class");
+assert.equal(Object.getPrototypeOf(shell.DrakoncPromptEditor.prototype), pi.CustomEditor.prototype, "editor must extend this exact host class");
 const memory = () => Object.fromEntries(Object.entries(process.memoryUsage()).map(([key, bytes]) => [key, bytes / 1024 / 1024]));
 const digest = (lines) => createHash("sha256").update(lines.join("\n")).digest("hex");
 const usage = { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 120, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 } };
@@ -59,7 +59,7 @@ function fixture(spec, live = false) {
 	const api = { getThinkingLevel: () => "high" };
 	const footerData = { getGitBranch: () => "performance", getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} };
 	let clock = 0;
-	const editor = new shell.GentlePromptEditor(tui, nativeTheme.getEditorTheme(), new KeybindingsManager(), {
+	const editor = new shell.DrakoncPromptEditor(tui, nativeTheme.getEditorTheme(), new KeybindingsManager(), {
 		...theme, pending: () => false, now: () => live ? Date.now() : clock, doubleEscCancelEnabled: () => false,
 		dispatchQueuedText() {}, requestRender() { counts.requests++; if (live) tui.requestRender(); },
 	});

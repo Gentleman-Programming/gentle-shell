@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
-import { HERDR_REPORTER_ENV } from "./gentle-shell-launcher.ts";
+import { HERDR_REPORTER_ENV } from "./drakonc-shell-launcher.ts";
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
@@ -129,13 +129,13 @@ export function herdrDetected(env: NodeJS.ProcessEnv): boolean {
 	return env.HERDR_ENV === "1" && !!env.HERDR_PANE_ID?.trim() && !!env.HERDR_SOCKET_PATH?.trim();
 }
 
-/** Read-only /gentle:doctor guidance; empty outside Herdr. Never touches Herdr config. */
+/** Read-only /drakonc:doctor guidance; empty outside Herdr. Never touches Herdr config. */
 export function herdrSetupHint(
 	env: NodeJS.ProcessEnv,
 	session: { interactive: boolean; isSocket: (path: string) => boolean },
 ): string[] {
 	if (!herdrDetected(env)) return [];
-	const inactive = env.GENTLE_PI_AGENTS_CHILD === "1" ? "Gentle Agents child session"
+	const inactive = env.DRAKONC_PI_AGENTS_CHILD === "1" ? "Drakonc Agents child session"
 		: !session.interactive ? "requires the interactive Pi TUI"
 		: !session.isSocket(env.HERDR_SOCKET_PATH!) ? "HERDR_SOCKET_PATH is not a Unix socket" : undefined;
 	return [
@@ -143,21 +143,21 @@ export function herdrSetupHint(
 		inactive ? `warn: Herdr task-summary publishing inactive: ${inactive}` : "pass: Herdr task-summary publishing active",
 		"info: Herdr's default sidebar does not show task titles; add these two rows to the Agents sidebar rows in your Herdr config: ['$summary'], ['$summary2']",
 		"info: Sidebar rows belong to the config of the Herdr client that displays the session, including when Pi runs over SSH",
-		"info: After editing, reload or restart Herdr; Gentle Shell never changes Herdr config",
-		"info: Details: https://github.com/Gentleman-Programming/gentle-shell/blob/main/docs/readme-reference.md#herdr-active-work-summary",
+		"info: After editing, reload or restart Herdr; Drakonc Shell never changes Herdr config",
+		"info: Details: https://github.com/Drakoncman-Programming/drakonc-shell/blob/main/docs/readme-reference.md#herdr-active-work-summary",
 	];
 }
 
-/** The agent label this pane reports to Herdr: Gentle Shell's own, or Herdr's Pi bridge. */
-export function herdrAgentLabel(env: NodeJS.ProcessEnv): "gentle-shell" | "pi" {
-	return env[HERDR_REPORTER_ENV] === "1" ? "gentle-shell" : "pi";
+/** The agent label this pane reports to Herdr: Drakonc Shell's own, or Herdr's Pi bridge. */
+export function herdrAgentLabel(env: NodeJS.ProcessEnv): "drakonc-shell" | "pi" {
+	return env[HERDR_REPORTER_ENV] === "1" ? "drakonc-shell" : "pi";
 }
 
 export function metadataArgs(pane: string, summary: string | null, seq: number, agent = "pi"): string[] {
 	const rows = summary?.split("\n") ?? [];
 	const tokens = ["summary", "summary2"].flatMap((token, index) => rows[index]
 		? ["--token", `${token}=${rows[index]}`] : ["--clear-token", token]);
-	return ["pane", "report-metadata", pane, "--source", "gentle:activity", "--agent", agent,
+	return ["pane", "report-metadata", pane, "--source", "drakonc:activity", "--agent", agent,
 		"--seq", String(seq), "--ttl-ms", "30000", ...tokens];
 }
 

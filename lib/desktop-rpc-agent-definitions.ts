@@ -1,4 +1,4 @@
-// Gentle Desktop agent-definitions slice: the pure contract shared by the
+// Drakonc Desktop agent-definitions slice: the pure contract shared by the
 // Desktop bridge (`lib/desktop-agent-definitions-service.ts`) and its reader.
 //
 // The data comes from the existing owners, unchanged: `discoverAgents` and

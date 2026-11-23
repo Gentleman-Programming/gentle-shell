@@ -126,11 +126,11 @@ test("choice prompts record the effective free-text flag: open by default, close
 });
 
 test("interactive RPC answers use the same dialogs without extra questions", async (t) => {
-	const previous = process.env.GENTLE_SHELL_INTERACTIVE_HOST;
-	process.env.GENTLE_SHELL_INTERACTIVE_HOST = "1";
+	const previous = process.env.DRAKONC_SHELL_INTERACTIVE_HOST;
+	process.env.DRAKONC_SHELL_INTERACTIVE_HOST = "1";
 	t.after(() => {
-		if (previous === undefined) delete process.env.GENTLE_SHELL_INTERACTIVE_HOST;
-		else process.env.GENTLE_SHELL_INTERACTIVE_HOST = previous;
+		if (previous === undefined) delete process.env.DRAKONC_SHELL_INTERACTIVE_HOST;
+		else process.env.DRAKONC_SHELL_INTERACTIVE_HOST = previous;
 	});
 	let calls = 0;
 	const { ctx: base } = context(undefined);
@@ -141,7 +141,7 @@ test("interactive RPC answers use the same dialogs without extra questions", asy
 	await tool(askUserQuestion)("question", { questions }, undefined, undefined, ctx);
 	assert.equal(calls, 2);
 	assert.equal(receipts.length, 2);
-	delete process.env.GENTLE_SHELL_INTERACTIVE_HOST;
+	delete process.env.DRAKONC_SHELL_INTERACTIVE_HOST;
 	await assert.rejects(tool(askUserChoice)("plain-rpc", params, undefined, undefined, ctx), /unavailable/);
 	await tool(askUserQuestion)("plain-rpc", { questions }, undefined, undefined, ctx);
 	assert.equal(receipts.length, 2);

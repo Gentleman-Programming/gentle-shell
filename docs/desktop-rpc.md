@@ -1,26 +1,26 @@
-# Gentle Desktop RPC
+# Drakonc Desktop RPC
 
-Gentle Shell exposes a structured control channel for Gentle Desktop without changing or patching `pi-coding-agent`. It uses Pi's public extension-command and Extension UI RPC mechanisms.
+Drakonc Shell exposes a structured control channel for Drakonc Desktop without changing or patching `pi-coding-agent`. It uses Pi's public extension-command and Extension UI RPC mechanisms.
 
 ## Activation
 
 Start Pi in RPC mode with the interactive-host marker:
 
 ```sh
-GENTLE_SHELL_INTERACTIVE_HOST=1 pi --mode rpc
+DRAKONC_SHELL_INTERACTIVE_HOST=1 pi --mode rpc
 ```
 
 The channel is inactive in the TUI and in headless RPC children. It does not register an agent-callable tool.
 
 ## Transport
 
-Desktop sends an ordinary Pi `prompt` command. Its `message` contains `/gentle:desktop` followed by one JSON request:
+Desktop sends an ordinary Pi `prompt` command. Its `message` contains `/drakonc:desktop` followed by one JSON request:
 
 ```json
 {
   "id": "pi-42",
   "type": "prompt",
-  "message": "/gentle:desktop {\"schema\":\"gentle-shell.desktop-rpc/v1\",\"requestId\":\"desktop-42\",\"method\":\"capabilities\",\"params\":{}}"
+  "message": "/drakonc:desktop {\"schema\":\"drakonc-shell.desktop-rpc/v1\",\"requestId\":\"desktop-42\",\"method\":\"capabilities\",\"params\":{}}"
 }
 ```
 
@@ -36,7 +36,7 @@ Pi's response to this command only reports prompt disposition:
 }
 ```
 
-The domain response arrives independently as an `extension_ui_request` with `method: "setWidget"`, `widgetKey: "gentle-desktop-rpc"`, and one JSON string in `widgetLines`. Its `requestId` correlates it with the Desktop request, not with the outer Pi prompt ID.
+The domain response arrives independently as an `extension_ui_request` with `method: "setWidget"`, `widgetKey: "drakonc-desktop-rpc"`, and one JSON string in `widgetLines`. Its `requestId` correlates it with the Desktop request, not with the outer Pi prompt ID.
 
 Registered extension commands are consumed by Pi. The real-runtime maintainer probe also verifies that this transport leaves `get_messages` empty rather than adding control traffic to the conversation.
 
@@ -44,7 +44,7 @@ Registered extension commands are consumed by Pi. The real-runtime maintainer pr
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "requestId": "desktop-42",
   "method": "get_snapshot",
   "params": {}
@@ -59,15 +59,15 @@ Returns the currently implemented contract; clients must not infer support from 
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
-  "command": "gentle:desktop",
-  "widget": "gentle-desktop-rpc",
+  "schema": "drakonc-shell.desktop-rpc/v1",
+  "command": "drakonc:desktop",
+  "widget": "drakonc-desktop-rpc",
   "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials"],
   "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "session_snapshot"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The agent-definitions slice advertises exactly its one read method and no event; editing definitions stays a file edit. The package-status slice advertises exactly its one read method and no event; `/gentle:doctor` stays terminal-only. The background-subagents slice advertises exactly its read and change methods and no event; every answer carries the state. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), [Agent definitions limits](#agent-definitions-limits), [Status limits](#status-limits), and [Background subagents limits](#background-subagents-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `drakonc_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/drakonc-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The agent-definitions slice advertises exactly its one read method and no event; editing definitions stays a file edit. The package-status slice advertises exactly its one read method and no event; `/drakonc:doctor` stays terminal-only. The background-subagents slice advertises exactly its read and change methods and no event; every answer carries the state. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), [Agent definitions limits](#agent-definitions-limits), [Status limits](#status-limits), and [Background subagents limits](#background-subagents-limits).
 
 ### `get_snapshot`
 
@@ -75,7 +75,7 @@ Returns the current event sequence and a bounded state projection:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "sequence": 0,
   "state": {
     "config": {
@@ -101,11 +101,11 @@ This snapshot does not project permission state: use `get_permission_mode` for t
 
 #### Session sections
 
-`get_snapshot` accepts one optional param, `sections`: the session state the TUI sidebar and the Herdr feed show, read live from the feed owner's projection (`buildDesktopFeedSnapshot`, schema `gentle-shell.desktop-feed/v1`) through an in-process seam, never from the feed's file.
+`get_snapshot` accepts one optional param, `sections`: the session state the TUI sidebar and the Herdr feed show, read live from the feed owner's projection (`buildDesktopFeedSnapshot`, schema `drakonc-shell.desktop-feed/v1`) through an in-process seam, never from the feed's file.
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "requestId": "desktop-43",
   "method": "get_snapshot",
   "params": { "sections": ["todo", "changes", "activity"] }
@@ -116,7 +116,7 @@ Without a `sections` key the request is the legacy read above, byte-for-byte (ot
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "sequence": 4,
   "state": {
     "config": { "stores": ["…as above…"] },
@@ -134,7 +134,7 @@ Without a `sections` key the request is the legacy read above, byte-for-byte (ot
 }
 ```
 
-Each section is the feed's own shape (see `DesktopFeedSnapshot` in `lib/desktop-feed.ts`) with two path-free changes: `project` is `{ "name", "branch", "dirty" }`, where `name` is the basename of the working directory (`null` for a filesystem root such as `/` or a drive root such as `C:\`), and in `changes` every worktree `root` is an opaque, stable label (`root-` plus 12 hex characters) while every file carries a `path` relative to its worktree plus that worktree's `root` label (`null`, with the bare file name, for a path no worktree holds). Windows-style roots (a drive letter or backslashes) match their files case- and separator-insensitively; POSIX roots match case-sensitively. A worktree whose root is `/` or a bare drive gets `root: null` and never relativizes a path: its files cross as bare file names with `root: null`. A section the session has nothing for is `null`, as in the feed (`changes` before the first scan, `review` before a review, `pendingQuestion` with no open question). When the feed is not running for this session (the extension is not loaded, the process is not Gentle Shell, or the session is not live) the answer is `session_unavailable`; `get_snapshot` without `sections` is unaffected. A read never emits an event.
+Each section is the feed's own shape (see `DesktopFeedSnapshot` in `lib/desktop-feed.ts`) with two path-free changes: `project` is `{ "name", "branch", "dirty" }`, where `name` is the basename of the working directory (`null` for a filesystem root such as `/` or a drive root such as `C:\`), and in `changes` every worktree `root` is an opaque, stable label (`root-` plus 12 hex characters) while every file carries a `path` relative to its worktree plus that worktree's `root` label (`null`, with the bare file name, for a path no worktree holds). Windows-style roots (a drive letter or backslashes) match their files case- and separator-insensitively; POSIX roots match case-sensitively. A worktree whose root is `/` or a bare drive gets `root: null` and never relativizes a path: its files cross as bare file names with `root: null`. A section the session has nothing for is `null`, as in the feed (`changes` before the first scan, `review` before a review, `pendingQuestion` with no open question). When the feed is not running for this session (the extension is not loaded, the process is not Drakonc Shell, or the session is not live) the answer is `session_unavailable`; `get_snapshot` without `sections` is unaffected. A read never emits an event.
 
 ### `get_config`
 
@@ -142,7 +142,7 @@ Reads one existing configuration store through the owner that already reads it. 
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "requestId": "desktop-46",
   "method": "get_config",
   "params": { "store": "profiles" }
@@ -158,12 +158,12 @@ Any other key — including `scope`, `path`, `file`, or `physical_path` — is r
 | `store` | Owner reader | `scope` | `readOnly` | Content |
 | --- | --- | --- | --- | --- |
 | `profiles` | `readProfilesFileResult` over `<configHome>/profiles.json` | `global` | `false` | Normalized `AgentProfilesFile`: `kind`, `version`, optional `active`, `profiles`, optional `workflow`. Writable — see [`set_config`](#set_config). |
-| `models` | `readSavedModelConfig` over `<configHome>/models.json` + `<cwd>/.pi/gentle-ai/models.json` | `global+project` | `true` | Saved routing map, global winning per agent, kept to safe agent keys. |
+| `models` | `readSavedModelConfig` over `<configHome>/models.json` + `<cwd>/.pi/drakonc-ai/models.json` | `global+project` | `true` | Saved routing map, global winning per agent, kept to safe agent keys. |
 | `profile_fallbacks` | `readFallbacksFile` over `<configHome>/profile-fallbacks.json` | `global` | `false` | Normalized `FallbacksFile`: per-profile, per-agent ordered chains. Writable — see [`set_config`](#set_config). |
 | `subagents` | `parseAgentsConfig` over `<agentHome>/subagents.json` + `<cwd>/.pi/subagents.json` | `global+project` | `true` | Normalized `AgentsConfig` the runtime would launch with. A layer that cannot be parsed is skipped and the remaining layer still merges, exactly like the runtime reader. |
 | `pins` | `readProfilePinStatus` + `evaluateProfilePin` over the local pin and the repo declaration | `local+repo` | `false` | `resolved`, the winning layer and profile, plus the `invalid` and `stale` layers. Writable per layer — see [`set_config`](#set_config). |
-| `managed_assets` | `readManagedAssetsManifestResult` over `<agentHome>/gentle-ai/managed-assets.json` | `global` | `true` | The installer's ownership manifest (`schemaVersion`, `assets`), filtered to ownership-shaped entries: relative asset paths below the agent home and 64-hex sha256 digests. Anything else is omitted, never echoed. |
-| `persona` | `readPersonaLayer` + `resolvePersonaMode` over `<configHome>/persona.json` + `<cwd>/.pi/gentle-ai/persona.json` | `global+project` | `false` | `{ mode }`: the persona in effect, the project layer winning. |
+| `managed_assets` | `readManagedAssetsManifestResult` over `<agentHome>/drakonc-ai/managed-assets.json` | `global` | `true` | The installer's ownership manifest (`schemaVersion`, `assets`), filtered to ownership-shaped entries: relative asset paths below the agent home and 64-hex sha256 digests. Anything else is omitted, never echoed. |
+| `persona` | `readPersonaLayer` + `resolvePersonaMode` over `<configHome>/persona.json` + `<cwd>/.pi/drakonc-ai/persona.json` | `global+project` | `false` | `{ mode }`: the persona in effect, the project layer winning. |
 | `banner` | `readBannerConfigSync` over `<configHome>/banner.json` | `global` | `false` | `{ showRose, showTextLogo, color }`. |
 | `notifications` | `parseNotificationSettingsFile` over `<configHome>/notifications.json` | `global` | `false` | The validated settings without `schema`, every `file:` sound replaced by `"file"`. |
 
@@ -171,7 +171,7 @@ Success:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-46",
   "ok": true,
@@ -182,7 +182,7 @@ Success:
     "status": "ok",
     "revision": "sha256:1f0c8c0f5bd34a1e27f4ba6d0f9c2f5b",
     "value": {
-      "kind": "gentle-pi.agent_model_profiles",
+      "kind": "drakonc-pi.agent_model_profiles",
       "version": 1,
       "active": "team",
       "profiles": { "team": { "explore": { "model": "anthropic/claude-sonnet-4" } } }
@@ -209,8 +209,8 @@ Success:
 `status` answers for the store; `layers` answers for each file it is assembled from. For a merged store the two are different questions:
 
 - `profiles`, `profile_fallbacks`, `managed_assets`, `banner`, and `notifications` have one layer, so `status` is that layer's status.
-- `persona` has a `global` layer (`persona.json` in the Gentle config home) and a `project` layer (`<cwd>/.pi/gentle-ai/persona.json`); `value` is `{ "mode": "gentleman" | "neutral" }`, the mode in effect (the project layer wins), exactly as the prompt build resolves it.
-- `banner` is `{ showRose, showTextLogo, color }` from `banner.json`. A file without those three valid settings is `invalid` and is never repaired by a read; extra keys are ignored, as the `/gentle:banner` editor ignores them, and a Desktop write keeps only the three settings.
+- `persona` has a `global` layer (`persona.json` in the Drakonc config home) and a `project` layer (`<cwd>/.pi/drakonc-ai/persona.json`); `value` is `{ "mode": "drakoncman" | "neutral" }`, the mode in effect (the project layer wins), exactly as the prompt build resolves it.
+- `banner` is `{ showRose, showTextLogo, color }` from `banner.json`. A file without those three valid settings is `invalid` and is never repaired by a read; extra keys are ignored, as the `/drakonc:banner` editor ignores them, and a Desktop write keeps only the three settings.
 - `notifications` is the owner's validated `notifications.json` without its `schema` key. Every `file:` sound is replaced by the marker `"file"`, so no sound path crosses the wire.
 - `subagents` mirrors the runtime reader: a layer that cannot be parsed is skipped and the remaining layer still merges. `status` is `ok` as soon as one layer is usable, and `layers` still names the broken one.
 - `models` keeps the owner's merge rule, which rejects the saved routing when a layer it reads is malformed; there `status` is `invalid` even if the other layer is fine.
@@ -237,7 +237,7 @@ Missing and malformed stores are reported, never repaired:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-47",
   "ok": true,
@@ -297,8 +297,8 @@ A write target is one file, not one store, with one exception: `persona`'s `glob
 | --- | --- | --- |
 | `profiles` | `global` | `<configHome>/profiles.json` |
 | `profile_fallbacks` | `global` | `<configHome>/profile-fallbacks.json` |
-| `pins` | `local`, `repo` | `<git-common-dir>/gentle-ai/profile-pin.json`, `<worktree-root>/.pi/gentle-ai/profile.json` |
-| `persona` | `global` | `<configHome>/persona.json`, plus `<cwd>/.pi/gentle-ai/persona.json` when it already exists |
+| `pins` | `local`, `repo` | `<git-common-dir>/drakonc-ai/profile-pin.json`, `<worktree-root>/.pi/drakonc-ai/profile.json` |
+| `persona` | `global` | `<configHome>/persona.json`, plus `<cwd>/.pi/drakonc-ai/persona.json` when it already exists |
 | `banner` | `global` | `<configHome>/banner.json` |
 | `notifications` | `global` | `<configHome>/notifications.json` |
 
@@ -328,13 +328,13 @@ Writes one existing, owner-maintained store. Desktop names a store and, for `pin
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "requestId": "desktop-48",
   "method": "set_config",
   "params": {
     "store": "profiles",
     "data": {
-      "kind": "gentle-pi.agent_model_profiles",
+      "kind": "drakonc-pi.agent_model_profiles",
       "version": 1,
       "active": "team",
       "profiles": { "team": { "explore": { "model": "anthropic/claude-sonnet-4" } } }
@@ -358,7 +358,7 @@ The complete `AgentProfilesFile`, exactly as the owner serializes it:
 
 ```json
 {
-  "kind": "gentle-pi.agent_model_profiles",
+  "kind": "drakonc-pi.agent_model_profiles",
   "version": 1,
   "active": "team",
   "profiles": {
@@ -373,7 +373,7 @@ The complete `AgentProfilesFile`, exactly as the owner serializes it:
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `kind` | yes | Exactly `gentle-pi.agent_model_profiles`. |
+| `kind` | yes | Exactly `drakonc-pi.agent_model_profiles`. |
 | `version` | yes | Exactly `1`. |
 | `active` | no | Name of the globally active profile. Omitting it clears the marker. |
 | `profiles` | yes | Profile name → routing map (agent name → `{model?, thinking?, tier?}`). Agent keys and model ids must satisfy the owner's safe-key policy. |
@@ -385,7 +385,7 @@ The complete `FallbacksFile`, exactly as the owner normalizes it:
 
 ```json
 {
-  "kind": "gentle-pi.profile_model_fallbacks",
+  "kind": "drakonc-pi.profile_model_fallbacks",
   "version": 1,
   "profiles": {
     "team": {
@@ -435,13 +435,13 @@ The checks below run in this order, and the first one that fails answers the req
 8. **Owner write** (`write_failed`): if the target already holds exactly this content the request is a no-op — nothing is written, `changed` is `false`, and no event is emitted; identical content is never re-serialized, so its bytes and mtime stay untouched, and a clear of an already-absent layer is the same no-op. Otherwise the owner's validated atomic writer performs the change (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`, or `clearProfilePinSync` — the writers go through a `0600` sibling temp file and a rename; the clear unlinks only a file that exists). If that writer throws, the answer is `write_failed` with a fixed message, no path, no OS code, no event, and the store left exactly as the owner's cleanup found it.
 9. **Report**: the store is re-read and the response reports the result.
 
-Steps 7–8 run in one synchronous block, with no `await` between the check and the rename or unlink. Pi dispatches Desktop prompts concurrently, but only an `await` can interleave another request, so **within this process** two `set_config` calls cannot both pass the check with the same `expectedRevision` — the second sees the first's revision and answers `revision_conflict`. This is not a cross-process transaction: there is no lock and no OS-level compare-and-swap, so another `pi` process (or `/gentle:profiles`, or the installer) can still write between the check and the rename. `expectedRevision` narrows that window; it does not remove it.
+Steps 7–8 run in one synchronous block, with no `await` between the check and the rename or unlink. Pi dispatches Desktop prompts concurrently, but only an `await` can interleave another request, so **within this process** two `set_config` calls cannot both pass the check with the same `expectedRevision` — the second sees the first's revision and answers `revision_conflict`. This is not a cross-process transaction: there is no lock and no OS-level compare-and-swap, so another `pi` process (or `/drakonc:profiles`, or the installer) can still write between the check and the rename. `expectedRevision` narrows that window; it does not remove it.
 
 #### Success
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-48",
   "ok": true,
@@ -452,7 +452,7 @@ Steps 7–8 run in one synchronous block, with no `await` between the check and 
     "status": "ok",
     "revision": "sha256:1c8065f530f01fb3c8e1dc33a2001b63",
     "value": {
-      "kind": "gentle-pi.agent_model_profiles",
+      "kind": "drakonc-pi.agent_model_profiles",
       "version": 1,
       "active": "team",
       "profiles": { "team": { "explore": { "model": "anthropic/claude-sonnet-4" } } }
@@ -480,7 +480,7 @@ Every value is re-read from the owner after the attempt, never an echo of `data`
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-49",
   "ok": false,
@@ -497,12 +497,12 @@ Reads the live permission owner. Params must be an empty object. A read has no e
 The owner initializes a session lazily and this read is one of the entry points that does it. The first permission call in a session (a read or a set) resolves the session identity and pins this session's live mode to the trusted default in effect at that moment; that is why a read can be the call that materializes the session's mode. Later default changes therefore affect new sessions, not the one already initialized.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-43", "method": "get_permission_mode", "params": {} }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-43", "method": "get_permission_mode", "params": {} }
 ```
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-43",
   "ok": true,
@@ -514,11 +514,11 @@ The owner initializes a session lazily and this read is one of the entry points 
 
 ### `set_permission_mode`
 
-Applies a session mode immediately through the existing permission owner (`YoloSessionController`). No restart, no reload, and no separate store: this is the same controller that answers `/gentle:mode` and `/gentle:yolo`.
+Applies a session mode immediately through the existing permission owner (`YoloSessionController`). No restart, no reload, and no separate store: this is the same controller that answers `/drakonc:mode` and `/drakonc:yolo`.
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "requestId": "desktop-44",
   "method": "set_permission_mode",
   "params": { "mode": "auto", "persist": true }
@@ -534,7 +534,7 @@ Only these two params are accepted. Any other key, a non-string `mode`, a non-bo
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-44",
   "ok": true,
@@ -548,7 +548,7 @@ Persistence is delegated to the owner's validated writer, which keeps the file p
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-45",
   "ok": true,
@@ -567,11 +567,11 @@ Persistence is delegated to the owner's validated writer, which keeps the file p
 Reads the subscription usage windows the existing usage owner has already recorded, projected into a safe wire shape. Params are optional: an empty object reads the whole current scope, and `{ "provider": "nan" }` reads exactly one provider.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-50", "method": "get_subscription_usage", "params": {} }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-50", "method": "get_subscription_usage", "params": {} }
 ```
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-51", "method": "get_subscription_usage", "params": { "provider": "openai-codex" } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-51", "method": "get_subscription_usage", "params": { "provider": "openai-codex" } }
 ```
 
 | Param | Required | Type | Meaning |
@@ -584,7 +584,7 @@ Success:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-51",
   "ok": true,
@@ -635,7 +635,7 @@ A header-only provider (Anthropic) is `pending` until its first response, and it
 Delegates a forced refresh to the existing `refreshUsage` closure, with exactly the same API-key and auth logic the panel uses. It never resolves credentials, reads `auth.json`, or implements a second fetcher.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-52", "method": "refresh_subscription_usage", "params": { "provider": "openai-codex" } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-52", "method": "refresh_subscription_usage", "params": { "provider": "openai-codex" } }
 ```
 
 Params are the same optional `provider` filter as `get_subscription_usage`. The response reports the post-refresh statuses in the same `providers` shape. A provider with no fetch endpoint (Anthropic — its windows arrive with provider responses) is a truthful typed no-op: it answers `refresh: "unsupported"` with its current `pending`/`ok` status and performs no fetch and emits no event. No Claude usage endpoint is invented.
@@ -644,7 +644,7 @@ A refreshable provider that is **outside the current session scope** is also a t
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-54",
   "ok": true,
@@ -660,7 +660,7 @@ A refreshable provider that is **outside the current session scope** is also a t
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-53",
   "ok": true,
@@ -679,11 +679,11 @@ When a refresh actually changes a snapshot, the response is followed by exactly 
 Reads the live design canvas state the existing design owner already owns (the single `DesignCanvas` from `createDesignCanvas`, plus `listDesigns`). Params are optional: an empty object omits the tokenized URL, and `{ "includeUrl": true }` explicitly requests it.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-55", "method": "get_design_canvas", "params": {} }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-55", "method": "get_design_canvas", "params": {} }
 ```
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-56", "method": "get_design_canvas", "params": { "includeUrl": true } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-56", "method": "get_design_canvas", "params": { "includeUrl": true } }
 ```
 
 | Param | Required | Type | Meaning |
@@ -696,7 +696,7 @@ Success:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-56",
   "ok": true,
@@ -725,7 +725,7 @@ When the design owner is absent (the extension that owns the canvas is not loade
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-57",
   "ok": false,
@@ -733,14 +733,14 @@ When the design owner is absent (the extension that owns the canvas is not loade
 }
 ```
 
-A request with `includeUrl: true` from a host that is not an interactive RPC host simply gets the same state **without** `url`; the capability is omitted, not rejected. There is no `open`/`stop` method on this channel — those stay the `gentle_design` tool's actions, and this slice only observes their results.
+A request with `includeUrl: true` from a host that is not an interactive RPC host simply gets the same state **without** `url`; the capability is omitted, not rejected. There is no `open`/`stop` method on this channel — those stay the `drakonc_design` tool's actions, and this slice only observes their results.
 
 ### `list_jobs`
 
 Reads the live background jobs the existing jobs owner already owns (the single parent-session `JobRegistry`), projected into the safe wire shape. Params must be an empty object.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-58", "method": "list_jobs", "params": {} }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-58", "method": "list_jobs", "params": {} }
 ```
 
 Only an empty params object is accepted; any other key is rejected as `invalid_request`. A read has no side effect: it never starts, stops, or polls a job, and never emits an event.
@@ -749,7 +749,7 @@ Success:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-58",
   "ok": true,
@@ -780,7 +780,7 @@ No command text, working directory, output path or tail, environment, owner sess
 Stops one running background job through the same owner stop path as `job_stop`: the monitor controller's `cancel` (dropping its timers and pending lines) followed by the registry's `stop` (aborting the process tree). Params are exactly `{ id }`.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-59", "method": "cancel_job", "params": { "id": "job-1" } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-59", "method": "cancel_job", "params": { "id": "job-1" } }
 ```
 
 | Param | Required | Type | Meaning |
@@ -791,7 +791,7 @@ Only the `id` key is accepted; any other key, a non-string or empty `id`, or a r
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-59",
   "ok": true,
@@ -808,7 +808,7 @@ The response is the **actual post-action state**, re-read from the owner — nev
 Reads one background job's bounded output tail from the existing jobs owner: the registry's own in-memory tail (the last 20 lines, at most 2 000 characters per line — `TAIL_LINES`/`MAX_TAIL_LINE_CHARS` in `lib/background-jobs.ts`). It is a pollable read: it never starts, stops, or changes a job, never reads the job's log file, and emits no event. Params are exactly `{ id }`.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-60", "method": "get_job_output", "params": { "id": "job-1" } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-60", "method": "get_job_output", "params": { "id": "job-1" } }
 ```
 
 | Param | Required | Type | Meaning |
@@ -819,7 +819,7 @@ Only the `id` key is accepted; any other key, a non-string or empty `id`, or a `
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-60",
   "ok": true,
@@ -848,7 +848,7 @@ The answer is bounded by construction: at most 20 lines and 40 019 UTF-16 code u
 Reads the live subagents the existing agents owner already owns (the single parent-session `TaskStore`), projected into the safe wire shape. Params must be an empty object.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-60", "method": "list_subagents", "params": {} }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-60", "method": "list_subagents", "params": {} }
 ```
 
 Only an empty params object is accepted; any other key is rejected as `invalid_request`. A read has no side effect: it never starts, stops, or spawns a subagent, and never emits an event.
@@ -857,7 +857,7 @@ Success:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-60",
   "ok": true,
@@ -902,7 +902,7 @@ No prompt text, tool arguments or output, working directory, session path, resul
 Stops one subagent through the same owner stop path the agents panel uses: `runner.cancel`. Params are exactly `{ id }`.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-61", "method": "cancel_subagent", "params": { "id": "m3a1-worker" } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-61", "method": "cancel_subagent", "params": { "id": "m3a1-worker" } }
 ```
 
 | Param | Required | Type | Meaning |
@@ -913,7 +913,7 @@ Only the `id` key is accepted; any other key, a non-string or empty `id`, or a r
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-61",
   "ok": true,
@@ -931,10 +931,10 @@ The response is the **actual post-action state**, re-read from the owner — nev
 
 ### `get_subagent_thread`
 
-Reads one subagent's bounded activity thread from the same `TaskStore` the `gentle-agents.activity/v1` widget projects, so a client can show what a finished or background subagent did. Params are `{ id, sinceVersion? }`.
+Reads one subagent's bounded activity thread from the same `TaskStore` the `drakonc-agents.activity/v1` widget projects, so a client can show what a finished or background subagent did. Params are `{ id, sinceVersion? }`.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-62", "method": "get_subagent_thread", "params": { "id": "m3a1-worker", "sinceVersion": 41 } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-62", "method": "get_subagent_thread", "params": { "id": "m3a1-worker", "sinceVersion": 41 } }
 ```
 
 | Param | Required | Type | Meaning |
@@ -946,7 +946,7 @@ Only the `id` and `sinceVersion` keys are accepted; any other key, a non-string 
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-62",
   "ok": true,
@@ -968,7 +968,7 @@ Only the `id` and `sinceVersion` keys are accepted; any other key, a non-string 
 | --- | --- |
 | `id` | The subagent the thread belongs to. |
 | `version` | The store's thread version. It grows with every change to the thread, including in-place changes to an existing item. |
-| `items` | The thread, oldest first, in the exact projection and bounds of `gentle-agents.activity/v1`: the last 40 items; `text`, `thinking`, and `note` items carry `text` (at most 2 000 characters); `tool` items carry `name`, `args` (the JSON-encoded arguments, at most 500 characters), `running`, `isError`, and `output` (at most 500 characters). A cut field ends with `…`. The list is then bounded to 256 KB by the same halving the widget applies. |
+| `items` | The thread, oldest first, in the exact projection and bounds of `drakonc-agents.activity/v1`: the last 40 items; `text`, `thinking`, and `note` items carry `text` (at most 2 000 characters); `tool` items carry `name`, `args` (the JSON-encoded arguments, at most 500 characters), `running`, `isError`, and `output` (at most 500 characters). A cut field ends with `…`. The list is then bounded to 256 KB by the same halving the widget applies. |
 | `dropped` | How many older items the store itself evicted from this thread (beyond its own 400-item retention). They are gone and no read can return them. |
 | `truncated` | `true` when the store still holds more items than `items` carries (the 40-item window or the byte bound cut older ones). |
 
@@ -978,10 +978,10 @@ Tool args and output are the subagent's own data: they contain whatever its tool
 
 ### `get_usage_stats`
 
-Reads cross-session usage — the same history `/gentle:stats` shows — through the stats owner's own loader and the same `aggregateStats` aggregation the panel runs, so the panel and Desktop never disagree. Params are optional `range` and `scope`.
+Reads cross-session usage — the same history `/drakonc:stats` shows — through the stats owner's own loader and the same `aggregateStats` aggregation the panel runs, so the panel and Desktop never disagree. Params are optional `range` and `scope`.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-61", "method": "get_usage_stats", "params": { "range": "30d", "scope": "all" } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-61", "method": "get_usage_stats", "params": { "range": "30d", "scope": "all" } }
 ```
 
 | Param | Required | Values | Meaning |
@@ -995,7 +995,7 @@ Success:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-61",
   "ok": true,
@@ -1031,10 +1031,10 @@ Model ids, provider ids, and project names longer than 128 characters are cut. N
 
 ### `apply_profile`
 
-Applies one saved profile through the `/gentle:profiles` screen's own actions: `mode: "default"` runs **Make default for new sessions**, and `mode: "session"` runs **Use in this session**. There is no second apply implementation, so the diff confirmation, the pinned-repository rule, and the rollback are the screen's own.
+Applies one saved profile through the `/drakonc:profiles` screen's own actions: `mode: "default"` runs **Make default for new sessions**, and `mode: "session"` runs **Use in this session**. There is no second apply implementation, so the diff confirmation, the pinned-repository rule, and the rollback are the screen's own.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-62", "method": "apply_profile", "params": { "profile": "team", "mode": "default" } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-62", "method": "apply_profile", "params": { "profile": "team", "mode": "default" } }
 ```
 
 | Param | Required | Type | Meaning |
@@ -1049,7 +1049,7 @@ When the screen would ask before writing (`Apply profile "<name>"?`, `Apply empt
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-62",
   "ok": true,
@@ -1076,7 +1076,7 @@ Otherwise the answer is the outcome, with the screen's notices as `notes` (`leve
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-63",
   "ok": true,
@@ -1084,7 +1084,7 @@ Otherwise the answer is the outcome, with the screen's notices as `notes` (`leve
     "profile": "team",
     "mode": "default",
     "status": "applied",
-    "notes": [{ "level": "info", "text": "el Gentleman applied profile \"team\" — 1 agent updated. …" }]
+    "notes": [{ "level": "info", "text": "el Drakoncman applied profile \"team\" — 1 agent updated. …" }]
   }
 }
 ```
@@ -1093,14 +1093,14 @@ Otherwise the answer is the outcome, with the screen's notices as `notes` (`leve
 
 `session` binds the profile to the RPC session through the same session-profile path as the screen's Enter: it writes no global routing, no pins, no materialized stores, and does not change the active marker in `profiles.json`.
 
-Only one apply runs at a time in a Pi process, across sessions. A request that arrives while another apply is running answers `profile_apply_busy` and changes nothing. While an apply runs, `set_config` for `profiles`, `profile_fallbacks`, and `pins` also answers `profile_apply_busy` and writes nothing: the apply rewrites the profiles store (and restores it on failure) from the snapshot it read, so an edit accepted mid-apply would otherwise be lost. Retry after the apply answers. The `/gentle:profiles` screen's Use in this session and Make default (including the save they make first) take the same gate, so they never run alongside a Desktop apply and a Desktop apply answers `profile_apply_busy` while one of them runs.
+Only one apply runs at a time in a Pi process, across sessions. A request that arrives while another apply is running answers `profile_apply_busy` and changes nothing. While an apply runs, `set_config` for `profiles`, `profile_fallbacks`, and `pins` also answers `profile_apply_busy` and writes nothing: the apply rewrites the profiles store (and restores it on failure) from the snapshot it read, so an edit accepted mid-apply would otherwise be lost. Retry after the apply answers. The `/drakonc:profiles` screen's Use in this session and Make default (including the save they make first) take the same gate, so they never run alongside a Desktop apply and a Desktop apply answers `profile_apply_busy` while one of them runs.
 
 ### `list_sessions`
 
 Lists saved Pi sessions through Pi's own session owner (`SessionManager.list` / `listAll`), newest first, so a client can offer a "resume session" list without reading Pi's session files or settings.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-70", "method": "list_sessions", "params": { "scope": "project", "limit": 20 } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-70", "method": "list_sessions", "params": { "scope": "project", "limit": 20 } }
 ```
 
 | Param | Required | Type | Meaning |
@@ -1115,14 +1115,14 @@ Success:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-70",
   "ok": true,
   "data": {
     "sessions": [
-      { "id": "0b5c9a12-7d4e-4f3a-9c1e-2a6b8d0f4e31", "name": "Release prep", "modified": 1793577600000, "messageCount": 14, "firstMessage": "Prepare the 1.4 release notes", "project": "gentle-shell", "current": true },
-      { "id": "5e21f0aa-3b7c-4d18-8f6e-91c2d4b7a053", "modified": 1793491200000, "messageCount": 3, "firstMessage": "Why does the build fail on Windows?", "project": "gentle-shell", "current": false }
+      { "id": "0b5c9a12-7d4e-4f3a-9c1e-2a6b8d0f4e31", "name": "Release prep", "modified": 1793577600000, "messageCount": 14, "firstMessage": "Prepare the 1.4 release notes", "project": "drakonc-shell", "current": true },
+      { "id": "5e21f0aa-3b7c-4d18-8f6e-91c2d4b7a053", "modified": 1793491200000, "messageCount": 3, "firstMessage": "Why does the build fail on Windows?", "project": "drakonc-shell", "current": false }
     ],
     "nextCursor": "WzE3OTM0OTEyMDAwMDAsIjVlMjFmMGFhIl0"
   }
@@ -1146,7 +1146,7 @@ No file path, working directory, parent-session path, or full message text ever 
 Switches this Pi process to a saved session by id. The id is resolved through Pi's owner (`SessionManager.findById`, plus the exact id in Pi's all-sessions listing for `scope: "all"`), and the switch is the command context's own `switchSession`. The session file path never crosses the wire, in either direction.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-71", "method": "switch_session", "params": { "id": "5e21f0aa-3b7c-4d18-8f6e-91c2d4b7a053" } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-71", "method": "switch_session", "params": { "id": "5e21f0aa-3b7c-4d18-8f6e-91c2d4b7a053" } }
 ```
 
 | Param | Required | Type | Meaning |
@@ -1158,7 +1158,7 @@ Any other key (including a Pi-style `sessionPath`), a missing or empty `id`, or 
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-71",
   "ok": true,
@@ -1176,22 +1176,22 @@ Any other key (including a Pi-style `sessionPath`), a missing or empty `id`, or 
 
 ### `get_changes`
 
-Reads the session's uncommitted changes from the same owner `/gentle:changes` uses: the shell's `WorktreeChangesTracker` over the session's roots (its own repository and every worktree its subagents used), each against its `HEAD`, untracked files included. Params must be an empty object.
+Reads the session's uncommitted changes from the same owner `/drakonc:changes` uses: the shell's `WorktreeChangesTracker` over the session's roots (its own repository and every worktree its subagents used), each against its `HEAD`, untracked files included. Params must be an empty object.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-70", "method": "get_changes", "params": {} }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-70", "method": "get_changes", "params": {} }
 ```
 
 Success:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-70",
   "ok": true,
   "data": {
-    "roots": [{ "id": "root-1", "label": "gentle-shell" }],
+    "roots": [{ "id": "root-1", "label": "drakonc-shell" }],
     "files": [
       { "root": "root-1", "path": "lib/shell-changes.ts", "status": "modified", "added": 12, "deleted": 3 },
       { "root": "root-1", "path": "notes.md", "status": "untracked", "added": 4, "deleted": 0 }
@@ -1215,17 +1215,17 @@ Only roots with changes are listed, so a clean session answers `roots: []` and `
 
 ### `get_change_diff`
 
-Reads one changed file's unified diff, the same Git diff the `/gentle:changes` panel shows for it: a tracked file is `git diff HEAD -- <path>`, an untracked file is a diff against an empty file. Unlike the panel, it runs with `--no-textconv --no-ext-diff` and `-c core.fsmonitor=false`, so it never executes a command the repository's configuration names; for a file with a `.gitattributes` textconv driver or an external diff driver the text is Git's plain diff and can differ from the panel. Params are exactly `{ root, path }`, both strings.
+Reads one changed file's unified diff, the same Git diff the `/drakonc:changes` panel shows for it: a tracked file is `git diff HEAD -- <path>`, an untracked file is a diff against an empty file. Unlike the panel, it runs with `--no-textconv --no-ext-diff` and `-c core.fsmonitor=false`, so it never executes a command the repository's configuration names; for a file with a `.gitattributes` textconv driver or an external diff driver the text is Git's plain diff and can differ from the panel. Params are exactly `{ root, path }`, both strings.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-71", "method": "get_change_diff", "params": { "root": "root-1", "path": "notes.md" } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-71", "method": "get_change_diff", "params": { "root": "root-1", "path": "notes.md" } }
 ```
 
 Success:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-71",
   "ok": true,
@@ -1244,17 +1244,17 @@ A diff is file content: it can contain whatever the user's files contain, secret
 
 ### `get_review_mode`
 
-Reads the receipt-driven development (RDD) switch for this session's workspace through the same native review CLI adapter `/gentle:review-mode` uses (`gentle-ai review mode status --json`). It has no side effects and emits no event.
+Reads the receipt-driven development (RDD) switch for this session's workspace through the same native review CLI adapter `/drakonc:review-mode` uses (`drakonc-ai review mode status --json`). It has no side effects and emits no event.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-70", "method": "get_review_mode", "params": {} }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-70", "method": "get_review_mode", "params": {} }
 ```
 
 `params` must be empty; any key is `invalid_request`.
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-70",
   "ok": true,
@@ -1272,14 +1272,14 @@ Reads the receipt-driven development (RDD) switch for this session's workspace t
 | `source` | `default`, `global`, `clone`, `unknown` | Which setting decided `effective`: no setting (on by default), the machine-wide setting, or this repository's setting. |
 | `scopes.global`, `scopes.clone` | `enabled`, `disabled`, `unset`, `unknown` | The stored machine-wide and repository settings. |
 
-A failed, timed-out, or unrecognized read answers `effective: "unknown"` with every other field `unknown`. It fails closed and never guesses. When `gentle-ai` is not installed or does not support the command, the answer is `review_unavailable` instead.
+A failed, timed-out, or unrecognized read answers `effective: "unknown"` with every other field `unknown`. It fails closed and never guesses. When `drakonc-ai` is not installed or does not support the command, the answer is `review_unavailable` instead.
 
 ### `set_review_mode`
 
 Changes the switch. Because the switch is the user's, a change takes two calls: the first answers a confirmation and writes nothing, and only a second call carrying that confirmation's token writes.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-71", "method": "set_review_mode", "params": { "enabled": false, "scope": "global" } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-71", "method": "set_review_mode", "params": { "enabled": false, "scope": "global" } }
 ```
 
 | Param | Required | Type | Meaning |
@@ -1292,7 +1292,7 @@ Any other key or a malformed value is `invalid_request`, rejected before the own
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-71",
   "ok": true,
@@ -1320,7 +1320,7 @@ With a matching token the owner writes the setting, re-reads the switch, and ans
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-72",
   "ok": true,
@@ -1340,10 +1340,10 @@ Only one `set_review_mode` runs at a time in a Pi process. A request that arrive
 
 ### `get_update_status`
 
-Reports whether Gentle Shell, Pi, and Pi's packages have updates, from the sources that already own those answers: Gentle Shell's own channel and version resolution, the release lookup `gentle-shell upgrade` uses, and Pi's own package update check (the one behind its "Package updates are available" notice). The only param is an optional `refresh`.
+Reports whether Drakonc Shell, Pi, and Pi's packages have updates, from the sources that already own those answers: Drakonc Shell's own channel and version resolution, the release lookup `drakonc-shell upgrade` uses, and Pi's own package update check (the one behind its "Package updates are available" notice). The only param is an optional `refresh`.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-71", "method": "get_update_status", "params": { "refresh": true } }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-71", "method": "get_update_status", "params": { "refresh": true } }
 ```
 
 | Param | Required | Values | Meaning |
@@ -1356,15 +1356,15 @@ Success:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-71",
   "ok": true,
   "data": {
     "refreshed": true,
     "offline": false,
-    "gentleShell": { "current": "4.8.0", "latest": "4.9.0", "channel": "release", "state": "update_available", "command": "gentle-shell upgrade", "checkedAt": "2026-11-17T12:00:00.000Z" },
-    "pi": { "current": "1.5.2", "latest": null, "state": "unknown", "command": "gentle-shell update", "checkedAt": null },
+    "drakoncShell": { "current": "4.8.0", "latest": "4.9.0", "channel": "release", "state": "update_available", "command": "drakonc-shell upgrade", "checkedAt": "2026-11-17T12:00:00.000Z" },
+    "pi": { "current": "1.5.2", "latest": null, "state": "unknown", "command": "drakonc-shell update", "checkedAt": null },
     "packages": {
       "available": true,
       "items": [
@@ -1372,7 +1372,7 @@ Success:
         { "name": "github.com/user/repo", "kind": "git", "scope": "project", "current": null, "latest": null, "pinned": true, "state": "skipped" }
       ],
       "truncated": false,
-      "command": "gentle-shell update --extensions",
+      "command": "drakonc-shell update --extensions",
       "checkedAt": "2026-11-17T12:00:00.000Z"
     }
   }
@@ -1383,11 +1383,11 @@ Success:
 | --- | --- |
 | `refreshed` | `true` only when this answer ran the lookups (`refresh: true` and not offline). |
 | `offline` | `PI_OFFLINE` is set (any value). Then nothing is looked up, even with `refresh: true`, and every looked-up item of a refresh answers `unknown`. A plain read still shows earlier answers with their `checkedAt`. |
-| `gentleShell.channel` | `bundled` (a bundled prefix install), `gentle-ai-managed` (gentle-pi loaded as the `npm:gentle-pi` Pi package, the way the Gentle AI managed stack declares it), `main` or `release` (the channel record `gentle-shell upgrade` keeps; no record means `release`), or `unknown` when that record cannot be read. |
-| `gentleShell.latest` | The latest stable `gentle-pi` release; for `main`, the first 12 characters of the latest `main` commit. `null` when unknown. |
-| `gentleShell.command`, `pi.command`, `packages.command` | Fixed text for that kind of install: `gentle-shell upgrade` (`release`, `bundled`), `gentle-shell upgrade --channel main` (`main`), `gentle-shell update --extensions` (`gentle-ai-managed`, and packages), and `gentle-shell update` (Pi). `null` for an `unknown` channel. Never built from user input. |
-| `state` (Gentle Shell, Pi) | `update_available` when the latest version is newer (the launcher's own stable-version comparison; for `main`, the running version does not carry the latest commit), `up_to_date` only when a successful lookup returned exactly the running version, otherwise `unknown`: never looked up, offline, failed, timed out, or not comparable (a prerelease or a newer local build). |
-| `pi.latest` | Only a bundled install can name the latest Pi (its own `publishedPi` lookup). Elsewhere the latest Pi is resolved only through the package manager that owns it while `gentle-shell update` runs, so it stays `null` and `unknown`. |
+| `drakoncShell.channel` | `bundled` (a bundled prefix install), `drakonc-ai-managed` (drakonc-pi loaded as the `npm:drakonc-pi` Pi package, the way the Drakonc AI managed stack declares it), `main` or `release` (the channel record `drakonc-shell upgrade` keeps; no record means `release`), or `unknown` when that record cannot be read. |
+| `drakoncShell.latest` | The latest stable `drakonc-pi` release; for `main`, the first 12 characters of the latest `main` commit. `null` when unknown. |
+| `drakoncShell.command`, `pi.command`, `packages.command` | Fixed text for that kind of install: `drakonc-shell upgrade` (`release`, `bundled`), `drakonc-shell upgrade --channel main` (`main`), `drakonc-shell update --extensions` (`drakonc-ai-managed`, and packages), and `drakonc-shell update` (Pi). `null` for an `unknown` channel. Never built from user input. |
+| `state` (Drakonc Shell, Pi) | `update_available` when the latest version is newer (the launcher's own stable-version comparison; for `main`, the running version does not carry the latest commit), `up_to_date` only when a successful lookup returned exactly the running version, otherwise `unknown`: never looked up, offline, failed, timed out, or not comparable (a prerelease or a newer local build). |
+| `pi.latest` | Only a bundled install can name the latest Pi (its own `publishedPi` lookup). Elsewhere the latest Pi is resolved only through the package manager that owns it while `drakonc-shell update` runs, so it stays `null` and `unknown`. |
 | `packages.items` | One row per configured Pi package (Pi's own listing), in Pi's order, at most 100. `name` is Pi's display name (npm name or `host/path`) or a local package's last path segment; `current` is an installed npm package's version. |
 | `packages.items[].state` | `update_available` when Pi's check reports a newer version; `no_update_reported` when it did not (Pi's check treats a failed lookup like "no update", so this is never claimed as up to date); `skipped` for a package Pi never checks (pinned, local, or not installed); `unknown` when not checked yet, offline, the check failed or timed out, or Pi's parser could not classify the source. |
 | `packages.items[].latest` | Pi's check reports only that a newer version exists, not which one: always `null`. |
@@ -1401,12 +1401,12 @@ No absolute path, raw package source, registry URL, token, command line, or look
 Lists the agent definitions this session can launch, the subagent defaults, and Pi's default orchestrator. It reads the same sources `subagent_list_agents` discovers from, fresh on every call: `<agent home>/agents`, `<agent home>/subagents`, `<cwd>/.pi/agents`, and `<cwd>/.pi/subagents` (a later folder wins a name clash, so a project definition replaces a global one), the global and project `subagents.json`, and the three orchestrator keys of Pi's `settings.json` in the agent home. Params must be an empty object; any key is `invalid_request`, and a malformed request reads nothing. It has no side effects and emits no event.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-90", "method": "list_agent_definitions", "params": {} }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-90", "method": "list_agent_definitions", "params": {} }
 ```
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-90",
   "ok": true,
@@ -1435,22 +1435,22 @@ No file path, prompt body, or problem text crosses the wire. `agent_definitions_
 
 ### `get_status`
 
-Reads the facts `/gentle:status` prints for this session's project, through the status owner in `extensions/gentle-ai.ts` (a versioned owner service, like review). Params must be an empty object; any key is `invalid_request`, and a malformed request never reaches the owner. It has no side effects and emits no event.
+Reads the facts `/drakonc:status` prints for this session's project, through the status owner in `extensions/drakonc-ai.ts` (a versioned owner service, like review). Params must be an empty object; any key is `invalid_request`, and a malformed request never reaches the owner. It has no side effects and emits no event.
 
 ```json
-{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-95", "method": "get_status", "params": {} }
+{ "schema": "drakonc-shell.desktop-rpc/v1", "requestId": "desktop-95", "method": "get_status", "params": {} }
 ```
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-95",
   "ok": true,
   "data": {
     "package": "active",
     "odd": "active",
-    "persona": "gentleman",
+    "persona": "drakoncman",
     "devBinary": { "state": "inactive", "sha256Prefix": null },
     "assets": {
       "delegation": { "stale": 0, "userOverrides": 1, "activeAgentOverrides": 0 },
@@ -1464,24 +1464,24 @@ Reads the facts `/gentle:status` prints for this session's project, through the 
 
 | Field | Meaning |
 | --- | --- |
-| `persona` | The persona in effect: the project `persona.json` wins over the global one; `gentleman` by default. |
-| `devBinary` | The `gentle-ai` dev-binary override: `inactive`, `active` (with the first 16 hex characters of its SHA-256), or `invalid` (declared but unusable). The binary is never run, so no version is reported; `/gentle:status` shows it. |
-| `assets.<owner>.stale` | Managed `delegation` or `review` assets missing from the agent home or different from the packaged copy. `/gentle:install-<owner> --force` refreshes them. |
+| `persona` | The persona in effect: the project `persona.json` wins over the global one; `drakoncman` by default. |
+| `devBinary` | The `drakonc-ai` dev-binary override: `inactive`, `active` (with the first 16 hex characters of its SHA-256), or `invalid` (declared but unusable). The binary is never run, so no version is reported; `/drakonc:status` shows it. |
+| `assets.<owner>.stale` | Managed `delegation` or `review` assets missing from the agent home or different from the packaged copy. `/drakonc:install-<owner> --force` refreshes them. |
 | `assets.<owner>.userOverrides` | Installed files the user replaced; preserved, not drift. |
 | `assets.<owner>.activeAgentOverrides` | Active non-builtin agents that shadow package agents of that owner. |
 | `modelConfig.global` | Whether the global `models.json` exists. |
 | `modelConfig.routing` | The saved model routing: `missing`, `invalid`, or `valid`. Per-agent routing is read with `get_config` (`models`). |
-| `severity` | `warning` exactly when `/gentle:status` warns: invalid routing, an active or invalid dev binary, stale assets, or active agent overrides. |
+| `severity` | `warning` exactly when `/drakonc:status` warns: invalid routing, an active or invalid dev binary, stale assets, or active agent overrides. |
 
 No path, command hint, or display text crosses the wire. `status_unavailable` answers when the session is not bound or was replaced during the read, no owner answers (for example inside a subagent process), or the owner's answer fails validation or throws; its message never carries the failure text.
 
 ### `get_background_subagents`
 
-Reads the background-subagents policy the way `/gentle:background-subagents status` resolves it for this session's project: the project file `.pi/gentle-ai/background-subagents.json`, then the machine-wide file in the Gentle config home, then `GENTLE_PI_BACKGROUND_SUBAGENTS`, then the default `off`. Params must be an empty object. It has no side effects and emits no event.
+Reads the background-subagents policy the way `/drakonc:background-subagents status` resolves it for this session's project: the project file `.pi/drakonc-ai/background-subagents.json`, then the machine-wide file in the Drakonc config home, then `DRAKONC_PI_BACKGROUND_SUBAGENTS`, then the default `off`. Params must be an empty object. It has no side effects and emits no event.
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-96",
   "ok": true,
@@ -1499,7 +1499,7 @@ Reads the background-subagents policy the way `/gentle:background-subagents stat
 
 ### `set_background_subagents`
 
-Writes the machine-wide policy, exactly as `/gentle:background-subagents enable|disable` does. The policy is a user-owned switch, so a change takes two calls, like `set_review_mode`.
+Writes the machine-wide policy, exactly as `/drakonc:background-subagents enable|disable` does. The policy is a user-owned switch, so a change takes two calls, like `set_review_mode`.
 
 | Param | Required | Type | Meaning |
 | --- | --- | --- | --- |
@@ -1514,7 +1514,7 @@ Errors: `invalid_request`; `background_subagents_busy` while another Desktop cha
 
 ### `get_profile_binding`
 
-Reads which profile this session routes its subagents with, through the same rule launches, the status bar, and `/gentle:profiles` use (`resolveSessionProfile`). A binding chosen in the terminal, restored on resume, or inherited at the session's start is reported exactly as a launch would apply it. Params must be an empty object. It writes nothing and emits no event; like the status bar and the Desktop feed, the read can freeze the inherited profile of a session that has not frozen it yet, which is the same freeze its first launch would do.
+Reads which profile this session routes its subagents with, through the same rule launches, the status bar, and `/drakonc:profiles` use (`resolveSessionProfile`). A binding chosen in the terminal, restored on resume, or inherited at the session's start is reported exactly as a launch would apply it. Params must be an empty object. It writes nothing and emits no event; like the status bar and the Desktop feed, the read can freeze the inherited profile of a session that has not frozen it yet, which is the same freeze its first launch would do.
 
 ```json
 { "ok": true, "data": { "kind": "explicit", "profile": "fast", "origin": "session" } }
@@ -1522,7 +1522,7 @@ Reads which profile this session routes its subagents with, through the same rul
 
 | Field | Meaning |
 | --- | --- |
-| `kind` | `explicit` (chosen for this session), `inherited` (the profile the session started with), `follow` (follows the shared layers live, `GENTLE_PI_PROFILE_FOLLOW`), or `live` (a child session reading the layers). |
+| `kind` | `explicit` (chosen for this session), `inherited` (the profile the session started with), `follow` (follows the shared layers live, `DRAKONC_PI_PROFILE_FOLLOW`), or `live` (a child session reading the layers). |
 | `profile` | The profile name, or `null` for the routing without a profile. |
 | `origin` | `session` for an explicit choice; otherwise the layer that supplied it: `local` (the clone pin), `repo` (the repository declaration), or `global`; `null` without a profile. |
 
@@ -1530,7 +1530,7 @@ Errors: `invalid_request` (any param) and `profiles_unavailable` (no session id 
 
 ### `clear_profile_binding`
 
-Runs `/gentle:profiles clear` for this session: the session goes back to the profile it started with, or to the routing without a session profile. Params must be an empty object. It takes the profile apply slot, so it never runs during an `apply_profile`.
+Runs `/drakonc:profiles clear` for this session: the session goes back to the profile it started with, or to the routing without a session profile. Params must be an empty object. It takes the profile apply slot, so it never runs during an `apply_profile`.
 
 ```json
 { "ok": true, "data": { "status": "cleared", "changed": true, "binding": { "kind": "inherited", "profile": null, "origin": null } } }
@@ -1546,7 +1546,7 @@ Lists the providers this session knows models for, and whether each has credenti
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-97",
   "ok": true,
@@ -1585,7 +1585,7 @@ Success:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-42",
   "ok": true,
@@ -1597,7 +1597,7 @@ Failure:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "response",
   "requestId": "desktop-42",
   "ok": false,
@@ -1632,7 +1632,7 @@ Current error codes are `invalid_request`, `unknown_store`, `read_only`, `invali
 | `profile_apply_busy` | An `apply_profile` is still running; returned to a second `apply_profile` and to `set_config` for `profiles`, `profile_fallbacks`, or `pins`. Nothing was written by this request. |
 | `sessions_unavailable` | No Desktop command bound a session context, the context has no session manager, session directory, or `switchSession`, the installed Pi lacks the session owner calls, reading sessions failed, or Pi refused the switch. Nothing was switched. |
 | `session_switching` | A `switch_session` was in flight when this request arrived (or the switch tore the session down while this request waited on an owner). Nothing was done; retry after the switch answers. |
-| `review_unavailable` | The review-mode owner did not answer for this session (extension not loaded, subagent child, or no Desktop command bound a session context), `gentle-ai` is not installed or does not support `review mode`, `set_review_mode` could not read the current state, or a write's outcome is unknown. The message says which; it never carries a path, CLI output, or a command line. |
+| `review_unavailable` | The review-mode owner did not answer for this session (extension not loaded, subagent child, or no Desktop command bound a session context), `drakonc-ai` is not installed or does not support `review mode`, `set_review_mode` could not read the current state, or a write's outcome is unknown. The message says which; it never carries a path, CLI output, or a command line. |
 | `review_mode_busy` | A `set_review_mode` is still running. Nothing was written by this request. |
 | `stats_unavailable` | No sessions root could be read, or the stats owner did not answer for this session (the owning extension is not loaded, or the session changed). Nothing was read. |
 | `not_found` | `cancel_job` or `get_job_output` named a job id, or `cancel_subagent` or `get_subagent_thread` named a subagent id, that does not exist, belongs to another session, or was already evicted by the store; or `switch_session` named an id that does not resolve in the requested scope; or `get_change_diff` named a root and path that are not a file in the owner's current change set. Nothing was stopped, read, or switched. |
@@ -1644,7 +1644,7 @@ Domain events use the same widget channel:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 1,
   "event": "example_event",
@@ -1659,13 +1659,13 @@ The event name above is illustrative; `capabilities` is authoritative for implem
 Emitted in two ways:
 
 - **`source: "desktop"`**: at most once per successful `set_permission_mode`, always after its response line, and never for rejected, unavailable, or no-op requests.
-- **`source: "external"`**: asynchronously, when the session mode or the persisted default changes outside Desktop RPC (for example `/gentle:mode`, `/gentle:mode default`, or `/gentle:yolo`).
+- **`source: "external"`**: asynchronously, when the session mode or the persisted default changes outside Desktop RPC (for example `/drakonc:mode`, `/drakonc:mode default`, or `/drakonc:yolo`).
 
 A Desktop change:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 1,
   "event": "permission_mode_changed",
@@ -1685,7 +1685,7 @@ An external change:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 2,
   "event": "permission_mode_changed",
@@ -1714,13 +1714,13 @@ Observation starts on `session_start` for an interactive RPC host only, and stop
 Emitted in two ways:
 
 - **`source: "desktop"`**: at most once per successful `set_config` that actually changed its target, always after its response line, and never for rejected, unavailable, conflicted, or no-op requests.
-- **`source: "external"`**: asynchronously and best effort, when a store's revision changes outside Desktop RPC (`/gentle:profiles`, an editor saving `profiles.json`, the installer, or another `pi` process).
+- **`source: "external"`**: asynchronously and best effort, when a store's revision changes outside Desktop RPC (`/drakonc:profiles`, an editor saving `profiles.json`, the installer, or another `pi` process).
 
 A Desktop write:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 1,
   "event": "config_changed",
@@ -1741,7 +1741,7 @@ An external change:
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 3,
   "event": "config_changed",
@@ -1757,7 +1757,7 @@ An external change:
 
 `store`, `scope`, `revision`, and `status` match what `get_config` and `get_snapshot` would answer for that store at that moment. There is no `value`, no `writeTarget` or `writeRevision` (an external writer may have touched any layer), and no path; read the store with `get_config` for its content and write targets.
 
-Detection watches the owner files' directories, non-recursively, for an interactive RPC host only: the config home (`profiles.json`, `profile-fallbacks.json`, `models.json`, `persona.json`, `banner.json`, `notifications.json`), the project `.pi/gentle-ai/` directory (`persona.json`), the agent home and its `gentle-ai/` directory (global `subagents.json`, the managed-assets manifest), the session cwd's `.pi/` and `.pi/gentle-ai/` (project `subagents.json` and `models.json`, the `repo` pin), and the Git common dir's `gentle-ai/` (the `local` pin) when the cwd is a resolvable worktree. Only events for those owner file names count. About 250 ms after the last relevant event, every store's revision is recomputed with the same readers `get_config` uses, and an event is emitted only for a store whose revision differs from the last revision this channel reported (a `get_config` answer, a `get_snapshot` projection, a `set_config` answer, or an earlier event). Consequences:
+Detection watches the owner files' directories, non-recursively, for an interactive RPC host only: the config home (`profiles.json`, `profile-fallbacks.json`, `models.json`, `persona.json`, `banner.json`, `notifications.json`), the project `.pi/drakonc-ai/` directory (`persona.json`), the agent home and its `drakonc-ai/` directory (global `subagents.json`, the managed-assets manifest), the session cwd's `.pi/` and `.pi/drakonc-ai/` (project `subagents.json` and `models.json`, the `repo` pin), and the Git common dir's `drakonc-ai/` (the `local` pin) when the cwd is a resolvable worktree. Only events for those owner file names count. About 250 ms after the last relevant event, every store's revision is recomputed with the same readers `get_config` uses, and an event is emitted only for a store whose revision differs from the last revision this channel reported (a `get_config` answer, a `get_snapshot` projection, a `set_config` answer, or an earlier event). Consequences:
 
 - a Desktop `set_config` is never echoed: its response records the resulting revision before the owner's own rename wakes the watcher;
 - reformatting a file, rewriting identical content, or undoing a change inside the window emits nothing, because the revision did not move;
@@ -1765,7 +1765,7 @@ Detection watches the owner files' directories, non-recursively, for an interact
 
 `source` says whether the event answers a Desktop write **to that same store**. A Desktop write can change another store's derived state: for example a `set_config` on `profiles` that drops the profile a pin names makes `pins` stale. The `profiles` change is the `source: "desktop"` event that follows the response; the `pins` change arrives later through the watcher, exactly once, as `source: "external"`.
 
-A directory that does not exist yet (for example a project without `.pi/`, or a fresh `<git-common-dir>/gentle-ai/`) is watched through its nearest existing ancestor, non-recursively and only for the creation of the next path segment. When that segment appears the ancestor watcher is closed and the next level is watched, until the owner directory itself is; each step recomputes once, so a pin that `/gentle:profiles` writes into a new directory raises exactly one event. A watched directory that is later removed reports its stores (now `missing`) and falls back to the same ancestor watching, so recreating it and writing the store again raises one event.
+A directory that does not exist yet (for example a project without `.pi/`, or a fresh `<git-common-dir>/drakonc-ai/`) is watched through its nearest existing ancestor, non-recursively and only for the creation of the next path segment. When that segment appears the ancestor watcher is closed and the next level is watched, until the owner directory itself is; each step recomputes once, so a pin that `/drakonc:profiles` writes into a new directory raises exactly one event. A watched directory that is later removed reports its stores (now `missing`) and falls back to the same ancestor watching, so recreating it and writing the store again raises one event.
 
 When a Desktop command binds a different session cwd, the watchers move with it, and the stores whose layers depend on the cwd (`models`, `subagents`, and `persona` project layers, and `pins`) are re-read at that moment: each one whose revision differs from the last one this channel reported is announced with `source: "external"` and becomes the new baseline, so a later unrelated change never carries stale extra events. If a change was detected but its debounce window had not closed when the cwd moved, every store is re-read instead, so that change is reported rather than dropped with the old watchers.
 
@@ -1780,7 +1780,7 @@ Carries structured subscription-usage snapshots to subscribed Desktop consumers.
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 3,
   "event": "rate_limit",
@@ -1811,11 +1811,11 @@ Each snapshot entry is the same safe projection as `get_subscription_usage` (`pr
 
 ### `design_canvas`
 
-Carries the sanitized post-transition state of the session's design canvas whenever the existing design owner actually opens, refreshes, or stops it. It is emitted for **all** canvas transitions, whether they were initiated by the agent (`gentle_design` tool, `/gentle:design`) or anything else — the bridge subscribes to the owner eagerly, so agent-driven canvas work reaches a connected Desktop app even before any `get_design_canvas` request. There is no parsing of `Design canvas:` text anywhere: the owner emits the structured transition directly, and no event is emitted for a no-op or failed action (a refused slug, a browser that could not open, a server that could not start, or a `stop` with nothing running).
+Carries the sanitized post-transition state of the session's design canvas whenever the existing design owner actually opens, refreshes, or stops it. It is emitted for **all** canvas transitions, whether they were initiated by the agent (`drakonc_design` tool, `/drakonc:design`) or anything else — the bridge subscribes to the owner eagerly, so agent-driven canvas work reaches a connected Desktop app even before any `get_design_canvas` request. There is no parsing of `Design canvas:` text anywhere: the owner emits the structured transition directly, and no event is emitted for a no-op or failed action (a refused slug, a browser that could not open, a server that could not start, or a `stop` with nothing running).
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 2,
   "event": "design_canvas",
@@ -1841,7 +1841,7 @@ Carries the active session's projected background-job list whenever the existing
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 2,
   "event": "jobs_update",
@@ -1861,7 +1861,7 @@ Carries the active session's projected subagent list whenever the existing agent
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 2,
   "event": "agents_update",
@@ -1881,7 +1881,7 @@ Follows an `apply_profile` answer whose `status` is `applied`, after the respons
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 3,
   "event": "profile_applied",
@@ -1889,7 +1889,7 @@ Follows an `apply_profile` answer whose `status` is `applied`, after the respons
 }
 ```
 
-`source` is always `desktop`: an apply from the `/gentle:profiles` screen emits nothing on this channel. `confirmation_required`, `not_applied`, and every error emit nothing. Clients that show profile state should re-read `get_config` for `profiles` after this event.
+`source` is always `desktop`: an apply from the `/drakonc:profiles` screen emits nothing on this channel. `confirmation_required`, `not_applied`, and every error emit nothing. Clients that show profile state should re-read `get_config` for `profiles` after this event.
 
 ### `session_snapshot`
 
@@ -1897,7 +1897,7 @@ Carries the session sections whose content changed since the last `session_snaps
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 5,
   "event": "session_snapshot",
@@ -1909,7 +1909,7 @@ It is emitted when the feed publishes, on the feed's own tiers: within 16 ms for
 
 ### `profile_binding_changed`
 
-Emitted when this session's profile binding changes: a `clear_profile_binding` (`source: "desktop"`), or any other write to the binding store for this session (`source: "external"`): the `/gentle:profiles` screen, an `apply_profile` in session mode, or a resume restoring the record. The data is the new `get_profile_binding` answer plus `source`. Writes for other sessions and writes that leave the answer unchanged emit nothing. The event follows writes to the binding store only: in `follow` and `live` kinds the resolved profile also changes when a pin or the global active profile changes, which is not a binding write, so a client re-reads `get_profile_binding` after `config_changed` on `pins` or `profiles`, and also after its own `get_config` read of those stores (that read records the new revision, so the watcher may then emit no `config_changed` for the same external change).
+Emitted when this session's profile binding changes: a `clear_profile_binding` (`source: "desktop"`), or any other write to the binding store for this session (`source: "external"`): the `/drakonc:profiles` screen, an `apply_profile` in session mode, or a resume restoring the record. The data is the new `get_profile_binding` answer plus `source`. Writes for other sessions and writes that leave the answer unchanged emit nothing. The event follows writes to the binding store only: in `follow` and `live` kinds the resolved profile also changes when a pin or the global active profile changes, which is not a binding write, so a client re-reads `get_profile_binding` after `config_changed` on `pins` or `profiles`, and also after its own `get_config` read of those stores (that read records the new revision, so the watcher may then emit no `config_changed` for the same external change).
 
 ```json
 { "event": "profile_binding_changed", "data": { "kind": "explicit", "profile": "fast", "origin": "session", "source": "external" } }
@@ -1921,7 +1921,7 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 
 ```json
 {
-  "schema": "gentle-shell.desktop-rpc/v1",
+  "schema": "drakonc-shell.desktop-rpc/v1",
   "kind": "event",
   "seq": 4,
   "event": "review_mode_changed",
@@ -1937,30 +1937,30 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 ## Configuration limits
 
 - **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`, `persona-config.ts`, `banner-config.ts`, `notification-policy.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
-- **Settings stores.** `persona` takes `{ "mode": "gentleman" | "neutral" }` and writes like `/gentle:persona`: the global file, plus the project file only when it already exists, so a project override never silently outranks the change (its `writeRevision` covers both layers, and a project file is never created). `banner` takes exactly `{ showRose, showTextLogo, color }`. `notifications` takes the settings as read: an event may keep the `"file"` marker only where its current sound is a file, which keeps that file; a new `file:` path is `invalid_data`, because the Desktop never sees one. All three write atomically, and none waits for a profile apply (`profile_apply_busy` applies only to the profile stores). Telemetry and the Pi theme are not config stores here: telemetry is a consent switch, and Pi persists its theme through an asynchronous settings queue and exports no list of installed themes to validate against.
+- **Settings stores.** `persona` takes `{ "mode": "drakoncman" | "neutral" }` and writes like `/drakonc:persona`: the global file, plus the project file only when it already exists, so a project override never silently outranks the change (its `writeRevision` covers both layers, and a project file is never created). `banner` takes exactly `{ showRose, showTextLogo, color }`. `notifications` takes the settings as read: an event may keep the `"file"` marker only where its current sound is a file, which keeps that file; a new `file:` path is `invalid_data`, because the Desktop never sees one. All three write atomically, and none waits for a profile apply (`profile_apply_busy` applies only to the profile stores). Telemetry and the Pi theme are not config stores here: telemetry is a consent switch, and Pi persists its theme through an asynchronous settings queue and exports no list of installed themes to validate against.
 - **Bounded write surface.** `set_config` exists only for `profiles`, `profile_fallbacks`, `pins`, and the settings stores above, and only as a whole-store replacement, one explicitly selected pin layer, or the explicit clear of one pin layer (`profile: null`). There is no generic physical-file target, no patch operation, no setter for `models`, `subagents`, or `managed_assets`, no way to clear both layers in one request, and no profile application or materialization: a profile write stores the definition, it does not apply it, and nothing else is rewritten as a side effect.
 - **Read-only rationale.** `models` and `subagents` are derived: the owners write them when a profile is applied or a route is materialized, so a Desktop write would fight that writer and leave the runtime and the store disagreeing. `managed_assets` is the installer's ownership manifest with hashes it verifies on install, so a client write would silently disable ownership checks. Only the stores whose owners accept validated writes report `readOnly: false`, and that flag describes the store's owner capability, which now matches this slice's write surface.
 - **No-op means no write.** Sending the content a store already holds, or clearing a pin layer that has no file, is answered with `changed: false`, no rewrite, no mtime churn, no removal, and no event, so a client can safely reconcile by re-sending what it read.
-- **Per-process guard, not a transaction.** The `expectedRevision` check and the owner's atomic rename happen in one synchronous step, so concurrent Desktop requests in one process cannot both commit from the same revision. Across processes there is no lock: another `pi` process, `/gentle:profiles`, or the installer can write between the check and the rename, and this contract cannot detect that. Treat `expectedRevision` as conflict detection, not as mutual exclusion.
+- **Per-process guard, not a transaction.** The `expectedRevision` check and the owner's atomic rename happen in one synchronous step, so concurrent Desktop requests in one process cannot both commit from the same revision. Across processes there is no lock: another `pi` process, `/drakonc:profiles`, or the installer can write between the check and the rename, and this contract cannot detect that. Treat `expectedRevision` as conflict detection, not as mutual exclusion.
 - **No paths, no secrets.** Physical paths are rejected as request input and never appear in a response, an event, or an error message. Content is limited to what these stores hold: profile names, routing entries, fallback chains, pin names, layer statuses, and asset ownership keys and hashes. `managed_assets` is additionally filtered to ownership-shaped entries — a relative asset path below the agent home plus a 64-hex sha256 digest — so an absolute path, a traversal segment, or an arbitrary string in the manifest is omitted rather than echoed. No credential, token, auth file, provider error, or conversation content is read or returned.
 - **Truthful normalization.** Content is what the owner's normalizer produced. Entries an owner drops (an unsafe agent key, an unknown thinking level, a stale `active` marker) are absent from `value`; if everything was dropped, the store reads `ok` with an empty map rather than being reported as `invalid`. A file the owner cannot parse at all reads `invalid`. A **write** may not rely on that leniency: data the normalizer would drop is rejected as `invalid_data`, so a Desktop write can never delete content it does not understand.
-- **Best-effort external events.** A change made by another `pi` process, by `/gentle:profiles`, by an editor, or by the installer produces a debounced `config_changed` with `source: "external"` when the owner directory can be watched and the store's revision really moved (see [`config_changed`](#config_changed)). When a watcher cannot be created, nothing is pushed for that directory and the change becomes visible on the next read. There is no polling and no cached copy: the watcher only decides when to recompute revisions with the owner readers.
-- **This slice does not implement** permission changes beyond the existing slice, subscription usage beyond the read/refresh contract below, subagents beyond the list/cancel/thread-read contract below, music, profile application, store materialization, or any Gentle Desktop client change.
+- **Best-effort external events.** A change made by another `pi` process, by `/drakonc:profiles`, by an editor, or by the installer produces a debounced `config_changed` with `source: "external"` when the owner directory can be watched and the store's revision really moved (see [`config_changed`](#config_changed)). When a watcher cannot be created, nothing is pushed for that directory and the change becomes visible on the next read. There is no polling and no cached copy: the watcher only decides when to recompute revisions with the owner readers.
+- **This slice does not implement** permission changes beyond the existing slice, subscription usage beyond the read/refresh contract below, subagents beyond the list/cancel/thread-read contract below, music, profile application, store materialization, or any Drakonc Desktop client change.
 
 ## Permission limits
 
-- The methods delegate to the Gentle AI extension's permission owner in the same Pi process. When that extension is not loaded, both methods answer `permission_unavailable` instead of guessing state.
-- Session changes require the owner's interactive-host admission: the TUI, or an RPC process with `GENTLE_SHELL_INTERACTIVE_HOST=1`. Headless RPC children and subagent children stay closed exactly as before.
-- Permission control is never an agent-callable tool; only `/gentle:desktop` over the interactive RPC channel reaches it.
+- The methods delegate to the Drakonc AI extension's permission owner in the same Pi process. When that extension is not loaded, both methods answer `permission_unavailable` instead of guessing state.
+- Session changes require the owner's interactive-host admission: the TUI, or an RPC process with `DRAKONC_SHELL_INTERACTIVE_HOST=1`. Headless RPC children and subagent children stay closed exactly as before.
+- Permission control is never an agent-callable tool; only `/drakonc:desktop` over the interactive RPC channel reaches it.
 - Permission state adds no filesystem watcher and no second store: external `permission_mode_changed` events follow the owner's in-process observer. Config is limited to the `get_config` and `set_config` contract in [Configuration limits](#configuration-limits); subscription usage is limited to the `get_subscription_usage` and `refresh_subscription_usage` contract in [Usage limits](#usage-limits); background jobs are limited to the `list_jobs`, `cancel_job`, and `get_job_output` contract in [Jobs limits](#jobs-limits); subagents are limited to the `list_subagents`, `cancel_subagent`, and `get_subagent_thread` contract in [Subagents limits](#subagents-limits); changed files are limited to the `get_changes` and `get_change_diff` contract in [Changes limits](#changes-limits); cross-session usage is limited to the `get_usage_stats` read in [Stats limits](#stats-limits); update status is limited to the `get_update_status` read in [Updates limits](#updates-limits); music and any Desktop client change are not implemented.
 - Requests are not queued. Pi's own RPC loop dispatches prompts concurrently, so overlapping `set_permission_mode` calls reach the owner in whatever order their own reads finish, and one can apply right after the other. What stays guaranteed: every request gets exactly one correlated response, responses never cross, and each response and its optional event are published as an adjacent pair with a monotonic `seq`. Send permission requests one at a time and correlate with `requestId`; the maintainer probe does exactly that.
 
 ### Trust boundary
 
-`GENTLE_SHELL_INTERACTIVE_HOST=1` is the only gate, and it is a process marker, not a human confirmation. Any actor able to write this Pi process's RPC stdin — or otherwise drive `/gentle:desktop` in the marker-set process — can request permission elevation, including `super-yolo`, and can make it the saved default with `persist: true`. Two consequences follow:
+`DRAKONC_SHELL_INTERACTIVE_HOST=1` is the only gate, and it is a process marker, not a human confirmation. Any actor able to write this Pi process's RPC stdin — or otherwise drive `/drakonc:desktop` in the marker-set process — can request permission elevation, including `super-yolo`, and can make it the saved default with `persist: true`. Two consequences follow:
 
 - `hasUI` in RPC mode means the Desktop app's UI surface exists; it is not proof that a person approved anything. This contract adds no confirmation dialog, so approval belongs to the Desktop client and its user.
-- The same write access already implies full control of an interactive agent session, so this is not a privilege escalation beyond stdin access. It is still a capability: treat the Desktop client's stdin channel as trusted input, and never let untrusted content (task text, issues, files, agent output) synthesize `/gentle:desktop` permission requests.
+- The same write access already implies full control of an interactive agent session, so this is not a privilege escalation beyond stdin access. It is still a capability: treat the Desktop client's stdin channel as trusted input, and never let untrusted content (task text, issues, files, agent output) synthesize `/drakonc:desktop` permission requests.
 
 ## Usage limits
 
@@ -1969,12 +1969,12 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **Claude data arrives after provider responses.** Anthropic's 5h/7d windows are header-driven: they appear in a `rate_limit` event (`source: "response"`) only after a provider response, never from a fetch. Before the first response, Anthropic reads `pending`.
 - **Safe projection only.** The wire carries provider id, status, `fetchedAt`, the public plan name, and the window percentages/durations/resets (plus NaN's raw allowance numbers). No account id, URL, access token, key material, raw provider error, or auth-resolution detail is ever returned or logged.
 - **Session-scoped, disposed on replacement.** The owner adapter is discovered per session and disposed on session replacement or shutdown; a late refresh or header recording for a replaced session is dropped, and the router's own publisher guard drops any superseded response. A refresh response always precedes its `rate_limit` event, and a no-op or failed refresh emits no event.
-- **No agent tool.** The usage surface is reachable only through `/gentle:desktop` over the interactive RPC channel, exactly like the permission and config slices.
+- **No agent tool.** The usage surface is reachable only through `/drakonc:desktop` over the interactive RPC channel, exactly like the permission and config slices.
 
 ## Design limits
 
 - **One owner, no second canvas.** `get_design_canvas` and the `design_canvas` event reach the existing design owner — the single `DesignCanvas` returned by `createDesignCanvas`, plus `listDesigns` — through a defensive, versioned owner-service adapter, the design analogue of the usage and YOLO seams. There is no second server, port, canvas store, browser opener, or watcher.
-- **Read + observe only.** This slice has exactly one method, `get_design_canvas`, and one event, `design_canvas`. It does not implement `open` or `stop`: those remain the `gentle_design` tool's actions (`/gentle:design open|stop`), and this slice only reports the transitions those actions actually cause.
+- **Read + observe only.** This slice has exactly one method, `get_design_canvas`, and one event, `design_canvas`. It does not implement `open` or `stop`: those remain the `drakonc_design` tool's actions (`/drakonc:design open|stop`), and this slice only reports the transitions those actions actually cause.
 - **Tokenized URL is a capability.** The canvas URL contains the per-server token. It is omitted by default, is included on a read only for an explicit `{ "includeUrl": true }` **after** the interactive-host trust check, and is included in an event only for a trusted interactive Desktop client. The raw token is never a separate field and never appears in an error or log: a throwing owner answers `design_unavailable` with a fixed message.
 - **No-op and failure mean no event.** A refused slug, a browser that could not open, a server that could not start, or a `stop` with nothing running emits nothing. Only actual `open`/`refresh`/`stop` transitions emit.
 - **Agent work reaches the app.** The bridge subscribes to the owner eagerly at session start, so a canvas opened or stopped by the agent (or by any other path through the owner) still arrives as a `design_canvas` event. Session replacement or shutdown disconnects the observer and drops late outcomes, and the router's own publisher guard drops superseded events.
@@ -2002,15 +2002,15 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **No-op and failure mean no event.** A `cancel_subagent` on an already-terminal task answers that terminal state with no event, and a `cancel_subagent` on an unknown or foreign id answers `not_found` with no event. A running task's cancel is requested but asynchronous: the response reports the still-`running` state and emits no immediate byte-identical event; only the real store transition (the child exit to `cancelled`) emits through the normal `agents_update` path. A TaskStore transition (add, status change, or the completion-time usage recording) emits `agents_update` at once; progress inside a running task (a turn ends, a tool starts or ends, usage grows) emits it at most once per session every 500 ms, and only when the projected list actually changed.
 - **Usage persists across restore.** The completion-time usage breakdown is written to the task's history record, so a restored finished task keeps its final breakdown. A task whose run never recorded a breakdown (no final-assistant observation) has no breakdown fields after restore.
 - **Agent work reaches the app.** The bridge subscribes to the owner eagerly at session start, so a subagent started or settled by the agent (or any other path through the owner) still arrives as an `agents_update` event. Bursts of transitions are coalesced into one event per window and byte-identical projected lists are deduped, so a settle that records usage right after its status change still emits exactly once. Session replacement or shutdown disconnects the observer, cancels the pending coalesced flush, and drops late outcomes, and the router's own publisher guard drops superseded events. A changed `cancel_subagent`'s response always precedes its event.
-- **Thread read is the widget's projection.** `get_subagent_thread` reuses the `gentle-agents.activity/v1` per-thread projection and bounds (`projectRpcThread`, then `boundRpcThread`, in `lib/agents-rpc-publisher.ts`): the last 40 items, 2 000 characters per text item, 500 for tool args and output, and the 256 KB halving. It is a read behind the `cancel_subagent` ownership check, emits no event, and adds no channel: it is one more read on the existing owner-service adapter. Tool args and output are the subagent's own data — whatever its tools received and printed — bounded but not redacted.
+- **Thread read is the widget's projection.** `get_subagent_thread` reuses the `drakonc-agents.activity/v1` per-thread projection and bounds (`projectRpcThread`, then `boundRpcThread`, in `lib/agents-rpc-publisher.ts`): the last 40 items, 2 000 characters per text item, 500 for tool args and output, and the 256 KB halving. It is a read behind the `cancel_subagent` ownership check, emits no event, and adds no channel: it is one more read on the existing owner-service adapter. Tool args and output are the subagent's own data — whatever its tools received and printed — bounded but not redacted.
 - **`sinceVersion` is thread-level.** The store keeps one version per thread, not per item, and items change in place (streamed text, tool output, tool end), so `sinceVersion` returns either nothing (unchanged) or the whole bounded window, never a partial diff.
-- **Tool names are not length-capped.** Like the `gentle-agents.activity/v1` widget, a thread item's tool `name` is forwarded without a length cap, so a single huge tool name can keep one item above the 256 KB halving target (halving never drops below one item). Capping it is a follow-up for the widget and this method together, so the two keep the same projection.
+- **Tool names are not length-capped.** Like the `drakonc-agents.activity/v1` widget, a thread item's tool `name` is forwarded without a length cap, so a single huge tool name can keep one item above the 256 KB halving target (halving never drops below one item). Capping it is a follow-up for the widget and this method together, so the two keep the same projection.
 - **Truthful absence.** When the owning extension is not loaded, `list_subagents`, `cancel_subagent`, and `get_subagent_thread` answer `agents_unavailable` rather than inventing an empty list, a fake stop, or an empty thread. A task that exists but belongs to another session is indistinguishable from an unknown id at this boundary: both answer `not_found`.
 - **Unproven live-child boundary.** The deterministic tests drive the real owner with a real `TaskStore` and a real `AgentRunner` over a fake child (never a real process), and the maintainer probe lists the owner-loaded empty list without starting a child. This slice does not yet prove a live `cancel_subagent` of a running child over the installed runtime end to end; the in-process real-owner test exercises the real `runner.cancel` path and its eventual `agents_update`, but a real OS child is out of scope.
 
 ## Profiles limits
 
-- **One owner, no second apply.** `apply_profile` reaches the `/gentle:profiles` owner in `extensions/gentle-ai.ts` through a defensive, versioned owner-service adapter, like the usage and design seams. The owner runs the screen's own **Use in this session** and **Make default** actions with a UI that records notices and answers confirmations only with a matching token. It never opens a dialog in Pi.
+- **One owner, no second apply.** `apply_profile` reaches the `/drakonc:profiles` owner in `extensions/drakonc-ai.ts` through a defensive, versioned owner-service adapter, like the usage and design seams. The owner runs the screen's own **Use in this session** and **Make default** actions with a UI that records notices and answers confirmations only with a matching token. It never opens a dialog in Pi.
 - **Apply, binding, and clear.** `apply_profile` and its `profile_applied` event, plus `get_profile_binding`, `clear_profile_binding`, and `profile_binding_changed`. Creating, editing, or deleting profiles stays `set_config` on the `profiles` store; pins, including publishing a profile to the repository, stay `set_config` on `pins`.
 - **One rule for the binding.** `get_profile_binding` and the event read `resolveSessionProfile`, the rule launches use, so they never disagree with a launch. The event follows the in-process binding store; a binding changed by another Pi process is not observed.
 - **Confirmation is Desktop's job.** The token binds an apply to the title and message that were shown and to the exact saved profile; it is not a proof that a person saw them.
@@ -2018,11 +2018,11 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 
 ## Session limits
 
-- **One owner, one schema.** `get_snapshot { sections }` and `session_snapshot` read the feed extension's live projection through a defensive, versioned owner-service adapter (`gentle:desktop:session-service`, the session analogue of the jobs seam). There is no second state store, no tool-event replay, and no read of the feed file under the agent home.
+- **One owner, one schema.** `get_snapshot { sections }` and `session_snapshot` read the feed extension's live projection through a defensive, versioned owner-service adapter (`drakonc:desktop:session-service`, the session analogue of the jobs seam). There is no second state store, no tool-event replay, and no read of the feed file under the agent home.
 - **Path-free projection.** No `identity` block, no `pid`/`ppid`/`ancestors`, no session file, no agent dir, and no absolute path from the projection crosses the wire: `project.cwd` becomes its basename `project.name`, worktree roots become opaque labels, and file paths are relative to their worktree. This rule covers every structural field the projection derives (working directory, worktree roots, file paths, identity).
 - **Free text passes as written.** Text a person or the agent wrote (pending question titles and options, todo titles and notes, activity and blocker labels, command descriptions) crosses exactly as the feed shows it, even when it contains a path: redacting inside text would corrupt it. This follows the `list_jobs` label precedent, where an explicit label is the agent's own wording and is kept.
 - **Bounded.** Arrays and text keep the feed's own caps (for example 200 changed files, 100 todos, 50 jobs and subagents, 200 commands, 500-character text, 2000-character question text), so the payload never grows with the session's lifetime. The channel has no separate response byte limit; requests stay under 64 KiB.
-- **Truthful absence.** When the feed is not running for the session, `sections` answer `session_unavailable` and `capabilities` omit `session_snapshot` rather than inventing an empty state. The feed runs only in Gentle Shell (not plain Pi), in the TUI or an interactive RPC host, and never in subagent children.
+- **Truthful absence.** When the feed is not running for the session, `sections` answer `session_unavailable` and `capabilities` omit `session_snapshot` rather than inventing an empty state. The feed runs only in Drakonc Shell (not plain Pi), in the TUI or an interactive RPC host, and never in subagent children.
 
 ## Sessions limits
 
@@ -2032,11 +2032,11 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **The listing reads files.** Pi reads every session file in scope to build its list, so `scope: "all"` over a large history costs as much as Pi's own `/resume` across all projects. Prefer `project` and page with `limit`.
 - **A switch replaces the session.** Every per-session bridge and the router restart with the new session; event `seq` restarts at 1, and Desktop should re-read `get_snapshot` and any state it shows. A switch during a streaming turn aborts that turn first (Pi's behavior). A failure after Pi already tore the old session down cannot be answered by either session.
 - **Exactly once across a switch.** Pi dispatches prompts concurrently, so requests sent right after a `switch_session` can reach the session being replaced. The router refuses them with `session_switching` while the switch is in flight, answers any request still waiting on an owner right before the teardown, and the replaced instance answers late deliveries through the UI object it extracted before Pi invalidated its context. The switch's own response comes from the new session.
-- **No agent tool.** Sessions are reachable only through `/gentle:desktop` over the interactive RPC channel.
+- **No agent tool.** Sessions are reachable only through `/drakonc:desktop` over the interactive RPC channel.
 
 ## Changes limits
 
-- **One owner, no second tracker.** `get_changes` and `get_change_diff` reach the existing `/gentle:changes` owner — the shell's `WorktreeChangesTracker` over `sessionChangeRoots` — through a defensive, versioned owner-service adapter, the changes analogue of the usage and jobs seams. There is no second scan, no watcher, and no cached copy. `loadFileDiff` lives in `lib/change-diff.ts`, shared by the panel and this slice, so both run the same Git arguments over the same bounded runner.
+- **One owner, no second tracker.** `get_changes` and `get_change_diff` reach the existing `/drakonc:changes` owner — the shell's `WorktreeChangesTracker` over `sessionChangeRoots` — through a defensive, versioned owner-service adapter, the changes analogue of the usage and jobs seams. There is no second scan, no watcher, and no cached copy. `loadFileDiff` lives in `lib/change-diff.ts`, shared by the panel and this slice, so both run the same Git arguments over the same bounded runner.
 - **Read only, no event.** This slice has exactly two methods and no event. It never stages, reverts, commits, or opens a file. Every `get_changes` and every `get_change_diff` rescans the worktree, as the panel does when it opens, which also refreshes the shell's own changes widget.
 - **No repository-configured commands in the diff.** `get_change_diff` passes `--no-textconv --no-ext-diff` and `-c core.fsmonitor=false`, so a `.gitattributes` textconv driver, an external diff driver, or an fsmonitor hook configured in the repository never runs for a Desktop read. The panel keeps Git's default behavior, so the two can differ for files with such a driver. The rescan itself is the panel's own `git status` and `git diff --numstat`, unchanged.
 - **Confinement.** A diff is served only for a file the owner itself lists for that root, by exact match, and only when the file's directory resolves inside the root and outside the repository's git dir and common dir (resolved through links, so an alias such as a junction to `.git` is refused). Request paths that are absolute or contain `..` segments or control characters are refused before the owner is asked; the owner's exact match is the real boundary. The file entry, its status, and so its Git arguments always come from the owner's list, never from the request.
@@ -2048,17 +2048,17 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 
 ## Review limits
 
-- **One owner, no second adapter.** `get_review_mode` and `set_review_mode` reach the `/gentle:review-mode` owner in `extensions/gentle-ai.ts` through a defensive, versioned owner-service adapter, like the profiles seam. Every read and write is that owner's `executeReviewMode` call over the native review CLI adapter, so status-cache invalidation and pending-consent cleanup on a disable are the TUI's own. The Desktop side never spawns `gentle-ai` and keeps no copy of the switch.
-- **Fail closed.** A read is bounded by the same timeout as the RDD status line (`GENTLE_PI_RDD_STATUS_TIMEOUT_MS`, 3 seconds by default) and a write by 10 seconds. A failed, timed-out, or unrecognized read is `unknown`, never a guess. A native failure is classified as unavailable (`gentle-ai` missing or the command unsupported), unknown, or failed; its message, exit detail, and paths never cross.
+- **One owner, no second adapter.** `get_review_mode` and `set_review_mode` reach the `/drakonc:review-mode` owner in `extensions/drakonc-ai.ts` through a defensive, versioned owner-service adapter, like the profiles seam. Every read and write is that owner's `executeReviewMode` call over the native review CLI adapter, so status-cache invalidation and pending-consent cleanup on a disable are the TUI's own. The Desktop side never spawns `drakonc-ai` and keeps no copy of the switch.
+- **Fail closed.** A read is bounded by the same timeout as the RDD status line (`DRAKONC_PI_RDD_STATUS_TIMEOUT_MS`, 3 seconds by default) and a write by 10 seconds. A failed, timed-out, or unrecognized read is `unknown`, never a guess. A native failure is classified as unavailable (`drakonc-ai` missing or the command unsupported), unknown, or failed; its message, exit detail, and paths never cross.
 - **User-owned switch.** This slice never changes the switch on its own: only a confirmed `set_review_mode` writes, and subagent children never answer the seam. Review start, skip, and candidate consent stay terminal-only.
 - **Token binds, it does not authenticate.** The confirmation token binds a change to the request and the exact state and text that were shown, so a stale or mismatched token never writes. It is not a secret: anyone who can write Pi's RPC stdin can read it and send it back.
-- **Desktop-only gate.** The single-flight gate serializes `set_review_mode` requests from Desktop in one Pi process. It does not gate the terminal `/gentle:review-mode` command, Herdr, or another process; a change from one of those between the two calls makes the token stale, and the second call asks again.
+- **Desktop-only gate.** The single-flight gate serializes `set_review_mode` requests from Desktop in one Pi process. It does not gate the terminal `/drakonc:review-mode` command, Herdr, or another process; a change from one of those between the two calls makes the token stale, and the second call asks again.
 - **A reset never writes late.** When the session is replaced or shut down while a confirmed `set_review_mode` is still discovering the owner or reading the current state, the write is not attempted and no event is emitted. That request gets no answer, because the router drops outcomes for a superseded session. A client that got no answer re-reads with `get_review_mode` and asks again.
 - **Truthful absence.** When the owning extension is not loaded, both methods answer `review_unavailable` rather than inventing a mode.
 
 ## Stats limits
 
-- **One owner, one loader, one aggregation.** `get_usage_stats` reaches the `/gentle:stats` owner in `extensions/gentle-stats.ts` through a defensive, versioned owner-service adapter, the stats analogue of the jobs seam. The owner reads the same sessions roots as the panel (the active home and the user's original Pi home) with the panel's own loader instance, so both share one size/mtime cache: an unchanged session file is never re-read. Totals, models, and days come from the panel's `aggregateStats` with the requested range and scope; each project row is that same aggregation scoped to one project. There is no second parser, cache, or store.
+- **One owner, one loader, one aggregation.** `get_usage_stats` reaches the `/drakonc:stats` owner in `extensions/drakonc-stats.ts` through a defensive, versioned owner-service adapter, the stats analogue of the jobs seam. The owner reads the same sessions roots as the panel (the active home and the user's original Pi home) with the panel's own loader instance, so both share one size/mtime cache: an unchanged session file is never re-read. Totals, models, and days come from the panel's `aggregateStats` with the requested range and scope; each project row is that same aggregation scoped to one project. There is no second parser, cache, or store.
 - **Shared in-flight load.** The loader answers concurrent loads of the same roots with one in-flight scan, so overlapping Desktop requests (or a request while the panel is loading) read the history once. The scan is asynchronous and streams files line by line; nothing is persisted.
 - **Read only, no event.** This slice has exactly one method and no event. History changes as sessions run; a client re-reads when it wants fresh numbers.
 - **Safe, bounded projection.** The wire carries counts, token sums, costs, model ids, provider ids, day keys, and project display names only. Arrays are capped (models 50, days 400, providers 50, projects 50) with a `truncated` flag per array; totals stay complete. A session's id, path, or message text never crosses (provider ids are reported in `byProvider`), and a raw read failure is answered with the fixed `stats_unavailable` message.
@@ -2067,25 +2067,25 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 
 ## Updates limits
 
-- **One source of truth.** Every fact comes from an existing resolver or check, imported, never copied: `runningBundledPrefix`, Pi's `DefaultPackageManager` listing, and `readChannel` for the channel; `latestRelease` and `resolveMainCommit` (the lookups `gentle-shell upgrade` uses) for Gentle Shell; the launcher's `startupReleaseCheck` record through `parseStartupReleaseCache` for the cached release; `findStartupUpdate`'s stable-version comparison; Pi's exported `VERSION`; `publishedPi` for a bundled Pi; and Pi's own `checkForAvailableUpdates` for packages. Pi's source parser (`parseSource`) is not part of Pi's typed surface; it is called defensively, and a parser that is missing or changed reports the package as `unknown`.
+- **One source of truth.** Every fact comes from an existing resolver or check, imported, never copied: `runningBundledPrefix`, Pi's `DefaultPackageManager` listing, and `readChannel` for the channel; `latestRelease` and `resolveMainCommit` (the lookups `drakonc-shell upgrade` uses) for Drakonc Shell; the launcher's `startupReleaseCheck` record through `parseStartupReleaseCache` for the cached release; `findStartupUpdate`'s stable-version comparison; Pi's exported `VERSION`; `publishedPi` for a bundled Pi; and Pi's own `checkForAvailableUpdates` for packages. Pi's source parser (`parseSource`) is not part of Pi's typed surface; it is called defensively, and a parser that is missing or changed reports the package as `unknown`.
 - **Cache only without `refresh`.** A plain read never reaches the network. It reads the launcher config, the channel record, Pi's settings, and installed packages' `package.json`. Pi's listing may ask npm for its global root once when a user package is not in Pi's own install folder, exactly as `pi list` does.
 - **Bounded refresh.** One deadline (15 seconds) bounds every lookup; a lookup that ignores cancellation (Pi's package check cannot be cancelled) is dropped when the deadline passes and reported `unknown`. Concurrent refreshes share one run.
 - **Never "up to date" by default.** Only a successful lookup that returned exactly the running version is `up_to_date`. Failed, offline, timed-out, or incomparable answers are `unknown`, and a package Pi's check did not list is `no_update_reported`, because Pi's check cannot tell a failed lookup from no update.
 - **Memory only.** A refresh result is kept in this Pi process's memory and answers later plain reads (across a session switch too); it is never written, so the launcher's own cache and its startup notice are unchanged.
-- **Gaps stated.** Pi's latest version is known only in a bundled install. Package `latest` is always `null`. A git package has no `current`. `gentle-ai-managed` is detected only when the running gentle-pi is the `npm:gentle-pi` package Pi installed.
+- **Gaps stated.** Pi's latest version is known only in a bundled install. Package `latest` is always `null`. A git package has no `current`. `drakonc-ai-managed` is detected only when the running drakonc-pi is the `npm:drakonc-pi` package Pi installed.
 - **Read only, no event.** This slice has exactly one method and no event, and it never runs an update.
 
 ## Agent definitions limits
 
-- **One source of truth.** Discovery, defaults, and the orchestrator come from `discoverAgents`, `loadAgentsConfig`, and `readOrchestratorSettings`, the owners `subagent_list_agents` and `/gentle:profiles` already use; nothing is copied.
+- **One source of truth.** Discovery, defaults, and the orchestrator come from `discoverAgents`, `loadAgentsConfig`, and `readOrchestratorSettings`, the owners `subagent_list_agents` and `/drakonc:profiles` already use; nothing is copied.
 - **Declared, not effective, models.** A definition's `model` is what its frontmatter declares. Routing in `subagents.json` and a repository profile pin can override it at launch; read them with `get_config` (`models`, `profiles`, `pins`).
 - **Bounded.** At most 200 agents, 64 tools per agent, names cut at 128 characters, descriptions at 512, and model ids over 256 characters reported as `null`.
 - **Read only, no event.** Definitions are plain files; a client that needs fresh data reads again. Editing them stays a file edit.
 
 ## Status limits
 
-- **One source of truth.** The owner computes every field with the same helpers `/gentle:status` uses (`readPersonaMode`, the package asset audit, `resolveGentleAiDevBinaryOverride`, `readModelRoutingAuthorityAsync`); the bridge only validates and projects.
-- **No doctor.** `/gentle:doctor` is interactive and can repair things; it stays in the terminal.
+- **One source of truth.** The owner computes every field with the same helpers `/drakonc:status` uses (`readPersonaMode`, the package asset audit, `resolveDrakoncAiDevBinaryOverride`, `readModelRoutingAuthorityAsync`); the bridge only validates and projects.
+- **No doctor.** `/drakonc:doctor` is interactive and can repair things; it stays in the terminal.
 - **No spawn.** The dev-binary override is resolved but never executed, so `get_status` never waits on a process.
 - **Cost.** The asset audit reads every managed asset file; read on demand, do not poll.
 - **Read only, no event.**
@@ -2133,29 +2133,29 @@ node --experimental-strip-types --test \
 
 The permission tests register the real `registerYoloSessionPolicy` owner with an isolated temporary config home and a stub identity resolver; they never read or write the user's own permission store.
 
-The design tests use only injected fake canvas/server/browser factories and a fake owner service: they cover stopped/running/open/refresh/stop state, slug and connected-client counts, default URL omission, explicit `includeUrl` inclusion only after trust, untrusted omission, malformed adapters and params, owner absence (`design_unavailable`, never a fabricated `running: false`), failed and no-op actions emitting nothing, external (agent-driven) transition events, late-reset disposal and stale-outcome drops, and raw-error/token redaction. One test runs the real `gentleDesign` owner seam in-process to prove the stopped canvas state and the design list arrive from the single owner adapter.
+The design tests use only injected fake canvas/server/browser factories and a fake owner service: they cover stopped/running/open/refresh/stop state, slug and connected-client counts, default URL omission, explicit `includeUrl` inclusion only after trust, untrusted omission, malformed adapters and params, owner absence (`design_unavailable`, never a fabricated `running: false`), failed and no-op actions emitting nothing, external (agent-driven) transition events, late-reset disposal and stale-outcome drops, and raw-error/token redaction. One test runs the real `drakoncDesign` owner seam in-process to prove the stopped canvas state and the design list arrive from the single owner adapter.
 
-The usage tests use a fake owner service and a fake fetch/modelRegistry only: they cover the five statuses, the safe projection and plan-only-when-public rule, provider filters, unknown-provider `unavailable`, invalid params, refresh delegation with the provider filter forwarded, the response-before-event order over the router, the Anthropic typed `unsupported` no-op, the out-of-scope `out_of_scope` no-op (including the real owner never reaching the fetcher), content-based change detection (a same-millisecond payload change emits once, byte-equivalent data stays a no-op), late-discovery disposal after a reset, no duplicate event on no-op/failed refresh, raw-error and secret redaction, header-driven `rate_limit` events, stale-session disconnects, and the versioned adapter discovery. One test runs the real `gentleShell` owner seam to prove Claude's 5h/7d windows arrive as structured snapshots from response headers, never header text.
+The usage tests use a fake owner service and a fake fetch/modelRegistry only: they cover the five statuses, the safe projection and plan-only-when-public rule, provider filters, unknown-provider `unavailable`, invalid params, refresh delegation with the provider filter forwarded, the response-before-event order over the router, the Anthropic typed `unsupported` no-op, the out-of-scope `out_of_scope` no-op (including the real owner never reaching the fetcher), content-based change detection (a same-millisecond payload change emits once, byte-equivalent data stays a no-op), late-discovery disposal after a reset, no duplicate event on no-op/failed refresh, raw-error and secret redaction, header-driven `rate_limit` events, stale-session disconnects, and the versioned adapter discovery. One test runs the real `drakoncShell` owner seam to prove Claude's 5h/7d windows arrive as structured snapshots from response headers, never header text.
 
-The jobs tests use the existing background-job fake (the same fake shell operations and monitor controller as the background-jobs tests) and a fake owner service only: they cover the whitelisted projection and field redaction, the bounded running + recent-finished selection, list/cancel/output param shapes, the active-session filter, owner absence (`jobs_unavailable`, never a fabricated empty list), the `job_stop` stop path (monitor cancel + registry stop), already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `jobs_update` events with foreign-session filtering, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also drive the real `job_stop` tool to prove the change descriptor distinguishes a running→stopped stop from a no-op stop. For `get_job_output` they cover the plain-text normalization (CSI, OSC, two-character escapes, carriage-return progress lines, control characters, and half characters left by a cut), the owner's 20-line and per-line bounds and the `truncated` flag, own versus foreign and unknown ids, invalid params rejected before discovery, an absent, outdated, throwing, or malformed owner answering `jobs_unavailable`, no event on a read, the real `gentle-agents` owner answering its own job, and the transport answer without an owner.
+The jobs tests use the existing background-job fake (the same fake shell operations and monitor controller as the background-jobs tests) and a fake owner service only: they cover the whitelisted projection and field redaction, the bounded running + recent-finished selection, list/cancel/output param shapes, the active-session filter, owner absence (`jobs_unavailable`, never a fabricated empty list), the `job_stop` stop path (monitor cancel + registry stop), already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `jobs_update` events with foreign-session filtering, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also drive the real `job_stop` tool to prove the change descriptor distinguishes a running→stopped stop from a no-op stop. For `get_job_output` they cover the plain-text normalization (CSI, OSC, two-character escapes, carriage-return progress lines, control characters, and half characters left by a cut), the owner's 20-line and per-line bounds and the `truncated` flag, own versus foreign and unknown ids, invalid params rejected before discovery, an absent, outdated, throwing, or malformed owner answering `jobs_unavailable`, no event on a read, the real `drakonc-agents` owner answering its own job, and the transport answer without an owner.
 
-The subagents tests use a real `TaskStore` plus a fake runner (never a child process) and a fake owner service only: they cover the whitelisted model/usage/cost projection and field redaction, the `get_subagent_thread` projection matching the activity widget's thread exactly (40-item window, per-field bounds, store `version` and `dropped`, `truncated`, and the byte-bound halving), its `sinceVersion` unchanged and changed answers, its param shapes rejected before discovery, unknown and foreign-session `not_found`, an absent, older, throwing, or malformed owner answering `agents_unavailable` without leaking, and a single response line with no event, the closed `lastStep` vocabulary (raw error/path/secret/provider text never crosses), the bounded active + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`agents_unavailable`, never a fabricated empty list), the `runner.cancel` stop path and its boolean result, already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `agents_update` events with foreign-session filtering, content dedupe and burst coalescing, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also run the real `gentleAgents` owner seam in-process over a fake child (real `TaskStore` + real `AgentRunner`, never a real process): a truthful empty list, a typed `not_found` cancel, a live-task cancel that honors `runner.cancel`'s result with no immediate event and one eventual `agents_update`, an owned thread read through the activity projection with a foreign-session `not_found`, and the persisted usage breakdown surviving `saveTask`/`loadStoredTask` restore.
+The subagents tests use a real `TaskStore` plus a fake runner (never a child process) and a fake owner service only: they cover the whitelisted model/usage/cost projection and field redaction, the `get_subagent_thread` projection matching the activity widget's thread exactly (40-item window, per-field bounds, store `version` and `dropped`, `truncated`, and the byte-bound halving), its `sinceVersion` unchanged and changed answers, its param shapes rejected before discovery, unknown and foreign-session `not_found`, an absent, older, throwing, or malformed owner answering `agents_unavailable` without leaking, and a single response line with no event, the closed `lastStep` vocabulary (raw error/path/secret/provider text never crosses), the bounded active + recent-finished selection, list/cancel param shapes, the active-session filter, owner absence (`agents_unavailable`, never a fabricated empty list), the `runner.cancel` stop path and its boolean result, already-terminal idempotency with no event, unknown and foreign-session `not_found`, invalid params rejected before discovery, agent-driven `agents_update` events with foreign-session filtering, content dedupe and burst coalescing, the response-before-event order over the router, session reset disconnecting observers and dropping late outcomes, late-discovery disposal, and the versioned adapter discovery. They also run the real `drakoncAgents` owner seam in-process over a fake child (real `TaskStore` + real `AgentRunner`, never a real process): a truthful empty list, a typed `not_found` cancel, a live-task cancel that honors `runner.cancel`'s result with no immediate event and one eventual `agents_update`, an owned thread read through the activity projection with a foreign-session `not_found`, and the persisted usage breakdown surviving `saveTask`/`loadStoredTask` restore.
 
 The session tests load the real desktop RPC and feed extensions on one fake Pi with fake timers and an isolated agent home: they cover the strict `sections` params, the path-free projection (basename, opaque roots, relative multi-worktree paths), a byte-identical `get_snapshot` without `sections` with and without the feed, `session_unavailable` and the missing `session_snapshot` capability without the feed, reads that emit no event, and `session_snapshot` carrying only changed sections on the feed's routine (250 ms) and urgent (16 ms) tiers, with no event for an unchanged flush.
 
-The changes tests load the real `gentleShell` owner and this extension together over temporary Git repositories (real `git`; a wrapped runner only to force a failure). They cover the opaque root id and directory-name label with no absolute path anywhere on the wire, root-relative paths and statuses, the 200-file cap, `get_change_diff` answering byte-for-byte what the panel's `loadFileDiff` answers for tracked and untracked files (including `/dev/null` on Windows), the 256 KiB cut on a line boundary and the head of a diff past the panel's 1 MiB bound, `not_found` for an unknown root, a root's absolute path or label in place of its id, a clean tracked file and `.git/config` that exist on disk, a missing file, `..` traversal, absolute paths, `./`, backslash, case, and trailing-space aliases, and a file behind a directory link (a junction on Windows), `invalid_request` for wrong shapes with no Git run, `changes_unavailable` without an owner, without a repository, and when Git status or the diff fails (with no Git output on the wire), one response line and no event per read, that the owner answers discovery only for its own live session, that a repository textconv driver never runs for `get_change_diff` while the panel's default call still honors it, that a junction to `.git` inside the root is refused, odd Windows path forms (`file.ts.`, `::$DATA`, short names, `\\?\` and UNC prefixes, trailing `/`), a stale root id from a previous session, and directories swapped to junctions after listing. `tests/change-diff.test.ts` proves the panel's `loadFileDiff` export is the shared lib function and keeps its arguments, bound notice, and failure behavior on real Git.
+The changes tests load the real `drakoncShell` owner and this extension together over temporary Git repositories (real `git`; a wrapped runner only to force a failure). They cover the opaque root id and directory-name label with no absolute path anywhere on the wire, root-relative paths and statuses, the 200-file cap, `get_change_diff` answering byte-for-byte what the panel's `loadFileDiff` answers for tracked and untracked files (including `/dev/null` on Windows), the 256 KiB cut on a line boundary and the head of a diff past the panel's 1 MiB bound, `not_found` for an unknown root, a root's absolute path or label in place of its id, a clean tracked file and `.git/config` that exist on disk, a missing file, `..` traversal, absolute paths, `./`, backslash, case, and trailing-space aliases, and a file behind a directory link (a junction on Windows), `invalid_request` for wrong shapes with no Git run, `changes_unavailable` without an owner, without a repository, and when Git status or the diff fails (with no Git output on the wire), one response line and no event per read, that the owner answers discovery only for its own live session, that a repository textconv driver never runs for `get_change_diff` while the panel's default call still honors it, that a junction to `.git` inside the root is refused, odd Windows path forms (`file.ts.`, `::$DATA`, short names, `\\?\` and UNC prefixes, trailing `/`), a stale root id from a previous session, and directories swapped to junctions after listing. `tests/change-diff.test.ts` proves the panel's `loadFileDiff` export is the shared lib function and keeps its arguments, bound notice, and failure behavior on real Git.
 
-The profiles tests use a fake owner service only: they cover param validation, owner absence (`profiles_unavailable`), the result shapes, the `profile_applied` event only after `applied`, and that the token changes with the mode, name, title, message, and profile content. The owner itself is covered in `tests/gentle-ai.test.ts`, which drives the real screen actions in a temporary config home: a default apply asks the screen's diff and writes nothing without its token, a wrong or stale token asks again and writes nothing, an unknown profile writes nothing, a session apply binds without writing shared state, and only one apply runs at a time.
+The profiles tests use a fake owner service only: they cover param validation, owner absence (`profiles_unavailable`), the result shapes, the `profile_applied` event only after `applied`, and that the token changes with the mode, name, title, message, and profile content. The owner itself is covered in `tests/drakonc-ai.test.ts`, which drives the real screen actions in a temporary config home: a default apply asks the screen's diff and writes nothing without its token, a wrong or stale token asks again and writes nothing, an unknown profile writes nothing, a session apply binds without writing shared state, and only one apply runs at a time.
 
-The review tests use a fake owner service and a fake native review adapter only; they never run `gentle-ai`, so nothing on the machine is toggled. They cover the wire projection of every source and scope, fail-closed `unknown` on a failed, timed-out, malformed, or throwing read, `review_unavailable` for a missing owner, host, adapter, or unsupported command, strict params rejected before discovery, the first call writing nothing, a matching token writing then re-reading, wrong and stale tokens asking again with a fresh token, the process-wide single-flight gate, clone enable under a global off (dialog text and a `changed: false` no-op), a scope-only change emitting the event, failed writes emitting nothing and carrying no CLI detail, the response-before-event order over the transport, and the versioned adapter discovery. They also load the real `extensions/gentle-ai.ts` owner over a fake adapter to prove the STATUS, write-with-scope, re-read call sequence, the error classification, the bounded read, and that a subagent child never answers.
+The review tests use a fake owner service and a fake native review adapter only; they never run `drakonc-ai`, so nothing on the machine is toggled. They cover the wire projection of every source and scope, fail-closed `unknown` on a failed, timed-out, malformed, or throwing read, `review_unavailable` for a missing owner, host, adapter, or unsupported command, strict params rejected before discovery, the first call writing nothing, a matching token writing then re-reading, wrong and stale tokens asking again with a fresh token, the process-wide single-flight gate, clone enable under a global off (dialog text and a `changed: false` no-op), a scope-only change emitting the event, failed writes emitting nothing and carrying no CLI detail, the response-before-event order over the transport, and the versioned adapter discovery. They also load the real `extensions/drakonc-ai.ts` owner over a fake adapter to prove the STATUS, write-with-scope, re-read call sequence, the error classification, the bounded read, and that a subagent child never answers.
 
-The stats tests write session files into a temporary sessions root outside the worktree and load the real `gentle-stats` owner with the real Desktop transport: they cover the advertised method with no new event, the 7-day/current-project defaults, every range and scope against `aggregateStats`, project display names and the absence of paths, session ids, providers, and message text, the model/day/project bounds with `truncated` and complete totals, reads through the owner's single loader with concurrent requests sharing one load, invalid params rejected before any load, `stats_unavailable` for unreadable roots and for an absent owner, the owner leaving the bus on shutdown, a session reset dropping an in-flight read, throwing or malformed owner reads, and the versioned adapter discovery. `tests/stats-collector.test.ts` pins the shared in-flight load and the readable-root check.
+The stats tests write session files into a temporary sessions root outside the worktree and load the real `drakonc-stats` owner with the real Desktop transport: they cover the advertised method with no new event, the 7-day/current-project defaults, every range and scope against `aggregateStats`, project display names and the absence of paths, session ids, providers, and message text, the model/day/project bounds with `truncated` and complete totals, reads through the owner's single loader with concurrent requests sharing one load, invalid params rejected before any load, `stats_unavailable` for unreadable roots and for an absent owner, the owner leaving the bus on shutdown, a session reset dropping an in-flight read, throwing or malformed owner reads, and the versioned adapter discovery. `tests/stats-collector.test.ts` pins the shared in-flight load and the readable-root check.
 
 The update-status tests drive the real Desktop transport with injected sources that count every lookup that would reach the network: they cover the advertised method with no new event, plain reads answering from the launcher's recorded lookup with no network work, a refresh running each lookup once with its check time and later plain reads answering from it, `up_to_date` only for an exact match after a successful lookup, newer local builds and prereleases staying `unknown`, failed lookups answering `unknown` with no error text on the wire while plain reads keep the last good result, the refresh deadline with lookups that never settle, concurrent refreshes sharing one run, `PI_OFFLINE` doing no lookup and claiming nothing, the main-channel commit comparison, each channel's fixed command, Pi without a reachable latest source, every package state, the 100-row bound with `truncated`, an unreadable listing, display names free of paths, URLs, and credentials, params rejected before any source work, and `updates_unavailable` for an unbound session, a throwing source, and a read a reset superseded. Two tests run the real sources against a temporary agent dir, launcher config, channel record, and a fake fetch: Pi's own listing and parser, the launcher's release record, the channel record (missing, `main`, malformed), Pi's `VERSION`, the release lookup's single request, and Pi's own package check reporting nothing under `PI_OFFLINE`.
 
 The config tests build six stores in a temporary root and inject the worktree identity, so no real user config, agent home, or repository pin is read. On the read side they cover every store, current path precedence, missing and malformed layers, revision stability and change, the read-only split, rejected stores/params/paths, the bounded snapshot projection, and a byte-and-mtime comparison proving a read never mutates a store. On the write side they cover a valid write for each writable store and both pin layers, clearing either pin layer and observing the winner fall back, clearing an already-missing layer as a no-op, clearing and replacing an unreadable layer, creating a missing store, a stale or missing `expectedRevision` (including on a clear), the documented rejection order (envelope, then store identity, then mutability, then revision, then payload), data the owner would drop, malformed pin clear shapes, extra and physical-path keys, every read-only store, a forced owner write failure (the store path is a directory) answering `write_failed` with no path, OS code, or event and an unchanged tree, the no-op path with untouched bytes and mtime, the resulting disk bytes, revision movement and its invalid-state coarseness, the response-then-event order over the real transport, and that a stopped session neither answers nor writes. They also re-check that the config dispatcher still falls through to the permission bridge.
 
-The external-change tests inject the directory watcher factory and a fake clock, so no assertion depends on real filesystem notification timing. They cover debounce coalescing and window restart, name filtering in shared directories, the real `fs.watch` watcher closing itself when its directory is removed (on Windows a removed directory otherwise keeps the process alive), watcher-creation failure (one directory and every directory) leaving `get_config`, `get_snapshot`, and `set_config` working with no error and no event, an external `profiles` edit producing one `config_changed` with `source: "external"` and no content or path, unchanged recomputed revisions (reformatting, change-and-undo) emitting nothing, a Desktop `set_config` never echoed as external, pin layers watched in the session worktree and re-targeted when the cwd changes, the cwd-dependent stores re-read and announced once on a re-target, a change still debounced when the cwd moves flushed rather than lost, a removed owner directory re-armed through its ancestor with exactly one event after it is recreated and written, a Desktop `profiles` write that makes a pin stale reported as one external `pins` event, a missing owner directory watched through its nearest existing ancestor and upgraded step by step (and closed on dispose), real `fs.watch` runs (rename-replace, Desktop write without echo, delete, recreate, a late `.pi/` directory, a local pin written into a fresh `<git-common-dir>/gentle-ai/`, nothing after reset), disposal on session shutdown and session switch (watchers closed, pending recompute cancelled, nothing published), no watcher and no owner subscription for TUI or headless hosts, `/gentle:mode` and `/gentle:mode default` producing external `permission_mode_changed` events over the real `registerYoloSessionPolicy` owner, a Desktop `set_permission_mode` never echoed (including an owner window that closes while the set is in flight), an external change right after a Desktop set's response still reported, a throwing emitter never propagating, a re-read in flight across a reset never emitting, `wire()` never rejecting when the owner throws, observation stopping on shutdown and restarting with a fresh sequence, and a missing permission owner leaving config events intact.
+The external-change tests inject the directory watcher factory and a fake clock, so no assertion depends on real filesystem notification timing. They cover debounce coalescing and window restart, name filtering in shared directories, the real `fs.watch` watcher closing itself when its directory is removed (on Windows a removed directory otherwise keeps the process alive), watcher-creation failure (one directory and every directory) leaving `get_config`, `get_snapshot`, and `set_config` working with no error and no event, an external `profiles` edit producing one `config_changed` with `source: "external"` and no content or path, unchanged recomputed revisions (reformatting, change-and-undo) emitting nothing, a Desktop `set_config` never echoed as external, pin layers watched in the session worktree and re-targeted when the cwd changes, the cwd-dependent stores re-read and announced once on a re-target, a change still debounced when the cwd moves flushed rather than lost, a removed owner directory re-armed through its ancestor with exactly one event after it is recreated and written, a Desktop `profiles` write that makes a pin stale reported as one external `pins` event, a missing owner directory watched through its nearest existing ancestor and upgraded step by step (and closed on dispose), real `fs.watch` runs (rename-replace, Desktop write without echo, delete, recreate, a late `.pi/` directory, a local pin written into a fresh `<git-common-dir>/drakonc-ai/`, nothing after reset), disposal on session shutdown and session switch (watchers closed, pending recompute cancelled, nothing published), no watcher and no owner subscription for TUI or headless hosts, `/drakonc:mode` and `/drakonc:mode default` producing external `permission_mode_changed` events over the real `registerYoloSessionPolicy` owner, a Desktop `set_permission_mode` never echoed (including an owner window that closes while the set is in flight), an external change right after a Desktop set's response still reported, a throwing emitter never propagating, a re-read in flight across a reset never emitting, `wire()` never rejecting when the owner throws, observation stopping on shutdown and restarting with a fresh sequence, and a missing permission owner leaving config events intact.
 
 The sessions tests write real Pi session files into an isolated root (a custom session directory, and a default agent directory through `PI_CODING_AGENT_DIR`) and run Pi's real `SessionManager` through the Desktop command: they cover the project and all-projects scopes for both a custom and the default session directory, newest-first order, the whitelisted projection (no path, cwd, session file, or full message text), the bounded `firstMessage`, the display-only `project`, `current`, keyset paging and its end, param validation before any owner work, `sessions_unavailable` without a bound context, a late list dropped after a reset, a switch that hands Pi the owner-resolved file and answers from the replacement session with a fresh sequence, the current-session no-op, `not_found` outside the requested scope, a cancelled switch, a refused switch with no raw error, `session_switching` for every request dispatched while a switch is in flight (and the gate's release after a cancelled or failed switch), a request pending on an owner at teardown answered exactly once, a command delivered to the replaced instance answered without touching its stale context, path-, glob-, and prefix-shaped ids that never resolve, another project's entries exposing only its display name, forged cursors, and a backslash name projected unchanged. The router tests cover the gate and `abandonPending` (one answer, the kept request still answered by its outcome, late outcomes dropped).
 
@@ -2164,11 +2164,11 @@ The maintainer probes run the installed Pi runtime with isolated HOME, agent hom
 1. transport only — this extension alone proves slash-command dispatch, correlation, and that capabilities advertise the permission, config, usage, design, jobs, and subagents domains;
 2. config reads — the same isolated runtime reads pre-seeded `profiles.json` and project `models.json` through `get_config`, checks the bounded `get_snapshot` projection, and proves no event is emitted and no store is created or rewritten;
 3. config write — the same isolated runtime reads the `profiles` write target, sends a `set_config` with that `expectedRevision`, observes the response plus one ordered `config_changed`, reads the store back with a moved revision, asserts the on-disk bytes are exactly the owner's serialization, and proves no other store was created and `get_messages` stayed empty;
-4. live owner — the real `extensions/gentle-ai.ts` owner extension is loaded alongside this extension, and the probe reads the mode, sets `auto` with `persist: false`, observes the response plus one `permission_mode_changed` event, and reads `auto` again in the same process without a restart, while `get_messages` stays empty and no default file is written. Nothing in the probe reimplements the owner;
-5. usage owner — the real `extensions/gentle-shell.ts` usage owner is loaded alongside this extension, and the probe reads `get_subscription_usage` for `anthropic` and `openai-codex` and observes truthful offline `pending` answers with no event and no live provider fetch. It never calls `refresh_subscription_usage` against a live provider;
-6. design owner — the real `extensions/gentle-design.ts` design owner is loaded alongside this extension, and the probe reads `get_design_canvas` (with and without `includeUrl`) and observes the truthful owner-loaded stopped state (`running: false`, `slug: null`, `connectedClients: 0`, `designs: []`) with no event and no tokenized URL. It never starts a canvas server or opens a browser;
-7. jobs owner — the real `extensions/gentle-agents.ts` jobs owner is loaded alongside this extension, and the probe reads `list_jobs` and observes the truthful owner-loaded empty list (`jobs: []`) with no event and no command or output path on the wire. It never starts a job;
-8. subagents owner — the real `extensions/gentle-agents.ts` subagents owner is loaded alongside this extension, and the probe reads `list_subagents` and observes the truthful owner-loaded empty list (`agents: []`) with no event and no prompt text, session path, or working directory on the wire. It never starts a child;
+4. live owner — the real `extensions/drakonc-ai.ts` owner extension is loaded alongside this extension, and the probe reads the mode, sets `auto` with `persist: false`, observes the response plus one `permission_mode_changed` event, and reads `auto` again in the same process without a restart, while `get_messages` stays empty and no default file is written. Nothing in the probe reimplements the owner;
+5. usage owner — the real `extensions/drakonc-shell.ts` usage owner is loaded alongside this extension, and the probe reads `get_subscription_usage` for `anthropic` and `openai-codex` and observes truthful offline `pending` answers with no event and no live provider fetch. It never calls `refresh_subscription_usage` against a live provider;
+6. design owner — the real `extensions/drakonc-design.ts` design owner is loaded alongside this extension, and the probe reads `get_design_canvas` (with and without `includeUrl`) and observes the truthful owner-loaded stopped state (`running: false`, `slug: null`, `connectedClients: 0`, `designs: []`) with no event and no tokenized URL. It never starts a canvas server or opens a browser;
+7. jobs owner — the real `extensions/drakonc-agents.ts` jobs owner is loaded alongside this extension, and the probe reads `list_jobs` and observes the truthful owner-loaded empty list (`jobs: []`) with no event and no command or output path on the wire. It never starts a job;
+8. subagents owner — the real `extensions/drakonc-agents.ts` subagents owner is loaded alongside this extension, and the probe reads `list_subagents` and observes the truthful owner-loaded empty list (`agents: []`) with no event and no prompt text, session path, or working directory on the wire. It never starts a child;
 9. sessions — with a session pre-seeded in the probe's `--session-dir`, the probe lists it through `list_sessions`, switches to it by id, receives the correlated response from the replacement session, reads `get_snapshot` at sequence 0, sees the session listed as `current`, gets `changed: false` for a second switch, and reads the seeded conversation through Pi's `get_messages`. No session file or absolute path appears on the wire. Three more probes send requests back to back right after a `switch_session` and check that each gets exactly one response and that the session then listed as current matches the switch that answered `changed: true`: another switch plus `list_sessions` (each `session_switching` or a real answer); a second switch to the same id (`session_switching`, final session unchanged); and `get_snapshot`, `capabilities`, and `list_jobs` (each `session_switching`).
 10. update status — with `PI_OFFLINE=1`, the probe reads `get_update_status` plainly and with `refresh: true`, and observes `offline: true`, `refreshed: false`, the `release` channel and its fixed command, Pi's real version with an `unknown` latest, an empty package list, no `up_to_date` claim, no event, and no absolute path on the wire. It never reaches the network.
 

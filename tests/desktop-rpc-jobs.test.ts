@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
-import gentleAgents, { type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
+import drakoncAgents, { type SessionTransportFactory } from "../extensions/drakonc-agents.ts";
 import { createJobRegistry, createOutputTail, MAX_TAIL_LINE_CHARS, TAIL_LINES, type JobExecOperations, type JobRecord } from "../lib/background-jobs.ts";
 import { createMonitorController, type MonitorController } from "../lib/background-monitor.ts";
 import { registerBackgroundJobTools } from "../lib/background-jobs-tools.ts";
@@ -154,7 +154,7 @@ test("projectDesktopJob keeps only the whitelist and never command/cwd/path/tail
 		command: "gh run watch 42 --exit-status",
 		cwd: "/home/devel/secret-repo",
 		ownerSessionId: "session-a",
-		outputPath: "/tmp/gentle-jobs/job-1.log",
+		outputPath: "/tmp/drakonc-jobs/job-1.log",
 		startedAt: 1000,
 		status: "running",
 		tail: ["secret output line"],
@@ -174,7 +174,7 @@ test("projectDesktopJob keeps only the whitelist and never command/cwd/path/tail
 	const projected = JSON.stringify(projectDesktopJob(job));
 	assert.equal(projected.includes("gh run"), false);
 	assert.equal(projected.includes("secret-repo"), false);
-	assert.equal(projected.includes("gentle-jobs"), false);
+	assert.equal(projected.includes("drakonc-jobs"), false);
 	assert.equal(projected.includes("secret output"), false);
 });
 
@@ -207,7 +207,7 @@ test("params parsers accept only the documented shapes", () => {
 test("isDesktopJobsServiceShape accepts only the versioned adapter", () => {
 	const good = { schema: DESKTOP_JOBS_SERVICE_SCHEMA, read: () => ({ sessionId: "s", jobs: [] }), cancel: () => ({ kind: "not_found" }), observe: () => () => {}, dispose: () => {} };
 	assert.equal(isDesktopJobsServiceShape(good), true);
-	assert.equal(isDesktopJobsServiceShape({ ...good, schema: "gentle-pi.desktop-jobs-service/v0" }), false);
+	assert.equal(isDesktopJobsServiceShape({ ...good, schema: "drakonc-pi.desktop-jobs-service/v0" }), false);
 	assert.equal(isDesktopJobsServiceShape({ ...good, cancel: undefined }), false);
 	assert.equal(isDesktopJobsServiceShape(null), false);
 	assert.equal(isDesktopJobsServiceShape("nope"), false);
@@ -493,7 +493,7 @@ test("discoverDesktopJobsService accepts the versioned adapter and ignores malfo
 	assert.equal(service?.schema, DESKTOP_JOBS_SERVICE_SCHEMA);
 
 	listeners.set(DESKTOP_JOBS_SERVICE_CHANNEL, (payload) => {
-		(payload as { respond(service: unknown): void }).respond({ schema: "gentle-pi.desktop-jobs-service/v0", read: () => ({ sessionId: "s", jobs: [] }) });
+		(payload as { respond(service: unknown): void }).respond({ schema: "drakonc-pi.desktop-jobs-service/v0", read: () => ({ sessionId: "s", jobs: [] }) });
 	});
 	assert.equal(await discoverDesktopJobsService(pi, ctx), undefined);
 });
@@ -586,7 +586,7 @@ function desktopHarness(t: test.TestContext) {
 
 test("the Desktop transport advertises the jobs methods and event", (t) => {
 	const app = desktopHarness(t);
-	app.commands.get("gentle:desktop")!.handler(
+	app.commands.get("drakonc:desktop")!.handler(
 		JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "cap-1", method: "capabilities", params: {} }),
 		app.ctx,
 	);
@@ -630,7 +630,7 @@ test("the Desktop transport advertises the jobs methods and event", (t) => {
 
 test("list_jobs answers jobs_unavailable through the transport without an owner extension", async (t) => {
 	const app = desktopHarness(t);
-	await app.commands.get("gentle:desktop")!.handler(
+	await app.commands.get("drakonc:desktop")!.handler(
 		JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "jobs-1", method: "list_jobs", params: {} }),
 		app.ctx,
 	);
@@ -639,7 +639,7 @@ test("list_jobs answers jobs_unavailable through the transport without an owner 
 	assert.deepEqual(response.error, JOBS_UNAVAILABLE);
 });
 
-// ---- Real owner: the gentle-agents jobs seam drives monitor self-stop ----
+// ---- Real owner: the drakonc-agents jobs seam drives monitor self-stop ----
 
 interface RealOwnerHarness {
 	handlers: Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>;
@@ -677,7 +677,7 @@ function recordedSchedule() {
 }
 
 /**
- * Instantiates the real `gentleAgents` extension (the actual owner seam, real
+ * Instantiates the real `drakoncAgents` extension (the actual owner seam, real
  * `JobRegistry`, and real `MonitorController`) with a fake host, then discovers
  * the real owner service and subscribes a Desktop bridge. This is the same
  * production wiring the maintainer probe loads, driven in-process.
@@ -754,10 +754,10 @@ async function realOwnerHarness(t: test.TestContext, session: { id: string } = {
 		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("inert transport must not send"); } }),
 	};
 
-	gentleAgents(pi, { GENTLE_PI_CONFIG_HOME: configHome, PATH: process.env.PATH ?? "" }, {
+	drakoncAgents(pi, { DRAKONC_PI_CONFIG_HOME: configHome, PATH: process.env.PATH ?? "" }, {
 		home,
 		agentHome,
-		env: { GENTLE_PI_CONFIG_HOME: configHome, PATH: process.env.PATH ?? "" },
+		env: { DRAKONC_PI_CONFIG_HOME: configHome, PATH: process.env.PATH ?? "" },
 		schedule: scheduled.schedule,
 		now: () => clock,
 		jobShell: () => ({ operations: fake.operations }),
@@ -860,13 +860,13 @@ test("plainJobOutput strips terminal control sequences and keeps the visible tex
 test("projectDesktopJobOutput carries only the job projection, the plain tail text, and truncated", () => {
 	const job: JobRecord = {
 		id: "job-1", kind: "command", label: "CI", command: "make ci SECRET=1", cwd: "/home/devel/secret-repo", ownerSessionId: "session-a",
-		outputPath: "/tmp/gentle-jobs/job-1.log", startedAt: 1000, status: "failed", endedAt: 2000, error: "spawn /bin/secret ENOENT",
+		outputPath: "/tmp/drakonc-jobs/job-1.log", startedAt: 1000, status: "failed", endedAt: 2000, error: "spawn /bin/secret ENOENT",
 		tail: ["\u001b[31mFAIL\u001b[0m", "line 2"],
 	};
 	const view = projectDesktopJobOutput(job);
 	assert.deepEqual(view, { job: { id: "job-1", label: "CI", status: "failed", startedAt: 1000, endedAt: 2000 }, output: "FAIL\nline 2", truncated: false });
 	const serialized = JSON.stringify(view);
-	for (const secret of ["make ci", "secret-repo", "gentle-jobs", "ENOENT", "session-a"]) assert.equal(serialized.includes(secret), false, secret);
+	for (const secret of ["make ci", "secret-repo", "drakonc-jobs", "ENOENT", "session-a"]) assert.equal(serialized.includes(secret), false, secret);
 	assert.equal(projectDesktopJobOutput({ ...job, tailTruncated: true }).truncated, true);
 });
 
@@ -1021,7 +1021,7 @@ test("the real owner answers get_job_output for its own job and not_found otherw
 
 test("get_job_output answers jobs_unavailable through the transport without an owner extension", async (t) => {
 	const app = desktopHarness(t);
-	await app.commands.get("gentle:desktop")!.handler(
+	await app.commands.get("drakonc:desktop")!.handler(
 		JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "out-1", method: "get_job_output", params: { id: "job-1" } }),
 		app.ctx,
 	);

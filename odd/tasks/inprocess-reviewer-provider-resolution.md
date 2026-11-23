@@ -39,7 +39,7 @@ The throw is synchronous, which is why the reported failure carries `elapsed_ms:
 The composed provider does honor extensions
 (`@earendil-works/pi-coding-agent/dist/core/provider-composer.js:316`:
 `if (extension?.streamSimple && model.api === extension.api)`), and the real object already passed as
-`reviewerRegistry` at `extensions/gentle-ai.ts:8888` and `:8931` is `ctx.modelRegistry`, which exposes
+`reviewerRegistry` at `extensions/drakonc-ai.ts:8888` and `:8931` is `ctx.modelRegistry`, which exposes
 `getProvider(provider): Provider | undefined`
 (`dist/core/model-registry.d.ts:32`, present in 0.85.1). Only the narrowed TypeScript interface hides it.
 
@@ -82,7 +82,7 @@ The header phrase "no extension hooks" (`:12`) means no tool/skill/prompt hooks.
 - `docs/review-integration.md` (only if wording requires it; the file is byte-pinned in
   `scripts/verify-package-files.mjs` and its hash must be re-pinned when touched)
 
-Out of scope for this change: `extensions/gentle-ai.ts` (no change expected — the widened interface
+Out of scope for this change: `extensions/drakonc-ai.ts` (no change expected — the widened interface
 stops hiding a method the real object already has), `ResolvedRequestAuth.baseUrl` being dropped by the
 narrow seam (pre-existing, follow-up issue).
 
@@ -135,7 +135,7 @@ narrow seam (pre-existing, follow-up issue).
 ## Tasks
 
 - [x] IRP-0 — Sanitize the local pi install so an e2e check is meaningful: `~/.pi/agent/npm/package.json`
-      pins `gentle-pi` to a `file:` tarball that no longer exists, and the installed build is stock
+      pins `drakonc-pi` to a `file:` tarball that no longer exists, and the installed build is stock
       3.2.1 (subprocess relay, `--no-extensions`, no allowlist). Record the resulting versions.
 - [x] IRP-1 — RED: a focused failing test asserting that a registry exposing `getProvider` routes the
       completion through the returned provider's `streamSimple`, with the extension `api` reaching it,
@@ -152,7 +152,7 @@ narrow seam (pre-existing, follow-up issue).
 - [x] IRP-6 — Verify: focused tests, `pnpm test`, `pnpm run typecheck`, and the maintainer matrix
       (`pnpm run test:maintainer`) with observed results recorded below.
 - [x] IRP-7 — E2E from pi: a real RDD lens routed to `claude-bridge/*` completes and is admitted.
-- [ ] IRP-8 — PR upstream against `Gentleman-Programming/gentle-shell`, linking #1304, #1190, #757,
+- [ ] IRP-8 — PR upstream against `Drakoncman-Programming/drakonc-shell`, linking #1304, #1190, #757,
       #831, and naming the design-bug framing so the failure class does not return through a third door.
 
 ## Acceptance criteria
@@ -193,15 +193,15 @@ PR remain the user's decision.
 
 ## Verification evidence
 
-- IRP-0 (2026-09-21): the phantom `file:` pin was replaced with `gentle-pi@^3.3.0` from the registry;
-  `npm ls gentle-pi` reports `gentle-pi@3.3.0`. The installed build now carries
+- IRP-0 (2026-09-21): the phantom `file:` pin was replaced with `drakonc-pi@^3.3.0` from the registry;
+  `npm ls drakonc-pi` reports `drakonc-pi@3.3.0`. The installed build now carries
   `lib/inprocess-reviewer.ts` and no longer carries `lib/opaque-pi-reviewer-adapter.ts`, so the local
   baseline reproduces **this** defect (#1304, in-process) rather than the superseded
-  `--no-extensions` one (#1337). A repository-wide search for `GENTLE_PI_REVIEW_RELAY_EXTENSIONS` and
+  `--no-extensions` one (#1337). A repository-wide search for `DRAKONC_PI_REVIEW_RELAY_EXTENSIONS` and
   `review-relay.json` in the installed package returns nothing, which confirms no escape hatch exists
   on a stock install.
-- IRP-0 aligned versions: `gentle-ai` 3.3.0, `gentle-pi` 3.3.0, `pi` 0.85.1,
-  `@earendil-works/pi-coding-agent` 0.85.1, `pi-claude-bridge` 0.8.0. `gentle-pi`'s declared peer is
+- IRP-0 aligned versions: `drakonc-ai` 3.3.0, `drakonc-pi` 3.3.0, `pi` 0.85.1,
+  `@earendil-works/pi-coding-agent` 0.85.1, `pi-claude-bridge` 0.8.0. `drakonc-pi`'s declared peer is
   `@earendil-works/pi-coding-agent >=0.85.1`.
 - IRP-0 consequence for the fix: the live runtime is pi-coding-agent **0.85.1**, where
   `ModelRegistry.streamSimple` does not exist. The `getProvider` route is therefore not a portability
@@ -209,7 +209,7 @@ PR remain the user's decision.
   0.86.1-only API.
 - IRP-0 leftovers, dead but harmless, kept rather than deleted (they are user configuration, not
   cruft, and deleting them silently would erase evidence of the earlier workaround):
-  `~/.pi/gentle-ai/review-relay.json` (nothing in 3.3.0 reads it) and `~/.pi/agent/pi-env.bak` (the
+  `~/.pi/drakonc-ai/review-relay.json` (nothing in 3.3.0 reads it) and `~/.pi/agent/pi-env.bak` (the
   env var it set is not read in 3.3.0).
 
 - IRP-1/2/3/5 (2026-09-21), one work unit on `fix/inprocess-reviewer-provider-resolution`, uncommitted
@@ -232,11 +232,11 @@ PR remain the user's decision.
   `reviewerRegistry|InProcessReviewerRegistry|inprocess-reviewer|review-host-relay` reports only the two
   pre-existing `tests/review-host-relay-routing.test.ts` diagnostics already in the baseline. That is the
   assignability proof for the widened seam: `ctx.modelRegistry` reaches an `InProcessReviewerRegistry`
-  parameter at `extensions/gentle-ai.ts:8888`/`:8931` through `:7397` and `:6766` with no cast and no new
+  parameter at `extensions/drakonc-ai.ts:8888`/`:8931` through `:7397` and `:6766` with no cast and no new
   diagnostic, so the real `ModelRegistry.getProvider` satisfies the optional member and the
   composed-provider path is live in production, not only under the fakes.
 - `pnpm test` → exit 0; `tests 3000 / pass 2962 / fail 0 / skipped 38`, plus
-  `gentle-pi provider contract mirror check passed (contract 1.2.0, 9 bundle entries, 2 generated
+  `drakonc-pi provider contract mirror check passed (contract 1.2.0, 9 bundle entries, 2 generated
   baselines, acquisition field-test-local)` and the runtime harness.
 - The 30 pre-existing tests passed with the `fakeRegistry` helper unedited. The three new tests opt into
   the composed-provider seam by spreading a `getProvider` over it at the call site
@@ -275,7 +275,7 @@ PR remain the user's decision.
   → exit 0, `tests 3003 / pass 2965 / fail 0 / skipped 38` (+3 against the IRP-1/2/3/5 run of 3000/2962,
   exactly the three new tests), plus the provider contract mirror check and the runtime harness.
 - The new tests set and restore a single synthetic `OPENAI_API_KEY` placeholder around the call, the
-  established save/mutate/restore pattern already used in `tests/gentle-ai.test.ts` and
+  established save/mutate/restore pattern already used in `tests/drakonc-ai.test.ts` and
   `tests/model-routing-authority.test.ts`. The value is asserted **absent** from the forwarded options,
   never printed, and it is the variable name compat would read for the default fake model's provider,
   which is what makes the assertion mean something.
@@ -395,12 +395,12 @@ follow-up bucket as the dropped `baseUrl`, not a regression introduced here.
   original concern passes: `registerFauxProvider` injects into pi-ai compat's registry, and the
   maintainer fakes carry no `getProvider`, so they take the `deps.complete` fallback exactly as the
   optional-member design intended. `armed positive-lens: runMatrix completes end-to-end through the
-  in-process reviewer registry against a stub gentle-ai binary` passes. The 5 skips are pre-existing
-  and env-gated (`GENTLE_PI_MAINTAINER_BASELINE_BINARY`, `GENTLE_PI_MAINTAINER_CAPABLE_BINARY`,
+  in-process reviewer registry against a stub drakonc-ai binary` passes. The 5 skips are pre-existing
+  and env-gated (`DRAKONC_PI_MAINTAINER_BASELINE_BINARY`, `DRAKONC_PI_MAINTAINER_CAPABLE_BINARY`,
   `provider-relay.maintest.ts:18-32`); they require maintainer-supplied binaries this machine does not
   have and are unrelated to this change.
 - `pnpm test` — `tests 3003 / pass 2965 / fail 0 / skipped 38`, plus
-  `gentle-pi provider contract mirror check passed (contract 1.2.0, 9 bundle entries, 2 generated
+  `drakonc-pi provider contract mirror check passed (contract 1.2.0, 9 bundle entries, 2 generated
   baselines)`. Baseline before this change was 3000/2962; the +3 are the IRP-4 tests.
 - `pnpm run test:harness` — exit 0 (run separately so the exit code was not masked by a pipe).
 - `pnpm run typecheck` — exit 0, `196 recorded diagnostic(s), no regressions; 3 file/code pair(s)
@@ -416,18 +416,18 @@ IRP-7.
   modules)`. `lib/inprocess-reviewer.ts` is not a generated module, so no regeneration was needed.
 - `node scripts/verify-package-files.mjs` — exit 0, `167 files; 69 exact byte-pinned contract
   artifacts for the v3.4.0 runtime`.
-- `pnpm pack` on `e8f20fda` produced `gentle-pi-3.3.0.tgz` (its `prepack` re-ran the full suite, the
+- `pnpm pack` on `e8f20fda` produced `drakonc-pi-3.3.0.tgz` (its `prepack` re-ran the full suite, the
   runtime-module check and the package-file check, all green).
-- The tarball was moved to `~/.pi/local-builds/gentle-pi-3.3.0-e8f20fda.tgz` **before** installing, and
-  `~/.pi/agent/npm` now pins `file:../../local-builds/gentle-pi-3.3.0-e8f20fda.tgz`. This is a
+- The tarball was moved to `~/.pi/local-builds/drakonc-pi-3.3.0-e8f20fda.tgz` **before** installing, and
+  `~/.pi/agent/npm` now pins `file:../../local-builds/drakonc-pi-3.3.0-e8f20fda.tgz`. This is a
   deliberate correction of the earlier mistake IRP-0 had to clean up: the previous local build was
   packed inside the repository, so a branch switch deleted the tarball and left a pin pointing at
   nothing. A path under `~/.pi` is not touched by repository operations, and the commit sha in the
   filename makes it obvious which build is installed.
 - Installed build verified to carry the fix: `lib/inprocess-reviewer.ts:216`
   `deps.registry.getProvider?.(parsed.provider)` and `:295` the `streamSimple(...).result()` dispatch.
-- Runtime note: gentle-pi manages its own package-local binary at `.gentle-ai/v3.4.0/gentle-ai`. The
-  `gentle-ai` on `PATH` (`~/.local/bin`, v3.3.0) is a separate global install. The extension uses the
+- Runtime note: drakonc-pi manages its own package-local binary at `.drakonc-ai/v3.4.0/drakonc-ai`. The
+  `drakonc-ai` on `PATH` (`~/.local/bin`, v3.3.0) is a separate global install. The extension uses the
   managed one, so the earlier `review assess` runs in this document used the PATH binary and were
   informational only.
 
@@ -435,17 +435,17 @@ IRP-7.
 because a live session already holds the previously loaded module — and a review whose lens routes to
 `claude-bridge/*`.
 
-To roll back: `cd ~/.pi/agent/npm && npm install gentle-pi@3.3.0`.
+To roll back: `cd ~/.pi/agent/npm && npm install drakonc-pi@3.3.0`.
 
 ## IRP-7 result (2026-09-22): e2e passed
 
-New pi session (not `/reload`) on the installed `gentle-pi-3.3.0-e8f20fda` build, host model
-`claude-bridge/claude-fable-5-1`, lens routing from `~/.pi/gentle-ai/models.json`
+New pi session (not `/reload`) on the installed `drakonc-pi-3.3.0-e8f20fda` build, host model
+`claude-bridge/claude-fable-5-1`, lens routing from `~/.pi/drakonc-ai/models.json`
 (`review-reliability` → `claude-bridge/claude-opus-5`).
 
 - Candidate: committed range `b6188bef..0f4b59e2` on `fix/inprocess-reviewer-provider-resolution`
   (target `sha256:f3eccf13…`, 3 paths, 695 changed lines, tier **medium**, one lens).
-- Lineage `review-a8874051b62f9776`: START → STATUS `collect` → `gentle_review_capture_group`
+- Lineage `review-a8874051b62f9776`: START → STATUS `collect` → `drakonc_review_capture_group`
   forecast (`pi_host_relay`, 1 model run) → acknowledged run → `state: approved`,
   `submitted_reviewers: 1`, prompt 60,980 bytes, result 8,110 bytes → acknowledge-approved,
   authority burned. No `No API provider registered for api: claude-bridge` anywhere.
@@ -464,23 +464,23 @@ New pi session (not `/reload`) on the installed `gentle-pi-3.3.0-e8f20fda` build
 
 Environment blocker found and cleared on the way (not a defect of this fix):
 
-- `review start`/`status` stopped with `managed_assets_outdated` and `gentle-ai sync --agent pi` did
-  not clear it. Root cause: `~/.gentle-ai/state.json` was being rewritten back to
-  `installed_binary_version: 3.3.0` after every sync by the **PATH** `gentle-ai` (3.3.0 at
+- `review start`/`status` stopped with `managed_assets_outdated` and `drakonc-ai sync --agent pi` did
+  not clear it. Root cause: `~/.drakonc-ai/state.json` was being rewritten back to
+  `installed_binary_version: 3.3.0` after every sync by the **PATH** `drakonc-ai` (3.3.0 at
   `~/.local/bin`), invoked by the Claude Code hooks in `~/.claude/settings.json` that pi-claude-bridge
-  honors through the Claude Agent SDK. The gentle-pi managed binary is 3.4.0, so the two fought over
+  honors through the Claude Agent SDK. The drakonc-pi managed binary is 3.4.0, so the two fought over
   the state file.
-- Fix applied: `~/.local/bin/gentle-ai` replaced with the managed 3.4.0 binary (sha256 `309d9aaf…`,
-  identical to `.gentle-ai/v3.4.0/gentle-ai`); the 3.3.0 copy is kept at
-  `~/.local/bin/gentle-ai-3.3.0.bak`. A full `gentle-ai sync` then left `state.json` at 3.4.0 and it
-  stayed there. Roll back with `mv ~/.local/bin/gentle-ai-3.3.0.bak ~/.local/bin/gentle-ai`.
+- Fix applied: `~/.local/bin/drakonc-ai` replaced with the managed 3.4.0 binary (sha256 `309d9aaf…`,
+  identical to `.drakonc-ai/v3.4.0/drakonc-ai`); the 3.3.0 copy is kept at
+  `~/.local/bin/drakonc-ai-3.3.0.bak`. A full `drakonc-ai sync` then left `state.json` at 3.4.0 and it
+  stayed there. Roll back with `mv ~/.local/bin/drakonc-ai-3.3.0.bak ~/.local/bin/drakonc-ai`.
 
 ## Native review boundary
 
 Receipt-driven development is **on** (decided by global). Per work-unit commit:
 
 - `aa964db4`, `a0130b50` — documentation only, passive, structural readback only. Boundary advanced.
-- `60f9d4e6` — `gentle-ai review assess --base-ref aa964db4 --committed-only` returned `risk: medium`
+- `60f9d4e6` — `drakonc-ai review assess --base-ref aa964db4 --committed-only` returned `risk: medium`
   (`executable_change` on `lib/inprocess-reviewer.ts`, 3 paths, 193 changed lines). Medium **defers to
   the PR slice**: the candidate is the range accumulated since `aa964db4`, and the native preflight
   STATUS runs at slice close (after IRP-4 and IRP-6), not per commit. Outcome so far:
@@ -494,7 +494,7 @@ The next reviewed boundary becomes the base for whatever follows the slice.
 
 ## IRP-8 audit (2026-09-22): blocked on the issue gate
 
-- Rebased onto `upstream/main` at `ba985f50` (gentle-pi 3.5.0, 28 commits ahead of the old base)
+- Rebased onto `upstream/main` at `ba985f50` (drakonc-pi 3.5.0, 28 commits ahead of the old base)
   with no conflicts; none of those commits touch `lib/inprocess-reviewer.ts`,
   `tests/inprocess-reviewer.test.ts` or `lib/review-host-relay.ts`, and none reference #1304. After
   the rebase: focused 36/36, relay 43/43, `pnpm test` 3174/3136 pass/0 fail/38 skipped, typecheck
@@ -512,6 +512,6 @@ The next reviewed boundary becomes the base for whatever follows the slice.
 
 ## Next step
 
-IRP-8: once #1304 is `status:approved`, push the branch and open the PR upstream against `Gentleman-Programming/gentle-shell` linking #1304, #1190, #757
+IRP-8: once #1304 is `status:approved`, push the branch and open the PR upstream against `Drakoncman-Programming/drakonc-shell` linking #1304, #1190, #757
 and #831, naming the design-bug framing, and listing the four advisory findings from the slice-close
 review as follow-up candidates. Every acceptance criterion, including the e2e one, is now met.

@@ -42,7 +42,7 @@ runtime signal instead of a fixed "~150k tokens" estimate in prompt text. Branch
   units heavy enough to repay a subagent start. Parent decision for genericity: no prices or provider tiers, only the
   model's context window from Pi plus an absolute cap.
 - L2 (writer, 2026-10-15, T1): `lib/context-backstop.ts` holds the threshold `min(cap, fraction x window)` (defaults
-  150,000 and 0.5; `GENTLE_PI_CONTEXT_BACKSTOP_TOKENS`, `GENTLE_PI_CONTEXT_BACKSTOP_FRACTION`; invalid values keep the
+  150,000 and 0.5; `DRAKONC_PI_CONTEXT_BACKSTOP_TOKENS`, `DRAKONC_PI_CONTEXT_BACKSTOP_FRACTION`; invalid values keep the
   defaults; unknown window leaves the cap; null tokens never reach it) and the once-per-crossing signal keyed by
   session. The primary `tool_result` handler appends the notice after the commit slice line (content first, structured
   content kept, `isError` untouched); children and in-process named-agent turns never get it. The writer admission
@@ -54,4 +54,4 @@ runtime signal instead of a fixed "~150k tokens" estimate in prompt text. Branch
   GREEN; `pnpm test` all three stages passed (6867 tests, 0 failed); `pnpm -s typecheck` clean. Differential admission,
   HEAD vs after, writer without a feature document: 100k/400k blocked/blocked; 200k/1M admitted/admitted; 64k/128k
   blocked/admitted (intended by S2/S4: a small window reaches the backstop at half its size). Follow-up outside this
-  task's surfaces: `skills/gentle-ai/SKILL.md:50` still states "~150k tokens".
+  task's surfaces: `skills/drakonc-ai/SKILL.md:50` still states "~150k tokens".

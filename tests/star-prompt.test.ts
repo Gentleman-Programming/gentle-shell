@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createStarPromptExtension } from "../extensions/gentle-star-prompt.ts";
+import { createStarPromptExtension } from "../extensions/drakonc-star-prompt.ts";
 import {
 	DEFAULT_STAR_PROMPT_STATE,
 	DISMISS_CHORD,
@@ -48,7 +48,7 @@ test("star prompt state: malformed JSON fails closed as unusable", async () => {
 test("star prompt state: valid content round-trips", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "star-prompt-"));
 	try {
-		writeStarPromptState(dir, { schema: "gentle-shell.star-prompt/v1", sent: 7, dismissed: true });
+		writeStarPromptState(dir, { schema: "drakonc-shell.star-prompt/v1", sent: 7, dismissed: true });
 		const raw = JSON.parse(await readFile(join(dir, "star-prompt.json"), "utf8"));
 		assert.equal(raw.sent, 7);
 		const read = readStarPromptState(dir);
@@ -145,7 +145,7 @@ function harness(options: HarnessOptions = {}) {
 	const openedUrls: string[] = [];
 	const deps = {
 		configHome: "/unused",
-		readState: () => ({ state: (options.state ?? { schema: "gentle-shell.star-prompt/v1", sent: 0, dismissed: false }) as StarPromptState, unusable: options.unusable ?? false }),
+		readState: () => ({ state: (options.state ?? { schema: "drakonc-shell.star-prompt/v1", sent: 0, dismissed: false }) as StarPromptState, unusable: options.unusable ?? false }),
 		writeState: options.writeState ?? ((_configHome: string, state: StarPromptState) => {
 			written.push(state);
 		}),
@@ -176,7 +176,7 @@ function harness(options: HarnessOptions = {}) {
 	return { fire, send, key, statuses, notes, written, scheduled, advance, gh, openedUrls, get terminalHandler() { return terminalHandler; }, get widget() { return widget; }, get renders() { return renders; } };
 }
 
-const stateWith = (sent: number, extra: Record<string, unknown> = {}) => ({ schema: "gentle-shell.star-prompt/v1", sent, dismissed: false, ...extra });
+const stateWith = (sent: number, extra: Record<string, unknown> = {}) => ({ schema: "drakonc-shell.star-prompt/v1", sent, dismissed: false, ...extra });
 
 // ---------- extension ----------
 
@@ -277,7 +277,7 @@ test("extension: the offer is painted in the theme's success green, like added l
 	h.advance(STAR_PROMPT_IDLE_MS);
 	h.scheduled[0].fn();
 	const offer = h.statuses.at(-1);
-	assert.ok(typeof offer === "string" && offer.startsWith("<success>Enjoying Gentle Shell?") && offer.includes("never asks again</success>"));
+	assert.ok(typeof offer === "string" && offer.startsWith("<success>Enjoying Drakonc Shell?") && offer.includes("never asks again</success>"));
 });
 
 const mouse = (type: "move" | "click", x: number, button: "none" | "left" | "right" = type === "move" ? "none" : "left") =>
@@ -328,9 +328,9 @@ test("extension: the offer is responsive: the longest whole wording that fits, w
 	const plain = (width: number) => h.widget!.render(width)[0]!.replace(/<\/?[a-z]+>/g, "");
 	const wording = (width: number) => plain(width).slice(0, -"[star]".length).trimEnd();
 	const cases: Array<[number, string]> = [
-		[400, "Enjoying Gentle Shell? Ctrl+G stars both Gentleman-Programming repos (github.com/Gentleman-Programming/gentle-shell and github.com/Gentleman-Programming/gentle-ai) on GitHub, Alt+D never asks again"],
-		[120, "Enjoying Gentle Shell? Ctrl+G stars gentle-shell and gentle-ai on GitHub, Alt+D never asks again"],
-		[90, "Enjoying Gentle Shell? Ctrl+G stars us on GitHub, Alt+D never asks again"],
+		[400, "Enjoying Drakonc Shell? Ctrl+G stars both Drakoncman-Programming repos (github.com/Drakoncman-Programming/drakonc-shell and github.com/Drakoncman-Programming/drakonc-ai) on GitHub, Alt+D never asks again"],
+		[120, "Enjoying Drakonc Shell? Ctrl+G stars drakonc-shell and drakonc-ai on GitHub, Alt+D never asks again"],
+		[90, "Enjoying Drakonc Shell? Ctrl+G stars us on GitHub, Alt+D never asks again"],
 		[60, "Ctrl+G stars us on GitHub, Alt+D never asks again"],
 		[36, "Ctrl+G star, Alt+D dismiss"],
 		[20, "Ctrl+G star"],
@@ -365,8 +365,8 @@ test("extension: when gh cannot star, Ctrl+G falls back to opening both repos in
 	assert.deepEqual(h.notes, []);
 	// Both sibling repos open so the chord never dead-ends.
 	assert.deepEqual(h.openedUrls, [
-		"https://github.com/Gentleman-Programming/gentle-shell",
-		"https://github.com/Gentleman-Programming/gentle-ai",
+		"https://github.com/Drakoncman-Programming/drakonc-shell",
+		"https://github.com/Drakoncman-Programming/drakonc-ai",
 	]);
 	assert.equal(h.written.at(-1)?.dismissed, true);
 });

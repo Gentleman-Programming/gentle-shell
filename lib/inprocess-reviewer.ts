@@ -1,4 +1,4 @@
-// In-process reviewer completion (gentle-ai#4611; gentle-pi#311 P1).
+// In-process reviewer completion (drakonc-ai#4611; drakonc-pi#311 P1).
 //
 // The relay child this module replaced ran a locked-down `pi --print` process
 // with extension discovery disabled, which dropped extension-registered
@@ -12,11 +12,11 @@
 // session, and none of pi's tool/skill/prompt extension hooks. Extension
 // *providers* are the opposite: they are explicitly in scope. Reading the
 // earlier "no extension hooks" wording as "no extension providers" is what
-// produced gentle-shell#1304, where every extension-registered model was
+// produced drakonc-shell#1304, where every extension-registered model was
 // unreachable, so the distinction is stated here rather than implied.
 //
 // Every I/O seam is injected (`registry`, `complete`, `now`), so this module
-// runs under tests with no network and no pi process. gentle-pi#311 P2 wires
+// runs under tests with no network and no pi process. drakonc-pi#311 P2 wires
 // this into the lens relay (lib/review-host-relay.ts); P3 wires the provider
 // role vectors. This file stays a pure completion, never invoked from here.
 
@@ -72,7 +72,7 @@ export const INPROCESS_REVIEWER_FAILURE = {
 } as const;
 export type InProcessReviewerFailureCode = (typeof INPROCESS_REVIEWER_FAILURE)[keyof typeof INPROCESS_REVIEWER_FAILURE];
 
-// gentle-ai#6095: an empty completion has more than one cause, and only the
+// drakonc-ai#6095: an empty completion has more than one cause, and only the
 // completion itself carries the facts that tell them apart. Attributing it
 // generically ("reviewer produced no text") pushed the diagnosis onto whoever
 // read the transcript next: the recorded model id, stop reason and usage split
@@ -185,7 +185,7 @@ function reportedCounter(value: unknown): number | undefined {
 
 /**
  * Attribute an empty completion from the facts the completion itself reported.
- * Two shapes are attributable today (gentle-ai#6095):
+ * Two shapes are attributable today (drakonc-ai#6095):
  *
  * - `stopReason: "length"` whose output budget was consumed by reasoning. This
  *   is deterministic for the routed model, not an incident: a lens routed to a

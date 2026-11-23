@@ -16,7 +16,7 @@ function scratch(t: TestContext, prefix: string): string {
 }
 
 function designRoot(t: TestContext) {
-	const root = join(scratch(t, "gentle-design-comments-"), "design");
+	const root = join(scratch(t, "drakonc-design-comments-"), "design");
 	mkdirSync(join(root, "alpha"), { recursive: true });
 	return root;
 }
@@ -142,7 +142,7 @@ test("inputs are validated before anything is written", async (t) => {
 
 test("a design directory or comments.json that escapes the root by symlink is refused", async (t) => {
 	const root = designRoot(t);
-	const outside = scratch(t, "gentle-design-comments-outside-");
+	const outside = scratch(t, "drakonc-design-comments-outside-");
 	writeFileSync(join(outside, "comments.json"), JSON.stringify({ version: 1, comments: [] }));
 	symlinkSync(outside, join(root, "escape"));
 	const store = createDesignCommentStore(root);
@@ -194,7 +194,7 @@ test("a stored screenshot path outside .screenshots makes comments.json invalid,
 	writeFileSync(join(root, "alpha", "comments.json"), JSON.stringify({ version: 1, comments: [entry] }));
 	await assert.rejects(store.read("alpha"), (error: unknown) => error instanceof DesignCommentsError && error.code === "invalid-file");
 	rmSync(join(root, "alpha", "comments.json"));
-	const outside = scratch(t, "gentle-design-shots-outside-");
+	const outside = scratch(t, "drakonc-design-shots-outside-");
 	symlinkSync(outside, join(root, "alpha", ".screenshots"));
 	await assert.rejects(store.add("alpha", { ...INPUT, screenshot: { mimeType: "image/png", data: PNG } }), (error: unknown) => error instanceof DesignCommentsError && error.code === "invalid-file");
 	assert.deepEqual(readdirSync(outside), []);

@@ -3,12 +3,12 @@ import { measureAgentsViewLayout, type AgentsViewLayout } from "./agents-view-la
 import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
 import { emptyThread, isFinished, TASK_STATUS, type TaskRecord, type TaskStore, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
 import { renderThreadItem, type AgentsThreadTheme } from "./agents-thread-view.ts";
-import { formatElapsed } from "./agents-widget.ts";
+import { AGENTS_GLYPH, formatElapsed } from "./agents-widget.ts";
 import { createNativePointerScope, type NativePointerRegion } from "./native-pointer-region.ts";
 import { formatCost, formatTokens } from "./shell-bar.ts";
 import { PresenceCursor, readActivity, type Header, type Target } from "./orchestrator-presence.ts";
 
-// Gentle Agents overlay: tasks on the left, the selected task's thread on
+// Drakonc Agents overlay: tasks on the left, the selected task's thread on
 // the right. Only the selected task is subscribed, thread items are rendered
 // once each (they are immutable until replaced), and the viewport shows the
 // tail unless the human scrolls up. Current scope contains direct live children;
@@ -431,7 +431,7 @@ export class AgentsView {
 		if (modeLabel) this.modeRegion.render(modeWidth);
 		const scope = this.deps.sessionId === undefined ? "" : `${SCOPE_LABEL[this.scope]} · `;
 		const controlsWidth = (closeLabel ? closeWidth + 1 : 0) + (modeLabel ? modeWidth + 1 : 0);
-		const title = truncateToWidth(`❀ Agents · ${scope}${this.counts()}`, Math.max(0, inner - 3 - controlsWidth), "…");
+		const title = truncateToWidth(`${AGENTS_GLYPH} Agents · ${scope}${this.counts()}`, Math.max(0, inner - 3 - controlsWidth), "…");
 		const mode = modeLabel ? ` ${theme.fg(this.hoveredControl === "mode" ? "warning" : ROLE.KEY, modeLabel)}` : "";
 		const close = closeLabel ? ` ${theme.fg(this.hoveredControl === "close" ? "warning" : ROLE.KEY, closeLabel)}` : "";
 		const top = theme.fg(ROLE.FRAME, "╭─ ") + theme.fg(ROLE.TITLE, title) + theme.fg(ROLE.FRAME, ` ${rule(inner - visibleWidth(title) - 3 - controlsWidth)}`) + mode + close + theme.fg(ROLE.FRAME, "╮");

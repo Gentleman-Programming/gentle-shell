@@ -6,7 +6,7 @@ export const CONSULTATION_BYTES = 16 * 1024;
 export interface MetadataSelection { recipientSessionId: string; cursor?: string }
 type Candidate = ReturnType<typeof discoverOrchestrators>[number];
 export interface MetadataReceipt {
-	schema: "gentle-agents.consultation/v1";
+	schema: "drakonc-agents.consultation/v1";
 	kind: "metadata"; status: "available" | "unavailable";
 	source: "published_snapshot"; ownerReply: false; authority: "none";
 	targetSessionId: string; observedAt: number;
@@ -26,7 +26,7 @@ function freeze<T>(value: T): T {
 	return value;
 }
 export function unavailableMetadata(targetSessionId: string, reason: string, now = Date.now(), freshness: MetadataReceipt["freshness"] = "unknown"): MetadataReceipt {
-	return freeze({ schema: "gentle-agents.consultation/v1", kind: "metadata", status: "unavailable",
+	return freeze({ schema: "drakonc-agents.consultation/v1", kind: "metadata", status: "unavailable",
 		source: "published_snapshot", ownerReply: false, authority: "none", targetSessionId, observedAt: now,
 		freshness, unknowns: [reason], omissions: ["private-context", "owner-decision", "reachability", "exclusive-writer-ownership"] });
 }
@@ -50,7 +50,7 @@ export function consultPublishedMetadata(profile: string, peers: readonly Presen
 	if (!snapshot.state) unknowns.push("curated-state");
 	const digest = createHash("sha256").update(JSON.stringify([selection.recipientSessionId,
 		peer.publication.incarnation, peer.publication.activation, snapshot])).digest("hex");
-	const receipt: MetadataReceipt = { schema: "gentle-agents.consultation/v1", kind: "metadata", status: "available",
+	const receipt: MetadataReceipt = { schema: "drakonc-agents.consultation/v1", kind: "metadata", status: "available",
 		source: "published_snapshot", ownerReply: false, authority: "none", targetSessionId: selection.recipientSessionId,
 		observedAt: now, freshness: peer.freshness, presenceObservedAt: peer.publication.heartbeat, digest, snapshot,
 		unknowns, omissions: ["private-context", "git-facts-beyond-published-prefix"] };

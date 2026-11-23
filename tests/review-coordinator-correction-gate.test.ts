@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension, __testing } from "../extensions/drakonc-ai.ts";
 import { NativeReviewCliV216, type ExecFileAdapter } from "../lib/native-review-cli.ts";
 
 // odd/tasks/review-one-call.md T11 (S5), L21: the run returns the correction
@@ -13,7 +13,7 @@ import { NativeReviewCliV216, type ExecFileAdapter } from "../lib/native-review-
 
 type Body = Record<string, any>;
 // A real contracted v2 STATUS (correction_required, correction_plan_required)
-// from a locally built gentle-ai at gentle-ai#6088 (e7720e6f4), on a scratch
+// from a locally built drakonc-ai at drakonc-ai#6088 (e7720e6f4), on a scratch
 // lineage with one synthetic CRITICAL to correct and one synthetic WARNING;
 // captured without the opt-in. Fixture text only; not real review output.
 const STATUS: Body = JSON.parse("{\"schema\":\"gentle-ai.review-integration.status/v9\",\"contract\":\"gentle-ai.review-integration/v2\",\"operation\":\"review.status\",\"applicability\":\"current_target\",\"authority\":{\"version\":\"compact-v2\",\"lineage_id\":\"review-0d8b087fff7b6eed\",\"state\":\"correction_required\",\"generation\":1,\"revision\":\"sha256:a7ddf6edace20fa270507183a2a60dbedd3ab6b41f03d0462e9228c80d9c7672\"},\"action\":\"collect\",\"replayability\":\"manual_action_required\",\"frozen\":{\"tier\":\"medium\",\"original_changed_lines\":1,\"correction_budget\":1},\"target_identity\":\"sha256:83e0f87755b27e526b27f89d986374c0b1415a7851718f2ce1aa800bb68e371f\",\"projection\":{\"schema\":\"gentle-ai.review-integration.projection/v1\",\"kind\":\"current-changes\",\"projection\":\"workspace\",\"base_tree\":\"a0b17eb7f8eba95c76ff14a4d2cce51b601e76f2\",\"initial_review_tree\":\"1c46f89a3ac76bcd75f1b1afaef64a6dc089c6df\",\"current_candidate_tree\":\"1c46f89a3ac76bcd75f1b1afaef64a6dc089c6df\",\"paths_digest\":\"sha256:85fde7c14a0bab6e322280540f42e1a3475f31abba2454770081982d81532c0b\",\"paths\":[\"a.ts\"],\"intended_untracked\":[],\"intended_untracked_proof\":\"sha256:b97229718d4c7fe50a8892eb474ae5aa6491697bccb400e3e31dbaca4894d2f3\",\"initial_snapshot_identity\":\"sha256:83e0f87755b27e526b27f89d986374c0b1415a7851718f2ce1aa800bb68e371f\",\"current_snapshot_identity\":\"sha256:83e0f87755b27e526b27f89d986374c0b1415a7851718f2ce1aa800bb68e371f\"},\"eligible_untracked_inventory\":\"sha256:0fc9c89f9fb57a5340cb06a0d61707dbf4d16b8d18d78a55fd8c28d114b47735\",\"repair\":{\"schema\":\"gentle-ai.review-authority-repair-assessment/v1\",\"status\":\"unsupported\",\"counts\":{\"lineages\":0,\"compact_lineages\":0,\"legacy_lineages\":0,\"events\":0,\"bytes\":0,\"eligible_candidates\":0,\"unsupported_lineages\":0,\"conflicts\":0},\"supported_operations\":[\"review/complete-fix\",\"review/validate-fix\"],\"authorization_schema\":\"gentle-ai.review-repair-authorization/v1\"},\"candidates\":[],\"forecast\":{\"horizon\":\"partial\",\"steps\":[{\"step\":1,\"kind\":\"collect\",\"reason_code\":\"correction_plan_required\",\"description\":\"Correction plan required to resolve review findings\"}]},\"next_transition\":{\"kind\":\"collect\",\"reason_code\":\"correction_plan_required\",\"collect\":{\"inputs\":[{\"name\":\"correction_lines\",\"schema\":\"gentle-ai.review-correction-plan/v1\",\"capture_operation\":\"review.capture-correction-plan\",\"arguments\":[{\"name\":\"lineage\",\"value\":\"review-0d8b087fff7b6eed\",\"token\":\"--lineage=review-0d8b087fff7b6eed\"},{\"name\":\"expected-revision\",\"value\":\"sha256:358845cd62d643d9a7b747d8a96891e154f22506e2f4a495ee46bd602e73f020\",\"token\":\"--expected-revision=sha256:358845cd62d643d9a7b747d8a96891e154f22506e2f4a495ee46bd602e73f020\"},{\"name\":\"target\",\"value\":\"sha256:83e0f87755b27e526b27f89d986374c0b1415a7851718f2ce1aa800bb68e371f\",\"token\":\"--target=sha256:83e0f87755b27e526b27f89d986374c0b1415a7851718f2ce1aa800bb68e371f\"},{\"name\":\"repository-context\",\"value\":\"rctx2_16252ab07879c5e12cc36ca2c2051415bdb3af5ce6f1d55457f5cdde6d18753a\",\"token\":\"--repository-context=rctx2_16252ab07879c5e12cc36ca2c2051415bdb3af5ce6f1d55457f5cdde6d18753a\"},{\"name\":\"request-hash\",\"value\":\"sha256:71d2f500490dd020938d25102ed69bf71abfa672dbad70f13ae4e6689a8ea732\",\"token\":\"--request-hash=sha256:71d2f500490dd020938d25102ed69bf71abfa672dbad70f13ae4e6689a8ea732\"}],\"submission\":{\"operation_token\":\"capture-correction-plan\",\"argument_tokens\":[\"--lineage=review-0d8b087fff7b6eed\",\"--expected-revision=sha256:358845cd62d643d9a7b747d8a96891e154f22506e2f4a495ee46bd602e73f020\",\"--target=sha256:83e0f87755b27e526b27f89d986374c0b1415a7851718f2ce1aa800bb68e371f\",\"--request-hash=sha256:71d2f500490dd020938d25102ed69bf71abfa672dbad70f13ae4e6689a8ea732\",\"--repository-context=rctx2_16252ab07879c5e12cc36ca2c2051415bdb3af5ce6f1d55457f5cdde6d18753a\",\"--correction-lines={{value}}\"],\"value\":{\"slot\":\"correction_lines\",\"domain\":\"positive_correction_lines\",\"minimum\":1,\"maximum\":2,\"substitution_location\":5}}}]},\"correction_request\":{\"schema\":\"gentle-ai.review-correction-plan-request/v1\",\"request_hash\":\"sha256:71d2f500490dd020938d25102ed69bf71abfa672dbad70f13ae4e6689a8ea732\",\"lineage_id\":\"review-0d8b087fff7b6eed\",\"expected_revision\":\"sha256:358845cd62d643d9a7b747d8a96891e154f22506e2f4a495ee46bd602e73f020\",\"target_identity\":\"sha256:83e0f87755b27e526b27f89d986374c0b1415a7851718f2ce1aa800bb68e371f\",\"correction_budget\":2,\"fix_finding_ids\":[\"R3-001\"],\"findings\":[{\"id\":\"R3-001\",\"lens\":\"reliability\",\"location\":\"a.ts:2\",\"severity\":\"CRITICAL\",\"claim\":\"Fixture: the added export breaks the reader; not real review output.\",\"proof_refs\":[\"the changed line deterministically causes the reproduced failure\"],\"evidence\":\"the changed line deterministically causes the reproduced failure\",\"evidence_class\":\"deterministic\",\"causal_disposition\":\"introduced\"}]}},\"repository_context\":{\"capability\":\"review.opaque_repository_context\",\"handle\":\"rctx2_16252ab07879c5e12cc36ca2c2051415bdb3af5ce6f1d55457f5cdde6d18753a\",\"revision\":\"sha256:358845cd62d643d9a7b747d8a96891e154f22506e2f4a495ee46bd602e73f020\",\"target_identity\":\"sha256:83e0f87755b27e526b27f89d986374c0b1415a7851718f2ce1aa800bb68e371f\"}}");
@@ -26,7 +26,7 @@ const scratch = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "rdd-corre
 after(() => rmSync(scratch, { recursive: true, force: true }));
 execFileSync("git", ["init", "-q"], { cwd: scratch });
 writeFileSync(join(scratch, "a.ts"), "export const a = 1;\n");
-const executable = join(scratch, "gentle-ai-fixture");
+const executable = join(scratch, "drakonc-ai-fixture");
 writeFileSync(executable, "fixture provider; never executed");
 const mode = JSON.stringify({ schema: "gentle-ai.review-mode/v1", operation: "status", scope: "both", status: { schema: "gentle-ai.rdd-mode-status/v1", global: "on", clone_local: "", effective: "on", source: "global", revision: `sha256:${"f".repeat(64)}` } });
 
@@ -47,15 +47,15 @@ function host(kind: Provider) {
 		return reply(body);
 	};
 	// One executable per provider kind.
-	const binary = join(scratch, `gentle-ai-${kind}-${Math.random().toString(36).slice(2)}`);
+	const binary = join(scratch, `drakonc-ai-${kind}-${Math.random().toString(36).slice(2)}`);
 	writeFileSync(binary, `fixture provider ${kind} ${binary}`);
 	const tools = new Map<string, any>();
-	createGentleAiExtension({ nativeReviewCli: new NativeReviewCliV216(adapter, binary, 30_000, 8 * 1024 * 1024), candidateViews: null, processEnv: { GENTLE_AI_TELEMETRY: "0" } })(
+	createDrakoncAiExtension({ nativeReviewCli: new NativeReviewCliV216(adapter, binary, 30_000, 8 * 1024 * 1024), candidateViews: null, processEnv: { DRAKONC_AI_TELEMETRY: "0" } })(
 		{ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool) } as never);
 	const context = { cwd: scratch, hasUI: false, sessionManager: { getSessionId: () => "fixture-gate", getBranch: () => [], getSessionFile: () => undefined } };
 	return { statusCalls, run: async () => {
 		try {
-			const result = await tools.get("gentle_review_run").execute("fixture-call", { lineageId: lineage }, undefined, undefined, context);
+			const result = await tools.get("drakonc_review_run").execute("fixture-call", { lineageId: lineage }, undefined, undefined, context);
 			return result.details as Body;
 		} finally { __testing.setReviewHostRelayRunnerForTesting(); __testing.setReviewHostRelayGroupRunnersForTesting(); }
 	} };

@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { renderShellSidebarBar, type ShellBarModel, type ShellBarTheme } from "../lib/shell-bar.ts";
 import { createReviewSidebarPublisher, REVIEW_SCOPE_UNAVAILABLE, REVIEW_SIDEBAR_LABELS, reviewSidebarSnapshot } from "../lib/review-sidebar-state.ts";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NATIVE_REVIEW_OPERATION, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
@@ -55,9 +55,9 @@ test("RDD maps explicit native evidence conservatively without parsing opaque bi
 		assert.equal(reviewSidebarSnapshot("status", nativeStatus(state)).state, expected);
 	}
 	const closure = { status: "closed", outcome: "native-last-event-closure", closure: { schema: "gentle-ai.review-last-event-closure/v1", state: "approved" } };
-	assert.equal(reviewSidebarSnapshot("gentle_review_capture", closure).state, "approved");
-	assert.equal(reviewSidebarSnapshot("gentle_review_capture_group", closure).state, "approved");
-	assert.equal(reviewSidebarSnapshot("gentle_review_capture_group", { status: "blocked", outcome: "reviewer-model-run-forecast" }).state, "forecast");
+	assert.equal(reviewSidebarSnapshot("drakonc_review_capture", closure).state, "approved");
+	assert.equal(reviewSidebarSnapshot("drakonc_review_capture_group", closure).state, "approved");
+	assert.equal(reviewSidebarSnapshot("drakonc_review_capture_group", { status: "blocked", outcome: "reviewer-model-run-forecast" }).state, "forecast");
 	const burned = { operation: "acknowledge-approved", status: "closed", outcome: "native-approved-acknowledgement-completed", authority: "burned" };
 	assert.equal(reviewSidebarSnapshot("acknowledge-approved", burned).state, "closed");
 	for (const missing of ["operation", "status", "outcome", "authority"]) {
@@ -65,7 +65,7 @@ test("RDD maps explicit native evidence conservatively without parsing opaque bi
 		delete incomplete[missing];
 		assert.notEqual(reviewSidebarSnapshot("acknowledge-approved", incomplete).state, "closed");
 	}
-	assert.notEqual(reviewSidebarSnapshot("gentle_review_capture", burned).state, "closed");
+	assert.notEqual(reviewSidebarSnapshot("drakonc_review_capture", burned).state, "closed");
 	assert.equal(reviewSidebarSnapshot("answer-consent", { outcome: "consent-declined-this-candidate" }).state, "declined");
 	assert.equal(reviewSidebarSnapshot("start", { outcome: "native-review-consent-required" }).state, "consent");
 	assert.deepEqual(reviewSidebarSnapshot("inspect", {
@@ -128,21 +128,21 @@ test("publisher retains scope only for issued capture bindings and matching clos
 		async execute() { return { content: [], details }; },
 	}).execute("call", params as never, undefined, undefined, toolContext(ctx));
 	const status = { result: { schema: "gentle-ai.review-integration.status/v9", authority: { state: "reviewing", lineage_id: "lineage" }, target_identity: "target", applicability: "current_target", projection: { paths: ["src/app.ts"] }, next_transition: { kind: "collect" } }, collectBindings: [{ collectBinding: "issued" }] };
-	await run("gentle_review", { operation: "status", lineageId: "lineage" }, status);
+	await run("drakonc_review", { operation: "status", lineageId: "lineage" }, status);
 	assert.deepEqual(events.at(-1)?.snapshot, { state: "in_review", scope: "app.ts" });
-	await run("gentle_review_capture", { lineageId: "lineage", collectBinding: "issued" }, { outcome: "reviewer-model-run-forecast" });
+	await run("drakonc_review_capture", { lineageId: "lineage", collectBinding: "issued" }, { outcome: "reviewer-model-run-forecast" });
 	assert.deepEqual(events.at(-1)?.snapshot, { state: "forecast", scope: "app.ts" });
-	await run("gentle_review_capture", { lineageId: "lineage", collectBinding: "wrong" }, { outcome: "reviewer-model-run-forecast" });
+	await run("drakonc_review_capture", { lineageId: "lineage", collectBinding: "wrong" }, { outcome: "reviewer-model-run-forecast" });
 	assert.equal(events.at(-1)?.snapshot.scope, "Candidate scope unavailable");
 });
 
 test("nested raw workspaceRoot loses only display correlation against canonical cwd", async () => {
 	const h = publisherFixture();
 	await h.seed();
-	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "first", workspaceRoot: "/repo/nested" }, { outcome: "reviewer-model-run-forecast" });
+	await h.run("drakonc_review_capture", { lineageId: "lineage", collectBinding: "first", workspaceRoot: "/repo/nested" }, { outcome: "reviewer-model-run-forecast" });
 	assert.deepEqual(h.snapshot(), { state: "forecast", scope: REVIEW_SCOPE_UNAVAILABLE });
 	await h.seed();
-	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "first", workspaceRoot: "/repo" }, { outcome: "reviewer-model-run-forecast" });
+	await h.run("drakonc_review_capture", { lineageId: "lineage", collectBinding: "first", workspaceRoot: "/repo" }, { outcome: "reviewer-model-run-forecast" });
 	assert.deepEqual(h.snapshot(), { state: "forecast", scope: "app.ts" });
 });
 
@@ -155,12 +155,12 @@ test("real facade STATUS binding retains sidebar scope through capture forecast"
 	const listed = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native, undefined, null);
 	const binding = (listed.collectBindings as Array<{ collectBinding: string }>)[0].collectBinding;
 	const h = publisherFixture();
-	await h.run("gentle_review", { operation: "status", lineageId }, listed);
+	await h.run("drakonc_review", { operation: "status", lineageId }, listed);
 	assert.deepEqual(h.snapshot(), { state: "in_review", scope: "add.js" });
 	const params = { lineageId, collectBinding: binding };
 	const forecast = await __testing.executeReviewCaptureOperation(params, process.cwd(), native, undefined, null);
 	assert.equal(forecast.outcome, "reviewer-model-run-forecast");
-	await h.run("gentle_review_capture", params, forecast);
+	await h.run("drakonc_review_capture", params, forecast);
 	assert.deepEqual(h.snapshot(), { state: "forecast", scope: "add.js" });
 });
 
@@ -171,7 +171,7 @@ test("publisher ignores late completions after reset without changing results", 
 	let finish!: () => void;
 	const pending = new Promise<void>((resolve) => { finish = resolve; });
 	const result = { content: [], details: { status: "blocked" } };
-	const tool = publisher.tool({ name: "gentle_review", label: "Test", description: "Test", parameters: { type: "object" } as never, async execute() { await pending; return result; } });
+	const tool = publisher.tool({ name: "drakonc_review", label: "Test", description: "Test", parameters: { type: "object" } as never, async execute() { await pending; return result; } });
 	publisher.reset(ctx);
 	const call = tool.execute("call", { operation: "status" } as never, undefined, undefined, toolContext(ctx));
 	publisher.reset(ctx);
@@ -190,15 +190,15 @@ function publisherFixture() {
 		async execute() { return { content: [], details: await details }; },
 	}).execute("call", params as never, undefined, undefined, toolContext(context));
 	const status = { result: { schema: "gentle-ai.review-integration.status/v9", authority: { state: "reviewing", lineage_id: "lineage" }, target_identity: "target", applicability: "current_target", projection: { paths: ["src/app.ts"] }, next_transition: { kind: "collect" } }, collectBindings: [{ collectBinding: "first" }, { collectBinding: "second" }] };
-	const seed = () => run("gentle_review", { operation: "status", lineageId: "lineage" }, status);
+	const seed = () => run("drakonc_review", { operation: "status", lineageId: "lineage" }, status);
 	const snapshot = () => events.at(-1)!.snapshot;
-	const closure = { tool: "gentle_review_capture", status: "closed", outcome: "native-last-event-closure", lineage_id: "lineage", closure: { schema: "gentle-ai.review-last-event-closure/v1", lineage_id: "lineage", target_identity: "target", state: "approved" } };
+	const closure = { tool: "drakonc_review_capture", status: "closed", outcome: "native-last-event-closure", lineage_id: "lineage", closure: { schema: "gentle-ai.review-last-event-closure/v1", lineage_id: "lineage", target_identity: "target", state: "approved" } };
 	const acknowledged = { operation: "acknowledge-approved", status: "closed", outcome: "native-approved-acknowledgement-completed", lineage_id: "lineage", target_identity: "target", authority: "burned" };
-	const captured = { tool: "gentle_review_capture", status: "captured", outcome: "native-reviewer-result-captured", lineage_id: "lineage", host_relay: { transport: "pi_host_relay", lens: "review-risk", order: "0", subject_hash: "sha256:fixture", prompt_bytes: 10, result_bytes: 20, submission: '{"state":"approved","authority":"burned"}' } };
+	const captured = { tool: "drakonc_review_capture", status: "captured", outcome: "native-reviewer-result-captured", lineage_id: "lineage", host_relay: { transport: "pi_host_relay", lens: "review-risk", order: "0", subject_hash: "sha256:fixture", prompt_bytes: 10, result_bytes: 20, submission: '{"state":"approved","authority":"burned"}' } };
 	return { run, seed, snapshot, publisher, ctx, events, closure, acknowledged, captured };
 }
 
-for (const name of ["gentle_review_capture", "gentle_review_capture_group"]) {
+for (const name of ["drakonc_review_capture", "drakonc_review_capture_group"]) {
 	test(`${name} retains issued scope through forecast, active capture, closure and matching acknowledgement`, async () => {
 		const h = publisherFixture();
 		await h.seed();
@@ -215,7 +215,7 @@ for (const name of ["gentle_review_capture", "gentle_review_capture_group"]) {
 			await pending;
 		}
 		assert.deepEqual(h.snapshot(), { state: "approved", scope: "app.ts" });
-		await h.run("gentle_review", { operation: "acknowledge-approved", lineageId: "lineage" }, h.acknowledged);
+		await h.run("drakonc_review", { operation: "acknowledge-approved", lineageId: "lineage" }, h.acknowledged);
 		assert.deepEqual(h.snapshot(), { state: "closed", scope: "app.ts" });
 	});
 }
@@ -224,14 +224,14 @@ test("separate issued captures retain only remaining binding until terminal clos
 	const h = publisherFixture();
 	await h.seed();
 	for (const binding of ["first", "second"]) {
-		await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: binding }, h.captured);
+		await h.run("drakonc_review_capture", { lineageId: "lineage", collectBinding: binding }, h.captured);
 		assert.deepEqual(h.snapshot(), { state: "in_review", scope: "app.ts" });
 	}
-	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "first" }, h.captured);
+	await h.run("drakonc_review_capture", { lineageId: "lineage", collectBinding: "first" }, h.captured);
 	assert.deepEqual(h.snapshot(), { state: "unknown", scope: "Candidate scope unavailable" });
 	await h.seed();
-	await h.run("gentle_review_capture_group", { lineageId: "lineage", collectBindings: ["first", "second"] }, { ...h.closure, tool: "gentle_review_capture_group" });
-	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "second" }, h.captured);
+	await h.run("drakonc_review_capture_group", { lineageId: "lineage", collectBindings: ["first", "second"] }, { ...h.closure, tool: "drakonc_review_capture_group" });
+	await h.run("drakonc_review_capture", { lineageId: "lineage", collectBinding: "second" }, h.captured);
 	assert.deepEqual(h.snapshot(), { state: "unknown", scope: "Candidate scope unavailable" });
 });
 
@@ -245,7 +245,7 @@ test("terminal closure requires its own matching identity despite matching wrapp
 		{ ...h.closure.closure, target_identity: undefined },
 	]) {
 		await h.seed();
-		await h.run("gentle_review_capture", params, { ...h.closure, closure });
+		await h.run("drakonc_review_capture", params, { ...h.closure, closure });
 		assert.deepEqual(h.snapshot(), { state: "approved", scope: "Candidate scope unavailable" });
 	}
 });
@@ -258,7 +258,7 @@ test("nonterminal capture requires exact issued input and well-formed matching o
 		{ ...bound, lineageId: "other" }, { ...bound, workspaceRoot: "/other" },
 	]) {
 		await h.seed();
-		await h.run("gentle_review_capture", params, h.captured);
+		await h.run("drakonc_review_capture", params, h.captured);
 		assert.deepEqual(h.snapshot(), { state: "unknown", scope: "Candidate scope unavailable" });
 	}
 	for (const details of [
@@ -273,14 +273,14 @@ test("nonterminal capture requires exact issued input and well-formed matching o
 		{ ...h.captured, failure: { reason: "failed" } }, { status: "captured" },
 	]) {
 		await h.seed();
-		await h.run("gentle_review_capture", bound, details);
+		await h.run("drakonc_review_capture", bound, details);
 		assert.equal(h.snapshot().scope, "Candidate scope unavailable");
 		assert.ok(["unknown", "unavailable"].includes(h.snapshot().state));
 	}
 	await h.seed();
-	await h.run("gentle_review_capture", bound, h.captured);
+	await h.run("drakonc_review_capture", bound, h.captured);
 	assert.deepEqual(h.snapshot(), { state: "in_review", scope: "app.ts" }, "opaque submission must not imply closure");
-	await h.run("gentle_review_capture", bound, h.captured);
+	await h.run("drakonc_review_capture", bound, h.captured);
 	assert.deepEqual(h.snapshot(), { state: "unknown", scope: "Candidate scope unavailable" }, "completed capture consumes display binding");
 });
 
@@ -293,7 +293,7 @@ test("unbound operations, mismatched acknowledgements, failures and resets disca
 		{ lineageId: "lineage", collectBindings: ["second", "first"] },
 	]) {
 		await h.seed();
-		const name = "collectBindings" in params ? "gentle_review_capture_group" : "gentle_review_capture";
+		const name = "collectBindings" in params ? "drakonc_review_capture_group" : "drakonc_review_capture";
 		const pending = h.run(name, params, { status: "blocked", outcome: "capture-binding-rejected" });
 		assert.equal(h.snapshot().scope, "Candidate scope unavailable");
 		await pending;
@@ -301,23 +301,23 @@ test("unbound operations, mismatched acknowledgements, failures and resets disca
 	}
 	for (const operation of ["inspect", "start", "status"]) {
 		await h.seed();
-		const pending = h.run("gentle_review", { operation, lineageId: "lineage" }, { status: "blocked" });
+		const pending = h.run("drakonc_review", { operation, lineageId: "lineage" }, { status: "blocked" });
 		assert.deepEqual(h.snapshot(), { state: "checking", scope: "Candidate scope unavailable" });
 		await pending;
 	}
 	for (const mismatch of [{ ...h.acknowledged, lineage_id: "other" }, { ...h.acknowledged, target_identity: "other" }]) {
 		await h.seed();
-		await h.run("gentle_review", { operation: "acknowledge-approved", lineageId: "lineage" }, mismatch);
+		await h.run("drakonc_review", { operation: "acknowledge-approved", lineageId: "lineage" }, mismatch);
 		assert.deepEqual(h.snapshot(), { state: "closed", scope: "Candidate scope unavailable" });
 	}
 	await h.seed();
-	await assert.rejects(h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "first" }, Promise.reject(new Error("capture failed"))), /capture failed/);
+	await assert.rejects(h.run("drakonc_review_capture", { lineageId: "lineage", collectBinding: "first" }, Promise.reject(new Error("capture failed"))), /capture failed/);
 	assert.deepEqual(h.snapshot(), { state: "unavailable", scope: "Candidate scope unavailable" });
-	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "first" }, h.closure);
+	await h.run("drakonc_review_capture", { lineageId: "lineage", collectBinding: "first" }, h.closure);
 	assert.equal(h.snapshot().scope, "Candidate scope unavailable");
 	await h.seed();
 	h.publisher.reset(h.ctx);
-	await h.run("gentle_review_capture", { lineageId: "lineage", collectBinding: "first" }, h.closure);
+	await h.run("drakonc_review_capture", { lineageId: "lineage", collectBinding: "first" }, h.closure);
 	assert.equal(h.snapshot().scope, "Candidate scope unavailable");
 });
 
@@ -335,7 +335,7 @@ test("cancellation errors remain unknown while other failures are unavailable, r
 		await h.seed();
 		const controller = new AbortController();
 		if (aborted) controller.abort();
-		const tool = h.publisher.tool({ name: "gentle_review", label: "Test", description: "Test", parameters: { type: "object" } as never,
+		const tool = h.publisher.tool({ name: "drakonc_review", label: "Test", description: "Test", parameters: { type: "object" } as never,
 			async execute() { throw error; },
 		});
 		await assert.rejects(tool.execute("call", { operation: "status" } as never, controller.signal, undefined, toolContext(h.ctx)), (caught) => caught === error);
@@ -348,15 +348,15 @@ test("foreign sessions, disabled publisher and event failures never change tool 
 	await h.seed();
 	const before = h.events.length;
 	const foreign = { cwd: "/repo", sessionManager: { getSessionId: () => "foreign" } } as unknown as ExtensionContext;
-	const result = await h.run("gentle_review", { operation: "status" }, { status: "blocked" }, foreign);
+	const result = await h.run("drakonc_review", { operation: "status" }, { status: "blocked" }, foreign);
 	assert.deepEqual(result.details, { status: "blocked" });
 	assert.equal(h.events.length, before);
 	h.publisher.reset();
-	await h.run("gentle_review", { operation: "status" }, { status: "blocked" });
+	await h.run("drakonc_review", { operation: "status" }, { status: "blocked" });
 	assert.equal(h.events.length, before);
 	const throwing = createReviewSidebarPublisher({ events: { emit: () => { throw Error("display failed"); } } } as unknown as ExtensionAPI);
 	throwing.reset(h.ctx);
-	const tool = throwing.tool({ name: "gentle_review", label: "Test", description: "Test", parameters: { type: "object" } as never, async execute() { return result; } });
+	const tool = throwing.tool({ name: "drakonc_review", label: "Test", description: "Test", parameters: { type: "object" } as never, async execute() { return result; } });
 	assert.equal(await tool.execute("call", { operation: "status" } as never, undefined, undefined, toolContext(h.ctx)), result);
 });
 

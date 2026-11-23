@@ -1,6 +1,6 @@
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
-// Gentle Agents transcript: a child's session JSONL rendered as markdown a
+// Drakonc Agents transcript: a child's session JSONL rendered as markdown a
 // human can read in an editor. Thinking is left out; tool output keeps a tail.
 
 export interface TranscriptOptions {

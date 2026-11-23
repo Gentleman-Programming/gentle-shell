@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createDesktopFeedExtension } from "../extensions/gentle-desktop-feed.ts";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import { createDesktopFeedExtension } from "../extensions/drakonc-desktop-feed.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import {
 	buildDesktopFeedSnapshot,
 	DESKTOP_FEED_URGENT_MS,
@@ -34,7 +34,7 @@ import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
 // Owner discovery waits up to 100 ms for a responder; let it settle.
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
-const GENTLE_ENV = { PI_PROGRAM_STATUS_APP: "gentle-shell", [INTERACTIVE_HOST_ENV]: "1" };
+const DRAKONC_ENV = { PI_PROGRAM_STATUS_APP: "drakonc-shell", [INTERACTIVE_HOST_ENV]: "1" };
 
 // ---- Fixtures ----
 
@@ -46,7 +46,7 @@ function fixtureInput(overrides: Partial<DesktopFeedInput> = {}): DesktopFeedInp
 	const model = changesModel(files);
 	return {
 		now: Date.UTC(2026, 10, 14, 12, 0, 0),
-		identity: { sessionId: "sess-1", sessionFile: "/agent/sessions/--w--/s.jsonl", sessionName: "Feed", cwd: "/home/dev/work/gentle-shell", realCwd: "/private/home/dev/work/gentle-shell", pid: 100, ppid: 99, ancestors: [98, 1], mode: "rpc", agentDir: "/agent", env: {} },
+		identity: { sessionId: "sess-1", sessionFile: "/agent/sessions/--w--/s.jsonl", sessionName: "Feed", cwd: "/home/dev/work/drakonc-shell", realCwd: "/private/home/dev/work/drakonc-shell", pid: 100, ppid: 99, ancestors: [98, 1], mode: "rpc", agentDir: "/agent", env: {} },
 		branch: "feat/x",
 		model: { id: "claude-opus-5-5", provider: "anthropic", reasoning: true },
 		thinkingLevel: "high",
@@ -56,7 +56,7 @@ function fixtureInput(overrides: Partial<DesktopFeedInput> = {}): DesktopFeedInp
 		usage: undefined,
 		permission: { mode: "normal" },
 		todo: { tasks: [{ id: 1, title: "Write tests", status: "in_progress" }], nextId: 2, updatedTurn: 1 },
-		changes: { model, worktrees: [{ root: "/home/dev/work/gentle-shell", branch: "feat/x", model }] },
+		changes: { model, worktrees: [{ root: "/home/dev/work/drakonc-shell", branch: "feat/x", model }] },
 		agents: [],
 		jobs: [{ id: "j1", label: "npm test", status: "running", startedAt: Date.UTC(2026, 10, 14, 11, 59, 0) }],
 		review: undefined,
@@ -114,7 +114,7 @@ function fakeCtx() {
 	const entries: unknown[] = [];
 	const widgets: Array<{ key: string; lines: string[] }> = [];
 	return {
-		cwd: "/home/dev/work/gentle-shell", mode: "rpc", hasUI: true,
+		cwd: "/home/dev/work/drakonc-shell", mode: "rpc", hasUI: true,
 		isIdle: () => true,
 		model: { id: "claude-opus-5-5", provider: "anthropic", reasoning: true, contextWindow: 200_000 },
 		modelRegistry: { isUsingOAuth: () => true },
@@ -125,7 +125,7 @@ function fakeCtx() {
 			getSessionId: () => "sess-1",
 			getSessionFile: () => "/agent/sessions/--w--/2026_sess-1.jsonl",
 			getSessionName: () => undefined,
-			getCwd: () => "/home/dev/work/gentle-shell",
+			getCwd: () => "/home/dev/work/drakonc-shell",
 			getBranch: () => entries,
 			getEntries: () => entries,
 		},
@@ -151,7 +151,7 @@ async function rpcHarness(t: test.TestContext, withFeed: boolean) {
 	const clock = fakeTimers();
 	if (withFeed) {
 		createDesktopFeedExtension({
-			env: GENTLE_ENV,
+			env: DRAKONC_ENV,
 			agentDir,
 			now: () => Date.UTC(2026, 10, 14, 12, 0, 0),
 			timers: clock.timers,
@@ -172,14 +172,14 @@ async function rpcHarness(t: test.TestContext, withFeed: boolean) {
 	await settle();
 	clock.run();
 	await settle();
-	const lines = () => ctx.widgets.filter((widget) => widget.key === "gentle-desktop-rpc").map((widget) => widget.lines[0]!);
+	const lines = () => ctx.widgets.filter((widget) => widget.key === "drakonc-desktop-rpc").map((widget) => widget.lines[0]!);
 	let requests = 0;
 	return {
 		...harness, ctx, clock, lines,
 		async invoke(method: string, params: Record<string, unknown> = {}) {
 			requests += 1;
 			const before = lines().length;
-			await harness.commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: `r${requests}`, method, params }), ctx);
+			await harness.commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: `r${requests}`, method, params }), ctx);
 			return lines().slice(before).map((line) => JSON.parse(line));
 		},
 	};
@@ -217,8 +217,8 @@ test("S4: the projection drops identity and every absolute path; cwd becomes a b
 	const snapshot = buildDesktopFeedSnapshot(fixtureInput());
 	const sections = projectDesktopSessionSections(snapshot, DESKTOP_SESSION_SECTIONS);
 	assert.deepEqual(Object.keys(sections), [...DESKTOP_SESSION_SECTIONS]);
-	assert.deepEqual(sections.project, { name: "gentle-shell", branch: "feat/x", dirty: 2 });
-	const label = desktopSessionRootLabel("/home/dev/work/gentle-shell");
+	assert.deepEqual(sections.project, { name: "drakonc-shell", branch: "feat/x", dirty: 2 });
+	const label = desktopSessionRootLabel("/home/dev/work/drakonc-shell");
 	assert.match(label, /^root-[0-9a-f]{12}$/);
 	assert.deepEqual(sections.changes, {
 		files: snapshot.changes!.files.map((file) => ({ path: file.path, root: label, status: file.status, added: file.added, deleted: file.deleted })),
@@ -261,9 +261,9 @@ test("S4: files of several worktrees become paths relative to their own opaque r
 test("S5: the discovery adapter shape is checked before use", () => {
 	assert.equal(isDesktopSessionServiceShape(undefined), false);
 	assert.equal(isDesktopSessionServiceShape({ schema: "other", read() {}, observe() {}, dispose() {} }), false);
-	assert.equal(isDesktopSessionServiceShape({ schema: "gentle-pi.desktop-session-service/v1", read() {}, observe() {} }), false);
-	assert.equal(isDesktopSessionServiceShape({ schema: "gentle-pi.desktop-session-service/v1", read() {}, observe() {}, dispose() {} }), true);
-	assert.equal(DESKTOP_SESSION_SERVICE_CHANNEL, "gentle:desktop:session-service");
+	assert.equal(isDesktopSessionServiceShape({ schema: "drakonc-pi.desktop-session-service/v1", read() {}, observe() {} }), false);
+	assert.equal(isDesktopSessionServiceShape({ schema: "drakonc-pi.desktop-session-service/v1", read() {}, observe() {}, dispose() {} }), true);
+	assert.equal(DESKTOP_SESSION_SERVICE_CHANNEL, "drakonc:desktop:session-service");
 });
 
 // ---- Through the real extensions ----
@@ -298,7 +298,7 @@ test("S1/S2/S4/S5: get_snapshot with sections reads the live feed projection; re
 	assert.equal(data.sequence, legacy.data.sequence);
 	assert.deepEqual(data.state.config, legacy.data.state.config, "state.config is unchanged");
 	assert.deepEqual(Object.keys(data.state.session), ["project", "todo", "changes", "activity"]);
-	assert.deepEqual(data.state.session.project, { name: "gentle-shell", branch: null, dirty: 0 });
+	assert.deepEqual(data.state.session.project, { name: "drakonc-shell", branch: null, dirty: 0 });
 	assert.deepEqual(data.state.session.todo, { items: [], progress: { done: 0, total: 0, open: 0 }, current: null, truncated: false });
 	assert.equal(data.state.session.activity.state, "idle");
 	const wire = JSON.stringify(data.state.session);
@@ -377,7 +377,7 @@ test("S5: the bridge drops a superseded session and answers unavailable when the
 	const observers = new Set<(value: DesktopFeedSnapshot) => void>();
 	let disposed = 0;
 	const service = {
-		schema: "gentle-pi.desktop-session-service/v1" as const,
+		schema: "drakonc-pi.desktop-session-service/v1" as const,
 		read: () => snapshot,
 		observe: (fn: (value: DesktopFeedSnapshot) => void) => { observers.add(fn); return () => observers.delete(fn); },
 		dispose: () => { disposed += 1; },
@@ -467,12 +467,12 @@ test("S4: a worktree root of / or a bare drive never relativizes paths and has n
 
 // ---- Verifier probes (regression tests) ----
 
-const PROBE_WIN_CWD = "C:\\Users\\devel\\My Projects\\gentle-shell";
+const PROBE_WIN_CWD = "C:\\Users\\devel\\My Projects\\drakonc-shell";
 function probeInput(overrides: Record<string, unknown> = {}): DesktopFeedInput {
 	const model = changesModel([{ path: "lib/a.ts", added: 3, deleted: 1, status: "modified" }]);
 	return {
 		now: Date.UTC(2026, 10, 14, 12, 0, 0),
-		identity: { sessionId: "sess-1", sessionFile: "C:\\Users\\devel\\.pi\\agent\\sessions\\s.jsonl", sessionName: "Feed", cwd: PROBE_WIN_CWD, realCwd: "\\\\?\\C:\\Users\\devel\\My Projects\\gentle-shell", pid: 100, ppid: 99, ancestors: [98, 1], mode: "rpc", agentDir: "C:\\Users\\devel\\.pi\\agent", env: { USERNAME: "devel", HOME: "C:\\Users\\devel" } },
+		identity: { sessionId: "sess-1", sessionFile: "C:\\Users\\devel\\.pi\\agent\\sessions\\s.jsonl", sessionName: "Feed", cwd: PROBE_WIN_CWD, realCwd: "\\\\?\\C:\\Users\\devel\\My Projects\\drakonc-shell", pid: 100, ppid: 99, ancestors: [98, 1], mode: "rpc", agentDir: "C:\\Users\\devel\\.pi\\agent", env: { USERNAME: "devel", HOME: "C:\\Users\\devel" } },
 		branch: "feat/x",
 		model: { id: "m", provider: "anthropic", reasoning: true },
 		thinkingLevel: "high", subscription: true,
@@ -501,14 +501,14 @@ test("S4 probe: Windows/UNC/POSIX/spaces paths in structural fields never reach 
 		{ path: "\\\\server\\share\\repo\\c.ts", added: 1, deleted: 0, status: "modified" },
 		{ path: "/srv/home/dev/repo/d.ts", added: 1, deleted: 0, status: "modified" },
 		{ path: "C:\\Users\\devel\\Desktop\\outside.txt", added: 1, deleted: 0, status: "modified" },
-		{ path: "c:\\users\\devel\\my projects\\gentle-shell\\casemismatch.ts", added: 1, deleted: 0, status: "modified" },
+		{ path: "c:\\users\\devel\\my projects\\drakonc-shell\\casemismatch.ts", added: 1, deleted: 0, status: "modified" },
 	]);
 	const one = changesModel([{ path: "x", added: 1, deleted: 0, status: "modified" }]);
 	const snap = buildDesktopFeedSnapshot(probeInput({ changes: { model: combined, worktrees: roots.map((root) => ({ root, branch: "b", model: one })) } }));
 	const sections = projectDesktopSessionSections(snap, DESKTOP_SESSION_SECTIONS);
 	const wire = JSON.stringify(sections);
 	for (const needle of PROBE_NEEDLES) assert.equal(wire.includes(needle), false, `${needle} in ${wire}`);
-	assert.deepEqual((sections.project as any).name, "gentle-shell");
+	assert.deepEqual((sections.project as any).name, "drakonc-shell");
 	const paths = (sections.changes as any).files.map((f: any) => [f.path, f.root]);
 	assert.deepEqual(paths.map((p: any) => p[0]).sort(), ["b.ts", "c.ts", "casemismatch.ts", "d.ts", "lib/a.ts", "outside.txt"]);
 });
@@ -528,7 +528,7 @@ function probeService(initial: DesktopFeedSnapshot) {
 		set(value: DesktopFeedSnapshot) { current = value; },
 		observers,
 		service: {
-			schema: "gentle-pi.desktop-session-service/v1" as const,
+			schema: "drakonc-pi.desktop-session-service/v1" as const,
 			read: () => current,
 			observe: (fn: (s: DesktopFeedSnapshot) => void) => { observers.add(fn); return () => observers.delete(fn); },
 			dispose: () => {},
@@ -591,14 +591,14 @@ async function probeHarness(t: test.TestContext) {
 	const agentDir = mkdtempSync(join(tmpdir(), "vprobe-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	const c = fakeTimers();
-	createDesktopFeedExtension({ env: GENTLE_ENV, agentDir, now: () => Date.UTC(2026, 10, 14, 12, 0, 0), timers: c.timers, git: () => async () => ({ stdout: "", code: 128 }), parentOf: async () => undefined, profile: () => ({ name: "work", tier: "fast" }), realpath: (p) => p, sweep: () => {}, actionWatch: () => () => {}, store: (d, id) => createDesktopFeedStore(d, id) })(h.pi);
+	createDesktopFeedExtension({ env: DRAKONC_ENV, agentDir, now: () => Date.UTC(2026, 10, 14, 12, 0, 0), timers: c.timers, git: () => async () => ({ stdout: "", code: 128 }), parentOf: async () => undefined, profile: () => ({ name: "work", tier: "fast" }), realpath: (p) => p, sweep: () => {}, actionWatch: () => () => {}, store: (d, id) => createDesktopFeedStore(d, id) })(h.pi);
 	const ctx = probeCtx();
 	t.after(() => h.fire("session_shutdown", { reason: "quit" }, ctx));
 	h.fire("session_start", { reason: "startup" }, ctx);
 	await settle(); c.run(); await settle(); c.run(); await settle();
-	const lines = () => ctx.widgets.filter((w: any) => w.key === "gentle-desktop-rpc").map((w: any) => w.lines[0] as string);
+	const lines = () => ctx.widgets.filter((w: any) => w.key === "drakonc-desktop-rpc").map((w: any) => w.lines[0] as string);
 	let i = 0;
-	return { ...h, ctx, c, lines, async invoke(method: string, params: Record<string, unknown> = {}) { i += 1; const before = lines().length; await h.commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: `r${i}`, method, params }), ctx); return lines().slice(before); } };
+	return { ...h, ctx, c, lines, async invoke(method: string, params: Record<string, unknown> = {}) { i += 1; const before = lines().length; await h.commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: `r${i}`, method, params }), ctx); return lines().slice(before); } };
 }
 
 test("S3 probe: with the feed, every event's seq is contiguous and get_snapshot.sequence equals delivered events; wire has no path", async (t) => {
@@ -621,7 +621,7 @@ test("S3 probe: with the feed, every event's seq is contiguous and get_snapshot.
 	// Free text (the prompt title) is shown as written: strip it before checking structural fields.
 	const structural = wire.replaceAll("Pick C:\\\\Users\\\\devel\\\\x?", "");
 	for (const needle of ["\\devel", "devel\\", "Users", "My Projects", ".pi", "s.jsonl"]) assert.equal(structural.includes(needle), false, needle);
-	assert.equal(full.data.state.session.project.name, "gentle-shell");
+	assert.equal(full.data.state.session.project.name, "drakonc-shell");
 });
 
 test("S3 probe: session switch disposes the old owner; the new session's events still flow and the old one's do not", async (t) => {

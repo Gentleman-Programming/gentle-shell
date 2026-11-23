@@ -297,7 +297,7 @@ export class PulseClient {
 		reply.assertEOF();
 		this.negotiatedVersion = version;
 		const properties = boundedPulseTagWriter().proplist([
-			["application.name", options.name ?? "gentle-shell"],
+			["application.name", options.name ?? "drakonc-shell"],
 			["application.type", options.type ?? "notification"],
 		]);
 		const named = await this.request(PulseCommand.SET_CLIENT_NAME, properties, signal);

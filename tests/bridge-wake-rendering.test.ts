@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createAgentSession, ModelRuntime, DefaultResourceLoader, SettingsManager, SessionManager } from "@earendil-works/pi-coding-agent";
-import gentleAgents from "../extensions/gentle-agents.ts";
+import drakoncAgents from "../extensions/drakonc-agents.ts";
 
 // Resolve from the installed SDK entry, never from a vendored runtime copy.
 const sdk = import.meta.resolve("@earendil-works/pi-coding-agent");
 const { UserMessageComponent } = await import(new URL("./modes/interactive/components/user-message.js", sdk).href);
 const { initTheme } = await import(new URL("./modes/interactive/theme/theme.js", sdk).href);
 initTheme("dark");
-const oldWake = "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
+const oldWake = "[System-generated Drakonc Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
 
 test("real user renderer preserves ordinary content and removes only the owned reserved wake", async () => {
 	// Every path is owned by this test so CI never depends on ambient TMPDIR, HOME, or agent directories.
@@ -20,15 +20,15 @@ test("real user renderer preserves ordinary content and removes only the owned r
 		const home = join(root, "home"), cwd = join(root, "project"), agentDir = join(root, "agent");
 		mkdirSync(home); mkdirSync(cwd); mkdirSync(agentDir);
 		const manager = SessionManager.inMemory(cwd);
-		const wake = `${oldWake} [gentle-agents wake: 67da57d9-7fbe-47b6-9187-c31109fe4eba]`;
-		manager.appendCustomEntry("gentle-agents.wake-identity", { sessionId: manager.getSessionId(), nonce: "invalid", text: "Human continuation" });
-		manager.appendCustomEntry("gentle-agents.wake-identity", { sessionId: "other-session", nonce: "67da57d9-7fbe-47b6-9187-c31109fe4eba", text: "Human continuation" });
-		manager.appendCustomEntry("gentle-agents.wake-identity", { sessionId: manager.getSessionId(), nonce: "67da57d9-7fbe-47b6-9187-c31109fe4eba", text: wake });
+		const wake = `${oldWake} [drakonc-agents wake: 67da57d9-7fbe-47b6-9187-c31109fe4eba]`;
+		manager.appendCustomEntry("drakonc-agents.wake-identity", { sessionId: manager.getSessionId(), nonce: "invalid", text: "Human continuation" });
+		manager.appendCustomEntry("drakonc-agents.wake-identity", { sessionId: "other-session", nonce: "67da57d9-7fbe-47b6-9187-c31109fe4eba", text: "Human continuation" });
+		manager.appendCustomEntry("drakonc-agents.wake-identity", { sessionId: manager.getSessionId(), nonce: "67da57d9-7fbe-47b6-9187-c31109fe4eba", text: wake });
 		const settingsManager = SettingsManager.inMemory();
 		const loader = new DefaultResourceLoader({
 			cwd, agentDir, settingsManager,
 			noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-			extensionFactories: [pi => gentleAgents(pi, {}, { home, agentHome: agentDir, schedule: () => () => {} })],
+			extensionFactories: [pi => drakoncAgents(pi, {}, { home, agentHome: agentDir, schedule: () => () => {} })],
 		});
 		await loader.reload();
 		const loaded = loader.getExtensions();

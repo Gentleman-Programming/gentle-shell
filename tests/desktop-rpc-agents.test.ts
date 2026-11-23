@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
-import gentleAgents, { type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
+import drakoncAgents, { type SessionTransportFactory } from "../extensions/drakonc-agents.ts";
 import { isFinished, TASK_EVENT, TASK_STATUS, TaskStore, type ChildResponseObservation, type ChildTokenMeasurement, type TaskRecord } from "../lib/agents-protocol.ts";
 import { historyDir, loadStoredTask, saveTask } from "../lib/agents-history.ts";
 import { AgentRunner } from "../lib/agents-runner.ts";
@@ -301,7 +301,7 @@ test("params parsers accept only the documented shapes", () => {
 test("isDesktopAgentsServiceShape accepts only the versioned adapter", () => {
 	const good = { schema: DESKTOP_AGENTS_SERVICE_SCHEMA, read: () => ({ sessionId: "s", agents: [] }), cancel: () => ({ kind: "not_found" }), observe: () => () => {}, dispose: () => {} };
 	assert.equal(isDesktopAgentsServiceShape(good), true);
-	assert.equal(isDesktopAgentsServiceShape({ ...good, schema: "gentle-pi.desktop-agents-service/v0" }), false);
+	assert.equal(isDesktopAgentsServiceShape({ ...good, schema: "drakonc-pi.desktop-agents-service/v0" }), false);
 	assert.equal(isDesktopAgentsServiceShape({ ...good, cancel: undefined }), false);
 	assert.equal(isDesktopAgentsServiceShape(null), false);
 	assert.equal(isDesktopAgentsServiceShape("nope"), false);
@@ -604,7 +604,7 @@ test("discoverDesktopAgentsService accepts the versioned adapter and ignores mal
 	assert.equal(service?.schema, DESKTOP_AGENTS_SERVICE_SCHEMA);
 
 	listeners.set(DESKTOP_AGENTS_SERVICE_CHANNEL, (payload) => {
-		(payload as { respond(service: unknown): void }).respond({ schema: "gentle-pi.desktop-agents-service/v0", read: () => ({ sessionId: "s", agents: [] }) });
+		(payload as { respond(service: unknown): void }).respond({ schema: "drakonc-pi.desktop-agents-service/v0", read: () => ({ sessionId: "s", agents: [] }) });
 	});
 	assert.equal(await discoverDesktopAgentsService(pi, ctx), undefined);
 });
@@ -665,7 +665,7 @@ test("projectDesktopAgentThread is the widget's exact thread projection and boun
 	const widget = projectRpcActivity(store, { parentSessionId: "session-a" }).tasks.find((entry) => entry.summary.id === "t1")!.thread;
 	const thread = projectDesktopAgentThread("t1", store.thread("t1"));
 	assert.equal(thread.id, "t1");
-	assert.deepEqual({ version: thread.version, dropped: thread.dropped, items: thread.items }, widget, "the method and gentle-agents.activity/v1 never disagree");
+	assert.deepEqual({ version: thread.version, dropped: thread.dropped, items: thread.items }, widget, "the method and drakonc-agents.activity/v1 never disagree");
 	assert.equal(thread.items.length, 40, "the widget's 40-item window");
 	assert.equal(thread.version, store.thread("t1").version);
 	assert.equal(thread.dropped, store.thread("t1").dropped);
@@ -851,7 +851,7 @@ function desktopHarness(t: test.TestContext) {
 
 test("the Desktop transport advertises the agents methods and event", (t) => {
 	const app = desktopHarness(t);
-	app.commands.get("gentle:desktop")!.handler(
+	app.commands.get("drakonc:desktop")!.handler(
 		JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "cap-1", method: "capabilities", params: {} }),
 		app.ctx,
 	);
@@ -895,7 +895,7 @@ test("the Desktop transport advertises the agents methods and event", (t) => {
 
 test("get_subagent_thread answers agents_unavailable through the transport without an owner extension", async (t) => {
 	const app = desktopHarness(t);
-	await app.commands.get("gentle:desktop")!.handler(
+	await app.commands.get("drakonc:desktop")!.handler(
 		JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "thread-1", method: "get_subagent_thread", params: { id: "t1" } }),
 		app.ctx,
 	);
@@ -909,7 +909,7 @@ test("get_subagent_thread answers agents_unavailable through the transport witho
 
 test("list_subagents answers agents_unavailable through the transport without an owner extension", async (t) => {
 	const app = desktopHarness(t);
-	await app.commands.get("gentle:desktop")!.handler(
+	await app.commands.get("drakonc:desktop")!.handler(
 		JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "agents-1", method: "list_subagents", params: {} }),
 		app.ctx,
 	);
@@ -918,7 +918,7 @@ test("list_subagents answers agents_unavailable through the transport without an
 	assert.deepEqual(response.error, AGENTS_UNAVAILABLE);
 });
 
-// ---- Real owner: the gentle-agents agents seam ----
+// ---- Real owner: the drakonc-agents agents seam ----
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
@@ -935,7 +935,7 @@ interface RealOwnerHarness {
 }
 
 /**
- * Instantiates the real `gentleAgents` extension (the actual owner seam, real
+ * Instantiates the real `drakoncAgents` extension (the actual owner seam, real
  * `TaskStore`, and real `AgentRunner`) with a fake host and a fake child spawn
  * (never a real process), then discovers the real owner service. A minimal
  * `worker` agent definition is written into the agent home so `subagent_run`
@@ -1013,10 +1013,10 @@ async function realOwnerHarness(t: test.TestContext, options: { schedule?: (fn: 
 		createClient: () => ({ close() {}, sendNotification: async () => { throw new Error("inert transport must not send"); } }),
 	};
 
-	gentleAgents(pi, { GENTLE_PI_CONFIG_HOME: configHome, PATH: process.env.PATH ?? "" }, {
+	drakoncAgents(pi, { DRAKONC_PI_CONFIG_HOME: configHome, PATH: process.env.PATH ?? "" }, {
 		home,
 		agentHome,
-		env: { GENTLE_PI_CONFIG_HOME: configHome, PATH: process.env.PATH ?? "" },
+		env: { DRAKONC_PI_CONFIG_HOME: configHome, PATH: process.env.PATH ?? "" },
 		schedule: options.schedule ?? (() => () => {}),
 		now: () => 1000,
 		jobShell: () => { throw new Error("real-owner agents harness must not run jobs"); },
@@ -1042,7 +1042,7 @@ async function launchBackgroundTask(h: RealOwnerHarness): Promise<string> {
 	const run = h.tools.get("subagent_run")!;
 	const result = await run.execute("run", { agent: "explore", task: "Map the repo", mode: "background" }, undefined, undefined, h.ctx);
 	await tick();
-	const taskId = (result.details.gentleAgents as { taskId: string }).taskId;
+	const taskId = (result.details.drakoncAgents as { taskId: string }).taskId;
 	assert.equal(h.children.length, 1, "the background task spawned exactly one child");
 	return taskId;
 }
@@ -1330,7 +1330,7 @@ test("probe: sinceVersion: equal returns [], other values return the window; in-
 	assert.equal(higher.data.items.length, 1);
 });
 
-// ---- Progress (gentle-shell-gpui parity, T6) ----
+// ---- Progress (drakonc-shell-gpui parity, T6) ----
 
 function toolThread(name: string, running: boolean) {
 	return { items: [{ kind: "tool" as const, callId: "c1", name, args: { command: "rm -rf /secret" }, output: "", running, isError: false }], dropped: 0, version: 1, limits: { maxItems: 400, maxOutputChars: 16000 } };

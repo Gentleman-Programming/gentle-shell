@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import { DESKTOP_RPC_SCHEMA } from "../lib/desktop-rpc.ts";
 import {
 	DESKTOP_PROFILE_BINDING_EVENTS,
@@ -19,7 +19,7 @@ import { bindSessionProfile, clearSessionProfileBinding, resetSessionProfileBind
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
 // get_profile_binding / clear_profile_binding / profile_binding_changed
-// (gentle-shell-gpui parity, T1): the session's profile through the single rule
+// (drakonc-shell-gpui parity, T1): the session's profile through the single rule
 // launches use, every binding write as an event, and the owner's clear.
 
 function fixture(t: test.TestContext, service?: Partial<DesktopProfilesService>) {
@@ -35,7 +35,7 @@ function fixture(t: test.TestContext, service?: Partial<DesktopProfilesService>)
 	const pi = { events: { on() { return () => {}; }, emit() {} } } as unknown as ExtensionAPI;
 	const bridge = new DesktopProfileBindingBridge(pi, {
 		configHome,
-		env: { GENTLE_PI_CONFIG_HOME: configHome },
+		env: { DRAKONC_PI_CONFIG_HOME: configHome },
 		resolveWorktree: () => undefined,
 		discover: async () => {
 			calls.discover += 1;
@@ -71,7 +71,7 @@ test("the Desktop transport advertises both methods and the change event once", 
 	const widgets: string[] = [];
 	const host = { mode: "rpc", cwd: "/x", sessionManager: { getCwd: () => "/x", getSessionId: () => "s", getEntries: () => [] }, ui: { setWidget(_k: string, lines: string[]) { widgets.push(...lines); } } };
 	for (const handler of handlers.get("session_start") ?? []) handler({}, host);
-	await commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "cap", method: "capabilities", params: {} }), host);
+	await commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "cap", method: "capabilities", params: {} }), host);
 	const data = JSON.parse(widgets.at(-1)!).data;
 	for (const method of DESKTOP_PROFILE_BINDING_METHODS) assert.equal(data.methods.filter((name: string) => name === method).length, 1);
 	assert.equal(data.events.filter((name: string) => name === "profile_binding_changed").length, 1);

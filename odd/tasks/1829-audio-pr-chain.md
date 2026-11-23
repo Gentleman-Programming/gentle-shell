@@ -6,13 +6,13 @@ Objetivo: preparar LOCALMENTE una cadena de ramas por unidades revisables que re
 
 | Dato | Valor |
 |---|---|
-| Base de integración | `main` @ `69c9b5ae` (worktree `gentle-shell-audio-chain`, rama `feat/1829-audio-tracker`) |
+| Base de integración | `main` @ `69c9b5ae` (worktree `drakonc-shell-audio-chain`, rama `feat/1829-audio-tracker`) |
 | Fuente | `feat/native-notification-audio` @ `3d04d14e`, 34 commits desde merge-base `a87192ee` |
 | Rama previa relacionada | `feat/sound-notifications` @ `9a1f8a75` |
 | Diff fuente | 50 archivos, 9295 adiciones / 38 eliminaciones (assets WAV binarios y licencia aparte) |
 | Deriva de `main` desde `a87192ee` | 204 commits; 106 archivos |
 
-`main` evolucionó de forma solapada en `extensions/gentle-agents.ts`, `lib/agents-protocol.ts`, `extensions/gentle-shell.ts`, `scripts/verify-package-files.mjs`, `tests/agents-protocol.test.ts`, `tests/gentle-shell.test.ts`, `tests/package-manifest.test.ts` y `docs/readme-reference.md`. La integración conserva los cambios más recientes de `main` y adapta, con test-first aplicable, solo lo necesario.
+`main` evolucionó de forma solapada en `extensions/drakonc-agents.ts`, `lib/agents-protocol.ts`, `extensions/drakonc-shell.ts`, `scripts/verify-package-files.mjs`, `tests/agents-protocol.test.ts`, `tests/drakonc-shell.test.ts`, `tests/package-manifest.test.ts` y `docs/readme-reference.md`. La integración conserva los cambios más recientes de `main` y adapta, con test-first aplicable, solo lo necesario.
 
 ## Política de la cadena
 

@@ -26,12 +26,12 @@ import {
 } from "../lib/session-profile-freeze.ts";
 import type { WorktreeIdentity, WorktreeResolver } from "../lib/session-worktree-registry.ts";
 
-// Inherited profile freeze (gentle-shell#1064 slice 3b-ii). A parent session that
+// Inherited profile freeze (drakonc-shell#1064 slice 3b-ii). A parent session that
 // never pressed Enter resolves `p → P → G` once and keeps that snapshot; `follow`
 // keeps the live resolution; children never freeze. The worktree identity is
 // injected, so these tests never run Git.
 
-const root = mkdtempSync(join(tmpdir(), "gentle-pi-profile-freeze-"));
+const root = mkdtempSync(join(tmpdir(), "drakonc-pi-profile-freeze-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 
 const FRONTIER: AgentModelConfig = { worker: { model: "anthropic/claude-opus", thinking: "high" } };
@@ -236,17 +236,17 @@ test("Enter in follow mode makes the binding explicit: later defaults no longer 
 	assert.deepEqual(sessionProfileModelProfiles(resolution), { worker: { model: "openai/gpt-5" } });
 });
 
-test("profileFollowEnabled accepts only GENTLE_PI_PROFILE_FOLLOW=1", () => {
-	assert.equal(PROFILE_FOLLOW_ENV, "GENTLE_PI_PROFILE_FOLLOW");
-	assert.equal(profileFollowEnabled({ GENTLE_PI_PROFILE_FOLLOW: "1" }), true);
-	assert.equal(profileFollowEnabled({ GENTLE_PI_PROFILE_FOLLOW: "0" }), false);
-	assert.equal(profileFollowEnabled({ GENTLE_PI_PROFILE_FOLLOW: "" }), false);
+test("profileFollowEnabled accepts only DRAKONC_PI_PROFILE_FOLLOW=1", () => {
+	assert.equal(PROFILE_FOLLOW_ENV, "DRAKONC_PI_PROFILE_FOLLOW");
+	assert.equal(profileFollowEnabled({ DRAKONC_PI_PROFILE_FOLLOW: "1" }), true);
+	assert.equal(profileFollowEnabled({ DRAKONC_PI_PROFILE_FOLLOW: "0" }), false);
+	assert.equal(profileFollowEnabled({ DRAKONC_PI_PROFILE_FOLLOW: "" }), false);
 	assert.equal(profileFollowEnabled({}), false);
 });
 
 test("subagent children never freeze: they resolve live", () => {
 	const f = fixture();
-	const env = { GENTLE_PI_AGENTS_CHILD: "1" };
+	const env = { DRAKONC_PI_AGENTS_CHILD: "1" };
 	f.pinLocal("frontier");
 	freezeSessionProfileAtStartup(options(f, "child-a", env));
 	assert.equal(readFrozenInheritedProfile("child-a"), undefined);
@@ -286,14 +286,14 @@ test("drift notice: shown once per distinct change of the defaults", () => {
 	f.pinLocal("local");
 	assert.equal(
 		inheritedProfileDriftNotice(opts),
-		'el Gentleman: the default profile changed to "local" (local), this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
+		'el Drakoncman: the default profile changed to "local" (local), this session keeps "frontier" (local). Open /drakonc:profiles and choose Use in this session to adopt one.',
 	);
 	assert.equal(inheritedProfileDriftNotice(opts), undefined, "the same change is not repeated");
 	f.pinLocal(undefined);
 	f.setActive("team");
 	assert.equal(
 		inheritedProfileDriftNotice(opts),
-		'el Gentleman: the default profile changed to "team" (global), this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
+		'el Drakoncman: the default profile changed to "team" (global), this session keeps "frontier" (local). Open /drakonc:profiles and choose Use in this session to adopt one.',
 	);
 	assert.equal(inheritedProfileDriftNotice(opts), undefined);
 	assert.equal(readFrozenInheritedProfile("session-a")?.profile?.name, "frontier", "the notice never adopts the new default");
@@ -309,7 +309,7 @@ test("drift notice: an explicit binding learns its profile definition changed in
 	const notice = inheritedProfileDriftNotice(opts);
 	assert.match(notice ?? "", /the profile definition changed to "team"/);
 	assert.match(notice ?? "", /this session keeps the binding from selection/);
-	assert.match(notice ?? "", /Open \/gentle:profiles and choose Use in this session to adopt one\.$/, "the notice names the current adoption action");
+	assert.match(notice ?? "", /Open \/drakonc:profiles and choose Use in this session to adopt one\.$/, "the notice names the current adoption action");
 	assert.doesNotMatch(notice ?? "", /Press Enter/, "the retired Enter instruction never comes back");
 	assert.equal(inheritedProfileDriftNotice(opts), undefined, "the same change is not repeated");
 
@@ -319,7 +319,7 @@ test("drift notice: an explicit binding learns its profile definition changed in
 	f.editProfile("team", { worker: { model: "openai/old" } });
 	assert.equal(inheritedProfileDriftNotice(opts), undefined, "reverting to the bound content is not drift");
 
-	const childOpts = options(f, "session-b", { GENTLE_PI_AGENTS_CHILD: "1" });
+	const childOpts = options(f, "session-b", { DRAKONC_PI_AGENTS_CHILD: "1" });
 	bindSessionProfile("session-b", "team", { worker: { model: "openai/old" } });
 	assert.equal(inheritedProfileDriftNotice(childOpts), undefined, "children never get the notice");
 });
@@ -350,14 +350,14 @@ test("drift notice covers a session frozen without a profile and a default that 
 	f.pinLocal("frontier");
 	assert.equal(
 		inheritedProfileDriftNotice(none),
-		'el Gentleman: the default profile changed to "frontier" (local), this session keeps no profile. Open /gentle:profiles and choose Use in this session to adopt one.',
+		'el Drakoncman: the default profile changed to "frontier" (local), this session keeps no profile. Open /drakonc:profiles and choose Use in this session to adopt one.',
 	);
 	const kept = options(f, "session-kept");
 	freezeSessionProfileAtStartup(kept);
 	f.pinLocal(undefined);
 	assert.equal(
 		inheritedProfileDriftNotice(kept),
-		'el Gentleman: the default profile changed to no profile, this session keeps "frontier" (local). Open /gentle:profiles and choose Use in this session to adopt one.',
+		'el Drakoncman: the default profile changed to no profile, this session keeps "frontier" (local). Open /drakonc:profiles and choose Use in this session to adopt one.',
 	);
 });
 
@@ -368,7 +368,7 @@ test("drift notice is never shown after an explicit Enter, in follow mode, or in
 	freezeSessionProfileAtStartup(explicit);
 	bindSessionProfile("session-explicit", "team", TEAM);
 	const follow = options(f, "session-follow", { [PROFILE_FOLLOW_ENV]: "1" });
-	const child = options(f, "session-child", { GENTLE_PI_AGENTS_CHILD: "1" });
+	const child = options(f, "session-child", { DRAKONC_PI_AGENTS_CHILD: "1" });
 	f.pinLocal("local");
 	assert.equal(inheritedProfileDriftNotice(explicit), undefined);
 	assert.equal(inheritedProfileDriftNotice(follow), undefined);
@@ -423,7 +423,7 @@ test("sessionProfileRoutingAt: follow reads the defaults of the target", () => {
 	assert.deepEqual(sessionProfileRoutingAt(resolution, { cwd: other.cwd, configHome: other.configHome, resolveWorktree: other.resolveWorktree }), LOCAL);
 });
 
-// A2 (gentle-shell#2742, section 4): a published startup record is the
+// A2 (drakonc-shell#2742, section 4): a published startup record is the
 // session's inherited profile, taken as recorded instead of freezing again.
 test("a startup record resolves as the inherited profile with its origin and label, without a new freeze", () => {
 	const f = fixture();
@@ -476,7 +476,7 @@ test("follow mode routes a recorded startup profile and resolves the current def
 	assert.deepEqual(resolveSessionProfile(options(f, "s-none", env)), { kind: "follow", profile: { name: "frontier", origin: "local", modelProfiles: FRONTIER } });
 });
 
-// A2 (gentle-shell#2742, section 3): only a freeze at the session's own start
+// A2 (drakonc-shell#2742, section 3): only a freeze at the session's own start
 // knows the startup state, with the profile's full definition.
 test("own start captures the startup profile with its full definition, orchestrator included", () => {
 	const f = fixture();
@@ -548,6 +548,6 @@ test("drift notice after a resume that took a startup record is the inherited no
 	f.setActive("frontier");
 	assert.equal(
 		inheritedProfileDriftNotice(opts),
-		'el Gentleman: the default profile changed to "frontier" (global), this session keeps "team" (global). Open /gentle:profiles and choose Use in this session to adopt one.',
+		'el Drakoncman: the default profile changed to "frontier" (global), this session keeps "team" (global). Open /drakonc:profiles and choose Use in this session to adopt one.',
 	);
 });

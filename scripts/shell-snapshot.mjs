@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Launches the real Gentle Shell TUI in a headless terminal on a FORK of an
+// Launches the real Drakonc Shell TUI in a headless terminal on a FORK of an
 // existing session and saves PNG screenshots, so an agent can look at what the
 // shell actually renders.
 //
@@ -8,7 +8,7 @@
 //   node scripts/shell-snapshot.mjs --latest-rich [--from <project-dir>] [...same options]
 //
 // --latest-rich picks the newest session of <project-dir> (default: --cwd) that
-// has both todo and subagent_run calls, from ~/.gentle-shell/agent/sessions.
+// has both todo and subagent_run calls, from ~/.drakonc-shell/agent/sessions.
 //
 // The terminal is ttyd (xterm.js) rendered by headless Chrome, driven over the
 // DevTools protocol with Node's built-in WebSocket. vhs uses the same stack but
@@ -18,7 +18,7 @@
 //
 // The source session is never resumed or written: the shell is started with
 // `--fork <session> --session-dir <scratch>/sessions`, so the fork lands in a
-// fresh /tmp/gentle-eyes.* scratch directory.
+// fresh /tmp/drakonc-eyes.* scratch directory.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -28,9 +28,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const launcher = join(repoRoot, "bin", "gentle-shell.mjs");
+const launcher = join(repoRoot, "bin", "drakonc-shell.mjs");
 // Pi stores a project's sessions under `--<absolute path with / as ->--`.
-const sessionsDirFor = (projectDir) => join(homedir(), ".gentle-shell", "agent", "sessions", `--${resolve(projectDir).replace(/^\//, "").replaceAll("/", "-")}--`);
+const sessionsDirFor = (projectDir) => join(homedir(), ".drakonc-shell", "agent", "sessions", `--${resolve(projectDir).replace(/^\//, "").replaceAll("/", "-")}--`);
 const chromeCandidates = [
 	process.env.CHROME_BIN,
 	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -42,7 +42,7 @@ const chromeCandidates = [
 const FONT_SIZE = 15;
 // Menlo first, then fonts that carry the Braille logo and Nerd Font icons.
 const FONT_FAMILY = "Menlo, 'Apple Braille', 'Apple Symbols', 'IosevkaTerm Nerd Font', monospace";
-// Dark palette close to the Gentleman terminal theme (xterm.js ITheme keys).
+// Dark palette close to the Drakoncman terminal theme (xterm.js ITheme keys).
 const THEME = {
 	background: "#06080f",
 	foreground: "#f3f6f9",
@@ -122,11 +122,11 @@ function findLatestRichSession(projectDir) {
 
 const shellQuote = (value) => `'${value.replaceAll("'", `'\\''`)}'`;
 
-// When this runs inside a Pi/Gentle Shell session (e.g. from an agent), the
-// inherited PI_*, GENTLE_*, and HERDR_* variables would make the snapshot shell
+// When this runs inside a Pi/Drakonc Shell session (e.g. from an agent), the
+// inherited PI_*, DRAKONC_*, and HERDR_* variables would make the snapshot shell
 // act as a subagent child (no sidebar rail) and report into the caller's pane.
 // Start it like a fresh user terminal instead.
-const INHERITED_SESSION_ENV = /^(PI_|GENTLE_PI_|GENTLE_SHELL_|HERDR_|TERM_PROGRAM|CLAUDE_AGENT_SDK|AI_AGENT$)/;
+const INHERITED_SESSION_ENV = /^(PI_|DRAKONC_PI_|DRAKONC_SHELL_|HERDR_|TERM_PROGRAM|CLAUDE_AGENT_SDK|AI_AGENT$)/;
 const cleanEnv = () => Object.fromEntries(Object.entries(process.env).filter(([key]) => !INHERITED_SESSION_ENV.test(key)));
 
 function freePort() {
@@ -188,7 +188,7 @@ const chrome = chromeCandidates.find((path) => existsSync(path));
 if (!chrome) usage("Google Chrome not found; set CHROME_BIN");
 if (spawnSync("ttyd", ["--version"], { encoding: "utf8" }).status !== 0) usage("ttyd is not installed or not on PATH");
 
-const scratch = mkdtempSync("/tmp/gentle-eyes.");
+const scratch = mkdtempSync("/tmp/drakonc-eyes.");
 const sessionDir = join(scratch, "sessions");
 const outDir = options.out ?? join(scratch, "shots");
 const chromeProfile = join(scratch, "chrome-profile");
@@ -334,7 +334,7 @@ console.log(`pty size at launch (rows cols): ${existsSync(sizeFile) ? readFileSy
 if (sourceAfter.size !== sourceBefore.size || sourceAfter.mtimeMs !== sourceBefore.mtimeMs) {
 	notes.push("the source session changed during the run (another live writer?); this script only reads it");
 }
-if (leftovers.length > 0) notes.push(`gentle-shell processes still running: ${leftovers.join(", ")}`);
+if (leftovers.length > 0) notes.push(`drakonc-shell processes still running: ${leftovers.join(", ")}`);
 for (const note of notes) console.log(`note: ${note}`);
 for (const path of written) console.log(`png: ${path}`);
 process.exit(written.length > 0 ? exitCode : 1);

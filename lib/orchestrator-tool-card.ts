@@ -69,7 +69,7 @@ function requestRows(args: unknown): string[] {
 
 /** Prefer structured data over its duplicated model-facing serialization. */
 export function expandedToolRows(args: unknown, result: Result): string[] {
-	const data = record(record(result.details).gentleAgents);
+	const data = record(record(result.details).drakoncAgents);
 	const output = Object.keys(data).length ? data : parsedOutput(result);
 	return [...section("Request", requestRows(args)), ...section("Details", typeof output === "string" ? output.split("\n") : readableDataRows(output)),
 		...result.content.filter(part => part.type !== "text").map(part => `Attachment: ${line(part.type)}`)];
@@ -177,7 +177,7 @@ function identityBodyRows(rows: string[], tone: CardTone, theme: CardTheme, widt
 function summary(operation: Operation, args: Record<string, unknown>, result: Result, failed: boolean): string[] {
 	const body = text(result);
 	if (failed) return [line(body) || "Operation failed"];
-	const data = record(record(result.details).gentleAgents);
+	const data = record(record(result.details).drakoncAgents);
 	if (operation === "session" && typeof data.alias === "string") {
 		if (taskIdentity(data)) {
 			const name = line(data.sessionName) || line(data.alias) || "unnamed";
@@ -235,7 +235,7 @@ export function orchestratorToolRenderers(operation: Operation, hint: (expanded:
 			if (context.state) context.state.orchestratorFailed = failed;
 			const tone = failed ? CARD_TONE.ERROR : CARD_TONE.INFO;
 			const args = context.args ?? {};
-			const data = record(record(result.details).gentleAgents);
+			const data = record(record(result.details).drakoncAgents);
 			const discoveryOverview = operation === "list" && !failed && !args.recipient_session_id && Array.isArray(data.candidates);
 			const workOverview = operation === "list" && !failed && Array.isArray(record(data.workSearch).matches);
 			const overview = options.expanded && (discoveryOverview || workOverview);

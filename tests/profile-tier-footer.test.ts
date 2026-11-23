@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { buildShellBarModel, createActiveProfileReader } from "../extensions/gentle-shell.ts";
+import { buildShellBarModel, createActiveProfileReader } from "../extensions/drakonc-shell.ts";
 import { bindSessionProfile, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { renderShellStatusBar, renderShellTitleRow, renderShellBar, type ShellBarModel } from "../lib/shell-bar.ts";
 
@@ -19,10 +19,10 @@ test("bottom tier reads the named profile configuration, not its older session s
 	const home = mkdtempSync(join(tmpdir(), "profile-tier-footer-"));
 	t.after(() => { resetSessionProfileBindingsForTesting(); rmSync(home, { recursive: true, force: true }); });
 	const profiles = { team: { orchestrator: { model: "openai/gpt-6.1-sol", tier: "fast" } }, other: { orchestrator: { model: "openai/gpt-6.1-sol", tier: "standard" } } };
-	const save = (active: string) => writeFileSync(join(home, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active, profiles }));
+	const save = (active: string) => writeFileSync(join(home, "profiles.json"), JSON.stringify({ kind: "drakonc-pi.agent_model_profiles", version: 1, active, profiles }));
 	save("team");
 	bindSessionProfile("footer-tier", "team", { orchestrator: { model: "openai/gpt-6.1-sol" } });
-	const reader = createActiveProfileReader({ GENTLE_PI_CONFIG_HOME: home });
+	const reader = createActiveProfileReader({ DRAKONC_PI_CONFIG_HOME: home });
 	reader.bind(home, () => undefined, "footer-tier");
 	assert.equal(reader(), "team (session)");
 	assert.equal(reader.tier(), "fast", "the configured tier shows even when the binding has no tier");
@@ -68,9 +68,9 @@ test("legacy tier integration is excluded while permission warnings and other st
 	const footer = {
 		getGitBranch: () => "main",
 		getExtensionStatuses: () => new Map([
-			["gentle-fast", "No tier selected; last response from server: Standard (default)"],
-			["gentle:mode", "Permissions: SUPER YOLO"],
-			["gentle:yolo", "SUPER YOLO — no permission prompts; private paths stay blocked"],
+			["drakonc-fast", "No tier selected; last response from server: Standard (default)"],
+			["drakonc:mode", "Permissions: SUPER YOLO"],
+			["drakonc:yolo", "SUPER YOLO — no permission prompts; private paths stay blocked"],
 			["other", "ready"],
 		]),
 	} as any;

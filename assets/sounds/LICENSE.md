@@ -1,7 +1,7 @@
 # Original notification tones
 
 `success.wav`, `error.wav`, and `attention.wav` are original synthetic sine tones,
-created for Gentle AI in 2026. No recording, sample library, audio API, or third-party
+created for Drakonc AI in 2026. No recording, sample library, audio API, or third-party
 composition was used. Mono PCM, 16-bit, 22050 Hz; amplitude 4000/32768, short fades.
 No platform listening verification has been performed; these are generated assets,
 not evidence of working playback. Linux/macOS adapters require manual verification;

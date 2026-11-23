@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 
 test("a second direct file is not refused based on session write history", async () => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-odd-direct-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-odd-direct-"));
 	try {
 		execFileSync("git", ["init", "--quiet"], { cwd });
 		const handlers = new Map<string, (event: Record<string, unknown>, ctx: ExtensionContext) => unknown>();
@@ -19,8 +19,8 @@ test("a second direct file is not refused based on session write history", async
 		} as unknown as ExtensionAPI;
 		// An isolated config home keeps the host's permission mode (for example Auto)
 		// out of a test that only exercises the ODD write gate.
-		const processEnv = { GENTLE_PI_CONFIG_HOME: join(cwd, ".config-home") };
-		createGentleAiExtension({ nativeReviewCli: null, processEnv, resolveTelemetryTriggerBinary: () => "/usr/bin/true", telemetryTriggerSpawn: (() => undefined) as never })(pi);
+		const processEnv = { DRAKONC_PI_CONFIG_HOME: join(cwd, ".config-home") };
+		createDrakoncAiExtension({ nativeReviewCli: null, processEnv, resolveTelemetryTriggerBinary: () => "/usr/bin/true", telemetryTriggerSpawn: (() => undefined) as never })(pi);
 		const ctx = {
 			cwd, hasUI: false, mode: "interactive", ui: { notify() {} },
 			sessionManager: { getSessionId: () => "odd-direct" },

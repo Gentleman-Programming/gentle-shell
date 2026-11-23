@@ -1,6 +1,6 @@
 # Review Relay Transport: selectable, authenticated, diagnosable reviewer
 
-Issues: gentle-shell#1140, #1156, #1158, #1136 — one class, four symptoms: the
+Issues: drakonc-shell#1140, #1156, #1158, #1136 — one class, four symptoms: the
 `pi_host_relay` reviewer child is launched with a frozen argv that (a) runs
 `--mode text` where a model that answers with a tool call produces zero bytes
 and exit 0 (#1140), (b) reports that silence with no reviewer-side evidence
@@ -45,7 +45,7 @@ extensions) for hosts that need nothing.
    name (`review-<lens>`), never from ambient defaults.
 4. **User-owned extension allowlist (#1158).** An optional allowlist of
    absolute extension file paths, resolved from the
-   `GENTLE_PI_REVIEW_RELAY_EXTENSIONS` environment variable (path-separator
+   `DRAKONC_PI_REVIEW_RELAY_EXTENSIONS` environment variable (path-separator
    separated), is forwarded as explicit `-e <path>` arguments. Missing or
    relative paths fail typed before any process launches.
 
@@ -96,7 +96,7 @@ extensions) for hosts that need nothing.
   `reviewer-config-invalid` before any process launches, and forwards them as
   `--model` / `-e` tokens. `pi-empty-output` now carries the child's own
   evidence, a bounded stderr excerpt, and the two remedies (lens selection,
-  GENTLE_PI_REVIEW_RELAY_EXTENSIONS).
+  DRAKONC_PI_REVIEW_RELAY_EXTENSIONS).
 
 - 2026-09-18 RELAY-4: RED (2 failing) then GREEN —
   `node --experimental-strip-types --test tests/review-relay-transport-agent.test.ts`
@@ -104,15 +104,15 @@ extensions) for hosts that need nothing.
   routing: 157 passed, 0 failed. The capture path resolves the lens's
   reviewer selection from the agent model routing config (agent name
   `review-<lens>`) and the extension allowlist from
-  GENTLE_PI_REVIEW_RELAY_EXTENSIONS, on both the single-slot and the group
+  DRAKONC_PI_REVIEW_RELAY_EXTENSIONS, on both the single-slot and the group
   capture paths, and the failure report carries the child's own evidence as
   `failure.reviewer`. One test lesson: the resolution reads the real config
-  home when GENTLE_PI_CONFIG_HOME is unset, so the selection-free test
+  home when DRAKONC_PI_CONFIG_HOME is unset, so the selection-free test
   isolates the config home.
 
 - 2026-09-18 RELAY-5: docs/review-integration.md now states the JSON event
   transport, the evidenced empty-output failure, and the two user-owned launch
-  selections (lens model routing entry, GENTLE_PI_REVIEW_RELAY_EXTENSIONS)
+  selections (lens model routing entry, DRAKONC_PI_REVIEW_RELAY_EXTENSIONS)
   with their typed pre-launch validation. Full suite: `pnpm test` — exit 0,
   2723 tests, 2685 passed, 0 failed, 38 skipped; provider contract mirror
   check passed; runtime harness ran clean. Typecheck: 197 recorded

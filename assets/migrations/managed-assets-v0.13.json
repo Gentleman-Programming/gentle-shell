@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageVersion": "0.13.0",
   "assets": {
-    "agents/gentle-ai-worker.md": "b34488c0e91f134e38c595ab4659b47c0f38b8e74d2a52b12fc9fcac96dc0dd3",
+    "agents/drakonc-ai-worker.md": "b34488c0e91f134e38c595ab4659b47c0f38b8e74d2a52b12fc9fcac96dc0dd3",
     "agents/jd-fix-agent.md": "4dfef5d62f6306d81d23a2babbbca42801f446181fed44eef07dc81d84a725c5",
     "agents/jd-judge-a.md": "66e78e7210aee297a2968d1cf885f735ec7324d1cb3a297aa47360e7bfab60cc",
     "agents/jd-judge-b.md": "aeb2485340c2beb7e0cc84b66105a0db2b51caa9aa4498940bd121baf952173b",
@@ -26,8 +26,8 @@
     "chains/sdd-full.chain.md": "4af3ff8b5b1d4f17cdfbda26f150fc017f82aa7f43aa4db3a2eb4fd2fd20f81b",
     "chains/sdd-plan.chain.md": "938c39f711539eae5b3f04c3aa031387ad420f7d7049906213a71c2e2704928c",
     "chains/sdd-verify.chain.md": "48c3861eb5912631e54658281064c2c346b633fa36cf8d43cf862a1d5e56b40e",
-    "gentle-ai/support/sdd-status-contract.md": "b6796a3958e24f747446e9514a62bce1cbeab26a115e79f500eeb8fbdde5a1ae",
-    "gentle-ai/support/strict-tdd-verify.md": "becb50da4841aae5f6b157462efbfcd4f20332c0c054c82a55970450be8e649c",
-    "gentle-ai/support/strict-tdd.md": "2b0340bfa1160db7f609a4e1b6a24bbd3a1b1a8347b2b65d400865c104fdd237"
+    "drakonc-ai/support/sdd-status-contract.md": "b6796a3958e24f747446e9514a62bce1cbeab26a115e79f500eeb8fbdde5a1ae",
+    "drakonc-ai/support/strict-tdd-verify.md": "becb50da4841aae5f6b157462efbfcd4f20332c0c054c82a55970450be8e649c",
+    "drakonc-ai/support/strict-tdd.md": "2b0340bfa1160db7f609a4e1b6a24bbd3a1b1a8347b2b65d400865c104fdd237"
   }
 }

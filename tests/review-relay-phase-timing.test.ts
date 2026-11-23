@@ -71,7 +71,7 @@ function fakeRelay(t: test.TestContext, options: { materializeFail?: boolean; su
 	const request: ReviewHostRelayRequest = {
 		captureArgumentTokens: ["--materialize=true", "--private-binding=secret"],
 		submission: { operationToken: "capture-result", argumentTokens: ["--input={{value}}"], values: [{ slot: "reviewer_result", domain: "artifact_path_or_stdin", substitutionLocation: 0 }] },
-		gentleAiExecutable: process.execPath,
+		drakoncAiExecutable: process.execPath,
 		targetCwd: process.cwd(),
 		reviewerRegistry: {
 			find: () => ({ id: "private-model", provider: "private-provider", api: "openai-responses", reasoning: false }) as never,

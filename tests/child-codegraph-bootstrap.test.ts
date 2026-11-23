@@ -24,7 +24,7 @@ function fixture(env: NodeJS.ProcessEnv, existing?: object) {
 }
 
 test("fallback child context supplies explicitly requested CodeGraph without extra tools", () => {
-	const f = fixture({ GENTLE_PI_AGENTS_CHILD: "1", [REQUESTED_TOOLS_ENV]: requested });
+	const f = fixture({ DRAKONC_PI_AGENTS_CHILD: "1", [REQUESTED_TOOLS_ENV]: requested });
 	f.start();
 	assert.deepEqual([...f.tools.keys()], ["codegraph"]);
 	const tool = f.tools.get("codegraph") as { parameters: { additionalProperties: boolean; properties: object } };
@@ -36,10 +36,10 @@ test("fallback child context supplies explicitly requested CodeGraph without ext
 
 test("fallback never overwrites package CodeGraph or grants it without explicit child scope", () => {
 	const existing = { identity: "package-owned implementation" };
-	const full = fixture({ GENTLE_PI_AGENTS_CHILD: "1", [REQUESTED_TOOLS_ENV]: requested }, existing);
+	const full = fixture({ DRAKONC_PI_AGENTS_CHILD: "1", [REQUESTED_TOOLS_ENV]: requested }, existing);
 	full.start();
 	assert.equal(full.tools.get("codegraph"), existing);
-	for (const env of [{ [REQUESTED_TOOLS_ENV]: requested }, { GENTLE_PI_AGENTS_CHILD: "1" }, { GENTLE_PI_AGENTS_CHILD: "1", [REQUESTED_TOOLS_ENV]: "read,grep,find" }]) {
+	for (const env of [{ [REQUESTED_TOOLS_ENV]: requested }, { DRAKONC_PI_AGENTS_CHILD: "1" }, { DRAKONC_PI_AGENTS_CHILD: "1", [REQUESTED_TOOLS_ENV]: "read,grep,find" }]) {
 		const f = fixture(env); f.start(); assert.equal(f.tools.size, 0);
 	}
 });
@@ -62,7 +62,7 @@ test("actual SDK child first model request includes CodeGraph and keeps selected
 		},
 	});
 	const loader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-		extensionFactories: [createChildContextExtension({ GENTLE_PI_AGENTS_CHILD: "1", [REQUESTED_TOOLS_ENV]: requested })] });
+		extensionFactories: [createChildContextExtension({ DRAKONC_PI_AGENTS_CHILD: "1", [REQUESTED_TOOLS_ENV]: requested })] });
 	await loader.reload();
 	const { session } = await createAgentSession({ cwd: root, agentDir, modelRuntime: runtime, model: runtime.getModel("offline-explore", "configured-small")!, resourceLoader: loader, settingsManager, sessionManager: SessionManager.inMemory(), tools: ["read", "grep", "find", "codegraph"] });
 	try {

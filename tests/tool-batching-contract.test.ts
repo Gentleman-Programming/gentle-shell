@@ -23,7 +23,7 @@ function declaredTools(prompt: string): string[] {
 }
 
 test("S13 C9: every generic subagent prompt batches independent tool calls in one turn", () => {
-	for (const agent of ["gentle-ai-worker", "gentle-ai-verify", "gentle-ai-explore"]) {
+	for (const agent of ["drakonc-ai-worker", "drakonc-ai-verify", "drakonc-ai-explore"]) {
 		const prompt = read(`assets/agents/${agent}.md`);
 		const rule = prompt.split("\n").find((line) => line.includes("**Batch tool calls:**"));
 		assert.ok(rule, `${agent} must carry the batch tool calls rule`);
@@ -35,7 +35,7 @@ test("S13 C9: every generic subagent prompt batches independent tool calls in on
 		// A shell-less agent must not be told to read files or run tests with a command it cannot run.
 		if (tools.includes("bash")) {
 			// Cost-speed P8 B2: the verifier never re-runs the writer's reported suite, so its rule batches the commands it runs.
-			const batched = agent === "gentle-ai-verify" ? "without status-only turns" : "the focused test and the suite without status-only turns";
+			const batched = agent === "drakonc-ai-verify" ? "without status-only turns" : "the focused test and the suite without status-only turns";
 			containsAll(rule, ["read several files with one command", batched], agent);
 		} else {
 			assert.doesNotMatch(rule, /one command|the suite/, `${agent} has no shell, so its rule must not name a command`);
@@ -56,7 +56,7 @@ test("S13 C10: the delegation card keeps the parent from reading what the worker
 });
 
 // S13 C9 parent: 95 of 389 parent turns did only coordination (todo 55, orchestrator_session_id 17,
-// gentle_review assess 14, subagent_list_agents 8) and parent multi-tool turns were ~0.
+// drakonc_review assess 14, subagent_list_agents 8) and parent multi-tool turns were ~0.
 test("S13 C9: the always-on orchestrator batches independent calls and never spends a turn only on coordination", () => {
 	const core = read("assets/orchestrator.md");
 	containsAll(core, [

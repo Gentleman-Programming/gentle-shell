@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { canonicalHash } from "../lib/review-transaction.ts";
 
 function dispatch(severity: string) {
@@ -21,7 +21,7 @@ test("#3051: the registered admission hook pinpoints unsupported severity withou
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	type Handler = (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<{ block?: boolean; reason?: string } | undefined>;
 	const handlers = new Map<string, Handler>();
-	createGentleAiExtension({ nativeReviewCli: null, processEnv: { GENTLE_AI_TELEMETRY: "0" } })({
+	createDrakoncAiExtension({ nativeReviewCli: null, processEnv: { DRAKONC_AI_TELEMETRY: "0" } })({
 		on: (name: string, handler: Handler) => handlers.set(name, handler), events: { emit() {} }, registerCommand() {}, registerTool() {},
 	} as unknown as ExtensionAPI);
 	const check = (input: unknown) => handlers.get("tool_call")!({ toolName: "subagent_run", input }, {

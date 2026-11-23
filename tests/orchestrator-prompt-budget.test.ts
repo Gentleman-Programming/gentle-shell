@@ -9,15 +9,15 @@ import {
 	createBashToolDefinition, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition,
 	getDocsPath, getExamplesPath, getReadmePath, loadSkillsFromDir,
 } from "@earendil-works/pi-coding-agent";
-import gentleAgents from "../extensions/gentle-agents.ts";
-import { __testing } from "../extensions/gentle-ai.ts";
+import drakoncAgents from "../extensions/drakonc-agents.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { BACKGROUND_SUBAGENTS_FILE, BACKGROUND_SUBAGENTS_SCHEMA } from "../lib/background-subagents-policy.ts";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 
 const root = join(import.meta.dirname, "..");
 const assets = join(root, "assets");
 const fixture = mkdtempSync(join(tmpdir(), "prompt-budget-"));
-const policyDirectory = join(fixture, ".pi", "gentle-ai");
+const policyDirectory = join(fixture, ".pi", "drakonc-ai");
 mkdirSync(policyDirectory, { recursive: true });
 writeFileSync(join(policyDirectory, BACKGROUND_SUBAGENTS_FILE), JSON.stringify({ schema: BACKGROUND_SUBAGENTS_SCHEMA, policy: "off" }));
 after(() => rmSync(fixture, { recursive: true, force: true }));
@@ -30,7 +30,7 @@ const pi = {
 	events: { on() {}, emit() {} },
 	registerTool(tool: Declaration) { tools.set(tool.name, tool); },
 };
-gentleAgents(pi as never, { GENTLE_PI_CONFIG_HOME: fixture }, { home: fixture, agentHome: fixture });
+drakoncAgents(pi as never, { DRAKONC_PI_CONFIG_HOME: fixture }, { home: fixture, agentHome: fixture });
 const names = ["orchestrator_session_id", "orchestrator_list", "subagent_run"];
 const selected = names.map(name => {
 	const tool = tools.get(name);
@@ -73,7 +73,7 @@ test("fixed primary host system assembly fits the byte budget", async t => {
 	const assembler = await import(pathToFileURL(join(dist, "core", "system-prompt.js")).href);
 	assert.equal(typeof assembler.buildSystemPrompt, "function", "Pi system assembler unavailable");
 	const activeTools = ["read", "bash", "edit", "write", ...names];
-	const harness = __testing.buildGentlePrompt("gentleman", fixture, activeTools, undefined, "tui");
+	const harness = __testing.buildDrakoncPrompt("drakoncman", fixture, activeTools, undefined, "tui");
 	assert.match(harness, /Background subagent policy: off/);
 	assert.match(harness, /Receipt-driven development: unknown \(native status unavailable\)/);
 	const review = __testing.readMirroredReviewContractFragment();
@@ -111,20 +111,20 @@ test("fixed primary host system assembly fits the byte budget", async t => {
 });
 
 test("fixed harness is independent of ambient background policy", () => {
-	const previous = process.env.GENTLE_PI_BACKGROUND_SUBAGENTS;
+	const previous = process.env.DRAKONC_PI_BACKGROUND_SUBAGENTS;
 	const activeTools = ["read", "bash", "edit", "write", ...names];
 	const rendered: string[] = [];
 	try {
 		for (const policy of ["off", "on"]) {
-			process.env.GENTLE_PI_BACKGROUND_SUBAGENTS = policy;
-			const harness = __testing.buildGentlePrompt("gentleman", fixture, activeTools, undefined, "tui");
+			process.env.DRAKONC_PI_BACKGROUND_SUBAGENTS = policy;
+			const harness = __testing.buildDrakoncPrompt("drakoncman", fixture, activeTools, undefined, "tui");
 			assert.match(harness, /Background subagent policy: off/);
 			rendered.push(harness);
 		}
 		assert.equal(rendered[0], rendered[1]);
 	} finally {
-		if (previous === undefined) delete process.env.GENTLE_PI_BACKGROUND_SUBAGENTS;
-		else process.env.GENTLE_PI_BACKGROUND_SUBAGENTS = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_BACKGROUND_SUBAGENTS;
+		else process.env.DRAKONC_PI_BACKGROUND_SUBAGENTS = previous;
 	}
 });
 

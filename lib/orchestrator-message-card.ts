@@ -72,8 +72,8 @@ export function outgoingMessageCall(args: { message?: unknown }, theme: CardThem
 }
 
 export function outgoingMessageResult(result: { content: Array<{ type: string; text?: string }>; details?: unknown }, expanded: boolean, partial: boolean, theme: CardTheme, context: MessageRowContext) {
-	const details = result.details as { gentleAgents?: OrchestratorMessageDetails; error?: unknown } | undefined;
-	const data = details?.gentleAgents ?? {};
+	const details = result.details as { drakoncAgents?: OrchestratorMessageDetails; error?: unknown } | undefined;
+	const data = details?.drakoncAgents ?? {};
 	const failed = !!details?.error || !!context.isError;
 	const accepted = data.state === "accepted" && !failed;
 	if (!partial) markCardResult(context.state);
@@ -89,7 +89,7 @@ export function outgoingMessageResult(result: { content: Array<{ type: string; t
 		const requested = clean(context.args?.recipient_session_id);
 		if (requested && requested !== data.recipientSessionId) body.push(`Requested recipient: ${requested}`);
 	} else if (expanded) {
-		body.push(...readableDataRows({ request: context.args, details: details?.gentleAgents }));
+		body.push(...readableDataRows({ request: context.args, details: details?.drakoncAgents }));
 	}
 	return {
 		render(width: number) {

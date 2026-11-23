@@ -64,7 +64,7 @@ test("unsafe publication Git environment matching preserves actual mixed-case ke
 });
 
 function createGateRepository(t: test.TestContext): GateRepository {
-	const parent = mkdtempSync(join(tmpdir(), "gentle-pi-gate-repo-"));
+	const parent = mkdtempSync(join(tmpdir(), "drakonc-pi-gate-repo-"));
 	const repository = join(parent, "repo");
 	mkdirSync(repository);
 	t.after(() => rmSync(parent, { recursive: true, force: true }));
@@ -957,11 +957,11 @@ test("release fast path remote head recheck detects an advanced or unresolvable 
 	assert.deepEqual(missing, { advanced: true, remote_head: null });
 });
 
-// gentle-shell#2552 review: an environment-injected GIT_CONFIG_GLOBAL carrying
+// drakonc-shell#2552 review: an environment-injected GIT_CONFIG_GLOBAL carrying
 // url.insteadOf must not redirect the publication destination probe; the probe
 // strips the key so Git reads the default config paths, never env overrides.
 test("push destination probe ignores environment-injected url.insteadOf rewrites", (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-probe-redirect-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-probe-redirect-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	// A hostile inherited GIT_DIR would point `git init` away from the fixture.
 	const fixtureEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));

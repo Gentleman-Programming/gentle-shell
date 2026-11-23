@@ -60,5 +60,5 @@ Read before any terminal UI edit. Every item is checkable in a screenshot.
 - Contrast of dim and muted text on every surface it appears on.
 - Every interactive row has default, hover, focus, selected, disabled and loading looks.
 - Long values (paths, branch names), empty states, 0 and 1000 items, narrow widths.
-- No line exceeds its column budget (an overflowing rail line can disable the whole rail in Gentle Shell).
+- No line exceeds its column budget (an overflowing rail line can disable the whole rail in Drakonc Shell).
 - Render cost: unchanged frames re-render nothing; style and width changes invalidate caches.

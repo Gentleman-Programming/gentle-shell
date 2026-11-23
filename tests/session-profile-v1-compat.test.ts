@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { profileRoleEntries } from "../lib/agent-profiles.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import {
@@ -12,9 +12,9 @@ import {
 	createSessionProfileStartupBind,
 } from "../lib/session-profile-persistence.ts";
 import { replay, replayReviewerRouting, type Transcript } from "./fixtures/session-profile-v1/replay.ts";
-import { reviewHostRelaySelection as v1ReviewHostRelaySelection } from "./fixtures/session-profile-v1/gentle-ai-reviewer.ts";
+import { reviewHostRelaySelection as v1ReviewHostRelaySelection } from "./fixtures/session-profile-v1/drakonc-ai-reviewer.ts";
 
-// v1 compatibility (gentle-shell#2742, section 10): a session resumed by the
+// v1 compatibility (drakonc-shell#2742, section 10): a session resumed by the
 // vendored v1 chain routes like the current modules. This file pins today's
 // record shapes; the A2 shapes join the same table as they land.
 
@@ -155,7 +155,7 @@ for (const [origin, defaults] of Object.entries(startupDefaults) as Array<[keyof
 		assert.equal(replay("v1", transcript).notice, undefined, "v1 finds no definition drift");
 	});
 	test(`follow mode routes a ${origin} startup bind as v1 does`, () => {
-		const transcript = { records: [record], defaults: { profiles, active: "local", foreignPin: "frontier" }, env: { GENTLE_PI_PROFILE_FOLLOW: "1" } };
+		const transcript = { records: [record], defaults: { profiles, active: "local", foreignPin: "frontier" }, env: { DRAKONC_PI_PROFILE_FOLLOW: "1" } };
 		assert.deepEqual(launchRouting("current", transcript), launchRouting("v1", transcript));
 		assert.deepEqual(launchRouting("current", transcript).foreignRouting, roles(profiles[name]));
 	});
@@ -179,7 +179,7 @@ test("gap (section 10): a startup-none clear resumed after an active profile app
 
 test("follow mode resolves the current defaults after a startup-none or legacy clear, as v1 does", () => {
 	for (const clear of [createSessionProfileClear("none"), createSessionProfileClear()]) {
-		const transcript = { records: [clear], defaults: { profiles, active: "frontier" }, env: { GENTLE_PI_PROFILE_FOLLOW: "1" } };
+		const transcript = { records: [clear], defaults: { profiles, active: "frontier" }, env: { DRAKONC_PI_PROFILE_FOLLOW: "1" } };
 		assert.deepEqual(replay("current", transcript), replay("v1", transcript));
 		assert.deepEqual(replay("current", transcript).routing, FRONTIER);
 	}
@@ -201,7 +201,7 @@ const clearTranscripts: Record<string, Transcript> = {
 	"unknown startup state": { records: [userBind("local", LOCAL), createSessionProfileClear()], defaults: { profiles, active: "frontier" } },
 	"invalid newest entry, startup known": { records: [userBind("local", LOCAL), invalid, createSessionProfileStartupBind("global", "team", TEAM)], defaults: { profiles, active: "team" } },
 	"invalid newest entry, startup unknown": { records: [userBind("local", LOCAL), invalid, createSessionProfileClear()], defaults: { profiles, active: "frontier" } },
-	"follow mode": { records: [createSessionProfileBind("local", LOCAL, teamStartup), createSessionProfileClear()], defaults: { profiles, active: "frontier" }, env: { GENTLE_PI_PROFILE_FOLLOW: "1" } },
+	"follow mode": { records: [createSessionProfileBind("local", LOCAL, teamStartup), createSessionProfileClear()], defaults: { profiles, active: "frontier" }, env: { DRAKONC_PI_PROFILE_FOLLOW: "1" } },
 };
 
 for (const [name, transcript] of Object.entries(clearTranscripts)) {
@@ -236,12 +236,12 @@ test("gap (section 10): after a startup-none clear a pin appears; a reviewer wit
 });
 
 test("gap (section 10): at own start the frozen profile's orchestrator feeds provider review roles; v1 without A1 reads the persisted default", (t) => {
-	const agentHome = mkdtempSync(join(tmpdir(), "gentle-pi-v1-frozen-agent-home-"));
-	const previous = process.env.GENTLE_PI_AGENT_HOME;
-	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	const agentHome = mkdtempSync(join(tmpdir(), "drakonc-pi-v1-frozen-agent-home-"));
+	const previous = process.env.DRAKONC_PI_AGENT_HOME;
+	process.env.DRAKONC_PI_AGENT_HOME = agentHome;
 	t.after(() => {
-		if (previous === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previous;
 		rmSync(agentHome, { recursive: true, force: true });
 	});
 	writeFileSync(join(agentHome, "settings.json"), JSON.stringify({ defaultProvider: "pidefault", defaultModel: "settings-model" }));
@@ -256,12 +256,12 @@ test("gap (section 10): at own start the frozen profile's orchestrator feeds pro
 });
 
 test("a startup record's orchestrator feeds the current refuter and validator; a reviewer without A1 falls back to settings.json", (t) => {
-	const agentHome = mkdtempSync(join(tmpdir(), "gentle-pi-v1-agent-home-"));
-	const previous = process.env.GENTLE_PI_AGENT_HOME;
-	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	const agentHome = mkdtempSync(join(tmpdir(), "drakonc-pi-v1-agent-home-"));
+	const previous = process.env.DRAKONC_PI_AGENT_HOME;
+	process.env.DRAKONC_PI_AGENT_HOME = agentHome;
 	t.after(() => {
-		if (previous === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previous;
 		rmSync(agentHome, { recursive: true, force: true });
 	});
 	writeFileSync(join(agentHome, "settings.json"), JSON.stringify({ defaultProvider: "pidefault", defaultModel: "settings-model" }));

@@ -12,8 +12,8 @@ Naming SDD in a request — asking about it, reporting a bug in it, or referenci
 
 ## Scope
 
-- gentle-pi only (user decision): `lib/sdd-preflight.ts`, preflight/runtime harness tests, `assets/orchestrator.md`, and `assets/sdd-orchestrator-workflow.md`.
-- Non-goals: gentle-ai provider templates (`internal/components/sdd/session_preflight.go`, per-agent `sdd-orchestrator.md` assets) — same flaw exists there, deferred by user choice.
+- drakonc-pi only (user decision): `lib/sdd-preflight.ts`, preflight/runtime harness tests, `assets/orchestrator.md`, and `assets/sdd-orchestrator-workflow.md`.
+- Non-goals: drakonc-ai provider templates (`internal/components/sdd/session_preflight.go`, per-agent `sdd-orchestrator.md` assets) — same flaw exists there, deferred by user choice.
 
 ## Constraints
 
@@ -59,12 +59,12 @@ Naming SDD in a request — asking about it, reporting a bug in it, or referenci
 
 ## Revised architecture
 
-- Input hook: only explicit `/sdd*` and `/gentle-sdd*` commands can originate preflight.
+- Input hook: only explicit `/sdd*` and `/drakonc-sdd*` commands can originate preflight.
 - Natural language: parent/orchestrator decides whether the user explicitly selected SDD; text alone has no side effect.
 - Execution boundary: existing `before_agent_start` and SDD dispatch gates run/reuse preflight before any SDD actor starts.
 - Result: mentioning the word `SDD` cannot open UI, while a real SDD route remains mechanically unable to execute without preflight.
 
 ## Follow-up (optional, out of scope here)
 
-- gentle-ai provider templates have the same fuzzy wording (`internal/components/sdd/session_preflight.go` "affirmative natural-language SDD request", per-agent `sdd-orchestrator.md` "or an equivalent natural-language request") — deferred by user decision.
+- drakonc-ai provider templates have the same fuzzy wording (`internal/components/sdd/session_preflight.go` "affirmative natural-language SDD request", per-agent `sdd-orchestrator.md` "or an equivalent natural-language request") — deferred by user decision.
 - If the core ever needs the boundary inline, the sanctioned path is updating `tests/orchestrator-budget.test.ts` CURRENT_* expected strings plus a compensating ≥100 B diet elsewhere in `orchestrator.md`.

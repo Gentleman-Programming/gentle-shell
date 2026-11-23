@@ -12,12 +12,12 @@ import {
 
 // Fixtures live under the system temp directory, never inside the worktree.
 // fs.rmSync (not the named export) because one test mocks it on the fs object.
-const root = mkdtempSync(join(tmpdir(), "gentle-herdr-task-summary-"));
+const root = mkdtempSync(join(tmpdir(), "drakonc-herdr-task-summary-"));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 
 function fixture() {
 	const home = mkdtempSync(join(root, "case-"));
-	return { options: { gentlePiConfigHome: home }, home, file: join(home, "herdr-task-summary.json") };
+	return { options: { drakoncPiConfigHome: home }, home, file: join(home, "herdr-task-summary.json") };
 }
 
 test("missing settings preserve legacy defaults and return independent values", () => {

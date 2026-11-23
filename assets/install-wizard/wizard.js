@@ -1,4 +1,4 @@
-// Gentle Shell installation wizard (browser side).
+// Drakonc Shell installation wizard (browser side).
 //
 // Loaded as an ES module under the host's strict CSP (`default-src 'self'`):
 // no inline code or styles, no HTML parsing of server data (DOM APIs and text
@@ -6,7 +6,7 @@
 // models, renderers and the controller factory are exported so Node tests can
 // load this file without a browser; it starts itself only inside a page.
 
-const API_HEADERS = Object.freeze({ "X-Gentle-Install": "1" });
+const API_HEADERS = Object.freeze({ "X-Drakonc-Install": "1" });
 const LOG_LIMIT = 200;
 
 /** Human labels for every step the runner logs. Unknown ids are shown as-is. */
@@ -25,36 +25,36 @@ export const stepLabels = Object.freeze({
 	"verify-persistent-runtime": "Verify the persistent Node.js and npm",
 	"verify-persistent-pnpm": "Verify the persistent pnpm",
 	"configure-npm-prefix": "Configure npm's global prefix",
-	"install-global": "Install Pi and Gentle Shell",
+	"install-global": "Install Pi and Drakonc Shell",
 	"verify-global-list": "Verify the installed packages",
-	"verify-shell-bin": "Verify the gentle-shell command",
-	"verify-gentle-ai": "Verify Gentle AI",
-	"shell-setup": "Run gentle-shell setup",
+	"verify-shell-bin": "Verify the drakonc-shell command",
+	"verify-drakonc-ai": "Verify Drakonc AI",
+	"shell-setup": "Run drakonc-shell setup",
 	"persist-path": "Add the global bin directory to PATH",
-	"build-gentle-ai-main": "Build Gentle AI from main",
-	"install-shell-main": "Install Gentle Shell from main",
+	"build-drakonc-ai-main": "Build Drakonc AI from main",
+	"install-shell-main": "Install Drakonc Shell from main",
 	"record-channel": "Save the main channel",
 	"acquire-go": "Download and verify Go",
 	"verify-go": "Verify the downloaded Go",
-	"check-existing-shell": "Check for an existing Gentle Shell",
-	"check-installed-shell": "Find the installed Gentle Shell",
+	"check-existing-shell": "Check for an existing Drakonc Shell",
+	"check-installed-shell": "Find the installed Drakonc Shell",
 	"install-pi": "Install Pi",
-	"update-shell": "Update Gentle Shell",
-	"verify-updated-shell": "Verify the updated Gentle Shell",
+	"update-shell": "Update Drakonc Shell",
+	"verify-updated-shell": "Verify the updated Drakonc Shell",
 	"check-installed-pi": "Find the installed Pi",
 	"update-pi": "Update Pi",
 	"verify-updated-pi": "Verify the updated Pi",
 	"check-existing-pi": "Check for an existing pnpm Pi",
 	"verify-installed-pi": "Verify the installed Pi",
-	"claim-prefix": "Create Gentle Shell's private folder",
+	"claim-prefix": "Create Drakonc Shell's private folder",
 	"copy-npm-settings": "Copy your npm registry and proxy settings",
-	"install-runtime": "Install Gentle Shell's Node.js, npm and pnpm",
-	"install-version": "Install Gentle Shell from the release lockfile",
+	"install-runtime": "Install Drakonc Shell's Node.js, npm and pnpm",
+	"install-version": "Install Drakonc Shell from the release lockfile",
 	"activate-version": "Activate the installed version",
-	"write-launcher": "Write the gentle-shell launcher",
-	"bundled-path": "Add gentle-shell to PATH",
-	"verify-launcher": "Check the new gentle-shell launcher",
-	"remove-global-shell": "Remove the old global gentle-pi",
+	"write-launcher": "Write the drakonc-shell launcher",
+	"bundled-path": "Add drakonc-shell to PATH",
+	"verify-launcher": "Check the new drakonc-shell launcher",
+	"remove-global-shell": "Remove the old global drakonc-pi",
 });
 export function stepLabel(id) {
 	return typeof id === "string" && Object.hasOwn(stepLabels, id) ? stepLabels[id] : String(id);
@@ -64,12 +64,12 @@ const toolLabels = Object.freeze({
 	node: "Node.js",
 	pnpm: "pnpm",
 	pi: "Pi",
-	shell: "Gentle Shell",
-	gentleAi: "Gentle AI",
+	shell: "Drakonc Shell",
+	drakoncAi: "Drakonc AI",
 	go: "Go",
 	globalBin: "pnpm global bin directory",
 	pnpmHome: "pnpm home folder",
-	setup: "Gentle Shell setup",
+	setup: "Drakonc Shell setup",
 	target: "This computer",
 });
 const statusText = Object.freeze({
@@ -104,7 +104,7 @@ function list(value) {
  * It mirrors runStandardInstall; progressModel tolerates any divergence.
  */
 // The main channel overlay the runner adds after verifying the release install.
-const mainSteps = ["build-gentle-ai-main", "install-shell-main", "record-channel"];
+const mainSteps = ["build-drakonc-ai-main", "install-shell-main", "record-channel"];
 function withMain(ids, steps) {
 	if (!ids.has("install-shell-main")) return steps;
 	const at = steps.indexOf("shell-setup");
@@ -114,22 +114,22 @@ function withMain(ids, steps) {
 export function expectedSteps(actionIds) {
 	const ids = new Set(list(actionIds));
 	// The bundled install (runBundledInstall): the PATH step only when the installer applies it; a
-	// migration checks the new launcher before the PATH step and removes the old global gentle-pi last.
+	// migration checks the new launcher before the PATH step and removes the old global drakonc-pi last.
 	if (ids.has("bundled-version")) {
 		const migration = ids.has("remove-global-shell");
 		return ["claim-prefix", "copy-npm-settings", "install-runtime", "install-version", "activate-version", "write-launcher",
 			...(migration ? ["verify-launcher"] : []), ...(ids.has("bundled-path") ? ["bundled-path"] : []), "shell-setup", ...(migration ? ["remove-global-shell"] : [])];
 	}
-	// An older Pi is found, updated and verified before any Gentle Shell step.
+	// An older Pi is found, updated and verified before any Drakonc Shell step.
 	const piCheck = ids.has("update-pi") ? ["check-installed-pi"] : [];
 	const piSteps = ids.has("update-pi") ? ["update-pi", "verify-updated-pi"] : [];
-	// An existing Gentle Shell is updated in place, then set up again.
+	// An existing Drakonc Shell is updated in place, then set up again.
 	// The installer's pinned Go is acquired after the checks, before anything is installed.
 	const go = ids.has("acquire-go") ? ["acquire-go", "verify-go"] : [];
 	const update = ["update-shell-release", "update-shell-main"].find((id) => ids.has(id));
 	if (update) {
 		return ["check-npm", "check-global-bin", "check-installed-shell", ...piCheck, ...go, ...(ids.has("install-pi") ? ["install-pi"] : []),
-			...piSteps, "update-shell", "verify-updated-shell", ...(update === "update-shell-release" ? ["verify-gentle-ai"] : []), "shell-setup"];
+			...piSteps, "update-shell", "verify-updated-shell", ...(update === "update-shell-release" ? ["verify-drakonc-ai"] : []), "shell-setup"];
 	}
 	if (piOnlyPlan(actionIds)) {
 		// The installer's Pi alone, next to an older one neither pnpm nor npm owns.
@@ -141,11 +141,11 @@ export function expectedSteps(actionIds) {
 	if (recoveryPlan(actionIds)) {
 		// Setup recovery re-verifies the installed stack and never reinstalls it.
 		const steps = ["check-npm", "check-global-bin", "check-recoverable-stack", "verify-global-list", "verify-shell-bin",
-			"verify-gentle-ai", "shell-setup"];
+			"verify-drakonc-ai", "shell-setup"];
 		return withMain(ids, ids.has("setup-global-bin") ? [...steps, "persist-path"] : steps);
 	}
 	// An npm that is about to be installed is checked after it is added.
-	// With Pi already installed, only Gentle Shell is added, so only it must be absent.
+	// With Pi already installed, only Drakonc Shell is added, so only it must be absent.
 	const shellOnly = ids.has("install-shell") && !ids.has("install-pi");
 	// The pinned Go comes right after the checks, before anything is persisted.
 	const steps = [...(addNpm ? [] : ["check-npm"]), "check-global-bin", shellOnly ? "check-existing-shell" : "check-existing-stack", ...piCheck, ...go];
@@ -158,12 +158,12 @@ export function expectedSteps(actionIds) {
 		if (addNpm) steps.push("check-npm");
 		if (addPnpm) steps.push("verify-persistent-pnpm");
 	}
-	steps.push(...piSteps, "install-global", "verify-global-list", "verify-shell-bin", "verify-gentle-ai", "shell-setup");
+	steps.push(...piSteps, "install-global", "verify-global-list", "verify-shell-bin", "verify-drakonc-ai", "shell-setup");
 	if (ids.has("setup-global-bin")) steps.push("persist-path");
 	return withMain(ids, steps);
 }
 
-/** Pi alone (a current Gentle Shell): only its update, or the installer's Pi, and readiness. */
+/** Pi alone (a current Drakonc Shell): only its update, or the installer's Pi, and readiness. */
 function piOnlyPlan(actionIds) {
 	const ids = list(actionIds);
 	return ["update-pi", "install-pi"].some((pi) => ids.includes(pi) && ids.every((id) => [pi, "verify-readiness"].includes(id)));
@@ -217,7 +217,7 @@ export function planModel(view) {
 			},
 			{
 				id: "persistence",
-				title: kind === "bundled" ? "Gentle Shell's own runtimes" : "Runtimes under PNPM_HOME",
+				title: kind === "bundled" ? "Drakonc Shell's own runtimes" : "Runtimes under PNPM_HOME",
 				changes: tools.length > 0,
 				state: kind === "bundled" ? `Uses its own ${tools.join(", ")}` : tools.length > 0
 					? `Will ${persistence.replacesNode === true ? "install" : "add"} ${tools.join(", ")}` : "No change",
@@ -262,11 +262,11 @@ export function progressModel(steps, entries, { running = false, outcome = null 
 	};
 }
 
-const detailCommands = new Map([["shell-setup", "gentle-shell setup"], ["install-version", "pnpm install"], ["persist-path", "pnpm setup"], ["acquire-go", "the Go download"],
-	["install-global", "pnpm add -g"], ["install-shell-main", "the Gentle Shell main install"], ["build-gentle-ai-main", "the Gentle AI main build"],
-	["update-shell", "the Gentle Shell update"], ["claim-prefix", "the bundled install"], ["copy-npm-settings", "the bundled install"],
+const detailCommands = new Map([["shell-setup", "drakonc-shell setup"], ["install-version", "pnpm install"], ["persist-path", "pnpm setup"], ["acquire-go", "the Go download"],
+	["install-global", "pnpm add -g"], ["install-shell-main", "the Drakonc Shell main install"], ["build-drakonc-ai-main", "the Drakonc AI main build"],
+	["update-shell", "the Drakonc Shell update"], ["claim-prefix", "the bundled install"], ["copy-npm-settings", "the bundled install"],
 	["install-runtime", "the bundled install"], ["activate-version", "the bundled install"], ["write-launcher", "the bundled install"],
-	["verify-launcher", "gentle-shell --version"], ["bundled-path", "the bundled install"]]);
+	["verify-launcher", "drakonc-shell --version"], ["bundled-path", "the bundled install"]]);
 
 /** Final screen model for every runner outcome. Guidance always comes from the host. */
 export function outcomeModel(outcome) {
@@ -275,25 +275,25 @@ export function outcomeModel(outcome) {
 	const notes = [];
 	if (outcome?.npmPrefix === "configured") notes.push("npm's user-level global prefix now points at PNPM_HOME.");
 	if (outcome?.npmPrefix === "unchanged") notes.push("npm's global prefix was already correct and was left unchanged.");
-	// A migration whose old global gentle-pi could not be removed (the host sends only the fixed commands).
-	if (typeof outcome?.removeCommand === "string") notes.push(`The old global gentle-pi could not be removed. Remove it with \`${text(outcome.removeCommand)}\`.`);
+	// A migration whose old global drakonc-pi could not be removed (the host sends only the fixed commands).
+	if (typeof outcome?.removeCommand === "string") notes.push(`The old global drakonc-pi could not be removed. Remove it with \`${text(outcome.removeCommand)}\`.`);
 	const base = { outcome: outcome?.outcome, guidance, completed, notes, reason: null, failedStep: null, command: null, detail: null, detailCommand: null };
 	if (outcome?.outcome === "ready") {
-		return { ...base, tone: "success", badge: "Installed", title: "Gentle Shell is ready",
-			lead: "Everything is installed and verified on this computer.", command: "gentle-shell",
-			next: ["Open any terminal.", "Run `gentle-shell` to start."] };
+		return { ...base, tone: "success", badge: "Installed", title: "Drakonc Shell is ready",
+			lead: "Everything is installed and verified on this computer.", command: "drakonc-shell",
+			next: ["Open any terminal.", "Run `drakonc-shell` to start."] };
 	}
 	// The bundled install could not edit the shell profile: the user adds the exact line.
 	const pathLine = outcome?.action === "add-path-line" ? outcome.pathLine : null;
 	if (outcome?.outcome === "terminal-action-required" && typeof pathLine?.file === "string" && typeof pathLine?.line === "string") {
-		return { ...base, tone: "success", badge: "One more step", title: "Add Gentle Shell to your PATH",
-			lead: "Gentle Shell is installed. The installer did not edit your shell profile, so new terminals need one line to find it.", command: pathLine.line,
-			next: [`Add the line above to ${pathLine.file}.`, "Open a new terminal window or tab.", "Run `gentle-shell` to start."] };
+		return { ...base, tone: "success", badge: "One more step", title: "Add Drakonc Shell to your PATH",
+			lead: "Drakonc Shell is installed. The installer did not edit your shell profile, so new terminals need one line to find it.", command: pathLine.line,
+			next: [`Add the line above to ${pathLine.file}.`, "Open a new terminal window or tab.", "Run `drakonc-shell` to start."] };
 	}
 	if (outcome?.outcome === "terminal-action-required") {
 		return { ...base, tone: "success", badge: "One more step", title: "Open a new terminal",
-			lead: "Your PATH was updated, and only terminals opened from now on can see it.", command: "gentle-shell",
-			next: ["Open a new terminal window or tab.", "Run `gentle-shell` to start."] };
+			lead: "Your PATH was updated, and only terminals opened from now on can see it.", command: "drakonc-shell",
+			next: ["Open a new terminal window or tab.", "Run `drakonc-shell` to start."] };
 	}
 	if (outcome?.outcome === "blocked") {
 		return { ...base, tone: "warning", badge: "Blocked", title: "Installation blocked",
@@ -416,7 +416,7 @@ export function renderStages(doc, current, { stopped = false } = {}) {
 
 export function renderLoading(doc) {
 	return panel(doc, { stage: "check", eyebrow: "Step 1 of 4 · Check", title: "Checking this computer",
-		lead: "Looking for Node.js, pnpm, Pi and Gentle Shell. Nothing changes until you confirm a plan." },
+		lead: "Looking for Node.js, pnpm, Pi and Drakonc Shell. Nothing changes until you confirm a plan." },
 	el(doc, "div", { class: "loader", "aria-hidden": "true" }, el(doc, "span"), el(doc, "span"), el(doc, "span")));
 }
 
@@ -431,8 +431,8 @@ function disclosureCard(doc, item) {
 }
 
 const channels = Object.freeze([
-	{ value: "release", label: "Latest release", hint: "Recommended. The published Gentle Shell and its pinned Gentle AI binary." },
-	{ value: "main", label: "Latest main", hint: "Development builds: Gentle Shell and Gentle AI from the latest commit of `main`, built on this computer with Go. If yours is missing, older or cannot be checked, the installer downloads its own pinned Go only for the build." },
+	{ value: "release", label: "Latest release", hint: "Recommended. The published Drakonc Shell and its pinned Drakonc AI binary." },
+	{ value: "main", label: "Latest main", hint: "Development builds: Drakonc Shell and Drakonc AI from the latest commit of `main`, built on this computer with Go. If yours is missing, older or cannot be checked, the installer downloads its own pinned Go only for the build." },
 ]);
 
 /** Channel choice shown on every review screen; a change reloads the plan. */
@@ -467,12 +467,12 @@ export function renderPlan(doc, model, handlers) {
 		el(doc, "div", { class: "actions" }, actionButton(doc, "Check again", "primary", () => handlers.reload()), close));
 	}
 	if (model.kind === "nothing") {
-		return panel(doc, { stage: "review", eyebrow: "Step 2 of 4 · Review", title: "Gentle Shell is already set up",
+		return panel(doc, { stage: "review", eyebrow: "Step 2 of 4 · Review", title: "Drakonc Shell is already set up",
 			lead: "This computer already has everything the wizard installs." },
 		choice,
 		el(doc, "p", {}, rich(doc, model.channel === "main"
-			? "Run `gentle-shell` in a terminal. To follow main, run `gentle-shell upgrade --channel main`."
-			: "Run `gentle-shell` in a terminal. To upgrade, run `gentle-shell upgrade`.")),
+			? "Run `drakonc-shell` in a terminal. To follow main, run `drakonc-shell upgrade --channel main`."
+			: "Run `drakonc-shell` in a terminal. To upgrade, run `drakonc-shell upgrade`.")),
 		el(doc, "div", { class: "actions" }, close));
 	}
 	const recovery = model.kind === "recovery";
@@ -481,8 +481,8 @@ export function renderPlan(doc, model, handlers) {
 	const installingPi = model.kind === "install-pi";
 	const piUpdate = model.actions.some((action) => action.id === "update-pi");
 	const checkbox = el(doc, "input", { type: "checkbox", id: "consent", class: "consent-input", "aria-describedby": "consent-hint" });
-	const label = recovery ? "Complete setup" : updating ? "Update Gentle Shell" : updatingPi ? "Update Pi" : installingPi ? "Install Pi"
-		: "Install Gentle Shell";
+	const label = recovery ? "Complete setup" : updating ? "Update Drakonc Shell" : updatingPi ? "Update Pi" : installingPi ? "Install Pi"
+		: "Install Drakonc Shell";
 	const install = actionButton(doc, label, "primary", (button) =>
 		handlers.install({ consent: checkbox.checked === true, checkbox, button }));
 	checkbox.addEventListener("change", () => {
@@ -490,20 +490,20 @@ export function renderPlan(doc, model, handlers) {
 		handlers.consentChanged?.(checkbox.checked === true);
 	});
 	const heading = recovery
-		? { title: "Finish setting up Gentle Shell",
-			lead: "Gentle Shell is already installed; this completes setup. Nothing is reinstalled, and nothing changes until you confirm." }
+		? { title: "Finish setting up Drakonc Shell",
+			lead: "Drakonc Shell is already installed; this completes setup. Nothing is reinstalled, and nothing changes until you confirm." }
 		: updating
-		? { title: "Update Gentle Shell",
-			lead: "Gentle Shell is already installed. This updates it with the package manager that installed it; your settings and sessions stay. Nothing changes until you confirm." }
+		? { title: "Update Drakonc Shell",
+			lead: "Drakonc Shell is already installed. This updates it with the package manager that installed it; your settings and sessions stay. Nothing changes until you confirm." }
 		: updatingPi
 		? { title: "Update Pi",
-			lead: "Gentle Shell is already installed, but Pi is older than it needs. This updates Pi with the package manager that installed it; your settings and sessions stay. Nothing changes until you confirm." }
+			lead: "Drakonc Shell is already installed, but Pi is older than it needs. This updates Pi with the package manager that installed it; your settings and sessions stay. Nothing changes until you confirm." }
 		: model.kind === "bundled"
-		? { title: "Install Gentle Shell as one self-contained product",
-			lead: "Nothing changes until you confirm. Gentle Shell brings its own pinned Node.js, npm, pnpm and Pi; your own Node.js, npm, pnpm, Go and Pi are not used or changed." }
+		? { title: "Install Drakonc Shell as one self-contained product",
+			lead: "Nothing changes until you confirm. Drakonc Shell brings its own pinned Node.js, npm, pnpm and Pi; your own Node.js, npm, pnpm, Go and Pi are not used or changed." }
 		: installingPi
-		? { title: "Install Pi for Gentle Shell",
-			lead: "Gentle Shell is already installed, but Pi is missing or older than it needs. This installs Pi globally with pnpm; any other Pi on this computer is left unchanged. Nothing changes until you confirm." }
+		? { title: "Install Pi for Drakonc Shell",
+			lead: "Drakonc Shell is already installed, but Pi is missing or older than it needs. This installs Pi globally with pnpm; any other Pi on this computer is left unchanged. Nothing changes until you confirm." }
 		: { title: "Review the installation plan",
 			lead: "Nothing changes until you confirm. This is exactly what the installer will do on this computer." };
 	return panel(doc, { stage: "review", eyebrow: "Step 2 of 4 · Review", ...heading },
@@ -526,7 +526,7 @@ export function renderPlan(doc, model, handlers) {
 		el(doc, "div", {},
 			el(doc, "label", { for: "consent", class: "consent-label" }, "I reviewed this plan and agree to these changes on this computer."),
 			el(doc, "p", { id: "consent-hint", class: "hint" }, updating
-				? "The installer runs only the steps listed above and updates only Gentle Shell (and Pi, if it is missing or older than required)."
+				? "The installer runs only the steps listed above and updates only Drakonc Shell (and Pi, if it is missing or older than required)."
 				: updatingPi
 				? "The installer runs only the steps listed above and updates only Pi, never to an older version."
 				: installingPi
@@ -579,7 +579,7 @@ export function renderProgress(doc) {
 	const count = el(doc, "span", { id: "progress-count", class: "progress-count" }, "Starting…");
 	const steps = el(doc, "ol", { class: "steps" });
 	const log = logPanel(doc, []);
-	const node = panel(doc, { stage: "install", eyebrow: "Step 3 of 4 · Install", title: "Installing Gentle Shell",
+	const node = panel(doc, { stage: "install", eyebrow: "Step 3 of 4 · Install", title: "Installing Drakonc Shell",
 		lead: "This can take a few minutes. Keep this tab and the terminal open." },
 	el(doc, "div", { class: "progress" },
 		el(doc, "div", { class: "progress-head" }, el(doc, "label", { for: "install-progress", class: "progress-label" }, "Progress"), count),
@@ -653,7 +653,7 @@ export function renderClosed(doc, outcome) {
 	const installed = outcome?.outcome === "ready" || outcome?.outcome === "terminal-action-required";
 	return panel(doc, { stage: "done", eyebrow: "Finished", title: "Installer closed",
 		lead: installed
-			? "You can close this tab. Run `gentle-shell` in a terminal to start."
+			? "You can close this tab. Run `drakonc-shell` in a terminal to start."
 			: "You can close this tab. The terminal shows the same result, and nothing else will run." });
 }
 

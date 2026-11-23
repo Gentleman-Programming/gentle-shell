@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { rejectUndocumentedWriterLaunch } from "../lib/bounded-writer-admission.ts";
 import { CONTEXT_BACKSTOP_TOKENS_ENV } from "../lib/context-backstop.ts";
 
@@ -28,7 +28,7 @@ function workspace(withDocument: boolean): string {
 test("S16: a writer launch without a feature-document task is rejected with an inline instruction", (t) => {
 	const root = workspace(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const denied = rejectUndocumentedWriterLaunch({ agent: "gentle-ai-worker", task: `Implement annual budgets.${surfaces}` }, { root, contextUsage: { tokens: 20_000, contextWindow: 400_000 } });
+	const denied = rejectUndocumentedWriterLaunch({ agent: "drakonc-ai-worker", task: `Implement annual budgets.${surfaces}` }, { root, contextUsage: { tokens: 20_000, contextWindow: 400_000 } });
 	assert.ok(denied?.block, "the launch must be blocked");
 	assert.match(denied.reason, /write this unit inline yourself/);
 	assert.match(denied.reason, /do not retry/);
@@ -38,7 +38,7 @@ test("S16: a writer launch without a feature-document task is rejected with an i
 test("S16: a writer naming a task of an existing feature document is admitted", (t) => {
 	const root = workspace(true);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const input = { agent: "gentle-ai-worker", task: `Spec: odd/tasks/ledger.md, T2, S3-S4. Read until ## Log.${surfaces}` };
+	const input = { agent: "drakonc-ai-worker", task: `Spec: odd/tasks/ledger.md, T2, S3-S4. Read until ## Log.${surfaces}` };
 	assert.equal(rejectUndocumentedWriterLaunch(input, { root, contextUsage: { tokens: 20_000, contextWindow: 400_000 } }), undefined);
 	const viaContext = { agent: "worker", task: `Implement it.${surfaces}`, context: "Spec: odd/tasks/ledger.md, T1" };
 	assert.equal(rejectUndocumentedWriterLaunch(viaContext, { root, contextUsage: { tokens: 20_000, contextWindow: 400_000 } }), undefined);
@@ -48,7 +48,7 @@ test("S16: a Spec reference to a missing document, or one escaping the root, is 
 	const root = workspace(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	for (const spec of ["odd/tasks/ledger.md", "odd/tasks/../../etc/passwd.md"]) {
-		const denied = rejectUndocumentedWriterLaunch({ agent: "gentle-ai-worker", task: `Spec: ${spec}, T1${surfaces}` }, { root, contextUsage: { tokens: 20_000, contextWindow: 400_000 } });
+		const denied = rejectUndocumentedWriterLaunch({ agent: "drakonc-ai-worker", task: `Spec: ${spec}, T1${surfaces}` }, { root, contextUsage: { tokens: 20_000, contextWindow: 400_000 } });
 		assert.ok(denied?.block, `${spec} must not admit a writer`);
 	}
 });
@@ -56,7 +56,7 @@ test("S16: a Spec reference to a missing document, or one escaping the root, is 
 test("S16: the measured context backstop admits a writer without a document", (t) => {
 	const root = workspace(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const input = { agent: "gentle-ai-worker", task: `Implement annual budgets.${surfaces}` };
+	const input = { agent: "drakonc-ai-worker", task: `Implement annual budgets.${surfaces}` };
 	assert.equal(rejectUndocumentedWriterLaunch(input, { root, contextUsage: { tokens: 150_000, contextWindow: 1_000_000 } }), undefined);
 	assert.ok(rejectUndocumentedWriterLaunch(input, { root, contextUsage: { tokens: 149_999, contextWindow: 1_000_000 } })?.block, "below the backstop does not admit");
 	assert.ok(rejectUndocumentedWriterLaunch(input, { root, contextUsage: { tokens: null, contextWindow: 400_000 } })?.block, "unknown context usage does not admit");
@@ -68,7 +68,7 @@ test("S16: the measured context backstop admits a writer without a document", (t
 test("S16: the admission backstop scales with the measured context window and honors the environment", (t) => {
 	const root = workspace(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const input = { agent: "gentle-ai-worker", task: `Implement annual budgets.${surfaces}` };
+	const input = { agent: "drakonc-ai-worker", task: `Implement annual budgets.${surfaces}` };
 	const decide = (tokens: number, contextWindow: number, env?: NodeJS.ProcessEnv) => rejectUndocumentedWriterLaunch(input, { root, contextUsage: { tokens, contextWindow }, env })?.block ?? false;
 	assert.equal(decide(19_200, 128_000), false, "15% of a small window admits");
 	assert.equal(decide(19_199, 128_000), true);
@@ -81,7 +81,7 @@ test("S16: the admission backstop scales with the measured context window and ho
 test("S16: previous behavior holds for non-writers and Judgment Day fix agents", (t) => {
 	const root = workspace(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	for (const agent of ["gentle-ai-explore", "gentle-ai-verify", "jd-fix-agent"]) {
+	for (const agent of ["drakonc-ai-explore", "drakonc-ai-verify", "jd-fix-agent"]) {
 		assert.equal(rejectUndocumentedWriterLaunch({ agent, task: "Read src/budget.ts" }, { root, contextUsage: { tokens: 0, contextWindow: 400_000 } }), undefined, agent);
 	}
 });
@@ -91,7 +91,7 @@ type ToolCallHandler = (event: { toolName: string; input: unknown }, ctx: Extens
 function launchThroughHook(input: Record<string, unknown>, cwd: string, tokens: number, processEnv: NodeJS.ProcessEnv = {}, contextWindow = 272_000) {
 	const handlers = new Map<string, ToolCallHandler>();
 	const pi = { on(name: string, handler: ToolCallHandler) { handlers.set(name, handler); }, events: { emit() {} }, registerCommand() {}, registerTool() {} } as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null, processEnv })(pi);
+	createDrakoncAiExtension({ nativeReviewCli: null, processEnv })(pi);
 	return handlers.get("tool_call")!({ toolName: "subagent_run", input }, {
 		cwd, hasUI: false, ui: { confirm: async () => true },
 		getContextUsage: () => ({ tokens, contextWindow, percent: Math.round((tokens / contextWindow) * 100) }),
@@ -102,17 +102,17 @@ test("S16: the orchestrator tool_call hook blocks an undocumented writer and adm
 	const bare = workspace(false);
 	const documented = workspace(true);
 	t.after(() => { rmSync(bare, { recursive: true, force: true }); rmSync(documented, { recursive: true, force: true }); });
-	const blocked = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: `Implement annual budgets.${surfaces}` }, bare, 20_000);
+	const blocked = await launchThroughHook({ agent: "drakonc-ai-worker", mode: "background", task: `Implement annual budgets.${surfaces}` }, bare, 20_000);
 	assert.equal(blocked?.block, true);
 	assert.match(blocked?.reason ?? "", /write this unit inline yourself/);
-	const admitted = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: `Spec: odd/tasks/ledger.md, T1. Read until ## Log.${surfaces}` }, documented, 20_000);
+	const admitted = await launchThroughHook({ agent: "drakonc-ai-worker", mode: "background", task: `Spec: odd/tasks/ledger.md, T1. Read until ## Log.${surfaces}` }, documented, 20_000);
 	assert.equal(admitted?.block, undefined);
-	const explorer = await launchThroughHook({ agent: "gentle-ai-explore", mode: "task", task: "Map src/budget.ts" }, bare, 20_000);
+	const explorer = await launchThroughHook({ agent: "drakonc-ai-explore", mode: "task", task: "Map src/budget.ts" }, bare, 20_000);
 	assert.equal(explorer?.block, undefined, "read-only subagents are unaffected");
 	// The hook passes the measured window, not only the tokens: 19.2k of a 128k window is at the backstop.
-	const smallWindow = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: `Implement annual budgets.${surfaces}` }, bare, 19_200, {}, 128_000);
+	const smallWindow = await launchThroughHook({ agent: "drakonc-ai-worker", mode: "background", task: `Implement annual budgets.${surfaces}` }, bare, 19_200, {}, 128_000);
 	assert.equal(smallWindow?.block, undefined, "15% of the measured window admits");
-	const envCap = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: `Implement annual budgets.${surfaces}` }, bare, 19_200, { GENTLE_PI_CONTEXT_BACKSTOP_FRACTION: "0.9" }, 128_000);
+	const envCap = await launchThroughHook({ agent: "drakonc-ai-worker", mode: "background", task: `Implement annual budgets.${surfaces}` }, bare, 19_200, { DRAKONC_PI_CONTEXT_BACKSTOP_FRACTION: "0.9" }, 128_000);
 	assert.equal(envCap?.block, true, "the hook reads the session environment");
 });
 
@@ -128,7 +128,7 @@ test("S16: the delegation card format and a comma-free task reference are admitt
 		"Spec: odd/tasks/ledger.md, T2–T4, S1",
 		"Spec: odd/tasks/ledger.md, T2..T4, S1",
 	]) {
-		assert.equal(rejectUndocumentedWriterLaunch({ agent: "gentle-ai-worker", task: `${line}\nImplement it.${surfaces}` }, { root, contextUsage: { tokens: 0, contextWindow: 400_000 } }), undefined, line);
+		assert.equal(rejectUndocumentedWriterLaunch({ agent: "drakonc-ai-worker", task: `${line}\nImplement it.${surfaces}` }, { root, contextUsage: { tokens: 0, contextWindow: 400_000 } }), undefined, line);
 	}
 });
 
@@ -138,7 +138,7 @@ test("canonical Spec launches from a repository subdirectory use its Git root fo
 	execFileSync("git", ["init", "--quiet", root]);
 	const cwd = join(root, "frontend");
 	mkdirSync(cwd);
-	for (const agent of ["gentle-ai-worker", "gentle-ai-verify"]) {
+	for (const agent of ["drakonc-ai-worker", "drakonc-ai-verify"]) {
 		const result = await launchThroughHook({ agent, task: `Spec: odd/tasks/ledger.md, T2–T4, S1${surfaces}` }, cwd, 0);
 		assert.equal(result?.block, undefined, `${agent}: ${result?.reason}`);
 	}
@@ -150,7 +150,7 @@ test("an explicit repository target never borrows the session repository's docum
 	t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(other, { recursive: true, force: true }); });
 	execFileSync("git", ["init", "--quiet", root]);
 	execFileSync("git", ["init", "--quiet", other]);
-	const result = await launchThroughHook({ agent: "gentle-ai-worker", repository_root: other, task: `Spec: odd/tasks/ledger.md, T1${surfaces}` }, root, 0);
+	const result = await launchThroughHook({ agent: "drakonc-ai-worker", repository_root: other, task: `Spec: odd/tasks/ledger.md, T1${surfaces}` }, root, 0);
 	assert.equal(result?.block, true);
 });
 
@@ -166,7 +166,7 @@ test("S16: a Spec mention inside prose, outside odd/tasks, or through a symlink 
 		"Spec: odd/tasks/../../README.md, T1",
 		"Spec: odd/tasks/link-out.md, T1",
 	]) {
-		assert.ok(rejectUndocumentedWriterLaunch({ agent: "gentle-ai-worker", task: `${task}${surfaces}` }, { root, contextUsage: { tokens: 0, contextWindow: 400_000 } })?.block, task);
+		assert.ok(rejectUndocumentedWriterLaunch({ agent: "drakonc-ai-worker", task: `${task}${surfaces}` }, { root, contextUsage: { tokens: 0, contextWindow: 400_000 } })?.block, task);
 	}
 });
 
@@ -174,9 +174,9 @@ test("S16: child sessions are exempt and an empty workspace_root falls back to t
 	const bare = workspace(false);
 	const documented = workspace(true);
 	t.after(() => { rmSync(bare, { recursive: true, force: true }); rmSync(documented, { recursive: true, force: true }); });
-	const child = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: `Implement it.${surfaces}` }, bare, 0, { GENTLE_PI_AGENTS_CHILD: "1" });
+	const child = await launchThroughHook({ agent: "drakonc-ai-worker", mode: "background", task: `Implement it.${surfaces}` }, bare, 0, { DRAKONC_PI_AGENTS_CHILD: "1" });
 	assert.equal(child?.block, undefined, "a child session is not gated");
-	const emptyRoot = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", workspace_root: "", task: `Spec: odd/tasks/ledger.md, T1${surfaces}` }, documented, 0);
+	const emptyRoot = await launchThroughHook({ agent: "drakonc-ai-worker", mode: "background", workspace_root: "", task: `Spec: odd/tasks/ledger.md, T1${surfaces}` }, documented, 0);
 	assert.equal(emptyRoot?.block, undefined, "an empty workspace_root means the session cwd");
 });
 
@@ -187,7 +187,7 @@ test("S16: child sessions are exempt and an empty workspace_root falls back to t
 test("S1: full delegation mode admits a writer with no feature document, below the backstop", (t) => {
 	const root = workspace(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const input = { agent: "gentle-ai-worker", task: `Change the accent colors.${surfaces}` };
+	const input = { agent: "drakonc-ai-worker", task: `Change the accent colors.${surfaces}` };
 	const contextUsage = { tokens: 20_000, contextWindow: 400_000 };
 	assert.equal(rejectUndocumentedWriterLaunch(input, { root, contextUsage, orchestratorMode: "full-delegation" }), undefined);
 	// Organic mode, stated explicitly, keeps today's rejection word for word.
@@ -200,7 +200,7 @@ test("S1: full delegation mode admits only generic writers, never widens other a
 	const root = workspace(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const contextUsage = { tokens: 20_000, contextWindow: 400_000 };
-	for (const agent of ["gentle-ai-explore", "jd-fix-agent"]) {
+	for (const agent of ["drakonc-ai-explore", "jd-fix-agent"]) {
 		assert.equal(rejectUndocumentedWriterLaunch({ agent, task: "x" }, { root, contextUsage, orchestratorMode: "full-delegation" }), undefined, agent);
 	}
 });
@@ -208,17 +208,17 @@ test("S1: full delegation mode admits only generic writers, never widens other a
 function withConfigHome<T>(workflowMode: string | undefined, run: (home: string) => Promise<T>): Promise<T> {
 	const home = mkdtempSync(join(tmpdir(), "writer-admission-home-"));
 	writeFileSync(join(home, "profiles.json"), JSON.stringify({
-		kind: "gentle-pi.agent_model_profiles",
+		kind: "drakonc-pi.agent_model_profiles",
 		version: 1,
 		active: "frontier-local",
 		profiles: { "frontier-local": { orchestrator: { model: "openai/gpt-6.1-terra" } } },
 		...(workflowMode === undefined ? {} : { workflow: { "frontier-local": { orchestratorMode: workflowMode } } }),
 	}));
-	const previous = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = home;
+	const previous = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = home;
 	return run(home).finally(() => {
-		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previous;
 		rmSync(home, { recursive: true, force: true });
 	});
 }
@@ -227,10 +227,10 @@ test("S7: the reported deadlock — a full delegation profile delegates a small 
 	const bare = workspace(false);
 	t.after(() => rmSync(bare, { recursive: true, force: true }));
 	await withConfigHome("full-delegation", async () => {
-		const admitted = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: `Change the accent colors.${surfaces}` }, bare, 20_000);
+		const admitted = await launchThroughHook({ agent: "drakonc-ai-worker", mode: "background", task: `Change the accent colors.${surfaces}` }, bare, 20_000);
 		assert.equal(admitted?.block, undefined, "the small task reaches the writer instead of being sent back inline");
 		// The mode never lifts the edit-surface requirement: that guard runs before admission.
-		const unscoped = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: "Change the accent colors." }, bare, 20_000);
+		const unscoped = await launchThroughHook({ agent: "drakonc-ai-worker", mode: "background", task: "Change the accent colors." }, bare, 20_000);
 		assert.equal(unscoped?.block, true, "a writer without allowed edit surfaces is still refused");
 		assert.doesNotMatch(unscoped?.reason ?? "", /write this unit inline yourself/);
 	});
@@ -240,7 +240,7 @@ test("S1: an organic profile keeps the undocumented-writer rejection through the
 	const bare = workspace(false);
 	t.after(() => rmSync(bare, { recursive: true, force: true }));
 	await withConfigHome(undefined, async () => {
-		const blocked = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: `Change the accent colors.${surfaces}` }, bare, 20_000);
+		const blocked = await launchThroughHook({ agent: "drakonc-ai-worker", mode: "background", task: `Change the accent colors.${surfaces}` }, bare, 20_000);
 		assert.equal(blocked?.block, true);
 		assert.match(blocked?.reason ?? "", /write this unit inline yourself/);
 	});
@@ -250,7 +250,7 @@ test("S1: the session environment override reaches the guard, as it reaches the 
 	const bare = workspace(false);
 	t.after(() => rmSync(bare, { recursive: true, force: true }));
 	await withConfigHome(undefined, async () => {
-		const admitted = await launchThroughHook({ agent: "gentle-ai-worker", mode: "background", task: `Change the accent colors.${surfaces}` }, bare, 20_000, { GENTLE_PI_ORCHESTRATOR_MODE: "full-delegation" });
+		const admitted = await launchThroughHook({ agent: "drakonc-ai-worker", mode: "background", task: `Change the accent colors.${surfaces}` }, bare, 20_000, { DRAKONC_PI_ORCHESTRATOR_MODE: "full-delegation" });
 		assert.equal(admitted?.block, undefined);
 	});
 });
@@ -260,13 +260,13 @@ test("S1: the session environment override reaches the guard, as it reaches the 
 test("S1: an omitted or organic mode decides exactly alike; full delegation widens only generic writers", (t) => {
 	const root = workspace(false);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	for (const agent of ["gentle-ai-worker", "worker", "gentle-ai-explore", "gentle-ai-verify", "jd-fix-agent", "unknown"]) {
+	for (const agent of ["drakonc-ai-worker", "worker", "drakonc-ai-explore", "drakonc-ai-verify", "jd-fix-agent", "unknown"]) {
 		for (const contextUsage of [undefined, { tokens: 20_000, contextWindow: 400_000 }, { tokens: 150_000, contextWindow: 1_000_000 }]) {
 			const input = { agent, task: `Do it.${surfaces}` };
 			const omitted = rejectUndocumentedWriterLaunch(input, { root, contextUsage });
 			assert.deepEqual(rejectUndocumentedWriterLaunch(input, { root, contextUsage, orchestratorMode: "organic" }), omitted, agent);
 			const full = rejectUndocumentedWriterLaunch(input, { root, contextUsage, orchestratorMode: "full-delegation" });
-			assert.deepEqual(full, agent === "gentle-ai-worker" || agent === "worker" ? undefined : omitted, agent);
+			assert.deepEqual(full, agent === "drakonc-ai-worker" || agent === "worker" ? undefined : omitted, agent);
 		}
 	}
 });
@@ -282,7 +282,7 @@ type BatchCall = { id: string; name: string; arguments: Record<string, unknown> 
 type BatchHandler = (event: { toolName: string; toolCallId: string; input: unknown; parentToolCallId?: string }, ctx: ExtensionContext) => Promise<{ block?: boolean; reason?: string } | undefined>;
 
 const writerCall = (id: string, surface: string, extra: Record<string, unknown> = {}): BatchCall => ({
-	id, name: "subagent_run", arguments: { agent: "gentle-ai-worker", task: `Implement ${id}.\n\n## Allowed edit surfaces\n${surface}\n`, ...extra },
+	id, name: "subagent_run", arguments: { agent: "drakonc-ai-worker", task: `Implement ${id}.\n\n## Allowed edit surfaces\n${surface}\n`, ...extra },
 });
 
 /** One session branch of assistant messages (each a batch of tool calls), every call answered before the next message. */
@@ -299,7 +299,7 @@ function sessionOf(messages: BatchCall[][]) {
 async function launchBatchThroughHook(messages: BatchCall[][], target: BatchCall, cwd: string, tokens = 20_000, processEnv: NodeJS.ProcessEnv = {}, parentToolCallId?: string) {
 	const handlers = new Map<string, BatchHandler>();
 	const pi = { on(name: string, handler: BatchHandler) { handlers.set(name, handler); }, events: { emit() {} }, registerCommand() {}, registerTool() {} } as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null, processEnv })(pi);
+	createDrakoncAiExtension({ nativeReviewCli: null, processEnv })(pi);
 	return handlers.get("tool_call")!({ toolName: target.name, toolCallId: target.id, input: target.arguments, ...(parentToolCallId ? { parentToolCallId } : {}) }, {
 		cwd, hasUI: false, ui: { confirm: async () => true },
 		sessionManager: sessionOf(messages),
@@ -335,8 +335,8 @@ test("P6: a lone writer, overlapping or uninterpretable surfaces, and a writer b
 			overlapping: [writerCall("o1", "src/**"), writerCall("o2", "src/budget.ts")],
 			"same file": [writerCall("s1", "src/budget.ts"), writerCall("s2", "SRC/budget.ts")],
 			uninterpretable: [writerCall("u1", "src/[ab].ts"), writerCall("u2", "lib/c.ts")],
-			"writer plus explorer": [writerCall("e1", "src/a.ts"), { id: "e2", name: "subagent_run", arguments: { agent: "gentle-ai-explore", task: "Map src/b.ts" } }],
-			"writer plus verifier": [writerCall("v1", "src/a.ts"), { id: "v2", name: "subagent_run", arguments: { agent: "gentle-ai-verify", task: "Verify.\nRisk: item 3 (shared parser)" } }],
+			"writer plus explorer": [writerCall("e1", "src/a.ts"), { id: "e2", name: "subagent_run", arguments: { agent: "drakonc-ai-explore", task: "Map src/b.ts" } }],
+			"writer plus verifier": [writerCall("v1", "src/a.ts"), { id: "v2", name: "subagent_run", arguments: { agent: "drakonc-ai-verify", task: "Verify.\nRisk: item 3 (shared parser)" } }],
 			"writer plus Judgment Day fix agent": [writerCall("j1", "src/a.ts"), { id: "j2", name: "subagent_run", arguments: { agent: "jd-fix-agent", task: "Fix.\n\n## Allowed edit surfaces\nsrc/b.ts\n" } }],
 			// A sequential tool serializes the whole message (L36); any other tool beside the launches is refused too.
 			"writers plus todo": [writerCall("t1", "src/a.ts"), writerCall("t2", "src/b.ts"), { id: "t3", name: "todo", arguments: { action: "list" } }],
@@ -372,12 +372,12 @@ test("P6 preserve: full delegation, a feature-document task and the backstop sti
 	t.after(() => { rmSync(bare, { recursive: true, force: true }); rmSync(documented, { recursive: true, force: true }); });
 	await withConfigHome(undefined, async () => {
 		const lone = writerCall("p1", "src/a.ts");
-		assert.equal((await launchBatchThroughHook([[lone]], lone, bare, 20_000, { GENTLE_PI_ORCHESTRATOR_MODE: "full-delegation" }))?.block, undefined, "full delegation");
+		assert.equal((await launchBatchThroughHook([[lone]], lone, bare, 20_000, { DRAKONC_PI_ORCHESTRATOR_MODE: "full-delegation" }))?.block, undefined, "full delegation");
 		const spec = writerCall("p2", "src/a.ts", { task: "Spec: odd/tasks/ledger.md, T1\n\n## Allowed edit surfaces\nsrc/a.ts\n" });
 		assert.equal((await launchBatchThroughHook([[spec]], spec, documented))?.block, undefined, "feature-document task");
 		assert.equal((await launchBatchThroughHook([[lone]], lone, bare, 150_000))?.block, undefined, "context backstop");
 		// The edit-surface guard still runs first, inside a batch too.
-		const unscoped = { id: "p3", name: "subagent_run", arguments: { agent: "gentle-ai-worker", task: "No surfaces." } };
+		const unscoped = { id: "p3", name: "subagent_run", arguments: { agent: "drakonc-ai-worker", task: "No surfaces." } };
 		const batch = [writerCall("p4", "src/a.ts"), unscoped];
 		const denied = await launchBatchThroughHook([batch], unscoped, bare);
 		assert.equal(denied?.block, true);
@@ -393,7 +393,7 @@ test("P6b preserve: full delegation admits three writers launched from one codem
 	const bare = workspace(false);
 	t.after(() => rmSync(bare, { recursive: true, force: true }));
 	await withConfigHome(undefined, async () => {
-		const full = { GENTLE_PI_ORCHESTRATOR_MODE: "full-delegation" };
+		const full = { DRAKONC_PI_ORCHESTRATOR_MODE: "full-delegation" };
 		const script = { id: "cm", name: "codemode", arguments: { code: "await Promise.allSettled([tools.subagent_run(a), tools.subagent_run(b), tools.subagent_run(c)])" } };
 		const nested = [writerCall("cm/1", "src/alpha.ts"), writerCall("cm/2", "src/beta.ts"), writerCall("cm/3", "src/gamma.ts")];
 		for (const target of nested) {
@@ -411,18 +411,18 @@ test("P6b preserve: full delegation admits three writers launched from one codem
 test("P6: the rejection names the same-message route and keeps the inline instruction", () => {
 	const root = workspace(false);
 	try {
-		const denied = rejectUndocumentedWriterLaunch({ agent: "gentle-ai-worker", task: `Implement it.${surfaces}` }, { root, contextUsage: { tokens: 0, contextWindow: 400_000 } });
+		const denied = rejectUndocumentedWriterLaunch({ agent: "drakonc-ai-worker", task: `Implement it.${surfaces}` }, { root, contextUsage: { tokens: 0, contextWindow: 400_000 } });
 		assert.match(denied?.reason ?? "", /two or more writers with disjoint `## Allowed edit surfaces` launched together in one message with no other tool call/);
 		assert.ok(denied?.reason.endsWith("write this unit inline yourself now; do not retry the launch, and never create a feature document only to launch writers."));
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 // Verifier mwb9qlc5-22-nfsa probes, kept as regression tests.
-test("P6: a writer beside gentle-ai-explore, and a path beside an uninterpretable glob, are rejected with the new text", async (t) => {
+test("P6: a writer beside drakonc-ai-explore, and a path beside an uninterpretable glob, are rejected with the new text", async (t) => {
 	const bare = workspace(false);
 	t.after(() => rmSync(bare, { recursive: true, force: true }));
 	await withConfigHome(undefined, async () => {
-		const withExplorer = [writerCall("x1", "src/alpha.ts"), { id: "x2", name: "subagent_run", arguments: { agent: "gentle-ai-explore", task: "Map src/beta.ts" } }];
+		const withExplorer = [writerCall("x1", "src/alpha.ts"), { id: "x2", name: "subagent_run", arguments: { agent: "drakonc-ai-explore", task: "Map src/beta.ts" } }];
 		const denied = await launchBatchThroughHook([withExplorer], withExplorer[0], bare);
 		assert.equal(denied?.block, true);
 		assert.match(denied?.reason ?? "", /two or more writers with disjoint `## Allowed edit surfaces` launched together in one message with no other tool call/);

@@ -1,9 +1,9 @@
 ---
-name: gentle-ai-judgment-day
+name: drakonc-ai-judgment-day
 description: "Trigger: judgment day, judgement day, dual review, adversarial review, juzgar. Run explicit blind dual review with at most two scoped fix/re-judgment rounds."
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "1.8"
 ---
 

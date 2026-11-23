@@ -3,7 +3,7 @@ import type { FloorState, Project, TowerChatTurn, TowerSnapshot, TowerSubagent, 
 
 export type RoomId = "map" | "workshop" | "lab" | "review" | "engram" | "engine" | "lounge";
 
-export const FLOOR_COLORS = ["#f095c8", "#5ee6e6", "#b4e7c7", "#e0c27a", "#a9c7ee", "#b48cff", "#ffb1dd", "#ff718f"];
+export const FLOOR_COLORS = ["#ff4d5e", "#5ee6e6", "#b4e7c7", "#e0c27a", "#a9c7ee", "#b48cff", "#ff8993", "#ff718f"];
 
 /** Sessions grouped by project folder; projects and floors keep a stable order. */
 export function groupProjects(sessions: readonly TowerSnapshot[]): Project[] {

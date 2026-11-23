@@ -5,8 +5,8 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { createEventBus, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
-import gentleShell from "../extensions/gentle-shell.ts";
+import { createDrakoncAiExtension, __testing } from "../extensions/drakonc-ai.ts";
+import drakoncShell from "../extensions/drakonc-shell.ts";
 import type { NativeReviewCli, NativeReviewModeRequest, NativeReviewModeResult } from "../lib/native-review-cli.ts";
 
 const OPTIONS = ["Enable RDD for this repository", "Disable RDD for this repository", "Enable RDD machine-wide", "Disable RDD machine-wide"];
@@ -24,8 +24,8 @@ function fixture(t: TestContext, options: { owner?: boolean; child?: boolean; pr
 	const cwd = join(root, "workspace"), home = join(root, "home"), config = join(root, "config");
 	mkdirSync(cwd); mkdirSync(home); mkdirSync(config);
 	const env = { HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: join(root, "xdg"), PI_CODING_AGENT_DIR: home,
-		GENTLE_PI_AGENT_HOME: home, GENTLE_PI_CONFIG_HOME: config, GENTLE_AI_TELEMETRY: "0",
-		GENTLE_PI_AGENTS_CHILD: options.child ? "1" : "0", GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" };
+		DRAKONC_PI_AGENT_HOME: home, DRAKONC_PI_CONFIG_HOME: config, DRAKONC_AI_TELEMETRY: "0",
+		DRAKONC_PI_AGENTS_CHILD: options.child ? "1" : "0", DRAKONC_PI_SHELL_CHANGES_WATCH_MS: "off" };
 	const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
 	Object.assign(process.env, env);
 	__testing.clearRddStatusMemoForTesting();
@@ -98,17 +98,17 @@ function fixture(t: TestContext, options: { owner?: boolean; child?: boolean; pr
 		getActiveTools: () => [], getThinkingLevel: () => "off", getCommands: () => [],
 		sendUserMessage() { assert.fail("Customize must not synthesize a command"); },
 	}) as unknown as ExtensionAPI;
-	events.on("gentle:rdd:host-ui", () => { discovery++; });
-	if (options.badBridge) events.on("gentle:rdd:host-ui", payload => (payload as { respond(value: unknown): void }).respond({ read: "invalid" }));
-	if (options.throwingBridge) events.on("gentle:rdd:host-ui", payload => (payload as { respond(value: unknown): void }).respond({
+	events.on("drakonc:rdd:host-ui", () => { discovery++; });
+	if (options.badBridge) events.on("drakonc:rdd:host-ui", payload => (payload as { respond(value: unknown): void }).respond({ read: "invalid" }));
+	if (options.throwingBridge) events.on("drakonc:rdd:host-ui", payload => (payload as { respond(value: unknown): void }).respond({
 		read() { throw new Error("bridge unavailable"); }, open() { assert.fail("a failed bridge cannot open"); },
 	}));
-	if (options.invalidStatusBridge) events.on("gentle:rdd:host-ui", payload => (payload as { respond(value: unknown): void }).respond({
+	if (options.invalidStatusBridge) events.on("drakonc:rdd:host-ui", payload => (payload as { respond(value: unknown): void }).respond({
 		async read() { return { effective: "on", source: "invalid" }; }, open() { assert.fail("an invalid status cannot open"); },
 	}));
-	if (options.owner !== false) createGentleAiExtension({ nativeReviewCli: options.provider === false ? null : native, candidateViews: null,
+	if (options.owner !== false) createDrakoncAiExtension({ nativeReviewCli: options.provider === false ? null : native, candidateViews: null,
 		processEnv: env, resolveTelemetryTriggerBinary: () => { throw new Error("disabled"); } })(makePi(ownerHandlers));
-	gentleShell(makePi(shellHandlers), env, { fetch: async () => { throw new Error("network disabled"); }, activeProfile: () => undefined, devBinary: () => undefined });
+	drakoncShell(makePi(shellHandlers), env, { fetch: async () => { throw new Error("network disabled"); }, activeProfile: () => undefined, devBinary: () => undefined });
 	const emit = async (handlers: typeof ownerHandlers, name: string) => { for (const fn of handlers.get(name) ?? []) await fn({ type: name, reason: "startup" }, ctx); };
 	const text = () => { assert.ok(view); return view.render(140).join("\n"); };
 	return {
@@ -123,7 +123,7 @@ function fixture(t: TestContext, options: { owner?: boolean; child?: boolean; pr
 		async command(name: string, args = "") { const command = commands.get(name); assert.ok(command, `/${name} is registered`); await command.handler(args, ctx); },
 		async open() {
 			opened = deferred<void>();
-			const command = commands.get("gentle:customize"); assert.ok(command, "/gentle:customize is registered");
+			const command = commands.get("drakonc:customize"); assert.ok(command, "/drakonc:customize is registered");
 			const result = command.handler("", ctx);
 			await Promise.race([opened.promise, result.then(() => { throw new Error("Customize did not open"); })]);
 			assert.ok(view);
@@ -207,18 +207,18 @@ test("missing bridge, unavailable provider and failed reads show unavailable and
 test("headless and child contexts cannot acquire RDD authority", async t => {
 	await t.test("headless", async st => {
 		const h = fixture(st); await h.start(); Object.assign(h.ctx, { mode: "print", hasUI: false });
-		const before = h.state(); await h.command("gentle:customize");
+		const before = h.state(); await h.command("drakonc:customize");
 		assert.equal(h.discovery(), 0); assert.deepEqual(h.prompts, []); assert.deepEqual(h.writes, []); assert.deepEqual(h.state(), before);
 	});
 	await t.test("rpc", async st => {
 		const h = fixture(st); await h.start(); Object.assign(h.ctx, { mode: "rpc" });
-		const before = h.state(); await h.command("gentle:customize");
+		const before = h.state(); await h.command("drakonc:customize");
 		assert.equal(h.discovery(), 0); assert.deepEqual(h.prompts, []); assert.deepEqual(h.writes, []); assert.deepEqual(h.state(), before);
 		assert.deepEqual(h.notices, [{ message: "Customization requires an interactive terminal.", type: "warning" }]);
 	});
 	await t.test("child", async st => {
 		const h = fixture(st, { child: true }); await h.start(); const before = h.state();
-		assert.equal(h.hasCommand("gentle:customize"), false, "the shell is not registered in a child");
+		assert.equal(h.hasCommand("drakonc:customize"), false, "the shell is not registered in a child");
 		assert.equal(h.discovery(), 0); assert.deepEqual(h.prompts, []); assert.deepEqual(h.writes, []); assert.deepEqual(h.state(), before);
 	});
 });

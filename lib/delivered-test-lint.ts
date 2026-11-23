@@ -75,6 +75,6 @@ export function evaluateDeliveredTestTool(toolName: string, input: unknown, cwd?
 	if (!violation) return undefined;
 	return {
 		block: true,
-		reason: `Gentle AI blocked this test write: ${record.path} ${violation}. Delivered tests must pass in any clone: build the previous behavior from a fixture instead of git history, and create scratch with mktemp outside the repository. Run differential checks against a scratch copy of the base and do not commit them as tests.`,
+		reason: `Drakonc AI blocked this test write: ${record.path} ${violation}. Delivered tests must pass in any clone: build the previous behavior from a fixture instead of git history, and create scratch with mktemp outside the repository. Run differential checks against a scratch copy of the base and do not commit them as tests.`,
 	};
 }

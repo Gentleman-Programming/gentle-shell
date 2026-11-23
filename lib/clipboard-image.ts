@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { getNativeClipboard, type NativeClipboard } from "@earendil-works/pi-tui";
 
-// Clipboard image reader for the prompt's attachment chips (gentle-shell#2464).
+// Clipboard image reader for the prompt's attachment chips (drakonc-shell#2464).
 // Pi reads the same backends but does not export its reader, and its handler
 // writes the image to a temp file and inserts the path. This reader keeps the
 // bytes in memory and returns null whenever Pi's own handler should decide

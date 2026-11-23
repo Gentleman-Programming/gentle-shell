@@ -840,8 +840,8 @@ test("the shortcuts list names Space + drag and Esc clears the selection, and th
 	assert.match(dialog, /<dt><kbd data-i18n="space">Space<\/kbd> \+ <span data-i18n="drag">drag<\/span><\/dt><dd data-i18n="panAnywhere">Pan from anywhere, even over an artboard<\/dd>/);
 	assert.ok(dialog.indexOf("&darr;") < dialog.indexOf(">Space</kbd>") && dialog.indexOf(">Space</kbd>") < dialog.indexOf("<dt><kbd>Esc</kbd></dt>"), "after the arrow keys");
 	assert.match(dialog, /<dt><kbd>Esc<\/kbd><\/dt><dd data-i18n="escape">[^<]*selected artboard[^<]*<\/dd>/);
-	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
-	const section = docs.slice(docs.indexOf("### Gentle Design"));
+	const docs = readFileSync(fileURLToPath(new URL("../docs/drakonc-shell.md", import.meta.url)), "utf8");
+	const section = docs.slice(docs.indexOf("### Drakonc Design"));
 	const start = section.indexOf("- **Layout**");
 	assert.ok(start >= 0, "a Layout entry");
 	const layout = section.slice(start, section.indexOf("\n", start));

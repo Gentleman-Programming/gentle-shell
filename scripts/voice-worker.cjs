@@ -1,7 +1,7 @@
 "use strict";
 // Voice dictation worker (S1-S3). lib/voice-session.ts runs this file as its own
 // Node process, so capture callbacks, the blocking recognizer load and the decode
-// never run inside Gentle AI. It speaks JSON lines: stdin receives one `start`
+// never run inside Drakonc AI. It speaks JSON lines: stdin receives one `start`
 // request, then `stop` or `cancel`; stdout carries `recording`, `transcribing`,
 // and one final `result` or `error`. Errors carry a closed code only, never a
 // message, path or native error text.
@@ -26,7 +26,7 @@ const path = require("node:path");
 const { release } = require("node:os");
 const { addAbortSignal } = require("node:stream");
 
-const SCHEMA = "gentle.voice/v1";
+const SCHEMA = "drakonc.voice/v1";
 const TARGETS = ["darwin-x64", "darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"];
 const MODEL_ROLES = ["encoder", "decoder", "joiner", "tokens"];
 // The only runtime files ever loaded; sherpa-onnx and the default capture

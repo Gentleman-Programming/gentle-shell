@@ -5,65 +5,53 @@ import fs from "node:fs/promises";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import startup, { isPiCliSubcommandInvocation, readBannerConfig, readGitBranch, rosePulseTicks } from "../extensions/startup-banner.ts";
-import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
+import startup, { DRAGON_COMPACT_RAW, DRAGON_LARGE_RAW, isPiCliSubcommandInvocation, readBannerConfig, readGitBranch, rosePulseTicks } from "../extensions/startup-banner.ts";
+import { setBundledInstallForTesting } from "../lib/drakonc-shell-bundled.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // The banner reads process.env directly; a suite launched from a delegated
-// child must still exercise the parent paths (gentle-shell#1690).
-delete process.env.GENTLE_PI_AGENTS_CHILD;
+// child must still exercise the parent paths (drakonc-shell#1690).
+delete process.env.DRAKONC_PI_AGENTS_CHILD;
 
-test("startup artwork spells Gentle Shell with aligned animation spans", () => {
+// El dragón del banner es arte Braille: un punto Braille visible lo delata en
+// la salida renderizada, igual que la rosa anterior se buscaba por su hocico.
+const DRAGON_INK = /[\u2801-\u28FF]/;
+
+const rowsWithInk = (art: readonly string[]) => art.filter((line) => DRAGON_INK.test(line));
+
+const leadingSpaces = (line: string) => line.length - line.trimStart().length;
+
+/** Columna inicial del bloque de arte en cada fila con dragón. */
+const artIndents = (lines: readonly string[]) => rowsWithInk(lines).map(leadingSpaces);
+
+/** Ancho visible del bloque de arte una vez normalizado y rellenado por el banner. */
+const artWidth = (art: readonly string[]) => Math.max(...art.map((line) => visibleWidth(line.trimEnd())));
+
+test("startup artwork uses Drakonc branding and a Braille dragon", () => {
 	const source = readFileSync(new URL("../extensions/startup-banner.ts", import.meta.url), "utf8");
-	const logo = JSON.parse(source.match(/const TEXT_LOGO = (\[[\s\S]*?\]);/)![1].replace(/,\s*]/, "]")) as string[];
-	const weights = JSON.parse(source.match(/const LETTER_WEIGHTS = (\[[^;]+\]);/)![1]) as number[];
-	// Preserve the original script, including its descending G and dark shadow.
-	const gentle = [
-		"                  ▄▄▄▀▀▀▀▀██                                ▄▄▀▄▄",
-		"              ▄▄█▀▀▒▒▒▒▒▄▄█▀▒                   ▄██     ▄▄█▀█▄█▀▒▒",
-		"          ▄▄██▀▒▒▒▒▒▄▄▄▀▀▒▒▒▒        ▄▄▄  ▀▀▀▀██▀▀▀▀▀███▀█▄▀▀▒▒▒▒",
-		"        ▄██▀▒▒▒▒     ▒▒▄▄█ ▄▄▄▀██ ▄▄▄▀▀▀▄  ▄██▀▒▒▒▒▄██▀▀▀▒▄▄███",
-		"       ██▀▒▒▒     ▄▄▄███▀▄██▀▀▀▄▄██▀▀▄█▀▄▄██▀▒▒▒▄▄██▀▒▒▄██▀▀▀▄▄",
-		"       ▀█▄▄▄▄▄▀▀▀█▄▄███▄▒▀▀▀▀▀▀▒▀▀▒▒▀▀▀▀▒██▄▄▀▀▀ ▀█▄▀▀▀ ▀▀▀▀▀▒▒",
-		"        ▒▄▄▄█▀▀▀█▄█▀▀▒▒▒▒ ▒▒▒▒▒▒ ▒▒  ▒▒▒▒ ▒▒▒▒▒▒▒ ▒▒▒▒▒▒ ▒▒▒▒▒",
-		"     ▄▄▀▀ ▒▒▒▒▄██▀▒▒▒▒",
-		"   ▄█ ▒▒▒▄▄██▀▀▒▒▒▒",
-		"    ▀▀▀▀▀▀▒▒▒▒▒▒",
-		"     ▒▒▒▒▒▒",
-	];
-	assert.equal(logo.length, 11, "retain the full-height script silhouette");
-	for (const [row, prefix] of gentle.entries()) {
-		assert.ok(logo[row].startsWith(prefix), `original Gentle script row ${row}`);
-		assert.ok(logo[row].includes("▒") || row === 0, "retain dark shadow");
+	const logo = JSON.parse(source.match(/const TEXT_LOGO = (\[[\s\S]*?\]);/)![1]) as string[];
+	assert.equal(logo.length, 5);
+	assert.ok(logo.every((line) => line.includes("█")));
+	// 3.1: la variante amplia conserva las 17 filas de la rosa original y la
+	// compacta reduce la misma silueta a 8 filas para terminales estrechas.
+	assert.equal(DRAGON_LARGE_RAW.length, 17);
+	assert.equal(DRAGON_COMPACT_RAW.length, 8);
+	assert.ok(artWidth(DRAGON_LARGE_RAW) <= 38, "la variante amplia cabe en 38 columnas");
+	assert.ok(artWidth(DRAGON_COMPACT_RAW) <= 20, "la variante compacta cabe en 20 columnas");
+	for (const art of [DRAGON_LARGE_RAW, DRAGON_COMPACT_RAW]) {
+		assert.ok(art.every((line) => /^[\u2800-\u28FF ]*$/.test(line)), "arte limitado a Braille y espacios");
+		assert.ok(art.every((line) => !line.includes("\t")), "arte sin tabuladores");
+		assert.ok(art.every((line) => line === line.trimEnd()), "arte sin espacios finales");
+		assert.ok(!/✿|❀|❁|✾/.test(art.join("")), "arte sin glifos de flor heredados");
+		assert.ok(rowsWithInk(art).length >= 6, "arte con detalle suficiente");
 	}
-	assert.equal(weights.length, 11, "one variable-width span per GENTLESHELL letter");
-	assert.ok(new Set(weights).size > 2, "script spans must not use fixed block-font widths");
-	assert.ok(logo.slice(0, 7).every((line) => /[▄▀█]/.test(line.slice(68))), "Shell has tall slanted strokes");
-	assert.ok(logo.slice(1, 7).every((line) => /▒/.test(line.slice(68))), "Shell retains the dark shadow");
-	const shell = logo.map((line) => line.slice(68));
-	assert.match(shell[0], /▄▄█▀▀▀██/, "S has its upper bowl");
-	assert.match(shell[3], /▀▀▀██▄▄/, "S curves into its lower bowl");
-	assert.match(shell[5], /▀█▄▄▄▄█▀▀▒▒/, "S closes with a shadowed exit stroke");
-	assert.match(shell[4], /▄██▀▄██▀██▒/, "h has a rising stem and connected arch");
-	assert.deepEqual(logo.slice(3, 6).map((line) => line.slice(93, 101)), [
-		" ▄▄▀▀██ ",
-		"▄██▄▄▀▒ ",
-		"▀█▄▄▄▄▀▀",
-	], "e has an upper loop/counter, a crossbar, and a curved lower exit rather than a wedge");
-	assert.equal(logo[3][100], " ", "e loop stays distinct from the following l");
-	assert.equal(logo[4][100], " ", "e counter opens before the l stem without moving it");
-	assert.equal(shell[0].split("▄▄▀▄▄").length - 1, 2, "both l ascenders retain looped tops");
-	assert.match(shell[5], /█▄▄▀▀▀▄▄▀█▄▄▀▀▀$/, "both l exits connect with an ascending script stroke");
-	assert.equal(Math.max(...logo.map((line) => line.length)), 120, "connected script retains glyph scale while tightening letter placement");
-	// Like Gentle, adjacent baseline strokes must meet, not merely have smaller gaps.
-	assert.match(shell[4], /▀██▄▄██▀▄██▀██▒/, "S exit meets the h entry");
-	assert.match(shell[5], /▀█▄▄▄▄▀▀█▄▄▀▀▀/, "e lower exit still meets the unchanged l stem");
-	assert.match(shell[5], /██▄▄▀▀█▄▄▄▄▀▀/, "h exit remains connected to e");
-	assert.deepEqual(weights, [22, 9, 8, 9, 8, 9, 10, 13, 8, 8, 13]);
-	assert.equal(weights.reduce((sum, width) => sum + width, 0), Math.max(...logo.map((line) => line.length)) - 3,
-		"span widths exactly cover the ink bounds from the G descender to the final l shadow");
+	// Silueta de la cabeza de perfil: cuernos y cráneo arriba a la izquierda,
+	// hocico a la derecha y cuello bajando por la izquierda.
+	assert.ok(DRAGON_LARGE_RAW.slice(0, 6).some((line) => DRAGON_INK.test(line.slice(0, 24))), "cuernos y cráneo arriba a la izquierda");
+	assert.ok(DRAGON_LARGE_RAW.slice(6, 13).some((line) => DRAGON_INK.test(line.slice(26))), "hocico a la derecha");
+	assert.ok(DRAGON_LARGE_RAW.slice(12).some((line) => DRAGON_INK.test(line.slice(0, 24))), "cuello abajo a la izquierda");
 });
 
 test("startup branch lookup uses direct git argv and hides its Windows child", async () => {
@@ -98,12 +86,12 @@ test("startup branch lookup times out into the not-a-repo fallback", { skip: pro
 
 test("startup banner keeps animating after invalidate and cleans up on dispose", async (t) => {
 	const home = mkdtempSync(join(tmpdir(), "gp-banner-quality-"));
-	writeFileSync(join(home, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"quality"}');
-	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = home;
+	writeFileSync(join(home, "animations.json"), '{"schema":"drakonc-pi.animations/v1","policy":"quality"}');
+	const previousHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = home;
 	t.after(() => {
-		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		if (previousHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousHome;
 		rmSync(home, { recursive: true, force: true });
 	});
 	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
@@ -130,7 +118,7 @@ test("startup banner keeps animating after invalidate and cleans up on dispose",
 		header = factory({ requestRender() { renders++; } }, { fg: (_role: string, text: string) => text });
 	} } });
 	t.mock.timers.tick(50);
-	assert.match(header!.render(200).join("\n"), /\x1b\[38;2;95;30;60m▒/, "script shadow keeps the dark pink palette");
+	assert.match(header!.render(200).join("\n"), /\x1b\[38;2;255;140;210m█/, "logo keeps the selected color palette");
 	const afterBoot = renders;
 	t.mock.timers.tick(25);
 	assert.ok(renders > afterBoot, "animation timer requests renders");
@@ -149,11 +137,11 @@ test("startup banner keeps animating after invalidate and cleans up on dispose",
 
 test("animation modes retain banner lifetime policy, final artwork and approximate duration", async (t) => {
 	const home = mkdtempSync(join(tmpdir(), "gp-banner-animations-"));
-	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = home;
+	const previousHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = home;
 	t.after(() => {
-		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		if (previousHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousHome;
 		rmSync(home, { recursive: true, force: true });
 	});
 	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
@@ -194,14 +182,18 @@ test("animation modes retain banner lifetime policy, final artwork and approxima
 	const ctx = { hasUI: true, cwd: "/fixture", ui: { setHeader(factory: (tui: unknown, theme: unknown) => typeof header) {
 		header = factory({ requestRender() { paints++; } }, { fg: (_role: string, text: string) => text });
 	} } };
-	const save = (policy: string) => writeFileSync(join(home, "animations.json"), JSON.stringify({ schema: "gentle-pi.animations/v1", policy }));
+	const save = (policy: string) => writeFileSync(join(home, "animations.json"), JSON.stringify({ schema: "drakonc-pi.animations/v1", policy }));
 	try {
 		save("potato");
 		await start!({}, ctx); boot!();
 		assert.equal(active, false, "potato starts no animation interval");
 		const staticArt = stripAnsi(header!.render(200).join("\n"));
+		// La animación debe terminar en el mismo estado final en todos los anchos.
+		const staticByWidth = new Map([30, 50, 80, 120, 200].map((width) => [width, stripAnsi(header!.render(width).join("\n"))]));
+		// El centrado del bloque del dragón en el último fotograma estático.
+		const staticIndents = artIndents(staticArt.split("\n"));
 		assert.match(staticArt, /[▄▀█]/);
-		assert.match(staticArt, /[\u2800-\u28ff]/);
+		assert.match(staticArt, DRAGON_INK);
 		header!.dispose();
 		let qualityDuration = 0;
 		let qualityPaints = 0;
@@ -210,12 +202,17 @@ test("animation modes retain banner lifetime policy, final artwork and approxima
 			await start!({}, ctx); boot!();
 			for (let i = 0; i < 15; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 			assert.equal(delay, policy === "quality" ? 25 : 250);
+			// El centrado no cambia entre fotogramas: el bloque del dragón empieza
+			// en la misma columna durante la animación que en el estado final.
+			assert.deepEqual(artIndents(header!.render(200).map(stripAnsi)), staticIndents, `${policy} keeps the dragon centered while animating`);
 			save("potato"); // Already-created animation keeps its policy.
 			const began = clock;
 			const before = paints;
 			while (active && clock - began <= 5500) { clock += delay; pulse!(); }
 			assert.equal(active, false, "finishes and clears the interval");
-			assert.equal(stripAnsi(header!.render(200).join("\n")), staticArt);
+			for (const [width, expected] of staticByWidth) {
+				assert.equal(stripAnsi(header!.render(width).join("\n")), expected, `settles to the static art at width ${width}`);
+			}
 			if (policy === "quality") { qualityDuration = clock - began; qualityPaints = paints - before; }
 			else {
 				assert.ok(Math.abs(clock - began - qualityDuration) <= 250);
@@ -244,7 +241,7 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 		t.mock.method(fs, "readdir", async () => [
 			{ name: "sdd-apply.md", isFile: () => true },
 			{ name: "sdd-status.md", isFile: () => true },
-			{ name: "gentle-ai-worker.md", isFile: () => true },
+			{ name: "drakonc-ai-worker.md", isFile: () => true },
 			{ name: "notes.txt", isFile: () => true },
 		] as any);
 		syncBuiltinESMExports();
@@ -282,10 +279,10 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 				assert.doesNotMatch(text, /phases\b/i, "historical SDD files never appear as active phases");
 				assert.match(text, /AGENTS:\s+1 agents/, "only the installed background agent is counted");
 				if (width >= 160) {
-					assert.equal(/[\u2800-\u28ff]/.test(text), showRose);
+					assert.equal(DRAGON_INK.test(text), showRose);
 					assert.equal(/[▒▄▀█]/.test(text), showTextLogo);
 				} else if (width === 80 && showTextLogo) {
-					assert.match(text, /✿ Gentle Shell ✿/, "narrow terminal shows graceful fallback branding");
+					assert.match(text, /◆ Drakonc Shell ◆/, "narrow terminal shows graceful fallback branding");
 				}
 				assert.match(lines.join("\n"), /\x1b\[38;2;85;170;205m/, "startup labels use the saved cyan palette");
 			}
@@ -301,8 +298,8 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 			process.stdout.emit("resize");
 			t.mock.timers.tick(150);
 			const minimal = stripAnsi(header!.render(80).join("\n"));
-			assert.doesNotMatch(minimal, /[\u2800-\u28ff]/);
-			assert.equal(/✿ Gentle Shell ✿/.test(minimal), showTextLogo);
+			assert.doesNotMatch(minimal, DRAGON_INK);
+			assert.equal(/◆ Drakonc Shell ◆/.test(minimal), showTextLogo);
 			if (showTextLogo) {
 				const wideMinimal = stripAnsi(header!.render(160).join("\n"));
 				assert.equal(/[▒▄▀█]/.test(wideMinimal), true);
@@ -314,6 +311,87 @@ for (const showRose of [false, true]) for (const showTextLogo of [false, true]) 
 		}
 	});
 }
+
+// D4 (3.2/3.3): la rama apilada elige la variante amplia, la compacta o ninguna
+// según el ancho disponible, sin desbordar ni descentrar el bloque; con
+// `showRose: false` no se dibuja el dragón y banner.json no se reescribe.
+test("the banner dragon picks its variant by width and keeps banner.json untouched", async (t) => {
+	const previousHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	t.after(() => {
+		if (previousHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousHome;
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	});
+	const argv = process.argv;
+	process.argv = ["node"];
+	t.after(() => { process.argv = argv; });
+	// rows/columns fijan el modo "full": render(width) varía el ancho disponible.
+	for (const [key, value] of [["rows", 40], ["columns", 200]] as const) {
+		const descriptor = Object.getOwnPropertyDescriptor(process.stdout, key);
+		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
+		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
+	}
+	const boot = async (tag: string, config: unknown) => {
+		const home = mkdtempSync(join(tmpdir(), `gp-banner-dragon-${tag}-`));
+		const agentDir = mkdtempSync(join(tmpdir(), `gp-banner-dragon-agent-${tag}-`));
+		t.after(() => { rmSync(home, { recursive: true, force: true }); rmSync(agentDir, { recursive: true, force: true }); });
+		process.env.DRAKONC_PI_CONFIG_HOME = home;
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		writeFileSync(join(home, "animations.json"), JSON.stringify({ schema: "drakonc-pi.animations/v1", policy: "potato" }));
+		const bannerPath = join(home, "banner.json");
+		writeFileSync(bannerPath, JSON.stringify(config));
+		let start: (event: unknown, ctx: unknown) => Promise<void>;
+		let header: { render(width: number): string[]; dispose(): void };
+		const { default: isolatedStartup } = await import(new URL(`../extensions/startup-banner.ts?dragon-${tag}`, import.meta.url).href) as typeof import("../extensions/startup-banner.ts");
+		isolatedStartup({ on: (name: string, fn: unknown) => {
+			if (name === "session_start") start = fn as typeof start;
+		}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
+		await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: (factory: Function) => {
+			header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
+		} } });
+		// El encabezado se instala en un setTimeout(50): deja correr el arranque.
+		for (let i = 0; i < 6; i++) await new Promise((resolve) => setTimeout(resolve, 30));
+		return {
+			render: (width: number) => header!.render(width).map(stripAnsi),
+			bannerPath,
+			dispose: () => header!.dispose(),
+		};
+	};
+	const indent = (line: string) => line.length - line.trimStart().length;
+	const shown = await boot("on", { showRose: true, showTextLogo: true, color: "red" });
+	try {
+		const before = readFileSync(shown.bannerPath, "utf8");
+		const artRows = (width: number) => rowsWithInk(shown.render(width));
+		assert.equal(artRows(30).length, 8, "30 columnas usan la variante compacta");
+		assert.equal(artRows(22).length, 8, "22 columnas aún admiten la compacta");
+		assert.equal(artRows(21).length, 0, "por debajo de la compacta no se dibuja arte");
+		assert.equal(artRows(50).length, 17, "50 columnas usan la variante amplia");
+		for (const width of [30, 50, 80, 120, 200]) {
+			const lines = shown.render(width);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width), `ninguna línea desborda ${width} columnas`);
+			assert.ok(artRows(width).length >= 8, `el dragón aparece a ${width} columnas`);
+			// El bloque está rellenado a un ancho uniforme y centrado: el margen
+			// izquierdo mínimo y el derecho coinciden (a lo sumo un espacio de
+			// diferencia por el redondeo del centrado).
+			const art = artRows(width);
+			const left = Math.min(...artIndents(art));
+			const right = width - Math.max(...art.map((line) => line.trimEnd().length));
+			assert.ok(Math.abs(left - right) <= 1, `el bloque del dragón queda centrado en ${width} columnas`);
+		}
+		assert.equal(readFileSync(shown.bannerPath, "utf8"), before, "arrancar el banner no reescribe banner.json");
+	} finally { shown.dispose(); }
+
+	const hidden = await boot("off", { showRose: false, showTextLogo: true, color: "red" });
+	try {
+		const before = readFileSync(hidden.bannerPath, "utf8");
+		for (const width of [30, 50, 80, 120, 200]) {
+			assert.equal(rowsWithInk(hidden.render(width)).length, 0, `showRose:false oculta el dragón a ${width} columnas`);
+		}
+		assert.equal(readFileSync(hidden.bannerPath, "utf8"), before, "showRose:false no reescribe banner.json");
+	} finally { hidden.dispose(); }
+});
 
 test("startup banner counts MCP servers from the active Pi agent dir", async (t) => {
 	const agentDir = join(tmpdir(), "gp-banner-agent-dir");
@@ -424,31 +502,31 @@ test("startup banner counts packages, extensions and agents from the active Pi a
 });
 
 test("launcher-injected extension directories do not suppress the startup banner", () => {
-	// Gentle Shell launches `pi -e <package-root-dir>`; a directory path is not a subcommand.
-	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "-e", "/opt/gentle-pi"]), false);
+	// Drakonc Shell launches `pi -e <package-root-dir>`; a directory path is not a subcommand.
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "-e", "/opt/drakonc-pi"]), false);
 	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "--no-extensions", "-e", "/a", "-e", "/b/ext.mjs"]), false);
 	assert.equal(isPiCliSubcommandInvocation(["node", "pi"]), false);
-	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "-e", "/opt/gentle-pi", "install"]), false);
+	assert.equal(isPiCliSubcommandInvocation(["node", "pi", "-e", "/opt/drakonc-pi", "install"]), false);
 	for (const sub of ["install", "remove", "uninstall", "update", "list", "config", "auth"]) {
 		assert.equal(isPiCliSubcommandInvocation(["node", "pi", sub, "npm:x"]), true, sub);
 	}
 });
 
-// gentle-shell#1690: a delegated rpc child has hasUI=true; only a piped stdout
+// drakonc-shell#1690: a delegated rpc child has hasUI=true; only a piped stdout
 // without rows/columns kept the banner off before the explicit child guard.
 test("delegated children never paint the startup banner", async (t) => {
-	const previousChild = process.env.GENTLE_PI_AGENTS_CHILD;
-	process.env.GENTLE_PI_AGENTS_CHILD = "1";
+	const previousChild = process.env.DRAKONC_PI_AGENTS_CHILD;
+	process.env.DRAKONC_PI_AGENTS_CHILD = "1";
 	t.after(() => {
-		if (previousChild === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
-		else process.env.GENTLE_PI_AGENTS_CHILD = previousChild;
+		if (previousChild === undefined) delete process.env.DRAKONC_PI_AGENTS_CHILD;
+		else process.env.DRAKONC_PI_AGENTS_CHILD = previousChild;
 	});
 	const home = mkdtempSync(join(tmpdir(), "gp-banner-child-"));
-	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = home;
+	const previousHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = home;
 	t.after(() => {
-		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		if (previousHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousHome;
 		rmSync(home, { recursive: true, force: true });
 	});
 	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
@@ -479,20 +557,21 @@ test("delegated children never paint the startup banner", async (t) => {
 
 // S9: the config home each of these reads resolves, per case. The OS home is
 // a temporary folder in every case, so no case can reach the real one.
-// "unset" and "empty" both name ~/.pi/gentle-ai: an empty GENTLE_PI_CONFIG_HOME
-// counts as unset (#2201; it used to name the current folder). "bundled" stands in for this package running from
+// "unset" and "empty" both name ~/.drakonc-shell/drakonc-ai, el hogar propio de
+// Drakonc Shell (nunca el ~/.pi compartido): un DRAKONC_PI_CONFIG_HOME vacío
+// cuenta como no definido (#2201; antes nombraba la carpeta actual). "bundled" stands in for this package running from
 // a bundled install (testing overlay) whose prefix the launcher passed; the
-// user's own GENTLE_PI_CONFIG_HOME is then not this install's.
+// user's own DRAKONC_PI_CONFIG_HOME is then not this install's.
 type ConfigHomeCase = "unset" | "empty" | "bundled";
 function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHomeCase): { env: NodeJS.ProcessEnv; dir: string; userConfig: string } {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), `config-home-${kind}-`)));
-	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GENTLE_PI_CONFIG_HOME: process.env.GENTLE_PI_CONFIG_HOME, GENTLE_SHELL_PREFIX: process.env.GENTLE_SHELL_PREFIX, GENTLE_SHELL_CONFIG_HOME: process.env.GENTLE_SHELL_CONFIG_HOME };
+	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, DRAKONC_PI_CONFIG_HOME: process.env.DRAKONC_PI_CONFIG_HOME, DRAKONC_SHELL_PREFIX: process.env.DRAKONC_SHELL_PREFIX, DRAKONC_SHELL_CONFIG_HOME: process.env.DRAKONC_SHELL_CONFIG_HOME };
 	const cwd = process.cwd();
 	process.env.HOME = join(base, "home");
 	process.env.USERPROFILE = join(base, "home");
-	delete process.env.GENTLE_PI_CONFIG_HOME;
-	delete process.env.GENTLE_SHELL_PREFIX;
-	delete process.env.GENTLE_SHELL_CONFIG_HOME;
+	delete process.env.DRAKONC_PI_CONFIG_HOME;
+	delete process.env.DRAKONC_SHELL_PREFIX;
+	delete process.env.DRAKONC_SHELL_CONFIG_HOME;
 	t.after(() => {
 		process.chdir(cwd);
 		setBundledInstallForTesting(undefined);
@@ -503,16 +582,16 @@ function configHomeCase(t: { after: (fn: () => void) => void }, kind: ConfigHome
 		rmSync(base, { recursive: true, force: true });
 	});
 	const userConfig = join(base, "user-config");
-	if (kind === "unset") return { env: {}, dir: join(base, "home", ".pi", "gentle-ai"), userConfig };
+	if (kind === "unset") return { env: {}, dir: join(base, "home", ".drakonc-shell", "drakonc-ai"), userConfig };
 	if (kind === "empty") {
 		mkdirSync(join(base, "cwd"));
 		process.chdir(join(base, "cwd"));
-		return { env: { GENTLE_PI_CONFIG_HOME: "" }, dir: join(base, "home", ".pi", "gentle-ai"), userConfig };
+		return { env: { DRAKONC_PI_CONFIG_HOME: "" }, dir: join(base, "home", ".drakonc-shell", "drakonc-ai"), userConfig };
 	}
 	const prefix = join(base, "prefix");
 	mkdirSync(prefix);
 	setBundledInstallForTesting({ root: prefix });
-	return { env: { GENTLE_SHELL_PREFIX: prefix, GENTLE_PI_CONFIG_HOME: userConfig }, dir: join(prefix, "config", "gentle-ai"), userConfig };
+	return { env: { DRAKONC_SHELL_PREFIX: prefix, DRAKONC_PI_CONFIG_HOME: userConfig }, dir: join(prefix, "config", "drakonc-ai"), userConfig };
 }
 
 for (const kind of ["unset", "empty", "bundled"] as const) {
@@ -529,14 +608,14 @@ for (const kind of ["unset", "empty", "bundled"] as const) {
 	});
 }
 
-test("the banner ends with a /gentle:guide reminder on every start, only when the command exists", async (t) => {
+test("the banner ends with a /drakonc:guide reminder on every start, only when the command exists", async (t) => {
 	const home = mkdtempSync(join(tmpdir(), "gp-banner-guide-"));
-	writeFileSync(join(home, "animations.json"), '{"schema":"gentle-pi.animations/v1","policy":"potato"}');
-	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = home;
+	writeFileSync(join(home, "animations.json"), '{"schema":"drakonc-pi.animations/v1","policy":"potato"}');
+	const previousHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = home;
 	t.after(() => {
-		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		if (previousHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousHome;
 		rmSync(home, { recursive: true, force: true });
 	});
 	t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
@@ -563,10 +642,10 @@ test("the banner ends with a /gentle:guide reminder on every start, only when th
 		header!.dispose();
 		return lines;
 	};
-	const withGuide = await render([{ name: "gentle:guide" }]);
-	assert.equal(withGuide.filter((line) => line.trim() !== "").at(-1)?.trim(), "Tip: run /gentle:guide for a guided tour of Gentle Shell");
-	assert.equal((await render([{ name: "gentle:guide" }])).filter((line) => line.includes("/gentle:guide")).length, 1, "shown again on the next start, once");
-	assert.equal((await render([])).some((line) => line.includes("/gentle:guide")), false);
+	const withGuide = await render([{ name: "drakonc:guide" }]);
+	assert.equal(withGuide.filter((line) => line.trim() !== "").at(-1)?.trim(), "Consejo: ejecuta /drakonc:guide para un recorrido guiado por Drakonc Shell");
+	assert.equal((await render([{ name: "drakonc:guide" }])).filter((line) => line.includes("/drakonc:guide")).length, 1, "shown again on the next start, once");
+	assert.equal((await render([])).some((line) => line.includes("/drakonc:guide")), false);
 });
 
 // Every rose pulse step repaints every rose cell, which drives the TUI diff to
@@ -579,11 +658,11 @@ test("the rose pulse step follows the resolved animation policy", async (t) => {
 	assert.deepEqual(["quality", "performance", "potato"].map((policy) => rosePulseTicks(policy as never)), [4, 2, 2],
 		"quality quantizes the wave; performance and potato keep the merge-base step");
 	const home = mkdtempSync(join(tmpdir(), "gp-banner-pulse-"));
-	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = home;
+	const previousHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = home;
 	t.after(() => {
-		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		if (previousHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousHome;
 		rmSync(home, { recursive: true, force: true });
 	});
 	// Rose only: with the logo off, a rendered header varies with tick solely
@@ -626,7 +705,7 @@ test("the rose pulse step follows the resolved animation policy", async (t) => {
 		header = factory({ requestRender() {} }, { fg: (_role: string, text: string) => text });
 	} } };
 	const startBanner = async (policy: string) => {
-		writeFileSync(join(home, "animations.json"), JSON.stringify({ schema: "gentle-pi.animations/v1", policy }));
+		writeFileSync(join(home, "animations.json"), JSON.stringify({ schema: "drakonc-pi.animations/v1", policy }));
 		await start!({}, ctx); boot!();
 		for (let i = 0; i < 15; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal(active, true, `${policy} starts its animation interval`);
@@ -658,11 +737,11 @@ test("the rose pulse step follows the resolved animation policy", async (t) => {
 // /reload that returned early would leave the editor without a header at all.
 test("/reload repaints the complete static banner instead of replaying the intro", async (t) => {
 	const home = mkdtempSync(join(tmpdir(), "gp-banner-reload-"));
-	const previousHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = home;
+	const previousHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = home;
 	t.after(() => {
-		if (previousHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousHome;
+		if (previousHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousHome;
 		rmSync(home, { recursive: true, force: true });
 	});
 	t.mock.method(fs, "readFile", async () => JSON.stringify({ showRose: true, showTextLogo: true, color: "pink" }));
@@ -676,7 +755,7 @@ test("/reload repaints the complete static banner instead of replaying the intro
 		Object.defineProperty(process.stdout, key, { configurable: true, writable: true, value });
 		t.after(() => descriptor ? Object.defineProperty(process.stdout, key, descriptor) : Reflect.deleteProperty(process.stdout, key));
 	}
-	const save = (policy: string) => writeFileSync(join(home, "animations.json"), JSON.stringify({ schema: "gentle-pi.animations/v1", policy }));
+	const save = (policy: string) => writeFileSync(join(home, "animations.json"), JSON.stringify({ schema: "drakonc-pi.animations/v1", policy }));
 	let boot: () => void;
 	let active = false;
 	let clock = 0;
@@ -716,6 +795,6 @@ test("/reload repaints the complete static banner instead of replaying the intro
 		assert.equal(stripAnsi(reloaded), staticGlyphs,
 			"/reload repaints the complete artwork instead of replaying the letter-writing intro");
 		assert.match(reloaded, /\x1b\[38;2;255;140;210m/, "/reload paints the settled logo palette");
-		assert.match(reloaded, /\x1b\[38;2;95;30;60m▒/, "/reload paints the settled rose shadow");
+		assert.match(reloaded, /\x1b\[38;2;255;140;210m█/, "/reload paints the settled logo");
 	} finally { header!.dispose(); }
 });

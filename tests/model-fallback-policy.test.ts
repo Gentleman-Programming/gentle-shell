@@ -35,7 +35,7 @@ test("pickModel keeps the primary while it works, then walks the chain skipping 
 	assert.deepEqual(pickModel("anthropic/opus", chain, { cooldown: new ModelCooldown(), now: 0, tried: new Set(["anthropic/opus"]) }), { model: "openai/gpt-5.5", thinking: "high", fallback: true }, "a primary that just failed is tried");
 });
 
-test("a full /gentle:usage window cools a whole provider until it resets, and a later fetch with room releases it", () => {
+test("a full /drakonc:usage window cools a whole provider until it resets, and a later fetch with room releases it", () => {
 	const cooldown = new ModelCooldown();
 	const window = (usedPercent: number, resetAt: number | null) => ({ label: "5h", usedPercent, windowSeconds: 18_000, resetAt });
 	syncUsageCooldown({ provider: "anthropic", limits: [{ name: "plan", limitReached: false, windows: [window(100, 50_000), window(40, 90_000)] }] }, cooldown, 1_000);

@@ -32,7 +32,7 @@ como en el panel. En el panel puedes colocar los resets en la misma linea que el
 - `tests/shell-usage.test.ts`
 - `tests/shell-usage-view.test.ts`
 - `tests/shell-bar.test.ts`
-- `docs/gentle-shell.md`
+- `docs/drakonc-shell.md`
 
 ## Tasks
 
@@ -58,7 +58,7 @@ como en el panel. En el panel puedes colocar los resets en la misma linea que el
 ## Verification evidence
 
 - NAN-C1 RED: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/shell-usage-view.test.ts tests/shell-bar.test.ts` — 5 failed (`renderUsagePanel lists each provider with meters, resets, and a stale marker`, `…lists each NaN model allowance with its reset on the same row`, `…orders the NaN allowances by family and prints no totals`, `UsageView frames the panel…`, `sidebar groups the NaN allowances by subscription without totals or resets`), 40 passed (the 5 failures were the old totals and the reset-under-the-meter shape).
-- NAN-C2 GREEN: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/shell-usage-view.test.ts tests/shell-bar.test.ts tests/gentle-shell.test.ts` — 89 passed, 0 failed.
+- NAN-C2 GREEN: `node --experimental-strip-types --test tests/shell-usage.test.ts tests/shell-usage-view.test.ts tests/shell-bar.test.ts tests/drakonc-shell.test.ts` — 89 passed, 0 failed.
 - Full suite: `pnpm test` — exit 0, 2693 tests, 2655 passed, 0 failed, 38 skipped; provider contract mirror passed and the runtime harness ran clean.
 - Typecheck: `pnpm run typecheck` — exit 0, 197 recorded diagnostics, no regressions.
 - Render through the product code (no network), panel at 80 columns: `deepseek-v4-flash 18% · resets in 13d 0h`, `glm5.3-flash 10% · …`, `glm5.2 1% · …`, `glm5.3 0% · …` — four rows, no `total` row, one line per window. Sidebar at 60 columns: the same four rows in the same order, ending at the percentage.

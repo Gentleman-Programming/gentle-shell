@@ -1,4 +1,4 @@
-// Shared gauge primitives for the Gentle Shell bar and panels.
+// Shared gauge primitives for the Drakonc Shell bar and panels.
 
 const GAUGE_TONE = {
 	ACCENT: "accent",

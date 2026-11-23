@@ -1,9 +1,10 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { BRAND_GLYPH } from "./brand-glyph.ts";
 import { parseModelRef } from "./agents-config.ts";
 import { NAN_CHAT_MODEL_IDS } from "./nan-provider.ts";
 import { paintGauge, type GaugePaint } from "./shell-gauge.ts";
 
-// Gentle Shell subscription usage: the rate-limit windows each connected
+// Drakonc Shell subscription usage: the rate-limit windows each connected
 // provider reports. Codex sends them as SSE headers and through its usage
 // endpoint; both land in the same model. Parsing is pure and never keeps
 // account details beyond the plan name.
@@ -128,7 +129,22 @@ const PENDING_NOTE: Record<string, string> = {
 	[ANTHROPIC_PROVIDER]: "usage arrives with the first response",
 };
 const UNSUPPORTED_NOTE = "no subscription usage for this provider";
-const ACTIVE_MARK = "✿";
+// OpenCode Go no entrega ventanas de uso a Drakonc por sí mismo: el paquete de
+// terceros que las publica por el contrato de fuentes es la única vía, así que
+// el panel lo nombra con versión fija, sin endpoints ni datos de cuenta.
+const OPENCODE_USAGE_PROVIDERS: readonly string[] = ["opencode", "opencode-go"];
+export const OPENCODE_USAGE_SOURCE_PACKAGE = "npm:gentle-opencode-go@0.1.2";
+
+/** Las líneas que explican cómo habilitar las ventanas de uso de un proveedor sin fuente. */
+export function usageSourceHint(provider: string): string[] {
+	if (!OPENCODE_USAGE_PROVIDERS.includes(provider)) return [];
+	return [
+		"no usage windows for this provider",
+		`enable them with: drakonc-shell install ${OPENCODE_USAGE_SOURCE_PACKAGE}`,
+		"third-party package: it receives your OpenCode Go key",
+	];
+}
+const ACTIVE_MARK = BRAND_GLYPH;
 // What a targeted provider with no snapshot says after a refresh actually ran
 // and answered nothing. Generic on purpose: it names no endpoint, key, or
 // account detail, exactly like the other notes here.
@@ -144,17 +160,24 @@ export interface ActiveProvider {
 // A generic hook so an extension holding its own provider (its own API token,
 // its own usage endpoint) can plug a usage source into the shell without the
 // shell ever knowing that provider's name. Emitted on `pi.events` as payload
-// under `USAGE_SOURCE_EVENT`; gentle-shell validates the shape below and
+// under `USAGE_SOURCE_EVENT`; drakonc-shell validates the shape below and
 // ignores anything else, so a malformed or foreign event never reaches a
 // fetch call. Re-registration for the same provider replaces the previous
 // source, so a second `session_start` emitting the same payload is a no-op
 // in effect, not an accumulation.
-export const USAGE_SOURCE_EVENT = "gentle-pi:usage-source/v1";
-export const USAGE_SOURCE_SCHEMA = "gentle-pi.usage-source/v1";
+export const USAGE_SOURCE_EVENT = "drakonc-pi:usage-source/v1";
+export const USAGE_SOURCE_SCHEMA = "drakonc-pi.usage-source/v1";
+// El contrato heredado se acepta como alias de compatibilidad para que los
+// paquetes de la comunidad escritos para Gentle Shell funcionen sin cambios.
+// Cada evento acepta solo su propio esquema: un payload con el esquema del
+// otro nombre se ignora, así que el alias no amplía la superficie aceptada.
+export const LEGACY_USAGE_SOURCE_EVENT = "gentle-pi:usage-source/v1";
+export const LEGACY_USAGE_SOURCE_SCHEMA = "gentle-pi.usage-source/v1";
+export type UsageSourceSchema = typeof USAGE_SOURCE_SCHEMA | typeof LEGACY_USAGE_SOURCE_SCHEMA;
 const USAGE_SOURCE_PROVIDER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export interface UsageSource {
-	schema: typeof USAGE_SOURCE_SCHEMA;
+	schema: UsageSourceSchema;
 	provider: string;
 	pendingNote?: string;
 	fetch(apiKey: string | undefined, fetchFn: typeof fetch, now: number): Promise<ProviderUsage | undefined>;
@@ -163,26 +186,32 @@ export interface UsageSource {
 // Pure and defensive: the payload crosses an event bus from another
 // extension, so nothing here is trusted until every field is checked. Any
 // mismatch returns undefined rather than throwing, exactly like the other
-// payload parsers in this file.
-export function parseUsageSource(value: unknown): UsageSource | undefined {
+// payload parsers in this file. `expectedSchema` is the schema of the event
+// that carried the payload: each event accepts only its own, so the alias
+// never loosens what a name accepts.
+export function parseUsageSource(value: unknown, expectedSchema: UsageSourceSchema = USAGE_SOURCE_SCHEMA): UsageSource | undefined {
 	if (!value || typeof value !== "object") return undefined;
 	const raw = value as Record<string, unknown>;
-	if (raw.schema !== USAGE_SOURCE_SCHEMA) return undefined;
+	if (raw.schema !== expectedSchema) return undefined;
 	if (typeof raw.provider !== "string" || !USAGE_SOURCE_PROVIDER_PATTERN.test(raw.provider)) return undefined;
 	if (typeof raw.fetch !== "function") return undefined;
 	if (raw.pendingNote !== undefined && typeof raw.pendingNote !== "string") return undefined;
-	const source: UsageSource = { schema: USAGE_SOURCE_SCHEMA, provider: raw.provider, fetch: raw.fetch as UsageSource["fetch"] };
+	const source: UsageSource = { schema: expectedSchema, provider: raw.provider, fetch: raw.fetch as UsageSource["fetch"] };
 	if (typeof raw.pendingNote === "string") source.pendingNote = raw.pendingNote;
 	return source;
 }
 
 // One source per provider, most recent registration wins. Nothing here fetches
-// or touches the network; it only remembers who to ask.
+// or touches the network; it only remembers who to ask. A built-in provider is
+// refused: its source receives that provider's API key, so a foreign extension
+// must never be able to replace it and read the credential.
 export class UsageSourceRegistry {
 	private readonly sources = new Map<string, UsageSource>();
 
-	register(source: UsageSource): void {
+	register(source: UsageSource): boolean {
+		if (SUPPORTED_USAGE_PROVIDERS.includes(source.provider)) return false;
 		this.sources.set(source.provider, source);
+		return true;
 	}
 
 	get(provider: string): UsageSource | undefined {
@@ -241,7 +270,7 @@ function parseSourceUsageLimit(value: unknown): UsageLimit | undefined {
 // parsed HTTP payload does: it is foreign code's own object, so it is
 // validated field by field and never recorded by reference. Every accepted
 // shape is rebuilt from scratch, so a source mutating its own object after
-// returning it can never reach a snapshot gentle-shell already recorded.
+// returning it can never reach a snapshot drakonc-shell already recorded.
 export function parseProviderUsage(value: unknown, expectedProvider: string): ProviderUsage | undefined {
 	if (!value || typeof value !== "object") return undefined;
 	const raw = value as Record<string, unknown>;
@@ -577,7 +606,7 @@ export interface UsagePanelScope {
 	failed: ReadonlySet<string>;
 }
 
-// The active provider comes first, marked with the petal, and explains
+// The active provider comes first, marked with the brand glyph, and explains
 // itself when it has no data yet. Other providers seen this session follow.
 // With a scope, the panel draws exactly the targeted providers in scope order:
 // one with no snapshot explains itself (its latest refresh failed, or its
@@ -601,6 +630,11 @@ export function renderUsagePanel(usages: ProviderUsage[], theme: UsageTheme, wid
 			// failed keeps its pending note.
 			const note = scope?.failed.has(row.provider) ? USAGE_FETCH_FAILED_NOTE : providerNote(row.provider, registry);
 			lines.push(`${mark}${theme.fg(ROLE.PROVIDER, row.provider)} ${theme.fg(ROLE.SEPARATOR, "·")} ${theme.fg(ROLE.RESET, note)}`);
+			// Sin fuente registrada, el proveedor explica cómo habilitarla; con una
+			// fuente registrada solo falta su primera lectura y no hay nada que hacer.
+			if (!registry?.has(row.provider) && !scope?.failed.has(row.provider)) {
+				for (const hint of usageSourceHint(row.provider)) lines.push(`  ${theme.fg(ROLE.RESET, hint)}`);
+			}
 			continue;
 		}
 		const usage = row.usage;

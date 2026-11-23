@@ -10,7 +10,7 @@ import { assertCandidateOwnerParent, decodeWindowsAclProbe, WindowsOwnerValidati
 const user = "S-1-5-21-1-2-3-1001";
 const administrator = "S-1-5-21-1-2-3-500";
 const dacl = `D:P(A;OICI;FA;;;${user})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`;
-const response = () => ({ schema: "gentle-pi.windows-acl-probe/v1", user, localAdministrator: administrator,
+const response = () => ({ schema: "drakonc-pi.windows-acl-probe/v1", user, localAdministrator: administrator,
 	entries: [{ index: 0, owner: user, dacl }, { index: 1, owner: "S-1-5-18", dacl }] });
 
 test("Windows batch probe decodes ordered complete observations without path or SID diagnostics", () => {
@@ -42,7 +42,7 @@ test("Windows batch probe rejects partial, reordered, duplicated and unknown obs
 
 test("Windows probe failures and foreign owners block without retrying invalid authority", { skip: process.platform !== "win32" }, t => {
 	const parent = realpathSync(tmpdir()); const root = mkdtempSync(join(parent, "rdd-probe-response-"));
-	mkdirSync(join(root, "gentle-ai", "candidate-views"), { recursive: true });
+	mkdirSync(join(root, "drakonc-ai", "candidate-views"), { recursive: true });
 	const original = childProcess.execFileSync;
 	let payload = "{"; let calls = 0;
 	t.mock.method(childProcess, "execFileSync", ((file: string, args: string[], options: unknown) => {

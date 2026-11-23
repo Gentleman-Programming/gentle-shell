@@ -13,7 +13,7 @@ import { todoPromptBlock } from "../lib/shell-todo.ts";
 // ---------------------------------------------------------------------------
 
 const INLINE = /stays? inline|inline write|do it and report/;
-const env = { GENTLE_PI_CONTEXT_BACKSTOP_TOKENS: "1000" };
+const env = { DRAKONC_PI_CONTEXT_BACKSTOP_TOKENS: "1000" };
 const usage = { tokens: 5_000, contextWindow: 100_000 };
 
 test("S5: the context backstop notice in full delegation mode has no inline clause", () => {

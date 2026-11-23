@@ -1,19 +1,19 @@
-// gentle-pi#662: pure decoding, tier mapping, and verification-plan logic for
-// the native read-only `gentle-ai review assess` command (gentle-ai#4295).
+// drakonc-pi#662: pure decoding, tier mapping, and verification-plan logic for
+// the native read-only `drakonc-ai review assess` command (drakonc-ai#4295).
 // Kept independent of the native review CLI wrapper (`lib/native-review-cli.ts`)
 // so the decoder and the verificationPlan table can be unit-tested without a
 // child process, and so the parent tool and the delegation asset agree on one
 // deterministic mapping.
 //
-// Native reference (gentle-ai#4295, landing in parallel with this change):
-// `gentle-ai review assess --cwd <repo> [--base-ref <ref> --committed-only] --json`
+// Native reference (drakonc-ai#4295, landing in parallel with this change):
+// `drakonc-ai review assess --cwd <repo> [--base-ref <ref> --committed-only] --json`
 // prints `{"schema":"gentle-ai.review-assessment/v1","risk":"passive|medium|high",
 // "reasons":[{"code":"…","path":"…","detail":"…"}],"changed_paths":1,
 // "changed_lines":1,"candidate":{"kind":"current-changes|base-diff","base_ref":"…"}}`.
-// gentle-pi#1175: the native v2 `assess.schema.json` requires only `code` on a
+// drakonc-pi#1175: the native v2 `assess.schema.json` requires only `code` on a
 // reason (`path`/`detail` are optional) and adds `candidate.consumed`,
 // `review_due`, `review_due_reason`, and an opaque `next_transition`. Older
-// binaries (for example gentle-ai v3.7.0) predate those fields, so
+// binaries (for example drakonc-ai v3.7.0) predate those fields, so
 // they decode as optional and stay absent rather than being defaulted.
 // A non-zero exit or a failure envelope means the candidate could not be
 // assessed; hosts treat that as `high`. Older binaries without the verb (or
@@ -55,7 +55,7 @@ export interface ReviewAssessmentReason {
 export interface ReviewAssessmentCandidate {
 	readonly kind: ReviewAssessmentCandidateKind;
 	readonly baseRef: string | undefined;
-	/** Present only when native reports it; never defaulted (gentle-pi#1175). */
+	/** Present only when native reports it; never defaulted (drakonc-pi#1175). */
 	readonly consumed?: boolean;
 }
 
@@ -104,7 +104,7 @@ function decodeReason(value: unknown): ReviewAssessmentReason {
 	if (!isNonEmptyString(code)) throw new TypeError("review assessment reason.code must be a non-empty string");
 	if (path !== undefined && !isNonEmptyString(path)) throw new TypeError("review assessment reason.path must be a non-empty string when present");
 	if (detail !== undefined && !isNonEmptyString(detail)) throw new TypeError("review assessment reason.detail must be a non-empty string when present");
-	// Absent path/detail stay absent: never synthesized (gentle-pi#1175).
+	// Absent path/detail stay absent: never synthesized (drakonc-pi#1175).
 	return Object.freeze({
 		code,
 		...(path === undefined ? {} : { path: path as string }),
@@ -150,7 +150,7 @@ function validateNextTransitionArgument(value: unknown): void {
 /**
  * Validates `next_transition` exactly as the native schema declares it and
  * returns the native value itself, frozen -- validated, never rebuilt,
- * reordered, or synthesized (gentle-pi#1175).
+ * reordered, or synthesized (drakonc-pi#1175).
  */
 function decodeNextTransition(value: unknown): ReviewAssessmentNextTransition {
 	if (!isRecord(value) || !hasOnlyKeys(value, ["operation", "command", "arguments"])) {
@@ -179,7 +179,7 @@ function decodeNextTransition(value: unknown): ReviewAssessmentNextTransition {
  * rejected. The decoder checks field shapes only; the native value is read
  * as-is and never audited for coherence between fields.
  * Unknown extra top-level fields are ignored and never projected, so a newer
- * binary stays decodable (gentle-pi#1175).
+ * binary stays decodable (drakonc-pi#1175).
  */
 export function decodeReviewAssessmentV1(value: unknown): ReviewAssessmentV1 {
 	if (!isRecord(value)) throw new TypeError("review assessment must be an object");
@@ -221,7 +221,7 @@ export function decodeReviewAssessmentV1(value: unknown): ReviewAssessmentV1 {
 }
 
 // ---------------------------------------------------------------------------
-// Verification-plan tiering (gentle-pi#662).
+// Verification-plan tiering (drakonc-pi#662).
 // ---------------------------------------------------------------------------
 
 export const VERIFICATION_TIER = {
@@ -233,7 +233,7 @@ export const VERIFICATION_TIER = {
 export type VerificationTier = (typeof VERIFICATION_TIER)[keyof typeof VERIFICATION_TIER];
 
 // ---------------------------------------------------------------------------
-// Agent-raised risk (gentle-shell#1494). The agent that made the change may
+// Agent-raised risk (drakonc-shell#1494). The agent that made the change may
 // raise its risk to high by citing one item of the high-risk list in the
 // always-on Task Size section; it can never lower a tier. That escalation is
 // the only way a plan gets an independent verifier: a native high or a failed
@@ -307,7 +307,7 @@ export const WRITER_PROFILE = {
 } as const;
 export type WriterProfile = (typeof WRITER_PROFILE)[keyof typeof WRITER_PROFILE];
 
-// gentle-pi#668: whether the native review actually reached a terminal
+// drakonc-pi#668: whether the native review actually reached a terminal
 // outcome for the current candidate. The `on` branch of `verificationPlan`
 // (the writer self-verifies, the native review is the independent check, no
 // separate verifier) holds only for `CLOSED` -- a human decline for this
@@ -332,7 +332,7 @@ export interface VerificationPlanInput {
 	/**
 	 * Native review outcome for the current candidate. Only consulted when
 	 * `rddLine` is `"on"`; `"off"`/`"unknown"` lines ignore it entirely.
-	 * Omitted resolves to `NATIVE_REVIEW_OUTCOME.UNKNOWN` (gentle-pi#668).
+	 * Omitted resolves to `NATIVE_REVIEW_OUTCOME.UNKNOWN` (drakonc-pi#668).
 	 */
 	readonly nativeReviewOutcome?: NativeReviewOutcome;
 }
@@ -347,7 +347,7 @@ export interface VerificationPlan {
 /**
  * Builds the risk-gated verification plan shared by the `off`/`unknown` RDD
  * lines and by an `on` line whose native review did not close for this
- * candidate (gentle-pi#668). `gatePrefix` supplies the sentence fragment
+ * candidate (drakonc-pi#668). `gatePrefix` supplies the sentence fragment
  * naming which branch fired, up to and including the word "and"; the
  * tier-specific clause is appended after it.
  */
@@ -381,7 +381,7 @@ function riskGatedPlan(gatePrefix: string, risk: VerificationTier): Verification
 }
 
 // Names why an `on` line falls back to the risk-gated path, for every
-// non-closed native review outcome (gentle-pi#668). `UNKNOWN` covers both an
+// non-closed native review outcome (drakonc-pi#668). `UNKNOWN` covers both an
 // omitted outcome and a caller-supplied one this decoder does not
 // recognize -- both fail closed the same way.
 function nonClosedOutcomeClause(outcome: NativeReviewOutcome): string {
@@ -398,7 +398,7 @@ function nonClosedOutcomeClause(outcome: NativeReviewOutcome): string {
 /**
  * Computes who verifies a delegated writer's change. Verification follows the
  * plan risk tier whatever the RDD line and native review outcome
- * (verify-always-rdd-high S1, superseding the gentle-pi#662/#668 on-path): the
+ * (verify-always-rdd-high S1, superseding the drakonc-pi#662/#668 on-path): the
  * native review is an additional outside view and never replaces or skips the
  * tier's verification. `nativeReviewOutcome` only shapes the reason text.
  *
@@ -433,7 +433,7 @@ export function verificationPlan(input: VerificationPlanInput): VerificationPlan
 }
 
 // ---------------------------------------------------------------------------
-// Small-writer-profile predicate (gentle-pi#662).
+// Small-writer-profile predicate (drakonc-pi#662).
 // ---------------------------------------------------------------------------
 
 /**
@@ -483,7 +483,7 @@ export function isSmallWriterProfile(profile: WriterModelProfileLike | undefined
 /**
  * Maps a resolved writer profile to the reported `writerProfile`. An unknown
  * or omitted profile resolves to `"small"`, exactly like
- * `isSmallWriterProfile` (gentle-pi#662).
+ * `isSmallWriterProfile` (drakonc-pi#662).
  */
 export function resolveWriterProfile(profile: WriterModelProfileLike | undefined): WriterProfile {
 	return isSmallWriterProfile(profile) ? WRITER_PROFILE.SMALL : WRITER_PROFILE.LARGE;

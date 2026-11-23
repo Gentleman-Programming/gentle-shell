@@ -4,16 +4,16 @@ import { join, relative } from "node:path";
 import test from "node:test";
 
 // Pain-point iteration S10 (C7): blind reviewers flagged tool artifacts in every
-// Gentle Shell delivery. Orchestrators told writers to create a scratch
+// Drakonc Shell delivery. Orchestrators told writers to create a scratch
 // directory in the repository root and point TMPDIR at it, so test state and
 // tool caches entered the diff. Test scratch now lives outside the worktree by
 // default. These are instruction-delivery contracts, not proof of model adherence.
 
 const ROOT = join(import.meta.dirname, "..");
 const read = (path: string): string => readFileSync(join(ROOT, path), "utf8");
-const worker = read("assets/agents/gentle-ai-worker.md");
+const worker = read("assets/agents/drakonc-ai-worker.md");
 const writer = read("assets/orchestrator-writer.md");
-const verifier = read("assets/agents/gentle-ai-verify.md");
+const verifier = read("assets/agents/drakonc-ai-verify.md");
 
 function section(text: string, heading: string): string {
 	const start = text.indexOf(`\n## ${heading}\n`);
@@ -80,9 +80,9 @@ test("S10: scratch outside the worktree is removed after use", () => {
 	containsAll(
 		verifier,
 		["list every scratch directory you created by exact path in your result so the parent removes it", "never delete it yourself"],
-		"gentle-ai-verify scratch report",
+		"drakonc-ai-verify scratch report",
 	);
-	assert.ok(!/\brm\s+-r/.test(verifier), "gentle-ai-verify must not instruct a deletion child safety blocks");
+	assert.ok(!/\brm\s+-r/.test(verifier), "drakonc-ai-verify must not instruct a deletion child safety blocks");
 	containsAll(
 		section(worker, "Test discipline"),
 		[
@@ -94,7 +94,7 @@ test("S10: scratch outside the worktree is removed after use", () => {
 	// Session scratch and artifact ledger: the runtime owns the parent session's
 	// TMPDIR (subagent TMPDIRs nest under it) and records clones and worktrees,
 	// so the writer rule points at the command instead of a model cleanup step.
-	containsAll(writer, ["The runtime owns session scratch", "`/gentle:scratch` lists or cleans recorded clones and worktrees"], "writer runtime-owned cleanup");
+	containsAll(writer, ["The runtime owns session scratch", "`/drakonc:scratch` lists or cleans recorded clones and worktrees"], "writer runtime-owned cleanup");
 	// The verifier's mktemp copy lives in its own TMPDIR, which the runner removes.
 	const verification = read("assets/orchestrator-verification.md");
 	containsAll(verification, ["the runtime removes each subagent's own TMPDIR, which holds that copy"], "verification runtime cleanup");

@@ -37,7 +37,7 @@ type Registry = {
  transfers: Set<Transfer>;
 };
 // Stable key, explicit protocol: a new implementation must not reset evidence.
-const registryKey = Symbol.for("gentle-pi.session-profile.lifecycle");
+const registryKey = Symbol.for("drakonc-pi.session-profile.lifecycle");
 function registry(): Registry {
  const existing = Reflect.get(globalThis, registryKey) as Registry | undefined;
  if (existing) {

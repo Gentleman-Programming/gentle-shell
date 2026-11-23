@@ -30,11 +30,11 @@ import test, { after } from "node:test";
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL_ASSETS_DIR = join(REPO_ROOT, "assets");
 const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-diet.md");
-// gentle-shell#1731 T10 (user decision): 8,192 -> 8,400 B for the narrowed high-risk items 1 and 3.
+// drakonc-shell#1731 T10 (user decision): 8,192 -> 8,400 B for the narrowed high-risk items 1 and 3.
 // Verification by named risk (escalate-only rule 3) and the writer-rule fix (triggers hold only when
 // their condition holds; a unit is independent behavior over a size floor), user decision 2026-10-14: 8,400 -> 9,100 B.
 // Weak-model economy (small path reads one batch with no todo; item 1 excludes rebuildable dev/test data), measured in
-// gentle-shell-bench 1321c60 (DeepSeek -24-30% time on x2/x5, -70% on a dev-database rename; Sol unchanged), user decision
+// drakonc-shell-bench 1321c60 (DeepSeek -24-30% time on x2/x5, -70% on a dev-database rename; Sol unchanged), user decision
 // 2026-10-22: 9,100 -> 9,250 B.
 // Issue #2935 (user decision 2026-11-06): 9,250 -> 9,350 B so the confinement clause keeps its full wording
 // (registered same-clone worktrees, never-blanket grants) while adding the resolved-skill-read exception; the
@@ -67,7 +67,7 @@ function copyRequiredLazyAssets(destination: string): void {
 
 const representativeProductionAssetsDir = mkdtempSync(join(tmpdir(), "gp-b-"));
 copyRequiredLazyAssets(representativeProductionAssetsDir);
-const { __testing } = await import("../extensions/gentle-ai.ts");
+const { __testing } = await import("../extensions/drakonc-ai.ts");
 
 // A controlled long assets root proves the parent prompt remains within the
 // canonical budget independently of the checkout or installed-package path.
@@ -129,7 +129,7 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // 2.2 — Byte budget (Spec: Always-On Injection Byte Budget)
 // ---------------------------------------------------------------------------
 
-// gentle-pi#661: `renderOrchestratorPrompt`/`getOrchestratorPrompt` default
+// drakonc-pi#661: `renderOrchestratorPrompt`/`getOrchestratorPrompt` default
 // `rddStatusLine` to the "unknown (native status unavailable)" line -- the
 // longest of the three renderable RDD status lines -- precisely so that a
 // no-argument call renders the worst case this budget measures, not a
@@ -213,13 +213,13 @@ const DISPOSITION_MAP: DispositionRange[] = [
 	{ lines: [9, 13], target: "core", label: "Core Role" },
 	{ lines: [15, 15], target: "core", label: "Language Boundary heading" },
 	{ lines: [17, 17], target: "core", label: "Language Boundary LB1 pointer" },
-	{ lines: [19, 19], target: "replaced", label: "Language Boundary LB2: request translation replaced by spec-by-reference handoffs (gentle-shell#1713)" },
+	{ lines: [19, 19], target: "replaced", label: "Language Boundary LB2: request translation replaced by spec-by-reference handoffs (drakonc-shell#1713)" },
 	{ lines: [21, 21], target: "replaced", label: "Language Boundary LB3: retired artifact types" },
 	{ lines: [23, 23], target: "core", label: "Language Boundary LB4 (public comment language)" },
 	{ lines: [25, 28], target: "delegation", label: "Language Boundary LB5 (exceptions)" },
 	{ lines: [29, 29], target: "obsolete", label: "Retired artifact exception" },
 	{ lines: [31, 40], target: "replaced", label: "Mental Model: ODD-only" },
-	{ lines: [42, 42], target: "replaced", label: "Work Routing Ladder heading replaced by Task Size and Mechanisms (gentle-shell#1494)" },
+	{ lines: [42, 42], target: "replaced", label: "Work Routing Ladder heading replaced by Task Size and Mechanisms (drakonc-shell#1494)" },
 	{
 		lines: [44, 97],
 		target: "replaced",
@@ -245,7 +245,7 @@ const DISPOSITION_MAP: DispositionRange[] = [
 	{
 		lines: [116, 126],
 		target: "obsolete",
-		label: "Pre-canon delegation table replaced by the mirrored gentle-ai canon table (#312)",
+		label: "Pre-canon delegation table replaced by the mirrored drakonc-ai canon table (#312)",
 	},
 	{
 		lines: [128, 132],
@@ -305,7 +305,7 @@ const fixtureLines = readFileSync(FIXTURE_PATH, "utf8").split("\n");
 const SUPERSEDED_LIFECYCLE_REVIEW_LINES = new Set([
 	70,
 	// 74/77: the loose mode-choice background lines were replaced by the
-	// marked gentle-pi:background-subagents policy block (issue #256).
+	// marked drakonc-pi:background-subagents policy block (issue #256).
 	74,
 	76,
 	77,
@@ -324,7 +324,7 @@ const SUPERSEDED_LIFECYCLE_REVIEW_LINES = new Set([
 	// excepts the work-unit commits of authorized large ODD implementation
 	// (asserted verbatim in tests/odd-routing-contract.test.ts).
 	280,
-	// 282: gentle-shell#1731 T4 relaxed the single-writer Safety line to disjoint
+	// 282: drakonc-shell#1731 T4 relaxed the single-writer Safety line to disjoint
 	// Allowed edit surfaces (runtime-enforced) or isolated worktrees.
 	282,
 ]);
@@ -418,7 +418,7 @@ test("lazy coordination detail retains subject guidance without inflating the co
 	assert.match(detail, /Names display only; stable IDs route/);
 });
 
-test("core-alone: dynamic Gentle AI ownership replaces package lifecycle instructions", () => {
+test("core-alone: dynamic Drakonc AI ownership replaces package lifecycle instructions", () => {
 	const core = readRealAsset("orchestrator.md");
 	// cost-speed-painpoints S15 P5a (verdict X1): the contract is injected only while RDD is not off.
 	assert.match(core, /While RDD is not off, this package injects the mirrored provider-bundle review execution contract;/);
@@ -496,7 +496,7 @@ test("getOrchestratorPrompt memoizes the return across calls", () => {
 });
 
 // ---------------------------------------------------------------------------
-// gentle-pi#661 follow-up: byte-budget compression must not turn a pointer
+// drakonc-pi#661 follow-up: byte-budget compression must not turn a pointer
 // into an opaque "Detail: `file.md`" -- each pointer line must still name
 // the lazy-loaded material it points to, in the shortest form that still
 // says what is over there.
@@ -513,7 +513,7 @@ test("every compressed lazy-file pointer in the core still names the material it
 			file: "orchestrator-delegation-reference.md",
 			mustName: ["Per-action table", "Work Routing Ladder", "Canonical Workflows"],
 		},
-		// gentle-shell#1494 per-mechanism modules.
+		// drakonc-shell#1494 per-mechanism modules.
 		{ file: "orchestrator-prompts.md", mustName: ["blocking-prompt relays", "provider defects"] },
 		{ file: "orchestrator-tracking.md", mustName: ["Track", "feature document"] },
 		// Verification by named risk: rule 3 names the escalated high-risk item.

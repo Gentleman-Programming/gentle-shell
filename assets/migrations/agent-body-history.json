@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "bodies": {
-    "agents/gentle-ai-explore.md": [
+    "agents/drakonc-ai-explore.md": [
       "1436a9d11151b23a3b78ca42fe94658d7f074af38136b471cd4c015aa0dfff26",
       "329659acf78df0dbcb1d6dbd386ee40e816bcb2ad433193628c20f12bdb31cb2",
       "389c74cc4d949acaad20f21a13606755f46a73e74f07325851d44c445b1b689b",
@@ -15,7 +15,7 @@
       "f0a2571f4b97cb4be56d0c74452ba922be31123a437e6da3ddd20eb78711c2d1",
       "f2edcf189dacb0f3294f0c0c2039374ce612543182b78c4a410687bc61e6375f"
     ],
-    "agents/gentle-ai-verify.md": [
+    "agents/drakonc-ai-verify.md": [
       "03f16dd23cde5c340ff04759d04672724d1debdde45448d5440cc7ce9a0cfc0c",
       "0c8df3faa0ed131fc621f716b13d3fcd9eae7763412a479e696cecf751d653b4",
       "0ddacbfbe1d61d6ef984b9b621ca36b745ff3841e9ca16ac5983706d3a081cd7",
@@ -58,7 +58,7 @@
       "f71ff8564ec1732c9e627cadd02c75b3ec613265bd0aaffc4981ba9eee254025",
       "fd074e7cf5ecc25ec334d2c8db7d0507bb14061074157158199a90ac0af0a3d0"
     ],
-    "agents/gentle-ai-worker.md": [
+    "agents/drakonc-ai-worker.md": [
       "0000cf664ae3d7186f861a65a0635eb738afa0c59b492906af5cb4c4e666c418",
       "0cddd8508e4f0ce34ecd06e48cfd4037e9ec5bb0fdc3d77ff40537b110b931d1",
       "1178dcf29e31ebdf81c8667c89da604f186f1056a629aa1993424fa25d90b111",

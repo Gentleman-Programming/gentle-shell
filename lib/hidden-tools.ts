@@ -30,6 +30,6 @@ export function hideBehindCodemode(name: string, when: () => boolean = () => tru
 /** Appended to the system prompt while the coordination tools are hidden. */
 export const COORDINATION_TOOLS_ROUTE = "Cross-session tools orchestrator_list, orchestrator_consult and orchestrator_send_message are not declared: call them from codemode as `tools.<name>(args)`; `describeTool(name)` shows their arguments.";
 /** Appended while the design tools are hidden: no design/ directory when this run started. */
-export const DESIGN_TOOLS_ROUTE = "gentle_design and gentle_design_comments are not declared in this run: call them from codemode, such as `tools.gentle_design({ action: \"list\" })`.";
+export const DESIGN_TOOLS_ROUTE = "drakonc_design and drakonc_design_comments are not declared in this run: call them from codemode, such as `tools.drakonc_design({ action: \"list\" })`.";
 /** Appended while the guide tool is hidden. */
-export const GUIDE_TOOL_ROUTE = "gentle_guide is not declared: call it from codemode as `tools.gentle_guide({ action: \"start\" })`.";
+export const GUIDE_TOOL_ROUTE = "drakonc_guide is not declared: call it from codemode as `tools.drakonc_guide({ action: \"start\" })`.";

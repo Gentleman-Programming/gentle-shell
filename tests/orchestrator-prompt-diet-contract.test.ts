@@ -3,8 +3,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
-import gentleAgents from "../extensions/gentle-agents.ts";
-import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import drakoncAgents from "../extensions/drakonc-agents.ts";
+import { __testing, createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 
 // ---------------------------------------------------------------------------
 // cost-speed-painpoints S5 (T4): orchestrator prompt diet.
@@ -19,23 +19,23 @@ import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 const REPO_ROOT = join(import.meta.dirname, "..");
 const ASSETS = join(REPO_ROOT, "assets");
 const MODES = ["organic", "full-delegation"] as const;
-const PERSONAS = ["gentleman", "neutral"] as const;
+const PERSONAS = ["drakoncman", "neutral"] as const;
 const ACTIVE_TOOLS = ["read", "bash", "edit", "write", "subagent_run"] as const;
 
 let scratch: string;
-const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+const previousConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
 before(() => {
 	scratch = mkdtempSync(join(tmpdir(), "t4-diet-"));
-	process.env.GENTLE_PI_CONFIG_HOME = join(scratch, "config");
+	process.env.DRAKONC_PI_CONFIG_HOME = join(scratch, "config");
 });
 after(() => {
-	if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-	else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+	if (previousConfigHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+	else process.env.DRAKONC_PI_CONFIG_HOME = previousConfigHome;
 	rmSync(scratch, { recursive: true, force: true });
 });
 
 function render(persona: (typeof PERSONAS)[number], mode: (typeof MODES)[number]): string {
-	return __testing.buildGentlePrompt(persona, join(scratch, "project"), ACTIVE_TOOLS, undefined, undefined, mode).replaceAll(ASSETS, "/a");
+	return __testing.buildDrakoncPrompt(persona, join(scratch, "project"), ACTIVE_TOOLS, undefined, undefined, mode).replaceAll(ASSETS, "/a");
 }
 
 function read(name: string): string {
@@ -50,8 +50,8 @@ function registeredTools(): Map<string, Declaration> {
 		events: { on() {}, emit() {} },
 		registerTool(tool: Declaration) { tools.set(tool.name, tool); },
 	};
-	gentleAgents(pi as never, { GENTLE_PI_CONFIG_HOME: scratch }, { home: scratch, agentHome: scratch });
-	createGentleAiExtension({ nativeReviewCli: null })(pi as never);
+	drakoncAgents(pi as never, { DRAKONC_PI_CONFIG_HOME: scratch }, { home: scratch, agentHome: scratch });
+	createDrakoncAiExtension({ nativeReviewCli: null })(pi as never);
 	return tools;
 }
 
@@ -99,7 +99,7 @@ test("S5 change 2 (preserve): organic keeps the full test-first bullet, and the 
 			assert.ok(bullet.includes(clause), `[${persona}] organic test-first bullet lost: ${clause}`);
 		}
 	}
-	const worker = read("agents/gentle-ai-worker.md");
+	const worker = read("agents/drakonc-ai-worker.md");
 	for (const clause of ["RED", "GREEN", "PRESERVE", "run one differential check before finishing", "no meaningful RED"]) assert.ok(worker.includes(clause), `worker lost ${clause}`);
 });
 
@@ -119,7 +119,7 @@ test("S5 change 3: the mirror cadence is per task transition, with log entries r
 
 // --- Change 4: admission requirements are stated where the launch is composed --
 
-const ADMISSION = "Admission rejects writers without repository-relative `## Allowed edit surfaces`; below the context backstop, organic writers without `Spec: odd/tasks/<existing>.md, T<n>` (2+ disjoint writers alone in one message pass) and `gentle-ai-verify` without that or `Risk: item N`.";
+const ADMISSION = "Admission rejects writers without repository-relative `## Allowed edit surfaces`; below the context backstop, organic writers without `Spec: odd/tasks/<existing>.md, T<n>` (2+ disjoint writers alone in one message pass) and `drakonc-ai-verify` without that or `Risk: item N`.";
 
 test("S5 change 4: the subagent_run description names what admission rejects", () => {
 	const run = registeredTools().get("subagent_run");
@@ -144,22 +144,22 @@ test("S5 change 5: the neutral persona states its Spanish register once (persona
 		assert.ok(!prompt.includes("Language: neutral/professional Spanish when the user writes Spanish."), `[${mode}] neutral duplicate Language line must go`);
 		assert.ok(prompt.includes("- When the user writes Spanish, use neutral/professional Spanish. Do NOT use voseo or any regional conjugations"), `[${mode}] neutral register rule must stay`);
 		assert.ok(prompt.includes("- Do not use slang or regional expressions."), `[${mode}] regional-expressions rule must stay`);
-		// P14 (PD-57): the gentleman persona also states its register once, in its persona bullet.
-		const gentleman = render("gentleman", mode);
-		assert.ok(!gentleman.includes("Language: natural Rioplatense Spanish with voseo when the user writes Spanish."), `[${mode}] gentleman duplicate Language line must go`);
-		assert.ok(gentleman.includes("- When the user writes Spanish, answer in natural Rioplatense Spanish with voseo."), `[${mode}] gentleman register rule must stay`);
+		// P14 (PD-57): the drakoncman persona also states its register once, in its persona bullet.
+		const drakoncman = render("drakoncman", mode);
+		assert.ok(!drakoncman.includes("Language: natural Rioplatense Spanish with voseo when the user writes Spanish."), `[${mode}] drakoncman duplicate Language line must go`);
+		assert.ok(drakoncman.includes("- When the user writes Spanish, answer in natural Rioplatense Spanish with voseo."), `[${mode}] drakoncman register rule must stay`);
 	}
 });
 
-test("S5 change 5: gentle_odd_phase does not restate the Phase reporting cadence, but keeps its own rules", () => {
-	const phase = registeredTools().get("gentle_odd_phase");
-	assert.ok(phase, "gentle_odd_phase must be registered");
+test("S5 change 5: drakonc_odd_phase does not restate the Phase reporting cadence, but keeps its own rules", () => {
+	const phase = registeredTools().get("drakonc_odd_phase");
+	assert.ok(phase, "drakonc_odd_phase must be registered");
 	const prose = [phase.promptSnippet ?? "", ...(phase.promptGuidelines ?? [])].join("\n");
 	assert.ok(!/never per tool call|never poll or report per tool call/.test(prose), "the cadence lives once, in the always-on Phase reporting line");
 	assert.ok(prose.includes("Pass phase exactly as its schema enum"), "schema rule must stay");
 	assert.ok(prose.includes("Never call this from a subagent or background/child task"), "child rule must stay: children do not receive Phase reporting");
 	for (const mode of MODES) {
-		assert.ok(render("gentleman", mode).includes("call it from the primary session only when its ODD phase actually changes, never per tool call or on a fixed cadence"), `[${mode}] Phase reporting keeps the cadence`);
+		assert.ok(render("drakoncman", mode).includes("call it from the primary session only when its ODD phase actually changes, never per tool call or on a fixed cadence"), `[${mode}] Phase reporting keeps the cadence`);
 	}
 });
 
@@ -180,7 +180,7 @@ test("S3: organic and full delegation keep the authorized-work boundary under RD
 		"Receipt-driven development: off (decided by global)",
 	];
 	for (const status of statuses) for (const mode of MODES) {
-		const prompt = __testing.buildGentlePrompt("gentleman", join(scratch, "project"), ACTIVE_TOOLS, status, undefined, mode).replaceAll(ASSETS, "/a");
+		const prompt = __testing.buildDrakoncPrompt("drakoncman", join(scratch, "project"), ACTIVE_TOOLS, status, undefined, mode).replaceAll(ASSETS, "/a");
 		for (const clause of CANONICAL_CLOSE) assert.ok(prompt.includes(clause), `[${status}/${mode}] canonical Close is missing: ${clause}`);
 		assert.ok(prompt.includes("An explicit user stop applies only to the work it names."), `[${status}/${mode}] explicit-stop coverage`);
 		assert.ok(!prompt.includes("Needs your decision"), `[${status}/${mode}] no generic terminal phrase`);
@@ -191,22 +191,22 @@ test("S3: organic and full delegation keep the authorized-work boundary under RD
 // --- Net bytes: both modes shrink, and the pins follow ----------------------
 
 // Measured at /a (normalized assets root), ACTIVE_TOOLS, default RDD line. Base c09189269 rendered
-// organic 25,482/25,778 B and full delegation 23,309/23,605 B (gentleman/neutral); the diet pins the new sizes.
+// organic 25,482/25,778 B and full delegation 23,309/23,605 B (drakoncman/neutral); the diet pins the new sizes.
 // cost-speed-painpoints S15 P5a: the verifier-setup paragraph moved to orchestrator-verification.md and the
 // always-on verdicts landed; measured organic 24,256/24,428 B and full delegation 22,161/22,333 B (default RDD line).
 // Verifier B1: the full-delegation Verify mechanism routes a verifier setup failure to that module (+92 B).
-// cost-speed P14: the duplicate gentleman Language line (-80 B, PD-57) and the core's evidence-budget number aligned
+// cost-speed P14: the duplicate drakoncman Language line (-80 B, PD-57) and the core's evidence-budget number aligned
 // to the runtime (-12 B in both modes, PD-81); measured organic 24,164/24,416 B and full delegation 22,131/22,383 B.
 const PRIMARY_PROMPT_BUDGETS: Record<(typeof MODES)[number], Record<(typeof PERSONAS)[number], number>> = {
 	// fix/temp-dir-exemption (user decision 2026-11-16, approved up to +175 B): the confinement clause exempts the OS temp
 	// directory in every mode and persona; measured organic 24,164/24,416 -> 24,251/24,503 B and full delegation
 	// 22,128/22,380 -> 22,210/22,462 B.
-	organic: { gentleman: 24_251, neutral: 24_503 },
+	organic: { drakoncman: 24_251, neutral: 24_503 },
 	// cost-speed P6 (X9): launch form, continue-one-worker rule and the tracking pointer, paid by the motivation
 	// sentence and a duplicate of step 6's verbatim-request rule (22,253/22,425 -> 22,223/22,395 B).
 	// cost-speed P6b: the launch sentence names the same assistant message, the `codemode` route and the sequential
 	// tools (+126 B), paid by tightening five sentences of the same asset (22,131/22,383 -> 22,128/22,380 B).
-	"full-delegation": { gentleman: 22_210, neutral: 22_462 },
+	"full-delegation": { drakoncman: 22_210, neutral: 22_462 },
 };
 
 test("S5: the rendered primary prompt fits the lowered per-mode budgets", (t) => {
@@ -236,14 +236,14 @@ test("S5 change 4: admission behaves as the subagent_run sentence states", async
 	const root = mkdtempSync(join(scratch, "admission-"));
 	const belowBackstop = { tokens: 1_000, contextWindow: 1_000_000 };
 	const env = {};
-	const writer = { agent: "gentle-ai-worker", task: "Change one file.\n\n## Allowed edit surfaces\nsrc/a.ts" };
+	const writer = { agent: "drakonc-ai-worker", task: "Change one file.\n\n## Allowed edit surfaces\nsrc/a.ts" };
 	assert.ok(rejectUndocumentedWriterLaunch(writer, { root, contextUsage: belowBackstop, env, orchestratorMode: "organic" })?.block, "organic writer without Spec: is rejected below the backstop");
 	assert.equal(rejectUndocumentedWriterLaunch(writer, { root, contextUsage: belowBackstop, env, orchestratorMode: "full-delegation" }), undefined, "full delegation never rejects a writer for a missing Spec:");
-	const sibling = { agent: "gentle-ai-worker", task: "Change another file.\n\n## Allowed edit surfaces\nsrc/b.ts" };
+	const sibling = { agent: "drakonc-ai-worker", task: "Change another file.\n\n## Allowed edit surfaces\nsrc/b.ts" };
 	const batch = [writer, sibling].map(input => ({ name: "subagent_run", arguments: input }));
 	assert.equal(rejectUndocumentedWriterLaunch(writer, { root, contextUsage: belowBackstop, env, orchestratorMode: "organic", sameMessageCalls: batch }), undefined, "2+ disjoint writers alone in one message pass");
 	assert.ok(rejectUndocumentedWriterLaunch(writer, { root, contextUsage: belowBackstop, env, orchestratorMode: "organic", sameMessageCalls: [...batch, { name: "read", arguments: { path: "a" } }] })?.block, "not with another call beside them");
-	const verifier = { agent: "gentle-ai-verify", task: "Verify the change." };
+	const verifier = { agent: "drakonc-ai-verify", task: "Verify the change." };
 	assert.ok(rejectUnriskedVerifierLaunch(verifier, { root, contextUsage: belowBackstop, env })?.block, "verifier without Risk: item N or Spec: is rejected (admission takes no mode, so full delegation too)");
 	assert.equal(rejectUnriskedVerifierLaunch({ ...verifier, task: "Verify the change.\nRisk: item 3 (shared parser)" }, { root, contextUsage: belowBackstop, env }), undefined, "a declared Risk: item 3 is admitted");
 });

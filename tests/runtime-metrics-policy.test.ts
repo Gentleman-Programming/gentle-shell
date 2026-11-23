@@ -9,10 +9,10 @@ const result = (value: unknown) => ({ stdout: JSON.stringify(value), stderr: "",
 test("only strict enabled policy grants; uses bounded policy invocation exclusively", async () => {
 	let calls = 0;
 	assert.equal(await readRuntimeMetricsPolicy("/workspace", {
-		resolve: () => "/fixture/gentle-ai", exec: async request => {
+		resolve: () => "/fixture/drakonc-ai", exec: async request => {
 			calls++;
 			assert.deepEqual(request.arguments, ["telemetry", "policy", "--json"]);
-			assert.equal(request.file, "/fixture/gentle-ai");
+			assert.equal(request.file, "/fixture/drakonc-ai");
 			assert.equal(request.cwd, "/workspace");
 			assert.equal(request.timeoutMs, 1000);
 			assert.equal(request.maxBufferBytes, 2048);
@@ -57,6 +57,6 @@ test("native-compatible environment veto accepts broad truthy spellings", () => 
 	for (const key of ["DO_NOT_TRACK", "CI", "GITHUB_ACTIONS"]) {
 		for (const value of ["1", "true", "TRUE", " yes ", "on", "t", "unknown"]) assert.equal(runtimeMetricsEnvAllows({ [key]: value }), false);
 	}
-	assert.equal(runtimeMetricsEnvAllows({ GENTLE_AI_TELEMETRY: "0" }), false);
+	assert.equal(runtimeMetricsEnvAllows({ DRAKONC_AI_TELEMETRY: "0" }), false);
 	assert.equal(runtimeMetricsEnvAllows({ DO_NOT_TRACK: "false", CI: "0" }), true);
 });

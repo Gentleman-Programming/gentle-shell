@@ -5,7 +5,7 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 
-export const REVIEW_SESSION_PERMISSION_REGISTRY_SCHEMA = "gentle-pi.review-session-standing-permission/v1";
+export const REVIEW_SESSION_PERMISSION_REGISTRY_SCHEMA = "drakonc-pi.review-session-standing-permission/v1";
 export const REVIEW_SESSION_PERMISSION_REGISTRY_SYMBOL = Symbol.for(REVIEW_SESSION_PERMISSION_REGISTRY_SCHEMA);
 
 const execFileAsync = promisify(execFile);
@@ -161,7 +161,7 @@ export async function captureReviewSessionIdentity(
 	resolveRoot: (cwd: string) => Promise<string | undefined> = resolveCanonicalGitWorktreeRoot,
 	resolveRepositoryIdentity: (cwd: string) => Promise<string | undefined> = resolveCanonicalGitRepositoryIdentity,
 ): Promise<ReviewSessionIdentity | undefined> {
-	if (processEnv.GENTLE_PI_AGENTS_CHILD === "1" || context.hasUI !== true || !hasInteractiveTui(context)) return undefined;
+	if (processEnv.DRAKONC_PI_AGENTS_CHILD === "1" || context.hasUI !== true || !hasInteractiveTui(context)) return undefined;
 	const sessionManager = context.sessionManager;
 	if (typeof sessionManager !== "object" || sessionManager === null) return undefined;
 	const sessionId = exactSessionId(sessionManager);

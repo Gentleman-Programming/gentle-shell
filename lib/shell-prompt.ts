@@ -1,4 +1,5 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { BRAND_FRAMES, BRAND_GLYPH } from "./brand-glyph.ts";
 import { stripAnsi } from "./terminal-theme.ts";
 import { CARD_STYLE, type CardStyle } from "./shell-card.ts";
 import { paintHoverable } from "./shell-hover.ts";
@@ -14,6 +15,7 @@ export const PROMPT_STATE = {
 
 export type PromptState = (typeof PROMPT_STATE)[keyof typeof PROMPT_STATE];
 
+// Tonos del glifo de marca: el dragón recorre la rampa de acento mientras trabaja.
 const PETAL_TONE = {
 	BRIGHT: "borderAccent",
 	ROSE: "accent",
@@ -82,10 +84,10 @@ export interface PromptFrameOptions {
 	panelHovered?: boolean;
 }
 
-// A terminal cell cannot grow, so the petal earns presence with weight and
-// the brightest rose in the theme. Working spins through four flowers.
-export const PROMPT_PETAL = "✿";
-const PETAL_FRAMES = ["✿", "❀", "❁", "✾"] as const;
+// El glifo de marca ocupa dos celdas y aun así lleva el peso y el rojo más
+// brillante del tema. En estado de trabajo alterna dragón y llama.
+export const PROMPT_PETAL = BRAND_GLYPH;
+const PETAL_FRAMES = BRAND_FRAMES;
 export const PROMPT_HINT = "type, or / for commands";
 export const DOUBLE_ESC_CANCEL_HINT = "esc again to cancel";
 export const IDLE_ESC_CLEAR_HINT = "esc again to clear";
@@ -129,9 +131,9 @@ function topRule(width: number, options: PromptFrameOptions, indicator: string |
 	const label = indicator ?? stateLabel(options);
 	const scanning = options.state === PROMPT_STATE.WORKING;
 	const glyph = petalGlyph(options.state, options.tick);
-	const petal = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);
+	const dragon = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);
 	const paintedLabel = label && scanning && !indicator ? scanWorkingText(label, options.tick, options.fg) : label ? options.fg(LABEL_ROLE, label) : "";
-	const title = [petal, paintedLabel].filter(Boolean).join(" ");
+	const title = [dragon, paintedLabel].filter(Boolean).join(" ");
 	const titleWidth = visibleWidth(glyph) + (label ? visibleWidth(label) + (glyph ? 1 : 0) : 0);
 	const fill = width - titleWidth - 5;
 	if (fill < 0) return options.borderColor(`╭${rule(width - 2)}╮`);
@@ -216,7 +218,7 @@ export function floatPromptRow(line: string, layout: PromptLayout, borderColor: 
 
 function floatPromptHint(top: string, bottom: string, options: PromptFrameOptions, width: number): string {
 	const glyph = petalGlyph(options.state, options.tick);
-	const petal = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);
+	const dragon = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);
 	const label = stateLabel(options) ?? "waiting for input";
 	let paintedLabel = "";
 	if (label) {
@@ -227,19 +229,20 @@ function floatPromptHint(top: string, bottom: string, options: PromptFrameOption
 	const info = [scrollIndicator(top), options.escHint ?? scrollIndicator(bottom)]
 		.filter((text): text is string => Boolean(text))
 		.map((text) => options.fg(LABEL_ROLE, text));
-	const hint = truncateToWidth("  " + petal + (paintedLabel ? " " + paintedLabel : "") + (info.length ? " · " + info.join(" · ") : ""), width, "");
+	const hint = truncateToWidth("  " + dragon + (paintedLabel ? " " + paintedLabel : "") + (info.length ? " · " + info.join(" · ") : ""), width, "");
 	return hint + " ".repeat(Math.max(0, width - visibleWidth(hint)));
 }
 
-// The panel editor: `─ ✿ state ──── mode ─` above the input, where the state
-// scans while working and the right end carries the vim mode or esc hint.
+// El editor del panel: `─ 🐉 state ──── mode ─` sobre la entrada, donde el
+// estado se recorre mientras trabaja y el extremo derecho lleva el modo vim o
+// la pista de esc.
 const PANEL_PROMPT = "› ";
 const PANEL_PROMPT_ROLE = "accent";
 export const PANEL_BUTTON = "[ Panel ]";
 
 function panelPromptRule(width: number, options: PromptFrameOptions, top: string | undefined, right: string | undefined): string {
 	const glyph = petalGlyph(options.state, options.tick);
-	const petal = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);
+	const dragon = options.fg(petalTone(options.state, options.tick), options.bold ? options.bold(glyph) : glyph);
 	const label = top ?? stateLabel(options) ?? "waiting for input";
 	if (options.panelButton && width >= visibleWidth(PANEL_BUTTON)) {
 		const button = paintHoverable({ fg: options.fg }, PANEL_BUTTON, options.panelHovered ?? false, "accent");
@@ -247,12 +250,13 @@ function panelPromptRule(width: number, options: PromptFrameOptions, top: string
 		const hintWidth = Math.max(0, width - visibleWidth(PANEL_BUTTON) - 4);
 		const hint = right && hintWidth > 0 ? truncateToWidth(right, hintWidth, "…") : "";
 		const end = ` ${button}${hint ? ` ${options.fg(LABEL_ROLE, hint)}` : ""} ${options.borderColor("─")}`;
+		const head = 3 + visibleWidth(glyph);
 		const available = width - visibleWidth(end);
-		if (available < 4) return options.borderColor(rule(available)) + end;
-		const clipped = truncateToWidth(label, Math.max(0, available - 5), "…");
+		if (available < head) return options.borderColor(rule(available)) + end;
+		const clipped = truncateToWidth(label, Math.max(0, available - head - 1), "…");
 		const painted = options.state === PROMPT_STATE.WORKING && !top ? scanWorkingText(clipped, options.tick, options.fg) : options.fg(LABEL_ROLE, clipped);
-		const fill = available - 4 - visibleWidth(clipped);
-		return `${options.borderColor("─ ")}${petal} ${painted}${options.borderColor(rule(fill))}${end}`;
+		const fill = available - head - visibleWidth(clipped);
+		return `${options.borderColor("─ ")}${dragon} ${painted}${options.borderColor(rule(fill))}${end}`;
 	}
 	const painted = options.state === PROMPT_STATE.WORKING && !top ? scanWorkingText(label, options.tick, options.fg) : options.fg(LABEL_ROLE, label);
 	const end = right ? ` ${options.fg(LABEL_ROLE, right)} ` : "";
@@ -260,7 +264,7 @@ function panelPromptRule(width: number, options: PromptFrameOptions, top: string
 	const endWidth = right ? visibleWidth(right) + 2 : 0;
 	const fill = width - titleWidth - endWidth - 1;
 	if (fill < 1) return options.borderColor(rule(width));
-	return `${options.borderColor("─ ")}${petal} ${painted} ${options.borderColor(rule(fill))}${end}${options.borderColor("─")}`;
+	return `${options.borderColor("─ ")}${dragon} ${painted} ${options.borderColor(rule(fill))}${end}${options.borderColor("─")}`;
 }
 
 /** One input row behind the `›` prompt (or its indent), clipped and padded to the layout width. */

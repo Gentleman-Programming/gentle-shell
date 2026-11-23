@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 
-// gentle-shell#1485: pi-claude-bridge forwards only the structured
+// drakonc-shell#1485: pi-claude-bridge forwards only the structured
 // systemPromptOptions parts of before_agent_start, so extensions must mutate
 // options.appendSystemPrompt instead of returning a replacement systemPrompt.
 
@@ -28,9 +28,9 @@ test("is idempotent: the same text is never appended twice to the same options o
 
 test("two different callers accumulate without erasing each other", () => {
 	const options = { appendSystemPrompt: "" };
-	appendSystemPromptOnce(options, "\n\nGentle AI harness");
+	appendSystemPromptOnce(options, "\n\nDrakonc AI harness");
 	appendSystemPromptOnce(options, "\n\nTodo list block");
-	assert.equal(options.appendSystemPrompt, "Gentle AI harness\n\nTodo list block");
+	assert.equal(options.appendSystemPrompt, "Drakonc AI harness\n\nTodo list block");
 });
 
 test("empty or blank text is a no-op", () => {

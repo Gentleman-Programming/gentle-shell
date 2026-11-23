@@ -1,31 +1,31 @@
-// Main channel: Gentle Shell and Gentle AI built from the latest `main` commits.
+// Main channel: Drakonc Shell and Drakonc AI built from the latest `main` commits.
 //
 // Neither repository publishes main builds, so both are produced locally from
 // an exact commit SHA resolved at install or upgrade time:
-//   - Gentle AI: `go install <module>@<sha>` in a sealed Go environment, so the
+//   - Drakonc AI: `go install <module>@<sha>` in a sealed Go environment, so the
 //     module source is verified by Go's checksum database (sum.golang.org), as
 //     the Windows release build already is. Go must resolve the commit to a
 //     module version (a tag or a pseudo-version) whose origin is that commit,
 //     and the binary must embed that version and report it, then it is
 //     activated through the existing dev-binary override, which never falls
 //     back to the pinned binary silently.
-//   - Gentle Shell: the exact commit's source tarball, versioned
+//   - Drakonc Shell: the exact commit's source tarball, versioned
 //     `<version>-main.<sha12>` and packed without `prepack` (which runs the full
-//     test suite). `prepack` is also what builds Gentle Tower's web app, so the
+//     test suite). `prepack` is also what builds Drakonc Tower's web app, so the
 //     pack step runs `pnpm run build:tower` itself and refuses a tarball that
 //     lacks `web/tower/dist/index.html`, then installs globally like any local
 //     tarball.
-// The recorded channel lets `gentle-shell upgrade` follow release or main.
+// The recorded channel lets `drakonc-shell upgrade` follow release or main.
 import { dirname, isAbsolute, join, posix, relative, win32 } from "node:path";
-import { gentleAiDevBinaryRegistrationPath, registerGentleAiDevBinary, unregisterGentleAiDevBinary } from "../runtime/gentle-ai-binary.mjs";
+import { drakoncAiDevBinaryRegistrationPath, registerDrakoncAiDevBinary, unregisterDrakoncAiDevBinary } from "../runtime/drakonc-ai-binary.mjs";
 import { acquireGo as acquirePinnedGo, installedGo } from "./installer-downloads.mjs";
 import { goAcquisition, pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
 
-export const SHELL_REPOSITORY = "Gentleman-Programming/gentle-shell";
-export const GENTLE_AI_REPOSITORY = "Gentleman-Programming/gentle-ai";
-export const GENTLE_AI_MODULE = "github.com/gentleman-programming/gentle-ai/v5";
-export const GENTLE_AI_MAIN_PACKAGE = `${GENTLE_AI_MODULE}/cmd/gentle-ai`;
-export const CHANNEL_SCHEMA = "gentle-shell.channel/v1";
+export const SHELL_REPOSITORY = "Drakoncman-Programming/drakonc-shell";
+export const DRAKONC_AI_REPOSITORY = "Drakoncman-Programming/drakonc-ai";
+export const DRAKONC_AI_MODULE = "github.com/drakoncman-programming/drakonc-ai/v5";
+export const DRAKONC_AI_MAIN_PACKAGE = `${DRAKONC_AI_MODULE}/cmd/drakonc-ai`;
+export const CHANNEL_SCHEMA = "drakonc-shell.channel/v1";
 export const CHANNELS = Object.freeze(["release", "main"]);
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -41,10 +41,11 @@ export class MainChannelError extends Error {
 	}
 }
 
-/** Same config home as the dev-binary override: a nonempty GENTLE_PI_CONFIG_HOME or ~/.pi/gentle-ai.
- * Install-level state, so never the standalone launcher's per-home marker (#2201). */
+/** Same config home as the dev-binary override (resolveDrakoncPiConfigHome): a
+ * nonempty DRAKONC_PI_CONFIG_HOME or ~/.drakonc-shell/drakonc-ai. Install-level
+ * state, so never the standalone launcher's per-home marker (#2201). */
 export function configHome({ env, home }) {
-	return env.GENTLE_PI_CONFIG_HOME || join(home, ".pi", "gentle-ai");
+	return env.DRAKONC_PI_CONFIG_HOME || join(home, ".drakonc-shell", "drakonc-ai");
 }
 export function channelStatePath(ctx) {
 	return join(configHome(ctx), "channel.json");
@@ -53,8 +54,8 @@ export function channelStatePath(ctx) {
 function validState(value) {
 	if (typeof value !== "object" || value === null || Array.isArray(value) || value.schema !== CHANNEL_SCHEMA) return null;
 	if (value.channel === "release" && Object.keys(value).length === 2) return { channel: "release" };
-	if (value.channel === "main" && Object.keys(value).length === 4 && SHA.test(value.shellCommit) && SHA.test(value.gentleAiCommit)) {
-		return { channel: "main", shellCommit: value.shellCommit, gentleAiCommit: value.gentleAiCommit };
+	if (value.channel === "main" && Object.keys(value).length === 4 && SHA.test(value.shellCommit) && SHA.test(value.drakoncAiCommit)) {
+		return { channel: "main", shellCommit: value.shellCommit, drakoncAiCommit: value.drakoncAiCommit };
 	}
 	return null;
 }
@@ -88,7 +89,7 @@ export async function resolveMainCommit(repository, { fetch }) {
 	let response;
 	try {
 		response = await fetch(`https://api.github.com/repos/${repository}/commits/main`, {
-			headers: { Accept: "application/vnd.github.sha", "User-Agent": "gentle-shell" },
+			headers: { Accept: "application/vnd.github.sha", "User-Agent": "drakonc-shell" },
 		});
 	} catch {
 		throw new MainChannelError("main-commit-unavailable", `the latest main commit of ${repository} could not be fetched`);
@@ -136,11 +137,11 @@ function sealedGoEnvironment(goPath, buildDirectory, platform) {
 	return { ...base, HOME: buildDirectory, TMPDIR: temporary, PATH: [dirname(goPath), "/usr/bin", "/bin"].join(":") };
 }
 
-/** Builds Gentle AI from `commit`, verifies the binary names it and registers it as the override. */
-export async function buildMainGentleAi({ commit, ctx, platform, goPath, run, fs }) {
-	if (!SHA.test(commit)) throw new MainChannelError("main-gentle-ai-unverified", "the Gentle AI commit is not an exact SHA");
-	const executable = platform === "win32" ? "gentle-ai.exe" : "gentle-ai";
-	const directory = join(configHome(ctx), "main", "gentle-ai", commit);
+/** Builds Drakonc AI from `commit`, verifies the binary names it and registers it as the override. */
+export async function buildMainDrakoncAi({ commit, ctx, platform, goPath, run, fs }) {
+	if (!SHA.test(commit)) throw new MainChannelError("main-drakonc-ai-unverified", "the Drakonc AI commit is not an exact SHA");
+	const executable = platform === "win32" ? "drakonc-ai.exe" : "drakonc-ai";
+	const directory = join(configHome(ctx), "main", "drakonc-ai", commit);
 	const buildDirectory = join(configHome(ctx), "main", ".build");
 	// Verified in the work folder before it replaces anything, so a failed rebuild of
 	// an already registered commit never touches the override; the final move stays
@@ -150,59 +151,59 @@ export async function buildMainGentleAi({ commit, ctx, platform, goPath, run, fs
 	const env = sealedGoEnvironment(goPath, buildDirectory, platform);
 	for (const path of [env.GOBIN, env.GOPATH, env.GOMODCACHE, env.GOCACHE, join(buildDirectory, "tmp")]) await fs.mkdir(path, { recursive: true });
 	try {
-		const install = await run(goPath, ["install", `${GENTLE_AI_MAIN_PACKAGE}@${commit}`], { env, cwd: buildDirectory, deadlineMs: deadlines.build, stderrTail: 4096 });
-		if (!succeeded(install)) throw new MainChannelError("main-gentle-ai-build-failed", `go install ${GENTLE_AI_MAIN_PACKAGE}@${commit} failed`, stderrCause(install));
+		const install = await run(goPath, ["install", `${DRAKONC_AI_MAIN_PACKAGE}@${commit}`], { env, cwd: buildDirectory, deadlineMs: deadlines.build, stderrTail: 4096 });
+		if (!succeeded(install)) throw new MainChannelError("main-drakonc-ai-build-failed", `go install ${DRAKONC_AI_MAIN_PACKAGE}@${commit} failed`, stderrCause(install));
 		await fs.mkdir(staging, { recursive: true });
 		const stagedPath = join(staging, executable);
 		await fs.copyFile(join(env.GOBIN, executable), stagedPath);
 		if (platform !== "win32") await fs.chmod(stagedPath, 0o755);
 		const reject = async (message, cause) => {
-			throw new MainChannelError("main-gentle-ai-unverified", message, cause);
+			throw new MainChannelError("main-drakonc-ai-unverified", message, cause);
 		};
 		const short = commit.slice(0, 12);
 		const goOptions = { env, cwd: buildDirectory, deadlineMs: deadlines.version, stderrTail: 4096 };
 		// Go resolves the commit through the proxy and checksum database: a tag commit is
 		// stamped with its tag, any other with a pseudo-version, so the version is not guessed.
 		// Resolving may reach the proxy, so it gets a network deadline, not the local one.
-		const listed = await run(goPath, ["list", "-m", "-json", `${GENTLE_AI_MODULE}@${commit}`], { ...goOptions, deadlineMs: deadlines.resolve });
-		if (!succeeded(listed)) return await reject(`Go could not resolve Gentle AI commit ${short}`, stderrCause(listed));
+		const listed = await run(goPath, ["list", "-m", "-json", `${DRAKONC_AI_MODULE}@${commit}`], { ...goOptions, deadlineMs: deadlines.resolve });
+		if (!succeeded(listed)) return await reject(`Go could not resolve Drakonc AI commit ${short}`, stderrCause(listed));
 		let resolved = null;
 		try {
 			resolved = JSON.parse(String(listed.stdout ?? ""));
 		} catch {
-			return await reject(`Go returned unreadable module information for Gentle AI commit ${short}`);
+			return await reject(`Go returned unreadable module information for Drakonc AI commit ${short}`);
 		}
 		const resolvedVersion = typeof resolved?.Version === "string" ? resolved.Version : "";
 		const originHash = resolved?.Origin?.Hash;
-		if (resolvedVersion === "") return await reject(`Go resolved Gentle AI commit ${short} to no module version`);
+		if (resolvedVersion === "") return await reject(`Go resolved Drakonc AI commit ${short} to no module version`);
 		if (originHash !== commit) {
-			return await reject(`Go resolved Gentle AI commit ${short} to ${originHash ? `commit ${originHash}` : "no commit"}, not the requested commit`);
+			return await reject(`Go resolved Drakonc AI commit ${short} to ${originHash ? `commit ${originHash}` : "no commit"}, not the requested commit`);
 		}
 		const embedded = await run(goPath, ["version", "-m", stagedPath], goOptions);
-		if (!succeeded(embedded)) return await reject("the built Gentle AI's embedded module version could not be read", stderrCause(embedded));
-		const modLine = String(embedded.stdout ?? "").split(/\r?\n/).map((line) => line.trim().split(/\s+/)).find((fields) => fields[0] === "mod" && fields[1] === GENTLE_AI_MODULE);
+		if (!succeeded(embedded)) return await reject("the built Drakonc AI's embedded module version could not be read", stderrCause(embedded));
+		const modLine = String(embedded.stdout ?? "").split(/\r?\n/).map((line) => line.trim().split(/\s+/)).find((fields) => fields[0] === "mod" && fields[1] === DRAKONC_AI_MODULE);
 		if (modLine?.[2] !== resolvedVersion) {
-			return await reject(`the built Gentle AI embeds module version ${modLine?.[2] ?? "none"}, expected ${resolvedVersion} for commit ${short}`);
+			return await reject(`the built Drakonc AI embeds module version ${modLine?.[2] ?? "none"}, expected ${resolvedVersion} for commit ${short}`);
 		}
 		const probe = await run(stagedPath, ["version"], { env: { PATH: env.PATH }, deadlineMs: deadlines.version });
-		const match = succeeded(probe) && /^gentle-ai (\S+)$/m.exec(String(probe.stdout ?? ""));
+		const match = succeeded(probe) && /^drakonc-ai (\S+)$/m.exec(String(probe.stdout ?? ""));
 		const expectedVersion = resolvedVersion.replace(/^v/, "");
 		if (!match || match[1] !== expectedVersion) {
-			return await reject(`the built Gentle AI reports version ${match ? match[1] : "none"}, expected ${expectedVersion} for commit ${short}`);
+			return await reject(`the built Drakonc AI reports version ${match ? match[1] : "none"}, expected ${expectedVersion} for commit ${short}`);
 		}
 		await fs.mkdir(directory, { recursive: true });
 		const binaryPath = join(directory, executable);
 		await fs.rename(stagedPath, binaryPath);
-		registerGentleAiDevBinary(binaryPath, ctx, platform);
+		registerDrakoncAiDevBinary(binaryPath, ctx, platform);
 		return { binaryPath, version: match[1] };
 	} finally {
 		await fs.rm(buildDirectory, { recursive: true, force: true });
 	}
 }
 
-/** Packs Gentle Shell from `commit` as `<version>-main.<sha12>` without running `prepack`. */
+/** Packs Drakonc Shell from `commit` as `<version>-main.<sha12>` without running `prepack`. */
 export async function packMainShell({ commit, ctx, fetch, run, pnpm, fs, platform = process.platform }) {
-	if (!SHA.test(commit)) throw new MainChannelError("main-shell-pack-failed", "the Gentle Shell commit is not an exact SHA");
+	if (!SHA.test(commit)) throw new MainChannelError("main-shell-pack-failed", "the Drakonc Shell commit is not an exact SHA");
 	const packages = join(configHome(ctx), "main", "packages");
 	const work = join(configHome(ctx), "main", ".source");
 	await fs.rm(work, { recursive: true, force: true });
@@ -211,30 +212,30 @@ export async function packMainShell({ commit, ctx, fetch, run, pnpm, fs, platfor
 	try {
 		let response;
 		try {
-			response = await fetch(`https://codeload.github.com/${SHELL_REPOSITORY}/tar.gz/${commit}`, { headers: { "User-Agent": "gentle-shell" } });
+			response = await fetch(`https://codeload.github.com/${SHELL_REPOSITORY}/tar.gz/${commit}`, { headers: { "User-Agent": "drakonc-shell" } });
 		} catch {
 			response = null;
 		}
 		const bytes = response?.ok ? Buffer.from(await response.arrayBuffer()) : null;
 		if (!bytes || bytes.length === 0 || bytes.length > MAX_SOURCE_BYTES) {
-			throw new MainChannelError("main-shell-download-failed", `the Gentle Shell source for ${commit.slice(0, 12)} could not be downloaded`);
+			throw new MainChannelError("main-shell-download-failed", `the Drakonc Shell source for ${commit.slice(0, 12)} could not be downloaded`);
 		}
 		const archive = join(work, "source.tgz");
 		await fs.writeFile(archive, bytes);
 		const source = join(work, "src");
 		const extract = await run(tarCommand(platform), ["-xzf", archive, "-C", source, "--strip-components=1"], { deadlineMs: deadlines.extract, stderrTail: 4096 });
 		if (!succeeded(extract)) {
-			throw new MainChannelError("main-shell-pack-failed", "the Gentle Shell source archive could not be extracted", stderrCause(extract));
+			throw new MainChannelError("main-shell-pack-failed", "the Drakonc Shell source archive could not be extracted", stderrCause(extract));
 		}
 		const manifestPath = join(source, "package.json");
 		const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
-		if (manifest?.name !== "gentle-pi" || typeof manifest.version !== "string") {
-			throw new MainChannelError("main-shell-pack-failed", "the downloaded source is not the gentle-pi package");
+		if (manifest?.name !== "drakonc-pi" || typeof manifest.version !== "string") {
+			throw new MainChannelError("main-shell-pack-failed", "the downloaded source is not the drakonc-pi package");
 		}
 		manifest.version = mainVersion(manifest.version, commit);
-		// prepack runs the full test suite and builds Gentle Tower; postinstall (the
+		// prepack runs the full test suite and builds Drakonc Tower; postinstall (the
 		// native binary) stays. Without prepack, pack would omit web/tower/dist and
-		// `gentle-shell tower` would fail on every main-channel install (Linux
+		// `drakonc-shell tower` would fail on every main-channel install (Linux
 		// included): the files list ships dist/, but only after build:tower.
 		if (manifest.scripts) {
 			delete manifest.scripts.prepack;
@@ -245,16 +246,16 @@ export async function packMainShell({ commit, ctx, fetch, run, pnpm, fs, platfor
 			cwd: source, deadlineMs: deadlines.build, stderrTail: 4096,
 		});
 		if (!succeeded(tower)) {
-			throw new MainChannelError("main-shell-tower-build-failed", "the Gentle Tower web app could not be built for the main package", stderrCause(tower));
+			throw new MainChannelError("main-shell-tower-build-failed", "the Drakonc Tower web app could not be built for the main package", stderrCause(tower));
 		}
 		const towerIndex = join(source, "web", "tower", "dist", "index.html");
 		if (!(await fs.stat(towerIndex).then((info) => info.isFile(), () => false))) {
-			throw new MainChannelError("main-shell-tower-build-failed", "the Gentle Tower web app build did not produce web/tower/dist/index.html");
+			throw new MainChannelError("main-shell-tower-build-failed", "the Drakonc Tower web app build did not produce web/tower/dist/index.html");
 		}
 		const pack = await run(pnpm.command, [...pnpm.prefix, "pack", "--pack-destination", packages], { cwd: source, deadlineMs: deadlines.pack });
-		const tgz = join(packages, `gentle-pi-${manifest.version}.tgz`);
+		const tgz = join(packages, `drakonc-pi-${manifest.version}.tgz`);
 		if (!succeeded(pack) || !(await fs.stat(tgz).then((info) => info.isFile(), () => false))) {
-			throw new MainChannelError("main-shell-pack-failed", "the Gentle Shell main package could not be packed");
+			throw new MainChannelError("main-shell-pack-failed", "the Drakonc Shell main package could not be packed");
 		}
 		return tgz;
 	} finally {
@@ -266,18 +267,18 @@ export async function packMainShell({ commit, ctx, fetch, run, pnpm, fs, platfor
 export function mainChannelAdapter({ fetch = globalThis.fetch, fs }) {
 	return {
 		resolveCommit: (repository) => resolveMainCommit(repository, { fetch }),
-		buildGentleAi: ({ commit, goPath, platform, ctx, run }) => buildMainGentleAi({ commit, ctx, platform, goPath, run, fs }),
+		buildDrakoncAi: ({ commit, goPath, platform, ctx, run }) => buildMainDrakoncAi({ commit, ctx, platform, goPath, run, fs }),
 		packShell: ({ commit, ctx, run, pnpm, platform }) => packMainShell({ commit, ctx, fetch, run, pnpm, fs, platform }),
 		writeChannel: (ctx, state) => writeChannel(ctx, state, fs),
 	};
 }
 
 // ---------------------------------------------------------------------------
-// `gentle-shell upgrade [--channel release|main]`
+// `drakonc-shell upgrade [--channel release|main]`
 // ---------------------------------------------------------------------------
 
 const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-const UPGRADE_USAGE = "usage: gentle-shell upgrade [--channel release|main]";
+const UPGRADE_USAGE = "usage: drakonc-shell upgrade [--channel release|main]";
 const INSTALL_DEADLINE = 20 * MINUTE;
 
 function parseUpgradeArgs(args) {
@@ -303,29 +304,29 @@ function inside(parent, child) {
 	return path !== "" && !path.startsWith("..") && !isAbsolute(path);
 }
 
-/** The latest stable gentle-pi release on the npm registry. */
+/** The latest stable drakonc-pi release on the npm registry. */
 export async function latestRelease(fetch) {
 	let version = null;
 	try {
-		const response = await fetch("https://registry.npmjs.org/gentle-pi/latest", { headers: { Accept: "application/json" } });
+		const response = await fetch("https://registry.npmjs.org/drakonc-pi/latest", { headers: { Accept: "application/json" } });
 		if (response?.ok) version = (await response.json())?.version;
 	} catch {
 		version = null;
 	}
 	if (typeof version !== "string" || !STABLE.test(version)) {
-		throw new MainChannelError("latest-release-unavailable", "the latest gentle-pi release could not be read from the npm registry");
+		throw new MainChannelError("latest-release-unavailable", "the latest drakonc-pi release could not be read from the npm registry");
 	}
 	return version;
 }
 
 /**
- * Which package manager owns an installed package (gentle-pi unless `name` says
+ * Which package manager owns an installed package (drakonc-pi unless `name` says
  * otherwise), from real (symlink-free) paths: pnpm when it lives under PNPM_HOME,
  * npm only when it is `<npm root -g>/<name>` itself, otherwise null — for example
  * an `npm link` of a source checkout, which must never be reinstalled over.
  * Paths follow `platform` (this host by default): case-insensitive on Windows.
  */
-export function installOwner({ packageRoot, pnpmHome, npmRoot, name = "gentle-pi", platform = process.platform }) {
+export function installOwner({ packageRoot, pnpmHome, npmRoot, name = "drakonc-pi", platform = process.platform }) {
 	const path = platform === "win32" ? win32 : posix;
 	const comparable = (value) => (platform === "win32" ? value.toLowerCase() : value);
 	if (typeof packageRoot !== "string") return null;
@@ -378,26 +379,26 @@ export async function ownerManager({ ctx, platform, packageRoot, adapters, comma
 	}
 	const manager = name === "npm" ? npm : await invocationOf("pnpm", adapters, platform);
 	if (!manager) {
-		throw new MainChannelError(`${purpose}-manager-missing`, `${name}, which owns this Gentle Shell installation, is not on PATH as a command this ${purpose} can run`);
+		throw new MainChannelError(`${purpose}-manager-missing`, `${name}, which owns this Drakonc Shell installation, is not on PATH as a command this ${purpose} can run`);
 	}
 	return { name, ...manager };
 }
 
 async function installGlobal(manager, spec, run) {
-	const argv = manager.name === "pnpm" ? ["add", "-g", spec, "--allow-build=gentle-pi"] : ["install", "-g", spec];
+	const argv = manager.name === "pnpm" ? ["add", "-g", spec, "--allow-build=drakonc-pi"] : ["install", "-g", spec];
 	if (!succeeded(await run(manager.command, [...manager.prefix, ...argv], { deadlineMs: INSTALL_DEADLINE }))) {
 		throw new MainChannelError("upgrade-install-failed", `${manager.name} could not install ${spec}`);
 	}
 }
 
-const REMOVE_GLOBAL = Object.freeze({ pnpm: Object.freeze(["remove", "-g", "gentle-pi"]), npm: Object.freeze(["uninstall", "-g", "gentle-pi"]) });
+const REMOVE_GLOBAL = Object.freeze({ pnpm: Object.freeze(["remove", "-g", "drakonc-pi"]), npm: Object.freeze(["uninstall", "-g", "drakonc-pi"]) });
 
-/** The command that removes the global gentle-pi with `name` (pnpm or npm), as a user types it. */
+/** The command that removes the global drakonc-pi with `name` (pnpm or npm), as a user types it. */
 export function removeGlobalCommand(name) {
 	return `${name} ${REMOVE_GLOBAL[name].join(" ")}`;
 }
 
-/** Removes the global gentle-pi with the manager ownerManager resolved (its
+/** Removes the global drakonc-pi with the manager ownerManager resolved (its
  * verified invocation); true when it succeeded. Nothing else is removed.
  */
 export async function removeGlobalShell(manager, run) {
@@ -407,9 +408,9 @@ export async function removeGlobalShell(manager, run) {
 /** Removes the dev-binary override only when it points at a main build this module made. */
 async function removeMainOverride(ctx, fs) {
 	try {
-		const registration = JSON.parse(await fs.readFile(gentleAiDevBinaryRegistrationPath(ctx), "utf8"));
-		if (typeof registration?.path === "string" && inside(join(configHome(ctx), "main", "gentle-ai"), registration.path)) {
-			unregisterGentleAiDevBinary(ctx);
+		const registration = JSON.parse(await fs.readFile(drakoncAiDevBinaryRegistrationPath(ctx), "utf8"));
+		if (typeof registration?.path === "string" && inside(join(configHome(ctx), "main", "drakonc-ai"), registration.path)) {
+			unregisterDrakoncAiDevBinary(ctx);
 		}
 	} catch {
 		// No registration, or one that is not ours: leave it alone.
@@ -435,8 +436,8 @@ async function mainGo({ userGo, pinnedGo, acquire, run }) {
 	} catch (error) {
 		// acquireGo wraps every failure; its cause names what went wrong (download, checksum, destination).
 		const reason = [error, error?.cause].filter((item) => item instanceof Error).map((item) => item.message).join(": ") || String(error);
-		throw new MainChannelError("main-requires-tools", `the main channel builds Gentle AI with Go ${requirements.go} or newer, and getting the pinned ` +
-			`Go ${goAcquisition.version} failed (${reason}); nothing was built, fix the cause, then run gentle-shell upgrade again`);
+		throw new MainChannelError("main-requires-tools", `the main channel builds Drakonc AI with Go ${requirements.go} or newer, and getting the pinned ` +
+			`Go ${goAcquisition.version} failed (${reason}); nothing was built, fix the cause, then run drakonc-shell upgrade again`);
 	}
 }
 
@@ -456,9 +457,9 @@ function withDetail(error, detail) {
 }
 
 /**
- * Updates Gentle Shell along its recorded channel (or the one `--channel` selects):
+ * Updates Drakonc Shell along its recorded channel (or the one `--channel` selects):
  * release goes to the latest npm release, main to the latest `main` commits of
- * Gentle Shell and Gentle AI, rebuilding only what moved. Returns the exit code;
+ * Drakonc Shell and Drakonc AI, rebuilding only what moved. Returns the exit code;
  * failures throw MainChannelError (`upgrade-usage` is a usage error).
  * adapters: { fetch, run, fs, which, invocation?, migrate? }; npm and pnpm run as
  * invocationOf resolves them (Windows hosts pass `invocation`). On release,
@@ -484,40 +485,40 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 			return migrated.code;
 		}
 		if (state.channel === "release" && !older(currentVersion, latest)) {
-			out(`gentle-shell ${currentVersion} is already the latest release.`);
+			out(`drakonc-shell ${currentVersion} is already the latest release.`);
 			return 0;
 		}
-		await installGlobal(await ownerManager({ ctx, platform, packageRoot, adapters }), `gentle-pi@${latest}`, run);
+		await installGlobal(await ownerManager({ ctx, platform, packageRoot, adapters }), `drakonc-pi@${latest}`, run);
 		await removeMainOverride(ctx, fs);
 		await writeChannel(ctx, { channel: "release" }, fs);
-		out(`Updated gentle-shell ${currentVersion} to ${latest} (release).`);
+		out(`Updated drakonc-shell ${currentVersion} to ${latest} (release).`);
 		return 0;
 	}
 	const [userGo, pnpm] = [await which("go"), await invocationOf("pnpm", adapters, platform)];
 	const pinnedGo = installedGo(join(configHome(ctx), "tools", "go"), platform, arch);
 	if (!pnpm) {
-		throw new MainChannelError("main-requires-tools", "the main channel packs Gentle Shell with pnpm; put it on PATH (Gentle AI is built with your Go, or with a pinned Go downloaded for the build)");
+		throw new MainChannelError("main-requires-tools", "the main channel packs Drakonc Shell with pnpm; put it on PATH (Drakonc AI is built with your Go, or with a pinned Go downloaded for the build)");
 	}
 	const acquire = adapters.acquireGo ?? (() => acquirePinnedGo({ root: join(configHome(ctx), "tools", "go"), platform, arch }));
-	const gentleAiCommit = await resolveMainCommit(GENTLE_AI_REPOSITORY, { fetch });
+	const drakoncAiCommit = await resolveMainCommit(DRAKONC_AI_REPOSITORY, { fetch });
 	const shellCommit = await resolveMainCommit(SHELL_REPOSITORY, { fetch });
 	const onMain = state.channel === "main";
-	const aiCurrent = onMain && state.gentleAiCommit === gentleAiCommit;
+	const aiCurrent = onMain && state.drakoncAiCommit === drakoncAiCommit;
 	const shellCurrent = onMain && state.shellCommit === shellCommit && currentVersion.endsWith(`-main.${shellCommit.slice(0, 12)}`);
-	const summary = `Gentle Shell ${shellCommit.slice(0, 12)}, Gentle AI ${gentleAiCommit.slice(0, 12)}`;
+	const summary = `Drakonc Shell ${shellCommit.slice(0, 12)}, Drakonc AI ${drakoncAiCommit.slice(0, 12)}`;
 	if (aiCurrent && shellCurrent) {
-		out(`gentle-shell is already at the latest main: ${summary}.`);
+		out(`drakonc-shell is already at the latest main: ${summary}.`);
 		return 0;
 	}
-	// Fail forward (#2356): a Gentle AI step that fails still installs a main Shell that
+	// Fail forward (#2356): a Drakonc AI step that fails still installs a main Shell that
 	// moved, so the retry runs the new Shell's code; the channel is recorded only when
-	// both steps succeed, so that retry rebuilds Gentle AI. Verification stays fail-closed.
+	// both steps succeed, so that retry rebuilds Drakonc AI. Verification stays fail-closed.
 	// A flag, not the caught value: a rejection may be any value, even a falsy one.
 	let aiFailed = false;
 	let aiError;
 	if (!aiCurrent) {
 		try {
-			await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs });
+			await buildMainDrakoncAi({ commit: drakoncAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs });
 		} catch (error) {
 			if (shellCurrent) throw error;
 			aiFailed = true;
@@ -530,14 +531,14 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 			const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm, fs, platform });
 			await installGlobal(manager, tgz, run);
 		} catch (error) {
-			throw aiFailed ? withDetail(error, `Gentle AI was not updated either (${describe(aiError)})`) : error;
+			throw aiFailed ? withDetail(error, `Drakonc AI was not updated either (${describe(aiError)})`) : error;
 		}
 	}
 	if (aiFailed) {
-		out(`Updated Gentle Shell to the latest main (${shellCommit.slice(0, 12)}); Gentle AI was not updated.`);
-		throw withDetail(aiError, `Gentle Shell was updated to main ${shellCommit.slice(0, 12)} but Gentle AI was not: run gentle-shell upgrade --channel main to finish`);
+		out(`Updated Drakonc Shell to the latest main (${shellCommit.slice(0, 12)}); Drakonc AI was not updated.`);
+		throw withDetail(aiError, `Drakonc Shell was updated to main ${shellCommit.slice(0, 12)} but Drakonc AI was not: run drakonc-shell upgrade --channel main to finish`);
 	}
-	await writeChannel(ctx, { channel: "main", shellCommit, gentleAiCommit }, fs);
+	await writeChannel(ctx, { channel: "main", shellCommit, drakoncAiCommit }, fs);
 	out(`Updated to the latest main: ${summary}.`);
 	return 0;
 }

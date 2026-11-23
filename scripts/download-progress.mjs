@@ -1,6 +1,6 @@
-// One-line terminal progress for the package-local Gentle AI download. Pure
+// One-line terminal progress for the package-local Drakonc AI download. Pure
 // formatting plus a throttled reporter over an injected writer; the caller
-// decides whether a terminal is attached (install-gentle-ai.mjs).
+// decides whether a terminal is attached (install-drakonc-ai.mjs).
 
 const KB = 1024;
 const MB = 1024 * 1024;

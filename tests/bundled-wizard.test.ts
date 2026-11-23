@@ -19,7 +19,7 @@ test("bundledGate says yes only for a new release installation whose release pub
 	assert.equal(gate(), true);
 	for (const platform of ["darwin", "linux", "win32"]) for (const arch of ["x64", "arm64"]) assert.equal(gate({ inventory: { platform, arch, shell: { available: false } } }), true);
 	assert.equal(gate({ channel: "main" }), false);
-	// An existing Gentle Shell (any owner) or one that could not be checked keeps the current path.
+	// An existing Drakonc Shell (any owner) or one that could not be checked keeps the current path.
 	assert.equal(gate({ inventory: { ...newComputer, shell: { available: true, version: "4.0.0", owner: "pnpm" } } }), false);
 	assert.equal(gate({ inventory: { ...newComputer, shell: { available: null } } }), false);
 	assert.equal(gate({ inventory: { platform: "win32", arch: "x64" } }), false);
@@ -48,29 +48,29 @@ function fakeDownload(files: Record<string, string | number | Error>) {
 test("fetchDistribution reads the asset pair of v<version> and tells published, missing, unavailable and rejected apart", async () => {
 	assert.equal(DISTRIBUTION_RELEASES, "https://github.com/Gentleman-Programming/gentle-shell/releases/download");
 	const asset = distributionAsset(manifest, lockfile);
-	const both = fakeDownload({ "gentle-shell-distribution.json": asset, "gentle-shell-distribution-lock.yaml": lockfile });
+	const both = fakeDownload({ "drakonc-shell-distribution.json": asset, "drakonc-shell-distribution-lock.yaml": lockfile });
 	assert.deepEqual(await fetchDistribution({ version: "4.1.0", download: both.download }), published);
-	assert.deepEqual(both.seen.map((descriptor) => descriptor.url), [`${DISTRIBUTION_RELEASES}/v4.1.0/gentle-shell-distribution.json`,
-		`${DISTRIBUTION_RELEASES}/v4.1.0/gentle-shell-distribution-lock.yaml`]);
+	assert.deepEqual(both.seen.map((descriptor) => descriptor.url), [`${DISTRIBUTION_RELEASES}/v4.1.0/drakonc-shell-distribution.json`,
+		`${DISTRIBUTION_RELEASES}/v4.1.0/drakonc-shell-distribution-lock.yaml`]);
 	assert.deepEqual(both.seen.map((descriptor) => descriptor.maxBytes), [64 * 1024, 8 * 1024 * 1024]);
 	assert.deepEqual(both.seen[0].redirectHosts, ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"]);
 	// A release without the assets (v4.0.0 today): the lockfile is not even requested.
-	const missing = fakeDownload({ "gentle-shell-distribution.json": 404 });
+	const missing = fakeDownload({ "drakonc-shell-distribution.json": 404 });
 	assert.deepEqual(await fetchDistribution({ version: "4.0.0", download: missing.download }), { status: "missing" });
 	assert.equal(missing.seen.length, 1);
-	assert.deepEqual(await fetchDistribution({ version: "4.1.0", download: fakeDownload({ "gentle-shell-distribution.json": asset,
-		"gentle-shell-distribution-lock.yaml": 404 }).download }), { status: "missing" });
-	assert.deepEqual(await fetchDistribution({ version: "4.1.0", download: fakeDownload({ "gentle-shell-distribution.json": new Error("offline") }).download }),
+	assert.deepEqual(await fetchDistribution({ version: "4.1.0", download: fakeDownload({ "drakonc-shell-distribution.json": asset,
+		"drakonc-shell-distribution-lock.yaml": 404 }).download }), { status: "missing" });
+	assert.deepEqual(await fetchDistribution({ version: "4.1.0", download: fakeDownload({ "drakonc-shell-distribution.json": new Error("offline") }).download }),
 		{ status: "unavailable" });
-	assert.deepEqual(await fetchDistribution({ version: "4.1.0", download: fakeDownload({ "gentle-shell-distribution.json": 500 }).download }), { status: "unavailable" });
+	assert.deepEqual(await fetchDistribution({ version: "4.1.0", download: fakeDownload({ "drakonc-shell-distribution.json": 500 }).download }), { status: "unavailable" });
 	// A lockfile whose sha256 is not the recorded one, or another schema, is never installed.
-	assert.deepEqual(await fetchDistribution({ version: "4.1.0", download: fakeDownload({ "gentle-shell-distribution.json": asset,
-		"gentle-shell-distribution-lock.yaml": `${lockfile}# changed\n` }).download }), { status: "rejected" });
-	assert.deepEqual(await fetchDistribution({ version: "4.1.0", download: fakeDownload({ "gentle-shell-distribution.json": "{}",
-		"gentle-shell-distribution-lock.yaml": lockfile }).download }), { status: "rejected" });
-	const local = fakeDownload({ "gentle-shell-distribution.json": 404 });
+	assert.deepEqual(await fetchDistribution({ version: "4.1.0", download: fakeDownload({ "drakonc-shell-distribution.json": asset,
+		"drakonc-shell-distribution-lock.yaml": `${lockfile}# changed\n` }).download }), { status: "rejected" });
+	assert.deepEqual(await fetchDistribution({ version: "4.1.0", download: fakeDownload({ "drakonc-shell-distribution.json": "{}",
+		"drakonc-shell-distribution-lock.yaml": lockfile }).download }), { status: "rejected" });
+	const local = fakeDownload({ "drakonc-shell-distribution.json": 404 });
 	await fetchDistribution({ version: "4.1.0", base: "http://127.0.0.1:9/assets", download: local.download });
-	assert.equal(local.seen[0].url, "http://127.0.0.1:9/assets/v4.1.0/gentle-shell-distribution.json");
+	assert.equal(local.seen[0].url, "http://127.0.0.1:9/assets/v4.1.0/drakonc-shell-distribution.json");
 });
 
 test("download reports the HTTP status and follows a redirect only to an allowed https host", async () => {
@@ -95,19 +95,19 @@ test("download reports the HTTP status and follows a redirect only to an allowed
 
 // Rule 2: the plan the user consents to.
 const posixLayout = prefixLayout({ platform: "linux", env: {}, home: "/home/u" });
-const profile = { kind: "profile", path: "/home/u/.bashrc", line: "export PATH=\"/home/u/.gentle-shell/bin:$PATH\" # gentle-shell bundled install", create: false };
+const profile = { kind: "profile", path: "/home/u/.bashrc", line: "export PATH=\"/home/u/.drakonc-shell/bin:$PATH\" # drakonc-shell bundled install", create: false };
 test("bundledPlan lists the bundled steps, the versions and the single PATH change", () => {
 	const plan = bundledPlan({ platform: "linux", distribution: published, layout: posixLayout, path: profile });
 	assert.deepEqual(plan.actions.map((action: { id: string }) => action.id),
 		["bundled-prefix", "bundled-runtime", "bundled-version", "bundled-activate", "bundled-path", "bundled-setup"]);
 	assert.deepEqual(plan.blockers, []);
 	assert.equal(plan.ready, false);
-	assert.deepEqual(plan.bundled, { shell: "4.1.0", pi: "1.0.2", id: "4.1.0-1.0.2", lockfile: sha256(lockfile), root: "/home/u/.gentle-shell",
-		bin: "/home/u/.gentle-shell/bin", node: "24.21.0", pnpm: "11.1.1", go: null, path: { kind: "profile", file: "/home/u/.bashrc", line: profile.line } });
+	assert.deepEqual(plan.bundled, { shell: "4.1.0", pi: "1.0.2", id: "4.1.0-1.0.2", lockfile: sha256(lockfile), root: "/home/u/.drakonc-shell",
+		bin: "/home/u/.drakonc-shell/bin", node: "24.21.0", pnpm: "11.1.1", go: null, path: { kind: "profile", file: "/home/u/.bashrc", line: profile.line } });
 	// Nothing to change, a link in ~/.local/bin, or a line the user adds: only the link is a step.
 	const ids = (path: Record<string, unknown>) => bundledPlan({ platform: "linux", distribution: published, layout: posixLayout, path }).actions.map((a: { id: string }) => a.id);
 	assert.equal(ids({ kind: "none" }).includes("bundled-path"), false);
-	assert.equal(ids({ kind: "symlink", path: "/home/u/.local/bin/gentle-shell", target: "/home/u/.gentle-shell/bin/gentle-shell" }).includes("bundled-path"), true);
+	assert.equal(ids({ kind: "symlink", path: "/home/u/.local/bin/drakonc-shell", target: "/home/u/.drakonc-shell/bin/drakonc-shell" }).includes("bundled-path"), true);
 	const manual = bundledPlan({ platform: "linux", distribution: published, layout: posixLayout, path: { ...profile, kind: "manual", reason: "symlink" } });
 	assert.equal(manual.actions.some((action: { id: string }) => action.id === "bundled-path"), false);
 	assert.deepEqual(manual.bundled.path, { kind: "manual", file: "/home/u/.bashrc", line: profile.line });
@@ -115,7 +115,7 @@ test("bundledPlan lists the bundled steps, the versions and the single PATH chan
 	const windows = bundledPlan({ platform: "win32", distribution: published, layout: windowsLayout,
 		path: { kind: "registry", key: "HKCU\\Environment", name: "Path", entry: windowsLayout.bin } });
 	assert.equal(windows.bundled.go, "1.25.14");
-	assert.deepEqual(windows.bundled.path, { kind: "registry", entry: "C:\\L\\gentle-shell\\bin" });
+	assert.deepEqual(windows.bundled.path, { kind: "registry", entry: "C:\\L\\drakonc-shell\\bin" });
 });
 
 // Rule 3: the fixed step order, logged like the standard runner's steps.
@@ -144,7 +144,7 @@ function harness({ platform = "linux", path = profile as Record<string, unknown>
 			claimPrefix: (options: { root?: string }) => { assert.equal(options.root, plan.bundled.root); return step("claim", layout); },
 			userNpmrc: () => "registry=https://r.example/\nsave-exact=true\n",
 			writeNpmrcAuth: (_: unknown, text: string) => step(`npmrc ${text.trim()}`, undefined),
-			ensureRuntime: async (options: { go: boolean }) => step(`runtime go=${options.go}`, { node: layout.node, pnpm: layout.pnpm, go: options.go ? "C:\\L\\gentle-shell\\runtime\\go\\1.25.14\\go\\bin\\go.exe" : null, acquired: [] }),
+			ensureRuntime: async (options: { go: boolean }) => step(`runtime go=${options.go}`, { node: layout.node, pnpm: layout.pnpm, go: options.go ? "C:\\L\\drakonc-shell\\runtime\\go\\1.25.14\\go\\bin\\go.exe" : null, acquired: [] }),
 			installVersion: async (options: { manifest: typeof manifest; lockfile: string; go: string | null }) =>
 				step(`install ${options.manifest.shell}-${options.manifest.pi} ${options.lockfile === lockfile} go=${options.go !== null}`, { id: "4.1.0-1.0.2", path: "", installed: true }),
 			activateVersion: (_: unknown, id: string) => step(`activate ${id}`, { id, previous: null }),
@@ -177,7 +177,7 @@ test("runBundledInstall claims, copies the npm settings, installs runtimes and t
 	assert.deepEqual(h.runs[0].args, ["setup"]);
 	assert.deepEqual(h.runs[0].options.env, setupEnvironment(h.layout, { platform: "linux", env: h.adapters.env, id: "4.1.0-1.0.2" }));
 	// No PATH change needed, or a link into a folder already on PATH: ready at once.
-	for (const path of [{ kind: "none" }, { kind: "symlink", path: "/home/u/.local/bin/gentle-shell", target: "/home/u/.gentle-shell/bin/gentle-shell" }]) {
+	for (const path of [{ kind: "none" }, { kind: "symlink", path: "/home/u/.local/bin/drakonc-shell", target: "/home/u/.drakonc-shell/bin/drakonc-shell" }]) {
 		const ready = await harness({ path }).run();
 		assert.equal(ready.outcome, "ready", path.kind);
 		assert.equal(ready.completed.includes("bundled-path"), path.kind === "symlink");
@@ -189,19 +189,19 @@ test("runBundledInstall claims, copies the npm settings, installs runtimes and t
 });
 
 test("runBundledInstall on Windows installs the pinned Go, writes the user Path through the registry and runs setup with our Node", async () => {
-	const h = harness({ platform: "win32", path: { kind: "registry", key: "HKCU\\Environment", name: "Path", entry: "C:\\L\\gentle-shell\\bin" } });
+	const h = harness({ platform: "win32", path: { kind: "registry", key: "HKCU\\Environment", name: "Path", entry: "C:\\L\\drakonc-shell\\bin" } });
 	const result = await h.run();
 	assert.equal(result.outcome, "terminal-action-required");
 	assert.deepEqual(h.calls.slice(2, 4), ["runtime go=true", "install 4.1.0-1.0.2 true go=true"]);
 	assert.ok(h.calls.includes("path registry true"));
 	// A .cmd launcher would need cmd.exe: setup runs the same Node and entry it runs.
 	assert.equal(h.runs[0].command, h.layout.node);
-	assert.deepEqual(h.runs[0].args, ["C:\\L\\gentle-shell\\versions\\4.1.0-1.0.2\\node_modules\\gentle-pi\\bin\\gentle-shell.mjs", "setup"]);
+	assert.deepEqual(h.runs[0].args, ["C:\\L\\drakonc-shell\\versions\\4.1.0-1.0.2\\node_modules\\drakonc-pi\\bin\\drakonc-shell.mjs", "setup"]);
 });
 
 // T6 (S7): the applied PATH entry is kept in the prefix, so self-uninstall reverts exactly it.
 test("runBundledInstall keeps the receipt of the PATH entry it applied, writes none when nothing was applied, and reverts the entry when the receipt cannot be kept", async () => {
-	const windows = harness({ platform: "win32", path: { kind: "registry", key: "HKCU\\Environment", name: "Path", entry: "C:\\L\\gentle-shell\\bin" } });
+	const windows = harness({ platform: "win32", path: { kind: "registry", key: "HKCU\\Environment", name: "Path", entry: "C:\\L\\drakonc-shell\\bin" } });
 	await windows.run();
 	assert.deepEqual(windows.calls.filter((call) => /^(path|receipt|unpath) /.test(call)), ["path registry true", "receipt registry true"]);
 	const present = harness({ applied: false });
@@ -263,28 +263,28 @@ test("windowsPathRegistry edits only the HKCU user Path through Windows PowerShe
 		seen.push({ command, args, env });
 		return answer;
 	});
-	assert.equal(registry.add("C:\\L\\gentle-shell\\bin"), "added");
+	assert.equal(registry.add("C:\\L\\drakonc-shell\\bin"), "added");
 	answer = "removed";
-	registry.remove("C:\\L\\gentle-shell\\bin");
+	registry.remove("C:\\L\\drakonc-shell\\bin");
 	assert.equal(seen[0].command, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
 	assert.deepEqual(seen[0].args.slice(0, 4), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
 	// The script is fixed: the entry and the mode travel as environment data only.
 	assert.equal(seen[0].args[4], seen[1].args[4]);
-	assert.equal(seen[0].args[4].includes("gentle-shell\\bin"), false);
+	assert.equal(seen[0].args[4].includes("drakonc-shell\\bin"), false);
 	assert.match(seen[0].args[4], /DoNotExpandEnvironmentNames/);
-	assert.deepEqual([seen[0].env.GENTLE_BUNDLED_PATH_ENTRY, seen[0].env.GENTLE_BUNDLED_PATH_MODE], ["C:\\L\\gentle-shell\\bin", "add"]);
-	assert.equal(seen[1].env.GENTLE_BUNDLED_PATH_MODE, "remove");
+	assert.deepEqual([seen[0].env.DRAKONC_BUNDLED_PATH_ENTRY, seen[0].env.DRAKONC_BUNDLED_PATH_MODE], ["C:\\L\\drakonc-shell\\bin", "add"]);
+	assert.equal(seen[1].env.DRAKONC_BUNDLED_PATH_MODE, "remove");
 	// What applyPathEntry reads: an entry the user Path already held was not applied.
 	answer = "present";
-	assert.equal(registry.add("C:\\L\\gentle-shell\\bin"), "present");
+	assert.equal(registry.add("C:\\L\\drakonc-shell\\bin"), "present");
 	answer = "something else";
-	assert.throws(() => registry.add("C:\\L\\gentle-shell\\bin"), /user Path/);
+	assert.throws(() => registry.add("C:\\L\\drakonc-shell\\bin"), /user Path/);
 	assert.throws(() => registry.add("relative\\bin"), /user Path/);
 });
 
-// T3 (S4): an existing Gentle Shell owned by a global pnpm or npm moves to the bundled prefix.
+// T3 (S4): an existing Drakonc Shell owned by a global pnpm or npm moves to the bundled prefix.
 const owned = (owner: unknown, version = "4.0.0") => ({ platform: "linux", arch: "x64", shell: { available: true, version, usable: true, global: true, owner } });
-test("migrationGate names the owner only for a pnpm or npm Gentle Shell on release whose release publishes the assets", () => {
+test("migrationGate names the owner only for a pnpm or npm Drakonc Shell on release whose release publishes the assets", () => {
 	const gate = (changes: Record<string, unknown> = {}) => migrationGate({ channel: "release", inventory: owned("pnpm"), distribution: published, version: "4.1.0", ...changes });
 	assert.equal(gate(), "pnpm");
 	assert.equal(gate({ inventory: owned("npm") }), "npm");
@@ -296,9 +296,9 @@ test("migrationGate names the owner only for a pnpm or npm Gentle Shell on relea
 	assert.equal(gate({ version: "4.2.0" }), null);
 	assert.equal(gate({ inventory: { ...owned("pnpm"), platform: "freebsd" } }), null);
 	assert.equal(gate({ inventory: newComputer }), null);
-	// A newer Gentle Shell than this release is never replaced by an older one.
+	// A newer Drakonc Shell than this release is never replaced by an older one.
 	assert.equal(gate({ inventory: owned("pnpm", "4.2.0") }), null);
-	// The new-installation gate is unchanged for an existing Gentle Shell.
+	// The new-installation gate is unchanged for an existing Drakonc Shell.
 	assert.equal(bundledGate({ channel: "release", inventory: owned("pnpm"), distribution: published, version: "4.1.0" }), false);
 });
 
@@ -306,26 +306,26 @@ test("bundledPlan for a migration adds the final remove-global-shell action, or 
 	const plan = bundledPlan({ platform: "linux", distribution: published, layout: posixLayout, path: profile, migrate: { manager: "pnpm", removal: "plan" } });
 	assert.deepEqual(plan.actions.map((action: { id: string }) => action.id),
 		["bundled-prefix", "bundled-runtime", "bundled-version", "bundled-activate", "bundled-path", "bundled-setup", "remove-global-shell"]);
-	assert.deepEqual(plan.bundled.migrate, { manager: "pnpm", command: "pnpm remove -g gentle-pi", removal: "plan" });
+	assert.deepEqual(plan.bundled.migrate, { manager: "pnpm", command: "pnpm remove -g drakonc-pi", removal: "plan" });
 	const ask = bundledPlan({ platform: "linux", distribution: published, layout: posixLayout, path: profile, migrate: { manager: "npm", removal: "ask" } });
 	assert.deepEqual(ask.actions.map((action: { id: string }) => action.id), ["bundled-prefix", "bundled-runtime", "bundled-version", "bundled-activate", "bundled-path"]);
-	assert.deepEqual(ask.bundled.migrate, { manager: "npm", command: "npm uninstall -g gentle-pi", removal: "ask" });
+	assert.deepEqual(ask.bundled.migrate, { manager: "npm", command: "npm uninstall -g drakonc-pi", removal: "ask" });
 });
 
-test("runBundledInstall for a migration checks the launcher's versions, then removes the old global gentle-pi last", async () => {
+test("runBundledInstall for a migration checks the launcher's versions, then removes the old global drakonc-pi last", async () => {
 	const h = harness({ migrate: { manager: "pnpm", removal: "plan" } });
 	const steps = ["claim-prefix", "copy-npm-settings", "install-runtime", "install-version", "activate-version", "write-launcher", "verify-launcher", "bundled-path",
 		"shell-setup", "remove-global-shell"];
 	assert.deepEqual(await h.run(), { outcome: "terminal-action-required", action: "open-new-terminal", completed: steps,
-		removeGlobal: { status: "removed", command: "pnpm remove -g gentle-pi" } });
+		removeGlobal: { status: "removed", command: "pnpm remove -g drakonc-pi" } });
 	assert.deepEqual(h.calls.slice(-5), ["check 4.1.0-1.0.2 4.1.0 1.0.2 launcher=true", "path profile true", "receipt profile true", "setup", "remove pnpm"]);
-	// A launcher that does not report both versions: no PATH change, and the old global gentle-pi is never removed.
+	// A launcher that does not report both versions: no PATH change, and the old global drakonc-pi is never removed.
 	// The detail names what the launcher reported and what was expected (A1).
-	const broken = harness({ migrate: { manager: "pnpm", removal: "plan" }, launcher: { ok: false, reported: "gentle-shell 4.0.0\npi 1.0.0", stderr: "Error: no Pi\n" } });
+	const broken = harness({ migrate: { manager: "pnpm", removal: "plan" }, launcher: { ok: false, reported: "drakonc-shell 4.0.0\npi 1.0.0", stderr: "Error: no Pi\n" } });
 	assert.deepEqual(await broken.run(), { outcome: "failed", failedStep: "verify-launcher", completed: steps.slice(0, 6),
-		detail: 'gentle-shell --version reported "gentle-shell 4.0.0 / pi 1.0.0" instead of "gentle-shell 4.1.0 / pi 1.0.2"' });
+		detail: 'drakonc-shell --version reported "drakonc-shell 4.0.0 / pi 1.0.0" instead of "drakonc-shell 4.1.0 / pi 1.0.2"' });
 	const silent = harness({ migrate: { manager: "pnpm", removal: "plan" }, launcher: { ok: false, reported: "", stderr: "Error: Cannot find module /home/u/x\n" } });
-	assert.equal((await silent.run()).detail, 'gentle-shell --version reported nothing instead of "gentle-shell 4.1.0 / pi 1.0.2": Error: Cannot find module ~/x');
+	assert.equal((await silent.run()).detail, 'drakonc-shell --version reported nothing instead of "drakonc-shell 4.1.0 / pi 1.0.2": Error: Cannot find module ~/x');
 	assert.equal(broken.calls.some((call) => call.startsWith("remove") || call.startsWith("path ")), false);
 	assert.ok(bundledFailedSteps.includes("verify-launcher"));
 	// B3: any failed migration step carries its error message as the detail; a new install's does not.
@@ -335,7 +335,7 @@ test("runBundledInstall for a migration checks the launcher's versions, then rem
 	// A failed removal keeps the bundled install and names the manual command.
 	const kept = await harness({ migrate: { manager: "npm", removal: "plan" }, removed: false }).run();
 	assert.equal(kept.outcome, "terminal-action-required");
-	assert.deepEqual(kept.removeGlobal, { status: "failed", command: "npm uninstall -g gentle-pi" });
+	assert.deepEqual(kept.removeGlobal, { status: "failed", command: "npm uninstall -g drakonc-pi" });
 	// A plan whose removal command was changed is not the consented one.
 	const forged = harness({ migrate: { manager: "pnpm", removal: "plan" } });
 	const plan = { ...forged.plan, bundled: { ...forged.plan.bundled, migrate: { ...forged.plan.bundled.migrate, command: "rm -rf ~" } } };
@@ -350,10 +350,10 @@ test("runBundledInstall for a migration checks the launcher's versions, then rem
 function lookup(files: Record<string, string>) {
 	return { exists: (path: string) => Object.hasOwn(files, path), realpath: (path: string) => files[path] ?? path };
 }
-test("shadowingCommand names the old gentle-shell a new terminal would still find before the bundled launcher", () => {
+test("shadowingCommand names the old drakonc-shell a new terminal would still find before the bundled launcher", () => {
 	const launcher = posixLayout.launcher;
-	const oldBin = "/home/u/Library/pnpm/gentle-shell";
-	const fs = lookup({ [oldBin]: oldBin, [launcher]: launcher, "/home/u/.local/bin/gentle-shell": launcher });
+	const oldBin = "/home/u/Library/pnpm/drakonc-shell";
+	const fs = lookup({ [oldBin]: oldBin, [launcher]: launcher, "/home/u/.local/bin/drakonc-shell": launcher });
 	const env = { PATH: "/home/u/Library/pnpm:/home/u/.local/bin:/usr/bin" };
 	const check = (pathKind: string, changes: Record<string, unknown> = {}) =>
 		shadowingCommand({ platform: "linux", env, layout: posixLayout, pathKind, fs, ...changes });
@@ -367,17 +367,17 @@ test("shadowingCommand names the old gentle-shell a new terminal would still fin
 	for (const profile of ["/home/u/.zshrc", "/home/u/.bash_profile", "/home/u/.bashrc", "/home/u/.profile"]) {
 		assert.equal(check("profile", { profile }), null, profile);
 	}
-	// B1: fish reads conf.d/gentle-shell.fish before config.fish, so anything config.fish prepends
+	// B1: fish reads conf.d/drakonc-shell.fish before config.fish, so anything config.fish prepends
 	// (pnpm setup's PNPM_HOME block) comes first: the bundled bin counts as last.
-	const fish = "/home/u/.config/fish/conf.d/gentle-shell.fish";
+	const fish = "/home/u/.config/fish/conf.d/drakonc-shell.fish";
 	assert.equal(check("profile", { profile: fish }), oldBin);
 	assert.equal(check("manual", { profile: fish }), oldBin);
 	assert.equal(check("profile", { profile: fish, fs: lookup({ [launcher]: launcher }) }), null);
 	assert.equal(check("none", { env: { PATH: `/home/u/Library/pnpm:${posixLayout.bin}` } }), oldBin);
-	assert.equal(check("none", { fs: lookup({ [launcher]: launcher, "/home/u/.local/bin/gentle-shell": launcher }) }), null);
+	assert.equal(check("none", { fs: lookup({ [launcher]: launcher, "/home/u/.local/bin/drakonc-shell": launcher }) }), null);
 	// Windows: the user Path entry comes after everything already on PATH.
 	const windows = prefixLayout({ platform: "win32", env: { LOCALAPPDATA: "C:\\L" }, home: "C:\\U" });
-	const oldCmd = "C:\\U\\AppData\\Local\\pnpm\\gentle-shell.cmd";
+	const oldCmd = "C:\\U\\AppData\\Local\\pnpm\\drakonc-shell.cmd";
 	const winFs = lookup({ [oldCmd]: oldCmd, [windows.launcher]: windows.launcher });
 	assert.equal(shadowingCommand({ platform: "win32", env: { Path: "C:\\U\\AppData\\Local\\pnpm;C:\\Windows" }, layout: windows, pathKind: "registry", fs: winFs }), oldCmd);
 	assert.equal(shadowingCommand({ platform: "win32", env: { Path: "C:\\Windows" }, layout: windows, pathKind: "registry", fs: winFs }), null);
@@ -390,18 +390,18 @@ function migration({ owner = "pnpm" as string | null, distribution = published a
 	let ownerCalls = 0;
 	const lines: string[] = [];
 	const asked: string[] = [];
-	const fishLine = "set -gx PATH '/home/u/.gentle-shell/bin' $PATH # gentle-shell bundled install";
-	const path = pathKind === "profile" ? (fish ? { kind: "profile", path: "/home/u/.config/fish/conf.d/gentle-shell.fish", line: fishLine, create: true } : profile)
+	const fishLine = "set -gx PATH '/home/u/.drakonc-shell/bin' $PATH # drakonc-shell bundled install";
+	const path = pathKind === "profile" ? (fish ? { kind: "profile", path: "/home/u/.config/fish/conf.d/drakonc-shell.fish", line: fishLine, create: true } : profile)
 		: { kind: pathKind };
 	const home = "/home/u";
-	const oldBin = "/home/u/Library/pnpm/gentle-shell";
+	const oldBin = "/home/u/Library/pnpm/drakonc-shell";
 	const files: Record<string, string> = { [posixLayout.launcher]: posixLayout.launcher, ...(shadow ? { [oldBin]: oldBin } : {}) };
 	const manager = { name: owner, command: `/usr/bin/${owner}`, prefix: [] };
 	const operations = {
 		prefixRoot: () => undefined,
 		claimPrefix: () => {
 			calls.push("claim");
-			if (failAt === "claim") throw new Error("Unsafe bundled prefix: /home/u/.gentle-shell");
+			if (failAt === "claim") throw new Error("Unsafe bundled prefix: /home/u/.drakonc-shell");
 			return posixLayout;
 		},
 		userNpmrc: () => "",
@@ -423,45 +423,45 @@ function migration({ owner = "pnpm" as string | null, distribution = published a
 	const migrate = () => migrateGlobalShell({ latest: "4.1.0", currentVersion, platform: "linux", arch: "x64",
 		env: { PATH: "/home/u/Library/pnpm:/usr/bin", HOME: home }, home, interactive,
 		ask: async (question: string) => { asked.push(question); return answer; }, out: (line: string) => lines.push(line),
-		adapters: { owner: async () => { ownerCalls += 1; if (!owner) throw new Error("neither pnpm nor npm owns /src/gentle-shell"); return manager; },
+		adapters: { owner: async () => { ownerCalls += 1; if (!owner) throw new Error("neither pnpm nor npm owns /src/drakonc-shell"); return manager; },
 			distribution: async (version: string) => { calls.push(`assets ${version}`); return distribution; }, run, operations, fs: lookup(files) } });
 	return { calls, lines, asked, migrate, owners: () => ownerCalls };
 }
 
-test("migrateGlobalShell explains, installs the bundled prefix, checks the launcher, then asks once and removes the old gentle-pi with its own manager", async () => {
+test("migrateGlobalShell explains, installs the bundled prefix, checks the launcher, then asks once and removes the old drakonc-pi with its own manager", async () => {
 	const m = migration();
 	assert.deepEqual(await m.migrate(), { code: 0, installed: true });
-	assert.deepEqual(m.calls, ["assets 4.1.0", "claim", "npmrc", "runtime", "install", "activate", "launcher", "check", "path", "/usr/bin/pnpm remove -g gentle-pi"]);
+	assert.deepEqual(m.calls, ["assets 4.1.0", "claim", "npmrc", "runtime", "install", "activate", "launcher", "check", "path", "/usr/bin/pnpm remove -g drakonc-pi"]);
 	const text = m.lines.join("\n");
-	assert.match(text, /\/home\/u\/\.gentle-shell/);
+	assert.match(text, /\/home\/u\/\.drakonc-shell/);
 	assert.match(text, /Pi 1\.0\.2/);
 	assert.match(text, /Node\.js, npm, pnpm and Pi are not used or changed/);
-	assert.match(text, /~\/\.gentle-shell\/agent/);
-	assert.deepEqual(m.asked, ["Remove the old global gentle-pi with pnpm (pnpm remove -g gentle-pi)? [y/N] "]);
-	assert.match(text, /Removed the old global gentle-pi/);
+	assert.match(text, /~\/\.drakonc-shell\/agent/);
+	assert.deepEqual(m.asked, ["Remove the old global drakonc-pi with pnpm (pnpm remove -g drakonc-pi)? [y/N] "]);
+	assert.match(text, /Removed the old global drakonc-pi/);
 	assert.match(text, /Open a new terminal/);
 });
 
-test("migrateGlobalShell keeps the old gentle-pi on No, on EOF and without a terminal, and says which gentle-shell a new terminal runs", async () => {
+test("migrateGlobalShell keeps the old drakonc-pi on No, on EOF and without a terminal, and says which drakonc-shell a new terminal runs", async () => {
 	for (const answer of ["", "n", "no"]) {
 		const m = migration({ answer, pathKind: "symlink", shadow: true });
 		assert.deepEqual(await m.migrate(), { code: 0, installed: true }, answer);
 		assert.equal(m.calls.some((call) => call.includes(" remove ")), false);
 		const text = m.lines.join("\n");
-		assert.match(text, /pnpm remove -g gentle-pi/);
+		assert.match(text, /pnpm remove -g drakonc-pi/);
 		// The old global bin comes before ~/.local/bin, so the old one still runs.
-		assert.match(text, /\/home\/u\/Library\/pnpm\/gentle-shell/);
+		assert.match(text, /\/home\/u\/Library\/pnpm\/drakonc-shell/);
 	}
 	const batch = migration({ interactive: false });
 	assert.deepEqual(await batch.migrate(), { code: 0, installed: true });
 	assert.deepEqual(batch.asked, []);
 	assert.equal(batch.calls.some((call) => call.includes(" remove ")), false);
-	assert.match(batch.lines.join("\n"), /To remove it, run: pnpm remove -g gentle-pi/);
+	assert.match(batch.lines.join("\n"), /To remove it, run: pnpm remove -g drakonc-pi/);
 });
 
 test("migrateGlobalShell never removes after a failed step: it names the step and its detail, then hands back to the global update", async () => {
-	// B3: null, so `gentle-shell upgrade` continues with the global package's own update this run.
-	const expected: Record<string, RegExp> = { plan: /could not be planned: Unsafe bundled bin path/, claim: /stopped at claim-prefix: Unsafe bundled prefix: ~\/\.gentle-shell/,
+	// B3: null, so `drakonc-shell upgrade` continues with the global package's own update this run.
+	const expected: Record<string, RegExp> = { plan: /could not be planned: Unsafe bundled bin path/, claim: /stopped at claim-prefix: Unsafe bundled prefix: ~\/\.drakonc-shell/,
 		install: /stopped at install-version/, check: /stopped at verify-launcher/ };
 	for (const failAt of ["plan", "claim", "install", "check"]) {
 		const m = migration({ failAt });
@@ -470,12 +470,12 @@ test("migrateGlobalShell never removes after a failed step: it names the step an
 		assert.equal(m.calls.some((call) => call.includes(" remove ")), false);
 		const text = m.lines.join("\n");
 		assert.match(text, expected[failAt], failAt);
-		assert.match(text, /global gentle-pi was left untouched/);
+		assert.match(text, /global drakonc-pi was left untouched/);
 	}
 	const npm = migration({ owner: "npm", removal: 1 });
 	assert.deepEqual(await npm.migrate(), { code: 1, installed: true });
-	assert.ok(npm.calls.includes("/usr/bin/npm uninstall -g gentle-pi"));
-	assert.match(npm.lines.join("\n"), /could not be removed.*npm uninstall -g gentle-pi/s);
+	assert.ok(npm.calls.includes("/usr/bin/npm uninstall -g drakonc-pi"));
+	assert.match(npm.lines.join("\n"), /could not be removed.*npm uninstall -g drakonc-pi/s);
 });
 
 test("migrateGlobalShell leaves an npm link, a release without the assets and main alone", async () => {
@@ -483,7 +483,7 @@ test("migrateGlobalShell leaves an npm link, a release without the assets and ma
 	assert.equal(await linked.migrate(), null);
 	assert.deepEqual(linked.calls, ["assets 4.1.0"]);
 	assert.match(linked.lines.join("\n"), /not a global pnpm or npm package/);
-	// B2: without published assets, or with a newer installed Gentle Shell, the owner (npm root -g) is never probed.
+	// B2: without published assets, or with a newer installed Drakonc Shell, the owner (npm root -g) is never probed.
 	for (const status of ["missing", "unavailable", "rejected"]) {
 		const m = migration({ distribution: { status } });
 		assert.equal(await m.migrate(), null, status);
@@ -497,9 +497,9 @@ test("migrateGlobalShell leaves an npm link, a release without the assets and ma
 	assert.equal(linked.owners(), 1);
 });
 
-test("migrateGlobalShell in fish reports the kept old gentle-shell, which config.fish puts before the conf.d line", async () => {
+test("migrateGlobalShell in fish reports the kept old drakonc-shell, which config.fish puts before the conf.d line", async () => {
 	const m = migration({ fish: true, shadow: true, answer: "n" });
 	assert.deepEqual(await m.migrate(), { code: 0, installed: true });
-	assert.match(m.lines.join("\n"), /New terminals still run \/home\/u\/Library\/pnpm\/gentle-shell/);
-	assert.match(m.lines.join("\n"), /pnpm remove -g gentle-pi/);
+	assert.match(m.lines.join("\n"), /New terminals still run \/home\/u\/Library\/pnpm\/drakonc-shell/);
+	assert.match(m.lines.join("\n"), /pnpm remove -g drakonc-pi/);
 });

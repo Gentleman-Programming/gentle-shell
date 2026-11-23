@@ -2,7 +2,7 @@
 
 Estado: **implementado en esta rama**. Retención, limpieza, ubicación y
 permisos resueltos (ver *Decisiones tomadas*); el código está en
-`lib/image-disk-cache.ts`, cableado en `extensions/gentle-shell.ts` y cubierto
+`lib/image-disk-cache.ts`, cableado en `extensions/drakonc-shell.ts` y cubierto
 por `tests/image-disk-cache.test.ts` (14 tests). Lo que sigue abierto, sin
 bloquear el merge, está en *Pendientes*.
 
@@ -13,20 +13,20 @@ cerrar y barrido de restos.
 ## Specs
 
 - S1: Tomado de `ISSUE-pasted-image-disk-path.md`: "Some agents/tools need a **filesystem path** (`file://` or absolute path) to process images" — modelos locales (Ollama, llama.cpp), OCR (tesseract, paddleocr), pipelines que esperan un path, tools que hacen multipart con file paths, y utilidades de CLI.
-- S2: Hoy los bytes viven "**entirely in memory**" como base64 y "No file is ever written to disk". El chip `[Image#N]` sigue siendo la unidad atómica del draft (gentle-shell#2464): borrar el chip no lo manda, los chips presentes se adjuntan al enviar.
+- S2: Hoy los bytes viven "**entirely in memory**" como base64 y "No file is ever written to disk". El chip `[Image#N]` sigue siendo la unidad atómica del draft (drakonc-shell#2464): borrar el chip no lo manda, los chips presentes se adjuntan al enviar.
 - S3: La ruta debe ser accesible para el agente sin romper el contrato de chips: `base64` sigue siendo la fuente de verdad del envío; el path es información adicional.
 - S4: Nada de esto puede cambiar el comportamiento actual cuando la feature está apagada.
 
 ## Pendientes (no bloquean el merge)
 
 1. **Exposición al agente (S3)**: hoy el path solo lo ve el usuario con
-   `/gentle:images`; todavía no hay tool ni API que se lo entregue al modelo. La
+   `/drakonc:images`; todavía no hay tool ni API que se lo entregue al modelo. La
    decisión de *no* inyectarlo en el prompt está tomada (ver *Decisiones tomadas*
    #3), pero cómo lo consume un agente queda por definir.
 2. **Cobertura del cableado**: ningún test ejercita el cableado de la extensión
    (alta del cache en `session_start`, borrado en `session_shutdown`, salida de
-   `/gentle:images`). Si eso se rompe, no hay test que lo detecte.
-3. **Aviso de privacidad en la UI**: activar `GENTLE_PI_IMAGES_DISK_CACHE=session`
+   `/drakonc:images`). Si eso se rompe, no hay test que lo detecte.
+3. **Aviso de privacidad en la UI**: activar `DRAKONC_PI_IMAGES_DISK_CACHE=session`
    deja imágenes pegadas en disco y hoy eso solo se explica en la ayuda del
    comando, no con una advertencia visible al activarlo.
 
@@ -40,7 +40,7 @@ repo) que:
 - cambiaba el constructor a **`constructor(sessionId: string)` — requerido**.
 
 **Por qué se revirtió**: los 9 call sites seguían llamando `new ImageAttachments()`
-sin argumentos, incluido el de producción (`extensions/gentle-shell.ts:2035`), así
+sin argumentos, incluido el de producción (`extensions/drakonc-shell.ts:2035`), así
 que `sessionId` llegaba `undefined` y `resolveCacheDir(undefined)` armaba una ruta
 basura. El resultado eran 8 tests de contrato en rojo (`image-attachments`), no por
 un cambio deliberado del contrato sino por el cableado faltante.
@@ -51,9 +51,9 @@ Evidencia de la reversión: `tests/image-attachments.test.ts` 9/9 y
 ## Decisiones tomadas (2026-11-05)
 
 1. **Retención**: la vida de la sesión. El directorio se borra en el cierre; un barrido al arrancar limpia restos de sesiones que crashearon (más de 7 días).
-2. **Activación**: apagada por defecto, opt-in por variable de entorno `GENTLE_PI_IMAGES_DISK_CACHE=session` (la extensión no lee un archivo de configuración para esto). Nadie persiste imágenes sin pedirlo.
-3. **Exposición**: solo por comando (`/gentle:images`). El path **nunca** se inyecta en el prompt ni viaja al proveedor.
-4. **Ubicación y permisos** (técnico): `${XDG_CACHE_HOME:-~/.cache}/gentle-shell/images/<session>/`, directorio `0700`, archivos `0600`. Un `XDG_CACHE_HOME` relativo se ignora y cae al fallback.
+2. **Activación**: apagada por defecto, opt-in por variable de entorno `DRAKONC_PI_IMAGES_DISK_CACHE=session` (la extensión no lee un archivo de configuración para esto). Nadie persiste imágenes sin pedirlo.
+3. **Exposición**: solo por comando (`/drakonc:images`). El path **nunca** se inyecta en el prompt ni viaja al proveedor.
+4. **Ubicación y permisos** (técnico): `${XDG_CACHE_HOME:-~/.cache}/drakonc-shell/images/<session>/`, directorio `0700`, archivos `0600`. Un `XDG_CACHE_HOME` relativo se ignora y cae al fallback.
 5. **Privacidad**: se acepta persistir la imagen solo con opt-in explícito y en
    un directorio privado por sesión; apagada por defecto, ninguna imagen toca el
    disco sin que el usuario lo pida.
@@ -69,10 +69,10 @@ Evidencia de la reversión: `tests/image-attachments.test.ts` 9/9 y
 
 ## Cableado (hecho)
 
-- `GENTLE_PI_IMAGES_DISK_CACHE=session` activa el cache; cualquier otro valor lo deja apagado (default).
+- `DRAKONC_PI_IMAGES_DISK_CACHE=session` activa el cache; cualquier otro valor lo deja apagado (default).
 - En `session_start` se barre lo viejo (>7 días) y se construye el cache con `ctx.sessionManager.getSessionId()`.
 - En `session_shutdown` se suelta el cache y se borra el directorio de la sesión.
-- `/gentle:images` lista `[Image#N] <path>` del draft actual; si el cache está apagado, lo explica en vez de fallar.
+- `/drakonc:images` lista `[Image#N] <path>` del draft actual; si el cache está apagado, lo explica en vez de fallar.
 - El path nunca se inyecta en el prompt: el envío sigue usando `base64`.
 
 ## Tasks

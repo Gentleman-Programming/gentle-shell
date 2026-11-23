@@ -1,6 +1,6 @@
 {
-	"title": "Gentle Shell rework: today vs proposal",
-	"brief": "The whole Gentle Shell screen at 180x50 with the same session data: the real capture today and the proposed IDE-in-a-terminal layout (title row, rail as one tinted panel with sections, editor as a titled panel, one status bar), each with numbered notes. Inventory in design/shell-rework/inventory.md.",
+	"title": "Drakonc Shell rework: today vs proposal",
+	"brief": "The whole Drakonc Shell screen at 180x50 with the same session data: the real capture today and the proposed IDE-in-a-terminal layout (title row, rail as one tinted panel with sections, editor as a titled panel, one status bar), each with numbered notes. Inventory in design/shell-rework/inventory.md.",
 	"artboards": [
 		{
 			"file": "02-proposal.html",

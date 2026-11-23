@@ -1,5 +1,5 @@
 /** Host orchestration of one ordinary native review. All authority stays in the existing facade. */
-export type ReviewCoordinatorTool = "gentle_review" | "gentle_review_capture" | "gentle_review_capture_group";
+export type ReviewCoordinatorTool = "drakonc_review" | "drakonc_review_capture" | "drakonc_review_capture_group";
 import { decodeAgentRiskEscalation, type AgentRiskEscalation } from "./review-risk-assessment.ts";
 type Body = Record<string, unknown>;
 const record = (value: unknown): Body => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Body : {};
@@ -91,7 +91,7 @@ function withoutRawNonBlockingFindings(result: Body): Body {
 }
 
 /**
- * Relay keys for STATUS `non_blocking_findings` (gentle-ai#6088), or none when
+ * Relay keys for STATUS `non_blocking_findings` (drakonc-ai#6088), or none when
  * the provider sent no such key or any part of it is malformed. An empty
  * provider list is the provider's answer ("none") and is relayed as such.
  * Never routed on.
@@ -223,7 +223,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   const start = now();
   const result = await deps.invoke(tool, { ...workspace, ...parameters });
   if (result.outcome === "reviewer-model-run-forecast") forecasts.push(structuredClone(result));
-  if (tool !== "gentle_review" && result.outcome !== "reviewer-model-run-forecast") {
+  if (tool !== "drakonc_review" && result.outcome !== "reviewer-model-run-forecast") {
    // Informational snapshots only: never route or total SDK cost from these.
    // The transition limit bounds retention to this invocation. A group's new
    // all-prepared records supersede its submitted-only legacy reviewers array.
@@ -240,30 +240,30 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   // A capture closure carrying advisory_findings is checked after the outcome
   // gate below, so a cancellation racing with it keeps the findings; any later
   // abort ends in cancelled through runReviewCoordinator's catch.
-  if (!acknowledged(result) && !(tool !== "gentle_review" && Object.hasOwn(record(result.closure), "advisory_findings"))) checkCancelled();
+  if (!acknowledged(result) && !(tool !== "drakonc_review" && Object.hasOwn(record(result.closure), "advisory_findings"))) checkCancelled();
   return result;
  };
  // The run's own inputs without a selection: after selection-required the
  // caller resumes the run with these plus the chosen untracked selection, so
  // START keeps the requested lenses and request context.
  const { untrackedScope: _scope, intendedUntracked: _paths, ...resumeInput } = structuredClone(input);
- const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result: withoutRawNonBlockingFindings(result), forecasts, reviewer_runs: reviewerRuns,
+ const finish = (outcome: string, result: Body) => ({ schema: "drakonc-pi.review-coordinator-experiment/v1", outcome, result: withoutRawNonBlockingFindings(result), forecasts, reviewer_runs: reviewerRuns,
   ...(closureFindings !== undefined ? { advisory_findings: closureFindings.value } : {}),
   ...(closureFindings !== undefined && closureClaims !== undefined ? { advisory_finding_claims: closureClaims.value, ...closureClaimMarks } : {}),
   ...structuredClone(correctionKeys),
   ...structuredClone(nonBlockingKeys),
   ...(outcome === "selection-required" ? { resume_input: resumeInput } : {}),
   ...(lineage === undefined ? {} : { lineage_id: lineage }), metrics: { elapsed_ms: now() - began, facade_calls: steps.length, steps } });
- const status = () => invoke("gentle_review", { operation: "status", lineageId: lineage, ...selectorInput });
+ const status = () => invoke("drakonc_review", { operation: "status", lineageId: lineage, ...selectorInput });
  const drive = async (): Promise<Body> => {
  let details: Body;
  if (lineage === undefined) {
   // The same escalate reaches assess and START (never inspect: the provider accepts it only on a fresh-START preflight) so the frozen tier and consent read high.
   const assessInput = input.escalate === undefined ? selectorInput : { input: JSON.stringify({ ...selector, escalate: input.escalate }) };
-  const assessment = await invoke("gentle_review", { operation: "assess", ...assessInput });
+  const assessment = await invoke("drakonc_review", { operation: "assess", ...assessInput });
   if (assessment.reviewDue === false && input.requestContextPath !== undefined) return finish("request-context-requires-fresh-review", assessment);
   if (assessment.reviewDue !== true) return finish(assessment.reviewDue === false ? "not-due" : "assessment-unavailable", assessment);
-  details = await invoke("gentle_review", { operation: "inspect", ...selectorInput,
+  details = await invoke("drakonc_review", { operation: "inspect", ...selectorInput,
    ...(input.untrackedScope === undefined ? {} : { untrackedScope: input.untrackedScope }),
    ...(input.intendedUntracked === undefined ? {} : { intendedUntracked: input.intendedUntracked }) });
  } else details = await status();
@@ -294,7 +294,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
    if (operation === "review.start") {
     if (started || lineage !== undefined) return finish("blocked", details);
     started = true;
-    details = await invoke("gentle_review", { operation: "start", input: JSON.stringify({ mode: "ordinary", ...selector,
+    details = await invoke("drakonc_review", { operation: "start", input: JSON.stringify({ mode: "ordinary", ...selector,
      ...(input.requestContextPath === undefined ? {} : { requestContextPath: input.requestContextPath }),
      ...(input.escalate === undefined ? {} : { escalate: input.escalate }),
      ...(input.lenses === undefined ? {} : { lenses: input.lenses, lensesReason: input.lensesReason }) }) });
@@ -304,7 +304,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
     lineage = issued;
    } else if (operation === "review.acknowledge-approved") {
     if (lineage === undefined || target === undefined) return finish("blocked", details);
-    const ack = await invoke("gentle_review", { operation: "acknowledge-approved", lineageId: lineage });
+    const ack = await invoke("drakonc_review", { operation: "acknowledge-approved", lineageId: lineage });
     // The facade verifies the native ACK. Preserve that terminal envelope;
     // never query STATUS/ASSESS or replay authority after its burn.
     return finish(acknowledged(ack) && ack.lineage_id === lineage && ack.target_identity === target ? "closed" : "blocked", ack);
@@ -345,7 +345,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   if (!bindings.every(nonempty)) return finish("blocked", details);
   if (new Set(bindings).size !== bindings.length || bindings.some(binding => captured.has(binding))) return finish("repeated-capture", details);
   bindings.forEach(binding => captured.add(binding));
-  const tool = bindings.length === 1 ? "gentle_review_capture" : "gentle_review_capture_group";
+  const tool = bindings.length === 1 ? "drakonc_review_capture" : "drakonc_review_capture_group";
   const parameters = bindings.length === 1 ? { lineageId: lineage, collectBinding: bindings[0] } : { lineageId: lineage, collectBindings: bindings };
   let capture = await invoke(tool, parameters);
   if (capture.outcome === "reviewer-model-run-forecast") {
@@ -355,15 +355,15 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
   // A group whose every reviewer result was admitted without a closing event
   // reports native-reviewer-group-status-reconciled after the facade's own
   // bound STATUS confirmed lineage and target and offered no further reviewer
-  // capture (gentle_review_capture_group). Like any accepted capture, the next
+  // capture (drakonc_review_capture_group). Like any accepted capture, the next
   // step comes only from the bound STATUS read below. Drift, an uncertain
   // submission or a failed reconciliation carries another outcome or a
   // failure/reconciliation field and stays blocked.
-  const reconciledGroup = tool === "gentle_review_capture_group" && capture.outcome === "native-reviewer-group-status-reconciled" && capture.status === "reconciled";
+  const reconciledGroup = tool === "drakonc_review_capture_group" && capture.outcome === "native-reviewer-group-status-reconciled" && capture.status === "reconciled";
   // An older provider's self-contained role vector (--execute=true): Go ran the
   // refuter or validator and admitted it, returning the role artifact instead
   // of a closure. Like an admitted reviewer result, bound STATUS routes next.
-  const capturedRole = tool === "gentle_review_capture" && capture.outcome === "native-provider-role-captured" && capture.status === "captured";
+  const capturedRole = tool === "drakonc_review_capture" && capture.outcome === "native-provider-role-captured" && capture.status === "captured";
   if (!(["native-last-event-closure", "native-reviewer-result-captured"].includes(String(capture.outcome)) || reconciledGroup || capturedRole)
    || capture.failure !== undefined || capture.reconciliation !== undefined
    || capture.native_failure !== undefined || capture.reconciliation_failure !== undefined) {

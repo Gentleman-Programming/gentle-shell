@@ -14,9 +14,9 @@ import {
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 
 function fixture(t: test.TestContext, count: number) {
-	const commonDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-owner-sweep-")));
+	const commonDir = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-owner-sweep-")));
 	t.after(() => rmSync(commonDir, { recursive: true, force: true }));
-	const parent = join(commonDir, "gentle-ai", "candidate-views");
+	const parent = join(commonDir, "drakonc-ai", "candidate-views");
 	mkdirSync(parent, { recursive: true });
 	const owners: CandidateViewOwner[] = [];
 	for (let i = 0; i < count; i++) {

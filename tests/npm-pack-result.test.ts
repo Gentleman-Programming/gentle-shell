@@ -3,7 +3,7 @@ import test from "node:test";
 import { normalizeNpmPackResult, parseNpmPackResult } from "../scripts/npm-pack-result.mjs";
 
 const entry = {
-	name: "gentle-pi", filename: "gentle-pi-4.0.0.tgz",
+	name: "drakonc-pi", filename: "drakonc-pi-4.0.0.tgz",
 	files: [{ path: "assets/sounds/success.wav", size: 13272 }],
 	integrity: "sha512-fixture",
 };
@@ -13,12 +13,12 @@ test("npm 11 array preserves tarball filename and file records", () => {
 });
 
 test("npm 12 named map preserves tarball filename and file records", () => {
-	assert.deepEqual(parseNpmPackResult(JSON.stringify({ "gentle-pi": entry })), [entry]);
+	assert.deepEqual(parseNpmPackResult(JSON.stringify({ "drakonc-pi": entry })), [entry]);
 });
 
 test("rejects empty and multiple results when exactly one tarball is expected", () => {
 	const other = { ...entry, name: "other", filename: "other.tgz" };
-	for (const value of [[], {}, [entry, other], { "gentle-pi": entry, other }]) {
+	for (const value of [[], {}, [entry, other], { "drakonc-pi": entry, other }]) {
 		assert.throws(() => normalizeNpmPackResult(value), /exactly one package/);
 	}
 });
@@ -26,8 +26,8 @@ test("rejects empty and multiple results when exactly one tarball is expected", 
 test("rejects arbitrary objects, malformed records and npm error envelopes", () => {
 	for (const value of [
 		null, false, 7, "output", { error: { code: "EFAIL", summary: "pack failed" } },
-		{ "gentle-pi": null }, { "gentle-pi": [] }, { wrong: entry },
-		{ "gentle-pi": entry, invalid: null }, [null], [[]], [{}],
+		{ "drakonc-pi": null }, { "drakonc-pi": [] }, { wrong: entry },
+		{ "drakonc-pi": entry, invalid: null }, [null], [[]], [{}],
 		[{ ...entry, name: "" }], [{ ...entry, filename: " " }],
 		[{ ...entry, files: null }], [{ ...entry, files: [] }],
 		[{ ...entry, files: [null] }], [{ ...entry, files: [{ path: "" }] }],

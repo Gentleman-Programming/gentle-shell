@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { parseAgentDefinition } from "../lib/agents-config.ts";
 
 const read = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
@@ -25,22 +25,22 @@ let cwd: string;
 let prior: string | undefined;
 before(() => {
   cwd = mkdtempSync(join(tmpdir(), "recovery-delivery-"));
-  prior = process.env.GENTLE_PI_CONFIG_HOME;
-  process.env.GENTLE_PI_CONFIG_HOME = join(cwd, "config");
+  prior = process.env.DRAKONC_PI_CONFIG_HOME;
+  process.env.DRAKONC_PI_CONFIG_HOME = join(cwd, "config");
   mkdirSync(join(cwd, "project"));
 });
 after(() => {
-  if (prior === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-  else process.env.GENTLE_PI_CONFIG_HOME = prior;
+  if (prior === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+  else process.env.DRAKONC_PI_CONFIG_HOME = prior;
   rmSync(cwd, { recursive: true, force: true });
 });
 
 // S2-S5: positive setup/implementation routes and negative authority boundaries
 // must coexist in the delivered parent prompt, in every persona and RDD mode.
-for (const persona of ["gentleman", "neutral"] as const) {
+for (const persona of ["drakoncman", "neutral"] as const) {
   for (const mode of ["on", "off", "unknown"]) {
     test(`S2-S5 delivered recovery is bounded: ${persona}/${mode}`, () => {
-      const p = __testing.buildGentlePrompt(persona, join(cwd, "project"), ["read"], `Receipt-driven development: ${mode}`);
+      const p = __testing.buildDrakoncPrompt(persona, join(cwd, "project"), ["read"], `Receipt-driven development: ${mode}`);
       assert.equal(p.split("## Authorized work continuity").length, 2);
       // cost-speed-painpoints S15 P4: the setup rules live in the verification module, loaded when Verification fires;
       // the unavailable-verifier rule stays always-on in the mirrored Close step.
@@ -71,7 +71,7 @@ for (const persona of ["gentleman", "neutral"] as const) {
 
 test("S3-S5 parsed worker and verifier contracts retain confinement and proof limits", () => {
   const agent = (name: string) => {
-    const p = `assets/agents/gentle-ai-${name}.md`;
+    const p = `assets/agents/drakonc-ai-${name}.md`;
     const parsed = parseAgentDefinition(read(p), p, "global");
     assert.ok(!("error" in parsed));
     return parsed;

@@ -9,8 +9,8 @@ import { normalizeProfilesFile, PROFILES_KIND, PROFILES_VERSION, createProfile, 
 import { createSessionProfileBind, readSessionProfileEntry, replaySessionProfileBranch, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { normalizeRoutingEntry } from "../lib/model-routing-authority.ts";
 import { parseAgentsConfig, resolveAgentProfile, withPinnedModelProfiles } from "../lib/agents-config.ts";
-import { __testing } from "../extensions/gentle-ai.ts";
-import fast from "../extensions/gentle-fast.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
+import fast from "../extensions/drakonc-fast.ts";
 import { CHILD_TIER_ENV, PROFILE_TIER_EVENT } from "../lib/openai-fast-tier.ts";
 import { runInProcessReviewer } from "../lib/inprocess-reviewer.ts";
 import { bindSessionProfile, clearSessionProfileBinding } from "../lib/session-profile-binding.ts";
@@ -71,13 +71,13 @@ test("profile UI saves Fast for both providers and independent roles", () => {
 
 for (const [provider, api] of [["openai", "openai-responses"], ["openai-codex", "openai-codex-responses"]]) {
  for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
-  test(`/gentle:profiles can select and save Fast for ${provider}/${id}`, async (t) => {
+  test(`/drakonc:profiles can select and save Fast for ${provider}/${id}`, async (t) => {
    const root = mkdtempSync(join(tmpdir(), "profile-fast-editor-"));
-   const previous = process.env.GENTLE_PI_CONFIG_HOME;
-   process.env.GENTLE_PI_CONFIG_HOME = root;
+   const previous = process.env.DRAKONC_PI_CONFIG_HOME;
+   process.env.DRAKONC_PI_CONFIG_HOME = root;
    t.after(() => {
-    if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-    else process.env.GENTLE_PI_CONFIG_HOME = previous;
+    if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+    else process.env.DRAKONC_PI_CONFIG_HOME = previous;
     rmSync(root, { recursive: true, force: true });
    });
    const path = join(root, "profiles.json");
@@ -222,8 +222,8 @@ test("session tree restores its frozen profile binding", async () => {
  const model = { provider: "openai", api: "openai-responses", id: "gpt-5.6-luna" };
  const ctx: any = { model, hasUI: false, sessionManager: { getSessionId: () => "tier-restore-test" }, ui: { notify() {} } };
  fast({ on: (name: string, fn: Function) => handlers.set(name, fn), events: { on: (name: string, fn: Function) => bus.set(name, fn) } } as any);
- const previousChild = process.env.GENTLE_PI_AGENTS_CHILD;
- process.env.GENTLE_PI_AGENTS_CHILD = "0";
+ const previousChild = process.env.DRAKONC_PI_AGENTS_CHILD;
+ process.env.DRAKONC_PI_AGENTS_CHILD = "0";
  bindSessionProfile("tier-restore-test", "work", { orchestrator: { model: "openai/gpt-5.6-luna", tier: "fast" } });
  try {
   handlers.get("session_start")!({}, ctx);
@@ -235,19 +235,19 @@ test("session tree restores its frozen profile binding", async () => {
   assert.equal(request().service_tier, "priority");
  } finally {
   clearSessionProfileBinding("tier-restore-test");
-  if (previousChild === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
-  else process.env.GENTLE_PI_AGENTS_CHILD = previousChild;
+  if (previousChild === undefined) delete process.env.DRAKONC_PI_AGENTS_CHILD;
+  else process.env.DRAKONC_PI_AGENTS_CHILD = previousChild;
  }
 });
 
 test("child runtime uses only its launch route and rejects model mismatches", () => {
- const oldChild = process.env.GENTLE_PI_AGENTS_CHILD;
+ const oldChild = process.env.DRAKONC_PI_AGENTS_CHILD;
  const oldTier = process.env[CHILD_TIER_ENV];
  const handlers = new Map<string, Function>();
  const ctx: any = { model: { provider: "openai-codex", api: "openai-codex-responses", id: "gpt-5.6-luna" }, hasUI: false, sessionManager: { getSessionId: () => "child" }, ui: { notify() {} } };
  fast({ on: (name: string, fn: Function) => handlers.set(name, fn) } as any);
  try {
-  process.env.GENTLE_PI_AGENTS_CHILD = "1";
+  process.env.DRAKONC_PI_AGENTS_CHILD = "1";
   process.env[CHILD_TIER_ENV] = JSON.stringify({ model: "openai-codex/gpt-5.6-luna", tier: "fast" });
   handlers.get("session_start")!({}, ctx);
   assert.equal(handlers.get("before_provider_request")!({ payload: {} }, ctx).service_tier, "priority");
@@ -255,7 +255,7 @@ test("child runtime uses only its launch route and rejects model mismatches", ()
   handlers.get("session_start")!({}, ctx);
   assert.equal(handlers.get("before_provider_request")!({ payload: {} }, ctx), undefined);
  } finally {
-  if (oldChild === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD; else process.env.GENTLE_PI_AGENTS_CHILD = oldChild;
+  if (oldChild === undefined) delete process.env.DRAKONC_PI_AGENTS_CHILD; else process.env.DRAKONC_PI_AGENTS_CHILD = oldChild;
   if (oldTier === undefined) delete process.env[CHILD_TIER_ENV]; else process.env[CHILD_TIER_ENV] = oldTier;
  }
 });
@@ -269,17 +269,17 @@ test("fresh default tier is frozen per session and used only for its model", () 
  assert.equal(readFrozenInheritedProfile("tier-default-test")?.defaultOrchestrator?.tier, "fast");
  freezeSessionProfileAtStartup({ ...options, sessionId: "tier-default-new" });
  assert.equal(readFrozenInheritedProfile("tier-default-new")?.defaultOrchestrator?.tier, "standard");
- freezeSessionProfileAtStartup({ ...options, sessionId: "tier-default-follow", env: { GENTLE_PI_PROFILE_FOLLOW: "1" } });
+ freezeSessionProfileAtStartup({ ...options, sessionId: "tier-default-follow", env: { DRAKONC_PI_PROFILE_FOLLOW: "1" } });
  current = { model: "openai/gpt-5.6-luna", tier: "fast" };
- freezeSessionProfileAtStartup({ ...options, sessionId: "tier-default-follow", env: { GENTLE_PI_PROFILE_FOLLOW: "1" } });
+ freezeSessionProfileAtStartup({ ...options, sessionId: "tier-default-follow", env: { DRAKONC_PI_PROFILE_FOLLOW: "1" } });
  assert.equal(readFrozenDefaultOrchestrator("tier-default-follow")?.tier, "standard");
  current = { model: "openai/gpt-5.6-luna", tier: "standard" };
  const handlers = new Map<string, Function>();
  const ctx: any = { model: { provider: "openai", api: "openai-responses", id: "gpt-5.6-luna" }, cwd: "/nonexistent", hasUI: false, sessionManager: { getSessionId: () => "tier-default-test" }, ui: { notify() {} } };
  fast({ on: (name: string, fn: Function) => handlers.set(name, fn) } as any);
- const old = process.env.GENTLE_PI_AGENTS_CHILD;
+ const old = process.env.DRAKONC_PI_AGENTS_CHILD;
  try {
-  process.env.GENTLE_PI_AGENTS_CHILD = "0";
+  process.env.DRAKONC_PI_AGENTS_CHILD = "0";
   handlers.get("session_start")!({}, ctx);
   assert.equal(handlers.get("before_provider_request")!({ payload: {} }, ctx)?.service_tier, "priority");
   bindSessionProfile("tier-default-test", "explicit", { orchestrator: { model: "openai/gpt-5.6-luna", tier: "standard" } });
@@ -295,7 +295,7 @@ test("fresh default tier is frozen per session and used only for its model", () 
   ctx.model = { ...ctx.model, id: "gpt-5.6-sol" };
   handlers.get("session_start")!({}, ctx);
   assert.equal(handlers.get("before_provider_request")!({ payload: {} }, ctx), undefined);
- } finally { if (old === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD; else process.env.GENTLE_PI_AGENTS_CHILD = old; }
+ } finally { if (old === undefined) delete process.env.DRAKONC_PI_AGENTS_CHILD; else process.env.DRAKONC_PI_AGENTS_CHILD = old; }
 });
 
 for (const provider of ["openai", "openai-codex"]) for (const order of ["fast-first", "profiles-first"]) {

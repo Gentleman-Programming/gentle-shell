@@ -19,7 +19,7 @@ function makeRoot(): string {
 
 const CWD = "/pi-history-test/project-a";
 
-/** An empty Gentle config home: the Customize preference is unset. */
+/** An empty Drakonc config home: the Customize preference is unset. */
 function makeConfigHome(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-config-"));
 }
@@ -62,7 +62,7 @@ function handlersWith(
     agentDir: path.join(root, "agent"),
     sessionsRoot: path.join(root, "sessions"),
     // Never read a developer's real Customize preference.
-    gentlePiConfigHome: configHome,
+    drakoncPiConfigHome: configHome,
   });
   return new Map(
     registered.map(([event, handler]) => [
@@ -176,8 +176,8 @@ test("the extension entry registers exactly the slice-6 wiring surface", () => {
   // Capture off (explicit env, empty config home) keeps the warm-up from
   // touching the real store root while the defaults are exercised.
   promptHistoryExtension(pi as never, {
-    env: { GENTLE_PI_HISTORY_CAPTURE: "off" },
-    gentlePiConfigHome: makeConfigHome(),
+    env: { DRAKONC_PI_HISTORY_CAPTURE: "off" },
+    drakoncPiConfigHome: makeConfigHome(),
   });
   assert.deepEqual(
     registered.map(([event]) => event),
@@ -198,15 +198,15 @@ test("captureEnabled is a strict opt-in", () => {
   const configHome = makeConfigHome();
   const enabled = (env: NodeJS.ProcessEnv) => captureEnabled(env, configHome);
   assert.equal(enabled({}), false);
-  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: "0" }), false);
-  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: "false" }), false);
-  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: "off" }), false);
-  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: "yes" }), false);
-  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: " 1 " }), true);
-  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: "TRUE" }), true);
-  assert.equal(enabled({ GENTLE_PI_HISTORY_CAPTURE: "On" }), true);
+  assert.equal(enabled({ DRAKONC_PI_HISTORY_CAPTURE: "0" }), false);
+  assert.equal(enabled({ DRAKONC_PI_HISTORY_CAPTURE: "false" }), false);
+  assert.equal(enabled({ DRAKONC_PI_HISTORY_CAPTURE: "off" }), false);
+  assert.equal(enabled({ DRAKONC_PI_HISTORY_CAPTURE: "yes" }), false);
+  assert.equal(enabled({ DRAKONC_PI_HISTORY_CAPTURE: " 1 " }), true);
+  assert.equal(enabled({ DRAKONC_PI_HISTORY_CAPTURE: "TRUE" }), true);
+  assert.equal(enabled({ DRAKONC_PI_HISTORY_CAPTURE: "On" }), true);
   // The unshipped rename from the contributor branch is not a switch.
-  assert.equal(enabled({ [`GENTLE_PI_HISTORY_${"ENABLE"}`]: "1" }), false);
+  assert.equal(enabled({ [`DRAKONC_PI_HISTORY_${"ENABLE"}`]: "1" }), false);
 });
 
 test("the capture handler is a no-op unless the user opts in", () => {
@@ -220,7 +220,7 @@ test("the capture handler is a no-op unless the user opts in", () => {
 
 test("an opted-in session captures delivered prompts", () => {
   const root = makeRoot();
-  const handler = captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root);
+  const handler = captureHandlerWith({ DRAKONC_PI_HISTORY_CAPTURE: "1" }, root);
   handler({ prompt: "hello store" });
   assert.deepEqual(fileTexts(sessionFilePath(root, CWD, "inst-entry")), [
     "hello store",
@@ -240,25 +240,25 @@ test("opted-in capture imports into its own root and defers seed on untrusted to
   fs.writeFileSync(path.join(agentDir, "editor-history.jsonl"),
     JSON.stringify({ v: 1, text: "legacy prompt" }) + "\n");
   fs.writeFileSync(path.join(root, "hidden.json"), "{invalid");
-  const handler = captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root);
+  const handler = captureHandlerWith({ DRAKONC_PI_HISTORY_CAPTURE: "1" }, root);
   handler({ prompt: "current prompt" });
   assert.deepEqual(fileTexts(path.join(root, "history-global.jsonl")), ["legacy prompt"]);
   assert.equal(fs.existsSync(seedFilePath(root, CWD)), false);
   assert.deepEqual(fileTexts(sessionFilePath(root, CWD, "inst-entry")), ["current prompt"]);
   fs.writeFileSync(path.join(root, "hidden.json"), JSON.stringify(["transcript prompt"]));
   // A new instance retries bootstrap after tombstones become trusted.
-  captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root)({ prompt: "next prompt" });
+  captureHandlerWith({ DRAKONC_PI_HISTORY_CAPTURE: "1" }, root)({ prompt: "next prompt" });
   assert.equal(fs.existsSync(seedFilePath(root, CWD)), false);
 });
 
 test("disabling capture stops new lines and leaves existing files alone", () => {
   const root = makeRoot();
-  const env: NodeJS.ProcessEnv = { GENTLE_PI_HISTORY_CAPTURE: "true" };
+  const env: NodeJS.ProcessEnv = { DRAKONC_PI_HISTORY_CAPTURE: "true" };
   const handler = captureHandlerWith(env, root);
   handler({ prompt: "kept" });
   const file = sessionFilePath(root, CWD, "inst-entry");
   assert.equal(fs.existsSync(file), true);
-  delete env.GENTLE_PI_HISTORY_CAPTURE;
+  delete env.DRAKONC_PI_HISTORY_CAPTURE;
   handler({ prompt: "never written" });
   assert.deepEqual(fileTexts(file), ["kept"]);
 });
@@ -269,12 +269,12 @@ test("the Customize preference enables capture without the env switch and toggle
   const handler = captureHandlerWith({}, root, configHome);
   handler({ prompt: "before opt-in" });
   assert.deepEqual(fs.readdirSync(root), []);
-  writeHistoryCapturePolicy("on", { gentlePiConfigHome: configHome });
+  writeHistoryCapturePolicy("on", { drakoncPiConfigHome: configHome });
   handler({ prompt: "captured" });
   const file = sessionFilePath(root, CWD, "inst-entry");
   assert.deepEqual(fileTexts(file), ["captured"]);
   // Turning the preference off stops new lines and keeps stored history.
-  writeHistoryCapturePolicy("off", { gentlePiConfigHome: configHome });
+  writeHistoryCapturePolicy("off", { drakoncPiConfigHome: configHome });
   handler({ prompt: "never written" });
   assert.deepEqual(fileTexts(file), ["captured"]);
 });
@@ -282,11 +282,11 @@ test("the Customize preference enables capture without the env switch and toggle
 test("an explicit env value overrides the Customize preference", () => {
   const root = makeRoot();
   const configHome = makeConfigHome();
-  writeHistoryCapturePolicy("on", { gentlePiConfigHome: configHome });
-  captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "0" }, root, configHome)({ prompt: "forced off" });
+  writeHistoryCapturePolicy("on", { drakoncPiConfigHome: configHome });
+  captureHandlerWith({ DRAKONC_PI_HISTORY_CAPTURE: "0" }, root, configHome)({ prompt: "forced off" });
   assert.deepEqual(fs.readdirSync(root), []);
-  writeHistoryCapturePolicy("off", { gentlePiConfigHome: configHome });
-  captureHandlerWith({ GENTLE_PI_HISTORY_CAPTURE: "On" }, root, configHome)({ prompt: "forced on" });
+  writeHistoryCapturePolicy("off", { drakoncPiConfigHome: configHome });
+  captureHandlerWith({ DRAKONC_PI_HISTORY_CAPTURE: "On" }, root, configHome)({ prompt: "forced on" });
   assert.deepEqual(fileTexts(sessionFilePath(root, CWD, "inst-entry")), ["forced on"]);
 });
 
@@ -299,13 +299,13 @@ test("a malformed Customize preference fails closed", () => {
   assert.equal(captureEnabled({}, configHome), false);
 });
 
-test("the extension resolves the preference under GENTLE_PI_CONFIG_HOME by default", () => {
+test("the extension resolves the preference under DRAKONC_PI_CONFIG_HOME by default", () => {
   const root = makeRoot();
   const configHome = makeConfigHome();
-  writeHistoryCapturePolicy("on", { gentlePiConfigHome: configHome });
+  writeHistoryCapturePolicy("on", { drakoncPiConfigHome: configHome });
   const registered: Array<[string, unknown]> = [];
   promptHistoryExtension({ on: (event: string, handler: unknown) => registered.push([event, handler]), registerShortcut: () => {}, registerCommand: () => {} } as never, {
-    env: { GENTLE_PI_CONFIG_HOME: configHome },
+    env: { DRAKONC_PI_CONFIG_HOME: configHome },
     root,
     cwd: CWD,
     instanceId: "inst-entry",
@@ -336,7 +336,7 @@ test("session_shutdown GC compacts the injected root and keeps its own file", ()
   const own = sessionFilePath(root, CWD, "inst-entry");
   fs.writeFileSync(own, `${JSON.stringify({ v: 1, text: "own" })}\n`);
   fs.utimesSync(own, new Date(1), new Date(1));
-  const shutdown = handlersWith({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root).get(
+  const shutdown = handlersWith({ DRAKONC_PI_HISTORY_CAPTURE: "1" }, root).get(
     "session_shutdown",
   );
   assert.ok(shutdown, "the shutdown handler is registered");

@@ -200,7 +200,7 @@ test("the panel header counts active and finished separately", () => {
 	store.add(task("active-1", "current-session-id", { agent: "active-1" }));
 	store.add(task("done-1", "current-session-id", { agent: "done-1", status: TASK_STATUS.COMPLETED, endedAt: 1000 }));
 	store.add(task("done-2", "current-session-id", { agent: "done-2", status: TASK_STATUS.FAILED, endedAt: 2000 }));
-	assert.match(view.render(100).join("\n"), /❀ Agents · this session · 1 active · 2 finished/);
+	assert.match(view.render(100).join("\n"), /🐉 Agents · this session · 1 active · 2 finished/);
 	view.dispose();
 });
 

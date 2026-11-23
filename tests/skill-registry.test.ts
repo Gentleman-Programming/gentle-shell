@@ -10,8 +10,8 @@ import skillRegistryExtension, { __testing, type ResolvedSkill } from "../extens
 const skillRegistry = skillRegistryExtension;
 
 // Registered startup reads process.env directly; a suite launched from a
-// delegated child must still exercise the parent paths (gentle-shell#1690).
-delete process.env.GENTLE_PI_AGENTS_CHILD;
+// delegated child must still exercise the parent paths (drakonc-shell#1690).
+delete process.env.DRAKONC_PI_AGENTS_CHILD;
 
 test("project skill dirs include supported workspace roots", () => {
 	const cwd = "/repo";
@@ -38,7 +38,7 @@ test("project skill dirs include supported workspace roots", () => {
 });
 
 test("registry renders indexed skill paths instead of compact rules", () => {
-	const cwd = join(tmpdir(), `gentle-pi-render-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-render-${Date.now()}`);
 	const skillPath = join(cwd, "skills", "go-testing", "SKILL.md");
 	const registry = __testing.renderRegistry(cwd, ["skills"], [
 		{
@@ -98,7 +98,7 @@ test("description normalization preserves trigger and collapses whitespace", () 
 });
 
 test("project-scoped duplicate wins over user duplicate", () => {
-	const cwd = join(tmpdir(), `gentle-pi-registry-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-registry-${Date.now()}`);
 	const projectPath = join(cwd, ".opencode/skills/dup/SKILL.md");
 	const userPath = join(cwd + "-home", ".config/opencode/skills/dup/SKILL.md");
 	const entries = [
@@ -111,7 +111,7 @@ test("project-scoped duplicate wins over user duplicate", () => {
 });
 
 test("uniqueExistingDirs normalizes duplicates and ignores missing roots", async () => {
-	const root = join(tmpdir(), `gentle-pi-existing-${Date.now()}`);
+	const root = join(tmpdir(), `drakonc-pi-existing-${Date.now()}`);
 	const existing = join(root, "skills");
 	mkdirSync(existing, { recursive: true });
 
@@ -122,7 +122,7 @@ test("uniqueExistingDirs normalizes duplicates and ignores missing roots", async
 });
 
 test("findSkillFiles scans flat skills and category-nested skills without descending further", async () => {
-	const root = join(tmpdir(), `gentle-pi-shallow-${Date.now()}`);
+	const root = join(tmpdir(), `drakonc-pi-shallow-${Date.now()}`);
 	const skillPath = join(root, "docs", "SKILL.md");
 	const nestedSkillPath = join(root, "fixtures", "nested", "SKILL.md");
 	const deeperSkillPath = join(root, "fixtures", "nested", "deeper", "SKILL.md");
@@ -137,7 +137,7 @@ test("findSkillFiles scans flat skills and category-nested skills without descen
 });
 
 test("findSkillFiles keeps direct skills ahead of alphabetically earlier nested collisions", async () => {
-	const cwd = join(tmpdir(), `gentle-pi-precedence-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-precedence-${Date.now()}`);
 	const directSkillPath = join(cwd, "skills", "zeta", "SKILL.md");
 	const nestedSkillPath = join(cwd, "skills", "alpha", "duplicate", "SKILL.md");
 	mkdirSync(dirname(directSkillPath), { recursive: true });
@@ -152,7 +152,7 @@ test("findSkillFiles keeps direct skills ahead of alphabetically earlier nested 
 });
 
 test("findSkillFiles does not descend into excluded categories", async () => {
-	const root = join(tmpdir(), `gentle-pi-excluded-category-${Date.now()}`);
+	const root = join(tmpdir(), `drakonc-pi-excluded-category-${Date.now()}`);
 	for (const category of ["_shared", "skill-registry", "sdd-fixtures"]) {
 		const nestedSkillPath = join(root, category, "hidden", "SKILL.md");
 		mkdirSync(dirname(nestedSkillPath), { recursive: true });
@@ -163,9 +163,9 @@ test("findSkillFiles does not descend into excluded categories", async () => {
 });
 
 test("findSkillFiles follows direct symlinked skills but not symlinked categories", async (t) => {
-	const root = join(tmpdir(), `gentle-pi-symlink-root-${Date.now()}`);
-	const realSkillDir = join(tmpdir(), `gentle-pi-symlink-target-${Date.now()}`);
-	const categoryTarget = join(tmpdir(), `gentle-pi-symlink-category-${Date.now()}`);
+	const root = join(tmpdir(), `drakonc-pi-symlink-root-${Date.now()}`);
+	const realSkillDir = join(tmpdir(), `drakonc-pi-symlink-target-${Date.now()}`);
+	const categoryTarget = join(tmpdir(), `drakonc-pi-symlink-category-${Date.now()}`);
 	const linkedSkillDir = join(root, "linked");
 	const skillPath = join(linkedSkillDir, "SKILL.md");
 	mkdirSync(root, { recursive: true });
@@ -192,26 +192,26 @@ function writeSkill(root: string, dir: string, name: string): string {
 }
 
 test("same-name duplicate in one scope resolves to the directory named after the skill", (t) => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-backup-dedupe-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-backup-dedupe-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const skills = join(root, "home", ".claude", "skills");
 	const hiddenBackup = writeSkill(skills, ".backup-live-to-youtube-20261114", "live-to-youtube");
 	const live = writeSkill(skills, "live-to-youtube", "live-to-youtube");
-	const suffixBackup = writeSkill(skills, "gentle-stack-main.backup-20260927T204711", "gentle-stack-main");
-	const stack = writeSkill(skills, "gentle-stack-main", "gentle-stack-main");
+	const suffixBackup = writeSkill(skills, "drakonc-stack-main.backup-20260927T204711", "drakonc-stack-main");
+	const stack = writeSkill(skills, "drakonc-stack-main", "drakonc-stack-main");
 	const cwd = join(root, "project");
 	const entry = (path: string, name: string) => ({ name, path, description: "d" });
 
 	for (const entries of [
-		[entry(hiddenBackup, "live-to-youtube"), entry(live, "live-to-youtube"), entry(suffixBackup, "gentle-stack-main"), entry(stack, "gentle-stack-main")],
-		[entry(live, "live-to-youtube"), entry(hiddenBackup, "live-to-youtube"), entry(stack, "gentle-stack-main"), entry(suffixBackup, "gentle-stack-main")],
+		[entry(hiddenBackup, "live-to-youtube"), entry(live, "live-to-youtube"), entry(suffixBackup, "drakonc-stack-main"), entry(stack, "drakonc-stack-main")],
+		[entry(live, "live-to-youtube"), entry(hiddenBackup, "live-to-youtube"), entry(stack, "drakonc-stack-main"), entry(suffixBackup, "drakonc-stack-main")],
 	]) {
 		assert.deepEqual(__testing.dedupeBySkillName(entries, cwd).map((e) => e.path), [stack, live]);
 	}
 });
 
 test("findSkillFiles skips dot-prefixed skill directories inside a hidden root", async (t) => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-hidden-skill-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-hidden-skill-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const skills = join(root, ".claude", "skills");
 	writeSkill(skills, ".backup-live-to-youtube-20261114", "live-to-youtube");
@@ -222,7 +222,7 @@ test("findSkillFiles skips dot-prefixed skill directories inside a hidden root",
 });
 
 test("a root without duplicates keeps every skill and the first-candidate tie-break", async (t) => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-no-dup-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-no-dup-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const skills = join(root, "skills");
 	const alpha = writeSkill(skills, "alpha", "alpha");
@@ -245,7 +245,7 @@ test("only missing skill-file errors allow category scanning", () => {
 });
 
 test("skill registry watchers close on shutdown", async () => {
-	const root = join(tmpdir(), `gentle-pi-watchers-${Date.now()}`);
+	const root = join(tmpdir(), `drakonc-pi-watchers-${Date.now()}`);
 	const skillPath = join(root, "skills", "docs", "SKILL.md");
 	mkdirSync(dirname(skillPath), { recursive: true });
 	writeFileSync(skillPath, "---\nname: docs\ndescription: Docs.\n---\n");
@@ -272,12 +272,12 @@ test("startup skip honors no skill registry controls", () => {
 	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, ["--no-skills"], {}), true);
 	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, ["-ns"], {}), true);
 	assert.equal(
-		__testing.shouldSkipSkillRegistryStartup(disabled, [], { GENTLE_PI_NO_SKILL_REGISTRY: "1" }),
+		__testing.shouldSkipSkillRegistryStartup(disabled, [], { DRAKONC_PI_NO_SKILL_REGISTRY: "1" }),
 		true,
 	);
 	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], {}), false);
-	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], { GENTLE_PI_AGENTS_CHILD: "1" }), true);
-	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], { GENTLE_PI_AGENTS_CHILD: "0" }), false);
+	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], { DRAKONC_PI_AGENTS_CHILD: "1" }), true);
+	assert.equal(__testing.shouldSkipSkillRegistryStartup(disabled, [], { DRAKONC_PI_AGENTS_CHILD: "0" }), false);
 });
 
 test("duplicate extension load is skipped only across different sources", () => {
@@ -292,20 +292,20 @@ test("duplicate extension load is skipped only across different sources", () => 
 		false,
 	);
 	assert.equal(
-		__testing.shouldSkipDuplicateExtensionLoad("file:///home/.pi/node_modules/gentle-pi/extensions/skill-registry.ts", "/workspace", state),
+		__testing.shouldSkipDuplicateExtensionLoad("file:///home/.pi/node_modules/drakonc-pi/extensions/skill-registry.ts", "/workspace", state),
 		true,
 	);
 });
 
 test("project-local skill registry extension wins over installed package copy", () => {
-	const cwd = join(tmpdir(), `gentle-pi-local-extension-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-local-extension-${Date.now()}`);
 	const localExtension = join(cwd, "extensions", "skill-registry.ts");
 	mkdirSync(dirname(localExtension), { recursive: true });
 	writeFileSync(localExtension, "");
 
 	assert.equal(
 		__testing.shouldSkipDuplicateExtensionLoad(
-			"file:///home/.pi/agent/npm/node_modules/gentle-pi/extensions/skill-registry.ts",
+			"file:///home/.pi/agent/npm/node_modules/drakonc-pi/extensions/skill-registry.ts",
 			cwd,
 			{},
 		),
@@ -318,9 +318,9 @@ test("project-local skill registry extension wins over installed package copy", 
 });
 
 test("scope and markdown cells are represented in registry", () => {
-	const cwd = join(tmpdir(), `gentle-pi-scope-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-scope-${Date.now()}`);
 	const projectPath = join(cwd, "skills", "docs", "SKILL.md");
-	const userPath = join(tmpdir(), `gentle-pi-home-${Date.now()}`, ".claude", "skills", "docs", "SKILL.md");
+	const userPath = join(tmpdir(), `drakonc-pi-home-${Date.now()}`, ".claude", "skills", "docs", "SKILL.md");
 	const registry = __testing.renderRegistry(cwd, ["skills"], [
 		{ name: "project-docs", path: projectPath, description: "Docs | guides" },
 		{ name: "user-docs", path: userPath, description: "" },
@@ -331,7 +331,7 @@ test("scope and markdown cells are represented in registry", () => {
 });
 
 test("generated registry file indexes skill path and omits body rules", async () => {
-	const cwd = join(tmpdir(), `gentle-pi-regenerate-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-regenerate-${Date.now()}`);
 	const skillPath = join(cwd, "skills", "go-testing", "SKILL.md");
 	mkdirSync(dirname(skillPath), { recursive: true });
 	writeFileSync(
@@ -371,7 +371,7 @@ test("orchestrator documents path injection protocol", () => {
 });
 
 test("non-forced regeneration invalidates cache when skill bytes change but path, size, and mtime are restored", async () => {
-	const cwd = join(tmpdir(), `gentle-pi-fingerprint-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-fingerprint-${Date.now()}`);
 	const skillPath = join(cwd, "skills", "alpha", "SKILL.md");
 	mkdirSync(dirname(skillPath), { recursive: true });
 
@@ -426,7 +426,7 @@ function escapeRegExp(value: string): string {
 // Pi lists its loaded skills itself, so the effective block proves a retained
 // capture through a same-name user-root copy the captured record outranks.
 function isolatedHome(t: { after(fn: () => void): void }): string {
-	const home = mkdtempSync(join(tmpdir(), "gentle-p2-home-"));
+	const home = mkdtempSync(join(tmpdir(), "drakonc-p2-home-"));
 	const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE;
 	process.env.HOME = home;
 	process.env.USERPROFILE = home;
@@ -467,7 +467,7 @@ function userShadow(home: string, name: string): string {
 }
 
 test("toResolvedEntry maps exact file path and scope from sourceInfo", () => {
-	const cwd = join(tmpdir(), `gentle-pi-resolved-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-resolved-${Date.now()}`);
 	const projectPath = join(cwd, "skills", "go-testing", "SKILL.md");
 	const projectEntry = __testing.toResolvedEntry(
 		{
@@ -517,7 +517,7 @@ test("toResolvedEntry maps exact file path and scope from sourceInfo", () => {
 });
 
 test("toResolvedEntry appends package origin to the scope label", () => {
-	const cwd = join(tmpdir(), `gentle-pi-resolved-package-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-resolved-package-${Date.now()}`);
 	const packaged = __testing.toResolvedEntry(
 		{
 			name: "packaged",
@@ -596,8 +596,8 @@ test("toResolvedEntry returns undefined for excluded skill names", () => {
 });
 
 test("mergeResolvedWithLoose gives resolved paths per-path authority", () => {
-	const cwd = join(tmpdir(), `gentle-pi-merge-${Date.now()}`);
-	const resolvedPath = join(tmpdir(), `gentle-pi-merge-pkg-${Date.now()}`, "skills", "dup", "SKILL.md");
+	const cwd = join(tmpdir(), `drakonc-pi-merge-${Date.now()}`);
+	const resolvedPath = join(tmpdir(), `drakonc-pi-merge-pkg-${Date.now()}`, "skills", "dup", "SKILL.md");
 	const otherPath = join(cwd, ".opencode", "skills", "other", "SKILL.md");
 	const merged = __testing.mergeResolvedWithLoose(
 		[{ name: "dup", path: resolvedPath, description: "resolved", scope: "user · package" }],
@@ -617,8 +617,8 @@ test("mergeResolvedWithLoose gives resolved paths per-path authority", () => {
 });
 
 test("mergeResolvedWithLoose keeps project-over-user name precedence", () => {
-	const cwd = join(tmpdir(), `gentle-pi-merge-precedence-${Date.now()}`);
-	const packagePath = join(tmpdir(), `gentle-pi-merge-pkg2-${Date.now()}`, "skills", "dup", "SKILL.md");
+	const cwd = join(tmpdir(), `drakonc-pi-merge-precedence-${Date.now()}`);
+	const packagePath = join(tmpdir(), `drakonc-pi-merge-pkg2-${Date.now()}`, "skills", "dup", "SKILL.md");
 	const projectPath = join(cwd, "skills", "dup", "SKILL.md");
 
 	const looseProjectWins = __testing.mergeResolvedWithLoose(
@@ -630,7 +630,7 @@ test("mergeResolvedWithLoose keeps project-over-user name precedence", () => {
 	assert.equal(looseProjectWins[0].path, projectPath, "loose project path beats resolved user/package path");
 
 	const resolvedProjectPath = join(cwd, ".claude", "skills", "dup", "SKILL.md");
-	const userPath = join(tmpdir(), `gentle-pi-merge-home-${Date.now()}`, ".pi", "agent", "skills", "dup", "SKILL.md");
+	const userPath = join(tmpdir(), `drakonc-pi-merge-home-${Date.now()}`, ".pi", "agent", "skills", "dup", "SKILL.md");
 	const resolvedWins = __testing.mergeResolvedWithLoose(
 		[{ name: "dup", path: resolvedProjectPath, description: "resolved", scope: "project" }],
 		[{ name: "dup", path: userPath, description: "loose" }],
@@ -641,7 +641,7 @@ test("mergeResolvedWithLoose keeps project-over-user name precedence", () => {
 });
 
 test("mergeResolvedWithLoose does not promote resolved user scope inside cwd", () => {
-	const cwd = join(tmpdir(), `gentle-pi-resolved-user-cwd-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-resolved-user-cwd-${Date.now()}`);
 	const resolvedPath = join(cwd, ".pi", "agent", "skills", "dup", "SKILL.md");
 	const loosePath = join(cwd, "skills", "dup", "SKILL.md");
 	const resolved = __testing.toResolvedEntry({
@@ -658,8 +658,8 @@ test("mergeResolvedWithLoose does not promote resolved user scope inside cwd", (
 });
 
 test("mergeResolvedWithLoose honors resolved project scope outside cwd", () => {
-	const cwd = join(tmpdir(), `gentle-pi-linked-workspace-${Date.now()}`);
-	const linkedPath = join(tmpdir(), `gentle-pi-linked-source-${Date.now()}`, "skills", "dup", "SKILL.md");
+	const cwd = join(tmpdir(), `drakonc-pi-linked-workspace-${Date.now()}`);
+	const linkedPath = join(tmpdir(), `drakonc-pi-linked-source-${Date.now()}`, "skills", "dup", "SKILL.md");
 	const loosePath = join(cwd, "skills", "dup", "SKILL.md");
 	const resolved = __testing.toResolvedEntry({
 		name: "dup", description: "Pi project skill", filePath: linkedPath,
@@ -674,12 +674,12 @@ test("mergeResolvedWithLoose honors resolved project scope outside cwd", () => {
 });
 
 test("mergeResolvedWithLoose with empty resolved matches the loose-only result", () => {
-	const cwd = join(tmpdir(), `gentle-pi-merge-empty-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-merge-empty-${Date.now()}`);
 	const loose = [
 		{ name: "zeta", path: join(cwd, "skills", "zeta", "SKILL.md"), description: "z" },
 		{
 			name: "alpha",
-			path: join(tmpdir(), `gentle-pi-merge-empty-home-${Date.now()}`, "skills", "alpha", "SKILL.md"),
+			path: join(tmpdir(), `drakonc-pi-merge-empty-home-${Date.now()}`, "skills", "alpha", "SKILL.md"),
 			description: "a-user",
 		},
 		{ name: "alpha", path: join(cwd, ".opencode", "skills", "alpha", "SKILL.md"), description: "a-project" },
@@ -692,7 +692,7 @@ test("mergeResolvedWithLoose with empty resolved matches the loose-only result",
 });
 
 test("disk regeneration retains loose skill paths and byte-identical refreshes", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-regen-disk-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-regen-disk-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const skill = join(cwd, "skills", "loose-one", "SKILL.md");
 	mkdirSync(dirname(skill), { recursive: true });
@@ -708,13 +708,13 @@ test("disk regeneration retains loose skill paths and byte-identical refreshes",
 });
 
 test("regenerateRegistry carries a skill resolved from a non-default PI_CODING_AGENT_DIR", async () => {
-	// Acceptance case from gentle-shell#369 (2026-09-27): with
+	// Acceptance case from drakonc-shell#369 (2026-09-27): with
 	// PI_CODING_AGENT_DIR set to a non-default directory, Pi resolves user
 	// skills from <agent-dir>/skills, which no loose scan root reaches. The
 	// runtime mirror must be the only route into the registry.
-	const cwd = join(tmpdir(), `gentle-pi-agentdir-cwd-${Date.now()}`);
-	const isolatedHome = join(tmpdir(), `gentle-pi-agentdir-home-${Date.now()}`);
-	const agentDir = join(tmpdir(), `gentle-pi-agentdir-root-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-agentdir-cwd-${Date.now()}`);
+	const isolatedHome = join(tmpdir(), `drakonc-pi-agentdir-home-${Date.now()}`);
+	const agentDir = join(tmpdir(), `drakonc-pi-agentdir-root-${Date.now()}`);
 	const skillPath = join(agentDir, "skills", "codegraph", "SKILL.md");
 	mkdirSync(dirname(skillPath), { recursive: true });
 	writeFileSync(skillPath, "---\nname: codegraph\ndescription: Trigger: agent-dir skill.\n---\n");
@@ -747,7 +747,7 @@ test("regenerateRegistry carries a skill resolved from a non-default PI_CODING_A
 		// Counter-proof: with no resolved set, the isolated agent dir is
 		// unreachable — no loose root scans it. If the skill still appeared, a
 		// hardcoded agent-dir loose root would have been reintroduced.
-		const bareCwd = join(tmpdir(), `gentle-pi-agentdir-bare-${Date.now()}`);
+		const bareCwd = join(tmpdir(), `drakonc-pi-agentdir-bare-${Date.now()}`);
 		const decoyPath = join(bareCwd, "skills", "decoy", "SKILL.md");
 		mkdirSync(dirname(decoyPath), { recursive: true });
 		writeFileSync(decoyPath, "---\nname: decoy\ndescription: Trigger: decoy.\n---\n");
@@ -782,7 +782,7 @@ test("regenerateRegistry never re-indexes a filtered Pi skill from a loose root"
 	// A Pi-managed loose root (.pi/skills) still holds the SKILL.md of a skill
 	// Pi filtered out at runtime; the loose scan must not resurrect it as an
 	// active registry row.
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-suppressed-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-suppressed-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const disabledPath = join(cwd, ".pi", "skills", "runtime-hidden", "SKILL.md");
 	const livePath = join(cwd, ".pi", "skills", "loose-live", "SKILL.md");
@@ -806,7 +806,7 @@ test("regenerateRegistry never re-indexes a filtered Pi skill from a loose root"
 });
 
 test("renderRegistry describes disk-only authority rather than runtime counts", () => {
-	const cwd = join(tmpdir(), "gentle-pi-render-disk");
+	const cwd = join(tmpdir(), "drakonc-pi-render-disk");
 	const entry = { name: "docs", path: join(cwd, "skills", "docs", "SKILL.md"), description: "Docs." };
 	const rendered = __testing.renderRegistry(cwd, ["skills"], [entry]);
 	assert.match(rendered, /excludes session-only runtime skills/);
@@ -830,7 +830,7 @@ function fakeSkillRegistryPi(getFlag: (name: string) => boolean = () => false) {
 }
 
 test("registered event leaves Pi-listed project package skills out without publishing runtime rows", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-apply-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-apply-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	isolatedHome(t);
 	const skillPath = join(cwd, "custom", "applied", "SKILL.md");
@@ -842,7 +842,7 @@ test("registered event leaves Pi-listed project package skills out without publi
 });
 
 test("Pi-listed global packages, project-local packages, and custom paths emit no rows", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-apply-matrix-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-apply-matrix-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	isolatedHome(t);
 	const globalPkgPath = join(cwd, "global", "node_modules", "pkg-a", "SKILL.md");
@@ -859,7 +859,7 @@ test("Pi-listed global packages, project-local packages, and custom paths emit n
 });
 
 test("repeated registered runtime captures do not duplicate the effective prompt", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-apply-idempotent-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-apply-idempotent-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const { pi, handlers } = fakeSkillRegistryPi(); skillRegistry(pi);
 	const options = { skills: [{ name: "idempotent", description: "Trigger: idempotent skill.", filePath: "/pkg/skills/idempotent/SKILL.md" }], appendSystemPrompt: "existing" };
@@ -871,7 +871,7 @@ test("repeated registered runtime captures do not duplicate the effective prompt
 });
 
 test("registered event replaces the effective view when runtime skills change", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-apply-change-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-apply-change-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	isolatedHome(t);
 	const disk = (name: string) => {
@@ -892,7 +892,7 @@ test("registered event replaces the effective view when runtime skills change", 
 });
 
 test("Pi-listed runtime duplicates emit no rows whatever their disabled state or order", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-resolved-order-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-resolved-order-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const shadow = userShadow(isolatedHome(t), "duplicate");
 	const alpha = "/pkg/alpha/SKILL.md", beta = "/pkg/beta/SKILL.md";
@@ -914,7 +914,7 @@ test("Pi-listed runtime duplicates emit no rows whatever their disabled state or
 });
 
 test("before_agent_start rejects malformed batches and preserves prior resolved skills", async (t) => {
-	const cwd = join(tmpdir(), `gentle-pi-wire-malformed-batch-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-wire-malformed-batch-${Date.now()}`);
 	const skillPath = "/pkg/skills/valid-before-malformed/SKILL.md";
 	const shadow = userShadow(isolatedHome(t), "valid");
 	const { pi, handlers, commands } = fakeSkillRegistryPi();
@@ -961,7 +961,7 @@ test("before_agent_start rejects malformed batches and preserves prior resolved 
 });
 
 test("watcher refresh retains captured runtime-resolved skills", { timeout: 5_000 }, async (t) => {
-	const cwd = join(tmpdir(), `gentle-pi-watch-resolved-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-watch-resolved-${Date.now()}`);
 	const shadow = userShadow(isolatedHome(t), "retained");
 	const looseSkillPath = join(cwd, "skills", "loose", "SKILL.md");
 	const resolvedPath = "/pkg/skills/watcher-retained/SKILL.md";
@@ -1003,7 +1003,7 @@ test("watcher refresh retains captured runtime-resolved skills", { timeout: 5_00
 test("before_agent_start handler wires pi-resolved skills into the registry", async (t) => {
 	// Happy path: the handler captures runtime-resolved skills for the session cwd.
 	{
-		const cwd = join(tmpdir(), `gentle-pi-wire-${Date.now()}`);
+		const cwd = join(tmpdir(), `drakonc-pi-wire-${Date.now()}`);
 		const shadow = userShadow(isolatedHome(t), "wired-skill");
 		const { pi, handlers } = fakeSkillRegistryPi();
 		skillRegistryExtension(pi);
@@ -1012,7 +1012,7 @@ test("before_agent_start handler wires pi-resolved skills into the registry", as
 
 		const skillPath = join(
 			tmpdir(),
-			`gentle-pi-wire-pkg-${Date.now()}`,
+			`drakonc-pi-wire-pkg-${Date.now()}`,
 			"skills",
 			"wired-skill",
 			"SKILL.md",
@@ -1026,7 +1026,7 @@ test("before_agent_start handler wires pi-resolved skills into the registry", as
 
 	// The no-skill-registry opt-out must leave the registry untouched.
 	{
-		const cwd = join(tmpdir(), `gentle-pi-wire-skip-${Date.now()}`);
+		const cwd = join(tmpdir(), `drakonc-pi-wire-skip-${Date.now()}`);
 		const { pi, handlers } = fakeSkillRegistryPi((name) => name === "no-skill-registry");
 		skillRegistryExtension(pi);
 		const handler = handlers.get("before_agent_start")?.[0];
@@ -1045,7 +1045,7 @@ test("before_agent_start handler wires pi-resolved skills into the registry", as
 
 	// A non-array skills payload must be ignored entirely.
 	{
-		const cwd = join(tmpdir(), `gentle-pi-wire-malformed-${Date.now()}`);
+		const cwd = join(tmpdir(), `drakonc-pi-wire-malformed-${Date.now()}`);
 		const { pi, handlers } = fakeSkillRegistryPi();
 		skillRegistryExtension(pi);
 		const handler = handlers.get("before_agent_start")?.[0];
@@ -1066,8 +1066,8 @@ test("before_agent_start handler wires pi-resolved skills into the registry", as
 test("startup regeneration keeps the resolved set captured before it settles", async (t) => {
 	// Startup regeneration is scheduled by session_start and lands later; a
 	// capture that already arrived is newer authority and must survive it.
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-startup-authority-"));
-	const packageRoot = mkdtempSync(join(tmpdir(), "gentle-pi-startup-authority-pkg-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-startup-authority-"));
+	const packageRoot = mkdtempSync(join(tmpdir(), "drakonc-pi-startup-authority-pkg-"));
 	t.after(() => {
 		rmSync(cwd, { recursive: true, force: true });
 		rmSync(packageRoot, { recursive: true, force: true });
@@ -1116,9 +1116,9 @@ test("startup regeneration keeps the resolved set captured before it settles", a
 });
 
 test("manual /skill-registry:refresh keeps the captured resolved set", async (t) => {
-	const cwd = join(tmpdir(), `gentle-pi-refresh-${Date.now()}`);
+	const cwd = join(tmpdir(), `drakonc-pi-refresh-${Date.now()}`);
 	const shadow = userShadow(isolatedHome(t), "refreshed");
-	const skillPath = join(tmpdir(), `gentle-pi-refresh-pkg-${Date.now()}`, "skills", "refreshed", "SKILL.md");
+	const skillPath = join(tmpdir(), `drakonc-pi-refresh-pkg-${Date.now()}`, "skills", "refreshed", "SKILL.md");
 	const { pi, handlers, commands } = fakeSkillRegistryPi();
 	skillRegistryExtension(pi);
 	const handler = handlers.get("before_agent_start")?.[0];
@@ -1156,7 +1156,7 @@ test("manual /skill-registry:refresh keeps the captured resolved set", async (t)
 });
 
 test("ensureAtlIgnored creates .atl/.gitignore with * and leaves root .gitignore untouched (#1387)", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), `gentle-pi-git-atl-${Date.now()}-`));
+	const cwd = mkdtempSync(join(tmpdir(), `drakonc-pi-git-atl-${Date.now()}-`));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 
 	// An empty index is sufficient; fixtures never need commits.
@@ -1202,7 +1202,7 @@ test("ensureAtlIgnored creates .atl/.gitignore with * and leaves root .gitignore
 });
 
 // Keep runtime scans inside an isolated home, including the existing watcher tests.
-const fixtureHome = mkdtempSync(join(tmpdir(), "gentle-pi-registry-home-"));
+const fixtureHome = mkdtempSync(join(tmpdir(), "drakonc-pi-registry-home-"));
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
 const originalGitCeiling = process.env.GIT_CEILING_DIRECTORIES;
@@ -1246,7 +1246,7 @@ function registeredRegistry(cwd: string, suppressed = false) {
 }
 
 function registryFixture(git = true, nested = false) {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-protected-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-protected-"));
 	if (git) execSync("git init", { cwd: root, stdio: "ignore" });
 	const cwd = nested ? join(root, "nested") : root;
 	mkdirSync(join(cwd, ".atl"), { recursive: true });
@@ -1389,14 +1389,14 @@ for (const control of ["environment", "--no-skills", "-ns"]) {
 	test(`registered ${control} suppression skips startup writes and watchers`, async (t) => {
 		const fixture = registryFixture();
 		const runtime = registeredRegistry(fixture.cwd);
-		const previousEnv = process.env.GENTLE_PI_NO_SKILL_REGISTRY;
+		const previousEnv = process.env.DRAKONC_PI_NO_SKILL_REGISTRY;
 		const previousArgv = process.argv;
-		if (control === "environment") process.env.GENTLE_PI_NO_SKILL_REGISTRY = "1";
+		if (control === "environment") process.env.DRAKONC_PI_NO_SKILL_REGISTRY = "1";
 		else process.argv = [...process.argv, control];
 		t.after(() => {
 			process.argv = previousArgv;
-			if (previousEnv === undefined) delete process.env.GENTLE_PI_NO_SKILL_REGISTRY;
-			else process.env.GENTLE_PI_NO_SKILL_REGISTRY = previousEnv;
+			if (previousEnv === undefined) delete process.env.DRAKONC_PI_NO_SKILL_REGISTRY;
+			else process.env.DRAKONC_PI_NO_SKILL_REGISTRY = previousEnv;
 			return runtime.stop();
 		});
 		await runtime.start();
@@ -1408,7 +1408,7 @@ for (const control of ["environment", "--no-skills", "-ns"]) {
 	});
 }
 
-// gentle-shell#1690: delegated rpc children have hasUI=true but must not write
+// drakonc-shell#1690: delegated rpc children have hasUI=true but must not write
 // .atl/, rename the legacy registry or start a watcher in the shared cwd.
 test("registered startup in a delegated child avoids writes, legacy rename and watchers", async (t) => {
 	const fixture = registryFixture();
@@ -1416,11 +1416,11 @@ test("registered startup in a delegated child avoids writes, legacy rename and w
 	mkdirSync(dirname(legacy), { recursive: true });
 	const source = 'Auto-generated by .pi/extensions/skill-registry.ts\nconst REGISTRY_REL_PATH = ".atl/skill-registry.md"\nfunction projectSkillDirs(cwd: string): string[]\nfunction regenerateRegistry(cwd: string, force: boolean)\n';
 	writeFileSync(legacy, source);
-	const previous = process.env.GENTLE_PI_AGENTS_CHILD;
-	process.env.GENTLE_PI_AGENTS_CHILD = "1";
+	const previous = process.env.DRAKONC_PI_AGENTS_CHILD;
+	process.env.DRAKONC_PI_AGENTS_CHILD = "1";
 	t.after(() => {
-		if (previous === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
-		else process.env.GENTLE_PI_AGENTS_CHILD = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_AGENTS_CHILD;
+		else process.env.DRAKONC_PI_AGENTS_CHILD = previous;
 	});
 	const runtime = registeredRegistry(fixture.cwd);
 	t.after(() => runtime.stop());
@@ -1478,7 +1478,7 @@ test("registered startup returns before regenerating and settles to the same out
 // existing fail-closed path instead of hanging.
 test("automatic Git tracking check times out into the fail-closed path", { skip: process.platform === "win32" }, async (t) => {
 	const fixture = registryFixture();
-	const bin = mkdtempSync(join(tmpdir(), "gentle-pi-slow-git-"));
+	const bin = mkdtempSync(join(tmpdir(), "drakonc-pi-slow-git-"));
 	writeFileSync(join(bin, "git"), "#!/bin/sh\nexec sleep 3\n", { mode: 0o755 });
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${bin}:${previousPath ?? ""}`;
@@ -1497,7 +1497,7 @@ test("automatic Git tracking check times out into the fail-closed path", { skip:
 // S2: a repository rooted at HOME makes every Git call scan the whole home.
 // Startup skips the automatic Git work there; deliberate refresh still works.
 test("registered startup skips Git work and watchers when the repository is rooted at HOME", async (t) => {
-	const home = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-registry-git-home-")));
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-registry-git-home-")));
 	execSync("git init", { cwd: home, stdio: "ignore" });
 	const cwd = join(home, "project");
 	const skill = join(cwd, "skills", "local", "SKILL.md");
@@ -1521,7 +1521,7 @@ test("registered startup skips Git work and watchers when the repository is root
 	assert.match(readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8"), /Initial skill/);
 });
 
-// gentle-shell#373: permission failures must degrade truthfully. The registry
+// drakonc-shell#373: permission failures must degrade truthfully. The registry
 // refresh reports a typed unavailable result with the offending path and a
 // safe next action, never a successful regeneration, and unexpected I/O keeps
 // its own diagnostic.
@@ -1537,7 +1537,7 @@ test("isStorageUnavailableError classifies only storage faults", () => {
 });
 
 test("regenerateRegistry reports a typed unavailable result instead of throwing on EACCES", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-skill-373-eacces-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-skill-373-eacces-"));
 	t.after(() => {
 		chmodSync(join(cwd, ".atl"), 0o755);
 		rmSync(cwd, { recursive: true, force: true });
@@ -1568,7 +1568,7 @@ test("regenerateRegistry reports a typed unavailable result instead of throwing 
 });
 
 test("regenerateRegistry degrades truthfully when .atl is a regular file", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-skill-373-enotdir-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-skill-373-enotdir-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	writeFileSync(join(cwd, ".atl"), "not a directory\n");
 	const result = await __testing.regenerateRegistry(cwd, true, true);
@@ -1578,8 +1578,8 @@ test("regenerateRegistry degrades truthfully when .atl is a regular file", async
 });
 
 test("S5 roots, Codex override, UTF-8 order and Unicode whitespace follow the shared discovery contract", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-shared-roots-"));
-	const home = mkdtempSync(join(tmpdir(), "gentle-shared-home-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-shared-roots-"));
+	const home = mkdtempSync(join(tmpdir(), "drakonc-shared-home-"));
 	const oldHome = process.env.HOME, oldProfile = process.env.USERPROFILE, oldCodex = process.env.CODEX_HOME;
 	t.after(() => {
 		if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
@@ -1607,7 +1607,7 @@ test("S5 roots, Codex override, UTF-8 order and Unicode whitespace follow the sh
 });
 
 test("S5–S6 registered refresh publishes exact disk-only bytes and repairs the cache without rewriting equal bytes", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-shared-registry-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-shared-registry-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const skill = join(cwd, "skills", "local", "SKILL.md");
 	mkdirSync(dirname(skill), { recursive: true });
@@ -1622,7 +1622,7 @@ test("S5–S6 registered refresh publishes exact disk-only bytes and repairs the
 	const cachePath = join(cwd, ".atl", ".skill-registry.cache.json");
 	const expected = [
 		`# Skill Registry — ${cwd.split(/[\\/]/).at(-1)}`, "",
-		"<!-- Shared disk skill registry; generated by Gentle Shell or Gentle AI. -->", "",
+		"<!-- Shared disk skill registry; generated by Drakonc Shell or Drakonc AI. -->", "",
 		"## Sources scanned", "", "- skills", "", "## Contract", "",
 		"**Delegator use only.** This disk index is not a summary and excludes session-only runtime skills. Pi delegators use their effective session view; other delegators use these rows. Pass exact `SKILL.md` paths to subagents.", "",
 		"`SKILL.md` remains the source of truth. Do not inject generated summaries or compact rules by default; pass paths so subagents load the full runtime contract and preserve author intent.", "",
@@ -1652,7 +1652,7 @@ test("S5–S6 registered refresh publishes exact disk-only bytes and repairs the
 });
 
 test("S7 registered prompt replaces runtime batches, suppresses disabled winners, and retains raw same-name alternatives", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-effective-registry-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-effective-registry-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const winner = join(cwd, "skills", "winner", "SKILL.md");
 	const alternate = join(cwd, ".claude", "skills", "alternate", "SKILL.md");
@@ -1695,7 +1695,7 @@ test("S7 registered prompt replaces runtime batches, suppresses disabled winners
 });
 
 test("S4–S7 disk edits update the next effective view while runtime remains session-local", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-effective-disk-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-effective-disk-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	isolatedHome(t);
 	const skill = join(cwd, "skills", "disk", "SKILL.md");
@@ -1740,7 +1740,7 @@ for (const [label, excluded] of [
 	["excluded category", "sdd-category/child"],
 ] as const) {
 	test(`S5 correction B1 excludes ${label} before reading its alias`, async (t) => {
-		const cwd = mkdtempSync(join(tmpdir(), "gentle-s5-excluded-"));
+		const cwd = mkdtempSync(join(tmpdir(), "drakonc-s5-excluded-"));
 		t.after(() => rmSync(cwd, { recursive: true, force: true }));
 		const create = (path: string, name: string, description: string) => {
 			const file = join(cwd, "skills", path, "SKILL.md");
@@ -1781,7 +1781,7 @@ for (const [label, excluded] of [
 }
 
 test("S5 correction B1 preserves eligible direct symlinks and rejects excluded symlinks and categories", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-s5-links-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-s5-links-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const roots = join(cwd, "skills"), targets = join(cwd, "targets");
 	for (const [path, name] of [["allowed", "linked"], ["excluded", "excluded-alias"], ["category/child", "category-alias"]]) {
@@ -1805,7 +1805,7 @@ test("S5 correction B1 preserves eligible direct symlinks and rejects excluded s
 
 for (const [label, quote] of [["apostrophe", "'"], ["double quote", '"']] as const) {
 	test(`S5 correction B3 preserves a single unmatched ${label} in the public view`, async (t) => {
-		const cwd = mkdtempSync(join(tmpdir(), "gentle-s5-quote-"));
+		const cwd = mkdtempSync(join(tmpdir(), "drakonc-s5-quote-"));
 		t.after(() => rmSync(cwd, { recursive: true, force: true }));
 		const create = (dir: string, name: string, description: string) => {
 			const file = join(cwd, "skills", dir, "SKILL.md");
@@ -1838,7 +1838,7 @@ for (const [label, quote] of [["apostrophe", "'"], ["double quote", '"']] as con
 }
 
 test("regenerateRegistry preserves the diagnostic for unexpected I/O errors", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-skill-373-eloop-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-skill-373-eloop-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	symlinkSync(join(cwd, ".atl", "self"), join(cwd, ".atl"));
 	await assert.rejects(
@@ -1854,7 +1854,7 @@ test("regenerateRegistry preserves the diagnostic for unexpected I/O errors", as
 const UNLISTED_HEADING = "## Effective session skills: on disk, not loaded by Pi; `<available_skills>` lists the rest";
 
 async function unlistedFixture(t: { after(fn: () => void): void }) {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-p2-cwd-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-p2-cwd-"));
 	const home = isolatedHome(t);
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const create = (root: string, dir: string, name: string, description: string) => {
@@ -1891,12 +1891,12 @@ test("P2 a skill only on disk is listed with name, description and path and no s
 	await event({ systemPromptOptions: options }, { cwd, hasUI: false });
 	assert.equal(options.appendSystemPrompt, [
 		"existing", "",
-		"<!-- gentle-pi effective skills begin -->",
+		"<!-- drakonc-pi effective skills begin -->",
 		UNLISTED_HEADING,
 		"| Skill | Trigger / description | Path |",
 		"| --- | --- | --- |",
 		`| \`other-agent\` | Trigger: other agent \\| shared. | \`${diskOnly}\` |`,
-		"<!-- gentle-pi effective skills end -->",
+		"<!-- drakonc-pi effective skills end -->",
 	].join("\n"));
 	await shutdown(undefined, { cwd, hasUI: false });
 });
@@ -1941,14 +1941,14 @@ test("P2 effective rows are ordered by name and identical on the next turn", asy
 
 test("P2 the renamed registry skill stays out of the effective block while the disk index keeps CLI parity", async (t) => {
 	const { cwd, home, create, event, shutdown } = await unlistedFixture(t);
-	const renamed = create(join(home, ".claude", "skills"), "registry-copy", "gentle-ai-skill-registry", "Index skills.");
+	const renamed = create(join(home, ".claude", "skills"), "registry-copy", "drakonc-ai-skill-registry", "Index skills.");
 	const diskOnly = create(join(home, ".claude", "skills"), "other", "other", "Other agent skill.");
 	const options = { skills: [], appendSystemPrompt: "" };
 	await event({ systemPromptOptions: options }, { cwd, hasUI: false });
 	assert.ok(options.appendSystemPrompt.includes(diskOnly));
 	assert.ok(!options.appendSystemPrompt.includes(renamed), "the registry skill is never a selectable row");
 	await __testing.regenerateRegistry(cwd, true, true);
-	// The Gentle AI CLI writer excludes only `_shared` and `skill-registry`; equal inputs must give equal bytes.
+	// The Drakonc AI CLI writer excludes only `_shared` and `skill-registry`; equal inputs must give equal bytes.
 	assert.ok(readFileSync(join(cwd, ".atl", "skill-registry.md"), "utf8").includes(renamed));
 	await shutdown(undefined, { cwd, hasUI: false });
 });
@@ -1994,7 +1994,7 @@ test("P2 a Pi-loaded symlinked skill and a disabled-only record emit no row", as
 	await shutdown(undefined, { cwd, hasUI: false });
 });
 
-// gentle-shell#3020 regression coverage, ported from @Cobies' gentle-shell#3070
+// drakonc-shell#3020 regression coverage, ported from @Cobies' drakonc-shell#3070
 // onto the merged #3089 contract: the shared registry is disk-only and written
 // only when its rendered bytes change, while each session's Pi-resolved skills
 // stay session-local in its prompt. One shared `.atl/` is read by every Pi
@@ -2035,7 +2035,7 @@ function snapshotKey(snapshot: ManagedFileSnapshot | { bytes: string; ino: numbe
 }
 
 function sharedCacheFixture() {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-shared-cache-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-shared-cache-"));
 	const cwd = join(root, "workspace");
 	const skill = join(cwd, "skills", "loose", "SKILL.md");
 	mkdirSync(dirname(skill), { recursive: true });
@@ -2056,7 +2056,7 @@ function sharedCacheFixture() {
 // the session's resolved rows must surface in its own effective block.
 const sharedCacheChildPrelude = `
 	import { join } from "node:path";
-	delete process.env.GENTLE_PI_AGENTS_CHILD;
+	delete process.env.DRAKONC_PI_AGENTS_CHILD;
 	process.env.HOME = join(process.env.GS_ROOT, "home");
 	process.env.USERPROFILE = process.env.HOME;
 	const { default: skillRegistry, __testing } = await import(process.env.GS_EXTENSION);

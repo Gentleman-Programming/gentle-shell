@@ -12,7 +12,7 @@ function fixture(t: TestContext) {
 	const publisher = PresencePublisher.start({ profile, sessionId: "peer", label: "Review", activity: [] });
 	t.after(() => { publisher.dispose(); rmSync(profile, { recursive: true, force: true }); });
 	const consult = (cursor?: string, peers = [peer], now = Date.now()) => consultPublishedMetadata(profile, peers, { recipientSessionId: "peer", cursor }, now);
-	const sidecar = join(profile, "gentle-agents", "presence", `${publisher.target.sessionHash}.${publisher.target.incarnation}.discovery.json`);
+	const sidecar = join(profile, "drakonc-agents", "presence", `${publisher.target.sessionHash}.${publisher.target.incarnation}.discovery.json`);
 	return { profile, publisher, consult, sidecar };
 }
 test("consultation captures frozen public notes and pages, never private task getters", t => {

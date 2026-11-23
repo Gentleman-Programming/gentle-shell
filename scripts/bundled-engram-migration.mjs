@@ -6,9 +6,9 @@ import { closeSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, read
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { engramProbeAllowed, engramProvenancePath, parseEngramProvenance } from "../runtime/gentle-shell-bundled.mjs";
+import { engramProbeAllowed, engramProvenancePath, parseEngramProvenance } from "../runtime/drakonc-shell-bundled.mjs";
 
-export const MIGRATION_USAGE = "Usage: gentle-shell memory migrate --confirm-quiescent\nStop every Engram client before running this command.\n";
+export const MIGRATION_USAGE = "Usage: drakonc-shell memory migrate --confirm-quiescent\nStop every Engram client before running this command.\n";
 export const MIGRATION_PENDING_NOTICE = "Engram memory disabled: an incomplete memory migration needs recovery. Keep every Engram client stopped, retain the original backup, and follow docs/bundled-install.md#recovering-an-interrupted-migration. Do not remove the migration marker or create a new store before recovery.";
 export const migrationMarkerPath = (prefix) => join(prefix, "config", "engram-migration.json");
 export function migrationPending(prefix) {
@@ -31,7 +31,7 @@ function syncPath(path, directory = false) {
 function coreHelp(core, env) {
 	// Older cores route unknown commands through legacy startup. Inspect their
 	// config-free help in an isolated home, never try an unknown data command.
-	const scratch = mkdtempSync(join(tmpdir(), "gentle-engram-capability-"));
+	const scratch = mkdtempSync(join(tmpdir(), "drakonc-engram-capability-"));
 	try {
 		const probe = spawnSync(core, ["--help"], {
 			cwd: scratch, env: { ...env, HOME: scratch, USERPROFILE: scratch, ENGRAM_DATA_DIR: join(scratch, "store") },
@@ -50,7 +50,7 @@ export function migrateBundledEngram({ prefix, core, home, env }) {
 	let output;
 	let backup;
 	try {
-		if (!core) throw new Error("the verified bundled core is unavailable; run gentle-shell setup first");
+		if (!core) throw new Error("the verified bundled core is unavailable; run drakonc-shell setup first");
 		if (!engramProbeAllowed(env)) throw new Error("explicit Engram selections or a disabled startup policy must be resolved before bundled migration");
 		if (migrationPending(prefix)) throw new Error(MIGRATION_PENDING_NOTICE);
 		const source = join(realpathSync(home), ".engram");
@@ -114,6 +114,6 @@ export function migrateBundledEngram({ prefix, core, home, env }) {
 		}
 		const retained = output ? ` Any partial copy at ${output} is retained; do not use it.` : "";
 		const recovery = promotionStarted ? ` Promotion may be incomplete; original backup: ${backup}. ${MIGRATION_PENDING_NOTICE}` : "";
-		return { code: 1, stdout: "", stderr: `gentle-shell: memory migration failed: ${error.message}.${retained}${recovery}\n` };
+		return { code: 1, stdout: "", stderr: `drakonc-shell: memory migration failed: ${error.message}.${retained}${recovery}\n` };
 	}
 }

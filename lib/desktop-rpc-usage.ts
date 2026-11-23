@@ -1,6 +1,6 @@
-// Gentle Desktop subscription-usage slice: the pure contract shared by the
+// Drakonc Desktop subscription-usage slice: the pure contract shared by the
 // Desktop bridge (`lib/desktop-usage-service.ts`) and the owner seam inside
-// `extensions/gentle-shell.ts`.
+// `extensions/drakonc-shell.ts`.
 //
 // Nothing here touches the network, reads a key, or resolves auth. It only
 // names the wire shapes, maps the owner's own recorded `ProviderUsage` into the
@@ -22,10 +22,10 @@ export const DESKTOP_USAGE_EVENT = "rate_limit";
 export const DESKTOP_USAGE_EVENTS = [DESKTOP_USAGE_EVENT] as const;
 
 // The versioned owner-service discovery seam (the usage analogue of the YOLO
-// `gentle:yolo:host-ui` adapter). The schema string guards the adapter against
+// `drakonc:yolo:host-ui` adapter). The schema string guards the adapter against
 // drift; the bridge ignores any responder whose shape does not match.
-export const DESKTOP_USAGE_SERVICE_SCHEMA = "gentle-pi.desktop-usage-service/v1";
-export const DESKTOP_USAGE_SERVICE_CHANNEL = "gentle:desktop:usage-service";
+export const DESKTOP_USAGE_SERVICE_SCHEMA = "drakonc-pi.desktop-usage-service/v1";
+export const DESKTOP_USAGE_SERVICE_CHANNEL = "drakonc:desktop:usage-service";
 
 // The staleness window matches the owner's own 5-minute refresh throttle: a
 // snapshot older than this for a refreshable provider is reported `stale` so a

@@ -1,9 +1,9 @@
 ---
-name: gentle-ai-skill-creator
+name: drakonc-ai-skill-creator
 description: "Trigger: /skill-creation, skill creation, skill creator, create skill, new skill. Create LLM-first skills with valid frontmatter."
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "1.0"
 ---
 
@@ -63,13 +63,13 @@ name: {skill-name}
 description: "Trigger: {phrases users or agents will say}. {What this skill does}."
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "1.0"
 ---
 ```
 
 6. Write sections in this order: Activation Contract, Hard Rules, Decision Gates, Execution Steps, Output Contract, References.
-7. If this is a packaged `gentle-pi` skill, add it to `scripts/verify-package-files.mjs`.
+7. If this is a packaged `drakonc-pi` skill, add it to `scripts/verify-package-files.mjs`.
 8. Refresh or document the skill registry update path.
 
 ## Output Contract

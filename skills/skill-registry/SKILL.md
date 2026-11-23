@@ -1,9 +1,9 @@
 ---
-name: gentle-ai-skill-registry
+name: drakonc-ai-skill-registry
 description: "Trigger: update skills, skill registry, actualizar skills, after skill changes. Index available skills by trigger and path."
 license: MIT
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "1.0"
 ---
 

@@ -1,14 +1,14 @@
 # Herdr aggregate busy while background subagents run (#626)
 
 Locator: `odd/tasks/fix-626-herdr-busy.md`; branch `fix/626-herdr-busy`; issue
-gentle-shell#626 (`status:approved`, `bug`, `type:bug`).
+drakonc-shell#626 (`status:approved`, `bug`, `type:bug`).
 
 ## Objective / why
 
 A background `subagent_run` keeps the child active after the parent prompt
 becomes available again, but Herdr drops the session to `idle` because its
 managed Pi integration derives `working` only from the parent's
-`agent_start`/`agent_settled`. Gentle Shell already projects human-input
+`agent_start`/`agent_settled`. Drakonc Shell already projects human-input
 blockers to the same bus (`herdr:blocked`); it has no projection for owned
 background work.
 
@@ -30,8 +30,8 @@ precedence (`blocked` over `busy`), so `herdr:blocked` is untouched.
   bounded, content-free string derived from counts only: no prompts, task text,
   agent names, ids, paths or output.
 - **No env or pane gate** on the emission path: `herdr:blocked` has none
-  (`gentle-ai.ts:1751-1765`), and the event is inert without a consumer. Do not
-  touch `lib/herdr-activity.ts` or `extensions/gentle-herdr-activity.ts`
+  (`drakonc-ai.ts:1751-1765`), and the event is inert without a consumer. Do not
+  touch `lib/herdr-activity.ts` or `extensions/drakonc-herdr-activity.ts`
   (different mechanism: socket metadata).
 - **Authority unchanged**: the `TaskStore` remains the only source of status. No
   polling, timers, process inspection or second state store.
@@ -45,11 +45,11 @@ precedence (`blocked` over `busy`), so `herdr:blocked` is untouched.
 
 ## Seams (verified 2026-10-05, path:line)
 
-- Authoritative store: `extensions/gentle-agents.ts:410` (`new TaskStore()`),
+- Authoritative store: `extensions/drakonc-agents.ts:410` (`new TaskStore()`),
   handed to the runner at `:977`. Store queries filter by session via
   `TaskStore.list(parentSessionId)` (`lib/agents-protocol.ts:486-490`).
 - Event bus form used by this extension: `pi.events.emit(CHANNEL, payload)`
-  (`gentle-agents.ts:1046`, `:1063`).
+  (`drakonc-agents.ts:1046`, `:1063`).
 - Non-terminal transitions (scattered, no single hook): QUEUED at
   `lib/agents-runner.ts:358`; RUNNING at `:476`, `:510`, `:528`, `:553` and
   `:848`; RUNNING resume and WAITING in `lib/agents-protocol.ts:423`, `:437`.
@@ -58,11 +58,11 @@ precedence (`blocked` over `busy`), so `herdr:blocked` is untouched.
   launch failures `:477/:511/:529`, quarantine `:914/:939`, `childError():967`,
   `completeExit():994`.
 - Existing observation points in the extension: `onFinish` hook
-  (`gentle-agents.ts:1052`) and `store.subscribeSummary(...)` (`:1296`).
+  (`drakonc-agents.ts:1052`) and `store.subscribeSummary(...)` (`:1296`).
 - Lifecycle handlers to reuse: `pi.on("session_start", ...)` at `:402`, `:507`,
   `:1957`; `session_shutdown` at `:508`, `:2008`.
 - Reference to mirror for the edge helper: `herdr:blocked`'s
-  `emitEffectiveBlocker` (`gentle-ai.ts:1751-1765`), edge guard at `:1761`.
+  `emitEffectiveBlocker` (`drakonc-ai.ts:1751-1765`), edge guard at `:1761`.
 
 ## Tasks / acceptance
 
@@ -72,7 +72,7 @@ precedence (`blocked` over `busy`), so `herdr:blocked` is untouched.
       `lower()`, or no-op. Label is count-based and bounded. Impossible states
       (lower when not raised, raise when already raised with the same label) are
       no-ops. Fails closed on malformed input without throwing.
-- [ ] **T2 — Wiring.** `extensions/gentle-agents.ts` calls the projector on the
+- [ ] **T2 — Wiring.** `extensions/drakonc-agents.ts` calls the projector on the
       observed transitions only: task created/launched, terminal settlement,
       `session_start` (re-raise for `/reload` and `/resume`), and
       `session_shutdown` (lower). Scoped to the active session's owned tasks. No
@@ -99,10 +99,10 @@ T3.
 ## Verification
 
 - Focused runner: `node --experimental-strip-types --test tests/<file>.test.ts`.
-- Existing patterns to follow: `tests/gentle-agents.test.ts` (extension under
+- Existing patterns to follow: `tests/drakonc-agents.test.ts` (extension under
   test), event capture in `tests/runtime-harness.mjs:65-70`, and `herdr:blocked`
   assertions in `tests/child-safety.test.ts:80` and
-  `tests/gentle-ai.test.ts:1414`.
+  `tests/drakonc-ai.test.ts:1414`.
 - Independent verification of the final candidate by a separate verifier
   subagent; native review follows because the RDD switch is on.
 
@@ -112,7 +112,7 @@ T3.
   (`go ahead, this one is yours`) and asked for lower-before-raise plus a
   `/reload` test. Acceptance comment posted.
 - 2026-10-05: independent verification on the final tree. Focused
-  `tests/herdr-busy.test.ts` 7/7, `tests/gentle-agents.test.ts` 214/214, the
+  `tests/herdr-busy.test.ts` 7/7, `tests/drakonc-agents.test.ts` 214/214, the
   agents trio 137/137, `pnpm typecheck` 186 recorded diagnostics with no
   regression, and `node scripts/build-runtime-modules.mjs --check` consistent.
   Negative control in a throwaway `/tmp` copy: reverting the wiring fails the
@@ -124,6 +124,6 @@ T3.
 - 2026-10-05: native review approved on lineage `review-a4cfe36504f2efd4`,
   target `sha256:b1701bbe` (tier medium, lens `review-reliability`, correction
   budget 200); the exact acknowledgement burned authority under
-  `gentle-ai.review-acknowledged/v1`. One non-blocking advisory,
+  `drakonc-ai.review-acknowledged/v1`. One non-blocking advisory,
   `R3-stuck-busy-wedge` against this file's `lib/herdr-busy.ts`, disposition
   informational: follow-up work, not a correction for this candidate.

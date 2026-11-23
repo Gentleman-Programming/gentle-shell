@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { resolveSessionWorktree, type WorktreeResolver } from "./session-worktree-registry.ts";
 
-// gentle-shell#1731: concurrent bounded writers are admitted only when their
+// drakonc-shell#1731: concurrent bounded writers are admitted only when their
 // `## Allowed edit surfaces` are disjoint. Overlap is deliberately conservative:
 // an entry covers every path it matches and everything under such a path, and
 // any entry or segment this module cannot reason about counts as overlapping.

@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createDesktopFeedExtension, type DesktopFeedOptions } from "../extensions/gentle-desktop-feed.ts";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import { createDesktopFeedExtension, type DesktopFeedOptions } from "../extensions/drakonc-desktop-feed.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import {
 	buildDesktopFeedSnapshot,
 	createDesktopFeedScheduler,
@@ -28,7 +28,7 @@ import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
 // Owner discovery waits up to 100 ms for a responder; let it settle.
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
-const GENTLE_ENV = { PI_PROGRAM_STATUS_APP: "gentle-shell", HERDR_ENV: "1", HERDR_PANE_ID: "t7" };
+const DRAKONC_ENV = { PI_PROGRAM_STATUS_APP: "drakonc-shell", HERDR_ENV: "1", HERDR_PANE_ID: "t7" };
 
 // ---- Fixtures ----
 
@@ -52,8 +52,8 @@ function fixtureInput(overrides: Partial<DesktopFeedInput> = {}): DesktopFeedInp
 		todo: { tasks: [{ id: 1, title: "Write tests", status: "done" }, { id: 2, title: "Build feed", status: "in_progress", note: "T4" }, { id: 3, title: "Old idea", status: "dropped" }], nextId: 4, updatedTurn: 2 },
 		changes: { model, worktrees: [{ root: "/w", branch: "feat/x", model }] },
 		agents: [
-			{ id: "a1", agent: "gentle-writer", status: "running", model: "sonnet", lastStep: "writing", thinking: "medium", usage: { total: 1000, cost: 0.5 } },
-			{ id: "a2", agent: "gentle-verifier", status: "completed", model: "haiku", lastStep: "completed", usage: { total: 200, cost: 0.1 } },
+			{ id: "a1", agent: "drakonc-writer", status: "running", model: "sonnet", lastStep: "writing", thinking: "medium", usage: { total: 1000, cost: 0.5 } },
+			{ id: "a2", agent: "drakonc-verifier", status: "completed", model: "haiku", lastStep: "completed", usage: { total: 200, cost: 0.1 } },
 		],
 		jobs: [
 			{ id: "j1", label: "npm test", status: "running", startedAt: Date.UTC(2026, 10, 14, 11, 59, 0) },
@@ -136,7 +136,7 @@ function fakeCtx(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-function feedHarness(t: test.TestContext, options: Partial<DesktopFeedOptions> = {}, env: NodeJS.ProcessEnv = GENTLE_ENV) {
+function feedHarness(t: test.TestContext, options: Partial<DesktopFeedOptions> = {}, env: NodeJS.ProcessEnv = DRAKONC_ENV) {
 	const agentDir = mkdtempSync(join(tmpdir(), "desktop-feed-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	const clock = fakeTimers();
@@ -207,8 +207,8 @@ test("S2: the snapshot carries every TUI field in the v1 schema shape", () => {
 		},
 		agents: {
 			items: [
-				{ id: "a1", name: "gentle-writer", role: null, state: "running", step: "writing", model: "sonnet", thinking: "medium", spend: { tokens: 1000, cost: 0.5 } },
-				{ id: "a2", name: "gentle-verifier", role: null, state: "completed", step: "completed", model: "haiku", thinking: null, spend: { tokens: 200, cost: 0.1 } },
+				{ id: "a1", name: "drakonc-writer", role: null, state: "running", step: "writing", model: "sonnet", thinking: "medium", spend: { tokens: 1000, cost: 0.5 } },
+				{ id: "a2", name: "drakonc-verifier", role: null, state: "completed", step: "completed", model: "haiku", thinking: null, spend: { tokens: 200, cost: 0.1 } },
 			],
 			active: 1,
 			spend: { runs: 2, tokens: 1200, cost: 0.6 },
@@ -236,7 +236,7 @@ test("S2: unknown sources stay null instead of guessed values", () => {
 });
 
 test("S3: the snapshot names its agent dir as an absolute path, bundled, Pi extension or custom home", () => {
-	for (const dir of ["/Users/me/.gentle-shell/agent", "/Users/me/.pi/agent", "/srv/custom-home"]) {
+	for (const dir of ["/Users/me/.drakonc-shell/agent", "/Users/me/.pi/agent", "/srv/custom-home"]) {
 		assert.equal(buildDesktopFeedSnapshot(fixtureInput({ identity: { ...fixtureInput().identity, agentDir: dir } })).identity.agentDir, dir);
 	}
 	const relative = buildDesktopFeedSnapshot(fixtureInput({ identity: { ...fixtureInput().identity, agentDir: "rel/agent" } })).identity.agentDir;
@@ -403,7 +403,7 @@ test("S2: the extension writes once per burst and never rewrites an unchanged sn
 test("S2: todo, review and attention events reach the snapshot", async (t) => {
 	const h = feedHarness(t);
 	await h.start();
-	h.fire("tool_execution_end", { toolCallId: "t1", toolName: "todo", isError: false, result: { details: { gentleTodo: { tasks: [{ id: 1, title: "Ship", status: "in_progress" }], nextId: 2, updatedTurn: 1 } } } }, h.ctx);
+	h.fire("tool_execution_end", { toolCallId: "t1", toolName: "todo", isError: false, result: { details: { drakoncTodo: { tasks: [{ id: 1, title: "Ship", status: "in_progress" }], nextId: 2, updatedTurn: 1 } } } }, h.ctx);
 	h.bus.emit(REVIEW_SIDEBAR_EVENT, { sessionId: "sess-1", snapshot: { state: "consent", scope: "a.ts" } });
 	h.bus.emit(REVIEW_SIDEBAR_EVENT, { sessionId: "other", snapshot: { state: "closed", scope: "b.ts" } });
 	h.clock.run();
@@ -471,8 +471,8 @@ test("S2/S5: questionnaires, extension dialogs and content-free consent prompts 
 test("S9: the snapshot lists the session's slash commands: pi's built-ins first, then its own, bounded", () => {
 	const snapshot = buildDesktopFeedSnapshot(fixtureInput({
 		commands: [
-			{ name: "gentle:status", description: "Show the Gentle status", source: "extension" },
-			{ name: "gentle:desktop", description: "Desktop RPC", source: "extension" },
+			{ name: "drakonc:status", description: "Show the Drakonc status", source: "extension" },
+			{ name: "drakonc:desktop", description: "Desktop RPC", source: "extension" },
 			{ name: "review", description: "x".repeat(900), source: "prompt" },
 			{ name: "skill:odd", description: undefined, source: "skill" },
 			{ name: "bad\u0007name", description: "control characters", source: "extension" },
@@ -482,7 +482,7 @@ test("S9: the snapshot lists the session's slash commands: pi's built-ins first,
 	const items = snapshot.commands.items;
 	assert.deepEqual(items.slice(0, DESKTOP_FEED_BUILTIN_COMMANDS.length).map((item) => item.source), DESKTOP_FEED_BUILTIN_COMMANDS.map(() => "builtin"));
 	assert.deepEqual(items.slice(DESKTOP_FEED_BUILTIN_COMMANDS.length), [
-		{ name: "gentle:status", description: "Show the Gentle status", args: null, terminal: true, source: "extension" },
+		{ name: "drakonc:status", description: "Show the Drakonc status", args: null, terminal: true, source: "extension" },
 		{ name: "review", description: `${"x".repeat(DESKTOP_FEED_LIMITS.commandText - 1)}…`, args: null, terminal: false, source: "prompt" },
 		{ name: "skill:odd", description: null, args: null, terminal: false, source: "skill" },
 		{ name: "badname", description: "control characters", args: null, terminal: true, source: "extension" },
@@ -514,11 +514,11 @@ test("S9: every listed built-in is one pi really has", async () => {
 test("S9: the extension publishes pi's command registry and keeps working without one", async (t) => {
 	const h = feedHarness(t);
 	(h.pi as unknown as { getCommands: () => unknown[] }).getCommands = () => [
-		{ name: "gentle:changes", description: "Open the changes panel", source: "extension", sourceInfo: { path: "/secret/ext.ts" } },
+		{ name: "drakonc:changes", description: "Open the changes panel", source: "extension", sourceInfo: { path: "/secret/ext.ts" } },
 	];
 	await h.start();
 	const extension = h.read().commands.items.filter((item) => item.source !== "builtin");
-	assert.deepEqual(extension, [{ name: "gentle:changes", description: "Open the changes panel", args: null, terminal: true, source: "extension" }]);
+	assert.deepEqual(extension, [{ name: "drakonc:changes", description: "Open the changes panel", args: null, terminal: true, source: "extension" }]);
 	assert.ok(!readFileSync(h.file, "utf8").includes("/secret/ext.ts"), "source paths never reach the snapshot");
 	const bare = feedHarness(t);
 	await bare.start();
@@ -546,7 +546,7 @@ test("S2: shutdown removes the snapshot, cancels the pending write and ignores l
 });
 
 test("S2: children, plain Pi and print sessions publish nothing", async (t) => {
-	for (const [env, mode] of [[{ ...GENTLE_ENV, GENTLE_PI_AGENTS_CHILD: "1" }, "tui"], [{}, "tui"], [GENTLE_ENV, "print"], [GENTLE_ENV, "rpc"]] as const) {
+	for (const [env, mode] of [[{ ...DRAKONC_ENV, DRAKONC_PI_AGENTS_CHILD: "1" }, "tui"], [{}, "tui"], [DRAKONC_ENV, "print"], [DRAKONC_ENV, "rpc"]] as const) {
 		const h = feedHarness(t, {}, env);
 		await h.start(fakeCtx({ mode }));
 		assert.deepEqual(h.writes, [], `${JSON.stringify(env)} ${mode}`);
@@ -588,11 +588,11 @@ test("S2: desktop RPC jobs answers and events are byte-identical with the feed l
 		const agentDir = mkdtempSync(join(tmpdir(), "desktop-feed-rpc-"));
 		t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 		const clock = fakeTimers();
-		if (withFeed) createDesktopFeedExtension({ env: { ...GENTLE_ENV, [INTERACTIVE_HOST_ENV]: "1" }, agentDir, timers: clock.timers, git: () => async () => ({ stdout: "", code: 128 }), parentOf: async () => undefined, profile: () => ({ name: undefined, tier: undefined }), sweep: () => {} })(harness.pi);
+		if (withFeed) createDesktopFeedExtension({ env: { ...DRAKONC_ENV, [INTERACTIVE_HOST_ENV]: "1" }, agentDir, timers: clock.timers, git: () => async () => ({ stdout: "", code: 128 }), parentOf: async () => undefined, profile: () => ({ name: undefined, tier: undefined }), sweep: () => {} })(harness.pi);
 		const ctx = fakeCtx({ mode: "rpc" });
 		harness.fire("session_start", { reason: "startup" }, ctx);
 		await settle();
-		await harness.commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "r1", method: "list_jobs", params: {} }), ctx);
+		await harness.commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "r1", method: "list_jobs", params: {} }), ctx);
 		jobs = [...jobs, { id: "j2", label: "build", status: "exited", startedAt: 2, endedAt: 3, exitCode: 0 }];
 		for (const fn of [...observers]) fn("sess-1");
 		await settle();
@@ -600,7 +600,7 @@ test("S2: desktop RPC jobs answers and events are byte-identical with the feed l
 		await settle();
 		clock.run();
 		const feed = withFeed ? JSON.parse(readFileSync(desktopFeedFile(agentDir, "sess-1"), "utf8")) as DesktopFeedSnapshot : undefined;
-		return { lines: ctx.widgets.filter((widget) => widget.key === "gentle-desktop-rpc").map((widget) => widget.lines[0]), feed };
+		return { lines: ctx.widgets.filter((widget) => widget.key === "drakonc-desktop-rpc").map((widget) => widget.lines[0]), feed };
 	};
 	const without = await run(false);
 	const withFeed = await run(true);

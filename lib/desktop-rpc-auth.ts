@@ -1,4 +1,4 @@
-// Gentle Desktop credential-status slice: the pure contract shared by the
+// Drakonc Desktop credential-status slice: the pure contract shared by the
 // Desktop bridge (`lib/desktop-auth-service.ts`) and Pi's model registry.
 //
 // It answers which providers have credentials and of which kind, never a

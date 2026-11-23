@@ -1,6 +1,6 @@
-// Gentle Desktop design-canvas bridge: reaches the existing design owner (the
+// Drakonc Desktop design-canvas bridge: reaches the existing design owner (the
 // single `DesignCanvas` from `createDesignCanvas`, plus `listDesigns`, inside
-// `extensions/gentle-design.ts`) through a defensive, versioned owner-service
+// `extensions/drakonc-design.ts`) through a defensive, versioned owner-service
 // event/adapter — the design analogue of the usage `discoverDesktopUsageService`
 // seam. It never starts a server, opens a browser, or keeps a second canvas
 // store: every read and every transition is the owner's own answer, shaped into
@@ -62,7 +62,7 @@ interface DesktopDesignBridgeOptions {
  * become ordered events, and it owns the session-scoped lifecycle: a reset
  * (session replacement or shutdown) disconnects the owner observer and drops
  * stale async outcomes. There is no open/stop method here — those remain the
- * `gentle_design` tool's job.
+ * `drakonc_design` tool's job.
  */
 export class DesktopDesignBridge {
 	private readonly pi: ExtensionAPI;

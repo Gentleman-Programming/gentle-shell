@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
-// gentle-shell #55 / #57 / #125 / #2348: the reply language is inferred every
+// drakonc-shell #55 / #57 / #125 / #2348: the reply language is inferred every
 // turn,
 // never stored, so the persona prompt itself must say how to infer it. The
 // rule lives on the single existing language-match bullet (the concept-level
 // duplication guard allows exactly one), so these tests read the rendered
 // prompt rather than a second rule.
 
-for (const persona of ["gentleman", "neutral"] as const) {
+for (const persona of ["drakoncman", "neutral"] as const) {
 	test(`[${persona}] the reply language follows the user's latest message, never a Spanish default (#125, #57)`, () => {
-		const prompt = __testing.buildGentlePrompt(persona);
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.match(prompt, /Always respond in the same language the user writes in\./);
 		assert.match(
 			prompt,
@@ -25,7 +25,7 @@ for (const persona of ["gentleman", "neutral"] as const) {
 		);
 	});
 	test(`[${persona}] harness-generated turns are never a language signal (#2348)`, () => {
-		const prompt = __testing.buildGentlePrompt(persona);
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.match(
 			prompt,
 			/Only a message written by the human can select or change the reply language/,
@@ -45,7 +45,7 @@ for (const persona of ["gentleman", "neutral"] as const) {
 }
 
 test("[neutral] the voseo prohibition covers regular and irregular forms, not only four irregular verbs (#55)", () => {
-	const prompt = __testing.buildGentlePrompt("neutral");
+	const prompt = __testing.buildDrakoncPrompt("neutral");
 	assert.match(prompt, /Do NOT use voseo/);
 	assert.match(prompt, /regular or irregular: use tú or usted forms, never vos forms/);
 	for (const pair of ["ajustas, not ajustás", "vives, not vivís", "mira, not mirá", "haz, not hacé"]) {
@@ -53,9 +53,9 @@ test("[neutral] the voseo prohibition covers regular and irregular forms, not on
 	}
 });
 
-test("[gentleman] Spanish replies keep Rioplatense voseo and get no neutral-only rule", () => {
-	const prompt = __testing.buildGentlePrompt("gentleman");
+test("[drakoncman] Spanish replies keep Rioplatense voseo and get no neutral-only rule", () => {
+	const prompt = __testing.buildDrakoncPrompt("drakoncman");
 	assert.match(prompt, /When the user writes Spanish, answer in natural Rioplatense Spanish with voseo\./);
 	assert.ok(!prompt.includes("Language: natural Rioplatense"), "P14 PD-57: the persona bullet states the register once, with no second Language line");
-	assert.doesNotMatch(prompt, /never vos forms/, "gentleman prompt must not inherit the neutral voseo prohibition");
+	assert.doesNotMatch(prompt, /never vos forms/, "drakoncman prompt must not inherit the neutral voseo prohibition");
 });

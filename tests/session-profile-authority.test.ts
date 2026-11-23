@@ -18,10 +18,10 @@ import {
  type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { loadExtensionFromFactory } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import gentleAgents, {
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
+import drakoncAgents, {
  type SessionTransportFactory,
-} from "../extensions/gentle-agents.ts";
+} from "../extensions/drakonc-agents.ts";
 import { bindSessionRepositoryPreparation } from "../lib/bounded-writer-admission.ts";
 import { SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
@@ -44,7 +44,7 @@ for (const order of ["agents-only", "agents-first", "owner-first"] as const)
     );
    const manager = SessionManager.create(root, join(root, "sessions"));
    manager.appendMessage({ role: "user", content: "fixture", timestamp: 1 });
-   manager.appendCustomEntry("gentle-pi.session-profile/v99", {
+   manager.appendCustomEntry("drakonc-pi.session-profile/v99", {
     kind: "future",
    });
    const initialDisk = readFileSync(manager.getSessionFile()!, "utf8");
@@ -69,13 +69,13 @@ for (const order of ["agents-only", "agents-first", "owner-first"] as const)
    const runtime = createExtensionRuntime(),
     bus = createEventBus();
    const agentsFactory = (pi: ExtensionAPI) =>
-    gentleAgents(
+    drakoncAgents(
      pi,
      {},
      {
       home,
       agentHome: join(home, ".pi", "agent"),
-      env: { GENTLE_PI_CONFIG_HOME: join(root, "config") },
+      env: { DRAKONC_PI_CONFIG_HOME: join(root, "config") },
       sessionTransport: transport,
       schedule: () => () => {},
       childExtensionPaths: [],
@@ -89,10 +89,10 @@ for (const order of ["agents-only", "agents-first", "owner-first"] as const)
       },
      },
     );
-   const ownerFactory = createGentleAiExtension({
+   const ownerFactory = createDrakoncAiExtension({
     nativeReviewCli: null,
     candidateViews: null,
-    processEnv: { GENTLE_PI_AGENTS_CHILD: "1" },
+    processEnv: { DRAKONC_PI_AGENTS_CHILD: "1" },
    });
    const factories =
     order === "agents-only"
@@ -205,7 +205,7 @@ test("U3 independently evaluated binding readers share only process-local snapsh
  );
  clearSessionProfileBinding("u3-module");
  assert.equal(copy.readSessionProfileBinding("u3-module"), undefined);
- assert.equal(SESSION_PROFILE_CUSTOM_TYPE, "gentle-pi.session-profile/v1");
+ assert.equal(SESSION_PROFILE_CUSTOM_TYPE, "drakonc-pi.session-profile/v1");
 });
 
 // Profile-less branches never depend on parsing the rest of the session file.
@@ -233,7 +233,7 @@ test("a profile-less saved branch drops a binding left from another branch", (t)
  assert.equal(readSessionProfileBinding(manager.getSessionId()), undefined);
 });
 
-// A2 (gentle-shell#2742, section 4): the newest corroborated record publishes
+// A2 (drakonc-shell#2742, section 4): the newest corroborated record publishes
 // its origin and startup state, and a startup-none clear stays distinct from a
 // legacy clear; each later record replaces it, as on /tree.
 test("publishing keeps the record's origin and startup state, and the newest record replaces them", () => {

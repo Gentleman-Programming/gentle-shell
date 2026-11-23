@@ -9,7 +9,7 @@ const model: Model<Api> = { id: "local", provider: "fixture", api: "fixture", na
 	baseUrl: "http://invalid.local", reasoning: true, input: ["text"], contextWindow: 32000, maxTokens: 1024,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 const receipt = (targetSessionId = "owner", digest = "a"): MetadataReceipt => Object.freeze<MetadataReceipt>({
-	schema: "gentle-agents.consultation/v1", kind: "metadata", status: "available", source: "published_snapshot",
+	schema: "drakonc-agents.consultation/v1", kind: "metadata", status: "available", source: "published_snapshot",
 	ownerReply: false, authority: "none", targetSessionId, observedAt: 123, freshness: "recent", digest,
 	snapshot: { label: "Owner", workspace: "/recorded", tasks: [], omittedTasks: 0, scope: null, catalog: null,
 		state: { schema: 1, sessionId: targetSessionId, recordedAt: 1, cwd: "/recorded", source: "owner-curated",

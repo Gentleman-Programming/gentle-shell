@@ -9,7 +9,7 @@ import { writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
 // The module-level selector gate reads process.env directly (that path has
 // no deps.env injection); keep the suite hermetic regardless of the ambient
 // shell so the off-path assertions cannot be flipped by the environment.
-delete process.env.GENTLE_PI_HISTORY_CAPTURE;
+delete process.env.DRAKONC_PI_HISTORY_CAPTURE;
 
 function makeRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-off-"));
@@ -51,7 +51,7 @@ function loadWithCommand(
     agentDir: path.join(root, "agent"),
     sessionsRoot: path.join(root, "sessions"),
     // An empty config home by default: the Customize preference is unset (off).
-    gentlePiConfigHome: configHome,
+    drakoncPiConfigHome: configHome,
   });
   const command = commands.find(([name]) => name === "history");
   assert.ok(command, "the history command must be registered");
@@ -92,11 +92,11 @@ test("with capture disabled, the history command imports nothing and warns", asy
   assert.equal(notifyCalls.length, 1);
   assert.equal(notifyCalls[0][1], "warning");
   assert.ok(
-    notifyCalls[0][0].includes("GENTLE_PI_HISTORY_CAPTURE"),
+    notifyCalls[0][0].includes("DRAKONC_PI_HISTORY_CAPTURE"),
     `the warning must name the switch, got: ${notifyCalls[0][0]}`,
   );
   assert.ok(
-    notifyCalls[0][0].includes("Gentle → Customize"),
+    notifyCalls[0][0].includes("Drakonc → Customize"),
     `the warning must name the Customize control, got: ${notifyCalls[0][0]}`,
   );
   // The gate must fire before the drain: no migration, no seed, no store.
@@ -105,7 +105,7 @@ test("with capture disabled, the history command imports nothing and warns", asy
 
 test("with capture enabled, opening the selector reads without initializing the store", async () => {
   const root = makeRoot();
-  const { commandHandler } = loadWithCommand({ GENTLE_PI_HISTORY_CAPTURE: "1" }, root);
+  const { commandHandler } = loadWithCommand({ DRAKONC_PI_HISTORY_CAPTURE: "1" }, root);
   // Open before the opted-in warm-up tick: the open flow alone must not
   // migrate, register, seed, or create a capture file.
   const notifyCalls: Array<[string, string]> = [];
@@ -123,7 +123,7 @@ test("the Customize preference opens the selector without the env switch", async
   assert.equal(notifyCalls[0][1], "warning");
   assert.match(notifyCalls[0][0], /disabled/);
   // The same loaded extension honors a later toggle without restart.
-  writeHistoryCapturePolicy("on", { gentlePiConfigHome: configHome });
+  writeHistoryCapturePolicy("on", { drakoncPiConfigHome: configHome });
   await commandHandler([], fakeCtx(notifyCalls));
   assert.deepEqual(notifyCalls[1], ["No prompt history available.", "warning"]);
 });
@@ -131,12 +131,12 @@ test("the Customize preference opens the selector without the env switch", async
 test("an explicit env off names the override instead of the Customize fix", async () => {
   const root = makeRoot();
   const configHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-off-config-"));
-  writeHistoryCapturePolicy("on", { gentlePiConfigHome: configHome });
-  const { commandHandler } = loadWithCommand({ GENTLE_PI_HISTORY_CAPTURE: "false" }, root, configHome);
+  writeHistoryCapturePolicy("on", { drakoncPiConfigHome: configHome });
+  const { commandHandler } = loadWithCommand({ DRAKONC_PI_HISTORY_CAPTURE: "false" }, root, configHome);
   const notifyCalls: Array<[string, string]> = [];
   await commandHandler([], fakeCtx(notifyCalls));
   assert.equal(notifyCalls.length, 1);
-  assert.match(notifyCalls[0][0], /disabled by GENTLE_PI_HISTORY_CAPTURE, which overrides the Gentle → Customize → History preference/);
+  assert.match(notifyCalls[0][0], /disabled by DRAKONC_PI_HISTORY_CAPTURE, which overrides the Drakonc → Customize → History preference/);
   assert.deepEqual(fs.readdirSync(root), []);
 });
 
@@ -150,9 +150,9 @@ test("a malformed Customize preference is reported as invalid, not just off", as
   await commandHandler([], fakeCtx(notifyCalls));
   assert.equal(notifyCalls.length, 1);
   assert.equal(notifyCalls[0][1], "warning");
-  assert.match(notifyCalls[0][0], /Gentle → Customize → History preference is invalid or unreadable/);
+  assert.match(notifyCalls[0][0], /Drakonc → Customize → History preference is invalid or unreadable/);
   assert.ok(notifyCalls[0][0].includes(preference), `the warning must name the file, got: ${notifyCalls[0][0]}`);
-  assert.ok(notifyCalls[0][0].includes("GENTLE_PI_HISTORY_CAPTURE=1"));
+  assert.ok(notifyCalls[0][0].includes("DRAKONC_PI_HISTORY_CAPTURE=1"));
   // Reporting never repairs: the malformed file and the store stay untouched.
   assert.equal(fs.readFileSync(preference, "utf8"), "{not json");
   assert.deepEqual(fs.readdirSync(root), []);
@@ -162,7 +162,7 @@ test("an env value that defers to a malformed preference still reports it", asyn
   const root = makeRoot();
   const configHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-off-config-"));
   fs.writeFileSync(path.join(configHome, "history-capture.json"), "[]", "utf8");
-  const { commandHandler } = loadWithCommand({ GENTLE_PI_HISTORY_CAPTURE: "maybe" }, root, configHome);
+  const { commandHandler } = loadWithCommand({ DRAKONC_PI_HISTORY_CAPTURE: "maybe" }, root, configHome);
   const notifyCalls: Array<[string, string]> = [];
   await commandHandler([], fakeCtx(notifyCalls));
   assert.equal(notifyCalls.length, 1);

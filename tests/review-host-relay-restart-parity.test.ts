@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 
-// gentle-pi#311 P6 — restart parity for the provider-relay capture lane.
+// drakonc-pi#311 P6 — restart parity for the provider-relay capture lane.
 //
 // P1-P5 proved same-process STATUS re-query after a relay transport failure
 // (tests/review-host-relay-routing.test.ts): the capture tool re-queries STATUS
@@ -16,10 +16,10 @@ import test from "node:test";
 // not merely asserted.
 //
 // Each scenario runs the controller in its own child process with a fresh
-// module load of extensions/gentle-ai.ts. Module-level state and every closure
+// module load of extensions/drakonc-ai.ts. Module-level state and every closure
 // restart from scratch. The truthful restart protocol uses the public surface:
 //   1. Process A: INSPECT exposes one opaque collectBinding, which is copied
-//      unchanged to exactly one gentle_review_capture invocation. The relay
+//      unchanged to exactly one drakonc_review_capture invocation. The relay
 //      transport fails without capture or source/authority mutation.
 //   2. Process B (fresh): INSPECT queries fresh provider STATUS and exposes the
 //      pending opaque collectBinding; it invokes neither capture nor the relay.
@@ -72,7 +72,7 @@ function relayCollectInput(lineageId, lens, order) {
 			{ name: "agent", value: "pi", token: "--agent=pi" },
 			{ name: "materialize", value: "true", token: "--materialize=true" },
 		],
-		// gentle-pi#638: the artifact subject is what makes the slot declarable —
+		// drakonc-pi#638: the artifact subject is what makes the slot declarable —
 		// its subject_hash is the --request-hash the capture-unachievable verb
 		// binds to. A slot without one cannot be declared, only retried.
 		artifactSubject: {
@@ -132,7 +132,7 @@ function collectStatus(lineageId, inputs) {
 }
 
 function repository(t) {
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-relay-restart-")));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-relay-restart-")));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	execFileSync("git", ["init", "-b", "main"], { cwd });
 	writeFileSync(join(cwd, "app.ts"), "export const value = 1;\n");
@@ -142,7 +142,7 @@ function repository(t) {
 }
 
 function restartWorkerSource() {
-	const extensionUrl = pathToFileURL(join(import.meta.dirname, "..", "extensions", "gentle-ai.ts")).href;
+	const extensionUrl = pathToFileURL(join(import.meta.dirname, "..", "extensions", "drakonc-ai.ts")).href;
 	const relayUrl = pathToFileURL(join(import.meta.dirname, "..", "lib", "review-host-relay.ts")).href;
 	const terminalSubmission = JSON.stringify({
 		schema: "gentle-ai.review-last-event-closure/v1",
@@ -244,7 +244,7 @@ await writeFile(outFile, JSON.stringify({ result, inspectResult, captureBinding,
 }
 
 function runWorker(t, cwd, statuses, mode) {
-	const scratch = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-relay-restart-run-")));
+	const scratch = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-relay-restart-run-")));
 	t.after(() => rmSync(scratch, { recursive: true, force: true }));
 	const statusFile = join(scratch, "statuses.json");
 	const outFile = join(scratch, "out.json");
@@ -265,7 +265,7 @@ function inspectCollectBinding(inspectResult) {
 const PENDING = collectStatus(LINEAGE, [relayCollectInput(LINEAGE, LENS, ORDER)]);
 const CONVERGED = collectStatus(LINEAGE, []);
 
-// gentle-pi#638: the typed stop the provider renders once the slot is declared
+// drakonc-pi#638: the typed stop the provider renders once the slot is declared
 // unachievable — no collect inputs, one withdraw binding per declared slot.
 // Built in the same plain-object style as collectStatus: typed fields for the
 // controller, raw fields for the envelope passthrough.
@@ -329,7 +329,7 @@ function unachievableStopStatus(lineageId, lens, order) {
 }
 const UNACHIEVABLE_STOP = unachievableStopStatus(LINEAGE, LENS, ORDER);
 
-// gentle-pi#638: the declared slot must not survive the restart as a reoffer.
+// drakonc-pi#638: the declared slot must not survive the restart as a reoffer.
 // Process A declares after the deterministic bound kill; fresh Process B sees
 // the provider's typed stop with the withdraw hint instead of the public
 // collectBinding it would have seen before the declaration.
@@ -347,7 +347,7 @@ test("an unachievable declaration survives the controller restart as a typed sto
 	assert.equal(declared.unachievableCalls.length, 1, "the declaration is recorded exactly once");
 	assert.deepEqual(declared.unachievableCalls, [{ cwd, lineageId: LINEAGE, targetIdentity: SHA, expectedRevision: SHA, requestHash: `sha256:${String(ORDER).repeat(64)}`, reason: "relay_transport_bound_exceeded", detail: "killed after 2256004ms against a 2256000ms relay bound", repositoryContext: `rctx1_${"e".repeat(64)}` }]);
 	assert.equal(declared.statusCalls.length, 3, "inspect and selection STATUS plus exactly one bound re-query");
-	assert.equal(declared.result.tool, "gentle_review_capture");
+	assert.equal(declared.result.tool, "drakonc_review_capture");
 	assert.equal(declared.result.status, "blocked");
 	assert.equal(declared.result.outcome, "unachievable-lens-slot-declared");
 	assert.equal(declared.result.mutation_performed, true);
@@ -377,7 +377,7 @@ test("a fresh controller process reoffers the exact public binding before one ca
 	assert.equal(failure.relayRequests.length, 1, "Process A observes exactly one pending slot");
 	assert.equal(failure.statusCalls.length, 2, "Process A performs INSPECT and the selected capture STATUS only");
 	assert.deepEqual(failure.statusCalls, [{ cwd }, { cwd, lineageId: LINEAGE }]);
-	assert.equal(failure.result.tool, "gentle_review_capture");
+	assert.equal(failure.result.tool, "drakonc_review_capture");
 	assert.equal(failure.result.status, "blocked");
 	assert.equal(failure.result.outcome, "pi-host-relay-transport-failure");
 	assert.deepEqual(failure.result.failure, { kind: "pi-failed", stage: "pi", exit_code: 4, timed_out: false });
@@ -412,7 +412,7 @@ test("a fresh controller process reoffers the exact public binding before one ca
 	assert.equal(relaunch.captureBinding, observedBinding, "Process C copies the exact reoffered binding");
 	assert.deepEqual(relaunch.relayRequests[0], observedRelayRequest, "the relay receives the same provider-owned slot after restart");
 	assert.deepEqual(relaunch.relayRequests[0].submission, providerSubmission(LINEAGE, LENS, ORDER));
-	assert.equal(relaunch.result.tool, "gentle_review_capture");
+	assert.equal(relaunch.result.tool, "drakonc_review_capture");
 	assert.equal(relaunch.result.status, "closed");
 	assert.equal(relaunch.result.outcome, "native-last-event-closure");
 	assert.equal(relaunch.result.closure.operation, "review/capture-result");
@@ -434,7 +434,7 @@ test("a fresh controller process reoffers the exact public binding before one ca
 	assert.equal(ambiguous.captureCalls, 1, "ambiguous capture is never replayed");
 	assert.equal(ambiguous.relayRequests.length, 1, "ambiguity does not relaunch the relay");
 	assert.deepEqual(ambiguous.statusCalls, [{ cwd }, { cwd, lineageId: LINEAGE }, { cwd, lineageId: LINEAGE }], "one capture STATUS plus one reconciliation STATUS");
-	assert.equal(ambiguous.result.tool, "gentle_review_capture");
+	assert.equal(ambiguous.result.tool, "drakonc_review_capture");
 	assert.equal(ambiguous.result.status, "reconciled");
 	assert.equal(ambiguous.result.outcome, "native-capture-outcome-unknown");
 });

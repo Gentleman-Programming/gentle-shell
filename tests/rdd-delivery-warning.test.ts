@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 
 const NOTICE = "RDD: this repository has an unreviewed candidate; review it before delivery.";
 const unreviewed = { applicability: "current_target", targetIdentity: "t", nextTransition: { kind: "execute", execute: { operation: "review.start" } } };
@@ -16,7 +16,7 @@ async function run(effective: "on" | "off", command: string, targetStatus: () =>
 	let statusCalls = 0;
 	let modeCalls = 0;
 	const cli = { reviewMode: async () => { modeCalls++; return { status: { effective } }; }, targetStatus: async () => { statusCalls++; return targetStatus(); } };
-	createGentleAiExtension({ nativeReviewCli: cli as never })(pi);
+	createDrakoncAiExtension({ nativeReviewCli: cli as never })(pi);
 	const notices: Array<[string, string | undefined]> = [];
 	const ctx = { cwd, hasUI: true, ui: { confirm: async () => true, notify: (message: string, level?: string) => notices.push([message, level]) } } as unknown as ExtensionContext;
 	const result = await handlers.get("tool_call")!({ toolName: "bash", input: { command } }, ctx);

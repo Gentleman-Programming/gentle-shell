@@ -19,13 +19,13 @@ Linux clean-container run passed (see
 builds three archives with stable names, attached to every release by the
 `installers` job of `publish.yml` after the verified npm publication (same
 commit, `contents: write` only in that job), with
-`gentle-shell-installers-SHA256SUMS.txt`:
+`drakonc-shell-installers-SHA256SUMS.txt`:
 
 | Asset | Launcher |
 | --- | --- |
-| `gentle-shell-installer-macos.zip` | `Gentle Shell Installer/Install Gentle Shell.command` |
-| `gentle-shell-installer-windows.zip` | `Gentle Shell Installer/Install Gentle Shell.cmd` (CRLF, ends with `pause`) |
-| `gentle-shell-installer-linux.tar.gz` | `gentle-shell-installer/install-gentle-shell.sh` |
+| `drakonc-shell-installer-macos.zip` | `Drakonc Shell Installer/Install Drakonc Shell.command` |
+| `drakonc-shell-installer-windows.zip` | `Drakonc Shell Installer/Install Drakonc Shell.cmd` (CRLF, ends with `pause`) |
+| `drakonc-shell-installer-linux.tar.gz` | `drakonc-shell-installer/install-drakonc-shell.sh` |
 
 Each launcher runs `installer/scripts/bootstrap.sh` (or `bootstrap.cmd`) next to
 it; `installer/` holds `package.json`, every `installerPaths` file and every
@@ -57,10 +57,10 @@ it lets the window close.
 `collectInventory`; see [Host probes](#host-probes).
 
 Current requirements come from `package.json` and
-[`gentle-ai-installer.mjs`](../scripts/gentle-ai-installer.mjs): Node `^22.19.0 || >=23.6.0`
+[`drakonc-ai-installer.mjs`](../scripts/drakonc-ai-installer.mjs): Node `^22.19.0 || >=23.6.0`
 (22.19.0 or a later 22.x release, or 23.6.0 or newer; 23.0–23.5 are not
-supported), Pi ≥1.2.0, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
-Gentle AI 5.0.0. Windows native source builds require Go ≥1.25.10 when the
+supported), Pi ≥1.2.0, pnpm acquisition 11.1.1, Drakonc Shell package 4.0.0 and package-local
+Drakonc AI 5.0.0. Windows native source builds require Go ≥1.25.10 when the
 required usable native binary is missing. A reusable binary does not require Go.
 When a build needs Go and the user's Go is missing, older or unchecked, the installer uses
 its own [pinned Go](#pinned-go) instead of blocking.
@@ -75,7 +75,7 @@ pairs produce an unsupported-target blocker and no actions. Native lanes,
 minimum OS versions, libc compatibility, artifact trust and elevation handling
 remain to be verified in later units.
 
-Probes are named `node`, `pnpm`, `pi`, `shell`, `gentleAi`, `go`, `globalBin`, and
+Probes are named `node`, `pnpm`, `pi`, `shell`, `drakoncAi`, `go`, `globalBin`, and
 `setup`, plus the optional advisory `git` (kept as `inventory.git` only when the
 probe answers) and Windows `folders`. `collectInventory` has no default probes; the real implementations live
 in [`installer-probes.mjs`](#host-probes). Probes must use bounded read-only
@@ -98,7 +98,7 @@ caller-provided functions; adapter implementations require review.
   required global-install capabilities. The acquisition pin is not a minimum:
   newer compatible pnpm is reusable. Do not infer compatibility from its version
   alone; the later acquisition adapter must validate the pinned engine too.
-- Gentle AI additionally needs `compatible: true`: evidence from the normal
+- Drakonc AI additionally needs `compatible: true`: evidence from the normal
   package-local binary resolution/integrity contract, for the selected Shell
   installation. Its exact installer pin is required; another version blocks
   rather than being overwritten. Do not confuse an unrelated PATH binary with
@@ -124,9 +124,9 @@ caller-provided functions; adapter implementations require review.
 
 Tool statuses distinguish `unavailable`, `unknown`, `incompatible`, `reusable`,
 `needs-setup`, `needs-update`, `needs-install` and `not-required`. A known version below the minimum is `incompatible` even when the tool cannot
-run (for example an older Shell whose global command is missing); Gentle AI and
+run (for example an older Shell whose global command is missing); Drakonc AI and
 setup add no separate `unknown` blocker then, because they are only checked for
-the pinned Shell. When Node.js, Pi, Gentle Shell or Go is simply older than its
+the pinned Shell. When Node.js, Pi, Drakonc Shell or Go is simply older than its
 minimum, the wizard's guidance names the found and required versions (for the
 Shell, also the pnpm commands that update or remove it); other blockers keep
 their fixed guidance. A missing, older or unchecked Go is not a blocker: `tools.go` is
@@ -140,7 +140,7 @@ the bootstrap's pinned copy runs the wizard: the probe reports that copy
 `tools.pnpm` records `found` and the persisted pin as `version`. When the
 found Node is in `$PNPM_HOME/bin`, the probe and plan also record
 `foundInGlobalBin: true` (see [Existing installations](#existing-installations)). That copy is persisted
-only for a new installation of Gentle Shell: with an existing Shell (updated or
+only for a new installation of Drakonc Shell: with an existing Shell (updated or
 current) the replaced runtime is an `incompatible-tool` blocker before consent,
 except for a setup recovery, which persists nothing. A user's pnpm in
 `$PNPM_HOME/bin`, where persisting pnpm writes, is never reported as `found`:
@@ -156,7 +156,7 @@ installer uses its own verified pnpm. An older Pi is not a blocker: one that pnp
 `needs-update`, and one neither owns is `needs-install` (see
 [Existing installations](#existing-installations)). A Pi or Shell command on PATH that pnpm does not manage
 stays `unknown` (never replaced), and its probe adds `outsidePnpm: true` so the
-guidance can say so; Gentle AI and setup add no separate blocker while the Shell
+guidance can say so; Drakonc AI and setup add no separate blocker while the Shell
 blocks. Any blocker suppresses all actions: repairing an
 existing incompatible or uncertain component requires a later explicit decision,
 not automatic replacement. `ready` means no acquisition/setup is indicated by
@@ -165,8 +165,8 @@ this inventory, **not that verification has executed**.
 A clean target receives these intents in dependency order:
 
 1. Acquire and verify Node, then pnpm; prepare the usable global-bin environment.
-2. When a build needs Go (the main channel, or a Windows Gentle Shell install or
-   update whose postinstall may build Gentle AI) and Go is missing, older or unchecked,
+2. When a build needs Go (the main channel, or a Windows Drakonc Shell install or
+   update whose postinstall may build Drakonc AI) and Go is missing, older or unchecked,
    `acquire-go` and `verify-go` come next, before every persistence and install
    step, so a failed Go download leaves the computer as it was.
 3. Persist only what is missing. A bootstrap-only reusable Node gets the full
@@ -179,13 +179,13 @@ A clean target receives these intents in dependency order:
    it gets at most one intent, `persist-npm` (npm 11.19.0) when no usable
    npm resolves (on POSIX a working npm from any version manager is usable), `persist-pnpm` (pnpm 11.1.1) when pnpm is bootstrap-only, or
    `persist-package-managers` when both are missing.
-4. Install Pi globally, then `gentle-pi` globally (its existing postinstall owns
+4. Install Pi globally, then `drakonc-pi` globally (its existing postinstall owns
    native installation). For an existing Shell with missing native binary, call
    the existing installer instead.
 5. Run normal Shell setup and verify stack readiness. Verification is always
    included, even when all components can be reused.
 
-A recoverable setup (the pinned stack is installed, Gentle AI is verified and
+A recoverable setup (the pinned stack is installed, Drakonc AI is verified and
 only setup did not finish) plans exactly `setup-global-bin` (only when the
 global bin is off PATH), `setup-shell` and `verify-readiness`: never an
 acquisition, persistence or installation intent. See
@@ -195,7 +195,7 @@ Actions are structured `{ id, kind, target, version? }` descriptors, **not shell
 commands**. Later runners must re-inventory after changes, verify prerequisite
 versions and global-bin readiness before dependent steps, obtain explicit consent
 and stop on mandatory failures. They must preserve existing versions/paths and
-use normal global package ownership and default `~/.gentle-shell/agent` semantics.
+use normal global package ownership and default `~/.drakonc-shell/agent` semantics.
 No alternate product root, Engram database/server, credential migration or custom
 companion installer belongs in this plan.
 
@@ -220,14 +220,14 @@ sh -n scripts/bootstrap.sh
 ## Host probes
 
 `scripts/installer-probes.mjs` exports `createProbes({ platform, env, run, fs,
-home?, verifyGentleAi? })`, returning the eight named probes for
+home?, verifyDrakoncAi? })`, returning the eight named probes for
 `collectInventory`. `env` is the wizard's own environment, with bootstrap tools
 first on PATH. Every probe returns the documented shape or the unknown shape
 `{ available: null }`; adapter errors are caught and never retained.
 
 | Export | Contract |
 | --- | --- |
-| `bootstrapRoots({ platform, env })` | Bootstrap tool roots: an absolute `GENTLE_BOOTSTRAP_TOOLS` plus every PATH entry segment named `.gentle-shell-bootstrap-tools.*` (case-insensitive on Windows). |
+| `bootstrapRoots({ platform, env })` | Bootstrap tool roots: an absolute `DRAKONC_BOOTSTRAP_TOOLS` plus every PATH entry segment named `.drakonc-shell-bootstrap-tools.*` (case-insensitive on Windows). |
 | `userEnvironment({ platform, env })` | A copy of `env` whose PATH omits entries inside those roots: the user's real PATH. |
 | `hostAdapters({ maxOutputBytes?, maxTextBytes? })` | Real `run` and read-only `fs` adapters, described below. |
 
@@ -260,21 +260,21 @@ the listing; truncated, nonzero, signalled or timed-out output is unknown.
 | --- | --- |
 | `node` | The first `node` on the user's real PATH (Go `exec.LookPath` order, PATHEXT on Windows), else the bootstrap one. `persistent` says which. `npm` is the runner's usable-npm proof in the user's real PATH with `$PNPM_HOME/bin` first, so a bootstrap npm never counts. A Windows `.cmd`/`.bat` cannot run with `shell:false`: a Node that resolves to one is unknown, and npm is run through what its shim runs ([Windows command shims](#windows-command-shims)). |
 | `pnpm` | The runner's invocation (bootstrap handoff, or a POSIX `pnpm` on PATH). `compatible` requires a successful run (pnpm checks its Node engine at startup) at the pin or newer, of any major: the runner's commands were run with pnpm 12 against a pnpm 11 global home and back (see [pnpm 12](#pnpm-12)). `persistent` is whether any `pnpm` resolves on the real PATH. A Windows user pnpm in `$PNPM_HOME\bin` whose shim or target fails the storage walk is never run: the bootstrap's pnpm is reported in its place with `inGlobalBin: true`, `untrusted: true` and `persistent: true`, so it does not block and nothing is persisted over it. A user pnpm in `$PNPM_HOME/bin` whose shim is not recognized, or whose `--version` does not report a stable version, is handled the same way with `unchecked: true` instead, on every platform. |
-| `pi`, `shell` | pnpm-global entries from the listing. A package that is not pnpm-global but whose command (`pi`, `gentle-shell`) resolves on the real PATH is unknown, never absent, so another installation is not duplicated. On Windows a `pi.cmd` or `gentle-shell.cmd` is run, and its package found, through what the shim runs; an unknown shim is never run. Shell is `usable` only when `$PNPM_HOME/bin/gentle-shell` (`.cmd` on Windows) exists. |
-| `gentleAi` | Absent without gentle-pi or without its package-native binary. Otherwise compatible only for this package version, a listed path that resolves inside PNPM_HOME and `verifyGentleAi` (default `packageNativeGentleAi`) success; anything else is unknown. |
+| `pi`, `shell` | pnpm-global entries from the listing. A package that is not pnpm-global but whose command (`pi`, `drakonc-shell`) resolves on the real PATH is unknown, never absent, so another installation is not duplicated. On Windows a `pi.cmd` or `drakonc-shell.cmd` is run, and its package found, through what the shim runs; an unknown shim is never run. Shell is `usable` only when `$PNPM_HOME/bin/drakonc-shell` (`.cmd` on Windows) exists. |
+| `drakoncAi` | Absent without drakonc-pi or without its package-native binary. Otherwise compatible only for this package version, a listed path that resolves inside PNPM_HOME and `verifyDrakoncAi` (default `packageNativeDrakoncAi`) success; anything else is unknown. |
 | `go` | `go version` from the real PATH; `go1.22` normalizes to `1.22.0`; devel and release-candidate builds are unknown. |
-| `folders` | Windows only, after the other probes: the commands `node`, `npm`, `go`, `pi` and `gentle-shell` resolve to on the real PATH, and what each one runs, walked in one Windows PowerShell launch (`verifyWindowsStorageMany`). Returns `{ node?, npm?, go?, pi?, shell? }` with the first failing path's finding per tool, or `null`. A walk that cannot finish is `null`, never a blocker ([reused tool folders](#reused-tool-folders)). |
+| `folders` | Windows only, after the other probes: the commands `node`, `npm`, `go`, `pi` and `drakonc-shell` resolve to on the real PATH, and what each one runs, walked in one Windows PowerShell launch (`verifyWindowsStorageMany`). Returns `{ node?, npm?, go?, pi?, shell? }` with the first failing path's finding per tool, or `null`. A walk that cannot finish is `null`, never a blocker ([reused tool folders](#reused-tool-folders)). |
 | `git` | Advisory only, for the standard and the bundled plan alike: `{ available }` from `git` on the real PATH, never run. On macOS `/usr/bin/git` is a shim that opens an install dialog without the Command Line Tools, so `xcode-select -p` (which never opens one) decides it; another Git first on PATH counts as it is. A missing Git adds a **Git not found** notice before consent (`gitNotice`) with the install command for the system (`sudo apt-get install -y git` on Debian or Ubuntu, `xcode-select --install`, `winget install --id Git.Git -e`). Installing does not need Git, and it is never a blocker; code review, worktrees and repository features do need it. |
 | `globalBin` | `pnpmGlobalBin` over the real PATH; `writable` is write access on the nearest existing ancestor of `$PNPM_HOME/bin` (itself included). A non-directory ancestor is not writable. |
-| `setup` | `false` when gentle-pi is absent. `{ available: true, recoverable: true }` for the pinned stack this pnpm installed (see [Setup recovery](#setup-recovery)), using the runner's `recoverableStackRoot`. Unknown otherwise, because an existing Shell's setup readiness has no read-only evidence. |
+| `setup` | `false` when drakonc-pi is absent. `{ available: true, recoverable: true }` for the pinned stack this pnpm installed (see [Setup recovery](#setup-recovery)), using the runner's `recoverableStackRoot`. Unknown otherwise, because an existing Shell's setup readiness has no read-only evidence. |
 
-A failed, empty or unparseable listing makes Pi, Shell, Gentle AI and setup
+A failed, empty or unparseable listing makes Pi, Shell, Drakonc AI and setup
 unknown, which blocks planning. A package listed in two projects is ambiguous
 and unknown.
 
 ## Bundled installation
 
-A new installation can install Gentle Shell as one self-contained product
+A new installation can install Drakonc Shell as one self-contained product
 instead: its own pinned Node.js (with the npm in the same archive), pnpm, Pi,
 and Go on Windows. The user's Node.js, npm, pnpm, Go and Pi are not used or
 changed. The building blocks are in [bundled install](bundled-install.md);
@@ -287,7 +287,7 @@ bundled plan is used only when all of these hold:
 
 - The channel is `release`.
 - The target is macOS, Linux or Windows on x64 or arm64.
-- Preflight found no Gentle Shell (`shell.available === false`). An existing
+- Preflight found no Drakonc Shell (`shell.available === false`). An existing
   one that a global pnpm or npm owns migrates instead (`migrationGate`, see
   [Migration from a global install](bundled-install.md#migration-from-a-global-install)).
   Any other existing or unknown one keeps the current path.
@@ -296,7 +296,7 @@ bundled plan is used only when all of these hold:
   `readDistribution` accepts them.
 
 The assets are fetched from
-`https://github.com/Gentleman-Programming/gentle-shell/releases/download/v<version>/`:
+`https://github.com/Drakoncman-Programming/drakonc-shell/releases/download/v<version>/`:
 
 - The download asks for the identity encoding.
 - It is bounded to 64 KiB for the manifest and 8 MiB for the lockfile.
@@ -330,14 +330,14 @@ It then runs and logs these steps, in this order:
 
 | Step | What it does |
 |---|---|
-| `claim-prefix` | `claimPrefix`: `~/.gentle-shell`, or the Windows private folder. |
+| `claim-prefix` | `claimPrefix`: `~/.drakonc-shell`, or the Windows private folder. |
 | `copy-npm-settings` | Writes the filtered copy of the user's npmrc (S12) into the prefix. |
 | `install-runtime` | `ensureRuntime`: our Node with its npm, and pnpm. Go too on Windows. |
 | `install-version` | `installVersion` from the release lockfile, `--frozen-lockfile`. |
 | `activate-version` | `activateVersion`. |
 | `write-launcher` | `ensureLauncher`. |
 | `bundled-path` | `applyPathEntry`, only for a link, a profile line or the HKCU user Path. The change is planned again first; one that differs from the consented plan is not applied. |
-| `shell-setup` | `gentle-shell setup` in `setupEnvironment`: the launcher on POSIX, and our Node with the same entry on Windows. |
+| `shell-setup` | `drakonc-shell setup` in `setupEnvironment`: the launcher on POSIX, and our Node with the same entry on Windows. |
 
 A migration plan adds `verify-launcher` (the launcher's `--version` must print
 both exact versions) before `bundled-path`, and ends with `remove-global-shell`.
@@ -361,17 +361,17 @@ On Windows the user Path is edited by `windowsPathRegistry`:
 ### What this path does not change yet
 
 - Preflight still probes the user's tools, as it does today. T5 removes those probes.
-- On POSIX, gentle-pi 4.0.0's postinstall and `gentle-shell setup` run `go version`
+- On POSIX, drakonc-pi 4.0.0's postinstall and `drakonc-shell setup` run `go version`
   from the user's PATH, which follows ours. Observed in a local run; Go is never
   used for the POSIX release path.
-- Gentle AI's Engram step in `gentle-shell setup` runs on its own terms. On macOS
+- Drakonc AI's Engram step in `drakonc-shell setup` runs on its own terms. On macOS
   it ran `brew install engram`. T4 (S9) owns that.
 
 ## Standard installation runner
 
 `scripts/installer-runner.mjs` exports `runStandardInstall({ plan, consent },
 adapters)`, the fixed installation step the local wizard host
-(`bin/gentle-shell-install.mjs`, below) calls after bootstrap and a fresh
+(`bin/drakonc-shell-install.mjs`, below) calls after bootstrap and a fresh
 preflight. It is a pure module: every process, filesystem,
 environment, integrity and log effect goes through adapters supplied by trusted
 local code, never through the browser.
@@ -393,12 +393,12 @@ those changes before asking.
 | Adapter | Contract |
 | --- | --- |
 | `platform` | `linux`, `darwin` or `win32`. |
-| `nodePath` | Absolute Node executable of the trusted host, used for npm proof and `gentle-shell setup`. |
+| `nodePath` | Absolute Node executable of the trusted host, used for npm proof and `drakonc-shell setup`. |
 | `env` | The user's environment. Never mutated; child environments are copies. |
 | `home` | Optional; defaults to `HOME` (`USERPROFILE` on Windows). |
 | `run(command, argv, { env, deadlineMs })` | Argv arrays with `shell:false` semantics and a hard deadline; returns `{ code, signal, timedOut, stdout }` with bounded output. |
 | `fs` | Read-only `isFile`, `realpath`, `readText` (also used to read pnpm's npm shim). The runner has no delete or write operation. |
-| `verifyGentleAi({ packageRoot, platform, env, home })` | Returns `{ ok: true }` only for package-native integrity. `packageNativeGentleAi` is the default implementation over `runtime/gentle-ai-binary.mjs`. |
+| `verifyDrakoncAi({ packageRoot, platform, env, home })` | Returns `{ ok: true }` only for package-native integrity. `packageNativeDrakoncAi` is the default implementation over `runtime/drakonc-ai-binary.mjs`. |
 | `log({ step, status, reason? })` | Receives step identifiers and statuses only, never raw command output or error text. |
 
 ### Fixed sequence
@@ -420,24 +420,24 @@ No-process gates, all returning `blocked`:
    reused stacks are `unsupported-plan`. `update-pi` (an
    [older Pi](#existing-installations)) needs `tools.pi` to be `needs-update`
    and never comes with `install-pi`; it may precede `install-shell` or an
-   update of Gentle Shell, or form a plan of its own with only `verify-readiness`.
-   With a reusable Gentle Shell, `install-pi` and `verify-readiness` alone are
+   update of Drakonc Shell, or form a plan of its own with only `verify-readiness`.
+   With a reusable Drakonc Shell, `install-pi` and `verify-readiness` alone are
    supported too (`tools.pi` `unavailable` or `needs-install`).
 3. Go: `acquire-go` and `verify-go` come together, only when `tools.go` is
    `needs-acquire` and the plan builds with Go (the main overlay,
    `update-shell-main`, or any Windows plan other than a recovery or a Pi-only
    plan); otherwise `unsupported-plan`. On Windows, Go must be `reusable` or
-   acquired in such a plan because gentle-pi's postinstall may build Gentle AI
+   acquired in such a plan because drakonc-pi's postinstall may build Drakonc AI
    from source (`go-required`). A recovery or a Pi-only update runs no
    postinstall, so it needs no Go.
 4. `pnpmGlobalBin` resolves PNPM_HOME (`pnpm-home-unknown` otherwise) and
    `nodePath` is absolute. A Windows plan with a private PNPM_HOME must name
    that same folder (`pnpm-home-changed` otherwise).
-5. pnpm comes from the bootstrap handoff `GENTLE_INSTALL_PNPM_NODE` +
-   `GENTLE_INSTALL_PNPM_ENTRY` (both absolute), or on POSIX from a `pnpm`
+5. pnpm comes from the bootstrap handoff `DRAKONC_INSTALL_PNPM_NODE` +
+   `DRAKONC_INSTALL_PNPM_ENTRY` (both absolute), or on POSIX from a `pnpm`
    executable on PATH. Windows requires the handoff because a `.cmd` shim cannot
    run with `shell:false` (`pnpm-unavailable`); a native pnpm the bootstrap
-   reused arrives alone as the absolute `.exe` in `GENTLE_INSTALL_PNPM_COMMAND`.
+   reused arrives alone as the absolute `.exe` in `DRAKONC_INSTALL_PNPM_COMMAND`.
 
 Every child process receives the user's environment plus `PNPM_HOME` and
 `$PNPM_HOME/bin` first on PATH. With a private Windows PNPM_HOME, the children
@@ -448,12 +448,12 @@ first step, `prepare-pnpm-home`, claims that folder before any command
 
 Pre-install checks, returning `blocked` on a false result or adapter error:
 
-1. `check-npm`: Gentle AI's normal Pi install always runs an Engram init step
+1. `check-npm`: Drakonc AI's normal Pi install always runs an Engram init step
    that can use `npm exec` and stops on failure. The runner resolves `npm` the
-   way Go's `exec.LookPath` (used by Gentle AI) does: absolute child PATH
+   way Go's `exec.LookPath` (used by Drakonc AI) does: absolute child PATH
    directories in order and, on Windows, every child PATHEXT extension in
    PATHEXT order (case-insensitive keys; default `.COM;.EXE;.BAT;.CMD`). On
-   POSIX that first candidate is accepted when it works the way Gentle AI
+   POSIX that first candidate is accepted when it works the way Drakonc AI
    will run it, whatever installed it (Node.js, Homebrew, nvm, fnm, or a
    mise, asdf or Volta shim): run directly from `/` in the child environment
    (30-second deadline each), `npm --version` must print a stable version and
@@ -478,7 +478,7 @@ Pre-install checks, returning `blocked` on a false result or adapter error:
 2. `check-global-bin`: `pnpm bin -g` must succeed and equal `$PNPM_HOME/bin`
    (`global-bin-mismatch`; case-insensitive on Windows).
 3. `check-existing-stack`: `pnpm list -g --depth 0 --json` runs before any
-   mutation. If `@earendil-works/pi-coding-agent` or `gentle-pi` appears in the
+   mutation. If `@earendil-works/pi-coding-agent` or `drakonc-pi` appears in the
    dependencies, devDependencies or optionalDependencies of any listed project,
    the runner blocks as `existing-stack` and never overwrites it, whatever the
    caller's plan says. A failed, timed-out or unparseable listing, or an
@@ -492,40 +492,40 @@ Mutating and verification steps, returning `failed` with `failedStep` and the
 [runtime persistence](#runtime-persistence) steps run next:
 
 1. `install-global`: exactly one
-   `pnpm add -g @earendil-works/pi-coding-agent@1.2.0 gentle-pi@<package version> --allow-build=gentle-pi`.
-   pnpm 11 installs each argument as its own global group, so gentle-pi gets
+   `pnpm add -g @earendil-works/pi-coding-agent@1.2.0 drakonc-pi@<package version> --allow-build=drakonc-pi`.
+   pnpm 11 installs each argument as its own global group, so drakonc-pi gets
    its optional peer Pi beside it, possibly newer than 1.2.0
-   ([The Pi that Gentle Shell runs](#the-pi-that-gentle-shell-runs)). pnpm 11
+   ([The Pi that Drakonc Shell runs](#the-pi-that-drakonc-shell-runs)). pnpm 11
    silently skips global postinstall scripts by default; the package-scoped
-   approval runs only gentle-pi's postinstall, which provisions Gentle AI. No
+   approval runs only drakonc-pi's postinstall, which provisions Drakonc AI. No
    blanket build approval is ever passed.
 2. `verify-global-list`: `pnpm list -g --depth 0 --json` must report exactly the
-   two pinned versions in the single listed project that owns gentle-pi
+   two pinned versions in the single listed project that owns drakonc-pi
    (other projects, such as the persisted npm and pnpm, are ignored), and
-   gentle-pi's absolute `path` must resolve inside PNPM_HOME. The Pi the
-   launcher runs from that real path, as Node resolves it (gentle-pi's own
-   `node_modules` first, then beside gentle-pi), must be a
+   drakonc-pi's absolute `path` must resolve inside PNPM_HOME. The Pi the
+   launcher runs from that real path, as Node resolves it (drakonc-pi's own
+   `node_modules` first, then beside drakonc-pi), must be a
    `@earendil-works/pi-coding-agent` package at a stable version at least the
    minimum (1.2.0); a missing, unreadable, prerelease or older one fails. When
    it is not 1.2.0, the outcome reports it as `piVersion` and the wizard says
-   which Pi Gentle Shell runs.
-3. `verify-shell-bin`: `$PNPM_HOME/bin/gentle-shell` (`gentle-shell.cmd` on
+   which Pi Drakonc Shell runs.
+3. `verify-shell-bin`: `$PNPM_HOME/bin/drakonc-shell` (`drakonc-shell.cmd` on
    Windows) exists.
-4. `verify-gentle-ai`: package-native integrity of the installed package. A
-   declared development override (`GENTLE_PI_GENTLE_AI_DEV_BINARY` or its
+4. `verify-drakonc-ai`: package-native integrity of the installed package. A
+   declared development override (`DRAKONC_PI_DRAKONC_AI_DEV_BINARY` or its
    registration file) is never package-native proof and fails.
-5. `shell-setup`: the installed public CLI, `node <gentle-pi>/bin/gentle-shell.mjs
-   setup`, with the child environment minus every `GENTLE_BOOTSTRAP_*` and
-   `GENTLE_INSTALL_*` key (case-insensitive on Windows); pnpm commands keep the
+5. `shell-setup`: the installed public CLI, `node <drakonc-pi>/bin/drakonc-shell.mjs
+   setup`, with the child environment minus every `DRAKONC_BOOTSTRAP_*` and
+   `DRAKONC_INSTALL_*` key (case-insensitive on Windows); pnpm commands keep the
    handoff. Nonzero, signal or deadline fails. The runner neither duplicates
    setup logic nor writes the automatic provisioning marker. It requests the
-   last 4 KiB of setup's stderr, where `gentle-shell setup` reports errors, and
+   last 4 KiB of setup's stderr, where `drakonc-shell setup` reports errors, and
    a failure carries `detail`: the last error line (containing `Error:` or a
    pnpm `ERR_` code), else the last non-empty line, without terminal escapes,
    control or bidi characters, with the user's home replaced by `~` and at most
    300 characters (`setupErrorDetail`). The raw output is not kept; only this
    step, `persist-path`, `acquire-go` (the Go folder in its way), `install-global`,
-   the main steps `build-gentle-ai-main` and `install-shell-main`, and the update's
+   the main steps `build-drakonc-ai-main` and `install-shell-main`, and the update's
    `update-shell` have a detail. A failed `pnpm add -g` (`install-global`, or the
    main package's) takes it from the same 4-KiB stderr tail or, when that has no
    line, from stdout, where pnpm reports a failed postinstall; the postinstall
@@ -538,7 +538,7 @@ Mutating and verification steps, returning `failed` with `failedStep` and the
 6. `persist-path`, only when `$PNPM_HOME/bin` was not on the user's own PATH:
    `pnpm setup`, then the outcome is `terminal-action-required` with
    `action: "open-new-terminal"`. A child environment never proves that a fresh
-   terminal resolves `gentle-shell`. On POSIX, `pnpm setup` picks the profile
+   terminal resolves `drakonc-shell`. On POSIX, `pnpm setup` picks the profile
    to edit from the inherited `SHELL` variable (bash, zsh, fish, ksh, dash, sh
    or nushell); without it pnpm 11.1.1 fails with `ERR_PNPM_UNKNOWN_SHELL`,
    with another shell `ERR_PNPM_UNSUPPORTED_SHELL`. A terminal session always
@@ -558,18 +558,18 @@ which installs `@pnpm/exe` from the registry.
 
 ### Setup recovery
 
-`gentle-shell setup` runs after `add -g`, so a setup that stops (for example on
+`drakonc-shell setup` runs after `add -g`, so a setup that stops (for example on
 the [GitHub API limit](#github-api-limit-during-setup)) or a failed `pnpm setup`
-leaves Pi and gentle-pi installed. Rerunning the installer then completes that
+leaves Pi and drakonc-pi installed. Rerunning the installer then completes that
 installation instead of blocking as an existing stack.
 
 Detection is the setup probe, with the same rule the runner applies
-(`recoverableStackRoot`): the global listing names Pi and gentle-pi exactly
-once each, both in the single project that owns gentle-pi, Pi at exactly
-1.2.0 and gentle-pi at exactly this package's version, gentle-pi's path
-resolves (realpath) inside PNPM_HOME, and the Pi beside gentle-pi is at least
+(`recoverableStackRoot`): the global listing names Pi and drakonc-pi exactly
+once each, both in the single project that owns drakonc-pi, Pi at exactly
+1.2.0 and drakonc-pi at exactly this package's version, drakonc-pi's path
+resolves (realpath) inside PNPM_HOME, and the Pi beside drakonc-pi is at least
 the minimum. Preflight also requires Pi, Shell and
-Gentle AI to be `reusable`. Anything else (another version, a second listing,
+Drakonc AI to be `reusable`. Anything else (another version, a second listing,
 a path outside PNPM_HOME, Pi missing) keeps the setup probe unknown, so a
 foreign or other-version stack stays blocked exactly as before.
 
@@ -579,20 +579,20 @@ The recovery plan is all or nothing: `setup-shell`, `verify-readiness` and
 global packages again and blocks as `existing-stack-unverified` when the stack
 no longer matches (or as `global-list-unavailable` when pnpm cannot list).
 It skips `install-global` (never `add -g`) and continues with the unchanged
-`verify-global-list`, `verify-shell-bin`, `verify-gentle-ai`, `shell-setup`
+`verify-global-list`, `verify-shell-bin`, `verify-drakonc-ai`, `shell-setup`
 and, when planned, `persist-path`, with the same outcomes. A recovery never
 persists the runtime: the earlier run persisted it before installing the
 stack, and `check-npm` still proves a usable npm in the child environment.
 
-Rerunning `gentle-shell setup` is acceptable because it is the public,
+Rerunning `drakonc-shell setup` is acceptable because it is the public,
 rerunnable command the clean installation already runs; the runner adds no
-setup logic of its own. The review screen says "Gentle Shell is already
+setup logic of its own. The review screen says "Drakonc Shell is already
 installed; this completes setup" and offers **Complete setup**.
 
 ### Runtime persistence
 
 A bootstrap-acquired Node lives in a temporary tools directory, so a later
-terminal would not find `node` or the working npm that Gentle AI's Engram step
+terminal would not find `node` or the working npm that Drakonc AI's Engram step
 needs. Every persistence step uses the same pnpm argv prefix and child
 environment as the stack install, and the runner persists only what is missing.
 
@@ -658,35 +658,35 @@ Pi but never reinstalls or downgrades it, and nothing changes before consent.
 
 | Found | Plan |
 | --- | --- |
-| A compatible Pi (pnpm-global, or any `pi` on PATH whose `pi --version` reports a stable version ≥ the minimum) and no Gentle Shell | Install only Gentle Shell: `pnpm add -g gentle-pi@<version> --allow-build=gentle-pi`, after checking that pnpm lists no gentle-pi (`check-existing-shell`). Pi is left as it is, also when it is newer than 1.2.0. |
-| A Gentle Shell that pnpm or npm owns | `update-shell-release` when it is older, unusable or a main build; `update-shell-main` on the main channel (needs Go). Then `setup-shell`. A missing Pi is installed first (`install-pi`). |
-| A current Gentle Shell that npm owns, on release | Nothing to do. |
-| A Pi older than the minimum that pnpm or npm owns | `update-pi` to `PI_INSTALL_VERSION` with that package manager (`pnpm add -g @earendil-works/pi-coding-agent@<version>` or `npm install -g …`), before any Gentle Shell step: ahead of `install-shell` or `update-shell-*`, or alone when Gentle Shell is current. The plan names the found and target versions and the manager. |
-| A Pi older than the minimum that neither pnpm nor npm owns (mise, Homebrew, a standalone binary) | Left unchanged. `install-pi` adds the installer's Pi with pnpm exactly as when Pi is absent (in the same `pnpm add -g` as gentle-pi, before an update of Gentle Shell, or alone when Gentle Shell is current), and the plan says so before consent. |
-| A Gentle Shell neither pnpm nor npm owns (an `npm link` of a source checkout, for example) | Blocked with an explanation; never reinstalled. |
+| A compatible Pi (pnpm-global, or any `pi` on PATH whose `pi --version` reports a stable version ≥ the minimum) and no Drakonc Shell | Install only Drakonc Shell: `pnpm add -g drakonc-pi@<version> --allow-build=drakonc-pi`, after checking that pnpm lists no drakonc-pi (`check-existing-shell`). Pi is left as it is, also when it is newer than 1.2.0. |
+| A Drakonc Shell that pnpm or npm owns | `update-shell-release` when it is older, unusable or a main build; `update-shell-main` on the main channel (needs Go). Then `setup-shell`. A missing Pi is installed first (`install-pi`). |
+| A current Drakonc Shell that npm owns, on release | Nothing to do. |
+| A Pi older than the minimum that pnpm or npm owns | `update-pi` to `PI_INSTALL_VERSION` with that package manager (`pnpm add -g @earendil-works/pi-coding-agent@<version>` or `npm install -g …`), before any Drakonc Shell step: ahead of `install-shell` or `update-shell-*`, or alone when Drakonc Shell is current. The plan names the found and target versions and the manager. |
+| A Pi older than the minimum that neither pnpm nor npm owns (mise, Homebrew, a standalone binary) | Left unchanged. `install-pi` adds the installer's Pi with pnpm exactly as when Pi is absent (in the same `pnpm add -g` as drakonc-pi, before an update of Drakonc Shell, or alone when Drakonc Shell is current), and the plan says so before consent. |
+| A Drakonc Shell neither pnpm nor npm owns (an `npm link` of a source checkout, for example) | Blocked with an explanation; never reinstalled. |
 | A stable Node.js outside the supported range (mise, nvm, Homebrew, pnpm or an old installer) | The POSIX bootstrap acquires verified Node 24.21.0 and the plan persists it (`persist-node`, `persist-package-managers`, `configure-npm-prefix`). A Node already in `$PNPM_HOME/bin` is replaced even when a different Node appears first on PATH; that other Node is left unchanged. The plan says so before consent. An unknown or prerelease version still blocks. Windows: `bootstrap.cmd` does the same, and also acquires its Node for a user Node whose storage it cannot trust (nvm-windows' symlink, fnm's junction), which it never runs. |
 | A pnpm older than 11.1.1, or whose engine rejects the bootstrap's Node (or, for the bootstraps only, another major) | Left unchanged. Both bootstraps acquire the verified pnpm 11.1.1 as when pnpm is absent, and the plan persists it (`persist-pnpm`, or `persist-package-managers` with npm). The plan says so before consent. Unknown evidence still blocks. |
 | That pnpm in `$PNPM_HOME/bin` itself (where persisting pnpm writes) | Never replaced or downgraded. At 11.1.1 or newer, of any major (pnpm 12 included), it is used as it is and nothing is persisted over it. An older one blocks before consent; the guidance names the found and required versions and updates it with `pnpm self-update 11.1.1`. |
 | A pnpm in `$PNPM_HOME/bin` whose shim is not recognized or whose `pnpm --version` reports no stable version | Left unchanged and never run again. The bootstrap's verified pnpm runs the installer and nothing is persisted over it (no `persist-pnpm`). The plan says so before consent. |
-| An older Node.js or incompatible pnpm next to an existing Gentle Shell (updated or current) | Blocked before consent: runtimes are persisted only while installing Gentle Shell. A setup recovery is not blocked and persists nothing. |
+| An older Node.js or incompatible pnpm next to an existing Drakonc Shell (updated or current) | Blocked before consent: runtimes are persisted only while installing Drakonc Shell. A setup recovery is not blocked and persists nothing. |
 | A Go missing or older than the minimum (main channel, or a Windows build) | Left unchanged. The installer downloads its [pinned Go](#pinned-go) only for the build, and the plan says so before consent with the found version (or missing). A Go whose version cannot be checked gets the pinned Go the same way, and is never run for the build. A release install on macOS or Linux never downloads Go. |
 
 Ownership comes from real paths ([`installOwner`](../scripts/main-channel.mjs)):
 pnpm when the package lives under PNPM_HOME, npm only when it is
-`<npm root -g>/gentle-pi` itself. On Windows the probe follows
-`gentle-shell.cmd` to the package it runs, and npm and pnpm never run as a
+`<npm root -g>/drakonc-pi` itself. On Windows the probe follows
+`drakonc-shell.cmd` to the package it runs, and npm and pnpm never run as a
 `.cmd`: `runUpgrade` takes an `invocation(name)` adapter
 (`upgradeInvocation`) that runs npm through what `npm.cmd` runs
 (`npmInvocation`) and pnpm from the bootstrap handoff in the wizard, or through
-`windowsInvocation` of the first `pnpm` on PATH in `gentle-shell upgrade`. A
+`windowsInvocation` of the first `pnpm` on PATH in `drakonc-shell upgrade`. A
 manager that resolves only to a `.cmd` or `.bat` counts as missing. On macOS
 and Linux nothing changes: the command on PATH runs as it is. The update runs
-the same code as `gentle-shell upgrade --channel <channel>`
+the same code as `drakonc-shell upgrade --channel <channel>`
 (`check-installed-shell`, `update-shell`), then `verify-updated-shell` requires
 the same owner and a stable version not older than before (release) or a
 `-main.<sha12>` version (main), and for pnpm a Pi beside the updated
-gentle-pi at least the minimum (its version is reported when it is not 1.2.0);
-release also re-runs `verify-gentle-ai`. An
+drakonc-pi at least the minimum (its version is reported when it is not 1.2.0);
+release also re-runs `verify-drakonc-ai`. An
 update never runs `pnpm setup`: the existing installation already has its PATH.
 
 An older Pi uses the same ownership rule with its own package name
@@ -701,9 +701,9 @@ holds it. `update-pi` then runs `pnpm add -g` through the runner's pnpm, or the
 user's `npm install -g` with the user's environment. `verify-updated-pi`
 requires one Pi from the same owner (pnpm listing it twice makes it ambiguous),
 at `PI_INSTALL_VERSION` or newer, and for npm at the same root. A failure stops
-before any Gentle Shell step. With pnpm 11.1.1, `pnpm add -g` of a newer Pi
+before any Drakonc Shell step. With pnpm 11.1.1, `pnpm add -g` of a newer Pi
 replaces the existing global package in place (its isolated global directory is
-swapped), whether Pi was added alone or together with gentle-pi, so the next run
+swapped), whether Pi was added alone or together with drakonc-pi, so the next run
 sees a single Pi; `npm install -g` replaces it in npm's global root.
 
 An unsupported Node.js outside `$PNPM_HOME/bin` or incompatible pnpm is left
@@ -711,14 +711,14 @@ unchanged, and once the bootstrap has its pinned copy the installer never runs
 the user's copy for installation steps: the wizard and runner run under the bootstrap's Node (`process.execPath`),
 `persist-node` puts the pinned Node first in the runner's child `PATH`, and the
 runner invokes the bootstrap's pnpm by absolute path (`runnerEnvironment` puts
-its directory first on POSIX; Windows uses the `GENTLE_INSTALL_PNPM_*`
+its directory first on POSIX; Windows uses the `DRAKONC_INSTALL_PNPM_*`
 handoff). Persisting Node replaces a pnpm-managed found Node in
 `$PNPM_HOME/bin`. The wizard reads the user's pnpm only for its `--version`
 (POSIX, from `/`). The plan's runtime persistence text names the found and pinned
 versions and says whether the found Node is replaced or left unchanged. It promises no PATH
 precedence: a version manager such as `mise activate` puts its own paths first
 again on every prompt, so new terminals may still run the older Node or pnpm.
-An update of an existing Gentle Shell persists nothing, so an older Node or
+An update of an existing Drakonc Shell persists nothing, so an older Node or
 incompatible pnpm still blocks it (`incompatible-tool`).
 
 An older Pi that neither pnpm nor npm owns is never run, changed or removed. The
@@ -727,36 +727,36 @@ adds. Alone, `install-pi` is checked like a shell-only installation:
 `check-existing-pi` requires pnpm to list no Pi, `pnpm add -g` adds it, and
 `verify-installed-pi` requires one pnpm-global Pi at `PI_INSTALL_VERSION` or
 newer. The `pi` probe reads pnpm's global list before PATH, so the next run
-reuses the pnpm-global Pi and no longer looks at the other one. Gentle Shell
-prefers the Pi beside gentle-pi over any `pi` on PATH
-([The Pi that Gentle Shell runs](#the-pi-that-gentle-shell-runs)); a
+reuses the pnpm-global Pi and no longer looks at the other one. Drakonc Shell
+prefers the Pi beside drakonc-pi over any `pi` on PATH
+([The Pi that Drakonc Shell runs](#the-pi-that-drakonc-shell-runs)); a
 terminal's `pi` command may still run the older one when it comes first on PATH.
 
-### The Pi that Gentle Shell runs
+### The Pi that Drakonc Shell runs
 
-The launcher runs the Pi that Node resolves from gentle-pi (gentle-pi's own
+The launcher runs the Pi that Node resolves from drakonc-pi (drakonc-pi's own
 `node_modules`, then beside it), and only without one the first `pi` on PATH.
 pnpm 11 installs every `pnpm add -g` argument in its own isolated global
-directory (group) and auto-installs gentle-pi's optional peer Pi in gentle-pi's
+directory (group) and auto-installs drakonc-pi's optional peer Pi in drakonc-pi's
 group at the latest version: verified with pnpm 11.1.1 in an isolated
-PNPM_HOME, `pnpm add -g @earendil-works/pi-coding-agent@1.0.0 gentle-pi@4.0.0`
-lists Pi 1.0.0 while the Pi beside gentle-pi is 1.1.0. So Gentle Shell may run a
+PNPM_HOME, `pnpm add -g @earendil-works/pi-coding-agent@1.0.0 drakonc-pi@4.0.0`
+lists Pi 1.0.0 while the Pi beside drakonc-pi is 1.1.0. So Drakonc Shell may run a
 Pi newer than `PI_INSTALL_VERSION`, always at least the minimum: the runner
 verifies that Pi (`verify-global-list`, the setup recovery, a pnpm
 `verify-updated-shell`) and, when it is not `PI_INSTALL_VERSION` (1.6.0 now; the 1.0.0/1.1.0/1.2.0 figures above are that older verification), the outcome says which Pi
-Gentle Shell runs. `--config.auto-install-peers=false` would leave gentle-pi
+Drakonc Shell runs. `--config.auto-install-peers=false` would leave drakonc-pi
 with no Pi beside it, so the launcher would run any `pi` on PATH, and
 `--config.overrides` is ignored for global installs.
 
-Pi and gentle-pi stay separate pnpm groups on every path (the clean install,
-the main package and `gentle-shell upgrade`). A single comma-separated group
-(`pnpm add -g <pi>,gentle-pi@<version>`) would pin the Pi beside gentle-pi, but
+Pi and drakonc-pi stay separate pnpm groups on every path (the clean install,
+the main package and `drakonc-shell upgrade`). A single comma-separated group
+(`pnpm add -g <pi>,drakonc-pi@<version>`) would pin the Pi beside drakonc-pi, but
 pnpm replaces every existing group that shares a package with a new one: Pi's
 own `pi update` (`pnpm install -g @earendil-works/pi-coding-agent@<latest>`)
-then deleted the whole group, gentle-pi and its `gentle-shell` command
+then deleted the whole group, drakonc-pi and its `drakonc-shell` command
 included, and the group also replaced unrelated packages sharing the user's Pi
 group. User decision (2026-10-10): "Quitar el agrupamiento (recomendado)".
-Pinning the Pi gentle-pi runs at the package level (an exact gentle-pi
+Pinning the Pi drakonc-pi runs at the package level (an exact drakonc-pi
 dependency instead of the host peer) needs its own design.
 
 ### Documented decisions
@@ -770,11 +770,11 @@ dependency instead of the host peer) needs its own design.
 - <a id="pnpm-12"></a>A pnpm 12 in `$PNPM_HOME/bin` no longer blocks. Measured on
   macOS with pnpm 12.11.2 (`pnpm self-update` into an isolated `PNPM_HOME`): the
   bootstrap's pnpm 11.1.1 ran `bin -g`, `store path`, `add -g` of Pi and of
-  `gentle-pi --allow-build=gentle-pi`, and `list -g --depth 0 --json` there; then
-  pnpm 12 listed, re-added (the `gentle-shell upgrade` path) and removed the same
+  `drakonc-pi --allow-build=drakonc-pi`, and `list -g --depth 0 --json` there; then
+  pnpm 12 listed, re-added (the `drakonc-shell upgrade` path) and removed the same
   packages, and pnpm 11 still read the global home. Both majors share
   `store/v11` and `global/v11`. With pnpm 12 alone, `runtime set node … -g`,
-  `add -g npm@…`, Pi and `gentle-pi` also succeeded. pnpm 12 refuses
+  `add -g npm@…`, Pi and `drakonc-pi` also succeeded. pnpm 12 refuses
   `add -g pnpm` (`ERR_PNPM_GLOBAL_PNPM_INSTALL`); the installer never persists
   pnpm over a compatible one, so that command is not run.
 
@@ -790,20 +790,20 @@ publishes main builds, so main is built on this computer
   older Go, or one whose version cannot be checked, gets the
   [pinned Go](#pinned-go), first on the build's PATH. Main steps are added only when the
   plan installs or completes setup; a stack that is already set up switches with
-  `gentle-shell upgrade --channel main`, or the wizard's update plan below.
-- After the release stack is installed and `verify-gentle-ai` passed, the runner:
-  1. `build-gentle-ai-main`: resolves the latest `main` commit of
-     Gentleman-Programming/gentle-ai (GitHub API, raw SHA), runs
-     `go install github.com/gentleman-programming/gentle-ai/v5/cmd/gentle-ai@<sha>`
+  `drakonc-shell upgrade --channel main`, or the wizard's update plan below.
+- After the release stack is installed and `verify-drakonc-ai` passed, the runner:
+  1. `build-drakonc-ai-main`: resolves the latest `main` commit of
+     Drakoncman-Programming/drakonc-ai (GitHub API, raw SHA), runs
+     `go install github.com/drakoncman-programming/drakonc-ai/v5/cmd/drakonc-ai@<sha>`
      in a sealed Go environment (`GOPROXY=https://proxy.golang.org`,
      `GOSUMDB=sum.golang.org`, `GOTOOLCHAIN=local`, `GOFLAGS=-modcacherw`),
      asks Go (`go list -m -json`, same environment) which module version that
      commit is (a release tag such as `v4.2.0`, or a pseudo-version) and requires
      its origin to be that exact commit, requires the binary to embed that module
      version (`go version -m`) and to report it, all in the `.build` work
-     folder, and only then moves it to `<config home>/main/gentle-ai/<sha>/`
+     folder, and only then moves it to `<config home>/main/drakonc-ai/<sha>/`
      (a failed rebuild leaves an already registered build in place) and registers it as the
-     `gentle-pi.dev-binary/v1` override, which never falls back to the pinned
+     `drakonc-pi.dev-binary/v1` override, which never falls back to the pinned
      binary silently.
   2. `install-shell-main`: downloads the latest `main` commit's source tarball,
      extracts it (on Windows with `%SystemRoot%\System32\tar.exe` by absolute
@@ -811,45 +811,45 @@ publishes main builds, so main is built on this computer
      a `D:\…` archive path as a remote host and fails with `Cannot connect to D:
      resolve failed`), sets its version to `<version>-main.<sha12>`, removes `prepack` and `prepare`
      (which would run the full test suite), runs `pnpm run build:tower` so the
-     packed tarball includes `web/tower/dist` (otherwise `gentle-shell tower`
+     packed tarball includes `web/tower/dist` (otherwise `drakonc-shell tower`
      fails on a main-channel install), packs it with `pnpm pack` into
-     `<config home>/main/packages/`, runs `pnpm add -g <tgz> --allow-build=gentle-pi`
+     `<config home>/main/packages/`, runs `pnpm add -g <tgz> --allow-build=drakonc-pi`
      and requires `pnpm list -g` to report that exact version under PNPM_HOME,
      with a Pi at least the minimum beside it.
      Installing `github:` or codeload URLs directly is not used: pnpm runs
      `prepack` for both.
-  3. `record-channel`: writes `{"schema":"gentle-shell.channel/v1","channel":"main",
-     "shellCommit":…,"gentleAiCommit":…}` to `<config home>/channel.json`.
+  3. `record-channel`: writes `{"schema":"drakonc-shell.channel/v1","channel":"main",
+     "shellCommit":…,"drakoncAiCommit":…}` to `<config home>/channel.json`.
 - `shell-setup` then runs from the main package. The config home is
-  `GENTLE_PI_CONFIG_HOME` or `~/.pi/gentle-ai`, as for the dev-binary override.
-- `gentle-shell upgrade --channel main` builds with the user's Go only when it
+  `DRAKONC_PI_CONFIG_HOME` or `~/.pi/drakonc-ai`, as for the dev-binary override.
+- `drakonc-shell upgrade --channel main` builds with the user's Go only when it
   reports a stable version that meets the minimum. Otherwise (missing, older, or
   a version it cannot check) it builds with the pinned Go under
   `<config home>/tools/go`, downloading and verifying it there with the same
   `acquireGo` as the wizard when no earlier run published it, and only when
-  Gentle AI is rebuilt. A failed download stops the Gentle AI build with
+  Drakonc AI is rebuilt. A failed download stops the Drakonc AI build with
   `main-requires-tools` before it starts (a main Shell that moved is still
   installed, as below); the user's Go is never run for the build.
-- When the Gentle AI step of `gentle-shell upgrade --channel main` fails (the
+- When the Drakonc AI step of `drakonc-shell upgrade --channel main` fails (the
   build, its verification, or getting the pinned Go) and the main Shell moved,
   the upgrade still packs and installs that Shell, records no channel, prints
-  `Updated Gentle Shell to the latest main (<sha12>); Gentle AI was not updated.`
+  `Updated Drakonc Shell to the latest main (<sha12>); Drakonc AI was not updated.`
   and exits 1 with the original error (code and message) followed by
-  `; Gentle Shell was updated to main <sha12> but Gentle AI was not: run
-  gentle-shell upgrade --channel main to finish`. The retry then rebuilds Gentle
+  `; Drakonc Shell was updated to main <sha12> but Drakonc AI was not: run
+  drakonc-shell upgrade --channel main to finish`. The retry then rebuilds Drakonc
   AI with the new Shell's code, so a fix in the main-channel upgrade path reaches
   an install whose own copy of it is broken; a cause the new Shell does not fix
-  (a Go download that keeps failing, for example) still has to be resolved first. Until then Gentle AI stays the
+  (a Go download that keeps failing, for example) still has to be resolved first. Until then Drakonc AI stays the
   previously registered main build or the pinned binary: a rejected build is
   never registered. When the Shell install fails as well, its error is reported
-  with `; Gentle AI was not updated either (<Gentle AI error>)`. An unexpected
+  with `; Drakonc AI was not updated either (<Drakonc AI error>)`. An unexpected
   error that has no main-channel code (a filesystem `EACCES`, for example) is
   reported as `main-upgrade-incomplete` with its own message and the same
   suffix, so neither the retry advice nor either error is lost. When the Shell
-  is already current, a failed Gentle AI step fails as before, with nothing
+  is already current, a failed Drakonc AI step fails as before, with nothing
   installed or recorded. The wizard's runner is the one bundled with the
   downloaded installer and does not get this behavior from a newer main.
-- Trust: Gentle AI source is verified by Go's checksum database; the Gentle Shell
+- Trust: Drakonc AI source is verified by Go's checksum database; the Drakonc Shell
   source is fetched over TLS from GitHub by exact commit SHA, with no pinned
   digest. Main builds are development builds.
 
@@ -883,10 +883,10 @@ the computer as it was.
   print `go version go<pin> …`.
 - The pinned Go is never put on the user's PATH or profile, and the user's Go
   (Homebrew, mise, an official package, anything) is only asked its version
-  (`go version`, as the preflight probe always did), never changed or removed. The runner passes it by path to `build-gentle-ai-main` and puts its
-  `bin` directory first on PATH only for the children that may build Gentle AI:
-  `pnpm add -g` (gentle-pi's Windows postinstall finds `go.exe` there) and the
-  wizard's Gentle Shell update.
+  (`go version`, as the preflight probe always did), never changed or removed. The runner passes it by path to `build-drakonc-ai-main` and puts its
+  `bin` directory first on PATH only for the children that may build Drakonc AI:
+  `pnpm add -g` (drakonc-pi's Windows postinstall finds `go.exe` there) and the
+  wizard's Drakonc Shell update.
 - The plan copy before consent names the pinned version, the Go found (or
   missing), and that the user's Go, PATH and shell profile stay unchanged.
 
@@ -900,13 +900,13 @@ must establish on real Windows, macOS and Linux machines:
   PNPM_HOME for the installed layout, and prints a parseable JSON array (for
   example `[]`) when no global package exists yet; empty output would block
   a clean installation as `global-list-unavailable`;
-- Windows npm resolution matches Gentle AI's actual lookup, including its
+- Windows npm resolution matches Drakonc AI's actual lookup, including its
   current-directory handling;
-- the scoped `--allow-build=gentle-pi` postinstall provisions package-native
-  Gentle AI, including Windows source builds with the user's Go;
-- `gentle-shell setup` completes the Engram init step with the accepted npm, and
-  whether Gentle AI selects `pnpm dlx` or `npm exec`;
-- `pnpm setup` makes `gentle-shell` resolvable in a fresh terminal of each
+- the scoped `--allow-build=drakonc-pi` postinstall provisions package-native
+  Drakonc AI, including Windows source builds with the user's Go;
+- `drakonc-shell setup` completes the Engram init step with the accepted npm, and
+  whether Drakonc AI selects `pnpm dlx` or `npm exec`;
+- `pnpm setup` makes `drakonc-shell` resolvable in a fresh terminal of each
   supported shell (the Linux lab showed it does not make `pnpm` itself
   resolvable);
 - the chosen deadlines suffice on slow networks, and pnpm's registry and
@@ -928,13 +928,13 @@ must establish on real Windows, macOS and Linux machines:
   not download-time verification);
 - pnpm's update notifier contacting registry.npmjs.org during these commands;
 - `pnpm list -g --json` listing persisted npm/pnpm and the stack as separate
-  projects with a usable gentle-pi `path`;
+  projects with a usable drakonc-pi `path`;
 - the probes' `access(W_OK)` writability check, which ignores Windows ACLs, and
   process deadlines that kill only the direct child.
 
 ## Local wizard host and entry
 
-`bin/gentle-shell-install.mjs` is the entry the bootstrap's `launchWizard`
+`bin/drakonc-shell-install.mjs` is the entry the bootstrap's `launchWizard`
 starts with no argv and inherited stdio. It is not a `package.json` `bin`
 command; it ships inside the package's `bin/` directory and is listed in
 `scripts/verify-package-files.mjs` with the other installer files
@@ -947,16 +947,16 @@ command; it ships inside the package's `bin/` directory and is listed in
   read-only fs). Each plan request creates fresh probes, then
   `collectInventory` and `planPreflight` run server-side.
 - Runner: `runStandardInstall` with `nodePath: process.execPath`, the same
-  adapters, `packageNativeGentleAi` and `runnerEnvironment`: the user's real
+  adapters, `packageNativeDrakoncAi` and `runnerEnvironment`: the user's real
   PATH from `userEnvironment`, so a temporary bootstrap npm or node never counts
   as persistent and `onPath` stays truthful. A POSIX bootstrap pnpm, which the
   bootstrap passes only through PATH, stays reachable as the **last** PATH
   entry (its directory holds only the `pnpm` wrapper); Windows uses the
-  `GENTLE_INSTALL_PNPM_*` handoff, which `userEnvironment` keeps.
+  `DRAKONC_INSTALL_PNPM_*` handoff, which `userEnvironment` keeps.
 - The entry prints the session URL, then opens it through a private redirect
   file so the one-time code never appears in the opener's argv (visible to
   local process listings). `writeRedirect` creates a fresh `mkdtemp` directory
-  `gentle-shell-install-*` under the OS temp dir (mode 0700) holding
+  `drakonc-shell-install-*` under the OS temp dir (mode 0700) holding
   `open.html` (mode 0600, exclusive create): a static page with a meta refresh
   and a link to the session URL, no script. `openBrowser` passes only that file
   path to a fixed opener spawned with `shell:false` and detached:
@@ -981,7 +981,7 @@ runner's children through the terminal's process group, but SIGTERM does not.
 Known debt, not fixed yet: on SIGINT or SIGTERM, `close` does not wait for a
 running installation to settle, and runner deadlines kill only the direct child
 process, not the processes it started (for example, the ones `pnpm` or
-`gentle-shell setup` spawn).
+`drakonc-shell setup` spawn).
 
 ### Security model
 
@@ -1003,7 +1003,7 @@ exception from it is ignored.
   `Cross-Origin-Opener-Policy: same-origin`. No CORS header is ever sent; error
   bodies are generic codes such as `{ "error": "forbidden" }`.
 - Session: a 32-byte random secret becomes the cookie
-  `gentle_install_session` (`HttpOnly; SameSite=Strict; Path=/`). The printed
+  `drakonc_install_session` (`HttpOnly; SameSite=Strict; Path=/`). The printed
   URL `http://127.0.0.1:<port>/session?code=<code>` carries a separate random
   one-time code that expires after 2 minutes; a valid `GET /session` consumes it
   and answers 200 with a minimal HTML page that sets the cookie and refreshes
@@ -1015,7 +1015,7 @@ exception from it is ignored.
   `timingSafeEqual`. Every asset and `/api/*` request needs the cookie (401).
 - A request with an `Origin` other than `http://127.0.0.1:<port>` is rejected
   (403), including GET. Every `/api/*` request, GET included, needs the header
-  `X-Gentle-Install: 1` (403 otherwise, before any probe or plan rotation), so
+  `X-Drakonc-Install: 1` (403 otherwise, before any probe or plan rotation), so
   a cross-origin fetch always needs a CORS preflight, which never succeeds.
   POST also requires that exact Origin and `Content-Type: application/json`
   (415 otherwise).
@@ -1039,7 +1039,7 @@ simply unknown paths.
 | --- | --- |
 | `GET /session?code=` | Consumes the one-time code, sets the cookie and returns 200 `text/html` that refreshes to `/`; 401 for a missing, wrong, used or expired code. |
 | `GET /`, `/wizard.js`, `/wizard.css` | `index.html`, `wizard.js`, `wizard.css` from `assetsDir`; 404 when absent. |
-| `GET /api/plan` | Runs `collectPlan(channel)` server-side for `?channel=release` (also the default without a query) or `?channel=main`, stores the plan under a new opaque `planId` and returns a view model: `actions` (`id` plus a fixed English description), `blockers` (`code`, `tool` — a preflight tool key such as `node` or `gentleAi`, otherwise `unknown` — and guidance), `profileChange` (whether `pnpm setup` edits the shell profile or Windows user PATH, and the bin directory), `persistence` (which of node, npm and pnpm go under `$PNPM_HOME`), `sharedFolders` (Windows: `{ tools, description }` for reused tools whose folders another account can change, or `null`), `ready` and `channel`. 409 while installing. Any other query is 400. |
+| `GET /api/plan` | Runs `collectPlan(channel)` server-side for `?channel=release` (also the default without a query) or `?channel=main`, stores the plan under a new opaque `planId` and returns a view model: `actions` (`id` plus a fixed English description), `blockers` (`code`, `tool` — a preflight tool key such as `node` or `drakoncAi`, otherwise `unknown` — and guidance), `profileChange` (whether `pnpm setup` edits the shell profile or Windows user PATH, and the bin directory), `persistence` (which of node, npm and pnpm go under `$PNPM_HOME`), `sharedFolders` (Windows: `{ tools, description }` for reused tools whose folders another account can change, or `null`), `ready` and `channel`. 409 while installing. Any other query is 400. |
 | `POST /api/install` | Body exactly `{ "planId": string, "consent": true }` (400 otherwise, including extra keys or a plan). 409 `install-running` while an installation runs; 409 `already-completed` once an installation has a final outcome (one installation per wizard run; the outcome is never replaced); 409 `plan-changed` for a stale `planId` or when a fresh re-inventory differs from the stored plan. Otherwise 202, and the runner receives the server-stored plan with `consent: true`. |
 | `GET /api/progress?after=<seq>` | Entries `{ seq, step, status, reason }` after `seq` from a ring buffer of the last 200; values outside `[a-z][a-z0-9-]*` become `unknown`, and no other runner field is kept. Also `running` and the final `outcome` with fixed guidance. |
 | `POST /api/shutdown` | Body empty or `{}`. Closes the host (409 while installing). |
@@ -1048,16 +1048,16 @@ simply unknown paths.
 reason, every failed step, every preflight blocker code and both successful
 outcomes, plus a generic fallback; a runner exception becomes a `failed`
 outcome with the fallback. A failed `shell-setup`, `persist-path`, `acquire-go`, `install-global`,
-`install-shell-main`, `build-gentle-ai-main` or `update-shell` outcome also passes the
+`install-shell-main`, `build-drakonc-ai-main` or `update-shell` outcome also passes the
 runner's `detail` through, bounded again (string only, control and bidi
 characters removed, at most 300 characters); the host drops it for any other
 step. When that detail names GitHub's rate limit (`rate limit`, or `GitHub API`
 together with `403`), the guidance becomes `guidance.setupRateLimit`: GitHub's
 anonymous API limit was reached on this network, wait up to an hour and run the
-installer again. For `install-global`, `install-shell-main`, `build-gentle-ai-main`
+installer again. For `install-global`, `install-shell-main`, `build-drakonc-ai-main`
 and `update-shell`, the same match, or `main-commit-unavailable` together with
 `HTTP 403`, selects `guidance.githubRateLimit`, the same advice without naming
-`gentle-shell setup`. No token or credential is ever requested. For `persist-path`,
+`drakonc-shell setup`. No token or credential is ever requested. For `persist-path`,
 a detail with `ERR_PNPM_UNKNOWN_SHELL` or `ERR_PNPM_UNSUPPORTED_SHELL` selects
 `guidance.persistPathShell`: open a regular terminal and run the installer
 again, or add `$PNPM_HOME/bin` to PATH manually. For `acquire-go`, a detail
@@ -1066,8 +1066,8 @@ starting with `Conflicting Go destination: ` selects
 the way and is never replaced; remove that folder and run the installer again.
 For `install-version` and `install-global`, a detail with `spawn UNKNOWN` selects
 `guidance.codeIntegrityBlocked`: libuv reports a Windows code integrity refusal
-(Smart App Control, CodeIntegrity event 3077) of the `gentle-ai.exe` that
-gentle-pi's postinstall builds as `spawn UNKNOWN`. Windows has no per-program
+(Smart App Control, CodeIntegrity event 3077) of the `drakonc-ai.exe` that
+drakonc-pi's postinstall builds as `spawn UNKNOWN`. Windows has no per-program
 exception, so the guidance offers WSL or turning Smart App Control off (on
 Windows 11 it cannot be turned back on without reinstalling Windows) instead of
 network and registry advice.
@@ -1087,9 +1087,9 @@ HTML).
 | Screen | What the user sees |
 | --- | --- |
 | Check | Shown while `GET /api/progress?after=0` and `GET /api/plan` run. A running installation resumes the Install screen; a finished one shows its outcome instead of a new plan. |
-| Review | Each fixed action with its description, the `profileChange` and `persistence` disclosures (state as text: "Will change", "No change"), on Windows a **Tools in folders other accounts can change** notice when the plan records one ([reused tool folders](#reused-tool-folders)), a **Git not found** notice when Git is missing (never a blocker), one consent checkbox and **Install Gentle Shell** (for a setup recovery, "Finish setting up Gentle Shell" and **Complete setup**). Without the checkbox no request is sent; the error is announced and focus moves to the checkbox. Preflight blockers replace the plan with their guidance, **Check again** and **Close installer**. |
+| Review | Each fixed action with its description, the `profileChange` and `persistence` disclosures (state as text: "Will change", "No change"), on Windows a **Tools in folders other accounts can change** notice when the plan records one ([reused tool folders](#reused-tool-folders)), a **Git not found** notice when Git is missing (never a blocker), one consent checkbox and **Install Drakonc Shell** (for a setup recovery, "Finish setting up Drakonc Shell" and **Complete setup**). Without the checkbox no request is sent; the error is announced and focus moves to the checkbox. Preflight blockers replace the plan with their guidance, **Check again** and **Close installer**. |
 | Install | Expected runner steps (`expectedSteps`) with a text status (Done, In progress, Pending, Failed, Blocked, Not run), a `<progress>` bar and a terminal-style log of `{ seq, step, status, reason }` entries. |
-| Done | `ready`: run `gentle-shell`. `terminal-action-required`: open a new terminal, then run `gentle-shell`. `blocked`/`failed`: the host's guidance, the reason or failed step, the steps that finished and the log. A failed step with a detail also shows it under **Last error from** its label: `gentle-shell setup`, `pnpm setup`, `the Go download`, `pnpm add -g` (`install-global`), `the Gentle Shell main install`, `the Gentle AI main build` or `the Gentle Shell update`, as one plain text node (backticks stay literal). Every outcome offers **Close installer** (`POST /api/shutdown`). |
+| Done | `ready`: run `drakonc-shell`. `terminal-action-required`: open a new terminal, then run `drakonc-shell`. `blocked`/`failed`: the host's guidance, the reason or failed step, the steps that finished and the log. A failed step with a detail also shows it under **Last error from** its label: `drakonc-shell setup`, `pnpm setup`, `the Go download`, `pnpm add -g` (`install-global`), `the Drakonc Shell main install`, `the Drakonc AI main build` or `the Drakonc Shell update`, as one plain text node (backticks stay literal). Every outcome offers **Close installer** (`POST /api/shutdown`). |
 
 Behavior worth knowing:
 
@@ -1112,10 +1112,10 @@ Behavior worth knowing:
   checkbox (keyboard operable), visible `:focus-visible` rings on every
   control, text labels for every color state, `prefers-reduced-motion` and
   `forced-colors` support.
-- Visual language: the gentlemanprogramming.com dark palette (accent
-  `#f095c8` on `#1a1218`) and its static hero glow behind the panel, with
-  local font stacks only and a text wordmark; no logos, brand images or
-  favicon are copied.
+- Visual language: the Drakonc brand palette (accent `#ff4d5e` on the
+  `#0d1526` background, text `#e6edf7`) and its static hero glow behind the
+  panel, with local font stacks only and a text wordmark; no logos, brand
+  images or favicon are copied.
 
 `wizard.js` exports its pure models (`planModel`, `progressModel`,
 `outcomeModel`, `expectedSteps`, `installBody`, `interpretInstall`,
@@ -1167,7 +1167,7 @@ with the rest of `scripts/` in the package.
 Run `sh scripts/bootstrap.sh` from a trusted extracted installation bundle or
 checkout. There is **no published bundle URL or remote-pipe installer contract**.
 The bundle must include `package.json`, both bootstrap modules and the wizard
-entry `bin/gentle-shell-install.mjs`. When that entry is missing, the script
+entry `bin/drakonc-shell-install.mjs`. When that entry is missing, the script
 reports it before downloads or home writes. T7 owns packaging and distribution
 proof.
 
@@ -1212,7 +1212,7 @@ With that entry available, the fixed sequence is:
 ### Ownership and failure boundaries
 
 Acquisition uses a mode-0700, uniquely created
-`$HOME/.gentle-shell-bootstrap-tools.<random>` directory, with an explicit
+`$HOME/.drakonc-shell-bootstrap-tools.<random>` directory, with an explicit
 `.bootstrap-owned` marker. This is **prerequisite tooling, not a product home**.
 HOME must be absolute, owned by the current user, not group/world writable and
 free of symlink ancestors. Staging and destinations reject conflicts and
@@ -1222,7 +1222,7 @@ acquisition removes its temporary archives/staging and retains verified tools
 while the wizard runs. After the wizard exits 0, the script removes the tools
 directory it claimed, and the Node helper removes the one it created when only
 pnpm was missing. Both removals require the exact
-`$HOME/.gentle-shell-bootstrap-tools.*` name, a real directory (not a symlink)
+`$HOME/.drakonc-shell-bootstrap-tools.*` name, a real directory (not a symlink)
 and the `.bootstrap-owned` marker with its exact content; `rm -rf` and
 `rmSync` remove links inside without following them. When removal is refused or
 fails, the bootstrap still exits 0 and prints
@@ -1327,7 +1327,7 @@ separate parent-owned gates.
 
 Run `scripts\bootstrap.cmd` from a trusted extracted bundle or checkout. Like
 POSIX, it stops before acquisition or home writes when the wizard entry
-`bin/gentle-shell-install.mjs` or any Windows-dependent helper/metadata file is
+`bin/drakonc-shell-install.mjs` or any Windows-dependent helper/metadata file is
 missing. There is no published bundle URL or remote-pipe contract, and the
 Windows bootstrap end to end still lacks native acceptance evidence.
 
@@ -1338,7 +1338,7 @@ Windows bootstrap end to end still lacks native acceptance evidence.
 | Node | Reuse a proven stable existing Node ≥24.3.0 inside the repository `engines.node` range. Otherwise (missing, a stable version outside that range, or a Node whose storage fails the reparse/owner/ACL walk, which therefore never runs) leave it as it is and acquire only the fixed official Node 24.21.0 Windows x64/arm64 ZIP, with no redirects and bounded transport, verify SHA256 before opening the archive, validate the whole namespace and extract only regular `node.exe`. |
 | pnpm | A pnpm whose wrapper, Node, entry, metadata or exe fails the reparse/owner/ACL walk never runs: it is left as it is and pnpm is acquired as when missing. Reuse only a [known shim](#windows-command-shims) of pnpm's own JS entry, with package identity, bin target, stable CLI version, compatible engine and global add/bin help evidence, preserving its sibling-Node preference or proving its inherited cwd/PATH/PATHEXT Node selection; or a native `pnpm.exe` (`pnpm setup`, `pnpm self-update`, @pnpm/exe, pnpm 12), directly or as a known shim's target (an extensionless target resolves through PATHEXT in order, and only an `.exe` first match counts), whose `--version` is stable and equals the `package.json` naming pnpm or `@pnpm/*` beside it, with the same global help evidence. A `pnpm.exe` without that `package.json` (pnpm's standalone installer, a Volta or mise shim), Corepack's `pnpm.cmd` and mise's file shim are not proven pnpm: they are never run and pnpm is acquired as when missing. Never execute a shim via cmd.exe. Other unknown wrappers block without replacement. One whose stable version is of another major or older than 11.1.1 is left as it is, and pnpm is acquired as when missing. |
 | Missing pnpm | Shared pnpm 11.1.1 URL/SRI and raw `>=22.13` engine identity are unchanged. Parse bounded gzip/USTAR bytes, reject unsupported extensions, links and unsafe Windows namespaces before no-clobber publication. Return a direct Node + JS-entry invocation; do not fabricate a wrapper. |
-| Handoff | Existing Node helper starts the fixed wizard entry `bin/gentle-shell-install.mjs`. Only child PATH is refreshed. No persistent PATH, global installation, product root or companion installation is created here. |
+| Handoff | Existing Node helper starts the fixed wizard entry `bin/drakonc-shell-install.mjs`. Only child PATH is refreshed. No persistent PATH, global installation, product root or companion installation is created here. |
 
 Windows Node SHA256 provenance is the parent's fresh primary-source read of
 [24.21.0 SHASUMS256](https://nodejs.org/dist/v24.21.0/SHASUMS256.txt). A narrow
@@ -1357,8 +1357,8 @@ integrity into another runtime. Pin changes still require fresh primary evidence
 - `bootstrapWindows({ bundle, tools, env })` validates fixed bundle files and
   requirements, acquires/reuses pnpm, then delegates to shared `launchWizard`.
   CLI entry is `installer-downloads.mjs --bootstrap-windows BUNDLE TOOLS`.
-- T5 receives `GENTLE_INSTALL_PNPM_NODE` and `GENTLE_INSTALL_PNPM_ENTRY`, or
-  `GENTLE_INSTALL_PNPM_COMMAND` alone for a native `pnpm.exe`, as data for that
+- T5 receives `DRAKONC_INSTALL_PNPM_NODE` and `DRAKONC_INSTALL_PNPM_ENTRY`, or
+  `DRAKONC_INSTALL_PNPM_COMMAND` alone for a native `pnpm.exe`, as data for that
   proven direct invocation. T4 must re-inventory before installation;
   these values are not an arbitrary command API or persistent terminal repair.
 - Storage, namespace, wrapper, tar and bounded process functions are exported
@@ -1367,8 +1367,8 @@ integrity into another runtime. Pin changes still require fresh primary evidence
 
 Go preparation is not part of the Windows bootstrap. The standard installation
 runner blocks on Windows unless preflight reports a reusable Go ≥1.25.10 or the
-plan acquires the [pinned Go](#pinned-go) after consent, because gentle-pi's
-postinstall may build Gentle AI from source; it never treats an explicit
+plan acquires the [pinned Go](#pinned-go) after consent, because drakonc-pi's
+postinstall may build Drakonc AI from source; it never treats an explicit
 override as native-package evidence.
 
 That Go SumDB source build runs Go in a fresh private directory created with
@@ -1420,7 +1420,7 @@ outside the guarantee; the interactive wizard has no total deadline.
 
 The claim tries at most two bases, in this order:
 
-1. `%LOCALAPPDATA%`, with the CMD's random `.gentle-shell-bootstrap-tools.*` name.
+1. `%LOCALAPPDATA%`, with the CMD's random `.drakonc-shell-bootstrap-tools.*` name.
 2. `%USERPROFILE%`, with its own random name. It is tried only when the first
    candidate fails `acl-mask` or `home-owner`. Any other rejection stops at once.
 
@@ -1436,7 +1436,7 @@ base owner (`home-owner`) and the whole ancestor walk up to the drive root
 candidate passes them all. The `acl-mask` masks, the reparse checks, the
 collision check, the random name and the no-UNC rule are the same for both.
 When the fallback is claimed, the stage exits 2 and CMD switches
-`GENTLE_BOOTSTRAP_TOOLS` to it before it records ownership. Every later stage,
+`DRAKONC_BOOTSTRAP_TOOLS` to it before it records ownership. Every later stage,
 the failure cleanup and the success cleanup use that one path.
 
 The base may be owned by the invoking SID, SYSTEM (`S-1-5-18`) or
@@ -1485,7 +1485,7 @@ bootstrap's verified pnpm runs every pnpm step.
 ### Windows PNPM_HOME
 
 The bootstrap's private directory only holds the temporary tools. The wizard
-then installs Node.js, npm, pnpm, Pi and Gentle Shell under PNPM_HOME and runs
+then installs Node.js, npm, pnpm, Pi and Drakonc Shell under PNPM_HOME and runs
 them from `$PNPM_HOME\bin`. On the tester's profile that folder,
 `%LOCALAPPDATA%\pnpm`, sat below the same `%LOCALAPPDATA%` another account
 could modify. So before any probe the wizard walks PNPM_HOME with the same
@@ -1514,8 +1514,8 @@ installation. The installer never moves, deletes or adopts it.
 
 `%USERPROFILE%\.pnpm` is accepted only when it passes the walk and is absent,
 empty, or marked as created by this flow: it holds a regular
-`.gentle-shell-pnpm-home` file with the exact text
-`gentle-pi private pnpm home`. A non-empty folder without that marker is
+`.drakonc-shell-pnpm-home` file with the exact text
+`drakonc-pi private pnpm home`. A non-empty folder without that marker is
 foreign and blocks, and so does one that fails the walk.
 
 The plan says all of this before consent: the default folder, the account
@@ -1536,10 +1536,10 @@ written, a `tmp` folder is created inside it (a real directory, never a link),
 and the folder and `tmp` are walked again. Any failure stops the installation
 before any command (`prepare-pnpm-home`).
 
-The installer's children, and an update's `gentle-shell upgrade` children, get
+The installer's children, and an update's `drakonc-shell upgrade` children, get
 `TEMP` and `TMP` set to that `tmp` folder. It inherits the protected DACL, so
-a postinstall's `os.tmpdir()` stays private: the Windows Gentle AI source
-build creates its `gai-` directory there and runs `gentle-ai.exe` from it
+a postinstall's `os.tmpdir()` stays private: the Windows Drakonc AI source
+build creates its `gai-` directory there and runs `drakonc-ai.exe` from it
 before publishing it. A default `%TEMP%` lives under `%LOCALAPPDATA%`, which
 another account may write. These values are never persisted, and nothing
 changes outside private mode or on POSIX.
@@ -1564,8 +1564,8 @@ own children therefore get `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and
 `pnpm setup` still saves only PNPM_HOME and the user Path.
 
 Residual risk (accepted, and stated in the plan before consent): after the
-installation, the user's own pnpm commands, and Gentle Shell's later
-`gentle-shell upgrade`, still use pnpm's default config, cache and state
+installation, the user's own pnpm commands, and Drakonc Shell's later
+`drakonc-shell upgrade`, still use pnpm's default config, cache and state
 folders under `%LOCALAPPDATA%` unless the user configures them. pnpm 11.1.1
 resolves its config folder only from `XDG_CONFIG_HOME` or
 `%LOCALAPPDATA%\pnpm\config`, so there is no safe persistent pnpm-native
@@ -1576,7 +1576,7 @@ and the binaries it persists; it does not make the rest of a writable
 Accepted risk (user decision): the installer never creates or runs its own
 binaries in a folder another account can change. The user's own tools are
 used the way the user already uses them: a Node.js, npm, Go, Pi or npm-owned
-Gentle Shell that the plan reuses or updates may live in such a folder (an
+Drakonc Shell that the plan reuses or updates may live in such a folder (an
 npm global prefix under `%APPDATA%`, for example), and the installer runs it
 there, as any terminal would. Only pnpm, the installer's own runner, and the
 Node.js that `bootstrap.cmd` runs are held to the walk as a blocker. The plan
@@ -1585,7 +1585,7 @@ discloses the rest as a notice (below).
 #### Reused tool folders
 
 Before consent the wizard walks every reused tool's command and what it runs:
-`node`, `npm`, `go`, `pi` and `gentle-shell` as the user's PATH resolves them,
+`node`, `npm`, `go`, `pi` and `drakonc-shell` as the user's PATH resolves them,
 plus the Node and JS entry of a known shim. Each file is walked where it really
 is (its realpath), and for every link on its path (a symbolic link or a
 junction, as `lstat` reports it) the real folder that holds the link is walked
@@ -1611,7 +1611,7 @@ A count that does not match, any other line, or `unsafe:policy` rejects
 the whole result. A test keeps that walk identical to the single-path one.
 
 The plan records only the tools it reuses as they are: the user's Node.js and
-its npm, a Go that a build reuses, a Pi kept as it is, and a Gentle Shell
+its npm, a Go that a build reuses, a Pi kept as it is, and a Drakonc Shell
 that npm owns (kept or updated with npm). `tools.folders` is then
 `{ status: "notice", reused: [{ tool, check, at, sid?, account?, rights? }] }`
 (per tool the first walk rejection, else the first `unchecked` path), and the
@@ -1654,7 +1654,7 @@ Failure cleanup targets only the directory claimed by the actual attempt;
 collisions and unrelated storage are not removed. Prerequisite tools remain
 available to children while the wizard runs. After the helper exits 0, a final
 stage removes the claimed root only when its full path is a direct child of
-`%LOCALAPPDATA%` or `%USERPROFILE%` named `.gentle-shell-bootstrap-tools.*`, neither it nor its
+`%LOCALAPPDATA%` or `%USERPROFILE%` named `.drakonc-shell-bootstrap-tools.*`, neither it nor its
 `.bootstrap-owned` marker is a reparse point, and the marker holds the exact
 text. It uses `[IO.Directory]::Delete(path, true)`, which does not recurse
 through reparse points, instead of Windows PowerShell 5.1 `Remove-Item`. A
@@ -1947,21 +1947,21 @@ T7 must establish those facts before advertising clean-machine support.
 ### Linux clean container
 
 A disposable `debian:bookworm-slim` container without Node, npm, pnpm, Pi or
-Gentle Shell, driven as a non-root user, passed end to end:
+Drakonc Shell, driven as a non-root user, passed end to end:
 `sh scripts/bootstrap.sh` exited 0 and the wizard, driven over HTTP exactly as
 the page does, reached `terminal-action-required` with all 13 runner steps
 `done` in about 27 seconds. A fresh `bash -ic` resolved `node` v24.21.0, `npm`
-11.19.0 and `pnpm` 11.1.1 from `$PNPM_HOME/bin`, and `gentle-shell --version`
-reported 4.0.0 with Pi 1.0.0 and the isolated home `~/.gentle-shell/agent`.
+11.19.0 and `pnpm` 11.1.1 from `$PNPM_HOME/bin`, and `drakonc-shell --version`
+reported 4.0.0 with Pi 1.0.0 and the isolated home `~/.drakonc-shell/agent`.
 That run predates the removal of bootstrap tools after success.
 
 The first run of `scripts/test-installer-acceptance.sh --worktree` (with the
 tools removal, not yet committed) did **not** pass: the bootstrap acquired its
 tools and printed the session URL after 113 seconds, the plan had no blockers,
-and 11 runner steps finished `done` before `shell-setup` (`gentle-shell setup`)
+and 11 runner steps finished `done` before `shell-setup` (`drakonc-shell setup`)
 failed; the outcome was `failed`, the bootstrap exited 1 and removed its tools
 through the failure path, after 146 seconds in total. A separate diagnostic
-container proved the cause: `gentle-shell setup` failed with `Error: execute
+container proved the cause: `drakonc-shell setup` failed with `Error: execute
 install pipeline: download engram binary: fetch latest engram version: GitHub
 API returned HTTP 403` because the anonymous GitHub API quota of this network
 was exhausted. After the quota reset, setup in the same container exited 0
@@ -1985,11 +1985,11 @@ requests left before it, session URL after 113 seconds, all 13 runner steps
 `done` including `shell-setup` and `persist-path`, outcome
 `terminal-action-required`, bootstrap exit 0; 142 seconds for bootstrap and
 wizard, 147 in total. A fresh `bash -ic` resolved `node` v24.21.0, `npm`
-11.19.0, `pnpm` 11.1.1 and `gentle-shell` from `~/.local/share/pnpm/bin`;
-`gentle-shell --version` reported 4.0.0, Pi 1.0.0 and the isolated home
-`~/.gentle-shell/agent`; no `~/.gentle-shell-bootstrap-tools.*` directory
+11.19.0, `pnpm` 11.1.1 and `drakonc-shell` from `~/.local/share/pnpm/bin`;
+`drakonc-shell --version` reported 4.0.0, Pi 1.0.0 and the isolated home
+`~/.drakonc-shell/agent`; no `~/.drakonc-shell-bootstrap-tools.*` directory
 remained, so the success-path tools removal is proven in a clean container.
-`bash -lc` did not resolve `gentle-shell`, as documented below.
+`bash -lc` did not resolve `drakonc-shell`, as documented below.
 
 To reproduce it, run `sh scripts/test-installer-acceptance.sh` from the
 repository. It refuses to start without a working Docker daemon and never runs
@@ -2001,20 +2001,20 @@ bootstrap, printing the reset time, when fewer than 5 anonymous core requests
 remain. It then copies the bundle to `/opt/bundle` (`git archive HEAD`, or the
 tracked working-tree files including uncommitted changes with `--worktree`) and
 runs the bootstrap. A headless driver inside the container redeems
-`/session?code=` with a cookie jar, sends `X-Gentle-Install: 1` on every
+`/session?code=` with a cookie jar, sends `X-Drakonc-Install: 1` on every
 `/api/*` request and the same Origin plus `Content-Type: application/json` on
 every POST, then requests the plan, consents, polls progress and shuts the host
 down. It then checks, in a fresh `bash -ic`, that `node`, `npm`, `pnpm` and
-`gentle-shell --version` resolve and that no `~/.gentle-shell-bootstrap-tools.*`
-directory remains, and reports whether `bash -lc` resolves `gentle-shell`. The
-container is removed on every exit unless `GENTLE_ACCEPTANCE_KEEP=1` keeps a
+`drakonc-shell --version` resolve and that no `~/.drakonc-shell-bootstrap-tools.*`
+directory remains, and reports whether `bash -lc` resolves `drakonc-shell`. The
+container is removed on every exit unless `DRAKONC_ACCEPTANCE_KEEP=1` keeps a
 failed one for inspection; the pulled image stays cached. Network
 access happens only inside the container. The installation is bounded by
-`GENTLE_ACCEPTANCE_INSTALL_SECONDS` (default 1500). CI does not run it.
+`DRAKONC_ACCEPTANCE_INSTALL_SECONDS` (default 1500). CI does not run it.
 
 ### GitHub API limit during setup
 
-`gentle-shell setup` runs upstream Gentle AI's install pipeline, which looks up
+`drakonc-shell setup` runs upstream Drakonc AI's install pipeline, which looks up
 the latest Engram version through the GitHub REST API without authentication:
 2 anonymous requests per setup. GitHub allows 60 anonymous requests per hour
 per public IP address, so machines sharing one address (offices, NAT, VPNs, CI
@@ -2026,7 +2026,7 @@ only its [setup recovery](#setup-recovery).
 
 A missing `git` only produces a warning during setup; it was not the cause.
 
-Upstream advisory for Gentle AI (not changed here): pin the Engram version or
+Upstream advisory for Drakonc AI (not changed here): pin the Engram version or
 fall back to it when the lookup fails, accept an optional `GITHUB_TOKEN` for
 the lookup, and replace the misleading "installed via go install" message that
 accompanies this failure.
@@ -2036,7 +2036,7 @@ accompanies this failure.
 `pnpm setup` writes `PNPM_HOME` and its PATH entry into the interactive shell's
 profile only: `~/.bashrc` for bash on Debian. Debian's `~/.bashrc` returns
 early for non-interactive shells, and login shells read `~/.profile`, so these
-do not find `gentle-shell`, `node`, `npm` or `pnpm`:
+do not find `drakonc-shell`, `node`, `npm` or `pnpm`:
 
 - non-interactive login shells such as `bash -lc '...'`, and tools or IDE tasks
   that start one;
@@ -2054,10 +2054,10 @@ export PNPM_HOME="$HOME/.local/share/pnpm"
 case ":$PATH:" in *":$PNPM_HOME/bin:"*) ;; *) export PATH="$PNPM_HOME/bin:$PATH" ;; esac
 ```
 
-### Upstream `~/.pi/gentle-ai`
+### Upstream `~/.pi/drakonc-ai`
 
-Gentle AI's setup creates an empty `~/.pi/gentle-ai` directory outside the
-isolated Gentle Shell home `~/.gentle-shell/agent`. This is upstream behavior;
+Drakonc AI's setup creates an empty `~/.pi/drakonc-ai` directory outside the
+isolated Drakonc Shell home `~/.drakonc-shell/agent`. This is upstream behavior;
 the installer neither relies on nor removes it.
 
 ### CI matrix

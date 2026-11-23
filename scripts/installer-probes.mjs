@@ -2,7 +2,7 @@ import { spawn as spawnProcess } from "node:child_process";
 import { constants } from "node:fs";
 import { access, lstat, readFile, realpath, stat } from "node:fs/promises";
 import { posix, win32 } from "node:path";
-import { gentleAiBinaryPath } from "../runtime/gentle-ai-binary.mjs";
+import { drakoncAiBinaryPath } from "../runtime/drakonc-ai-binary.mjs";
 import { nodeRequirementSatisfied } from "./installer-downloads.mjs";
 import { pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
 import { installOwner } from "./main-channel.mjs";
@@ -14,7 +14,7 @@ import {
 	genuineNpm,
 	lookPath,
 	npmInvocation,
-	packageNativeGentleAi,
+	packageNativeDrakoncAi,
 	pnpmInvocation,
 	recoverableStackRoot,
 	samePath,
@@ -31,7 +31,7 @@ import { verifyWindowsStorage, verifyWindowsStorageMany } from "./installer-wind
 
 const SECOND = 1000;
 const deadlines = Object.freeze({ version: 10 * SECOND, list: 30 * SECOND });
-const BOOTSTRAP_TOOLS = /^\.gentle-shell-bootstrap-tools\./;
+const BOOTSTRAP_TOOLS = /^\.drakonc-shell-bootstrap-tools\./;
 
 const unknown = () => ({ available: null });
 const absent = () => ({ available: false });
@@ -55,7 +55,7 @@ function exactVersion(text, pattern) {
 }
 const NUMBER = "(0|[1-9]\\d*)";
 const STABLE = new RegExp(`^${NUMBER}\\.${NUMBER}\\.${NUMBER}$`);
-// A main-channel Gentle Shell (scripts/main-channel.mjs): <stable>-main.<sha12>.
+// A main-channel Drakonc Shell (scripts/main-channel.mjs): <stable>-main.<sha12>.
 const MAIN_BUILD = new RegExp(`^${NUMBER}\\.${NUMBER}\\.${NUMBER}-main\\.[0-9a-f]{12}$`);
 const NODE_VERSION = new RegExp(`^v${NUMBER}\\.${NUMBER}\\.${NUMBER}$`);
 const GO_VERSION = new RegExp(`^go version go${NUMBER}\\.${NUMBER}(?:\\.${NUMBER})? \\S+$`);
@@ -74,8 +74,8 @@ function sameDirectory(platform, left, right) {
 	return platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
-/** Bootstrap tool roots: `GENTLE_BOOTSTRAP_TOOLS` and every PATH entry segment
- * named `.gentle-shell-bootstrap-tools.*` (the bootstrap's temporary directory).
+/** Bootstrap tool roots: `DRAKONC_BOOTSTRAP_TOOLS` and every PATH entry segment
+ * named `.drakonc-shell-bootstrap-tools.*` (the bootstrap's temporary directory).
  */
 export function bootstrapRoots({ platform, env }) {
 	const path = pathOf(platform);
@@ -84,7 +84,7 @@ export function bootstrapRoots({ platform, env }) {
 		const normal = normalDirectory(path, root);
 		if (!roots.some((other) => sameDirectory(platform, other, normal))) roots.push(normal);
 	};
-	const tools = envValue(env, "GENTLE_BOOTSTRAP_TOOLS", platform);
+	const tools = envValue(env, "DRAKONC_BOOTSTRAP_TOOLS", platform);
 	if (typeof tools === "string" && path.isAbsolute(tools)) add(tools);
 	const marker = platform === "win32" ? new RegExp(BOOTSTRAP_TOOLS.source, "i") : BOOTSTRAP_TOOLS;
 	for (const entry of String(env[pathKey(env, platform)] ?? "").split(path.delimiter)) {
@@ -192,7 +192,7 @@ export function hostAdapters({ maxOutputBytes = 1024 * 1024, maxTextBytes = 1024
 }
 
 /**
- * createProbes({ platform, env, run, fs, home?, verifyGentleAi?, storage?, storageMany?, pnpmHome? }) -> the eight
+ * createProbes({ platform, env, run, fs, home?, verifyDrakoncAi?, storage?, storageMany?, pnpmHome? }) -> the eight
  * named collectInventory probes, plus `folders` (Windows only). `env` is the wizard's environment (bootstrap
  * tools first on PATH); `run` and `fs` follow hostAdapters. Each probe returns
  * the shape collectInventory documents, or { available: null } when unknown or
@@ -201,7 +201,7 @@ export function hostAdapters({ maxOutputBytes = 1024 * 1024, maxTextBytes = 1024
  * walks many in one launch (verifyWindowsStorageMany) and `pnpmHome` is the
  * wizard's PNPM_HOME decision (windowsPnpmHome).
  */
-export function createProbes({ platform, env, run, fs, home, verifyGentleAi = packageNativeGentleAi,
+export function createProbes({ platform, env, run, fs, home, verifyDrakoncAi = packageNativeDrakoncAi,
 	storage = platform === "win32" ? (file) => verifyWindowsStorage(file, env) : null,
 	storageMany = platform === "win32" ? (files) => verifyWindowsStorageMany(files, env) : null, pnpmHome = null }) {
 	const path = pathOf(platform);
@@ -339,7 +339,7 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 		const line = stdout?.split(/\r?\n/).at(-1)?.trim() ?? "";
 		return path.isAbsolute(line) ? fs.realpath(line).catch(() => null) : null;
 	})());
-	const shellBin = () => path.join(globalBin.path, platform === "win32" ? "gentle-shell.cmd" : "gentle-shell");
+	const shellBin = () => path.join(globalBin.path, platform === "win32" ? "drakonc-shell.cmd" : "drakonc-shell");
 	/** The Pi on the user's PATH outside pnpm: real root, its package version and owner (npm or null). */
 	const piOnPath = async () => {
 		const found = await packageOnPath("pi", PI_PACKAGE, true);
@@ -350,7 +350,7 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 
 	const probes = {
 		/** Windows (S6 notice): the folders of the tools the user's PATH resolves (Node,
-		 * npm, Go, Pi, Gentle Shell), each command and what it runs, walked in one
+		 * npm, Go, Pi, Drakonc Shell), each command and what it runs, walked in one
 		 * storageMany launch where they really are (canonicalFiles): links such as
 		 * pnpm's global `node_modules\<pkg>` junction or a `pnpm runtime` node.exe are
 		 * followed, never reported, and the folder holding each link is walked too.
@@ -364,7 +364,7 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			if (!storageMany) return null;
 			const files = {};
 			const unchecked = new Map();
-			for (const [tool, command] of [["node", "node"], ["npm", "npm"], ["go", "go"], ["pi", "pi"], ["shell", "gentle-shell"]]) {
+			for (const [tool, command] of [["node", "node"], ["npm", "npm"], ["go", "go"], ["pi", "pi"], ["shell", "drakonc-shell"]]) {
 				const found = await lookPath(command, user, platform, fs);
 				if (!found) continue;
 				const runs = await Promise.resolve().then(() => invocation(found)).catch(() => null);
@@ -392,14 +392,14 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			}).filter(([, finding]) => finding));
 			return Object.keys(findings).length > 0 ? findings : null;
 		},
-		/** The installed Gentle Shell for an update: real root, version and owner (pnpm, npm or null). */
+		/** The installed Drakonc Shell for an update: real root, version and owner (pnpm, npm or null). */
 		async locateShell() {
-			const shell = await globalPackage(SHELL_PACKAGE, "gentle-shell");
+			const shell = await globalPackage(SHELL_PACKAGE, "drakonc-shell");
 			if (shell.state === "present" && typeof shell.entry.path === "string" && path.isAbsolute(shell.entry.path)) {
 				return { root: await fs.realpath(shell.entry.path), version: shell.version, owner: "pnpm" };
 			}
 			if (shell.state !== "unknown" || !shell.outsidePnpm) return null;
-			const found = await packageOnPath("gentle-shell", SHELL_PACKAGE, true);
+			const found = await packageOnPath("drakonc-shell", SHELL_PACKAGE, true);
 			if (!found) return null;
 			return { root: found.root, version: found.version, owner: installOwner({ packageRoot: found.root, pnpmHome: null, npmRoot: await npmGlobalRoot(), platform }) };
 		},
@@ -511,27 +511,27 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 			return located?.owner === "npm" && located.version === found.version ? { ...found, owner: "npm" } : found;
 		},
 		async shell() {
-			const shell = await globalPackage(SHELL_PACKAGE, "gentle-shell");
+			const shell = await globalPackage(SHELL_PACKAGE, "drakonc-shell");
 			if (shell.state === "present") return { available: true, version: shell.version, usable: await fs.isFile(shellBin()), global: true, owner: "pnpm" };
 			if (shell.state === "absent" || !shell.outsidePnpm) return shell.state === "absent" ? absent() : unknown();
 			// Installed by npm only when it really lives in npm's global root; a linked checkout stays unknown.
 			// A Windows shim is followed to the entry it runs, as for Pi.
-			const found = await packageOnPath("gentle-shell", SHELL_PACKAGE, true);
+			const found = await packageOnPath("drakonc-shell", SHELL_PACKAGE, true);
 			const owner = found ? installOwner({ packageRoot: found.root, pnpmHome: null, npmRoot: await npmGlobalRoot(), platform }) : null;
 			const version = found && (exactVersion(found.version, STABLE) ?? (MAIN_BUILD.test(found.version) ? found.version : null));
 			return owner === "npm" && version ? { available: true, version, usable: true, global: true, owner } : notPnpmGlobal(shell);
 		},
-		async gentleAi() {
-			const shell = await globalPackage(SHELL_PACKAGE, "gentle-shell");
+		async drakoncAi() {
+			const shell = await globalPackage(SHELL_PACKAGE, "drakonc-shell");
 			if (shell.state === "absent") return absent();
 			// Only this package version's native pin is the requirement being checked.
 			if (shell.state !== "present" || shell.version !== requirements.shell) return unknown();
 			if (typeof shell.entry.path !== "string" || !path.isAbsolute(shell.entry.path)) return unknown();
 			const [root, pnpmHome] = [await fs.realpath(shell.entry.path), await fs.realpath(globalBin.pnpmHome)];
 			if (!contains(pnpmHome, root, platform)) return unknown();
-			if (!(await fs.isFile(gentleAiBinaryPath(root, platform)))) return absent();
-			const verdict = await verifyGentleAi({ packageRoot: root, platform, env, home: userHome });
-			return verdict?.ok === true ? { available: true, version: requirements.gentleAi, usable: true, compatible: true } : unknown();
+			if (!(await fs.isFile(drakoncAiBinaryPath(root, platform)))) return absent();
+			const verdict = await verifyDrakoncAi({ packageRoot: root, platform, env, home: userHome });
+			return verdict?.ok === true ? { available: true, version: requirements.drakoncAi, usable: true, compatible: true } : unknown();
 		},
 		async go() {
 			const go = await lookPath("go", user, platform, fs);
@@ -565,8 +565,8 @@ export function createProbes({ platform, env, run, fs, home, verifyGentleAi = pa
 		async setup() {
 			// Setup readiness of an existing Shell has no read-only evidence. Only the
 			// pinned stack this pnpm installed (an earlier run whose setup did not
-			// finish) is recoverable: its public `gentle-shell setup` may be rerun.
-			const shell = await globalPackage(SHELL_PACKAGE, "gentle-shell");
+			// finish) is recoverable: its public `drakonc-shell setup` may be rerun.
+			const shell = await globalPackage(SHELL_PACKAGE, "drakonc-shell");
 			if (shell.state === "absent") return false;
 			if (shell.state !== "present") return unknown();
 			const root = await recoverableStackRoot(await globalListing(), globalBin.pnpmHome, platform, fs);

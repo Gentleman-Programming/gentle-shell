@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
-// gentle-shell#1731 T13 (evidence L24): in bench task x4 the user wrote "I may
-// stop you between the two and pick the second part up later"; every Gentle
+// drakonc-shell#1731 T13 (evidence L24): in bench task x4 the user wrote "I may
+// stop you between the two and pick the second part up later"; every Drakonc
 // cell delivered only the first part and paused by itself. Hedged delivery
 // wording asks for resumable notes and separate commits, never a stop, and
 // the close step must not leave tracked tasks pending without a user stop.
@@ -20,16 +20,16 @@ const contextualApproval = 'Interpret short replies such as "yes", "go ahead", o
 const informedClarification = 'Clarify scope, constraints, acceptance criteria, and non-goals when needed for the human to understand the action or to resolve consequential uncertainty. Reuse what is already established; after informed approval, proceed without repeating the clarification unless new consequential uncertainty appears.';
 
 test("contextual approval continues the agreed action without weakening consent boundaries", () => {
-	assert.ok(__testing.buildGentlePrompt("gentleman").includes(contextualApproval));
+	assert.ok(__testing.buildDrakoncPrompt("drakoncman").includes(contextualApproval));
 });
 
 test("clarification preserves understanding without reopening informed approval", () => {
-	assert.ok(__testing.buildGentlePrompt("gentleman").includes(informedClarification));
-	assert.ok(read("skills/gentle-ai/SKILL.md").includes(informedClarification));
+	assert.ok(__testing.buildDrakoncPrompt("drakoncman").includes(informedClarification));
+	assert.ok(read("skills/drakonc-ai/SKILL.md").includes(informedClarification));
 });
 
 test("resolved subdecisions retain the original authorized objective", () => {
-	const prompt = __testing.buildGentlePrompt("gentleman");
+	const prompt = __testing.buildDrakoncPrompt("drakoncman");
 	assert.ok(prompt.includes("Resolving an incident or subdecision does not complete or cancel the original authorized objective; resume safe, necessary in-scope steps automatically, using judgment for proportionate recovery and respecting explicit user dispositions."));
 	assert.ok(!prompt.includes("Investigate pending technical uncertainty"), "the canonical real-human-decision boundary owns that clause");
 	assert.ok(prompt.includes("only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work"));
@@ -110,7 +110,7 @@ test("T13: the always-on harness narrows conditional intent and gates Close on p
 	// The harness ODD steps are injected on every request, including the small
 	// path that never loads the tracking module, so the narrowing must live there too.
 	// They are rendered from the mirrored routing/pi.md, so check the rendered harness.
-	const harness = __testing.buildGentlePrompt("gentleman");
+	const harness = __testing.buildDrakoncPrompt("drakoncman");
 	assert.ok(
 		harness.includes("Ambiguous or conditional change intent (unclear whether a change is authorized at all) gets one clarification; stop and wait."),
 		"harness Authorize step must narrow conditional intent",

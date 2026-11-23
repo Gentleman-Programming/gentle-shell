@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 
 test("RDD off plans retain checks and reject invalid input before native calls", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "independent-rdd-regression-"));
@@ -20,7 +20,7 @@ test("RDD off plans retain checks and reject invalid input before native calls",
 	const before = hash();
 	const tools = new Map<string, any>();
 	const calls = { mode: 0, assess: 0, target: 0, append: 0 };
-	createGentleAiExtension({ candidateViews: null, nativeReviewCli: {
+	createDrakoncAiExtension({ candidateViews: null, nativeReviewCli: {
 		reviewMode: async () => { calls.mode++; return { status: { effective: "off", source: "global" } }; },
 		assess: async () => { calls.assess++; throw Error("must not assess"); },
 		targetStatus: async () => { calls.target++; throw Error("must not query target"); },
@@ -30,7 +30,7 @@ test("RDD off plans retain checks and reject invalid input before native calls",
 		appendEntry() { calls.append++; },
 	} as any);
 	const registry = [...tools.keys()];
-	const invoke = (input?: unknown, signal?: AbortSignal) => tools.get("gentle_review").execute(
+	const invoke = (input?: unknown, signal?: AbortSignal) => tools.get("drakonc_review").execute(
 		"probe", { operation: "assess", ...(input === undefined ? {} : { input }) }, signal, undefined, { cwd: root },
 	);
 	for (const [input, message] of [

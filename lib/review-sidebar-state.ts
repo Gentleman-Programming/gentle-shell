@@ -5,7 +5,7 @@ import { sanitizeTerminalText } from "./terminal-theme.ts";
 import { measureStatusSidebar } from "./status-timing-diagnostics.ts";
 
 /** Ephemeral display data only; this event grants no review authority. */
-export const REVIEW_SIDEBAR_EVENT = "gentle-ai:review-sidebar";
+export const REVIEW_SIDEBAR_EVENT = "drakonc-ai:review-sidebar";
 export const REVIEW_SCOPE_UNAVAILABLE = "Candidate scope unavailable";
 
 export const REVIEW_SIDEBAR_LABELS = {
@@ -94,8 +94,8 @@ function issuedBindings(data: Record<string, unknown>): string[] {
 
 function matchesCapture(name: string, input: Record<string, unknown>, prior: ReviewScope | undefined): boolean {
 	if (!prior || input.lineageId !== prior.lineage) return false;
-	if (name === "gentle_review_capture") return typeof input.collectBinding === "string" && prior.bindings.includes(input.collectBinding);
-	return name === "gentle_review_capture_group" && Array.isArray(input.collectBindings) &&
+	if (name === "drakonc_review_capture") return typeof input.collectBinding === "string" && prior.bindings.includes(input.collectBinding);
+	return name === "drakonc_review_capture_group" && Array.isArray(input.collectBindings) &&
 		prior.bindings.length > 0 && input.collectBindings.length === prior.bindings.length &&
 		input.collectBindings.every((binding, index) => binding === prior.bindings[index]);
 }
@@ -104,7 +104,7 @@ function matchesCapture(name: string, input: Record<string, unknown>, prior: Rev
 // It can describe idle continuity only with the publisher's issued correlation.
 function isNonterminalReviewerCapture(data: Record<string, unknown>): boolean {
 	const relay = record(data.host_relay);
-	return data.tool === "gentle_review_capture" && data.status === "captured" &&
+	return data.tool === "drakonc_review_capture" && data.status === "captured" &&
 		data.outcome === "native-reviewer-result-captured" &&
 		typeof data.lineage_id === "string" && data.lineage_id.length > 0 &&
 		data.result === undefined && data.closure === undefined &&
@@ -135,7 +135,7 @@ function resolveCompletion(operation: string, name: string, input: Record<string
 		closure.lineage_id === prior?.lineage && closure.target_identity === prior?.target);
 	const sameCapture = boundCapture && closureMatches &&
 		(lineage === undefined || lineage === prior!.lineage) && (target === undefined || target === prior!.target);
-	const nonterminalSingle = name === "gentle_review_capture" && sameCapture && isNonterminalReviewerCapture(data) &&
+	const nonterminalSingle = name === "drakonc_review_capture" && sameCapture && isNonterminalReviewerCapture(data) &&
 		data.lineage_id === prior!.lineage && (data.target_identity === undefined || data.target_identity === prior!.target);
 	if (nonterminalSingle) {
 		snapshot.state = "in_review";

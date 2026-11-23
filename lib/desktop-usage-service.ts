@@ -1,6 +1,6 @@
-// Gentle Desktop subscription-usage bridge: reaches the existing usage owner
+// Drakonc Desktop subscription-usage bridge: reaches the existing usage owner
 // (UsageStore / UsageSourceRegistry / refreshUsage / after_provider_response
-// closures inside `extensions/gentle-shell.ts`) through a defensive, versioned
+// closures inside `extensions/drakonc-shell.ts`) through a defensive, versioned
 // owner-service event/adapter — the usage analogue of the YOLO
 // `discoverYoloUiAdapter` seam. It never fetches, resolves auth, or keeps a
 // second store: every read and every refresh is the owner's own answer, shaped

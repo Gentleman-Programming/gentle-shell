@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a reproducible problem with gentle-pi.
+description: Report a reproducible problem with drakonc-pi.
 labels: ["bug", "status:needs-review"]
 
 body:
@@ -27,7 +27,7 @@ body:
     id: problem
     attributes:
       label: Problem
-      description: What went wrong, and how does it affect your use of gentle-pi?
+      description: What went wrong, and how does it affect your use of drakonc-pi?
     validations:
       required: true
 
@@ -52,9 +52,9 @@ body:
       required: true
 
   - type: input
-    id: gentle_pi_version
+    id: drakonc_pi_version
     attributes:
-      label: gentle-pi version
+      label: drakonc-pi version
       description: Provide the installed package version, or the commit if running from source.
     validations:
       required: true

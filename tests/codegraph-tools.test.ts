@@ -14,14 +14,14 @@ import codeGraphTools, {
 } from "../extensions/codegraph-tools.ts";
 
 function workspace(t: test.TestContext): string {
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-")));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-codegraph-")));
 	execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	return cwd;
 }
 
 test("CodeGraph tool rejects non-project, nested-project, HOME, and temporary workspaces before init", async (t) => {
-	const nonProject = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-non-project-")));
+	const nonProject = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-codegraph-non-project-")));
 	t.after(() => rmSync(nonProject, { recursive: true, force: true }));
 	const root = workspace(t);
 	const nested = join(root, "nested");
@@ -43,7 +43,7 @@ test("CodeGraph tool rejects non-project, nested-project, HOME, and temporary wo
 test("CodeGraph workspace guard compares directories by identity, not path spelling (#2558)", (t) => {
 	// A mapped drive and its UNC form name one directory; an alias reproduces that without a network share.
 	const root = workspace(t);
-	const holder = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-alias-")));
+	const holder = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-codegraph-alias-")));
 	t.after(() => rmSync(holder, { recursive: true, force: true }));
 	const alias = join(holder, "root");
 	symlinkSync(root, alias, "junction");
@@ -74,7 +74,7 @@ test("CodeGraph tool accepts the Git root reached through a different spelling o
 });
 
 test("CodeGraph workspace rejection names the compared paths and Git's own error (#2558)", async (t) => {
-	const nonProject = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-non-project-")));
+	const nonProject = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-codegraph-non-project-")));
 	t.after(() => rmSync(nonProject, { recursive: true, force: true }));
 	const root = workspace(t);
 	const nested = join(root, "nested");
@@ -161,7 +161,7 @@ test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore command
 
 	for (const parameters of [
 		{ operation: "init" },
-		{ operation: "query", query: "buildGentlePrompt", limit: 4 },
+		{ operation: "query", query: "buildDrakoncPrompt", limit: 4 },
 		{ operation: "explore", query: "review gate", limit: 3 },
 	] as const) {
 		const result = await tool.execute("test", parameters, undefined, undefined, ctx);
@@ -171,7 +171,7 @@ test("CodeGraph tool runs only fixed cwd-scoped init, query, and explore command
 	assert.deepEqual(calls, [
 		{ args: ["init", cwd], cwd },
 		{
-			args: ["query", "--path", cwd, "--limit", "4", "--", "buildGentlePrompt"],
+			args: ["query", "--path", cwd, "--limit", "4", "--", "buildDrakoncPrompt"],
 			cwd,
 		},
 		{
@@ -362,8 +362,8 @@ function withWindowsPath(t: test.TestContext, path: string): void {
 }
 
 test("Windows shim helpers skip stale PATH shims before resolving the npm script", (t) => {
-	const staleBinDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-stale-bin-")));
-	const validBinDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-valid-bin-")));
+	const staleBinDir = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-codegraph-stale-bin-")));
+	const validBinDir = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-codegraph-valid-bin-")));
 	t.after(() => rmSync(staleBinDir, { recursive: true, force: true }));
 	t.after(() => rmSync(validBinDir, { recursive: true, force: true }));
 	writeFileSync(join(staleBinDir, "codegraph.cmd"), "@ECHO off\n");
@@ -379,7 +379,7 @@ test("Windows shim helpers skip stale PATH shims before resolving the npm script
 });
 
 test("Windows shim helpers resolve quoted PATH entries in order without stripping unmatched quotes", (t) => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-quoted-bin-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-codegraph-quoted-bin-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const firstBin = join(root, "Program Files", "nodejs");
 	const secondBin = join(root, "other-bin");
@@ -401,7 +401,7 @@ test("Windows shim helpers resolve quoted PATH entries in order without strippin
 });
 
 test("Windows launcher passes command metacharacters as one literal argv value", async (t) => {
-	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-bin-")));
+	const binDir = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-codegraph-bin-")));
 	t.after(() => rmSync(binDir, { recursive: true, force: true }));
 	writeCodeGraphPackage(binDir, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
 	const cwd = workspace(t);
@@ -486,7 +486,7 @@ test("CodeGraph exclusion appends on a new line and recognizes an equivalent exi
 });
 
 test("CodeGraph exclusion uses the exclude file git resolves for a linked worktree", async (t) => {
-	const base = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-worktree-")));
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-codegraph-worktree-")));
 	t.after(() => rmSync(base, { recursive: true, force: true }));
 	const primary = join(base, "primary");
 	const linked = join(base, "linked");
@@ -520,7 +520,7 @@ test("CodeGraph query excludes an index that already exists, and leaves the excl
 
 test("CodeGraph init still succeeds and reports when git is unavailable for the local exclusion", async (t) => {
 	const cwd = workspace(t);
-	const empty = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-nogit-")));
+	const empty = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-codegraph-nogit-")));
 	const originalPath = process.env.PATH;
 	t.after(() => {
 		process.env.PATH = originalPath;

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
-import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { __testing, createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 
 // S5 (startup-home-repo-and-changes): startup review negotiation runs after
 // session_start returns and passes its deadline signal to native STATUS.
@@ -22,16 +22,16 @@ function withoutSignal<T>(request: T): T {
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, NativeReviewCliV216, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import type { ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
-// gentle-pi#556 / gentle-ai#4051: with RDD enabled, the agent finished an
+// drakonc-pi#556 / drakonc-ai#4051: with RDD enabled, the agent finished an
 // implementation and reported completion without ever entering the review
 // preflight. These tests cover the read-only, idempotent `agent_end` nudge
-// that reminds the agent to call gentle_review before reporting completion,
+// that reminds the agent to call drakonc_review before reporting completion,
 // without ever starting a review or answering consent itself.
 //
-// gentle-pi#568/#777: startup negotiates STATUS, but only successful own
+// drakonc-pi#568/#777: startup negotiates STATUS, but only successful own
 // mutation receipts authorize agent_end to query a candidate. Pre-session
 // work and foreign-session changes are not this session's output. These tests point
-// `GENTLE_PI_AGENT_HOME` and the session `cwd` at fresh temp directories so
+// `DRAKONC_PI_AGENT_HOME` and the session `cwd` at fresh temp directories so
 // `session_start`'s real SDD asset install and model config sweep never
 // touch this machine's actual home directory. The cwd is an isolated Git
 // fixture so mutation receipts exercise canonical root resolution.
@@ -45,7 +45,7 @@ let fixtureRoot: string | undefined;
 const fixtureEnvironment: NodeJS.ProcessEnv = {};
 const previousEnvironment = new Map<string, string | undefined>();
 before(async () => {
-	const root = await mkdtemp(join(tmpdir(), "gentle-pi-preflight-"));
+	const root = await mkdtemp(join(tmpdir(), "drakonc-pi-preflight-"));
 	fixtureRoot = root;
 	fixtureCwd = join(root, "project");
 	const home = join(root, "home");
@@ -55,8 +55,8 @@ before(async () => {
 	fixtureCwd = realpathSync(fixtureCwd);
 	Object.assign(fixtureEnvironment, {
 		HOME: home, USERPROFILE: home,
-		GENTLE_PI_CONFIG_HOME: join(home, "config"),
-		GENTLE_PI_AGENT_HOME: join(home, "agents"),
+		DRAKONC_PI_CONFIG_HOME: join(home, "config"),
+		DRAKONC_PI_AGENT_HOME: join(home, "agents"),
 		PI_CODING_AGENT_DIR: join(home, "pi"),
 		XDG_CONFIG_HOME: join(home, "xdg"),
 	});
@@ -97,9 +97,9 @@ function harness(nativeReviewCli: NativeReviewCli | null, entries: CustomEntry[]
 			sent.push({ message, options });
 		},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({
+	createDrakoncAiExtension({
 		nativeReviewCli,
-		processEnv: { ...fixtureEnvironment, GENTLE_PI_AGENTS_CHILD: "0", ...processEnv, GENTLE_AI_TELEMETRY: "0" },
+		processEnv: { ...fixtureEnvironment, DRAKONC_PI_AGENTS_CHILD: "0", ...processEnv, DRAKONC_AI_TELEMETRY: "0" },
 		resolveTelemetryTriggerBinary: () => join(fixtureCwd, "never-executed"),
 		telemetryTriggerSpawn: () => assert.fail("Preflight fixtures must not spawn telemetry"),
 	})(pi);
@@ -126,29 +126,29 @@ function toolContext(context: ExtensionContext): ExtensionToolContext {
 }
 
 async function withSessionStartEnv<T>(callback: (cwd: string) => Promise<T>, initializeGit = true): Promise<T> {
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
-	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
+	const previousConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
 	// Each call made three temp dirs and never removed them (87 left behind per suite run).
 	const created: string[] = [];
-	process.env.GENTLE_PI_AGENT_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-agent-home-"));
-	created.push(process.env.GENTLE_PI_AGENT_HOME);
+	process.env.DRAKONC_PI_AGENT_HOME = await mkdtemp(join(tmpdir(), "drakonc-pi-session-baseline-agent-home-"));
+	created.push(process.env.DRAKONC_PI_AGENT_HOME);
 	// Isolates both the model-config sweep and the dev-binary registration
-	// lookup from this machine's real ~/.pi/gentle-ai, so `session_start`'s
+	// lookup from this machine's real ~/.pi/drakonc-ai, so `session_start`'s
 	// unrelated notifications never leak into these assertions.
-	process.env.GENTLE_PI_CONFIG_HOME = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-config-home-"));
-	created.push(process.env.GENTLE_PI_CONFIG_HOME);
+	process.env.DRAKONC_PI_CONFIG_HOME = await mkdtemp(join(tmpdir(), "drakonc-pi-session-baseline-config-home-"));
+	created.push(process.env.DRAKONC_PI_CONFIG_HOME);
 	try {
-		const cwd = await mkdtemp(join(tmpdir(), "gentle-pi-session-baseline-cwd-"));
+		const cwd = await mkdtemp(join(tmpdir(), "drakonc-pi-session-baseline-cwd-"));
 		created.push(cwd);
 		if (initializeGit) childProcess.execFileSync("git", ["init", "--quiet", cwd]);
 		await mkdir(join(cwd, "src"));
 		await writeFile(join(cwd, "src/example.ts"), "export const value = 1;");
 		return await callback(cwd);
 	} finally {
-		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
-		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		if (previousAgentHome === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
+		if (previousConfigHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousConfigHome;
 		for (const dir of created) await rm(dir, { recursive: true, force: true });
 	}
 }
@@ -272,7 +272,7 @@ for (const scenario of ["same", "changed", "sibling-root", "nested-root", "faile
 		} as unknown as NativeReviewCli;
 		const { handlers, sent, tools } = harness(native);
 		const session = ctx(lineageId, true, cwd);
-		const review = tools.get("gentle_review");
+		const review = tools.get("drakonc_review");
 		assert.ok(review);
 		await directWrite(handlers, session);
 		const result = await review.execute("post-ack", { operation: "acknowledge-approved", lineageId }, undefined, undefined, toolContext(session));
@@ -301,7 +301,7 @@ for (const scenario of ["same", "changed", "sibling-root", "nested-root", "faile
 		await handlers.get("agent_end")!(agentEndEvent, endSession);
 		const shouldRemind = changedTarget || unsuccessful || scenario === "new-write" || scenario === "concurrent-write";
 		assert.deepEqual(statusRequests.slice(callsBeforeEnd), shouldRemind ? [{ cwd: endSession.cwd, agent: "pi" }] : []);
-		const reminders = sent.filter(({ message }) => message.customType === "gentle-pi.review-preflight");
+		const reminders = sent.filter(({ message }) => message.customType === "drakonc-pi.review-preflight");
 		assert.equal(reminders.length, shouldRemind ? 1 : 0,
 			shouldRemind ? "an unconsumed own mutation still requires preflight" : "an acknowledged or unowned target must not receive another preflight reminder");
 		if (changedTarget) assert.ok(String(reminders[0]?.message.content).includes(nextTarget));
@@ -360,10 +360,10 @@ test("agent_end nudges exactly once when RDD is on and STATUS offers review.star
 
 	assert.equal(sent.length, 1);
 	const [entry] = sent;
-	assert.equal(entry?.message.customType, "gentle-pi.review-preflight");
+	assert.equal(entry?.message.customType, "drakonc-pi.review-preflight");
 	const content = String(entry?.message.content);
-	assert.match(content, /gentle_review/);
-	assert.match(content, /first determine whether the user explicitly left this exact target unreviewed\. if yes, do not invoke review; report that disposition and continue\. only otherwise, call the gentle_review tool with \{"operation":"inspect"\}/i);
+	assert.match(content, /drakonc_review/);
+	assert.match(content, /first determine whether the user explicitly left this exact target unreviewed\. if yes, do not invoke review; report that disposition and continue\. only otherwise, call the drakonc_review tool with \{"operation":"inspect"\}/i);
 	assert.doesNotMatch(content, /run the review preflight before reporting completion\. if the user explicitly left/i);
 	assert.ok(content.includes(targetIdentity), "message must name the target identity");
 	assert.equal(entry?.options.triggerTurn, true);
@@ -423,12 +423,12 @@ for (const outcome of ["not-due", "due", "error", "new-write", "workspace", "rac
 			const session = ctx(`3163-${outcome}`, true, cwd);
 			await directWrite(handlers, session);
 			if (outcome === "assessment-race") duringAssessment = async () => { duringAssessment = async () => {}; await directWrite(handlers, session); };
-			await tools.get("gentle_review")!.execute("select", { operation: "assess", input: { baseRef, committedOnly: true } }, undefined, undefined, toolContext(session));
-			if (outcome === "workspace") await tools.get("gentle_review")!.execute("workspace", { operation: "assess" }, undefined, undefined, toolContext(session));
+			await tools.get("drakonc_review")!.execute("select", { operation: "assess", input: { baseRef, committedOnly: true } }, undefined, undefined, toolContext(session));
+			if (outcome === "workspace") await tools.get("drakonc_review")!.execute("workspace", { operation: "assess" }, undefined, undefined, toolContext(session));
 			if (outcome === "new-write") await directWrite(handlers, session);
 			if (outcome === "reselect") {
 				await directWrite(handlers, session);
-				await tools.get("gentle_review")!.execute("reselect", { operation: "assess", input: { baseRef, committedOnly: true } }, undefined, undefined, toolContext(session));
+				await tools.get("drakonc_review")!.execute("reselect", { operation: "assess", input: { baseRef, committedOnly: true } }, undefined, undefined, toolContext(session));
 			}
 			if (outcome === "race") duringAssessment = async () => { await directWrite(handlers, session); };
 			initial = false;
@@ -443,9 +443,9 @@ for (const outcome of ["not-due", "due", "error", "new-write", "workspace", "rac
 	});
 }
 
-test("#3163: real native assessment keeps a committed range through the registered end hook", { skip: !process.env.GENTLE_AI_DEV_BINARY }, async () => {
+test("#3163: real native assessment keeps a committed range through the registered end hook", { skip: !process.env.DRAKONC_AI_DEV_BINARY }, async () => {
 	await withSessionStartEnv(async cwd => {
-		const binary = process.env.GENTLE_AI_DEV_BINARY!;
+		const binary = process.env.DRAKONC_AI_DEV_BINARY!;
 		const git = (...args: string[]) => childProcess.execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "core.autocrlf=false", ...args], { cwd, encoding: "utf8" }).trim();
 		git("add", "."); git("commit", "-qm", "base");
 		const baseRef = git("rev-parse", "HEAD");
@@ -464,7 +464,7 @@ test("#3163: real native assessment keeps a committed range through the register
 		const { handlers, sent, tools } = harness(native);
 		const session = ctx("3163-native-assessment", true, cwd);
 		await directWrite(handlers, session);
-		const result = await tools.get("gentle_review")!.execute("select", { operation: "assess", input: { baseRef, committedOnly: true } }, undefined, undefined, toolContext(session));
+		const result = await tools.get("drakonc_review")!.execute("select", { operation: "assess", input: { baseRef, committedOnly: true } }, undefined, undefined, toolContext(session));
 		assert.equal((result.details as { reviewDue?: boolean }).reviewDue, false);
 		await handlers.get("agent_end")!(agentEndEvent, session);
 		assert.equal(requests.length, 2);
@@ -549,7 +549,7 @@ test("agent_end pairs a named agent's start with its own end, then still nudges 
 	assert.equal(sent.length, 1, "the primary loop's end still nudges once the subagent's end is paired off");
 });
 
-test("gentle-ai-worker agent_end never queries native review", async () => {
+test("drakonc-ai-worker agent_end never queries native review", async () => {
 	const statusRequests: unknown[] = [];
 	const native = {
 		reviewMode: onMode("on"),
@@ -563,14 +563,14 @@ test("gentle-ai-worker agent_end never queries native review", async () => {
 	const agentEnd = handlers.get("agent_end");
 	const session = ctx("agent-end-generic-worker");
 	assert.equal(typeof beforeAgentStart, "function");
-	await beforeAgentStart!({ agentName: "gentle-ai-worker", systemPrompt: "" }, session);
+	await beforeAgentStart!({ agentName: "drakonc-ai-worker", systemPrompt: "" }, session);
 	await directWrite(handlers, session);
 	await agentEnd!(agentEndEvent, session);
 	assert.deepEqual(statusRequests, []);
 	assert.deepEqual(sent, []);
 });
 
-test("agent_end sends nothing and performs no STATUS call when GENTLE_PI_AGENTS_CHILD is 1", async () => {
+test("agent_end sends nothing and performs no STATUS call when DRAKONC_PI_AGENTS_CHILD is 1", async () => {
 	const statusRequests: unknown[] = [];
 	const native = {
 		reviewMode: onMode("on"),
@@ -579,7 +579,7 @@ test("agent_end sends nothing and performs no STATUS call when GENTLE_PI_AGENTS_
 			throw new Error("targetStatus must not be called in a child session");
 		},
 	} as unknown as NativeReviewCli;
-	const { handlers, sent } = harness(native, [], { GENTLE_PI_AGENTS_CHILD: "1" });
+	const { handlers, sent } = harness(native, [], { DRAKONC_PI_AGENTS_CHILD: "1" });
 	const agentEnd = handlers.get("agent_end");
 	assert.equal(typeof agentEnd, "function");
 	const session = ctx("agent-end-child");
@@ -917,7 +917,7 @@ for (const ownsMutation of [false, true]) {
 			targetIdentity = targetB;
 			const callsBeforeEnd = statusRequests.length;
 			await agentEnd!(agentEndEvent, session);
-			const reminders = sent.filter(({ message }) => message.customType === "gentle-pi.review-preflight");
+			const reminders = sent.filter(({ message }) => message.customType === "drakonc-pi.review-preflight");
 			assert.deepEqual({
 				statusRequests: statusRequests.slice(callsBeforeEnd),
 				reminderCount: reminders.length,

@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import choice from "../extensions/ask-user-choice.ts";
 import questionnaire from "../extensions/ask-user-question.ts";
 import { AutoPermissionClassifier } from "../lib/auto-permission-classifier.ts";
@@ -22,10 +22,10 @@ function fixture(t:any,answer:(ctx:any,n:number)=>any=()=>verdict(),deadlineMs=1
  const engine=new AutoPermissionClassifier(registry,{deadlineMs});
  const pi:any={events:{on(){return()=>{};},emit(){}},on(n:string,fn:any){hooks.set(n,[...hooks.get(n)??[],fn]);},registerTool(v:any){tools.set(v.name,v);},registerCommand(n:string,v:any){commands.set(n,v);},registerFlag(){},registerMessageRenderer(){},getActiveTools(){return [];},appendEntry(type:string,data:any){receipts.push({type,data});}};
  const ctx:any={cwd:root,mode:"tui",hasUI:true,sessionManager:manager,model:{...model},modelRegistry:registry,signal:new AbortController().signal,ui:{notify(){},setStatus(){},setWidget(){},confirm:async()=>false,custom:async()=>undefined}};
- createGentleAiExtension({processEnv:{GENTLE_PI_CONFIG_HOME:home},nativeReviewCli:null,candidateViews:null,autoPermissionClassifier:engine,resolveTelemetryTriggerBinary:()=>{throw Error("No native execution authorized");}})(pi);choice(pi);questionnaire(pi);
+ createDrakoncAiExtension({processEnv:{DRAKONC_PI_CONFIG_HOME:home},nativeReviewCli:null,candidateViews:null,autoPermissionClassifier:engine,resolveTelemetryTriggerBinary:()=>{throw Error("No native execution authorized");}})(pi);choice(pi);questionnaire(pi);
  const emit=async(n:string,e:any)=>{let out:any;for(const fn of hooks.get(n)??[]){const next=await fn(e,ctx);if(next!==undefined)out=next;}return out;};
  return {root,home,manager,anchor,ctx,tools,calls,receipts,engine,emit,
- mode:(mode:string)=>commands.get("gentle:mode").handler(mode,ctx),
+ mode:(mode:string)=>commands.get("drakonc:mode").handler(mode,ctx),
  input:async(text:string)=>{await emit("input",{source:"interactive",text});manager.appendMessage({role:"user",content:text,timestamp:1});},
  call:(name:string,input:any)=>emit("tool_call",{toolName:name,input,toolCallId:"action"}),
  payload:()=>JSON.parse(calls.at(-1).context.messages[0].content)};

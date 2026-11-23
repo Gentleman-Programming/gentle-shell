@@ -18,7 +18,7 @@ function fixture() {
 	writeFileSync(join(packageRoot, "dist", "index.js"), "export default function(api) {}\n");
 	const request: TaskRequest = {
 		agent: {
-			name: "gentle-ai-explore", description: "Public fixture", filePath: join(root, "explorer.md"), scope: "global",
+			name: "drakonc-ai-explore", description: "Public fixture", filePath: join(root, "explorer.md"), scope: "global",
 			tools: ["read", "grep", "find", "codegraph", ...webTools], instructions: "Explore without modifying source.",
 			model: undefined, thinking: undefined, mode: undefined,
 		},
@@ -117,7 +117,7 @@ test("missing or incompatible SDK package lookup never installs or enables ambie
 test("explicit capability scope, not agent name, determines optional web loading", () => {
 	const f = fixture();
 	try {
-		for (const name of ["renamed-explorer", "gentle-ai-worker", "gentle-ai-verify"]) {
+		for (const name of ["renamed-explorer", "drakonc-ai-worker", "drakonc-ai-verify"]) {
 			const optedIn = { ...f.request, agent: { ...f.request.agent, name } };
 			assert.deepEqual(paths(childArguments(optedIn)), [...f.request.extensionPaths!, f.packageRoot]);
 			const localOnly = { ...optedIn, agent: { ...optedIn.agent, tools: ["read", "grep", "find"] } };

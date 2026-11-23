@@ -7,7 +7,7 @@ import { canonicalJsonV1, domainHashV1 } from "../lib/review-canonical.ts";
 import { conservativeOwnerDeathProofV1, qualifiedNodeFsLockPlatformV1, ReviewLockError, ReviewMutationLockV1, type ReviewLockPlatformAdapterV1 } from "../lib/review-lock.ts";
 
 function temporaryRoot(): string {
-	return mkdtempSync(join(tmpdir(), "gentle-review-lock-"));
+	return mkdtempSync(join(tmpdir(), "drakonc-review-lock-"));
 }
 
 function qualifiedAdapter(ownerDead = true): ReviewLockPlatformAdapterV1 {

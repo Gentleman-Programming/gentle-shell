@@ -2,7 +2,7 @@ import { isArtboardPath, locateDesignFile, readDesignFile, replaceDesignFile, se
 
 // The single owner of design/<slug>/handoffs.json (S15): the handoff state of
 // each artboard and the design's chosen artboard. The canvas server (Implement
-// this), the command and the gentle_design tool all write through this module,
+// this), the command and the drakonc_design tool all write through this module,
 // in the same per-file in-process queue as comments.json, re-reading the file
 // before every write and replacing it with a temp file + rename. A file this
 // module cannot parse is reported and never overwritten.

@@ -34,6 +34,6 @@ test("every SKILL.md reference resolves relative to its own skill directory", ()
 });
 
 test("the reference check sees package-root paths as broken", () => {
-	assert.deepEqual(referencePaths("## References\n\n- `docs/skill-style-guide.md` — guide.\n- `gentle-ui-design` skill — not a path.\n"), ["docs/skill-style-guide.md"]);
+	assert.deepEqual(referencePaths("## References\n\n- `docs/skill-style-guide.md` — guide.\n- `drakonc-ui-design` skill — not a path.\n"), ["docs/skill-style-guide.md"]);
 	assert.equal(existsSync(join(skillsRoot, "skill-improver", "docs/skill-style-guide.md")), false);
 });

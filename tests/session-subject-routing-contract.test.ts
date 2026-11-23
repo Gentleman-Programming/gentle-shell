@@ -4,14 +4,14 @@ import { join } from "node:path";
 import test from "node:test";
 
 const root = join(import.meta.dirname, "..");
-const source = readFileSync(join(root, "extensions/gentle-agents.ts"), "utf8");
+const source = readFileSync(join(root, "extensions/drakonc-agents.ts"), "utf8");
 const match = source.match(/name: "orchestrator_session_id",\s*label: "[^"]+",\s*description: ("(?:[^"\\]|\\.)*")/);
 assert.ok(match, "Registered session tool must expose a public description");
 const description: string = JSON.parse(match[1]);
 // S11 T2: the session subject rules moved from the delegation card to its reference.
 const detail = readFileSync(join(root, "assets/orchestrator-delegation-reference.md"), "utf8")
 	.split("## Session subject and display identity\n")[1].split("### Publish and find classified work")[0];
-const docs = readFileSync(join(root, "docs/gentle-agents-activity.md"), "utf8")
+const docs = readFileSync(join(root, "docs/drakonc-agents-activity.md"), "utf8")
 	.split("### Declare a recognizable subject\n")[1].split("### Publish curated state")[0];
 
 // The changed behavior is model-facing metadata/guidance, not a new runtime guard.

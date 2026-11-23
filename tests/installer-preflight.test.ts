@@ -12,13 +12,13 @@ const absent = { available: false };
 const tool = (version: string) => ({ available: true, version, usable: true });
 function clean(platform = "linux", arch = "x64") {
 	return { platform, arch, node: absent, pnpm: absent, pi: absent, shell: absent,
-		gentleAi: absent, go: absent, globalBin: absent, setup: false };
+		drakoncAi: absent, go: absent, globalBin: absent, setup: false };
 }
 function installed(platform = "linux") {
 	return { ...clean(platform), node: tool("24.1.0"),
 		pnpm: { ...tool("12.0.0"), compatible: true }, pi: tool("1.2.0"),
 		shell: { ...tool("5.0.0"), global: true },
-		gentleAi: { ...tool(requirements.gentleAi), compatible: true },
+		drakoncAi: { ...tool(requirements.drakoncAi), compatible: true },
 		globalBin: { available: true, path: "/disposable/bin", writable: true, onPath: true }, setup: true };
 }
 const ids = (inventory: object) => planPreflight(inventory).actions.map((action: { id: string }) => action.id);
@@ -33,7 +33,7 @@ test("requirements follow repository metadata and native installer pin", () => {
 });
 
 test("preflight imports a packed manifest without packageManager using the verified pnpm pin", () => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-preflight-packed-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-preflight-packed-"));
 	try {
 		const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 		delete pkg.packageManager;
@@ -74,7 +74,7 @@ for (const platform of ["linux", "darwin", "win32"]) {
 	});
 }
 
-const mainSteps = ["build-gentle-ai-main", "install-shell-main", "record-channel"];
+const mainSteps = ["build-drakonc-ai-main", "install-shell-main", "record-channel"];
 for (const platform of ["linux", "darwin", "win32"]) {
 	test(`the main channel on ${platform} adds the main build steps after a clean installation`, () => {
 		const inventory = { ...clean(platform), node: tool("24.1.0"), pnpm: { ...tool("11.1.1"), compatible: true },
@@ -85,7 +85,7 @@ for (const platform of ["linux", "darwin", "win32"]) {
 		assert.equal(plan.tools.go.status, "reusable");
 		assert.deepEqual(plan.actions.map((action: { id: string }) => action.id), [...release, ...mainSteps]);
 		assert.deepEqual(plan.actions.slice(-3), [
-			{ id: "build-gentle-ai-main", kind: "build-native-main", target: "gentleAi" },
+			{ id: "build-drakonc-ai-main", kind: "build-native-main", target: "drakoncAi" },
 			{ id: "install-shell-main", kind: "install-global", target: "shell" },
 			{ id: "record-channel", kind: "configure", target: "channel" }]);
 		assert.equal(plan.ready, false);
@@ -164,7 +164,7 @@ test("an unknown channel is rejected", () => {
 });
 
 test("Windows requires compatible Go only before a missing native binary", () => {
-	const inventory = { ...installed("win32"), gentleAi: absent, go: tool("1.26.0") };
+	const inventory = { ...installed("win32"), drakoncAi: absent, go: tool("1.26.0") };
 	assert.equal(planPreflight(inventory).tools.go.status, "reusable");
 	assert.deepEqual(ids(inventory), ["provision-native", "setup-shell", "verify-readiness"]);
 	const older = planPreflight({ ...inventory, go: tool("1.25.9") });
@@ -173,11 +173,11 @@ test("Windows requires compatible Go only before a missing native binary", () =>
 	assert.deepEqual(older.actions.slice(0, 2), goActions);
 });
 
-test("Windows acquires the pinned Go for a Shell install even when Gentle AI is already installed", () => {
-	// gentle-pi's postinstall always builds Gentle AI from source on Windows, so an
-	// existing compatible gentle-ai never removes the need for Go.
-	const compatible = { ...tool(requirements.gentleAi), compatible: true };
-	for (const inventory of [{ ...clean("win32"), gentleAi: compatible },
+test("Windows acquires the pinned Go for a Shell install even when Drakonc AI is already installed", () => {
+	// drakonc-pi's postinstall always builds Drakonc AI from source on Windows, so an
+	// existing compatible drakonc-ai never removes the need for Go.
+	const compatible = { ...tool(requirements.drakoncAi), compatible: true };
+	for (const inventory of [{ ...clean("win32"), drakoncAi: compatible },
 		{ ...installed("win32"), shell: absent, setup: false, go: absent }]) {
 		const plan = planPreflight(inventory);
 		assert.deepEqual(plan.blockers, []);
@@ -202,7 +202,7 @@ for (const [name, version] of [["node", "22.18.0"], ["shell", "3.9.0"], ["node",
 test("an older Shell without its global command is reported as incompatible, not unknown", () => {
 	const unchecked = { available: null };
 	const inventory = { ...installed(), shell: { available: true, version: "3.4.0", usable: false, global: true },
-		gentleAi: unchecked, setup: unchecked };
+		drakoncAi: unchecked, setup: unchecked };
 	const plan = planPreflight(inventory);
 	assert.deepEqual(plan.blockers, [{ code: "incompatible-tool", tool: "shell" }]);
 	assert.equal(plan.tools.shell.status, "incompatible");
@@ -210,9 +210,9 @@ test("an older Shell without its global command is reported as incompatible, not
 	assert.equal(plan.ready, false);
 });
 
-test("a Shell installed outside pnpm is the only blocker, without derived Gentle AI and setup blockers", () => {
+test("a Shell installed outside pnpm is the only blocker, without derived Drakonc AI and setup blockers", () => {
 	const unchecked = { available: null };
-	const plan = planPreflight({ ...installed(), shell: { available: null, outsidePnpm: true }, gentleAi: unchecked, setup: unchecked });
+	const plan = planPreflight({ ...installed(), shell: { available: null, outsidePnpm: true }, drakoncAi: unchecked, setup: unchecked });
 	assert.deepEqual(plan.blockers, [{ code: "unknown-tool", tool: "shell" }]);
 	assert.deepEqual(plan.actions, []);
 	assert.equal(plan.ready, false);
@@ -222,9 +222,9 @@ const unchecked = { available: null };
 const owned = (version: string, owner = "pnpm", usable = true) => ({ available: true, version, usable, global: true, owner });
 const updateIds = (plan: { actions: Array<{ id: string }> }) => plan.actions.map((action) => action.id);
 
-test("an older Gentle Shell that pnpm or npm owns is updated to the latest release, then set up", () => {
+test("an older Drakonc Shell that pnpm or npm owns is updated to the latest release, then set up", () => {
 	for (const shell of [owned("3.9.0"), owned("3.9.0", "npm"), owned("3.4.0", "pnpm", false), owned(`${requirements.shell}-main.6e7e3a18f794`, "npm")]) {
-		const plan = planPreflight({ ...installed(), shell, gentleAi: unchecked, setup: unchecked });
+		const plan = planPreflight({ ...installed(), shell, drakoncAi: unchecked, setup: unchecked });
 		assert.deepEqual(plan.blockers, [], JSON.stringify(shell));
 		assert.equal(plan.tools.shell.status, "needs-update");
 		assert.deepEqual(updateIds(plan), ["update-shell-release", "setup-shell", "verify-readiness"]);
@@ -233,66 +233,66 @@ test("an older Gentle Shell that pnpm or npm owns is updated to the latest relea
 	}
 });
 
-test("a current Gentle Shell installed by npm needs nothing on the release channel", () => {
-	const plan = planPreflight({ ...installed(), shell: owned(requirements.shell, "npm"), gentleAi: unchecked, setup: unchecked });
+test("a current Drakonc Shell installed by npm needs nothing on the release channel", () => {
+	const plan = planPreflight({ ...installed(), shell: owned(requirements.shell, "npm"), drakoncAi: unchecked, setup: unchecked });
 	assert.deepEqual(plan.blockers, []);
 	assert.deepEqual(updateIds(plan), ["verify-readiness"]);
 	assert.equal(plan.ready, true);
 });
 
-test("a current pnpm-owned Gentle Shell plans exactly as before", () => {
+test("a current pnpm-owned Drakonc Shell plans exactly as before", () => {
 	const inventory = installed();
 	assert.deepEqual(planPreflight({ ...inventory, shell: { ...inventory.shell, owner: "pnpm" } }), planPreflight(inventory));
 });
 
-test("on the main channel an owned Gentle Shell is updated to the latest main, which needs Go", () => {
+test("on the main channel an owned Drakonc Shell is updated to the latest main, which needs Go", () => {
 	for (const shell of [owned(requirements.shell), owned("3.9.0", "npm"), owned(`${requirements.shell}-main.6e7e3a18f794`)]) {
-		const plan = planPreflight({ ...installed(), shell, go: tool("1.26.0"), gentleAi: unchecked, setup: unchecked }, { channel: "main" });
+		const plan = planPreflight({ ...installed(), shell, go: tool("1.26.0"), drakoncAi: unchecked, setup: unchecked }, { channel: "main" });
 		assert.deepEqual(plan.blockers, []);
 		assert.deepEqual(updateIds(plan), ["update-shell-main", "setup-shell", "verify-readiness"]);
 		assert.deepEqual(plan.actions[0], { id: "update-shell-main", kind: "upgrade", target: "shell" });
 	}
 	for (const go of [absent, tool("1.24.0")]) {
-		const noGo = planPreflight({ ...installed(), shell: owned("3.9.0"), go, gentleAi: unchecked, setup: unchecked }, { channel: "main" });
+		const noGo = planPreflight({ ...installed(), shell: owned("3.9.0"), go, drakoncAi: unchecked, setup: unchecked }, { channel: "main" });
 		assert.deepEqual(noGo.blockers, []);
 		assert.deepEqual(updateIds(noGo), ["acquire-go", "verify-go", "update-shell-main", "setup-shell", "verify-readiness"]);
 	}
-	// A Windows release update runs gentle-pi's postinstall, which may build Gentle AI.
-	const windows = planPreflight({ ...installed("win32"), shell: owned("3.9.0"), go: tool("1.24.0"), gentleAi: unchecked, setup: unchecked });
+	// A Windows release update runs drakonc-pi's postinstall, which may build Drakonc AI.
+	const windows = planPreflight({ ...installed("win32"), shell: owned("3.9.0"), go: tool("1.24.0"), drakoncAi: unchecked, setup: unchecked });
 	assert.deepEqual(updateIds(windows), ["acquire-go", "verify-go", "update-shell-release", "setup-shell", "verify-readiness"]);
-	assert.deepEqual(updateIds(planPreflight({ ...installed("darwin"), shell: owned("3.9.0"), go: absent, gentleAi: unchecked, setup: unchecked })),
+	assert.deepEqual(updateIds(planPreflight({ ...installed("darwin"), shell: owned("3.9.0"), go: absent, drakoncAi: unchecked, setup: unchecked })),
 		["update-shell-release", "setup-shell", "verify-readiness"]);
 });
 
-test("a missing Pi is installed before an existing Gentle Shell is updated", () => {
-	const plan = planPreflight({ ...installed(), pi: absent, shell: owned("3.9.0", "npm"), gentleAi: unchecked, setup: unchecked });
+test("a missing Pi is installed before an existing Drakonc Shell is updated", () => {
+	const plan = planPreflight({ ...installed(), pi: absent, shell: owned("3.9.0", "npm"), drakoncAi: unchecked, setup: unchecked });
 	assert.deepEqual(updateIds(plan), ["install-pi", "update-shell-release", "setup-shell", "verify-readiness"]);
 });
 
-test("an existing compatible Pi from any installation is reused and only Gentle Shell is installed", () => {
+test("an existing compatible Pi from any installation is reused and only Drakonc Shell is installed", () => {
 	for (const pi of [tool("1.2.0"), { ...tool("1.2.4"), external: true }]) {
-		const plan = planPreflight({ ...installed(), pi, shell: absent, gentleAi: absent, setup: false });
+		const plan = planPreflight({ ...installed(), pi, shell: absent, drakoncAi: absent, setup: false });
 		assert.equal(plan.tools.pi.status, "reusable");
 		assert.deepEqual(updateIds(plan), ["install-shell", "setup-shell", "verify-readiness"]);
 	}
 });
 
-test("a pnpm Pi newer than the installer's pin never blocks: Gentle Shell is added or updated beside it", () => {
+test("a pnpm Pi newer than the installer's pin never blocks: Drakonc Shell is added or updated beside it", () => {
 	const newer = { ...tool("1.2.1") };
-	const install = planPreflight({ ...installed(), pi: newer, shell: absent, gentleAi: absent, setup: false });
+	const install = planPreflight({ ...installed(), pi: newer, shell: absent, drakoncAi: absent, setup: false });
 	assert.deepEqual([install.blockers, updateIds(install)], [[], ["install-shell", "setup-shell", "verify-readiness"]]);
-	const update = planPreflight({ ...installed(), pi: newer, shell: owned("3.9.0"), gentleAi: unchecked, setup: unchecked });
+	const update = planPreflight({ ...installed(), pi: newer, shell: owned("3.9.0"), drakoncAi: unchecked, setup: unchecked });
 	assert.deepEqual([update.blockers, updateIds(update)], [[], ["update-shell-release", "setup-shell", "verify-readiness"]]);
 	// Even a probe that reported an owner is not a blocker: only an older owned Pi is updated.
-	assert.deepEqual(planPreflight({ ...installed(), pi: { ...newer, owner: "pnpm" }, shell: absent, gentleAi: absent, setup: false }).blockers, []);
+	assert.deepEqual(planPreflight({ ...installed(), pi: { ...newer, owner: "pnpm" }, shell: absent, drakoncAi: absent, setup: false }).blockers, []);
 });
 
 // An older Pi that pnpm or npm owns is updated to the version the installer installs.
 const olderPi = (owner?: string, version = "0.87.1") => ({ ...tool(version), ...(owner ? { owner } : {}) });
 
-test("an older Pi that pnpm or npm owns is updated before Gentle Shell is installed, instead of blocking", () => {
+test("an older Pi that pnpm or npm owns is updated before Drakonc Shell is installed, instead of blocking", () => {
 	for (const owner of ["pnpm", "npm"]) {
-		const plan = planPreflight({ ...installed(), pi: olderPi(owner), shell: absent, gentleAi: absent, setup: false });
+		const plan = planPreflight({ ...installed(), pi: olderPi(owner), shell: absent, drakoncAi: absent, setup: false });
 		assert.deepEqual(plan.blockers, [], owner);
 		assert.deepEqual(plan.tools.pi, { status: "needs-update", required: requirements.pi, version: "0.87.1", owner });
 		assert.deepEqual(updateIds(plan), ["update-pi", "install-shell", "setup-shell", "verify-readiness"]);
@@ -301,13 +301,13 @@ test("an older Pi that pnpm or npm owns is updated before Gentle Shell is instal
 	}
 });
 
-test("an older owned Pi is updated before an existing Gentle Shell is updated", () => {
-	const plan = planPreflight({ ...installed(), pi: olderPi("pnpm"), shell: owned("3.9.0", "npm"), gentleAi: unchecked, setup: unchecked });
+test("an older owned Pi is updated before an existing Drakonc Shell is updated", () => {
+	const plan = planPreflight({ ...installed(), pi: olderPi("pnpm"), shell: owned("3.9.0", "npm"), drakoncAi: unchecked, setup: unchecked });
 	assert.deepEqual(plan.blockers, []);
 	assert.deepEqual(updateIds(plan), ["update-pi", "update-shell-release", "setup-shell", "verify-readiness"]);
 });
 
-test("with a current Gentle Shell, an older owned Pi is the only thing updated", () => {
+test("with a current Drakonc Shell, an older owned Pi is the only thing updated", () => {
 	for (const shell of [owned(requirements.shell, "npm"), { ...tool(requirements.shell), global: true }]) {
 		const plan = planPreflight({ ...installed(), pi: olderPi("npm"), shell });
 		assert.deepEqual(plan.blockers, [], JSON.stringify(shell));
@@ -325,16 +325,16 @@ test("the main channel updates an older owned Pi before the main overlay", () =>
 
 test("an older Pi that neither pnpm nor npm owns is left as it is, and the installer's Pi is installed alongside", () => {
 	for (const pi of [olderPi(), olderPi("mise"), { ...olderPi(), external: true }, { ...tool("0.99.0"), external: true }]) {
-		const plan = planPreflight({ ...installed(), pi, shell: absent, gentleAi: absent, setup: false });
+		const plan = planPreflight({ ...installed(), pi, shell: absent, drakoncAi: absent, setup: false });
 		assert.deepEqual(plan.blockers, [], JSON.stringify(pi));
 		assert.deepEqual(plan.tools.pi, { status: "needs-install", required: requirements.pi, version: pi.version });
-		// Exactly the absent-Pi installation: Pi and Gentle Shell in one pnpm add.
+		// Exactly the absent-Pi installation: Pi and Drakonc Shell in one pnpm add.
 		assert.deepEqual(updateIds(plan), ["install-pi", "install-shell", "setup-shell", "verify-readiness"]);
-		assert.deepEqual(updateIds(plan), updateIds(planPreflight({ ...installed(), pi: absent, shell: absent, gentleAi: absent, setup: false })));
+		assert.deepEqual(updateIds(plan), updateIds(planPreflight({ ...installed(), pi: absent, shell: absent, drakoncAi: absent, setup: false })));
 	}
-	const update = planPreflight({ ...installed(), pi: olderPi(), shell: owned("3.9.0", "npm"), gentleAi: unchecked, setup: unchecked });
+	const update = planPreflight({ ...installed(), pi: olderPi(), shell: owned("3.9.0", "npm"), drakoncAi: unchecked, setup: unchecked });
 	assert.deepEqual(updateIds(update), ["install-pi", "update-shell-release", "setup-shell", "verify-readiness"]);
-	// A current Gentle Shell: only the installer's Pi is added.
+	// A current Drakonc Shell: only the installer's Pi is added.
 	for (const shell of [owned(requirements.shell, "npm"), { ...tool(requirements.shell), global: true }]) {
 		assert.deepEqual(updateIds(planPreflight({ ...installed(), pi: olderPi(), shell })), ["install-pi", "verify-readiness"]);
 	}
@@ -343,22 +343,22 @@ test("an older Pi that neither pnpm nor npm owns is left as it is, and the insta
 test("Pi is never touched when it is current, and an unknown or unusable Pi keeps blocking", () => {
 	// A current Pi, even with a known owner, is reused untouched.
 	for (const pi of [olderPi("pnpm", requirements.pi), olderPi("npm", "1.2.0"), { ...olderPi(undefined, "1.2.0"), external: true }]) {
-		const plan = planPreflight({ ...installed(), pi, shell: absent, gentleAi: absent, setup: false });
+		const plan = planPreflight({ ...installed(), pi, shell: absent, drakoncAi: absent, setup: false });
 		assert.equal(plan.tools.pi.status, "reusable");
 		assert.deepEqual(updateIds(plan), ["install-shell", "setup-shell", "verify-readiness"]);
 	}
 	// A prerelease, an unusable Pi or one whose version cannot be read keeps blocking.
 	for (const pi of [olderPi("pnpm", "0.99.1-rc.1"), { ...olderPi("pnpm"), usable: false }, { ...olderPi(), usable: false },
 		{ available: null, owner: "pnpm" }, { available: null, outsidePnpm: true }]) {
-		const plan = planPreflight({ ...installed(), pi, shell: absent, gentleAi: absent, setup: false });
+		const plan = planPreflight({ ...installed(), pi, shell: absent, drakoncAi: absent, setup: false });
 		assert.ok(plan.blockers.some((b: { tool: string }) => b.tool === "pi"), JSON.stringify(pi));
 		assert.deepEqual(plan.actions, []);
 	}
 });
 
-test("an unknown Gentle AI still blocks when the Shell is reusable", () => {
-	const plan = planPreflight({ ...installed(), gentleAi: { available: null } });
-	assert.deepEqual(plan.blockers, [{ code: "unknown-tool", tool: "gentleAi" }]);
+test("an unknown Drakonc AI still blocks when the Shell is reusable", () => {
+	const plan = planPreflight({ ...installed(), drakoncAi: { available: null } });
+	assert.deepEqual(plan.blockers, [{ code: "unknown-tool", tool: "drakoncAi" }]);
 });
 
 test("a current Shell without its global command still blocks as unknown", () => {
@@ -368,7 +368,7 @@ test("a current Shell without its global command still blocks as unknown", () =>
 });
 
 test("missing Windows Go is acquired before reprovisioning an existing Shell", () => {
-	const inventory = { ...installed("win32"), gentleAi: absent };
+	const inventory = { ...installed("win32"), drakoncAi: absent };
 	assert.deepEqual(ids(inventory), ["acquire-go", "verify-go", "provision-native", "setup-shell", "verify-readiness"]);
 	// A Go it cannot check is never run either: the pinned Go builds instead.
 	for (const go of [tool("devel"), { ...tool("1.26.0"), usable: false }]) {
@@ -398,22 +398,22 @@ test("a recoverable stack only reruns setup, with PATH setup when the global bin
 	}
 });
 
-test("only an exact recoverable setup with a verified Gentle AI is a recovery", () => {
+test("only an exact recoverable setup with a verified Drakonc AI is a recovery", () => {
 	for (const setup of [{ available: null }, { available: true }, { available: true, recoverable: "yes" }, { available: false, recoverable: true }]) {
 		const plan = planPreflight(partial({ setup }));
 		assert.ok(plan.blockers.some((b: { tool: string; code: string }) => b.tool === "setup" && b.code === "unknown-tool"), JSON.stringify(setup));
 		assert.deepEqual(plan.actions, []);
 	}
 	// A missing native binary keeps its existing provisioning plan; the runner does not run it.
-	assert.deepEqual(ids(partial({ gentleAi: absent })), ["provision-native", "setup-shell", "verify-readiness"]);
-	for (const change of [{ gentleAi: { available: null } }, { pi: tool("0.99.0") }, { shell: { ...tool(requirements.shell), global: false } }]) {
+	assert.deepEqual(ids(partial({ drakoncAi: absent })), ["provision-native", "setup-shell", "verify-readiness"]);
+	for (const change of [{ drakoncAi: { available: null } }, { pi: tool("0.99.0") }, { shell: { ...tool(requirements.shell), global: false } }]) {
 		assert.deepEqual(ids(partial(change)), []);
 	}
 });
 
 test("unknown probes and pnpm compatibility fail closed", () => {
 	for (const change of [{ node: undefined }, { pnpm: tool("11.1.1") }, { setup: undefined },
-		{ gentleAi: { ...tool("5.0.0"), compatible: false } }, { shell: { ...tool("4.0.0"), global: false } }]) {
+		{ drakoncAi: { ...tool("5.0.0"), compatible: false } }, { shell: { ...tool("4.0.0"), global: false } }]) {
 		assert.ok(planPreflight({ ...installed(), ...change }).blockers.length > 0);
 	}
 });
@@ -452,7 +452,7 @@ test("unsupported targets never offer installation", () => {
 
 test("collector invokes only injected named probes, catches failures without logging details", async () => {
 	const calls: string[] = [];
-	const probes = Object.fromEntries(["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin", "setup"].map((name) =>
+	const probes = Object.fromEntries(["node", "pnpm", "pi", "shell", "drakoncAi", "go", "globalBin", "setup"].map((name) =>
 		[name, async () => { calls.push(name); if (name === "node") throw new Error("private diagnostic"); return absent; }]));
 	const inventory = await collectInventory({ platform: "linux", arch: "x64", probes });
 	assert.deepEqual(calls, Object.keys(probes));
@@ -570,8 +570,8 @@ test("preflight carries a different global-bin Node only when it persists Node",
 	assert.deepEqual(planPreflight(runtimeStack(supported, pnpm)).tools.node, { status: "reusable", required: requirements.node });
 	// Recovery, updates and blockers do not persist Node and must not change their plans.
 	for (const inventory of [partial({ node: pinnedNode("23.5.9") }),
-		{ ...installed(), node: pinnedNode(), shell: owned("3.9.0"), gentleAi: unchecked, setup: unchecked },
-		{ ...installed(), node: pinnedNode("23.5.9"), shell: owned("3.9.0"), gentleAi: unchecked, setup: unchecked }]) {
+		{ ...installed(), node: pinnedNode(), shell: owned("3.9.0"), drakoncAi: unchecked, setup: unchecked },
+		{ ...installed(), node: pinnedNode("23.5.9"), shell: owned("3.9.0"), drakoncAi: unchecked, setup: unchecked }]) {
 		const original = planPreflight(inventory);
 		assert.equal(original.actions.some((action: { id: string }) => action.id === "persist-node"), false);
 		assert.deepEqual(planPreflight({ ...inventory, node: { ...inventory.node, globalBinNode: true } }), original);
@@ -614,14 +614,14 @@ test("a found version is recorded only for a bootstrap copy replacing a stable o
 
 test("an update of an existing installation persists nothing, so an older Node or incompatible pnpm still blocks it", () => {
 	for (const [name, change] of [["node", { node: pinnedNode("22.18.0") }], ["pnpm", { pnpm: pinnedPnpm("10.27.0") }]] as const) {
-		const plan = planPreflight({ ...installed(), shell: owned("3.9.0"), gentleAi: unchecked, setup: unchecked, ...change });
+		const plan = planPreflight({ ...installed(), shell: owned("3.9.0"), drakoncAi: unchecked, setup: unchecked, ...change });
 		assert.deepEqual(plan.blockers, [{ code: "incompatible-tool", tool: name }]);
 		assert.deepEqual(plan.actions, []);
 	}
 });
 
-test("a current Gentle Shell persists nothing either, so an older Node or incompatible pnpm blocks before consent", () => {
-	// The runner persists runtimes only while installing Gentle Shell (planGate):
+test("a current Drakonc Shell persists nothing either, so an older Node or incompatible pnpm blocks before consent", () => {
+	// The runner persists runtimes only while installing Drakonc Shell (planGate):
 	// these plans would otherwise be rejected as unsupported after consent.
 	const current = { ...installed(), shell: owned(requirements.shell) };
 	const cases = [
@@ -673,7 +673,7 @@ test("a user's pnpm in $PNPM_HOME/bin that could not be checked is left as it is
 });
 
 test("an older Go is left as it is: the pinned Go is acquired alongside, and a set-up stack downloads nothing", () => {
-	for (const [platform, channel, change] of [["win32", "release", { gentleAi: absent }], ["darwin", "main", { shell: absent, setup: false }]] as const) {
+	for (const [platform, channel, change] of [["win32", "release", { drakoncAi: absent }], ["darwin", "main", { shell: absent, setup: false }]] as const) {
 		const plan = planPreflight({ ...installed(platform), ...change, go: tool("1.24.0") }, { channel });
 		assert.deepEqual(plan.blockers, [], platform);
 		assert.equal(plan.tools.go.found, "1.24.0");
@@ -738,7 +738,7 @@ test("a blocked Windows PNPM_HOME decision runs no probe and plans only that blo
 	] as const;
 	for (const [pnpmHome, blocker] of cases) {
 		const called: string[] = [];
-		const probes = Object.fromEntries(["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin", "setup"]
+		const probes = Object.fromEntries(["node", "pnpm", "pi", "shell", "drakoncAi", "go", "globalBin", "setup"]
 			.map((name) => [name, async () => { called.push(name); return { available: null }; }]));
 		const inventory = await collectInventory({ platform: "win32", arch: "x64", probes, pnpmHome });
 		assert.deepEqual(called, [], JSON.stringify(pnpmHome));
@@ -767,10 +767,10 @@ const weakFolder = { check: "parent-acl-mask", at: "C:\\Users\\m\\AppData\\Roami
 const allFolders = { node: weakFolder, npm: weakFolder, go: { check: "target-owner", at: "C:\\Go\\bin\\go.exe", sid: "S-1-5-21-9" }, pi: weakFolder, shell: weakFolder };
 test("Windows: collectInventory records the folders walk after the tool probes, and never blocks on it", async () => {
 	const order: string[] = [];
-	const probes = { ...Object.fromEntries(["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin", "setup"].map((name) => [name, async () => { order.push(name); return absent; }])),
+	const probes = { ...Object.fromEntries(["node", "pnpm", "pi", "shell", "drakoncAi", "go", "globalBin", "setup"].map((name) => [name, async () => { order.push(name); return absent; }])),
 		folders: async () => { order.push("folders"); return { node: weakFolder }; } };
 	const inventory = await collectInventory({ platform: "win32", arch: "x64", probes });
-	assert.deepEqual(order, ["node", "pnpm", "pi", "shell", "gentleAi", "go", "globalBin", "setup", "folders"]);
+	assert.deepEqual(order, ["node", "pnpm", "pi", "shell", "drakoncAi", "go", "globalBin", "setup", "folders"]);
 	assert.deepEqual(inventory.folders, { node: weakFolder });
 	for (const folders of [async () => null, async () => ({}), async () => ({ available: null }), async () => { throw new Error("walk failed"); }]) {
 		const quiet = await collectInventory({ platform: "win32", arch: "x64", probes: { ...probes, folders } });
@@ -792,7 +792,7 @@ test("Windows: the plan notes only the reused tools whose folders another accoun
 	assert.deepEqual(plan.blockers, []);
 	assert.deepEqual(plan.actions, planPreflight(reused).actions, "a notice changes no action");
 	assert.deepEqual(plan.tools.folders, { status: "notice", reused: [{ tool: "node", ...weakFolder }, { tool: "npm", ...weakFolder }, { tool: "go", ...allFolders.go }, { tool: "pi", ...weakFolder }] },
-		"Gentle Shell is installed by pnpm here, so its folder is not reused");
+		"Drakonc Shell is installed by pnpm here, so its folder is not reused");
 	assert.equal("folders" in planPreflight(reused).tools, false);
 	// Not reused: a Node left for the pinned one, a missing npm, Go not needed, a Pi installed alongside.
 	const replaced = planPreflight({ ...reused, node: { ...tool("24.21.0"), persistent: false, npm: false, found: "22.0.0" },
@@ -800,7 +800,7 @@ test("Windows: the plan notes only the reused tools whose folders another accoun
 	assert.deepEqual(replaced.tools.folders?.reused.map((entry: { tool: string }) => entry.tool), ["go"], "only Go, which the Windows build still reuses");
 	const missingNpm = planPreflight({ ...reused, node: { ...tool("24.18.0"), persistent: true, npm: false }, folders: { npm: weakFolder } });
 	assert.equal(missingNpm.tools.folders, undefined);
-	// An npm-owned Gentle Shell that is kept or updated with npm is reused.
+	// An npm-owned Drakonc Shell that is kept or updated with npm is reused.
 	const npmShell = planPreflight({ ...installed("win32"), node: { ...tool("24.18.0"), persistent: true, npm: true },
 		shell: { ...tool(requirements.shell), global: true, owner: "npm" }, folders: { shell: weakFolder, go: weakFolder } });
 	assert.deepEqual(npmShell.tools.folders?.reused.map((entry: { tool: string }) => entry.tool), ["shell"], "no build here, so Go is not reused");

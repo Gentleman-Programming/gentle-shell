@@ -12,7 +12,7 @@ import { findAll, flush, heardGeneration, inspectorPick, loadCanvas, memoryStora
 // strings, numbers or booleans, never fake elements, which node:assert would walk whole on a failure.
 
 const TOKENS_URL = "/t/api/system/tokens";
-const TECHNICAL_KEY = "gentle-design:technical";
+const TECHNICAL_KEY = "drakonc-design:technical";
 const HIDE_MS = 300;
 // While a panel shows, the pointer must rest this long on another element before the panel follows it.
 const DWELL_MS = 250;
@@ -205,7 +205,7 @@ test("only well-formed tokens count: a custom property name, a value, at most 50
 test("Technical details is a checkbox item in Settings, off by default and remembered in this browser", async () => {
 	const canvas = await loadTokens();
 	$(canvas, "gd-rail-settings").dispatch("click");
-	assert.deepEqual(settingsItems(canvas).map((item) => texts(item, "gd-menu-label")[0]), ["Design system board", "Keyboard shortcuts", "Technical details", "Gentleman", "Neutral", "Español", "English", "Match the browser"]);
+	assert.deepEqual(settingsItems(canvas).map((item) => texts(item, "gd-menu-label")[0]), ["Design system board", "Keyboard shortcuts", "Technical details", "Drakoncman", "Neutral", "Español", "English", "Match the browser"]);
 	const item = technicalItem(canvas)!;
 	assert.equal(item.getAttribute("role"), "menuitemcheckbox");
 	assert.equal(item.getAttribute("aria-checked"), "false");
@@ -948,18 +948,18 @@ test("canvas-tokens.js keeps its English strings in one block, reaches the brows
 	const init = source.indexOf("export function init");
 	assert.ok(source.indexOf("const TEXT = Object.freeze({") >= 0 && source.indexOf("const TEXT = Object.freeze({") < init);
 	assert.ok(!/(?<![.\w])(navigator|document|window|localStorage|setTimeout)\b/.test(source.slice(init).replace(/\/\/.*$|\/\*[^]*?\*\//gm, "")), "only ctx.win and ctx.doc");
-	assert.ok(source.includes('"gentle-design:technical"'));
+	assert.ok(source.includes('"drakonc-design:technical"'));
 	assert.ok(!/state\.(tokens|technical)\s*=/.test(source), "store mutators only");
 });
 
 test("the docs describe the token inspector with the heuristics note, and Technical details in the Tool rail", () => {
-	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
-	const section = docs.slice(docs.indexOf("### Gentle Design"), docs.indexOf("### Gentle Music"));
+	const docs = readFileSync(fileURLToPath(new URL("../docs/drakonc-shell.md", import.meta.url)), "utf8");
+	const section = docs.slice(docs.indexOf("### Drakonc Design"), docs.indexOf("### Drakonc Music"));
 	const start = section.indexOf("- **Tokens**");
 	assert.ok(start >= 0, "a Tokens entry");
 	const entry = section.slice(start, section.indexOf("\n", start));
 	assert.ok(entry.includes("These are heuristics: an element with a background image or gradient has no known background, and the match uses computed values, not the CSS that produced them."));
-	for (const words of ["**Technical details**", "Comment mode", "⚠ no token", "OKLab", "WCAG", "**Ask the agent to fix**", "**Copy**", "`design/system.md`", "`gentle-design:technical`", "only after the pointer rests on it (250 ms)", "`Esc` in the panel closes it", "keyboard focus leaves the panel", "over 256 KB or could not be read", "measure the element under the pointer only while Technical details is on"]) assert.ok(entry.includes(words), `the Tokens entry mentions ${words}`);
+	for (const words of ["**Technical details**", "Comment mode", "⚠ no token", "OKLab", "WCAG", "**Ask the agent to fix**", "**Copy**", "`design/system.md`", "`drakonc-design:technical`", "only after the pointer rests on it (250 ms)", "`Esc` in the panel closes it", "keyboard focus leaves the panel", "over 256 KB or could not be read", "measure the element under the pointer only while Technical details is on"]) assert.ok(entry.includes(words), `the Tokens entry mentions ${words}`);
 	const rail = section.slice(section.indexOf("- **Tool rail**"), section.indexOf("\n", section.indexOf("- **Tool rail**")));
 	assert.ok(rail.includes("**Technical details**"), "the Tool rail entry names Technical details");
 });

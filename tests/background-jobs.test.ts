@@ -54,7 +54,7 @@ function fakeOperations() {
 }
 
 function setup(commandPrefix?: string) {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-jobs-test-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-jobs-test-"));
 	const fake = fakeOperations();
 	const settled: JobRecord[] = [];
 	let clock = 1000;
@@ -224,7 +224,7 @@ test("list filters by owner session and stopAll stops every running job without 
 });
 
 test("a real shell job runs through Pi's bash operations and reports its exit code", { skip: process.platform === "win32" }, async () => {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-jobs-real-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-jobs-real-"));
 	try {
 		const done = new Promise<JobRecord>((resolve) => {
 			const registry = createJobRegistry({ outputDir: () => dir, now: Date.now, shell: () => ({ operations: createLocalBashOperations() }), onSettled: resolve });

@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { DESKTOP_RPC_SCHEMA } from "../lib/desktop-rpc.ts";
 import {
 	BACKGROUND_SUBAGENTS_BUSY,
@@ -21,8 +21,8 @@ import { DesktopBackgroundSubagentsBridge } from "../lib/desktop-background-suba
 import { BACKGROUND_SUBAGENTS_FILE, BACKGROUND_SUBAGENTS_SCHEMA } from "../lib/background-subagents-policy.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 
-// get/set_background_subagents: the `/gentle:background-subagents` policy read
-// and written through its owner in `extensions/gentle-ai.ts`, with the same
+// get/set_background_subagents: the `/drakonc:background-subagents` policy read
+// and written through its owner in `extensions/drakonc-ai.ts`, with the same
 // two-call confirmation as `set_review_mode`.
 
 function bus() {
@@ -39,22 +39,22 @@ function realOwner(t: test.TestContext, processEnv: NodeJS.ProcessEnv = {}) {
 	const configHome = join(root, "config");
 	const cwd = join(root, "repo");
 	mkdirSync(configHome, { recursive: true });
-	mkdirSync(join(cwd, ".pi", "gentle-ai"), { recursive: true });
-	const saved = { config: process.env.GENTLE_PI_CONFIG_HOME, policy: process.env.GENTLE_PI_BACKGROUND_SUBAGENTS };
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
-	delete process.env.GENTLE_PI_BACKGROUND_SUBAGENTS;
+	mkdirSync(join(cwd, ".pi", "drakonc-ai"), { recursive: true });
+	const saved = { config: process.env.DRAKONC_PI_CONFIG_HOME, policy: process.env.DRAKONC_PI_BACKGROUND_SUBAGENTS };
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
+	delete process.env.DRAKONC_PI_BACKGROUND_SUBAGENTS;
 	t.after(() => {
-		if (saved.config === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = saved.config;
-		if (saved.policy !== undefined) process.env.GENTLE_PI_BACKGROUND_SUBAGENTS = saved.policy;
+		if (saved.config === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = saved.config;
+		if (saved.policy !== undefined) process.env.DRAKONC_PI_BACKGROUND_SUBAGENTS = saved.policy;
 		rmSync(root, { recursive: true, force: true });
 	});
 	const events = bus();
 	const pi = { on() {}, registerCommand() {}, registerTool() {}, getActiveTools: () => ["read", "subagent_run"], events } as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null, processEnv: { GENTLE_AI_TELEMETRY: "0", ...processEnv } })(pi);
+	createDrakoncAiExtension({ nativeReviewCli: null, processEnv: { DRAKONC_AI_TELEMETRY: "0", ...processEnv } })(pi);
 	const bridge = new DesktopBackgroundSubagentsBridge(pi);
 	bridge.attach({ cwd, mode: "rpc", sessionManager: { getCwd: () => cwd } } as unknown as ExtensionContext);
-	return { bridge, globalFile: join(configHome, BACKGROUND_SUBAGENTS_FILE), projectFile: join(cwd, ".pi", "gentle-ai", BACKGROUND_SUBAGENTS_FILE) };
+	return { bridge, globalFile: join(configHome, BACKGROUND_SUBAGENTS_FILE), projectFile: join(cwd, ".pi", "drakonc-ai", BACKGROUND_SUBAGENTS_FILE) };
 }
 
 const DEFAULT_STATE: DesktopBackgroundSubagentsState = { effective: "off", source: "default", malformed: false, projectFile: "absent", globalFile: "absent", capability: "ready" };
@@ -88,7 +88,7 @@ test("the Desktop transport advertises both methods once and no new event", asyn
 	const widgets: string[] = [];
 	const host = { mode: "rpc", cwd: "/x", sessionManager: { getCwd: () => "/x", getSessionId: () => "s", getEntries: () => [] }, ui: { setWidget(_k: string, lines: string[]) { widgets.push(...lines); } } };
 	for (const handler of handlers.get("session_start") ?? []) handler({}, host);
-	await commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "cap", method: "capabilities", params: {} }), host);
+	await commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "cap", method: "capabilities", params: {} }), host);
 	const data = JSON.parse(widgets.at(-1)!).data;
 	for (const method of DESKTOP_BACKGROUND_SUBAGENTS_METHODS) assert.equal(data.methods.filter((name: string) => name === method).length, 1);
 	assert.deepEqual(data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
@@ -147,7 +147,7 @@ test("malformed set params are rejected before the owner and write nothing", asy
 });
 
 test("a subagent process never answers the owner channel", async (t) => {
-	const owner = realOwner(t, { GENTLE_PI_AGENTS_CHILD: "1" });
+	const owner = realOwner(t, { DRAKONC_PI_AGENTS_CHILD: "1" });
 	assert.deepEqual(await owner.bridge.handle("get_background_subagents", {}), { ok: false, error: BACKGROUND_SUBAGENTS_UNAVAILABLE });
 });
 

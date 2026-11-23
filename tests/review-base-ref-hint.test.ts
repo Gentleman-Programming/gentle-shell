@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { BASE_REF_ACCEPTED_FORMS } from "../lib/review-candidate-view.ts";
 
 const BASE_REF_REJECTION_REASONS = ["base-ref-unresolvable", "base-ref-ambiguous", "base-ref-moved", "base-ref-invalid"];

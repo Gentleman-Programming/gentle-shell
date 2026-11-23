@@ -7,7 +7,7 @@ exiting the extension leaves no `git` process behind scanning the repository.
 
 ## Problem
 
-`shellGitRunner` in `extensions/gentle-shell.ts` bounded a scan by killing the direct child on
+`shellGitRunner` in `extensions/drakonc-shell.ts` bounded a scan by killing the direct child on
 timeout. On Windows that is not sufficient. Neither libuv nor `execFile` groups the children in a Job
 Object: the timeout ends in `TerminateProcess` on the direct child, which never reaches descendants.
 A `git` scan that delegated its work to a child keeps that child running, and the surviving process
@@ -39,7 +39,7 @@ create, and on Windows there is no reliable way to attribute the orphan afterwar
 
 ## Constraints
 
-- Allowed edit surfaces: `extensions/gentle-shell.ts`, `tests/gentle-shell.test.ts`, and this task
+- Allowed edit surfaces: `extensions/drakonc-shell.ts`, `tests/drakonc-shell.test.ts`, and this task
   document.
 - Preserve the existing scan contract: same success shape, same failure signal apart from the
   timed-out `code: 1`.
@@ -77,14 +77,14 @@ create, and on Windows there is no reliable way to attribute the orphan afterwar
 ## Checks
 
 - Work-unit commit: `5c4643681` (`fix(shell): kill the whole Git process tree on Windows scan timeout`),
-  +97/−7 across two files: `extensions/gentle-shell.ts` (the fix) and `tests/gentle-shell.test.ts`
+  +97/−7 across two files: `extensions/drakonc-shell.ts` (the fix) and `tests/drakonc-shell.test.ts`
   (the regression that pins it).
 - Tests: 321 total, 316 passed, 5 failed — all five reproduce on the pristine base commit and are
   Windows-specific pre-existing failures, not caused by this change.
 - Typecheck: `node scripts/check-types.mjs` — 0 recorded diagnostics, no regressions.
 - Runtime harness: `node --experimental-strip-types tests/runtime-harness.mjs` — exit 0.
-- Diff scope: only `extensions/gentle-shell.ts`, `tests/gentle-shell.test.ts` and this task document.
-- Deadline-wins regression: `tests/gentle-shell.test.ts` — "a timed-out scan that ends with exit 0
+- Diff scope: only `extensions/drakonc-shell.ts`, `tests/drakonc-shell.test.ts` and this task document.
+- Deadline-wins regression: `tests/drakonc-shell.test.ts` — "a timed-out scan that ends with exit 0
   still reports failure" models execFile answering cleanly with truncated porcelain once the grace
   cuts the pipes. Mutation-checked: deleting the `timedOut` branch in `settle()` turns it red
   (`0 !== 1`), while every other scan test stays green.

@@ -26,8 +26,8 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  Object.assign(env, {HOME:temp, USERPROFILE:temp, XDG_CONFIG_HOME:temp, XDG_CACHE_HOME:join(temp,'cache'), npm_config_cache:join(temp,'cache'), npm_config_userconfig:join(temp,'user.npmrc'), npm_config_globalconfig:join(temp,'global.npmrc'), npm_config_update_notifier:'false', COREPACK_ENABLE_PROJECT_SPEC:'0', COREPACK_ENABLE_NETWORK:'0', COREPACK_HOME:join(temp,'corepack'), PNPM_HOME:join(temp,'pnpm-home')});
  await fs.writeFile(env.npm_config_userconfig!, '');
  await fs.writeFile(env.npm_config_globalconfig!, '');
- // GENTLE_PI_MAINTEST_PNPM selects another real pnpm (for example a user's newer global one).
- const command = manager === 'pnpm' && process.env.GENTLE_PI_MAINTEST_PNPM ? process.env.GENTLE_PI_MAINTEST_PNPM : (await exec('which', [manager], {env})).stdout.trim();
+ // DRAKONC_PI_MAINTEST_PNPM selects another real pnpm (for example a user's newer global one).
+ const command = manager === 'pnpm' && process.env.DRAKONC_PI_MAINTEST_PNPM ? process.env.DRAKONC_PI_MAINTEST_PNPM : (await exec('which', [manager], {env})).stdout.trim();
  const version = (await exec(command, ['--version'], {cwd:temp, env})).stdout.trim();
  const files = new Map<string, Buffer>();
  const manifests: Record<string, any> = {};
@@ -78,7 +78,7 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  await fs.mkdir(join(root, '.git'), {recursive:true});
  const declaredVersion = manager === 'pnpm' ? '11.1.1' : version;
  t.diagnostic(`${manager} runtime ${version}; project declaration ${declaredVersion}`);
- const manifest = JSON.stringify({name:'gentle-pi', version:'4.4.0', packageManager:`${manager}@${declaredVersion}`, devDependencies:{[PI]:'^1.0.0', 'unrelated-fixture':'^1.0.0'}});
+ const manifest = JSON.stringify({name:'drakonc-pi', version:'4.4.0', packageManager:`${manager}@${declaredVersion}`, devDependencies:{[PI]:'^1.0.0', 'unrelated-fixture':'^1.0.0'}});
  await fs.writeFile(join(root, 'package.json'), manifest);
  // Versioned entries for the siblings shadow any later CLI entry for the same name.
  const policy = `minimumReleaseAge: 4320\nminimumReleaseAgeExclude:\n  - pre-excluded-fixture\n  - '${SIBLING}@1.0.0'\n  - '${GRAND}@1.0.0'\n`;
@@ -87,7 +87,7 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
  await exec(command, ['install', ...common, ...registryFlags], {cwd:root, env, maxBuffer:1024*1024});
  const lockPath = join(root, manager === 'pnpm' ? 'pnpm-lock.yaml' : 'package-lock.json');
  const oldLock = await fs.readFile(lockPath, 'utf8');
- const link = join(temp, 'global', 'node_modules', 'gentle-pi');
+ const link = join(temp, 'global', 'node_modules', 'drakonc-pi');
  await fs.mkdir(join(temp, 'global', 'node_modules'), {recursive:true});
  await fs.symlink(root, link, 'junction');
  const selected = await fs.realpath(join(root, 'node_modules', PI, 'dist', 'bundle', 'cli.js'));
@@ -99,7 +99,7 @@ for (const manager of ['npm', 'pnpm']) test(`real ${manager} source update prese
   which:async (name: string) => name === manager || name === 'npm' ? command : null,
   run:async (_cmd: string, args: string[], options: {cwd?: string,env?: Record<string,string>}) => {
    if (args.includes('list') && args.includes('-g')) return {code:0, stdout:JSON.stringify([{path:temp, dependencies:{}}])};
-   if (args.includes('ls') && args.includes('-g')) return {code:0, stdout:JSON.stringify({path:temp, dependencies:{'gentle-pi':{path:link, resolved:'file:../../checkout'}}})};
+   if (args.includes('ls') && args.includes('-g')) return {code:0, stdout:JSON.stringify({path:temp, dependencies:{'drakonc-pi':{path:link, resolved:'file:../../checkout'}}})};
    const mutation = ['update', 'add', 'install'].includes(args[0]);
    if (mutation) mutations.push(args);
    const selectedEnv = options.env ?? env;

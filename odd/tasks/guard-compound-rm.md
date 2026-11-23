@@ -1,7 +1,7 @@
 # Guard: recognize destructive commands in compound bodies, backticks and eval (#2285)
 
 Objective: the destructive-command recognizer sees `rm` and the other recognized destructive forms after shell reserved words, inside backtick substitutions and inside literal `eval` payloads.
-Branch: `fix/guard-compound-rm` (worktree `/home/gentleman/work/gentle-pi-worktrees/guard-compound`, base `origin/main` 0c45b6f62). Delivery: single PR closing #2285. Runner: `node --experimental-strip-types --test <file>`; suite `pnpm test`.
+Branch: `fix/guard-compound-rm` (worktree `/home/drakoncman/work/drakonc-pi-worktrees/guard-compound`, base `origin/main` 0c45b6f62). Delivery: single PR closing #2285. Runner: `node --experimental-strip-types --test <file>`; suite `pnpm test`.
 
 ## Specs
 
@@ -21,7 +21,7 @@ Branch: `fix/guard-compound-rm` (worktree `/home/gentleman/work/gentle-pi-worktr
 
 | ID | Specs | Route | Status | Commit |
 |----|-------|-------|--------|--------|
-| T1 | S1-S5 | delegated (Writer trigger: parallel units with gentle-ai #5533) | done, verified (L3) | 6b8acd37f |
+| T1 | S1-S5 | delegated (Writer trigger: parallel units with drakonc-ai #5533) | done, verified (L3) | 6b8acd37f |
 
 Risk: item 2 (security guard) → independent verifier after T1.
 

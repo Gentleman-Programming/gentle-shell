@@ -2,11 +2,11 @@
 
 ## Objective
 
-Make the Gentle Pi harness (ODD workflow, identity, persona, review contract, RDD status, research block) and the Gentle Todo open-tasks block reach the model on every provider, including `pi-claude-bridge`.
+Make the Drakonc Pi harness (ODD workflow, identity, persona, review contract, RDD status, research block) and the Drakonc Todo open-tasks block reach the model on every provider, including `pi-claude-bridge`.
 
 ## Problem
 
-`extensions/gentle-ai.ts` and `extensions/gentle-todo.ts` inject text by returning `{ systemPrompt: event.systemPrompt + ... }` from `before_agent_start`. `pi-claude-bridge` 0.8.0 forwards only the structured `systemPromptOptions` parts (context files, skills, `customPrompt`, `appendSystemPrompt`) after the Claude Code preset, so the returned prompt is silently dropped. Observed: the visible TODO is never updated, ODD phase labels never appear, and RDD consent is relayed as chat text (gentle-shell #1485).
+`extensions/drakonc-ai.ts` and `extensions/drakonc-todo.ts` inject text by returning `{ systemPrompt: event.systemPrompt + ... }` from `before_agent_start`. `pi-claude-bridge` 0.8.0 forwards only the structured `systemPromptOptions` parts (context files, skills, `customPrompt`, `appendSystemPrompt`) after the Claude Code preset, so the returned prompt is silently dropped. Observed: the visible TODO is never updated, ODD phase labels never appear, and RDD consent is relayed as chat text (drakonc-shell #1485).
 
 ## Why
 
@@ -14,8 +14,8 @@ Pi documents this route (`docs/extensions.md:101`: "Prefer changing prompt secti
 
 ## Scope
 
-- Move the gentle-ai injection from the returned `systemPrompt` to `event.systemPromptOptions.appendSystemPrompt`, idempotently.
-- Same for the gentle-todo open-tasks block.
+- Move the drakonc-ai injection from the returned `systemPrompt` to `event.systemPromptOptions.appendSystemPrompt`, idempotently.
+- Same for the drakonc-todo open-tasks block.
 - Tests and docs.
 
 ## Constraints
@@ -23,13 +23,13 @@ Pi documents this route (`docs/extensions.md:101`: "Prefer changing prompt secti
 - Behavior for non-bridge providers must stay equivalent: same text, same primary-session scoping, no duplication across turns or handlers.
 - Do not break other `before_agent_start` handlers or existing prompt tests.
 - Technical artifacts in English.
-- Out of scope: the superseded `feat/bridge-instructions` branch (kept, unpublished); the stale `gentle-ai` skill (#1085); the dangling `APPEND_SYSTEM.md` symlink left by a gentle-ai test.
+- Out of scope: the superseded `feat/bridge-instructions` branch (kept, unpublished); the stale `drakonc-ai` skill (#1085); the dangling `APPEND_SYSTEM.md` symlink left by a drakonc-ai test.
 
 ## Tasks
 
-- [x] T1 gentle-ai harness through `appendSystemPrompt`, with tests. Route: delegated (writer; 4+ files to understand). Shared idempotent helper `lib/append-system-prompt.ts`. `tests/telemetry-trigger.test.ts` and `tests/runtime-harness.mjs` asserted the removed return shape and were updated to the new contract (scope extended by the parent; required consequence, not new behavior). Commit `13d6a3d24`.
-- [x] T2 gentle-todo block through `appendSystemPrompt`, with tests, plus a cross-extension ordering test. Route: delegated (same writer). Commit `c1589327c`.
-- [x] T3 Docs (`docs/gentle-shell.md`; `docs/review-integration.md` is a byte-pinned contract artifact and was restored after CI `verify` caught the drift). Route: delegated (same writer). Commit: the docs commit that carries this document update.
+- [x] T1 drakonc-ai harness through `appendSystemPrompt`, with tests. Route: delegated (writer; 4+ files to understand). Shared idempotent helper `lib/append-system-prompt.ts`. `tests/telemetry-trigger.test.ts` and `tests/runtime-harness.mjs` asserted the removed return shape and were updated to the new contract (scope extended by the parent; required consequence, not new behavior). Commit `13d6a3d24`.
+- [x] T2 drakonc-todo block through `appendSystemPrompt`, with tests, plus a cross-extension ordering test. Route: delegated (same writer). Commit `c1589327c`.
+- [x] T3 Docs (`docs/drakonc-shell.md`; `docs/review-integration.md` is a byte-pinned contract artifact and was restored after CI `verify` caught the drift). Route: delegated (same writer). Commit: the docs commit that carries this document update.
 - [x] T4 Live verification under `claude-bridge`. Route: inline (parent). See evidence.
 
 ## Acceptance criteria
@@ -50,7 +50,7 @@ Pi documents this route (`docs/extensions.md:101`: "Prefer changing prompt secti
 
 ## Progress
 
-- Worktree: `../gentle-pi-worktrees/1485-append-system-prompt`, branch `fix/1485-bridge-append-system-prompt` from `origin/main` (cedc69e08).
+- Worktree: `../drakonc-pi-worktrees/1485-append-system-prompt`, branch `fix/1485-bridge-append-system-prompt` from `origin/main` (cedc69e08).
 
 ## Runner semantics (confirmed by the writer)
 
@@ -65,7 +65,7 @@ Pi documents this route (`docs/extensions.md:101`: "Prefer changing prompt secti
 - `node --experimental-strip-types tests/runtime-harness.mjs`: exit 0 (writer and parent).
 - Focused files (helper, route, review contract prompt, todo, telemetry): 42 pass, 0 fail (parent re-run).
 - `node scripts/check-provider-contract.mjs`: pass. `node scripts/check-types.mjs`: no regressions.
-- Live, `gentle-shell -p --no-session --model claude-bridge/claude-opus-5-5`, asked whether the instructions contain "Default workflow: Organic Driven Development": this branch answered yes; the installed package answered no. With `openai-codex/gpt-5.5` on this branch, the phrase is present exactly once.
+- Live, `drakonc-shell -p --no-session --model claude-bridge/claude-opus-5-5`, asked whether the instructions contain "Default workflow: Organic Driven Development": this branch answered yes; the installed package answered no. With `openai-codex/gpt-5.5` on this branch, the phrase is present exactly once.
 
 ## Review
 
@@ -73,7 +73,7 @@ Pi documents this route (`docs/extensions.md:101`: "Prefer changing prompt secti
 
 ## Follow-ups
 
-- Done in this PR (commit `1a5cbc094`, user-approved scope addition): the `gentle_odd_phase` reporting instruction lived only in `assets/orchestrator-delegation.md`; one "Phase reporting" line now follows step 7 in the harness, covered by `tests/odd-routing-contract.test.ts` (RED then GREEN). Live under `claude-bridge`, the model now states when to call `gentle_odd_phase`.
+- Done in this PR (commit `1a5cbc094`, user-approved scope addition): the `drakonc_odd_phase` reporting instruction lived only in `assets/orchestrator-delegation.md`; one "Phase reporting" line now follows step 7 in the harness, covered by `tests/odd-routing-contract.test.ts` (RED then GREEN). Live under `claude-bridge`, the model now states when to call `drakonc_odd_phase`.
 - Superseded `feat/bridge-instructions` branch: deleted (never published).
 
 ## Next step

@@ -1,6 +1,7 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { BRAND_GLYPH } from "./brand-glyph.ts";
 
-// Gentle Shell cards: the shape every Gentle notice takes in the transcript
+// Drakonc Shell cards: the shape every Drakonc notice takes in the transcript
 // and above the editor. The same rounded frame as the prompt and the
 // overlays, with the title in the card's tone. Pure: strings in, lines out.
 
@@ -27,7 +28,7 @@ export interface CardTheme {
 	bg?(color: string, text: string): string;
 }
 
-// Conversation cards come in two styles, chosen in /gentle:customize. Pi loads
+// Conversation cards come in two styles, chosen in /drakonc:customize. Pi loads
 // every extension with its own jiti loader (moduleCache:false), so each one
 // gets a copy of this module; the global symbol keeps one style per process.
 export const CARD_STYLE = {
@@ -37,7 +38,7 @@ export const CARD_STYLE = {
 
 export type CardStyle = (typeof CARD_STYLE)[keyof typeof CARD_STYLE];
 
-const CARD_STYLE_SLOT = Symbol.for("gentle-pi.card-style");
+const CARD_STYLE_SLOT = Symbol.for("drakonc-pi.card-style");
 const styleState = globalThis as typeof globalThis & { [CARD_STYLE_SLOT]?: unknown };
 
 export function cardStyle(): CardStyle {
@@ -64,10 +65,10 @@ export interface CardRenderOptions {
 	panel?: boolean;
 }
 
-export const CARD_GLYPH = "✿";
+export const CARD_GLYPH = BRAND_GLYPH;
 // Frame and title paint with the same role for every tone except INFO, whose
 // rounded frame stays in the theme's plain border role while its title
-// carries the accent role — the rose look every informational card (sidebar,
+// carries the accent role — the Drakonc look every informational card (sidebar,
 // review preflight, a quiet Agents widget, ...) uses.
 const FRAME_ROLE: Record<CardTone, string> = {
 	[CARD_TONE.INFO]: "border",
@@ -215,7 +216,7 @@ export function cardBodyRows(
 // by the result component, which closes the frame. The call cannot see the
 // result, so result renderers mark the row state both share, and a call still
 // waiting for its first result closes its own frame.
-const RESULT_MARK = Symbol.for("gentle-pi.card-result");
+const RESULT_MARK = Symbol.for("drakonc-pi.card-result");
 const RUNNING_TEXT = "running…";
 const RUNNING_ROLE = "muted";
 

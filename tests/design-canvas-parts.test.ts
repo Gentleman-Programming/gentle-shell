@@ -87,7 +87,7 @@ test("Implement only this sits between Cancel and Send, enabled only when the pa
 			assert.equal(button.title, "Build only this element in the project; the field is an optional note");
 			continue;
 		}
-		assert.equal(button.title, "The canvas is not connected to a Pi session; open it with /gentle:design open");
+		assert.equal(button.title, "The canvas is not connected to a Pi session; open it with /drakonc:design open");
 		button.dispatch("click");
 		await settle();
 		assert.deepEqual(canvas.posts, [], "a disabled button sends nothing");
@@ -138,7 +138,7 @@ test("Implement only this refuses a long note, disables itself while in flight a
 
 	const cases: Array<[Record<string, unknown>, string]> = [
 		[{ __http: 500, error: "delivery-failed", slug: "alpha", file: "01-a.html", reason: "session closed" }, "Not sent: the session did not take it (session closed)."],
-		[{ __http: 501, error: "implement-part-unavailable" }, "Not sent: the canvas is not connected to a Pi session; open it with /gentle:design open."],
+		[{ __http: 501, error: "implement-part-unavailable" }, "Not sent: the canvas is not connected to a Pi session; open it with /drakonc:design open."],
 		[{ __http: 409, error: "too-many-parts", reason: "at most 100" }, "Not sent: this design already has 100 parts; remove one first."],
 		[{ __http: 409, error: "parts-too-large", reason: "1 MiB" }, "Not sent: parts.json is full; remove a part first."],
 		[{ __http: 422, error: "invalid-parts", reason: "bad json" }, "Not sent: parts.json cannot be read; fix it or delete it."],
@@ -229,7 +229,7 @@ test("without a Pi session the reason Implement only this is disabled is a note 
 	assert.equal(noteId, "gd-popover-part-note");
 	const notes = findAll($(offline, "gd-popover-form"), (element) => element.id === noteId);
 	assert.equal(notes.length, 1, "the note is in the popover");
-	assert.deepEqual([notes[0].hidden, notes[0].textContent], [false, "The canvas is not connected to a Pi session; open it with /gentle:design open"]);
+	assert.deepEqual([notes[0].hidden, notes[0].textContent], [false, "The canvas is not connected to a Pi session; open it with /drakonc:design open"]);
 	assert.equal(notes[0].classes.has("gd-popover-note"), true);
 
 	const online = await loadParts();
@@ -713,9 +713,9 @@ test("canvas-parts.js is registered, groups its English text and styles its sect
 });
 
 test("the docs describe Implement only this, Partial implementations and Remove", () => {
-	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
-	const section = docs.slice(docs.indexOf("### Gentle Design"), docs.indexOf("### Gentle Music"));
+	const docs = readFileSync(fileURLToPath(new URL("../docs/drakonc-shell.md", import.meta.url)), "utf8");
+	const section = docs.slice(docs.indexOf("### Drakonc Design"), docs.indexOf("### Drakonc Music"));
 	for (const words of ["**Implement only this**", "**Partial implementations**", "**Show**", "**Remove**", "can no longer report", "Pi session", "does not choose a direction"]) {
-		assert.ok(section.includes(words), `the Gentle Design docs mention ${words}`);
+		assert.ok(section.includes(words), `the Drakonc Design docs mention ${words}`);
 	}
 });

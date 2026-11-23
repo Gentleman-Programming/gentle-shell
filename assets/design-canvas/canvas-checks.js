@@ -7,7 +7,7 @@
 // element, prefilled). The checks describe the artboard at the size it is shown,
 // and they are heuristics, not a full audit: they miss keyboard, focus-order, motion and screen-reader
 // problems, and each list is capped (20 problems and 10 advice items per check, with the full count reported
-// for the page's first 3000 elements; docs/gentle-shell.md).
+// for the page's first 3000 elements; docs/drakonc-shell.md).
 // board.checks is changed in place only by setChecks here; the tab lives in the store (setTab); the
 // ring is this module's own view state, which other modules end through clearMark.
 // Each finding comes with its English title and detail, and with a key and plain vars (inspector.js): the card shows

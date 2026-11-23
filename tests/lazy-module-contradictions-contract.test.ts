@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
 // cost-speed-painpoints S15 P5b: each audited contradiction in the lazy orchestrator
 // modules is resolved in the direction T12 decided (L36). Every test checks both
@@ -14,9 +14,9 @@ const delegation = read("assets/orchestrator-delegation.md");
 const writer = read("assets/orchestrator-writer.md");
 const reference = read("assets/orchestrator-delegation-reference.md");
 const card = read("assets/orchestrator-full-delegation-card.md");
-const worker = read("assets/agents/gentle-ai-worker.md");
-const explorer = read("assets/agents/gentle-ai-explore.md");
-const prompts = (["gentleman", "neutral"] as const).map((persona) => __testing.buildGentlePrompt(persona));
+const worker = read("assets/agents/drakonc-ai-worker.md");
+const explorer = read("assets/agents/drakonc-ai-explore.md");
+const prompts = (["drakoncman", "neutral"] as const).map((persona) => __testing.buildDrakoncPrompt(persona));
 
 test("C3: tracking drops the test-first restatement; the always-on rule adds no other cases", () => {
 	assert.ok(!tracking.includes("relevant alternate cases"), "tracking still asks for alternate cases");
@@ -35,7 +35,7 @@ test("C3: tracking drops the test-first restatement; the always-on rule adds no 
 test("C5: tracking drops what restated the injected review contract and keeps the commit-boundary rules", () => {
 	for (const stale of [
 		"Medium: defer to the PR slice",
-		'`gentle_review` `{"operation":"start"}`',
+		'`drakonc_review` `{"operation":"start"}`',
 		"start native review",
 		"review at slice close",
 		"deferred to slice",
@@ -43,7 +43,7 @@ test("C5: tracking drops what restated the injected review contract and keeps th
 	]) {
 		assert.ok(!tracking.includes(stale), `tracking still restates the injected review contract: ${stale}`);
 	}
-	assert.ok(tracking.includes("When RDD is enabled, the injected Gentle AI contract governs native review start, execution and consent; this module adds only assessment and commit boundaries."), "tracking must defer start, run, and consent to the injected contract");
+	assert.ok(tracking.includes("When RDD is enabled, the injected Drakonc AI contract governs native review start, execution and consent; this module adds only assessment and commit boundaries."), "tracking must defer start, run, and consent to the injected contract");
 	// Provider-owned boundary rules; tracking carries the slice assessment policy.
 	for (const rule of [
 		"A not-due `passive` commit needs no review and the boundary advances; `under_budget` stays pending in the slice and never triggers review by itself.",
@@ -52,7 +52,7 @@ test("C5: tracking drops what restated the injected review contract and keeps th
 	]) {
 		assert.ok(tracking.includes(rule), `tracking lost a commit-boundary rule: ${rule}`);
 	}
-	assert.ok(tracking.includes('After each work-unit commit, assess it with `gentle_review` `{"operation":"assess"}` and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`'));
+	assert.ok(tracking.includes('After each work-unit commit, assess it with `drakonc_review` `{"operation":"assess"}` and `{"baseRef":"<last reviewed boundary>","committedOnly":true}`'));
 	assert.match(tracking, /assess `escalate` field \(`orchestrator-verification\.md`\); never lower one/);
 	assert.ok(tracking.includes("When RDD is disabled, do not start or prompt for RDD; ordinary checks remain."));
 	// The rule that a high-risk unit is reviewed alone lives in always-on step 6.
@@ -107,7 +107,7 @@ test("Duplicates: tracking keeps no restatement of step 3 or of the Phase report
 		"do not start a debate loop",
 		"Deterministic failures need fixes, not model debate",
 		"never duplicate or bypass it with this challenge",
-		"Call `gentle_odd_phase` with `clear` only to leave the current phase before its turn ends.",
+		"Call `drakonc_odd_phase` with `clear` only to leave the current phase before its turn ends.",
 	]) {
 		assert.ok(tracking.includes(kept), `tracking lost a rule step 3 or Phase reporting does not carry: ${kept}`);
 	}
@@ -134,7 +134,7 @@ test("C11: the writer card omits `mode` like every other launch rule", () => {
 
 test("C14: the reference points at the worker's Known environmental failures definition without restating it", () => {
 	assert.ok(!reference.includes("exact pre-existing base failures reported as evidence, never blockers"), "the reference restates the definition");
-	assert.ok(reference.includes("`## Known environmental failures`: `gentle-ai-worker`'s Verification contract."));
+	assert.ok(reference.includes("`## Known environmental failures`: `drakonc-ai-worker`'s Verification contract."));
 	assert.ok(worker.includes("this is the canonical definition; other assets reference it, they do not restate it"));
 	assert.ok(worker.includes("Any OTHER required command that fails -- one not named under that heading -- still forces `status: partial`."));
 });
@@ -144,22 +144,22 @@ test("X4: the reference names only agents and options that exist, and no delegat
 		assert.ok(!reference.includes(ghost), `the reference still names something that does not exist: ${ghost}`);
 	}
 	assert.ok(!reference.includes("Prefer delegation when fresh context improves correctness"), "the reference contradicts the inline default");
-	assert.ok(reference.includes("Route generic exploration first to the installed package-owned `gentle-ai-explore`"));
+	assert.ok(reference.includes("Route generic exploration first to the installed package-owned `drakonc-ai-explore`"));
 	assert.ok(reference.includes("do not pass the `model` parameter by default"));
 	for (const prompt of prompts) assert.ok(prompt.includes("when in doubt, work inline"));
 	assert.ok(delegation.includes("Parallel writers only with disjoint Allowed edit surfaces (runtime-enforced) or isolated worktrees."));
 });
 
-test("X4: the README reference and the gentle-ai skill name the explorer that exists, not `scout` or `context-builder`", () => {
+test("X4: the README reference and the drakonc-ai skill name the explorer that exists, not `scout` or `context-builder`", () => {
 	const readme = read("docs/readme-reference.md");
-	const skill = read("skills/gentle-ai/SKILL.md");
+	const skill = read("skills/drakonc-ai/SKILL.md");
 	for (const text of [readme, skill]) {
 		assert.doesNotMatch(text, /scout|context-builder/, "a text still names an agent that does not exist");
-		assert.ok(text.includes("gentle-ai-explore"));
+		assert.ok(text.includes("drakonc-ai-explore"));
 	}
-	assert.ok(readme.includes("Launch the package-owned `gentle-ai-explore`"));
-	assert.ok(readme.includes("`gentle-ai-explore` saves parent context by compressing broad exploration."));
-	assert.ok(skill.includes("clarify → gentle-ai-explore when the evidence budget is exceeded → inline"));
+	assert.ok(readme.includes("Launch the package-owned `drakonc-ai-explore`"));
+	assert.ok(readme.includes("`drakonc-ai-explore` saves parent context by compressing broad exploration."));
+	assert.ok(skill.includes("clarify → drakonc-ai-explore when the evidence budget is exceeded → inline"));
 });
 
 test("X5: the large task pattern label matches its inline diagram", () => {
@@ -172,10 +172,10 @@ test("X5: the large task pattern label matches its inline diagram", () => {
 
 // harness-continuity S8 (T8b): the runtime infers the phase label from tool activity, so the model call
 // is an optional refinement, never a per-phase obligation; the `clear` rule stays.
-test("S8: tracking makes `gentle_odd_phase` an optional refinement, never required per phase", () => {
-	const start = tracking.indexOf("#### Signaling the ODD phase to the Gentle prompt");
+test("S8: tracking makes `drakonc_odd_phase` an optional refinement, never required per phase", () => {
+	const start = tracking.indexOf("#### Signaling the ODD phase to the Drakonc prompt");
 	assert.ok(start >= 0, "tracking keeps the phase-signaling section");
 	const section = tracking.slice(start, tracking.indexOf("\n\n", tracking.indexOf("\n\n", start) + 2));
-	assert.ok(section.includes("`gentle_odd_phase` is an optional refinement, never required per phase"), "the phase call must be optional");
-	assert.ok(section.includes("Call `gentle_odd_phase` with `clear` only to leave the current phase before its turn ends."));
+	assert.ok(section.includes("`drakonc_odd_phase` is an optional refinement, never required per phase"), "the phase call must be optional");
+	assert.ok(section.includes("Call `drakonc_odd_phase` with `clear` only to leave the current phase before its turn ends."));
 });

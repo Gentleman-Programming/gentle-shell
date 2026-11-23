@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { reconcileUnknownReviewLastEventCapture } from "../lib/review-last-event-controller.ts";
 import * as nativeReviewCliModule from "../lib/native-review-cli.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
@@ -587,7 +587,7 @@ test("terminal capture closes directly, nonterminal capture does not auto-follow
 	assert.equal(statusCalls, 2, "only initial STATUS plus one ambiguity reconciliation");
 });
 
-test("unknown-capture reconciliation preserves agentless legacy callers and forwards an explicit Pi agent", async () => {
+test("unknown-capture reconciliation preserves adrakoncss legacy callers and forwards an explicit Pi agent", async () => {
 	const calls: Array<Record<string, unknown>> = [];
 	const native = {
 		targetStatus: async (request: Record<string, unknown>) => {
@@ -606,7 +606,7 @@ test("unknown-capture reconciliation preserves agentless legacy callers and forw
 	]);
 	assert.equal(result.targetIdentity, SHA);
 	let launches = 0;
-	const strictNative = new nativeReviewCliModule.NativeReviewCliV216(async () => { launches += 1; throw new Error("must not launch"); }, "/package/.gentle-ai/gentle-ai");
+	const strictNative = new nativeReviewCliModule.NativeReviewCliV216(async () => { launches += 1; throw new Error("must not launch"); }, "/package/.drakonc-ai/drakonc-ai");
 	for (const selector of [{ committedOnly: true }, { baseRef: "refs/heads/main" }, { baseRef: "refs/heads/main", committedOnly: false }] as unknown as readonly Parameters<typeof reconcileUnknownReviewLastEventCapture>[3][]) await assert.rejects(() => reconcileUnknownReviewLastEventCapture(strictNative, "/repo", { lineageId: "reconcile-lineage", targetIdentity: SHA }, selector));
 	assert.equal(launches, 0);
 });

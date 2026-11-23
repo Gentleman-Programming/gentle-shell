@@ -10,9 +10,9 @@ import { registerYoloSessionPolicy, discoverYoloUiAdapter } from "../lib/yolo-se
 import { isPermissionMode, parsePermissionModePolicyFile, resolvePermissionModePolicy, writePermissionModePolicy, permissionModePolicyFile, PERMISSION_MODE_SCHEMA } from "../lib/permission-mode-policy.ts";
 
 function fixture(t: test.TestContext) {
- const home = mkdtempSync(join(tmpdir(), "gentle-mode-"));
+ const home = mkdtempSync(join(tmpdir(), "drakonc-mode-"));
  t.after(() => rmSync(home, { recursive: true, force: true }));
- return { gentlePiConfigHome: home };
+ return { drakoncPiConfigHome: home };
 }
 function host(home: string, env: NodeJS.ProcessEnv = {}, onChange?: () => void) {
  const commands = new Map<string, { handler(args: string, context: ExtensionContext): Promise<void> }>();
@@ -27,12 +27,12 @@ function host(home: string, env: NodeJS.ProcessEnv = {}, onChange?: () => void) 
  const pi = { registerCommand: (n: string, c: { handler(args: string, context: ExtensionContext): Promise<void> }) => commands.set(n, c),
   events: { on: (n: string, fn: (value: unknown) => void) => listeners.set(n, fn), emit: (n: string, v: unknown) => listeners.get(n)?.(v) },
  } as unknown as ExtensionAPI;
- const controller = registerYoloSessionPolicy(pi, { ...env, GENTLE_PI_CONFIG_HOME: home }, { onChange });
+ const controller = registerYoloSessionPolicy(pi, { ...env, DRAKONC_PI_CONFIG_HOME: home }, { onChange });
  return { controller, context, pi, commands, notices, statuses, next: () => { sessionId = "next"; } };
 }
 
 test("superseded YOLO enables stay silent while genuine activation failure warns", async t => {
- const options = fixture(t), h = host(options.gentlePiConfigHome);
+ const options = fixture(t), h = host(options.drakoncPiConfigHome);
  const original = fsPromises.realpath;
  const captures: Array<{ release(): void }> = [];
  let captured!: () => void;
@@ -66,7 +66,7 @@ test("strict global policy defaults Normal; round trips all modes atomically and
   assert.equal(path, permissionModePolicyFile(options));
   assert.equal(resolvePermissionModePolicy(options).mode, mode);
   assert.equal(statSync(path).mode & 0o777, 0o600);
-  assert.deepEqual(readdirSync(options.gentlePiConfigHome), ["permission-mode.json"]);
+  assert.deepEqual(readdirSync(options.drakoncPiConfigHome), ["permission-mode.json"]);
   assert.equal(parsePermissionModePolicyFile(readFileSync(path, "utf8")), mode);
  }
 });
@@ -81,11 +81,11 @@ test("malformed, extra-field, invalid and unreadable preferences fail Normal and
   assert.equal(readFileSync(permissionModePolicyFile(options), "utf8"), raw);
  }
  assert.throws(() => writePermissionModePolicy("invalid" as "normal", options));
- assert.equal(resolvePermissionModePolicy({ gentlePiConfigHome: permissionModePolicyFile(options) }).mode, "normal");
+ assert.equal(resolvePermissionModePolicy({ drakoncPiConfigHome: permissionModePolicyFile(options) }).mode, "normal");
 });
 
 test("non-Git primary uses exclusive live modes; saved defaults affect fresh sessions only", async t => {
- const options = fixture(t), h = host(options.gentlePiConfigHome);
+ const options = fixture(t), h = host(options.drakoncPiConfigHome);
  assert.equal(await h.controller.mode(h.context), "normal");
  assert.equal(await h.controller.saveDefault("auto", h.context), true);
  assert.match(h.notices.at(-1)!, /additional model calls.*separate usage/i);
@@ -94,14 +94,14 @@ test("non-Git primary uses exclusive live modes; saved defaults affect fresh ses
  assert.equal(await h.controller.active(h.context), true);
  assert.equal(await h.controller.setMode("auto", h.context), true);
  assert.equal(await h.controller.active(h.context), false);
- assert.match(h.statuses.get("gentle:mode")!, /AUTO/);
+ assert.match(h.statuses.get("drakonc:mode")!, /AUTO/);
  assert.equal(await h.controller.setMode("normal", h.context), true);
  assert.equal(await h.controller.mode(h.context), "normal");
  h.next(); h.controller.reset(h.context);
  assert.equal(await h.controller.mode(h.context), "auto");
  h.controller.reset(h.context);
  assert.equal(await h.controller.mode(h.context), "normal", "same-session revocation does not replay defaults");
- const fresh = host(options.gentlePiConfigHome);
+ const fresh = host(options.drakoncPiConfigHome);
  assert.equal(await fresh.controller.mode(fresh.context), "auto");
  assert.equal(fresh.notices.length, 0, "saved preference does not repeatedly prompt");
 });
@@ -109,20 +109,20 @@ test("non-Git primary uses exclusive live modes; saved defaults affect fresh ses
 test("trusted defaults support headless primary but never children or headless mutation", async t => {
  const options = fixture(t);
  writePermissionModePolicy("yolo", options);
- const h = host(options.gentlePiConfigHome);
+ const h = host(options.drakoncPiConfigHome);
  Object.assign(h.context, { hasUI: false, mode: "json" });
  assert.equal(await h.controller.mode(h.context), "yolo");
  assert.equal(await h.controller.setMode("auto", h.context), false);
  assert.equal(await h.controller.saveDefault("normal", h.context), false);
  assert.equal(h.controller.defaultMode(), "yolo");
- const child = host(options.gentlePiConfigHome, { GENTLE_PI_AGENTS_CHILD: "1" });
+ const child = host(options.drakoncPiConfigHome, { DRAKONC_PI_AGENTS_CHILD: "1" });
  assert.equal(await child.controller.mode(child.context), "normal");
  assert.equal(await child.controller.saveDefault("auto", child.context), false);
 });
 
 test("slash and optional adapter operations share mode state; invalid arguments do not mutate", async t => {
- const options = fixture(t), h = host(options.gentlePiConfigHome);
- const command = h.commands.get("gentle:mode"); assert.ok(command);
+ const options = fixture(t), h = host(options.drakoncPiConfigHome);
+ const command = h.commands.get("drakonc:mode"); assert.ok(command);
  await command.handler("auto", h.context);
  assert.equal(await h.controller.mode(h.context), "auto");
  await command.handler("default yolo", h.context);
@@ -145,7 +145,7 @@ test("slash and optional adapter operations share mode state; invalid arguments 
 });
 
 test("disposing the UI adapter during pending activation discards its mode choice", async t => {
- const options = fixture(t), h = host(options.gentlePiConfigHome);
+ const options = fixture(t), h = host(options.drakoncPiConfigHome);
  const adapter = await discoverYoloUiAdapter(h.pi, h.context); assert.ok(adapter);
  const pending = adapter.setMode!("auto");
  adapter.dispose();
@@ -156,7 +156,7 @@ test("disposing the UI adapter during pending activation discards its mode choic
 test("reset during initial default capture revokes without replaying that session default", async t => {
  const options = fixture(t);
  writePermissionModePolicy("auto", options);
- const h = host(options.gentlePiConfigHome);
+ const h = host(options.drakoncPiConfigHome);
  const pending = h.controller.mode(h.context);
  h.controller.reset(h.context);
  assert.equal(await pending, "normal");
@@ -167,7 +167,7 @@ test("a concurrent mode switch during default-save initialization discards the s
  const options = fixture(t);
  let once = true;
  let superseding: Promise<boolean> | undefined;
- const h = host(options.gentlePiConfigHome, {}, () => {
+ const h = host(options.drakoncPiConfigHome, {}, () => {
   if (!once) return;
   once = false;
   superseding = h.controller.setMode("normal", h.context);
@@ -178,7 +178,7 @@ test("a concurrent mode switch during default-save initialization discards the s
 });
 
 test("stale pending activation, scope loss and malformed preference remain closed", async t => {
- const options = fixture(t), h = host(options.gentlePiConfigHome);
+ const options = fixture(t), h = host(options.drakoncPiConfigHome);
  const pending = h.controller.setMode("auto", h.context);
  h.controller.reset(h.context);
  assert.equal(await pending, false);
@@ -186,7 +186,7 @@ test("stale pending activation, scope loss and malformed preference remain close
  assert.equal(await h.controller.setMode("auto", h.context), true);
  Object.assign(h.context, { cwd: "/" });
  assert.equal(await h.controller.mode(h.context), "normal");
- Object.assign(h.context, { cwd: options.gentlePiConfigHome });
+ Object.assign(h.context, { cwd: options.drakoncPiConfigHome });
  assert.equal(await h.controller.mode(h.context), "normal", "revoked modes do not resurrect");
  writeFileSync(permissionModePolicyFile(options), "{");
  assert.equal(await h.controller.saveDefault("yolo", h.context), false);

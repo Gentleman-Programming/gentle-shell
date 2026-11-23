@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import {
 	REPLY_LANGUAGE_ANCHOR_TYPE,
 	humanLanguageExcerpt,
@@ -29,16 +29,16 @@ import {
 
 const HUMAN = "Che, revisá por qué el writer no arranca y decime qué pasa con la admisión";
 const user = (text: string) => ({ role: "user", content: [{ type: "text", text }], timestamp: 1 });
-const custom = (customType: string, content = "Subagent gentle-ai-worker (task x) finished. All checks pass.") => ({ role: "custom", customType, content, display: true, timestamp: 2 });
+const custom = (customType: string, content = "Subagent drakonc-ai-worker (task x) finished. All checks pass.") => ({ role: "custom", customType, content, display: true, timestamp: 2 });
 const toolResult = () => ({ role: "toolResult", toolCallId: "t1", toolName: "read", content: [{ type: "text", text: "file text" }], isError: false, timestamp: 3 });
 const assistant = () => ({ role: "assistant", content: [{ type: "text", text: "Voy a revisar." }], timestamp: 4 });
-const WAKE = "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
+const WAKE = "[System-generated Drakonc Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
 
 test("S9: only human-typed input counts; extension-sent text, commands and empty input do not", () => {
 	assert.equal(isHumanInput("interactive", HUMAN), true);
 	assert.equal(isHumanInput("rpc", HUMAN), true);
 	assert.equal(isHumanInput("extension", HUMAN), false, "bridge wakes and resumes arrive with the extension source");
-	assert.equal(isHumanInput("interactive", "/gentle:profiles"), false);
+	assert.equal(isHumanInput("interactive", "/drakonc:profiles"), false);
 	assert.equal(isHumanInput("interactive", "!git status"), false);
 	assert.equal(isHumanInput("interactive", "   "), false);
 });
@@ -51,7 +51,7 @@ test("S9: the excerpt is the start of the human's own words, whitespace-collapse
 });
 
 test("S9: an automated message at the tail gets an anchor quoting the human", () => {
-	const anchor = replyLanguageAnchor([user(HUMAN), assistant(), custom("gentle-agents.result")] as never, undefined);
+	const anchor = replyLanguageAnchor([user(HUMAN), assistant(), custom("drakonc-agents.result")] as never, undefined);
 	assert.ok(anchor);
 	assert.match(anchor, /not written by the human/);
 	assert.ok(anchor.includes(`«${humanLanguageExcerpt(HUMAN)}»`), "the anchor quotes the human's own words");
@@ -59,7 +59,7 @@ test("S9: an automated message at the tail gets an anchor quoting the human", ()
 });
 
 test("S9: a bridge wake, sent with the user role, counts as automated, not as the human", () => {
-	const anchor = replyLanguageAnchor([user(HUMAN), assistant(), custom("gentle-agents.result"), user(WAKE)] as never, undefined);
+	const anchor = replyLanguageAnchor([user(HUMAN), assistant(), custom("drakonc-agents.result"), user(WAKE)] as never, undefined);
 	assert.ok(anchor?.includes(`«${humanLanguageExcerpt(HUMAN)}»`), "the wake is never taken as the human's latest message");
 });
 
@@ -69,21 +69,21 @@ test("S9: mid tool loop, or right after the human, nothing is anchored", () => {
 });
 
 test("S9: todo snapshots and reminders never trigger an anchor on their own", () => {
-	const messages = [user(HUMAN), assistant(), toolResult(), custom("gentle-todo-state", "Current todo list: ..."), custom("gentle-todo-reminder", "Update the list.")];
+	const messages = [user(HUMAN), assistant(), toolResult(), custom("drakonc-todo-state", "Current todo list: ..."), custom("drakonc-todo-reminder", "Update the list.")];
 	assert.equal(replyLanguageAnchor(messages as never, undefined), undefined);
 	// ...but they do not hide an automated message right before them either.
-	const behind = [user(HUMAN), assistant(), custom("gentle-agents.result"), custom("gentle-todo-state", "Current todo list: ...")];
+	const behind = [user(HUMAN), assistant(), custom("drakonc-agents.result"), custom("drakonc-todo-state", "Current todo list: ...")];
 	assert.ok(replyLanguageAnchor(behind as never, undefined));
 });
 
 test("S9: an anchor already after the automated tail is not added again", () => {
-	const first = replyLanguageAnchor([user(HUMAN), assistant(), custom("gentle-agents.result")] as never, undefined)!;
-	const persisted = [user(HUMAN), assistant(), custom("gentle-agents.result"), { role: "custom", customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: first, display: false, timestamp: 5 }];
+	const first = replyLanguageAnchor([user(HUMAN), assistant(), custom("drakonc-agents.result")] as never, undefined)!;
+	const persisted = [user(HUMAN), assistant(), custom("drakonc-agents.result"), { role: "custom", customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: first, display: false, timestamp: 5 }];
 	assert.equal(replyLanguageAnchor(persisted as never, undefined), undefined);
 });
 
 test("S9: after compaction the recorded human text still anchors", () => {
-	const compacted = [{ role: "compactionSummary", summary: "The user asked about the writer admission.", tokensBefore: 1, timestamp: 1 }, custom("gentle-agents.result")];
+	const compacted = [{ role: "compactionSummary", summary: "The user asked about the writer admission.", tokensBefore: 1, timestamp: 1 }, custom("drakonc-agents.result")];
 	assert.equal(replyLanguageAnchor(compacted as never, undefined), undefined, "with nothing recorded there is no human text to quote");
 	assert.ok(replyLanguageAnchor(compacted as never, HUMAN)?.includes(`«${humanLanguageExcerpt(HUMAN)}»`));
 });
@@ -100,9 +100,9 @@ function hookFixture(t: TestContext, child = false) {
 		getActiveTools: () => ["read"], getFlag: () => undefined,
 		sendMessage(message: never, options: unknown) { sent.push({ message, options }); },
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({
+	createDrakoncAiExtension({
 		nativeReviewCli: null,
-		processEnv: { GENTLE_PI_CONFIG_HOME: join(cwd, "config"), GENTLE_PI_AGENTS_CHILD: child ? "1" : "0" },
+		processEnv: { DRAKONC_PI_CONFIG_HOME: join(cwd, "config"), DRAKONC_PI_AGENTS_CHILD: child ? "1" : "0" },
 		resolveTelemetryTriggerBinary: () => "/usr/bin/true", telemetryTriggerSpawn: (() => undefined) as never,
 	})(pi);
 	const ctx = { cwd, hasUI: false, mode: "interactive", ui: { notify() {} },
@@ -120,7 +120,7 @@ function hookFixture(t: TestContext, child = false) {
 test("S9: through the real hooks, a subagent result after the human gets one persisted anchor", async (t) => {
 	const f = hookFixture(t);
 	await f.input(HUMAN);
-	const messages = [user(HUMAN), assistant(), custom("gentle-agents.result"), user(WAKE)];
+	const messages = [user(HUMAN), assistant(), custom("drakonc-agents.result"), user(WAKE)];
 	const result = await f.context(messages);
 	const trailing = result?.messages?.at(-1) as { customType?: string; content?: string } | undefined;
 	assert.equal(trailing?.customType, REPLY_LANGUAGE_ANCHOR_TYPE, "the anchor trails this request");
@@ -137,7 +137,7 @@ test("S9: through the real hooks, extension-sourced input never replaces the hum
 	const f = hookFixture(t);
 	await f.input(HUMAN);
 	await f.input(WAKE, "extension");
-	const compacted = [{ role: "compactionSummary", summary: "Earlier work.", tokensBefore: 1, timestamp: 1 }, custom("gentle-agents.result")];
+	const compacted = [{ role: "compactionSummary", summary: "Earlier work.", tokensBefore: 1, timestamp: 1 }, custom("drakonc-agents.result")];
 	const result = await f.context(compacted);
 	assert.ok((result?.messages?.at(-1) as { content?: string })?.content?.includes(`«${humanLanguageExcerpt(HUMAN)}»`));
 });
@@ -145,7 +145,7 @@ test("S9: through the real hooks, extension-sourced input never replaces the hum
 test("S9: child sessions are never anchored", async (t) => {
 	const f = hookFixture(t, true);
 	await f.input(HUMAN, "rpc");
-	assert.equal(await f.context([user(HUMAN), assistant(), custom("gentle-agents.result")]), undefined);
+	assert.equal(await f.context([user(HUMAN), assistant(), custom("drakonc-agents.result")]), undefined);
 	assert.equal(f.sent.length, 0);
 });
 
@@ -154,11 +154,11 @@ test("S9: child sessions are never anchored", async (t) => {
 test("S9: a second subagent result after the same human message gets its own persisted anchor", async (t) => {
 	const f = hookFixture(t);
 	await f.input(HUMAN);
-	const firstTail = [user(HUMAN), assistant(), custom("gentle-agents.result")];
+	const firstTail = [user(HUMAN), assistant(), custom("drakonc-agents.result")];
 	const first = await f.context(firstTail);
 	assert.equal(f.sent.length, 1);
 	const persisted = first!.messages!.at(-1);
-	const second = [...firstTail, persisted, assistant(), toolResult(), { ...custom("gentle-agents.result"), timestamp: 9 }];
+	const second = [...firstTail, persisted, assistant(), toolResult(), { ...custom("drakonc-agents.result"), timestamp: 9 }];
 	const result = await f.context(second);
 	assert.equal((result?.messages?.at(-1) as { customType?: string })?.customType, REPLY_LANGUAGE_ANCHOR_TYPE);
 	assert.equal(f.sent.length, 2, "the new automated tail is anchored and persisted too");
@@ -169,8 +169,8 @@ test("S9: a second subagent result after the same human message gets its own per
 // Independent verification probe: Pi flushes a persisted custom message at turn_end, after the turn's assistant
 // message and tool results, so the anchor lands there rather than where the trailing copy sat.
 test("S9: the anchor Pi flushes at turn_end, after the tool round, is not re-added", () => {
-	const first = replyLanguageAnchor([user(HUMAN), assistant(), custom("gentle-agents.result")] as never, HUMAN)!;
-	const flushed = [user(HUMAN), assistant(), custom("gentle-agents.result"), assistant(), toolResult(), { role: "custom", customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: first, display: false, timestamp: 6 }];
+	const first = replyLanguageAnchor([user(HUMAN), assistant(), custom("drakonc-agents.result")] as never, HUMAN)!;
+	const flushed = [user(HUMAN), assistant(), custom("drakonc-agents.result"), assistant(), toolResult(), { role: "custom", customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: first, display: false, timestamp: 6 }];
 	assert.equal(replyLanguageAnchor(flushed as never, HUMAN), undefined);
 });
 
@@ -179,7 +179,7 @@ test("S9: the anchor Pi flushes at turn_end, after the tool round, is not re-add
 // carried it and is moved back there; one whose predecessor is gone, or saved without a placement, stays put.
 test("P1: a saved anchor is moved back after the message it followed, with its request's timestamp", () => {
 	const anchor = (details?: unknown) => ({ role: "custom", customType: REPLY_LANGUAGE_ANCHOR_TYPE, content: "a", display: false, details, timestamp: 50 });
-	const tail = custom("gentle-agents.result");
+	const tail = custom("drakonc-agents.result");
 	const saved = anchor({ after: replyLanguageAnchorPosition(tail), at: 7 });
 	const placed = placePersistedReplyAnchors([user(HUMAN), tail, assistant(), toolResult(), saved]);
 	assert.deepEqual(placed, [user(HUMAN), tail, { ...saved, timestamp: 7 }, assistant(), toolResult()]);

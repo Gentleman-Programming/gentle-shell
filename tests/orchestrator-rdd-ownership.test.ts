@@ -8,7 +8,7 @@ const ROOT = join(import.meta.dirname, "..");
 const ASSETS = join(ROOT, "assets");
 // cost-speed-painpoints S15 P5a (verdict X1): the contract is injected only while RDD is not off.
 const BOUNDARY =
-	"While RDD is not off, this package injects the mirrored provider-bundle review execution contract; Gentle AI writes nothing into this prompt. Absent that mirrored contract, this package invents no lifecycle instructions.";
+	"While RDD is not off, this package injects the mirrored provider-bundle review execution contract; Drakonc AI writes nothing into this prompt. Absent that mirrored contract, this package invents no lifecycle instructions.";
 
 function read(relativePath: string): string {
 	return readFileSync(join(ROOT, relativePath), "utf8");
@@ -24,7 +24,7 @@ test("static prompts omit stale native RDD lifecycle mirrors", () => {
 		"reconcile-terminal-mirrors",
 		"Native Bounded Review Orchestration",
 		"Continue after a stop reason code",
-		"gentle-ai review status",
+		"drakonc-ai review status",
 		"next_transition",
 		"start -> finalize -> validate",
 		"review.capture-result",
@@ -49,24 +49,24 @@ test("lossless blocking prompts route every closed single-select envelope throug
 	}
 });
 
-test("static prompts declare one dynamic Gentle AI RDD ownership boundary", () => {
+test("static prompts declare one dynamic Drakonc AI RDD ownership boundary", () => {
 	assert.equal(staticPrompts.split(BOUNDARY).length - 1, 1, "expected one dynamic RDD ownership boundary");
 	assert.ok(core.includes(BOUNDARY), "the Pi parent prompt owns the single boundary");
 	assert.ok(!delegation.includes(BOUNDARY), "generic delegation detail must not gain RDD text");
 });
 
 test("rendered parent prompt keeps the RDD boundary while omitting lifecycle mirrors", async () => {
-	const { __testing } = await import("../extensions/gentle-ai.ts");
+	const { __testing } = await import("../extensions/drakonc-ai.ts");
 	const rendered = __testing.getOrchestratorPrompt();
 	assert.ok(rendered.includes(BOUNDARY));
 	for (const marker of ["Authority-First Terminal Procedure", "reconcile-terminal-mirrors", "next_transition"]) {
 		assert.ok(!rendered.includes(marker), `rendered parent prompt leaked: ${marker}`);
 	}
-	// gentle-pi#661: getOrchestratorPrompt()'s no-argument default renders the
+	// drakonc-pi#661: getOrchestratorPrompt()'s no-argument default renders the
 	// "unknown (native status unavailable)" RDD status line -- the longest of
 	// the three renderable forms -- so this IS the worst-case render the core
 	// budget below must cover, not a smaller placeholder production later
-	// exceeds. gentle-shell#1731 T10 (user decision): budget 8,192 -> 8,400 B.
+	// exceeds. drakonc-shell#1731 T10 (user decision): budget 8,192 -> 8,400 B.
 	// Verification by named risk and the writer-rule fix: 8,400 -> 9,100 B; weak-model economy: 9,100 -> 9,250 B
 	// issue #2935 (user decision): 9,250 -> 9,350 B (the canonical budget in orchestrator-budget.test.ts).
 	assert.ok(
@@ -92,7 +92,7 @@ test("static prompts retain ODD and delegated-work guidance without SDD", () => 
 
 test("always-on parent prompt requires a narrow writer edit surface before launch", () => {
 	assert.match(core, /Before launching (?:a )?bounded writer/i);
-	assert.match(core, /`gentle-ai-worker`/);
+	assert.match(core, /`drakonc-ai-worker`/);
 	assert.match(core, /`worker`/);
 	assert.match(core, /## Allowed edit surfaces/);
 	assert.match(core, /repository-relative/i);

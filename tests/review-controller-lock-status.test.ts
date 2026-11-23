@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import type { NativeReviewCli, NativeReviewStatusResult } from "../lib/native-review-cli.ts";
 
-// Issue #184: gentle-ai 2.1.8 leaves review-transactions/v2/LOCK behind after
+// Issue #184: drakonc-ai 2.1.8 leaves review-transactions/v2/LOCK behind after
 // ORDINARY successful operations and inventories it as {"status":"released"}.
 // Only live lock claims — owned or ambiguous — may block the controller;
 // released residue is dead-owner metadata already surfaced through the
@@ -31,13 +31,13 @@ interface RegisteredTool {
 
 function runtime(nativeReviewCli: NativeReviewCli): RegisteredTool {
 	const tools = new Map<string, RegisteredTool>();
-	const dependencies = { nativeReviewCli, candidateViews: null } as unknown as Parameters<typeof createGentleAiExtension>[0];
-	createGentleAiExtension(dependencies)({
+	const dependencies = { nativeReviewCli, candidateViews: null } as unknown as Parameters<typeof createDrakoncAiExtension>[0];
+	createDrakoncAiExtension(dependencies)({
 		on() {},
 		registerTool(definition: RegisteredTool & { name: string }) { tools.set(definition.name, definition); },
 		registerCommand() {},
 	} as unknown as ExtensionAPI);
-	const controller = tools.get("gentle_review");
+	const controller = tools.get("drakonc_review");
 	assert.ok(controller);
 	return controller;
 }
@@ -47,7 +47,7 @@ function context(cwd: string): ExtensionContext {
 }
 
 function repository(t: test.TestContext): string {
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-lock-status-")));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-lock-status-")));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	execFileSync("git", ["init", "-b", "main"], { cwd });
 	writeFileSync(join(cwd, "app.ts"), "export const value = 1;\n");
@@ -56,11 +56,11 @@ function repository(t: test.TestContext): string {
 	return cwd;
 }
 
-// Exact shape gentle-ai 2.1.8 emits for the residual entry (no owner, no
+// Exact shape drakonc-ai 2.1.8 emits for the residual entry (no owner, no
 // problem), reproduced empirically against the system binary.
-const RELEASED_LOCK = { version: "compact-v2", path: "/repo/.git/gentle-ai/review-transactions/v2/LOCK", status: "released" } as const;
-const OWNED_LOCK = { version: "compact-v2", path: "/repo/.git/gentle-ai/review-transactions/v2/LOCK", status: "owned", owner: { schema: "gentle-ai.review-store-lock/v1", ownerId: "owner", pid: 1, host: "host", acquiredAt: "2026-07-14T00:00:00Z" } } as const;
-const AMBIGUOUS_LOCK = { version: "compact-v2", path: "/repo/.git/gentle-ai/review-transactions/v2/LOCK", status: "ambiguous", problem: "unreadable owner metadata" } as const;
+const RELEASED_LOCK = { version: "compact-v2", path: "/repo/.git/drakonc-ai/review-transactions/v2/LOCK", status: "released" } as const;
+const OWNED_LOCK = { version: "compact-v2", path: "/repo/.git/drakonc-ai/review-transactions/v2/LOCK", status: "owned", owner: { schema: "gentle-ai.review-store-lock/v1", ownerId: "owner", pid: 1, host: "host", acquiredAt: "2026-07-14T00:00:00Z" } } as const;
+const AMBIGUOUS_LOCK = { version: "compact-v2", path: "/repo/.git/drakonc-ai/review-transactions/v2/LOCK", status: "ambiguous", problem: "unreadable owner metadata" } as const;
 
 function nativeStatus(cwd: string, status: string, locks: readonly unknown[]): NativeReviewStatusResult {
 	return {

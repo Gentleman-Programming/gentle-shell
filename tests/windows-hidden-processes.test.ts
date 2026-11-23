@@ -39,7 +39,7 @@ function fakeGitResult(command: string, args: readonly string[], cwd: string): s
 	if (args.includes("--is-shallow-repository")) return "false";
 	if (args.includes("--is-inside-work-tree")) return "true";
 	if (args.includes("info/exclude")) return join(cwd, ".git", "info", "exclude");
-	if (args.includes("--git-path")) return join(cwd, ".git", "gentle-ai", "reviews");
+	if (args.includes("--git-path")) return join(cwd, ".git", "drakonc-ai", "reviews");
 	if (args.includes("--max-parents=0")) return "a".repeat(40);
 	if (args[0] === "cat-file" && args[1] === "-t") return "tree";
 	if (args.includes("--verify")) {
@@ -104,7 +104,7 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 	const cp = childProcess();
 	const original = { execFileSync: cp.execFileSync, execFile: cp.execFile, spawnSync: cp.spawnSync };
 	const captures: Capture[] = [];
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-windows-hidden-workspace-")));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-windows-hidden-workspace-")));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	mkdirSync(join(cwd, ".git"), { recursive: true });
 	const fakeSync = ((command: string, args: readonly string[], options: Options = {}) => {
@@ -139,7 +139,7 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		let fallbackRoot: string | undefined;
 		let fallbackCalls: ExpectedCall[] = [];
 	if (process.platform === "win32") {
-		fallbackRoot = mkdtempSync(join(tmpdir(), "gentle-pi-codegraph-contract-"));
+		fallbackRoot = mkdtempSync(join(tmpdir(), "drakonc-pi-codegraph-contract-"));
 		t.after(() => rmSync(fallbackRoot!, { recursive: true, force: true }));
 		const packageRoot = join(fallbackRoot, "node_modules", "@colbymchenry", "codegraph");
 		mkdirSync(packageRoot, { recursive: true });
@@ -162,7 +162,7 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		const transaction = await import(`../lib/review-transaction.ts${query}`);
 		const fixtures = await import(`./review-test-fixtures.ts${query}`);
 		const publication = await import(`../lib/review-publication-gate.ts${query}`);
-		const gentleAi = await import(`../extensions/gentle-ai.ts${query}`);
+		const drakoncAi = await import(`../extensions/drakonc-ai.ts${query}`);
 		const sliceSignal = await import(`../lib/commit-slice-signal.ts${query}`);
 		const scratch = await import(`../lib/session-scratch.ts${query}`);
 		const skills = await import(`../extensions/skill-registry.ts${query}`);
@@ -182,13 +182,13 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		assert.match(graphText, /indexed/, "CodeGraph must return the fixture command result");
 
 		const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
-		gentleAi.createGentleAiExtension({ nativeReviewCli: { targetStatus: async () => ({}) } as never })({
+		drakoncAi.createDrakoncAiExtension({ nativeReviewCli: { targetStatus: async () => ({}) } as never })({
 			registerTool(definition: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) { tools.set(definition.name, definition); },
 			registerCommand() {}, on() {},
 		} as never);
-		const review = tools.get("gentle_review");
-		assert.ok(review, "gentle_review public handler must be registered");
-		await trace(captures, traces, "gentle_review inspect", () => review.execute("capture", { operation: "inspect", workspaceRoot: cwd }, undefined, undefined, { cwd, hasUI: false } as never), [
+		const review = tools.get("drakonc_review");
+		assert.ok(review, "drakonc_review public handler must be registered");
+		await trace(captures, traces, "drakonc_review inspect", () => review.execute("capture", { operation: "inspect", workspaceRoot: cwd }, undefined, undefined, { cwd, hasUI: false } as never), [
 			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--show-toplevel"] },
 			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--git-common-dir"] },
 		]);
@@ -199,7 +199,7 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 			{ kind: "execFileSync", command: "git", args: ["-C", cwd, "rev-parse", "--is-shallow-repository"] },
 			{ kind: "execFileSync", command: "git", args: ["-C", cwd, "rev-list", "--max-parents=0", "--all"] },
 		]);
-		assert.equal(authority, join(cwd, ".git", "gentle-ai", "reviews"));
+		assert.equal(authority, join(cwd, ".git", "drakonc-ai", "reviews"));
 		const untracked = await trace(captures, traces, "snapshot untracked discovery", () => snapshot.discoverReviewUntrackedPaths(cwd), [
 			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--show-toplevel"] },
 			{ kind: "execFileSync", command: "git", args: ["ls-files", "--others", "--exclude-standard", "-z"] },
@@ -207,9 +207,9 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 		assert.deepEqual(untracked, ["tests/windows-hidden-processes.test.ts"]);
 		const storeRoot = await trace(captures, traces, "transaction store root", () => transaction.reviewStoreRootForRepository(cwd), [
 			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--show-toplevel"] },
-			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--git-path", "gentle-ai/reviews"] },
+			{ kind: "execFileSync", command: "git", args: ["rev-parse", "--git-path", "drakonc-ai/reviews"] },
 		]);
-		assert.equal(storeRoot, join(cwd, ".git", "gentle-ai", "reviews"));
+		assert.equal(storeRoot, join(cwd, ".git", "drakonc-ai", "reviews"));
 		const gateTree = "b".repeat(40);
 		const gate = await trace(captures, traces, "transaction intended-commit gate", () => transaction.evaluateGateTarget(
 			approvedReceipt(transaction, fixtures, gateTree),
@@ -269,7 +269,7 @@ async function captureOwnedRoutes(t: TestContext): Promise<{ captures: Capture[]
 			{ kind: "execFile", command: "git", args: ["rev-parse", "--show-toplevel"] },
 		]);
 		assert.equal(artifact.state, "kept", "an unrelated top-level keeps the recorded directory");
-		await trace(captures, traces, "profile declaration sharing", () => gentleAi.repoDeclarationSharing(cwd, join(cwd, "profile.json")), [
+		await trace(captures, traces, "profile declaration sharing", () => drakoncAi.repoDeclarationSharing(cwd, join(cwd, "profile.json")), [
 			{ kind: "execFileSync", command: "git", args: ["check-ignore", "--quiet", "profile.json"] },
 		]);
 		await trace(captures, traces, "skill registry tracking probe", () => skills.automaticWriteWarning(cwd, [".atl/.gitignore"]), [
@@ -294,7 +294,7 @@ test("owned public adapters pass windowsHide at every mapped Node child-process 
 	const { traces } = await captureOwnedRoutes(t);
 	assert.deepEqual(traces.map(({ label }) => label), [
 		"CodeGraph init",
-		"gentle_review inspect",
+		"drakonc_review inspect",
 		"repository authority",
 		"snapshot untracked discovery",
 		"transaction store root",
@@ -318,7 +318,7 @@ test("owned public adapters pass windowsHide at every mapped Node child-process 
 });
 
 test("external editor remains the explicit interactive exemption", async () => {
-	const shell = await import("../extensions/gentle-shell.ts");
+	const shell = await import("../extensions/drakonc-shell.ts");
 	let received: Options | undefined;
 	const host = { stop() {}, start() {}, requestRender() {} };
 	assert.equal(shell.openInExternalEditor(host, "editor.txt", { EDITOR: "fixture-editor" }, ((_command: string, _args: readonly string[], options: Options) => {

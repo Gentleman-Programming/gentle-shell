@@ -18,11 +18,11 @@ const JUDGES = ["assets/agents/jd-judge-a.md", "assets/agents/jd-judge-b.md"] as
 const FIX_AGENT = "assets/agents/jd-fix-agent.md";
 const JD_SKILL = "skills/judgment-day/SKILL.md";
 const JD_PROMPTS = "skills/judgment-day/references/prompts-and-formats.md";
-const GENTLE_SKILL = "skills/gentle-ai/SKILL.md";
+const DRAKONC_SKILL = "skills/drakonc-ai/SKILL.md";
 const README = "README.md";
 const TECHNICAL_REFERENCE = "docs/readme-reference.md";
 const CHAIN = "assets/chains/4r-review.chain.md";
-const WORKER = "assets/agents/gentle-ai-worker.md";
+const WORKER = "assets/agents/drakonc-ai-worker.md";
 const RDD_DEFECT_SKILL = "skills/rdd-defect-workflow/SKILL.md";
 
 function read(path: string): string {
@@ -226,7 +226,7 @@ test("risk lens distinguishes trusted orchestration from concrete boundary bypas
 });
 
 test("the Pi-owned adversarial role agents are retired: roles execute through Go-owned pi processes", () => {
-	// gentle-pi#311 P5: the refuter and targeted validator are no longer
+	// drakonc-pi#311 P5: the refuter and targeted validator are no longer
 	// Pi-authored actors. The provider renders self-contained
 	// review.capture-refuter / review.capture-validation vectors; executing
 	// them makes Go materialize the role prompt, spawn its own locked-down pi
@@ -322,25 +322,25 @@ test("Judgment Day fix routing has one canonical shape and never falls back to g
 	assert.match(routing, /If the generic writer chain is unavailable, use the documented native generic fallback or stop\./);
 });
 
-test("orchestrator, injected skill, and technical reference defer RDD lifecycle ownership to Gentle AI", () => {
+test("orchestrator, injected skill, and technical reference defer RDD lifecycle ownership to Drakonc AI", () => {
 	// cost-speed-painpoints S15 P5a (verdict X1): the contract is injected only while RDD is not off.
-	const boundary = "While RDD is not off, this package injects the mirrored provider-bundle review execution contract; Gentle AI writes nothing into this prompt. Absent that mirrored contract, this package invents no lifecycle instructions.";
+	const boundary = "While RDD is not off, this package injects the mirrored provider-bundle review execution contract; Drakonc AI writes nothing into this prompt. Absent that mirrored contract, this package invents no lifecycle instructions.";
 	const orchestrator = union(ORCHESTRATOR);
 	assert.ok(orchestrator.includes(boundary), "orchestrator must carry the sole static ownership boundary");
 
 	for (const [label, content] of [
-		[GENTLE_SKILL, read(GENTLE_SKILL)],
+		[DRAKONC_SKILL, read(DRAKONC_SKILL)],
 		[TECHNICAL_REFERENCE, read(TECHNICAL_REFERENCE)],
 	] as const) {
 		assertMatches(label, content, [
-			/Gentle AI dynamically supplies runtime-specific RDD instructions/i,
+			/Drakonc AI dynamically supplies runtime-specific RDD instructions/i,
 			/(?:sole lifecycle authority|does not define an RDD lifecycle)/i,
 		]);
 	}
 
 	for (const [label, content] of [
 		["orchestrator", orchestrator],
-		[GENTLE_SKILL, read(GENTLE_SKILL)],
+		[DRAKONC_SKILL, read(DRAKONC_SKILL)],
 	] as const) {
 		assert.doesNotMatch(content, /start -> finalize -> validate|INSPECT before START|next_transition|review\.capture-result/i, label);
 	}
@@ -348,15 +348,15 @@ test("orchestrator, injected skill, and technical reference defer RDD lifecycle 
 
 test("technical reference documents the dynamic runtime authority boundary without an old package route", () => {
 	const content = read(TECHNICAL_REFERENCE);
-	assert.match(content, /Gentle AI dynamically supplies runtime-specific RDD instructions/i);
+	assert.match(content, /Drakonc AI dynamically supplies runtime-specific RDD instructions/i);
 	assert.match(content, /does not define an RDD lifecycle/i);
-	assert.doesNotMatch(content, /New ordinary review uses compact `gentle_review` `start -> finalize -> validate`\./);
+	assert.doesNotMatch(content, /New ordinary review uses compact `drakonc_review` `start -> finalize -> validate`\./);
 	assert.match(content, /Dangerous-command safety remains independent and authoritative/);
 	assert.match(content, /Project and user overrides may shadow a package asset/);
 });
 
 test("managed contracts retain no fresh lifecycle review directive", () => {
-	const managed = union([...ORCHESTRATOR, WORKER, GENTLE_SKILL, README]);
+	const managed = union([...ORCHESTRATOR, WORKER, DRAKONC_SKILL, README]);
 	for (const obsolete of [
 		"A fresh review still follows delegated implementation.",
 		"run a fresh-context review lens unless",

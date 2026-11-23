@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { __testing, createGentleAiExtension } from "../../extensions/gentle-ai.ts";
+import { __testing, createDrakoncAiExtension } from "../../extensions/drakonc-ai.ts";
 import { resolveSessionWorktree } from "../../lib/session-worktree-registry.ts";
 import { CandidateViewRegistry } from "../../lib/review-candidate-view.ts";
 import {
@@ -23,10 +23,10 @@ import { requireDevBinary } from "../support/native-binary-gate.ts";
 // Organic RDD Parity: candidate-bound dev-binary journeys.
 //
 // This suite runs only via `pnpm run test:dev-binary` and only when
-// GENTLE_AI_DEV_BINARY names a current, absolute candidate binary. Every START
+// DRAKONC_AI_DEV_BINARY names a current, absolute candidate binary. Every START
 // first obtains candidate-bound STATUS and executes the returned transition;
 // consent answers replay the envelope's own invocation exactly once.
-const DEV_BINARY = process.env.GENTLE_AI_DEV_BINARY;
+const DEV_BINARY = process.env.DRAKONC_AI_DEV_BINARY;
 const devBinaryGate = requireDevBinary({
 	devBinaryPath: DEV_BINARY,
 	exists: typeof DEV_BINARY === "string" && DEV_BINARY.length > 0 && DEV_BINARY.startsWith("/") && existsSync(DEV_BINARY),
@@ -34,7 +34,7 @@ const devBinaryGate = requireDevBinary({
 });
 if (devBinaryGate.run === false) console.log(`tests/devbinary/native-review-parity.devtest.ts: ${devBinaryGate.reason}`);
 const RUNNABLE = devBinaryGate.run;
-const DEV_HOME = mkdtempSync(join(tmpdir(), "gentle-pi-dev-binary-home-"));
+const DEV_HOME = mkdtempSync(join(tmpdir(), "drakonc-pi-dev-binary-home-"));
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_USERPROFILE = process.env.USERPROFILE;
 
@@ -87,7 +87,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 function repository(t: test.TestContext): string {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-dev-binary-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-dev-binary-"));
 	t.after(() => {
 		try { execFileSync("chmod", ["-R", "u+w", cwd]); } catch { /* best effort */ }
 		rmSync(cwd, { recursive: true, force: true });
@@ -99,7 +99,7 @@ function repository(t: test.TestContext): string {
 }
 
 function enableGlobalReview(cwd: string): void {
-	assert.ok(DEV_BINARY, "GENTLE_AI_DEV_BINARY is required for this devtest");
+	assert.ok(DEV_BINARY, "DRAKONC_AI_DEV_BINARY is required for this devtest");
 	const enabled = JSON.parse(execFileSync(DEV_BINARY, [
 		"review", "mode", "enable", "--scope", "global", "--cwd", cwd, "--json",
 	], { encoding: "utf8" })) as { status: { effective: string } };
@@ -144,7 +144,7 @@ function consentAnswerCall(calls: NativeCall[], answer: "granted" | "declined"):
 // Development-only counterpart of the published-pin SDK proof. A fixture-only
 // provider drives an actual SDK write; no external model, START or download.
 test("dev-binary: SDK non-Git bootstrap entry preserves files and metadata", { skip: !RUNNABLE }, async (t) => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-dev-bootstrap-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-dev-bootstrap-")));
 	const home = join(root, "home");
 	const agentDir = join(home, "agent");
 	mkdirSync(agentDir, { recursive: true });
@@ -152,11 +152,11 @@ test("dev-binary: SDK non-Git bootstrap entry preserves files and metadata", { s
 	const environment = {
 		HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"),
 		XDG_DATA_HOME: join(home, ".local", "share"), XDG_CACHE_HOME: join(home, ".cache"),
-		GENTLE_PI_AGENT_HOME: agentDir, PI_CODING_AGENT_DIR: agentDir,
-		GENTLE_PI_CONFIG_HOME: join(home, "pi-config"), PI_OFFLINE: "1",
+		DRAKONC_PI_AGENT_HOME: agentDir, PI_CODING_AGENT_DIR: agentDir,
+		DRAKONC_PI_CONFIG_HOME: join(home, "pi-config"), PI_OFFLINE: "1",
 		// A poisoned ambient declaration must be replaced by the production
 		// adapter rather than accidentally furnishing the fixture's handshake.
-		GENTLE_PI_REVIEW_RELAY_CONTRACT: "invalid-ambient-relay",
+		DRAKONC_PI_REVIEW_RELAY_CONTRACT: "invalid-ambient-relay",
 	};
 	// Disposable Git commands must not follow an ambient repository selector.
 	for (const key of Object.keys(process.env).filter((key) => key.startsWith("GIT_"))) {
@@ -221,12 +221,12 @@ test("dev-binary: SDK non-Git bootstrap entry preserves files and metadata", { s
 					});
 					return stream;
 				},
-			}), createGentleAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: {} })],
+			}), createDrakoncAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: {} })],
 		});
 		await resourceLoader.reload();
 		assert.deepEqual(resourceLoader.getExtensions().errors, []);
 		const { session } = await createAgentSession({
-			cwd, agentDir, resourceLoader, modelRuntime, sessionManager: SessionManager.inMemory(cwd), tools: ["write", "gentle_review"],
+			cwd, agentDir, resourceLoader, modelRuntime, sessionManager: SessionManager.inMemory(cwd), tools: ["write", "drakonc_review"],
 			settingsManager: SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } }),
 		});
 		try {
@@ -240,9 +240,9 @@ test("dev-binary: SDK non-Git bootstrap entry preserves files and metadata", { s
 				assert.ok(session.messages.some(message => message.role === "toolResult" && message.toolName === "write" && !message.isError), "actual SDK successful write result");
 				assert.equal(readFileSync(join(cwd, "app.ts"), "utf8"), "export const fixture = true;\n");
 			}
-			assert.ok(session.getAllTools().some((tool) => tool.name === "gentle_review"), "actual SDK registers the facade");
-			session.setActiveToolsByName(["gentle_review"]);
-			const tool = session.agent.state.tools.find((tool) => tool.name === "gentle_review");
+			assert.ok(session.getAllTools().some((tool) => tool.name === "drakonc_review"), "actual SDK registers the facade");
+			session.setActiveToolsByName(["drakonc_review"]);
+			const tool = session.agent.state.tools.find((tool) => tool.name === "drakonc_review");
 			assert.ok(tool, "actual SDK registers the facade");
 			if (operation === "inspect" || inspectAfterStartup) {
 				const result = await tool.execute("bootstrap-inspect", { operation: "inspect", ...(workspaceRoot === undefined ? {} : { workspaceRoot }) });
@@ -263,7 +263,7 @@ test("dev-binary: SDK non-Git bootstrap entry preserves files and metadata", { s
 		assert.equal(git(cwd, "ls-files", "--others", "--exclude-standard"), existsSync(join(cwd, "app.ts")) ? "app.ts\ncandidate.txt" : "candidate.txt");
 		assert.throws(() => git(cwd, "rev-parse", "--verify", "HEAD"), "HEAD stays unborn");
 		assert.equal(git(cwd, "remote"), "");
-		assert.equal(existsSync(join(cwd, ".git", "gentle-ai", "reviews")), false, "entry creates no review lineage");
+		assert.equal(existsSync(join(cwd, ".git", "drakonc-ai", "reviews")), false, "entry creates no review lineage");
 	};
 	const startupRoot = fixture("startup");
 	await entry(startupRoot, "startup", undefined, false);
@@ -497,7 +497,7 @@ test("dev-binary: a low-risk START closes the review with no receipt or follow-u
 	assert.equal(started.lensesRequired, false);
 });
 
-// gentle-pi#518: native STATUS projects a staged exact rename as its source
+// drakonc-pi#518: native STATUS projects a staged exact rename as its source
 // and its destination. The Pi controller freezes the same identity, so
 // ordinary START reaches native admission instead of being rejected locally
 // with candidate-target-projection-drift.

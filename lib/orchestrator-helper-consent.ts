@@ -22,7 +22,7 @@ interface Request {
 }
 // Pi's jiti loader disables moduleCache. Keep ONLY execution leases across reloads;
 // no caller identity, permissions, source snapshots or model configuration here.
-const leaseKey = Symbol.for("gentle-pi.orchestrator-helper.execution/v1");
+const leaseKey = Symbol.for("drakonc-pi.orchestrator-helper.execution/v1");
 const shared = globalThis as typeof globalThis & { [leaseKey]?: WeakMap<HelperHost["modelRegistry"], OrchestratorHelper> };
 const engines = shared[leaseKey] ??= new WeakMap<HelperHost["modelRegistry"], OrchestratorHelper>();
 const CHOICES = ["Allow once", "Allow this target + model for this session", "Decline"];

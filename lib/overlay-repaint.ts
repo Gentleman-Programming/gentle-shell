@@ -5,7 +5,7 @@ import type { TUI } from "@earendil-works/pi-tui";
  * to repaint the full cell buffer. Pi restores the editor behind a closed
  * overlay with an incremental diff render; a fullscreen overlay's stale cell
  * state can survive that pass — keys keep working while the screen stops
- * updating (field-reported as "selection keys are dead" after /gentle:agents
+ * updating (field-reported as "selection keys are dead" after /drakonc:agents
  * + Esc). `tui.requestRender(true)` resets the renderer's written-frame state
  * so the next paint rewrites EVERY cell to the terminal, clearing the ghost —
  * without rebuilding component rows, which on long sessions costs seconds of

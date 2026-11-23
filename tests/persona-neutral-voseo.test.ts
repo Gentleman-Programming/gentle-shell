@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
-// These tests assert that the composed main-agent prompt (built by buildGentlePrompt)
+// These tests assert that the composed main-agent prompt (built by buildDrakoncPrompt)
 // does not encourage Rioplatense voseo in neutral mode, and does include the expected
-// voseo/Rioplatense markers in gentleman mode.
+// voseo/Rioplatense markers in drakoncman mode.
 
 test("neutral mode composed prompt does not instruct to use voseo", () => {
-	const prompt = __testing.buildGentlePrompt("neutral");
+	const prompt = __testing.buildDrakoncPrompt("neutral");
 	// The neutral prompt must never tell the model to USE voseo
 	assert.doesNotMatch(
 		prompt,
@@ -22,7 +22,7 @@ test("neutral mode composed prompt does not instruct to use voseo", () => {
 });
 
 test("neutral mode composed prompt has no positive voseo/Rioplatense instruction and includes explicit prohibition", () => {
-	const prompt = __testing.buildGentlePrompt("neutral");
+	const prompt = __testing.buildDrakoncPrompt("neutral");
 	// Any sentence that affirmatively tells the model to use voseo or natural Rioplatense
 	// must be absent. The prohibition line ("Do NOT use voseo") is the only allowed voseo
 	// mention. We match patterns that indicate a positive directive by requiring the word
@@ -46,26 +46,26 @@ test("neutral mode composed prompt has no positive voseo/Rioplatense instruction
 	);
 });
 
-test("gentleman mode composed prompt contains voseo reference", () => {
-	const prompt = __testing.buildGentlePrompt("gentleman");
+test("drakoncman mode composed prompt contains voseo reference", () => {
+	const prompt = __testing.buildDrakoncPrompt("drakoncman");
 	assert.match(
 		prompt,
 		/voseo/i,
-		"gentleman prompt must reference voseo",
+		"drakoncman prompt must reference voseo",
 	);
 });
 
-test("gentleman mode composed prompt contains Rioplatense reference", () => {
-	const prompt = __testing.buildGentlePrompt("gentleman");
+test("drakoncman mode composed prompt contains Rioplatense reference", () => {
+	const prompt = __testing.buildDrakoncPrompt("drakoncman");
 	assert.match(
 		prompt,
 		/Rioplatense/i,
-		"gentleman prompt must reference Rioplatense",
+		"drakoncman prompt must reference Rioplatense",
 	);
 });
 
 test("neutral mode composed prompt explicitly states active mode is neutral", () => {
-	const prompt = __testing.buildGentlePrompt("neutral");
+	const prompt = __testing.buildDrakoncPrompt("neutral");
 	assert.match(
 		prompt,
 		/Current persona mode: neutral/i,
@@ -73,17 +73,17 @@ test("neutral mode composed prompt explicitly states active mode is neutral", ()
 	);
 });
 
-test("gentleman mode composed prompt explicitly states active mode is gentleman", () => {
-	const prompt = __testing.buildGentlePrompt("gentleman");
+test("drakoncman mode composed prompt explicitly states active mode is drakoncman", () => {
+	const prompt = __testing.buildDrakoncPrompt("drakoncman");
 	assert.match(
 		prompt,
-		/Current persona mode: gentleman/i,
-		"gentleman prompt must state active mode is gentleman",
+		/Current persona mode: drakoncman/i,
+		"drakoncman prompt must state active mode is drakoncman",
 	);
 });
 
 test("neutral mode composed prompt explicitly forbids voseo conjugations", () => {
-	const prompt = __testing.buildGentlePrompt("neutral");
+	const prompt = __testing.buildDrakoncPrompt("neutral");
 	// The neutral persona prompt must explicitly forbid voseo conjugation forms
 	assert.match(
 		prompt,
@@ -92,15 +92,15 @@ test("neutral mode composed prompt explicitly forbids voseo conjugations", () =>
 	);
 });
 
-test("neutral and gentleman modes produce different language-boundary text", () => {
-	const neutralPrompt = __testing.buildGentlePrompt("neutral");
-	const gentlemanPrompt = __testing.buildGentlePrompt("gentleman");
+test("neutral and drakoncman modes produce different language-boundary text", () => {
+	const neutralPrompt = __testing.buildDrakoncPrompt("neutral");
+	const drakoncmanPrompt = __testing.buildDrakoncPrompt("drakoncman");
 
 	// The language-boundary section must differ between modes
 	assert.notEqual(
 		neutralPrompt,
-		gentlemanPrompt,
-		"neutral and gentleman prompts must differ",
+		drakoncmanPrompt,
+		"neutral and drakoncman prompts must differ",
 	);
 
 	// Neutral must not include a positive instruction to use Rioplatense
@@ -110,10 +110,10 @@ test("neutral and gentleman modes produce different language-boundary text", () 
 		"neutral prompt must not contain positive 'natural Rioplatense' language instruction",
 	);
 
-	// Gentleman must contain the Rioplatense instruction (P14 PD-57: once, in the persona bullet)
+	// Drakoncman must contain the Rioplatense instruction (P14 PD-57: once, in the persona bullet)
 	assert.match(
-		gentlemanPrompt,
+		drakoncmanPrompt,
 		/When the user writes Spanish, answer in natural Rioplatense Spanish with voseo\./,
-		"gentleman prompt must contain the natural Rioplatense persona instruction",
+		"drakoncman prompt must contain the natural Rioplatense persona instruction",
 	);
 });

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createCoordinatorRuntime } from "./support/review-coordinator-runtime.ts";
-import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension, __testing } from "../extensions/drakonc-ai.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
 import { statusV9 } from "./support/status-v9.ts";
@@ -19,20 +19,20 @@ test("registered coordinator executes existing facade and preserves the baseline
 	const baseline = createCoordinatorRuntime(cwd, "baseline");
 	let baselineTrace: string[];
 	try {
-		const status = await baseline.invoke("gentle_review", { operation: "status", lineageId: baseline.lineage });
+		const status = await baseline.invoke("drakonc_review", { operation: "status", lineageId: baseline.lineage });
 		const collectBinding = status.collectBindings[0].collectBinding;
 		const capture = { lineageId: baseline.lineage, collectBinding };
-		assert.equal((await baseline.invoke("gentle_review_capture", capture)).outcome, "reviewer-model-run-forecast");
-		assert.equal((await baseline.invoke("gentle_review_capture", { ...capture, reviewerRunAcknowledged: true })).outcome, "native-last-event-closure");
-		await baseline.invoke("gentle_review", { operation: "status", lineageId: baseline.lineage });
-		assert.equal((await baseline.invoke("gentle_review", { operation: "acknowledge-approved", lineageId: baseline.lineage })).authority, "burned");
+		assert.equal((await baseline.invoke("drakonc_review_capture", capture)).outcome, "reviewer-model-run-forecast");
+		assert.equal((await baseline.invoke("drakonc_review_capture", { ...capture, reviewerRunAcknowledged: true })).outcome, "native-last-event-closure");
+		await baseline.invoke("drakonc_review", { operation: "status", lineageId: baseline.lineage });
+		assert.equal((await baseline.invoke("drakonc_review", { operation: "acknowledge-approved", lineageId: baseline.lineage })).authority, "burned");
 		assert.ok(baseline.closed());
 		baselineTrace = [...baseline.nativeCalls];
 	} finally { baseline.close(); }
 	const coordinated = createCoordinatorRuntime(cwd, "coordinator");
 	try {
-		assert.equal(coordinated.tools.get("gentle_review_run").exposure, "model-only");
-		const result = await coordinated.invoke("gentle_review_run", { lineageId: coordinated.lineage });
+		assert.equal(coordinated.tools.get("drakonc_review_run").exposure, "model-only");
+		const result = await coordinated.invoke("drakonc_review_run", { lineageId: coordinated.lineage });
 		assert.equal(result.outcome, "closed", JSON.stringify({ result, calls: coordinated.nativeCalls }));
 		assert.ok(coordinated.closed());
 		assert.deepEqual(coordinated.nativeCalls, baselineTrace!);
@@ -62,8 +62,8 @@ test("experimental coordinator respects RDD off and a switch disabled during its
 				reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: effective, cloneLocal: "", effective, source: "global" } }),
 			} as unknown as NativeReviewCli;
 			const tools = new Map<string, any>();
-			createGentleAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: { GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "1" } })({ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool) } as never);
-			const result = await tools.get("gentle_review_run").execute("mode-test", { lineageId: status.authority!.lineageId }, undefined,
+			createDrakoncAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: { DRAKONC_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "1" } })({ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool) } as never);
+			const result = await tools.get("drakonc_review_run").execute("mode-test", { lineageId: status.authority!.lineageId }, undefined,
 				() => { effective = "off"; }, { cwd, hasUI: true, sessionManager: { getSessionId: () => "mode-test" } });
 			assert.equal(captures, 0, "mode off must stop before reviewer execution");
 			assert.equal(result.details.outcome, "blocked");
@@ -93,8 +93,8 @@ test("capture forecast retains fresh mode and session checks before model execut
 				reviewMode: async () => ({ operation: "status", scope: "clone", status: { global: effective, cloneLocal: "", effective, source: "global" } }),
 			} as unknown as NativeReviewCli;
 			const tools = new Map<string, any>();
-			createGentleAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: { GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "1" } })({ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool) } as never);
-			const call = () => tools.get("gentle_review_run").execute("projected-guard", { lineageId: base.authority!.lineageId }, undefined,
+			createDrakoncAiExtension({ nativeReviewCli: native, candidateViews: null, processEnv: { DRAKONC_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "1" } })({ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool) } as never);
+			const call = () => tools.get("drakonc_review_run").execute("projected-guard", { lineageId: base.authority!.lineageId }, undefined,
 				(update: any) => { assert.equal(update.details.outcome, "reviewer-model-run-forecast"); displayed++; if (change === "mode") effective = "off"; else session = "changed"; },
 				{ cwd, hasUI: true, sessionManager: { getSessionId: () => session } });
 			if (change === "session") await assert.rejects(call, { name: "AbortError" });
@@ -113,6 +113,6 @@ test("coordinator fixture closes through an unresolved temporary-directory alias
  execFileSync("git", ["init", "-q"], { cwd }); writeFileSync(join(cwd, "candidate.ts"), "export const value = 1;\n");
  symlinkSync(cwd, alias, process.platform === "win32" ? "junction" : "dir");
  const runtime = createCoordinatorRuntime(alias, "coordinator");
- try { const result = await runtime.invoke("gentle_review_run", { lineageId: runtime.lineage }); assert.equal(result.outcome, "closed", JSON.stringify(result)); }
+ try { const result = await runtime.invoke("drakonc_review_run", { lineageId: runtime.lineage }); assert.equal(result.outcome, "closed", JSON.stringify(result)); }
  finally { runtime.close(); }
 });

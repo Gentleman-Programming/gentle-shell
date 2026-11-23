@@ -6,7 +6,7 @@ Track the Pi development packages with `>=1.0.0`, following the previous `>=0.99
 ## Problem and scope
 The targeted local install upgraded the engine but left root AI/TUI packages at 0.99.2. Development declarations, workspace maturity exceptions, lockfile, current-development documentation and associated assertions need one coherent upgrade.
 
-Allowed source surfaces: `package.json`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`, `tests/gentle-shell-launcher.test.ts`, `tests/package-manifest.test.ts`, `docs/gentle-shell.md`, `docs/readme-reference.md`, `lib/vim-editor-adapter.ts`, `tests/vim-editor-adapter.test.ts`, `tests/gentle-shell.test.ts`.
+Allowed source surfaces: `package.json`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`, `tests/drakonc-shell-launcher.test.ts`, `tests/package-manifest.test.ts`, `docs/drakonc-shell.md`, `docs/readme-reference.md`, `lib/vim-editor-adapter.ts`, `tests/vim-editor-adapter.test.ts`, `tests/drakonc-shell.test.ts`.
 
 Keep the peer/runtime minimum 0.99.1, wildcard peers, historical fixtures, generated runtime modules, and the 4320-minute maturity policy unchanged. Preserve existing audited Vim releases 0.99.1 and 0.99.2; admit exact 1.0.0 only after actual bundled/unbundled behavioral proof. Keep constructor identity, verified metadata, private shape/snapshot checks and unknown-release fallback protections. Only the eight existing first-party package exceptions change to exact release 1.0.0. No publication or remote operation is authorized.
 
@@ -23,7 +23,7 @@ Keep the peer/runtime minimum 0.99.1, wildcard peers, historical fixtures, gener
 Strategy: ask-on-risk. Forecast: about 300 authored additions/deletions including editor support and checks; dependency-lock changes count as authored changes for delivery. If actual size exceeds about 400, apply ask-on-risk before committing rather than code-golfing. One cohesive work unit; reassess if actual source scope exceeds this forecast. Running committed authored lines: 0.
 
 ## Progress and evidence
-- Local installed engine: `gentle-shell --version` reports wrapper 3.7.0 and Pi 1.0.0; help smoke passed. Installer emitted Done but its command timed out; installed state was separately verified.
+- Local installed engine: `drakonc-shell --version` reports wrapper 3.7.0 and Pi 1.0.0; help smoke passed. Installer emitted Done but its command timed out; installed state was separately verified.
 - Pre-change branch was `fix/nan-reasoning-levels`; source upgrade uses `build/pi-minimum-1.0.0`. Git was clean before task creation.
 - Mixed-graph baseline: `pnpm test` failed (4567 tests: 4448 passed, 85 failed, 34 skipped). Failures: 75 shell/modal, 9 Vim adapter, 1 manifest alignment. Provider mirror and real runtime harness passed. Full test log: `/tmp/pi-bash-6c8067dd1571b2c2.log`.
 - Runtime modules passed (8 modules). Typecheck failed with 8 additional diagnostics across 7 file/code pairs. No baseline changes permitted.
@@ -37,7 +37,7 @@ Strategy: ask-on-risk. Forecast: about 300 authored additions/deletions includin
 - Skipped: packed lifecycle, devbinary/crosslane/maintainer execution and live-terminal/manual verification. No publication or commit.
 - Native review lineage `review-8a557dd3ba1b34d9` froze the ten tracked source paths; the passive untracked task document was explicitly excluded. Two model captures produced empty output (first stopReason length, second stop); no verdict was admitted or authority acknowledged. An intervening incomplete binding was rejected with no mutation; fresh STATUS and exact stored binding were used for the second attempt. Latest authority remains reviewing/collect-required. No further retry loop.
 - Native ASSESS with explicit unavailable returns high-risk fallback (unassessable due untracked bookkeeping document), writer self-checks plus independent verifier; those functional checks are satisfied. Unit/commit closure remains pending the review decision.
-- Engram mirror pending: cross-project save to gentle-pi was blocked because this Engram server lacks isolated_session_registration. Preserve this document as authoritative local progress; do not claim a mirror exists.
+- Engram mirror pending: cross-project save to drakonc-pi was blocked because this Engram server lacks isolated_session_registration. Preserve this document as authoritative local progress; do not claim a mirror exists.
 
 - Human decision: deliver without retrying native review (no native verdict; lineage left untouched, no reset/recover). Delivery authorized through the configured GitHub CLI session: issue #1641 created with `enhancement`, `type:chore`, `status:approved`; PR to `main` and merge after required checks.
 - Delivery strategy: single PR (230 authored lines, within budget). The unrelated NaN commit is excluded by rebasing onto current `main`, where it already landed as #1637.

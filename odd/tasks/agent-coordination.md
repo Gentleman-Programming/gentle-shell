@@ -16,9 +16,9 @@ Commits, push, PR creation, and memory mirror remain parent-owned; no merge appr
 ## Blocker dispositions and observed verification
 
 - P1 RED: `node --experimental-strip-types --test tests/orchestrator-discovery.test.ts` failed because the exact `ac671593` validator rejected a new metadata-bearing header (`false !== true`). GREEN: same validator accepts unchanged headers with sidecars; malformed/missing/wrong-incarnation/wrong-generation sidecars leave valid headers visible and metadata unknown.
-- Restoration P2 RED: `node --experimental-strip-types --test --test-name-pattern='restored task history' tests/gentle-agents.test.ts` captured `history-running` in publication during the synchronous restore summary callback. GREEN: same command passed after runtime-owned gating. Admission refresh publishes real admitted tasks without requiring a later child event; alternate extension harness passed.
+- Restoration P2 RED: `node --experimental-strip-types --test --test-name-pattern='restored task history' tests/drakonc-agents.test.ts` captured `history-running` in publication during the synchronous restore summary callback. GREEN: same command passed after runtime-owned gating. Admission refresh publishes real admitted tasks without requiring a later child event; alternate extension harness passed.
 - Duplicate-activation P2: the real POSIX registry selects one canonical newest advertised activation (existing token tie-break). New real-registry test confirms selection equals `resolve`, metadata for the other activation stays unknown, and exact selected metadata joins with reachability unknown. No candidate-caused failure was reproduced for canonical selection; mock duplicate arrays are not claimed to detect real registry ambiguity. Transport/message targeting is unchanged.
-- Final: `node --experimental-strip-types --test tests/orchestrator-presence.test.ts tests/gentle-agents.test.ts tests/orchestrator-discovery.test.ts tests/agents-session-transport.test.ts`: 237 passed, 0 failed. Fixture Git probes emitted non-repository warnings.
+- Final: `node --experimental-strip-types --test tests/orchestrator-presence.test.ts tests/drakonc-agents.test.ts tests/orchestrator-discovery.test.ts tests/agents-session-transport.test.ts`: 237 passed, 0 failed. Fixture Git probes emitted non-repository warnings.
 - Runtime boundary: registered `orchestrator_list` extension harness joined a known peer label/workspace/child task and observed zero child launches and zero messages. Harness evidence, not an interactive live-model session.
 - `node scripts/check-types.mjs`: 186 recorded diagnostics, no regressions (12 file/code pairs improved).
 - `node scripts/build-runtime-modules.mjs --check`: 8 generated modules match; one-shot metrics sources validated.
@@ -49,18 +49,18 @@ and association tests rather than compressing two work units into the review bud
 - Read installed Pi `examples/extensions/session-name.ts`, full `extensions.md`,
   `sessions.md`, `session-format.md`, and linked relevant `sdk.md` before API use.
   A guessed singular `docs/session.md` path did not exist; corrected to `sessions.md`.
-- RED: `node --experimental-strip-types --test --test-name-pattern='registered session identity' tests/gentle-agents.test.ts`
+- RED: `node --experimental-strip-types --test --test-name-pattern='registered session identity' tests/drakonc-agents.test.ts`
   failed `'' !== 'Fix auth'` on baseline. Separately,
   `node --experimental-strip-types --test --test-name-pattern='heartbeat refreshes' tests/orchestrator-presence.test.ts`
   failed `'Fallback' !== 'Human rename'` before implementation.
-- GREEN: `node --experimental-strip-types --test --test-name-pattern='registered session identity|heartbeat refreshes' tests/orchestrator-presence.test.ts tests/gentle-agents.test.ts`
+- GREEN: `node --experimental-strip-types --test --test-name-pattern='registered session identity|heartbeat refreshes' tests/orchestrator-presence.test.ts tests/drakonc-agents.test.ts`
   passed both tests. Alternates cover human-name preservation, control-only and
   Unicode-limited subjects, idle rename without generation changes, unchanged
   activity/metadata readback, invalid source, replacement, and stale tool context.
 - Registered-tool runtime harness observed zero child launches, custom messages,
   and user messages. It drives the existing heartbeat callback deterministically;
   this is not interactive live-model readback or Windows runtime evidence.
-- `node --experimental-strip-types --test tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/gentle-agents.test.ts`:
+- `node --experimental-strip-types --test tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/drakonc-agents.test.ts`:
   193 passed, 0 failed. Existing fixture Git probes emitted non-repository/missing-cwd warnings.
 - `node scripts/check-types.mjs`: 186 recorded diagnostics, no regressions;
   12 file/code pairs improved. `node scripts/build-runtime-modules.mjs --check`:
@@ -92,9 +92,9 @@ Reuse canonical Git root/common-directory resolution for the host, launch-owned 
 - Added optional scope facts with canonical roots, clone hashes, resolution-attempt time/source; no raw common-directory paths. Reuses the existing resolver and durable session registry entries. Existing owned/unfinished/non-restored task gating and exact schema-1 headers remain intact.
 - One derived snapshot caches successful/unknown resolutions; host/launch cwd, admission membership, registered membership/events, and session replacement invalidate it. At most 17 unique paths are resolved per snapshot; stable publication/heartbeat does not probe Git.
 - Eight child/eight registered facts maximum; roots requiring normalization or exceeding 256 bytes are unknown, never shortened. Byte overflow withholds both scope lists with exact omission counts. This is not complete registered-root continuation or a global writer/isolation inventory.
-- RED: `node --experimental-strip-types --test tests/orchestrator-scope.test.ts` first failed missing module, then the temporary unknown-scope implementation produced the meaningful host assertion `null !== <fixture repo>`. `node --experimental-strip-types --test --test-name-pattern='registered orchestrator_list' tests/gentle-agents.test.ts` failed because candidate scope/host was absent.
-- GREEN: `node --experimental-strip-types --test --test-name-pattern='recorded host|registered orchestrator_list' tests/orchestrator-scope.test.ts tests/gentle-agents.test.ts`: 2 passed. Real owned Git fixtures exercise host/child association, sibling versus separate clones, ambient Git routing, non-Git/unavailable, replacement/cwd/membership changes and bounded unknown caching. These alternates were observed GREEN, not separate RED runs.
-- Final: `node --experimental-strip-types --test tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/gentle-agents.test.ts tests/orchestrator-scope.test.ts`: 196 passed, 0 failed. Existing fixture probes emit non-Git/missing-cwd warnings. An earlier run exposed a new bus-subscription leak and two incorrect fixture expectations; fixed and rerun successfully.
+- RED: `node --experimental-strip-types --test tests/orchestrator-scope.test.ts` first failed missing module, then the temporary unknown-scope implementation produced the meaningful host assertion `null !== <fixture repo>`. `node --experimental-strip-types --test --test-name-pattern='registered orchestrator_list' tests/drakonc-agents.test.ts` failed because candidate scope/host was absent.
+- GREEN: `node --experimental-strip-types --test --test-name-pattern='recorded host|registered orchestrator_list' tests/orchestrator-scope.test.ts tests/drakonc-agents.test.ts`: 2 passed. Real owned Git fixtures exercise host/child association, sibling versus separate clones, ambient Git routing, non-Git/unavailable, replacement/cwd/membership changes and bounded unknown caching. These alternates were observed GREEN, not separate RED runs.
+- Final: `node --experimental-strip-types --test tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/drakonc-agents.test.ts tests/orchestrator-scope.test.ts`: 196 passed, 0 failed. Existing fixture probes emit non-Git/missing-cwd warnings. An earlier run exposed a new bus-subscription leak and two incorrect fixture expectations; fixed and rerun successfully.
 - `node scripts/check-types.mjs`: 186 recorded diagnostics, no regressions; 12 file/code pairs improved. `node scripts/build-runtime-modules.mjs --check`: 8 modules match; metrics sources validated.
 - Registered-tool harness reads peer host/child scope and legacy unknown fallback; host publication harness checks own root, registered-root event refresh, unchanged resolution age on heartbeat and session replacement. Discovery-only harnesses launch zero children and send zero messages; existing admitted-child harness retains its original launches. No new tools/model calls/messages.
 - Optional old readers may reject new sidecars as unknown, but activity remains visible. New readers accept legacy scope-free sidecars; malformed scope alone preserves recognizable metadata and stable ID with unknown repository facts.
@@ -104,7 +104,7 @@ Reuse canonical Git root/common-directory resolution for the host, launch-owned 
 ### Pre-commit correction: literal Unicode root safety
 
 - Independent static finding reproduced: two existing Git directories `repo\u00a0name` and `repo name` are distinct, but the shared spelling resolver normalizes the former to the latter. Scope now rejects every normalized separator on input, resolved-root output and sidecar readback; shared resolver semantics are unchanged. This is honest unknown, not faithful resolution of those literal paths.
-- RED/GREEN: `node --experimental-strip-types --test tests/orchestrator-scope.test.ts tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/gentle-agents.test.ts`: before the guard, 196 passed / 1 failed with the ASCII twin root and clone hash instead of null; after, 197 passed / 0 failed. Alternates cover all 15 normalized separators, zero resolver probes for rejected inputs, ordinary spaces, Unicode letters, and malformed sidecar fallback retaining the header/recorded workspace.
+- RED/GREEN: `node --experimental-strip-types --test tests/orchestrator-scope.test.ts tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/drakonc-agents.test.ts`: before the guard, 196 passed / 1 failed with the ASCII twin root and clone hash instead of null; after, 197 passed / 0 failed. Alternates cover all 15 normalized separators, zero resolver probes for rejected inputs, ordinary spaces, Unicode letters, and malformed sidecar fallback retaining the header/recorded workspace.
 - Known and unknown facts retain `recorded-workspace/git` source and resolution-attempt time, not heartbeat freshness. Fixtures and private profile storage are confined to the owned temporary root and cleaned in teardown.
 - `node scripts/check-types.mjs`: 186 recorded diagnostics, no regressions; 12 file/code pairs improved. `node scripts/build-runtime-modules.mjs --check`: 8 modules match; metrics sources validated. No interactive live-profile or native Windows proof; no new tools/messages/model calls. Parent mirror/review/delivery remain pending; Refs #1701 only.
 
@@ -136,7 +136,7 @@ Rollback boundary: remove this unit's optional catalog/projection/join and resto
 - RED: `node --experimental-strip-types --test tests/orchestrator-catalog.test.ts`
   failed 0/1 passing: missing `catalog.tasks` with ten children and ten roots.
   GREEN: same command passed the new behavior; expanded alternates passed 2/2.
-- Historical pre-correction: `node --experimental-strip-types --test tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/gentle-agents.test.ts tests/orchestrator-catalog.test.ts`
+- Historical pre-correction: `node --experimental-strip-types --test tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/drakonc-agents.test.ts tests/orchestrator-catalog.test.ts`
   passed 197/197. Existing non-repository/missing-cwd Git fixture warnings remain.
 - Alternates cover tampered/wrong-peer/stale/replacement cursors, heartbeat and
   generation consistency, private-field exclusion, no new resolver calls, byte
@@ -154,7 +154,7 @@ Rollback boundary: remove this unit's optional catalog/projection/join and resto
 
 ### Busy private-activity correction (current evidence)
 
-RED/GREEN command: `node --experimental-strip-types --test tests/orchestrator-catalog.test.ts tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/gentle-agents.test.ts`.
+RED/GREEN command: `node --experimental-strip-types --test tests/orchestrator-catalog.test.ts tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/drakonc-agents.test.ts`.
 RED: 196 passed, one failed; unchanged public tasks/roots with only private thread
 and activity-time changes advanced activity generation, but continuation returned
 undefined instead of t8/t9. GREEN: 197 passed, zero failed after binding tokens to
@@ -202,7 +202,7 @@ withdraw a valid header. Split optional write guards; do not reopen consumed
 missing `/repo` metadata for unwritable and symlink catalog roots. Owned temporary
 fixtures verify legacy activity remains readable, metadata survives, retry works,
 and publisher cleanup stays scoped. Final GREEN: 202 passed / zero failed with
-`node --experimental-strip-types --test tests/orchestrator-state.test.ts tests/orchestrator-catalog.test.ts tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/gentle-agents.test.ts`.
+`node --experimental-strip-types --test tests/orchestrator-state.test.ts tests/orchestrator-catalog.test.ts tests/orchestrator-presence.test.ts tests/orchestrator-discovery.test.ts tests/drakonc-agents.test.ts`.
 `node scripts/check-types.mjs`: 186 diagnostics, no regressions, 12 pairs improved.
 `node scripts/build-runtime-modules.mjs --check`: eight modules match; metrics
 sources validated. `git diff --check` passed. Existing fixture non-Git/missing-cwd
@@ -238,7 +238,7 @@ Base `75644e32`, previous PR #1729 (388 lines; remote functional checks passed, 
   Presence observation is separate from historical notes/Git resolution times.
   Source `published_snapshot`, `ownerReply: false`, `authority: none`; paths/tasks
   are recorded context, not exclusive/global writer ownership or review consent.
-- RED/GREEN command: `node --experimental-strip-types --test tests/orchestrator-consultation.test.ts tests/orchestrator-state.test.ts tests/orchestrator-catalog.test.ts tests/orchestrator-discovery.test.ts tests/orchestrator-presence.test.ts tests/gentle-agents.test.ts`.
+- RED/GREEN command: `node --experimental-strip-types --test tests/orchestrator-consultation.test.ts tests/orchestrator-state.test.ts tests/orchestrator-catalog.test.ts tests/orchestrator-discovery.test.ts tests/orchestrator-presence.test.ts tests/drakonc-agents.test.ts`.
   RED: 202 passed / two failed (missing module and registered consultation tool).
   Final GREEN: 207 passed / zero failed. An intermediate resolver spy incorrectly
   threw during startup; changed it to count/delegate baseline resolution instead.
@@ -274,19 +274,19 @@ Base `75644e32`, previous PR #1729 (388 lines; remote functional checks passed, 
 ### Asset correction: lazy placement verified
 - Parent chose the existing lazy delegation guide for the entire milestone hint. `assets/orchestrator.md` now matches HEAD byte-for-byte (including original Core Role); no existing guardrails, fixtures or caps changed. New guidance sits beside delegation preparation, with safe own state, no extra turns/reads/noise and no consent authority.
 - RED remains the observed 44 passed / two failed. GREEN: `node --experimental-strip-types --test tests/orchestrator-budget.test.ts tests/orchestrator-rdd-ownership.test.ts tests/append-system-prompt-route.test.ts`: all 46 passed, zero failures, including verbatim role and 128-character root budget.
-- `node --experimental-strip-types --test tests/orchestrator-consultation.test.ts tests/orchestrator-state.test.ts tests/orchestrator-catalog.test.ts tests/orchestrator-discovery.test.ts tests/orchestrator-presence.test.ts tests/gentle-agents.test.ts`: all 207 passed, zero failures; existing fixture Git warnings remain.
+- `node --experimental-strip-types --test tests/orchestrator-consultation.test.ts tests/orchestrator-state.test.ts tests/orchestrator-catalog.test.ts tests/orchestrator-discovery.test.ts tests/orchestrator-presence.test.ts tests/drakonc-agents.test.ts`: all 207 passed, zero failures; existing fixture Git warnings remain.
 - `node scripts/check-types.mjs`: 186 diagnostics, no regressions, 12 pairs improved. `node scripts/build-runtime-modules.mjs --check`: eight modules match; metrics validated. `git diff --check` passed.
 - Controlled-long render is 8,176 bytes (derived from prior measured 8,199 minus the 23-byte asset restoration); the unchanged cap test independently passes. Full working slice including parent/staged/new files: 319 changed lines; staged content untouched, parent must restage final restoration and lazy asset.
 - Owned temporary fixture teardown retained. SDK artifact/execution and nested helper remain absent; both issues stay open pending separate acceptance and parent delivery.
 
 ## Unit 7: actual public-SDK acceptance (functional acceptance verified)
 
-Base `49592c5a`, previous PR #1733 (319 lines; 207 functional and 46 prompt checks passed). Branch `test/1702-consultation-sdk`. Permanent installed SDK 1.0.0 fixture uses `DefaultResourceLoader.reload`, `createAgentSession`, `bindExtensions`, local `registerProvider` and `session.prompt` against production Gentle Agents/Shell tools. Two distinct managers/cwds share an owned trusted profile; a fresh third runtime replaces the owner. No fake business context/private SDK calls, transport adapter, paid/outbound calls or OS child agents.
+Base `49592c5a`, previous PR #1733 (319 lines; 207 functional and 46 prompt checks passed). Branch `test/1702-consultation-sdk`. Permanent installed SDK 1.0.0 fixture uses `DefaultResourceLoader.reload`, `createAgentSession`, `bindExtensions`, local `registerProvider` and `session.prompt` against production Drakonc Agents/Shell tools. Two distinct managers/cwds share an owned trusted profile; a fresh third runtime replaces the owner. No fake business context/private SDK calls, transport adapter, paid/outbound calls or OS child agents.
 
 - Curated objective/progress/decisions/blockers persist via production `pi.appendEntry` on the actual branch, preserving a human name. Actual SDK message entries contain private sentinels absent from frozen receipts. Historical recordedAt/digest, published source, ownerReply false and authority none are asserted.
 - Nine then ten actual detached Git worktrees are registered through the SDK tool. First/opaque next pages expose roots beyond eight while Git facts remain the bounded prefix. Membership invalidates old cursors; private history plus omitted state leaves continuation/digest unchanged. Null withdrawal persists and survives SessionManager.open; disposed old owner is unavailable and replacement has unknown fresh notes, no resurrection.
 - Each tool prompt has exactly two local driver iterations, not zero model calls. Caller consultations leave owner model count unchanged and add zero measured resolver/Git calls between tool start/end; whole shell prompt setup still probes Git. No 1,000-projection measurement or child-execution proof claimed.
-- Output authorization has two selectors: owned 0700 OS-temp root for profile/Git/settings/auth/models/sessions, plus production's exact profile-derived 32-hex socket leaf under canonical /tmp/gentle-pi-<uid>. Preexisting leaf aborts before SDK startup. Actual socket paths, private UID/mode and canonical containment are checked. Captured public production shutdown callbacks receive actual SDK contexts before dispose, which alone does not emit shutdown. Bounded polling verifies presence withdrawal/empty sockets; revalidation precedes nonrecursive rmdir of only that leaf. Never delete UID parent/historical leaves; owned root removal and no-recreation checks follow. Windows explicitly skips.
+- Output authorization has two selectors: owned 0700 OS-temp root for profile/Git/settings/auth/models/sessions, plus production's exact profile-derived 32-hex socket leaf under canonical /tmp/drakonc-pi-<uid>. Preexisting leaf aborts before SDK startup. Actual socket paths, private UID/mode and canonical containment are checked. Captured public production shutdown callbacks receive actual SDK contexts before dispose, which alone does not emit shutdown. Bounded polling verifies presence withdrawal/empty sockets; revalidation precedes nonrecursive rmdir of only that leaf. Never delete UID parent/historical leaves; owned root removal and no-recreation checks follow. Windows explicitly skips.
 - Ordinary acceptance addition for existing behavior: strict TDD not active; fixture-development failures are not production RED. Earlier semantic RED evidence stands separately. Initial passing attempt lacked socket-leaf confinement; only the guarded rerun is current acceptance evidence.
 - Focused command `node --experimental-strip-types --test tests/orchestrator-consultation-sdk.test.ts`: 1 passed. Authorized ten-file consultation/state/catalog/discovery/presence/agents/budget/RDD/append suite: 254 passed, zero failed; existing non-Git/missing-cwd fixture warnings remain.
 - `node scripts/check-types.mjs`: 186 recorded diagnostics, no regressions; 12 pairs improved. `node scripts/build-runtime-modules.mjs --check`: eight modules match, metrics validated. `git diff --check`: passed.

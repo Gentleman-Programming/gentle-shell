@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 
 test("run guidance conditionally discloses a truncated statement", () => {
 	const tools = new Map<string, { promptGuidelines: string[] }>();
-	createGentleAiExtension({
+	createDrakoncAiExtension({
 		nativeReviewCli: null,
 		candidateViews: null,
 		processEnv: {},
@@ -22,7 +22,7 @@ test("run guidance conditionally discloses a truncated statement", () => {
 		},
 	} as never);
 
-	const guidelines = tools.get("gentle_review_run")!.promptGuidelines;
+	const guidelines = tools.get("drakonc_review_run")!.promptGuidelines;
 	const rules = guidelines.filter(line => line.includes("statement_truncated"));
 	assert.equal(rules.length, 1);
 	assert.match(rules[0]!, /^When non_blocking_findings\.statement_truncated is true,/);

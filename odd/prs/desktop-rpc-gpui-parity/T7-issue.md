@@ -9,7 +9,7 @@
 
 ### Problem or opportunity
 
-gentle-shell-gpui reads agent definition files and Pi's `settings.json` itself to list agents and the default orchestrator.
+drakonc-shell-gpui reads agent definition files and Pi's `settings.json` itself to list agents and the default orchestrator.
 
 ### Proposed outcome
 
@@ -21,4 +21,4 @@ _No response_
 
 ### Additional context
 
-Part of the gentle-shell-gpui parity work: each piece replaces an app-side workaround (reading private files, prompt-text commands, or parsing terminal output). Implementation branch: `feat/desktop-rpc-agent-definitions`.
+Part of the drakonc-shell-gpui parity work: each piece replaces an app-side workaround (reading private files, prompt-text commands, or parsing terminal output). Implementation branch: `feat/desktop-rpc-agent-definitions`.

@@ -3,15 +3,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { loadSkillsFromDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 // ---------------------------------------------------------------------------
-// gentle-pi#661/#662: RDD-aware verification rule for delegated work.
+// drakonc-pi#661/#662: RDD-aware verification rule for delegated work.
 //
 // The bounded writer always self-verifies: it runs the parent-authorized
 // `## Verification` commands itself and reports observed output. Whether a
-// SEPARATE `gentle-ai-verify` delegation is also required depends on the
+// SEPARATE `drakonc-ai-verify` delegation is also required depends on the
 // rendered `Receipt-driven development:` line, stated normatively exactly
 // once in trigger 5 (Verification rule) and referenced -- not restated --
 // everywhere else in this asset:
@@ -38,10 +38,10 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 const delegation = readDelegationDetail();
-const worker = read("assets/agents/gentle-ai-worker.md");
+const worker = read("assets/agents/drakonc-ai-worker.md");
 
 const ROUTING_SENTENCE =
-	'After the writer returns, when RDD is validated off, do not require `assess`: the writer\'s self-verification stands and a named Task Size high-risk item still requires an independent verifier. When RDD is on or unknown, call `gentle_review` with `{"operation":"assess"}` over the writer\'s diff and follow the returned plan.';
+	'After the writer returns, when RDD is validated off, do not require `assess`: the writer\'s self-verification stands and a named Task Size high-risk item still requires an independent verifier. When RDD is on or unknown, call `drakonc_review` with `{"operation":"assess"}` over the writer\'s diff and follow the returned plan.';
 const RDD_ON_SENTENCE =
 	"When the line reads `on`, the native review is an additional outside view of the change; it never replaces or skips the tier's verification, and the tier's verifier runs before review.";
 // Verification by named risk changed the tier table and replaced the
@@ -51,7 +51,7 @@ const RDD_ON_SENTENCE =
 const TIER_TABLE_HEADER = "| Tier | Verification (any RDD state) |";
 const PASSIVE_TIER_ROW = "| passive | structural readback by the parent; no separate verifier, no tests |";
 const MEDIUM_TIER_ROW = "| medium | writer self-verification stands; no separate verifier, whatever model wrote the change |";
-const HIGH_TIER_ROW = "| high | only through `escalate` naming a Task Size high-risk item: writer self-verification plus one separate `gentle-ai-verify` run |";
+const HIGH_TIER_ROW = "| high | only through `escalate` naming a Task Size high-risk item: writer self-verification plus one separate `drakonc-ai-verify` run |";
 const UNASSESSABLE_TIER_ROW = "| native high, unknown, or assess failed | informs only: writer self-verification stands; escalate when a named high-risk item applies |";
 // odd/tasks/verifier-admission.md S6: the sentence names the runtime admission of the verifier launch.
 const NAMED_RISK_SENTENCE =
@@ -62,13 +62,13 @@ test("trigger 5 skips mandatory assess only for validated off and preserves name
 	assert.ok(delegation.includes(ROUTING_SENTENCE), "trigger 5 is missing the exact routing sentence");
 	assert.doesNotMatch(delegation, /whatever the `Receipt-driven development:` line reads \(`on`, `off`, or `unknown`\)/);
 	assert.doesNotMatch(registeredReviewToolContract(), /it is the only way to get an independent verifier/);
-	for (const path of ["assets/orchestrator.md", "skills/gentle-ai/SKILL.md"]) {
+	for (const path of ["assets/orchestrator.md", "skills/drakonc-ai/SKILL.md"]) {
 		assert.match(read(path), /assess `escalate` when RDD is on or unknown/, `${path} must not mandate assess while off`);
 	}
-	const { skills, diagnostics } = loadSkillsFromDir({ dir: join(ROOT, "skills/gentle-ai"), source: "fixture" });
+	const { skills, diagnostics } = loadSkillsFromDir({ dir: join(ROOT, "skills/drakonc-ai"), source: "fixture" });
 	assert.deepEqual(diagnostics, []);
 	assert.equal(skills.length, 1);
-	assert.equal(skills[0].name, "gentle-ai");
+	assert.equal(skills[0].name, "drakonc-ai");
 });
 
 test("trigger 5 states that with RDD on the native review adds an outside view and never replaces verification", () => {
@@ -94,7 +94,7 @@ test("trigger 5 keeps the parent spot check requirement in every tier", () => {
 });
 
 test("trigger 5 never introduces a forbidden native RDD marker", () => {
-	for (const marker of ["gentle-ai review status", "next_transition", "review.capture-result", "review.validate", "reviewGate.result"]) {
+	for (const marker of ["drakonc-ai review status", "next_transition", "review.capture-result", "review.validate", "reviewGate.result"]) {
 		assert.ok(!delegation.includes(marker), `stale/forbidden RDD marker introduced: ${marker}`);
 	}
 });
@@ -110,11 +110,11 @@ test("trigger 5 never restates the retired #661 off/unknown non-trivial judgment
 	assert.doesNotMatch(delegation, /purely passive documentation with no behavior to verify/);
 });
 
-// S9 canon change (gentle-ai 87a3b2eb): the trigger section heading dropped "Mandatory".
+// S9 canon change (drakonc-ai 87a3b2eb): the trigger section heading dropped "Mandatory".
 test("the Simple Delegation paragraph references trigger 3 instead of restating the on/off/unknown routing", () => {
 	assert.match(
 		delegation,
-		/per the RDD-aware Verification rule \(trigger 3 under Delegation Triggers, gentle-pi#661\)/,
+		/per the RDD-aware Verification rule \(trigger 3 under Delegation Triggers, drakonc-pi#661\)/,
 	);
 	assert.match(delegation, /the normative on\/off\/unknown routing lives in `orchestrator-verification.md`, not here/);
 });
@@ -187,7 +187,7 @@ test("worker asset owns the canonical Known environmental failures definition", 
 test("delegation asset references the worker's Known environmental failures definition instead of restating it", () => {
 	assert.match(
 		delegation,
-		/`## Known environmental failures`: `gentle-ai-worker`'s Verification contract\./,
+		/`## Known environmental failures`: `drakonc-ai-worker`'s Verification contract\./,
 	);
 	// The full canonical wording ("lists exact test names or exact command
 	// lines that already fail on the base") must not be duplicated here.
@@ -206,7 +206,7 @@ test("worker asset never claims completion while a required verification command
 test("worker keeps candidate review disposition and lifecycle parent-owned", () => {
 	for (const clause of [
 		"The primary parent owns candidate review disposition and lifecycle, including preflight and any explicit candidate-level opt-out.",
-		"Never search for, request, or invoke review tools, including `gentle_review`.",
+		"Never search for, request, or invoke review tools, including `drakonc_review`.",
 		"Missing review tools never block this worker's implementation or verification handoff.",
 	]) {
 		assert.ok(worker.includes(clause), `worker asset is missing: ${clause}`);
@@ -230,8 +230,8 @@ test("worker asset keeps the existing Return contract fields", () => {
 });
 
 // ---------------------------------------------------------------------------
-// gentle-pi#1175: the verification policy is stated on three surfaces -- the
-// `gentle_review` tool contract (description, guidelines, parameters), the
+// drakonc-pi#1175: the verification policy is stated on three surfaces -- the
+// `drakonc_review` tool contract (description, guidelines, parameters), the
 // delegation asset, and docs/delegated-verification.md -- and they must say
 // the same thing about the behavior ASSESS implements: closure only from the
 // native `candidate.consumed` fact for this candidate, the runtime writer
@@ -260,9 +260,9 @@ function registeredReviewToolContract(): string {
 			tools.set(definition.name, definition);
 		},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null })(pi);
-	const tool = tools.get("gentle_review");
-	assert.ok(tool, "gentle_review must be registered");
+	createDrakoncAiExtension({ nativeReviewCli: null })(pi);
+	const tool = tools.get("drakonc_review");
+	assert.ok(tool, "drakonc_review must be registered");
 	return [tool.description ?? "", tool.promptSnippet ?? "", ...(tool.promptGuidelines ?? []), JSON.stringify(tool.parameters)].join("\n");
 }
 
@@ -271,7 +271,7 @@ function normalizePolicyText(text: string): string {
 }
 
 const POLICY_SURFACES: ReadonlyArray<readonly [string, string]> = [
-	["gentle_review tool contract", normalizePolicyText(registeredReviewToolContract())],
+	["drakonc_review tool contract", normalizePolicyText(registeredReviewToolContract())],
 	["assets/orchestrator-delegation.md", normalizePolicyText(delegation)],
 	["docs/delegated-verification.md", normalizePolicyText(read("docs/delegated-verification.md"))],
 ];
@@ -287,7 +287,7 @@ const SHARED_POLICY_PHRASES: ReadonlyArray<readonly [string, string]> = [
 	["functional checks still run", "a native code review is not a substitute for applicable functional checks"],
 ];
 
-test("the three verification policy surfaces carry the same ASSESS closure, profile, fallback, and functional-check statements (gentle-pi#1175)", () => {
+test("the three verification policy surfaces carry the same ASSESS closure, profile, fallback, and functional-check statements (drakonc-pi#1175)", () => {
 	for (const [surface, text] of POLICY_SURFACES) {
 		for (const [statement, phrase] of SHARED_POLICY_PHRASES) {
 			assert.ok(text.includes(phrase), `${surface} is missing the ${statement} statement: "${phrase}"`);
@@ -303,7 +303,7 @@ test("no verification policy surface still carries the retired small-model bias 
 	}
 });
 
-test("no verification policy surface still tells callers to pass closed explicitly (gentle-pi#1175)", () => {
+test("no verification policy surface still tells callers to pass closed explicitly (drakonc-pi#1175)", () => {
 	for (const [surface, text] of POLICY_SURFACES) {
 		for (const stale of ["closed is never derived", "closed is never auto-derived", "closed is never inferred", "pass it explicitly", "pass it only right after"]) {
 			assert.ok(!text.includes(stale), `${surface} still carries the retired explicit-closure wording: "${stale}"`);

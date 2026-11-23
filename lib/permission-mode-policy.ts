@@ -1,11 +1,11 @@
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 
 export type PermissionMode = "normal" | "auto" | "yolo" | "super-yolo";
-export const PERMISSION_MODE_SCHEMA = "gentle-pi.permission-mode/v1";
-export interface PermissionModeOptions { gentlePiConfigHome?: string }
+export const PERMISSION_MODE_SCHEMA = "drakonc-pi.permission-mode/v1";
+export interface PermissionModeOptions { drakoncPiConfigHome?: string }
 export interface PermissionModeResolution {
 	mode: PermissionMode;
 	malformed: boolean;
@@ -17,7 +17,7 @@ export function isPermissionMode(value: unknown): value is PermissionMode {
 }
 /** Never consult merged Pi settings or repository configuration. */
 export function permissionModePolicyFile(options: PermissionModeOptions = {}): string {
-	return join(options.gentlePiConfigHome ?? gentlePiConfigHome(), "permission-mode.json");
+	return join(options.drakoncPiConfigHome ?? drakoncPiConfigHome(), "permission-mode.json");
 }
 export const permissionModePolicyPath = permissionModePolicyFile;
 export function parsePermissionModePolicyFile(raw: string): PermissionMode | undefined {
@@ -43,7 +43,7 @@ export function writePermissionModePolicy(mode: PermissionMode, options: Permiss
 	if (!isPermissionMode(mode)) throw new Error("Invalid permission mode");
 	const resolution = resolvePermissionModePolicy(options);
 	if (resolution.malformed) throw new Error("Permission mode preference is malformed or unreadable; repair it before saving.");
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.drakoncPiConfigHome ?? drakoncPiConfigHome();
 	const path = resolution.globalFile;
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	mkdirSync(home, { recursive: true });

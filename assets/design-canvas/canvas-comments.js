@@ -34,7 +34,7 @@ const TEXT = Object.freeze({
 });
 
 const LIMITS = { pins: 500 };
-const MODE_KEY = "gentle-design:send-mode";
+const MODE_KEY = "drakonc-design:send-mode";
 
 export function init(ctx) {
 	const { win, doc, els, store, api, ui, actions } = ctx;

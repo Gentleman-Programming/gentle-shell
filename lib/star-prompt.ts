@@ -2,12 +2,12 @@ import { execFile as nodeExecFile } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, win32 } from "node:path";
 import { spawn as nodeSpawn } from "node:child_process";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 
-export const STAR_PROMPT_SCHEMA = "gentle-shell.star-prompt/v1";
+export const STAR_PROMPT_SCHEMA = "drakonc-shell.star-prompt/v1";
 export const STAR_PROMPT_FILE = "star-prompt.json";
-/** Both Gentleman-Programming repos get the star: the one in use and its sibling. */
-export const STAR_PROMPT_REPOSITORIES = ["Gentleman-Programming/gentle-shell", "Gentleman-Programming/gentle-ai"] as const;
+/** Both Drakoncman-Programming repos get the star: the one in use and its sibling. */
+export const STAR_PROMPT_REPOSITORIES = ["Drakoncman-Programming/drakonc-shell", "Drakoncman-Programming/drakonc-ai"] as const;
 export const STAR_PROMPT_REPOSITORY_URLS = STAR_PROMPT_REPOSITORIES.map((repository) => `https://github.com/${repository}`);
 /** Prompts 1..N stay silent; the offer may appear from N+1 on (t3code parity). */
 export const PROMPTS_BEFORE_ASKING = 5;

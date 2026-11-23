@@ -43,7 +43,7 @@ test("native warming decisions use only current owned live background work", () 
 	assert.equal(handler!({ ...candidate, action: "warm" }), undefined, "ordinary idle keeps native action");
 });
 
-// Supplemental architecture guard; the extension lifecycle is exercised in gentle-agents.test.ts.
+// Supplemental architecture guard; the extension lifecycle is exercised in drakonc-agents.test.ts.
 test("warming helper has no maintenance capabilities", () => {
 	const helper = readFileSync(new URL("../lib/background-cache-warming.ts", import.meta.url), "utf8");
 	assert.doesNotMatch(helper, /setTimeout|setInterval|sendMessage|sendUserMessage|subagent_|runner\./);

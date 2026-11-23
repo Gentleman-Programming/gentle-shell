@@ -30,13 +30,13 @@ test("golden AUTH setup: tagged u32 version then raw-length arbitrary cookie", (
 });
 
 test("golden proplist carries two equal lengths: tagged 'L' then raw 'x'", () => {
-	const out = boundedPulseTagWriter().proplist([["application.name", "gentle-shell"]]).finish();
+	const out = boundedPulseTagWriter().proplist([["application.name", "drakonc-shell"]]).finish();
 	const expected = Buffer.concat([
 		hex("50"), // 'P'
 		Buffer.from("tapplication.name\0", "latin1"),
 		hex("4c 00 00 00 0d"), // tagged u32 value length
 		hex("78 00 00 00 0d"), // raw arbitrary value length, same value
-		Buffer.from("gentle-shell\0", "latin1"),
+		Buffer.from("drakonc-shell\0", "latin1"),
 		hex("4e"), // 'N'
 	]);
 	assert.deepEqual(out, expected);

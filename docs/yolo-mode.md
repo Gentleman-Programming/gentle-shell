@@ -2,22 +2,22 @@
 
 > 🚀 **Full speed, destructive actions still ask.** YOLO lets the agent implement, commit, push and open PRs within the already authorized task without asking each time, which suits long autonomous runs. Destructive operations still require fresh confirmation; the one exception is recursive removal of the session's own temp scratch (see [Temp scratch removal](#temp-scratch-removal)).
 
-Use `/gentle:yolo` in the interactive primary Pi TUI to choose Normal, Auto, YOLO or Super Yolo for the current session. Select YOLO to stop repeated permission questions for ordinary work **within your already authorized task**. YOLO is **OFF** unless you select it or save YOLO as the user-global default. [Permission modes and global defaults](permission-modes.md) are managed separately from the live-session selection. The active status and a separate editor widget both say **🚀 YOLO ON 🔥 — destructive confirmations remain**, even when Gentle Shell hides its status layout.
+Use `/drakonc:yolo` in the interactive primary Pi TUI to choose Normal, Auto, YOLO or Super Yolo for the current session. Select YOLO to stop repeated permission questions for ordinary work **within your already authorized task**. YOLO is **OFF** unless you select it or save YOLO as the user-global default. [Permission modes and global defaults](permission-modes.md) are managed separately from the live-session selection. The active status and a separate editor widget both say **🚀 YOLO ON 🔥 — destructive confirmations remain**, even when Drakonc Shell hides its status layout.
 
 | Command | Effect |
 | --- | --- |
-| `/gentle:yolo enable` | Select YOLO for this live session and workspace/clone. |
-| `/gentle:yolo disable` | Select Normal immediately and clear the YOLO indicators; saved defaults stay unchanged. |
-| `/gentle:yolo status` | Show YOLO or Super Yolo when active, otherwise **YOLO OFF**, without activating. |
-| `/gentle:yolo` | Choose `normal`, `auto`, `yolo` or `super-yolo` for this session. The menu shows the current mode and a short description of each choice. Cancelling changes nothing; without an interactive primary TUI it reports status instead. |
+| `/drakonc:yolo enable` | Select YOLO for this live session and workspace/clone. |
+| `/drakonc:yolo disable` | Select Normal immediately and clear the YOLO indicators; saved defaults stay unchanged. |
+| `/drakonc:yolo status` | Show YOLO or Super Yolo when active, otherwise **YOLO OFF**, without activating. |
+| `/drakonc:yolo` | Choose `normal`, `auto`, `yolo` or `super-yolo` for this session. The menu shows the current mode and a short description of each choice. Cancelling changes nothing; without an interactive primary TUI it reports status instead. |
 
 Invalid arguments leave state unchanged.
 
-The Session command palette also includes YOLO. Interactive selection requires an eligible primary TUI, live session identity and identifiable workspace. Outside Git, the canonical workspace directory supplies identity. There is no model-callable activation tool. `/gentle:mode default yolo` optionally saves a trusted user-global default for new primary sessions; `/gentle:mode default normal` removes that elevated default. Neither command changes the current mode.
+The Session command palette also includes YOLO. Interactive selection requires an eligible primary TUI, live session identity and identifiable workspace. Outside Git, the canonical workspace directory supplies identity. There is no model-callable activation tool. `/drakonc:mode default yolo` optionally saves a trusted user-global default for new primary sessions; `/drakonc:mode default normal` removes that elevated default. Neither command changes the current mode.
 
 ## Super Yolo
 
-**💥 Super Yolo removes every permission prompt; the only line left is private material.** Select it with `/gentle:yolo` or `/gentle:mode super-yolo`, or save it for new sessions with `/gentle:mode default super-yolo`.
+**💥 Super Yolo removes every permission prompt; the only line left is private material.** Select it with `/drakonc:yolo` or `/drakonc:mode super-yolo`, or save it for new sessions with `/drakonc:mode default super-yolo`.
 
 While it is active:
 
@@ -26,15 +26,15 @@ While it is active:
 - The **sensitive-path guard stays hard-blocked**: `read`, `write` and `edit` of `.env` files, `.ssh`, keychains, `*.pem/*.key/*.p12/*.pfx`, `auth.json`, `secrets/` directories and cloud credential files are refused in every mode, Super Yolo included.
 - Code-level catastrophic denies remain: `rm -rf /`, `rm -rf ~`, `--no-preserve-root`, `git reset --hard`, forced clean and force push are blocked without a dialog.
 - `ask_user` tools, provider consent, maintenance/recovery authorization and opaque-token decisions are never automatically answered.
-- `/gentle:yolo status` identifies Super Yolo while it is active, and `/gentle:yolo disable` returns to Normal. Children never inherit Super Yolo; their bounded delegation and child guards are unchanged.
+- `/drakonc:yolo status` identifies Super Yolo while it is active, and `/drakonc:yolo disable` returns to Normal. Children never inherit Super Yolo; their bounded delegation and child guards are unchanged.
 
 Super Yolo is deliberate maximum autonomy for a workspace you accept the consequences of. The shell recognition remains lexical, not a sandbox: unrecognized script forms, custom tools and prompt injection can still reach destructive effects, and OS-level isolation remains your real containment boundary.
 
 ## Configuration menu path
 
-1. Open `/gentle:customize` → **Editor**.
+1. Open `/drakonc:customize` → **Editor**.
 2. Select **YOLO: OFF · session only**, immediately after the Vim enable/disable rows.
-3. Press **Enter** or **Space** to toggle the same permission as `/gentle:yolo`. The row updates to **YOLO: ON · session only**; slash changes and revocation also update an open menu.
+3. Press **Enter** or **Space** to toggle the same permission as `/drakonc:yolo`. The row updates to **YOLO: ON · session only**; slash changes and revocation also update an open menu.
 
 Navigation, the read-only preview and Escape never grant permission. The preview reminds you that ordinary scoped commits/push/PR are covered, destructive confirmations remain, review consent is unchanged and reload resets the live grant. **UNAVAILABLE** means the live primary owner or eligible session/workspace cannot be used; selecting it cannot activate YOLO.
 
@@ -71,7 +71,7 @@ Anything else keeps asking, including another user's directory, a directory not 
 
 Live permission is held in the extension instance, bound to the exact live SessionManager, session ID and canonical Git common-directory identity, or canonical workspace directory outside Git. Sibling worktrees in one clone may retain it; an unrelated workspace or session identity cannot. Scope loss revokes rather than hiding permission until you return.
 
-Shutdown, **reload** and session replacement revoke live grants and callbacks. New primary session instances may apply a saved global YOLO default; they never restore a grant from transcript entries. An explicit Normal selection wins over that default in the current session. To keep both this session and future sessions in Normal, use `/gentle:yolo disable` and `/gentle:mode default normal`.
+Shutdown, **reload** and session replacement revoke live grants and callbacks. New primary session instances may apply a saved global YOLO default; they never restore a grant from transcript entries. An explicit Normal selection wins over that default in the current session. To keep both this session and future sessions in Normal, use `/drakonc:yolo disable` and `/drakonc:mode default normal`.
 
 This is permission guidance and shell-guard defense in depth, **not a sandbox or an all-tools safety guarantee**. Detection only covers recognized command forms; scripts, custom tools and prompt injection can bypass semantic guidance. Tools and extensions retain the operating-system permissions of the process. Trusted SDK callers can invoke command handlers and supply interactive contexts; the human command path is not an OS security boundary against those callers. Use OS/container isolation and narrowly scoped credentials when you need an actual containment boundary.
 
@@ -102,7 +102,7 @@ Ordinary builds, tests, read-only SQL, predicate-bounded literal deletes, Git st
 3. Recognized database/filesystem data loss always requires fresh confirmation, even when autonomous mode or a matched delivery action is configured to allow. The only exception is [temp scratch removal](#temp-scratch-removal) under active YOLO in the primary session.
 4. No UI, cancellation, a non-true answer or a dialog error cannot authorize execution. Approval is not cached; permission and Herdr blocker lifecycle events remain balanced.
 
-Children receive the lightweight `child-safety.ts` entry alongside `child-context.ts`; they do not need the full primary extension. The safety entry registers nothing outside `GENTLE_PI_AGENTS_CHILD=1`, preventing duplicate primary prompts during package auto-discovery. If the full primary extension is explicitly loaded in a child, its destructive-command path also blocks instead of prompting.
+Children receive the lightweight `child-safety.ts` entry alongside `child-context.ts`; they do not need the full primary extension. The safety entry registers nothing outside `DRAKONC_PI_AGENTS_CHILD=1`, preventing duplicate primary prompts during package auto-discovery. If the full primary extension is explicitly loaded in a child, its destructive-command path also blocks instead of prompting.
 
 ### Detection limitations
 

@@ -9,7 +9,7 @@ import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-inte
 import { isInteractiveMode, isInteractiveRpcHost } from "../lib/rpc-host.ts";
 
 const CHOICE_TOOL_NAME = "ask_user_choice";
-const ASK_USER_CHOICE_BLOCKED_EVENT = "gentle-pi:ask-user-choice:blocked";
+const ASK_USER_CHOICE_BLOCKED_EVENT = "drakonc-pi:ask-user-choice:blocked";
 
 const ChoiceOptionSchema = Type.Object(
 	{
@@ -311,7 +311,7 @@ export default function askUserChoice(pi: ExtensionAPI): void {
 						}
 					};
 					list.onCancel = () => finish(undefined);
-					// Gentle Shell Desktop answers a session outside Herdr app through this list's own finish.
+					// Drakonc Shell Desktop answers a session outside Herdr app through this list's own finish.
 					publishChoiceAnswerHandle(_toolCallId, params, finish, () => completed);
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 					container.addChild(new Text(theme.fg("accent", theme.bold(params.question)), 1, 0));

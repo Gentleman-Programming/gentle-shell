@@ -9,7 +9,7 @@ import { stream as streamAnthropic } from "@earendil-works/pi-ai/api/anthropic-m
 import { normalizeContext, validateToolArguments, type Model, type ToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
-import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { __testing, createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 
 const metadata = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"))), "..", "package.json");
 const version: string = JSON.parse(readFileSync(metadata, "utf8")).version;
@@ -20,7 +20,7 @@ const coercesStringNull = major > 1 || (major === 1 && minor >= 5);
 
 function registeredTools(): Map<string, any> {
 	const tools = new Map<string, any>();
-	createGentleAiExtension({ nativeReviewCli: null })({
+	createDrakoncAiExtension({ nativeReviewCli: null })({
 		on() {}, registerCommand() {}, registerTool(tool: any) { tools.set(tool.name, tool); },
 	} as unknown as ExtensionAPI);
 	return tools;
@@ -60,19 +60,19 @@ test("public Anthropic non-strict adapter preserves the complete review tool dec
 	assert.match(result.errorMessage ?? "", new RegExp(sentinel));
 	assert.ok(payload, "adapter reached payload callback");
 	const emitted = new Map<string, any>(payload.tools.map((tool: any) => [tool.name, tool.input_schema]));
-	const controller = emitted.get("gentle_review");
+	const controller = emitted.get("drakonc_review");
 	assert.equal(controller.type, "object");
 	assert.deepEqual(controller.required, ["operation"]);
 	assert.deepEqual(Object.keys(controller.properties).sort(), ["operation", "lineageId", "selectionBinding", "intendedUntracked", "untrackedScope", "changeName", "idempotencyKey", "transition", "input", "outputPath", "inputPath", "operationId", "lineageIds", "workspaceRoot"].sort());
 	assert.ok(controller.properties.input.anyOf.some((schema: any) => schema.type === "object"));
 	assert.match(controller.properties.input.description, /START\/ASSESS\/answer-consent\/abandon/);
-	assert.deepEqual(controller.properties.operation.enum, tools.get("gentle_review").parameters.properties.operation.enum);
-	for (const name of ["gentle_review_capture", "gentle_review_capture_group"]) {
+	assert.deepEqual(controller.properties.operation.enum, tools.get("drakonc_review").parameters.properties.operation.enum);
+	for (const name of ["drakonc_review_capture", "drakonc_review_capture_group"]) {
 		const schema = emitted.get(name);
 		assert.deepEqual(schema.required, tools.get(name).parameters.required);
 		assert.deepEqual(schema.properties, tools.get(name).parameters.properties);
 	}
-	assert.ok(emitted.get("gentle_review_capture_group").properties.collectBindings.items.anyOf.some((schema: any) => schema.type === "object"));
+	assert.ok(emitted.get("drakonc_review_capture_group").properties.collectBindings.items.anyOf.some((schema: any) => schema.type === "object"));
 	// Anthropic omits the root operation constraints. Even its broader nullable
 	// declaration cannot grant consent, maintenance, or native execution.
 	let nativeCalls = 0;
@@ -80,7 +80,7 @@ test("public Anthropic non-strict adapter preserves the complete review tool dec
 	for (const operation of ["start", "assess", "answer-consent", "inspect", "reset", "recover"]) {
 		const inputs = operation === "start" || operation === "assess" || operation === "answer-consent" ? [null] : [null, { consentBinding: "opaque", answer: "granted" }];
 		for (const input of inputs) {
-			const args = validateToolArguments({ ...tools.get("gentle_review"), parameters: controller }, { type: "toolCall", id: "provider-shell", name: "gentle_review", arguments: { operation, input } });
+			const args = validateToolArguments({ ...tools.get("drakonc_review"), parameters: controller }, { type: "toolCall", id: "provider-shell", name: "drakonc_review", arguments: { operation, input } });
 			assert.deepEqual(args.input, input, "provider-shell validation accepts and retains this input");
 			await assert.rejects(__testing.executeReviewControllerOperation(args, process.cwd(), native));
 		}
@@ -92,7 +92,7 @@ const binding = { name: "reviewer_result", arguments: [] };
 
 test("STATUS accepts object selectors and rejects malformed input before native access", async () => {
  const input = { baseRef: "HEAD", committedOnly: true };
- assert.equal(__testing.parseReviewControllerParameters(validate("gentle_review", { operation: "status", input })).input, JSON.stringify(input));
+ assert.equal(__testing.parseReviewControllerParameters(validate("drakonc_review", { operation: "status", input })).input, JSON.stringify(input));
  let calls = 0;
  const native = new Proxy({}, { get: () => async () => { calls++; throw new Error("invalid input reached native"); } }) as NativeReviewCli;
  for (const malformed of [null, [], 42]) await assert.rejects(__testing.executeReviewControllerOperation({ operation: "status", input: malformed }, process.cwd(), native), /input|JSON|object/i);
@@ -105,25 +105,25 @@ test("STATUS accepts object selectors and rejects malformed input before native 
 test("registered review schemas admit START/ASSESS objects and ordered capture objects", () => {
 	for (const operation of ["start", "assess"]) {
 		const input = operation === "start" ? { mode: "ordinary" } : { committedOnly: true, baseRef: "HEAD" };
-		assert.deepEqual(validate("gentle_review", { operation, input }).input, input);
-		assert.equal(__testing.parseReviewControllerParameters(validate("gentle_review", { operation, input })).input, JSON.stringify(input));
+		assert.deepEqual(validate("drakonc_review", { operation, input }).input, input);
+		assert.equal(__testing.parseReviewControllerParameters(validate("drakonc_review", { operation, input })).input, JSON.stringify(input));
 	}
-	assert.deepEqual(validate("gentle_review_capture", { lineageId: "l", collectBinding: binding }).collectBinding, binding);
+	assert.deepEqual(validate("drakonc_review_capture", { lineageId: "l", collectBinding: binding }).collectBinding, binding);
 	const ordered = [binding, ' { "name": "second", "arguments": [] } '];
-	const args = validate("gentle_review_capture_group", { lineageId: "l", collectBindings: ordered });
+	const args = validate("drakonc_review_capture_group", { lineageId: "l", collectBindings: ordered });
 	assert.deepEqual(__testing.parseReviewCaptureGroupParameters(args).collectBindings, [JSON.stringify(binding), ordered[1]]);
 });
 
 test("answer-consent admits JSON object input and coerces it cleanly (#2375)", async () => {
 	const input = { consentBinding: "bound-1", answer: "granted" };
-	assert.deepEqual(validate("gentle_review", { operation: "answer-consent", input }).input, input);
+	assert.deepEqual(validate("drakonc_review", { operation: "answer-consent", input }).input, input);
 	assert.equal(
-		__testing.parseReviewControllerParameters(validate("gentle_review", { operation: "answer-consent", input })).input,
+		__testing.parseReviewControllerParameters(validate("drakonc_review", { operation: "answer-consent", input })).input,
 		JSON.stringify(input),
 	);
 	const native = { targetStatus: async () => ({ targetIdentity: "t1" }) } as unknown as NativeReviewCli;
 	const outcome = await __testing.executeReviewControllerOperation(
-		validate("gentle_review", { operation: "answer-consent", input }),
+		validate("drakonc_review", { operation: "answer-consent", input }),
 		process.cwd(),
 		native,
 	);
@@ -133,7 +133,7 @@ test("answer-consent admits JSON object input and coerces it cleanly (#2375)", a
 
 test("abandon admits JSON object input and coerces it to a serialized string", () => {
 	const input = { actor: "loonbac", reason: "operator_disposition" };
-	const args = validate("gentle_review", { operation: "abandon", lineageId: "review-1", input });
+	const args = validate("drakonc_review", { operation: "abandon", lineageId: "review-1", input });
 	assert.deepEqual(args.input, input);
 	assert.equal(__testing.parseReviewControllerParameters(args).input, JSON.stringify(input));
 });
@@ -145,10 +145,10 @@ test("validated abandon objects reach the mocked native facade and still fail cl
 		reviewStatus: async () => { statusCalls++; return { entries: [] }; },
 		abandon: async () => { abandonCalls++; },
 	} as unknown as NativeReviewCli;
-	const bad = await __testing.executeReviewControllerOperation(validate("gentle_review", { operation: "abandon", lineageId: "review-1", input: { actor: "loonbac", reason: "not-a-reason" } }), process.cwd(), native);
+	const bad = await __testing.executeReviewControllerOperation(validate("drakonc_review", { operation: "abandon", lineageId: "review-1", input: { actor: "loonbac", reason: "not-a-reason" } }), process.cwd(), native);
 	assert.equal(bad.outcome, "native-input-invalid");
 	assert.equal(statusCalls, 0);
-	const ineligible = await __testing.executeReviewControllerOperation(validate("gentle_review", { operation: "abandon", lineageId: "review-1", input: { actor: "loonbac", reason: "operator_disposition" } }), process.cwd(), native);
+	const ineligible = await __testing.executeReviewControllerOperation(validate("drakonc_review", { operation: "abandon", lineageId: "review-1", input: { actor: "loonbac", reason: "operator_disposition" } }), process.cwd(), native);
 	assert.equal(ineligible.outcome, "native-abandon-ineligible");
 	assert.equal(statusCalls, 1);
 	assert.equal(abandonCalls, 0);
@@ -159,7 +159,7 @@ test("validated ASSESS objects reach the mocked native facade with parsed fields
 	const baseRef = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
 	const native = { assess: async (request: unknown) => { requests.push(request); throw new Error("mock assessment unavailable"); } } as unknown as NativeReviewCli;
 	for (const input of [{ baseRef: "HEAD", committedOnly: true, nativeReviewOutcome: "unknown" }, ' { "baseRef": "HEAD", "committedOnly": true, "nativeReviewOutcome": "unknown" } ']) {
-		await __testing.executeReviewControllerOperation(validate("gentle_review", { operation: "assess", input }), process.cwd(), native);
+		await __testing.executeReviewControllerOperation(validate("drakonc_review", { operation: "assess", input }), process.cwd(), native);
 	}
 	assert.equal(requests.length, 2);
 	assert.deepEqual(requests[0], { cwd: process.cwd(), baseRef, committedOnly: true });
@@ -178,7 +178,7 @@ test("ASSESS ignores empty top-level selection defaults and targets the selected
 	const requests: unknown[] = [];
 	const native = { assess: async (request: unknown) => { requests.push(request); throw new Error("fixture assessment unavailable"); } } as unknown as NativeReviewCli;
 	for (const defaults of [{}, { intendedUntracked: [] }, { untrackedScope: "select" }, { untrackedScope: "exclude" }, { intendedUntracked: [], untrackedScope: "select" }, { intendedUntracked: [], untrackedScope: "exclude" }]) {
-		const args = validate("gentle_review", { operation: "assess", workspaceRoot: selected, input: "{}", ...defaults });
+		const args = validate("drakonc_review", { operation: "assess", workspaceRoot: selected, input: "{}", ...defaults });
 		const original = structuredClone(args);
 		const parsed = __testing.parseReviewControllerParameters(args);
 		assert.equal("intendedUntracked" in parsed, false);
@@ -205,20 +205,20 @@ test("ASSESS still rejects meaningful or malformed top-level untracked selection
 test("serialized inputs remain byte-for-byte unchanged at validation and facade parsing", () => {
 	const input = ' \n{ "mode" : "ordinary" }\t';
 	for (const operation of ["start", "assess", "answer-consent", "reset", "recover"]) {
-		assert.equal(__testing.parseReviewControllerParameters(validate("gentle_review", { operation, input })).input, input);
+		assert.equal(__testing.parseReviewControllerParameters(validate("drakonc_review", { operation, input })).input, input);
 	}
 	const collectBinding = ' { "name": "reviewer_result", "arguments": [] }\n';
-	assert.equal(__testing.parseReviewCaptureParameters(validate("gentle_review_capture", { lineageId: "l", collectBinding })).collectBinding, collectBinding);
+	assert.equal(__testing.parseReviewCaptureParameters(validate("drakonc_review_capture", { lineageId: "l", collectBinding })).collectBinding, collectBinding);
 });
 
 test("validation and facade keep arrays, primitives and null fail-closed", async () => {
 	const operations = ["start", "assess", "answer-consent", "inspect", "reset", "recover"];
 	for (const value of [[], 123, true, "123", "[]"]) {
 		for (const operation of operations) {
-			assert.throws(() => validate("gentle_review", { operation, input: value }), /Validation failed/);
+			assert.throws(() => validate("drakonc_review", { operation, input: value }), /Validation failed/);
 		}
-		assert.throws(() => validate("gentle_review_capture", { lineageId: "l", collectBinding: value }), /Validation failed/);
-		assert.throws(() => validate("gentle_review_capture_group", { lineageId: "l", collectBindings: [binding, value] }), /Validation failed/);
+		assert.throws(() => validate("drakonc_review_capture", { lineageId: "l", collectBinding: value }), /Validation failed/);
+		assert.throws(() => validate("drakonc_review_capture_group", { lineageId: "l", collectBindings: [binding, value] }), /Validation failed/);
 	}
 	let calls = 0;
 	const native = new Proxy({}, { get() { return async () => { calls++; throw new Error("unexpected native execution"); }; } }) as NativeReviewCli;
@@ -226,15 +226,15 @@ test("validation and facade keep arrays, primitives and null fail-closed", async
 	for (const value of [null, false, "null"]) {
 		for (const operation of operations) {
 			if (value === "null" && !coercesStringNull) {
-				assert.throws(() => validate("gentle_review", { operation, input: value }), /Validation failed/);
+				assert.throws(() => validate("drakonc_review", { operation, input: value }), /Validation failed/);
 			} else {
-				const validated = validate("gentle_review", { operation, input: value });
+				const validated = validate("drakonc_review", { operation, input: value });
 				assert.equal(validated.input, null, "nullable shell preserves null instead of stripping it to omitted");
 				await assert.rejects(__testing.executeReviewControllerOperation(validated, process.cwd(), native));
 			}
 		}
-		assert.throws(() => validate("gentle_review_capture", { lineageId: "l", collectBinding: value }), /Validation failed/);
-		assert.throws(() => validate("gentle_review_capture_group", { lineageId: "l", collectBindings: [binding, value] }), /Validation failed/);
+		assert.throws(() => validate("drakonc_review_capture", { lineageId: "l", collectBinding: value }), /Validation failed/);
+		assert.throws(() => validate("drakonc_review_capture_group", { lineageId: "l", collectBindings: [binding, value] }), /Validation failed/);
 	}
 	for (const operation of operations) {
 		await assert.rejects(__testing.executeReviewControllerOperation({ operation, input: "null" }, process.cwd(), native), /input must be a JSON object/);
@@ -243,7 +243,7 @@ test("validation and facade keep arrays, primitives and null fail-closed", async
 });
 
 test("all other controller operations keep object input fail-closed at the facade boundary (#1698)", async () => {
-	const operations = (tools.get("gentle_review").parameters.properties.operation.enum as string[]).filter((operation) => operation !== "start" && operation !== "assess" && operation !== "answer-consent" && operation !== "abandon" && operation !== "status" && operation !== "select-intended-untracked");
+	const operations = (tools.get("drakonc_review").parameters.properties.operation.enum as string[]).filter((operation) => operation !== "start" && operation !== "assess" && operation !== "answer-consent" && operation !== "abandon" && operation !== "status" && operation !== "select-intended-untracked");
 	let calls = 0;
 	const native = new Proxy({}, { get() { return async () => { calls++; throw new Error("unexpected native execution"); }; } }) as NativeReviewCli;
 	for (const operation of operations) {

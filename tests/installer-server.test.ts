@@ -7,9 +7,9 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { exitCodeFor, openBrowser, openerFor, redirectPage, runnerEnvironment, upgradeEnvironment, wizardHandlers, writeRedirect } from "../bin/gentle-shell-install.mjs";
+import { exitCodeFor, openBrowser, openerFor, redirectPage, runnerEnvironment, upgradeEnvironment, wizardHandlers, writeRedirect } from "../bin/drakonc-shell-install.mjs";
 import { planPreflight, requirements } from "../scripts/installer-preflight.mjs";
-import { PI_INSTALL_VERSION, blockedReasons, failedSteps, runStandardInstall } from "../scripts/installer-runner.mjs";
+import { PI_INSTALL_VERSION, SHELL_NOT_PUBLISHED_MESSAGE, blockedReasons, failedSteps, runStandardInstall } from "../scripts/installer-runner.mjs";
 import { createProbes } from "../scripts/installer-probes.mjs";
 import { createInstallerServer, guidance } from "../scripts/installer-server.mjs";
 import { distributionAsset, prefixLayout } from "../scripts/bundled-install.mjs";
@@ -23,7 +23,7 @@ type RunInstall = (request: { plan: Plan; consent: boolean }, log: Log) => Promi
 
 const BIN = "/home/u/.local/share/pnpm/bin";
 // Every /api/* request carries the custom header, so cross-origin fetches need a preflight.
-const API = { "x-gentle-install": "1" };
+const API = { "x-drakonc-install": "1" };
 const cleanInventory = {
 	platform: "linux",
 	arch: "x64",
@@ -31,7 +31,7 @@ const cleanInventory = {
 	pnpm: { available: true, version: "11.1.1", usable: true, compatible: true, persistent: false },
 	pi: { available: false },
 	shell: { available: false },
-	gentleAi: { available: false },
+	drakoncAi: { available: false },
 	go: { available: false },
 	globalBin: { available: true, path: BIN, writable: true, onPath: false },
 	setup: false,
@@ -41,7 +41,7 @@ function collected(changes: Record<string, unknown> = {}): Collected {
 	return { inventory, plan: planPreflight(inventory) };
 }
 
-const assetsDir = mkdtempSync(join(tmpdir(), "gentle-install-server-"));
+const assetsDir = mkdtempSync(join(tmpdir(), "drakonc-install-server-"));
 writeFileSync(join(assetsDir, "index.html"), "<!doctype html><title>fixture</title>\n");
 writeFileSync(join(assetsDir, "wizard.js"), "// fixture\n");
 test.after(() => rmSync(assetsDir, { recursive: true, force: true }));
@@ -99,7 +99,7 @@ function post(port: number, path: string, cookie: string, body: unknown, headers
 		method: "POST",
 		path,
 		body: typeof body === "string" ? body : JSON.stringify(body),
-		headers: { cookie, origin: `http://127.0.0.1:${port}`, "x-gentle-install": "1", "content-type": "application/json", ...headers },
+		headers: { cookie, origin: `http://127.0.0.1:${port}`, "x-drakonc-install": "1", "content-type": "application/json", ...headers },
 	});
 }
 async function plan(port: number, cookie: string) {
@@ -165,7 +165,7 @@ test("session code is single-use, expires, and sets a strict HttpOnly cookie", a
 		assert.ok(response.body.includes('<meta http-equiv="refresh" content="0; url=/">'));
 		assert.ok(!/<script|<style|\sstyle=/i.test(response.body));
 		const cookie = String(response.headers["set-cookie"]);
-		assert.match(cookie, /^gentle_install_session=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Strict; Path=\/$/);
+		assert.match(cookie, /^drakonc_install_session=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Strict; Path=\/$/);
 		assert.doesNotMatch(cookie, /Domain=/i);
 		const reused = await send(fresh.port, { path: `/session?code=${fresh.code}` });
 		assert.equal(reused.status, 401);
@@ -191,7 +191,7 @@ test("API and asset requests need the session cookie", async () => {
 	try {
 		for (const path of ["/", "/wizard.js", "/api/plan", "/api/progress"]) {
 			assert.equal((await send(port, { path })).status, 401, path);
-			assert.equal((await send(port, { path, headers: { cookie: "gentle_install_session=forged" } })).status, 401, path);
+			assert.equal((await send(port, { path, headers: { cookie: "drakonc_install_session=forged" } })).status, 401, path);
 		}
 		const cookie = await login();
 		const page = await send(port, { path: "/", headers: { cookie } });
@@ -217,12 +217,12 @@ test("POST needs the exact Origin and custom header; GET rejects a foreign Origi
 		assert.equal((await post(port, "/api/install", cookie, body, { origin: `http://localhost:${port}` })).status, 403);
 		assert.equal((await post(port, "/api/install", cookie, body, { origin: "null" })).status, 403);
 		const noOrigin = await send(port, { method: "POST", path: "/api/install", body: JSON.stringify(body),
-			headers: { cookie, "x-gentle-install": "1", "content-type": "application/json" } });
+			headers: { cookie, "x-drakonc-install": "1", "content-type": "application/json" } });
 		assert.equal(noOrigin.status, 403);
 		const noHeader = await send(port, { method: "POST", path: "/api/install", body: JSON.stringify(body),
 			headers: { cookie, origin: `http://127.0.0.1:${port}`, "content-type": "application/json" } });
 		assert.equal(noHeader.status, 403);
-		assert.equal((await post(port, "/api/install", cookie, body, { "x-gentle-install": "true" })).status, 403);
+		assert.equal((await post(port, "/api/install", cookie, body, { "x-drakonc-install": "true" })).status, 403);
 		assert.equal((await post(port, "/api/install", cookie, body, { "content-type": "text/plain" })).status, 415);
 		assert.equal((await send(port, { path: "/api/plan", headers: { cookie, ...API, origin: "http://evil.test" } })).status, 403);
 		assert.equal(runs.length, 0);
@@ -297,19 +297,19 @@ test("/api/plan reports blockers with guidance and no profile change when alread
 	}
 });
 
-test("/api/plan names the found and required version of an older Gentle Shell and how to resolve it", async () => {
+test("/api/plan names the found and required version of an older Drakonc Shell and how to resolve it", async () => {
 	const { version: releaseVersion } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 	const { host, port, login } = await start({ collect: async () => collected({
 		pi: { available: true, version: "1.2.4", usable: true },
 		shell: { available: true, version: "3.4.0", usable: false, global: true },
-		gentleAi: { available: null }, setup: { available: null },
+		drakoncAi: { available: null }, setup: { available: null },
 	}) });
 	try {
 		const view = await plan(port, await login());
 		assert.deepEqual(view.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["incompatible-tool", "shell"]]);
 		assert.equal(view.blockers[0].guidance,
-			`Gentle Shell 3.4.0 is installed globally with pnpm, but this installer needs ${releaseVersion} or newer. Nothing was replaced. ` +
-			`Update it with \`pnpm add -g gentle-pi@${releaseVersion}\`, or remove it with \`pnpm remove -g gentle-pi\`, then select Check again.`);
+			`Drakonc Shell 3.4.0 is installed globally with pnpm, but this installer needs ${releaseVersion} or newer. Nothing was replaced. ` +
+			`Update it with \`pnpm add -g drakonc-pi@${releaseVersion}\`, or remove it with \`pnpm remove -g drakonc-pi\`, then select Check again.`);
 		assert.deepEqual(view.actions, []);
 	} finally {
 		await host.close("test");
@@ -322,8 +322,8 @@ test("/api/plan installs the installer's Pi alongside an older Pi that neither p
 		const view = await plan(port, await login());
 		assert.deepEqual(view.blockers, []);
 		const install = view.actions.find((action: { id: string }) => action.id === "install-pi");
-		assert.equal(install.description, "Install the latest stable Pi globally with pnpm for Gentle Shell. The Pi 0.99.0 already on this computer " +
-			"was not installed with pnpm or npm, so it is left unchanged. Gentle Shell uses the installer's Pi; the `pi` command in a terminal may still run the older one.");
+		assert.equal(install.description, "Install the latest stable Pi globally with pnpm for Drakonc Shell. The Pi 0.99.0 already on this computer " +
+			"was not installed with pnpm or npm, so it is left unchanged. Drakonc Shell uses the installer's Pi; the `pi` command in a terminal may still run the older one.");
 		assert.deepEqual(runs, []);
 	} finally {
 		await host.close("test");
@@ -338,7 +338,7 @@ test("/api/plan shows an older Pi's update to latest stable with its found versi
 			assert.deepEqual(view.blockers, []);
 			const update = view.actions.find((action: { id: string }) => action.id === "update-pi");
 			assert.equal(update.description, `Update Pi 0.87.1 to the latest stable version with ${owner}, the package manager that installed it. ` +
-				`Gentle Shell needs Pi ${requirements.pi} or newer.`);
+				`Drakonc Shell needs Pi ${requirements.pi} or newer.`);
 			assert.ok(view.actions.findIndex((action: { id: string }) => action.id === "update-pi") <
 				view.actions.findIndex((action: { id: string }) => action.id === "install-shell"));
 			assert.deepEqual(runs, []);
@@ -358,7 +358,7 @@ test("/api/plan says, before consent, that an older Node and an incompatible pnp
 		assert.deepEqual(view.blockers, []);
 		assert.deepEqual(view.persistence.tools, ["node", "npm", "pnpm"]);
 		const text = view.persistence.description;
-		assert.ok(text.includes("Node.js 22.18.0 on this computer is not a version Gentle Shell supports (it needs 22.19.0 or a later 22.x release, or 23.6.0 or newer), so the installer uses its pinned Node.js 24.21.0 " +
+		assert.ok(text.includes("Node.js 22.18.0 on this computer is not a version Drakonc Shell supports (it needs 22.19.0 or a later 22.x release, or 23.6.0 or newer), so the installer uses its pinned Node.js 24.21.0 " +
 			"and installs it under $PNPM_HOME. Your Node.js 22.18.0 is left unchanged."), text);
 		assert.ok(text.includes(`pnpm 10.27.0 on this computer is not a pnpm ${requirements.pnpm.split(".")[0]} release this installer can use, ` +
 			`so the installer uses its pinned pnpm ${requirements.pnpm} and installs it under $PNPM_HOME. Your pnpm 10.27.0 is left unchanged.`), text);
@@ -379,10 +379,10 @@ test("/api/plan says, before consent, that an older Node and an incompatible pnp
 
 test("a pnpm-managed unsupported Node is disclosed as replaced from probe through plan, consent and runner", async () => {
 	const home = "/home/u/.local/share/pnpm";
-	const bootstrap = "/home/u/.gentle-shell-bootstrap-tools.fixture/node/bin/node";
+	const bootstrap = "/home/u/.drakonc-shell-bootstrap-tools.fixture/node/bin/node";
 	const pnpmEntry = "/tools/pnpm/bin/pnpm.mjs";
 	const env = { HOME: "/home/u", PNPM_HOME: home, PATH: `${bootstrap.slice(0, -5)}:${BIN}:/usr/bin`,
-		GENTLE_INSTALL_PNPM_NODE: bootstrap, GENTLE_INSTALL_PNPM_ENTRY: pnpmEntry };
+		DRAKONC_INSTALL_PNPM_NODE: bootstrap, DRAKONC_INSTALL_PNPM_ENTRY: pnpmEntry };
 	const nodeFor = async (version: string, own: string) => {
 		const probeEnv = { ...env, PATH: `${bootstrap.slice(0, -5)}:${own.slice(0, -5)}:/usr/bin` };
 		const fs = { isFile: async (file: string) => [bootstrap, own].includes(file),
@@ -405,19 +405,19 @@ test("a pnpm-managed unsupported Node is disclosed as replaced from probe throug
 			if (managed) {
 				assert.equal(view.persistence.replacesNode, true);
 				assert.equal(text, `node, npm, pnpm will be installed under $PNPM_HOME (${home}) so new terminals keep working after the temporary installer tools are removed. ` +
-					`Node.js ${version} on this computer is not a version Gentle Shell supports (it needs 22.19.0 or a later 22.x release, or 23.6.0 or newer). ` +
+					`Node.js ${version} on this computer is not a version Drakonc Shell supports (it needs 22.19.0 or a later 22.x release, or 23.6.0 or newer). ` +
 					`Your Node.js ${version} is managed by pnpm under $PNPM_HOME and will be replaced by the pinned Node.js 24.21.0. ` +
 					"A version manager such as `mise activate` may still put your own versions first on PATH in new terminals.");
 				assert.doesNotMatch(text, /left unchanged|Existing installations are not replaced/);
 			} else {
 				assert.equal(text, `node, npm, pnpm will be installed under $PNPM_HOME (${home}) so new terminals keep working after the temporary installer tools are removed. Existing installations are not replaced. ` +
-					`Node.js ${version} on this computer is not a version Gentle Shell supports (it needs 22.19.0 or a later 22.x release, or 23.6.0 or newer), so the installer uses its pinned Node.js 24.21.0 ` +
+					`Node.js ${version} on this computer is not a version Drakonc Shell supports (it needs 22.19.0 or a later 22.x release, or 23.6.0 or newer), so the installer uses its pinned Node.js 24.21.0 ` +
 					`and installs it under $PNPM_HOME. Your Node.js ${version} is left unchanged. A version manager such as \`mise activate\` may still put your own versions first on PATH in new terminals.`);
 			}
 		} finally { await host.close("test"); }
 		if (!managed || version !== "23.5.9") continue;
 		const calls: string[][] = [];
-		const result = await runStandardInstall({ plan: data.plan, consent: true }, { platform: "linux", env, nodePath: bootstrap,
+		const result = await runStandardInstall({ plan: data.plan, consent: true }, { platform: "linux", env, nodePath: bootstrap, shellPackagePublished: true,
 			fs: { isFile: async () => false }, run: async (_command: string, args: string[]) => {
 				calls.push(args);
 				const operation = args.slice(1).join(" ");
@@ -433,12 +433,12 @@ test("a pnpm-managed unsupported Node is disclosed as replaced from probe throug
 
 test("a separate global-bin Node is disclosed from probe through plan, consent and runner", async () => {
 	const home = "/home/u/.local/share/pnpm";
-	const bootstrap = "/home/u/.gentle-shell-bootstrap-tools.fixture/node/bin/node";
+	const bootstrap = "/home/u/.drakonc-shell-bootstrap-tools.fixture/node/bin/node";
 	const own = "/usr/bin/node";
 	const destination = `${BIN}/node`;
 	const pnpmEntry = "/tools/pnpm/bin/pnpm.mjs";
 	const env = { HOME: "/home/u", PNPM_HOME: home, PATH: `${bootstrap.slice(0, -5)}:/usr/bin:${BIN}`,
-		GENTLE_INSTALL_PNPM_NODE: bootstrap, GENTLE_INSTALL_PNPM_ENTRY: pnpmEntry };
+		DRAKONC_INSTALL_PNPM_NODE: bootstrap, DRAKONC_INSTALL_PNPM_ENTRY: pnpmEntry };
 	const fs = { isFile: async (file: string) => [bootstrap, own, destination].includes(file),
 		isDirectory: async () => false, exists: async () => false, realpath: async (file: string) => file,
 		readText: async () => "", writable: async () => false };
@@ -452,7 +452,7 @@ test("a separate global-bin Node is disclosed from probe through plan, consent a
 	try {
 		const view = await plan(port, await login());
 		const calls: string[][] = [];
-		const result = await runStandardInstall({ plan: data.plan, consent: true }, { platform: "linux", env, nodePath: bootstrap,
+		const result = await runStandardInstall({ plan: data.plan, consent: true }, { platform: "linux", env, nodePath: bootstrap, shellPackagePublished: true,
 			fs: { isFile: async () => false }, run: async (_command: string, args: string[]) => {
 				calls.push(args);
 				const operation = args.slice(1).join(" ");
@@ -464,7 +464,7 @@ test("a separate global-bin Node is disclosed from probe through plan, consent a
 		assert.equal(result.failedStep, "persist-node");
 		assert.deepEqual(calls.at(-1), [pnpmEntry, "runtime", "set", "node", "24.21.0", "-g"]);
 		assert.equal(view.persistence.description, `node, npm, pnpm will be installed under $PNPM_HOME (${home}) so new terminals keep working after the temporary installer tools are removed. ` +
-			"Node.js 23.5.9 on this computer is not a version Gentle Shell supports (it needs 22.19.0 or a later 22.x release, or 23.6.0 or newer), so the installer uses its pinned Node.js 24.21.0 " +
+			"Node.js 23.5.9 on this computer is not a version Drakonc Shell supports (it needs 22.19.0 or a later 22.x release, or 23.6.0 or newer), so the installer uses its pinned Node.js 24.21.0 " +
 			"and installs it under $PNPM_HOME. Your Node.js 23.5.9 found first on PATH is left unchanged. " +
 			"The Node.js already in $PNPM_HOME will be replaced by the pinned Node.js 24.21.0. " +
 			"A version manager such as `mise activate` may still put your own versions first on PATH in new terminals.");
@@ -491,7 +491,7 @@ test("a setup recovery does not describe a destination Node as replaced without 
 		found: "23.5.9", globalBinNode: true };
 	const data = collected({ node, pi: { available: true, version: "1.2.0", usable: true },
 		shell: { available: true, version: requirements.shell, usable: true, global: true },
-		gentleAi: { available: true, version: requirements.gentleAi, usable: true, compatible: true },
+		drakoncAi: { available: true, version: requirements.drakoncAi, usable: true, compatible: true },
 		setup: { available: true, recoverable: true } });
 	const { host, port, login } = await start({ collect: async () => data });
 	try {
@@ -507,7 +507,7 @@ test("destination changes do not stale a plan without persist-node", async () =>
 	const node = { available: true, version: "24.21.0", usable: true, persistent: false, npm: false, found: "23.5.9" };
 	const recovery = { pi: { available: true, version: "1.2.0", usable: true },
 		shell: { available: true, version: requirements.shell, usable: true, global: true },
-		gentleAi: { available: true, version: requirements.gentleAi, usable: true, compatible: true },
+		drakoncAi: { available: true, version: requirements.drakoncAi, usable: true, compatible: true },
 		setup: { available: true, recoverable: true } };
 	let current = collected({ ...recovery, node });
 	const consented = current.plan;
@@ -549,7 +549,7 @@ test("/api/plan says before consent which Go is downloaded, only to build, with 
 			assert.deepEqual(view.blockers, []);
 			const acquire = view.actions.find((action: { id: string }) => action.id === "acquire-go");
 			assert.equal(acquire.description, `${found}, so the installer downloads Go 1.25.14 from go.dev, verifies its pinned SHA-256 checksum ` +
-				"and uses it only to build Gentle AI. It is kept in the installer's own folder (~/.pi/gentle-ai/tools/go); your Go, PATH and shell profile are not changed.");
+				"and uses it only to build Drakonc AI. It is kept in the installer's own folder (~/.drakonc-shell/drakonc-ai/tools/go); your Go, PATH and shell profile are not changed.");
 			assert.equal(view.actions.find((action: { id: string }) => action.id === "verify-go").description,
 				"Check that the downloaded Go runs and reports the pinned version.");
 		} finally {
@@ -612,16 +612,16 @@ test("/api/plan explains a pnpm in $PNPM_HOME/bin that the installer will not re
 	}
 });
 
-test("/api/plan explains a Gentle Shell that neither pnpm nor npm manages", async () => {
+test("/api/plan explains a Drakonc Shell that neither pnpm nor npm manages", async () => {
 	const { host, port, login } = await start({ collect: async () => collected({
 		pi: { available: true, version: "1.2.4", usable: true },
-		shell: { available: null, outsidePnpm: true }, gentleAi: { available: null }, setup: { available: null },
+		shell: { available: null, outsidePnpm: true }, drakoncAi: { available: null }, setup: { available: null },
 	}) });
 	try {
 		const view = await plan(port, await login());
 		assert.deepEqual(view.blockers.map((blocker: { code: string; tool: string }) => [blocker.code, blocker.tool]), [["unknown-tool", "shell"]]);
 		assert.equal(view.blockers[0].guidance,
-			"Gentle Shell is already installed, but neither pnpm nor npm manages it (a linked source checkout, for example), " +
+			"Drakonc Shell is already installed, but neither pnpm nor npm manages it (a linked source checkout, for example), " +
 			"so this installer cannot update it. Nothing was replaced. Update it the way you installed it, then select Check again.");
 	} finally {
 		await host.close("test");
@@ -639,15 +639,15 @@ test("/api/plan explains a Pi whose version cannot be read", async () => {
 	}
 });
 
-test("/api/plan keeps a compatible Pi and says pnpm may put another next to Gentle Shell, at least the minimum", async () => {
+test("/api/plan keeps a compatible Pi and says pnpm may put another next to Drakonc Shell, at least the minimum", async () => {
 	// A newer compatible Pi is kept as it is; pnpm may install a different peer beside Shell.
 	const { host, port, login, runs } = await start({ collect: async () => collected({ pi: { available: true, version: "1.8.0", usable: true } }) });
 	try {
 		const view = await plan(port, await login());
 		assert.deepEqual(view.blockers, []);
 		assert.equal(view.actions.find((action: { id: string }) => action.id === "install-shell").description,
-			"Install Gentle Shell (gentle-pi) globally with pnpm. pnpm may put another Pi next to it " +
-			`(at least Pi ${requirements.pi}), and Gentle Shell runs that Pi.`);
+			"Install Drakonc Shell (drakonc-pi) globally with pnpm. pnpm may put another Pi next to it " +
+			`(at least Pi ${requirements.pi}), and Drakonc Shell runs that Pi.`);
 		assert.equal(view.actions.some((action: { id: string }) => action.id === "install-pi" || action.id === "update-pi"), false);
 		assert.deepEqual(runs, []);
 	} finally {
@@ -655,14 +655,14 @@ test("/api/plan keeps a compatible Pi and says pnpm may put another next to Gent
 	}
 });
 
-test("the outcome says which Pi Gentle Shell runs whenever a valid version is reported", async () => {
+test("the outcome says which Pi Drakonc Shell runs whenever a valid version is reported", async () => {
 	const cases: [object, string][] = [
-		[{ outcome: "ready", completed: [], piVersion: "1.1.0" }, `${guidance.outcomes.ready} Gentle Shell runs Pi 1.1.0, which pnpm installed next to it.`],
+		[{ outcome: "ready", completed: [], piVersion: "1.1.0" }, `${guidance.outcomes.ready} Drakonc Shell runs Pi 1.1.0, which pnpm installed next to it.`],
 		[{ outcome: "terminal-action-required", action: "open-new-terminal", completed: [], piVersion: "1.1.0" },
-			`${guidance.outcomes["terminal-action-required"]} Gentle Shell runs Pi 1.1.0, which pnpm installed next to it.`],
+			`${guidance.outcomes["terminal-action-required"]} Drakonc Shell runs Pi 1.1.0, which pnpm installed next to it.`],
 		[{ outcome: "ready", completed: [] }, guidance.outcomes.ready],
 		[{ outcome: "ready", completed: [], piVersion: PI_INSTALL_VERSION },
-			`${guidance.outcomes.ready} Gentle Shell runs Pi ${PI_INSTALL_VERSION}, which pnpm installed next to it.`],
+			`${guidance.outcomes.ready} Drakonc Shell runs Pi ${PI_INSTALL_VERSION}, which pnpm installed next to it.`],
 		[{ outcome: "ready", completed: [], piVersion: "1.1.0 <script>" }, guidance.outcomes.ready],
 	];
 	for (const [result, expected] of cases) {
@@ -680,20 +680,20 @@ test("the outcome says which Pi Gentle Shell runs whenever a valid version is re
 	}
 });
 
-test("/api/plan describes updating an existing Gentle Shell on either channel", async () => {
+test("/api/plan describes updating an existing Drakonc Shell on either channel", async () => {
 	const shell = { available: true, version: "3.9.0", usable: true, global: true, owner: "npm" };
 	const { host, port, login } = await start({ collect: async (channel) => collectedFor(channel, { pi: { available: true, version: "1.2.4", usable: true },
-		shell, go: { available: true, version: "1.26.0", usable: true }, gentleAi: { available: null }, setup: { available: null } }) });
+		shell, go: { available: true, version: "1.26.0", usable: true }, drakoncAi: { available: null }, setup: { available: null } }) });
 	try {
 		const cookie = await login();
 		const release = await plan(port, cookie);
 		assert.deepEqual(release.actions.map((action: { id: string; description: string }) => [action.id, action.description]), [
-			["update-shell-release", "Update Gentle Shell to the latest release with the package manager that installed it (pnpm or npm)."],
+			["update-shell-release", "Update Drakonc Shell to the latest release with the package manager that installed it (pnpm or npm)."],
 			["setup-shell", release.actions[1].description],
 			["verify-readiness", "Verify that the installed stack is ready."]]);
 		const main = JSON.parse((await send(port, { path: "/api/plan?channel=main", headers: { cookie, ...API } })).body);
 		assert.equal(main.actions[0].description,
-			"Update Gentle Shell and Gentle AI to the latest commits of `main`, built on this computer, with the package manager that installed Gentle Shell.");
+			"Update Drakonc Shell and Drakonc AI to the latest commits of `main`, built on this computer, with the package manager that installed Drakonc Shell.");
 	} finally {
 		await host.close("test");
 	}
@@ -712,10 +712,10 @@ test("/api/plan keeps the generic guidance for an unknown tool without more evid
 
 test("/api/plan keeps the generic guidance when no older version is known", async () => {
 	const { host, port, login } = await start({ collect: async () => collected({
-		gentleAi: { available: true, version: "1.0.0", usable: true, compatible: false } }) });
+		drakoncAi: { available: true, version: "1.0.0", usable: true, compatible: false } }) });
 	try {
 		const view = await plan(port, await login());
-		const blocker = view.blockers.find((item: { tool: string }) => item.tool === "gentleAi");
+		const blocker = view.blockers.find((item: { tool: string }) => item.tool === "drakoncAi");
 		assert.equal(blocker.guidance, guidance.blockers["incompatible-tool"]);
 	} finally {
 		await host.close("test");
@@ -739,9 +739,9 @@ test("/api/plan plans the release channel by default and the main channel on req
 		const main = JSON.parse(response.body);
 		assert.equal(main.channel, "main");
 		const described = Object.fromEntries(main.actions.map((action: { id: string; description: string }) => [action.id, action.description]));
-		assert.equal(described["build-gentle-ai-main"], "Build Gentle AI from the latest commit of its `main` branch with Go, verified by Go's checksum database, and use it instead of the pinned release binary.");
-		assert.equal(described["install-shell-main"], "Install Gentle Shell from the latest commit of its `main` branch with pnpm, replacing the release package.");
-		assert.equal(described["record-channel"], "Remember the `main` channel, so `gentle-shell upgrade` keeps following `main`.");
+		assert.equal(described["build-drakonc-ai-main"], "Build Drakonc AI from the latest commit of its `main` branch with Go, verified by Go's checksum database, and use it instead of the pinned release binary.");
+		assert.equal(described["install-shell-main"], "Install Drakonc Shell from the latest commit of its `main` branch with pnpm, replacing the release package.");
+		assert.equal(described["record-channel"], "Remember the `main` channel, so `drakonc-shell upgrade` keeps following `main`.");
 		assert.deepEqual(channels, ["release", "main"]);
 	} finally {
 		await host.close("test");
@@ -784,8 +784,8 @@ test("/api/plan offers the pinned Go on the main channel for a Go it cannot chec
 		const ids = view.actions.map((action: { id: string }) => action.id);
 		assert.equal(ids.indexOf("verify-go"), ids.indexOf("acquire-go") + 1);
 		assert.equal(view.actions.find((action: { id: string }) => action.id === "acquire-go").description, "The Go on this computer did not report a version this installer can check, so the installer downloads Go 1.25.14 " +
-			"from go.dev, verifies its pinned SHA-256 checksum and uses it only to build Gentle AI. It is kept in the installer's own folder " +
-			"(~/.pi/gentle-ai/tools/go); your Go, PATH and shell profile are not changed.");
+			"from go.dev, verifies its pinned SHA-256 checksum and uses it only to build Drakonc AI. It is kept in the installer's own folder " +
+			"(~/.drakonc-shell/drakonc-ai/tools/go); your Go, PATH and shell profile are not changed.");
 	} finally {
 		await host.close("test");
 	}
@@ -793,14 +793,14 @@ test("/api/plan offers the pinned Go on the main channel for a Go it cannot chec
 
 test("/api/plan keeps the preflight's camelCase tool names, but no other tool text", async () => {
 	const { host, port, login } = await start({ collect: async () => {
-		const result = collected({ gentleAi: { available: true, version: "1.0.0", usable: true, compatible: false },
+		const result = collected({ drakoncAi: { available: true, version: "1.0.0", usable: true, compatible: false },
 			globalBin: { available: true, path: BIN, writable: false, onPath: true } });
 		result.plan.blockers.push({ code: "unknown-tool", tool: "Evil<tool>" }, { code: "unknown-tool", tool: "x".repeat(65) });
 		return result;
 	} });
 	try {
 		const view = await plan(port, await login());
-		assert.deepEqual(view.blockers.map((blocker: { tool: string }) => blocker.tool), ["gentleAi", "globalBin", "unknown", "unknown"]);
+		assert.deepEqual(view.blockers.map((blocker: { tool: string }) => blocker.tool), ["drakoncAi", "globalBin", "unknown", "unknown"]);
 	} finally {
 		await host.close("test");
 	}
@@ -830,7 +830,7 @@ test("install body must be exactly { planId, consent: true }; the runner is not 
 		// Without Content-Length, the streamed body is bounded too.
 		const chunked = await new Promise<number>((resolve, reject) => {
 			const req = httpRequest({ host: "127.0.0.1", port, method: "POST", path: "/api/install", agent: false, headers: {
-				cookie, origin: `http://127.0.0.1:${port}`, "x-gentle-install": "1", "content-type": "application/json",
+				cookie, origin: `http://127.0.0.1:${port}`, "x-drakonc-install": "1", "content-type": "application/json",
 				"transfer-encoding": "chunked" } }, (res) => {
 				res.resume();
 				resolve(res.statusCode ?? 0);
@@ -981,6 +981,30 @@ test("progress log is a bounded ring buffer with restricted fields", async () =>
 	}
 });
 
+// D6/S6 de publicar-paquetes-drakonc: el paquete Pi de la Shell no está publicado
+// en npm, así que el runner se detiene antes de cualquier add -g y el asistente
+// muestra el motivo propio con el texto en español (el mismo del runner).
+test("a blocked shell-not-published outcome shows the Spanish guidance in the wizard", async () => {
+	const runInstall: RunInstall = async () => ({ outcome: "blocked", reason: "shell-not-published", completed: [] });
+	const { host, port, login } = await start({ runInstall });
+	try {
+		const cookie = await login();
+		const { planId } = await plan(port, cookie);
+		assert.equal((await post(port, "/api/install", cookie, { planId, consent: true })).status, 202);
+		await waitFor(() => host.outcome() !== null);
+		const progress = JSON.parse((await send(port, { path: "/api/progress", headers: { cookie, ...API } })).body);
+		assert.equal(progress.outcome.outcome, "blocked");
+		assert.equal(progress.outcome.reason, "shell-not-published");
+		assert.equal(progress.outcome.guidance, guidance.blocked["shell-not-published"]);
+		assert.equal(progress.outcome.guidance, SHELL_NOT_PUBLISHED_MESSAGE);
+		assert.match(progress.outcome.guidance, /aún no está publicado en npm/);
+		assert.match(progress.outcome.guidance, /github\.com\/drakonc\/drakonc-shell/);
+		assert.deepEqual(progress.outcome.completed, []);
+	} finally {
+		await host.close("test");
+	}
+});
+
 test("a throwing runner becomes a failed outcome with generic guidance", async () => {
 	const { host, port, login } = await start({ runInstall: async () => { throw new Error("/home/u/secret path"); } });
 	try {
@@ -1081,7 +1105,7 @@ test("a failed setup passes only its bounded detail through, with rate-limit gui
 		}
 	}
 	// A failed Go download passes its folder conflict through, with guidance to remove that folder.
-	const conflict = "Conflicting Go destination: ~/.pi/gentle-ai/tools/go/1.25.14";
+	const conflict = "Conflicting Go destination: ~/.drakonc-shell/drakonc-ai/tools/go/1.25.14";
 	for (const [detail, expected] of [[conflict, guidance.goDestinationConflict], ["Error: size", guidance.failed["acquire-go"]]]) {
 		const run = await start({ runInstall: async () => ({ outcome: "failed", failedStep: "acquire-go", completed: [], detail }) });
 		try {
@@ -1098,18 +1122,18 @@ test("a failed setup passes only its bounded detail through, with rate-limit gui
 	}
 	// The install, main-channel and update steps pass their detail through; GitHub's anonymous
 	// API limit (a main commit GitHub refused with HTTP 403) gets the rate-limit guidance.
-	const mainLimited = "main-commit-unavailable: GitHub did not return the latest main commit of Gentleman-Programming/gentle-shell (HTTP 403)";
+	const mainLimited = "main-commit-unavailable: GitHub did not return the latest main commit of Drakoncman-Programming/drakonc-shell (HTTP 403)";
 	for (const [step, detail, expected] of [
-		["install-global", ".../gentle-pi postinstall:   root cause Error: go: open ~/x: The directory name is invalid.", guidance.failed["install-global"]],
+		["install-global", ".../drakonc-pi postinstall:   root cause Error: go: open ~/x: The directory name is invalid.", guidance.failed["install-global"]],
 		["install-global", rateLimited, guidance.githubRateLimit],
-		// Windows code integrity (Smart App Control) refused the gentle-ai.exe the postinstall built.
-		["install-global", ".../node_modules/gentle-pi postinstall: caused by Error: spawn UNKNOWN (code UNKNOWN)", guidance.codeIntegrityBlocked],
-		["install-version", ".../node_modules/gentle-pi postinstall: caused by Error: spawn UNKNOWN (code UNKNOWN)", guidance.codeIntegrityBlocked],
+		// Windows code integrity (Smart App Control) refused the drakonc-ai.exe the postinstall built.
+		["install-global", ".../node_modules/drakonc-pi postinstall: caused by Error: spawn UNKNOWN (code UNKNOWN)", guidance.codeIntegrityBlocked],
+		["install-version", ".../node_modules/drakonc-pi postinstall: caused by Error: spawn UNKNOWN (code UNKNOWN)", guidance.codeIntegrityBlocked],
 		["install-version", "ERR_PNPM_FETCH_401 GET https://npm.acme.dev/x: Unauthorized", guidance.failed["install-version"]],
 		["install-shell-main", mainLimited, guidance.githubRateLimit],
-		["install-shell-main", "main-commit-unavailable: GitHub did not return the latest main commit of Gentleman-Programming/gentle-shell (HTTP 500)", guidance.failed["install-shell-main"]],
-		["build-gentle-ai-main", "main-commit-unavailable: GitHub did not return the latest main commit of Gentleman-Programming/gentle-ai (HTTP 403)", guidance.githubRateLimit],
-		["build-gentle-ai-main", "golang.org/x/sys/cpu: fork/exec ~/asm.exe: The directory name is invalid.", guidance.failed["build-gentle-ai-main"]],
+		["install-shell-main", "main-commit-unavailable: GitHub did not return the latest main commit of Drakoncman-Programming/drakonc-shell (HTTP 500)", guidance.failed["install-shell-main"]],
+		["build-drakonc-ai-main", "main-commit-unavailable: GitHub did not return the latest main commit of Drakoncman-Programming/drakonc-ai (HTTP 403)", guidance.githubRateLimit],
+		["build-drakonc-ai-main", "golang.org/x/sys/cpu: fork/exec ~/asm.exe: The directory name is invalid.", guidance.failed["build-drakonc-ai-main"]],
 		["update-shell", mainLimited, guidance.githubRateLimit],
 		["update-shell", "tar: Error is not recoverable: exiting now", guidance.failed["update-shell"]],
 	]) {
@@ -1128,7 +1152,7 @@ test("a failed setup passes only its bounded detail through, with rate-limit gui
 	}
 	assert.match(guidance.githubRateLimit, /GitHub/);
 	assert.match(guidance.githubRateLimit, /hour/);
-	assert.doesNotMatch(guidance.githubRateLimit, /gentle-shell setup|token|credential|password|log in|sign in/i);
+	assert.doesNotMatch(guidance.githubRateLimit, /drakonc-shell setup|token|credential|password|log in|sign in/i);
 	assert.match(guidance.codeIntegrityBlocked, /Smart App Control/);
 	assert.match(guidance.codeIntegrityBlocked, /WSL/);
 	assert.match(guidance.codeIntegrityBlocked, /cannot be turned back on/);
@@ -1152,7 +1176,7 @@ test("only the fixed allowlist is routed: traversal and unknown paths 404, wrong
 			"/wizard.js/../../package.json", "//wizard.js", "/api/plan/", "/favicon.ico", "/assets/index.html"]) {
 			const response = await send(port, { path, headers: { cookie } });
 			assert.equal(response.status, 404, path);
-			assert.doesNotMatch(response.body, /gentle-pi|"version"/);
+			assert.doesNotMatch(response.body, /drakonc-pi|"version"/);
 		}
 		assert.equal((await post(port, "/api/run", cookie, {})).status, 404);
 		assert.equal((await send(port, { method: "DELETE", path: "/api/plan", headers: { cookie, ...API } })).status, 405);
@@ -1251,10 +1275,10 @@ test("guidance covers every runner blocked reason and failed step", () => {
 
 test("entry helpers: fixed per-platform opener, exit codes and runner environment", async () => {
 	// The opener receives the private redirect file, never the session URL.
-	const file = "/tmp/gentle-shell-install-Ab12/open.html";
+	const file = "/tmp/drakonc-shell-install-Ab12/open.html";
 	assert.deepEqual(openerFor("darwin", file, {}), { command: "/usr/bin/open", args: [file] });
 	assert.deepEqual(openerFor("linux", file, {}), { command: "xdg-open", args: [file] });
-	const winFile = "C:\\Users\\u\\AppData\\Local\\Temp\\gentle-shell-install-Ab12\\open.html";
+	const winFile = "C:\\Users\\u\\AppData\\Local\\Temp\\drakonc-shell-install-Ab12\\open.html";
 	assert.deepEqual(openerFor("win32", winFile, { SystemRoot: "C:\\Windows" }),
 		{ command: "C:\\Windows\\System32\\rundll32.exe", args: ["url.dll,FileProtocolHandler", winFile] });
 	assert.equal(openerFor("win32", winFile, { SystemRoot: "relative" }), null);
@@ -1264,7 +1288,7 @@ test("entry helpers: fixed per-platform opener, exit codes and runner environmen
 	assert.equal(exitCodeFor({ outcome: "terminal-action-required" }), 0);
 	for (const outcome of [{ outcome: "blocked" }, { outcome: "failed" }, null]) assert.equal(exitCodeFor(outcome), 1);
 
-	const TOOLS = "/home/u/.gentle-shell-bootstrap-tools.Ab12";
+	const TOOLS = "/home/u/.drakonc-shell-bootstrap-tools.Ab12";
 	const files = new Set([`${TOOLS}/pnpm/bin/pnpm`, "/usr/bin/pnpm"]);
 	const fs = { isFile: async (path: string) => files.has(path) };
 	const wizardEnv = { HOME: "/home/u", PATH: `${TOOLS}/node/bin:${TOOLS}/pnpm/bin:/opt/bin:/bin` };
@@ -1278,19 +1302,19 @@ test("entry helpers: fixed per-platform opener, exit codes and runner environmen
 	// The user's own pnpm, reused by the bootstrap, stays the one on PATH.
 	const reused = { HOME: "/home/u", PATH: `${TOOLS}/node/bin:/opt/bin:/bin` };
 	assert.deepEqual(await runnerEnvironment({ platform: "linux", env: reused, fs }), { HOME: "/home/u", PATH: "/opt/bin:/bin" });
-	const windowsEnv = { USERPROFILE: "C:\\Users\\u", Path: `C:\\Users\\u\\AppData\\Local\\.gentle-shell-bootstrap-tools.1\\node;C:\\Windows`,
-		GENTLE_INSTALL_PNPM_NODE: "C:\\t\\node.exe", GENTLE_INSTALL_PNPM_ENTRY: "C:\\t\\pnpm.mjs" };
+	const windowsEnv = { USERPROFILE: "C:\\Users\\u", Path: `C:\\Users\\u\\AppData\\Local\\.drakonc-shell-bootstrap-tools.1\\node;C:\\Windows`,
+		DRAKONC_INSTALL_PNPM_NODE: "C:\\t\\node.exe", DRAKONC_INSTALL_PNPM_ENTRY: "C:\\t\\pnpm.mjs" };
 	assert.deepEqual(await runnerEnvironment({ platform: "win32", env: windowsEnv, fs }),
 		{ ...windowsEnv, Path: "C:\\Windows" });
 });
 
-test("every /api/* request needs X-Gentle-Install: 1 before any state change", async () => {
+test("every /api/* request needs X-Drakonc-Install: 1 before any state change", async () => {
 	const { host, port, login, collects } = await start();
 	try {
 		const cookie = await login();
 		for (const value of [undefined, "0", "true"]) {
 			const headers: Record<string, string> = { cookie };
-			if (value !== undefined) headers["x-gentle-install"] = value;
+			if (value !== undefined) headers["x-drakonc-install"] = value;
 			assert.equal((await send(port, { path: "/api/plan", headers })).status, 403, String(value));
 			assert.equal((await send(port, { path: "/api/progress", headers })).status, 403, String(value));
 		}
@@ -1317,7 +1341,7 @@ test("only authenticated traffic extends the idle timeout", async () => {
 		await send(port, { path: "/api/plan", host: `localhost:${port}` });
 		await send(port, { path: "/api/plan", headers: API });
 		await send(port, { path: "/session?code=wrong" });
-		await send(port, { path: "/", headers: { cookie: "gentle_install_session=forged" } });
+		await send(port, { path: "/", headers: { cookie: "drakonc_install_session=forged" } });
 		await send(port, { path: "/nope" });
 		clock.value += 1_000;
 		assert.equal(host.checkIdle(), true);
@@ -1367,7 +1391,7 @@ test("a completed installation is final: later installs get 409 already-complete
 
 // The one-time code reaches the browser through a private redirect file, so it
 // never appears in the opener's argv (visible to local process listings).
-const redirectRoot = mkdtempSync(join(tmpdir(), "gentle-install-redirect-test-"));
+const redirectRoot = mkdtempSync(join(tmpdir(), "drakonc-install-redirect-test-"));
 test.after(() => rmSync(redirectRoot, { recursive: true, force: true }));
 const SESSION_URL = "http://127.0.0.1:4000/session?code=Abc_123-xyz";
 
@@ -1398,7 +1422,7 @@ test("writeRedirect creates a private directory and file, and remove() deletes b
 	const tempDir = mkdtempSync(join(redirectRoot, "write-"));
 	const redirect = await writeRedirect(SESSION_URL, { tempDir, files: fsPromises });
 	assert.equal(redirect.file, join(redirect.dir, "open.html"));
-	assert.ok(redirect.dir.startsWith(join(tempDir, "gentle-shell-install-")));
+	assert.ok(redirect.dir.startsWith(join(tempDir, "drakonc-shell-install-")));
 	assert.equal(readFileSync(redirect.file, "utf8"), redirectPage(SESSION_URL));
 	if (process.platform !== "win32") {
 		assert.equal(statSync(redirect.dir).mode & 0o777, 0o700);
@@ -1550,7 +1574,7 @@ test("/api/plan names the folder, principal, rights and remedy when PNPM_HOME is
 	assert.ok(guidance.failed["prepare-pnpm-home"].includes("%USERPROFILE%\\.pnpm"));
 });
 
-// R2: an update's children (gentle-shell upgrade, its pnpm and postinstall) get the
+// R2: an update's children (drakonc-shell upgrade, its pnpm and postinstall) get the
 // same private-mode environment as the runner's children; otherwise it is unchanged.
 test("upgradeEnvironment isolates TEMP, TMP and pnpm's folders in a private Windows PNPM_HOME only", () => {
 	const env = { USERPROFILE: "C:\\Users\\m", PNPM_HOME: W_PRIVATE, Path: "C:\\Windows", TEMP: "C:\\Users\\m\\AppData\\Local\\Temp" };
@@ -1564,7 +1588,7 @@ test("upgradeEnvironment isolates TEMP, TMP and pnpm's folders in a private Wind
 
 // T1c: the bundled plan's copy, before consent.
 const bundledDistribution = { status: "published", manifest: { shell: "4.1.0", pi: "1.0.2" }, lockfile: "lock" };
-const bundledLine = 'export PATH="/home/u/.gentle-shell/bin:$PATH" # gentle-shell bundled install';
+const bundledLine = 'export PATH="/home/u/.drakonc-shell/bin:$PATH" # drakonc-shell bundled install';
 function bundledCollected(path: Record<string, unknown>, platform = "linux"): Collected {
 	const layout = platform === "win32" ? prefixLayout({ platform, env: { LOCALAPPDATA: "C:\\L" }, home: "C:\\U" }) : prefixLayout({ platform, env: {}, home: "/home/u" });
 	return { inventory: { ...cleanInventory, platform }, plan: bundledPlan({ platform, distribution: bundledDistribution, layout, path }) as never };
@@ -1577,19 +1601,19 @@ test("/api/plan describes the bundled install: its own pinned runtimes, the user
 		assert.deepEqual(view.actions.map((action: { id: string }) => action.id),
 			["bundled-prefix", "bundled-runtime", "bundled-version", "bundled-activate", "bundled-path", "bundled-setup"]);
 		const text = view.actions.map((action: { description: string }) => action.description).join("\n");
-		assert.match(text, /\/home\/u\/\.gentle-shell/);
+		assert.match(text, /\/home\/u\/\.drakonc-shell/);
 		assert.match(text, /Node\.js 24\.21\.0 with its npm and pnpm 11\.1\.1/);
-		assert.match(text, /Gentle Shell 4\.1\.0 with Pi 1\.0\.2/);
+		assert.match(text, /Drakonc Shell 4\.1\.0 with Pi 1\.0\.2/);
 		assert.match(text, /--frozen-lockfile/);
 		assert.match(text, /\/home\/u\/\.bashrc/);
-		assert.match(text, /gentle-shell setup/);
+		assert.match(text, /drakonc-shell setup/);
 		assert.deepEqual(view.persistence.tools, ["node", "npm", "pnpm"]);
-		assert.equal(view.persistence.pnpmHome, "/home/u/.gentle-shell");
+		assert.equal(view.persistence.pnpmHome, "/home/u/.drakonc-shell");
 		assert.match(view.persistence.description, /Your own Node\.js, npm, pnpm, Go and Pi are not used or changed/);
 		assert.match(view.persistence.description, /npm registry, authentication and proxy settings/);
 		assert.equal(view.profileChange.changesProfile, true);
 		assert.equal(view.profileChange.command, null);
-		assert.equal(view.profileChange.binDir, "/home/u/.gentle-shell/bin");
+		assert.equal(view.profileChange.binDir, "/home/u/.drakonc-shell/bin");
 		assert.match(view.profileChange.description, /\/home\/u\/\.bashrc/);
 	} finally {
 		await host.close("test");
@@ -1602,17 +1626,17 @@ test("/api/plan describes the bundled install: its own pinned runtimes, the user
 	try {
 		const view = await plan(server.port, await server.login());
 		assert.equal(view.actions.at(-1).id, "remove-global-shell");
-		assert.match(view.actions.at(-1).description, /`npm uninstall -g gentle-pi`/);
-		assert.match(view.actions.at(-1).description, /reports Gentle Shell 4\.1\.0 with Pi 1\.0\.2/);
-		assert.match(view.actions.at(-1).description, /Your Pi and ~\/\.gentle-shell\/agent are not changed/);
+		assert.match(view.actions.at(-1).description, /`npm uninstall -g drakonc-pi`/);
+		assert.match(view.actions.at(-1).description, /reports Drakonc Shell 4\.1\.0 with Pi 1\.0\.2/);
+		assert.match(view.actions.at(-1).description, /Your Pi and ~\/\.drakonc-shell\/agent are not changed/);
 	} finally {
 		await server.host.close("test");
 	}
 	const cases: [Record<string, unknown>, RegExp, boolean, string?][] = [
 		[{ kind: "none" }, /already finds/, false],
-		[{ kind: "symlink", path: "/home/u/.local/bin/gentle-shell", target: "/home/u/.gentle-shell/bin/gentle-shell" }, /\/home\/u\/\.local\/bin\/gentle-shell/, true],
+		[{ kind: "symlink", path: "/home/u/.local/bin/drakonc-shell", target: "/home/u/.drakonc-shell/bin/drakonc-shell" }, /\/home\/u\/\.local\/bin\/drakonc-shell/, true],
 		[{ kind: "manual", path: "/home/u/.zshrc", line: bundledLine, reason: "symlink" }, /add this line to \/home\/u\/\.zshrc yourself/, false],
-		[{ kind: "registry", key: "HKCU\\Environment", name: "Path", entry: "C:\\L\\gentle-shell\\bin" }, /user PATH/, true, "win32"],
+		[{ kind: "registry", key: "HKCU\\Environment", name: "Path", entry: "C:\\L\\drakonc-shell\\bin" }, /user PATH/, true, "win32"],
 	];
 	for (const [path, description, changes, platform] of cases) {
 		const server = await start({ collect: async () => bundledCollected(path, platform) });
@@ -1645,19 +1669,19 @@ test("bundled outcomes: every bundled step has guidance, pnpm's error line is sh
 		[{ outcome: "terminal-action-required", action: "add-path-line", pathLine: { file: "/home/u/.zshrc\u001b[2J", line: 7 }, completed: [] },
 			(view) => { assert.equal("pathLine" in view, false); }],
 		// T3: a failed removal keeps the install and names the exact command; anything else is not shown.
-		[{ outcome: "terminal-action-required", action: "open-new-terminal", completed: [], removeGlobal: { status: "failed", command: "npm uninstall -g gentle-pi" } },
+		[{ outcome: "terminal-action-required", action: "open-new-terminal", completed: [], removeGlobal: { status: "failed", command: "npm uninstall -g drakonc-pi" } },
 			(view) => {
-				assert.equal(view.removeCommand, "npm uninstall -g gentle-pi");
-				assert.match(String(view.guidance), /old global gentle-pi could not be removed/);
+				assert.equal(view.removeCommand, "npm uninstall -g drakonc-pi");
+				assert.match(String(view.guidance), /old global drakonc-pi could not be removed/);
 			}],
 		[{ outcome: "ready", completed: [], removeGlobal: { status: "failed", command: "rm -rf ~" } }, (view) => { assert.equal("removeCommand" in view, false); }],
-		[{ outcome: "ready", completed: [], removeGlobal: { status: "removed", command: "pnpm remove -g gentle-pi" } },
+		[{ outcome: "ready", completed: [], removeGlobal: { status: "removed", command: "pnpm remove -g drakonc-pi" } },
 			(view) => { assert.equal("removeCommand" in view, false); assert.equal(view.guidance, guidance.outcomes.ready); }],
 		[{ outcome: "failed", failedStep: "verify-launcher", completed: [], detail: "Error: no Pi" },
-			(view) => { assert.equal(view.detail, "Error: no Pi"); assert.match(String(view.guidance), /old global Gentle Shell was kept/); }],
+			(view) => { assert.equal(view.detail, "Error: no Pi"); assert.match(String(view.guidance), /old global Drakonc Shell was kept/); }],
 		// B3: a migration's failed bundled step shows its detail; a new install's sends none, so nothing changes there.
-		[{ outcome: "failed", failedStep: "claim-prefix", completed: [], detail: "Unsafe bundled prefix: ~/.gentle-shell" },
-			(view) => { assert.equal(view.detail, "Unsafe bundled prefix: ~/.gentle-shell"); assert.equal(view.guidance, guidance.failed["claim-prefix"]); }],
+		[{ outcome: "failed", failedStep: "claim-prefix", completed: [], detail: "Unsafe bundled prefix: ~/.drakonc-shell" },
+			(view) => { assert.equal(view.detail, "Unsafe bundled prefix: ~/.drakonc-shell"); assert.equal(view.guidance, guidance.failed["claim-prefix"]); }],
 		[{ outcome: "failed", failedStep: "claim-prefix", completed: [] }, (view) => { assert.equal("detail" in view, false); }],
 	];
 	for (const [result, check] of cases) {
@@ -1675,15 +1699,15 @@ test("bundled outcomes: every bundled step has guidance, pnpm's error line is sh
 });
 
 test("planning never executes a destination Node", { skip: process.platform === "win32" ? "simulated Linux paths need a POSIX filesystem" : false }, async () => {
-	const home = mkdtempSync(join(tmpdir(), "gentle-destination-planning-"));
+	const home = mkdtempSync(join(tmpdir(), "drakonc-destination-planning-"));
 	try {
-		const bootstrap = join(home, ".gentle-shell-bootstrap-tools.fixture/node/bin/node");
+		const bootstrap = join(home, ".drakonc-shell-bootstrap-tools.fixture/node/bin/node");
 		const bin = join(home, "pnpm/bin");
 		const destination = join(bin, "node");
 		const own = "/usr/bin/node";
 		const pnpmEntry = "/tools/pnpm/bin/pnpm.mjs";
 		const env = { HOME: home, PNPM_HOME: join(home, "pnpm"), PATH: `${bootstrap.slice(0, -5)}:/usr/bin:${bin}`, SHELL: "/bin/bash",
-			GENTLE_INSTALL_PNPM_NODE: bootstrap, GENTLE_INSTALL_PNPM_ENTRY: pnpmEntry };
+			DRAKONC_INSTALL_PNPM_NODE: bootstrap, DRAKONC_INSTALL_PNPM_ENTRY: pnpmEntry };
 		const fs = { isFile: async (file: string) => [bootstrap, own, destination].includes(file),
 			isDirectory: async (file: string) => file === home, exists: async (file: string) => file === home,
 			realpath: async (file: string) => file, readText: async () => "", writable: async () => true };
@@ -1712,7 +1736,7 @@ test("planning never executes a destination Node", { skip: process.platform === 
 // Simulates Linux against the real filesystem (profile files), so it runs on the POSIX runners only.
 test("wizardHandlers plans the bundled install only when the gate says so, and routes its plan to the bundled runner",
 	{ skip: process.platform === "win32" ? "simulated Linux paths need a POSIX filesystem" : false }, async () => {
-	const home = mkdtempSync(join(tmpdir(), "gentle-wizard-handlers-"));
+	const home = mkdtempSync(join(tmpdir(), "drakonc-wizard-handlers-"));
 	try {
 		const asset = distributionAsset({ shell: requirements.shell, pi: "1.0.2" }, "lock");
 		const urls: string[] = [];
@@ -1726,18 +1750,18 @@ test("wizardHandlers plans the bundled install only when the gate says so, and r
 			download: download(published), inventory: async () => structuredClone(inventory) });
 		const bundled = await handlers(true).collectPlan("release");
 		assert.equal(bundled.plan.bundled.shell, requirements.shell);
-		assert.equal(bundled.plan.bundled.root, join(home, ".gentle-shell"));
+		assert.equal(bundled.plan.bundled.root, join(home, ".drakonc-shell"));
 		assert.equal(bundled.plan.bundled.path.kind, "profile");
-		assert.deepEqual(urls, [`https://github.com/Gentleman-Programming/gentle-shell/releases/download/v${requirements.shell}/gentle-shell-distribution.json`,
-			`https://github.com/Gentleman-Programming/gentle-shell/releases/download/v${requirements.shell}/gentle-shell-distribution-lock.yaml`]);
-		// Without the assets (v4.0.0 today), on main, or with an existing Gentle Shell: the standard plan, unchanged.
+		assert.deepEqual(urls, [`https://github.com/Drakoncman-Programming/drakonc-shell/releases/download/v${requirements.shell}/drakonc-shell-distribution.json`,
+			`https://github.com/Drakoncman-Programming/drakonc-shell/releases/download/v${requirements.shell}/drakonc-shell-distribution-lock.yaml`]);
+		// Without the assets (v4.0.0 today), on main, or with an existing Drakonc Shell: the standard plan, unchanged.
 		urls.length = 0;
 		assert.deepEqual((await handlers(false).collectPlan("release")).plan, planPreflight(cleanInventory));
 		assert.deepEqual((await handlers(true).collectPlan("main")).plan, planPreflight(cleanInventory, { channel: "main" }));
-		// T3: an existing Gentle Shell that pnpm or npm owns moves to the bundled install and its old package is removed last.
+		// T3: an existing Drakonc Shell that pnpm or npm owns moves to the bundled install and its old package is removed last.
 		const existing = { ...cleanInventory, shell: { available: true, version: requirements.shell, usable: true, global: true, owner: "pnpm" } };
 		const migration = (await handlers(true, existing).collectPlan("release")).plan;
-		assert.deepEqual(migration.bundled.migrate, { manager: "pnpm", command: "pnpm remove -g gentle-pi", removal: "plan" });
+		assert.deepEqual(migration.bundled.migrate, { manager: "pnpm", command: "pnpm remove -g drakonc-pi", removal: "plan" });
 		assert.equal(migration.actions.at(-1).id, "remove-global-shell");
 		// An npm link (no owner) or a release without the assets: the standard plan, unchanged.
 		const linked = { ...existing, shell: { available: true, version: requirements.shell, usable: true, global: true } };
@@ -1755,7 +1779,7 @@ test("wizardHandlers plans the bundled install only when the gate says so, and r
 
 // Git is not needed to install; the plan notes a missing Git, never as a blocker,
 // for the standard and the bundled plan alike (both inventories carry the probe).
-const gitNoticeText = (install: string) => "Git was not found on this computer. Gentle Shell installs and starts without it, but code review, worktrees and other " +
+const gitNoticeText = (install: string) => "Git was not found on this computer. Drakonc Shell installs and starts without it, but code review, worktrees and other " +
 	`repository features need it. Install it with ${install}, then open a new terminal. This is not a blocker.`;
 test("/api/plan notes a missing Git for the standard and the bundled plan, never as a blocker", async () => {
 	const cases = [

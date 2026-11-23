@@ -1,6 +1,6 @@
 import { FINISHED_STATUSES } from "./agents-protocol.ts";
 
-// gentle-shell#626: the herdr pane must stay busy while owned background
+// drakonc-shell#626: the herdr pane must stay busy while owned background
 // subagents run, even after the parent itself settles. This module is the
 // pure, edge-triggered projection the extension feeds on every summary
 // notification; it mirrors pi-subagents' herdr producer exactly: raise once,

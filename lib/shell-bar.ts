@@ -1,4 +1,5 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { BRAND_GLYPH } from "./brand-glyph.ts";
 import { GAUGE_CELLS, gaugeTone, paintGauge, renderGauge, type GaugePaint, type GaugeTone } from "./shell-gauge.ts";
 import { renderUsageBar, selectUsageLimit, type ProviderUsage, type UsageWindow } from "./shell-usage.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
@@ -17,7 +18,7 @@ type HeaderPresentation = Presentation & Partial<Pick<VisualSettings, "headerPla
 
 export { gaugeTone, renderGauge, type GaugeTone };
 
-// Gentle Shell status bar: one line of segments that replaces pi's built-in
+// Drakonc Shell status bar: one line of segments that replaces pi's built-in
 // three-line footer. Everything here is pure so the bar can be rendered and
 // verified without a live TUI.
 
@@ -104,8 +105,8 @@ export interface ShellBarTheme {
 	bold(text: string): string;
 }
 
-// Theme roles the bar paints with. Keys are pi theme colors; the Gentle themes
-// map them to the rose palette (accent = rose, syntaxFunction = powder blue).
+// Theme roles the bar paints with. Keys are pi theme colors; the Drakonc themes
+// map them to the brand palette (accent = red, syntaxFunction = powder blue).
 const ROLE = {
 	BRAND: "accent",
 	SEPARATOR: "dim",
@@ -120,15 +121,26 @@ const ROLE = {
 	SESSION: "dim",
 } as const;
 
-export const SHELL_BAR_BRAND = "✿ gentle shell";
+export const SHELL_BAR_BRAND = `${BRAND_GLYPH} drakonc shell`;
+// El nombre de marca va en dos roles: `drakonc` con el acento rojo y `shell`
+// con el rol de texto, tanto en la barra compacta como en el encabezado.
+const BRAND_NAME = "drakonc";
+const BRAND_SUFFIX = "shell";
+
+/** Pinta `🐉 drakonc` con el acento y `shell` con el rol de texto. */
+function paintBrand(theme: ShellBarTheme, name: string, suffix: string, bold = false): string {
+	const accent = (text: string) => theme.fg(ROLE.BRAND, bold ? theme.bold(text) : text);
+	const plain = (text: string) => theme.fg(ROLE.VALUE, bold ? theme.bold(text) : text);
+	return `${accent(`${BRAND_GLYPH} ${name}`)} ${plain(suffix)}`;
+}
 export const SHELL_BAR_SEPARATOR = "⟡";
 export const SHELL_BAR_GAUGE_CELLS = GAUGE_CELLS;
 const RIGHT_PADDING = 2;
 const COMPACT_BRANCH_WIDTH = 15;
 
 export function shellEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-	if (env.GENTLE_PI_AGENTS_CHILD === "1") return false;
-	const value = env.GENTLE_PI_SHELL?.trim().toLowerCase();
+	if (env.DRAKONC_PI_AGENTS_CHILD === "1") return false;
+	const value = env.DRAKONC_PI_SHELL?.trim().toLowerCase();
 	return !(value === "0" || value === "false" || value === "off");
 }
 
@@ -136,7 +148,7 @@ export function shellEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 // Inside a Herdr pane keep that row, which Pi shows only during real activity,
 // so detection works without a local manifest override.
 export function keepNativeWorkingRow(env: NodeJS.ProcessEnv = process.env): boolean {
-	return env.HERDR_ENV === "1" && env.GENTLE_PI_AGENTS_CHILD !== "1";
+	return env.HERDR_ENV === "1" && env.DRAKONC_PI_AGENTS_CHILD !== "1";
 }
 
 export function formatTokens(count: number): string {
@@ -195,7 +207,7 @@ function buildSegments(model: ShellBarModel, theme: ShellBarTheme, presentation?
 	const usage = model.usage ? renderUsageBar(model.usage, theme, model.modelId, paint) : undefined;
 	const statuses = model.statuses.map((status) => theme.fg(ROLE.STATUS, sanitizeStatus(status)));
 	return [
-		...(presentation?.density === "minimal" ? [] : [theme.fg(ROLE.BRAND, SHELL_BAR_BRAND)]),
+		...(presentation?.density === "minimal" ? [] : [paintBrand(theme, BRAND_NAME, BRAND_SUFFIX)]),
 		location,
 		...(presentation?.visibility.modelDetails === false ? [] : [modelSegment]),
 		...(presentation?.visibility.usageCost === false ? [] : [context, cost, ...(usage ? [usage] : [])]),
@@ -250,7 +262,7 @@ export interface StatusSectionsOptions {
 	hovered?: StatusSection | "open-changes";
 }
 
-/** The rail Status with its click targets: section headers collapse them and the Changes row opens /gentle:changes. */
+/** The rail Status with its click targets: section headers collapse them and the Changes row opens /drakonc:changes. */
 export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarTheme, width: number, presentation?: Presentation, hints?: string, options: StatusSectionsOptions = {}): { lines: string[]; targets: StatusTarget[]; groups: Array<{ start: number; end: number }>; loose: number[] } {
 	const label = (text: string) => theme.fg(ROLE.LABEL, text);
 	const wrapped = (text: string, role: string) => wrapTextWithAnsi(text, Math.max(1, width - PANEL_ROW_INDENT)).map((line) => renderPanelRow(width, theme.fg(role, line)));
@@ -264,7 +276,7 @@ export function renderShellStatusSections(model: ShellBarModel, theme: ShellBarT
 	}
 	if (presentation?.visibility.changes !== false) {
 		const changes = model.changes;
-		const command = options.hovered === "open-changes" ? theme.fg(HOVER_ROLE, "/gentle:changes") : label("/gentle:changes");
+		const command = options.hovered === "open-changes" ? theme.fg(HOVER_ROLE, "/drakonc:changes") : label("/drakonc:changes");
 		sections.push({
 			key: "changes",
 			header: header("changes", "Changes", changes?.files ? `${changes.files} ${changes.files === 1 ? "file" : "files"}` : "clean"),
@@ -339,11 +351,11 @@ const paintChromeRow = (theme: ShellBarTheme, row: string) => paintSurfaceRow(ro
 function projectIdentity(cwd: string, theme: ShellBarTheme): { name: string; full: string } {
 	const path = sanitizeStatus(cwd);
 	const name = path.split("/").filter((part) => part.length > 0).pop() ?? path;
-	const label = `${theme.fg(ROLE.BRAND, "✿")} ${theme.fg(ROLE.VALUE, theme.bold(name))}`;
+	const label = `${theme.fg(ROLE.BRAND, BRAND_GLYPH)} ${theme.fg(ROLE.VALUE, theme.bold(name))}`;
 	return { name: label, full: `${label}  ${theme.fg(ROLE.PATH, path)}` };
 }
 
-/** `✿ name  path` left; the session name, or the model and profile on mobile, right. */
+/** `🐉 name  path` left; the session name, or the model and profile on mobile, right. */
 export function renderShellTitleRow(model: ShellBarModel, theme: ShellBarTheme, width: number, options: { model?: boolean } = {}): string {
 	const target = Math.max(0, Math.floor(width));
 	const left = projectIdentity(model.cwd, theme).full;
@@ -441,14 +453,15 @@ export function renderShellStatusBar(model: ShellBarModel, theme: ShellBarTheme,
 	return { rows: [paintChromeRow(theme, ` ${fitPanelLine(left, "", room)} `)], headerRow: 0 };
 }
 
-const HEADER_BRAND = "✿ Gentle Shell";
+const HEADER_BRAND_NAME = "Drakonc";
+const HEADER_BRAND_SUFFIX = "Shell";
 
 // Narrower than the width, widest first: dropping the profile, then the
 // effort, then the whole location keeps the brand and the model alive.
 // Once location goes, restore effort if it fits before trying model-only
 // alongside the right-aligned counters.
 function headerLeftStages(model: ShellHeaderModel, theme: ShellBarTheme, showModelDetails: boolean): string[][] {
-	const brand = theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
+	const brand = paintBrand(theme, HEADER_BRAND_NAME, HEADER_BRAND_SUFFIX, true);
 	const location = locationSegment(model, theme);
 	if (!showModelDetails) return [[brand, location], [brand]];
 	const withEffort = executionSegment(model.modelId, model.effort, theme);
@@ -613,7 +626,7 @@ function headerContent(model: ShellHeaderModel, theme: ShellBarTheme, width: num
 		const usageStart = visibleWidth(left) + (targetWidth - visibleWidth(left) - visibleWidth(right)) + visibleWidth(ctxCost) + visibleWidth(` ${SHELL_BAR_SEPARATOR} `);
 		return { text, usageSpan: { start: usageStart, end: usageStart + visibleWidth(usageText) } };
 	}
-	const brand = presentation?.density === "minimal" ? "" : theme.fg(ROLE.BRAND, theme.bold(HEADER_BRAND));
+	const brand = presentation?.density === "minimal" ? "" : paintBrand(theme, HEADER_BRAND_NAME, HEADER_BRAND_SUFFIX, true);
 	if (jobs && visibleWidth(jobs) <= targetWidth) {
 		const left = visibleWidth(brand) + RIGHT_PADDING + visibleWidth(jobs) <= targetWidth ? brand : "";
 		return { text: left + " ".repeat(targetWidth - visibleWidth(left) - visibleWidth(jobs)) + jobs };
@@ -629,7 +642,7 @@ export function renderShellBelowInputFloat(model: ShellBarModel, theme: ShellBar
 	if (floatHeaderPaint(theme, targetWidth, () => "") === undefined) return undefined;
 	const chrome = renderShellHeaderChrome(buildShellHeaderModel(model, presentation.statusPlacement === "hidden"), theme, targetWidth, usageHint, presentation, paint);
 	// The row exists only while files are actually tracked; an unborn-only root
-	// is silence here (/gentle:changes explains the state on demand).
+	// is silence here (/drakonc:changes explains the state on demand).
 	const changesRow = Boolean(changes && changes.files.length > 0) && presentation.visibility.changes !== false
 		? floatHeaderRow(theme, targetWidth, (inner) => renderChangesWidget(changes, theme, inner)[0] ?? "")
 		: undefined;
@@ -670,7 +683,7 @@ export function renderShellBottomOnlyBar(model: ShellBarModel, theme: ShellBarTh
 
 // The rule row painted directly under the header bar: one full-width horizontal
 // line in the same theme role as the editor frame (PROMPT_FRAME_ROLE in
-// extensions/gentle-shell.ts), so the status row and the prompt read as one
+// extensions/drakonc-shell.ts), so the status row and the prompt read as one
 // panel. It exists only while the fullscreen sidebar is active — when the
 // sidebar is not shown the header rail never renders and the rule goes away
 // with it.

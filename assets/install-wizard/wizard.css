@@ -1,23 +1,23 @@
-/* Gentle Shell installation wizard.
+/* Drakonc Shell installation wizard.
    Dark only, local font stacks only (no web fonts, no external resources):
    the host serves this file under `default-src 'self'`. Colors follow the
-   gentlemanprogramming.com tokens; every state also has a text label. */
+   Drakonc brand tokens (background #0d1526, text #e6edf7, accent #ff4d5e); every state also has a text label. */
 
 :root {
 	color-scheme: dark;
-	--bg: #1a1218;
-	--bg-deep: #000000;
-	--surface: #20161e;
-	--surface-1: #241822;
-	--surface-2: #342230;
-	--border: #342230;
+	--bg: #0d1526;
+	--bg-deep: #080e1a;
+	--surface: #121d31;
+	--surface-1: #17233a;
+	--surface-2: #1f2c44;
+	--border: #334158;
 	--border-soft: #ffffff17;
-	--text: #f6eff3;
-	--text-muted: #a78e9b;
-	--text-faint: #76616b;
-	--accent: #f095c8;
-	--accent-strong: #ff76c3;
-	--accent-soft: #ffb1dd;
+	--text: #e6edf7;
+	--text-muted: #a9b7ca;
+	--text-faint: #8593a8;
+	--accent: #ff4d5e;
+	--accent-strong: #ff7782;
+	--accent-soft: #ff8993;
 	--success: #b4e7c7;
 	--warning: #e0c27a;
 	--error: #ff718f;
@@ -27,9 +27,9 @@
 	--radius-lg: 16px;
 	--radius-pill: 999px;
 	--ease: cubic-bezier(.4, 0, .2, 1);
-	--glow: 0 10px 30px #f095c84d;
-	--glow-hover: 0 14px 36px #f095c86b;
-	--shadow-panel: 0 24px 60px #00000073, 0 0 40px #f095c81a;
+	--glow: 0 10px 30px #ff4d5e4d;
+	--glow-hover: 0 14px 36px #ff4d5e6b;
+	--shadow-panel: 0 24px 60px #00000073, 0 0 40px #ff4d5e1a;
 	--font-sans: Inter, "SF Pro Text", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 	--font-mono: "IosevkaTerm NF", "Iosevka Term", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace;
 }
@@ -60,7 +60,7 @@ body {
 }
 
 ::selection {
-	background: #f095c84d;
+	background: #ff4d5e4d;
 	color: var(--text);
 }
 
@@ -172,12 +172,12 @@ main,
 	place-items: center;
 	width: 34px;
 	height: 34px;
-	border: 1px solid #f095c866;
+	border: 1px solid #ff4d5e66;
 	border-radius: var(--radius-sm);
-	background: linear-gradient(140deg, #f095c829, #f095c80a);
+	background: linear-gradient(140deg, #ff4d5e29, #ff4d5e0a);
 	color: var(--accent);
 	font: 700 14px/1 var(--font-mono);
-	box-shadow: 0 6px 18px #f095c826;
+	box-shadow: 0 6px 18px #ff4d5e26;
 }
 
 .wordmark-accent {
@@ -248,7 +248,7 @@ main {
 }
 
 .stage-done:not(:last-child)::after {
-	background: linear-gradient(90deg, #b4e7c799, #f095c866);
+	background: linear-gradient(90deg, #b4e7c799, #ff4d5e66);
 }
 
 .stage-dot {
@@ -272,7 +272,7 @@ main {
 	border-color: var(--accent);
 	background: var(--accent);
 	color: var(--bg);
-	box-shadow: 0 0 0 4px #f095c826, var(--glow);
+	box-shadow: 0 0 0 4px #ff4d5e26, var(--glow);
 }
 
 .stage-done {
@@ -313,7 +313,7 @@ main {
 	z-index: -1;
 	pointer-events: none;
 	background:
-		radial-gradient(38% 50% at 30% 30%, #f095c838, #0000 70%),
+		radial-gradient(38% 50% at 30% 30%, #ff4d5e38, #0000 70%),
 		radial-gradient(30% 40% at 75% 40%, #b4e7c71f, #0000 70%);
 	filter: blur(32px);
 }
@@ -324,7 +324,7 @@ main {
 	padding: clamp(24px, 4.2vw, 52px);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-lg);
-	background: linear-gradient(180deg, #241822f2, #20161ef2);
+	background: linear-gradient(180deg, #17233af2, #121d31f2);
 	box-shadow: var(--shadow-panel);
 	animation: rise .35s var(--ease) both;
 }
@@ -423,9 +423,9 @@ h2 {
 }
 
 .disclosure-changes {
-	border-color: #f095c859;
-	background: linear-gradient(180deg, #f095c80d, #0000 60%), var(--surface);
-	box-shadow: inset 0 1px 0 #f095c81f;
+	border-color: #ff4d5e59;
+	background: linear-gradient(180deg, #ff4d5e0d, #0000 60%), var(--surface);
+	box-shadow: inset 0 1px 0 #ff4d5e1f;
 }
 
 .card-head {
@@ -471,8 +471,8 @@ h2 {
 }
 
 .pill-accent {
-	border-color: #f095c84d;
-	background: #f095c81f;
+	border-color: #ff4d5e4d;
+	background: #ff4d5e1f;
 	color: var(--accent-soft);
 }
 
@@ -514,9 +514,9 @@ h2 {
 	place-items: center;
 	width: 32px;
 	height: 26px;
-	border: 1px solid #f095c84d;
+	border: 1px solid #ff4d5e4d;
 	border-radius: 6px;
-	background: #f095c812;
+	background: #ff4d5e12;
 	color: var(--accent);
 	font: 600 12px/1 var(--font-mono);
 }
@@ -553,8 +553,8 @@ h2 {
 }
 
 .channel-option:has(.channel-input:checked) {
-	border-color: #f095c88c;
-	box-shadow: 0 0 0 3px #f095c81a;
+	border-color: #ff4d5e8c;
+	box-shadow: 0 0 0 3px #ff4d5e1a;
 }
 
 .channel-option .hint {
@@ -587,8 +587,8 @@ h2 {
 }
 
 .consent:has(.consent-input:checked) {
-	border-color: #f095c88c;
-	box-shadow: 0 0 0 3px #f095c81a;
+	border-color: #ff4d5e8c;
+	box-shadow: 0 0 0 3px #ff4d5e1a;
 }
 
 .consent:has(.consent-input[aria-invalid="true"]) {
@@ -800,7 +800,7 @@ progress::-webkit-progress-bar {
 progress::-webkit-progress-value {
 	border-radius: var(--radius-pill);
 	background: linear-gradient(90deg, var(--info), var(--accent-soft));
-	box-shadow: 0 0 16px #ffb1dd66;
+	box-shadow: 0 0 16px #ff899366;
 	transition: inline-size .4s var(--ease);
 }
 
@@ -873,8 +873,8 @@ progress::-moz-progress-bar {
 }
 
 .step-running {
-	border-color: #f095c833;
-	background: #f095c80f;
+	border-color: #ff4d5e33;
+	background: #ff4d5e0f;
 }
 
 .step-running .step-icon {

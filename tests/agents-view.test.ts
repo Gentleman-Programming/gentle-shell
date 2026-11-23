@@ -6,7 +6,7 @@ import { renderThreadItem } from "../lib/agents-thread-view.ts";
 import { AgentsView, taskHeader } from "../lib/agents-view.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
-// Gentle Agents overlay: list left, selected thread right, tail-following,
+// Drakonc Agents overlay: list left, selected thread right, tail-following,
 // and only the selected task subscribed.
 
 const plainTheme = { fg: (_color: string, text: string) => text };
@@ -260,7 +260,7 @@ test("AgentsView renders the frame with the task list and the selected thread's 
 	for (const line of lines) assert.equal(visibleWidth(line), 90, `"${stripAnsi(line)}" is not 90 wide`);
 	const plain = lines.map(stripAnsi);
 	assert.equal(plain.length, 8);
-	assert.match(plain[0], /^╭─ ❀ Agents · this session · 1 active · 1 finished ─+ \[F Fullscreen\] \[× Close\]╮$/);
+	assert.match(plain[0], /^╭─ 🐉 Agents · this session · 1 active · 1 finished ─+ \[F Fullscreen\] \[× Close\]╮$/);
 	assert.match(plain[1], /▸ └ ◐ Subagent explore.*explore · running · gpt-5\.6-terra · 34k · \$0\.270 · 1m00s/);
 	assert.match(plain[2], /line 3/, "the thread window follows the tail");
 	assert.match(plain[3], /line 4/);
@@ -604,12 +604,12 @@ test("AgentsView scopes to this session's own children (active and finished) and
 	store.add(task("stale", { agent: "stale", status: TASK_STATUS.COMPLETED, endedAt: 61_000 - 16 * 60_000, createdAt: 800, lastActivityAt: 800 }));
 	const names = () => view.render(80).map(stripAnsi).filter((line) => /[◐✓] Subagent /.test(line)).map((line) => line.match(/[◐✓] Subagent (\w+)/)?.[1]);
 	let plain = view.render(80).map(stripAnsi);
-	assert.match(plain[0], /^╭─ ❀ Agents · this session · 1 active · 2 finished ─+ \[F Fullscreen\] \[× Close\]╮$/);
+	assert.match(plain[0], /^╭─ 🐉 Agents · this session · 1 active · 2 finished ─+ \[F Fullscreen\] \[× Close\]╮$/);
 	assert.deepEqual(names(), ["mine", "fresh", "stale"], "the session's own history stays, newest ended first, after the active child; the foreign task stays out");
 	assert.match(plain.at(-2) ?? "", /\[Scope\]/);
 	view.handleInput("a");
 	plain = view.render(80).map(stripAnsi);
-	assert.match(plain[0], /^╭─ ❀ Agents · all sessions · 1 active · 2 finished ─+ \[F Fullscreen\] \[× Close\]╮$/);
+	assert.match(plain[0], /^╭─ 🐉 Agents · all sessions · 1 active · 2 finished ─+ \[F Fullscreen\] \[× Close\]╮$/);
 	assert.deepEqual(names(), ["mine", "fresh", "stale"], "retained foreign tasks cannot manufacture open orchestrators");
 	assert.match(plain.at(-2) ?? "", /\[Scope\]/);
 	view.handleInput("j");

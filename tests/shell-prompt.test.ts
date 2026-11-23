@@ -19,7 +19,7 @@ import {
 // The scanner phase must come from elapsed working time (one step per pulse
 // window), never from render count: streaming repaints arrive in bursts and
 // silent tool runs barely repaint at all, so a render-driven wave strobes or
-// freezes (the "─ ✾ exploring… ─" cadence regression).
+// freezes (the "─ 🔥 exploring… ─" cadence regression).
 test("workingTick derives the scanner phase from elapsed time, not render count", () => {
 	assert.equal(workingTick(0), 0);
 	assert.equal(workingTick(79), 0, "the frame is stable within one pulse window");
@@ -62,7 +62,7 @@ test("compact banner pulse rises from ink through fresh color to a bright tip th
 	assert.equal(petalTone(PROMPT_STATE.WORKING, 8), tones[0]);
 });
 
-// The Gentle Shell prompt wraps pi's editor output (a top rule, padded content
+// The Drakonc Shell prompt wraps pi's editor output (a top rule, padded content
 // lines, a bottom rule) in a rounded frame with a petal that shows the agent
 // state. Framing is pure: it takes the editor's lines and returns new ones.
 
@@ -81,7 +81,7 @@ function options(overrides: Partial<PromptFrameOptions> = {}): PromptFrameOption
 
 test("framePromptLines sets the petal in bold when the theme offers it", () => {
 	const lines = framePromptLines(editorLines(40), 40, options({ bold: (text) => `*${text}*` }));
-	assert.match(lines[0], /<borderAccent>\*✿\*<\/borderAccent>/);
+	assert.match(lines[0], /<borderAccent>\*🐉\*<\/borderAccent>/);
 });
 
 function editorLines(width: number, content: string[] = [` ${CURSOR}`]): string[] {
@@ -94,14 +94,14 @@ test("framePromptLines draws rounded corners, side rules, and keeps every line a
 	const lines = framePromptLines(editorLines(width), width, options({ fg: (_c, t) => t }));
 	assert.equal(lines.length, 3);
 	for (const line of lines) assert.equal(visibleWidth(line), width, `line "${stripAnsi(line)}" is not ${width} wide`);
-	assert.match(stripAnsi(lines[0]), /^╭─ ✿ ─+╮$/);
+	assert.match(stripAnsi(lines[0]), /^╭─ 🐉 ─+╮$/);
 	assert.match(stripAnsi(lines[1]), /^│ .* │$/);
 	assert.match(stripAnsi(lines[2]), /^╰─+╯$/);
 });
 
 test("framePromptLines paints the frame with the editor border color and the petal with the state tone", () => {
 	const lines = framePromptLines(editorLines(40), 40, options({ borderColor: (text) => `[b]${text}[/b]`, bold: (text) => `*${text}*` }));
-	assert.match(lines[0], /^\[b\]╭─ \[\/b\]<borderAccent>\*✿\*<\/borderAccent>\[b\] ─+╮\[\/b\]$/);
+	assert.match(lines[0], /^\[b\]╭─ \[\/b\]<borderAccent>\*🐉\*<\/borderAccent>\[b\] ─+╮\[\/b\]$/);
 	assert.match(lines[1], /^\[b\]│\[\/b\].*\[b\]│\[\/b\]$/);
 	assert.match(lines[2], /^\[b\]╰─+╯\[\/b\]$/);
 });
@@ -109,14 +109,14 @@ test("framePromptLines paints the frame with the editor border color and the pet
 test("framePromptLines renders an explicit ODD phase workingLabel instead of the generic working label", () => {
 	const plain = (_color: string, text: string) => text;
 	const phased = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.WORKING, tick: 3, fg: plain, workingLabel: "exploring…" }));
-	assert.match(stripAnsi(phased[0]), /^╭─ ✾ exploring… ─+╮$/);
+	assert.match(stripAnsi(phased[0]), /^╭─ 🔥 exploring… ─+╮$/);
 	assert.equal(visibleWidth(phased[0]), 40);
 });
 
 test("framePromptLines falls back to the generic working label when no phase was reported", () => {
 	const plain = (_color: string, text: string) => text;
 	const fallback = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.WORKING, tick: 3, fg: plain, workingLabel: undefined }));
-	assert.match(stripAnsi(fallback[0]), /^╭─ ✾ working… ─+╮$/);
+	assert.match(stripAnsi(fallback[0]), /^╭─ 🔥 working… ─+╮$/);
 });
 
 test("framePromptLines ignores workingLabel outside the working state", () => {
@@ -124,7 +124,7 @@ test("framePromptLines ignores workingLabel outside the working state", () => {
 	const idle = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.IDLE, fg: plain, workingLabel: "exploring…" }));
 	assert.equal(stripAnsi(idle[0]).includes("exploring"), false);
 	const queued = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.QUEUED, fg: plain, workingLabel: "exploring…" }));
-	assert.match(stripAnsi(queued[0]), /^╭─ ✿ queued ─+╮$/);
+	assert.match(stripAnsi(queued[0]), /^╭─ 🐉 queued ─+╮$/);
 });
 
 test("framePromptLines stays width-safe at narrow widths with the longest ODD phase label", () => {
@@ -140,33 +140,33 @@ test("framePromptLines stays width-safe at narrow widths with the longest ODD ph
 	assert.match(stripAnsi(comfortable[0]), /implementing…/);
 });
 
-test("petalTone rests bright, walks the rose ramp while working, and turns to warning when queued", () => {
+test("petalTone rests bright, walks the dragon ramp while working, and turns to warning when queued", () => {
 	assert.equal(petalTone(PROMPT_STATE.IDLE, 2), "borderAccent");
 	assert.deepEqual([0, 1, 2, 3, 4].map((tick) => petalTone(PROMPT_STATE.WORKING, tick)), ["mdQuoteBorder", "thinkingHigh", "accent", "borderAccent", "accent"]);
 	assert.equal(petalTone(PROMPT_STATE.QUEUED, 1), "warning");
 });
 
-test("petalGlyph spins through the flowers while working and rests otherwise", () => {
-	assert.equal(petalGlyph(PROMPT_STATE.IDLE, 3), "✿");
-	assert.deepEqual([0, 1, 2, 3, 4].map((tick) => petalGlyph(PROMPT_STATE.WORKING, tick)), ["✿", "❀", "❁", "✾", "✿"]);
-	assert.equal(petalGlyph(PROMPT_STATE.QUEUED, 1), "❀");
+test("petalGlyph alternates the dragon and flame frames while working and rests otherwise", () => {
+	assert.equal(petalGlyph(PROMPT_STATE.IDLE, 3), "🐉");
+	assert.deepEqual([0, 1, 2, 3, 4].map((tick) => petalGlyph(PROMPT_STATE.WORKING, tick)), ["🐉", "🔥", "🐉", "🔥", "🐉"]);
+	assert.equal(petalGlyph(PROMPT_STATE.QUEUED, 1), "🔥");
 });
 
 test("framePromptLines scans the working word while preserving the frame and queued state", () => {
 	const plain = (_color: string, text: string) => text;
 	const working = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.WORKING, tick: 3 }));
-	assert.match(working[0], /<borderAccent>✾<\/borderAccent>/);
+	assert.match(working[0], /<borderAccent>🔥<\/borderAccent>/);
 	assert.match(working[0], /<borderAccent>w<\/borderAccent><accent>o<\/accent><thinkingHigh>r<\/thinkingHigh>/);
 	assert.equal(working[0].replace(/<[^>]+>/g, "").includes("working…"), true);
 	const workingPlain = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.WORKING, tick: 3, fg: plain }));
-	assert.match(stripAnsi(workingPlain[0]), /^╭─ ✾ working… ─+╮$/);
+	assert.match(stripAnsi(workingPlain[0]), /^╭─ 🔥 working… ─+╮$/);
 	assert.equal(visibleWidth(workingPlain[0]), 40);
 
 	const queued = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.QUEUED }));
-	assert.match(queued[0], /<warning>✿<\/warning>/);
+	assert.match(queued[0], /<warning>🐉<\/warning>/);
 	assert.match(queued[0], /<muted>queued<\/muted>/);
 	const queuedPlain = framePromptLines(editorLines(40), 40, options({ state: PROMPT_STATE.QUEUED, fg: plain }));
-	assert.match(stripAnsi(queuedPlain[0]), /^╭─ ✿ queued ─+╮$/);
+	assert.match(stripAnsi(queuedPlain[0]), /^╭─ 🐉 queued ─+╮$/);
 	assert.equal(visibleWidth(queuedPlain[0]), 40);
 });
 
@@ -176,7 +176,7 @@ test("framePromptLines keeps the editor scroll indicators inside the frame", () 
 	const top = `─── ↑ 2 more ${"─".repeat(inner - 13)}`;
 	const bottom = `─── ↓ 3 more ${"─".repeat(inner - 13)}`;
 	const lines = framePromptLines([top, ` x${" ".repeat(inner - 2)}`, bottom], width, options({ fg: (_c, t) => t }));
-	assert.match(stripAnsi(lines[0]), /^╭─ ✿ ↑ 2 more ─+╮$/);
+	assert.match(stripAnsi(lines[0]), /^╭─ 🐉 ↑ 2 more ─+╮$/);
 	assert.match(stripAnsi(lines[2]), /^╰─ ↓ 3 more ─+╯$/);
 	for (const line of lines) assert.equal(visibleWidth(line), width);
 });
@@ -253,7 +253,7 @@ test("T2 float prompt keeps status and content inside the background with inset 
 		style: "float", bg: floatBg, fg: (_c, t) => t, state: PROMPT_STATE.WORKING, workingLabel: "exploring…", escHint: "esc again to cancel",
 	}));
 	assert.equal(rows.length, 3);
-	assert.match(stripAnsi(rows[0]), /^ ▎ ✿ exploring… · ↑ 2 more · esc again to cancel/);
+	assert.match(stripAnsi(rows[0]), /^ ▎ 🐉 exploring… · ↑ 2 more · esc again to cancel/);
 	assert.match(stripAnsi(rows[1]), /^ ▎ ab cd + $/);
 	assert.ok(rows[1].includes(`${CURSOR}\x1b[48;2;20;30;40m`));
 	assert.equal(stripAnsi(rows[2]), ` ▎${" ".repeat(77)} `);
@@ -287,7 +287,7 @@ test("T2 float prompt idle label uses the quiet card background without changing
 	};
 	for (const state of [PROMPT_STATE.IDLE, PROMPT_STATE.WORKING, PROMPT_STATE.QUEUED]) {
 		const rows = framePromptLines(["──", "draft", "──"], 80, options({ style: "float", bg, state, fg: (_c, t) => t }));
-		assert.match(stripAnsi(rows[0]), state === PROMPT_STATE.IDLE ? /✿ waiting for input/ : state === PROMPT_STATE.WORKING ? /working…/ : /queued/);
+		assert.match(stripAnsi(rows[0]), state === PROMPT_STATE.IDLE ? /🐉 waiting for input/ : state === PROMPT_STATE.WORKING ? /working…/ : /queued/);
 		if (state !== PROMPT_STATE.IDLE) assert.doesNotMatch(stripAnsi(rows[0]), /waiting for input/);
 	}
 	const neon = framePromptLines(["──", "draft", "──"], 80, options({ style: "neon", state: PROMPT_STATE.IDLE, fg: (_c, t) => t }));
@@ -347,11 +347,11 @@ test("the panel prompt frame titles its rule with state and mode and keeps the r
 	const lines = framePromptLines(editorLines(40, ["first line", "second line"]), 40, options({ fg: plain, escHint: "INSERT" }), layout).map(stripAnsi);
 	assert.equal(lines.length, 4, "rule, two input rows, closing row");
 	for (const line of lines) assert.equal(visibleWidth(line), 40);
-	assert.match(lines[0]!, /^─ ✿ waiting for input ─+ INSERT ─$/);
+	assert.match(lines[0]!, /^─ 🐉 waiting for input ─+ INSERT ─$/);
 	assert.equal(lines[1], "› first line".padEnd(40));
 	assert.equal(lines[2], "  second line".padEnd(40));
 	assert.equal(lines[3], " ".repeat(40));
 	const working = framePromptLines(editorLines(40), 40, options({ fg: plain, state: PROMPT_STATE.WORKING, workingLabel: "exploring…" }), layout).map(stripAnsi);
-	assert.match(working[0]!, /^─ \S exploring… ─+─$/);
+	assert.match(working[0]!, /^─ 🐉 exploring… ─+─$/);
 	assert.doesNotMatch(lines.join("\n"), /[╭╮╰╯│▎]/u);
 });

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from "node:child_process";
-import { gentleAiIsolationEnv, resolveGentleAiBinary } from "./gentle-ai-binary.ts";
+import { drakoncAiIsolationEnv, resolveDrakoncAiBinary } from "./drakonc-ai-binary.ts";
 import { runtimeMetricsEnvAllows } from "./runtime-metrics-policy.ts";
 import { isPublicRuntimeModelId, normalizeRuntimeModel, type RuntimeMetricBucket } from "./runtime-metrics.ts";
 import type { ChildLaunchBucket } from "./runtime-metrics-children.ts";
@@ -102,11 +102,11 @@ export async function sendNativeRuntimeEvent(rows: readonly RuntimeMetricBucket[
 	try {
 		const payload = (deps.encode ?? encodeNativeRuntimeEvent)(rows, deps.launches);
 		if (!payload || Buffer.byteLength(payload) > 16384) return "discarded";
-		const file = (deps.resolve ?? resolveGentleAiBinary)();
+		const file = (deps.resolve ?? resolveDrakoncAiBinary)();
 		if (!runtimeMetricsEnvAllows(env)) return "disabled";
 		if (deps.signal?.aborted || deps.current?.() === false) return "discarded";
-		// S9: a bundled install keeps Gentle AI's state inside its prefix.
-		return await sendProcess(file, cwd, payload, gentleAiIsolationEnv(env), deps.spawn ?? spawn, deps.signal);
+		// S9: a bundled install keeps Drakonc AI's state inside its prefix.
+		return await sendProcess(file, cwd, payload, drakoncAiIsolationEnv(env), deps.spawn ?? spawn, deps.signal);
 	} catch { return "discarded"; }
 	finally { busy = false; }
 }

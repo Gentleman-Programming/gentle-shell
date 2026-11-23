@@ -32,7 +32,7 @@ test("the jobs section lists running jobs newest first with elapsed time", () =>
 	const watcher = text.indexOf("Watcher CI ronda 2");
 	const build = text.indexOf("Build runtime");
 	assert.ok(watcher >= 0, "the newest job paints");
-	assert.ok(build > watcher, "newest first, matching the /gentle:jobs running group");
+	assert.ok(build > watcher, "newest first, matching the /drakonc:jobs running group");
 	assert.match(text, /1m 0s/, "the 60s job shows its elapsed time");
 	assert.match(text, /1m 30s/, "the 90s job shows its elapsed time");
 	for (const line of lines) assert.equal(visibleWidth(stripAnsi(line)), 50, `row fills the section: ${stripAnsi(line)}`);
@@ -59,7 +59,7 @@ test("the sort never mutates the snapshot", () => {
 });
 
 // Finished tails mirror the Agents card's results: an exit lingers for a
-// minute with the /gentle:jobs outcome glyph, its elapsed frozen at the end.
+// minute with the /drakonc:jobs outcome glyph, its elapsed frozen at the end.
 
 const exitedJob = { id: "job-1", label: "Build runtime", startedAt: 10_000, status: "exited" as const, endedAt: 70_000, exitCode: 0 as number | null };
 

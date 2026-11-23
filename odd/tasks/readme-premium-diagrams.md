@@ -1,7 +1,7 @@
 # README premium diagrams
 
 Redesign the README diagrams in the approved ODD prototype style and add the missing feature images.
-Worktree: gentle-shell-worktrees/readme-modernize, branch docs/readme-modernize. Commits only when the user asks.
+Worktree: drakonc-shell-worktrees/readme-modernize, branch docs/readme-modernize. Commits only when the user asks.
 
 ## Specs
 
@@ -16,7 +16,7 @@ Worktree: gentle-shell-worktrees/readme-modernize, branch docs/readme-modernize.
 - T1 — S1,S3,S4 — inline — ODD workflow prototype — done — 51cc40ae2
 - T2 — S1,S3,S4 — inline — Focused agents (`agent-orchestration.svg`) — done — 51cc40ae2
 - T3 — S1,S3,S4 — inline — Native review (`native-review.svg`) — done — 51cc40ae2
-- T4 — S1,S2,S3,S4 — inline — el Gentleman (`gentleman-workflow.svg`, currently unused) redesigned and embedded — done — 51cc40ae2
+- T4 — S1,S2,S3,S4 — inline — el Drakoncman (`drakoncman-workflow.svg`, currently unused) redesigned and embedded — done — 51cc40ae2
 - T5 — S2,S3,S4 — inline — Measured: before/after chart from the README table data (`measured-routing.svg`) — done — 51cc40ae2
 - T6 — S2,S3,S4 — inline — Permission modes: Normal / Auto / YOLO diagram from README facts (`permission-modes.svg`) — done — 51cc40ae2
 - T7 — S2 — inline — Command palette: embed existing unused `command-palette.png` — dropped: it shows the removed SDD group; moved to T8
@@ -24,14 +24,14 @@ Worktree: gentle-shell-worktrees/readme-modernize, branch docs/readme-modernize.
 
 ## Shot list (T8)
 
-Common setup: Gentle Shell fullscreen, Gentleman-Cute theme, terminal about 160x45, no personal paths, keys, or account names visible. Export PNG about 1600 px wide, cropped to the terminal, to `docs/assets/features/<file>`.
+Common setup: Drakonc Shell fullscreen, Drakoncman-Cute theme, terminal about 160x45, no personal paths, keys, or account names visible. Export PNG about 1600 px wide, cropped to the terminal, to `docs/assets/features/<file>`.
 
 | File | Open | State to show |
 | :--- | :--- | :--- |
 | `command-palette.png` | `alt+k` | Groups Configuration, Session, Diagnostics, Skills; one entry highlighted; no search text |
-| `audio-notifications.png` | `/gentle:customize` → Notifications | Two-column card with the master switch on and Success, Error, Attention types visible |
-| `background-jobs.png` | `/gentle:jobs` | At least one running and one completed job, details pane visible |
-| `nan-models.png` | `/gentle:models` | NaN models listed (offline fallback or refreshed list) |
+| `audio-notifications.png` | `/drakonc:customize` → Notifications | Two-column card with the master switch on and Success, Error, Attention types visible |
+| `background-jobs.png` | `/drakonc:jobs` | At least one running and one completed job, details pane visible |
+| `nan-models.png` | `/drakonc:models` | NaN models listed (offline fallback or refreshed list) |
 
 ## Log
 

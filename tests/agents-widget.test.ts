@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { TASK_STATUS, TaskStore, type TaskRecord } from "../lib/agents-protocol.ts";
-import installGentleAgents from "../extensions/gentle-agents.ts";
+import installDrakoncAgents from "../extensions/drakonc-agents.ts";
 import { PresencePublisher } from "../lib/orchestrator-presence.ts";
 import { sidebarState } from "../lib/shell-sidebar.ts";
 import { installSidebar } from "../lib/shell-sidebar-layout.ts";
@@ -12,7 +12,7 @@ import { formatTokens } from "../lib/shell-bar.ts";
 import { CARD_STYLE, cardStyle, setCardStyle, type CardStyle } from "../lib/shell-card.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
-// Gentle Agents widget: the card above the editor that shows what the
+// Drakonc Agents widget: the card above the editor that shows what the
 // subagents are doing, drawn from task records only (never from threads).
 // Layout: glyph, agent, task summary (wrapped), then model · tokens · cost · time.
 
@@ -90,20 +90,20 @@ test("renderAgentsCard paints the quiet-state INFO card with the rose frame (bor
 	const taggedTheme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
 	const lines = renderAgentsCard([task({ status: TASK_STATUS.RUNNING })], taggedTheme, 60, 5000, { collapsed: false });
 	assert.match(lines[0]!, /^<border>╭<\/border>/);
-	assert.match(lines[0]!, /<accent>❀ Agents<\/accent>/);
+	assert.match(lines[0]!, /<accent>🐉 Agents<\/accent>/);
 });
 
 test("renderAgentsCard draws columns for agent, task, and model · tokens · cost · time, with the batch time in the rule", () => {
 	const tasks = [
 		task({ id: "a", status: TASK_STATUS.COMPLETED, startedAt: 1000, endedAt: 26_000 }),
-		task({ id: "b", agent: "sdd-apply", label: "write gentle-shell footer", startedAt: 44_000, tokens: 12_000, cost: 0.09 }),
+		task({ id: "b", agent: "sdd-apply", label: "write drakonc-shell footer", startedAt: 44_000, tokens: 12_000, cost: 0.09 }),
 	];
 	const lines = renderAgentsCard(tasks, plainTheme, 84, 85_000, { collapsed: false });
 	for (const line of lines) assert.equal(visibleWidth(line), 84, `"${stripAnsi(line)}" is not 84 wide`);
 	const plain = lines.map(stripAnsi);
-	assert.match(plain[0], /^╭─ ❀ Agents · 1 active · 1 done ─+ 1m24s ╮$/);
+	assert.match(plain[0], /^╭─ 🐉 Agents · 1 active · 1 done ─+ 1m24s ╮$/);
 	assert.match(plain[1], /^│ ✓  sdd-explore  map footer data sources +claude-sonnet-5 · 34k · \$0\.270 · 25s │$/);
-	assert.match(plain[2], /^│ ◐  sdd-apply    write gentle-shell footer +claude-sonnet-5 · 12k · \$0\.090 · 41s │$/);
+	assert.match(plain[2], /^│ ◐  sdd-apply    write drakonc-shell footer +claude-sonnet-5 · 12k · \$0\.090 · 41s │$/);
 	assert.match(plain[3], /^╰─+╯$/);
 	assert.deepEqual(renderAgentsCard([], plainTheme, 60, 0, { collapsed: false }), []);
 });
@@ -203,10 +203,10 @@ test("renderAgentsCard renders singleton elapsed time only on its task row", () 
 });
 
 test("renderAgentsCard keeps every task on one line, clipping long labels, and drops the task column when the card is narrow", () => {
-	const tasks = [task({ id: "a", label: "write the gentle shell footer and all of its tests before lunch" })];
+	const tasks = [task({ id: "a", label: "write the drakonc shell footer and all of its tests before lunch" })];
 	const wide = renderAgentsCard(tasks, plainTheme, 84, 5_000, { collapsed: false }).map(stripAnsi);
 	assert.equal(wide.length, 3);
-	assert.match(wide[1], /^│ ◐  sdd-explore  write the gentle shell foo… +claude-sonnet-5 · 34k · \$0\.270 · 4s │$/);
+	assert.match(wide[1], /^│ ◐  sdd-explore  write the drakonc shell foo… +claude-sonnet-5 · 34k · \$0\.270 · 4s │$/);
 	// Narrow cards degrade per column: task text first, then the model name,
 	// then tokens and cost. Elapsed is the one value the reader cannot rebuild
 	// from anything else on screen, so it is the last to go.
@@ -215,7 +215,7 @@ test("renderAgentsCard keeps every task on one line, clipping long labels, and d
 	assert.match(narrow[1], /^│ ◐  sdd-explore +34k · \$0\.270 · 4s │$/, "the model name goes before tokens, cost and elapsed");
 });
 
-// gentle-shell#1143: one long model id used to flip the whole card to the
+// drakonc-shell#1143: one long model id used to flip the whole card to the
 // model-only fallback, silently dropping tokens, cost and the running time.
 test("renderAgentsCard keeps tokens, cost and elapsed when a long model name no longer fits", () => {
 	const tasks = [task({ id: "a", model: "anthropic/claude-sonnet-4-5-20250929", tokens: 12_345, cost: 0.42, startedAt: 5_000 - 184_000 })];
@@ -246,7 +246,7 @@ test("renderAgentsCard shows questions and failures in place of the task, and co
 		task({ id: "c", status: TASK_STATUS.QUEUED, createdAt: 1500, startedAt: null, tokens: 0, cost: 0 }),
 	];
 	const plain = renderAgentsCard(tasks, plainTheme, 80, 3000, { collapsed: false }).map(stripAnsi);
-	assert.match(plain[0], /^╭─ ❀ Agents · 1 waiting · 1 queued · 1 failed ─+ 2s ╮$/);
+	assert.match(plain[0], /^╭─ 🐉 Agents · 1 waiting · 1 queued · 1 failed ─+ 2s ╮$/);
 	// The waiting row carries no tokens/cost of its own, but the failed row
 	// below it does, so those columns stay reserved (blank) rather than
 	// collapsing — the whole point of fixed columns over the old per-row join.
@@ -261,7 +261,7 @@ test("renderAgentsCard shows questions and failures in place of the task, and co
 	assert.match(collapsed[1], /^│ \?  sdd-explore  asked: Delete\?/);
 });
 
-// gentle-shell#1143 reversed the old priority: usage (tokens, cost and above
+// drakonc-shell#1143 reversed the old priority: usage (tokens, cost and above
 // all elapsed) outranks the model·effort label when the row is narrow, since
 // the label is the one value the user already chose and can look up.
 test("usage outranks the model label at narrow widths without inventing unknown values", () => {
@@ -391,7 +391,7 @@ test("renderAgentsCard formats subagent cost with formatCost (three decimals bel
 test("renderAgentsCard in the float style is a float panel two rows taller than neon with unclipped columns", (t) => {
 	const tasks = [
 		task({ id: "a", status: TASK_STATUS.COMPLETED, startedAt: 1000, endedAt: 26_000 }),
-		task({ id: "b", agent: "sdd-apply", label: "write gentle-shell footer", startedAt: 44_000, tokens: 12_000, cost: 0.09 }),
+		task({ id: "b", agent: "sdd-apply", label: "write drakonc-shell footer", startedAt: 44_000, tokens: 12_000, cost: 0.09 }),
 	];
 	const theme = withBackground(plainTheme);
 	for (const options of [{ collapsed: false }, { collapsed: true, collapseKey: "ctrl+a" }, { collapsed: false, maxRows: 1, viewKey: "ctrl+v" }]) {
@@ -400,7 +400,7 @@ test("renderAgentsCard in the float style is a float panel two rows taller than 
 		const float = renderAgentsCard(tasks, theme, 84, 85_000, options);
 		setCardStyle(CARD_STYLE.NEON);
 		assert.equal(float.length, neon.length + 2, "the top padding and separator rows add two rows");
-		assert.match(stripAnsi(float[1]!), /^ ▎ ❀ Agents  1 active · 1 done +\S.*\S {3}$/, "header on row 1, hint right-aligned");
+		assert.match(stripAnsi(float[1]!), /^ ▎ 🐉 Agents  1 active · 1 done +\S.*\S {3}$/, "header on row 1, hint right-aligned");
 		assert.match(stripAnsi(float[2]!), /^ ▎ +$/, "a blank separator row follows the header");
 		assertFloatRows(float, 84);
 		for (const [index, row] of float.slice(3, -1).entries()) {
@@ -415,7 +415,7 @@ test("renderAgentsCard in the float style is a float panel two rows taller than 
 	useCardStyle(t, CARD_STYLE.FLOAT);
 	const tagged = withBackground({ fg: (color: string, text: string) => `<${color}>${text}</${color}>` });
 	const [, header] = renderAgentsCard([task({ status: TASK_STATUS.WAITING })], tagged, 120, 5000, { collapsed: true, collapseKey: "ctrl+a" });
-	assert.match(stripAnsi(header!), /^ <warning>▎<\/warning> <warning>❀ Agents<\/warning>  <muted>1 waiting<\/muted> +<muted>ctrl\+a expand<\/muted> {3}$/);
+	assert.match(stripAnsi(header!), /^ <warning>▎<\/warning> <warning>🐉 Agents<\/warning>  <muted>1 waiting<\/muted> +<muted>ctrl\+a expand<\/muted> {3}$/);
 });
 
 // The fullscreen rail draws Agents as a panel section (design/shell-rework/06-many-agents.html):
@@ -425,12 +425,12 @@ test("renderAgentsCard in the float style is a float panel two rows taller than 
 test("the Agents section orders rows by what needs you and aligns kind and time columns", () => {
 	const now = 400_000;
 	const tasks = [
-		task({ id: "done", agent: "gentle-ai-verify", label: "verify T1 title row", status: TASK_STATUS.COMPLETED, startedAt: 0, endedAt: 380_000 }),
-		task({ id: "worker", agent: "gentle-ai-worker", label: "T3 rail panel sections", startedAt: 28_000, tokens: 2_100_000 }),
-		task({ id: "asks", agent: "gentle-ai-explore", label: "map sidebar render paths", lastStep: "Which base branch should the chain use?", status: TASK_STATUS.WAITING, startedAt: 10_000 }),
-		task({ id: "queued", agent: "gentle-ai-worker", label: "T5 mobile work row", status: TASK_STATUS.QUEUED, startedAt: null, createdAt: 50_000, tokens: 0 }),
-		task({ id: "failed", agent: "gentle-ai-worker", label: "T6 customize presets", status: TASK_STATUS.FAILED, error: "T6 customize presets", startedAt: 300_000, endedAt: 370_000 }),
-		task({ id: "verify", agent: "gentle-ai-verify", label: "verify T2 editor rule", startedAt: 277_000, tokens: 800_000 }),
+		task({ id: "done", agent: "drakonc-ai-verify", label: "verify T1 title row", status: TASK_STATUS.COMPLETED, startedAt: 0, endedAt: 380_000 }),
+		task({ id: "worker", agent: "drakonc-ai-worker", label: "T3 rail panel sections", startedAt: 28_000, tokens: 2_100_000 }),
+		task({ id: "asks", agent: "drakonc-ai-explore", label: "map sidebar render paths", lastStep: "Which base branch should the chain use?", status: TASK_STATUS.WAITING, startedAt: 10_000 }),
+		task({ id: "queued", agent: "drakonc-ai-worker", label: "T5 mobile work row", status: TASK_STATUS.QUEUED, startedAt: null, createdAt: 50_000, tokens: 0 }),
+		task({ id: "failed", agent: "drakonc-ai-worker", label: "T6 customize presets", status: TASK_STATUS.FAILED, error: "T6 customize presets", startedAt: 300_000, endedAt: 370_000 }),
+		task({ id: "verify", agent: "drakonc-ai-verify", label: "verify T2 editor rule", startedAt: 277_000, tokens: 800_000 }),
 	];
 	const lines = renderAgentsSection(tasks, plainTheme, 50, now, { collapsed: false });
 	for (const line of lines) assert.equal(visibleWidth(line), 50, `row fills the section: ${line}`);
@@ -444,7 +444,7 @@ test("the Agents section orders rows by what needs you and aligns kind and time 
 		` | ◐ verify T2 editor rule | verify | ${verify}`,
 		" | ○ T5 mobile work row | worker | queued",
 		` | ✗ T6 customize presets | worker | failed ${formatElapsed(70_000)}`,
-		" | ✓ 1 done · /gentle:agents",
+		" | ✓ 1 done · /drakonc:agents",
 	]);
 	const kindColumn = rows.slice(1, 6).map((row) => [...row.matchAll(/(explore|worker|verify)(?= )/g)].at(-1)!.index);
 	assert.equal(new Set(kindColumn).size, 1, `agent kinds line up in one column: ${kindColumn}`);
@@ -496,8 +496,8 @@ test("agent widget routes row hover, reset, collapse and clicks through its publ
 		events: { on: () => () => {}, emit() {} },
 		registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMarkdownTransformer() {}, registerMessageRenderer() {}, registerEntryRenderer() {},
 	};
-	installGentleAgents(pi as never, { GENTLE_PI_CONFIG_HOME: "/dev/null" }, {
-		home: "/dev/null", agentHome: "/dev/null", env: { GENTLE_PI_CONFIG_HOME: "/dev/null" },
+	installDrakoncAgents(pi as never, { DRAKONC_PI_CONFIG_HOME: "/dev/null" }, {
+		home: "/dev/null", agentHome: "/dev/null", env: { DRAKONC_PI_CONFIG_HOME: "/dev/null" },
 		now: () => 5_000, schedule: () => () => {}, resolveWorktree: () => undefined,
 	});
 	let factory: ((tui: unknown, theme: unknown) => Component) | undefined;
@@ -570,9 +570,9 @@ test("agent widget routes row hover, reset, collapse and clicks through its publ
 	(component as Component & { dispose?(): void }).dispose?.();
 });
 
-test("an idle Agents section keeps one muted row pointing at /gentle:agents", () => {
+test("an idle Agents section keeps one muted row pointing at /drakonc:agents", () => {
 	const lines = renderAgentsSection([], plainTheme, 50, 0, { collapsed: false }).map((line) => line.trimEnd());
-	assert.deepEqual(lines.map((row) => row.replace(/\s{2,}/g, " | ")), ["▾ AGENTS | idle", " | none running · /gentle:agents"]);
+	assert.deepEqual(lines.map((row) => row.replace(/\s{2,}/g, " | ")), ["▾ AGENTS | idle", " | none running · /drakonc:agents"]);
 });
 
 test("a collapsed Agents section keeps the row that needs you most", () => {
@@ -590,14 +590,14 @@ test("more agents than the section's rows keep waiting and running rows and coun
 	assert.match(rows[1]!, /^\? Need you\?/);
 	assert.match(rows[2]!, /^◐ the running one/);
 	assert.equal(rows.length, 1 + 8, "eight rows, the last one counting the rest");
-	assert.match(rows.at(-1)!, /^… 7 more · \/gentle:agents$/);
+	assert.match(rows.at(-1)!, /^… 7 more · \/drakonc:agents$/);
 });
 
 test("the agents alert names the agent asking the user and its question, above the editor", () => {
 	const painted = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => `\x1b[48;5;52m${text}\x1b[49m` };
 	const waiting = [
-		task({ id: "a", agent: "gentle-ai-explore", status: TASK_STATUS.WAITING, lastStep: "asked: Which base branch should the chain use?", createdAt: 1 }),
-		task({ id: "b", agent: "gentle-ai-worker", status: TASK_STATUS.WAITING, lastStep: "asked: Overwrite the fixture?", createdAt: 2 }),
+		task({ id: "a", agent: "drakonc-ai-explore", status: TASK_STATUS.WAITING, lastStep: "asked: Which base branch should the chain use?", createdAt: 1 }),
+		task({ id: "b", agent: "drakonc-ai-worker", status: TASK_STATUS.WAITING, lastStep: "asked: Overwrite the fixture?", createdAt: 2 }),
 		task({ id: "c", label: "running" }),
 	];
 	const lines = renderAgentsAlert(waiting, painted, 110);
@@ -605,8 +605,8 @@ test("the agents alert names the agent asking the user and its question, above t
 	assert.ok(lines[0]!.startsWith("\x1b[48;5;52m"), "the alert sits on the selection surface");
 	const row = stripAnsi(lines[0]!);
 	assert.equal(visibleWidth(row), 110);
-	assert.match(stripAnsi(renderAgentsAlert(waiting, painted, 60)[0]!), /…\s+\+1 more · \/gentle:agents $/, "a narrow row clips the question, never the way to the agents view");
-	assert.match(row, /^ \? explore asked: Which base branch should the chain use\? +\+1 more · \/gentle:agents $/);
+	assert.match(stripAnsi(renderAgentsAlert(waiting, painted, 60)[0]!), /…\s+\+1 more · \/drakonc:agents $/, "a narrow row clips the question, never the way to the agents view");
+	assert.match(row, /^ \? explore asked: Which base branch should the chain use\? +\+1 more · \/drakonc:agents $/);
 	assert.deepEqual(renderAgentsAlert([task({ id: "c" })], painted, 80), [], "nothing waits, nothing paints");
 });
 
@@ -645,9 +645,9 @@ test("a moved agent's ↪ mark never changes the other rows, at any rail width",
 	const now = 70_000;
 	const others = [
 		task({ id: "w", status: TASK_STATUS.WAITING, startedAt: 1_000, prompt: "grep the repo", agent: "sdd-explore" }),
-		task({ id: "f", status: TASK_STATUS.FAILED, startedAt: 2_000, endedAt: 59_000, prompt: "verify the change", agent: "gentle-ai-verify" }),
+		task({ id: "f", status: TASK_STATUS.FAILED, startedAt: 2_000, endedAt: 59_000, prompt: "verify the change", agent: "drakonc-ai-verify" }),
 	];
-	const running = task({ id: "r", status: TASK_STATUS.RUNNING, startedAt: 3_000, prompt: "write the parser", agent: "gentle-ai-worker", tokens: 34_000, model: "anthropic/claude-opus-5-5" });
+	const running = task({ id: "r", status: TASK_STATUS.RUNNING, startedAt: 3_000, prompt: "write the parser", agent: "drakonc-ai-worker", tokens: 34_000, model: "anthropic/claude-opus-5-5" });
 	for (const width of [46, 30, 20]) {
 		const plain = renderAgentsSection([...others, running], theme as never, width, now, { collapsed: false });
 		const moved = renderAgentsSection([...others, { ...running, model: "openai/gpt-5.5", fallbackFrom: "anthropic/claude-opus-5-5" }], theme as never, width, now, { collapsed: false });
@@ -662,7 +662,7 @@ test("a moved agent's ↪ mark never changes the other rows, at any rail width",
 
 test("a moved agent's row keeps its task readable and adds the model when there is room", () => {
 	const theme = { fg: (_role: string, text: string) => text };
-	const running = task({ id: "r", status: TASK_STATUS.RUNNING, startedAt: 3_000, prompt: "write the parser", label: "write the parser", agent: "gentle-ai-worker", tokens: 34_000, model: "anthropic/claude-opus-5-5", fallbackFrom: "openai/gpt-5.5" });
+	const running = task({ id: "r", status: TASK_STATUS.RUNNING, startedAt: 3_000, prompt: "write the parser", label: "write the parser", agent: "drakonc-ai-worker", tokens: 34_000, model: "anthropic/claude-opus-5-5", fallbackFrom: "openai/gpt-5.5" });
 	const at46 = renderAgentsSection([running], theme as never, 46, 70_000, { collapsed: false }).join("\n");
 	assert.match(at46, /↪ write the/, "the task comes first after the mark");
 	const at90 = renderAgentsSection([running], theme as never, 90, 70_000, { collapsed: false }).join("\n");

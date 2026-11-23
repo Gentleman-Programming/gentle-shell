@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import { parseAgentsConfig, loadAgentsConfig } from "../lib/agents-config.ts";
 import { FALLBACKS_KIND, FALLBACKS_VERSION, fallbacksFilePath, normalizeFallbacksFile } from "../lib/model-fallback-store.ts";
 import { PROFILES_KIND, PROFILES_VERSION, normalizeProfilesFile, profilesFilePath, serializeProfilesFile } from "../lib/agent-profiles.ts";
@@ -28,7 +28,7 @@ interface Env {
 }
 
 function isolatedEnvironment(t: test.TestContext): Env {
-	const root = mkdtempSync(join(tmpdir(), "gentle-desktop-config-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-desktop-config-"));
 	const configHome = join(root, "config");
 	const agentHome = join(root, "agent");
 	const workspace = join(root, "workspace");
@@ -165,7 +165,7 @@ test("models merges the global store over the legacy project store read-only", a
 		review: { model: "openai/gpt-project", thinking: "low" },
 	};
 	writeJson(join(env.configHome, "models.json"), globalConfig);
-	writeJson(join(env.workspace, ".pi", "gentle-ai", "models.json"), projectConfig);
+	writeJson(join(env.workspace, ".pi", "drakonc-ai", "models.json"), projectConfig);
 
 	const data = await readStore(bridgeFor(env), "models");
 
@@ -197,7 +197,7 @@ test("models reports missing layers and a malformed layer truthfully", async (t)
 		{ source: "project", status: "missing" },
 	]);
 
-	writeJson(join(env.workspace, ".pi", "gentle-ai", "models.json"), { worker: { model: "openai/gpt-project" } });
+	writeJson(join(env.workspace, ".pi", "drakonc-ai", "models.json"), { worker: { model: "openai/gpt-project" } });
 	const projectOnly = await readStore(bridge, "models");
 	assert.equal(projectOnly.status, "ok");
 	assert.deepEqual(projectOnly.value, { worker: { model: "openai/gpt-project" } });
@@ -425,15 +425,15 @@ test("pins report missing, unresolvable, and non-worktree cases truthfully", asy
 
 test("managed_assets reads the agent-home manifest read-only", async (t) => {
 	const env = isolatedEnvironment(t);
-	const path = join(env.agentHome, "gentle-ai", "managed-assets.json");
-	writeJson(path, { schemaVersion: 1, assets: { "agents/gentle-ai-worker.md": "a".repeat(64) } });
+	const path = join(env.agentHome, "drakonc-ai", "managed-assets.json");
+	writeJson(path, { schemaVersion: 1, assets: { "agents/drakonc-ai-worker.md": "a".repeat(64) } });
 
 	const data = await readStore(bridgeFor(env), "managed_assets");
 	assert.equal(data.scope, "global");
 	assert.equal(data.readOnly, true, "the managed-asset manifest belongs to the installer");
 	assert.equal(data.status, "ok");
 	assert.deepEqual(data.layers, [{ source: "global", status: "ok" }]);
-	assert.deepEqual(data.value, { schemaVersion: 1, assets: { "agents/gentle-ai-worker.md": "a".repeat(64) } });
+	assert.deepEqual(data.value, { schemaVersion: 1, assets: { "agents/drakonc-ai-worker.md": "a".repeat(64) } });
 
 	writeJson(path, { schemaVersion: 99, assets: {} });
 	const unsupported = await readStore(bridgeFor(env), "managed_assets");
@@ -447,12 +447,12 @@ test("managed_assets reads the agent-home manifest read-only", async (t) => {
 
 test("managed_assets projects only ownership-shaped keys and hashes", async (t) => {
 	const env = isolatedEnvironment(t);
-	const path = join(env.agentHome, "gentle-ai", "managed-assets.json");
+	const path = join(env.agentHome, "drakonc-ai", "managed-assets.json");
 	const hash = "b".repeat(64);
 	writeJson(path, {
 		schemaVersion: 1,
 		assets: {
-			"agents/gentle-ai-worker.md": hash,
+			"agents/drakonc-ai-worker.md": hash,
 			"/etc/passwd": hash,
 			"agents/../../escape.md": hash,
 			"agents/back\\slash.md": hash,
@@ -468,7 +468,7 @@ test("managed_assets projects only ownership-shaped keys and hashes", async (t) 
 	const data = await readStore(bridgeFor(env), "managed_assets");
 
 	assert.equal(data.status, "ok");
-	assert.deepEqual(data.value, { schemaVersion: 1, assets: { "agents/gentle-ai-worker.md": hash } });
+	assert.deepEqual(data.value, { schemaVersion: 1, assets: { "agents/drakonc-ai-worker.md": hash } });
 	const wire = JSON.stringify(data);
 	for (const leaked of ["passwd", "escape", "windows", "not-a-sha256-digest"]) {
 		assert.equal(wire.includes(leaked), false, `a non-ownership entry never crosses the contract: ${leaked}`);
@@ -479,7 +479,7 @@ test("managed_assets projects only ownership-shaped keys and hashes", async (t) 
 test("managed_assets preserves a shipped legacy manifest without filtering valid entries", async (t) => {
 	const env = isolatedEnvironment(t);
 	const legacy = JSON.parse(readFileSync(new URL("../assets/migrations/managed-assets-v2.5.0.json", import.meta.url), "utf8"));
-	const path = join(env.agentHome, "gentle-ai", "managed-assets.json");
+	const path = join(env.agentHome, "drakonc-ai", "managed-assets.json");
 	writeJson(path, legacy);
 
 	const data = await readStore(bridgeFor(env), "managed_assets");
@@ -549,11 +549,11 @@ test("reads never mutate any store", async (t) => {
 	writeJson(join(env.configHome, "models.json"), { explore: { model: "anthropic/claude-global" } });
 	writeJson(fallbacksFilePath(env.configHome), { kind: FALLBACKS_KIND, version: FALLBACKS_VERSION, profiles: {} });
 	writeJson(join(env.agentHome, "subagents.json"), { model_profiles: { explore: { model: "anthropic/claude-sub" } } });
-	writeJson(join(env.workspace, ".pi", "gentle-ai", "models.json"), { worker: { model: "openai/gpt-project" } });
+	writeJson(join(env.workspace, ".pi", "drakonc-ai", "models.json"), { worker: { model: "openai/gpt-project" } });
 	writeJson(join(env.workspace, ".pi", "subagents.json"), { max_concurrency: 2 });
 	writeJson(localProfilePinPath(identity.commonDir), pin("team"));
 	writeJson(repoProfileDeclarationPath(identity.root), pin("ops"));
-	writeJson(join(env.agentHome, "gentle-ai", "managed-assets.json"), { schemaVersion: 1, assets: {} });
+	writeJson(join(env.agentHome, "drakonc-ai", "managed-assets.json"), { schemaVersion: 1, assets: {} });
 	const bridge = bridgeFor(env, () => identity);
 
 	const before = snapshotTree(env.root);
@@ -766,7 +766,7 @@ test("profile_fallbacks writes normalized chains and refuses content the owner w
 		{ kind: FALLBACKS_KIND, version: FALLBACKS_VERSION, profiles: { team: { worker: [{ model: "openai/gpt-a" }, { model: "openai/gpt-a" }] } } },
 		{ kind: FALLBACKS_KIND, version: FALLBACKS_VERSION, profiles: { team: { worker: [{ model: "not a model" }] } } },
 		{ kind: FALLBACKS_KIND, version: FALLBACKS_VERSION, profiles: {}, extra: true },
-		{ kind: "gentle-pi.something_else", version: 1, profiles: {} },
+		{ kind: "drakonc-pi.something_else", version: 1, profiles: {} },
 	]) {
 		const rejected = await setConfig(bridge, {
 			store: "profile_fallbacks",
@@ -853,7 +853,7 @@ test("invalid data never creates or modifies a file", async (t) => {
 	const before = snapshotTree(env.root);
 	const cases: Array<[string, unknown]> = [
 		["profiles", []],
-		["profiles", { kind: "gentle-pi.something_else", version: 1, profiles: {} }],
+		["profiles", { kind: "drakonc-pi.something_else", version: 1, profiles: {} }],
 		["profiles", { kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: { "bad name": { worker: { model: "openai/gpt-a" } } } }],
 		["profiles", { kind: PROFILES_KIND, version: PROFILES_VERSION, profiles: { team: { "bad agent!": { model: "openai/gpt-a" } } } }],
 		["profiles", { ...profilesFixture(), active: "ghost" }],
@@ -1264,20 +1264,20 @@ function isolatedTransport(t: test.TestContext) {
 	const env = isolatedEnvironment(t);
 	const previous = {
 		host: process.env[INTERACTIVE_HOST_ENV],
-		configHome: process.env.GENTLE_PI_CONFIG_HOME,
-		agentHome: process.env.GENTLE_PI_AGENT_HOME,
+		configHome: process.env.DRAKONC_PI_CONFIG_HOME,
+		agentHome: process.env.DRAKONC_PI_AGENT_HOME,
 	};
 	process.env[INTERACTIVE_HOST_ENV] = "1";
-	process.env.GENTLE_PI_CONFIG_HOME = env.configHome;
-	process.env.GENTLE_PI_AGENT_HOME = env.agentHome;
+	process.env.DRAKONC_PI_CONFIG_HOME = env.configHome;
+	process.env.DRAKONC_PI_AGENT_HOME = env.agentHome;
 	t.after(() => {
 		const restore = (key: string, value: string | undefined) => {
 			if (value === undefined) delete process.env[key];
 			else process.env[key] = value;
 		};
 		restore(INTERACTIVE_HOST_ENV, previous.host);
-		restore("GENTLE_PI_CONFIG_HOME", previous.configHome);
-		restore("GENTLE_PI_AGENT_HOME", previous.agentHome);
+		restore("DRAKONC_PI_CONFIG_HOME", previous.configHome);
+		restore("DRAKONC_PI_AGENT_HOME", previous.agentHome);
 	});
 
 	const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
@@ -1300,7 +1300,7 @@ function isolatedTransport(t: test.TestContext) {
 		events,
 		start() { events.get("session_start")?.({}, ctx); },
 		async invoke(method: string, params: Record<string, unknown> = {}, requestId = `request-${method}`) {
-			await commands.get("gentle:desktop")!.handler(
+			await commands.get("drakonc:desktop")!.handler(
 				JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }),
 				ctx,
 			);

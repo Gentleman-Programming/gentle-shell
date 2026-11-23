@@ -117,7 +117,7 @@ test("a query that expires while queued is still delivered once, marked expired"
 	assert.equal(deliverable.length, 1);
 	assert.equal(deliverable[0]?.content, `Subagent scout asks:\nTask ID: task-1\nRequest ID: q1\nQuestion: Need approval\n${EXPIRED_LINE}`);
 	assert.equal(deliverable[0]?.requestId, "q1");
-	assert.equal((deliverable[0]?.details.gentleAgents as { expired?: boolean }).expired, true);
+	assert.equal((deliverable[0]?.details.drakoncAgents as { expired?: boolean }).expired, true);
 	assert.equal(queue.takeDeliverable(1100, "s1", () => true).length, 0, "delivered at most once");
 });
 

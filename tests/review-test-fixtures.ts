@@ -82,10 +82,10 @@ export function testSnapshot(options: TestSnapshotOptions): SnapshotV1 {
 		lenses: [...lenses],
 		policy_hash: options.policyHash ?? "a".repeat(64),
 		object_store: {
-			snapshot_directory: "/test/repository/.git/gentle-ai/reviews/snapshots/test",
-			object_directory: "/test/repository/.git/gentle-ai/reviews/snapshots/test/objects",
+			snapshot_directory: "/test/repository/.git/drakonc-ai/reviews/snapshots/test",
+			object_directory: "/test/repository/.git/drakonc-ai/reviews/snapshots/test/objects",
 			alternate_object_directory: "/test/repository/.git/objects",
-			metadata_path: "/test/repository/.git/gentle-ai/reviews/snapshots/test/snapshot.json",
+			metadata_path: "/test/repository/.git/drakonc-ai/reviews/snapshots/test/snapshot.json",
 			sensitivity: "workspace-content",
 			cleanup_trigger: SNAPSHOT_CLEANUP_TRIGGER.LINEAGE_TERMINAL,
 			cleanup_action: SNAPSHOT_CLEANUP_ACTION.DELETE_ISOLATED_STORE,

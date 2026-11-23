@@ -33,23 +33,23 @@ The Astra-medium parent is about 90–97% of the harness cost: $1.05–1.24 per 
 
 ## Setup
 
-- **Code under test:** worktree `~/work/gentle-pi/.worktrees/bench-baseline`, detached at origin/main `c091892699589c26f310fa5b6de91536d7d4268f`, package version 4.7.0. Its `node_modules` is a symlink to the main checkout's `node_modules`, which holds `@earendil-works/pi-coding-agent` **1.5.2**.
+- **Code under test:** worktree `~/work/drakonc-pi/.worktrees/bench-baseline`, detached at origin/main `c091892699589c26f310fa5b6de91536d7d4268f`, package version 4.7.0. Its `node_modules` is a symlink to the main checkout's `node_modules`, which holds `@earendil-works/pi-coding-agent` **1.5.2**.
   - Bare Pi was launched from that root's `node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js`.
-  - The harness was launched with `node <root>/bin/gentle-shell.mjs`, whose bundled CLI resolves to the same package.
-  - The isolated home declares no gentle-pi package, so the launcher injects the root's own copy (same mechanism as #1494).
+  - The harness was launched with `node <root>/bin/drakonc-shell.mjs`, whose bundled CLI resolves to the same package.
+  - The isolated home declares no drakonc-pi package, so the launcher injects the root's own copy (same mechanism as #1494).
   - The worktree stayed clean throughout.
-- **Other versions:** Node v24.14.1, Python 3.14.7, Engram v3.0.0-20261007205017 (shared server), and `gentle-engram@0.4.2`. The home also has `pi-web-access`, `pi-btw` and `pi-claude-bridge`.
-- **Home:** `~/.gentle-shell/agent` for every arm. Bare Pi gets it through `PI_CODING_AGENT_DIR`. Super-yolo is preserved: the primary prompt contains `<gentle-super-yolo-session>`.
+- **Other versions:** Node v24.14.1, Python 3.14.7, Engram v3.0.0-20261007205017 (shared server), and `drakonc-engram@0.4.2`. The home also has `pi-web-access`, `pi-btw` and `pi-claude-bridge`.
+- **Home:** `~/.drakonc-shell/agent` for every arm. Bare Pi gets it through `PI_CODING_AGENT_DIR`. Super-yolo is preserved: the primary prompt contains `<drakonc-super-yolo-session>`.
 - **Model:** `--model openai-codex/gpt-6-astra --thinking medium` in every arm. Every parent session records `model_change openai-codex/gpt-6-astra` and `thinking medium`.
-- **Workflow mode:** set per run with `GENTLE_PI_ORCHESTRATOR_MODE`. Confirmed in each system prompt:
+- **Workflow mode:** set per run with `DRAKONC_PI_ORCHESTRATOR_MODE`. Confirmed in each system prompt:
   - Every O prompt contains `COORDINATOR, not the default executor`.
   - Every FD prompt contains `COORDINATOR in full delegation mode`.
   - B has no orchestrator block.
 - **Worker routing:** taken from the active profile `openai-oauth-delegation`. Every child session and every subagent result reports `openai/gpt-6.1-terra` at `max`.
-  - `~/.gentle-shell/gentle-ai/profiles.json` was not modified: sha1 `e3b0b88122750d50f7220da96ff3b3f245ff5157` before and after, `active` still `openai-oauth-delegation`.
+  - `~/.drakonc-shell/drakonc-ai/profiles.json` was not modified: sha1 `e3b0b88122750d50f7220da96ff3b3f245ff5157` before and after, `active` still `openai-oauth-delegation`.
   - No profile pin was written.
 - **Run location:**
-  - **Harness arms (O, FD):** each run is a fresh `git init` copy of the fixture under `~/work/gentle-pi/.worktrees/bench-runs/base-<task>-<arm><n>/`. Every O and FD primary session's `project_context` section lists exactly `~/AGENTS.md` (67,088 B including its wrapper tag) and `~/work/gentle-pi/AGENTS.md` (12,253 B), 79,406 B in total. Every worker session lists both files in their stripped child form: 13,230 B and 9,117 B, 22,412 B in total.
+  - **Harness arms (O, FD):** each run is a fresh `git init` copy of the fixture under `~/work/drakonc-pi/.worktrees/bench-runs/base-<task>-<arm><n>/`. Every O and FD primary session's `project_context` section lists exactly `~/AGENTS.md` (67,088 B including its wrapper tag) and `~/work/drakonc-pi/AGENTS.md` (12,253 B), 79,406 B in total. Every worker session lists both files in their stripped child form: 13,230 B and 9,117 B, 22,412 B in total.
   - **Bare arm (B):** stays in `/private/tmp/cost-speed-bench-PSQgUo/runs-bare/`, with no AGENTS.md (empty `project_context`), as the drift reference.
 - **Order:** strictly sequential, one model run per tool call, each awaited before the next. Arms were interleaved: F1 B1, O1, FD1, B2, O2, FD2, B3, O3, FD3, then F2 in the same order.
   - Timeouts: 900 s for F1 and 1500 s for F2.
@@ -61,13 +61,13 @@ The Astra-medium parent is about 90–97% of the harness cost: $1.05–1.24 per 
 CLEAN="env -i HOME=$HOME PATH=$PATH USER=$USER LOGNAME=$USER SHELL=/bin/bash LANG=en_US.UTF-8 TERM=dumb TMPDIR=/tmp"
 MODEL=openai-codex/gpt-6-astra; THINK=medium; TO=900   # F1; 1500 for F2
 # B (bare Pi + todo)
-$CLEAN PI_CODING_AGENT_DIR=$HOME/.gentle-shell/agent timeout $TO node $ROOT/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
-  -p --mode json --no-extensions -e $ROOT/extensions/gentle-todo.ts --model $MODEL --thinking $THINK --session-dir $S/sess/$id "$PROMPT" </dev/null
+$CLEAN PI_CODING_AGENT_DIR=$HOME/.drakonc-shell/agent timeout $TO node $ROOT/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
+  -p --mode json --no-extensions -e $ROOT/extensions/drakonc-todo.ts --model $MODEL --thinking $THINK --session-dir $S/sess/$id "$PROMPT" </dev/null
 # O (organic)
-$CLEAN GENTLE_PI_ORCHESTRATOR_MODE=organic GENTLE_SHELL_SKIP_STARTUP_UPDATE=1 timeout $TO node $ROOT/bin/gentle-shell.mjs \
+$CLEAN DRAKONC_PI_ORCHESTRATOR_MODE=organic DRAKONC_SHELL_SKIP_STARTUP_UPDATE=1 timeout $TO node $ROOT/bin/drakonc-shell.mjs \
   -p --mode json --model $MODEL --thinking $THINK --session-dir $S/sess/$id "$PROMPT" </dev/null
 # FD (full delegation)
-$CLEAN GENTLE_PI_ORCHESTRATOR_MODE=full-delegation GENTLE_SHELL_SKIP_STARTUP_UPDATE=1 timeout $TO node $ROOT/bin/gentle-shell.mjs \
+$CLEAN DRAKONC_PI_ORCHESTRATOR_MODE=full-delegation DRAKONC_SHELL_SKIP_STARTUP_UPDATE=1 timeout $TO node $ROOT/bin/drakonc-shell.mjs \
   -p --mode json --model $MODEL --thinking $THINK --session-dir $S/sess/$id "$PROMPT" </dev/null
 # after each run, in the run repo:
 git status --short --untracked-files=all; git rev-parse HEAD   # vs the fixture commit
@@ -78,9 +78,9 @@ tools/hidden.sh <run repo>   # F2 only; PYTHONPATH=<run repo>, cwd = scratch hid
 Metrics come from `tools/analyze.py` and `tools/table.py`:
 
 - **Parent:** the `--session-dir` JSONL.
-- **Children:** each task record in `~/.gentle-shell/agent/gentle-agents/tasks/*.json` whose `parentSessionId` equals the parent session id points to a child session through its `sessionPath`. A `subagent_continue` reuses the same child session and is counted once.
+- **Children:** each task record in `~/.drakonc-shell/agent/drakonc-agents/tasks/*.json` whose `parentSessionId` equals the parent session id points to a child session through its `sessionPath`. A `subagent_continue` reuses the same child session and is counted once.
 - **Effective calls:** parent tool calls with each `codemode` script's inner `tools.*(` calls expanded by regex.
-- **Bookkeeping:** `todo`, `mem_*`, `gentle_odd_phase` and `orchestrator_session_id`.
+- **Bookkeeping:** `todo`, `mem_*`, `drakonc_odd_phase` and `orchestrator_session_id`.
 - **Cost:** Pi's per-message `usage.cost.total`. `totalFromProvider` is `false` everywhere, so cost is a catalog estimate. Astra and Terra are both priced; no model in these runs was unpriced.
 
 ## Tasks
@@ -179,7 +179,7 @@ Every worker called `mem_save` 1–3 times.
 
 Subagent launches:
 
-- Every O and FD run launched exactly one `gentle-ai-worker` session.
+- Every O and FD run launched exactly one `drakonc-ai-worker` session.
 - F1-FD runs used `subagent_run` plus 2 `subagent_continue`, one per fix (sequential fixes, not corrections).
 - Every other harness run used a single `subagent_run`.
 - No run launched an explore or verify agent, and no launch was rejected.
@@ -238,13 +238,13 @@ Subagent launches:
 | B primary | 14,384 | 126 | 348 | 1,390 | 1,293 | 716 | 0 | 10,441 | 70 | – | 4,861 (5 tools) |
 | O primary | 160,917 | 126 | 2,064 | 4,826 | 1,293 | 56,809 | 79,406 | 15,749 | 81 | 563 | 53,382 (60 tools) |
 | FD primary | 158,498 | 126 | 2,064 | 4,826 | 1,293 | 54,642 | 79,406 | 15,749 | 82 | 310 | 53,382 (60 tools) |
-| `gentle-ai-worker` child (O and FD) | 57,885 | 126 | 164 | 232 | 1,293 | 17,585 | 22,412 | 15,749 | 81 | 243 | 6,198 (8 tools) |
+| `drakonc-ai-worker` child (O and FD) | 57,885 | 126 | 164 | 232 | 1,293 | 17,585 | 22,412 | 15,749 | 81 | 243 | 6,198 (8 tools) |
 
 O `mcp_servers` was 563 B in F1-O1 and 310 B in F2-O1.
 
 Per turn, by this transcript method, the primary carries about 214 KB (O) or 212 KB (FD), against 19 KB for B, and a worker carries 64 KB. These totals are estimates: the tool-definition column lists every registered tool and is an upper bound on what is sent (L37; see the final phase). No session recorded a system-prompt patch after the first message.
 
-- **Project context (primary):** `~/AGENTS.md` 67,088 B and `~/work/gentle-pi/AGENTS.md` 12,253 B. In the worker they are 13,230 B and 9,117 B, already stripped by `lib/child-context-files.ts`.
+- **Project context (primary):** `~/AGENTS.md` 67,088 B and `~/work/drakonc-pi/AGENTS.md` 12,253 B. In the worker they are 13,230 B and 9,117 B, already stripped by `lib/child-context-files.ts`.
 - **Skills:** the `skills` section is 15,749 B in both primary and worker.
 - **Second skill catalog:** the primary addendum also carries a new `## Effective session skills` table of 25,511 B, a second skill catalog that was not present in #1494's addendum (#1494 organic addendum: 31,146 B; now 56,809 B). The rest of the addendum is nearly unchanged:
 
@@ -252,11 +252,11 @@ Per turn, by this transcript method, the primary carries about 214 KB (O) or 212
 |---|---|
 | Authorized work continuity | 14,183 |
 | Orchestrator block (core role through Safety) | ~9,600 |
-| `<gentle-super-yolo-session>` | 1,958 |
+| `<drakonc-super-yolo-session>` | 1,958 |
 | Todo list | 737 |
-| gentle-engram protocol | ~2,790 |
+| drakonc-engram protocol | ~2,790 |
 
-- **Engram protocol:** it reaches the primary through `~/AGENTS.md`, the project `AGENTS.md`, and the gentle-engram addendum.
+- **Engram protocol:** it reaches the primary through `~/AGENTS.md`, the project `AGENTS.md`, and the drakonc-engram addendum.
 
 ## Quality
 
@@ -299,7 +299,7 @@ Counts are from `engram projects list`. The bare arm wrote none. These projects 
 
 ## Anomalies
 
-1. **Organic delegated in all 6 runs.** In #1494, organic ran inline: parent `gpt-6.1-sol`/low, run in `/tmp` without `AGENTS.md`. Here every O run launched a terra-max `gentle-ai-worker`.
+1. **Organic delegated in all 6 runs.** In #1494, organic ran inline: parent `gpt-6.1-sol`/low, run in `/tmp` without `AGENTS.md`. Here every O run launched a terra-max `drakonc-ai-worker`.
    - On F1 the parent fixed 2 bugs itself and delegated 1.
    - On F2 the worker did all the work.
    - As a result, O is 2.5–2.7x B in wall time and costs about the same as FD.
@@ -312,11 +312,11 @@ Counts are from `engram projects list`. The bare arm wrote none. These projects 
 
 1. n=3 per arm and task, two tasks, one orchestrator model.
 2. **Provider load:** during the baseline, other delegated writers (T1, T3) used the same provider account (L6). Bare runs were interleaved as the drift reference. B F1 ranged 50.8–57.0 s and B F2 89.2–91.2 s, so drift was small.
-3. **B differs in location as well as harness:** it runs in `/private/tmp` without `AGENTS.md`. It measures bare Pi, not "Gentle Shell without `AGENTS.md`".
+3. **B differs in location as well as harness:** it runs in `/private/tmp` without `AGENTS.md`. It measures bare Pi, not "Drakonc Shell without `AGENTS.md`".
 4. **Costs are Pi catalog estimates** (`totalFromProvider: false`), not billed amounts.
-5. **Wall time includes startup:** it covers the whole launcher process, including Gentle Shell startup and Engram.
+5. **Wall time includes startup:** it covers the whole launcher process, including Drakonc Shell startup and Engram.
 6. **`codemode` calls are expanded by regex** over script text. They appear in the parent counts as effective calls.
-7. **Run repos are retained:** the repos in `~/work/gentle-pi/.worktrees/bench-runs/` are kept for inspection. `.worktrees/` is already untracked in the main checkout.
+7. **Run repos are retained:** the repos in `~/work/drakonc-pi/.worktrees/bench-runs/` are kept for inspection. `.worktrees/` is already untracked in the main checkout.
 
 ## Re-run for the after phase (T7)
 
@@ -342,7 +342,7 @@ The scratch README has the details. Keep the profile, the home and the model fla
 
 ### Setup
 
-- **Code under test:** worktree `~/work/gentle-pi/.worktrees/bench-after`, detached at origin/main `29b57a414e2c980a129074dbfb0114ce169df1a0`, with the same `node_modules` symlink. It includes four merged tasks on top of the baseline:
+- **Code under test:** worktree `~/work/drakonc-pi/.worktrees/bench-after`, detached at origin/main `29b57a414e2c980a129074dbfb0114ce169df1a0`, with the same `node_modules` symlink. It includes four merged tasks on top of the baseline:
   - #3093: generic children get no skills catalog.
   - #3092: agent guidance.
   - #3095: the primary filters context files and dedupes the Engram protocol.
@@ -353,7 +353,7 @@ The scratch README has the details. Keep the profile, the home and the model fla
   - Pi `@earendil-works/pi-coding-agent` is 1.5.2.
   - `profiles.json` sha1 is `e3b0b88122750d50f7220da96ff3b3f245ff5157`, the same as in the baseline, with `active` still `openai-oauth-delegation`.
 - **Everything else unchanged:** same `run.sh`, model `openai-codex/gpt-6-astra` at `medium`, timeouts, fixtures and frozen hashes, home and `env -i`.
-  - Harness run repos live under `~/work/gentle-pi/.worktrees/bench-runs/after-*`.
+  - Harness run repos live under `~/work/drakonc-pi/.worktrees/bench-runs/after-*`.
   - Bare runs live in `runs-bare/` in scratch.
 - **Provider load:** no other agent used the provider during this phase.
 - **Order:** F1 B1, O1 (concurrent, see below), then B4, O4, FD1, B2, O2, FD2, B3, O3, FD3, then F2 B1, O1, FD1, B2, O2, FD2, B3, O3, FD3. Every run exited 0 with empty stderr. Nothing timed out or was retried.
@@ -376,9 +376,9 @@ python3 -B $S/tools/compare.py base after --exclude after-F1-B1,after-F1-O1 > $S
 Checked on the first O session (after-F1-O1, confirmed again on O4) and the first FD session (after-F1-FD1) before the rest of the matrix.
 
 - **Primary project context:** 10,622 B, down from 79,406.
-  - `~/AGENTS.md` keeps 1,440 B, and its only managed block is `gentle-ai:remote-authorization`.
-  - `~/work/gentle-pi/AGENTS.md` keeps 9,117 B, and its only managed block is `gentle-ai:engram-protocol` (8,997 B).
-  - Dropped from the primary: `gentle-ai:orchestrator` and `gentle-ai:agent-routing` in both files, and the home `gentle-ai:engram-protocol` copy.
+  - `~/AGENTS.md` keeps 1,440 B, and its only managed block is `drakonc-ai:remote-authorization`.
+  - `~/work/drakonc-pi/AGENTS.md` keeps 9,117 B, and its only managed block is `drakonc-ai:engram-protocol` (8,997 B).
+  - Dropped from the primary: `drakonc-ai:orchestrator` and `drakonc-ai:agent-routing` in both files, and the home `drakonc-ai:engram-protocol` copy.
 - **Worker system prompt:** the `skills` section is absent. Project context is 10,622 B (the same two blocks), down from 22,412.
 - **Language Boundary:** the full-delegation primary contains `## Language Boundary`.
 - **Primary per turn (transcript method):** sections 91,215 B (O) and 89,165 B (FD); tool definitions 53,552 B (60 tools, an upper bound on what is sent) in both.
@@ -589,7 +589,7 @@ The bare arm's code and prompt are unchanged: 14,384 B sections in base and 14,3
 | | of which addendum | 54,642 | 54,408 | −0.4% |
 | | tool definitions | 53,382 (60) | 53,552 (60) | +0.3% |
 | | **per turn (transcript estimate)** | **211,880** | **142,717** | **−33%** |
-| `gentle-ai-worker` | sections total | 57,885 | 30,511 | −47% |
+| `drakonc-ai-worker` | sections total | 57,885 | 30,511 | −47% |
 | | of which project_context | 22,412 | 10,622 | −53% |
 | | of which skills | 15,749 | 0 (absent) | −100% |
 | | of which addendum | 17,585 | 17,748 | +0.9% |
@@ -606,8 +606,8 @@ The bytes saved come almost entirely from context-file filtering (#3095) and the
 
 **Engram protocol copies in the after primary:** two copies remain.
 
-- The project `AGENTS.md` block `gentle-ai:engram-protocol` (8,997 B) is still loaded.
-- gentle-engram's own addendum protocol (`## Engram Persistent Memory — Protocol`, about 2,790 B) is also present.
+- The project `AGENTS.md` block `drakonc-ai:engram-protocol` (8,997 B) is still loaded.
+- drakonc-engram's own addendum protocol (`## Engram Persistent Memory — Protocol`, about 2,790 B) is also present.
 - Only the home `~/AGENTS.md` copy (11,788 B) was dropped.
 
 Workers carry the same project block.
@@ -616,7 +616,7 @@ Workers carry the same project block.
 
 | Phase | Organic runs that delegated | What the parent did |
 |---|---|---|
-| base | **6 of 6** (one `gentle-ai-worker`, terra-max, per run) | F1: delegated 1 fix and made 2 fixes inline (2 parent edits + 1 worker edit). F2: made no edits; the worker implemented everything. |
+| base | **6 of 6** (one `drakonc-ai-worker`, terra-max, per run) | F1: delegated 1 fix and made 2 fixes inline (2 parent edits + 1 worker edit). F2: made no edits; the worker implemented everything. |
 | after | **0 of 6** (0 of 8 including the 2 extras) | Every run worked inline. F1: 3 parent edits and a focused test run. F2: wrote `loans.py`, updated `__init__.py` and wrote `tests/test_loans.py` (3 parent edits). |
 
 Delegation was the main cost of organic mode in the baseline. Without it, organic wall time fell 60% in both tasks. Organic is now 1.25x B on F1 and 1.02x B on F2.
@@ -707,7 +707,7 @@ The concurrent extras also passed, with no outside files and no commit.
 3. **One rejected launch** (F1-FD3), where the baseline had none. The admission requirement is still missed sometimes.
 4. **More bookkeeping.** In F1, organic parents save one `mem_save` per fix: 3 per run, up from 2. `mem_review` ran in 7 sessions, up from 4.
 5. **Fewer new tests from inline organic F2 runs.** These runs wrote 8–11 new tests (13–16 total), where the base-phase workers wrote 11–18 (16–23 total). This is ungraded: the hidden suite still passed 18/18.
-6. **Engram protocol still reaches the primary twice:** the project block (8,997 B) plus gentle-engram's addendum. The 25.5 KB `Effective session skills` table is unchanged.
+6. **Engram protocol still reaches the primary twice:** the project block (8,997 B) plus drakonc-engram's addendum. The 25.5 KB `Effective session skills` table is unchanged.
 
 ### Engram, after phase
 
@@ -745,18 +745,18 @@ P11 (S15). One phase, `final`, on 2026-11-10/11, 23:56 to 01:50 UTC, plus four r
 
 ### Setup
 
-- **Code under test:** worktree `~/work/gentle-pi/.worktrees/bench-final`, detached at `70becff648472b855134db81c03f6c1d4fe5520a` (main `1308f5479` plus PR #3112), Pi `@earendil-works/pi-coding-agent` 1.5.2, same `node_modules` link. Every run's `.meta` records `root_head=70becff64…` and `pi=1.5.2`.
+- **Code under test:** worktree `~/work/drakonc-pi/.worktrees/bench-final`, detached at `70becff648472b855134db81c03f6c1d4fe5520a` (main `1308f5479` plus PR #3112), Pi `@earendil-works/pi-coding-agent` 1.5.2, same `node_modules` link. Every run's `.meta` records `root_head=70becff64…` and `pi=1.5.2`.
 - **Merged since `after` (29b57a414), from `git log 29b57a414..70becff64`:** #3099 skill contradictions, #3101 verification by change kind, #3100 reply-language anchors append-only, #3103 effective skills block, #3102 lazy-module contradictions, #3104 assess tests isolation, #3105 review follow-ups, #3106 todo reminder append-only, #3107 late child-query answers, #3108 always-on prompt verdicts, #3110 parallel writer admission, #3111 tools by mode (1308f5479), #3112 approved text verdicts (70becff64).
 - **Not in the tree:** P9b (conflict-marker refusal on commits, admission rejections that name the invalid line, a 16 KB cap on child reports) was still in verification. It should not move these numbers: every child report in these tasks is far below 16 KB, no run committed, and no launch in the final phase was rejected (the message change acts only on a rejected launch).
 - **Unchanged:** both harnesses (`/private/tmp/cost-speed-bench-PSQgUo`, `/private/tmp/delegation-check-KGPJRI`), their `run.sh`, fixtures, hidden suites and tools (`shasum -c FROZEN.sha256` OK in both before the first run); `openai-codex/gpt-6-astra` at `medium` for every parent; workers from the active profile `openai-oauth-delegation` (every child session `openai/gpt-6.1-terra@max`); `profiles.json` sha1 `e3b0b88122750d50f7220da96ff3b3f245ff5157` before and after; real HOME as `run.sh` sets it.
-- **Review mode:** `gentle-ai review mode status` printed `receipt-driven development: off (decided by global)` before the first run and after the last.
+- **Review mode:** `drakonc-ai review mode status` printed `receipt-driven development: off (decided by global)` before the first run and after the last.
 - **Order:** F1 B1 O1 FD1, B2 O2 FD2, B3 O3 FD3; F2 in the same order; F3 O3, FD3, O4, FD4; then the quiet replacements F1 FD4, FD5, FD6. One run per tool call, each awaited. Every run exited 0 with empty stderr; nothing timed out, nothing was retried or repeated.
-- **Process counts:** `pgrep -fl "gentle-shell.mjs|pi-coding-agent" | wc -l` was 0 before the first run and 0 after the last; from final-F2-B1 on it was recorded immediately before and after every run, and was 0 every time (column `pgrep` below; `–` = not recorded per run).
+- **Process counts:** `pgrep -fl "drakonc-shell.mjs|pi-coding-agent" | wc -l` was 0 before the first run and 0 after the last; from final-F2-B1 on it was recorded immediately before and after every run, and was 0 every time (column `pgrep` below; `–` = not recorded per run).
 
 **Known contamination, final-F1-B1 through final-F1-FD3.** While these nine runs ran, the parent session had other subagents working on this machine (a verifier running timing probes and test suites, two writers, a ledger worker) on the same account and the same worker model as the full-delegation arm's workers (`gpt-6.1-terra`). The process count above stayed 0 during that window, so it does not detect that load. The F1 full-delegation cell was therefore run again under quiet conditions as FD4–FD6 (the parent launched nothing until the phase ended). Both versions are reported; nothing is dropped.
 
 ```bash
-S=/private/tmp/cost-speed-bench-PSQgUo; ROOT=~/work/gentle-pi/.worktrees/bench-final
+S=/private/tmp/cost-speed-bench-PSQgUo; ROOT=~/work/drakonc-pi/.worktrees/bench-final
 cd $S && ./run.sh final $ROOT F1 B 1   # … one per call, order above
 python3 -B tools/table.py final > out/final-tables.md
 python3 -B tools/compare.py base final > out/compare-base-final.md
@@ -823,7 +823,7 @@ Parent / worker cost medians, final: F1 O 0.653 / 0; F1 FD quiet 0.645 / 0.051 (
 
 ### Bare arm as the day's noise reference
 
-The bare prompt changed by 24 B (`rules` 1,390 → 1,366: the `todo` tool guideline shortened by P7, loaded through `-e $ROOT/extensions/gentle-todo.ts`); tool definitions 4,861 B in all three phases.
+The bare prompt changed by 24 B (`rules` 1,390 → 1,366: the `todo` tool guideline shortened by P7, loaded through `-e $ROOT/extensions/drakonc-todo.ts`); tool definitions 4,861 B in all three phases.
 
 | Task | after B runs (s) | Median | final B runs (s) | Median | Change | $ median after → final |
 |---|---|---|---|---|---|---|
@@ -849,7 +849,7 @@ Sections = the first system message's sections; tool definitions = its `toolsAdd
 | | of which addendum | 54,642 | 54,408 | 40,845 | −13,563 |
 | | tool definitions (transcript) | 53,382 (60) | 53,552 (60) | 53,542 (60) | −10 |
 | | **per turn (transcript estimate)** | **211,880** | **142,717** | **128,655** | **−14,062 (−10%)**; vs base −39% |
-| `gentle-ai-worker` | sections total | 57,885 | 30,511 | 30,540 | +29 |
+| `drakonc-ai-worker` | sections total | 57,885 | 30,511 | 30,540 | +29 |
 | | tool definitions | 6,198 (8) | 6,198 (8) | 6,198 (8) | 0 |
 | | **per turn (transcript estimate)** | **64,083** | **36,709** | **36,738** | **+29** |
 
@@ -932,7 +932,7 @@ Medians, old → new: organic 660.9 s → 654.9 s, $2.276 → $1.422 (−38%), p
 
 ## Full delegation after the launch-sentence fix (8b2a492b6)
 
-P6b live check, 2026-11-11 02:22–02:35 UTC. Tree `.worktrees/fd-parallel-launch` at 8b2a492b6 (main e8a56a1a4 plus the reworded `orchestrator-full-delegation.md:25`); same harness (`/private/tmp/delegation-check-KGPJRI`, `shasum -c FROZEN.sha256` OK), `./run.sh $ROOT F3 FD 5` then `FD 6`, one per tool call, each awaited. Both rc 0, empty stderr, no timeout, no retry, no provider error (no assistant message with `stopReason: error`, no retry event in the JSON stream). `gentle-ai review mode status`: `receipt-driven development: off (decided by global)` before and after. `pgrep -fl "gentle-shell.mjs|pi-coding-agent" | wc -l`: 0 before and after each run; no other Gentle Shell subagent ran (visible: this check's parent and worker sessions, three idle interactive `gentle-shell` processes, one `gh pr checks 3114 --watch`, gone after FD6). Workers `openai/gpt-6.1-terra@max`. Scratch `/private/tmp/p6bl-pPjkOF`.
+P6b live check, 2026-11-11 02:22–02:35 UTC. Tree `.worktrees/fd-parallel-launch` at 8b2a492b6 (main e8a56a1a4 plus the reworded `orchestrator-full-delegation.md:25`); same harness (`/private/tmp/delegation-check-KGPJRI`, `shasum -c FROZEN.sha256` OK), `./run.sh $ROOT F3 FD 5` then `FD 6`, one per tool call, each awaited. Both rc 0, empty stderr, no timeout, no retry, no provider error (no assistant message with `stopReason: error`, no retry event in the JSON stream). `drakonc-ai review mode status`: `receipt-driven development: off (decided by global)` before and after. `pgrep -fl "drakonc-shell.mjs|pi-coding-agent" | wc -l`: 0 before and after each run; no other Drakonc Shell subagent ran (visible: this check's parent and worker sessions, three idle interactive `drakonc-shell` processes, one `gh pr checks 3114 --watch`, gone after FD6). Workers `openai/gpt-6.1-terra@max`. Scratch `/private/tmp/p6bl-pPjkOF`.
 
 | Run | Tree | Launches (calls / messages / route) | Overlap | Wall s | $ parent / workers / total | Hidden |
 |---|---|---|---|---|---|---|
@@ -943,7 +943,7 @@ P6b live check, 2026-11-11 02:22–02:35 UTC. Tree `.worktrees/fd-parallel-launc
 | FD5 | 8b2a492b6 | 3 / 1 / `codemode` | yes | 360.2 | 0.652 / 0.443 / 1.094 | 28/28 |
 | FD6 | 8b2a492b6 | 3 / 1 / `codemode` | yes | 386.6 | 0.643 / 0.517 / 1.159 | 28/28 |
 
-- **FD5:** parent turn 4 of 7 held one `codemode` call and nothing else; the script ran `Promise.allSettled(jobs.map(… tools.subagent_run({agent:"gentle-ai-worker", mode:"task", …})))` over three units. Children started 02:23:17, durations 210 / 221 / 277 s, ended 02:26:47 / 02:26:58 / 02:27:54. No `subagent_continue`, no new worker for a fix, no verifier (3 worker sessions). Public 51 tests OK; 13 child edits, 0 parent edits; no outside files; no commits.
+- **FD5:** parent turn 4 of 7 held one `codemode` call and nothing else; the script ran `Promise.allSettled(jobs.map(… tools.subagent_run({agent:"drakonc-ai-worker", mode:"task", …})))` over three units. Children started 02:23:17, durations 210 / 221 / 277 s, ended 02:26:47 / 02:26:58 / 02:27:54. No `subagent_continue`, no new worker for a fix, no verifier (3 worker sessions). Public 51 tests OK; 13 child edits, 0 parent edits; no outside files; no commits.
 - **FD6:** parent turn 3 of 6 held one `codemode` call and nothing else; same `Promise.allSettled` over three `subagent_run` (`mode: "task"`). Children started 02:29:38, durations 193 / 235 / 302 s, ended 02:32:51 / 02:33:33 / 02:34:40. No `subagent_continue`, no new worker for a fix, no verifier (3 worker sessions). Public 64 tests OK; 15 child edits, 0 parent edits; no outside files; no commits.
 
 What the two runs show:

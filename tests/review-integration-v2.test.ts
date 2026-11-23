@@ -254,15 +254,15 @@ test("failure with code managed_assets_outdated decodes its continuation, degrad
 		replayability: "manual_action_required",
 		required_inputs: [],
 		next_action: "explicit-maintainer-action",
-		continuation: { operation: "sync", command: "gentle-ai sync --agent claude-code", agent: "claude-code", stale_assets: ["orchestration/claude-code.md"] },
+		continuation: { operation: "sync", command: "drakonc-ai sync --agent claude-code", agent: "claude-code", stale_assets: ["orchestration/claude-code.md"] },
 	};
-	assert.deepEqual(decodeReviewFailureV2(source).continuation, { operation: "sync", command: "gentle-ai sync --agent claude-code", agent: "claude-code", staleAssets: ["orchestration/claude-code.md"] });
+	assert.deepEqual(decodeReviewFailureV2(source).continuation, { operation: "sync", command: "drakonc-ai sync --agent claude-code", agent: "claude-code", staleAssets: ["orchestration/claude-code.md"] });
 
 	const missingCommand = clone(source);
 	delete (missingCommand.continuation as JsonObject).command;
 	assert.throws(() => decodeReviewFailureV2(missingCommand), /command.*required|required.*command/);
 
-	// an older gentle-ai may emit managed_assets_outdated with no continuation
+	// an older drakonc-ai may emit managed_assets_outdated with no continuation
 	// at all; decode must not refuse the whole envelope for that
 	const missingContinuation = clone(source);
 	delete missingContinuation.continuation;
@@ -528,19 +528,19 @@ test("next_transition decodes an execute variant and rejects a stop that carries
 	assert.throws(() => decodeReviewNextTransitionV3(stopWithExecute), /stop cannot carry/);
 });
 
-// gentle-pi#627: gentle-ai reports a stale managed-asset set as a typed stop
-// carrying the exact `gentle-ai sync` invocation that resolves it.
+// drakonc-pi#627: drakonc-ai reports a stale managed-asset set as a typed stop
+// carrying the exact `drakonc-ai sync` invocation that resolves it.
 function managedAssetsContinuation(overrides: Partial<JsonObject> = {}): JsonObject {
-	return { operation: "sync", command: "gentle-ai sync --agent claude-code", agent: "claude-code", stale_assets: ["orchestration/claude-code.md"], ...overrides };
+	return { operation: "sync", command: "drakonc-ai sync --agent claude-code", agent: "claude-code", stale_assets: ["orchestration/claude-code.md"], ...overrides };
 }
 
 test("next_transition stop decodes a managed_assets_outdated continuation and rejects a malformed one", () => {
 	const stop: JsonObject = { kind: "stop", reason_code: "managed_assets_outdated", continuation: managedAssetsContinuation() };
 	const decoded = decodeReviewNextTransitionV3(stop);
-	assert.deepEqual(decoded.continuation, { operation: "sync", command: "gentle-ai sync --agent claude-code", agent: "claude-code", staleAssets: ["orchestration/claude-code.md"] });
+	assert.deepEqual(decoded.continuation, { operation: "sync", command: "drakonc-ai sync --agent claude-code", agent: "claude-code", staleAssets: ["orchestration/claude-code.md"] });
 
-	const bare: JsonObject = { kind: "stop", reason_code: "managed_assets_outdated", continuation: { operation: "sync", command: "gentle-ai sync" } };
-	assert.deepEqual(decodeReviewNextTransitionV3(bare).continuation, { operation: "sync", command: "gentle-ai sync" });
+	const bare: JsonObject = { kind: "stop", reason_code: "managed_assets_outdated", continuation: { operation: "sync", command: "drakonc-ai sync" } };
+	assert.deepEqual(decodeReviewNextTransitionV3(bare).continuation, { operation: "sync", command: "drakonc-ai sync" });
 
 	const missingCommand = clone(stop);
 	delete (missingCommand.continuation as JsonObject).command;
@@ -550,7 +550,7 @@ test("next_transition stop decodes a managed_assets_outdated continuation and re
 	(emptyCommand.continuation as JsonObject).command = "";
 	assert.throws(() => decodeReviewNextTransitionV3(emptyCommand), /command/);
 
-	// an older gentle-ai may emit this stop with no continuation at all; decode
+	// an older drakonc-ai may emit this stop with no continuation at all; decode
 	// must not refuse the whole envelope for that
 	const missingForReasonCode = { kind: "stop", reason_code: "managed_assets_outdated" };
 	assert.equal(decodeReviewNextTransitionV3(missingForReasonCode).continuation, undefined);
@@ -563,8 +563,8 @@ test("next_transition stop decodes a managed_assets_outdated continuation and re
 	assert.equal(plainStop.continuation, undefined);
 });
 
-// gentle-pi#638: after the host relay declares a selected lens slot
-// unachievable through the native capture-unachievable verb, gentle-ai's
+// drakonc-pi#638: after the host relay declares a selected lens slot
+// unachievable through the native capture-unachievable verb, drakonc-ai's
 // STATUS stops with reason_code unachievable_lens_slot and carries one entry
 // per declared slot, each naming the complete withdraw command
 // (contracts/review-integration/v2/schemas/status-v7.schema.json, the stop
@@ -631,7 +631,7 @@ test("next_transition stop decodes unachievable_lens_slots and their withdraw bi
 	assert.equal(decodeReviewNextTransitionV3({ kind: "stop", reason_code: "rdd_disabled" }).unachievableLensSlots, undefined);
 });
 
-// gentle-pi#822: the withdraw form names the slot identity twice — as named arguments and as the binding object — and a slot whose two renderings disagree never decodes, so restart cannot withdraw a different slot.
+// drakonc-pi#822: the withdraw form names the slot identity twice — as named arguments and as the binding object — and a slot whose two renderings disagree never decodes, so restart cannot withdraw a different slot.
 test("next_transition stop refuses an unachievable slot whose withdraw arguments disagree with its identity", () => {
 	const stop: JsonObject = { kind: "stop", reason_code: "unachievable_lens_slot", unachievable_lens_slots: [unachievableSlot()] };
 	const drift = (name: string, value: string): JsonObject => {
@@ -647,7 +647,7 @@ test("next_transition stop refuses an unachievable slot whose withdraw arguments
 	assert.doesNotThrow(() => decodeReviewNextTransitionV3(stop));
 });
 
-// gentle-pi#822: identity arguments appear exactly once, and the rendered
+// drakonc-pi#822: identity arguments appear exactly once, and the rendered
 // command is an exact, ordered rendering of every validated provider token.
 // Substring checks would accept a missing non-identity token, repeated command,
 // suffix, or shell payload despite the command no longer naming this slot alone.
@@ -672,7 +672,7 @@ test("next_transition stop refuses duplicate identities and non-exact withdraw c
 	assert.doesNotThrow(() => decodeReviewNextTransitionV3(stop));
 });
 
-// gentle-pi#822 (CodeRabbit finding): withdrawal is a narrowly scoped, runnable
+// drakonc-pi#822 (CodeRabbit finding): withdrawal is a narrowly scoped, runnable
 // retraction. Its one affirmative flag is part of the exact native vector, not
 // just another provider-defined argument that a malformed STATUS can omit or
 // negate while still rendering a plausible command.
@@ -712,7 +712,7 @@ test("next_transition stop requires exactly one canonical --withdraw=true argume
 	assert.throws(() => decodeReviewNextTransitionV3({ ...stop, unachievable_lens_slots: [duplicate] }), /withdraw must appear exactly once/);
 });
 
-// gentle-pi#822 (CodeRabbit finding): Go bounds the CAPTURE_UNACHIEVABLE detail at 512 UTF-8 bytes (native-review-cli.ts enforces the same limit when declaring), so the transition decoder mirrors that bound — measured in bytes, not UTF-16 code units — and a STATUS stop can never carry a detail this client would have refused to declare.
+// drakonc-pi#822 (CodeRabbit finding): Go bounds the CAPTURE_UNACHIEVABLE detail at 512 UTF-8 bytes (native-review-cli.ts enforces the same limit when declaring), so the transition decoder mirrors that bound — measured in bytes, not UTF-16 code units — and a STATUS stop can never carry a detail this client would have refused to declare.
 test("next_transition stop bounds an unachievable slot detail at 512 UTF-8 bytes", () => {
 	const stop: JsonObject = { kind: "stop", reason_code: "unachievable_lens_slot", unachievable_lens_slots: [unachievableSlot()] };
 	// exactly 512 one-byte characters still decodes
@@ -868,7 +868,7 @@ test("next_transition.execute accepts the optional selector_arguments and artifa
 	assert.doesNotThrow(() => decodeReviewNextTransitionV3({ ...base, execute: { ...base.execute, selector_arguments: [{ name: "projection", value: "workspace", token: "--projection=workspace" }] } }));
 });
 
-// gentle-pi#311 P4-roles: the two Go-owned non-lens provider role capture
+// drakonc-pi#311 P4-roles: the two Go-owned non-lens provider role capture
 // operations render SELF-CONTAINED vectors (binding tokens + --agent=pi
 // --execute=true). Their schemas are pinned, and a submission descriptor on
 // either one is a contract violation because it would hand the caller a way
@@ -925,7 +925,7 @@ test("next_transition decodes the self-contained provider role capture vectors s
 	);
 });
 
-// gentle-ai's v9 contract makes the same two role operations host-mediated
+// drakonc-ai's v9 contract makes the same two role operations host-mediated
 // exactly like a lens materialize slot: the input carries a submission
 // descriptor alongside --materialize=true (never --execute), and the host
 // completes the frozen prompt in-process and submits through that
@@ -944,7 +944,7 @@ test("next_transition decodes the v9 host-mediated provider role submission form
 		reason_code: "provider_refuter_required",
 		collect: { inputs: [{ name, schema, capture_operation: captureOperation, arguments: materializeArguments, ...extra }] },
 	});
-	// This decoder path is gated on v9 specifically -- the sibling gentle-ai
+	// This decoder path is gated on v9 specifically -- the sibling drakonc-ai
 	// branch's contract, ahead of the currently-released v8 -- not on v5,
 	// which v8 (and v6/v7) already satisfy.
 	const decodeRoleTransition = (value: unknown) => decodeReviewNextTransitionV3(value, { v9: true });
@@ -1006,7 +1006,7 @@ test("next_transition decodes the v9 host-mediated provider role submission form
 });
 
 test("targeted validation preserves an explicitly frozen empty policy without accepting absent or non-string policy", () => {
-	// Gentle AI v4.3.1 CompactState explicitly distinguishes a non-nil empty
+	// Drakonc AI v4.3.1 CompactState explicitly distinguishes a non-nil empty
 	// policy from missing historical policy; both the constructor and request
 	// serializer retain the empty string. It is evidence, not a required label.
 	const sha = `sha256:${"a".repeat(64)}`;
@@ -1049,7 +1049,7 @@ test("v5 targeted-validator collect inputs carry the exact provider-owned valida
 		expected_revision: expectedRevision,
 		target_identity: targetIdentity,
 		fix_finding_ids: ["R1-001"],
-		policy_content: "Gentle AI native bounded review policy.",
+		policy_content: "Drakonc AI native bounded review policy.",
 		fix_findings: [{
 			id: "R1-001",
 			lens: "risk",

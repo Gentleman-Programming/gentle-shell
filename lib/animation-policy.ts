@@ -1,14 +1,14 @@
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 
 export const ANIMATION_POLICY = { QUALITY: "quality", PERFORMANCE: "performance", POTATO: "potato" } as const;
 export type AnimationPolicy = (typeof ANIMATION_POLICY)[keyof typeof ANIMATION_POLICY];
 const SOURCE = { GLOBAL: "global_file", DEFAULT: "default" } as const;
-export const ANIMATION_SCHEMA = "gentle-pi.animations/v1";
+export const ANIMATION_SCHEMA = "drakonc-pi.animations/v1";
 
-interface AnimationOptions { gentlePiConfigHome?: string }
+interface AnimationOptions { drakoncPiConfigHome?: string }
 export interface AnimationResolution {
 	policy: AnimationPolicy;
 	source: (typeof SOURCE)[keyof typeof SOURCE];
@@ -26,7 +26,7 @@ export function parseAnimationPolicyFile(raw: string): AnimationPolicy | undefin
 }
 
 export function resolveAnimationPolicy(options: AnimationOptions = {}): AnimationResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), "animations.json");
+	const globalFile = join(options.drakoncPiConfigHome ?? drakoncPiConfigHome(), "animations.json");
 	try {
 		const policy = parseAnimationPolicyFile(readFileSync(globalFile, "utf8"));
 		return { policy: policy ?? "quality", source: SOURCE.GLOBAL, malformed: policy === undefined, globalFile };
@@ -38,7 +38,7 @@ export function resolveAnimationPolicy(options: AnimationOptions = {}): Animatio
 
 /** Same-directory rename prevents readers from seeing a partially written policy. */
 export function writeAnimationPolicy(policy: AnimationPolicy, options: AnimationOptions = {}): string {
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.drakoncPiConfigHome ?? drakoncPiConfigHome();
 	const path = join(home, "animations.json");
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	mkdirSync(home, { recursive: true });

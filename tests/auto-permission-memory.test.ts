@@ -3,7 +3,7 @@ import test from "node:test";
 import { AutoPermissionMemory } from "../lib/auto-permission-memory.ts";
 
 function fixture() {
- const sourceInfo={path:"/installed/gentle-engram/index.ts",source:"npm:gentle-engram@0.2.0",scope:"user",origin:"package"};
+ const sourceInfo={path:"/installed/drakonc-engram/index.ts",source:"npm:drakonc-engram@0.2.0",scope:"user",origin:"package"};
  const tools=["mem_current_project","mem_save","mem_session_summary"].map(name=>({name,sourceInfo:{...sourceInfo}}));
  const branch=[{id:"human"}];
  let id="session",epoch=1;
@@ -22,7 +22,7 @@ test("memory context needs admitted provider resolution and explicit matching de
  f.memory.result({...f.call,isError:false,details:{data:f.data}} as any,f.ctx,1);
  assert.equal(f.context(),undefined,"unsolicited result is not a live resolution");
  f.resolve();
- assert.deepEqual(f.context(),{provider:"gentle-engram",operation:"mem_save",project:"canonical-key",cwd:"/project"});
+ assert.deepEqual(f.context(),{provider:"drakonc-engram",operation:"mem_save",project:"canonical-key",cwd:"/project"});
  for(const input of [{project:"canonical-key"},{cwd:"/other",project:"canonical-key"},{cwd:"/project",project:"other"},
   {...f.save.input,scope:"global"},{...f.save.input,scope:"personal"},{...f.save.input,session_id:"claimed"}]) {
   assert.equal(f.memory.context({...f.save,input},f.ctx,1),undefined);

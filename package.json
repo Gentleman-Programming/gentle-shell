@@ -1,18 +1,18 @@
 {
-	"name": "gentle-pi",
+	"name": "drakonc-pi",
 	"version": "5.0.0",
-	"description": "Turn Pi into el Gentleman: an ODD development harness with focused subagents, configured TDD evidence, native review, and skill discovery.",
+	"description": "Turn Pi into el Drakoncman: an ODD development harness with focused subagents, configured TDD evidence, native review, and skill discovery.",
 	"license": "MIT",
 	"type": "module",
 	"bin": {
-		"gentle-shell": "bin/gentle-shell.mjs"
+		"drakonc-shell": "bin/drakonc-shell.mjs"
 	},
 	"keywords": [
 		"pi-package",
 		"pi",
 		"pi-coding-agent",
-		"gentle-pi",
-		"gentle-ai",
+		"drakonc-pi",
+		"drakonc-ai",
 		"odd",
 		"subagents",
 		"tdd",
@@ -22,7 +22,7 @@
 	],
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/Gentleman-Programming/gentle-shell.git"
+		"url": "git+https://github.com/Drakoncman-Programming/drakonc-shell.git"
 	},
 	"files": [
 		"assets/",
@@ -50,7 +50,7 @@
 	],
 	"scripts": {
 		"check:provider-contract": "node scripts/check-provider-contract.mjs",
-		"postinstall": "node scripts/install-gentle-ai.mjs",
+		"postinstall": "node scripts/install-drakonc-ai.mjs",
 		"test": "node scripts/run-test-suite.mjs",
 		"test:harness": "node --experimental-strip-types tests/runtime-harness.mjs",
 		"test:dev-binary": "node --experimental-strip-types --test tests/devbinary/*.devtest.ts",
@@ -66,7 +66,7 @@
 		"build:tower": "cd web/tower && pnpm install --frozen-lockfile && pnpm build"
 	},
 	"pi": {
-		"image": "https://cdn.jsdelivr.net/npm/gentle-pi/assets/gentle-logo-only.png",
+		"image": "https://cdn.jsdelivr.net/npm/drakonc-pi/assets/drakonc-logo-only.png",
 		"extensions": [
 			"./extensions"
 		],

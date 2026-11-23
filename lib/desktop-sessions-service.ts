@@ -1,4 +1,4 @@
-// Gentle Desktop sessions bridge: lists sessions and switches by id through
+// Drakonc Desktop sessions bridge: lists sessions and switches by id through
 // the owner Pi already provides in-process. `SessionManager.list`, `listAll`,
 // and `findById` read and resolve sessions with the runtime's own session
 // directory (custom `sessionDir` included, read from the live session
@@ -95,7 +95,7 @@ export class DesktopSessionsBridge {
 		this.owner = "owner" in options ? options.owner : SessionManager;
 	}
 
-	/** The command context of this Desktop session; bound per `/gentle:desktop` command. */
+	/** The command context of this Desktop session; bound per `/drakonc:desktop` command. */
 	attach(context: CommandHost): void {
 		this.host = context;
 	}

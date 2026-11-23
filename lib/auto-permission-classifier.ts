@@ -226,7 +226,7 @@ function prepare(r: AutoPermissionRequest): string {
 		const candidate = json(r.memoryContext) as AutoPermissionMemoryContext;
 		const args = capturedAction.input as Record<string, unknown> | null;
 		if (!candidate || Array.isArray(candidate) || typeof candidate !== "object" || Object.keys(candidate).length !== 4 ||
-			candidate.provider !== "gentle-engram" || !["mem_save", "mem_session_summary"].includes(candidate.operation) ||
+			candidate.provider !== "drakonc-engram" || !["mem_save", "mem_session_summary"].includes(candidate.operation) ||
 			candidate.operation !== capturedAction.toolName || typeof candidate.project !== "string" ||
 			!candidate.project.trim() || candidate.project.length > 256 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(candidate.project) ||
 			candidate.cwd !== r.cwd || !args || args.cwd !== candidate.cwd || args.project !== candidate.project ||

@@ -12,8 +12,8 @@ const ROOT = join(import.meta.dirname, "..");
 const read = (path: string): string => readFileSync(join(ROOT, path), "utf8");
 
 const verification = read("assets/orchestrator-verification.md");
-const verify = read("assets/agents/gentle-ai-verify.md");
-const worker = read("assets/agents/gentle-ai-worker.md");
+const verify = read("assets/agents/drakonc-ai-verify.md");
+const worker = read("assets/agents/drakonc-ai-worker.md");
 const docs = read("docs/delegated-verification.md");
 const LENSES = ["review-risk", "review-reliability", "review-resilience", "review-readability"].map((name) => `assets/agents/${name}.md`);
 const JUDGES = ["assets/agents/jd-judge-a.md", "assets/agents/jd-judge-b.md"];
@@ -43,7 +43,7 @@ test("P8 rule 1: the verifier does not use the writer's reported suite as its ma
 	], "verification spot check");
 });
 
-// Cost-speed S15 P16 (from the review of gentle-ai PR #6072): when the user's failing command is the writer's
+// Cost-speed S15 P16 (from the review of drakonc-ai PR #6072): when the user's failing command is the writer's
 // reported suite, the rule against re-running that suite must not leave the user-reported fix unverified.
 test("P16: the user's failing command is run even when it is the suite the writer reported", () => {
 	const kinds = sectionOf(verify, "## Evidence by change kind");
@@ -54,7 +54,7 @@ test("P16: the user's failing command is run even when it is the suite the write
 	assert.ok(docs.includes("it does not re-run the suite the writer reported, because the parent's single spot check of one reported command is the check on the writer's own results; the one exception is the user's failing command the parent passes, which it runs even when it is that suite."), "the docs state the same exception next to the prohibition");
 });
 
-// Cost-speed S15 P17 (from the review of gentle-ai PR #6072): a passing run on the change proves nothing when the
+// Cost-speed S15 P17 (from the review of drakonc-ai PR #6072): a passing run on the change proves nothing when the
 // user's failing command did not fail at the baseline with the user's error; the fix stays unverified then.
 test("P17: a user-reported fix is verified only when the failure reproduces at the baseline with the user's error", () => {
 	const kinds = sectionOf(verify, "## Evidence by change kind");
@@ -135,7 +135,7 @@ test("P8 C1: the second correction is stated before the remaining blockers leave
 test("P8 C2: the writer adds verifier probes as regression tests and the parent commits", () => {
 	assert.ok(verification.includes("the writer adds its probes as regression tests; the parent commits when a commit is authorized."), "verification must say the parent commits only when a commit is authorized");
 	assert.ok(!verification.includes("the writer commits its probes"), "the writer never commits");
-	// Cost-speed S15 P16 (from the review of gentle-ai PR #6072): the parent commits the probes only when a commit is authorized.
+	// Cost-speed S15 P16 (from the review of drakonc-ai PR #6072): the parent commits the probes only when a commit is authorized.
 	assert.ok(verify.includes("for the parent to hand to the writer, who adds them; the parent commits them only when a commit is authorized, otherwise they stay uncommitted; you never write them"), "verify durable probes must say the parent commits only when a commit is authorized");
 	assert.ok(!verify.includes("the parent commits; you never write them"), "the unconditional commit sentence is gone from the verifier body");
 	assert.ok(!verify.includes("to hand to the writer to commit"), "verify must not say the writer commits");
@@ -179,7 +179,7 @@ test("P8 C13: review lenses and Judgment Day judges carry no prose output instru
 test("P8 X6: the Verification rule carries no stale number or not-restated claim", () => {
 	assert.ok(!verification.includes("5. **Verification rule**"), "stale trigger number");
 	assert.ok(!verification.includes("referenced, not restated"), "the rule is restated elsewhere; the claim is false");
-	assert.ok(verification.includes("**Verification rule** (gentle-pi#661/#662):"), "the rule keeps its issue references");
+	assert.ok(verification.includes("**Verification rule** (drakonc-pi#661/#662):"), "the rule keeps its issue references");
 });
 
 // Preservation: PR #3084 setup self-correction and PR #3092 first-launch reads and resume rule.
@@ -207,7 +207,7 @@ test("P8 B1: the parent passes the user's environment and runs the real-case che
 		"Run yourself any real-case check the verifier leaves unverified before calling the change verified.",
 	], "verification handoff B1");
 	// Cost-speed S15 P5a: the always-on verifier-setup paragraph moved into this module (MODULE_BUDGETS in
-	// tests/task-size-routing-contract.test.ts holds the arithmetic): 7,900 -> 8,608 B; mode-neutral wording: 8,656 B; P16 conditional commit, paid by trimming restated phrases: 8,648 B; gentle-shell#3082 terminal-disposition raise: 8,900 B (#3149).
+	// tests/task-size-routing-contract.test.ts holds the arithmetic): 7,900 -> 8,608 B; mode-neutral wording: 8,656 B; P16 conditional commit, paid by trimming restated phrases: 8,648 B; drakonc-shell#3082 terminal-disposition raise: 8,900 B (#3149).
 	assert.ok(verification.length > 0 && Buffer.byteLength(verification) <= 8_900, "the module stays within its 8,900 B budget");
 });
 

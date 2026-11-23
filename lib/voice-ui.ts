@@ -2,7 +2,7 @@ import { isKeyRelease, matchesKey, truncateToWidth } from "@earendil-works/pi-tu
 import type { VoiceInstallProgress } from "./voice-install.ts";
 import type { VoiceSessionState } from "./voice-session.ts";
 
-// The two compact /gentle:voice overlays: download progress and one dictation.
+// The two compact /drakonc:voice overlays: download progress and one dictation.
 // They only render state and report keys; the command owns the install and the
 // session. After dispose() a view ignores every update and key and never asks
 // for a repaint, so a late state change from a closing session is harmless.

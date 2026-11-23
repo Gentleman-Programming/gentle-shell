@@ -9,7 +9,7 @@ import type {
 	ExtensionContext,
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
-import gentleAi, { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import drakoncAi, { __testing, createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import {
 	REVIEW_MODE,
 	REVIEW_TRANSITION,
@@ -89,8 +89,8 @@ function registerRuntime(nativeReviewCli: NativeReviewCli | null = null): Runtim
 		},
 		registerCommand() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli })(pi);
-	const controller = tools.get("gentle_review");
+	createDrakoncAiExtension({ nativeReviewCli })(pi);
+	const controller = tools.get("drakonc_review");
 	const toolCall = handlers.get("tool_call");
 	assert.ok(controller, "the supported review controller tool must be registered");
 	assert.ok(toolCall, "the lifecycle gate hook must be registered");
@@ -120,7 +120,7 @@ function git(repository: string, ...args: string[]): string {
 }
 
 function createRepository(t: test.TestContext): RepositoryFixture {
-	const parent = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-review-controller-")));
+	const parent = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-review-controller-")));
 	const repository = join(parent, "repo");
 	mkdirSync(repository);
 	t.after(() => rmSync(parent, { recursive: true, force: true }));
@@ -325,7 +325,7 @@ test("ordinary START without legacy credentials does not demand Judgment Day pre
 	assert.equal(started.operation, "start");
 	assert.equal(started.outcome, "native-status-unsupported");
 	assert.equal(started.mutation_performed, false);
-	assert.equal(existsSync(join(fixture.repository, ".git", "gentle-ai", "reviews", "graph-v1")), false);
+	assert.equal(existsSync(join(fixture.repository, ".git", "drakonc-ai", "reviews", "graph-v1")), false);
 });
 
 test("judgment-day START reports missing credentials after a supported mode is accepted", async (t) => {
@@ -347,7 +347,7 @@ test("judgment-day START reports missing credentials after a supported mode is a
 		controller.execute("judgment-day-missing-lineage", { operation: "start", idempotencyKey: "judgment-day-start-key", input }, undefined, undefined, ctx),
 		/Judgment Day graph-v1 START requires lineageId/,
 	);
-	assert.equal(existsSync(join(fixture.repository, ".git", "gentle-ai", "reviews", "graph-v1")), false);
+	assert.equal(existsSync(join(fixture.repository, ".git", "drakonc-ai", "reviews", "graph-v1")), false);
 });
 
 test("general STATUS returns the typed native-status-unsupported boundary without authority selection", () => {
@@ -359,7 +359,7 @@ test("general STATUS returns the typed native-status-unsupported boundary withou
 		mutation_performed: false,
 		inventory_complete: false,
 		next_action: "check-native-provider-capabilities",
-		remediation_command: "gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition",
+		remediation_command: "drakonc-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition",
 		evidence: {
 			expected_contract: "gentle-ai.review-integration/v2",
 			general_status: "unsupported",
@@ -368,9 +368,9 @@ test("general STATUS returns the typed native-status-unsupported boundary withou
 	});
 });
 
-test("gentle-pi#185: general STATUS on a non-negotiated native CLI names the exact status command to run", async (t) => {
+test("drakonc-pi#185: general STATUS on a non-negotiated native CLI names the exact status command to run", async (t) => {
 	// The legacy `correctionForecast` restoration guard this issue originally
-	// reported (extensions/gentle-ai.ts, then around line 5329) was scoped to
+	// reported (extensions/drakonc-ai.ts, then around line 5329) was scoped to
 	// `targetStatus !== undefined` and skipped restoring a candidate view when
 	// the native CLI lacked negotiated STATUS support, reproducing the #176
 	// empty-registry failure. That entire manual FINALIZE lifecycle (and the
@@ -388,7 +388,7 @@ test("gentle-pi#185: general STATUS on a non-negotiated native CLI names the exa
 	assert.equal(result.outcome, "native-status-unsupported");
 	assert.equal(
 		result.remediation_command,
-		"gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition",
+		"drakonc-ai review status --cwd <repo> --contract gentle-ai.review-integration/v2 --agent pi --next-transition",
 	);
 });
 
@@ -409,7 +409,7 @@ test("failed START gives exact mode and serialization guidance and creates no li
 	const { controller } = registerRuntime(native);
 	const ctx = extensionContext(fixture.repository);
 	const modeGuidance = /only "ordinary" or "judgment-day".*JSON string.*no lineage was created.*do not call STATUS or ADVANCE/is;
-	const graphPath = join(fixture.repository, ".git", "gentle-ai", "reviews", "graph-v1");
+	const graphPath = join(fixture.repository, ".git", "drakonc-ai", "reviews", "graph-v1");
 	const committedRange = { baseRef: fixture.baseCommit, committedOnly: true };
 
 	await assert.rejects(
@@ -473,7 +473,7 @@ test("failed START gives exact mode and serialization guidance and creates no li
 });
 
 
-test("shipped controller fails closed while static prompts defer RDD lifecycle ownership to Gentle AI", () => {
+test("shipped controller fails closed while static prompts defer RDD lifecycle ownership to Drakonc AI", () => {
 	const { controller } = registerRuntime();
 	const toolContract = [
 		controller.description,
@@ -484,17 +484,17 @@ test("shipped controller fails closed while static prompts defer RDD lifecycle o
 
 	assert.match(toolContract, /native-input-required.*never.*invent/is);
 	assert.match(toolContract, /output.*lost|response.*lost|ambiguous.*START/is);
-	assert.match(toolContract, /ambiguous START output.*target-scoped native status.*declared action.*ambiguous gentle_review_capture.*never replays/is);
+	assert.match(toolContract, /ambiguous START output.*target-scoped native status.*declared action.*ambiguous drakonc_review_capture.*never replays/is);
 	assert.doesNotMatch(toolContract, /START throws.*lineage does not exist/is);
 
 	// cost-speed-painpoints S15 P5a (verdict X1): the contract is injected only while RDD is not off.
-	const boundary = "While RDD is not off, this package injects the mirrored provider-bundle review execution contract; Gentle AI writes nothing into this prompt. Absent that mirrored contract, this package invents no lifecycle instructions.";
+	const boundary = "While RDD is not off, this package injects the mirrored provider-bundle review execution contract; Drakonc AI writes nothing into this prompt. Absent that mirrored contract, this package invents no lifecycle instructions.";
 	const core = readFileSync("assets/orchestrator.md", "utf8");
 	assert.match(core, new RegExp(boundary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
-	for (const path of ["assets/orchestrator-delegation.md", "assets/orchestrator-delegation-reference.md", "skills/gentle-ai/SKILL.md"]) {
+	for (const path of ["assets/orchestrator-delegation.md", "assets/orchestrator-delegation-reference.md", "skills/drakonc-ai/SKILL.md"]) {
 		const contract = readFileSync(path, "utf8");
 		assert.doesNotMatch(contract, /INSPECT before START|start -> finalize -> validate|next_transition|review\.capture-result/is, path);
 	}
-	assert.match(readFileSync("skills/gentle-ai/SKILL.md", "utf8"), /sole lifecycle authority/i);
+	assert.match(readFileSync("skills/drakonc-ai/SKILL.md", "utf8"), /sole lifecycle authority/i);
 });

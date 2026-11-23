@@ -82,14 +82,14 @@ const UNHOOKED_CHECK_IDS = new Set([
 	"asset-runtime-windows-session-transport-owned", "asset-runtime-windows-session-transport-hash",
 	"asset-lib-windows-session-transport-owned", "asset-lib-windows-session-transport-hash",
 	"asset-lib-agents-session-transport-owned", "asset-lib-agents-session-transport-hash",
-	"asset-extension-gentle-agents-owned", "asset-extension-gentle-agents-hash",
-	"asset-extension-gentle-ai-owned", "asset-extension-gentle-ai-hash",
+	"asset-extension-drakonc-agents-owned", "asset-extension-drakonc-agents-hash",
+	"asset-extension-drakonc-ai-owned", "asset-extension-drakonc-ai-hash",
 	"asset-native-review-cli-owned", "asset-native-review-cli-hash",
 	"asset-review-integration-v2-owned", "asset-review-integration-v2-hash",
-	"asset-installer-gentle-ai-owned", "asset-installer-gentle-ai-hash",
+	"asset-installer-drakonc-ai-owned", "asset-installer-drakonc-ai-hash",
 	"asset-installer-tui-mode-setting-owned", "asset-installer-tui-mode-setting-hash",
 	"native-package-cache-absent", "native-command-absent", "sdk-manifest-owned", "sdk-version", "jiti-manifest-owned", "jiti-static-export", "jiti-entry-owned", "jiti-version",
-	"home-empty", "gentle-pi-agent-empty", "pi-coding-agent-empty", "gentle-pi-config-empty", "xdg-config-empty", "xdg-cache-empty", "xdg-data-empty", "appdata-empty", "local-appdata-empty",
+	"home-empty", "drakonc-pi-agent-empty", "pi-coding-agent-empty", "drakonc-pi-config-empty", "xdg-config-empty", "xdg-cache-empty", "xdg-data-empty", "appdata-empty", "local-appdata-empty",
 ]);
 
 function newUnhookedReceipt() {
@@ -614,17 +614,17 @@ export function createHookedPackedConsumerManifest(installDirectory, tarball) {
 	// Older npm ignores this consumer-only field. No transitive script is approved.
 	const absoluteSpec = `file:${canonicalTarball.split(sep).join("/")}`;
 	if (realpathSync.native(absoluteSpec.slice(5)) !== canonicalTarball) throw new Error("absolute script approval does not resolve to the packed tarball");
-	return { name: "gentle-pi-packed-runner-test", private: true, allowScripts: { [fileSpec]: true, [absoluteSpec]: true } };
+	return { name: "drakonc-pi-packed-runner-test", private: true, allowScripts: { [fileSpec]: true, [absoluteSpec]: true } };
 }
 
 async function testHookedPackedRunner() {
-	const temporary = mkdtempSync(join(tmpdir(), "gentle-pi-packed-runner-"));
+	const temporary = mkdtempSync(join(tmpdir(), "drakonc-pi-packed-runner-"));
 	const packDirectory = join(temporary, "pack");
 	const installDirectory = join(temporary, "install");
 	// Every child inherits only disposable Pi homes, never the operator's settings.
 	const agentHome = join(temporary, "agent");
 	const piAgentHome = join(temporary, "pi-agent");
-	const isolatedEnv = { ...process.env, GENTLE_PI_AGENT_HOME: agentHome, PI_CODING_AGENT_DIR: piAgentHome };
+	const isolatedEnv = { ...process.env, DRAKONC_PI_AGENT_HOME: agentHome, PI_CODING_AGENT_DIR: piAgentHome };
 	const runNpm = (arguments_, options) => runNpmWithEnv(arguments_, isolatedEnv, options);
 	try {
 		mkdirSync(packDirectory);
@@ -650,7 +650,7 @@ async function testHookedPackedRunner() {
 	assert.deepEqual(readdirSync(agentHome), ["settings.json"]);
 	assert.deepEqual(readdirSync(piAgentHome), []);
 	assert.equal(existsSync(join(installDirectory, ".pi", "settings.json")), false);
-	const packageRoot = join(installDirectory, "node_modules", "gentle-pi");
+	const packageRoot = join(installDirectory, "node_modules", "drakonc-pi");
 	assert.ok(existsSync(join(packageRoot, "scripts", "install-tui-mode-setting.mjs")));
 	const { nativeReviewAbandonAuthorization } = await import(pathToFileURL(join(packageRoot, "runtime", "native-review-cli.mjs")).href);
 	const abandonAuthorization = nativeReviewAbandonAuthorization({
@@ -675,16 +675,16 @@ async function testHookedPackedRunner() {
 	assert.ok(!abandonAuthorization.includes("evidence_records_present"));
 	// Accept prerelease pins too: a stable-only pattern here was a second,
 	// silent pin that refused the first prerelease version directory.
-	if (!existsSync(join(packageRoot, ".gentle-ai"))) throw new Error("packed postinstall did not create .gentle-ai; npm may have blocked lifecycle scripts — check the consumer allowScripts exact tarball approval and installer output");
-	const versions = readdirSync(join(packageRoot, ".gentle-ai"), { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.]*)?$/.test(entry.name));
-	if (versions.length !== 1) throw new Error("packed install did not contain exactly one package-local Gentle AI version");
-	const executable = join(packageRoot, ".gentle-ai", versions[0].name, process.platform === "win32" ? "gentle-ai.exe" : "gentle-ai");
+	if (!existsSync(join(packageRoot, ".drakonc-ai"))) throw new Error("packed postinstall did not create .drakonc-ai; npm may have blocked lifecycle scripts — check the consumer allowScripts exact tarball approval and installer output");
+	const versions = readdirSync(join(packageRoot, ".drakonc-ai"), { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.]*)?$/.test(entry.name));
+	if (versions.length !== 1) throw new Error("packed install did not contain exactly one package-local Drakonc AI version");
+	const executable = join(packageRoot, ".drakonc-ai", versions[0].name, process.platform === "win32" ? "drakonc-ai.exe" : "drakonc-ai");
 	const capabilities = JSON.parse(execFileSync(executable, ["review", "capabilities", "--contract", "gentle-ai.review-integration/v2"], { cwd: installDirectory, encoding: "utf8", env: isolatedEnv }));
 	// Decode with the PACKED consumer's own decoder rather than comparing the
 	// schema string against a list hand-copied into this script. The copy was a
 	// second, silent pin: it accepted only `capabilities/v2`, so the moment the
 	// pinned provider advertised an additive minor this E2E rejected a pairing
-	// that gentle-pi reads correctly, and it would have done so again on the
+	// that drakonc-pi reads correctly, and it would have done so again on the
 	// next minor. Using the shipped decoder makes the assertion what it always
 	// meant to be — the packed consumer can read the packed provider — and it
 	// checks the whole envelope (protocol major/minor, required operations,
@@ -693,9 +693,9 @@ async function testHookedPackedRunner() {
 	const { decodeReviewCapabilitiesV2 } = await import(pathToFileURL(join(packageRoot, "runtime", "review-integration-v2.mjs")).href);
 	const executableDigest = `sha256:${createHash("sha256").update(readFileSync(executable)).digest("hex")}`;
 	const decoded = decodeReviewCapabilitiesV2(capabilities, executableDigest);
-	if (decoded.contract !== "gentle-ai.review-integration/v2" || decoded.packageVersion !== versions[0].name.slice(1)) throw new Error("package-local Gentle AI returned incompatible capabilities");
+	if (decoded.contract !== "gentle-ai.review-integration/v2" || decoded.packageVersion !== versions[0].name.slice(1)) throw new Error("package-local Drakonc AI returned incompatible capabilities");
 	const packageManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-		process.stdout.write(`packed package E2E passed (gentle-pi ${packageManifest.version ?? "unknown"}; Gentle AI ${decoded.packageVersion ?? "unknown"})\n`);
+		process.stdout.write(`packed package E2E passed (drakonc-pi ${packageManifest.version ?? "unknown"}; Drakonc AI ${decoded.packageVersion ?? "unknown"})\n`);
 	} finally {
 		rmSync(temporary, { recursive: true, force: true });
 	}
@@ -704,9 +704,9 @@ async function testHookedPackedRunner() {
 function isolatedUnhookedEnvironment(temporary) {
 	const homes = join(temporary, "homes");
 	const home = join(homes, "home");
-	const agentHome = join(homes, "gentle-pi-agent");
+	const agentHome = join(homes, "drakonc-pi-agent");
 	const piAgentHome = join(homes, "pi-coding-agent");
-	const gentleConfigHome = join(homes, "gentle-pi-config");
+	const drakoncConfigHome = join(homes, "drakonc-pi-config");
 	const xdgConfigHome = join(homes, "xdg-config");
 	const xdgCacheHome = join(homes, "xdg-cache");
 	const xdgDataHome = join(homes, "xdg-data");
@@ -717,12 +717,12 @@ function isolatedUnhookedEnvironment(temporary) {
 	const passthrough = ["PATH", "SystemRoot", "SYSTEMROOT", "WINDIR", "ComSpec", "PATHEXT", "OS", "CI", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"];
 	const env = {};
 	for (const key of passthrough) if (typeof process.env[key] === "string") env[key] = process.env[key];
-	for (const directory of [homes, home, agentHome, piAgentHome, gentleConfigHome, xdgConfigHome, xdgCacheHome, xdgDataHome, appData, localAppData, npmCache]) mkdirSync(directory, { recursive: true });
+	for (const directory of [homes, home, agentHome, piAgentHome, drakoncConfigHome, xdgConfigHome, xdgCacheHome, xdgDataHome, appData, localAppData, npmCache]) mkdirSync(directory, { recursive: true });
 	Object.assign(env, {
 		HOME: home, USERPROFILE: home, APPDATA: appData, LOCALAPPDATA: localAppData,
 		XDG_CONFIG_HOME: xdgConfigHome, XDG_CACHE_HOME: xdgCacheHome, XDG_DATA_HOME: xdgDataHome,
 		TMPDIR: temporary, TMP: temporary, TEMP: temporary,
-		GENTLE_PI_AGENT_HOME: agentHome, GENTLE_PI_CONFIG_HOME: gentleConfigHome, PI_CODING_AGENT_DIR: piAgentHome,
+		DRAKONC_PI_AGENT_HOME: agentHome, DRAKONC_PI_CONFIG_HOME: drakoncConfigHome, PI_CODING_AGENT_DIR: piAgentHome,
 		NPM_CONFIG_CACHE: npmCache, npm_config_cache: npmCache, NPM_CONFIG_USERCONFIG: npmUserConfig, npm_config_userconfig: npmUserConfig,
 		NPM_CONFIG_TMP: temporary, npm_config_tmp: temporary, NPM_CONFIG_IGNORE_SCRIPTS: "true", npm_config_ignore_scripts: "true",
 		NPM_CONFIG_UPDATE_NOTIFIER: "false", npm_config_update_notifier: "false",
@@ -735,9 +735,9 @@ function isolatedUnhookedEnvironment(temporary) {
 		env,
 		homes: [
 			{ checkId: "home-empty", path: home },
-			{ checkId: "gentle-pi-agent-empty", path: agentHome },
+			{ checkId: "drakonc-pi-agent-empty", path: agentHome },
 			{ checkId: "pi-coding-agent-empty", path: piAgentHome },
-			{ checkId: "gentle-pi-config-empty", path: gentleConfigHome },
+			{ checkId: "drakonc-pi-config-empty", path: drakoncConfigHome },
 			{ checkId: "xdg-config-empty", path: xdgConfigHome },
 			{ checkId: "xdg-cache-empty", path: xdgCacheHome },
 			{ checkId: "xdg-data-empty", path: xdgDataHome },
@@ -821,7 +821,7 @@ export function validateWindowsStartupTimingMachinePaths(delta, operations = { l
 function assertPackResult(packed, packDirectory, receipt) {
 	selectUnhookedCheck(receipt, "pack-metadata");
 	const [entry] = normalizeNpmPackResult(packed);
-	if (entry.name !== "gentle-pi" || typeof entry.filename !== "string" || entry.filename !== basename(entry.filename)) throw new Error("npm pack returned an unsafe package identity");
+	if (entry.name !== "drakonc-pi" || typeof entry.filename !== "string" || entry.filename !== basename(entry.filename)) throw new Error("npm pack returned an unsafe package identity");
 	if (typeof entry.integrity !== "string" || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(entry.integrity)) throw new Error("npm pack did not report a sha512 integrity");
 	const tarball = resolve(packDirectory, entry.filename);
 	if (!isWithin(packDirectory, tarball)) throw new Error("npm pack tarball escapes the owned pack directory");
@@ -836,11 +836,11 @@ const HASHED_PACKED_ASSETS = [
 	{ ownedCheckId: "asset-runtime-windows-session-transport-owned", hashCheckId: "asset-runtime-windows-session-transport-hash", relativePath: "runtime/windows-session-transport.ps1" },
 	{ ownedCheckId: "asset-lib-windows-session-transport-owned", hashCheckId: "asset-lib-windows-session-transport-hash", relativePath: "lib/windows-session-transport.ts" },
 	{ ownedCheckId: "asset-lib-agents-session-transport-owned", hashCheckId: "asset-lib-agents-session-transport-hash", relativePath: "lib/agents-session-transport.ts" },
-	{ ownedCheckId: "asset-extension-gentle-agents-owned", hashCheckId: "asset-extension-gentle-agents-hash", relativePath: "extensions/gentle-agents.ts" },
-	{ ownedCheckId: "asset-extension-gentle-ai-owned", hashCheckId: "asset-extension-gentle-ai-hash", relativePath: "extensions/gentle-ai.ts" },
+	{ ownedCheckId: "asset-extension-drakonc-agents-owned", hashCheckId: "asset-extension-drakonc-agents-hash", relativePath: "extensions/drakonc-agents.ts" },
+	{ ownedCheckId: "asset-extension-drakonc-ai-owned", hashCheckId: "asset-extension-drakonc-ai-hash", relativePath: "extensions/drakonc-ai.ts" },
 	{ ownedCheckId: "asset-native-review-cli-owned", hashCheckId: "asset-native-review-cli-hash", relativePath: "runtime/native-review-cli.mjs" },
 	{ ownedCheckId: "asset-review-integration-v2-owned", hashCheckId: "asset-review-integration-v2-hash", relativePath: "runtime/review-integration-v2.mjs" },
-	{ ownedCheckId: "asset-installer-gentle-ai-owned", hashCheckId: "asset-installer-gentle-ai-hash", relativePath: "scripts/install-gentle-ai.mjs" },
+	{ ownedCheckId: "asset-installer-drakonc-ai-owned", hashCheckId: "asset-installer-drakonc-ai-hash", relativePath: "scripts/install-drakonc-ai.mjs" },
 	{ ownedCheckId: "asset-installer-tui-mode-setting-owned", hashCheckId: "asset-installer-tui-mode-setting-hash", relativePath: "scripts/install-tui-mode-setting.mjs" },
 ];
 
@@ -857,10 +857,10 @@ function assertPackedAssets(packageRoot, receipt) {
 
 function assertNoNativeInstallerArtifacts(packageRoot, consumerDirectory, receipt) {
 	selectUnhookedCheck(receipt, "native-package-cache-absent");
-	if (existsSync(join(packageRoot, ".gentle-ai"))) throw new Error("unhooked install unexpectedly contains a native Gentle AI artifact");
+	if (existsSync(join(packageRoot, ".drakonc-ai"))) throw new Error("unhooked install unexpectedly contains a native Drakonc AI artifact");
 	selectUnhookedCheck(receipt, "native-command-absent");
-	const nativeCommand = process.platform === "win32" ? "gentle-ai.cmd" : "gentle-ai";
-	if (existsSync(join(consumerDirectory, "node_modules", ".bin", nativeCommand))) throw new Error("unhooked install unexpectedly exposed a native Gentle AI executable");
+	const nativeCommand = process.platform === "win32" ? "drakonc-ai.cmd" : "drakonc-ai";
+	if (existsSync(join(consumerDirectory, "node_modules", ".bin", nativeCommand))) throw new Error("unhooked install unexpectedly exposed a native Drakonc AI executable");
 }
 
 function compareRelease(left, right) {
@@ -935,10 +935,10 @@ async function register(relativePath) {
   assert.equal(typeof factory, "function", \`missing default extension factory: \${relativePath}\`);
   await factory(pi);
 }
-await register("extensions/gentle-agents.ts");
-await register("extensions/gentle-ai.ts");
-for (const name of ["subagent_list_agents", "subagent_run", "orchestrator_session_id", "orchestrator_list", "orchestrator_send_message", "gentle_review", "gentle_review_capture", "gentle_review_capture_group", "gentle_review_scope"]) assert.ok(registrations.tools.includes(name), \`missing registered tool: \${name}\`);
-for (const name of ["gentle:agents", "gentle:status", "gentle:review-mode"]) assert.ok(registrations.commands.includes(name), \`missing registered command: \${name}\`);
+await register("extensions/drakonc-agents.ts");
+await register("extensions/drakonc-ai.ts");
+for (const name of ["subagent_list_agents", "subagent_run", "orchestrator_session_id", "orchestrator_list", "orchestrator_send_message", "drakonc_review", "drakonc_review_capture", "drakonc_review_capture_group", "drakonc_review_scope"]) assert.ok(registrations.tools.includes(name), \`missing registered tool: \${name}\`);
+for (const name of ["drakonc:agents", "drakonc:status", "drakonc:review-mode"]) assert.ok(registrations.commands.includes(name), \`missing registered command: \${name}\`);
 assert.ok(registrations.events.includes("session_start"), "expected session_start registration");
 assert.ok(registrations.events.includes("session_shutdown"), "expected session_shutdown registration");
 process.stdout.write(JSON.stringify({ tools: registrations.tools.sort(), commands: registrations.commands.sort(), loader: "Jiti from @earendil-works/pi-coding-agent dependency" }));
@@ -1233,14 +1233,14 @@ try {
   ({ join } = pathModule);
   ({ pathToFileURL } = urlModule);
   checkpoint("bootstrap", "bootstrap-agent-home");
-  const agentHome = process.env.GENTLE_PI_AGENT_HOME;
+  const agentHome = process.env.DRAKONC_PI_AGENT_HOME;
   assert.equal(typeof agentHome, "string");
   checkpoint("bootstrap", "bootstrap-directories");
   const probeRoot = join(process.cwd(), "sdk-lifecycle-probe");
   const cwd = join(probeRoot, "cwd");
   const sessionRoot = join(probeRoot, "sessions");
   const modelRoot = join(probeRoot, "model-runtime");
-  for (const path of [probeRoot, cwd, sessionRoot, modelRoot, agentHome, join(agentHome, "gentle-agents")]) mkdirSync(path, { recursive: true });
+  for (const path of [probeRoot, cwd, sessionRoot, modelRoot, agentHome, join(agentHome, "drakonc-agents")]) mkdirSync(path, { recursive: true });
   checkpoint("sdk-load", "sdk-import");
   const sdk = await within(load(import("@earendil-works/pi-coding-agent")), 30000);
   progress.sdkLoaded = true;
@@ -1251,15 +1251,15 @@ try {
   const { createJiti } = await within(load(import(pathToFileURL(${JSON.stringify(jitiStaticEntry)}).href)), 30000);
   assert.equal(typeof createJiti, "function", "Jiti static export is unavailable");
   const jiti = createJiti(pathToFileURL(${JSON.stringify(consumerPackageJson)}).href, { moduleCache: false });
-  const agentsExtensionPath = join(${JSON.stringify(packageRoot)}, "extensions", "gentle-agents.ts");
-  const gentleAiExtensionPath = join(${JSON.stringify(packageRoot)}, "extensions", "gentle-ai.ts");
+  const agentsExtensionPath = join(${JSON.stringify(packageRoot)}, "extensions", "drakonc-agents.ts");
+  const drakoncAiExtensionPath = join(${JSON.stringify(packageRoot)}, "extensions", "drakonc-ai.ts");
   checkpoint("agents-module-load", "agents-module-import");
   const { createDefaultSessionTransport } = await within(load(jiti.import(pathToFileURL(agentsExtensionPath).href)), 30000);
   checkpoint("agents-module-load", "agents-module-export");
   assert.equal(typeof createDefaultSessionTransport, "function", "packaged agents transport export is unavailable");
       const { WindowsSessionRegistryPhaseSequence } = await within(load(jiti.import(pathToFileURL(join(${JSON.stringify(packageRoot)}, "lib", "windows-session-transport.ts")).href)), 30000);
       assert.equal(typeof WindowsSessionRegistryPhaseSequence, "function", "packaged Windows phase sequence export is unavailable");
-  const expectedExtensionPaths = [agentsExtensionPath, gentleAiExtensionPath];
+  const expectedExtensionPaths = [agentsExtensionPath, drakoncAiExtensionPath];
   checkpoint("services", "settings-untrusted");
   settingsManager = SettingsManager.inMemory({}, { projectTrusted: false });
   assert.equal(settingsManager.isProjectTrusted(), false, "in-memory settings must keep project discovery untrusted");
@@ -1439,13 +1439,13 @@ async function testSdkLifecyclePackedSession() {
 		const runnerTemp = process.env.RUNNER_TEMP;
 		if (typeof runnerTemp !== "string" || runnerTemp.length === 0) throw new SdkLifecycleFailure("pack", "assertion-failed");
 		selectSdkLifecycleCheck(receipt, "temporary-root");
-		temporary = mkdtempSync(join(resolve(runnerTemp), "gentle-pi-sdk-lifecycle-"));
+		temporary = mkdtempSync(join(resolve(runnerTemp), "drakonc-pi-sdk-lifecycle-"));
 		const packDirectory = join(temporary, "pack");
 		const consumerDirectory = join(temporary, "consumer");
 		mkdirSync(packDirectory);
 		mkdirSync(consumerDirectory);
 		const { env } = isolatedUnhookedEnvironment(temporary);
-		Object.assign(env, { GENTLE_PI_AGENTS: "1", PI_OFFLINE: "1" });
+		Object.assign(env, { DRAKONC_PI_AGENTS: "1", PI_OFFLINE: "1" });
 		selectSdkLifecycleCheck(receipt, "project-sdk-version");
 		const sdkVersion = resolveProjectPiSdkVersion(root, "SDK lifecycle probe");
 		selectSdkLifecycleCheck(receipt, "pack-command");
@@ -1457,11 +1457,11 @@ async function testSdkLifecyclePackedSession() {
 		receipt.packVerified = true;
 		stage = "install";
 		selectSdkLifecycleCheck(receipt, "install-command");
-		writeFileSync(join(consumerDirectory, "package.json"), JSON.stringify({ name: "gentle-pi-sdk-lifecycle-proof", private: true, dependencies: { "@earendil-works/pi-coding-agent": sdkVersion } }), "utf8");
+		writeFileSync(join(consumerDirectory, "package.json"), JSON.stringify({ name: "drakonc-pi-sdk-lifecycle-proof", private: true, dependencies: { "@earendil-works/pi-coding-agent": sdkVersion } }), "utf8");
 		runBoundedNpm("install", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--omit=dev", "--legacy-peer-deps", tarball, `@earendil-works/pi-coding-agent@${sdkVersion}`], env, consumerDirectory);
 		receipt.installCompleted = true;
 		stage = "artifact-check";
-		const packageRoot = join(consumerDirectory, "node_modules", "gentle-pi");
+		const packageRoot = join(consumerDirectory, "node_modules", "drakonc-pi");
 		selectSdkLifecycleCheck(receipt, "packed-assets");
 		assertPackedAssets(packageRoot, { checkId: "asset-runtime-windows-session-transport-owned" });
 		selectSdkLifecycleCheck(receipt, "native-artifacts");
@@ -1512,13 +1512,13 @@ async function testWindowsStartupTimingPackedHelper() {
 		const runnerTemp = process.env.RUNNER_TEMP;
 		if (typeof runnerTemp !== "string" || runnerTemp.length === 0) throw new WindowsStartupTimingFailure("pack", "assertion-failed");
 		selectWindowsStartupTimingCheck(receipt, "temporary-root");
-		temporary = mkdtempSync(join(resolve(runnerTemp), "gentle-pi-windows-startup-timing-"));
+		temporary = mkdtempSync(join(resolve(runnerTemp), "drakonc-pi-windows-startup-timing-"));
 		const packDirectory = join(temporary, "pack");
 		const consumerDirectory = join(temporary, "consumer");
 		mkdirSync(packDirectory);
 		mkdirSync(consumerDirectory);
 		const { env } = isolatedUnhookedEnvironment(temporary);
-		Object.assign(env, { GENTLE_PI_AGENTS: "1", PI_OFFLINE: "1" });
+		Object.assign(env, { DRAKONC_PI_AGENTS: "1", PI_OFFLINE: "1" });
 		selectWindowsStartupTimingCheck(receipt, "project-sdk-version");
 		const sdkVersion = resolveProjectPiSdkVersion(root, "Windows startup timing probe");
 		selectWindowsStartupTimingCheck(receipt, "pack-command");
@@ -1530,11 +1530,11 @@ async function testWindowsStartupTimingPackedHelper() {
 		receipt.packVerified = true;
 		stage = "install";
 		selectWindowsStartupTimingCheck(receipt, "install-command");
-		writeFileSync(join(consumerDirectory, "package.json"), JSON.stringify({ name: "gentle-pi-windows-startup-timing", private: true, dependencies: { "@earendil-works/pi-coding-agent": sdkVersion } }), "utf8");
+		writeFileSync(join(consumerDirectory, "package.json"), JSON.stringify({ name: "drakonc-pi-windows-startup-timing", private: true, dependencies: { "@earendil-works/pi-coding-agent": sdkVersion } }), "utf8");
 		runBoundedNpm("install", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--omit=dev", "--legacy-peer-deps", tarball, `@earendil-works/pi-coding-agent@${sdkVersion}`], env, consumerDirectory);
 		receipt.installCompleted = true;
 		stage = "artifact-check";
-		const packageRoot = join(consumerDirectory, "node_modules", "gentle-pi");
+		const packageRoot = join(consumerDirectory, "node_modules", "drakonc-pi");
 		selectWindowsStartupTimingCheck(receipt, "packed-assets");
 		assertPackedAssets(packageRoot, { checkId: "asset-runtime-windows-session-transport-owned" });
 		selectWindowsStartupTimingCheck(receipt, "native-artifacts");
@@ -1584,7 +1584,7 @@ async function testWindowsStartupTimingEnvironmentExperiment() {
 		const runnerTemp = process.env.RUNNER_TEMP;
 		if (typeof runnerTemp !== "string" || runnerTemp.length === 0) throw new WindowsStartupTimingFailure("pack", "assertion-failed");
 		selectWindowsStartupTimingCheck(receipt, "temporary-root");
-		temporary = mkdtempSync(join(resolve(runnerTemp), "gentle-pi-windows-startup-environment-"));
+		temporary = mkdtempSync(join(resolve(runnerTemp), "drakonc-pi-windows-startup-environment-"));
 		const packDirectory = join(temporary, "pack");
 		const consumerDirectory = join(temporary, "consumer");
 		mkdirSync(packDirectory);
@@ -1592,7 +1592,7 @@ async function testWindowsStartupTimingEnvironmentExperiment() {
 		// Both cases retain this exact existing minimal isolation environment; only
 		// the treatment receives the validated, fixed Windows path-key delta.
 		const { env: isolatedEnv } = isolatedUnhookedEnvironment(temporary);
-		Object.assign(isolatedEnv, { GENTLE_PI_AGENTS: "1", PI_OFFLINE: "1" });
+		Object.assign(isolatedEnv, { DRAKONC_PI_AGENTS: "1", PI_OFFLINE: "1" });
 		const pathDelta = deriveWindowsStartupTimingPathDelta(process.env);
 		const treatmentPathDelta = validateWindowsStartupTimingMachinePaths(pathDelta) ? pathDelta : undefined;
 		selectWindowsStartupTimingCheck(receipt, "project-sdk-version");
@@ -1606,11 +1606,11 @@ async function testWindowsStartupTimingEnvironmentExperiment() {
 		receipt.packVerified = true;
 		stage = "install";
 		selectWindowsStartupTimingCheck(receipt, "install-command");
-		writeFileSync(join(consumerDirectory, "package.json"), JSON.stringify({ name: "gentle-pi-windows-startup-environment", private: true, dependencies: { "@earendil-works/pi-coding-agent": sdkVersion } }), "utf8");
+		writeFileSync(join(consumerDirectory, "package.json"), JSON.stringify({ name: "drakonc-pi-windows-startup-environment", private: true, dependencies: { "@earendil-works/pi-coding-agent": sdkVersion } }), "utf8");
 		runBoundedNpm("install", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--omit=dev", "--legacy-peer-deps", tarball, `@earendil-works/pi-coding-agent@${sdkVersion}`], isolatedEnv, consumerDirectory);
 		receipt.installCompleted = true;
 		stage = "artifact-check";
-		const packageRoot = join(consumerDirectory, "node_modules", "gentle-pi");
+		const packageRoot = join(consumerDirectory, "node_modules", "drakonc-pi");
 		selectWindowsStartupTimingCheck(receipt, "packed-assets");
 		assertPackedAssets(packageRoot, { checkId: "asset-runtime-windows-session-transport-owned" });
 		selectWindowsStartupTimingCheck(receipt, "native-artifacts");
@@ -1686,7 +1686,7 @@ async function testUnhookedPackedImports() {
 		const runnerTemp = process.env.RUNNER_TEMP;
 		if (typeof runnerTemp !== "string" || runnerTemp.length === 0) throw new Error("RUNNER_TEMP is required");
 		selectUnhookedCheck(receipt, "temporary-root");
-		temporary = mkdtempSync(join(resolve(runnerTemp), "gentle-pi-packed-unhooked-"));
+		temporary = mkdtempSync(join(resolve(runnerTemp), "drakonc-pi-packed-unhooked-"));
 		const packDirectory = join(temporary, "pack");
 		const consumerDirectory = join(temporary, "consumer");
 		mkdirSync(packDirectory);
@@ -1703,11 +1703,11 @@ async function testUnhookedPackedImports() {
 		receipt.packVerified = true;
 		stage = "install";
 		selectUnhookedCheck(receipt, "install-command");
-		writeFileSync(join(consumerDirectory, "package.json"), JSON.stringify({ name: "gentle-pi-unhooked-import-proof", private: true, dependencies: { "@earendil-works/pi-coding-agent": sdkVersion } }), "utf8");
+		writeFileSync(join(consumerDirectory, "package.json"), JSON.stringify({ name: "drakonc-pi-unhooked-import-proof", private: true, dependencies: { "@earendil-works/pi-coding-agent": sdkVersion } }), "utf8");
 		runBoundedNpm("install", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", "--omit=dev", "--legacy-peer-deps", tarball, `@earendil-works/pi-coding-agent@${sdkVersion}`], env, consumerDirectory);
 		receipt.installCompleted = true;
 		stage = "artifact-check";
-		const packageRoot = join(consumerDirectory, "node_modules", "gentle-pi");
+		const packageRoot = join(consumerDirectory, "node_modules", "drakonc-pi");
 		assertPackedAssets(packageRoot, receipt);
 		assertNoNativeInstallerArtifacts(packageRoot, consumerDirectory, receipt);
 		const sdkPackageJson = join(consumerDirectory, "node_modules", "@earendil-works", "pi-coding-agent", "package.json");

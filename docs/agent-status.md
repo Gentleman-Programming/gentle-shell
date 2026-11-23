@@ -1,17 +1,17 @@
 # Read per-session agent status
 
-Any terminal tool can read Gentle Shell's status without Herdr or a socket.
+Any terminal tool can read Drakonc Shell's status without Herdr or a socket.
 Interactive top-level Pi sessions publish JSON under
-`<gentlePiConfigHome()>/agent-status/<sha256-of-session-id>.json`.
-Use the active Gentle Shell profile's config home; no `XDG_RUNTIME_DIR` is needed.
-The packaged `gentle-agent-status` extension loads automatically.
+`<drakoncPiConfigHome()>/agent-status/<sha256-of-session-id>.json`.
+Use the active Drakonc Shell profile's config home; no `XDG_RUNTIME_DIR` is needed.
+The packaged `drakonc-agent-status` extension loads automatically.
 
-## Format: `gentle-shell.agent-status/v1`
+## Format: `drakonc-shell.agent-status/v1`
 
 ```json
 {
-  "schema": "gentle-shell.agent-status/v1",
-  "agent": "gentle-shell",
+  "schema": "drakonc-shell.agent-status/v1",
+  "agent": "drakonc-shell",
   "session": "session-123",
   "pid": 12345,
   "cwd": "/work/project",
@@ -22,7 +22,7 @@ The packaged `gentle-agent-status` extension loads automatically.
 ```
 
 - `schema`: version identifier; readers should ignore unsupported versions.
-- `agent`: `gentle-shell` when the launcher owns agent reporting, otherwise `pi`.
+- `agent`: `drakonc-shell` when the launcher owns agent reporting, otherwise `pi`.
 - `session`: stable Pi session ID; `pid`: publisher process ID; `cwd`: session workspace.
 - `state`: `working`, `blocked` (attention takes precedence), or `idle`.
 - `task`: sanitized first `in_progress` Todo title, or `null` when absent, inactive,
@@ -37,7 +37,7 @@ Set `STATUS_DIR` to the active config home's `agent-status` directory. For examp
 this `jq` reader prints fresh sessions and tolerates missing files during shutdown:
 
 ```sh
-jq -r 'select(.schema == "gentle-shell.agent-status/v1") |
+jq -r 'select(.schema == "drakonc-shell.agent-status/v1") |
   select((now - (.updatedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) <= 30) |
   [.agent, .session, .state, (.task.title // "")] | @tsv' "$STATUS_DIR"/*.json 2>/dev/null
 ```

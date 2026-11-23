@@ -1,6 +1,6 @@
 # Session scratch review advisories
 
-Objective: fix the non-blocking findings the native reviews of gentle-shell#2300 (session scratch and artifact ledger,
+Objective: fix the non-blocking findings the native reviews of drakonc-shell#2300 (session scratch and artifact ledger,
 merged as `d79265b99`) left, where each is a real defect reproducible through the public interface. Branch
 `fix/scratch-review-advisories` from origin/main `d79265b99`. Runner: `pnpm test`.
 
@@ -12,7 +12,7 @@ merged as `d79265b99`) left, where each is a real defect reproducible through th
   un clone puede dejar huérfanos sus worktrees vinculados."
 - S2 Quarantined subagent TMPDIR (findings R1-shutdown-removes-nested-subagent-tmpdirs, R3-quarantined-subagent-tmp-removed,
   extensions/session-scratch.ts ~100-111, lib/agents-runner.ts quarantine at ~992): on session shutdown, and in
-  `/gentle:scratch clean` for the live session, a subagent TMPDIR (`gaXXXXXX`) under the session scratch whose child is
+  `/drakonc:scratch clean` for the live session, a subagent TMPDIR (`gaXXXXXX`) under the session scratch whose child is
   still running or quarantined (exit unconfirmed) is kept, not deleted; the rest of the scratch is removed. When anything
   is kept at shutdown, the ledger keeps the scratch entry so a later startup sweep (owning process dead, past grace)
   removes it. The runner must expose (or the extension must learn) which `ga*` dirs belong to live or quarantined
@@ -27,7 +27,7 @@ merged as `d79265b99`) left, where each is a real defect reproducible through th
   clone whose repository has linked worktrees (`git worktree list --porcelain` shows more than the main one, ignoring
   prunable ones) is kept with reason "has linked worktrees".
 - S5 Clean empties the live TMPDIR (R3-clean-empties-live-tmpdir, R1-clean-empties-live-session-temp-entries,
-  extensions/session-scratch.ts ~273, lib/session-scratch.ts ~200-206): `/gentle:scratch clean` on the live session
+  extensions/session-scratch.ts ~273, lib/session-scratch.ts ~200-206): `/drakonc:scratch clean` on the live session
   removes only entries older than the moment the command started minus 60 seconds and never removes `ga*` dirs of live
   or quarantined children (S2); entries a running command may be using right now stay.
 - S6 Reload fallback (R3-reload-fallback-inherits-scratch, extensions/session-scratch.ts ~147-151): when reload cannot
@@ -46,13 +46,13 @@ merged as `d79265b99`) left, where each is a real defect reproducible through th
 ## Log
 
 - L1 (user, 2026-10-16): request in S1. The PR uses the `size:exception` label at the user's explicit instruction.
-- L2 (T1, S2): mechanism is a per-process registry on `globalThis` (`Symbol.for("gentle-pi.live-subagent-scratch")`) in
+- L2 (T1, S2): mechanism is a per-process registry on `globalThis` (`Symbol.for("drakonc-pi.live-subagent-scratch")`) in
   lib/session-scratch.ts: the runner holds a `ga*` dir from `mkdtemp` until it removes it (spawn failure, or
   `cleanupLive`, which keeps a quarantined child's dir until its exit is proven). `pi.events` was rejected:
-  extensions/gentle-agents.ts unsubscribes its listeners at `session_shutdown`, handler order is not guaranteed, and a
+  extensions/drakonc-agents.ts unsubscribes its listeners at `session_shutdown`, handler order is not guaranteed, and a
   runner of a module instance from before a /reload may still hold a quarantined child. Shutdown now keeps held dirs,
-  removes the rest of the scratch, and leaves `scratchDir` in the ledger for the sweep; extensions/gentle-agents.ts is
-  unchanged. The `/gentle:scratch clean` half was already met (contents-only removal keeps every `ga*` entry, covered by
+  removes the rest of the scratch, and leaves `scratchDir` in the ledger for the sweep; extensions/drakonc-agents.ts is
+  unchanged. The `/drakonc:scratch clean` half was already met (contents-only removal keeps every `ga*` entry, covered by
   "S6: clean removes scratch without asking..."). RED: "advisories S2: session shutdown keeps a running or quarantined
   subagent's TMPDIR..." failed with "a quarantined child's TMPDIR stays"; GREEN after the change.
 - L3 (T1, S3): `processStartTime(pid, platform)` reads Linux `/proc/<pid>/stat` field 22 with `btime` and
@@ -87,7 +87,7 @@ merged as `d79265b99`) left, where each is a real defect reproducible through th
 - L8 (T1, verification): `node --experimental-strip-types --test` on tests/session-scratch.test.ts 43/43 and
   tests/agents-runner.test.ts 100/100; `pnpm test` all stages passed (unit 7013 tests, 6941 pass, 0 fail, 72 skipped;
   provider-contract and runtime-harness PASS); `pnpm -s typecheck` no regressions; `node scripts/verify-package-files.mjs`
-  passed. Note: a test that drives `process.env` must clear `GENTLE_PI_AGENTS_CHILD`, since the runner may itself run
+  passed. Note: a test that drives `process.env` must clear `DRAKONC_PI_AGENTS_CHILD`, since the runner may itself run
   inside a subagent, where the extension registers nothing.
 - L9 (parent, 2026-10-16): native review `review-e6f96fb8f1a7b6c5` of 9f4040bcb approved and acknowledged with 9 non-blocking
   findings. Fixed the consequential one in a follow-up commit: R1-start-time-mismatch-deletes-live-scratch (with

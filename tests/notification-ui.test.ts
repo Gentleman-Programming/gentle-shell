@@ -6,9 +6,9 @@ import { claimNotificationOwner, getNotificationService } from "../lib/notificat
 import { DEFAULT_NOTIFICATION_SETTINGS, type NotificationSettings } from "../lib/notification-policy.ts";
 import { fileURLToPath } from "node:url";
 
-const childEnv = process.env.GENTLE_PI_AGENTS_CHILD;
-before(() => { process.env.GENTLE_PI_AGENTS_CHILD = "0"; });
-after(() => { if (childEnv === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD; else process.env.GENTLE_PI_AGENTS_CHILD = childEnv; });
+const childEnv = process.env.DRAKONC_PI_AGENTS_CHILD;
+before(() => { process.env.DRAKONC_PI_AGENTS_CHILD = "0"; });
+after(() => { if (childEnv === undefined) delete process.env.DRAKONC_PI_AGENTS_CHILD; else process.env.DRAKONC_PI_AGENTS_CHILD = childEnv; });
 
 function harness(options: { malformed?: boolean; readError?: boolean; failWrite?: boolean } = {}) {
 	const choices: (string | undefined)[] = []; const inputs: (string | undefined)[] = [];
@@ -151,7 +151,7 @@ test("input failure reports generic local diagnostic and returns to panel", asyn
 test("headless/RPC and missing owner do not open dialogs", async () => {
 	const h = harness(); try {
 		for (const mode of ["rpc", "print", "json"] as const) await openNotificationPanel({ ...h.ctx, mode });
-		process.env.GENTLE_PI_AGENTS_CHILD = "1"; await h.panel(); process.env.GENTLE_PI_AGENTS_CHILD = "0";
+		process.env.DRAKONC_PI_AGENTS_CHILD = "1"; await h.panel(); process.env.DRAKONC_PI_AGENTS_CHILD = "0";
 		h.owner.retire(); await h.panel(); assert.deepEqual(h.menus, []); assert.equal(h.probes, 0);
 	} finally { h.owner.retire(); }
 });

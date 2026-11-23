@@ -33,7 +33,7 @@ after(() => {
 
 function storeWith(workflow?: Record<string, unknown>): unknown {
 	return {
-		kind: "gentle-pi.agent_model_profiles",
+		kind: "drakonc-pi.agent_model_profiles",
 		version: 1,
 		active: "normal",
 		profiles: {
@@ -50,7 +50,7 @@ function bind(sessionId: string, profile: string): void {
 
 test("a session with no profile anywhere resolves to the organic default", () => {
 	const storeWithoutActive = {
-		kind: "gentle-pi.agent_model_profiles",
+		kind: "drakonc-pi.agent_model_profiles",
 		version: 1,
 		profiles: { normal: { orchestrator: { model: "gpt-5.4" } } },
 	};

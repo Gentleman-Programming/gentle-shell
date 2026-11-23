@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 
 export const HERDR_SUMMARY_COLORS = ["accent", "text", "muted", "dim", "success", "warning", "error"] as const;
 export type HerdrSummaryColor = (typeof HERDR_SUMMARY_COLORS)[number];
@@ -13,10 +13,10 @@ export interface HerdrTaskSummarySettings {
 export const DEFAULT_HERDR_TASK_SUMMARY_SETTINGS: HerdrTaskSummarySettings = {
 	enabled: true, summaryColor: "accent", continuationColor: "muted",
 };
-export const HERDR_TASK_SUMMARY_SCHEMA = "gentle-pi.herdr-task-summary/v1";
-export const HERDR_TASK_SUMMARY_CHANGED = "gentle-pi:herdr-task-summary:changed";
+export const HERDR_TASK_SUMMARY_SCHEMA = "drakonc-pi.herdr-task-summary/v1";
+export const HERDR_TASK_SUMMARY_CHANGED = "drakonc-pi:herdr-task-summary:changed";
 export interface HerdrTaskSummaryChanged { configHome: string }
-export interface HerdrTaskSummaryOptions { gentlePiConfigHome?: string }
+export interface HerdrTaskSummaryOptions { drakoncPiConfigHome?: string }
 export interface HerdrTaskSummaryResolution {
 	settings: HerdrTaskSummarySettings;
 	malformed: boolean;
@@ -36,7 +36,7 @@ export function isHerdrTaskSummarySettings(value: unknown): value is HerdrTaskSu
 }
 
 export function resolveHerdrTaskSummarySettings(options: HerdrTaskSummaryOptions = {}): HerdrTaskSummaryResolution {
-	const globalFile = join(resolve(options.gentlePiConfigHome ?? gentlePiConfigHome()), "herdr-task-summary.json");
+	const globalFile = join(resolve(options.drakoncPiConfigHome ?? drakoncPiConfigHome()), "herdr-task-summary.json");
 	const fallback = { settings: { ...DEFAULT_HERDR_TASK_SUMMARY_SETTINGS }, globalFile };
 	let fd: number | undefined;
 	try {

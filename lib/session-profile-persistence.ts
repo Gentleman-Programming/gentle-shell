@@ -1,4 +1,4 @@
-// Standalone v1 codec and pure active-branch replay (gentle-shell#1064).
+// Standalone v1 codec and pure active-branch replay (drakonc-shell#1064).
 // No Pi API, disk access, shared binding store, or orchestrator application.
 import { isValidProfileName } from "./agent-profiles.ts";
 import {
@@ -11,8 +11,8 @@ import {
 	type AgentRoutingEntry,
 } from "./model-routing-authority.ts";
 
-export const SESSION_PROFILE_CUSTOM_TYPE = "gentle-pi.session-profile/v1";
-export const SESSION_PROFILE_FAMILY = "gentle-pi.session-profile/";
+export const SESSION_PROFILE_CUSTOM_TYPE = "drakonc-pi.session-profile/v1";
+export const SESSION_PROFILE_FAMILY = "drakonc-pi.session-profile/";
 
 /** True for any custom entry in the session-profile family, known version or not. */
 export function isSessionProfileFamilyEntry(entry: unknown): boolean {
@@ -37,7 +37,7 @@ export interface SessionProfileStartupProfile {
 	modelProfiles: AgentModelConfig;
 }
 
-/** A known startup state (gentle-shell#2742, section 3): a profile, or none in any layer. */
+/** A known startup state (drakonc-shell#2742, section 3): a profile, or none in any layer. */
 export type SessionProfileStartupState = SessionProfileStartupProfile | "none";
 
 export interface SessionProfileBindPayload {

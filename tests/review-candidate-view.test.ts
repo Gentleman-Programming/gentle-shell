@@ -31,7 +31,7 @@ function git(cwd: string, ...arguments_: string[]): string {
 }
 
 function repository(t: test.TestContext): string {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-candidate-view-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-candidate-view-"));
 	t.after(() => {
 		if (process.platform !== "win32") execFileSync("chmod", ["-R", "u+rwx", cwd]);
 		rmSync(cwd, { recursive: true, force: true });
@@ -171,7 +171,7 @@ test("private candidate owner fails closed when Windows owner resolution is unav
 });
 
 test("private candidate owner rejects a different Windows owner at the ancestor replacement boundary", (t) => {
-	const cwd = repository(t), commonDir = join(cwd, ".git"), control = join(commonDir, "gentle-ai"), parent = join(control, "candidate-views");
+	const cwd = repository(t), commonDir = join(cwd, ".git"), control = join(commonDir, "drakonc-ai"), parent = join(control, "candidate-views");
 	mkdirSync(parent, { recursive: true });
 	setWindowsAclAuthorityForTesting((path) => {
 		if (path === control) validatePrivateWindowsOwner("S-1-5-21-4-5-6-1002", "S-1-5-21-1-2-3-1001");
@@ -181,7 +181,7 @@ test("private candidate owner rejects a different Windows owner at the ancestor 
 });
 
 test("private candidate owner revalidates every Windows ancestor replacement boundary", (t) => {
-	const cwd = repository(t), commonDir = join(cwd, ".git"), control = join(commonDir, "gentle-ai"), parent = join(control, "candidate-views");
+	const cwd = repository(t), commonDir = join(cwd, ".git"), control = join(commonDir, "drakonc-ai"), parent = join(control, "candidate-views");
 	mkdirSync(parent, { recursive: true });
 	const checked: string[] = [];
 	setWindowsAclAuthorityForTesting((path) => checked.push(path));
@@ -191,7 +191,7 @@ test("private candidate owner revalidates every Windows ancestor replacement bou
 });
 
 test("private candidate owner rejects a controlled foreign Windows owner", { skip: process.platform !== "win32" }, (t) => {
-	const path = mkdtempSync(join(tmpdir(), "gentle-pi-foreign-owner-"));
+	const path = mkdtempSync(join(tmpdir(), "drakonc-pi-foreign-owner-"));
 	t.after(() => rmSync(path, { recursive: true, force: true }));
 	try {
 		execFileSync(realpathSync.native("\\\\?\\GLOBALROOT\\SystemRoot\\System32\\icacls.exe"), [path, "/setowner", "*S-1-5-32-545"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -204,7 +204,7 @@ test("private candidate owner rejects a controlled foreign Windows owner", { ski
 });
 
 test("private candidate owner reads trusted Windows directory and marker file owners", { skip: process.platform !== "win32" }, (t) => {
-	const cwd = repository(t), commonDir = join(cwd, ".git"), parent = join(commonDir, "gentle-ai", "candidate-views");
+	const cwd = repository(t), commonDir = join(cwd, ".git"), parent = join(commonDir, "drakonc-ai", "candidate-views");
 	const view = new CandidateViewRegistry().create({ contributorRoot: cwd });
 	try {
 		assert.doesNotThrow(() => assertTrustedWindowsOwner(parent, "directory"));
@@ -216,7 +216,7 @@ test("private candidate owner reads trusted Windows directory and marker file ow
 });
 
 test("private candidate owner removes unrelated explicit Windows grants during enforcement", { skip: process.platform !== "win32" }, (t) => {
-	const cwd = repository(t), commonDir = join(cwd, ".git"), parent = join(commonDir, "gentle-ai", "candidate-views");
+	const cwd = repository(t), commonDir = join(cwd, ".git"), parent = join(commonDir, "drakonc-ai", "candidate-views");
 	const initial = new CandidateViewRegistry().create({ contributorRoot: cwd });
 	initial.cleanup();
 	const system = process.env.SystemRoot!;
@@ -259,7 +259,7 @@ test("candidate contributor root accepts canonical Windows Git path spelling", {
 
 test("private candidate owner ignores a spoofed SystemRoot when invoking Windows ACL tools", { skip: process.platform !== "win32" }, (t) => {
 	const originalSystemRoot = process.env.SystemRoot;
-	const spoofedSystemRoot = join(tmpdir(), "gentle-pi-spoofed-SystemRoot");
+	const spoofedSystemRoot = join(tmpdir(), "drakonc-pi-spoofed-SystemRoot");
 	process.env.SystemRoot = spoofedSystemRoot;
 	t.after(() => {
 		if (originalSystemRoot === undefined) delete process.env.SystemRoot;
@@ -308,7 +308,7 @@ function publicationFailure(t: test.TestContext, phase: "write" | "fsync" | "dir
 		Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
 		t.after(() => Object.defineProperty(process, "platform", descriptor));
 	}
-	const cwd = repository(t), parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	const cwd = repository(t), parent = join(cwd, ".git", "drakonc-ai", "candidate-views");
 	let adds = 0;
 	if (phase === "write") t.mock.method(fs, "writeFileSync", () => { throw new Error("fixture marker write failure"); });
 	if (phase === "fsync") t.mock.method(fs, "fsyncSync", () => { throw new Error("fixture marker fsync failure"); });
@@ -340,7 +340,7 @@ for (const [phase, label] of [["write", "marker write"], ["fsync", "marker fsync
 
 test("candidate owner publication never removes a replaced marker", (t) => {
 	mockWindowsAcl(t);
-	const cwd = repository(t), parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	const cwd = repository(t), parent = join(cwd, ".git", "drakonc-ai", "candidate-views");
 	const write = fs.writeFileSync;
 	t.mock.method(fs, "fsyncSync", () => {
 		const marker = readdirSync(parent).find((name) => name.endsWith(".owner.json"));
@@ -367,7 +367,7 @@ test("candidate owner publication never removes a replaced marker", (t) => {
 test("candidate owner publication preserves a replaced marker with 64-bit identity precision loss", (t) => {
 	mockWindowsAcl(t);
 	// The registry canonicalizes the contributor root (e.g. /var -> /private/var on macOS).
-	const cwd = repository(t), parent = join(realpathSync(cwd), ".git", "gentle-ai", "candidate-views");
+	const cwd = repository(t), parent = join(realpathSync(cwd), ".git", "drakonc-ai", "candidate-views");
 	const originalLstat = fs.lstatSync, fsync = fs.fsyncSync, write = fs.writeFileSync;
 	// Modeled identities, not measured NTFS values: distinct 64-bit indices round to one Number.
 	const high = 2n ** 53n;
@@ -415,7 +415,7 @@ test("candidate owner publication preserves a replaced marker with 64-bit identi
 
 test("public POSIX candidate-views parent reports bounded privacy guidance without changing permissions or adding a worktree", { skip: process.platform === "win32" }, (t) => {
 	const cwd = repository(t);
-	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	const parent = join(cwd, ".git", "drakonc-ai", "candidate-views");
 	mkdirSync(parent, { recursive: true, mode: 0o700 });
 	chmodSync(parent, 0o777);
 	let adds = 0;
@@ -442,13 +442,13 @@ test("public POSIX candidate-views parent reports bounded privacy guidance witho
 
 test("POSIX chmod-ineffective parent reports filesystem capability guidance before worktree creation", { skip: process.platform === "win32" }, (t) => {
 	const cwd = repository(t);
-	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	const parent = join(cwd, ".git", "drakonc-ai", "candidate-views");
 	mkdirSync(parent, { recursive: true, mode: 0o700 });
 	chmodSync(parent, 0o777);
 	const originalLstat = fs.lstatSync;
 	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
 		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
-		return typeof path === "string" && path.includes(".gentle-ai-chmod-probe-")
+		return typeof path === "string" && path.includes(".drakonc-ai-chmod-probe-")
 			? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { mode: (Number(stat.mode) & ~0o777) | 0o777, uid: process.getuid?.() })
 			: stat;
 	});
@@ -470,17 +470,17 @@ test("POSIX chmod-ineffective parent reports filesystem capability guidance befo
 		return true;
 	});
 	assert.equal(adds, 0);
-	assert.equal(readdirSync(parent).some((name) => name.includes(".gentle-ai-chmod-probe-")), false);
+	assert.equal(readdirSync(parent).some((name) => name.includes(".drakonc-ai-chmod-probe-")), false);
 });
 
 test("inconclusive private-mode probe keeps bounded privacy guidance instead of claiming ineffective chmod", { skip: process.platform === "win32" }, (t) => {
 	const cwd = repository(t);
-	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	const parent = join(cwd, ".git", "drakonc-ai", "candidate-views");
 	mkdirSync(parent, { recursive: true, mode: 0o700 });
 	chmodSync(parent, 0o777);
 	const originalMkdir = fs.mkdirSync;
 	t.mock.method(fs, "mkdirSync", (path: Parameters<typeof fs.mkdirSync>[0], ...args: unknown[]) => {
-		if (typeof path === "string" && path.includes(".gentle-ai-chmod-probe-")) throw Object.assign(new Error("probe creation refused"), { code: "EACCES" });
+		if (typeof path === "string" && path.includes(".drakonc-ai-chmod-probe-")) throw Object.assign(new Error("probe creation refused"), { code: "EACCES" });
 		return (originalMkdir as (...arguments_: unknown[]) => ReturnType<typeof fs.mkdirSync>)(path, ...args);
 	});
 	syncBuiltinESMExports();
@@ -501,7 +501,7 @@ test("inconclusive private-mode probe keeps bounded privacy guidance instead of 
 		return true;
 	});
 	assert.equal(adds, 0);
-	assert.equal(readdirSync(parent).some((name) => name.includes(".gentle-ai-chmod-probe-")), false);
+	assert.equal(readdirSync(parent).some((name) => name.includes(".drakonc-ai-chmod-probe-")), false);
 	chmodSync(parent, 0o700);
 	const view = registry.create({ contributorRoot: cwd });
 	view.cleanup();
@@ -510,7 +510,7 @@ test("inconclusive private-mode probe keeps bounded privacy guidance instead of 
 test("POSIX parent privacy classification does not probe a replaced path after validating it", { skip: process.platform === "win32" }, (t) => {
 	const cwd = repository(t);
 	const commonDir = realpathSync(join(cwd, ".git"));
-	const parent = join(commonDir, "gentle-ai", "candidate-views");
+	const parent = join(commonDir, "drakonc-ai", "candidate-views");
 	mkdirSync(parent, { recursive: true, mode: 0o700 });
 	const originalLstat = fs.lstatSync;
 	let parentProbes = 0;
@@ -533,7 +533,7 @@ test("POSIX parent privacy classification does not probe a replaced path after v
 test("POSIX non-directory and symlink parents never receive privacy guidance", { skip: process.platform === "win32" }, (t) => {
 	const cwd = repository(t);
 	const commonDir = realpathSync(join(cwd, ".git"));
-	const control = join(commonDir, "gentle-ai");
+	const control = join(commonDir, "drakonc-ai");
 	const parent = join(control, "candidate-views");
 	mkdirSync(control, { recursive: true, mode: 0o700 });
 	for (const kind of ["file", "symlink"] as const) {
@@ -695,7 +695,7 @@ test("materialization rejects a symlinked owner ancestor without creating an ext
 	const cwd = repository(t);
 	const outside = join(cwd, "outside");
 	mkdirSync(outside);
-	symlinkSync(outside, join(cwd, ".git", "gentle-ai"));
+	symlinkSync(outside, join(cwd, ".git", "drakonc-ai"));
 	assert.throws(() => new CandidateViewRegistry().create({ contributorRoot: cwd }));
 	assert.equal(existsSync(join(outside, "candidate-views")), false);
 });
@@ -885,14 +885,14 @@ test("candidate view Git commands classify bounded timeouts and block materializ
 
 test("candidate-view Git timeouts use a bounded strict-decimal override with safe fallback", (t) => {
 	const withTimeout = <T>(value: string | undefined, callback: () => T): T => {
-		const previous = process.env.GENTLE_PI_CANDIDATE_GIT_TIMEOUT_MS;
+		const previous = process.env.DRAKONC_PI_CANDIDATE_GIT_TIMEOUT_MS;
 		try {
-			if (value === undefined) delete process.env.GENTLE_PI_CANDIDATE_GIT_TIMEOUT_MS;
-			else process.env.GENTLE_PI_CANDIDATE_GIT_TIMEOUT_MS = value;
+			if (value === undefined) delete process.env.DRAKONC_PI_CANDIDATE_GIT_TIMEOUT_MS;
+			else process.env.DRAKONC_PI_CANDIDATE_GIT_TIMEOUT_MS = value;
 			return callback();
 		} finally {
-			if (previous === undefined) delete process.env.GENTLE_PI_CANDIDATE_GIT_TIMEOUT_MS;
-			else process.env.GENTLE_PI_CANDIDATE_GIT_TIMEOUT_MS = previous;
+			if (previous === undefined) delete process.env.DRAKONC_PI_CANDIDATE_GIT_TIMEOUT_MS;
+			else process.env.DRAKONC_PI_CANDIDATE_GIT_TIMEOUT_MS = previous;
 		}
 	};
 	for (const [name, value, expected] of [
@@ -1262,7 +1262,7 @@ function emptyTreeOf(cwd: string): string {
 }
 
 function unbornRepository(t: test.TestContext, stage = true): string {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-candidate-view-unborn-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-candidate-view-unborn-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	git(cwd, "init", "-b", "main");
 	git(cwd, "config", "user.name", "Candidate Test");
@@ -1565,10 +1565,10 @@ test("candidate registry still fails closed rebinding the same lineage to genuin
 	registry.cleanupTerminal("conflict-lineage", "approved", contributorRoot);
 });
 
-// gentle-pi#323: `createOrReuse` reuses whatever view a replay key maps to,
+// drakonc-pi#323: `createOrReuse` reuses whatever view a replay key maps to,
 // with no awareness of live candidate content -- a content-independent key
 // reuses a stale view even after the candidate content it was frozen from
-// has changed. The fix lives at the START call site (extensions/gentle-ai.ts),
+// has changed. The fix lives at the START call site (extensions/drakonc-ai.ts),
 // which now folds the current candidate tree into the replay key; this test
 // documents both the registry's plain-key reuse contract and that folding
 // content identity into the key produces a fresh view once content changes.
@@ -1593,7 +1593,7 @@ test("candidate registry reuses a replay-keyed view verbatim regardless of live 
 test("candidate registry rejects a lineage target whose authorized symlink was replaced", (t) => {
 	const root = repository(t);
 	const replacement = repository(t);
-	const alias = join(tmpdir(), `gentle-pi-candidate-alias-${process.pid}-${Date.now()}`);
+	const alias = join(tmpdir(), `drakonc-pi-candidate-alias-${process.pid}-${Date.now()}`);
 	t.after(() => rmSync(alias, { recursive: true, force: true }));
 	symlinkSync(root, alias, "dir");
 	const registry = new CandidateViewRegistry();
@@ -1743,7 +1743,7 @@ test("candidate view derives deletion, rename, executable, and symlink scope fro
 	try {
 		// The rename source (tracked.txt) is frozen as a deletion next to its
 		// destination: native STATUS projects the rename as both paths
-		// (gentle-pi#518), and the reviewer scope carries the same identity.
+		// (drakonc-pi#518), and the reviewer scope carries the same identity.
 		assert.deepEqual(view.paths, ["deleted.txt", "linked.sh", "renamed.txt", "script.sh", "tracked.txt"]);
 		assert.deepEqual(view.deletedPaths, ["deleted.txt", "tracked.txt"]);
 		assert.deepEqual(view.modes, { "linked.sh": "120000", "renamed.txt": "100644", "script.sh": "100755" });
@@ -1758,7 +1758,7 @@ test("candidate view derives deletion, rename, executable, and symlink scope fro
 	}
 });
 
-// gentle-pi#518: native STATUS projects every path whose state changed between
+// drakonc-pi#518: native STATUS projects every path whose state changed between
 // the frozen trees (Go diffs with --no-renames), so a staged exact rename is
 // its source deletion plus its destination addition. The candidate view must
 // project the same identity or ordinary START is rejected before native
@@ -1887,7 +1887,7 @@ test("candidate view compacts an oversized non-ASCII scope losslessly and determ
 		]);
 		assert.ok(Buffer.byteLength(first.task, "utf8") <= Buffer.byteLength("review", "utf8") + 4_096);
 		assert.doesNotMatch(first.task, /Frozen changed scope by mode:/);
-		assert.match(first.task, /Call `gentle_review_scope`/);
+		assert.match(first.task, /Call `drakonc_review_scope`/);
 		assert.throws(() => decodeCandidateContextManifest(compact.encoded, `${compact.sha256.slice(0, -1)}0`), /integrity/);
 		assert.throws(() => readCandidateContextManifestPage(compact.encoded, compact.sha256, actorEntries.length + 1), /cursor/);
 		const nonCanonicalBytes = Buffer.from(JSON.stringify({ gitlinks: decoded.manifest.gitlinks, scopeByMode: decoded.manifest.scopeByMode, version: 1 }), "utf8");
@@ -2120,7 +2120,7 @@ test("unavailable native symlink capability fails with bounded reason and cleans
 	syncBuiltinESMExports();
 	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 	assert.throws(() => createCandidateView({ contributorRoot: cwd }), (error: unknown) => error instanceof CandidateViewError && error.reason === "symlink-materialization-failed" && !error.message.includes("private path and user"));
-	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	const parent = join(cwd, ".git", "drakonc-ai", "candidate-views");
 	assert.deepEqual(readdirSync(parent), []);
 	assert.equal(git(cwd, "worktree", "list", "--porcelain").includes("candidate-views"), false);
 });
@@ -2652,7 +2652,7 @@ test("dispatch restore removes a registered projection when materialization fail
 });
 
 test("candidate root resolution drift is exposed as a typed candidate-view error", () => {
-	const missingRoot = join(tmpdir(), `gentle-pi-missing-root-${process.pid}-${Date.now()}`);
+	const missingRoot = join(tmpdir(), `drakonc-pi-missing-root-${process.pid}-${Date.now()}`);
 	assert.throws(
 		() => new CandidateViewRegistry().hasCurrentBinding(missingRoot),
 		(error: unknown) => error instanceof CandidateViewError && error.reason === "contributor-root-unresolvable",
@@ -3057,7 +3057,7 @@ test("candidate view materializes an unborn staged repository without mutating t
 		view.cleanup();
 	}
 	// Cleanup removed the orphan worktree; no worktree lingers and no commit appeared.
-	assert.equal(git(contributorRoot, "worktree", "list").split("\n").filter((line) => line.includes("gentle-ai-candidate")).length, 0);
+	assert.equal(git(contributorRoot, "worktree", "list").split("\n").filter((line) => line.includes("drakonc-ai-candidate")).length, 0);
 	assert.equal(git(contributorRoot, "rev-list", "--all").length, 0);
 });
 
@@ -3128,7 +3128,7 @@ test("candidate view fails closed when the unborn ref probe exits with an unexpe
 });
 
 test("candidate view treats an unborn sha256 repository base as the repository-native sha256 empty tree", (t) => {
-	const contributorRoot = mkdtempSync(join(tmpdir(), "gentle-pi-candidate-view-unborn-sha256-"));
+	const contributorRoot = mkdtempSync(join(tmpdir(), "drakonc-pi-candidate-view-unborn-sha256-"));
 	t.after(() => rmSync(contributorRoot, { recursive: true, force: true }));
 	try {
 		git(contributorRoot, "init", "--object-format=sha256", "-b", "main");
@@ -3175,7 +3175,7 @@ test("candidate view unborn worktree falls back when --orphan is unsupported, pr
 	} finally {
 		view.cleanup();
 	}
-	assert.equal(git(contributorRoot, "worktree", "list").split("\n").filter((line) => line.includes("gentle-ai-candidate")).length, 0);
+	assert.equal(git(contributorRoot, "worktree", "list").split("\n").filter((line) => line.includes("drakonc-ai-candidate")).length, 0);
 	assert.equal(git(contributorRoot, "rev-list", "--all").length, 0);
 });
 
@@ -3212,9 +3212,9 @@ test("candidate view cleans up a partially registered unborn fallback worktree w
 	assert.ok(failure instanceof CandidateViewError, "the symbolic-ref failure must propagate");
 	assert.equal((failure as CandidateViewError).reason, "candidate-view-git-failure");
 	// No registered/admin worktree remains.
-	assert.equal(git(contributorRoot, "worktree", "list").split("\n").filter((line) => line.includes("gentle-ai-candidate")).length, 0);
+	assert.equal(git(contributorRoot, "worktree", "list").split("\n").filter((line) => line.includes("drakonc-ai-candidate")).length, 0);
 	// No candidate directory remains under the candidate-view parent.
-	const parent = join(realpathSync(git(contributorRoot, "rev-parse", "--path-format=absolute", "--git-common-dir")), "gentle-ai", "candidate-views");
+	const parent = join(realpathSync(git(contributorRoot, "rev-parse", "--path-format=absolute", "--git-common-dir")), "drakonc-ai", "candidate-views");
 	const leftover = existsSync(parent) ? readdirSync(parent).filter((entry) => lstatSync(join(parent, entry)).isDirectory()) : [];
 	assert.deepEqual(leftover, [], "no candidate directory remains after a partial unborn fallback failure");
 });
@@ -3231,8 +3231,8 @@ function candidateViewWorktreeCount(cwd: string): number {
 	return git(cwd, "worktree", "list").split("\n").filter((line) => line.includes("candidate-views")).length;
 }
 
-test("gentle-pi#185: a forecast-restored FINALIZE worktree does not leak across the next restore for the same lineage", (t) => {
-	// gentle-pi#185: `restoreForFinalizeFromNative` materializes a real Git
+test("drakonc-pi#185: a forecast-restored FINALIZE worktree does not leak across the next restore for the same lineage", (t) => {
+	// drakonc-pi#185: `restoreForFinalizeFromNative` materializes a real Git
 	// worktree to restore a lineage's FINALIZE binding from the native frozen
 	// projection. A forecast-only FINALIZE after a process restart uses this
 	// exact path, but its outcome is non-terminal, so `cleanupTerminal` (which
@@ -3272,7 +3272,7 @@ test("gentle-pi#185: a forecast-restored FINALIZE worktree does not leak across 
 	assert.equal(candidateViewWorktreeCount(cwd), 0, "approved cleanup removes the restored worktree, leaving no candidate worktree registered");
 });
 
-test("gentle-pi#185 review correction: a restore whose materialization fails leaves the previous binding intact", (t) => {
+test("drakonc-pi#185 review correction: a restore whose materialization fails leaves the previous binding intact", (t) => {
 	const cwd = repository(t);
 	const lineageId = "forecast-lineage-185-rollback";
 	const descriptor = stagedFinalizeDescriptor(cwd, "tracked.txt", "forecast change\n");

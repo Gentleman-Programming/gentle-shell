@@ -1,4 +1,5 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { BRAND_GLYPH } from "./brand-glyph.ts";
 import { paintSurfaceRow, surfaceOpener, type CardTheme } from "./shell-card.ts";
 import { HOVER_ROLE, paintHoverable } from "./shell-hover.ts";
 import type { ChromeSurface } from "./visual-customization-policy.ts";
@@ -125,8 +126,8 @@ export interface PanelSheet {
 const SHEET_ORDER = ["todo", "jobs", "agents", "footer"] as const;
 
 /**
- * The rail's sections as a full-width sheet (/gentle:panel, mobile): a fixed
- * ` ✿ Panel … esc back` row, then every section the rail would show, in rail
+ * The rail's sections as a full-width sheet (/drakonc:panel, mobile): a fixed
+ * ` 🐉 Panel … esc back` row, then every section the rail would show, in rail
  * order, scrolled within `rows`. Rows hidden below say how many remain.
  */
 const SHEET_BACK = "esc back";
@@ -140,7 +141,7 @@ export function panelSheetBackHit(width: number, x: number, y: number): boolean 
 export function renderPanelSheet(parts: ReadonlyMap<string, { render(width: number): string[] }>, theme: PanelTheme, width: number, view: { rows: number; scrollTop: number; backHovered?: boolean }): PanelSheet {
 	const target = Math.max(0, Math.floor(width));
 	const inner = Math.max(0, target - 2);
-	const title = ` ${fitPanelLine(`${theme.fg("accent", "✿")} ${theme.fg("text", theme.bold ? theme.bold("Panel") : "Panel")}`, paintHoverable(theme, SHEET_BACK, view.backHovered ?? false, "muted"), inner)} `;
+	const title = ` ${fitPanelLine(`${theme.fg("accent", BRAND_GLYPH)} ${theme.fg("text", theme.bold ? theme.bold("Panel") : "Panel")}`, paintHoverable(theme, SHEET_BACK, view.backHovered ?? false, "muted"), inner)} `;
 	const content: string[] = [];
 	for (const key of SHEET_ORDER) {
 		const lines = [...(parts.get(key)?.render(inner) ?? [])];

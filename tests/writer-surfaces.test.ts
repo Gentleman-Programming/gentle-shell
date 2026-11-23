@@ -7,7 +7,7 @@ import test from "node:test";
 import { worktreeGitEnvironment } from "../lib/session-worktree-registry.ts";
 import { canonicalWriterRoot, normalizeSurfaceEntry, overlappingSurfaces, surfacesOverlap, WriterSurfaceRegistry, writerSurfaceConflictMessage } from "../lib/writer-surfaces.ts";
 
-// gentle-shell#1731 T4 (S2, AC6): concurrent writers are admitted only when
+// drakonc-shell#1731 T4 (S2, AC6): concurrent writers are admitted only when
 // their `## Allowed edit surfaces` are disjoint. Overlap is conservative: two
 // entries overlap when some path could be covered by both, and an entry also
 // covers everything under it, so uncertainty always reads as overlap.

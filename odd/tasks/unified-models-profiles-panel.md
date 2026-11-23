@@ -1,31 +1,31 @@
-# Unify /gentle:models into /gentle:profiles with a pointer-driven routing editor
+# Unify /drakonc:models into /drakonc:profiles with a pointer-driven routing editor
 
 ## Objective
-One fullscreen surface for model routing: `/gentle:models` and `/gentle:profiles` open the same profiles panel, and each profile's routing is edited in place with a mouse-first (but keyboard-complete) routing editor.
+One fullscreen surface for model routing: `/drakonc:models` and `/drakonc:profiles` open the same profiles panel, and each profile's routing is edited in place with a mouse-first (but keyboard-complete) routing editor.
 
 ## Problem
-Two overlapping commands: `/gentle:models` edited global routing in a keyboard-only panel with different visuals, while `/gentle:profiles` managed the profiles that actually own that routing. The user asked to unify them and make the model-picker UI "LINDA" (beautiful), useful, intuitive, and mouse-responsive (hover + click).
+Two overlapping commands: `/drakonc:models` edited global routing in a keyboard-only panel with different visuals, while `/drakonc:profiles` managed the profiles that actually own that routing. The user asked to unify them and make the model-picker UI "LINDA" (beautiful), useful, intuitive, and mouse-responsive (hover + click).
 
 ## Design
-- `/gentle:models` keeps its housekeeping (legacy override migration, invalid `models.json` surfacing, store seeding) and then opens the same `ProfilesPanel` loop as `/gentle:profiles`, preselecting the current profile target (pin, else active).
+- `/drakonc:models` keeps its housekeeping (legacy override migration, invalid `models.json` surfacing, store seeding) and then opens the same `ProfilesPanel` loop as `/drakonc:profiles`, preselecting the current profile target (pin, else active).
 - New `RoutingEditorPanel` (replaces `SddModelPanel`): fullscreen table `AGENT | MODEL | EFFORT` plus `orchestrator` and `Set all agents` rows; searchable model picker; effort picker; clickable footer buttons (Save · Custom · Inherit · Export · Restore · Cancel).
 - Mouse: hover fills the whole row (pending background, same as the profiles list), click on a row opens the model picker, click on an `effort=` cell opens the effort picker, wheel scrolls lists and moves the cursor, footer buttons act on click. Hit regions are recorded in terminal coordinates during render (+1 row for the card border, +2 columns for the border/space).
 - Keyboard preserved from the old panel: `j/k`, `enter`, `e`, `i`, `c`, `x`, `r`, `g`/`G`, `ctrl+s` (save), `esc`.
 - Save semantics: the editor writes the draft into the selected profile via `updateProfile` + `writeProfilesFileSync`. No global `models.json` write, no materialization, no live-model switch. Applying globally remains the profiles panel's `a` with its existing confirmations.
 - ProfilesPanel gains `m` (edit routing) and pointer support in the detail pane: hovering a Profile routing row fills it; clicking one opens the editor for the shown profile.
 - Export/restore of `models.json` move into the editor (`x`/`r`, also clickable).
-- The old `u` (save routing + snapshot into current profile) is superseded: saving the editor IS the profile write. `resolveCurrentProfileTarget` still drives the `/gentle:models` preselection.
+- The old `u` (save routing + snapshot into current profile) is superseded: saving the editor IS the profile write. `resolveCurrentProfileTarget` still drives the `/drakonc:models` preselection.
 
 ## Constraints
 - Reuse the panel action-loop pattern: no nested overlays; every action reopens panels and reads fresh state.
 - All existing guardrails intact: apply-global confirmations, pin honesty notes, escape-stripping of agent/model labels.
-- Tests: `tests/gentle-ai.test.ts` routing-editor suite (render, terminal fill, pointer interactions, store writes); `tests/runtime-harness.mjs` migrated to the new visit sequences.
+- Tests: `tests/drakonc-ai.test.ts` routing-editor suite (render, terminal fill, pointer interactions, store writes); `tests/runtime-harness.mjs` migrated to the new visit sequences.
 
 ## Tasks
 - [x] T1 `RoutingEditorPanel` with mouse hit regions, hover fill, clickable footer, model/effort pickers.
 - [x] T2 `edit-routing` result + `m` key + detail-pane routing-row click/hover in `ProfilesPanel`.
 - [x] T3 `runProfilesPanelAction` edit-routing loop (custom model input, export, restore, save-to-store).
-- [x] T4 `/gentle:models` as preselecting alias (`openProfilesPanelLoop` extraction); remove `SddModelPanel`/old handler/`u` helpers.
+- [x] T4 `/drakonc:models` as preselecting alias (`openProfilesPanelLoop` extraction); remove `SddModelPanel`/old handler/`u` helpers.
 - [x] T5 Unit tests: updated model-panel tests + new pointer tests (hover, click-to-picker, option commit, footer buttons, effort cell, wheel).
 - [x] T6 Docs: `docs/readme-reference.md` models/profiles sections and command table.
 - [x] T7 `tests/runtime-harness.mjs` migration (writer task `mvppl322-1-qm07`; visit sequences profiles→editor→close, store-only save assertions, commit `d82a22014`).
@@ -54,18 +54,18 @@ Design artifact: `odd/design/models-profiles-ui-proposal.html` (variants A/B/C; 
 - Tabs are profiles with scope glyphs (◉ session, ★ default, ⌂ repo); ←→ or click switches, with a Save and switch / Discard / Stay guard for unsaved edits.
 - Orchestrator is the first row; the Model ▾ / Effort ▾ header sets every agent (replaces the Set all agents row); effort is a one-line strip; the model list marks the current value and offers Custom model id….
 - Footer is three buttons: Use in this session (u), Make default (d), Save (s). the profile menu ▾ on the active tab (m): Rename, Duplicate, Use in this repo, Delete. + New (n): copy, from what's running now (replaces Snapshot), empty.
-- File operations moved to subcommands: /gentle:models export|restore, /gentle:profiles export <name>|import|publish <name>.
-- Fixes found in the redesign: hover used toolPendingBg (#100A0F, invisible on the #060407 Gentleman-Cute background) and now uses selectedBg; pointer actions ran on both press and click, so one click could fire two actions — they now run on click only.
+- File operations moved to subcommands: /drakonc:models export|restore, /drakonc:profiles export <name>|import|publish <name>.
+- Fixes found in the redesign: hover used toolPendingBg (#100A0F, invisible on the #060407 Drakoncman-Cute background) and now uses selectedBg; pointer actions ran on both press and click, so one click could fire two actions — they now run on click only.
 
 - Live feedback: the ⋯ glyph read as truncated text (same as …). The active tab now shows ▾ and the hint reads "m menu".
 
 ## Test migration (variant A) and defects it surfaced
 - The background test writer (task mvqyms23-1-maaf) made no progress in 86 turns (65 changed lines, contract changed under it four times) and was cancelled; the parent migrated the tests inline.
-- Defects found and fixed while migrating: control sequences in an agent name glued the name to its model (padding measured before sanitizing); provider review roles lost their "Pi persisted default" inherit label in the effort row (gentle-pi#2271); their table cells were cut at 60 columns ("Pi default" now); letter shortcuts compared raw input, so terminals using the kitty keyboard protocol could not use e/s/u/d/n/m/j/k (now matchesKey); the use-session bind lived only in the loop (restored as a runProfilesPanelAction case shared with tests).
+- Defects found and fixed while migrating: control sequences in an agent name glued the name to its model (padding measured before sanitizing); provider review roles lost their "Pi persisted default" inherit label in the effort row (drakonc-pi#2271); their table cells were cut at 60 columns ("Pi default" now); letter shortcuts compared raw input, so terminals using the kitty keyboard protocol could not use e/s/u/d/n/m/j/k (now matchesKey); the use-session bind lived only in the loop (restored as a runProfilesPanelAction case shared with tests).
 - The runtime harness could pass falsely: a mocked panel that never finished let Node drain the event loop and exit 0 with later sections skipped. Earlier "runtime-harness PASS" reports after the table-first rewrite (da497a7b9) were not reliable. The harness now fails when run() has not completed at exit.
 - Tests removed with the UI they covered (contracts re-covered on the new screen): the 12-item action menu, the orchestrator picker, the detail pane (line scroll, "now" line, effective-routing table, (session) refresh after snapshot), and s snapshot (replaced by + New › From what's running now).
 
 ## Notes
-- Writer delegation for T7: gentle-ai-worker task `mvppl322-1-qm07` (runtime-harness only).
-- The 4 TTY launcher failures (`tests/gentle-shell-bin.test.ts`) reproduce on main through `run-test-suite.mjs` (verified) but pass in isolation in both trees: pre-existing PTY-timing flake under parallel load.
+- Writer delegation for T7: drakonc-ai-worker task `mvppl322-1-qm07` (runtime-harness only).
+- The 4 TTY launcher failures (`tests/drakonc-shell-bin.test.ts`) reproduce on main through `run-test-suite.mjs` (verified) but pass in isolation in both trees: pre-existing PTY-timing flake under parallel load.
 - Slice boundary: commit `68179a0b8` (1889 authored lines — editor + panel integration + unit tests + docs). Delivery strategy: single feature commit; runtime-harness migration lands as its own commit.

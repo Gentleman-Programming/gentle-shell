@@ -311,13 +311,13 @@ test("the armed state drives the footer copy and the error-colored highlight", (
 });
 
 // ---------------------------------------------------------------------------
-// Capture gate: the opt-in switch stays GENTLE_PI_HISTORY_CAPTURE (#1390).
+// Capture gate: the opt-in switch stays DRAKONC_PI_HISTORY_CAPTURE (#1390).
 // ---------------------------------------------------------------------------
 
 // The contributor branch briefly renamed the switch; the rename must not
 // ship. Assemble the rejected literal from parts so this file stays
 // grep-clean for it.
-const renamedSwitch = `GENTLE_PI_HISTORY_${"ENABLE"}`;
+const renamedSwitch = `DRAKONC_PI_HISTORY_${"ENABLE"}`;
 
 test("captureEnabled delegates to the shared env-then-Customize gate", () => {
   const decl = selectorSource.indexOf("export function captureEnabled(");
@@ -329,7 +329,7 @@ test("captureEnabled delegates to the shared env-then-Customize gate", () => {
   // lib/history-capture-policy.ts; tests/history-capture-policy.test.ts and
   // the session-writer suite pin the behavior.
   assert.ok(
-    body.includes("historyCaptureEnabled({ env, gentlePiConfigHome: configHome })"),
+    body.includes("historyCaptureEnabled({ env, drakoncPiConfigHome: configHome })"),
     "the extension must use the shared gate with its injected config home",
   );
   assert.ok(!body.includes(renamedSwitch), "the rename must not ship");

@@ -42,7 +42,7 @@ function strictJsonAgents(): string[] {
 // ritual is retired in favor of memory-owned learning (workers save validated
 // facts through Engram when given a project). Neither the delegation modules,
 // the full-delegation card, nor the generic agent bodies may instruct it.
-const GENERIC_AGENTS = ["gentle-ai-explore.md", "gentle-ai-worker.md", "gentle-ai-verify.md"];
+const GENERIC_AGENTS = ["drakonc-ai-explore.md", "drakonc-ai-worker.md", "drakonc-ai-verify.md"];
 
 test("S8: the delegation contract no longer instructs a mandatory `## Key Learnings` closing block", () => {
 	const delegation = readDelegationDetail();
@@ -57,7 +57,7 @@ test("S8: generic agents keep their Return contract without the Key Learnings ri
 		const source = readFileSync(join(AGENTS, file), "utf8");
 		assert.doesNotMatch(source, /Key Learnings/, `${file} must not mention the retired ritual`);
 	}
-	const worker = readFileSync(join(AGENTS, "gentle-ai-worker.md"), "utf8");
+	const worker = readFileSync(join(AGENTS, "drakonc-ai-worker.md"), "utf8");
 	const memory = readSection(worker, "Memory safety");
 	assert.ok(memory, "the worker keeps its Memory safety section");
 	assert.match(memory, /Use `mem_save` only when the parent supplies a validated project name/);

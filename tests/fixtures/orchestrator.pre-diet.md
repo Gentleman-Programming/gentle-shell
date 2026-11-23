@@ -1,4 +1,4 @@
-# el Gentleman Orchestrator
+# el Drakoncman Orchestrator
 
 Bind this to the parent Pi session only. Do not apply it to SDD executor phase agents.
 
@@ -30,7 +30,7 @@ Exceptions:
 
 ## Mental Model
 
-el Gentleman is an ecosystem configurator and harness layer. After installation, the user should not memorize workflows or manually wire agents. The package should get out of the way:
+el Drakoncman is an ecosystem configurator and harness layer. After installation, the user should not memorize workflows or manually wire agents. The package should get out of the way:
 
 - Small request: do it directly.
 - Substantial feature: suggest SDD organically.
@@ -184,7 +184,7 @@ If multiple rows match, run the narrow set that covers the risk. Example: shell 
 
 The detailed SDD workflow is intentionally not embedded in this always-on parent prompt. Before handling any `/sdd-*` command, natural-language SDD request, SDD continuation/routing, apply/verify/sync/archive work, or SDD/Judgment-Day phase delegation, read this package asset first:
 
-`{{GENTLE_PI_SDD_WORKFLOW_PATH}}`
+`{{DRAKONC_PI_SDD_WORKFLOW_PATH}}`
 
 That lazy surface contains the SDD phases, native dispatcher rules, status contract, preflight/init guards, artifact-store policy, execution mode, Strict TDD forwarding, phase result contract, and review workload guard.
 
@@ -192,7 +192,7 @@ Hard preflight invariant: `openspec/config.yaml`, existing SDD changes, installe
 
 ## Memory Contract
 
-When Engram or another callable memory package is available, the parent owns context selection and subagents own write-back. Retrieval rules differ by task type, matching the gentle-ai (OpenCode) contract.
+When Engram or another callable memory package is available, the parent owns context selection and subagents own write-back. Retrieval rules differ by task type, matching the drakonc-ai (OpenCode) contract.
 
 ### Non-SDD delegation
 
@@ -270,8 +270,8 @@ Common intent hints, not hard routing:
 | -------------------------- | -------------------------------------- |
 | PR review / GitHub PR URL  | project review skill, then `pr-review` |
 | Post-ready review comments | `comment-writer`                       |
-| Create/open/prepare PR     | `gentle-ai-branch-pr`                  |
-| Split/stack/large PR       | `gentle-ai-chained-pr`                 |
+| Create/open/prepare PR     | `drakonc-ai-branch-pr`                  |
+| Split/stack/large PR       | `drakonc-ai-chained-pr`                 |
 
 Keep this lightweight: loading a skill should improve the immediate task, not force extra ceremony.
 
@@ -284,7 +284,7 @@ Keep this lightweight: loading a skill should improve the immediate task, not fo
 
 ## 4R Review Triggers
 
-The extension (`extensions/gentle-ai.ts`) gates `bash` tool calls that look like git/gh workflow events. Gate semantics:
+The extension (`extensions/drakonc-ai.ts`) gates `bash` tool calls that look like git/gh workflow events. Gate semantics:
 
 - **pre-commit** (`git commit`): advisory only. The extension notifies the user to consider running `review-readability` but does NOT block. No orchestrator action needed.
 - **pre-push** (`git push`): advisory only. Same as pre-commit — notify, do not block.
@@ -292,7 +292,7 @@ The extension (`extensions/gentle-ai.ts`) gates `bash` tool calls that look like
   - Changed paths match hot globs: `**/auth/**`, `**/update/**`, `**/security/**`, `**/payments/**`
   - Diff exceeds 400 changed lines (added + deleted)
   - When blocked, the reason names all four agents to run first.
-- **post-sdd-phase** (design, apply): **strong gate** for the packaged `gentle-ai-judgment-day` skill. Handled separately by SDD phase orchestration, not this diff-based hook.
+- **post-sdd-phase** (design, apply): **strong gate** for the packaged `drakonc-ai-judgment-day` skill. Handled separately by SDD phase orchestration, not this diff-based hook.
 
 When the extension blocks a `gh pr create` command, the orchestrator must launch the `4r-review` chain (or run the four agents individually) and wait for their reports before the user retries the PR command.
 

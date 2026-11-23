@@ -9,7 +9,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import test, { after, before } from "node:test";
 import { setWindowsAclAuthorityForTesting } from "../lib/review-candidate-view-owner.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { __testing, createGentleAiExtension, PendingReviewConsentRegistry } from "../extensions/gentle-ai.ts";
+import { __testing, createDrakoncAiExtension, PendingReviewConsentRegistry } from "../extensions/drakonc-ai.ts";
 import { CandidateViewError, CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, NativeReviewConsentRequiredError, NativeReviewIntegrationError, type NativeReviewCli } from "../lib/native-review-cli.ts";
 import { decodeReviewLastEventClosureV1, decodeReviewConsentV3, decodeReviewStatusV3, type ReviewCollectInputV3, type ReviewStatusV3 } from "../lib/review-integration-v2.ts";
@@ -110,11 +110,11 @@ function burnedAcknowledgementStatus(lineageId: string): ReviewStatusV3 {
 	return burned;
 }
 
-// gentle-pi#627: gentle-ai reports a stale managed-asset set as a typed stop
-// carrying the exact `gentle-ai sync` invocation that resolves it.
+// drakonc-pi#627: drakonc-ai reports a stale managed-asset set as a typed stop
+// carrying the exact `drakonc-ai sync` invocation that resolves it.
 function managedAssetsOutdatedStatus(lineageId: string): ReviewStatusV3 {
 	const stopped = status(lineageId, [], "approved");
-	stopped.nextTransition = { kind: "stop", reasonCode: "managed_assets_outdated", continuation: { operation: "sync", command: "gentle-ai sync --agent claude-code", agent: "claude-code", staleAssets: ["orchestration/claude-code.md"] } };
+	stopped.nextTransition = { kind: "stop", reasonCode: "managed_assets_outdated", continuation: { operation: "sync", command: "drakonc-ai sync --agent claude-code", agent: "claude-code", staleAssets: ["orchestration/claude-code.md"] } };
 	return stopped;
 }
 
@@ -123,7 +123,7 @@ test("STATUS renders the managed_assets_outdated continuation command as the act
 	const native = { targetStatus: async () => managedAssetsOutdatedStatus(lineageId) } as unknown as NativeReviewCli;
 	const blocked = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
 	assert.equal(blocked.status, "blocked");
-	assert.equal(blocked.hint, "run gentle-ai sync --agent claude-code");
+	assert.equal(blocked.hint, "run drakonc-ai sync --agent claude-code");
 
 	// an unknown stop reason code keeps rendering as a plain blocked result
 	const otherStopNative = { targetStatus: async () => burnedAcknowledgementStatus(lineageId) } as unknown as NativeReviewCli;
@@ -131,7 +131,7 @@ test("STATUS renders the managed_assets_outdated continuation command as the act
 	assert.equal(plainBlocked.status, "blocked");
 	assert.equal(plainBlocked.hint, undefined);
 
-	// an older gentle-ai may report this same stop with no continuation; the
+	// an older drakonc-ai may report this same stop with no continuation; the
 	// renderer degrades to a plain blocked result instead of losing the status
 	const noContinuation = status(lineageId, [], "approved");
 	noContinuation.nextTransition = { kind: "stop", reasonCode: "managed_assets_outdated" };
@@ -148,7 +148,7 @@ test("caller-relative STATUS approved guidance preserves selected root against a
 	offered.raw = { ...offered.raw, next_transition: { kind: "execute", execute: { operation: "review.acknowledge-approved" } } };
 	const native = { targetStatus: async () => offered } as unknown as NativeReviewCli;
 	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, workspaceRoot: root }, dirname(root), native);
-	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(root)}}`);
+	assert.equal(result.next_action, `drakonc_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(root)}}`);
 	assert.equal((result.blocker as Record<string, unknown>).category, "continuation");
 });
 
@@ -171,9 +171,9 @@ test("caller-relative approved closure guidance preserves selected root and cano
 		captureProviderRole: async () => ({ schema: "gentle-ai.review-last-event-closure/v1", operation: "review.capture-refuter", lineageId, state: "approved", storeRevision: SHA, acknowledgement }),
 	} as unknown as NativeReviewCli;
 	const result = await __testing.executeReviewCaptureOperation({ lineageId, workspaceRoot: root, collectBinding: JSON.stringify(input) }, dirname(root), native);
-	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(root)}}`);
+	assert.equal(result.next_action, `drakonc_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(root)}}`);
 	const canonical = await __testing.executeReviewCaptureOperation({ lineageId, collectBinding: JSON.stringify(input) }, root, native);
-	assert.equal(canonical.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}"}`);
+	assert.equal(canonical.next_action, `drakonc_review {"operation":"acknowledge-approved","lineageId":"${lineageId}"}`);
 	assert.deepEqual((result.closure as Record<string, unknown>).acknowledgement, (canonical.closure as Record<string, unknown>).acknowledgement);
 	// This root-only registry double models a remembered lineage without a
 	// frozen projection, and enforces the same root identity at admission.
@@ -227,16 +227,16 @@ test("caller-relative grouped capture closure preserves selected workspace root"
 	const result = await __testing.executeReviewCaptureGroupOperation({ lineageId, workspaceRoot: root, collectBindings: inputs.map((input) => JSON.stringify(input)), reviewerRunAcknowledged: true }, dirname(root), native);
 	assert.equal(submissions, 1, JSON.stringify(result));
 	assert.equal(result.outcome, "native-last-event-closure", JSON.stringify(result));
-	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(root)}}`);
+	assert.equal(result.next_action, `drakonc_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(root)}}`);
 });
 
 // Issue #1371: approved status mappings and closure envelopes provide additive next_action
-test("STATUS on approved target renders additive next_action naming exact gentle_review acknowledge-approved invocation", async () => {
+test("STATUS on approved target renders additive next_action naming exact drakonc_review acknowledge-approved invocation", async () => {
 	const lineageId = "status-approved-ack";
 	const native = { targetStatus: async () => approvedAcknowledgementStatus(lineageId) } as unknown as NativeReviewCli;
 	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, process.cwd(), native);
 	assert.equal(result.status, "blocked");
-	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}"}`);
+	assert.equal(result.next_action, `drakonc_review {"operation":"acknowledge-approved","lineageId":"${lineageId}"}`);
 });
 
 test("STATUS on approved target preserves workspaceRoot in next_action when distinct from process cwd", async (t) => {
@@ -245,7 +245,7 @@ test("STATUS on approved target preserves workspaceRoot in next_action when dist
 	const native = { targetStatus: async () => approvedAcknowledgementStatus(lineageId, worktreeRoot) } as unknown as NativeReviewCli;
 	const result = await __testing.executeReviewControllerOperation({ operation: "status", lineageId, workspaceRoot: worktreeRoot }, worktreeRoot, native);
 	assert.equal(result.status, "blocked");
-	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`);
+	assert.equal(result.next_action, `drakonc_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`);
 });
 
 test("invalid acknowledgement input returns self-healing next_action for canonical lineage and fallback slug otherwise", async (t) => {
@@ -261,7 +261,7 @@ test("invalid acknowledgement input returns self-healing next_action for canonic
 	assert.equal(rejectedWithInput.outcome, "native-approved-acknowledgement-input-invalid");
 	assert.equal(rejectedWithInput.reason, "controller-only-input");
 	assert.equal(rejectedWithInput.field, "input");
-	assert.equal(rejectedWithInput.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}"}`);
+	assert.equal(rejectedWithInput.next_action, `drakonc_review {"operation":"acknowledge-approved","lineageId":"${lineageId}"}`);
 
 	// 2. Controller-only input with canonical lineage and distinct workspaceRoot
 	const worktreeRoot = repository(t);
@@ -273,7 +273,7 @@ test("invalid acknowledgement input returns self-healing next_action for canonic
 	assert.equal(rejectedWithWorktree.outcome, "native-approved-acknowledgement-input-invalid");
 	assert.equal(
 		rejectedWithWorktree.next_action,
-		`gentle_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`,
+		`drakonc_review {"operation":"acknowledge-approved","lineageId":"${lineageId}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`,
 	);
 
 	// 3. Non-canonical / invalid lineage returns fallback slug
@@ -418,7 +418,7 @@ test("public acknowledgement reports the burn from the review-acknowledged/v1 en
 });
 
 function candidateRepository(t: test.TestContext): string {
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-native-routing-")));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-native-routing-")));
 	// The registry's views are 0555 dirs / 0444 files; restore writability before
 	// the fixture teardown so a surviving view never breaks rmSync.
 	t.after(() => { try { execFileSync("chmod", ["-R", "u+w", cwd]); } catch {} rmSync(cwd, { recursive: true, force: true }); });
@@ -456,7 +456,7 @@ test("approved acknowledgement burn tears down the retained candidate view and k
 	assert.ok(registry.hasProjection(lineageId, contributorRoot), "terminal approved cleanup keeps the lineage projection");
 });
 
-// gentle-ai#4003: the native burn is the committed authority outcome. A Pi-side
+// drakonc-ai#4003: the native burn is the committed authority outcome. A Pi-side
 // candidate-view teardown failure after it must never be reported as a failed
 // acknowledgement, or the caller cannot tell that authority was consumed.
 test("approved acknowledgement reports the burn truthfully when candidate-view cleanup fails after it", async (t) => {
@@ -884,18 +884,18 @@ test("route retention caps, rejects collisions and invalid selectors, and clears
 
 test("public INSPECT and STATUS publish the exact pi-bound binding that capture revalidates", async () => {
 	const lineageId = "pi-bound-public-binding";
-	const agentlessInput = collectInput(lineageId);
+	const adrakoncssInput = collectInput(lineageId);
 	const piBoundInput: ReviewCollectInputV3 = {
-		...agentlessInput,
+		...adrakoncssInput,
 		arguments: [
-			...agentlessInput.arguments,
+			...adrakoncssInput.arguments,
 			{ name: "agent", value: "pi", token: "--agent=pi" },
 			{ name: "materialize", value: "true", token: "--materialize=true" },
 		],
 		submission: {
-			...agentlessInput.submission!,
+			...adrakoncssInput.submission!,
 			argumentTokens: [
-				...agentlessInput.submission!.argumentTokens.slice(0, -1),
+				...adrakoncssInput.submission!.argumentTokens.slice(0, -1),
 				"--agent=pi",
 				"--materialize=true",
 				"--input={{value}}",
@@ -903,11 +903,11 @@ test("public INSPECT and STATUS publish the exact pi-bound binding that capture 
 			values: [{ slot: "reviewer_result", domain: "artifact_path_or_stdin", substitutionLocation: 9 }],
 		},
 	};
-	const agentlessStatus = status(lineageId);
-	agentlessStatus.nextTransition = {
+	const adrakoncssStatus = status(lineageId);
+	adrakoncssStatus.nextTransition = {
 		kind: "collect",
 		reasonCode: "capture_required",
-		collect: { inputs: [agentlessInput] },
+		collect: { inputs: [adrakoncssInput] },
 	};
 	const piBoundStatus = status(lineageId);
 	piBoundStatus.nextTransition = {
@@ -919,7 +919,7 @@ test("public INSPECT and STATUS publish the exact pi-bound binding that capture 
 	const native = {
 		targetStatus: async (request: { agent?: string; lineageId?: string }) => {
 			requests.push(request);
-			return request.agent === "pi" ? piBoundStatus : agentlessStatus;
+			return request.agent === "pi" ? piBoundStatus : adrakoncssStatus;
 		},
 	} as unknown as NativeReviewCli;
 
@@ -958,7 +958,7 @@ test("public INSPECT and STATUS publish the exact pi-bound binding that capture 
 });
 
 function repository(t: test.TestContext): string {
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-native-routing-")));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-native-routing-")));
 	t.after(() => {
 		execFileSync("chmod", ["-R", "u+rwx", cwd], { stdio: "ignore" });
 		chmodSync(cwd, 0o700);
@@ -974,9 +974,9 @@ function repository(t: test.TestContext): string {
 
 test("candidate lifecycle sweeps startup and cleans every shutdown including reload", async (t) => {
 	const cwd = repository(t);
-	for (const key of ["HOME", "GENTLE_PI_AGENT_HOME", "PI_CODING_AGENT_DIR", "GENTLE_PI_CONFIG_HOME", "GENTLE_PI_GENTLE_AI_DEV_BINARY"]) {
+	for (const key of ["HOME", "DRAKONC_PI_AGENT_HOME", "PI_CODING_AGENT_DIR", "DRAKONC_PI_CONFIG_HOME", "DRAKONC_PI_DRAKONC_AI_DEV_BINARY"]) {
 		const previous = process.env[key];
-		process.env[key] = key === "GENTLE_PI_GENTLE_AI_DEV_BINARY" ? "" : join(cwd, key);
+		process.env[key] = key === "DRAKONC_PI_DRAKONC_AI_DEV_BINARY" ? "" : join(cwd, key);
 		if (process.env[key]) mkdirSync(process.env[key]!, { recursive: true });
 		t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
 	}
@@ -984,8 +984,8 @@ test("candidate lifecycle sweeps startup and cleans every shutdown including rel
 	const homeAgent = join(cwd, "HOME", ".agents", "isolation-probe.md");
 	mkdirSync(dirname(homeAgent), { recursive: true });
 	writeFileSync(homeAgent, "---\nname: isolation-probe\ndescription: Fixture\n---\n");
-	writeFileSync(join(cwd, "GENTLE_PI_CONFIG_HOME", "models.json"), JSON.stringify({ "isolation-probe": { model: "fixture/model" } }));
-	t.diagnostic(`startup routing: cwd=${cwd}; HOME, GENTLE_PI_AGENT_HOME, PI_CODING_AGENT_DIR, GENTLE_PI_CONFIG_HOME are same-named children; dev-binary override disabled`);
+	writeFileSync(join(cwd, "DRAKONC_PI_CONFIG_HOME", "models.json"), JSON.stringify({ "isolation-probe": { model: "fixture/model" } }));
+	t.diagnostic(`startup routing: cwd=${cwd}; HOME, DRAKONC_PI_AGENT_HOME, PI_CODING_AGENT_DIR, DRAKONC_PI_CONFIG_HOME are same-named children; dev-binary override disabled`);
 	const calls: string[] = [];
 	const destinations: string[] = [];
 	const violations: string[] = [];
@@ -1030,7 +1030,7 @@ test("candidate lifecycle sweeps startup and cleans every shutdown including rel
 	const registry = new CandidateViewRegistry();
 	t.mock.method(registry, "sweepOrphans", (root: string) => { assert.equal(root, cwd); calls.push("sweep"); });
 	t.mock.method(registry, "cleanupAll", () => { calls.push("cleanup"); });
-	createGentleAiExtension({ nativeReviewCli: null, candidateViews: registry, processEnv: {} })({
+	createDrakoncAiExtension({ nativeReviewCli: null, candidateViews: registry, processEnv: {} })({
 		on(name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) {
 			hooks.set(name, [...(hooks.get(name) ?? []), handler]);
 		},
@@ -1042,10 +1042,10 @@ test("candidate lifecycle sweeps startup and cleans every shutdown including rel
 		assert.deepEqual(violations, []);
 		assert.ok(destinations.length > 0, "startup must actually write fixture assets");
 		assert.ok(discovery.includes(join(cwd, "HOME", ".agents")), "home agent discovery must use the fixture");
-		assert.equal(existsSync(join(cwd, "GENTLE_PI_AGENT_HOME", "gentle-ai", "managed-assets.json")), true);
+		assert.equal(existsSync(join(cwd, "DRAKONC_PI_AGENT_HOME", "drakonc-ai", "managed-assets.json")), true);
 		assert.match(readFileSync(homeAgent, "utf8"), /model: fixture\/model/);
 		assert.ok(destinations.includes(homeAgent), "the discovered fixture agent must actually receive routing");
-		assert.ok(destinations.includes(join(cwd, "GENTLE_PI_AGENT_HOME", "subagents.json")));
+		assert.ok(destinations.includes(join(cwd, "DRAKONC_PI_AGENT_HOME", "subagents.json")));
 		t.diagnostic(`confined startup: ${destinations.length} filesystem mutations; fixture home-agent routing and managed-assets manifest verified; external violations=0`);
 		assert.deepEqual(calls, ["sweep"]);
 	} finally {
@@ -1068,7 +1068,7 @@ function reviewRuntime(nativeReviewCli: NativeReviewCli, candidateViews: Candida
 	const tools = new Map<string, RegisteredControllerTool>();
 	let toolCall: ((event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<unknown>) | undefined;
 	let sessionShutdown: ((event: unknown, ctx: ExtensionContext) => unknown) | undefined;
-	createGentleAiExtension({ nativeReviewCli, candidateViews })({
+	createDrakoncAiExtension({ nativeReviewCli, candidateViews })({
 		on(name: string, handler: (event: { toolName: string; input: unknown }, ctx: ExtensionContext) => Promise<unknown>) {
 			if (name === "tool_call") toolCall = handler;
 			if (name === "session_shutdown") sessionShutdown = handler as unknown as (event: unknown, ctx: ExtensionContext) => unknown;
@@ -1076,8 +1076,8 @@ function reviewRuntime(nativeReviewCli: NativeReviewCli, candidateViews: Candida
 		registerTool(definition: RegisteredControllerTool & { name: string }) { tools.set(definition.name, definition); },
 		registerCommand() {},
 	} as unknown as ExtensionAPI);
-	const controller = tools.get("gentle_review");
-	const capture = tools.get("gentle_review_capture");
+	const controller = tools.get("drakonc_review");
+	const capture = tools.get("drakonc_review_capture");
 	assert.ok(controller);
 	assert.ok(capture);
 	assert.ok(toolCall);
@@ -1126,7 +1126,7 @@ function startStatus(cwd: string, baseRef?: string, intendedUntracked: readonly 
 test("START reports POSIX candidate parent privacy refusal without native START or permission repair", { skip: process.platform === "win32" }, async (t) => {
 	const cwd = repository(t);
 	const target = startStatus(cwd);
-	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	const parent = join(cwd, ".git", "drakonc-ai", "candidate-views");
 	chmodSync(parent, 0o777);
 	let starts = 0;
 	const native = {
@@ -1154,13 +1154,13 @@ test("START reports POSIX candidate parent privacy refusal without native START 
 test("START reports ineffective POSIX private-mode mounts without native START or permission repair", { skip: process.platform === "win32" }, async (t) => {
 	const cwd = repository(t);
 	const target = startStatus(cwd);
-	const parent = join(cwd, ".git", "gentle-ai", "candidate-views");
+	const parent = join(cwd, ".git", "drakonc-ai", "candidate-views");
 	mkdirSync(parent, { recursive: true, mode: 0o700 });
 	chmodSync(parent, 0o777);
 	const originalLstat = fs.lstatSync;
 	t.mock.method(fs, "lstatSync", (path: Parameters<typeof fs.lstatSync>[0], ...args: unknown[]) => {
 		const stat = (originalLstat as (...arguments_: unknown[]) => ReturnType<typeof fs.lstatSync>)(path, ...args);
-		return typeof path === "string" && path.includes(".gentle-ai-chmod-probe-")
+		return typeof path === "string" && path.includes(".drakonc-ai-chmod-probe-")
 			? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { mode: (Number(stat.mode) & ~0o777) | 0o777, uid: process.getuid?.() })
 			: stat;
 	});
@@ -1240,7 +1240,7 @@ test("ordinary START materializes an excluded-untracked candidate exactly once b
 });
 
 test("ordinary START adopts the offered committed-range base while an untracked selection is in play", async (t) => {
-	// Live-reproduced blocker (gentle-pi#874): the committed-range adoption was
+	// Live-reproduced blocker (drakonc-pi#874): the committed-range adoption was
 	// skipped whenever an untracked selection was in play, so the provider's
 	// base-diff projection was compared against a base-less candidate view and
 	// assertNativeStartCandidateBinding failed with
@@ -1563,7 +1563,7 @@ for (const statusSchema of ["gentle-ai.review-integration.status/v6", "gentle-ai
 	assert.deepEqual(requests.map((request) => request.cwd), [cwd, cwd, cwd]);
 	assert.equal(starts[0]!.cwd, cwd);
 	assert.deepEqual(starts[0]!.intendedUntrackedSelection, { argumentTokens: selection.submission!.argumentTokens, value: JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: "select", expected_untracked_inventory: SHA, intended_untracked: [eligible] }) });
-	// gentle-pi#941: every refusal named its own check, so a caller holding
+	// drakonc-pi#941: every refusal named its own check, so a caller holding
 	// provider-issued bytes can tell a stale binding from an ineligible path
 	// instead of retrying the same call.
 	for (const { reason, field, ...invalid } of [
@@ -1584,7 +1584,7 @@ for (const statusSchema of ["gentle-ai.review-integration.status/v6", "gentle-ai
 	assert.equal(requests.every((request) => !("lineageId" in request)), true);
 });
 
-// gentle-pi#941: a selection refused because the live status moved names the field
+// drakonc-pi#941: a selection refused because the live status moved names the field
 // that moved, and an empty selection -- the only honest answer when the candidate
 // touches no untracked file -- is accepted rather than refused.
 for (const scenario of [
@@ -1613,7 +1613,7 @@ for (const scenario of [
 	assert.equal(starts.length, 0);
 });
 
-// The reporter's own case in gentle-pi#941: the candidate touches only tracked
+// The reporter's own case in drakonc-pi#941: the candidate touches only tracked
 // files while the repository carries an unrelated untracked inventory, so the
 // only honest selection is the empty one. It must start, not be refused.
 test("an empty intended-untracked selection excludes every eligible path and starts", async (t) => {
@@ -1706,7 +1706,7 @@ test("committed-range selection rejects target-identity drift before START", asy
 	assert.equal(starts, 0);
 });
 
-// gentle-pi#941: the two remaining refusal reasons had no coverage, so a future
+// drakonc-pi#941: the two remaining refusal reasons had no coverage, so a future
 // refactor could reorder or drop them without a red test. Name each one.
 test("a selection answer against a status with no selection input names the absent input", async (t) => {
 	const cwd = repository(t), eligible = "selected.md";
@@ -1756,7 +1756,7 @@ test("an eligible-paths list that is not a JSON array names the unreadable field
 	assert.equal(starts.length, 0);
 });
 
-// gentle-pi#706: inspect names the exact continuation for the intended-untracked
+// drakonc-pi#706: inspect names the exact continuation for the intended-untracked
 // stop and can resolve it in one call through top-level untrackedScope.
 function untrackedStopFixture(
 	t: test.TestContext,
@@ -2159,7 +2159,7 @@ test("a fresh unsuccessful inspect invalidates its prior pre-lineage selection",
 		assert.equal(retained.has(`${cwd}\u0000`), false);
 	});
 
-// gentle-pi#1192: a committed-range inspect's retained pre-lineage selection
+// drakonc-pi#1192: a committed-range inspect's retained pre-lineage selection
 // must remember its own baseRef/committedOnly too, so a later plain START
 // replays the same committed range instead of falling back to the
 // workspace-diff one.
@@ -2279,7 +2279,7 @@ test("inspect with a committed-range selector retains baseRef/committedOnly, and
 	assert.equal("baseRef" in lineageEntry!, false);
 });
 
-// gentle-pi#review-ready-inspect-selector: a plain inspect that resolves ready
+// drakonc-pi#review-ready-inspect-selector: a plain inspect that resolves ready
 // without ever needing an untrackedScope decision must still retain its own
 // committed-range selector, so the following plain START replays the exact
 // inspected range instead of adopting the native default base-ref (#874).
@@ -2447,7 +2447,7 @@ test("an explicit baseRef that conflicts with a retained committed-range selecto
 	assert.equal(starts[0]!.baseRef, otherRef);
 	// The conflicting explicit START never adopts the retained scope/inventory.
 	assert.equal("untrackedScope" in starts[0]!, false);
-	// A successful START always clears the pre-lineage "" entry (gentle-pi#706),
+	// A successful START always clears the pre-lineage "" entry (drakonc-pi#706),
 	// whether or not it consumed it: a new lineage invalidates any stale
 	// pre-lineage selection regardless of this START's own adoption choice.
 	assert.equal(retained.has(`${cwd}\u0000`), false);
@@ -2774,8 +2774,8 @@ test("approved capture closure envelope carries additive next_action alongside u
 	const result = await __testing.executeReviewCaptureOperation({ lineageId: closureLineage, collectBinding: JSON.stringify(input) }, process.cwd(), native);
 	assert.equal(result.status, "closed");
 	assert.equal(result.outcome, "native-last-event-closure");
-	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${closureLineage}"}`);
-	assert.equal((result.closure as { next_action?: string }).next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${closureLineage}"}`);
+	assert.equal(result.next_action, `drakonc_review {"operation":"acknowledge-approved","lineageId":"${closureLineage}"}`);
+	assert.equal((result.closure as { next_action?: string }).next_action, `drakonc_review {"operation":"acknowledge-approved","lineageId":"${closureLineage}"}`);
 	assert.deepEqual((result.closure as { acknowledgement?: unknown }).acknowledgement, ackContinuation);
 });
 
@@ -2829,8 +2829,8 @@ test("approved capture closure envelope preserves workspaceRoot in next_action w
 	const result = await __testing.executeReviewCaptureOperation({ lineageId: closureLineage, collectBinding: JSON.stringify(input), workspaceRoot: worktreeRoot }, worktreeRoot, native);
 	assert.equal(result.status, "closed");
 	assert.equal(result.outcome, "native-last-event-closure");
-	assert.equal(result.next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${closureLineage}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`);
-	assert.equal((result.closure as { next_action?: string }).next_action, `gentle_review {"operation":"acknowledge-approved","lineageId":"${closureLineage}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`);
+	assert.equal(result.next_action, `drakonc_review {"operation":"acknowledge-approved","lineageId":"${closureLineage}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`);
+	assert.equal((result.closure as { next_action?: string }).next_action, `drakonc_review {"operation":"acknowledge-approved","lineageId":"${closureLineage}","workspaceRoot":${JSON.stringify(worktreeRoot)}}`);
 	assert.deepEqual((result.closure as { acknowledgement?: unknown }).acknowledgement, ackContinuation);
 });
 
@@ -2866,13 +2866,13 @@ test("targeted-validator captures echo the distinct provider correction target i
 
 test("capture schema and guidance name diff-line units apart from the frozen logical correction budget", () => {
 	const tools = new Map<string, { description: string; promptGuidelines?: readonly string[]; parameters: unknown }>();
-	createGentleAiExtension({ nativeReviewCli: null })({
+	createDrakoncAiExtension({ nativeReviewCli: null })({
 		on() {},
 		registerTool(definition: { name: string; description: string; promptGuidelines?: readonly string[]; parameters: unknown }) { tools.set(definition.name, definition); },
 		registerCommand() {},
 	} as unknown as ExtensionAPI);
-	const capture = tools.get("gentle_review_capture");
-	const controller = tools.get("gentle_review");
+	const capture = tools.get("drakonc_review_capture");
+	const controller = tools.get("drakonc_review");
 	assert.ok(capture);
 	assert.ok(controller);
 	const schema = JSON.stringify(capture.parameters);
@@ -3020,8 +3020,8 @@ test("current STATUS binding allows exactly one provider capture and never follo
 test("ordinary START transports native focus and safe policy inputs without rebuilding provider authority", async (t) => {
 	const cwd = repository(t);
 	const seen: Array<Record<string, unknown>> = [];
-	mkdirSync(join(cwd, ".gentle-ai", "policies"), { recursive: true });
-	const policyPath = join(cwd, ".gentle-ai", "policies", "focus.json");
+	mkdirSync(join(cwd, ".drakonc-ai", "policies"), { recursive: true });
+	const policyPath = join(cwd, ".drakonc-ai", "policies", "focus.json");
 	writeFileSync(policyPath, "{}\n");
 	const native = {
 		targetStatus: async () => startStatus(cwd),
@@ -3031,7 +3031,7 @@ test("ordinary START transports native focus and safe policy inputs without rebu
 		},
 	} as unknown as NativeReviewCli;
 	for (const focus of [undefined, "risk", "resilience", "readability", "reliability"] as const) {
-		const input = { mode: "ordinary", ...(focus === undefined ? {} : { focus }), ...(focus === "risk" ? { policyPath: ".gentle-ai/policies/focus.json" } : {}) };
+		const input = { mode: "ordinary", ...(focus === undefined ? {} : { focus }), ...(focus === "risk" ? { policyPath: ".drakonc-ai/policies/focus.json" } : {}) };
 		const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify(input) }, cwd, native);
 		assert.equal(result.operation, "start");
 	}
@@ -3253,7 +3253,7 @@ test("ordinary START refuses a target projection that no longer matches the froz
 	assert.equal(startCalls, 0);
 });
 
-// gentle-pi#455: a consent binding one active Pi session's START created must
+// drakonc-pi#455: a consent binding one active Pi session's START created must
 // be answerable from another active session presenting the same opaque
 // binding id -- consent bindings are not partitioned by which session's
 // START created them, only by the repository and candidate they are scoped to.
@@ -3279,7 +3279,7 @@ test("answer-consent resolves a valid binding presented by a different active Pi
 	assert.notEqual(answered.status, "blocked", JSON.stringify(answered));
 });
 
-// gentle-pi#455: cross-session resolution must still enforce single use --
+// drakonc-pi#455: cross-session resolution must still enforce single use --
 // once a binding is answered by any session, no session (including the one
 // whose START created it) may answer it again.
 test("a consumed consent binding cannot be answered a second time from any session", async (t) => {
@@ -3307,7 +3307,7 @@ test("a consumed consent binding cannot be answered a second time from any sessi
 	assert.equal((replay.diagnostics as { code?: string } | undefined)?.code, "consent-binding-already-consumed", JSON.stringify(replay));
 });
 
-// gentle-pi#455 correction: cross-session resolution looks a binding up by
+// drakonc-pi#455 correction: cross-session resolution looks a binding up by
 // its opaque id alone, so it must independently refuse an answer presented
 // from a different repository than the one its owning START minted it for,
 // without ever running the mode gate or native answerConsent, and without
@@ -3339,7 +3339,7 @@ test("answer-consent refuses a binding presented from a different repository tha
 	assert.equal((rightRepo.result as { lineage_id?: string } | undefined)?.lineage_id, "right-repo", JSON.stringify(rightRepo));
 });
 
-// gentle-pi#323: within the live consent TTL window, a content-independent
+// drakonc-pi#323: within the live consent TTL window, a content-independent
 // replay key let a second ordinary START reuse the first START's still-live
 // (never lineage-bound) frozen candidate view even though the live candidate
 // content changed underneath it, and then dead-ended at
@@ -3478,7 +3478,7 @@ test("collect-state public STATUS, INSPECT, and START serialize each provider co
 });
 
 test("a correction-plan binding bound to the frozen authority target is captured after the worktree drifts", async () => {
-	// gentle-ai binds correction-plan collect inputs to authority_target_identity
+	// drakonc-ai binds correction-plan collect inputs to authority_target_identity
 	// (the frozen candidate), not to the live target_identity, once the
 	// candidate has drifted; the host must accept the target the provider issued.
 	const lineageId = "drifted-correction";
@@ -3573,15 +3573,15 @@ test("START options survive intended-untracked continuation with and without req
  for (const withContext of [false, true]) for (const selection of ["lenses", "focus"]) for (const includeFile of [false, true]) await t.test(`${selection}, context=${withContext}, include=${includeFile}`, async t => {
   const { cwd, eligible, initial, target } = untrackedStopFixture(t);
   const retained = new Map(), starts: Array<Record<string, unknown>> = [];
-  mkdirSync(join(cwd, ".gentle-ai", "policies"), { recursive: true });
-  const policyPath = join(cwd, ".gentle-ai", "policies", "review.json"); writeFileSync(policyPath, "{}\n");
+  mkdirSync(join(cwd, ".drakonc-ai", "policies"), { recursive: true });
+  const policyPath = join(cwd, ".drakonc-ai", "policies", "review.json"); writeFileSync(policyPath, "{}\n");
   if (withContext) writeFileSync(join(cwd, "spec.md"), "Requested behavior");
   const native = { targetStatus: async (request: Record<string, unknown>) => "intendedUntrackedSelection" in request ? target : initial,
    start: async (request: Record<string, unknown>) => { starts.push(request); return { lineageId: "options-selected", state: "reviewing", riskLevel: "low", selectedLenses: [], changedFiles: 1, changedLines: 1, correctionBudget: 1, action: "created", lensesRequired: false, riskReasons: [], raw: {} }; }
   } as unknown as NativeReviewCli;
   const run = (parameters: Record<string, unknown>) => __testing.executeReviewControllerOperation(parameters, cwd, native, undefined, undefined, undefined, retained);
   const requested = selection === "lenses" ? { lenses: ["risk"], lensesReason: "permission checks" } : { focus: "reliability" };
-  const stopped = await run({ operation: "start", input: JSON.stringify({ mode: "ordinary", ...requested, policyPath: ".gentle-ai/policies/review.json", ...(withContext ? { requestContextPath: "spec.md" } : {}) }) });
+  const stopped = await run({ operation: "start", input: JSON.stringify({ mode: "ordinary", ...requested, policyPath: ".drakonc-ai/policies/review.json", ...(withContext ? { requestContextPath: "spec.md" } : {}) }) });
   assert.equal(typeof stopped.selectionBinding, "string", JSON.stringify(stopped));
   const resumed = await run({ operation: "select-intended-untracked", selectionBinding: stopped.selectionBinding, intendedUntracked: includeFile ? [eligible] : [] });
   assert.equal(starts.length, 1, JSON.stringify(resumed));
@@ -3683,7 +3683,7 @@ test("request context rechecks sensitive aliases before selection and consent co
  }
 });
 
-// gentle-shell#3412: a lineage retained with its committed-range projection is
+// drakonc-shell#3412: a lineage retained with its committed-range projection is
 // bound by that range alone. A status input that carries only an untracked
 // declaration (or nothing) must not be validated against the workspace
 // projection, and the committed range sends no untracked selection flags.
@@ -3766,7 +3766,7 @@ test("fresh-session bound STATUS {} on an unretained workspace lineage keeps the
 	assert.deepEqual({ outcome: (result as { outcome?: string }).outcome, reason: (result as { reason?: string }).reason }, { outcome: "native-status-input-invalid", reason: "untracked-selection-invalid" });
 });
 
-// gentle-shell#3412 (probe side effects): the fresh-session probe must keep the
+// drakonc-shell#3412 (probe side effects): the fresh-session probe must keep the
 // untracked refusal on any non-success outcome and never cache a transport refusal.
 const probeRefusal = { outcome: "native-status-input-invalid", reason: "untracked-selection-invalid" };
 const probeOutcome = (result: unknown) => ({ outcome: (result as { outcome?: string }).outcome, reason: (result as { reason?: string }).reason });
@@ -3817,11 +3817,11 @@ test("retained committed lineage: {} and exclude-with-digest equal the omitted-i
 	assert.deepEqual(await run(JSON.stringify({ untrackedScope: "exclude", expectedUntrackedInventory: SHA })), omitted);
 });
 
-// gentle-shell#3424 follow-up A1: an older-than-pinned native contract must
+// drakonc-shell#3424 follow-up A1: an older-than-pinned native contract must
 // reach the tool result with its exact actionable message, not a generic
 // native-operation-failed / native-status-unsupported remediation.
-const STATUS_V8_TOO_OLD = "gentle-ai native review status/v8 is older than the supported v9 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override";
-const CAPABILITIES_V25_TOO_OLD = "gentle-ai native review capabilities/v2.5 is older than the supported v2.6 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override";
+const STATUS_V8_TOO_OLD = "drakonc-ai native review status/v8 is older than the supported v9 (drakonc-ai v4.6.0); update drakonc-ai or remove the dev-binary override";
+const CAPABILITIES_V25_TOO_OLD = "drakonc-ai native review capabilities/v2.5 is older than the supported v2.6 (drakonc-ai v4.6.0); update drakonc-ai or remove the dev-binary override";
 const tooOldNative = (message: string) => ({
 	targetStatus: async () => { throw new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, "review/status", true, false, message, { operation: "review/status", error_code: NATIVE_REVIEW_ERROR_CODE.VERSION_INCOMPATIBLE, timed_out: false, output_limit_exceeded: false }); },
 }) as unknown as NativeReviewCli;
@@ -3846,7 +3846,7 @@ test("a version-incompatible error with a foreign message never leaks it as reme
 
 // A bare capabilities/v2 is a real decoder too-old identity (#3424 follow-up).
 test("INSPECT surfaces the bare capabilities/v2 too-old message", async () => {
-	const message = "gentle-ai native review capabilities/v2 is older than the supported v2.6 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override";
+	const message = "drakonc-ai native review capabilities/v2 is older than the supported v2.6 (drakonc-ai v4.6.0); update drakonc-ai or remove the dev-binary override";
 	const result = await __testing.executeReviewControllerOperation({ operation: "inspect" }, process.cwd(), tooOldNative(message));
 	assert.equal(result.reason, message);
 });

@@ -2,21 +2,21 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { readDelegationDetail } from "./support/orchestrator-modules.ts";
 
 // ---------------------------------------------------------------------------
 // persona-single-channel migration test
 //
-// Freezes the pre-change wrapper (gentle-ai.ts) and orchestrator.md text as
+// Freezes the pre-change wrapper (drakonc-ai.ts) and orchestrator.md text as
 // verbatim string-literal fixtures (from HEAD, BEFORE this change), then
 // proves the union survives in the LIVE post-change combined injection
-// (`__testing.buildGentlePrompt(persona)`, which calls `getOrchestratorPrompt()`
+// (`__testing.buildDrakoncPrompt(persona)`, which calls `getOrchestratorPrompt()`
 // internally and reads `assets/orchestrator.md` from disk, memoized for the
-// lifetime of the process — see gentle-ai.ts:118-133).
+// lifetime of the process — see drakonc-ai.ts:118-133).
 //
 // DO NOT edit the PRE_* fixtures to make this test pass — they document the
-// pre-change reality. Only the canonical block (gentle-ai.ts / orchestrator.md)
+// pre-change reality. Only the canonical block (drakonc-ai.ts / orchestrator.md)
 // or the extraction/assertions below may change.
 // ---------------------------------------------------------------------------
 
@@ -32,21 +32,21 @@ function readOrchestratorMdRaw(): string {
 // PRE_* fixtures — frozen verbatim from HEAD before this change
 // ---------------------------------------------------------------------------
 
-/** gentle-ai.ts :179-184 — wrapper Identity contract block, pre-change (438 B). */
+/** drakonc-ai.ts :179-184 — wrapper Identity contract block, pre-change (438 B). */
 const PRE_WRAPPER_IDENTITY_BLOCK = `Identity contract:
-- If the user asks who or what you are, answer as el Gentleman, not as a generic assistant.
+- If the user asks who or what you are, answer as el Drakoncman, not as a generic assistant.
 - Say you are a Pi-specific coding-agent harness with senior architect persona.
 - Mention SDD/OpenSpec phase artifacts and subagents as core capabilities.
 - Mention memory only when memory packages or callable memory tools are actually active; never invent persistent memory.
 - Do not claim portability outside the Pi runtime.
 `;
 
-/** gentle-ai.ts :173-198 — full wrapper static template, pre-change, rendered for "gentleman". */
-const PRE_WRAPPER_GENTLEMAN = `## el Gentleman Identity and Harness
+/** drakonc-ai.ts :173-198 — full wrapper static template, pre-change, rendered for "drakoncman". */
+const PRE_WRAPPER_DRAKONCMAN = `## el Drakoncman Identity and Harness
 
-Current persona mode: gentleman
+Current persona mode: drakoncman
 
-You are el Gentleman: a Pi-specific coding-agent harness for controlled development work.
+You are el Drakoncman: a Pi-specific coding-agent harness for controlled development work.
 
 ${PRE_WRAPPER_IDENTITY_BLOCK}
 Persona:
@@ -60,7 +60,7 @@ Persona:
 Language: natural Rioplatense Spanish with voseo when the user writes Spanish.
 
 Harness principles:
-- el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
+- el Drakoncman is not prompt engineering. It is runtime discipline around powerful agents.
 - Prefer SDD/OpenSpec artifacts over floating chat context for non-trivial work.
 - Clarify scope, constraints, acceptance criteria, and non-goals before implementation.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
@@ -69,12 +69,12 @@ Harness principles:
 - Protect the human reviewer: avoid oversized changes, surface review workload risk, and ask before turning one task into a large multi-area change.
 - Never claim persistent memory is available because of this package. Memory is provided by separate packages or MCP tools when installed and callable.`;
 
-/** gentle-ai.ts :173-198 — full wrapper static template, pre-change, rendered for "neutral". */
-const PRE_WRAPPER_NEUTRAL = `## el Gentleman Identity and Harness
+/** drakonc-ai.ts :173-198 — full wrapper static template, pre-change, rendered for "neutral". */
+const PRE_WRAPPER_NEUTRAL = `## el Drakoncman Identity and Harness
 
 Current persona mode: neutral
 
-You are el Gentleman: a Pi-specific coding-agent harness for controlled development work.
+You are el Drakoncman: a Pi-specific coding-agent harness for controlled development work.
 
 ${PRE_WRAPPER_IDENTITY_BLOCK}
 Persona:
@@ -90,7 +90,7 @@ Persona:
 Language: neutral/professional Spanish when the user writes Spanish. Do NOT use voseo or Rioplatense regional expressions.
 
 Harness principles:
-- el Gentleman is not prompt engineering. It is runtime discipline around powerful agents.
+- el Drakoncman is not prompt engineering. It is runtime discipline around powerful agents.
 - Prefer SDD/OpenSpec artifacts over floating chat context for non-trivial work.
 - Clarify scope, constraints, acceptance criteria, and non-goals before implementation.
 - Use subagents when available for exploration, planning, implementation, and review, while keeping one parent session responsible for orchestration.
@@ -102,12 +102,12 @@ Harness principles:
 /** orchestrator.md :5-21 — Identity Contract section, pre-change (831 B). */
 const PRE_ORCH_IDENTITY = `## Identity Contract
 
-You are el Gentleman: a Pi-specific coding-agent harness for controlled development work.
+You are el Drakoncman: a Pi-specific coding-agent harness for controlled development work.
 
 When the user asks who or what you are, answer with this meaning, translated into the user's language:
 
 \`\`\`text
-I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I work with SDD/OpenSpec when the task justifies it, coordinate subagents, use phase artifacts, run commands, and edit files. I am not a generic chatbot.
+I am el Drakoncman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I work with SDD/OpenSpec when the task justifies it, coordinate subagents, use phase artifacts, run commands, and edit files. I am not a generic chatbot.
 \`\`\`
 
 Rules:
@@ -142,17 +142,17 @@ Exceptions:
 // text"), frozen here so the apply commit and this test move together.
 // ---------------------------------------------------------------------------
 
-/** design.md "Wrapper Identity contract" — replaces gentle-ai.ts :179-184 (817 B). */
+/** design.md "Wrapper Identity contract" — replaces drakonc-ai.ts :179-184 (817 B). */
 const POST_WRAPPER_IDENTITY_BLOCK = `Identity contract:
-- When the user asks who or what you are, answer as el Gentleman, not as a generic assistant, and never introduce yourself as only "your assistant" or "the default assistant". Convey this meaning, translated into the user's language: "I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I work with SDD/OpenSpec when the task justifies it, coordinate subagents, use phase artifacts, run commands, and edit files. I am not a generic chatbot."
+- When the user asks who or what you are, answer as el Drakoncman, not as a generic assistant, and never introduce yourself as only "your assistant" or "the default assistant". Convey this meaning, translated into the user's language: "I am el Drakoncman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I work with SDD/OpenSpec when the task justifies it, coordinate subagents, use phase artifacts, run commands, and edit files. I am not a generic chatbot."
 - Follow the currently selected persona mode.
 - Mention SDD/OpenSpec phase artifacts and subagents as core capabilities.
 - Mention memory only when memory packages or callable memory tools are actually active; never invent persistent memory.
 - Do not claim portability outside the Pi runtime.
 `;
 
-/** New clause folded into GENTLEMAN_PERSONA_PROMPT, mirrors NEUTRAL_PERSONA_PROMPT :158. */
-const NEW_GENTLEMAN_LANGUAGE_CLAUSE =
+/** New clause folded into DRAKONCMAN_PERSONA_PROMPT, mirrors NEUTRAL_PERSONA_PROMPT :158. */
+const NEW_DRAKONCMAN_LANGUAGE_CLAUSE =
 	"- Always respond in the same language the user writes in.";
 
 /** design.md "orchestrator.md `## Identity Contract`" — replaces orchestrator.md :5-21. */
@@ -195,7 +195,7 @@ const ORCH_IDENTITY_DELTA_BYTES = 682; // PRE_ORCH_IDENTITY_BYTES - POST_ORCH_ID
 
 const PRE_ORCH_LANGBOUNDARY_BYTES = 2117; // PRE_ORCH_LANGBOUNDARY
 
-const GENTLEMAN_NET_DELTA_BYTES = -283; // section-sum method, gentleman mode
+const DRAKONCMAN_NET_DELTA_BYTES = -283; // section-sum method, drakoncman mode
 const NEUTRAL_NET_DELTA_BYTES = -341; // section-sum method, neutral mode
 
 // ---------------------------------------------------------------------------
@@ -209,7 +209,7 @@ test("fixture integrity: PRE byte counts match design.md judge-measured figures"
 	assert.equal(
 		Buffer.byteLength(PRE_WRAPPER_IDENTITY_BLOCK),
 		PRE_WRAPPER_BYTES,
-		"PRE_WRAPPER_IDENTITY_BLOCK must equal the judge-measured 438 B (gentle-ai.ts:179-184)",
+		"PRE_WRAPPER_IDENTITY_BLOCK must equal the judge-measured 438 B (drakonc-ai.ts:179-184)",
 	);
 	assert.equal(
 		Buffer.byteLength(PRE_ORCH_IDENTITY),
@@ -234,27 +234,27 @@ test("fixture integrity: POST_WRAPPER_IDENTITY_BLOCK matches design.md converged
 // ---------------------------------------------------------------------------
 // Line-level union sweep — one named assertion per Table A / Table B rule.
 // Verifies survival (VERBATIM / MERGED / POINTER) in the LIVE post-change
-// combined injection: __testing.buildGentlePrompt(persona).
+// combined injection: __testing.buildDrakoncPrompt(persona).
 // ---------------------------------------------------------------------------
 
-test("Table A rule: wrapper :177 'You are el Gentleman...' survives verbatim (KEEP once, wrapper)", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+test("Table A rule: wrapper :177 'You are el Drakoncman...' survives verbatim (KEEP once, wrapper)", () => {
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.match(
 			prompt,
-			/You are el Gentleman: a Pi-specific coding-agent harness for controlled development work\./,
+			/You are el Drakoncman: a Pi-specific coding-agent harness for controlled development work\./,
 			`[${persona}] wrapper :177 opening sentence must survive`,
 		);
 	}
 });
 
 test("Table A rule: wrapper :180/:181 + orchestrator :9,:12 self-description MERGE into wrapper bullet 1", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.match(
 			prompt,
-			/answer as el Gentleman, not as a generic assistant/,
-			`[${persona}] merged bullet must keep 'answer as el Gentleman, not as a generic assistant' (subsumes wrapper :180)`,
+			/answer as el Drakoncman, not as a generic assistant/,
+			`[${persona}] merged bullet must keep 'answer as el Drakoncman, not as a generic assistant' (subsumes wrapper :180)`,
 		);
 		assert.match(
 			prompt,
@@ -263,15 +263,15 @@ test("Table A rule: wrapper :180/:181 + orchestrator :9,:12 self-description MER
 		);
 		assert.match(
 			prompt,
-			/I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona\. I run Organic Driven Development, coordinate subagents, track substantial work, run commands, and edit files\. I am not a generic chatbot\./,
+			/I am el Drakoncman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona\. I run Organic Driven Development, coordinate subagents, track substantial work, run commands, and edit files\. I am not a generic chatbot\./,
 			`[${persona}] the richer translated self-description paragraph (orchestrator :9,:12) must survive in the wrapper`,
 		);
 	}
 });
 
 test("Table A rule: orchestrator :17 'never introduce yourself...' ADDED to wrapper (orchestrator-only rule)", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.match(
 			prompt,
 			/never introduce yourself as only "your assistant" or "the default assistant"/,
@@ -281,8 +281,8 @@ test("Table A rule: orchestrator :17 'never introduce yourself...' ADDED to wrap
 });
 
 test("Table A rule: persona-mode selection (trimmed) survives; language clause NOT restated in Identity contract", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.match(
 			prompt,
 			/Follow the currently selected persona mode\./,
@@ -292,8 +292,8 @@ test("Table A rule: persona-mode selection (trimmed) survives; language clause N
 });
 
 test("Table A rule: ODD and subagents core-capabilities bullet survives (KEEP once)", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.match(
 			prompt,
 			/Mention ODD as the development workflow and subagents as a core capability\./,
@@ -303,8 +303,8 @@ test("Table A rule: ODD and subagents core-capabilities bullet survives (KEEP on
 });
 
 test("Table A rule: memory rule (wrapper phrasing, with never-invent clause) survives (KEEP wrapper)", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.match(
 			prompt,
 			/Mention memory only when memory packages or callable memory tools are actually active; never invent persistent memory\./,
@@ -314,8 +314,8 @@ test("Table A rule: memory rule (wrapper phrasing, with never-invent clause) sur
 });
 
 test("Table A rule: 'Do not claim portability outside the Pi runtime.' survives (KEEP once, byte-identical wrapper :184 / orchestrator :20)", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.match(
 			prompt,
 			/Do not claim portability outside the Pi runtime\./,
@@ -330,8 +330,8 @@ test("Table B rule: LB2 subagent-English delegation kept verbatim in orchestrato
 	// combined injection now only carries a pointer to it. Union read so this
 	// assertion is repointed, not weakened.
 	const delegationDetail = readDelegationDetail();
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona) + delegationDetail;
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona) + delegationDetail;
 		assert.match(
 			prompt,
 			/Subagent-facing prompts should be written in English by default, even when the user speaks Spanish\./,
@@ -341,8 +341,8 @@ test("Table B rule: LB2 subagent-English delegation kept verbatim in orchestrato
 });
 
 test("Table B rule: LB3 artifacts-English kept verbatim in orchestrator (unique)", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.match(
 			prompt,
 			/Generated technical artifacts — whether by the parent inline or by subagents/,
@@ -352,8 +352,8 @@ test("Table B rule: LB3 artifacts-English kept verbatim in orchestrator (unique)
 });
 
 test("Table B rule: LB4 public-comment target language kept verbatim in orchestrator (unique)", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.match(
 			prompt,
 			/Public\/contextual comments and replies are different from technical artifacts\./,
@@ -368,8 +368,8 @@ test("Table B rule: LB5 exceptions kept verbatim in orchestrator (unique)", () =
 	// always-on combined injection now only carries a pointer to it. Union
 	// read so this assertion is repointed, not weakened.
 	const delegationDetail = readDelegationDetail();
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona) + delegationDetail;
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona) + delegationDetail;
 		assert.match(
 			prompt,
 			/Preserve exact user quotes, UI copy, error messages, filenames, commands, and domain terms in their original language when they are evidence\./,
@@ -395,8 +395,8 @@ test("orchestrator.md no longer restates the Identity Contract pointer; the Lang
 	assert.ok(!raw.includes(POST_ORCH_IDENTITY.trim()), "the duplicate Identity Contract pointer section must stay removed");
 	const pointer = "defined once in the identity/harness section above (its `Current persona mode:` line)";
 	for (const mode of ["organic", "full-delegation"] as const) {
-		for (const persona of ["gentleman", "neutral"] as const) {
-			const prompt = __testing.buildGentlePrompt(persona, undefined, undefined, undefined, undefined, mode);
+		for (const persona of ["drakoncman", "neutral"] as const) {
+			const prompt = __testing.buildDrakoncPrompt(persona, undefined, undefined, undefined, undefined, mode);
 			assert.ok(prompt.includes(pointer), `[${mode}/${persona}] the identity/harness pointer must survive`);
 			assert.ok(prompt.includes("Identity contract:"), `[${mode}/${persona}] the wrapper identity contract must stay`);
 		}
@@ -429,8 +429,8 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 test("dup guard (exact-string): 'Do not claim portability outside the Pi runtime.' occurs exactly once", () => {
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.equal(
 			countOccurrences(prompt, "Do not claim portability outside the Pi runtime."),
 			1,
@@ -441,9 +441,9 @@ test("dup guard (exact-string): 'Do not claim portability outside the Pi runtime
 
 test("dup guard (exact-string): identity self-description sentence occurs exactly once", () => {
 	const selfDescription =
-		"I am el Gentleman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I run Organic Driven Development, coordinate subagents, track substantial work, run commands, and edit files. I am not a generic chatbot.";
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+		"I am el Drakoncman: a Pi-specific coding-agent harness for controlled development, with a senior architect persona. I run Organic Driven Development, coordinate subagents, track substantial work, run commands, and edit files. I am not a generic chatbot.";
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.equal(
 			countOccurrences(prompt, selfDescription),
 			1,
@@ -465,8 +465,8 @@ test("dup guard (exact-string): LB2/LB3/LB4 each occur exactly once", () => {
 		"Generated technical artifacts — whether by the parent inline or by subagents";
 	const lb4 =
 		"Public/contextual comments and replies are different from technical artifacts.";
-	for (const persona of ["gentleman", "neutral"] as const) {
-		const prompt = __testing.buildGentlePrompt(persona);
+	for (const persona of ["drakoncman", "neutral"] as const) {
+		const prompt = __testing.buildDrakoncPrompt(persona);
 		assert.equal(
 			countOccurrences(prompt + delegationDetail, lb2),
 			1,
@@ -499,12 +499,12 @@ function countLanguageMatchConceptOccurrences(text: string): number {
 }
 
 test("dup guard (concept-level): language-match regex matches exactly once per rendered mode, excluding the scoped self-description exception", () => {
-	const gentlemanPrompt = __testing.buildGentlePrompt("gentleman");
-	const neutralPrompt = __testing.buildGentlePrompt("neutral");
+	const drakoncmanPrompt = __testing.buildDrakoncPrompt("drakoncman");
+	const neutralPrompt = __testing.buildDrakoncPrompt("neutral");
 	assert.equal(
-		countLanguageMatchConceptOccurrences(gentlemanPrompt),
+		countLanguageMatchConceptOccurrences(drakoncmanPrompt),
 		1,
-		"gentleman mode must have exactly one non-excepted language-match concept occurrence",
+		"drakoncman mode must have exactly one non-excepted language-match concept occurrence",
 	);
 	assert.equal(
 		countLanguageMatchConceptOccurrences(neutralPrompt),
@@ -517,17 +517,17 @@ test("dup guard (concept-level): language-match regex matches exactly once per r
 // Added-rule assertion — task 1.5
 // ---------------------------------------------------------------------------
 
-test("added rule: gentleman output contains the new GENTLEMAN_PERSONA_PROMPT language-match clause", () => {
-	const prompt = __testing.buildGentlePrompt("gentleman");
+test("added rule: drakoncman output contains the new DRAKONCMAN_PERSONA_PROMPT language-match clause", () => {
+	const prompt = __testing.buildDrakoncPrompt("drakoncman");
 	assert.match(
 		prompt,
 		/Always respond in the same language the user writes in\./,
-		"gentleman prompt must contain the new language-match clause mirroring NEUTRAL_PERSONA_PROMPT :158",
+		"drakoncman prompt must contain the new language-match clause mirroring NEUTRAL_PERSONA_PROMPT :158",
 	);
 });
 
 test("regression: neutral output still contains its own unchanged language-match clause (:158)", () => {
-	const prompt = __testing.buildGentlePrompt("neutral");
+	const prompt = __testing.buildDrakoncPrompt("neutral");
 	assert.match(
 		prompt,
 		/Always respond in the same language the user writes in\./,
@@ -567,15 +567,15 @@ test("byte delta: orchestrator.md Language Boundary LB1->pointer shrinks by the 
 	assert.equal(pre - post, 38, "orchestrator Language Boundary delta must be -38 B (262 B LB1 sentence -> 224 B pointer)");
 });
 
-test("byte delta: new GENTLEMAN_PERSONA_PROMPT clause is present and small (single added line)", () => {
+test("byte delta: new DRAKONCMAN_PERSONA_PROMPT clause is present and small (single added line)", () => {
 	assert.equal(
-		Buffer.byteLength(`${NEW_GENTLEMAN_LANGUAGE_CLAUSE}\n`),
+		Buffer.byteLength(`${NEW_DRAKONCMAN_LANGUAGE_CLAUSE}\n`),
 		58,
-		"the added gentleman language-match clause line must be 58 B (measured, ~60 B design estimate)",
+		"the added drakoncman language-match clause line must be 58 B (measured, ~60 B design estimate)",
 	);
 });
 
-test("byte delta: net per-session injection delta matches byte-measurements.md (gentleman -283 B, neutral -341 B, section-sum method)", () => {
+test("byte delta: net per-session injection delta matches byte-measurements.md (drakoncman -283 B, neutral -341 B, section-sum method)", () => {
 	// Section-sum method (fixture-derived, internally consistent). Whole-file `wc -c` on the
 	// two edited files gives -282 B / -340 B — 1 B off, a trailing-newline/range-boundary
 	// counting-convention artifact between `bat --line-range` section extraction and whole-file
@@ -587,11 +587,11 @@ test("byte delta: net per-session injection delta matches byte-measurements.md (
 		Buffer.byteLength(POST_ORCH_IDENTITY) -
 		Buffer.byteLength(PRE_ORCH_IDENTITY) +
 		(Buffer.byteLength(POST_ORCH_LANGBOUNDARY) - Buffer.byteLength(PRE_ORCH_LANGBOUNDARY));
-	const gentlemanClauseDelta = Buffer.byteLength(`${NEW_GENTLEMAN_LANGUAGE_CLAUSE}\n`);
+	const drakoncmanClauseDelta = Buffer.byteLength(`${NEW_DRAKONCMAN_LANGUAGE_CLAUSE}\n`);
 	assert.equal(
-		wrapperDelta + orchDelta + gentlemanClauseDelta,
-		GENTLEMAN_NET_DELTA_BYTES,
-		"gentleman net per-session injection delta must be -283 B (section-sum method)",
+		wrapperDelta + orchDelta + drakoncmanClauseDelta,
+		DRAKONCMAN_NET_DELTA_BYTES,
+		"drakoncman net per-session injection delta must be -283 B (section-sum method)",
 	);
 	assert.equal(
 		wrapperDelta + orchDelta,
@@ -604,24 +604,24 @@ test("byte delta: net per-session injection delta matches byte-measurements.md (
 // Requirement: Persona Constant Selection Keeps Working
 // ---------------------------------------------------------------------------
 
-test("gentleman persona selected: GENTLEMAN_PERSONA_PROMPT content appears once, no neutral-only rule leaks in", () => {
-	const prompt = __testing.buildGentlePrompt("gentleman");
-	assert.match(prompt, /Current persona mode: gentleman/);
+test("drakoncman persona selected: DRAKONCMAN_PERSONA_PROMPT content appears once, no neutral-only rule leaks in", () => {
+	const prompt = __testing.buildDrakoncPrompt("drakoncman");
+	assert.match(prompt, /Current persona mode: drakoncman/);
 	assert.match(prompt, /answer in natural Rioplatense Spanish with voseo/i);
 	assert.doesNotMatch(
 		prompt,
 		/Do NOT use voseo \(vos ten[eé]s/i,
-		"gentleman prompt must not leak the neutral-only voseo prohibition bullet",
+		"drakoncman prompt must not leak the neutral-only voseo prohibition bullet",
 	);
 });
 
-test("neutral persona selected: NEUTRAL_PERSONA_PROMPT content appears once, no gentleman-only rule leaks in", () => {
-	const prompt = __testing.buildGentlePrompt("neutral");
+test("neutral persona selected: NEUTRAL_PERSONA_PROMPT content appears once, no drakoncman-only rule leaks in", () => {
+	const prompt = __testing.buildDrakoncPrompt("neutral");
 	assert.match(prompt, /Current persona mode: neutral/);
 	assert.match(prompt, /Do NOT use voseo/i);
 	assert.doesNotMatch(
 		prompt,
 		/answer in natural Rioplatense Spanish with voseo/i,
-		"neutral prompt must not leak the gentleman-only voseo instruction",
+		"neutral prompt must not leak the drakoncman-only voseo instruction",
 	);
 });

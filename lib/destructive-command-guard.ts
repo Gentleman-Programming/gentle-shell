@@ -57,7 +57,7 @@ const WRAPPER_VALUE_OPTIONS: Record<string, readonly string[]> = {
 	xargs: ["-n", "-I", "-P", "--max-args", "--replace", "--max-procs"],
 };
 const WRAPPERS = ["env", "sudo", "command", "exec", "nohup", "timeout", "xargs"];
-// gentle-pi#2285: unquoted reserved words that open a compound body or a
+// drakonc-pi#2285: unquoted reserved words that open a compound body or a
 // condition are followed by a command in command position.
 const RESERVED_WORDS = new Set(["then", "else", "elif", "do", "{", "!", "if", "while", "until"]);
 
@@ -84,7 +84,7 @@ function headCursor(segment: readonly Token[]): number {
 	return cursor;
 }
 
-// gentle-shell#2174: commands whose arguments are searched, printed or viewed
+// drakonc-shell#2174: commands whose arguments are searched, printed or viewed
 // text, never executed and never fed to an executor. `sed` is absent on
 // purpose: GNU sed executes scripts through `e` with any delimiter or address.
 // The exemption applies only when EVERY segment head is in DATA_COMMANDS or
@@ -95,7 +95,7 @@ const DATA_COMMANDS = new Set([
 	"wc", "sort", "uniq", "cut", "tr", "jq", "diff", "ls", "file", "stat",
 ]);
 const INERT_COMMANDS = new Set(["cd", "pwd", "true", "false", "test", "[", "mkdir", "touch"]);
-// gentle-shell#1202: read-only subcommands that neither execute nor re-route
+// drakonc-shell#1202: read-only subcommands that neither execute nor re-route
 // text. A segment headed by one of these no longer makes the whole line opaque,
 // provided nothing is piped into it and nothing precedes the head (assignments,
 // wrappers) or follows `git` besides `-C <path>` / `--no-pager`. `push` and
@@ -157,7 +157,7 @@ function maskDataSubstitutions(command: string): { masked: string; ranges: Range
 
 /**
  * Byte ranges of the command that are plain arguments of a known data command
- * (gentle-shell#2174). A guarded or denied pattern matching only inside these
+ * (drakonc-shell#2174). A guarded or denied pattern matching only inside these
  * ranges is prose, not an operation. Returns no ranges, keeping every lexical
  * match, when the command is opaque: a command substitution that is not
  * itself only data commands, process substitution or backticks, an

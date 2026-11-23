@@ -16,7 +16,7 @@ import test from "node:test";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const ASSETS = join(REPO_ROOT, "assets");
-const { __testing } = await import("../extensions/gentle-ai.ts");
+const { __testing } = await import("../extensions/drakonc-ai.ts");
 
 /**
  * Phrases that route work inline, or decide delegation by size. "Task Size" is deliberately absent: it defines
@@ -40,7 +40,7 @@ test("S6: the closure rule recognises the organic sentences a narrower pattern l
 });
 
 function render(mode: "organic" | "full-delegation"): string {
-	return __testing.buildGentlePrompt("gentleman", REPO_ROOT, undefined, undefined, undefined, mode);
+	return __testing.buildDrakoncPrompt("drakoncman", REPO_ROOT, undefined, undefined, undefined, mode);
 }
 
 function namesIn(text: string): string[] {
@@ -96,14 +96,14 @@ test("P6 (X9): full delegation reaches tracking and verification, not the organi
 // cost-speed P6b: "in one message with no other tool call" read as "each call in a message of its own" (F3: three
 // writers in three messages, no overlap, 887-1,092 s vs 393-478 s from one codemode script). Both routes are admitted
 // and overlap in full delegation (real Pi probes); the sequential tools are those declaring `executionMode: "sequential"`.
-const PARALLEL_LAUNCH_RULE = "Independent units with disjoint surfaces launch together: all their `subagent_run` calls in the same assistant message or one `codemode` script, never one launch per message nor beside a sequential `todo`, `ask_user_*`, `codegraph` or `gentle_review*` (it serializes them); units needing the same file run one at a time.";
+const PARALLEL_LAUNCH_RULE = "Independent units with disjoint surfaces launch together: all their `subagent_run` calls in the same assistant message or one `codemode` script, never one launch per message nor beside a sequential `todo`, `ask_user_*`, `codegraph` or `drakonc_review*` (it serializes them); units needing the same file run one at a time.";
 
 test("P6b: full delegation launches independent units in the same assistant message or one codemode script, never one per message", () => {
 	const prompt = render("full-delegation");
 	assert.ok(prompt.includes("in the same assistant message"), "same assistant message");
 	assert.ok(prompt.includes("or one `codemode` script"), "codemode route");
 	assert.ok(prompt.includes("never one launch per message"), "never one launch per message");
-	for (const tool of ["`todo`", "`ask_user_*`", "`codegraph`", "`gentle_review*`"]) assert.ok(prompt.includes(tool), `sequential tool ${tool}`);
+	for (const tool of ["`todo`", "`ask_user_*`", "`codegraph`", "`drakonc_review*`"]) assert.ok(prompt.includes(tool), `sequential tool ${tool}`);
 	assert.ok(!prompt.includes("in one message with no other tool call"), "the ambiguous clause is gone");
 	assert.ok(!prompt.includes("as direct `subagent_run` calls"), "codemode is no longer excluded");
 });
@@ -119,7 +119,7 @@ test("S3: full delegation keeps a Task Size that decides tracking and risk, neve
 
 test("S4: full delegation tells the agent how the human switches the mode, and that no new session is needed", () => {
 	const prompt = render("full-delegation");
-	assert.match(prompt, /\/gentle:profiles/);
+	assert.match(prompt, /\/drakonc:profiles/);
 	assert.match(prompt, /`w`/);
 	assert.match(prompt, /next turn/i);
 	assert.match(prompt, /no new session/i);

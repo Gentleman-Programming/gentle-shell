@@ -85,7 +85,7 @@ test("historical v3 status is refused as older than the supported v9 without rew
 	assert.throws(
 		() => decodeReviewStatusV3(fixture(V2_FIXTURES, "status.fixture.json")),
 		(error: unknown) => error instanceof ReviewNativeContractTooOldError
-			&& error.message === "gentle-ai native review status/v3 is older than the supported v9 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override",
+			&& error.message === "drakonc-ai native review status/v3 is older than the supported v9 (drakonc-ai v4.6.0); update drakonc-ai or remove the dev-binary override",
 	);
 });
 
@@ -212,9 +212,9 @@ test("a v5 provider role task input decodes and is confined to external.run_prov
 	input.name = "refuter_batch";
 	input.schema = "https://gentle-ai.dev/schema/review/refuter/v1";
 	input.capture_operation = "external.run_provider_role";
-	input.provider_task = { agent: "review-refuter", role: "refuter", prompt: "GENTLE_AI_REVIEW_BINDING {}" };
+	input.provider_task = { agent: "review-refuter", role: "refuter", prompt: "DRAKONC_AI_REVIEW_BINDING {}" };
 	const decoded = decodeReviewStatusV3(body);
-	assert.deepEqual(decoded.nextTransition?.collect?.inputs[0]?.providerTask, { agent: "review-refuter", role: "refuter", prompt: "GENTLE_AI_REVIEW_BINDING {}" });
+	assert.deepEqual(decoded.nextTransition?.collect?.inputs[0]?.providerTask, { agent: "review-refuter", role: "refuter", prompt: "DRAKONC_AI_REVIEW_BINDING {}" });
 	const missing = clone(body);
 	delete ((((missing.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[])[0]!).provider_task;
 	assert.throws(() => decodeReviewStatusV3(missing), /provider_task/);
@@ -286,7 +286,7 @@ function reviewingStartV4(action: "created" | "replayed" = "created"): JsonObjec
 	return body;
 }
 
-test("capabilities/v2.6 (gentle-ai v4.6.0) is the only supported advertisement and keeps the status/v6 floor", () => {
+test("capabilities/v2.6 (drakonc-ai v4.6.0) is the only supported advertisement and keeps the status/v6 floor", () => {
 	const v26 = capabilitiesV26(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
 	v26.schemas = [...(v26.schemas as string[]), "gentle-ai.review-integration.status/v7", "gentle-ai.review-integration.status/v8", "gentle-ai.review-integration.status/v9"];
 	const decoded = decodeReviewCapabilitiesV2(v26, CAPTURED_DIGEST);
@@ -314,7 +314,7 @@ test("capabilities older than v2.6 are refused with the actionable minimum-versi
 		assert.throws(
 			() => decodeReviewCapabilitiesV2(older, CAPTURED_DIGEST),
 			(error: unknown) => error instanceof ReviewNativeContractTooOldError
-				&& error.message === `gentle-ai native review ${label} is older than the supported v2.6 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override`,
+				&& error.message === `drakonc-ai native review ${label} is older than the supported v2.6 (drakonc-ai v4.6.0); update drakonc-ai or remove the dev-binary override`,
 			identity,
 		);
 	}
@@ -324,7 +324,7 @@ test("capabilities older than v2.6 are refused with the actionable minimum-versi
 	assert.throws(() => decodeReviewCapabilitiesV2(unknown, CAPTURED_DIGEST), (error: unknown) => error instanceof TypeError && !(error instanceof ReviewNativeContractTooOldError) && /schema/.test(error.message));
 });
 
-// status/v9 (gentle-ai v4.6.0) is the only supported status identity; its
+// status/v9 (drakonc-ai v4.6.0) is the only supported status identity; its
 // host-mediated role submission lives in next_transition.collect.inputs and is
 // covered by tests/review-integration-v2.test.ts's "v9 host-mediated" tests.
 test("status/v9 decodes with its exact identity and the eligible untracked inventory", () => {
@@ -342,7 +342,7 @@ test("status older than v9 is refused with the actionable minimum-version messag
 		assert.throws(
 			() => decodeReviewStatusV3(older),
 			(error: unknown) => error instanceof ReviewNativeContractTooOldError
-				&& error.message === `gentle-ai native review status/v${version} is older than the supported v9 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override`,
+				&& error.message === `drakonc-ai native review status/v${version} is older than the supported v9 (drakonc-ai v4.6.0); update drakonc-ai or remove the dev-binary override`,
 			`status/v${version}`,
 		);
 	}
@@ -415,7 +415,7 @@ function queuedTargetStatusAdapter(): { adapter: ExecFileAdapter; calls: string[
 }
 
 function targetStatusClient(adapter: ExecFileAdapter): NativeReviewCliV216 {
-	return new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai", 30_000, 1024 * 1024);
+	return new NativeReviewCliV216(adapter, "/package/.drakonc-ai/drakonc-ai", 30_000, 1024 * 1024);
 }
 
 const SUBMITTED_PROVIDER_TOKENS = ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", "--projection=workspace", "--intended-untracked-selection={{value}}"];
@@ -730,7 +730,7 @@ test("START/v4 closed approval keeps acknowledgement but forbids a continuation"
 });
 
 // ---------------------------------------------------------------------------
-// review-acknowledged/v1 — gentle-ai #3947: the exact acknowledgement burn
+// review-acknowledged/v1 — drakonc-ai #3947: the exact acknowledgement burn
 // prints one typed envelope instead of nothing. Provenance:
 // tests/fixtures/devbinary/review-acknowledged.provenance.md.
 // ---------------------------------------------------------------------------
@@ -807,7 +807,7 @@ test("review-acknowledged/v1 is disjoint from every prior captured identity in b
 	}
 });
 
-// Producer-shaped projection: gentle-ai d521b5e, target_status.go and
+// Producer-shaped projection: drakonc-ai d521b5e, target_status.go and
 // last-event-closure.schema.json#/properties/escalation (not a live capture).
 function escalatedStatusV7(): JsonObject {
 	const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
@@ -849,7 +849,7 @@ test("v7 escalation strictly decodes all causes and optional refuter evidence", 
 });
 
 test("START/v4 accepts every risk reason code and signal the published start schema allows", () => {
-	// gentle-ai publishes dangerous_sink (code and signal) and agent_escalation
+	// drakonc-ai publishes dangerous_sink (code and signal) and agent_escalation
 	// (code and signal) in start-v4.schema.json; a high-risk START that names
 	// them must decode instead of failing as schema-incompatible (#5374).
 	const start = reviewingStartV4();

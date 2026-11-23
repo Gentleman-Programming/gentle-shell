@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { REPLY_LANGUAGE_ANCHOR_TYPE, placePersistedReplyAnchors } from "../lib/reply-language-anchor.ts";
 
 // cost-speed-painpoints S10/S15 (P1), independent verifier probes (mwb638m6-12-yqki). Pi saves an anchor sent
@@ -18,13 +18,13 @@ type Message = { role: string; content?: unknown; customType?: string; timestamp
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
 const HUMAN = "Che, revisá por qué el writer no arranca y decime qué pasa con la admisión";
-const WAKE = "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
+const WAKE = "[System-generated Drakonc Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
 let clock = 100;
 const sys: Message = { role: "system", content: "prompt", timestamp: 0 };
 const user = (text: string): Message => ({ role: "user", content: [{ type: "text", text }], timestamp: ++clock });
 const assistant = (call?: string): Message => ({ role: "assistant", content: call ? [{ type: "toolCall", id: call, name: "read", arguments: {} }] : [{ type: "text", text: "ok" }], timestamp: ++clock });
 const toolResult = (id: string): Message => ({ role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: "r" }], isError: false, timestamp: ++clock });
-const result = (): Message => ({ role: "custom", customType: "gentle-agents.result", content: "Subagent finished.", display: true, timestamp: ++clock });
+const result = (): Message => ({ role: "custom", customType: "drakonc-agents.result", content: "Subagent finished.", display: true, timestamp: ++clock });
 const compactionSummary = (): Message => ({ role: "compactionSummary", summary: "s", tokensBefore: 1, timestamp: ++clock });
 
 function fixture(t: TestContext) {
@@ -39,9 +39,9 @@ function fixture(t: TestContext) {
 		// Pi stamps the saved copy itself, later than the request that carried it.
 		sendMessage(message: Message, options: unknown) { sent.push({ ...message, role: "custom", timestamp: ++clock, _options: options }); },
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({
+	createDrakoncAiExtension({
 		nativeReviewCli: null,
-		processEnv: { GENTLE_PI_CONFIG_HOME: join(cwd, "config"), GENTLE_PI_AGENTS_CHILD: "0" },
+		processEnv: { DRAKONC_PI_CONFIG_HOME: join(cwd, "config"), DRAKONC_PI_AGENTS_CHILD: "0" },
 		resolveTelemetryTriggerBinary: () => "/usr/bin/true", telemetryTriggerSpawn: (() => undefined) as never,
 	})(api);
 	const ctx = {

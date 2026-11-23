@@ -22,7 +22,7 @@ Memory-write receipts optionally include `memoryContextAttached`, a content-free
 
 ## Timeout and evidence-limit diagnostics
 
-Classifier results and late-settlement receipts include a metadata-only `diagnostic` object. The runtime projects only these fields into its existing `gentle-auto-permission` entries, and appends them to timeout and evidence-limit blocking messages so a failed read can be diagnosed without opening private session files:
+Classifier results and late-settlement receipts include a metadata-only `diagnostic` object. The runtime projects only these fields into its existing `drakonc-auto-permission` entries, and appends them to timeout and evidence-limit blocking messages so a failed read can be diagnosed without opening private session files:
 
 - `implementation`: `auto-classifier-diagnostics-v1`, a marker for this instrumentation, not a source hash or proof of the loaded SDK.
 - `elapsedMs`: monotonic milliseconds since this classifier invocation began, rounded down; late receipts measure through settlement.

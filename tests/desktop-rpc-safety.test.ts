@@ -13,7 +13,7 @@ function job(command: string, label = command, kind: JobRecord["kind"] = "comman
 		command,
 		cwd: "/home/devel/secret-repo",
 		ownerSessionId: "session-a",
-		outputPath: "/tmp/gentle-jobs/job-1.log",
+		outputPath: "/tmp/drakonc-jobs/job-1.log",
 		startedAt: 1000,
 		status: "running",
 		tail: [],

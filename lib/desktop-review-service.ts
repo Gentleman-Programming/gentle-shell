@@ -1,7 +1,7 @@
-// Gentle Desktop review-mode bridge (#3324): reaches the review-mode owner in
-// `extensions/gentle-ai.ts` (the native review CLI adapter behind
-// `/gentle:review-mode`) through a defensive, versioned owner-service
-// event/adapter, like the jobs and profiles seams. It never spawns `gentle-ai`
+// Drakonc Desktop review-mode bridge (#3324): reaches the review-mode owner in
+// `extensions/drakonc-ai.ts` (the native review CLI adapter behind
+// `/drakonc:review-mode`) through a defensive, versioned owner-service
+// event/adapter, like the jobs and profiles seams. It never spawns `drakonc-ai`
 // and keeps no copy of the switch: every read and every write is the owner's
 // own, shaped into the Desktop RPC contract by `lib/desktop-rpc-review.ts`.
 

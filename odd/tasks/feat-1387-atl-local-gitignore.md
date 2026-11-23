@@ -6,7 +6,7 @@ Ensure that the local skill registry generated inside `.atl/` is ignored by crea
 
 ## Problem
 
-Starting Pi with the skill registry enabled appended `.atl/` to the project's root `.gitignore`. In team repositories where not all contributors use gentle-shell, this introduced unwanted modifications to shared tracked files that could inadvertently enter pull requests.
+Starting Pi with the skill registry enabled appended `.atl/` to the project's root `.gitignore`. In team repositories where not all contributors use drakonc-shell, this introduced unwanted modifications to shared tracked files that could inadvertently enter pull requests.
 
 ## Scope
 

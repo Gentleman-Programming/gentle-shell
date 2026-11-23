@@ -6,9 +6,9 @@ Prevent passive Pi session hooks from invoking native review negotiation in an u
 
 ## Scope
 
-- `extensions/gentle-ai.ts`: the shared passive session STATUS resolver only.
+- `extensions/drakonc-ai.ts`: the shared passive session STATUS resolver only.
 - `tests/review-agent-end-preflight.test.ts`: outside-Git startup/end regression and controls for in-Git behavior.
-- No change to explicit `gentle_review` inspection, native bootstrap, or global RDD mode.
+- No change to explicit `drakonc_review` inspection, native bootstrap, or global RDD mode.
 
 ## Tasks
 
@@ -38,7 +38,7 @@ Prevent passive Pi session hooks from invoking native review negotiation in an u
 - GREEN: `node --experimental-strip-types --test tests/review-agent-end-preflight.test.ts` — 42 passed, 0 failed, including existing nested/sibling-root cases. Independent verifier repeated 42/42.
 - `node scripts/check-types.mjs` — exit 0, 188 recorded baseline diagnostics, no regressions (10 improved file/code pairs). `git diff --check` — exit 0.
 - Runtime boundary: the test exercises real Git discovery and Pi event handlers, but mocks the native provider; no live Pi/native bootstrap was run.
-- Rollback boundary: the guard in `extensions/gentle-ai.ts` and regression in `tests/review-agent-end-preflight.test.ts` (plus this task record).
+- Rollback boundary: the guard in `extensions/drakonc-ai.ts` and regression in `tests/review-agent-end-preflight.test.ts` (plus this task record).
 - Dependency setup: `pnpm install --frozen-lockfile --ignore-scripts` populated ignored `node_modules`; package and lockfile unchanged.
 - Native review approved and acknowledged: lineage `review-b9df31fb8fc6ab6c`, target `sha256:32d235ecff07e297de78b84a38daf7ff5e78a07ef2df5e255d5de89539ad8b7d`; authority burned before commit. The commit contains the exact reviewed three-file candidate.
 - This bookkeeping update records the reviewed work-unit commit; it changes only this passive task document after acknowledgement.

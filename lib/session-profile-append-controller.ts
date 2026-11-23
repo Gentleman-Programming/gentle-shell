@@ -90,7 +90,7 @@ export interface SessionProfileAttachment {
   models: SessionProfileBindPayload["modelProfiles"],
   startup?: SessionProfileStartupState,
  ): SessionProfileAppendOutcome;
- /** Record the profile the session took at startup (gentle-shell#2742). */
+ /** Record the profile the session took at startup (drakonc-shell#2742). */
  bindStartup(
   origin: SessionProfileStartupOrigin,
   name: string,
@@ -130,7 +130,7 @@ type ForkStore = {
  transfers: WeakMap<object, ForkTransfer>;
 };
 // Keep the key stable across code reloads; the value owns protocol negotiation.
-const forkStoreKey = Symbol.for("gentle-pi.session-profile.fork-evidence");
+const forkStoreKey = Symbol.for("drakonc-pi.session-profile.fork-evidence");
 function forkStore(): ForkStore {
  const existing = Reflect.get(globalThis, forkStoreKey) as
   | ForkStore

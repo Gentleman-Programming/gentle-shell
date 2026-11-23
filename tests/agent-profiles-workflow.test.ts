@@ -70,7 +70,7 @@ test("every declared mode round-trips and nothing else is accepted", () => {
 
 test("an unknown mode is dropped and reported, never silently honoured", () => {
 	const normalized = normalizeProfilesFile({
-		kind: "gentle-pi.agent_model_profiles",
+		kind: "drakonc-pi.agent_model_profiles",
 		version: 1,
 		profiles: { normal: { orchestrator: { model: "gpt-5.4" } } },
 		workflow: { normal: { orchestratorMode: "super-delegation" } },
@@ -84,7 +84,7 @@ test("an unknown mode is dropped and reported, never silently honoured", () => {
 
 test("a workflow entry naming a profile that does not exist is dropped and reported", () => {
 	const normalized = normalizeProfilesFile({
-		kind: "gentle-pi.agent_model_profiles",
+		kind: "drakonc-pi.agent_model_profiles",
 		version: 1,
 		profiles: { normal: { orchestrator: { model: "gpt-5.4" } } },
 		workflow: { ghost: { orchestratorMode: "full-delegation" } },
@@ -99,7 +99,7 @@ test("a workflow entry naming a profile that does not exist is dropped and repor
 test("a malformed workflow map is dropped as a whole and never breaks the routing read", () => {
 	for (const workflow of [null, 42, "full-delegation", [] as unknown]) {
 		const normalized = normalizeProfilesFile({
-			kind: "gentle-pi.agent_model_profiles",
+			kind: "drakonc-pi.agent_model_profiles",
 			version: 1,
 			profiles: { normal: { orchestrator: { model: "gpt-5.4" } } },
 			workflow,
@@ -145,7 +145,7 @@ test("serialization omits an empty workflow map and keeps the file head-stable",
 
 test("dropping an unknown mode does not disturb an existing valid entry", () => {
 	const normalized = normalizeProfilesFile({
-		kind: "gentle-pi.agent_model_profiles",
+		kind: "drakonc-pi.agent_model_profiles",
 		version: 1,
 		profiles: {
 			normal: { orchestrator: { model: "gpt-5.4" } },

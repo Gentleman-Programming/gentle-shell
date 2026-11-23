@@ -5,7 +5,7 @@ import test from "node:test";
 import * as source from "../lib/review-integration-v2.ts";
 
 // odd/tasks/review-one-call.md T11 (S5), L18: STATUS `non_blocking_findings`
-// (gentle-ai#6088, opt-in --non-blocking-findings) is decoded only for a
+// (drakonc-ai#6088, opt-in --non-blocking-findings) is decoded only for a
 // compact-v2 authority in correction_required or escalated.
 
 const runtime = await import(new URL("../runtime/review-integration-v2.mjs", import.meta.url).href) as typeof source;
@@ -50,7 +50,7 @@ for (const [label, decoder] of decoders) {
 		for (const state of ["approved", "reviewing"]) {
 			assert.throws(() => decoder.decodeReviewStatusV3(status(state, structuredClone(key))), /status\.non_blocking_findings requires a current compact-v2 authority in correction_required or escalated/, state);
 		}
-		assert.throws(() => decoder.decodeReviewStatusV3(status("correction_required", structuredClone(key), "gentle-ai.review-integration.status/v8")), /gentle-ai native review status\/v8 is older than the supported v9 \(gentle-ai v4\.6\.0\); update gentle-ai or remove the dev-binary override/, "status/v8 is refused as older than the supported minimum");
+		assert.throws(() => decoder.decodeReviewStatusV3(status("correction_required", structuredClone(key), "gentle-ai.review-integration.status/v8")), /drakonc-ai native review status\/v8 is older than the supported v9 \(drakonc-ai v4\.6\.0\); update drakonc-ai or remove the dev-binary override/, "status/v8 is refused as older than the supported minimum");
 	});
 
 	test(`${label}: the non_blocking_findings key sets stay exact`, () => {

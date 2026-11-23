@@ -16,7 +16,7 @@ verifyDepsBeforeRun: false
 minimumReleaseAge: 4320
 
 # Pi's publisher scope is exempt from the release-age wait by the owner's
-# decision: Gentle Shell tracks Pi's latest release, as `gentle-shell update`
+# decision: Drakonc Shell tracks Pi's latest release, as `drakonc-shell update`
 # already does. Every other package still waits 72 hours.
 minimumReleaseAgeExclude:
   - '@earendil-works/*'

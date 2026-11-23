@@ -13,7 +13,7 @@ import { MAX_SYSTEM_LINE, MAX_SYSTEM_TOKENS, MAX_SYSTEM_MD_BYTES, parseSystemTok
 const REAL = readFileSync(fileURLToPath(new URL("../design/system.md", import.meta.url)), "utf8");
 
 function scratch(t: TestContext): string {
-	const dir = mkdtempSync(join(tmpdir(), "gentle-design-tokens-"));
+	const dir = mkdtempSync(join(tmpdir(), "drakonc-design-tokens-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	return dir;
 }
@@ -22,8 +22,8 @@ const byName = (text: string) => new Map(parseSystemTokens(text).map((token) => 
 
 test("S1: the real design/system.md yields the wizard's colors, fonts, radius, shadows and motion tokens, grouped by section", () => {
 	const tokens = byName(REAL);
-	assert.deepEqual(tokens.get("--bg"), { name: "--bg", value: "#1a1218", section: "Colors", group: "color" });
-	assert.equal(tokens.get("--accent")?.value, "#f095c8");
+	assert.deepEqual(tokens.get("--bg"), { name: "--bg", value: "#0d1526", section: "Colors", group: "color" });
+	assert.equal(tokens.get("--accent")?.value, "#ff4d5e");
 	assert.equal(tokens.get("--text-muted")?.group, "color");
 	assert.equal(tokens.get("--border-soft")?.value, "#ffffff17");
 	assert.equal(tokens.get("--info")?.value, "#a9c7ee");
@@ -33,8 +33,8 @@ test("S1: the real design/system.md yields the wizard's colors, fonts, radius, s
 	assert.equal(tokens.get("--radius-sm")?.value, "8px");
 	assert.equal(tokens.get("--radius-pill")?.value, "999px");
 	assert.equal(tokens.get("--radius-sm")?.group, "radius");
-	assert.equal(tokens.get("--glow")?.value, "0 10px 30px #f095c84d");
-	assert.equal(tokens.get("--glow-hover")?.value, "0 14px 36px #f095c86b");
+	assert.equal(tokens.get("--glow")?.value, "0 10px 30px #ff4d5e4d");
+	assert.equal(tokens.get("--glow-hover")?.value, "0 14px 36px #ff4d5e6b");
 	assert.equal(tokens.get("--shadow-panel")?.group, "shadow");
 	assert.equal(tokens.get("--ease")?.value, "cubic-bezier(.4, 0, .2, 1)");
 	// Prose and non-token rows are not tokens.

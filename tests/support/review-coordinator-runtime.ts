@@ -2,7 +2,7 @@
 // No real approval, native CLI, reviewer network call or candidate freeze occurs.
 import assert from "node:assert/strict";
 import { readFileSync, realpathSync } from "node:fs";
-import { createGentleAiExtension, __testing } from "../../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension, __testing } from "../../extensions/drakonc-ai.ts";
 import { decodeReviewStatusV3, type ReviewCollectInputV3, type ReviewStatusV3 } from "../../lib/review-integration-v2.ts";
 import type { NativeReviewCli } from "../../lib/native-review-cli.ts";
 import { runReviewHostRelayReviewerGroup, type ReviewHostRelayPreparationRunner, type ReviewHostRelayRequest } from "../../lib/review-host-relay.ts";
@@ -246,9 +246,9 @@ export function createCoordinatorRuntime(cwd: string, variant: "baseline" | "coo
 		// An admitted reviewer result that is not the last event: no closure.
 		return { submission: "{}", promptByteLength: prepared.promptByteLength, resultByteLength: 2 };
 	});
-	createGentleAiExtension({ nativeReviewCli: native, candidateViews: null,
+	createDrakoncAiExtension({ nativeReviewCli: native, candidateViews: null,
 		// The coordinator is registered by default; "0" is its explicit opt-out.
-		processEnv: { ...(variant === "coordinator" ? {} : { GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "0" }), GENTLE_AI_TELEMETRY: "0" },
+		processEnv: { ...(variant === "coordinator" ? {} : { DRAKONC_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "0" }), DRAKONC_AI_TELEMETRY: "0" },
 	})({ on() {}, registerCommand() {}, registerTool: (tool: any) => tools.set(tool.name, tool),
 		...(options.transport === undefined ? {} : { getSettings: () => ({ transport: options.transport }) }) } as never);
 	const forecasts: Body[] = [];

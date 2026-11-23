@@ -32,17 +32,17 @@ test("hooked consumer approves only the canonical local tarball file spec", () =
 		const pack = join(disposable, "pack");
 		mkdirSync(consumer);
 		mkdirSync(pack);
-		const tarball = join(pack, "gentle-pi-4.0.0.tgz");
+		const tarball = join(pack, "drakonc-pi-4.0.0.tgz");
 		writeFileSync(tarball, "owned tarball fixture");
 		const manifest = packedRunner.createHookedPackedConsumerManifest(consumer, tarball);
 		assert.deepEqual(manifest, {
-			name: "gentle-pi-packed-runner-test", private: true,
+			name: "drakonc-pi-packed-runner-test", private: true,
 			allowScripts: {
-				"file:../pack/gentle-pi-4.0.0.tgz": true,
+				"file:../pack/drakonc-pi-4.0.0.tgz": true,
 				[`file:${realpathSync.native(tarball).split(sep).join("/")}`]: true,
 			},
 		});
-		assert.equal(manifest.allowScripts["gentle-pi"], undefined);
+		assert.equal(manifest.allowScripts["drakonc-pi"], undefined);
 		assert.equal(manifest.allowScripts["*"], undefined);
 		for (const spec of Object.keys(manifest.allowScripts)) {
 			const filePath = spec.slice(5);
@@ -50,7 +50,7 @@ test("hooked consumer approves only the canonical local tarball file spec", () =
 		}
 		symlinkSync(consumer, join(disposable, "consumer-alias"), "dir");
 		assert.deepEqual(packedRunner.createHookedPackedConsumerManifest(join(disposable, "consumer-alias"), tarball), manifest);
-		symlinkSync("gentle-pi-4.0.0.tgz", join(pack, "alias.tgz"));
+		symlinkSync("drakonc-pi-4.0.0.tgz", join(pack, "alias.tgz"));
 		assert.throws(() => packedRunner.createHookedPackedConsumerManifest(consumer, join(pack, "alias.tgz")), /symbolic link/);
 		assert.throws(() => packedRunner.createHookedPackedConsumerManifest(consumer, pack), /regular file/);
 	} finally {

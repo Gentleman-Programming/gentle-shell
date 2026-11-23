@@ -8,7 +8,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { NativeReviewCli, NativeReviewModeRequest, NativeReviewModeResult } from "../lib/native-review-cli.ts";
 
-const HIDDEN = ["gentle_review_capture", "gentle_review_capture_group", "gentle_review_scope"];
+const HIDDEN = ["drakonc_review_capture", "drakonc_review_capture_group", "drakonc_review_scope"];
 const line = (mode: string, source: string) => `Receipt-driven development: ${mode} (decided by ${source})`;
 
 function deferred<T>() {
@@ -78,10 +78,10 @@ function nativeFixture(initial: State) {
 type FixtureNative = ReturnType<typeof nativeFixture>;
 
 async function fixture(t: { after(fn: () => Promise<void>): void }, initial: State) {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-rdd-mode-cache-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-rdd-mode-cache-")));
 	const profile = join(root, "profile");
 	mkdirSync(profile);
-	const bindings = { PI_CODING_AGENT_DIR: profile, PI_CODING_AGENT_SESSION_DIR: join(root, "sessions"), GENTLE_PI_AGENT_HOME: profile, GENTLE_PI_CONFIG_HOME: join(root, "config") };
+	const bindings = { PI_CODING_AGENT_DIR: profile, PI_CODING_AGENT_SESSION_DIR: join(root, "sessions"), DRAKONC_PI_AGENT_HOME: profile, DRAKONC_PI_CONFIG_HOME: join(root, "config") };
 	const previous = Object.fromEntries(Object.keys(bindings).map((key) => [key, process.env[key]]));
 	Object.assign(process.env, bindings);
 	const live: Array<() => Promise<void>> = [];
@@ -99,7 +99,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, initial: Sta
 	});
 	const sdk = await import("@earendil-works/pi-coding-agent");
 	const ai = await import("@earendil-works/pi-ai");
-	const { createGentleAiExtension, __testing } = await import("../extensions/gentle-ai.ts");
+	const { createDrakoncAiExtension, __testing } = await import("../extensions/drakonc-ai.ts");
 	clearMemo = __testing.clearRddStatusMemoForTesting;
 	clearMemo();
 	const native = nativeFixture(initial);
@@ -142,7 +142,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, initial: Sta
 					};
 					return on;
 				} });
-				createGentleAiExtension({ nativeReviewCli: nativeCli, candidateViews: null, processEnv: { ...bindings, GENTLE_AI_TELEMETRY: "0" }, resolveTelemetryTriggerBinary: () => { throw new Error("fixture"); } })(capture);
+				createDrakoncAiExtension({ nativeReviewCli: nativeCli, candidateViews: null, processEnv: { ...bindings, DRAKONC_AI_TELEMETRY: "0" }, resolveTelemetryTriggerBinary: () => { throw new Error("fixture"); } })(capture);
 				pi.registerProvider(provider, { api: provider, apiKey: "fixture-only", baseUrl: "http://invalid.local", models: [{ id: model.id, name: model.name, reasoning: false, input: ["text"], cost: model.cost, contextWindow: model.contextWindow, maxTokens: model.maxTokens }],
 					streamSimple(_model, context) {
 						requests.push({ system: ai.getCurrentSystemPrompt(context.messages), tools: ai.getCurrentTools(context.messages).map((tool) => tool.name) });
@@ -156,7 +156,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, initial: Sta
 		});
 		await loader.reload();
 		assert.deepEqual(loader.getExtensions().errors, []);
-		const { session } = await sdk.createAgentSession({ cwd, agentDir: profile, modelRuntime: runtime, model: model as never, thinkingLevel: "off", resourceLoader: loader, tools: ["read", "gentle_review", ...HIDDEN], sessionManager: sdk.SessionManager.inMemory(cwd), settingsManager: settings });
+		const { session } = await sdk.createAgentSession({ cwd, agentDir: profile, modelRuntime: runtime, model: model as never, thinkingLevel: "off", resourceLoader: loader, tools: ["read", "drakonc_review", ...HIDDEN], sessionManager: sdk.SessionManager.inMemory(cwd), settingsManager: settings });
 		let closed = false;
 		const close = async () => {
 			if (closed) return;
@@ -174,7 +174,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, initial: Sta
 			prompt: (text: string) => session.prompt(text, { source: "interactive" }),
 			assess: () => {
 				assert.ok(ctx);
-				return tools.get("gentle_review")!.execute("mode-race", { operation: "assess" }, undefined, undefined, ctx);
+				return tools.get("drakonc_review")!.execute("mode-race", { operation: "assess" }, undefined, undefined, ctx);
 			},
 		};
 	}
@@ -197,20 +197,20 @@ test("registered mode command refreshes pinned on/off/source and preserves clone
 	const host = await f.host(cwd);
 	await host.prompt("Initial request");
 	assertPrompt(host, "on", "global");
-	await host.prompt("/gentle:review-mode disable");
+	await host.prompt("/drakonc:review-mode disable");
 	assert.deepEqual(host.notices.at(-1), { message: "receipt-driven development: off (decided by clone_local)", type: "info" });
 	await host.prompt("After disable");
 	assertPrompt(host, "off", "clone_local");
-	await host.prompt("/gentle:review-mode enable");
+	await host.prompt("/drakonc:review-mode enable");
 	assert.deepEqual(host.notices.at(-1), { message: "receipt-driven development: on (decided by global)", type: "info" });
 	await host.prompt("After enable");
 	assertPrompt(host, "on", "global");
 	f.native.state(cwd).global = "";
-	await host.prompt("/gentle:review-mode enable");
+	await host.prompt("/drakonc:review-mode enable");
 	assert.deepEqual(host.notices.at(-1), { message: "receipt-driven development: on (decided by default)", type: "info" });
 	await host.prompt("After source change");
 	assertPrompt(host, "on", "default");
-	await host.prompt("/gentle:review-mode status");
+	await host.prompt("/drakonc:review-mode status");
 	assert.deepEqual(host.notices.at(-1), { message: "receipt-driven development: on (decided by default)", type: "info" });
 	assert.deepEqual(f.native.writes.map(({ operation }) => operation), ["disable", "enable", "enable"]);
 	for (const call of f.native.calls) assert.equal(call.scope, undefined, "legacy command does not request a global scope");
@@ -226,13 +226,13 @@ test("invalid, refused and malformed reads do not grant authority or fabricate o
 	const calls = f.native.calls.length;
 	const state = { ...f.native.state(cwd) };
 	const writes = structuredClone(f.native.writes);
-	await host.prompt("/gentle:review-mode invalid action");
-	assert.deepEqual(host.notices.at(-1), { message: 'Unknown /gentle:review-mode sub-action "invalid action". Use status, disable, or enable.', type: "warning" });
+	await host.prompt("/drakonc:review-mode invalid action");
+	assert.deepEqual(host.notices.at(-1), { message: 'Unknown /drakonc:review-mode sub-action "invalid action". Use status, disable, or enable.', type: "warning" });
 	assert.equal(f.native.calls.length, calls);
 	assert.deepEqual(f.native.state(cwd), state);
 	assert.deepEqual(f.native.writes, writes);
 	f.native.failMutation(true);
-	await host.prompt("/gentle:review-mode enable");
+	await host.prompt("/drakonc:review-mode enable");
 	assert.deepEqual(host.notices.at(-1), { message: "fixture mutation refused", type: "error" });
 	assert.deepEqual(f.native.state(cwd), state);
 	assert.deepEqual(f.native.writes, writes);
@@ -251,8 +251,8 @@ test("invalid, refused and malformed reads do not grant authority or fabricate o
 	assertPrompt(host, "unknown");
 	f.native.failRead(false);
 	f.native.failMutation(false);
-	await host.prompt("/gentle:review-mode enable");
-	assert.deepEqual(host.notices.at(-1), { message: "receipt-driven development: off (decided by global)\nThat did not turn reviews back on: /gentle:review-mode enable only clears a clone-local override, which cannot override a global off. Run `gentle-ai review mode enable --scope=global` to turn them back on.", type: "warning" });
+	await host.prompt("/drakonc:review-mode enable");
+	assert.deepEqual(host.notices.at(-1), { message: "receipt-driven development: off (decided by global)\nThat did not turn reviews back on: /drakonc:review-mode enable only clears a clone-local override, which cannot override a global off. Run `drakonc-ai review mode enable --scope=global` to turn them back on.", type: "warning" });
 	assert.deepEqual(f.native.state(cwd), { global: "off", cloneLocal: "" });
 	await host.prompt("Read global off");
 	assertPrompt(host, "off", "global");
@@ -265,7 +265,7 @@ test("late startup status cannot resurrect on after a successful disable", { tim
 	const pending = f.native.holdNext();
 	const host = await f.host(cwd);
 	await pending.started;
-	await host.prompt("/gentle:review-mode disable");
+	await host.prompt("/drakonc:review-mode disable");
 	assert.deepEqual(f.native.state(cwd), { global: "on", cloneLocal: "off" });
 	pending.read.resolve({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "", effective: "on", source: "global" } });
 	await pending.read.promise;
@@ -282,8 +282,8 @@ test("an unavailable mode provider cannot change native state or validate off", 
 	const cwd = f.repo("repo");
 	const state = { ...f.native.state(cwd) };
 	const host = await f.host(cwd, null);
-	await host.prompt("/gentle:review-mode disable");
-	assert.deepEqual(host.notices.at(-1), { message: "Gentle AI review mode is not available with the currently negotiated native version.", type: "info" });
+	await host.prompt("/drakonc:review-mode disable");
+	assert.deepEqual(host.notices.at(-1), { message: "Drakonc AI review mode is not available with the currently negotiated native version.", type: "info" });
 	await host.prompt("Unavailable status");
 	assertPrompt(host, "unknown");
 	assert.deepEqual(f.native.calls, []);
@@ -304,7 +304,7 @@ test("a stale in-flight off prompt cannot undo another session's enable", { time
 	const pending = f.native.holdNext();
 	const inFlight = first.prompt("Prompt awaiting the old status");
 	await pending.started;
-	await second.prompt("/gentle:review-mode enable");
+	await second.prompt("/drakonc:review-mode enable");
 	assert.deepEqual(second.notices.at(-1), { message: "receipt-driven development: on (decided by global)", type: "info" });
 	assert.deepEqual(f.native.state(cwd), { global: "on", cloneLocal: "" });
 	pending.read.resolve({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "off", effective: "off", source: "clone_local" } });
@@ -325,22 +325,22 @@ test("existing review-mode command protocol retains exact notifications and nati
 	await host.prompt("Warm status");
 	host.notices.length = 0;
 	f.native.calls.length = 0;
-	for (const action of ["", " status", " disable", " status", " enable", " invalid action"]) await host.prompt(`/gentle:review-mode${action}`);
+	for (const action of ["", " status", " disable", " status", " enable", " invalid action"]) await host.prompt(`/drakonc:review-mode${action}`);
 	f.native.failMutation(true);
-	await host.prompt("/gentle:review-mode disable");
+	await host.prompt("/drakonc:review-mode disable");
 	f.native.failMutation(false);
 	f.native.state(cwd).global = "off";
 	f.native.state(cwd).cloneLocal = "off";
-	await host.prompt("/gentle:review-mode enable");
+	await host.prompt("/drakonc:review-mode enable");
 	const expected = [
 		{ message: "receipt-driven development: on (decided by global)", type: "info" },
 		{ message: "receipt-driven development: on (decided by global)", type: "info" },
 		{ message: "receipt-driven development: off (decided by clone_local)", type: "info" },
 		{ message: "receipt-driven development: off (decided by clone_local)", type: "info" },
 		{ message: "receipt-driven development: on (decided by global)", type: "info" },
-		{ message: 'Unknown /gentle:review-mode sub-action "invalid action". Use status, disable, or enable.', type: "warning" },
+		{ message: 'Unknown /drakonc:review-mode sub-action "invalid action". Use status, disable, or enable.', type: "warning" },
 		{ message: "fixture mutation refused", type: "error" },
-		{ message: "receipt-driven development: off (decided by global)\nThat did not turn reviews back on: /gentle:review-mode enable only clears a clone-local override, which cannot override a global off. Run `gentle-ai review mode enable --scope=global` to turn them back on.", type: "warning" },
+		{ message: "receipt-driven development: off (decided by global)\nThat did not turn reviews back on: /drakonc:review-mode enable only clears a clone-local override, which cannot override a global off. Run `drakonc-ai review mode enable --scope=global` to turn them back on.", type: "warning" },
 	];
 	const calls = f.native.calls.map((call) => ({ ...call, cwd: "<fixture-cwd>" }));
 	assert.deepEqual(host.notices, expected);
@@ -383,7 +383,7 @@ test("held startup OFF cannot suppress guidance after registered enable", { time
 	const pending = f.native.holdNext();
 	const host = await f.host(cwd);
 	await pending.started;
-	await host.prompt("/gentle:review-mode enable");
+	await host.prompt("/drakonc:review-mode enable");
 	assert.deepEqual(host.notices.at(-1), { message: "receipt-driven development: on (decided by global)", type: "info" });
 	pending.read.resolve({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "off", effective: "off", source: "clone_local" } });
 	await pending.read.promise;
@@ -410,7 +410,7 @@ test("shutdown and reopen invalidate a held OFF direct assessment", { timeout: 3
 	await pending.started;
 	await old.close();
 	const fresh = await f.host(cwd);
-	await fresh.prompt("/gentle:review-mode enable");
+	await fresh.prompt("/drakonc:review-mode enable");
 	assert.deepEqual(fresh.notices.at(-1), { message: "receipt-driven development: on (decided by global)", type: "info" });
 	pending.read.resolve({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "off", effective: "off", source: "clone_local" } });
 	const result = await assessment;
@@ -434,7 +434,7 @@ test("a held OFF assessment cannot skip native assessment after another session 
 	const pending = f.native.holdNext();
 	const inFlight = first.assess();
 	await pending.started;
-	await second.prompt("/gentle:review-mode enable");
+	await second.prompt("/drakonc:review-mode enable");
 	assert.deepEqual(second.notices.at(-1), { message: "receipt-driven development: on (decided by global)", type: "info" });
 	assert.deepEqual(f.native.state(cwd), { global: "on", cloneLocal: "" });
 	pending.read.resolve({ operation: "status", scope: "clone", status: { global: "on", cloneLocal: "off", effective: "off", source: "clone_local" } });

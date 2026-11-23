@@ -1,4 +1,4 @@
-// Session-bound active profiles (gentle-shell#1064, slice 1).
+// Session-bound active profiles (drakonc-shell#1064, slice 1).
 //
 // One parent Pi session may bind one saved profile for its own launches without
 // touching any shared state: no clone pin (`p`), no repository declaration (`P`),
@@ -13,7 +13,7 @@
 // `moduleCache: false` (loader.js `loadExtensionModule`), so a module-local Map
 // would be re-evaluated per entrypoint: the panel writes one copy while the
 // launch, usage, and status readers hold their own empty copies
-// (gentle-shell#1558). The store therefore lives on `globalThis` behind a
+// (drakonc-shell#1558). The store therefore lives on `globalThis` behind a
 // `Symbol.for` key, which every evaluation of this module in one process
 // resolves to the same symbol and therefore the same shared Map.
 import type { AgentModelConfig } from "../../../lib/model-routing-authority.ts";
@@ -24,7 +24,7 @@ export interface SessionProfileBinding {
 	readonly modelProfiles: AgentModelConfig;
 }
 
-const bindingsRegistryKey = Symbol.for("gentle-pi:session-profile-bindings");
+const bindingsRegistryKey = Symbol.for("drakonc-pi:session-profile-bindings");
 
 /** The one process-wide binding store, shared across every extension entrypoint that imports this module. */
 function bindingsBySession(): Map<string, SessionProfileBinding> {

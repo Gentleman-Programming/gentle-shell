@@ -1156,8 +1156,8 @@ test("canvas.css: one Export section on --gd-* tokens hides the chrome while exp
 });
 
 test("the docs describe the artboard menu and its exports", () => {
-	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
-	const section = docs.slice(docs.indexOf("### Gentle Design"), docs.indexOf("### Gentle Music"));
+	const docs = readFileSync(fileURLToPath(new URL("../docs/drakonc-shell.md", import.meta.url)), "utf8");
+	const section = docs.slice(docs.indexOf("### Drakonc Design"), docs.indexOf("### Drakonc Music"));
 	const start = section.indexOf("- **Export**");
 	assert.ok(start >= 0, "an Export entry");
 	const entry = section.slice(start, section.indexOf("\n", start));

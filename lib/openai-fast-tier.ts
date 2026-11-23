@@ -7,8 +7,8 @@ const FAST_MODELS = new Set([
 	"gpt-6.2-sol", "gpt-6.2-astra",
 ]);
 
-export const PROFILE_TIER_EVENT = "gentle-pi:profile-tier";
-export const CHILD_TIER_ENV = "GENTLE_PI_AGENT_SERVICE_TIER";
+export const PROFILE_TIER_EVENT = "drakonc-pi:profile-tier";
+export const CHILD_TIER_ENV = "DRAKONC_PI_AGENT_SERVICE_TIER";
 
 export function supportsOpenAIFast(model: { provider?: string; api?: string; id?: string } | null | undefined): boolean {
 	return !!model && typeof model.id === "string" && FAST_MODELS.has(model.id) && (

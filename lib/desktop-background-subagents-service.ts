@@ -1,5 +1,5 @@
-// Gentle Desktop background-subagents bridge: reaches the
-// `/gentle:background-subagents` owner in `extensions/gentle-ai.ts` through a
+// Drakonc Desktop background-subagents bridge: reaches the
+// `/drakonc:background-subagents` owner in `extensions/drakonc-ai.ts` through a
 // versioned owner-service event/adapter and answers `get_background_subagents`
 // and `set_background_subagents`. It keeps no copy of the policy: every read
 // and every write is the owner's own.

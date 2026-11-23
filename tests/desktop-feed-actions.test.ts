@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createDesktopFeedExtension, type DesktopFeedOptions } from "../extensions/gentle-desktop-feed.ts";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import { createDesktopFeedExtension, type DesktopFeedOptions } from "../extensions/drakonc-desktop-feed.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import {
 	answerKeys,
 	DESKTOP_ACTION_RESULT_SCHEMA,
@@ -30,12 +30,12 @@ import { NOTIFICATION_ATTENTION_EVENT } from "../lib/notification-events.ts";
 import { registerYoloSessionPolicy } from "../lib/yolo-session-policy.ts";
 
 // T7 (odd/tasks/herdr-desktop.md, S2/S5): the desktop's actions reach a live
-// Gentle Shell session through a private per-session inbox, and every action
+// Drakonc Shell session through a private per-session inbox, and every action
 // goes through the same owner the desktop RPC already uses — never around it.
 
 const NOW = Date.UTC(2026, 10, 15, 12, 0, 0);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
-const GENTLE_ENV = { PI_PROGRAM_STATUS_APP: "gentle-shell", HERDR_ENV: "1", HERDR_PANE_ID: "t7" };
+const DRAKONC_ENV = { PI_PROGRAM_STATUS_APP: "drakonc-shell", HERDR_ENV: "1", HERDR_PANE_ID: "t7" };
 
 // ---- Harness ----
 
@@ -131,7 +131,7 @@ function fakeOwners(bus: ReturnType<typeof fakeBus>, calls: OwnerCalls, idle = f
 			dispose: () => {},
 		});
 	});
-	const agent = { id: "a1", agent: "gentle-writer", status: idle ? "completed" : "running", model: "sonnet", lastStep: "writing", usage: { total: 10, cost: 0.1 } };
+	const agent = { id: "a1", agent: "drakonc-writer", status: idle ? "completed" : "running", model: "sonnet", lastStep: "writing", usage: { total: 10, cost: 0.1 } };
 	bus.on(DESKTOP_AGENTS_SERVICE_CHANNEL, (payload) => {
 		(payload as { respond(service: unknown): void }).respond({
 			schema: DESKTOP_AGENTS_SERVICE_SCHEMA,
@@ -156,11 +156,11 @@ function harness(t: test.TestContext, { idle, ...options }: Partial<DesktopFeedO
 	const calls: OwnerCalls = { cancelJob: [], cancelSubagent: [] };
 	const setModes: string[] = [];
 	fakeOwners(h.bus, calls, idle);
-	const ownerEnv = { ...GENTLE_ENV, GENTLE_PI_CONFIG_HOME: configHome };
+	const ownerEnv = { ...DRAKONC_ENV, DRAKONC_PI_CONFIG_HOME: configHome };
 	if ((options.owner ?? "real") === "real") {
 		// Count every owner setMode the adapter receives without changing what it
 		// does (registered first, so it wraps the request before the owner answers).
-		h.bus.on("gentle:yolo:host-ui", (payload) => {
+		h.bus.on("drakonc:yolo:host-ui", (payload) => {
 			const request = payload as { respond(adapter: unknown): void };
 			const original = request.respond;
 			request.respond = (adapter: any) => {
@@ -173,7 +173,7 @@ function harness(t: test.TestContext, { idle, ...options }: Partial<DesktopFeedO
 		});
 		registerYoloSessionPolicy(h.pi, ownerEnv, { resolveIdentity: async () => "workspace:test" });
 	} else if (options.owner === "refusing") {
-		h.bus.on("gentle:yolo:host-ui", (payload) => {
+		h.bus.on("drakonc:yolo:host-ui", (payload) => {
 			(payload as { respond(adapter: unknown): void }).respond({
 				read: async () => "OFF",
 				readSnapshot: async () => ({ yolo: "OFF", mode: "normal", defaultMode: "normal" }),
@@ -187,7 +187,7 @@ function harness(t: test.TestContext, { idle, ...options }: Partial<DesktopFeedO
 	let fireWatch: (() => void) | undefined;
 	let watchClosed = 0;
 	createDesktopFeedExtension({
-		env: GENTLE_ENV,
+		env: DRAKONC_ENV,
 		agentDir,
 		now: () => NOW,
 		timers: clock.timers,
@@ -485,18 +485,18 @@ test("S2: desktop RPC set_permission_mode answers are byte-identical with the fe
 		mkdirSync(join(root, "w"));
 		mkdirSync(join(root, "config"));
 		const h = fakePi();
-		registerYoloSessionPolicy(h.pi, { ...GENTLE_ENV, GENTLE_PI_CONFIG_HOME: join(root, "config"), [INTERACTIVE_HOST_ENV]: "1" }, { resolveIdentity: async () => "workspace:test" });
+		registerYoloSessionPolicy(h.pi, { ...DRAKONC_ENV, DRAKONC_PI_CONFIG_HOME: join(root, "config"), [INTERACTIVE_HOST_ENV]: "1" }, { resolveIdentity: async () => "workspace:test" });
 		desktopRpc(h.pi);
 		const clock = fakeTimers();
-		if (withFeed) createDesktopFeedExtension({ env: { ...GENTLE_ENV, [INTERACTIVE_HOST_ENV]: "1" }, agentDir: join(root, "agent"), timers: clock.timers, git: () => async () => ({ stdout: "", code: 128 }), parentOf: async () => undefined, profile: () => ({ name: undefined, tier: undefined }), sweep: () => {}, actionWatch: () => () => {} })(h.pi);
+		if (withFeed) createDesktopFeedExtension({ env: { ...DRAKONC_ENV, [INTERACTIVE_HOST_ENV]: "1" }, agentDir: join(root, "agent"), timers: clock.timers, git: () => async () => ({ stdout: "", code: 128 }), parentOf: async () => undefined, profile: () => ({ name: undefined, tier: undefined }), sweep: () => {}, actionWatch: () => () => {} })(h.pi);
 		const ctx = fakeCtx(join(root, "w"), { mode: "rpc" });
 		h.fire("session_start", { reason: "startup" }, ctx);
 		await settle();
 		for (const [requestId, params] of [["r1", { mode: "super-yolo" }], ["r2", { mode: "normal" }], ["r3", { mode: "nope" }]] as const) {
-			await h.commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method: "set_permission_mode", params }), ctx);
+			await h.commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method: "set_permission_mode", params }), ctx);
 		}
 		clock.run();
-		return ctx.widgets.filter((widget) => widget.key === "gentle-desktop-rpc").map((widget) => widget.lines[0]);
+		return ctx.widgets.filter((widget) => widget.key === "drakonc-desktop-rpc").map((widget) => widget.lines[0]);
 	};
 	const without = await run(false);
 	const withFeed = await run(true);
@@ -511,7 +511,7 @@ test("S2: desktop RPC set_permission_mode answers are byte-identical with the fe
 test("S10: send_prompt types the text into the session through pi, steering while the agent works", async (t) => {
 	const h = harness(t);
 	await h.start();
-	Object.assign(h.pi, { getCommands: () => [{ name: "gentle:mode", source: "extension" }, { name: "review", source: "prompt" }] });
+	Object.assign(h.pi, { getCommands: () => [{ name: "drakonc:mode", source: "extension" }, { name: "review", source: "prompt" }] });
 	h.drop("p1.json", h.action("p1", "send_prompt", { text: "hola" }));
 	await h.deliver();
 	assert.deepEqual(h.sent, [{ content: "hola", options: { deliverAs: "steer", expandPromptTemplates: false } }]);
@@ -522,7 +522,7 @@ test("S10: send_prompt types the text into the session through pi, steering whil
 	await h.deliver();
 	assert.deepEqual(h.sent[1], { content: "/review the parser", options: { deliverAs: "steer", expandPromptTemplates: true } });
 	assert.deepEqual(h.result("p2").data, { queued: true });
-	h.drop("p3.json", h.action("p3", "send_prompt", { text: "/gentle:mode super-yolo" }));
+	h.drop("p3.json", h.action("p3", "send_prompt", { text: "/drakonc:mode super-yolo" }));
 	h.drop("p4.json", h.action("p4", "send_prompt", { text: "/new" }));
 	await h.deliver();
 	assert.equal(h.result("p3").error.code, "terminal_command");
@@ -585,11 +585,11 @@ const STEER = (content: string, expand = false) => ({ content, options: { delive
 test("S10: no pi built-in, extension command or ! line reaches pi, leading whitespace included", async (t) => {
 	const h = harness(t);
 	await h.start();
-	Object.assign(h.pi, { getCommands: () => [{ name: "gentle:mode", source: "extension" }, { name: "gentle:agents", source: "extension" }, { name: "review", source: "prompt" }] });
+	Object.assign(h.pi, { getCommands: () => [{ name: "drakonc:mode", source: "extension" }, { name: "drakonc:agents", source: "extension" }, { name: "review", source: "prompt" }] });
 	const texts = [
 		...DESKTOP_FEED_BUILTIN_COMMANDS.map((command) => `/${command.name}`),
 		"/quit", "/exit", "/settings", "/scoped-models", "/hotkeys", "/debug",
-		"/gentle:mode super-yolo", "/gentle:agents", "  /new", "\t/model x", "\n/gentle:mode yolo",
+		"/drakonc:mode super-yolo", "/drakonc:agents", "  /new", "\t/model x", "\n/drakonc:mode yolo",
 		"!rm -rf build", "!!ls", "   !ls", "\n!ls",
 	];
 	// Batches under the outbox's 32 kept answers.
@@ -756,6 +756,6 @@ test("S10 (V9): a held prompt is dropped with a clear error when the session end
 	h.fire("session_shutdown", { reason: "quit" }, h.ctx);
 	h.clock.run();
 	assert.deepEqual([h.sent, h.refused], [[], []]);
-	assert.deepEqual(h.ctx.notices, ["Gentle Shell Desktop: a prompt sent during compaction was not delivered (the session ended)."]);
+	assert.deepEqual(h.ctx.notices, ["Drakonc Shell Desktop: a prompt sent during compaction was not delivered (the session ended)."]);
 	assert.equal(h.clock.armed, 0);
 });

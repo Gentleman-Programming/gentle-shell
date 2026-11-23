@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import choiceExtension from "../extensions/ask-user-choice.ts";
 import questionnaireExtension from "../extensions/ask-user-question.ts";
 
@@ -29,7 +29,7 @@ for (const toolName of ["ask_user_choice", "ask_user_question"] as const) {
     custom:async()=>toolName==="ask_user_choice" ? {index:1,label:"Yes",value:"opaque-choice"} :
      {cancelled:false,answers:[{questionIndex:0,question:"May I edit source.ts?",kind:"option",answer:"Yes"}]}},
   };
-  createGentleAiExtension({processEnv:{GENTLE_PI_CONFIG_HOME:home},nativeReviewCli:null,candidateViews:null,
+  createDrakoncAiExtension({processEnv:{DRAKONC_PI_CONFIG_HOME:home},nativeReviewCli:null,candidateViews:null,
    autoPermissionClassifier:{cancel(){},async run(request:any){requests.push(request);return {status:"available",decision:allow?"allow":"deny",reason:"Fixture scope"};}},
    resolveTelemetryTriggerBinary:()=>{throw Error("native disabled in fixture");},
   })(pi);
@@ -39,7 +39,7 @@ for (const toolName of ["ask_user_choice", "ask_user_question"] as const) {
    for(const hook of hooks.get(name)??[]){const next=await hook(event,ctx);if(next!==undefined)output=next;}
    return output;
   };
-  await commands.get("gentle:mode").handler("auto",ctx);
+  await commands.get("drakonc:mode").handler("auto",ctx);
   await emit("input",{source:"interactive",text:"Inspect only; ask before editing."});
   manager.appendMessage({role:"user",content:"Inspect only; ask before editing.",timestamp:1});
   const action={toolName:"write",toolCallId:"edit",input:{path:join(root,"source.ts"),content:"x"}};

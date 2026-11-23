@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { resetCapabilitiesCache, setCapabilities, stripTerminalSequences as stripAnsi } from "@earendil-works/pi-tui";
-import { GentlePromptEditor, imageAttachmentsWidget, modelAcceptsImages } from "../extensions/gentle-shell.ts";
+import { DrakoncPromptEditor, imageAttachmentsWidget, modelAcceptsImages } from "../extensions/drakonc-shell.ts";
 import type { ClipboardImage } from "../lib/clipboard-image.ts";
 import { ImageAttachments } from "../lib/image-attachments.ts";
 import { createVimEditorAdapter } from "../lib/vim-editor-adapter.ts";
@@ -13,7 +13,7 @@ import { join } from "node:path";
 
 const INSTALLED_PI = (createRequire(import.meta.url)("@earendil-works/pi-tui/package.json") as { version: string }).version;
 
-// Prompt chips for pasted images (gentle-shell#2464): the paste key inserts an
+// Prompt chips for pasted images (drakonc-shell#2464): the paste key inserts an
 // atomic `[Image#N]`, one Backspace removes it, and Pi's own paste handler
 // stays the fallback for files, text and unsupported formats.
 
@@ -39,7 +39,7 @@ function chipEditor(read: (() => Promise<ClipboardImage | null>) | undefined, at
 		selectedPrefix: identity, selectedText: identity, description: identity, scrollInfo: identity, noMatch: identity,
 	} } as unknown as CtorParams[1];
 	const keybindings = { matches: (data: string, action: string) => action === "app.clipboard.pasteImage" && data === PASTE_KEY } as unknown as CtorParams[2];
-	const editor = new GentlePromptEditor(tui, theme, keybindings, {
+	const editor = new DrakoncPromptEditor(tui, theme, keybindings, {
 		fg: (_role, text) => text, bold: identity, requestRender() {}, pending: () => false,
 		now: () => 0, doubleEscCancelEnabled: () => false, dispatchQueuedText() {},
 		attachments: read ? attachments : undefined, readClipboardImage: read,
@@ -247,7 +247,7 @@ function imagePaste(text: string) {
 }
 
 function temporaryImage(name = "herdr-paste-1.png"): string {
-	const directory = mkdtempSync(join(tmpdir(), "gentle-paste-"));
+	const directory = mkdtempSync(join(tmpdir(), "drakonc-paste-"));
 	const path = join(directory, name);
 	writeFileSync(path, PNG_2X1);
 	return path;

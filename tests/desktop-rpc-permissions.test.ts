@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import { DESKTOP_RPC_SCHEMA, DESKTOP_RPC_WIDGET } from "../lib/desktop-rpc.ts";
 import { PERMISSION_MODE_SCHEMA, permissionModePolicyFile, writePermissionModePolicy } from "../lib/permission-mode-policy.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
@@ -13,29 +13,29 @@ import { registerYoloSessionPolicy } from "../lib/yolo-session-policy.ts";
 type WidgetCall = { key: string; lines: string[] };
 
 function isolatedEnvironment(t: test.TestContext) {
-	const root = mkdtempSync(join(tmpdir(), "gentle-desktop-permissions-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-desktop-permissions-"));
 	const home = join(root, "config");
 	const workspace = join(root, "workspace");
 	mkdirSync(home);
 	mkdirSync(workspace);
 	const previous = {
 		host: process.env[INTERACTIVE_HOST_ENV],
-		configHome: process.env.GENTLE_PI_CONFIG_HOME,
-		child: process.env.GENTLE_PI_AGENTS_CHILD,
+		configHome: process.env.DRAKONC_PI_CONFIG_HOME,
+		child: process.env.DRAKONC_PI_AGENTS_CHILD,
 	};
 	process.env[INTERACTIVE_HOST_ENV] = "1";
-	process.env.GENTLE_PI_CONFIG_HOME = home;
-	delete process.env.GENTLE_PI_AGENTS_CHILD;
+	process.env.DRAKONC_PI_CONFIG_HOME = home;
+	delete process.env.DRAKONC_PI_AGENTS_CHILD;
 	t.after(() => {
 		if (previous.host === undefined) delete process.env[INTERACTIVE_HOST_ENV];
 		else process.env[INTERACTIVE_HOST_ENV] = previous.host;
-		if (previous.configHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previous.configHome;
-		if (previous.child === undefined) delete process.env.GENTLE_PI_AGENTS_CHILD;
-		else process.env.GENTLE_PI_AGENTS_CHILD = previous.child;
+		if (previous.configHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previous.configHome;
+		if (previous.child === undefined) delete process.env.DRAKONC_PI_AGENTS_CHILD;
+		else process.env.DRAKONC_PI_AGENTS_CHILD = previous.child;
 		rmSync(root, { recursive: true, force: true });
 	});
-	return { root, home, workspace, policyFile: permissionModePolicyFile({ gentlePiConfigHome: home }) };
+	return { root, home, workspace, policyFile: permissionModePolicyFile({ drakoncPiConfigHome: home }) };
 }
 
 function desktopHost(t: test.TestContext, options: { owner?: boolean } = {}) {
@@ -89,8 +89,8 @@ function desktopHost(t: test.TestContext, options: { owner?: boolean } = {}) {
 		start() { lifecycle.get("session_start")?.({}, ctx); },
 		shutdown() { lifecycle.get("session_shutdown")?.({}, ctx); },
 		async invoke(method: string, params: Record<string, unknown> = {}, requestId = `request-${method}`) {
-			assert.deepEqual([...commands.keys()].includes("gentle:desktop"), true);
-			await commands.get("gentle:desktop")!.handler(
+			assert.deepEqual([...commands.keys()].includes("drakonc:desktop"), true);
+			await commands.get("drakonc:desktop")!.handler(
 				JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }),
 				ctx,
 			);
@@ -162,7 +162,7 @@ test("get_permission_mode reports the live owner state and never persists a defa
 
 	// The owner initializes a session lazily, so this first call pinned the session
 	// to the default in effect then; a later default change belongs to new sessions.
-	writePermissionModePolicy("auto", { gentlePiConfigHome: app.home });
+	writePermissionModePolicy("auto", { drakoncPiConfigHome: app.home });
 	await app.invoke("get_permission_mode", {}, "request-read-2");
 	assert.deepEqual(app.lines().at(-1).data, { mode: "normal", default_mode: "auto" });
 	assert.equal(app.lines().filter((line) => line.kind === "event").length, 0, "reads never emit events");

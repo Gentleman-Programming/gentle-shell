@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createEventBus, initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getThemeByName } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import gentleShell from "../extensions/gentle-shell.ts";
+import drakoncShell from "../extensions/drakonc-shell.ts";
 import * as yolo from "../lib/yolo-session-policy.ts";
 import { stripAnsi } from "../lib/terminal-theme.ts";
 import { VisualCustomizeView } from "../lib/visual-customize-view.ts";
@@ -69,8 +69,8 @@ function fixture(t: test.TestContext, order = "owner-first", env: NodeJS.Process
 		},
 	} as unknown as ExtensionContext;
 	let controller: yolo.YoloSessionController | undefined;
-	const owner = () => { controller = yolo.registerYoloSessionPolicy(pi, { ...env, GENTLE_PI_CONFIG_HOME: home }, { resolveIdentity: async () => undefined }); };
-	const shell = () => gentleShell(pi, { ...env, GENTLE_PI_CONFIG_HOME: home, GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
+	const owner = () => { controller = yolo.registerYoloSessionPolicy(pi, { ...env, DRAKONC_PI_CONFIG_HOME: home }, { resolveIdentity: async () => undefined }); };
+	const shell = () => drakoncShell(pi, { ...env, DRAKONC_PI_CONFIG_HOME: home, DRAKONC_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
 		fetch: async () => { assert.fail("network disabled"); }, activeProfile: () => undefined, devBinary: () => undefined,
 	});
 	if (order === "owner-first") { owner(); shell(); }
@@ -80,7 +80,7 @@ function fixture(t: test.TestContext, order = "owner-first", env: NodeJS.Process
 		pi, ctx, home, events, notices, statuses, widgets, snapshot, controller: () => controller!, renders: () => renders,
 		setSessionId: (id: string) => { sessionId = id; }, setSlashMode: (mode: string) => { slashMode = mode; },
 		view: () => { assert.ok(view); return view; },
-		async command(args: string) { await commands.get("gentle:yolo")!.handler(args, ctx); },
+		async command(args: string) { await commands.get("drakonc:yolo")!.handler(args, ctx); },
 		async apply(data: string) {
 			assert.ok(observeActionReady && view, "action-ready observation is enabled");
 			let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -94,7 +94,7 @@ function fixture(t: test.TestContext, order = "owner-first", env: NodeJS.Process
 		},
 		async open() {
 			opened = new Promise<void>(resolve => { ready = resolve; });
-			const result = commands.get("gentle:customize")!.handler("", ctx);
+			const result = commands.get("drakonc:customize")!.handler("", ctx);
 			await opened;
 			return { result, close: () => { view?.handleInput("\x1b"); finish?.(); } };
 		},
@@ -190,7 +190,7 @@ for (const order of ["owner-first", "shell-first"]) test(`Editor YOLO menu and s
 
 for (const invalid of [false, true]) test(`absent/invalid owner is unavailable, bounded and cannot activate (invalid: ${invalid})`, async t => {
 	const h = fixture(t, "absent");
-	if (invalid) h.events.on("gentle:yolo:host-ui", data => {
+	if (invalid) h.events.on("drakonc:yolo:host-ui", data => {
 		const request = data as { respond(value: unknown): void };
 		request.respond({ enabled: true });
 	});
@@ -205,7 +205,7 @@ test("scope revocation refreshes without notification recursion or Git during re
 	const h = fixture(t); await h.command("enable");
 	// Resolve the unrelated RDD discovery immediately so its timeout repaint
 	// cannot be mistaken for a recursive YOLO revocation notification.
-	h.events.on("gentle:rdd:host-ui", data => {
+	h.events.on("drakonc:rdd:host-ui", data => {
 		(data as { respond(value: unknown): void }).respond({
 			read: async () => undefined,
 			open: async () => { throw new Error("YOLO revocation must not open RDD"); },
@@ -248,10 +248,10 @@ test("off wins over pending menu on; child/headless/RPC cannot acquire adapter a
 	open.close(); await open.result;
 	assert.equal(typeof yolo.discoverYoloUiAdapter, "function");
 	for (const variant of ["child", "headless", "rpc", "missing-workspace"]) {
-		const f = fixture(t, "owner-first", variant === "child" ? { GENTLE_PI_AGENTS_CHILD: "1" } : {});
+		const f = fixture(t, "owner-first", variant === "child" ? { DRAKONC_PI_AGENTS_CHILD: "1" } : {});
 		if (variant === "headless") Object.assign(f.ctx, { hasUI: false });
 		if (variant === "rpc") Object.assign(f.ctx, { mode: "rpc" });
-		if (variant === "missing-workspace") Object.assign(f.ctx, { cwd: "/nonexistent-gentle-workspace" });
+		if (variant === "missing-workspace") Object.assign(f.ctx, { cwd: "/nonexistent-drakonc-workspace" });
 		const adapter = await yolo.discoverYoloUiAdapter(f.pi, f.ctx);
 		if (adapter) { assert.equal(await adapter.read(), "UNAVAILABLE"); await adapter.toggle(); adapter.dispose(); }
 		assert.equal(await f.controller().active(f.ctx), false, variant);
@@ -295,7 +295,7 @@ test("adapter callbacks fail closed after reset, disposal and context invalidati
 test("late discovery callback is disposed rather than reviving a timed-out interaction", async t => {
 	const h = fixture(t, "absent");
 	let respond!: (value: unknown) => void;
-	h.events.on("gentle:yolo:host-ui", data => { respond = (data as { respond(value: unknown): void }).respond; });
+	h.events.on("drakonc:yolo:host-ui", data => { respond = (data as { respond(value: unknown): void }).respond; });
 	assert.equal(await yolo.discoverYoloUiAdapter(h.pi, h.ctx), undefined);
 	let disposed = 0;
 	respond({ read: async () => "ON", toggle: async () => assert.fail("late callback must not act"), observe: () => () => {}, dispose: () => { disposed++; } });

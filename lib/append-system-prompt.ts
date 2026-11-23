@@ -1,4 +1,4 @@
-// gentle-shell#1485: pi-claude-bridge only forwards the structured
+// drakonc-shell#1485: pi-claude-bridge only forwards the structured
 // systemPromptOptions parts of before_agent_start, dropping any
 // handler-returned replacement systemPrompt. Extensions mutate
 // options.appendSystemPrompt instead so the harness reaches every provider.

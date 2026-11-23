@@ -11,7 +11,7 @@ import {
 } from "../lib/profiles-orchestrator.ts";
 
 function fixture(t: test.TestContext) {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-orchestrator-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-orchestrator-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	return { root, settingsPath: join(root, "settings.json") };
 }
@@ -45,7 +45,7 @@ test("reading the orchestrator distinguishes missing, unreadable, unset and set"
 	writeFileSync(settingsPath, JSON.stringify(["not", "an", "object"]));
 	assert.equal(readOrchestratorSettings(settingsPath).status, "invalid");
 
-	writeFileSync(settingsPath, JSON.stringify({ theme: "Gentleman-Cute" }));
+	writeFileSync(settingsPath, JSON.stringify({ theme: "Drakoncman-Cute" }));
 	const unset = readOrchestratorSettings(settingsPath);
 	assert.equal(unset.status, "valid");
 	assert.equal(unset.status === "valid" ? unset.entry : undefined, undefined);
@@ -73,7 +73,7 @@ test("reading the orchestrator distinguishes missing, unreadable, unset and set"
 
 test("an orchestrator entry without a model never touches the settings file", (t) => {
 	const { root, settingsPath } = fixture(t);
-	const before = '{\n  "packages": [\n    "npm:pi-mcp-adapter"\n  ],\n  "theme": "Gentleman-Cute"\n}\n';
+	const before = '{\n  "packages": [\n    "npm:pi-mcp-adapter"\n  ],\n  "theme": "Drakoncman-Cute"\n}\n';
 	writeFileSync(settingsPath, before);
 	assert.deepEqual(applyOrchestratorSettings(settingsPath, { thinking: "high" }), {
 		status: "unchanged",
@@ -92,7 +92,7 @@ test("applying the orchestrator preserves every unrelated settings key", (t) => 
 		JSON.stringify(
 			{
 				packages: ["npm:pi-mcp-adapter", "some-package"],
-				theme: "Gentleman-Cute",
+				theme: "Drakoncman-Cute",
 				tuiMode: "fullscreen",
 				telemetry: { enabled: true },
 				defaultProvider: "nan",
@@ -117,7 +117,7 @@ test("applying the orchestrator preserves every unrelated settings key", (t) => 
 	assert.equal(after.defaultModel, "glm5.3");
 	assert.equal(after.defaultThinkingLevel, "max");
 	assert.deepEqual(after.packages, ["npm:pi-mcp-adapter", "some-package"]);
-	assert.equal(after.theme, "Gentleman-Cute");
+	assert.equal(after.theme, "Drakoncman-Cute");
 	assert.equal(after.tuiMode, "fullscreen");
 	assert.deepEqual(after.telemetry, { enabled: true });
 	assert.deepEqual(after.images, { autoResize: true });
@@ -177,15 +177,15 @@ test("an unusable target is refused instead of being overwritten", (t) => {
 
 	// A model id that is not a provider/model pair is refused for the same reason:
 	// there is no provider to write, and guessing one would corrupt the selection.
-	writeFileSync(settingsPath, JSON.stringify({ theme: "Gentleman-Cute" }));
+	writeFileSync(settingsPath, JSON.stringify({ theme: "Drakoncman-Cute" }));
 	const noProvider = applyOrchestratorSettings(settingsPath, { model: "glm5.3" });
 	assert.equal(noProvider.status, "invalid");
-	assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), { theme: "Gentleman-Cute" });
+	assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), { theme: "Drakoncman-Cute" });
 });
 
 test("restoring returns the previous bytes, or removes a file the write created", (t) => {
 	const { root, settingsPath } = fixture(t);
-	const before = '{\n  "theme": "Gentleman-Cute"\n}\n';
+	const before = '{\n  "theme": "Drakoncman-Cute"\n}\n';
 	writeFileSync(settingsPath, before);
 	const written = applyOrchestratorSettings(settingsPath, { model: "nan/glm5.3" });
 	assert.equal(written.status, "written");

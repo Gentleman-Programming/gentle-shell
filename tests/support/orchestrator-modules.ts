@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// gentle-shell#1494 split the lazy delegation detail into per-mechanism
+// drakonc-shell#1494 split the lazy delegation detail into per-mechanism
 // modules. Contract tests that assert delegation-scoped clauses read the union
 // so a moved clause stays pinned instead of silently disappearing.
 export const DELEGATION_MODULES = [

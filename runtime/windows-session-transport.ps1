@@ -364,7 +364,7 @@ public static class WindowsSessionBootstrap {
         public readonly string SessionId, Endpoint, Token; public readonly long CreatedAt;
         public PresenceRecord(string sessionId, string endpoint, string token, long createdAt) { SessionId = sessionId; Endpoint = endpoint; Token = token; CreatedAt = createdAt; }
       }
-      static readonly string PipePrefix = @"\\.\pipe\gentle-pi-";
+      static readonly string PipePrefix = @"\\.\pipe\drakonc-pi-";
       const int FileDispositionInformation = 13, MaxOwnedPublications = 64;
       struct RecordIdentity { public uint Volume; public uint IndexHigh, IndexLow; public RecordIdentity(BY_HANDLE_FILE_INFORMATION info) { Volume = info.VolumeSerialNumber; IndexHigh = info.FileIndexHigh; IndexLow = info.FileIndexLow; } public bool Equals(RecordIdentity other) { return Volume == other.Volume && IndexHigh == other.IndexHigh && IndexLow == other.IndexLow; } }
       sealed class OwnedPublication { public readonly PresenceRecord Record; public readonly RecordIdentity Identity; public readonly string Sid; public SafeFileHandle Handle; public OwnedPublication(PresenceRecord record, RecordIdentity identity, string sid, IntPtr handle) { Record = record; Identity = identity; Sid = sid; Handle = new SafeFileHandle(handle, true); } public void Dispose() { if (Handle != null) { Handle.Dispose(); Handle = null; } } }
@@ -709,8 +709,8 @@ public static class WindowsSessionBootstrap {
         uint volumeSerial;
         SetStage("volume-open"); IntPtr volume = RequireVolumeOpen(VolumePath(agentHome, out volumeSerial), volumeSerial); Handles.Add(volume); IntPtr parent = volume;
         foreach (string component in components) { SetStage("ancestor-open"); IntPtr child = RequireOpen(parent, component, false); Handles.Add(child); parent = child; }
-        // gentle-agents is a shared routing parent created by the host lifecycle; never repair or create it here.
-        SetStage("routing-open"); IntPtr routing = RequireOpen(parent, "gentle-agents", false); Handles.Add(routing);
+        // drakonc-agents is a shared routing parent created by the host lifecycle; never repair or create it here.
+        SetStage("routing-open"); IntPtr routing = RequireOpen(parent, "drakonc-agents", false); Handles.Add(routing);
         IntPtr transport = CreateOrOpenOwned(routing, "transport", descriptor, sid, "transport-create-or-open", "transport-assert-owned"); Handles.Add(transport);
         Presence = CreateOrOpenOwned(transport, "presence", descriptor, sid, "presence-create-or-open", "presence-assert-owned"); Handles.Add(Presence);
       } catch { CloseAll(); throw; } finally { InitializationStage = "unknown"; InitializationNtStatus = null; }

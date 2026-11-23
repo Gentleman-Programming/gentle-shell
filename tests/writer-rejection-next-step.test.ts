@@ -15,7 +15,7 @@ const surfaces = "\n\n## Allowed edit surfaces\nsrc/budget.ts\n";
 function rejection(): string {
 	const root = mkdtempSync(join(tmpdir(), "writer-rejection-next-step-"));
 	try {
-		const denied = rejectUndocumentedWriterLaunch({ agent: "gentle-ai-worker", task: `Fix the budget rounding. The user said: delegate this.${surfaces}` }, { root, contextUsage: { tokens: 20_000, contextWindow: 400_000 } });
+		const denied = rejectUndocumentedWriterLaunch({ agent: "drakonc-ai-worker", task: `Fix the budget rounding. The user said: delegate this.${surfaces}` }, { root, contextUsage: { tokens: 20_000, contextWindow: 400_000 } });
 		assert.equal(denied?.block, true, "admission still rejects a small organic writer");
 		return denied!.reason;
 	} finally {

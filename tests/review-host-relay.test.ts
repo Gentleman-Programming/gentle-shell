@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createNodeExecFileAdapter } from "../lib/native-review-cli.ts";
-import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
+import { setBundledInstallForTesting } from "../lib/drakonc-shell-bundled.ts";
 import { INPROCESS_REVIEWER_FAILURE, type InProcessReviewerOutcome, type InProcessReviewerRequest, type InProcessReviewerDeps, runInProcessReviewer } from "../lib/inprocess-reviewer.ts";
 import {
 	REVIEW_HOST_RELAY_FAILURE,
@@ -29,10 +29,10 @@ import {
 	type ReviewHostRelayRequest,
 } from "../lib/review-host-relay.ts";
 import * as reviewHostRelayModule from "../lib/review-host-relay.ts";
-import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "../lib/review-relay-contract.ts";
+import { DRAKONC_PI_REVIEW_RELAY_CONTRACT, DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV } from "../lib/review-relay-contract.ts";
 import { decodeReviewNextTransitionV3, type ReviewCaptureSubmissionV1, type ReviewCollectInputV3 } from "../lib/review-integration-v2.ts";
 
-// gentle-pi#311 P2: the reviewer transport this file exercises no longer
+// drakonc-pi#311 P2: the reviewer transport this file exercises no longer
 // spawns a pi child. `runReviewHostRelaySlot`/`prepareReviewHostRelaySlot`
 // take an injectable `runReviewer` (defaulting to the real
 // `runInProcessReviewer`), so every test below fakes that seam instead of a
@@ -44,17 +44,17 @@ import { decodeReviewNextTransitionV3, type ReviewCaptureSubmissionV1, type Revi
 // slot detection) which stayed exactly as it was.
 
 // ---------------------------------------------------------------------------
-// Fake gentle-ai binary. Following the repo's fake-executable idiom (shell/git
+// Fake drakonc-ai binary. Following the repo's fake-executable idiom (shell/git
 // wrappers in related review tests), this is a shebang script written into a
 // scratch directory; a node script is used so binary-unsafe bytes survive
 // verbatim.
 // ---------------------------------------------------------------------------
 
-const FAKE_GENTLE_AI = `#!/usr/bin/env node
+const FAKE_DRAKONC_AI = `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
 const argv = process.argv.slice(2);
-if (process.env.RELAY_FAKE_LOG) fs.appendFileSync(process.env.RELAY_FAKE_LOG, JSON.stringify({ argv, cwd: process.cwd(), contract: process.env.${GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV} ?? null, home: process.env.GENTLE_AI_HOME ?? null }) + "\\n");
+if (process.env.RELAY_FAKE_LOG) fs.appendFileSync(process.env.RELAY_FAKE_LOG, JSON.stringify({ argv, cwd: process.cwd(), contract: process.env.${DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV} ?? null, home: process.env.DRAKONC_AI_HOME ?? null, gentleHome: process.env.GENTLE_AI_HOME ?? null, noSelfUpdate: process.env.GENTLE_AI_NO_SELF_UPDATE ?? null }) + "\\n");
 if (argv.some((token) => token === "--materialize" || token.startsWith("--materialize="))) {
 	const mode = process.env.RELAY_FAKE_MATERIALIZE_MODE || "ok";
 	if (mode === "ok") { process.stdout.write(Buffer.from(process.env.RELAY_FAKE_PROMPT_B64 || "", "base64")); process.exit(0); }
@@ -103,13 +103,13 @@ if (inputToken !== undefined) {
 	process.stderr.write("capture binding does not match the current reviewing authority\\n");
 	process.exit(1);
 }
-process.stderr.write("unexpected fake gentle-ai invocation\\n");
+process.stderr.write("unexpected fake drakonc-ai invocation\\n");
 process.exit(9);
 `;
 
 interface RelayHarness {
 	directory: string;
-	gentleAi: string;
+	drakoncAi: string;
 	logPath: string;
 	submitCapturePath: string;
 	targetCwd: string;
@@ -117,12 +117,12 @@ interface RelayHarness {
 }
 
 function harness(t: test.TestContext, overrides: Record<string, string> = {}): RelayHarness {
-	const directory = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-relay-harness-")));
+	const directory = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-relay-harness-")));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
-	const gentleAi = join(directory, "gentle-ai");
-	writeFileSync(gentleAi, FAKE_GENTLE_AI);
-	chmodSync(gentleAi, 0o755);
-	const logPath = join(directory, "gentle-ai.log");
+	const drakoncAi = join(directory, "drakonc-ai");
+	writeFileSync(drakoncAi, FAKE_DRAKONC_AI);
+	chmodSync(drakoncAi, 0o755);
+	const logPath = join(directory, "drakonc-ai.log");
 	const submitCapturePath = join(directory, "submitted.bin");
 	const targetCwd = join(directory, "target-worktree");
 	mkdirSync(targetCwd);
@@ -134,11 +134,11 @@ function harness(t: test.TestContext, overrides: Record<string, string> = {}): R
 	};
 	// The relay itself must add the handshake; the base environment never
 	// carries it, so the fake-binary log proves the injection.
-	delete environment[GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV];
-	return { directory, gentleAi, logPath, submitCapturePath, targetCwd, environment };
+	delete environment[DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV];
+	return { directory, drakoncAi, logPath, submitCapturePath, targetCwd, environment };
 }
 
-function readLog(path: string): Array<{ argv: string[]; contract: string | null; cwd?: string; home?: string | null }> {
+function readLog(path: string): Array<{ argv: string[]; contract: string | null; cwd?: string; home?: string | null; gentleHome?: string | null; noSelfUpdate?: string | null }> {
 	if (!existsSync(path)) return [];
 	return readFileSync(path, "utf8").split("\n").filter((line) => line.length > 0).map((line) => JSON.parse(line));
 }
@@ -176,7 +176,7 @@ const SUBMISSION: ReviewCaptureSubmissionV1 = Object.freeze({
 // valid UTF-8 at all. The relay must materialize them verbatim into the
 // completion request.
 const PROMPT_BYTES = Buffer.concat([
-	Buffer.from('GENTLE_AI_REVIEW_BINDING {"lineage":"review-1d5aadacc600e167"}\n"quotes" \\backslash\r\n\u00e9\u{1F3A9}\n', "utf8"),
+	Buffer.from('DRAKONC_AI_REVIEW_BINDING {"lineage":"review-1d5aadacc600e167"}\n"quotes" \\backslash\r\n\u00e9\u{1F3A9}\n', "utf8"),
 	Buffer.from([0x00, 0x01, 0x07, 0xff, 0xfe, 0x00]),
 ]);
 // The reviewer's completion text — what used to be the pi event stream's
@@ -187,7 +187,7 @@ function relayRequest(fixture: RelayHarness, overrides: Record<string, unknown> 
 	return {
 		captureArgumentTokens: CAPTURE_TOKENS,
 		submission: SUBMISSION,
-		gentleAiExecutable: fixture.gentleAi,
+		drakoncAiExecutable: fixture.drakoncAi,
 		targetCwd: fixture.targetCwd,
 		reviewerRegistry: {
 			find: () => ({ id: "gpt-5", name: "GPT-5", api: "openai-responses", provider: "openai", baseUrl: "https://example.invalid", reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100_000, maxTokens: 8192 }) as never,
@@ -199,7 +199,7 @@ function relayRequest(fixture: RelayHarness, overrides: Record<string, unknown> 
 			...fixture.environment,
 			RELAY_FAKE_PROMPT_B64: PROMPT_BYTES.toString("base64"),
 		},
-		gentleAiTimeoutMs: 30_000,
+		drakoncAiTimeoutMs: 30_000,
 		piTimeoutMs: 30_000,
 		...overrides,
 	} as ReviewHostRelayRequest;
@@ -252,49 +252,75 @@ async function rejectsWithRelayError(promise: Promise<unknown>, kind: string, st
 }
 
 // ---------------------------------------------------------------------------
-// Handshake — every gentle-ai CLI spawn carries the compiled declaration.
+// Handshake — every drakonc-ai CLI spawn carries the compiled declaration.
 // ---------------------------------------------------------------------------
 
-test("the central native CLI runner declares the relay contract on every gentle-ai spawn", async (t) => {
+test("the central native CLI runner declares the relay contract on every drakonc-ai spawn", async (t) => {
 	const fixture = harness(t);
 	const probe = join(fixture.directory, "env-probe");
-	writeFileSync(probe, `#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ contract: process.env.${GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV} ?? null }));\n`);
+	writeFileSync(probe, `#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ contract: process.env.${DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV} ?? null }));\n`);
 	chmodSync(probe, 0o755);
-	const hadContract = Object.prototype.hasOwnProperty.call(process.env, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV);
-	const previous = process.env[GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV];
-	delete process.env[GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV];
+	const hadContract = Object.prototype.hasOwnProperty.call(process.env, DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV);
+	const previous = process.env[DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV];
+	delete process.env[DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV];
 	t.after(() => {
-		if (hadContract) process.env[GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV] = previous;
+		if (hadContract) process.env[DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV] = previous;
 	});
 	const adapter = createNodeExecFileAdapter();
 	for (const argv of [["version"], ["review", "status", "--cwd", fixture.directory]]) {
 		const result = await adapter({ file: probe, arguments: argv, cwd: fixture.directory, timeoutMs: 10_000, maxBufferBytes: 1024 * 1024 });
 		assert.equal(result.exitCode, 0);
-		assert.deepEqual(JSON.parse(result.stdout), { contract: GENTLE_PI_REVIEW_RELAY_CONTRACT });
+		assert.deepEqual(JSON.parse(result.stdout), { contract: DRAKONC_PI_REVIEW_RELAY_CONTRACT });
 	}
 });
 
-// S9: in a bundled install (the testing overlay stands in for this package
-// running from it) both relay invocations get Gentle AI's isolation
-// variables; otherwise neither does.
-test("both relay gentle-ai invocations carry Gentle AI's isolation variables only in a bundled install", async (t) => {
+// The companion's own home is computed from the OS home, so a temporary HOME
+// keeps the expectation exact without touching the real one.
+function useTemporaryOsHome(t: test.TestContext): string {
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-ai-isolation-home-")));
+	const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	t.after(() => {
+		for (const [name, value] of Object.entries(previous)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		rmSync(home, { recursive: true, force: true });
+	});
+	return home;
+}
+
+// S9/D1: in a bundled install (the testing overlay stands in for this package
+// running from it) both relay invocations get the prefix's paths; outside one,
+// the pinned companion still gets Drakonc's own home and no self-update, which
+// is what keeps its state out of ~/.gentle-ai.
+test("both relay drakonc-ai invocations carry Drakonc AI's isolation variables, inside a bundled install or not", async (t) => {
+	const osHome = useTemporaryOsHome(t);
 	const ordinary = harness(t);
 	await runRelay(ordinary);
-	assert.deepEqual(readLog(ordinary.logPath).map((call) => call.home), [null, null]);
-	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "gentle-ai-isolation-relay-")));
+	const standaloneHome = join(osHome, ".drakonc-shell", "drakonc-ai-home");
+	const ordinaryCalls = readLog(ordinary.logPath);
+	assert.deepEqual(ordinaryCalls.map((call) => call.home), [standaloneHome, standaloneHome], "Drakonc's own home, never ~/.gentle-ai");
+	assert.deepEqual(ordinaryCalls.map((call) => call.gentleHome), [standaloneHome, standaloneHome], "the name the pinned gentle-ai reads");
+	assert.deepEqual(ordinaryCalls.map((call) => call.noSelfUpdate), ["1", "1"], "the pinned binary never self-updates");
+	const prefix = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-ai-isolation-relay-")));
 	setBundledInstallForTesting({ root: prefix });
 	t.after(() => {
 		setBundledInstallForTesting(undefined);
 		rmSync(prefix, { recursive: true, force: true });
 	});
-	const bundled = harness(t, { GENTLE_SHELL_PREFIX: prefix });
+	const bundled = harness(t, { DRAKONC_SHELL_PREFIX: prefix });
 	await runRelay(bundled);
-	assert.deepEqual(readLog(bundled.logPath).map((call) => call.home), [join(prefix, "gentle-ai"), join(prefix, "gentle-ai")]);
+	const bundledCalls = readLog(bundled.logPath);
+	assert.deepEqual(bundledCalls.map((call) => call.home), [join(prefix, "drakonc-ai"), join(prefix, "drakonc-ai")]);
+	assert.deepEqual(bundledCalls.map((call) => call.gentleHome), [join(prefix, "drakonc-ai"), join(prefix, "drakonc-ai")]);
+	assert.deepEqual(bundledCalls.map((call) => call.noSelfUpdate), ["1", "1"]);
 });
 
-test("relay contract constants are the compiled gentle-ai handshake values", () => {
-	assert.equal(GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV, "GENTLE_PI_REVIEW_RELAY_CONTRACT");
-	assert.equal(GENTLE_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
+test("relay contract constants are the compiled drakonc-ai handshake values", () => {
+	assert.equal(DRAKONC_PI_REVIEW_RELAY_CONTRACT_ENV, "GENTLE_PI_REVIEW_RELAY_CONTRACT");
+	assert.equal(DRAKONC_PI_REVIEW_RELAY_CONTRACT, "gentle-pi.review-relay/v1");
 });
 
 test("no pi child launcher is exported: the lens path completes in-process", () => {
@@ -322,27 +348,27 @@ test("relay happy path moves prompt bytes verbatim into the completion and submi
 	// Submission --input file bytes are EXACTLY the reviewer's completion text.
 	assert.deepEqual(readFileSync(fixture.submitCapturePath), Buffer.from(REVIEWER_TEXT, "utf8"));
 
-	const gentleAiCalls = readLog(fixture.logPath);
-	assert.equal(gentleAiCalls.length, 2);
+	const drakoncAiCalls = readLog(fixture.logPath);
+	assert.equal(drakoncAiCalls.length, 2);
 	// (a) exact provider tokens, verbatim, in provider order.
-	assert.deepEqual(gentleAiCalls[0]!.argv, ["review", "capture-result", ...CAPTURE_TOKENS]);
+	assert.deepEqual(drakoncAiCalls[0]!.argv, ["review", "capture-result", ...CAPTURE_TOKENS]);
 	// (b) the provider-owned submission form, verbatim: its exact operation
 	// and argument tokens with only the artifact path substituted into the
 	// declared {{value}} slot. No agent/materialize, nothing synthesized.
-	assert.deepEqual(gentleAiCalls[1]!.argv.slice(0, 2 + BINDING_TOKENS.length), ["review", SUBMISSION.operationToken, ...BINDING_TOKENS]);
-	const substituted = gentleAiCalls[1]!.argv.at(-1)!;
+	assert.deepEqual(drakoncAiCalls[1]!.argv.slice(0, 2 + BINDING_TOKENS.length), ["review", SUBMISSION.operationToken, ...BINDING_TOKENS]);
+	const substituted = drakoncAiCalls[1]!.argv.at(-1)!;
 	assert.match(substituted, /^--input=\S+$/);
 	assert.equal(substituted.includes("{{value}}"), false);
 	assert.equal(existsSync(substituted.slice("--input=".length)), false, "the coordinator removes its temporary result file after provider submission");
-	assert.equal(gentleAiCalls[1]!.argv.length, 2 + SUBMISSION.argumentTokens.length);
-	assert.equal(gentleAiCalls[1]!.argv.some((token) => token.includes("--agent") || token.includes("--materialize")), false);
-	// Handshake declared on both gentle-ai invocations even though the base
+	assert.equal(drakoncAiCalls[1]!.argv.length, 2 + SUBMISSION.argumentTokens.length);
+	assert.equal(drakoncAiCalls[1]!.argv.some((token) => token.includes("--agent") || token.includes("--materialize")), false);
+	// Handshake declared on both drakonc-ai invocations even though the base
 	// environment carried none.
-	assert.deepEqual(gentleAiCalls.map((call) => call.contract), [GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT]);
-	assert.deepEqual(gentleAiCalls.map((call) => call.cwd), [fixture.targetCwd, fixture.targetCwd]);
+	assert.deepEqual(drakoncAiCalls.map((call) => call.contract), [DRAKONC_PI_REVIEW_RELAY_CONTRACT, DRAKONC_PI_REVIEW_RELAY_CONTRACT]);
+	assert.deepEqual(drakoncAiCalls.map((call) => call.cwd), [fixture.targetCwd, fixture.targetCwd]);
 });
 
-// gentle-pi#311 P3: a v9 provider role slot (refuter, targeted validator)
+// drakonc-pi#311 P3: a v9 provider role slot (refuter, targeted validator)
 // reaches this same relay through the exact same request shape a lens
 // materialize slot uses — the only difference is the operation name the
 // provider's own submission descriptor names. The materialize invocation
@@ -366,12 +392,12 @@ test("the materialize invocation follows the provider's own submission operation
 
 	assert.equal(JSON.parse(result.submission).admission_decision, "completed");
 	assert.equal(calls.length, 1);
-	const gentleAiCalls = readLog(fixture.logPath);
-	assert.equal(gentleAiCalls.length, 2);
-	assert.deepEqual(gentleAiCalls[0]!.argv, ["review", "capture-refuter", ...refuterCaptureTokens]);
-	assert.deepEqual(gentleAiCalls[1]!.argv.slice(0, 2 + bindingTokens.length), ["review", "capture-refuter", ...bindingTokens]);
-	assert.equal(gentleAiCalls[1]!.argv[2 + bindingTokens.length], "--agent=pi");
-	const submitted = gentleAiCalls[1]!.argv.at(-1)!;
+	const drakoncAiCalls = readLog(fixture.logPath);
+	assert.equal(drakoncAiCalls.length, 2);
+	assert.deepEqual(drakoncAiCalls[0]!.argv, ["review", "capture-refuter", ...refuterCaptureTokens]);
+	assert.deepEqual(drakoncAiCalls[1]!.argv.slice(0, 2 + bindingTokens.length), ["review", "capture-refuter", ...bindingTokens]);
+	assert.equal(drakoncAiCalls[1]!.argv[2 + bindingTokens.length], "--agent=pi");
+	const submitted = drakoncAiCalls[1]!.argv.at(-1)!;
 	assert.match(submitted, /^--input=\S+$/);
 });
 
@@ -680,7 +706,7 @@ test("a tool call's cancelled signal maps to REVIEWER_ABORTED and forwards the c
 });
 
 // ---------------------------------------------------------------------------
-// gentle-pi#367 — the reviewer bound is reachable from production, and a
+// drakonc-pi#367 — the reviewer bound is reachable from production, and a
 // timed-out completion says so with both measurements.
 // ---------------------------------------------------------------------------
 
@@ -762,7 +788,7 @@ test("submission refusal is a typed error whose outcome is unknown pending STATU
 	assert.equal(readLog(fixture.logPath).length, 2);
 });
 
-// gentle-pi#522 / #524: Go refuses a reviewer submission at admission with a
+// drakonc-pi#522 / #524: Go refuses a reviewer submission at admission with a
 // typed [invalid_request] refusal and states that the lens slot was not
 // consumed. That is a proven non-mutation, not an unknown outcome, and the
 // refusal text is the only thing that tells the host what to change.
@@ -812,7 +838,7 @@ test("a submission the fake admits with the expected subject still completes", a
 
 test("submission refusal preserves its primary evidence when result staging cleanup also fails", async (t) => {
 	const fixture = harness(t, { RELAY_FAKE_SUBMIT_MODE: "refuse-cleanup-fail" });
-	const scratchParent = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-relay-primary-failure-")));
+	const scratchParent = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-relay-primary-failure-")));
 	const originalTmpdir = process.env.TMPDIR;
 	process.env.TMPDIR = scratchParent;
 	try {
@@ -843,7 +869,7 @@ test("relay staging directories are removed after a submission failure too", asy
 
 test("a result staging cleanup failure remains a typed submit failure", async (t) => {
 	const fixture = harness(t, { RELAY_FAKE_SUBMIT_MODE: "cleanup-fail" });
-	const scratchParent = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-relay-cleanup-")));
+	const scratchParent = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-relay-cleanup-")));
 	const originalTmpdir = process.env.TMPDIR;
 	process.env.TMPDIR = scratchParent;
 	try {
@@ -890,11 +916,11 @@ test("refusal classification distinguishes unknown-flag, handshake, and other", 
 	assert.equal(classifyReviewHostRelayRefusal("flag provided but not defined: -materialize\nUsage:"), "unknown-flag");
 	assert.equal(classifyReviewHostRelayRefusal("flag provided but not defined: -agent"), "unknown-flag");
 	assert.equal(classifyReviewHostRelayRefusal("the active runtime is not eligible for immutable receipt review"), "handshake");
-	assert.equal(classifyReviewHostRelayRefusal("declare GENTLE_PI_REVIEW_RELAY_CONTRACT=gentle-pi.review-relay/v1"), "handshake");
+	assert.equal(classifyReviewHostRelayRefusal("declare DRAKONC_PI_REVIEW_RELAY_CONTRACT=gentle-pi.review-relay/v1"), "handshake");
 	assert.equal(classifyReviewHostRelayRefusal("some unrelated explosion"), "other");
 });
 
-// gentle-pi#638: only a reviewer killed by the scaled relay bound is proven
+// drakonc-pi#638: only a reviewer killed by the scaled relay bound is proven
 // deterministic for this exact slot. Generic admission refusals are repairable
 // by a fresh reviewer and retain the ordinary exact-reoffer behavior.
 test("the unachievable predicate names only deterministic slot failures", () => {
@@ -908,7 +934,7 @@ test("the unachievable predicate names only deterministic slot failures", () => 
 		assert.equal(reviewHostRelayUnachievableDetail(admitted), undefined);
 	}
 
-	const unknownOutcome = new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", "gentle-ai capture submission exceeded its bound", { timedOut: true });
+	const unknownOutcome = new ReviewHostRelayError(REVIEW_HOST_RELAY_FAILURE.SUBMISSION_REFUSED, "submit", "drakonc-ai capture submission exceeded its bound", { timedOut: true });
 	assert.equal(reviewHostRelayUnachievableReason(unknownOutcome), undefined, "an unknown mutation outcome is never deterministic");
 	assert.equal(reviewHostRelayUnachievableDetail(unknownOutcome), undefined);
 
@@ -994,7 +1020,7 @@ test("only provider-issued pi --materialize capture-result inputs become relay s
 test("relay input validation rejects empty or malformed inputs before any process launches", async () => {
 	await assert.rejects(runReviewHostRelaySlot({ captureArgumentTokens: [], submission: SUBMISSION }), TypeError);
 	await assert.rejects(runReviewHostRelaySlot({ captureArgumentTokens: [""], submission: SUBMISSION }), TypeError);
-	await assert.rejects(runReviewHostRelaySlot({ captureArgumentTokens: CAPTURE_TOKENS, submission: SUBMISSION, gentleAiExecutable: "gentle-ai" }), TypeError);
+	await assert.rejects(runReviewHostRelaySlot({ captureArgumentTokens: CAPTURE_TOKENS, submission: SUBMISSION, drakoncAiExecutable: "drakonc-ai" }), TypeError);
 });
 
 // ---------------------------------------------------------------------------
@@ -1011,7 +1037,7 @@ test("a materialize slot without a provider submission fails closed before any p
 	);
 	assert.equal(error.message, REVIEW_HOST_RELAY_SUBMISSION_MISSING_MESSAGE);
 	assert.equal(error.mutationOutcome, "none");
-	assert.equal(readLog(fixture.logPath).length, 0, "no gentle-ai invocation was launched");
+	assert.equal(readLog(fixture.logPath).length, 0, "no drakonc-ai invocation was launched");
 	assert.equal(calls.length, 0, "no completion was run");
 	assert.equal(existsSync(fixture.submitCapturePath), false);
 });

@@ -3,7 +3,7 @@
 ## Objective
 
 The sidebar Usage group prints one aggregate line (`renderUsageBar`), so a NaN session shows a single
-allowance while `/gentle:usage` shows the grouped breakdown. Print the same grouped rows in the
+allowance while `/drakonc:usage` shows the grouped breakdown. Print the same grouped rows in the
 sidebar — account total, family totals, models — without the reset dates, which stay in the panel.
 
 ## Problem / Why
@@ -28,7 +28,7 @@ so the grouped view has to be readable there too.
 - `odd/tasks/nan-usage-sidebar-groups.md`
 - `lib/shell-bar.ts`
 - `tests/shell-bar.test.ts`
-- `docs/gentle-shell.md`
+- `docs/drakonc-shell.md`
 
 ## Tasks
 
@@ -53,7 +53,7 @@ so the grouped view has to be readable there too.
 ## Verification evidence
 
 - NAN-S1 RED: `node --experimental-strip-types --test tests/shell-bar.test.ts` — 1 failed, `sidebar groups the NaN allowances by subscription without the panel resets` (actual `['glm5.3-flash']`, expected the six grouped rows); the Codex guard test passed against current behavior.
-- NAN-S2 GREEN: `node --experimental-strip-types --test tests/shell-bar.test.ts tests/shell-usage.test.ts tests/shell-usage-view.test.ts tests/gentle-shell.test.ts` — 89 passed, 0 failed.
+- NAN-S2 GREEN: `node --experimental-strip-types --test tests/shell-bar.test.ts tests/shell-usage.test.ts tests/shell-usage-view.test.ts tests/drakonc-shell.test.ts` — 89 passed, 0 failed.
 - Full suite: `pnpm test` — exit 0, 2693 tests, 2655 passed, 0 failed, 38 skipped; provider contract mirror passed and the runtime harness ran clean.
 - Typecheck: `pnpm run typecheck` — exit 0, 197 recorded diagnostics, no regressions.
 - Render through the product code at width 60 with the live payload shape (6 models, two of them unmetered): `nan total 7%`, `deepseek-v4-flash 18%`, `glm total 3%`, `glm5.3-flash 10%`, `glm5.2 1%`, `glm5.3 0%`, and no `resets in` line anywhere in the card.

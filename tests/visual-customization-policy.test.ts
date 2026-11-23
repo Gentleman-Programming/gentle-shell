@@ -8,7 +8,7 @@ import { applyVisualPreset, CHROME_SURFACE, DEFAULT_VISUAL_SETTINGS, DENSITY, HE
 test("missing settings use responsive defaults and return independent copies", () => {
 	const home = mkdtempSync(join(tmpdir(), "visual-policy-"));
 	try {
-		const resolved = resolveVisualSettings({ gentlePiConfigHome: home });
+		const resolved = resolveVisualSettings({ drakoncPiConfigHome: home });
 		assert.deepEqual(resolved.settings, DEFAULT_VISUAL_SETTINGS);
 		assert.equal(DEFAULT_VISUAL_SETTINGS.statusPlacement, "auto");
 		assert.equal(DEFAULT_VISUAL_SETTINGS.headerPlacement, "top");
@@ -16,7 +16,7 @@ test("missing settings use responsive defaults and return independent copies", (
 		assert.deepEqual(DEFAULT_VISUAL_SETTINGS.visibility, { changes: true, rdd: true, agents: true, todo: true, usageCost: true, modelDetails: true, contextWarning: true, stats: false });
 		resolved.settings.visibility.agents = false;
 		assert.equal(DEFAULT_VISUAL_SETTINGS.visibility.agents, true);
-		assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).settings.visibility.agents, true);
+		assert.equal(resolveVisualSettings({ drakoncPiConfigHome: home }).settings.visibility.agents, true);
 	} finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -44,7 +44,7 @@ test("settings saved before the rdd section existed load as valid with rdd shown
 	const home = mkdtempSync(join(tmpdir(), "visual-policy-"));
 	try {
 		writeFileSync(join(home, "visual-customization.json"), JSON.stringify(legacy));
-		const resolved = resolveVisualSettings({ gentlePiConfigHome: home });
+		const resolved = resolveVisualSettings({ drakoncPiConfigHome: home });
 		assert.equal(resolved.malformed, false);
 		assert.deepEqual(resolved.settings, expected);
 		const { rdd: _rdd, ...legacyVisibility } = expected.visibility;
@@ -85,7 +85,7 @@ test("an unreadable settings path is a read error, not malformed content", () =>
 	const home = mkdtempSync(join(tmpdir(), "visual-policy-"));
 	try {
 		mkdirSync(join(home, "visual-customization.json"));
-		const result = resolveVisualSettings({ gentlePiConfigHome: home });
+		const result = resolveVisualSettings({ drakoncPiConfigHome: home });
 		assert.equal(result.malformed, false);
 		assert.equal(result.readError, true);
 		assert.equal(result.source, "global_file");
@@ -98,7 +98,7 @@ test("failed rename preserves the destination and removes the temporary file", (
 	try {
 		const destination = join(home, "visual-customization.json");
 		mkdirSync(destination);
-		assert.throws(() => writeVisualSettings(DEFAULT_VISUAL_SETTINGS, { gentlePiConfigHome: home }));
+		assert.throws(() => writeVisualSettings(DEFAULT_VISUAL_SETTINGS, { drakoncPiConfigHome: home }));
 		assert.deepEqual(readdirSync(home), ["visual-customization.json"]);
 		assert.equal(statSync(destination).isDirectory(), true);
 	} finally { rmSync(home, { recursive: true, force: true }); }
@@ -111,8 +111,8 @@ test("each placement and density value survives a versioned write and read", () 
 			for (const headerPlacement of Object.values(HEADER_PLACEMENT)) {
 				for (const density of Object.values(DENSITY)) {
 					const settings = { ...DEFAULT_VISUAL_SETTINGS, statusPlacement, headerPlacement, density };
-					writeVisualSettings(settings, { gentlePiConfigHome: home });
-					assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, settings);
+					writeVisualSettings(settings, { drakoncPiConfigHome: home });
+					assert.deepEqual(resolveVisualSettings({ drakoncPiConfigHome: home }).settings, settings);
 				}
 			}
 		}
@@ -123,23 +123,23 @@ test("atomic write round trips and invalid existing files fall back without over
 	const home = mkdtempSync(join(tmpdir(), "visual-policy-"));
 	try {
 		const settings = { ...DEFAULT_VISUAL_SETTINGS, statusPlacement: "hidden" as const, headerPlacement: "below-input" as const, density: "minimal" as const, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, agents: false } };
-		const path = writeVisualSettings(settings, { gentlePiConfigHome: home });
+		const path = writeVisualSettings(settings, { drakoncPiConfigHome: home });
 		assert.equal(path, join(home, "visual-customization.json"));
 		if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
-		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, settings);
+		assert.deepEqual(resolveVisualSettings({ drakoncPiConfigHome: home }).settings, settings);
 		const { surface: _surface, ...stored } = settings;
 		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { schema: VISUAL_SCHEMA, ...stored }, "the tinted default is not stored");
 		const validFile = readFileSync(path, "utf8");
-		assert.throws(() => writeVisualSettings({ ...settings, density: "bad" as typeof settings.density }, { gentlePiConfigHome: home }));
+		assert.throws(() => writeVisualSettings({ ...settings, density: "bad" as typeof settings.density }, { drakoncPiConfigHome: home }));
 		assert.equal(readFileSync(path, "utf8"), validFile);
 		writeFileSync(path, "broken");
-		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, DEFAULT_VISUAL_SETTINGS);
-		assert.equal(resolveVisualSettings({ gentlePiConfigHome: home }).malformed, true);
+		assert.deepEqual(resolveVisualSettings({ drakoncPiConfigHome: home }).settings, DEFAULT_VISUAL_SETTINGS);
+		assert.equal(resolveVisualSettings({ drakoncPiConfigHome: home }).malformed, true);
 		assert.equal(readFileSync(path, "utf8"), "broken");
 	} finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-// Presets (/gentle:customize → Layout → Preset) bundle the visibility switches
+// Presets (/drakonc:customize → Layout → Preset) bundle the visibility switches
 // (and Light's bottom Status); density is its own axis, like the header and the
 // surface. They never add a key, so every binary keeps reading the file.
 test("presets are valid settings that keep the file format and the header placement; Light drops the rail", () => {
@@ -166,10 +166,10 @@ test("presets are valid settings that keep the file format and the header placem
 	assert.equal(visualPresetOf({ ...DEFAULT_VISUAL_SETTINGS, visibility: { ...DEFAULT_VISUAL_SETTINGS.visibility, rdd: false } }), undefined, "a hand-tuned mix is custom");
 	const home = mkdtempSync(join(tmpdir(), "visual-preset-"));
 	try {
-		writeVisualSettings(light, { gentlePiConfigHome: home });
+		writeVisualSettings(light, { drakoncPiConfigHome: home });
 		const stored = JSON.parse(readFileSync(join(home, "visual-customization.json"), "utf8"));
 		assert.deepEqual(Object.keys(stored).sort(), ["density", "headerPlacement", "schema", "statusPlacement", "visibility"], "no preset key is stored");
-		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, light);
+		assert.deepEqual(resolveVisualSettings({ drakoncPiConfigHome: home }).settings, light);
 	} finally {
 		rmSync(home, { recursive: true, force: true });
 	}
@@ -199,13 +199,13 @@ test("the chrome surface defaults to transparent, is stored only when tinted, an
 	const home = mkdtempSync(join(tmpdir(), "visual-surface-"));
 	try {
 		const file = join(home, "visual-customization.json");
-		writeVisualSettings(DEFAULT_VISUAL_SETTINGS, { gentlePiConfigHome: home });
+		writeVisualSettings(DEFAULT_VISUAL_SETTINGS, { drakoncPiConfigHome: home });
 		assert.equal(Object.hasOwn(JSON.parse(readFileSync(file, "utf8")), "surface"), false, "the default keeps the file readable by older versions");
-		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, DEFAULT_VISUAL_SETTINGS);
+		assert.deepEqual(resolveVisualSettings({ drakoncPiConfigHome: home }).settings, DEFAULT_VISUAL_SETTINGS);
 		const tinted = { ...DEFAULT_VISUAL_SETTINGS, surface: CHROME_SURFACE.TINTED };
-		writeVisualSettings(tinted, { gentlePiConfigHome: home });
+		writeVisualSettings(tinted, { drakoncPiConfigHome: home });
 		assert.equal(JSON.parse(readFileSync(file, "utf8")).surface, "tinted");
-		assert.deepEqual(resolveVisualSettings({ gentlePiConfigHome: home }).settings, tinted);
+		assert.deepEqual(resolveVisualSettings({ drakoncPiConfigHome: home }).settings, tinted);
 		assert.equal(visualPresetOf(tinted), VISUAL_PRESET.NEUTRAL, "presets ignore the surface");
 		assert.equal(applyVisualPreset(tinted, VISUAL_PRESET.POWER_USER).surface, CHROME_SURFACE.TINTED, "a preset keeps the surface");
 		const { surface: _surface, ...legacy } = DEFAULT_VISUAL_SETTINGS;

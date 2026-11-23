@@ -6,7 +6,7 @@ import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { AutoPermissionClassifier } from "../lib/auto-permission-classifier.ts";
 
 const model = {
@@ -19,11 +19,11 @@ const model = {
 function fixture(t: test.TestContext) {
  const root = mkdtempSync(join(tmpdir(), "auto-invariants-")), home = join(root, "config");
  mkdirSync(home);
- const previous = process.env.GENTLE_PI_CONFIG_HOME;
- process.env.GENTLE_PI_CONFIG_HOME = home;
+ const previous = process.env.DRAKONC_PI_CONFIG_HOME;
+ process.env.DRAKONC_PI_CONFIG_HOME = home;
  t.after(() => {
-  if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-  else process.env.GENTLE_PI_CONFIG_HOME = previous;
+  if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+  else process.env.DRAKONC_PI_CONFIG_HOME = previous;
   rmSync(root, { recursive: true, force: true });
  });
  const manager = SessionManager.inMemory(root), anchor = manager.appendCustomEntry("probe-anchor", {});
@@ -67,7 +67,7 @@ function fixture(t: test.TestContext) {
   registerTool() {}, registerFlag() {}, registerMessageRenderer() {}, getActiveTools: () => [],
   appendEntry(type: string, data: any) { receipts.push({ type, data }); receiptChanged?.(); },
  };
- createGentleAiExtension({ processEnv: { GENTLE_PI_CONFIG_HOME: home }, nativeReviewCli: null,
+ createDrakoncAiExtension({ processEnv: { DRAKONC_PI_CONFIG_HOME: home }, nativeReviewCli: null,
   candidateViews: null, resolveTelemetryTriggerBinary: () => { throw Error("network/native disabled"); },
   autoPermissionClassifier: engine })(pi);
  const emit = async (name: string, event: any) => {
@@ -82,7 +82,7 @@ function fixture(t: test.TestContext) {
    manager.appendMessage({ role: "user", content: text, timestamp: 1 });
   },
   call: (toolName: string, input: any) => emit("tool_call", { toolName, input, toolCallId: "probe-call" }),
-  enable: () => commands.get("gentle:mode").handler("auto", ctx),
+  enable: () => commands.get("drakonc:mode").handler("auto", ctx),
   setDecision(value: string) { decision = value; }, setPending(value: boolean) { pending = value; },
   inspect(path: string) { inspectPath=path; },
   started: () => deadline(started, "one inference started"),
@@ -117,7 +117,7 @@ function deadline<T>(event: Promise<T>, label: string): Promise<T> {
 }
 
 function assertUsage(receipt: any, late: boolean) {
- assert.equal(receipt.type, "gentle-auto-permission");
+ assert.equal(receipt.type, "drakonc-auto-permission");
  assert.equal(receipt.data.late, late);
  assert.equal(receipt.data.usageKnown, true);
  assert.equal(receipt.data.usage.totalTokens, 8);
@@ -149,13 +149,13 @@ test("public shell hook blocks a stale mode lookup after Auto is reselected", as
  assert.equal(executions, 0, "invalidated mode lookup must not bypass Auto");
  assert.equal(result.block, true); assert.match(result.reason, /changed|expired/i);
  assert.equal(f.providerCalls.length, 0);
- assert.match(f.statuses.filter(([key]) => key === "gentle:mode").at(-1)[1], /AUTO/);
+ assert.match(f.statuses.filter(([key]) => key === "drakonc:mode").at(-1)[1], /AUTO/);
 });
 
 test("stable Normal and YOLO shell admission retains the non-classifier path", async t => {
  const f = fixture(t);
  for (const mode of ["normal", "yolo"]) {
-  await f.commands.get("gentle:mode").handler(mode, f.ctx);
+  await f.commands.get("drakonc:mode").handler(mode, f.ctx);
   assert.equal(await f.call("bash", { command: "pwd" }), undefined);
  }
  assert.equal(f.providerCalls.length, 0);
@@ -181,7 +181,7 @@ test("public hook read-only request classifies authorized reads and denies mutat
  assert.match(result.reason, /Only inspection is authorized/);
  assert.equal(f.receipts.length, 2); assert.equal(f.receipts[1].data.decision, "deny"); assertUsage(f.receipts[1], false);
  assert.equal(f.receipts.reduce((tokens, receipt) => tokens + receipt.data.usage.totalTokens, 0), 16);
- assert.match(f.statuses.filter(([key]) => key === "gentle:auto-usage").at(-1)[1], /Auto checks 2 · 16 tokens · \$0\.0400 \(separate\)/);
+ assert.match(f.statuses.filter(([key]) => key === "drakonc:auto-usage").at(-1)[1], /Auto checks 2 · 16 tokens · \$0\.0400 \(separate\)/);
 });
 
 test("public hook explicit prohibition classifies a local read and blocks exposure", async t => {
@@ -198,13 +198,13 @@ test("public hook explicit prohibition classifies a local read and blocks exposu
  assert.deepEqual(context.trustedMessages, [instruction]);
  assert.deepEqual(context.action, { toolName: "read", input: { path: file } });
  assert.equal(f.receipts.length, 1); assert.equal(f.receipts[0].data.decision, "deny"); assertUsage(f.receipts[0], false);
- assert.match(f.statuses.filter(([key]) => key === "gentle:auto-usage").at(-1)[1], /Auto checks 1 · 8 tokens · \$0\.0200 \(separate\)/);
+ assert.match(f.statuses.filter(([key]) => key === "drakonc:auto-usage").at(-1)[1], /Auto checks 1 · 8 tokens · \$0\.0200 \(separate\)/);
 });
 
 test("public hook protected policy and native consent remain independent", async t => {
  const f = fixture(t); await f.enable(); await f.input("Implement the local feature.");
  assert.equal((await f.call("write", { path: join(f.home, "permission-mode.json"), content: "yolo" })).block, true);
- for (const name of ["ask_user_question", "ask_user_choice", "gentle_review", "gentle_review_capture", "subagent_status"])
+ for (const name of ["ask_user_question", "ask_user_choice", "drakonc_review", "drakonc_review_capture", "subagent_status"])
   assert.equal(await f.call(name, {}), undefined);
  assert.equal(f.providerCalls.length, 0, "no classifier can satisfy those independent decisions");
  assert.equal(f.receipts.length, 0);
@@ -220,7 +220,7 @@ for (const reason of ["model", "model-in-place", "request", "tree", "branch-with
   if (reason === "tree") { f.manager.branch(f.anchor); await f.emit("session_tree", { newLeafId: f.anchor }); }
   if (reason === "branch-without-event") f.manager.branch(f.anchor);
   if (reason === "session") f.ctx.sessionManager = SessionManager.inMemory(f.root);
-  if (reason === "mode") await f.commands.get("gentle:mode").handler("normal", f.ctx);
+  if (reason === "mode") await f.commands.get("drakonc:mode").handler("normal", f.ctx);
   if (reason === "action") args.value = "different";
   f.providerCalls[0].resolve();
   const verdict = await result;
@@ -241,7 +241,7 @@ for (const reason of ["model", "model-in-place", "request", "tree", "branch-with
 
 test("saving a future default leaves the active Auto mode unchanged", async t => {
  const f = fixture(t); await f.enable(); await f.input("Perform the local fixture action only.");
- await f.commands.get("gentle:mode").handler("default yolo", f.ctx);
+ await f.commands.get("drakonc:mode").handler("default yolo", f.ctx);
  assert.equal(JSON.parse(readFileSync(join(f.home, "permission-mode.json"), "utf8")).mode, "yolo");
  // A policy refresh may revoke pending checks; it must not change this session's live override.
  assert.equal(await f.call("custom_fixture", { operation: "edit" }), undefined);
@@ -272,5 +272,5 @@ test("public hook cancellation records late usage separately without executing a
  assert.equal(f.receipts[0].data.late, false);
  const lateUsage = f.waitForReceipts(2); f.providerCalls[0].resolve(); await lateUsage;
  assert.equal(f.receipts.length, 2); assertUsage(f.receipts[1], true);
- assert.match(f.statuses.filter(([key]) => key === "gentle:auto-usage").at(-1)[1], /Auto checks 1 · 8 tokens · \$0\.0200 \(separate\)/);
+ assert.match(f.statuses.filter(([key]) => key === "drakonc:auto-usage").at(-1)[1], /Auto checks 1 · 8 tokens · \$0\.0200 \(separate\)/);
 });

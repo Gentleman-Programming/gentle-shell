@@ -16,7 +16,7 @@ The oversized menu has exactly three outcomes in the order below. English exampl
 
 Selecting single PR overrides the pending chaining path: clear the chain choice as inapplicable and suppress later chain prompts. It is not a chain strategy and does not select `exception-ok`. Least recommended applies only to this oversized menu; focused ≤400-line single PRs remain reasonable. Use the destination PR template with scope, changed-line count, verification, and any applicable exception rationale; do not require a tracker, child dependency diagram, or Chain Context.
 
-Follow the destination repository's documented contribution/size policy. `size:exception` is a Gentle-owned repository policy, not a universal label requirement. Never request, create, or add the label for generic users unless the destination policy uses it. Preserve applicable maintainer acceptance and protected-label authorization. Delivery selection does not authorize push, PR creation, merge, or review-mode/consent changes.
+Follow the destination repository's documented contribution/size policy. `size:exception` is a Drakonc-owned repository policy, not a universal label requirement. Never request, create, or add the label for generic users unless the destination policy uses it. Preserve applicable maintainer acceptance and protected-label authorization. Delivery selection does not authorize push, PR creation, merge, or review-mode/consent changes.
 
 ## Feature Branch Chain
 

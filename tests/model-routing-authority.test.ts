@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { __testing, applySavedModelConfig, readModelConfig, readModelConfigAsync } from "../extensions/gentle-ai.ts";
+import { __testing, applySavedModelConfig, readModelConfig, readModelConfigAsync } from "../extensions/drakonc-ai.ts";
 import {
 	localProfilePinPath,
 	setProfilePinWorktreeResolverForTesting,
@@ -11,18 +11,18 @@ import {
 } from "../lib/agent-profile-pin.ts";
 
 test("coincident global and legacy paths preserve invalid-global status", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-model-coincidence-"));
-	const configHome = join(cwd, ".pi", "gentle-ai");
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-model-coincidence-"));
+	const configHome = join(cwd, ".pi", "drakonc-ai");
 	mkdirSync(configHome, { recursive: true });
-	const previous = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	const previous = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
 	t.after(() => {
-		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previous;
 		rmSync(cwd, { recursive: true, force: true });
 	});
 	const path = join(configHome, "models.json");
-	assert.equal(path, join(cwd, ".pi", "gentle-ai", "models.json"));
+	assert.equal(path, join(cwd, ".pi", "drakonc-ai", "models.json"));
 	writeFileSync(path, "{");
 	const results = [__testing.readSavedModelConfig(cwd), await __testing.readSavedModelConfigAsync(cwd)];
 	assert.deepEqual(results, [ { status: "invalid", path }, { status: "invalid", path } ]);
@@ -31,22 +31,22 @@ test("coincident global and legacy paths preserve invalid-global status", async 
 });
 
 test("bootstrapped active profile preserves legacy routing while global models are missing", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-model-bootstrap-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-model-bootstrap-"));
 	const configHome = join(cwd, "global");
-	const projectHome = join(cwd, ".pi", "gentle-ai");
+	const projectHome = join(cwd, ".pi", "drakonc-ai");
 	mkdirSync(configHome, { recursive: true });
 	mkdirSync(projectHome, { recursive: true });
-	const previous = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	const previous = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
 	t.after(() => {
-		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previous;
 		rmSync(cwd, { recursive: true, force: true });
 	});
 	const config = { "review-risk": { model: "openai/gpt-5" } };
 	writeFileSync(join(projectHome, "models.json"), JSON.stringify(config));
 	writeFileSync(join(configHome, "profiles.json"), JSON.stringify({
-		kind: "gentle-pi.agent_model_profiles", version: 1, active: "current", profiles: { current: config },
+		kind: "drakonc-pi.agent_model_profiles", version: 1, active: "current", profiles: { current: config },
 	}));
 	const expected = { "review-risk": { model: "openai/gpt-5", thinking: undefined } };
 	assert.deepEqual({ sync: readModelConfig(cwd), async: await readModelConfigAsync(cwd) }, {
@@ -56,20 +56,20 @@ test("bootstrapped active profile preserves legacy routing while global models a
 });
 
 test("active profile omission is preserved while global models are still missing", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-model-profile-missing-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-model-profile-missing-"));
 	const configHome = join(cwd, "global");
-	const projectHome = join(cwd, ".pi", "gentle-ai");
+	const projectHome = join(cwd, ".pi", "drakonc-ai");
 	mkdirSync(configHome, { recursive: true });
 	mkdirSync(projectHome, { recursive: true });
-	const previous = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	const previous = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
 	t.after(() => {
-		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previous;
 		rmSync(cwd, { recursive: true, force: true });
 	});
 	writeFileSync(join(configHome, "profiles.json"), JSON.stringify({
-		kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {} },
+		kind: "drakonc-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {} },
 	}));
 	writeFileSync(join(projectHome, "models.json"), JSON.stringify({ "review-risk": { model: "openai/gpt-5" } }));
 	assert.deepEqual({ sync: readModelConfig(cwd), async: await readModelConfigAsync(cwd) }, { sync: {}, async: {} });
@@ -77,20 +77,20 @@ test("active profile omission is preserved while global models are still missing
 });
 
 test("active profile omission prevents stale legacy materialization while global models are still missing", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-model-profile-missing-apply-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-model-profile-missing-apply-"));
 	const configHome = join(cwd, "global");
-	const projectHome = join(cwd, ".pi", "gentle-ai");
+	const projectHome = join(cwd, ".pi", "drakonc-ai");
 	mkdirSync(configHome, { recursive: true });
 	mkdirSync(projectHome, { recursive: true });
-	const previous = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	const previous = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
 	t.after(() => {
-		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previous;
 		rmSync(cwd, { recursive: true, force: true });
 	});
 	writeFileSync(join(configHome, "profiles.json"), JSON.stringify({
-		kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {} },
+		kind: "drakonc-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {} },
 	}));
 	writeFileSync(join(projectHome, "models.json"), JSON.stringify({ "review-risk": { model: "openai/gpt-5" } }));
 	const materialized: unknown[] = [];
@@ -106,20 +106,20 @@ test("active profile omission prevents stale legacy materialization while global
 });
 
 test("active profile omission prevents stale legacy routing reads and materialization", async (t) => {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-model-profile-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-model-profile-"));
 	const configHome = join(cwd, "global");
-	const projectHome = join(cwd, ".pi", "gentle-ai");
+	const projectHome = join(cwd, ".pi", "drakonc-ai");
 	mkdirSync(configHome, { recursive: true });
 	mkdirSync(projectHome, { recursive: true });
-	const previous = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	const previous = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
 	t.after(() => {
-		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previous;
 		rmSync(cwd, { recursive: true, force: true });
 	});
 	writeFileSync(join(configHome, "profiles.json"), JSON.stringify({
-		kind: "gentle-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {} },
+		kind: "drakonc-pi.agent_model_profiles", version: 1, active: "team", profiles: { team: {} },
 	}));
 	writeFileSync(join(configHome, "models.json"), "{}");
 	writeFileSync(join(projectHome, "models.json"), JSON.stringify({ "review-risk": { model: "openai/gpt-5" } }));
@@ -134,28 +134,28 @@ test("active profile omission prevents stale legacy routing reads and materializ
 	});
 });
 
-// gentle-shell#2477 regression: a pinned or active profile replaced the legacy
+// drakonc-shell#2477 regression: a pinned or active profile replaced the legacy
 // project source even when no model config existed at all, so a session that
 // had deliberately cleared its profile read the pin back as saved routing. The
 // profile snapshot only stands in for a legacy file that is actually there.
 test("a pin or active profile invents no saved routing while no model config exists", async (t) => {
-	const previous = process.env.GENTLE_PI_CONFIG_HOME;
+	const previous = process.env.DRAKONC_PI_CONFIG_HOME;
 	t.after(() => {
 		setProfilePinWorktreeResolverForTesting();
-		if (previous === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previous;
+		if (previous === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previous;
 	});
 	const chosen = { "review-risk": { model: "openai/pinned-risk" } };
 	for (const target of ["pinned", "active"] as const) {
-		const cwd = mkdtempSync(join(tmpdir(), `gentle-pi-model-${target}-no-config-`));
+		const cwd = mkdtempSync(join(tmpdir(), `drakonc-pi-model-${target}-no-config-`));
 		const configHome = join(cwd, "global");
-		const projectHome = join(cwd, ".pi", "gentle-ai");
+		const projectHome = join(cwd, ".pi", "drakonc-ai");
 		mkdirSync(configHome, { recursive: true });
 		mkdirSync(projectHome, { recursive: true });
-		process.env.GENTLE_PI_CONFIG_HOME = configHome;
+		process.env.DRAKONC_PI_CONFIG_HOME = configHome;
 		t.after(() => rmSync(cwd, { recursive: true, force: true }));
 		writeFileSync(join(configHome, "profiles.json"), JSON.stringify({
-			kind: "gentle-pi.agent_model_profiles", version: 1, ...(target === "active" ? { active: "chosen" } : {}), profiles: { chosen },
+			kind: "drakonc-pi.agent_model_profiles", version: 1, ...(target === "active" ? { active: "chosen" } : {}), profiles: { chosen },
 		}));
 		const identity = { root: join(cwd, "worktree"), commonDir: join(cwd, "git-common") };
 		mkdirSync(identity.root, { recursive: true });
@@ -179,10 +179,10 @@ test("model routing authority normalizes and preserves sync/async source status"
 		`shared model routing authority must load: ${String(loaded.error)}`,
 	);
 	const authority = loaded.module;
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-model-routing-authority-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-model-routing-authority-"));
 	const globalDir = join(root, "global");
 	const projectDir = join(root, "project");
-	const projectConfigDir = join(projectDir, ".pi", "gentle-ai");
+	const projectConfigDir = join(projectDir, ".pi", "drakonc-ai");
 	const agentsDir = join(root, "agents");
 	mkdirSync(globalDir, { recursive: true });
 	mkdirSync(projectConfigDir, { recursive: true });
@@ -275,7 +275,7 @@ test("model routing authority normalizes and preserves sync/async source status"
 	});
 
 	// A present global config must merge with, not fully shadow, the legacy project
-	// config (gentle-shell#2163): project-only keys survive, same-name keys prefer global.
+	// config (drakonc-shell#2163): project-only keys survive, same-name keys prefer global.
 	const globalWithProjectKeyOverride = join(globalDir, "global-with-project-key.json");
 	writeFileSync(globalWithProjectKeyOverride, JSON.stringify({ project: "openai/gpt-5" }));
 	const invalidProjectPath = join(projectConfigDir, "invalid.json");
@@ -298,11 +298,11 @@ test("model routing authority normalizes and preserves sync/async source status"
 		assert.deepEqual(await authority.readSavedModelConfigAsync(globalSource, projectSource), expected);
 	}
 
-	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = globalDir;
+	const previousConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = globalDir;
 	t.after(() => {
-		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		if (previousConfigHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousConfigHome;
 	});
 	writeFileSync(projectPath, JSON.stringify({ project: "google/gemini" }));
 	assert.deepEqual(readModelConfig(projectDir), { project: { model: "google/gemini" } });
@@ -324,9 +324,9 @@ test("model routing authority normalizes and preserves sync/async source status"
 });
 
 test("saved-routing apply fails closed for invalid project and global sources", async (t) => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-model-routing-apply-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-model-routing-apply-"));
 	const configHome = join(root, "global");
-	const projectConfigDir = join(root, ".pi", "gentle-ai");
+	const projectConfigDir = join(root, ".pi", "drakonc-ai");
 	const projectAgentsDir = join(root, ".pi", "agents");
 	const projectProfileDir = join(root, ".pi");
 	const agentHome = join(root, "agent-home");
@@ -340,15 +340,15 @@ test("saved-routing apply fails closed for invalid project and global sources", 
 	mkdirSync(agentHomeSubagentsDir, { recursive: true });
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 
-	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
-	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	const previousConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
+	process.env.DRAKONC_PI_AGENT_HOME = agentHome;
 	t.after(() => {
-		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
-		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousConfigHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousConfigHome;
+		if (previousAgentHome === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 	});
 
 	const agentPath = join(projectAgentsDir, "worker.md");
@@ -389,9 +389,9 @@ test("saved-routing apply fails closed for invalid project and global sources", 
 });
 
 test("saved-routing apply preserves missing, valid, null, inherit, and omission behavior", async (t) => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-pi-model-routing-apply-valid-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-pi-model-routing-apply-valid-"));
 	const configHome = join(root, "global");
-	const projectConfigDir = join(root, ".pi", "gentle-ai");
+	const projectConfigDir = join(root, ".pi", "drakonc-ai");
 	const projectAgentsDir = join(root, ".pi", "agents");
 	const projectProfileDir = join(root, ".pi");
 	const agentHome = join(root, "agent-home");
@@ -405,15 +405,15 @@ test("saved-routing apply preserves missing, valid, null, inherit, and omission 
 	mkdirSync(agentHomeSubagentsDir, { recursive: true });
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 
-	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
-	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
-	process.env.GENTLE_PI_AGENT_HOME = agentHome;
+	const previousConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	const previousAgentHome = process.env.DRAKONC_PI_AGENT_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
+	process.env.DRAKONC_PI_AGENT_HOME = agentHome;
 	t.after(() => {
-		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
-		if (previousAgentHome === undefined) delete process.env.GENTLE_PI_AGENT_HOME;
-		else process.env.GENTLE_PI_AGENT_HOME = previousAgentHome;
+		if (previousConfigHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousConfigHome;
+		if (previousAgentHome === undefined) delete process.env.DRAKONC_PI_AGENT_HOME;
+		else process.env.DRAKONC_PI_AGENT_HOME = previousAgentHome;
 	});
 
 	const agentPath = join(projectAgentsDir, "worker.md");

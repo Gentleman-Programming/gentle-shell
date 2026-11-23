@@ -46,7 +46,7 @@ function modelFieldRule(field: "provider" | "id"): ModelFieldRule {
 	// The length cap lives on $defs.model.properties.<field>; the shape pattern
 	// lives only on the first (public-pattern) branch of $defs.model.anyOf, next
 	// to the unknown/custom/opencode sentinel branches. Both are mirrored,
-	// byte-for-byte, from the Gentle AI transport schema.
+	// byte-for-byte, from the Drakonc AI transport schema.
 	const property: unknown = runtimeSchema?.$defs?.model?.properties?.[field];
 	if (!object(property) || typeof property.maxLength !== "number") {
 		throw new Error(`Invalid runtime telemetry model ${field} schema`);
@@ -62,7 +62,7 @@ function modelFieldRule(field: "provider" | "id"): ModelFieldRule {
 
 // Schema-driven, not a hardcoded TypeScript regex: the mirrored transport
 // contract owns the open family-pattern rules for provider/id shape. A
-// companion Gentle AI change keeps the Go side on the same patterns.
+// companion Drakonc AI change keeps the Go side on the same patterns.
 const MODEL_PROVIDER_RULE = modelFieldRule("provider");
 const MODEL_ID_RULE = modelFieldRule("id");
 
@@ -81,7 +81,7 @@ export function normalizeRuntimeProvider(value: unknown): string {
 }
 
 /** Generic, schema-driven family-pattern normalizer for a (provider, id)
- * selection or response pair (gentle-pi#968 / gentle-ai#4536). Open-weight
+ * selection or response pair (drakonc-pi#968 / drakonc-ai#4536). Open-weight
  * models on arbitrary providers are reported by name; private aliases and
  * fine-tunes stay custom. Rules, identical to the mirrored Go/schema side:
  *  - a non-string or empty provider or id fails closed to unknown/unknown;

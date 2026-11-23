@@ -16,7 +16,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 function repository(t: test.TestContext): string {
-	const parent = mkdtempSync(join(tmpdir(), "gentle-pi-review-repository-"));
+	const parent = mkdtempSync(join(tmpdir(), "drakonc-pi-review-repository-"));
 	const root = join(parent, "repo");
 	mkdirSync(root);
 	git(root, "init", "-b", "main");
@@ -76,7 +76,7 @@ test("review Git environment rejects inherited unsafe Git overrides", () => {
 	}
 });
 
-// gentle-shell#2552: the unit-test runner pins the config-file keys for
+// drakonc-shell#2552: the unit-test runner pins the config-file keys for
 // hermeticity, and reviewGitEnvironment overrides them itself, so inherited
 // values must be tolerated instead of failing closed; routing overrides do not.
 test("review Git environment tolerates inherited config-file keys and still pins them", () => {
@@ -98,7 +98,7 @@ test("review Git environment tolerates inherited config-file keys and still pins
 	}
 });
 
-// gentle-shell#2552: deleting the config-file keys makes the probe fall back to
+// drakonc-shell#2552: deleting the config-file keys makes the probe fall back to
 // the host's default config paths, which are not environment-injectable; the
 // unit-stage runner redirects HOME instead of relying on preserved pins.
 test("publication probe drops inherited config-file keys and routing overrides", () => {
@@ -131,7 +131,7 @@ test("a Windows drive-letter Git common directory resolves repository authority"
 	const root = repository(t);
 	const commonDirectory = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir");
 	assert.match(commonDirectory, /^[A-Za-z]:[\\/]/);
-	const storeRoot = join(commonDirectory, "gentle-ai", "reviews");
+	const storeRoot = join(commonDirectory, "drakonc-ai", "reviews");
 	mkdirSync(storeRoot, { recursive: true });
 	writeFileSync(join(storeRoot, "IDENTITY"), JSON.stringify({
 		object_format: "sha1",
@@ -153,7 +153,7 @@ test("linked worktrees resolve one common-directory authority", (t) => {
 });
 
 test("non-Git directories and empty repositories fail closed", (t) => {
-	const outside = mkdtempSync(join(tmpdir(), "gentle-pi-not-git-"));
+	const outside = mkdtempSync(join(tmpdir(), "drakonc-pi-not-git-"));
 	t.after(() => rmSync(outside, { recursive: true, force: true }));
 	assert.throws(() => resolveRepositoryAuthorityV1(outside), /Git common directory|repository/i);
 	git(outside, "init");
@@ -190,9 +190,9 @@ test("a store transplanted into an unrelated repository fails closed", (t) => {
 	const source = repository(t);
 	createLineage(source);
 	const sourceCommonDirectory = git(source, "rev-parse", "--path-format=absolute", "--git-common-dir");
-	const sourceStoreRoot = join(sourceCommonDirectory, "gentle-ai", "reviews");
+	const sourceStoreRoot = join(sourceCommonDirectory, "drakonc-ai", "reviews");
 
-	const otherParent = mkdtempSync(join(tmpdir(), "gentle-pi-review-repository-unrelated-"));
+	const otherParent = mkdtempSync(join(tmpdir(), "drakonc-pi-review-repository-unrelated-"));
 	t.after(() => rmSync(otherParent, { recursive: true, force: true }));
 	const other = join(otherParent, "repo");
 	mkdirSync(other);
@@ -203,7 +203,7 @@ test("a store transplanted into an unrelated repository fails closed", (t) => {
 	git(other, "add", "README.md");
 	git(other, "commit", "-m", "unrelated initial");
 	const otherCommonDirectory = git(other, "rev-parse", "--path-format=absolute", "--git-common-dir");
-	const otherStoreRoot = join(otherCommonDirectory, "gentle-ai", "reviews");
+	const otherStoreRoot = join(otherCommonDirectory, "drakonc-ai", "reviews");
 	mkdirSync(dirname(otherStoreRoot), { recursive: true });
 	cpSync(sourceStoreRoot, otherStoreRoot, { recursive: true });
 
@@ -224,7 +224,7 @@ test("removing a pinned root commit via history rewrite violates the subset and 
 test("a reader racing the first-time IDENTITY write recovers once the concurrent writer completes, instead of dying on a transient partial read", (t) => {
 	const root = repository(t);
 	const commonDirectory = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir");
-	const storeRoot = join(commonDirectory, "gentle-ai", "reviews");
+	const storeRoot = join(commonDirectory, "drakonc-ai", "reviews");
 	mkdirSync(storeRoot, { recursive: true });
 	const identityPath = join(storeRoot, "IDENTITY");
 	// Simulate a concurrent writer's O_CREAT|O_EXCL having claimed the slot

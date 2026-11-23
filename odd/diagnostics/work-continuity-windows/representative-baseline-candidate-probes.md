@@ -23,7 +23,7 @@ The probe does not attribute all 337 historical unit failures. The historical fu
 | `commitTargetDirectory` git-C/leading-cd | `commitTargetDirectory follows git -C and a leading cd` | `tests/commit-slice-signal.test.ts:48` |
 | `pnpmEnvironment` referenced-variable preservation | `pnpmEnvironment keeps the variables the prefix npmrc references and still drops npm settings` | `tests/bundled-install.test.ts:1181` |
 
-The selected test files are unchanged between the two commits. The commit diff in the relevant set contains only `extensions/gentle-ai.ts`; therefore, these probes can compare the same test definitions and invocations across the two source snapshots.
+The selected test files are unchanged between the two commits. The commit diff in the relevant set contains only `extensions/drakonc-ai.ts`; therefore, these probes can compare the same test definitions and invocations across the two source snapshots.
 
 ## Invocation and Results
 

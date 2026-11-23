@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
-import { GENTLE_AI_DEV_BINARY_ENV } from "../lib/gentle-ai-binary.ts";
+import { DRAKONC_AI_DEV_BINARY_ENV } from "../lib/drakonc-ai-binary.ts";
 import type { InProcessReviewerDeps, InProcessReviewerRegistry, InProcessReviewerRequest } from "../lib/inprocess-reviewer.ts";
 import { prepareReviewHostRelaySlot, type ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
 import { createCoordinatorRuntime, type CoordinatorRuntimeOptions } from "./support/review-coordinator-runtime.ts";
 
 // odd/tasks/review-one-call.md T8 (S6, S7): a reviewer run launched by one
-// gentle_review_run call receives exactly the request the same reviewer run
+// drakonc_review_run call receives exactly the request the same reviewer run
 // receives when the parent calls status and the capture tools one by one.
 //
 // Seams: the facade's own host relay runners (activeReviewHostRelayRunner for a
@@ -52,10 +52,10 @@ before(() => {
 	writeFileSync(join(config, "models.json"), `${JSON.stringify(ROUTING, null, 2)}\n`);
 	const agentHome = join(root, "agent");
 	mkdirSync(agentHome);
-	const materializer = join(root, "gentle-ai-materializer");
+	const materializer = join(root, "drakonc-ai-materializer");
 	writeFileSync(materializer, MATERIALIZER);
 	chmodSync(materializer, 0o755);
-	const environment = { GENTLE_PI_CONFIG_HOME: config, GENTLE_PI_AGENT_HOME: agentHome, [GENTLE_AI_DEV_BINARY_ENV]: materializer };
+	const environment = { DRAKONC_PI_CONFIG_HOME: config, DRAKONC_PI_AGENT_HOME: agentHome, [DRAKONC_AI_DEV_BINARY_ENV]: materializer };
 	for (const [key, value] of Object.entries(environment)) { previous[key] = process.env[key]; process.env[key] = value; }
 });
 after(() => {
@@ -116,7 +116,7 @@ async function drive(path: "direct" | "run", scenario: NonNullable<CoordinatorRu
 		let steps: string[];
 		let outcome: unknown;
 		if (path === "run") {
-			const result = await runtime.invoke("gentle_review_run", { lineageId }, signal());
+			const result = await runtime.invoke("drakonc_review_run", { lineageId }, signal());
 			outcome = result.outcome;
 			steps = result.metrics.steps.map((step: { tool: string; operation?: string }) => step.operation === undefined ? step.tool : `${step.tool}:${step.operation}`);
 			assert.equal(result.forecasts.length, scenario === "refuter" ? 2 : 1);
@@ -124,22 +124,22 @@ async function drive(path: "direct" | "run", scenario: NonNullable<CoordinatorRu
 			// A parent on main: STATUS, the capture forecast, the acknowledged capture, STATUS, ..., acknowledgement.
 			steps = [];
 			const call = async (tool: string, parameters: Record<string, unknown>) => {
-				steps.push(tool === "gentle_review" ? `${tool}:${parameters.operation}` : tool);
+				steps.push(tool === "drakonc_review" ? `${tool}:${parameters.operation}` : tool);
 				return await runtime.invoke(tool, parameters, signal());
 			};
-			let status = await call("gentle_review", { operation: "status", lineageId });
+			let status = await call("drakonc_review", { operation: "status", lineageId });
 			for (let count = 0; count < 4; count++) {
 				const transition = status.result.next_transition;
 				if (transition.kind === "execute" && transition.execute.operation === "review.acknowledge-approved") break;
 				const bindings = status.collectBindings.map((entry: { collectBinding: string }) => entry.collectBinding);
 				const [tool, parameters] = bindings.length === 1
-					? ["gentle_review_capture", { lineageId, collectBinding: bindings[0] }]
-					: ["gentle_review_capture_group", { lineageId, collectBindings: bindings }];
+					? ["drakonc_review_capture", { lineageId, collectBinding: bindings[0] }]
+					: ["drakonc_review_capture_group", { lineageId, collectBindings: bindings }];
 				assert.equal((await call(tool, parameters)).outcome, "reviewer-model-run-forecast");
 				await call(tool, { ...parameters, reviewerRunAcknowledged: true });
-				status = await call("gentle_review", { operation: "status", lineageId });
+				status = await call("drakonc_review", { operation: "status", lineageId });
 			}
-			const ack = await call("gentle_review", { operation: "acknowledge-approved", lineageId });
+			const ack = await call("drakonc_review", { operation: "acknowledge-approved", lineageId });
 			outcome = ack.status === "closed" && ack.authority === "burned" ? "closed" : ack.outcome;
 		}
 		assert.equal(outcome, "closed", `${path} ${scenario}`);
@@ -152,12 +152,12 @@ async function drive(path: "direct" | "run", scenario: NonNullable<CoordinatorRu
 const fieldsOf = (records: unknown[]) => [...new Set(records.flatMap((record) => record === undefined ? [] : Object.keys(record as object)))].sort();
 
 for (const scenario of ["single", "group", "refuter"] as const) {
-	test(`T8: ${scenario}: every reviewer request of one gentle_review_run equals the parent-driven one, with and without a UI`, async (t) => {
+	test(`T8: ${scenario}: every reviewer request of one drakonc_review_run equals the parent-driven one, with and without a UI`, async (t) => {
 		const direct = await drive("direct", scenario, true);
 		const expectedSteps = {
-			single: ["gentle_review:status", "gentle_review_capture", "gentle_review_capture", "gentle_review:status", "gentle_review:acknowledge-approved"],
-			group: ["gentle_review:status", "gentle_review_capture_group", "gentle_review_capture_group", "gentle_review:status", "gentle_review:acknowledge-approved"],
-			refuter: ["gentle_review:status", "gentle_review_capture_group", "gentle_review_capture_group", "gentle_review:status", "gentle_review_capture", "gentle_review_capture", "gentle_review:status", "gentle_review:acknowledge-approved"],
+			single: ["drakonc_review:status", "drakonc_review_capture", "drakonc_review_capture", "drakonc_review:status", "drakonc_review:acknowledge-approved"],
+			group: ["drakonc_review:status", "drakonc_review_capture_group", "drakonc_review_capture_group", "drakonc_review:status", "drakonc_review:acknowledge-approved"],
+			refuter: ["drakonc_review:status", "drakonc_review_capture_group", "drakonc_review_capture_group", "drakonc_review:status", "drakonc_review_capture", "drakonc_review_capture", "drakonc_review:status", "drakonc_review:acknowledge-approved"],
 		}[scenario];
 		assert.deepEqual(direct.steps, expectedSteps);
 		const lenses = { single: ["review-reliability"], group: ["review-risk", "review-reliability"], refuter: ["review-risk", "review-reliability", "review-refuter"] }[scenario];
@@ -168,7 +168,7 @@ for (const scenario of ["single", "group", "refuter"] as const) {
 			// The prompt is what the materializer received: its arguments, directory and environment.
 			const prompt = ((launch.reviewerRequest as { prompt: { utf8: string } }).prompt).utf8;
 			assert.match(prompt, /^fixture materialized prompt/);
-			assert.ok(prompt.includes(`cwd=${repo}\n`) && prompt.includes("arg=--lineage=") && prompt.includes("GENTLE_PI_CONFIG_HOME="), prompt);
+			assert.ok(prompt.includes(`cwd=${repo}\n`) && prompt.includes("arg=--lineage=") && prompt.includes("DRAKONC_PI_CONFIG_HOME="), prompt);
 		}
 		if (scenario !== "single") {
 			// The two lenses start before either finishes, in provider order.
@@ -188,7 +188,7 @@ for (const scenario of ["single", "group", "refuter"] as const) {
 			assert.deepEqual(modeReads, run.steps.map(() => ({ operation: "review-mode", request: { cwd: repo, operation: "status", signal: "<AbortSignal aborted=false>" } })), `${label}: one switch read per facade step`);
 			assert.equal(direct.providerOperations.some(({ operation }) => operation === "review-mode"), false);
 			// L19: only STATUS reads made for the run ask for the provider's
-			// non-blocking findings (gentle-ai#6088); a parent's direct calls never do.
+			// non-blocking findings (drakonc-ai#6088); a parent's direct calls never do.
 			// That opt-in reaches no reviewer; every other argument is identical.
 			const optedIn = run.providerOperations.filter(({ operation, request }) => operation === "target-status" && (request as Record<string, unknown>).nonBlockingFindings === true);
 			assert.ok(optedIn.length > 0, `${label}: the run's STATUS asks for the non-blocking findings`);

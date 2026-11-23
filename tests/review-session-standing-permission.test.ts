@@ -23,7 +23,7 @@ import {
 } from "../lib/review-session-standing-permission.ts";
 
 function repository(t: test.TestContext): string {
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-session-permission-")));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-session-permission-")));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
 	writeFileSync(join(cwd, "README.md"), "test repository\n");
@@ -33,7 +33,7 @@ function repository(t: test.TestContext): string {
 }
 
 function siblingWorktree(t: test.TestContext, parentRoot: string): string {
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-session-permission-worktree-")));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-session-permission-worktree-")));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	execFileSync("git", ["worktree", "add", "--detach", cwd, "HEAD"], { cwd: parentRoot, stdio: "ignore" });
 	return cwd;
@@ -101,7 +101,7 @@ test("review session Git identity lookups hide every Windows child process", asy
 });
 
 test("synchronous repository discovery stays silent outside Git", (t) => {
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-non-git-identity-")));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-non-git-identity-")));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const moduleUrl = new URL("../lib/review-session-standing-permission.ts", import.meta.url).href;
 	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
@@ -133,7 +133,7 @@ test("headless, child, empty-session, and non-Git contexts cannot offer or consu
 	assert.equal(await captureReviewSessionIdentity(context(root, manager, "session", { mode: "rpc", ui: { getAllThemes: () => [{}] } }), {}), undefined);
 	assert.equal(await captureReviewSessionIdentity(context(root, manager, "session", { mode: undefined }), {}), undefined, "an omitted mode with no verified TUI surface fails closed");
 	assert.ok(await captureReviewSessionIdentity(context(root, manager, "session", { mode: undefined, ui: { getAllThemes: () => [{}] } }), {}), "Pi 0.85 compatibility contexts prove TUI support through their nonempty theme surface");
-	assert.equal(await captureReviewSessionIdentity(context(root, manager, "session"), { GENTLE_PI_AGENTS_CHILD: "1" }), undefined);
+	assert.equal(await captureReviewSessionIdentity(context(root, manager, "session"), { DRAKONC_PI_AGENTS_CHILD: "1" }), undefined);
 	assert.equal(await captureReviewSessionIdentity(context(root, manager, ""), {}), undefined);
 	assert.equal(await captureReviewSessionIdentity(context(tmpdir(), manager, "session"), {}), undefined);
 });

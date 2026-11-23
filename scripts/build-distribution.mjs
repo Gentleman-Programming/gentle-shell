@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Release distribution assets (S3, T1b): gentle-pi at the release version and
+// Release distribution assets (S3, T1b): drakonc-pi at the release version and
 // the exact Pi (PI_INSTALL_VERSION), with the pnpm-lock.yaml our pinned pnpm
 // resolves for them, published as two release assets that installVersion
 // installs with --frozen-lockfile. pnpm records every platform's optional
@@ -22,16 +22,16 @@ import { DISTRIBUTION_ASSETS, activateVersion, claimPrefix, distributionAsset, d
 import { PI_INSTALL_VERSION } from "./installer-preflight.mjs";
 
 const RESOLVE_TIMEOUT = 10 * 60 * 1000;
-// Right after `npm publish` the registry may not list gentle-pi@<version> yet:
+// Right after `npm publish` the registry may not list drakonc-pi@<version> yet:
 // 10 attempts 30 seconds apart wait about five minutes for it.
 const RESOLVE_ATTEMPTS = 10;
 const RESOLVE_DELAY = 30 * 1000;
 const output = (result) => `${result.stdout ?? ""}${result.stderr ?? ""}`.slice(-4000);
 
-/** Resolves the lockfile for gentle-pi `shell` and Pi `pi` with our pnpm
+/** Resolves the lockfile for drakonc-pi `shell` and Pi `pi` with our pnpm
  * (`install --lockfile-only`) in a fresh folder under the prefix, from the
  * unmodified distributionFiles() output and the same environment installVersion
- * uses. Only "no matching version" for this gentle-pi is retried (pnpm prints it
+ * uses. Only "no matching version" for this drakonc-pi is retried (pnpm prints it
  * on stdout); any other failure stops at once. Returns { manifest, assets }
  * keyed by the release asset names.
  */
@@ -40,7 +40,7 @@ export async function buildDistribution({ layout, shell, pi = PI_INSTALL_VERSION
 	const files = distributionFiles(manifest);
 	const sleep = adapters.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 	// `shell` is an exact SemVer here, so only its dots need escaping.
-	const unpublished = new RegExp(`ERR_PNPM_NO_(?:MATURE_)?MATCHING_VERSION\\] No matching version found for gentle-pi@${shell.replaceAll(".", "\\.")}(?![\\w.+-])`);
+	const unpublished = new RegExp(`ERR_PNPM_NO_(?:MATURE_)?MATCHING_VERSION\\] No matching version found for drakonc-pi@${shell.replaceAll(".", "\\.")}(?![\\w.+-])`);
 	for (let attempt = 1; ; attempt += 1) {
 		const folder = mkdtempSync(join(layout.tmp, "lockfile-"));
 		try {
@@ -54,7 +54,7 @@ export async function buildDistribution({ layout, shell, pi = PI_INSTALL_VERSION
 			}
 			if (!unpublished.test(output(result))) throw Object.assign(new Error("pnpm lockfile resolution failed"), { output: output(result) });
 			if (attempt === RESOLVE_ATTEMPTS) {
-				throw Object.assign(new Error(`gentle-pi@${shell} is not on the registry after ${RESOLVE_ATTEMPTS} attempts; check its npm publication`), { output: output(result) });
+				throw Object.assign(new Error(`drakonc-pi@${shell} is not on the registry after ${RESOLVE_ATTEMPTS} attempts; check its npm publication`), { output: output(result) });
 			}
 		} finally {
 			rmSync(folder, { recursive: true, force: true });
@@ -73,8 +73,8 @@ function launch(launcher, { env, platform }) {
 
 /** Proves a release asset pair: our runtimes (Go too on Windows, as
  * installVersion requires), a frozen install of the pair, `current` switched to
- * it, the launcher written, and `gentle-shell --version` reporting exactly the
- * pair's gentle-pi and Pi. Returns { id, version }.
+ * it, the launcher written, and `drakonc-shell --version` reporting exactly the
+ * pair's drakonc-pi and Pi. Returns { id, version }.
  */
 export async function verifyDistribution({ layout, distribution, lockfile, platform, arch, env = {}, adapters = {} }) {
 	const { manifest } = readDistribution(distribution, lockfile);
@@ -83,14 +83,14 @@ export async function verifyDistribution({ layout, distribution, lockfile, platf
 	activateVersion(layout, id);
 	ensureLauncher(layout);
 	// The environment our pnpm ran in (no NODE_OPTIONS, NODE_PATH or npm/pnpm
-	// settings from the host), without any Pi or Gentle override that could point
+	// settings from the host), without any Pi or Drakonc override that could point
 	// the launcher at another Pi or agent home.
-	const launchEnv = Object.fromEntries(Object.entries(pnpmEnvironment(layout, { platform, env })).filter(([key]) => !/^(?:gentle_|pi_)/i.test(key)));
+	const launchEnv = Object.fromEntries(Object.entries(pnpmEnvironment(layout, { platform, env })).filter(([key]) => !/^(?:drakonc_|pi_)/i.test(key)));
 	const result = await (adapters.launch ?? launch)(layout.launcher, { env: launchEnv, platform });
 	const version = String(result.stdout ?? "").trim();
 	const [shellLine, piLine] = version.split(/\r?\n/);
-	if (result.status !== 0 || shellLine !== `gentle-shell ${manifest.shell}` || piLine !== `pi ${manifest.pi}`) {
-		throw Object.assign(new Error(`The launcher reported ${JSON.stringify(version)}, not gentle-shell ${manifest.shell} with pi ${manifest.pi}`),
+	if (result.status !== 0 || shellLine !== `drakonc-shell ${manifest.shell}` || piLine !== `pi ${manifest.pi}`) {
+		throw Object.assign(new Error(`The launcher reported ${JSON.stringify(version)}, not drakonc-shell ${manifest.shell} with pi ${manifest.pi}`),
 			{ output: output(result) });
 	}
 	return { id, version };
@@ -135,7 +135,7 @@ export async function main(argv, { platform = process.platform, arch = process.a
 			const { manifest, assets } = await buildDistribution({ layout: prefix.layout, shell: values.shell, pi: values.pi, env: prefix.env, adapters });
 			mkdirSync(values.out, { recursive: true });
 			for (const [name, text] of Object.entries(assets)) writeFileSync(join(values.out, name), text, { flag: "wx" });
-			console.log(`Built ${Object.keys(assets).join(" and ")} for gentle-pi ${manifest.shell} with pi ${manifest.pi} in ${values.out}`);
+			console.log(`Built ${Object.keys(assets).join(" and ")} for drakonc-pi ${manifest.shell} with pi ${manifest.pi} in ${values.out}`);
 		} else {
 			const read = (name) => readFileSync(join(values.assets, name), "utf8");
 			const result = await verifyDistribution({ layout: prefix.layout, distribution: read(DISTRIBUTION_ASSETS.distribution), lockfile: read(DISTRIBUTION_ASSETS.lockfile),

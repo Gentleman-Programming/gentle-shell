@@ -1,7 +1,7 @@
-// Gentle Tower web server: serves the built web app and the hub's floors.
+// Drakonc Tower web server: serves the built web app and the hub's floors.
 // Closed by default: 127.0.0.1 only, a random port, a per-launch token on every
 // request, and any Origin other than its own is refused. Read-only for now:
-// actions come later and reuse Gentle Shell's own authority.
+// actions come later and reuse Drakonc Shell's own authority.
 
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -23,7 +23,7 @@ export interface TowerServerOptions {
 	/** Peer presence registries: every live session shows, detailed or basic. */
 	presenceDirs?: readonly string[];
 	now?: () => number;
-	/** Opens a new Gentle Shell session (a floor) in a project already in the tower. */
+	/** Opens a new Drakonc Shell session (a floor) in a project already in the tower. */
 	onNewFloor?: (cwd: string, prompt?: string) => Promise<void>;
 }
 

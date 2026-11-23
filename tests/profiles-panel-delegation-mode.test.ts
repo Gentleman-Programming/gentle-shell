@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import type { AgentModelConfig } from "../lib/model-routing-authority.ts";
 import { createSessionProfileIntegration } from "../lib/session-profile-integration.ts";
@@ -13,13 +13,13 @@ import { resetSessionProfileBindingsForTesting } from "../lib/session-profile-bi
 import { stripAnsi } from "../lib/terminal-theme.ts";
 
 // ---------------------------------------------------------------------------
-// /gentle:profiles exposes the per-profile orchestrator mode (full delegation
+// /drakonc:profiles exposes the per-profile orchestrator mode (full delegation
 // mode S5) through a panel draft: `w` toggles the shown profile, every commit
 // path (save, use-session) carries it, and the loop persists it with the
 // routing in one atomic write.
 // ---------------------------------------------------------------------------
 
-const SCREEN_AGENTS = ["gentle-ai-explore", "gentle-ai-verify", "gentle-ai-worker"];
+const SCREEN_AGENTS = ["drakonc-ai-explore", "drakonc-ai-verify", "drakonc-ai-worker"];
 const PANEL_MODELS = ["nan/deepseek-v4-flash", "openai/gpt-5.5"];
 
 type PanelResult = {
@@ -30,7 +30,7 @@ type PanelResult = {
 };
 
 function teamRouting(): AgentModelConfig {
-	return { orchestrator: { model: "openai/gpt-6.1-sol", thinking: "max" }, "gentle-ai-worker": { model: "nan/deepseek-v4-flash" } };
+	return { orchestrator: { model: "openai/gpt-6.1-sol", thinking: "max" }, "drakonc-ai-worker": { model: "nan/deepseek-v4-flash" } };
 }
 
 function panelFile(workflow?: Record<string, { orchestratorMode: string }>): AgentProfilesFile {
@@ -139,14 +139,14 @@ test("the orchestrator row shows the drafted mode beside the tier, in both modes
 	assert.match(orchestratorRow(renderPanel([], panelFile({ team: { orchestratorMode: "full-delegation" } }), [], 100, TONE_THEME)), /⇄ full delegation(?!…)/, "not uppercased, so no accent tone");
 	assert.doesNotMatch(orchestratorRow(renderPanel([], panelFile(), [], 100, TONE_THEME)), /ORGANIC/, "organic is not ranked with an accent tone either");
 	// The chip belongs to the orchestrator row only.
-	assert.doesNotMatch(renderPanel([], panelFile({ team: { orchestratorMode: "full-delegation" } })).join("\n"), /gentle-ai-worker\s+nan\/deepseek-v4-flash\s+inherit\s+⇄/);
+	assert.doesNotMatch(renderPanel([], panelFile({ team: { orchestratorMode: "full-delegation" } })).join("\n"), /drakonc-ai-worker\s+nan\/deepseek-v4-flash\s+inherit\s+⇄/);
 });
 
 test("the mode chip keeps the full orchestrator row intact at 100 columns", () => {
 	const row = orchestratorRow(renderPanel([], panelFile()));
 	assert.doesNotMatch(row, /…/, "nothing on the row is cut to make room");
 	// Agent rows are untouched by the chip.
-	assert.match(renderPanel([], panelFile()).join("\n"), /gentle-ai-worker\s+nan\/deepseek-v4-flash\s+inherit/);
+	assert.match(renderPanel([], panelFile()).join("\n"), /drakonc-ai-worker\s+nan\/deepseek-v4-flash\s+inherit/);
 	// With a Fast tier on the row, chip and tier share the line at 100 columns.
 	const tiered = orchestratorRow(renderPanel([], panelFile(), [], 100, undefined, { fastModels: ["openai/gpt-6.1-sol"] }));
 	assert.match(tiered, /Standard ▾\s+◎ organic/);
@@ -248,13 +248,13 @@ function panelHomeFixture(t: test.TestContext): PanelHomeFixture {
 	const root = mkdtempSync(join(tmpdir(), "profiles-panel-delegation-"));
 	const configHome = join(root, "global");
 	mkdirSync(configHome, { recursive: true });
-	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	const previousConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
 	resetSessionProfileBindingsForTesting();
 	t.after(() => {
 		resetSessionProfileBindingsForTesting();
-		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		if (previousConfigHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousConfigHome;
 		rmSync(root, { recursive: true, force: true });
 	});
 	const storePath = join(configHome, "profiles.json");
@@ -404,19 +404,19 @@ test("the custom model prompt round trip keeps the mode draft, and saving after 
 	const fixture = panelHomeFixture(t);
 	fixture.writeStore({ team: { orchestrator: { model: "openai/gpt-6.1-sol" } } }, { active: "team" });
 	const { actions } = await runLoop(fixture, [
-		{ type: "custom", target: "gentle-ai-worker", config: { orchestrator: { model: "openai/gpt-6.1-sol" } }, modeDraft: "full-delegation" },
+		{ type: "custom", target: "drakonc-ai-worker", config: { orchestrator: { model: "openai/gpt-6.1-sol" } }, modeDraft: "full-delegation" },
 		{ drive: ["s"] },
 		{ type: "close" },
 	], { answers: ["openai/beta"] });
 	const savedAction = actions.find((action) => (action as PanelResult).type === "save") as PanelResult | undefined;
 	assert.equal(savedAction?.orchestratorMode, "full-delegation", "the mode draft survives the reopen");
-	assert.equal((savedAction?.config as Record<string, { model?: string }> | undefined)?.["gentle-ai-worker"]?.model, "openai/beta", "the routing draft survives too");
+	assert.equal((savedAction?.config as Record<string, { model?: string }> | undefined)?.["drakonc-ai-worker"]?.model, "openai/beta", "the routing draft survives too");
 	const saved = readProfilesFileResult(fixture.storePath);
 	const file = saved.status === "valid" ? saved.file : undefined;
 	assert.deepEqual(file?.workflow?.["team"], { orchestratorMode: "full-delegation" });
 	assert.deepEqual(
 		JSON.parse(JSON.stringify(file?.profiles["team"])),
-		{ orchestrator: { model: "openai/gpt-6.1-sol" }, "gentle-ai-worker": { model: "openai/beta" } },
+		{ orchestrator: { model: "openai/gpt-6.1-sol" }, "drakonc-ai-worker": { model: "openai/beta" } },
 		"the custom model and the mode land together",
 	);
 });

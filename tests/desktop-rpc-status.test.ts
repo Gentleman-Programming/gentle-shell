@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { DESKTOP_RPC_SCHEMA } from "../lib/desktop-rpc.ts";
 import {
 	DESKTOP_STATUS_EVENTS,
@@ -19,16 +19,16 @@ import {
 } from "../lib/desktop-rpc-status.ts";
 import { DesktopStatusBridge } from "../lib/desktop-status-service.ts";
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
-import { GENTLE_AI_DEV_BINARY_ENV } from "../lib/gentle-ai-binary.ts";
+import { DRAKONC_AI_DEV_BINARY_ENV } from "../lib/drakonc-ai-binary.ts";
 
-// get_status: the facts `/gentle:status` prints, read through the owner's
-// versioned service in `extensions/gentle-ai.ts`, without paths, command hints,
+// get_status: the facts `/drakonc:status` prints, read through the owner's
+// versioned service in `extensions/drakonc-ai.ts`, without paths, command hints,
 // or display text.
 
 const CLEAN: DesktopPackageStatus = {
 	package: "active",
 	odd: "active",
-	persona: "gentleman",
+	persona: "drakoncman",
 	devBinary: { state: "inactive", sha256Prefix: null },
 	assets: { delegation: { stale: 0, userOverrides: 0, activeAgentOverrides: 0 }, review: { stale: 0, userOverrides: 0, activeAgentOverrides: 0 } },
 	modelConfig: { global: "missing", routing: "missing" },
@@ -88,7 +88,7 @@ test("the Desktop transport advertises get_status once and no new event", async 
 	const widgets: string[] = [];
 	const host = { mode: "rpc", cwd: "/x", sessionManager: { getCwd: () => "/x", getSessionId: () => "s", getEntries: () => [] }, ui: { setWidget(_k: string, lines: string[]) { widgets.push(...lines); } } };
 	for (const handler of handlers.get("session_start") ?? []) handler({}, host);
-	await commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "cap", method: "capabilities", params: {} }), host);
+	await commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId: "cap", method: "capabilities", params: {} }), host);
 	const data = JSON.parse(widgets.at(-1)!).data;
 	assert.equal(data.methods.filter((method: string) => method === "get_status").length, 1);
 	assert.deepEqual(data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
@@ -106,8 +106,8 @@ test("get_status recomputes severity and drops anything the contract does not na
 	const status = {
 		...CLEAN,
 		severity: "info",
-		devBinary: { state: "active", sha256Prefix: "0123456789abcdef", path: "C:\\Users\\x\\gentle-ai.exe" },
-		assets: { ...CLEAN.assets, review: { stale: 2, userOverrides: 0, activeAgentOverrides: 0, hint: "/gentle:install-review --force" } },
+		devBinary: { state: "active", sha256Prefix: "0123456789abcdef", path: "C:\\Users\\x\\drakonc-ai.exe" },
+		assets: { ...CLEAN.assets, review: { stale: 2, userOverrides: 0, activeAgentOverrides: 0, hint: "/drakonc:install-review --force" } },
 		modelConfig: { global: "present", routing: "invalid", path: "/home/x/.pi/models.json" },
 	};
 	const outcome = await bridgeOver(fakeOwner(() => ({ kind: "status", status: status as never })).pi).handle("get_status", {});
@@ -157,21 +157,21 @@ test("a reset during the read drops its answer", async () => {
 
 // ---- The real owner ----
 
-test("the real gentle-ai owner answers the same facts /gentle:status prints, path-free", async (t) => {
+test("the real drakonc-ai owner answers the same facts /drakonc:status prints, path-free", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "desktop-rpc-status-"));
 	const configHome = join(root, "config");
 	const agentHome = join(root, "agent");
 	const cwd = join(root, "repo");
-	mkdirSync(join(cwd, ".pi", "gentle-ai"), { recursive: true });
+	mkdirSync(join(cwd, ".pi", "drakonc-ai"), { recursive: true });
 	mkdirSync(configHome, { recursive: true });
 	mkdirSync(agentHome, { recursive: true });
-	writeFileSync(join(cwd, ".pi", "gentle-ai", "persona.json"), JSON.stringify({ mode: "neutral" }));
-	const saved = { config: process.env.GENTLE_PI_CONFIG_HOME, agent: process.env.GENTLE_PI_AGENT_HOME, dev: process.env[GENTLE_AI_DEV_BINARY_ENV] };
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
-	process.env.GENTLE_PI_AGENT_HOME = agentHome;
-	delete process.env[GENTLE_AI_DEV_BINARY_ENV];
+	writeFileSync(join(cwd, ".pi", "drakonc-ai", "persona.json"), JSON.stringify({ mode: "neutral" }));
+	const saved = { config: process.env.DRAKONC_PI_CONFIG_HOME, agent: process.env.DRAKONC_PI_AGENT_HOME, dev: process.env[DRAKONC_AI_DEV_BINARY_ENV] };
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
+	process.env.DRAKONC_PI_AGENT_HOME = agentHome;
+	delete process.env[DRAKONC_AI_DEV_BINARY_ENV];
 	t.after(() => {
-		for (const [key, value] of [["GENTLE_PI_CONFIG_HOME", saved.config], ["GENTLE_PI_AGENT_HOME", saved.agent], [GENTLE_AI_DEV_BINARY_ENV, saved.dev]] as const) {
+		for (const [key, value] of [["DRAKONC_PI_CONFIG_HOME", saved.config], ["DRAKONC_PI_AGENT_HOME", saved.agent], [DRAKONC_AI_DEV_BINARY_ENV, saved.dev]] as const) {
 			if (value === undefined) delete process.env[key];
 			else process.env[key] = value;
 		}
@@ -179,13 +179,13 @@ test("the real gentle-ai owner answers the same facts /gentle:status prints, pat
 	});
 	const events = bus();
 	const pi = { on() {}, registerCommand() {}, registerTool() {}, events } as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null, processEnv: { GENTLE_AI_TELEMETRY: "0" } })(pi);
+	createDrakoncAiExtension({ nativeReviewCli: null, processEnv: { DRAKONC_AI_TELEMETRY: "0" } })(pi);
 	const bridge = new DesktopStatusBridge(pi);
 	bridge.attach({ ...ctx, cwd, sessionManager: { getCwd: () => cwd } } as unknown as ExtensionContext);
 	const outcome = await bridge.handle("get_status", {});
 	assert.ok(outcome?.ok, JSON.stringify(outcome));
 	const data = outcome.data as unknown as DesktopPackageStatus;
-	assert.equal(data.persona, "neutral", "the project persona file wins, as in /gentle:status");
+	assert.equal(data.persona, "neutral", "the project persona file wins, as in /drakonc:status");
 	assert.deepEqual(data.devBinary, { state: "inactive", sha256Prefix: null });
 	assert.deepEqual(data.modelConfig, { global: "missing", routing: "missing" });
 	assert.ok(data.assets.delegation.stale > 0, "an empty agent home has every managed delegation asset missing");

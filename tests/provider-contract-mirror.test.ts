@@ -13,7 +13,7 @@ import {
 	mirrorProviderContractBundle,
 } from "../scripts/mirror-provider-contract.mjs";
 
-// Fixture provenance: generated from gentle-ai main (contract 1.1.0) with
+// Fixture provenance: generated from drakonc-ai main (contract 1.1.0) with
 // `go run ./internal/providercontractbundlecmd generate --out <dir>`.
 const FIXTURE_ROOT = join(import.meta.dirname, "fixtures", "provider-contract-bundle", "v1.1.0");
 const FIXTURE_PATHS = [
@@ -27,11 +27,11 @@ const FIXTURE_PATHS = [
 	"vectors/targeted-validator.json",
 ] as const;
 
-// Fixture provenance: the real gentle-ai provider contract bundle 1.2.0
-// release archive, extracted. gentle-pi#560 / gentle-ai#4056, #4057.
+// Fixture provenance: the real drakonc-ai provider contract bundle 1.2.0
+// release archive, extracted. drakonc-pi#560 / drakonc-ai#4056, #4057.
 const FIXTURE_1_2_0_ROOT = join(import.meta.dirname, "fixtures", "provider-contract-bundle", "v1.2.0");
 
-// Fixture provenance: the gentle-ai provider contract bundle 1.4.0 archive
+// Fixture provenance: the drakonc-ai provider contract bundle 1.4.0 archive
 // built by goreleaser, extracted. Adds Pi's ODD routing block as routing/pi.md.
 const FIXTURE_1_4_0_ROOT = join(import.meta.dirname, "fixtures", "provider-contract-bundle", "v1.4.0");
 
@@ -48,7 +48,7 @@ interface LockRecord {
 }
 
 function withTemporaryRoot<T>(run: (packageRoot: string) => T): T {
-	const packageRoot = mkdtempSync(join(tmpdir(), "gentle-pi-provider-mirror-"));
+	const packageRoot = mkdtempSync(join(tmpdir(), "drakonc-pi-provider-mirror-"));
 	try {
 		return run(packageRoot);
 	} finally {
@@ -150,7 +150,7 @@ test("mirrors a verified local 1.4.0 bundle tree, including its routing entry, a
 
 test("mirrors a verified local archive and records the archive digest in the lock", () => {
 	withTemporaryRoot((packageRoot) => {
-		const archivePath = join(packageRoot, "gentle-ai-review-provider-contract-1.1.0.tar.gz");
+		const archivePath = join(packageRoot, "drakonc-ai-review-provider-contract-1.1.0.tar.gz");
 		writeFileSync(archivePath, fixtureArchiveBytes());
 		mirrorProviderContractBundle(archivePath, packageRoot);
 		const lock = JSON.parse(

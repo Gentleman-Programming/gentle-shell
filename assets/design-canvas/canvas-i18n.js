@@ -9,7 +9,7 @@
 // titles and tradeoffs) and file names stay as written.
 
 // The choice in this browser, for every design at this canvas address: "es", "en" or "auto".
-const LANGUAGE_KEY = "gentle-design:language";
+const LANGUAGE_KEY = "drakonc-design:language";
 const CHOICES = ["es", "en", "auto"];
 const ATTRIBUTES = ["title", "aria-label", "placeholder", "alt"];
 const MARKUP = ["[data-i18n]", ...ATTRIBUTES.map((name) => `[data-i18n-${name}]`)].join(",");

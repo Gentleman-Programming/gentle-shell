@@ -112,7 +112,7 @@ function parseModelConfigFileValue(value: Record<string, unknown>): AgentModelCo
 export function modelConfigPaths(configHome: string, cwd: string): { global: string; project: string } {
 	return {
 		global: join(configHome, "models.json"),
-		project: join(cwd, ".pi", "gentle-ai", "models.json"),
+		project: join(cwd, ".pi", "drakonc-ai", "models.json"),
 	};
 }
 

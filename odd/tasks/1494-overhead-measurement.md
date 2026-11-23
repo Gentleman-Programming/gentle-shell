@@ -20,19 +20,19 @@ The A1–A3 rows (and every "A" or "sol-low + terra-max" label below) describe a
 
 The ratios above for full-delegation use B1–B3 (median 42.9 s). Against the B1–B4 median (45.15 s), full-delegation wall time is 7.01x; the call ratios do not change, and parent tokens are 3.12x. See "Organic arm (n=3)" below.
 
-Current main no longer shows the original failure classes: zero `gentle_review` calls, zero `gentle_odd_phase` calls, no ODD file or `.gitignore`/`.atl/` in the target repo, no per-test verifier subagents. The remaining wall-time overhead in the user's default mode comes from **full-delegation mode**: the parent sends every fix to a `gentle-ai-worker`. Those workers run on the profile's routed model, `openai/gpt-6.1-terra` at `max` thinking, not the parent's `gpt-6.1-sol`/`low` (a benchmark-forced parent, not a real configuration; see the AT section for the user's real profile). Subagent calls take 197–370 s of the 258–449 s wall time (63–82%). In organic mode (n=3) the same harness ran inline and stayed within the bound for both time and calls.
+Current main no longer shows the original failure classes: zero `drakonc_review` calls, zero `drakonc_odd_phase` calls, no ODD file or `.gitignore`/`.atl/` in the target repo, no per-test verifier subagents. The remaining wall-time overhead in the user's default mode comes from **full-delegation mode**: the parent sends every fix to a `drakonc-ai-worker`. Those workers run on the profile's routed model, `openai/gpt-6.1-terra` at `max` thinking, not the parent's `gpt-6.1-sol`/`low` (a benchmark-forced parent, not a real configuration; see the AT section for the user's real profile). Subagent calls take 197–370 s of the 258–449 s wall time (63–82%). In organic mode (n=3) the same harness ran inline and stayed within the bound for both time and calls.
 
 ## Setup
 
-- Code under test: worktree `.worktrees/overhead-1494`, HEAD `116c0e997` (origin/main), package version 4.7.0. Launched as `node <worktree>/bin/gentle-shell.mjs`. The default package root is the worktree, and the isolated home declares no gentle-pi, so the launcher injects the worktree's own copy (plain injection, no take-over).
+- Code under test: worktree `.worktrees/overhead-1494`, HEAD `116c0e997` (origin/main), package version 4.7.0. Launched as `node <worktree>/bin/drakonc-shell.mjs`. The default package root is the worktree, and the isolated home declares no drakonc-pi, so the launcher injects the worktree's own copy (plain injection, no take-over).
   - Verified from the session files: skills load from `<worktree>/skills/...`, and the prompt references `<worktree>/assets`. `node_modules` is a symlink to the main checkout's `node_modules`, so the Pi runtime is that checkout's `@earendil-works/pi-coding-agent`.
 - Pi 1.5.0 (both arms). Python 3.14.7. Engram v3.0.0-20261007205017 (shared server).
-- Home: isolated `~/.gentle-shell/agent` for both arms (see Caveat 2). Packages in its settings: `pi-web-access`, `pi-btw`, `pi-claude-bridge`, `gentle-engram@0.4.2`. Arm A loads all of them; arm B's `--no-extensions` drops their extensions, but user skills still load (B system prompt is about 15 KB vs. 54 KB for A).
+- Home: isolated `~/.drakonc-shell/agent` for both arms (see Caveat 2). Packages in its settings: `pi-web-access`, `pi-btw`, `pi-claude-bridge`, `drakonc-engram@0.4.2`. Arm A loads all of them; arm B's `--no-extensions` drops their extensions, but user skills still load (B system prompt is about 15 KB vs. 54 KB for A).
 - Model: `openai-codex/gpt-6.1-sol`, thinking `low`, for both parents. The session files confirm `model_change openai-codex/gpt-6.1-sol` and `thinking_level_change low`. The profile's `orchestrator` key (`openai/gpt-6-astra`) did not override the CLI `--model`.
-- Workflow mode: active profile `openai-oauth-delegation` in `~/.gentle-shell/gentle-ai/profiles.json`, with `workflow.openai-oauth-delegation.orchestratorMode = "full-delegation"`.
+- Workflow mode: active profile `openai-oauth-delegation` in `~/.drakonc-shell/drakonc-ai/profiles.json`, with `workflow.openai-oauth-delegation.orchestratorMode = "full-delegation"`.
   - Confirmed in the session system prompts: A1–A3 contain `You are a COORDINATOR in full delegation mode`.
-  - Per-run override without editing config: env `GENTLE_PI_ORCHESTRATOR_MODE=organic` (`lib/orchestrator-mode-policy.ts:7`). AO1 used it, and its prompt contains the organic `You are a COORDINATOR, not the default executor`.
-  - The same profile routes `gentle-ai-worker` to `openai/gpt-6.1-terra` with `max` thinking. Subagent `details` confirm this for every worker call.
+  - Per-run override without editing config: env `DRAKONC_PI_ORCHESTRATOR_MODE=organic` (`lib/orchestrator-mode-policy.ts:7`). AO1 used it, and its prompt contains the organic `You are a COORDINATOR, not the default executor`.
+  - The same profile routes `drakonc-ai-worker` to `openai/gpt-6.1-terra` with `max` thinking. Subagent `details` confirm this for every worker call.
 - Fixture: the issue's `inventory.py` verbatim, plus `tests/__init__.py` and `tests/test_inventory.py`. `ITEMS = [pear:5, apple:2, fig:9]`, and the tests are `InventoryTest.test_total_stock` (`== 16`), `test_parse_price_with_thousands` (`parse_price("$1,234.50") == 1234.50`), and `test_low_stock_inclusive_and_sorted` (`low_stock(ITEMS, 5) == ["apple", "pear"]`). Baseline: 3 tests, `FAILED (failures=2, errors=1)`. Each run copied `fixture2/` into `runs/<id>`, ran `git init`, and committed it.
 - Prompt: the issue's prompt verbatim (`/private/tmp/overhead-1494-X8jpvt/prompt.txt`).
 - Order: A1, B1, A2, B2, A3, B3 (interleaved), then AO1. Follow-up: AO2, B4, AO3. One run per slot, timeout 900 s, all exit 0. No model run was retried (see "Excluded runs").
@@ -42,15 +42,15 @@ Current main no longer shows the original failure classes: zero `gentle_review` 
 ```bash
 CLEAN="env -i HOME=$HOME PATH=$PATH USER=$USER LOGNAME=$USER SHELL=/bin/bash LANG=en_US.UTF-8 TERM=dumb TMPDIR=/tmp"
 MODEL=openai-codex/gpt-6.1-sol; THINK=low
-WT=~/work/gentle-pi/.worktrees/overhead-1494
+WT=~/work/drakonc-pi/.worktrees/overhead-1494
 # B (bare + todo)
-$CLEAN PI_CODING_AGENT_DIR=$HOME/.gentle-shell/agent timeout 900 pi -p --mode json --no-extensions \
-  -e $WT/extensions/gentle-todo.ts --model $MODEL --thinking $THINK --session-dir $S/sess/$id "$PROMPT" </dev/null
-# A (gentle-shell from the worktree, user default = full delegation)
-$CLEAN GENTLE_SHELL_SKIP_STARTUP_UPDATE=1 timeout 900 node $WT/bin/gentle-shell.mjs -p --mode json \
+$CLEAN PI_CODING_AGENT_DIR=$HOME/.drakonc-shell/agent timeout 900 pi -p --mode json --no-extensions \
+  -e $WT/extensions/drakonc-todo.ts --model $MODEL --thinking $THINK --session-dir $S/sess/$id "$PROMPT" </dev/null
+# A (drakonc-shell from the worktree, user default = full delegation)
+$CLEAN DRAKONC_SHELL_SKIP_STARTUP_UPDATE=1 timeout 900 node $WT/bin/drakonc-shell.mjs -p --mode json \
   --model $MODEL --thinking $THINK --session-dir $S/sess/$id "$PROMPT" </dev/null
 # AO (diagnostic, organic)
-$CLEAN GENTLE_PI_ORCHESTRATOR_MODE=organic GENTLE_SHELL_SKIP_STARTUP_UPDATE=1 timeout 900 node $WT/bin/gentle-shell.mjs -p --mode json \
+$CLEAN DRAKONC_PI_ORCHESTRATOR_MODE=organic DRAKONC_SHELL_SKIP_STARTUP_UPDATE=1 timeout 900 node $WT/bin/drakonc-shell.mjs -p --mode json \
   --model $MODEL --thinking $THINK --session-dir $S/sess/$id "$PROMPT" </dev/null
 # after each run, in the run repo:
 git status --short --untracked-files=all; python3 -m unittest
@@ -104,7 +104,7 @@ Engram observations written to the throwaway fixture projects: 18 in total, acro
 
 ## Organic arm (n=3)
 
-Same setup as AO1 for every run: `env -i`, home `~/.gentle-shell/agent`, `openai-codex/gpt-6.1-sol` `low`, `fixture2/` in a fresh repo, `GENTLE_PI_ORCHESTRATOR_MODE=organic`. All three system prompts contain the organic block and none contain the full-delegation one. Stderr was empty and the run repos show only `M inventory.py` (plus untracked `__pycache__/`). B4 was interleaved between AO2 and AO3 to show timing drift; at 47.4 s it falls inside the B1–B3 range (39.6–58.2 s).
+Same setup as AO1 for every run: `env -i`, home `~/.drakonc-shell/agent`, `openai-codex/gpt-6.1-sol` `low`, `fixture2/` in a fresh repo, `DRAKONC_PI_ORCHESTRATOR_MODE=organic`. All three system prompts contain the organic block and none contain the full-delegation one. Stderr was empty and the run repos show only `M inventory.py` (plus untracked `__pycache__/`). B4 was interleaved between AO2 and AO3 to show timing drift; at 47.4 s it falls inside the B1–B3 range (39.6–58.2 s).
 
 | Run | Tests | Wall s | Top calls | Eff calls | Subagents | mem_save | todo | odd_phase | review | Parent tokens in/out/cache/total |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -160,27 +160,27 @@ The goal is to measure full delegation in its intended setup: an expensive orche
 
 ### Setup
 
-- **Model ids** (from `gentle-shell --list-models`):
+- **Model ids** (from `drakonc-shell --list-models`):
   - Orchestrator: `openai-codex/gpt-6-astra`, thinking `medium`.
   - Workers: `nan/deepseek-v4-flash`. This is the only DeepSeek Flash on NaN; there is no 4.1. The parent confirmed it is the intended model.
   - NaN lists `deepseek-v4-flash` as adaptive reasoning (`lib/nan-provider.ts:45`), so the selected level does not change its depth. Child sessions record `thinking: max`, inherited because the profile entry sets no level.
-- **Profile mechanism:** a pin can only name a profile that already exists in the global store, and a scratch `GENTLE_PI_CONFIG_HOME` would have dropped the user's super-yolo permission mode, which tools cannot copy. With parent authorization I added one profile to `~/.gentle-shell/gentle-ai/profiles.json`. `active` and every other profile are unchanged.
+- **Profile mechanism:** a pin can only name a profile that already exists in the global store, and a scratch `DRAKONC_PI_CONFIG_HOME` would have dropped the user's super-yolo permission mode, which tools cannot copy. With parent authorization I added one profile to `~/.drakonc-shell/drakonc-ai/profiles.json`. `active` and every other profile are unchanged.
   - Backup: `/private/tmp/overhead-1494-X8jpvt/profiles.json.backup-before-bench` (sha1 `cf9fe0c97f33e6616a03740378a406260236d365`).
   - Pure additions; `diff backup new` shows only `472a473,487` and `479a495,497`:
 
   ```json
   "bench-astra-flash": {
     "orchestrator": { "model": "openai-codex/gpt-6-astra", "thinking": "medium" },
-    "gentle-ai-worker": { "model": "nan/deepseek-v4-flash" },
-    "gentle-ai-explore": { "model": "nan/deepseek-v4-flash" },
-    "gentle-ai-verify": { "model": "nan/deepseek-v4-flash" }
+    "drakonc-ai-worker": { "model": "nan/deepseek-v4-flash" },
+    "drakonc-ai-explore": { "model": "nan/deepseek-v4-flash" },
+    "drakonc-ai-verify": { "model": "nan/deepseek-v4-flash" }
   }
   ```
 
   plus, under `workflow`: `"bench-astra-flash": { "orchestratorMode": "full-delegation" }`. The profile was left in place.
-- **Per-run selection:** a local pin in each run repo, `runs/<id>/.git/gentle-ai/profile-pin.json`, containing `{"kind":"gentle-pi.agent_model_profile_pin","version":1,"profile":"bench-astra-flash"}`. It sits inside `.git/`, so it is invisible to `git status`.
-  - Pins route roles only, so the orchestrator model came from the CLI: `... gentle-shell.mjs -p --mode json --model openai-codex/gpt-6-astra --thinking medium ...`.
-  - Everything else is the same as arm A: `env -i`, home `~/.gentle-shell/agent`, `fixture2/`, the same prompt, and a 900 s timeout.
+- **Per-run selection:** a local pin in each run repo, `runs/<id>/.git/drakonc-ai/profile-pin.json`, containing `{"kind":"drakonc-pi.agent_model_profile_pin","version":1,"profile":"bench-astra-flash"}`. It sits inside `.git/`, so it is invisible to `git status`.
+  - Pins route roles only, so the orchestrator model came from the CLI: `... drakonc-shell.mjs -p --mode json --model openai-codex/gpt-6-astra --thinking medium ...`.
+  - Everything else is the same as arm A: `env -i`, home `~/.drakonc-shell/agent`, `fixture2/`, the same prompt, and a 900 s timeout.
 - **Confirmed from the session files:**
   - Every parent has `model_change openai-codex/gpt-6-astra` and `thinking medium`.
   - Every system prompt contains `COORDINATOR in full delegation mode`.
@@ -207,7 +207,7 @@ The goal is to measure full delegation in its intended setup: an expensive orche
 | *AF3 (concurrent)* | 3/3 | 153.5 | 17 | 3+0 | 20 | 3 | 4 | 27,820 / 1,552 / 200,832 / 230,204 | 208,641 | 0.557 | 90.5 |
 | *B5 (concurrent)* | 3/3 | 49.4 | 15 | 0 | – | 0 | 5 | 14,450 / 686 / 79,872 / 95,008 | – | 0.044 | – |
 
-All five AF runs used `gentle-ai-worker` only, with zero explore or verify agents, and made 0 `gentle_review` and 0 `gentle_odd_phase` calls.
+All five AF runs used `drakonc-ai-worker` only, with zero explore or verify agents, and made 0 `drakonc_review` and 0 `drakonc_odd_phase` calls.
 
 Parent tools (effective):
 
@@ -258,13 +258,13 @@ User request (verbatim): "lo que sería el benchmark de Full Delegation lo hicis
 
 ### Setup
 
-Exactly the AF setup (`fixture2/`, same prompt, `env -i`, home `~/.gentle-shell/agent` with super-yolo preserved, fresh repo per run, orchestrator `--model openai-codex/gpt-6-astra --thinking medium`, 900 s timeout). Only the pin changes: each run repo gets `.git/gentle-ai/profile-pin.json` set to `{"kind":"gentle-pi.agent_model_profile_pin","version":1,"profile":"openai-oauth-delegation"}`, the user's real active profile.
+Exactly the AF setup (`fixture2/`, same prompt, `env -i`, home `~/.drakonc-shell/agent` with super-yolo preserved, fresh repo per run, orchestrator `--model openai-codex/gpt-6-astra --thinking medium`, 900 s timeout). Only the pin changes: each run repo gets `.git/drakonc-ai/profile-pin.json` set to `{"kind":"drakonc-pi.agent_model_profile_pin","version":1,"profile":"openai-oauth-delegation"}`, the user's real active profile.
 
 That profile routes:
 
-- `gentle-ai-worker`: `openai/gpt-6.1-terra` @ `max`
-- `gentle-ai-explore`: terra @ `medium`
-- `gentle-ai-verify`: `openai/gpt-6.1-sol` @ `high`
+- `drakonc-ai-worker`: `openai/gpt-6.1-terra` @ `max`
+- `drakonc-ai-explore`: terra @ `medium`
+- `drakonc-ai-verify`: `openai/gpt-6.1-sol` @ `high`
 
 Its workflow is full-delegation. `profiles.json` was not modified for this arm: sha1 `0f5c4895…` before and after, and `active` is still `openai-oauth-delegation`.
 
@@ -288,7 +288,7 @@ Cost is Pi's estimate from catalog prices (`totalFromProvider: false`).
 | AT3 | 3/3 | 176.2 | 18 | 1+2 | 28 | 3 | 4 | 27,414 / 1,396 / 247,680 / 276,490 | 245,374 | 0.592 | 0.063 | 0.655 | 123.3 (70%) |
 | B7 | 3/3 | 43.6 | 14 | 0 | – | 0 | 5 | 7,774 / 637 / 79,872 / 88,283 | – | 0.030 | – | 0.030 | – |
 
-All three AT runs used `gentle-ai-worker` only (zero explore or verify agents) and made 0 `gentle_review` and 0 `gentle_odd_phase` calls.
+All three AT runs used `drakonc-ai-worker` only (zero explore or verify agents) and made 0 `drakonc_review` and 0 `drakonc_odd_phase` calls.
 
 Parent tools (effective):
 
@@ -338,7 +338,7 @@ Reading:
 
 ## Bookkeeping attribution (for T4)
 
-Bookkeeping = `todo`, `mem_*`, `gentle_odd_phase`, `orchestrator_session_id`.
+Bookkeeping = `todo`, `mem_*`, `drakonc_odd_phase`, `orchestrator_session_id`.
 
 | Run | Effective calls | Bookkeeping calls | Share | Tool turns | Bookkeeping-only turns |
 |---|---|---|---|---|---|
@@ -355,7 +355,7 @@ Median A run (A2), in order:
 | T0 | bash | `pwd; git status; ls`: orient | no |
 | T1 | codemode[read, bash, subagent_list_agents] | read source, baseline `python3 -m unittest`, list agents | no |
 | T2 | codemode[read, read, orchestrator_session_id, todo] | read tests, read `orchestrator-full-delegation-card.md`, name session, write 3-task list | no (mixed) |
-| T3 | subagent_run gentle-ai-worker | fix `total_stock` | no |
+| T3 | subagent_run drakonc-ai-worker | fix `total_stock` | no |
 | T4 | codemode[mem_save, todo] | save fix 1 to Engram, mark task 1 done | **yes** |
 | T5 | subagent_continue | fix `parse_price` | no |
 | T6 | codemode[mem_save, todo] | save fix 2, mark task 2 done | **yes** |
@@ -374,9 +374,9 @@ Reading of the data:
 
 | Run | Wall s | Why excluded |
 |---|---|---|
-| A1-contaminated | 42.2 | Launched with this worker's own environment, which carries `GENTLE_PI_AGENTS_CHILD=1`, `GENTLE_SHELL_CHILD_PACKAGE_INJECTION` (pointing at the main checkout), `PI_SESSION_*`, and `HERDR_*`. The harness treated the primary as a child: no orchestrator workflow block, no `todo` tool, and child safety blocked a `git restore`. Not representative. Every counted run uses `env -i`. |
+| A1-contaminated | 42.2 | Launched with this worker's own environment, which carries `DRAKONC_PI_AGENTS_CHILD=1`, `DRAKONC_SHELL_CHILD_PACKAGE_INJECTION` (pointing at the main checkout), `PI_SESSION_*`, and `HERDR_*`. The harness treated the primary as a child: no orchestrator workflow block, no `todo` tool, and child safety blocked a `git restore`. Not representative. Every counted run uses `env -i`. |
 | A1-pycfixture | 566.4 | The first fixture copy had `__pycache__/*.pyc` committed (setup mistake: unittest was run in the fixture before committing). The model spent 2 extra worker subagents restoring the `.pyc` files (5 `subagent_run` in total). Fixed by `fixture2/` without bytecode. |
-| B1-authfail | 3.2 | Plain `pi` home `~/.pi/agent` failed with `OAuth refresh failed for openai-codex … refresh_token_reused` before any model output. No model turn happened. B was then pointed at the same home as A (`PI_CODING_AGENT_DIR=~/.gentle-shell/agent`). Credentials were not touched. |
+| B1-authfail | 3.2 | Plain `pi` home `~/.pi/agent` failed with `OAuth refresh failed for openai-codex … refresh_token_reused` before any model output. No model turn happened. B was then pointed at the same home as A (`PI_CODING_AGENT_DIR=~/.drakonc-shell/agent`). Credentials were not touched. |
 
 ## Caveats
 
@@ -384,7 +384,7 @@ Reading of the data:
 2. Both arms share the isolated home and its OpenAI Codex login. This deviates from the issue's B command (default Pi home) only because that home's token was stale. B still loads user skills.
 3. "Same model and effort" holds for the parent sessions only. Under the user's profile, full-delegation workers run `openai/gpt-6.1-terra` at `max` on provider `openai`, which is a large part of A's time.
 4. `codemode` hides inner tool calls in top-level counts. Effective counts come from a regex over the script text.
-5. Wall time is measured around the whole launcher process, so it includes gentle-shell startup and Engram.
+5. Wall time is measured around the whole launcher process, so it includes drakonc-shell startup and Engram.
 6. Engram is the user's shared server. The fixture observations are in projects `a1`, `a2`, `a3`, `ao1`, `ao2`, `ao3`, `af1`–`af5`, `at1`–`at3` (42 in total) and were not deleted.
 7. The AF arm added a `bench-astra-flash` profile to the user's `profiles.json` (see the Astra section for the backup and the exact lines). B5, AF2 and AF3 ran concurrently and are excluded from the medians.
 8. The AT arm used the user's existing `openai-oauth-delegation` profile through a scratch pin. No config change was made.

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
-import * as shell from "../lib/gentle-shell-bundled.ts";
+import * as shell from "../lib/drakonc-shell-bundled.ts";
 
 const repository = dirname(dirname(fileURLToPath(import.meta.url)));
 const GUARD = join(repository, "bin", "engram-guard");
@@ -23,7 +23,7 @@ const listening = (compatible: boolean, healthInstanceId?: string, healthVersion
 // Isolated: no inherited policy, notice or explicit Engram selection.
 const clean = (extra: Record<string, string> = {}) => {
 	const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
-	for (const key of ["GENTLE_PI_AGENTS_CHILD", "ENGRAM_STARTUP_POLICY", "ENGRAM_STARTUP_NOTICE", "ENGRAM_BIN", "ENGRAM_URL", "ENGRAM_PORT",
+	for (const key of ["DRAKONC_PI_AGENTS_CHILD", "ENGRAM_STARTUP_POLICY", "ENGRAM_STARTUP_NOTICE", "ENGRAM_BIN", "ENGRAM_URL", "ENGRAM_PORT",
 		"ENGRAM_DATA_DIR", "ENGRAM_DATABASE_URL", "ENGRAM_HTTP_TOKEN"]) if (!(key in extra)) delete env[key];
 	return env;
 };
@@ -69,7 +69,7 @@ test("shared Engram environment refuses original Windows .. even when normalizat
 
 test("shared Engram environment refuses scratch-shaped UNC share roots without looping", () => {
 	const script = `import assert from 'node:assert/strict';
-		import { sharedEngramEnv } from './lib/gentle-shell-bundled.ts';
+		import { sharedEngramEnv } from './lib/drakonc-shell-bundled.ts';
 		assert.throws(() => sharedEngramEnv({ TEMP: ${JSON.stringify("\\\\server\\gp123456\\")} }, 'win32'), /absolute.*scratch/i);`;
 	const result = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "--experimental-strip-types", "--input-type=module", "-e", script], { cwd: repository, encoding: "utf8", timeout: 3000 });
 	assert.equal(result.error, undefined);
@@ -86,7 +86,7 @@ test("shared Engram environment reaches an actual Windows Node child with explic
 	const probe = `const os = require('node:os'); process.stdout.write(JSON.stringify({TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR, tmpdir: os.tmpdir()}));`;
 	// Set known ambient scratch only inside an isolated parent process. No files
 	// are created: neither chosen path needs to exist for this zero-write probe.
-	const script = `import { sharedEngramEnv } from './lib/gentle-shell-bundled.ts';
+	const script = `import { sharedEngramEnv } from './lib/drakonc-shell-bundled.ts';
 		import { spawnSync } from 'node:child_process';
 		process.env.TEMP = ${JSON.stringify(scratch)};
 		const env = sharedEngramEnv({ TMPDIR: ${JSON.stringify(scratch)} });
@@ -102,7 +102,7 @@ test("shared Engram environment reaches an actual Windows Node child with explic
 test("shared Engram environment retains sanitization and detached spawn wiring", () => {
 	assert.deepEqual(shell.sharedEngramEnv({ ENGRAM_BIN: "chosen", ENGRAM_OTHER: "value", ENGRAM_NO_UPDATE_CHECK: "0", GH_TOKEN: "token", GITHUB_TOKEN: "token", HOME: "home", TEMP: "chosen" }),
 		{ HOME: "home", TEMP: "chosen", ENGRAM_NO_UPDATE_CHECK: "1" });
-	const launcher = readFileSync(join(repository, "bin", "gentle-shell.mjs"), "utf8");
+	const launcher = readFileSync(join(repository, "bin", "drakonc-shell.mjs"), "utf8");
 	assert.match(launcher, /const env = sharedEngramEnv\(process\.env\);/);
 	assert.match(launcher, /spawn\(core, \["serve"\], \{ cwd: homedir\(\), env, detached: true, stdio: "ignore", windowsHide: true \}\)/);
 });
@@ -205,7 +205,7 @@ test("provenance records parse strictly", () => {
 	}
 	assert.equal(shell.parseEngramProvenance("{"), undefined);
 	assert.equal(shell.parseEngramProvenance(undefined), undefined);
-	assert.equal(shell.engramProvenancePath("/home/ana/.gentle-shell", "linux"), "/home/ana/.gentle-shell/config/engram-provenance.json");
+	assert.equal(shell.engramProvenancePath("/home/ana/.drakonc-shell", "linux"), "/home/ana/.drakonc-shell/config/engram-provenance.json");
 });
 
 test("only flag-position version or help tokens count as a Pi version or help request", () => {
@@ -270,7 +270,7 @@ test("the bundled core contract table holds exactly the three verified release d
 	// The provenance stays named in the source: read from GET /runtime-contract
 	// of the real release binaries during development, and the 3.5.2 windows
 	// archive sha256 matched the retired 3.5.2 pin exactly.
-	const source = readFileSync(join(repository, "lib", "gentle-shell-bundled.ts"), "utf8");
+	const source = readFileSync(join(repository, "lib", "drakonc-shell-bundled.ts"), "utf8");
 	assert.match(source, /GET \/runtime-contract/);
 	assert.match(source, /windows archive sha256[\s\S]{0,160}retired 3\.5\.2 pin/);
 });
@@ -295,7 +295,7 @@ test("the mismatch notice is loud only when both digests are known and differ", 
 	assert.match(notice!, /3\.5\.2/);
 	assert.match(notice!, new RegExp(CONTRACT_352));
 	assert.match(notice!, /memory may be unavailable until the pair matches/);
-	assert.match(notice!, /new Gentle Shell release/);
+	assert.match(notice!, /new Drakonc Shell release/);
 	assert.match(notice!, /update the companion/);
 	// Equal digests and unknown sides stay silent: never a false alarm.
 	assert.equal(shell.engramContractMismatchNotice(CONTRACT_352, "3.5.2"), undefined);
@@ -330,7 +330,7 @@ test("the live contract probe reads only /runtime-contract and answers the parse
 });
 
 test("the launcher wires the warn-only contract gate into companion verification and the ready shared server", () => {
-	const launcher = readFileSync(join(repository, "bin", "gentle-shell.mjs"), "utf8");
+	const launcher = readFileSync(join(repository, "bin", "drakonc-shell.mjs"), "utf8");
 	// ensureEngramCompanion reads <home>/npm/node_modules/gentle-engram/runtime-contract.json and warns only.
 	assert.match(launcher, /async function ensureEngramCompanion[\s\S]{0,300}warnEngramContractMismatch\(home\);/);
 	assert.match(launcher, /function warnEngramContractMismatch\([\s\S]{0,600}runtime-contract\.json/);
@@ -351,7 +351,7 @@ test("the launcher wires the warn-only contract gate into companion verification
 });
 
 test("the extensions update re-verifies the managed companion after the child completes", () => {
-	const launcher = readFileSync(join(repository, "bin", "gentle-shell.mjs"), "utf8");
+	const launcher = readFileSync(join(repository, "bin", "drakonc-shell.mjs"), "utf8");
 	// T4 (S2, S5): after the pi update --extensions child completes for a
 	// bundled, Shell-owned home, the same companion verification that setup and
 	// launch run runs even though a piSubcommand is set. Warn only: never a

@@ -7,7 +7,7 @@ import { getSystemErrorName } from 'node:util';
 import { windowsProcessCheck, windowsBootstrapReason } from '../scripts/installer-windows.mjs';
 
 // Only owned inert Node children. Never invoke PowerShell, ACL/storage or setup.
-const root = mkdtempSync(join(tmpdir(), 'gentle-installer-diagnostics-1921-'));
+const root = mkdtempSync(join(tmpdir(), 'drakonc-installer-diagnostics-1921-'));
 const fixture = join(root, 'child.mjs');
 writeFileSync(fixture, `import { writeSync } from 'node:fs';
 const mode = process.argv[2];

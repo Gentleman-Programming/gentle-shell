@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SettingsManager, SessionManager } from "@earendil-works/pi-coding-agent";
-import gentleAgents, { type SessionTransportFactory } from "../extensions/gentle-agents.ts";
+import drakoncAgents, { type SessionTransportFactory } from "../extensions/drakonc-agents.ts";
 import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 
 const sdk = import.meta.resolve("@earendil-works/pi-coding-agent");
@@ -49,7 +49,7 @@ test("actual SDK Bridge wake retains preparation, history, reload and resumed re
 	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
 	const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 		extensionFactories: [pi => {
-			gentleAgents(pi, {}, { home, agentHome: agentDir, env: { PATH: "/usr/bin:/bin" }, pi: { command: "offline-child", args: [] }, spawn: () => { const child = fakeChild(); children.push(child); return child.child; }, schedule: () => () => {}, sessionTransport: transport, resolveWorktree: () => undefined });
+			drakoncAgents(pi, {}, { home, agentHome: agentDir, env: { PATH: "/usr/bin:/bin" }, pi: { command: "offline-child", args: [] }, spawn: () => { const child = fakeChild(); children.push(child); return child.child; }, schedule: () => () => {}, sessionTransport: transport, resolveWorktree: () => undefined });
 			pi.registerTool({ name: "sentinel", label: "Sentinel", description: "Offline sentinel tool", parameters: { type: "object", properties: {} } as never, execute: async () => ({ content: [], details: undefined }) });
 			pi.on("before_agent_start", event => {
 				preparations++;
@@ -86,12 +86,12 @@ test("actual SDK Bridge wake retains preparation, history, reload and resumed re
 		assert.equal(preparations, 2, "wake traverses normal prompt/before_agent_start");
 		assert.match(getCurrentSystemPrompt(requests[1].messages), /BRIDGE_PREPARATION_SENTINEL_2/);
 		assert.deepEqual(getCurrentTools(requests[1].messages).map(tool => tool.name), ["sentinel"]);
-		const wakeEntries = manager.getEntries().filter(entry => entry.type === "custom" && entry.customType === "gentle-agents.wake-identity");
+		const wakeEntries = manager.getEntries().filter(entry => entry.type === "custom" && entry.customType === "drakonc-agents.wake-identity");
 		assert.equal(wakeEntries.length, 1);
 		const identity = (wakeEntries[0] as { data: { text: string } }).data;
 		assert.ok(session.messages.some(message => message.role === "user" && JSON.stringify(message.content).includes(identity.text)), "wake is still user-role history");
 		assert.ok(JSON.stringify(requests[1].messages).includes(identity.text), "wake remains model-visible");
-		assert.equal(manager.getEntries().filter(entry => entry.type === "custom_message" && entry.customType === "gentle-agents.result").length, 1);
+		assert.equal(manager.getEntries().filter(entry => entry.type === "custom_message" && entry.customType === "drakonc-agents.result").length, 1);
 		const render = (text: string) => new UserMessageComponent(text, undefined, 1, session.extensionRunner.getMarkdownTransformers()).render(80);
 		assert.deepEqual(render(identity.text), []);
 		assert.ok(render("Ordinary human turn").length > 0);
@@ -111,8 +111,8 @@ test("actual SDK Bridge wake retains preparation, history, reload and resumed re
 		assert.equal(preparations, 3);
 		assert.match(getCurrentSystemPrompt(requests[2].messages), /BRIDGE_PREPARATION_SENTINEL_3/);
 		assert.deepEqual(getCurrentTools(requests[2].messages).map(tool => tool.name), ["sentinel"]);
-		assert.equal(session.sessionManager.getEntries().filter(entry => entry.type === "custom" && entry.customType === "gentle-agents.wake-identity").length, 1, "resume reuses one identity");
-		assert.equal(session.sessionManager.getEntries().filter(entry => entry.type === "custom_message" && entry.customType === "gentle-agents.message").length, 1, "query stored once");
+		assert.equal(session.sessionManager.getEntries().filter(entry => entry.type === "custom" && entry.customType === "drakonc-agents.wake-identity").length, 1, "resume reuses one identity");
+		assert.equal(session.sessionManager.getEntries().filter(entry => entry.type === "custom_message" && entry.customType === "drakonc-agents.message").length, 1, "query stored once");
 		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		session.dispose();
 		await loader.reload();

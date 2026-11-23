@@ -1,9 +1,9 @@
 ---
-name: gentle-ai-branch-pr
+name: drakonc-ai-branch-pr
 description: "Prepare pull requests using the target repository's contribution policy. Trigger: creating, opening, or preparing PRs for review."
 license: Apache-2.0
 metadata:
-  author: gentleman-programming
+  author: drakoncman-programming
   version: "2.1"
 ---
 
@@ -115,7 +115,7 @@ Do not mark an unverified `[x]` checkbox. Check each applicable item only after 
 
 - Apply exactly one `type:*` label only when required by target policy, from the authorized target's available labels. Do not create missing labels to satisfy this skill. A commit-type mapping below is a suggestion, not proof of label availability or permission.
 - Protected labels require an exact direct instruction naming the label and an actor with MAINTAIN/ADMIN permission. Do not infer authorization from a general request to prepare or open a PR.
-- For a PR above the advisory 400 authored-line review budget, follow the destination repository's documented contribution/size policy. `size:exception` is a Gentle-owned repository policy, not a universal label requirement. Never request, create, or add the label for generic users unless their destination policy uses it. Only when that policy uses `size:exception`, record the human-selected `size:exception` rationale if that route was selected; no separate instructor proof is required. Preserve actual policy acceptance gates and apply the protected label only under the same direct-instruction and actor rule. Choosing `single-pr` does not waive policy gates or label authorization, nor automatically select `exception-ok`. Do not code-golf or omit tests to meet the budget.
+- For a PR above the advisory 400 authored-line review budget, follow the destination repository's documented contribution/size policy. `size:exception` is a Drakonc-owned repository policy, not a universal label requirement. Never request, create, or add the label for generic users unless their destination policy uses it. Only when that policy uses `size:exception`, record the human-selected `size:exception` rationale if that route was selected; no separate instructor proof is required. Preserve actual policy acceptance gates and apply the protected label only under the same direct-instruction and actor rule. Choosing `single-pr` does not waive policy gates or label authorization, nor automatically select `exception-ok`. Do not code-golf or omit tests to meet the budget.
 - REQUIRED CI is determined by target policy, not a fixed list of job names. Check issue-reference validation (including target-supported `Refs`), issue approval, exactly one type label and shellcheck where the target requires them. CodeRabbit is optional unless required by target policy. Report required pending or failing checks; never merge on an unverified green claim.
 
 ---

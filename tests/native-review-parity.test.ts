@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test, { after, before } from "node:test";
 import { setWindowsAclAuthorityForTesting } from "../lib/review-candidate-view-owner.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { __testing, createGentleAiExtension, PendingReviewConsentRegistry } from "../extensions/gentle-ai.ts";
+import { __testing, createDrakoncAiExtension, PendingReviewConsentRegistry } from "../extensions/drakonc-ai.ts";
 import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import {
 	NATIVE_REVIEW_ERROR_CODE,
@@ -95,7 +95,7 @@ function mode(
 
 test("review mode STATUS keeps the provider-decided default-off source", async () => {
 	const queue = queuedAdapter([mode("status", "off", "default")]);
-	const result = await new NativeReviewCliV216(queue.adapter, "/package/.gentle-ai/gentle-ai").reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.STATUS });
+	const result = await new NativeReviewCliV216(queue.adapter, "/package/.drakonc-ai/drakonc-ai").reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.STATUS });
 	assert.equal(result.status.effective, "off");
 	assert.equal(result.status.source, "default");
 	assert.deepEqual(queue.calls[0], ["review", "mode", "status", "--cwd", process.cwd(), "--json"]);
@@ -103,7 +103,7 @@ test("review mode STATUS keeps the provider-decided default-off source", async (
 
 test("review mode mutations remain clone-scoped and retain their exact operation discriminator", async () => {
 	const queue = queuedAdapter([mode("disable", "off", "clone_local"), mode("enable", "on", "global")]);
-	const review = new NativeReviewCliV216(queue.adapter, "/package/.gentle-ai/gentle-ai");
+	const review = new NativeReviewCliV216(queue.adapter, "/package/.drakonc-ai/drakonc-ai");
 	assert.equal((await review.reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.DISABLE })).operation, "disable");
 	assert.equal((await review.reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.ENABLE })).operation, "enable");
 	assert.deepEqual(queue.calls.map((arguments_) => arguments_.slice(-3)), [["--scope", "clone", "--json"], ["--scope", "clone", "--json"]]);
@@ -112,7 +112,7 @@ test("review mode mutations remain clone-scoped and retain their exact operation
 test("review mode rejects a response with a foreign operation discriminator", async () => {
 	const queue = queuedAdapter([mode("enable", "on", "global")]);
 	await assert.rejects(
-		() => new NativeReviewCliV216(queue.adapter, "/package/.gentle-ai/gentle-ai").reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }),
+		() => new NativeReviewCliV216(queue.adapter, "/package/.drakonc-ai/drakonc-ai").reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }),
 		/schema incompatible/,
 	);
 });
@@ -141,16 +141,16 @@ test("Windows native cwd normalization preserves drive identity without changing
 test("current review mode keeps canonical reach values and rejects unrecognized wire values", async (t) => {
 	for (const reach of ["machine", "this_build"] as const) {
 		const queue = queuedAdapter([mode("status", "off", "clone_local", reach)]);
-		const result = await new NativeReviewCliV216(queue.adapter, "/package/.gentle-ai/gentle-ai").reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.STATUS });
+		const result = await new NativeReviewCliV216(queue.adapter, "/package/.drakonc-ai/drakonc-ai").reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.STATUS });
 		assert.equal(result.status.reach, reach);
 	}
 	const malformed = queuedAdapter([mode("status", "off", "clone_local", "future")]);
 	await assert.rejects(
-		() => new NativeReviewCliV216(malformed.adapter, "/package/.gentle-ai/gentle-ai").reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }),
+		() => new NativeReviewCliV216(malformed.adapter, "/package/.drakonc-ai/drakonc-ai").reviewMode({ cwd: process.cwd(), operation: NATIVE_REVIEW_MODE_OPERATION.STATUS }),
 		(error: unknown) => error instanceof NativeReviewCliError && error.code === NATIVE_REVIEW_ERROR_CODE.SCHEMA_INCOMPATIBLE,
 	);
 	if (process.platform !== "win32") {
-		const root = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-review-mode-")));
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-review-mode-")));
 		const alias = `${root}-alias`;
 		const { symlinkSync } = await import("node:fs");
 		symlinkSync(root, alias, "dir");
@@ -163,7 +163,7 @@ test("current review mode keeps canonical reach values and rejects unrecognized 
 			observed.push(request.cwd);
 			return { stdout: mode("status", "off", "global"), stderr: "", exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 		};
-		await new NativeReviewCliV216(adapter, "/package/.gentle-ai/gentle-ai").reviewMode({ cwd: alias, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS });
+		await new NativeReviewCliV216(adapter, "/package/.drakonc-ai/drakonc-ai").reviewMode({ cwd: alias, operation: NATIVE_REVIEW_MODE_OPERATION.STATUS });
 		assert.deepEqual(observed, [root]);
 	}
 });
@@ -210,19 +210,19 @@ function parityRuntime(nativeReviewCli: NativeReviewCli | null, options: ParityR
 		nativeReviewCli,
 		candidateViews: options.candidateViews ?? new CandidateViewRegistry(),
 		pendingReviewConsentRegistry: options.pendingReviewConsentRegistry ?? new PendingReviewConsentRegistry(),
-	} as unknown as Parameters<typeof createGentleAiExtension>[0];
-	__testing.createGentleAiExtension(dependencies)({
+	} as unknown as Parameters<typeof createDrakoncAiExtension>[0];
+	__testing.createDrakoncAiExtension(dependencies)({
 		on(name: string, handler: RegisteredEvent) { events.set(name, handler); },
 		registerTool(definition: RegisteredControllerTool & { name: string }) { tools.set(definition.name, definition); },
 		registerCommand(name: string, definition: RegisteredCommand) { commands.set(name, definition); },
 	} as unknown as ExtensionAPI);
-	const controller = tools.get("gentle_review");
+	const controller = tools.get("drakonc_review");
 	assert.ok(controller);
 	return { controller: controller!, commands, events };
 }
 
 function repository(t: test.TestContext): string {
-	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-native-parity-")));
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-native-parity-")));
 	t.after(() => {
 		try { execFileSync("chmod", ["-R", "u+w", cwd], { stdio: "ignore" }); } catch { /* best effort */ }
 		rmSync(cwd, { recursive: true, force: true });
@@ -357,7 +357,7 @@ async function answerConsent(runtime: ParityRuntime, cwd: string, binding: unkno
 	return await executeController(runtime, { operation: "answer-consent", input: JSON.stringify({ consentBinding: binding, answer }) }, cwd, sessionId);
 }
 
-// gentle-pi#516: an unknown or expired binding is a typed, blocked outcome
+// drakonc-pi#516: an unknown or expired binding is a typed, blocked outcome
 // that names itself and its exit. It still carries the current negotiated
 // STATUS as reconciliation context, but it never reads as a healthy
 // pre-start "ready".
@@ -416,7 +416,7 @@ test("review-mode gate retains every off-source continuation and fails closed on
 	assert.equal(failed.outcome, "native-operation-failed");
 });
 
-test("public gentle:review-mode handler reports current operations, global-off warnings, and unavailability", async () => {
+test("public drakonc:review-mode handler reports current operations, global-off warnings, and unavailability", async () => {
 	const calls: string[] = [];
 	const native = {
 		reviewMode: async ({ operation }: { operation: "status" | "enable" | "disable" }) => {
@@ -430,7 +430,7 @@ test("public gentle:review-mode handler reports current operations, global-off w
 		},
 	} as unknown as NativeReviewCli;
 	const runtime = parityRuntime(native);
-	const command = runtime.commands.get("gentle:review-mode");
+	const command = runtime.commands.get("drakonc:review-mode");
 	assert.ok(command);
 	const notices: Array<{ message: string; type?: string }> = [];
 	const ctx = context(process.cwd(), "review-mode-command", notices);
@@ -441,13 +441,13 @@ test("public gentle:review-mode handler reports current operations, global-off w
 	assert.match(notices[0]?.message ?? "", /receipt-driven development: on/);
 	assert.match(notices[1]?.message ?? "", /receipt-driven development: off/);
 	assert.equal(notices[2]?.type, "warning");
-	assert.match(notices[2]?.message ?? "", /gentle-ai review mode enable --scope=global/);
+	assert.match(notices[2]?.message ?? "", /drakonc-ai review mode enable --scope=global/);
 
-	const unavailable = parityRuntime({} as NativeReviewCli).commands.get("gentle:review-mode");
+	const unavailable = parityRuntime({} as NativeReviewCli).commands.get("drakonc:review-mode");
 	assert.ok(unavailable);
 	const unavailableNotices: Array<{ message: string; type?: string }> = [];
 	await unavailable!.handler("status", context(process.cwd(), "review-mode-unavailable", unavailableNotices));
-	assert.deepEqual(unavailableNotices, [{ message: "Gentle AI review mode is not available with the currently negotiated native version.", type: "info" }]);
+	assert.deepEqual(unavailableNotices, [{ message: "Drakonc AI review mode is not available with the currently negotiated native version.", type: "info" }]);
 });
 
 test("public consent relay allows any active session to resolve a live binding, is one-shot, and is candidate-scoped", async (t) => {
@@ -460,7 +460,7 @@ test("public consent relay allows any active session to resolve a live binding, 
 	const sameSessionResult = await answerConsent(second, cwd, sameSession.consent_binding, "declined", "same-session");
 	assert.equal(sameSessionResult.outcome, "consent-declined-this-candidate");
 
-	// gentle-pi#455: a binding is answerable by whichever active Pi session
+	// drakonc-pi#455: a binding is answerable by whichever active Pi session
 	// presents it, not only the session whose START created it.
 	const blockedA = await beginConsent(first, cwd, "session-a");
 	const { consentBinding, ...nativeEnvelope } = blockedA.consent as Record<string, unknown>;
@@ -510,7 +510,7 @@ test("public consent relay allows any active session to resolve a live binding, 
 		scope: "clone",
 		status: { global: "", cloneLocal: "off", effective: "off", source: "clone_local" },
 	});
-	const disable = second.commands.get("gentle:review-mode");
+	const disable = second.commands.get("drakonc:review-mode");
 	assert.ok(disable);
 	await disable!.handler("disable", context(cwd, "session-b"));
 	const staleModeCleared = await answerConsent(second, cwd, nextCandidate.consent_binding, "declined", "session-b");
@@ -642,7 +642,7 @@ test("stale local consent bindings preserve a typed native STATUS failure", asyn
 	assert.deepEqual(fixture.answers, ["declined"], "unavailable native STATUS must not replay answer-consent");
 });
 
-test("stale local consent bindings retain typed Pi transport refusal without an agentless retry", async (t) => {
+test("stale local consent bindings retain typed Pi transport refusal without an adrakoncss retry", async (t) => {
 	const cwd = repository(t);
 	const fixture = consentNative(cwd);
 	const statusRequests: Array<{ agent?: string }> = [];
@@ -833,5 +833,5 @@ test("candidate consent completion writes no persistent asked latch", async (t) 
 	assert.equal((completed.result as { lineage_id?: string }).lineage_id, "consent-lineage");
 	assert.deepEqual(fixture.answers, ["granted"]);
 	const commonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, encoding: "utf8" }).trim();
-	assert.equal(existsSync(join(commonDir, "gentle-pi", "review-consent", "asked.json")), false);
+	assert.equal(existsSync(join(commonDir, "drakonc-pi", "review-consent", "asked.json")), false);
 });

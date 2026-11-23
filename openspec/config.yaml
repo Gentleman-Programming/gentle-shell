@@ -1,0 +1,34 @@
+schema: spec-driven
+
+# Plantilla compartida por los kits. La skill inicializar-proyecto de cualquiera de ellos la copia antes de `openspec init`,
+# que conserva un config.yaml existente. Ajustar por proyecto si es necesario.
+context: |
+  Language: es
+  All artifacts must be written in es.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+  Follow the project's AGENTS.md (CLAUDE.md is an identical copy) and the agent workflow defined in the global instructions of the tool in use (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md or ~/.config/opencode/AGENTS.md).
+
+rules:
+  proposal:
+    - Indicar qué queda fuera de alcance.
+    - Indicar si el cambio toca autenticación, autorización, datos personales, secretos, entradas externas, webhooks, pagos o dependencias; en ese caso el diseño requiere revisión del agente security.
+  design:
+    - Reutilizar patrones existentes del repositorio y citar sus rutas.
+    - Incluir una sección de seguridad con amenazas y controles cuando el cambio sea sensible.
+  tasks:
+    - Iniciar cada tarea con el agente responsable entre corchetes, por ejemplo `[backend]`, `[frontend]`, `[database]` o `[ai-agent-engineer]`.
+    - Agregar el sufijo `:ligero` (`[backend:ligero]`, `[frontend:ligero]`) solo a tareas mecánicas de backend o frontend que repiten un patrón existente del proyecto (textos, estilos, un campo o componente análogo, configuración puntual). Nunca en tareas que toquen autenticación, autorización, datos personales, secretos, entradas externas, webhooks, pagos, contratos públicos, esquema, migraciones, dependencias, configuración de seguridad (CORS, cookies, cabeceras, sesiones, TLS, debug, rate limiting), integraciones, prompts o herramientas de IA, que abarquen varios módulos o sin patrón análogo.
+    - Incluir tareas de pruebas para escenarios positivos, negativos y casos límite.
+    - Terminar con un grupo de verificación con tareas `[code-reviewer]`, `[security]` y `[qa]`.
+
+operations:
+  apply:
+    guidance:
+      - Delegar cada tarea al subagente indicado entre corchetes con el contexto de proposal, design, specs y la tarea concreta; ejecutar en paralelo las tareas independientes.
+      - Marcar una tarea como completada solo después de revisar el reporte del subagente y su evidencia.
+      - Si el subagente indicado no está instalado en el proyecto, implementar la tarea en la sesión principal con las mismas reglas.
+      - Delegar las tareas `:ligero` con el modelo ligero que definan las instrucciones globales de la herramienta en uso; si la herramienta no permite elegir modelo, usar el modelo por defecto. Ignorar el sufijo en agentes distintos de backend y frontend. Si una tarea `:ligero` recibe un hallazgo bloqueante o el agente reporta un bloqueo o la entrega incompleta, corregirla o reintentarla con el modelo por defecto. Si al implementarla resulta que toca un área excluida, el agente se detiene y lo reporta como bloqueo.
+      - Las tareas de verificación se ejecutan con code-reviewer y security en paralelo y después qa; los hallazgos bloqueantes vuelven al agente que implementó.
+  archive:
+    guidance:
+      - Archivar solo con code-reviewer sin hallazgos bloqueantes, security sin hallazgos CRÍTICA o ALTA abiertos y qa APTO, salvo que el usuario acepte explícitamente el riesgo.

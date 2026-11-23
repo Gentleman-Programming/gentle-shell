@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 
-export const VISUAL_SCHEMA = "gentle-pi.visual-customization/v1";
+export const VISUAL_SCHEMA = "drakonc-pi.visual-customization/v1";
 export const STATUS_PLACEMENT = { AUTO: "auto", RIGHT: "right", BOTTOM: "bottom", HIDDEN: "hidden" } as const;
 /**
  * Where the header row goes: `top` spans both conversation and rail above them;
@@ -85,7 +85,7 @@ export const VISUAL_SECTION_KEYS = ["changes", "rdd", "agents", "todo", "usageCo
 const ADDED_SECTION_DEFAULTS: Partial<Record<keyof VisualVisibility, boolean>> = { rdd: true, contextWarning: true, stats: false };
 const ADDED_SECTION_KEYS = Object.keys(ADDED_SECTION_DEFAULTS) as (keyof VisualVisibility)[];
 const BASE_SECTION_KEYS = VISUAL_SECTION_KEYS.filter((key) => !ADDED_SECTION_KEYS.includes(key));
-interface VisualOptions { gentlePiConfigHome?: string }
+interface VisualOptions { drakoncPiConfigHome?: string }
 export interface VisualResolution {
 	settings: VisualSettings;
 	source: "global_file" | "default";
@@ -143,7 +143,7 @@ export function parseVisualSettingsFile(raw: string): VisualSettings | undefined
 	} catch { return undefined; }
 }
 export function resolveVisualSettings(options: VisualOptions = {}): VisualResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), "visual-customization.json");
+	const globalFile = join(options.drakoncPiConfigHome ?? drakoncPiConfigHome(), "visual-customization.json");
 	try {
 		const settings = parseVisualSettingsFile(readFileSync(globalFile, "utf8"));
 		return { settings: settings ?? structuredClone(DEFAULT_VISUAL_SETTINGS), source: "global_file", malformed: settings === undefined, readError: false, globalFile };
@@ -160,7 +160,7 @@ export function storedVisualSettings(settings: VisualSettings): Omit<VisualSetti
 /** Same-directory rename keeps partial JSON invisible to readers. */
 export function writeVisualSettings(settings: VisualSettings, options: VisualOptions = {}): string {
 	if (!isVisualSettings(settings)) throw new TypeError("Invalid visual settings");
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.drakoncPiConfigHome ?? drakoncPiConfigHome();
 	const path = join(home, "visual-customization.json");
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	mkdirSync(home, { recursive: true });

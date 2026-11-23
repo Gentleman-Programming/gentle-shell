@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { sessionToMarkdown } from "../lib/agents-transcript.ts";
 
-// Gentle Agents transcript: session JSONL in, readable markdown out.
+// Drakonc Agents transcript: session JSONL in, readable markdown out.
 
 const session = [
 	JSON.stringify({ type: "session", version: 3, id: "x" }),

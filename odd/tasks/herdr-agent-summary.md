@@ -6,7 +6,7 @@ Locator: `odd/tasks/herdr-agent-summary.md`; branch `feat/herdr-agent-summary`.
 Expose the active Todo title in Herdr's Agents sidebar without another model call or changing lifecycle authority.
 
 ## Scope / constraints
-User-approved refinement supersedes the MVP phase/tool projection: only `◐` plus `in_progress` Todo title, at most two display-cell-bounded rows. Source `gentle:activity` owns `summary`/`summary2`, not semantic state. No prompts, arguments, output, notes, fallback tools or ODD labels. No personal config, managed bridge, live Herdr, reload, sync, dependencies, commits, pushes or PRs. One sequential writer; independent parent verification follows.
+User-approved refinement supersedes the MVP phase/tool projection: only `◐` plus `in_progress` Todo title, at most two display-cell-bounded rows. Source `drakonc:activity` owns `summary`/`summary2`, not semantic state. No prompts, arguments, output, notes, fallback tools or ODD labels. No personal config, managed bridge, live Herdr, reload, sync, dependencies, commits, pushes or PRs. One sequential writer; independent parent verification follows.
 User explicitly approved 500–600 total authored lines (previous estimate 383), without code golf. Package worktree and first config row were already selected; parent owns adding the second row and any activation.
 
 ## Tasks / acceptance
@@ -18,7 +18,7 @@ User explicitly approved 500–600 total authored lines (previous estimate 383),
 
 ## Verification
 Strict TDD explicitly activated by parent. Exact isolated serial runner:
-`env -u HERDR_ENV -u HERDR_SOCKET_PATH -u HERDR_PANE_ID -u HERDR_BIN_PATH NODE_OPTIONS=--max-old-space-size=1024 node --experimental-strip-types --test --test-concurrency=1 tests/herdr-activity.test.ts tests/gentle-herdr-activity.test.ts`.
+`env -u HERDR_ENV -u HERDR_SOCKET_PATH -u HERDR_PANE_ID -u HERDR_BIN_PATH NODE_OPTIONS=--max-old-space-size=1024 node --experimental-strip-types --test --test-concurrency=1 tests/herdr-activity.test.ts tests/drakonc-herdr-activity.test.ts`.
 RED before production: 4/14 passed; 10 intended failures exposed old phase/tool fallback, old signature, missing geometry and missing second-token clear. GREEN: 14/14 passed. Triangulation RED: 14/15 passed, malformed successful Todo retained `◐ valid`; corrected snapshot handling then GREEN: 15/15 passed. Transport and snapshot IO were stubbed only, never live Herdr or real user data. Unicode, growth-after-stat bounds, cache/fallback, long-to-short atomic clear, root/children, ownership, offline and ordering covered.
 Prior parent evidence, not rerun here: focused launcher/child checks passed, generated-runtime check passed (8 runtime checks); type ratchet has pre-existing 223 vs 200 diagnostics. This TS refinement has clean focused editor diagnostics. No new type-baseline claim.
 

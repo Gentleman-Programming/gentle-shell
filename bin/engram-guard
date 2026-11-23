@@ -1,5 +1,5 @@
 #!/bin/sh
-# Gentle Shell's Engram guard. A bundled Gentle Shell points ENGRAM_BIN here
+# Drakonc Shell's Engram guard. A bundled Drakonc Shell points ENGRAM_BIN here
 # when memory is disabled (unknown store compatibility or a missing bundled
 # core) and the user selected neither ENGRAM_BIN nor ENGRAM_URL. Providers reach
 # local Engram data only by running ENGRAM_BIN, so failing here stops them

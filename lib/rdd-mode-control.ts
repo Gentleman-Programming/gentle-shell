@@ -7,7 +7,7 @@ export interface RddModeControl {
 	open(): Promise<void>;
 }
 
-export const RDD_MODE_CONTROL_CHANNEL = "gentle:rdd:host-ui";
+export const RDD_MODE_CONTROL_CHANNEL = "drakonc:rdd:host-ui";
 
 /** Discover the current session owner for a human-operated UI, if one is available. */
 export function discoverRddModeControl(pi: ExtensionAPI): Promise<RddModeControl | undefined> {

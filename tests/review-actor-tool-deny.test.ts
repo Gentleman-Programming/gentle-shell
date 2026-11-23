@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 // Read-only review actors must deny omitted tools by DEFAULT, not by omission
-// (parity with gentle-ai #1372). Each actor's tool map leads with the
+// (parity with drakonc-ai #1372). Each actor's tool map leads with the
 // deny-all rule `"*": false` before its explicit allowances so globally
 // enabled MCP namespaces and future tools stay denied unless listed.
 
@@ -12,7 +12,7 @@ const ROOT = join(import.meta.dirname, "..");
 const ASSETS_AGENTS_DIR = join(ROOT, "assets", "agents");
 const DENY_ALL_RULE = '"*": false';
 
-// gentle-pi#311 P5: review-refuter.md and review-validator.md are retired —
+// drakonc-pi#311 P5: review-refuter.md and review-validator.md are retired —
 // the adversarial roles execute through Go-owned pi processes via
 // provider-rendered self-contained vectors, so no Pi agent definition exists
 // for them to deny tools on.
@@ -98,7 +98,7 @@ test("a tool absent from the allowlist resolves to denied under the deny-all rul
 		"read",
 		"grep",
 		"find",
-		"gentle_review_scope",
+		"drakonc_review_scope",
 		"edit",
 		"write",
 		"bash",
@@ -118,12 +118,12 @@ test("a tool absent from the allowlist resolves to denied under the deny-all rul
 	// read-only candidate view Pi already materializes is the sanctioned path;
 	// bash was the one thing making it optional.
 	//
-	// gentle-ai's OpenCode variant does grant bash, but only behind permissions
+	// drakonc-ai's OpenCode variant does grant bash, but only behind permissions
 	// whose broad deny precedes narrow allows for specific Git shapes. That is
 	// the other half of the same rule, not an exception to it.
 	for (const lens of ["review-risk", "review-resilience", "review-readability", "review-reliability"]) {
 		const lensActive = resolveActiveTools(readToolEntries(join(ASSETS_AGENTS_DIR, `${lens}.md`)), registry);
-		assert.deepEqual(lensActive, ["read", "grep", "find", "gentle_review_scope"], `${lens} must expose only candidate readers and the bounded scope reader`);
+		assert.deepEqual(lensActive, ["read", "grep", "find", "drakonc_review_scope"], `${lens} must expose only candidate readers and the bounded scope reader`);
 		for (const omitted of ["bash", "edit", "write", "mem_save", "codegraph_explore", "mcp__slack__slack_send_message", "subagent_run"]) {
 			assert.ok(!lensActive.includes(omitted), `${lens} must deny ${omitted}`);
 		}

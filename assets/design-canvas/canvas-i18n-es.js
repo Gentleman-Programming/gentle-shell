@@ -49,7 +49,7 @@ export const ES = Object.freeze({
 	},
 	theme: {
 		theme: "Tema",
-		gentleman: "Gentleman",
+		drakoncman: "Drakoncman",
 		neutral: "Neutro",
 	},
 	focus: {
@@ -59,7 +59,7 @@ export const ES = Object.freeze({
 	boards: {
 		systemTitle: "Design system",
 		systemTradeoff: "Tokens del proyecto (design/system.md)",
-		systemNote: "Los comentarios solo se aplican a las propuestas. Para cambiar el sistema, actualiza las fuentes de diseño del proyecto y ejecuta /gentle:design sync.",
+		systemNote: "Los comentarios solo se aplican a las propuestas. Para cambiar el sistema, actualiza las fuentes de diseño del proyecto y ejecuta /drakonc:design sync.",
 		systemOff: "Comentarios desactivados en este tablero",
 		invalidDesign: (slug) => `${slug} (design.json no válido)`,
 		frameTitle: (title) => `Propuesta ${title}`,
@@ -78,7 +78,7 @@ export const ES = Object.freeze({
 		notSent: (reason) => `No se envió: ${reason}`,
 		error: "error",
 		feature: (feature) => `Funcionalidad: ${feature}`,
-		noDesigns: "Aún no hay diseños. Ejecuta /gentle:design con una petición para crear uno.",
+		noDesigns: "Aún no hay diseños. Ejecuta /drakonc:design con una petición para crear uno.",
 		cannotShow: (slug, reason) => `No se puede mostrar el diseño "${slug}": ${reason}`,
 		invalidManifest: (slug) => `design.json de ${slug} no es válido`,
 		noArtboards: "Este diseño aún no tiene propuestas.",
@@ -226,7 +226,7 @@ export const ES = Object.freeze({
 		confirmLabel: (number) => `Confirmar que quitas la parte ${number}`,
 		cancel: "Cancelar",
 		partTitle: "Construir solo este elemento en el proyecto; el campo es una nota opcional",
-		partOffline: "El canvas no está conectado a una sesión de Pi; ábrelo con /gentle:design open",
+		partOffline: "El canvas no está conectado a una sesión de Pi; ábrelo con /drakonc:design open",
 		noteTooLong: (max) => `La nota puede tener como máximo ${max} caracteres.`,
 		sending: "Enviando…",
 		sentShort: "Enviado a la sesión",
@@ -234,7 +234,7 @@ export const ES = Object.freeze({
 		queued: (title) => `En cola: la sesión construirá solo esta parte de ${title} cuando termine su tarea actual.`,
 		notSent: (why) => `No se envió: ${why}`,
 		sendErrors: {
-			"implement-part-unavailable": "el canvas no está conectado a una sesión de Pi; ábrelo con /gentle:design open.",
+			"implement-part-unavailable": "el canvas no está conectado a una sesión de Pi; ábrelo con /drakonc:design open.",
 			"invalid-file": "esa propuesta ya no está en el diseño.",
 			"invalid-selector": "el selector de este elemento no se puede enviar.",
 			"invalid-excerpt": "el texto de este elemento no se puede enviar.",

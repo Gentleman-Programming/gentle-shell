@@ -17,7 +17,7 @@ Before launching any bounded writer, even the native `Agent` fallback, derive it
 - pre-existing untracked targets it may write, listed explicitly;
 - nothing beyond the task; wider is the same defect as none.
 
-Test scratch stays outside the worktree (`mktemp -d`), never in the repository (nor caches or `TMPDIR`); inside state uses an excluded path the test removes. The runtime owns session scratch; `/gentle:scratch` lists or cleans recorded clones and worktrees.
+Test scratch stays outside the worktree (`mktemp -d`), never in the repository (nor caches or `TMPDIR`); inside state uses an excluded path the test removes. The runtime owns session scratch; `/drakonc:scratch` lists or cleans recorded clones and worktrees.
 
 If the surface cannot be derived, do not launch or make the human author paths: offer the derived exact paths as an approve/decline choice (Lossless Blocking Prompts, `orchestrator-prompts.md`). Investigate technical route doubt; it is not a human question.
 

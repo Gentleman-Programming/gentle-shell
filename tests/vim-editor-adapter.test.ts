@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
 import { CURSOR_MARKER, Editor, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { AUDITED_PI_EDITOR_VERSIONS, createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
-import { resolveVimRuntime, VIM_AGENT_INDEX_PATTERN, VIM_CLI_ENTRY_PATTERN } from "../extensions/gentle-shell.ts";
+import { resolveVimRuntime, VIM_AGENT_INDEX_PATTERN, VIM_CLI_ENTRY_PATTERN } from "../extensions/drakonc-shell.ts";
 import { VimOperatorEngine } from "../lib/vim-operator-engine.ts";
 import { VimVisualEngine } from "../lib/vim-visual-engine.ts";
 
@@ -290,7 +290,7 @@ test("audited Pi editor releases are one frozen exact allowlist that includes th
 // A fabricated package root reuses the real installed classes but declares its
 // own release metadata, isolating the audited-version allowlist from identity.
 function fabricatedPiCli(t: test.TestContext, version: string, tuiVersion = version, bundledVersion = version): string {
-  const root = realpathSync(mkdtempSync(resolve(tmpdir(), "gentle-vim-audit-")));
+  const root = realpathSync(mkdtempSync(resolve(tmpdir(), "drakonc-vim-audit-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const realBundle = resolve(dirname(realpathSync(target)), "index.js");
   const realAgent = resolve(dirname(realpathSync(target)), "../index.js");

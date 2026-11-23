@@ -61,7 +61,7 @@ function createRepository(t: test.TestContext): {
 	repository: string;
 	git: (...args: string[]) => string;
 } {
-	const parent = realpathSync(mkdtempSync(join(tmpdir(), "gentle-pi-snapshot-")));
+	const parent = realpathSync(mkdtempSync(join(tmpdir(), "drakonc-pi-snapshot-")));
 	const repository = join(parent, "repo");
 	mkdirSync(repository);
 	t.after(() => rmSync(parent, { recursive: true, force: true }));
@@ -77,9 +77,9 @@ function createRepository(t: test.TestContext): {
 	git("add", ".");
 	git(
 		"-c",
-		"user.name=Gentle Pi Tests",
+		"user.name=Drakonc Pi Tests",
 		"-c",
-		"user.email=gentle-pi@example.invalid",
+		"user.email=drakonc-pi@example.invalid",
 		"commit",
 		"-m",
 		"base",
@@ -133,7 +133,7 @@ test("ephemeral live candidate binding derives the complete candidate without re
 	const { repository, git } = createRepository(t);
 	writeFileSync(join(repository, "tracked.txt"), "working tree\n");
 	writeFileSync(join(repository, "untracked.txt"), "included\n");
-	const snapshots = join(repository, ".git", "gentle-ai", "reviews", "snapshots");
+	const snapshots = join(repository, ".git", "drakonc-ai", "reviews", "snapshots");
 	const indexPath = join(git("rev-parse", "--absolute-git-dir"), "index");
 	const indexBefore = readFileSync(indexPath);
 	const statusBefore = git("status", "--porcelain=v1", "--untracked-files=all");

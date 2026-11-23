@@ -637,9 +637,9 @@ for (const incompatible of [false, true]) {
    import assert from "node:assert/strict";
    import { SessionManager } from "@earendil-works/pi-coding-agent";
    import { createSessionProfileIntegration } from ${JSON.stringify(moduleUrl)};
-   ${incompatible ? 'globalThis[Symbol.for("gentle-pi.session-profile.lifecycle")] = { version: 2 };' : ""}
+   ${incompatible ? 'globalThis[Symbol.for("drakonc-pi.session-profile.lifecycle")] = { version: 2 };' : ""}
    const manager = SessionManager.inMemory(${JSON.stringify(root)});
-   manager.appendCustomEntry("gentle-pi.session-profile/v1", { kind: "bind", origin: "user", name: "unwritten", modelProfiles: {} });
+   manager.appendCustomEntry("drakonc-pi.session-profile/v1", { kind: "bind", origin: "user", name: "unwritten", modelProfiles: {} });
    const before = JSON.stringify(manager.getEntries()); let calls = 0;
    const live = createSessionProfileIntegration().start(manager, () => { calls++; }, { reason: "startup" });
    assert.equal(live.outcome.status, "indeterminate");
@@ -791,7 +791,7 @@ test("a reload start while a selection is queued revokes the old attachment", as
  assert.equal(result?.current, false);
  assert.notEqual(result?.outcome.status, "persisted", "the old attachment cannot append");
  assert.equal(
-  f.manager.getBranch().some((entry) => entry.type === "custom" && entry.customType?.startsWith("gentle-pi.session-profile/")),
+  f.manager.getBranch().some((entry) => entry.type === "custom" && entry.customType?.startsWith("drakonc-pi.session-profile/")),
   false,
  );
 });
@@ -831,7 +831,7 @@ test("selection helpers treat an incompatible registry protocol as nothing pendi
    runCurrentSessionProfileSelection,
    waitCurrentSessionProfileSelection,
   } from ${JSON.stringify(moduleUrl)};
-  globalThis[Symbol.for("gentle-pi.session-profile.lifecycle")] = { version: 2 };
+  globalThis[Symbol.for("drakonc-pi.session-profile.lifecycle")] = { version: 2 };
   const manager = SessionManager.inMemory(${JSON.stringify(tmpdir())});
   assert.equal(hasPendingSessionProfileSelection(manager), false);
   assert.equal(await waitCurrentSessionProfileSelection(manager), undefined);

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { __testing, createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError } from "../lib/review-host-relay.ts";
 import { runInProcessReviewer } from "../lib/inprocess-reviewer.ts";
 import { NativeReviewIntegrationError, type NativeReviewCli } from "../lib/native-review-cli.ts";
@@ -13,8 +13,8 @@ import { CandidateViewRegistry } from "../lib/review-candidate-view.ts";
 import type { ReviewArtifactSubjectV2, ReviewCollectInputV3, ReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { ReviewHostRelayRequest } from "../lib/review-host-relay.ts";
 
-// Third field failure on the recovered-lineage defect (2026-08-16, gentle-pi
-// main 402f9f77 + gentle-ai 2.4.0-main.20278905): STATUS recognises the
+// Third field failure on the recovered-lineage defect (2026-08-16, drakonc-pi
+// main 402f9f77 + drakonc-ai 2.4.0-main.20278905): STATUS recognises the
 // lineage, the Pi RELAY never runs, no lens is launched, zero mutations.
 //
 // Measured against the live binary on a faithful reproduction (linked
@@ -39,7 +39,7 @@ const SHA = `sha256:${"1".repeat(64)}`;
 const TRANSPORT_REFUSAL_CODE = "immutable_review_transport_unsupported";
 
 function repository(t: test.TestContext): string {
-	const cwd = mkdtempSync(join(tmpdir(), "gentle-pi-relay-transport-"));
+	const cwd = mkdtempSync(join(tmpdir(), "drakonc-pi-relay-transport-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	execFileSync("git", ["init", "-b", "main"], { cwd });
 	writeFileSync(join(cwd, "app.ts"), "export const value = 1;\n");
@@ -190,21 +190,21 @@ test("the negotiated status asks for the pi agent so the provider offers its mat
 	assert.equal(hostRelay.transport, "pi_host_relay");
 });
 
-// gentle-pi#311 P2 (superseding gentle-shell#1136 / #1158): the lens's
+// drakonc-pi#311 P2 (superseding drakonc-shell#1136 / #1158): the lens's
 // user-owned completion selection (agent model routing config) rides the
 // relay request alongside the live model registry; there is no extension
 // allowlist and no ambient default model to fall back to.
 test("capture forwards the lens's user-owned selection and thinking level to the relay request", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-config-"));
+	const configHome = mkdtempSync(join(tmpdir(), "drakonc-pi-relay-config-"));
 	const cwd = repository(t);
 	t.after(() => rmSync(configHome, { recursive: true, force: true }));
 	writeFileSync(join(configHome, "models.json"), JSON.stringify({ "review-reliability": { model: "minimax/MiniMax-M3", thinking: "high" } }), "utf8");
-	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	const previousConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
 	t.after(() => {
-		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		if (previousConfigHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousConfigHome;
 	});
 	const { native } = transportAwareNative();
 	const relayed: ReviewHostRelayRequest[] = [];
@@ -324,7 +324,7 @@ test("capture group threads the caller's live session id into every relay reques
 	assert.equal(result.outcome, "native-reviewer-group-status-reconciled");
 });
 
-// gentle-pi#311 P2 decision (flagged for confirmation): the in-process path
+// drakonc-pi#311 P2 decision (flagged for confirmation): the in-process path
 // has no ambient default model. A routing entry with no configured model used
 // to launch the child selection-free (inheriting pi's own default); the real
 // relay now refuses it typed instead, since there is no child to inherit a
@@ -335,14 +335,14 @@ test("capture group threads the caller's live session id into every relay reques
 // its `selection` field is simply absent.
 test("capture forwards no selection when the lens has no configured model, leaving the missing-model refusal to the relay", async (t) => {
 	t.after(() => __testing.setReviewHostRelayRunnerForTesting());
-	const configHome = mkdtempSync(join(tmpdir(), "gentle-pi-relay-config-empty-"));
+	const configHome = mkdtempSync(join(tmpdir(), "drakonc-pi-relay-config-empty-"));
 	const cwd = repository(t);
 	t.after(() => rmSync(configHome, { recursive: true, force: true }));
-	const previousConfigHome = process.env.GENTLE_PI_CONFIG_HOME;
-	process.env.GENTLE_PI_CONFIG_HOME = configHome;
+	const previousConfigHome = process.env.DRAKONC_PI_CONFIG_HOME;
+	process.env.DRAKONC_PI_CONFIG_HOME = configHome;
 	t.after(() => {
-		if (previousConfigHome === undefined) delete process.env.GENTLE_PI_CONFIG_HOME;
-		else process.env.GENTLE_PI_CONFIG_HOME = previousConfigHome;
+		if (previousConfigHome === undefined) delete process.env.DRAKONC_PI_CONFIG_HOME;
+		else process.env.DRAKONC_PI_CONFIG_HOME = previousConfigHome;
 	});
 	const { native } = transportAwareNative();
 	const relayed: ReviewHostRelayRequest[] = [];
@@ -472,10 +472,10 @@ test("a provider that refuses the pi transport blocks immediately without an age
 });
 
 test("a transport refusal names the runnable wrapper continuation, never a raw CLI command as the only exit", async (t) => {
-	// #535: a provider-printed raw `gentle-ai review ...` continuation is a dead
+	// #535: a provider-printed raw `drakonc-ai review ...` continuation is a dead
 	// end in this runtime — Pi is not in the provider's immutable review runtime
 	// list — so the refusal envelope itself must name the exit that runs in this
-	// surface: the gentle_review / gentle_review_capture wrapper tools. The
+	// surface: the drakonc_review / drakonc_review_capture wrapper tools. The
 	// provider's diagnostic stays intact as evidence alongside the runnable exit.
 	const captureCwd = repository(t);
 	const { native: captureNative } = transportAwareNative({ refusalCode: TRANSPORT_REFUSAL_CODE });
@@ -483,10 +483,10 @@ test("a transport refusal names the runnable wrapper continuation, never a raw C
 	__testing.clearReviewTransportProbeForTesting(captureNative);
 	assert.equal(capture.outcome, "pi-host-relay-transport-unavailable");
 	const captureNextAction = String(capture.next_action);
-	assert.match(captureNextAction, /gentle_review \{"operation":"inspect"\}/, "the capture refusal re-enters negotiated STATUS through the wrapper controller");
-	assert.match(captureNextAction, /gentle_review_capture/, "the capture refusal names the wrapper resubmission, not a CLI command");
-	assert.doesNotMatch(captureNextAction, /gentle-ai review/, "a raw `gentle-ai review ...` invocation is not a runnable exit in this runtime");
-	assert.deepEqual(capture.wrapper_continuation, { tool: "gentle_review", operation: "inspect", then: "gentle_review_capture" });
+	assert.match(captureNextAction, /drakonc_review \{"operation":"inspect"\}/, "the capture refusal re-enters negotiated STATUS through the wrapper controller");
+	assert.match(captureNextAction, /drakonc_review_capture/, "the capture refusal names the wrapper resubmission, not a CLI command");
+	assert.doesNotMatch(captureNextAction, /gentle-ai review/, "a raw `drakonc-ai review ...` invocation is not a runnable exit in this runtime");
+	assert.deepEqual(capture.wrapper_continuation, { tool: "drakonc_review", operation: "inspect", then: "drakonc_review_capture" });
 	assert.match(String((capture.relay_transport as { message: string }).message), /immutable review runtimes/i, "the provider diagnostic remains intact in the envelope");
 
 	const statusCwd = repository(t);
@@ -495,9 +495,9 @@ test("a transport refusal names the runnable wrapper continuation, never a raw C
 	__testing.clearReviewTransportProbeForTesting(statusNative);
 	assert.equal(status.outcome, "pi-host-relay-transport-unavailable");
 	const statusNextAction = String(status.next_action);
-	assert.match(statusNextAction, /gentle_review \{"operation":"inspect"\}/, "the controller refusal re-enters negotiated STATUS through the wrapper controller");
-	assert.doesNotMatch(statusNextAction, /gentle-ai review/, "a raw `gentle-ai review ...` invocation is not a runnable exit in this runtime");
-	assert.deepEqual(status.wrapper_continuation, { tool: "gentle_review", operation: "inspect" });
+	assert.match(statusNextAction, /drakonc_review \{"operation":"inspect"\}/, "the controller refusal re-enters negotiated STATUS through the wrapper controller");
+	assert.doesNotMatch(statusNextAction, /gentle-ai review/, "a raw `drakonc-ai review ...` invocation is not a runnable exit in this runtime");
+	assert.deepEqual(status.wrapper_continuation, { tool: "drakonc_review", operation: "inspect" });
 });
 
 test("a remembered pi transport refusal remains blocked without re-probing or lifecycle continuation", async (t) => {
@@ -567,10 +567,10 @@ for (const grouped of [false, true]) {
 				{ lineageId, collectBindings: inputs.map(input => JSON.stringify(input)), reviewerRunAcknowledged: true }, cwd, native, undefined, new CandidateViewRegistry(),
 			) : await runCapture(cwd, native, lineageId);
 			assert.equal(result.outcome, "pi-host-relay-timeout");
-			assert.match(String(result.next_action), new RegExp(phase === "first-output" ? "GENTLE_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS" : "GENTLE_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS"));
+			assert.match(String(result.next_action), new RegExp(phase === "first-output" ? "DRAKONC_PI_REVIEW_RELAY_FIRST_OUTPUT_TIMEOUT_MS" : "DRAKONC_PI_REVIEW_RELAY_IDLE_TIMEOUT_MS"));
 			assert.match(String(result.next_action), /120000ms/);
 			assert.match(String(result.next_action), /fresh STATUS/);
-			assert.doesNotMatch(String(result.next_action), /GENTLE_PI_REVIEW_RELAY_PI_TIMEOUT_MS|900000ms/);
+			assert.doesNotMatch(String(result.next_action), /DRAKONC_PI_REVIEW_RELAY_PI_TIMEOUT_MS|900000ms/);
 		});
 	}
 }
@@ -603,7 +603,7 @@ for (const grouped of [false, true]) {
 					getSettings() { settingsReads += 1; return { transport }; },
 				}),
 			} as unknown as ExtensionAPI;
-			createGentleAiExtension({ nativeReviewCli: native })(pi);
+			createDrakoncAiExtension({ nativeReviewCli: native })(pi);
 			assert.equal(settingsReads, 0, "registration must not cache settings");
 			transport = preference === "unset" || preference === "older-api" ? undefined : preference;
 			const requests: ReviewHostRelayRequest[] = [];
@@ -616,8 +616,8 @@ for (const grouped of [false, true]) {
 				async (result) => ({ promptByteLength: result.promptByteLength, resultByteLength: result.resultByteLength, submission: "{}" }),
 			);
 			const ctx = { cwd, hasUI: false } as unknown as Parameters<CaptureTool["execute"]>[4];
-			await tools.get("gentle_review")!.execute("status", { operation: "status", lineageId }, undefined, undefined, ctx);
-			const tool = tools.get(grouped ? "gentle_review_capture_group" : "gentle_review_capture")!;
+			await tools.get("drakonc_review")!.execute("status", { operation: "status", lineageId }, undefined, undefined, ctx);
+			const tool = tools.get(grouped ? "drakonc_review_capture_group" : "drakonc_review_capture")!;
 			const parameters = grouped
 				? { lineageId, collectBindings: inputs.map((input) => JSON.stringify(input)) }
 				: { lineageId, collectBinding: JSON.stringify(inputs[0]) };

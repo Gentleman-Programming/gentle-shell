@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { VERSION, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import { DESKTOP_RPC_SCHEMA } from "../lib/desktop-rpc.ts";
 import {
 	DESKTOP_UPDATES_EVENTS,
@@ -19,7 +19,7 @@ import { DesktopUpdatesBridge, resetUpdateStatusCacheForTesting, type UpdateSour
 import { INTERACTIVE_HOST_ENV } from "../lib/rpc-host.ts";
 import { defaultUpdateSources, packageKey, type ConfiguredPackageFacts, type UpdateSources } from "../lib/update-status.ts";
 
-// get_update_status: a read over Gentle Shell's own channel/version resolution
+// get_update_status: a read over Drakonc Shell's own channel/version resolution
 // and Pi's own package update check. The transport tests inject fake sources
 // (counting every lookup that would reach the network); the last tests run the
 // real sources against a temporary agent dir, config files, and a fake fetch.
@@ -116,7 +116,7 @@ function harness(t: test.TestContext, factory?: UpdateSourcesFactory, timeoutMs?
 		widgets,
 		async fire(event: string) { for (const handler of handlers.get(event) ?? []) await handler({}, ctx); },
 		invoke(requestId: string, params: Record<string, unknown>, method = "get_update_status") {
-			return commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }), ctx);
+			return commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }), ctx);
 		},
 		responses() { return widgets.map((line) => JSON.parse(line)); },
 	};
@@ -151,8 +151,8 @@ test("without refresh it answers from the launcher's recorded release lookup wit
 	assert.deepEqual(responses[0].data, {
 		refreshed: false,
 		offline: false,
-		gentleShell: { current: "4.8.0", latest: "4.9.0", channel: "release", state: "update_available", command: "gentle-shell upgrade", checkedAt: "2026-11-16T08:00:00.000Z" },
-		pi: { current: "1.5.2", latest: null, state: "unknown", command: "gentle-shell update", checkedAt: null },
+		drakoncShell: { current: "4.8.0", latest: "4.9.0", channel: "release", state: "update_available", command: "drakonc-shell upgrade", checkedAt: "2026-11-16T08:00:00.000Z" },
+		pi: { current: "1.5.2", latest: null, state: "unknown", command: "drakonc-shell update", checkedAt: null },
 		packages: {
 			available: true,
 			items: [
@@ -160,7 +160,7 @@ test("without refresh it answers from the launcher's recorded release lookup wit
 				{ name: "beta", kind: "npm", scope: "user", current: "1.0.0", latest: null, pinned: false, state: "unknown" },
 			],
 			truncated: false,
-			command: "gentle-shell update --extensions",
+			command: "drakonc-shell update --extensions",
 			checkedAt: null,
 		},
 	});
@@ -174,9 +174,9 @@ test("an omitted or false refresh never looks anything up, and with no cache eve
 	const [first, second] = app.responses();
 	assert.equal(fake.calls.network, 0);
 	for (const response of [first, second]) {
-		assert.equal(response.data.gentleShell.latest, null);
-		assert.equal(response.data.gentleShell.state, "unknown");
-		assert.equal(response.data.gentleShell.checkedAt, null);
+		assert.equal(response.data.drakoncShell.latest, null);
+		assert.equal(response.data.drakoncShell.state, "unknown");
+		assert.equal(response.data.drakoncShell.checkedAt, null);
 		assert.equal(response.data.pi.state, "unknown");
 		assert.equal(response.data.refreshed, false);
 	}
@@ -193,13 +193,13 @@ test("refresh runs each lookup once, reports the check time, and later plain rea
 	assert.equal(app.responses().length, 2, "no event");
 	assert.deepEqual({ latestShell: fake.calls.latestShell, latestPi: fake.calls.latestPi, checkPackages: fake.calls.checkPackages }, { latestShell: 1, latestPi: 1, checkPackages: 1 });
 	assert.equal(refreshed.data.refreshed, true);
-	assert.deepEqual(refreshed.data.gentleShell, { current: "4.8.0", latest: "4.9.0", channel: "release", state: "update_available", command: "gentle-shell upgrade", checkedAt: "2026-11-17T12:00:00.000Z" });
-	assert.deepEqual(refreshed.data.pi, { current: "1.5.2", latest: "1.6.0", state: "update_available", command: "gentle-shell update", checkedAt: "2026-11-17T12:00:00.000Z" });
+	assert.deepEqual(refreshed.data.drakoncShell, { current: "4.8.0", latest: "4.9.0", channel: "release", state: "update_available", command: "drakonc-shell upgrade", checkedAt: "2026-11-17T12:00:00.000Z" });
+	assert.deepEqual(refreshed.data.pi, { current: "1.5.2", latest: "1.6.0", state: "update_available", command: "drakonc-shell update", checkedAt: "2026-11-17T12:00:00.000Z" });
 	assert.deepEqual(refreshed.data.packages.items.map((item: any) => [item.name, item.state]), [["alpha", "update_available"], ["beta", "no_update_reported"]]);
 	assert.equal(refreshed.data.packages.checkedAt, "2026-11-17T12:00:00.000Z");
 	// The plain read reuses the refresh in memory, over the older launcher record.
 	assert.equal(cached.data.refreshed, false);
-	assert.deepEqual(cached.data.gentleShell, refreshed.data.gentleShell);
+	assert.deepEqual(cached.data.drakoncShell, refreshed.data.drakoncShell);
 	assert.deepEqual(cached.data.pi, refreshed.data.pi);
 	assert.deepEqual(cached.data.packages, refreshed.data.packages);
 	assert.equal(fake.calls.network, 3, "the plain read did no network work");
@@ -210,7 +210,7 @@ test("an exact match is up_to_date only after a successful lookup", async (t) =>
 	const app = harness(t, fake.factory);
 	await app.invoke("upd-1", { refresh: true });
 	const data = app.responses()[0].data;
-	assert.equal(data.gentleShell.state, "up_to_date");
+	assert.equal(data.drakoncShell.state, "up_to_date");
 	assert.equal(data.pi.state, "up_to_date");
 	// Pi's package check cannot tell a failed lookup from no update, so a
 	// package it did not list is never called up to date.
@@ -222,7 +222,7 @@ test("a newer local build or an incomparable version is unknown, never up to dat
 	const app = harness(t, fake.factory);
 	await app.invoke("upd-1", { refresh: true });
 	const data = app.responses()[0].data;
-	assert.equal(data.gentleShell.state, "unknown");
+	assert.equal(data.drakoncShell.state, "unknown");
 	assert.equal(data.pi.state, "unknown");
 });
 
@@ -239,18 +239,18 @@ test("failed lookups report unknown with no latest, never up to date, and keep t
 	await app.invoke("bad", { refresh: true });
 	await app.invoke("plain", {});
 	const [good, bad, plain] = app.responses();
-	assert.equal(good.data.gentleShell.state, "up_to_date");
+	assert.equal(good.data.drakoncShell.state, "up_to_date");
 	assert.equal(bad.ok, true);
 	assert.deepEqual(
-		{ shell: [bad.data.gentleShell.state, bad.data.gentleShell.latest, bad.data.gentleShell.checkedAt], pi: [bad.data.pi.state, bad.data.pi.latest, bad.data.pi.checkedAt] },
+		{ shell: [bad.data.drakoncShell.state, bad.data.drakoncShell.latest, bad.data.drakoncShell.checkedAt], pi: [bad.data.pi.state, bad.data.pi.latest, bad.data.pi.checkedAt] },
 		{ shell: ["unknown", null, null], pi: ["unknown", null, null] },
 	);
 	assert.deepEqual(bad.data.packages.items.map((item: any) => item.state), ["unknown", "unknown"]);
 	assert.equal(bad.data.packages.checkedAt, null);
 	assert.doesNotMatch(JSON.stringify(bad), /secret|ENOTFOUND|registry|pnpm view|npm view/);
 	// A plain read shows the last successful check with its own time.
-	assert.equal(plain.data.gentleShell.state, "up_to_date");
-	assert.equal(plain.data.gentleShell.checkedAt, "2026-11-17T12:00:00.000Z");
+	assert.equal(plain.data.drakoncShell.state, "up_to_date");
+	assert.equal(plain.data.drakoncShell.checkedAt, "2026-11-17T12:00:00.000Z");
 });
 
 test("a refresh is bounded by its deadline even when a lookup never settles", async (t) => {
@@ -262,7 +262,7 @@ test("a refresh is bounded by its deadline even when a lookup never settles", as
 	assert.ok(Date.now() - started < 5_000, "the answer came back at the deadline");
 	const data = app.responses()[0].data;
 	assert.equal(data.refreshed, true);
-	assert.equal(data.gentleShell.state, "unknown");
+	assert.equal(data.drakoncShell.state, "unknown");
 	assert.equal(data.pi.state, "unknown");
 	assert.deepEqual(data.packages.items.map((item: any) => item.state), ["unknown", "unknown"]);
 });
@@ -293,12 +293,12 @@ test("PI_OFFLINE: refresh does no network work and reports nothing as up to date
 	assert.equal(fake.calls.network, 0);
 	assert.equal(refresh.data.offline, true);
 	assert.equal(refresh.data.refreshed, false);
-	assert.deepEqual([refresh.data.gentleShell.state, refresh.data.gentleShell.latest], ["unknown", null]);
+	assert.deepEqual([refresh.data.drakoncShell.state, refresh.data.drakoncShell.latest], ["unknown", null]);
 	assert.equal(refresh.data.pi.state, "unknown");
 	assert.deepEqual(refresh.data.packages.items.map((item: any) => item.state), ["unknown", "unknown"]);
 	// A plain read still answers from the recorded lookup, dated, and flagged offline.
 	assert.equal(plain.data.offline, true);
-	assert.deepEqual([plain.data.gentleShell.state, plain.data.gentleShell.checkedAt], ["up_to_date", "2026-11-16T08:00:00.000Z"]);
+	assert.deepEqual([plain.data.drakoncShell.state, plain.data.drakoncShell.checkedAt], ["up_to_date", "2026-11-16T08:00:00.000Z"]);
 });
 
 // ---- Channels and fixed commands ----
@@ -309,28 +309,28 @@ test("the main channel compares the latest main commit with the commit in the ru
 	await app.invoke("main-plain", {});
 	await app.invoke("main-current", { refresh: true });
 	const [plain, fresh] = app.responses();
-	assert.deepEqual([plain.data.gentleShell.latest, plain.data.gentleShell.state], [null, "unknown"], "the release record never answers for main");
-	assert.deepEqual(fresh.data.gentleShell, { current: `4.8.0-main.${SHA.slice(0, 12)}`, latest: SHA.slice(0, 12), channel: "main", state: "up_to_date", command: "gentle-shell upgrade --channel main", checkedAt: "2026-11-17T12:00:00.000Z" });
+	assert.deepEqual([plain.data.drakoncShell.latest, plain.data.drakoncShell.state], [null, "unknown"], "the release record never answers for main");
+	assert.deepEqual(fresh.data.drakoncShell, { current: `4.8.0-main.${SHA.slice(0, 12)}`, latest: SHA.slice(0, 12), channel: "main", state: "up_to_date", command: "drakonc-shell upgrade --channel main", checkedAt: "2026-11-17T12:00:00.000Z" });
 
 	const behind = fakeSources({ channel: "main", shellVersion: "4.8.0-main.ffffffffffff", latestShell: async () => SHA });
 	const other = harness(t, behind.factory);
 	await other.invoke("main-behind", { refresh: true });
-	assert.equal(other.responses()[0].data.gentleShell.state, "update_available");
+	assert.equal(other.responses()[0].data.drakoncShell.state, "update_available");
 });
 
 test("each install channel carries its fixed command, and an unknown channel looks nothing up", async (t) => {
 	const expected: Record<ShellChannel, string | null> = {
-		release: "gentle-shell upgrade",
-		main: "gentle-shell upgrade --channel main",
-		bundled: "gentle-shell upgrade",
-		"gentle-ai-managed": "gentle-shell update --extensions",
+		release: "drakonc-shell upgrade",
+		main: "drakonc-shell upgrade --channel main",
+		bundled: "drakonc-shell upgrade",
+		"drakonc-ai-managed": "drakonc-shell update --extensions",
 		unknown: null,
 	};
 	for (const [channel, command] of Object.entries(expected) as Array<[ShellChannel, string | null]>) {
 		const fake = fakeSources({ channel });
 		const app = harness(t, fake.factory);
 		await app.invoke(`ch-${channel}`, { refresh: true });
-		const shell = app.responses()[0].data.gentleShell;
+		const shell = app.responses()[0].data.drakoncShell;
 		assert.equal(shell.channel, channel);
 		assert.equal(shell.command, command);
 		if (channel === "unknown") {
@@ -345,7 +345,7 @@ test("a Pi with no reachable latest-version source stays unknown and is never lo
 	const app = harness(t, fake.factory);
 	await app.invoke("pi-1", { refresh: true });
 	const pi = app.responses()[0].data.pi;
-	assert.deepEqual(pi, { current: "1.5.2", latest: null, state: "unknown", command: "gentle-shell update", checkedAt: null });
+	assert.deepEqual(pi, { current: "1.5.2", latest: null, state: "unknown", command: "drakonc-shell update", checkedAt: null });
 	assert.equal(fake.calls.latestPi, 0);
 });
 
@@ -386,7 +386,7 @@ test("packages are bounded to 100 rows with truncated, and an unreadable listing
 
 	const broken = harness(t, fakeSources({ packages: undefined }).factory);
 	await broken.invoke("broken", {});
-	assert.deepEqual(broken.responses()[0].data.packages, { available: false, items: [], truncated: false, command: "gentle-shell update --extensions", checkedAt: null });
+	assert.deepEqual(broken.responses()[0].data.packages, { available: false, items: [], truncated: false, command: "drakonc-shell update --extensions", checkedAt: null });
 });
 
 test("package names are display names only: no path, URL, or credential", () => {
@@ -482,7 +482,7 @@ test("real sources: Pi's listing, the launcher's release record, the channel rec
 		requests.push(url);
 		return new Response(JSON.stringify({ version: "4.9.1" }), { status: 200 });
 	}) as typeof globalThis.fetch;
-	const env = { GENTLE_PI_CONFIG_HOME: fixture.configHome, GENTLE_SHELL_CONFIG: fixture.launcherConfig };
+	const env = { DRAKONC_PI_CONFIG_HOME: fixture.configHome, DRAKONC_SHELL_CONFIG: fixture.launcherConfig };
 	const sources = defaultUpdateSources({ cwd: fixture.project, env, home: fixture.root, fetch });
 
 	assert.equal(sources.offline, false);
@@ -499,9 +499,9 @@ test("real sources: Pi's listing, the launcher's release record, the channel rec
 	]);
 	assert.equal(requests.length, 0, "every read above was local");
 	assert.equal(await sources.latestShell("release", new AbortController().signal), "4.9.1");
-	assert.deepEqual(requests, ["https://registry.npmjs.org/gentle-pi/latest"]);
+	assert.deepEqual(requests, ["https://registry.npmjs.org/drakonc-pi/latest"]);
 
-	writeFileSync(join(fixture.configHome, "channel.json"), JSON.stringify({ schema: "gentle-shell.channel/v1", channel: "main", shellCommit: SHA, gentleAiCommit: SHA }));
+	writeFileSync(join(fixture.configHome, "channel.json"), JSON.stringify({ schema: "drakonc-shell.channel/v1", channel: "main", shellCommit: SHA, drakoncAiCommit: SHA }));
 	assert.equal(await sources.shellChannel(), "main");
 	writeFileSync(join(fixture.configHome, "channel.json"), "not json");
 	assert.equal(await sources.shellChannel(), "unknown", "a malformed channel record is never guessed");
@@ -509,7 +509,7 @@ test("real sources: Pi's listing, the launcher's release record, the channel rec
 
 test("real sources: PI_OFFLINE makes Pi's own package check report nothing, so the answer stays unknown", async (t) => {
 	const fixture = realFixture(t);
-	const sources = defaultUpdateSources({ cwd: fixture.project, env: { PI_OFFLINE: "1", GENTLE_SHELL_CONFIG: fixture.launcherConfig, GENTLE_PI_CONFIG_HOME: fixture.configHome }, home: fixture.root, fetch: (() => { throw new Error("no network"); }) as typeof globalThis.fetch });
+	const sources = defaultUpdateSources({ cwd: fixture.project, env: { PI_OFFLINE: "1", DRAKONC_SHELL_CONFIG: fixture.launcherConfig, DRAKONC_PI_CONFIG_HOME: fixture.configHome }, home: fixture.root, fetch: (() => { throw new Error("no network"); }) as typeof globalThis.fetch });
 	assert.equal(sources.offline, true);
 	const bridge = new DesktopUpdatesBridge({ sources: () => sources });
 	resetUpdateStatusCacheForTesting();

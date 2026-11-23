@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseReviewCoordinatorInput, runReviewCoordinator, type ReviewCoordinatorTool } from "../lib/review-coordinator.ts";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 
 type Body = Record<string, any>;
 const target = "sha256:" + "a".repeat(64);
@@ -46,7 +46,7 @@ test("coordinator retains earlier runs and a failed reviewer attempt without dup
 test("reviewer evidence snapshots stay within the existing transition limit and do not persist across invocations", async () => {
 	let captures = 0;
 	const result = await runReviewCoordinator({ lineageId: lineage }, { invoke: async tool => {
-		if (tool === "gentle_review") return { ...collect, collectBindings: Array.from({ length: 4 }, (_, i) => ({ collectBinding: `opaque-${captures}-${i}` })) };
+		if (tool === "drakonc_review") return { ...collect, collectBindings: Array.from({ length: 4 }, (_, i) => ({ collectBinding: `opaque-${captures}-${i}` })) };
 		captures++;
 		return { ...captured, host_relay: { reviewer_runs: Array.from({ length: 4 }, () => ({ reviewer: { reviewerModel: "fixture/model", phase: "completion" } })) } };
 	} });
@@ -122,13 +122,13 @@ test("an intended-untracked selection returns selection-required; a correction r
 test("post-edit opaque captures need no targeted-validator reason or operation", async () => {
  const host = backend([collect, captured, approved, closed]);
  assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "closed");
- assert.equal(host.calls.filter(call => call.tool === "gentle_review_capture").length, 1);
+ assert.equal(host.calls.filter(call => call.tool === "drakonc_review_capture").length, 1);
 });
 
 test("opaque captures need no Pi metadata and groups retain provider order", async () => {
  const host = backend([{ ...collect, collectBindings: [{ collectBinding: "second" }, { collectBinding: "first" }] }, captured, stopped]);
  assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "stopped");
- assert.equal(host.calls[1].tool, "gentle_review_capture_group"); assert.deepEqual(host.calls[1].parameters.collectBindings, ["second", "first"]);
+ assert.equal(host.calls[1].tool, "drakonc_review_capture_group"); assert.deepEqual(host.calls[1].parameters.collectBindings, ["second", "first"]);
 });
 
 test("capture failures and missing forecast display never run or acknowledge further", async () => {
@@ -141,20 +141,20 @@ test("capture failures and missing forecast display never run or acknowledge fur
 
 test("a reconciled reviewer group continues only through bound STATUS; drift, uncertain or failed reconciliation stays blocked", async () => {
  const group = { ...collect, collectBindings: [{ collectBinding: "first" }, { collectBinding: "second" }] };
- const reconciled = { tool: "gentle_review_capture_group", status: "reconciled", outcome: "native-reviewer-group-status-reconciled", next_transition: { kind: "execute", execute: { operation: "review.acknowledge-approved" } } };
+ const reconciled = { tool: "drakonc_review_capture_group", status: "reconciled", outcome: "native-reviewer-group-status-reconciled", next_transition: { kind: "execute", execute: { operation: "review.acknowledge-approved" } } };
  const refuter = { ...collect, collectBindings: [{ collectBinding: "refuter" }] };
  const host = backend([group, reconciled, refuter, captured, approved, closed]);
  assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "closed");
- assert.deepEqual(host.calls.map(call => call.tool === "gentle_review" ? `status-or-ack:${call.parameters.operation}` : call.tool), ["status-or-ack:status", "gentle_review_capture_group", "status-or-ack:status", "gentle_review_capture", "status-or-ack:status", "status-or-ack:acknowledge-approved"], "the reconciled capture's own next_transition is never followed");
+ assert.deepEqual(host.calls.map(call => call.tool === "drakonc_review" ? `status-or-ack:${call.parameters.operation}` : call.tool), ["status-or-ack:status", "drakonc_review_capture_group", "status-or-ack:status", "drakonc_review_capture", "status-or-ack:status", "status-or-ack:acknowledge-approved"], "the reconciled capture's own next_transition is never followed");
  for (const capture of [
   { ...reconciled, native_failure: { reason: "unknown" } },
   { ...reconciled, failure: { kind: "transport" } },
   { ...reconciled, reconciliation: {} },
   { ...reconciled, reconciliation_failure: {} },
   { ...reconciled, status: "blocked" },
-  { tool: "gentle_review_capture_group", outcome: "native-reviewer-group-status-reconciliation-failed", reconciliation_failure: {} },
-  { tool: "gentle_review_capture_group", status: "blocked", outcome: "capture-group-authority-drift", reconciliation: {} },
-  { tool: "gentle_review_capture", status: "reconciled", outcome: "native-capture-outcome-unknown", native_failure: {} },
+  { tool: "drakonc_review_capture_group", outcome: "native-reviewer-group-status-reconciliation-failed", reconciliation_failure: {} },
+  { tool: "drakonc_review_capture_group", status: "blocked", outcome: "capture-group-authority-drift", reconciliation: {} },
+  { tool: "drakonc_review_capture", status: "reconciled", outcome: "native-capture-outcome-unknown", native_failure: {} },
  ]) {
   const blocked = backend([group, capture]);
   const result = await runReviewCoordinator({ lineageId: lineage }, blocked);
@@ -163,7 +163,7 @@ test("a reconciled reviewer group continues only through bound STATUS; drift, un
  // Fresh reconciled groups forever still end at the existing transition cap.
  let groups = 0;
  const capped = await runReviewCoordinator({ lineageId: lineage }, { invoke: async tool => {
-  if (tool === "gentle_review") return { ...collect, collectBindings: [{ collectBinding: `a-${groups}` }, { collectBinding: `b-${groups}` }] };
+  if (tool === "drakonc_review") return { ...collect, collectBindings: [{ collectBinding: `a-${groups}` }, { collectBinding: `b-${groups}` }] };
   groups++; return reconciled;
  } });
  assert.equal(capped.outcome, "transition-limit"); assert.equal(groups, 24);
@@ -238,11 +238,11 @@ test("ambiguous selectors and consent arguments are rejected before dispatch", (
 });
 
 test("coordinator is registered by default in a parent session; absent in child sessions and with the explicit opt-out", () => {
-	for (const [env, expected] of [[{}, true], [{ GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "1" }, true], [{ GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "0" }, false], [{ GENTLE_PI_AGENTS_CHILD: "1" }, false], [{ GENTLE_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "1", GENTLE_PI_AGENTS_CHILD: "1" }, false]] as const) {
+	for (const [env, expected] of [[{}, true], [{ DRAKONC_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "1" }, true], [{ DRAKONC_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "0" }, false], [{ DRAKONC_PI_AGENTS_CHILD: "1" }, false], [{ DRAKONC_PI_EXPERIMENTAL_REVIEW_COORDINATOR: "1", DRAKONC_PI_AGENTS_CHILD: "1" }, false]] as const) {
 		const tools = new Map();
-		createGentleAiExtension({ nativeReviewCli: null, processEnv: env })({ registerTool: (tool: { name: string }) => tools.set(tool.name, tool), registerCommand() {}, on() {} } as never);
-		assert.equal(tools.has("gentle_review_run"), expected);
-		for (const name of ["gentle_review", "gentle_review_capture", "gentle_review_capture_group"]) assert.ok(tools.has(name));
+		createDrakoncAiExtension({ nativeReviewCli: null, processEnv: env })({ registerTool: (tool: { name: string }) => tools.set(tool.name, tool), registerCommand() {}, on() {} } as never);
+		assert.equal(tools.has("drakonc_review_run"), expected);
+		for (const name of ["drakonc_review", "drakonc_review_capture", "drakonc_review_capture_group"]) assert.ok(tools.has(name));
 	}
 });
 
@@ -257,10 +257,10 @@ test("forecasts remain lossless in final results even if capture later refuses",
 });
 
 test("a captured provider-role artifact continues only through bound STATUS; look-alikes stay blocked", async () => {
- const role = { tool: "gentle_review_capture", status: "captured", outcome: "native-provider-role-captured", provider_role: { role: "refuter", captured: true } };
+ const role = { tool: "drakonc_review_capture", status: "captured", outcome: "native-provider-role-captured", provider_role: { role: "refuter", captured: true } };
  const host = backend([collect, role, approved, closed]);
  assert.equal((await runReviewCoordinator({ lineageId: lineage }, host)).outcome, "closed");
- assert.deepEqual(host.calls.map(call => call.tool === "gentle_review" ? String(call.parameters.operation) : call.tool), ["status", "gentle_review_capture", "status", "acknowledge-approved"]);
+ assert.deepEqual(host.calls.map(call => call.tool === "drakonc_review" ? String(call.parameters.operation) : call.tool), ["status", "drakonc_review_capture", "status", "acknowledge-approved"]);
  const group = { ...collect, collectBindings: [{ collectBinding: "first" }, { collectBinding: "second" }] };
  for (const [status, capture] of [
   [collect, { ...role, status: "blocked" }],
@@ -299,13 +299,13 @@ test("cancellation after an admitted closure with findings returns cancelled; a 
  const withFindings = { ...captured, closure: { advisory_findings: findings, advisory_finding_claims: { F1: "claim" } } };
  const racing = (response: Body) => {
   const controller = new AbortController(); const calls: string[] = [];
-  return { calls, signal: controller.signal, async invoke(tool: ReviewCoordinatorTool) { calls.push(tool); if (tool === "gentle_review") return collect; controller.abort(); return response; } };
+  return { calls, signal: controller.signal, async invoke(tool: ReviewCoordinatorTool) { calls.push(tool); if (tool === "drakonc_review") return collect; controller.abort(); return response; } };
  };
  const host = racing(withFindings);
  const result = await runReviewCoordinator({ lineageId: lineage }, host);
  assert.equal(result.outcome, "cancelled"); assert.deepEqual(result.result, withFindings, "the fixture envelope carries no status or state to drop");
  assert.deepEqual(result.advisory_findings, findings); assert.deepEqual(result.advisory_finding_claims, { F1: "claim" });
- assert.deepEqual(host.calls, ["gentle_review", "gentle_review_capture"], "nothing is dispatched after the cancellation");
+ assert.deepEqual(host.calls, ["drakonc_review", "drakonc_review_capture"], "nothing is dispatched after the cancellation");
  for (const response of [{ ...withFindings, failure: { kind: "transport" } }, { ...withFindings, outcome: "capture-binding-rejected" }, { ...captured, closure: {} }, captured]) {
   const refused = racing(response);
   await assert.rejects(runReviewCoordinator({ lineageId: lineage }, refused), { name: "AbortError" }, JSON.stringify(response));
@@ -314,14 +314,14 @@ test("cancellation after an admitted closure with findings returns cancelled; a 
 });
 
 test("after a captured provider-role artifact, drift, a reoffered capture and the cap still stop the run", async () => {
- const role = { tool: "gentle_review_capture", status: "captured", outcome: "native-provider-role-captured", provider_role: { role: "refuter", captured: true } };
+ const role = { tool: "drakonc_review_capture", status: "captured", outcome: "native-provider-role-captured", provider_role: { role: "refuter", captured: true } };
  const drift = backend([collect, role, { result: { ...approved.result, target_identity: "other" } }]);
  assert.equal((await runReviewCoordinator({ lineageId: lineage }, drift)).outcome, "binding-drift"); assert.equal(drift.calls.length, 3);
  const reoffered = backend([collect, role, collect]);
  assert.equal((await runReviewCoordinator({ lineageId: lineage }, reoffered)).outcome, "repeated-capture"); assert.equal(reoffered.calls.length, 3);
  let roles = 0;
  const capped = await runReviewCoordinator({ lineageId: lineage }, { invoke: async tool => {
-  if (tool === "gentle_review") return { ...collect, collectBindings: [{ collectBinding: `role-${roles}` }] };
+  if (tool === "drakonc_review") return { ...collect, collectBindings: [{ collectBinding: `role-${roles}` }] };
   roles++; return role;
  } });
  assert.equal(capped.outcome, "transition-limit"); assert.equal(roles, 24);
@@ -337,20 +337,20 @@ test("a retained approved closure with findings survives every later abort befor
   const result = await runReviewCoordinator({ lineageId: lineage }, { signal: controller.signal,
    now: () => { if (abortAtNextClock) controller.abort(); return 0; },
    async invoke(tool, parameters) {
-    calls.push(tool === "gentle_review" ? String(parameters.operation) : tool);
-    if (tool !== "gentle_review") return withFindings;
+    calls.push(tool === "drakonc_review" ? String(parameters.operation) : tool);
+    if (tool !== "drakonc_review") return withFindings;
     if (++statuses === 1) return collect;
     abortAtNextClock = true; return approved;
    } });
   assert.equal(result.outcome, "cancelled"); assert.deepEqual(result.result, expected);
   assert.deepEqual(result.advisory_findings, findings); assert.deepEqual(result.advisory_finding_claims, { F1: "claim" }); assert.deepEqual(result.advisory_finding_claims_truncated, ["F1"]);
-  assert.deepEqual(calls, ["status", "gentle_review_capture", "status"], "no acknowledgement after the abort");
+  assert.deepEqual(calls, ["status", "drakonc_review_capture", "status"], "no acknowledgement after the abort");
  }
  // The acknowledgement rejects because of the abort; or completes although the signal aborted.
  for (const [ack, outcome] of [["rejects", "cancelled"], ["completes", "closed"]] as const) {
   const controller = new AbortController(); let statuses = 0;
   const result = await runReviewCoordinator({ lineageId: lineage }, { signal: controller.signal, async invoke(tool, parameters) {
-   if (tool !== "gentle_review") return withFindings;
+   if (tool !== "drakonc_review") return withFindings;
    if (parameters.operation === "acknowledge-approved") {
     controller.abort();
     if (ack === "rejects") throw Object.assign(new Error("aborted"), { name: "AbortError" });
@@ -364,7 +364,7 @@ test("a retained approved closure with findings survives every later abort befor
  // A non-abort rejection is not a cancellation.
  let statuses = 0;
  await assert.rejects(runReviewCoordinator({ lineageId: lineage }, { async invoke(tool) {
-  if (tool !== "gentle_review") return withFindings;
+  if (tool !== "drakonc_review") return withFindings;
   if (++statuses === 1) return collect;
   throw new Error("transport failure");
  } }), /transport failure/);
@@ -376,7 +376,7 @@ test("only the abort itself turns a retained approved closure into cancelled; an
  const failing = (abort: (controller: AbortController) => void, thrown: (signal: AbortSignal) => unknown) => {
   const controller = new AbortController(); let statuses = 0;
   return runReviewCoordinator({ lineageId: lineage }, { signal: controller.signal, async invoke(tool) {
-   if (tool !== "gentle_review") return withFindings;
+   if (tool !== "drakonc_review") return withFindings;
    if (++statuses === 1) return collect;
    abort(controller); throw thrown(controller.signal);
   } });

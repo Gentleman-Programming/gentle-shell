@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 import { asNativeReviewCliError, readReviewFailureFacts } from "../lib/review-failure-facts.ts";
 import { NativeReviewCliError, NativeReviewConsentBindingError, NativeReviewIntegrationError, NATIVE_REVIEW_ERROR_CODE, NATIVE_REQUEST_CONTEXT_UNSUPPORTED_MESSAGE } from "../lib/native-review-cli.ts";
 import { decodeReviewFailureV2 } from "../lib/review-integration-v2.ts";
@@ -58,10 +58,10 @@ test("foreign CLI errors require matching sanitized diagnostics and never carry 
 
 test("managed-asset continuation and audit evidence retain their existing operation projection", () => {
 	const raw = { code: "managed_assets_outdated", opaque: "provider evidence" };
-	const error = { failureEnvelope: { raw, code: "managed_assets_outdated", mutationOutcome: "not_started", replayability: "not_replayable", nextAction: "stop", continuation: { command: "gentle-ai sync" } } };
+	const error = { failureEnvelope: { raw, code: "managed_assets_outdated", mutationOutcome: "not_started", replayability: "not_replayable", nextAction: "stop", continuation: { command: "drakonc-ai sync" } } };
 	assert.deepEqual(__testing.nativeOperationFailure("start", error), {
 		operation: "start", status: "blocked", native_failure: raw, mutation_performed: false, mutation_outcome: "none",
-		replayability: "not_replayable", next_action: "stop", hint: "run gentle-ai sync",
+		replayability: "not_replayable", next_action: "stop", hint: "run drakonc-ai sync",
 	});
 	const auditRecord = { operation: "review.repair", outcome: "unknown" };
 	const unknown = new NativeReviewCliError(NATIVE_REVIEW_ERROR_CODE.NON_ZERO, "review/reclaim", true, true, "unknown", undefined, auditRecord);

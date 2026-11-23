@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-// Owner decision (2026-11-11): Gentle Shell tracks Pi's latest release, so Pi's
+// Owner decision (2026-11-11): Drakonc Shell tracks Pi's latest release, so Pi's
 // publisher scope is exempt from the release-age wait as a standing rule, not a
 // per-version exception. Every other package still waits 72 hours.
 

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
-const verify = read("assets/agents/gentle-ai-verify.md");
+const verify = read("assets/agents/drakonc-ai-verify.md");
 const policy = read("assets/orchestrator-verification.md");
 const parent = read("assets/orchestrator.md");
 

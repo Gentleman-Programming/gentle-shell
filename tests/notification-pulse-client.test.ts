@@ -135,7 +135,7 @@ test("probe authenticates, reads server info, reports wav only with a sink and c
 		assert.ok(auth.payload.subarray(20).every(byte => byte === 0));
 
 		const name = server.frames.find(entry => commandOf(entry.payload) === 9)!;
-		for (const needle of ["tapplication.name\0", "tapplication.type\0", "gentle-shell\0"])
+		for (const needle of ["tapplication.name\0", "tapplication.type\0", "drakonc-shell\0"])
 			assert.ok(name.payload.includes(Buffer.from(needle, "latin1")), needle);
 	} finally { await server.close(); }
 });

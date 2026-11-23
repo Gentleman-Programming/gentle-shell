@@ -11,7 +11,7 @@ import { fakeChild, type FakeChild } from "./agents-fake-child.ts";
 // reported a job keeps the pre-existing immediate settlement.
 
 const explorer: AgentDefinition = { name: "explore", description: "maps", filePath: "/a/explore.md", scope: "global", instructions: "You map things.", model: undefined, thinking: undefined, mode: undefined, tools: ["read", "bash_background"] };
-const request = (overrides: Partial<TaskRequest> = {}): TaskRequest => ({ agent: explorer, prompt: "Map the repo", label: undefined, context: undefined, mode: AGENT_MODE.TASK, cwd: "/repo", parentSessionId: "s1", model: { provider: "openai-codex", id: "gpt-5.6-terra" }, thinking: "high", sessionDir: "/sessions", resumeSessionPath: undefined, env: { GENTLE_PI_BACKGROUND_SUBAGENTS: "on" }, ...overrides });
+const request = (overrides: Partial<TaskRequest> = {}): TaskRequest => ({ agent: explorer, prompt: "Map the repo", label: undefined, context: undefined, mode: AGENT_MODE.TASK, cwd: "/repo", parentSessionId: "s1", model: { provider: "openai-codex", id: "gpt-5.6-terra" }, thinking: "high", sessionDir: "/sessions", resumeSessionPath: undefined, env: { DRAKONC_PI_BACKGROUND_SUBAGENTS: "on" }, ...overrides });
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const job = (id: string, running: number, pending: boolean) => ({ id, kind: "job", message: JSON.stringify({ running, pending }) });
 

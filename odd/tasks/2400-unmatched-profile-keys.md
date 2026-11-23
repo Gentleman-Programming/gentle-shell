@@ -1,4 +1,4 @@
-# gentle-shell #2400 — surface model_profiles keys with no suggestion
+# drakonc-shell #2400 — surface model_profiles keys with no suggestion
 
 Issue: #2400 (follow-up to #2196 / PR #2397). Branch `fix/2400-silent-unmatched-keys` from main `5694b22c3`.
 Decision of record: Juan chose both surfaces ("hacé las dos opciones para el 2400").
@@ -17,7 +17,7 @@ the launch warning only fires when the suggestion is the agent being launched, a
 - **S#2** Panel: the profiles panel shows the unmatched keys with no suggestion as an "unmatched keys" note/row,
   fitting narrow (32-col) panels without truncating the key names silently. Keys with a suggestion keep their current note.
 - **S#3** Resolution stays exact-match: no key is ever routed by these changes.
-- **S#4** Tests RED first in `tests/gentle-agents.test.ts` (S#1) and `tests/gentle-ai.test.ts` (S#2).
+- **S#4** Tests RED first in `tests/drakonc-agents.test.ts` (S#1) and `tests/drakonc-ai.test.ts` (S#2).
 
 ## Tasks
 
@@ -34,5 +34,5 @@ the launch warning only fires when the suggestion is the agent being launched, a
   checked). Source is `loadAgentsConfig(...).modelProfiles` through `unmatchedProfileKeys`; keys already shown as
   current rows are skipped, and the section is omitted when a session binding or a pin wins (that snapshot's keys
   are already rows). RED: heading regex failed before the change; pin-guard test fails with the guard removed.
-- Verification: `node --experimental-strip-types --test tests/gentle-agents.test.ts` 264/264 pass;
-  `tests/gentle-ai.test.ts` 126/126 pass; `tests/agents-config.test.ts` 17/17 pass; `pnpm typecheck` 0 diagnostics.
+- Verification: `node --experimental-strip-types --test tests/drakonc-agents.test.ts` 264/264 pass;
+  `tests/drakonc-ai.test.ts` 126/126 pass; `tests/agents-config.test.ts` 17/17 pass; `pnpm typecheck` 0 diagnostics.

@@ -1,4 +1,4 @@
-export const QUIET_TOOLS_ENV = "GENTLE_PI_QUIET_TOOLS";
+export const QUIET_TOOLS_ENV = "DRAKONC_PI_QUIET_TOOLS";
 export const PI_PRETTY_SUPPRESSED_TOOL_NAMES = ["read", "bash", "ls", "find", "grep"] as const;
 
 export function quietToolsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {

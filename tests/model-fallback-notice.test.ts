@@ -14,7 +14,7 @@ const prices: Record<string, { input: number; output: number; cacheRead: number;
 const lookup = (model: { provider: string | undefined; id: string }) => prices[`${model.provider}/${model.id}`];
 
 test("the notice names the agent, why it moved, where it went, and when that costs more", () => {
-	assert.equal(MODEL_FALLBACK_ENTRY, "gentle-pi.model-fallback/v1");
+	assert.equal(MODEL_FALLBACK_ENTRY, "drakonc-pi.model-fallback/v1");
 	assert.equal(fallbackNotice({ agent: "explore", from: "a/cheap", to: "b/pricey", category: C.QUOTA }, lookup),
 		"explore: a/cheap hit its usage limit; continuing on b/pricey (5.0x the price).");
 	assert.equal(fallbackNotice({ agent: "orchestrator", from: "b/pricey", to: "a/cheap", category: C.RATE_LIMIT }, lookup),
@@ -30,7 +30,7 @@ test("the chain comes from the launch's profile, else the active profile; a brok
 		writeFallbacksFile(fallbacksFilePath(home), setChain(setChain(emptyFallbacksFile(), "work", "explore", [{ model: "b/pricey" }]), "home", "*", [{ model: "a/cheap" }]));
 		assert.deepEqual(profileFallbackChain(home, "work", "explore"), [{ model: "b/pricey" }]);
 		assert.deepEqual(profileFallbackChain(home, undefined, "explore"), [], "no profile and no active profile");
-		writeFileSync(join(home, "profiles.json"), JSON.stringify({ kind: "gentle-pi.agent_model_profiles", version: 1, active: "home", profiles: { home: {}, work: {} } }));
+		writeFileSync(join(home, "profiles.json"), JSON.stringify({ kind: "drakonc-pi.agent_model_profiles", version: 1, active: "home", profiles: { home: {}, work: {} } }));
 		assert.deepEqual(profileFallbackChain(home, undefined, "explore"), [{ model: "a/cheap" }], "the active profile when the launch names none");
 		writeFileSync(fallbacksFilePath(home), "{ broken");
 		assert.deepEqual(profileFallbackChain(home, "work", "explore"), []);

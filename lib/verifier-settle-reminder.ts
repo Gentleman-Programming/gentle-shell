@@ -3,11 +3,11 @@ import { declaredHighRiskItem, isVerifierLaunch } from "./verifier-admission.ts"
 // odd/tasks/verifier-settle-reminder.md (#2652): verifier admission only gates a launch that happens, so a run could
 // declare `Risk: item N` in its final message and settle without ever attempting the independent verifier. At settle,
 // such a primary run gets one visible reminder and one continuation; the declaration uses the admission grammar and
-// any `gentle-ai-verify` launch attempt in the same user prompt, admitted or rejected, counts as an attempt.
-export const VERIFIER_SETTLE_REMINDER_TYPE = "gentle-pi.verifier-settle-reminder";
+// any `drakonc-ai-verify` launch attempt in the same user prompt, admitted or rejected, counts as an attempt.
+export const VERIFIER_SETTLE_REMINDER_TYPE = "drakonc-pi.verifier-settle-reminder";
 
 export function verifierSettleReminderText(item: number): string {
-	return `Verification reminder: your final message declares \`Risk: item ${item}\`, but no independent verifier was launched for this prompt. Now launch \`gentle-ai-verify\` with the \`Risk: item ${item}\` line in its \`task\`. A user's visual or manual approval does not replace technical verification. If verification is unavailable, report the missing proof and do not claim the change complete.`;
+	return `Verification reminder: your final message declares \`Risk: item ${item}\`, but no independent verifier was launched for this prompt. Now launch \`drakonc-ai-verify\` with the \`Risk: item ${item}\` line in its \`task\`. A user's visual or manual approval does not replace technical verification. If verification is unavailable, report the missing proof and do not claim the change complete.`;
 }
 
 // The text of the last assistant message, or undefined when the run has none.

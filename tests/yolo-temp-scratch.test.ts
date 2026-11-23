@@ -29,8 +29,8 @@ test("a tmpdir that is /, home, an ancestor or a descendant of home is not a tem
 		}
 	}
 	const ownFile = { uid: 1000, isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false };
-	assert.equal(isTempScratchTarget("/home/gentleman/work/repo/README.md", mock({ home: "/home/gentleman", tmpdir: "/home/gentleman/work/repo", lstat: () => ownFile })), false);
-	assert.equal(isTempScratchTarget("/home/gentleman-tmp/x.log", mock({ home: "/home/gentleman", tmpdir: "/home/gentleman-tmp", lstat: () => ownFile })), true, "sibling prefix is not a descendant");
+	assert.equal(isTempScratchTarget("/home/drakoncman/work/repo/README.md", mock({ home: "/home/drakoncman", tmpdir: "/home/drakoncman/work/repo", lstat: () => ownFile })), false);
+	assert.equal(isTempScratchTarget("/home/drakoncman-tmp/x.log", mock({ home: "/home/drakoncman", tmpdir: "/home/drakoncman-tmp", lstat: () => ownFile })), true, "sibling prefix is not a descendant");
 });
 
 test("only mktemp-named own directories qualify; files need ownership, symlinks and missing paths always qualify", () => {
@@ -55,9 +55,9 @@ test("the production probe recognizes a real mktemp directory, own file and syml
 	if (fs.uid === undefined) return;
 	const root = realpathSync(tmpdir());
 	const scratch = mkdtempSync(join(root, "tmp."));
-	const file = join(root, `gentle-scratch-${process.pid}.log`);
-	const link = join(root, `gentle-scratch-${process.pid}.link`);
-	const named = mkdtempSync(join(root, "gentle-scratch-"));
+	const file = join(root, `drakonc-scratch-${process.pid}.log`);
+	const link = join(root, `drakonc-scratch-${process.pid}.link`);
+	const named = mkdtempSync(join(root, "drakonc-scratch-"));
 	try {
 		writeFileSync(file, "log");
 		symlinkSync(named, link);

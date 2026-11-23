@@ -1,5 +1,5 @@
-// Gentle Tower: every live Gentle Shell session, from the peer presence registry
-// Gentle Agents already keeps (<home>/gentle-agents/presence). Read-only and
+// Drakonc Tower: every live Drakonc Shell session, from the peer presence registry
+// Drakonc Agents already keeps (<home>/drakonc-agents/presence). Read-only and
 // bounded. A session without the tower extension becomes a *basic* floor: name,
 // project and its live helpers, no tasks or cost, and it takes no actions.
 
@@ -14,7 +14,7 @@ const LIVE = new Set(["queued", "running", "waiting"]);
 export const PRESENCE_MAX_AGE_MS = 2 * 60_000;
 
 export function defaultPresenceDirs(home: string = homedir()): string[] {
-	return [join(home, ".gentle-shell", "agent", "gentle-agents", "presence"), join(home, ".pi", "agent", "gentle-agents", "presence")];
+	return [join(home, ".drakonc-shell", "agent", "drakonc-agents", "presence"), join(home, ".pi", "agent", "drakonc-agents", "presence")];
 }
 
 function readJson(path: string): Record<string, unknown> | undefined {

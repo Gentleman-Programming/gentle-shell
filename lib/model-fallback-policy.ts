@@ -80,7 +80,7 @@ type UsageLike = {
 };
 
 /**
- * Mirrors a /gentle:usage reading into the cooldown. A spent limit that
+ * Mirrors a /drakonc:usage reading into the cooldown. A spent limit that
  * covers the whole provider (`scope: "provider"`, Codex's main limit), or
  * every limit spent at once, makes the provider wait until the earliest
  * reset. Any other spent limit names one model (NaN reports one per model,
@@ -125,7 +125,7 @@ const SAFE_MODEL_NAME = /^[A-Za-z0-9._~:@+%-]+$/;
 // Kept local so the agents runner never loads the shell's usage module.
 const ADVISORY_USAGE_PROVIDERS: ReadonlySet<string> = new Set(["nan"]);
 
-const SHARED = Symbol.for("gentle-pi.model-fallback.cooldown");
+const SHARED = Symbol.for("drakonc-pi.model-fallback.cooldown");
 /** One registry per process: the orchestrator and the agents runner share what ran out. */
 export function sharedCooldown(): ModelCooldown {
 	const host = globalThis as unknown as Record<symbol, ModelCooldown | undefined>;

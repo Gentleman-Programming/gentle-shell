@@ -1,29 +1,29 @@
-# Feature: ODD routing drift ratchet (gentle-pi mirror of gentle-ai canon)
+# Feature: ODD routing drift ratchet (drakonc-pi mirror of drakonc-ai canon)
 
 ## Objective
 
-Make the hand-mirrored ODD routing text in gentle-pi fail visibly when the
-gentle-ai canonical routing block changes, instead of drifting silently.
+Make the hand-mirrored ODD routing text in drakonc-pi fail visibly when the
+drakonc-ai canonical routing block changes, instead of drifting silently.
 
 ## Problem
 
-gentle-pi hand-mirrors the ODD delegation text from gentle-ai
+drakonc-pi hand-mirrors the ODD delegation text from drakonc-ai
 (`internal/components/agentguidance/routing.go` RenderRouting). There is no
 automated sync (only the review provider contract is mirrored), so a canonical
-change in gentle-ai leaves the pi mirror stale with nothing catching it.
+change in drakonc-ai leaves the pi mirror stale with nothing catching it.
 
 ## Design (follows the provider-contract precedent)
 
 - `fixtures/odd-routing-canonical.md` — vendored snapshot of the canonical
-  routing block rendered by gentle-ai `RenderRouting`, with a header naming the
+  routing block rendered by drakonc-ai `RenderRouting`, with a header naming the
   source repo/commit and the fixture digest.
 - `scripts/mirror-odd-routing.mjs` — offline regeneration: locates a local
-  gentle-ai checkout (default `../gentle-ai`), renders the canonical block
+  drakonc-ai checkout (default `../drakonc-ai`), renders the canonical block
   through a temporary Go entrypoint, verifies, and writes the fixture. Never
   touches the network. Fails closed when the sibling checkout is missing.
 - `tests/odd-routing-canonical-ratchet.test.ts` — derives semantic anchors from
   the fixture and asserts the pi mirror (assets/orchestrator-delegation.md,
-  assets/orchestrator.md, extensions/gentle-ai.ts) carries each mandatory
+  assets/orchestrator.md, extensions/drakonc-ai.ts) carries each mandatory
   delegation clause. A canonical change that is not re-mirrored fails here.
 - `package.json` — `mirror:odd-routing` script entry.
 
@@ -45,13 +45,13 @@ change in gentle-ai leaves the pi mirror stale with nothing catching it.
   (`git show -s --format=%cI HEAD`) instead of wall-clock time, so the same
   source commit renders identical fixture bytes.
 - [x] T6. Address approved-review finding R3-DirtySourceProvenance: fail closed
-  before rendering when the gentle-ai checkout has uncommitted modifications to
+  before rendering when the drakonc-ai checkout has uncommitted modifications to
   tracked files (`git status --porcelain --untracked-files=no`), naming the
   offending paths. Untracked files must not block.
 
 ## Progress and evidence
 
-- Canonical source: gentle-ai `../gentle-ai` at commit
+- Canonical source: drakonc-ai `../drakonc-ai` at commit
   `e7729359fd9d6cb691ed2a88e8f72b1372f7c92e` (contains `dcd2fa07`, the mandatory
   delegation triggers).
 - Fixture block sha256:
@@ -80,7 +80,7 @@ change in gentle-ai leaves the pi mirror stale with nothing catching it.
 ## Approved-review findings (T5, T6)
 
 - R3-NonIdempotentRefresh: `generated_at` used wall-clock time, so re-running
-  the mirror over an unchanged gentle-ai produced a date-only diff. Now derived
+  the mirror over an unchanged drakonc-ai produced a date-only diff. Now derived
   from the source commit's committer date; same source commit + same rendered
   block -> identical bytes.
 - R3-DirtySourceProvenance: the header declares a source commit, but nothing
@@ -93,22 +93,22 @@ change in gentle-ai leaves the pi mirror stale with nothing catching it.
 - RED: `node --experimental-strip-types --test
   tests/odd-routing-canonical-ratchet.test.ts` failed with
   `SyntaxError: The requested module '../scripts/mirror-odd-routing.mjs' does
-  not provide an export named 'assertCleanGentleAiCheckout'` before the helpers
+  not provide an export named 'assertCleanDrakoncAiCheckout'` before the helpers
   existed.
 - GREEN: ratchet suite 7/7 pass after implementing the helpers and the two new
   tests (`fixture rendering is idempotent and derives generated_at from the
   source commit`, `the mirror fails closed on a dirty source checkout and names
   the tracked paths`).
 - Idempotency (integration): two consecutive `npm run mirror:odd-routing` runs
-  over gentle-ai `e7729359...` produced byte-identical fixtures, both
+  over drakonc-ai `e7729359...` produced byte-identical fixtures, both
   `shasum -a 256 = c8293650834991146a88297baa4cc7367724f6a855fe905bdda2c8a477581947`.
 - Fixture diff vs HEAD is the `generated_at` header line only
   (`...11:58:20.516Z` -> `...13:49:03+02:00`); `block_sha256` unchanged
   (`16eaa303...`).
-- Gentle-ai checkout left untouched: 0 tracked modifications after both runs;
+- Drakonc-ai checkout left untouched: 0 tracked modifications after both runs;
   its 9 untracked files did not block the guard.
 - `tests/odd-routing-contract.test.ts` could not run in this worktree: it
-  imports `extensions/gentle-ai.ts`, which needs `@earendil-works/pi-tui`, and
+  imports `extensions/drakonc-ai.ts`, which needs `@earendil-works/pi-tui`, and
   this worktree has no `node_modules` (`ERR_MODULE_NOT_FOUND`). The main worktree
   was not accessed per the task constraint. This is an environment limitation,
   not a regression: the contract test does not import the mirror script or the
@@ -117,7 +117,7 @@ change in gentle-ai leaves the pi mirror stale with nothing catching it.
 
 ## Acceptance criteria
 
-- `npm run mirror:odd-routing` regenerates the fixture from a local gentle-ai.
+- `npm run mirror:odd-routing` regenerates the fixture from a local drakonc-ai.
 - Ratchet test passes on the current mirror and fails when a canonical clause
   is missing from it.
 - Full suite stays green (blocked only by the unrelated external test edit).

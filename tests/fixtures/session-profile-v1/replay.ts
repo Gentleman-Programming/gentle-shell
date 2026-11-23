@@ -1,4 +1,4 @@
-// Golden-transcript replay for the v1 compatibility matrix (gentle-shell#2742,
+// Golden-transcript replay for the v1 compatibility matrix (drakonc-shell#2742,
 // section 10). One transcript is a record sequence plus the shared defaults at
 // resume; `replay` resumes it from disk under v1 or under the current modules
 // and reports what a launch and the status line would see.
@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProfile, emptyProfilesFile, profilesFilePath, setActiveProfile, writeProfilesFileSync } from "../../../lib/agent-profiles.ts";
 import { localProfilePinPath, repoProfileDeclarationPath, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../../../lib/agent-profile-pin.ts";
-import { __testing } from "../../../extensions/gentle-ai.ts";
+import { __testing } from "../../../extensions/drakonc-ai.ts";
 import type { AgentModelConfig } from "../../../lib/model-routing-authority.ts";
 import * as currentAuthority from "../../../lib/session-profile-authority.ts";
 import * as currentBinding from "../../../lib/session-profile-binding.ts";
@@ -17,7 +17,7 @@ import type { WorktreeIdentity } from "../../../lib/session-worktree-registry.ts
 import * as v1Authority from "./session-profile-authority.ts";
 import * as v1Binding from "./session-profile-binding.ts";
 import * as v1Freeze from "./session-profile-freeze.ts";
-import * as v1Reviewer from "./gentle-ai-reviewer.ts";
+import * as v1Reviewer from "./drakonc-ai-reviewer.ts";
 
 export interface TranscriptDefaults {
 	profiles: Record<string, AgentModelConfig>;
@@ -108,7 +108,7 @@ interface Resumed {
 /** Resume `transcript` under one version, with that version's process state reset first. */
 function resume<T>(version: Version, transcript: Transcript, observe: (resumed: Resumed) => T): T {
 	const modules = versions[version];
-	const base = mkdtempSync(join(tmpdir(), `gentle-pi-v1-replay-${version}-`));
+	const base = mkdtempSync(join(tmpdir(), `drakonc-pi-v1-replay-${version}-`));
 	try {
 		// Both versions keep their stores on the same `Symbol.for` registries, so a
 		// replay starts from an empty process and never sees the other version's state.
@@ -154,7 +154,7 @@ export function replay(version: Version, transcript: Transcript): ReplayObservat
  */
 export function replayReviewerRouting(version: Version, transcript: Transcript): AgentModelConfig {
 	return resume(version, transcript, ({ options, agentHome }) => {
-		const replayed: NodeJS.ProcessEnv = { GENTLE_PI_AGENTS_CHILD: undefined, GENTLE_PI_PROFILE_FOLLOW: undefined, ...options.env, GENTLE_PI_CONFIG_HOME: options.configHome, GENTLE_PI_AGENT_HOME: agentHome };
+		const replayed: NodeJS.ProcessEnv = { DRAKONC_PI_AGENTS_CHILD: undefined, DRAKONC_PI_PROFILE_FOLLOW: undefined, ...options.env, DRAKONC_PI_CONFIG_HOME: options.configHome, DRAKONC_PI_AGENT_HOME: agentHome };
 		const previous = Object.fromEntries(Object.keys(replayed).map((key) => [key, process.env[key]]));
 		const assign = (values: NodeJS.ProcessEnv) => {
 			for (const [key, value] of Object.entries(values)) {

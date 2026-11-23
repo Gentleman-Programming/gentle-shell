@@ -23,7 +23,7 @@ Before delegating, declare a subject via `orchestrator_session_id`.
 
 - Pass the session's resolved skill paths under `## Skills to load before work`; children read them first (`orchestrator-skills.md`).
 - A child must be able to do the task it is given. Check the agent's declared `tools` in `subagent_list_agents` before launching: never give a read-only explorer shell work, and never assume your own tools transfer to the child. With no qualified agent, report the capability gap; never do the work yourself instead.
-- Background (policy on, `subagent_run` present): omit `mode`; it returns a task id at once. End the turn and resume on its `gentle-agents.result` completion message; never sleep or poll `subagent_status`. Otherwise run in the foreground. Detail: below.
+- Background (policy on, `subagent_run` present): omit `mode`; it returns a task id at once. End the turn and resume on its `drakonc-agents.result` completion message; never sleep or poll `subagent_status`. Otherwise run in the foreground. Detail: below.
 - Do not pass `model` to generic subagents unless the user asks.
 
 #### Allowed edit surfaces (MANDATORY)
@@ -37,13 +37,13 @@ Before launching any bounded writer, even the native `Agent` fallback, derive it
 - pre-existing untracked targets it may write, listed explicitly;
 - nothing beyond the task; wider is the same defect as none.
 
-Test scratch stays outside the worktree (`mktemp -d`), never in the repository (nor caches or `TMPDIR`); inside state uses an excluded path the test removes. The runtime owns session scratch; `/gentle:scratch` lists or cleans recorded clones and worktrees.
+Test scratch stays outside the worktree (`mktemp -d`), never in the repository (nor caches or `TMPDIR`); inside state uses an excluded path the test removes. The runtime owns session scratch; `/drakonc:scratch` lists or cleans recorded clones and worktrees.
 
 If the surface cannot be derived, do not launch or make the human author paths: offer the derived exact paths as an approve/decline choice (Lossless Blocking Prompts, `orchestrator-prompts.md`). Investigate technical route doubt; it is not a human question.
 
 A writer never widens its surface; it reports exact candidate paths with reasons and awaits your replacement. Add a necessary path (test, helper) yourself, without the human, only in the authorized objective and repository, after checking ownership, existing work, risk, and concurrent writers and units; a cosmetic refactor never qualifies; an unresolved ownership or overlap conflict blocks it. New objective or scope, unapproved repository, private material, destructive or prohibited operation, missing consent, denial, or exhausted limit go to the human under existing protocols. Continue the same writer with a replacement, not a union: every still-needed path plus a concise reason, never repository-wide, no budget reset. A surface grants no repository authority or prohibited operation.
 
-<!-- gentle-pi:background-subagents -->
+<!-- drakonc-pi:background-subagents -->
 #### Background Subagent Policy
 
 Background execution is policy-gated: the always-on orchestrator prompt renders one status line, `Background subagent policy: on|off (capability: ready|absent)`. If the policy is off OR the `subagent_run` tool is unavailable, run every delegation in the foreground — `mode: "task"` when `subagent_*` tools exist, otherwise the native `Agent` fallback — always.
@@ -52,9 +52,9 @@ When the policy is on and `subagent_run` is available:
 
 - The runtime already defaults `subagent_run` to `mode: "background"` under this policy in interactive and RPC sessions, so omit `mode` for ordinary delegation. It returns a task id at once; the terminal stays free and the human keeps typing. Pass a `label` of three to six words naming the work.
 - A child `agent_end` retains its latest answer but is not completion: Pi may still retry, compact, or run a queued follow-up. Treat the task as finished only at `agent_settled`; only then release its queue slot, publish its background result, or terminate it. If it exits first, report failure with its retained answer as diagnostics.
-- When a background task settles, its result arrives as a message in this session (custom type `gentle-agents.result`, one per task) and starts a new turn if you are idle. Wait for it: end the turn once launches and any non-overlapping work are done. Never sleep or periodically poll `subagent_status`/`subagent_result` for completion or cache maintenance. Retain the task ID. Use `subagent_status` only at a real orchestration decision boundary: user-requested inspection, relevant scope change, input request, or suspected abnormal behavior. Never relaunch equivalent work merely because it is queued or running. Cache warming belongs to Pi's native runtime, never to model-driven maintenance turns.
+- When a background task settles, its result arrives as a message in this session (custom type `drakonc-agents.result`, one per task) and starts a new turn if you are idle. Wait for it: end the turn once launches and any non-overlapping work are done. Never sleep or periodically poll `subagent_status`/`subagent_result` for completion or cache maintenance. Retain the task ID. Use `subagent_status` only at a real orchestration decision boundary: user-requested inspection, relevant scope change, input request, or suspected abnormal behavior. Never relaunch equivalent work merely because it is queued or running. Cache warming belongs to Pi's native runtime, never to model-driven maintenance turns.
 - Do not claim an implementation ready or RDD-ready while its required verification or correction follow-up remains queued. Run the required focused verification before that claim, and retain legitimate post-correction verification. This does not invent a universal full-suite requirement or make a receipt a delivery gate.
 - Use `mode: "task"` only when the subagent must ask the human something mid-flight (task-mode dialogs reach the human; background dialogs are dismissed) or when the human asked to wait.
 - Launch as many independent tasks as the work has; the runner queues beyond `max_concurrency`. Do not duplicate launches or work, and do not overlap files or topics.
 - Finished tasks persist across restarts; running ones are stopped when pi exits and must be relaunched, never claimed as recovered.
-<!-- /gentle-pi:background-subagents -->
+<!-- /drakonc-pi:background-subagents -->

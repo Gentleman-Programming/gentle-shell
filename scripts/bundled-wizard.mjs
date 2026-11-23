@@ -1,6 +1,6 @@
 // The web installer's bundled path (T1c; S1, S2, S3, S12): a new installation
 // of the release channel whose release publishes the distribution assets gets
-// Gentle Shell as one self-contained product, through the shared module in
+// Drakonc Shell as one self-contained product, through the shared module in
 // bundled-install.mjs. The user's Node, npm, pnpm, Go and Pi are not used or
 // changed. Everything else keeps the standard runner (installer-runner.mjs).
 import { createHash } from "node:crypto";
@@ -14,6 +14,9 @@ import { setupErrorDetail } from "./installer-runner.mjs";
 import { windowsProcessCheck } from "./installer-windows.mjs";
 
 /** Where each release's distribution assets live: <base>/v<version>/<asset>. */
+// Excepción de marca (docs/brand-exceptions.md): Drakonc Shell todavía no
+// publica releases propias, así que la única base que resuelve hoy es la del
+// proyecto original. Reapuntar cuando exista la distribución de Drakonc.
 export const DISTRIBUTION_RELEASES = "https://github.com/Gentleman-Programming/gentle-shell/releases/download";
 // GitHub answers a release asset with a redirect to its asset host.
 const ASSET_HOSTS = Object.freeze(["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"]);
@@ -54,7 +57,7 @@ export async function fetchDistribution({ version, base = DISTRIBUTION_RELEASES,
 }
 
 /** The gate (pure): the bundled install only for a new installation (preflight
- * found no Gentle Shell) of the release channel on a supported target, when this
+ * found no Drakonc Shell) of the release channel on a supported target, when this
  * package's own release (`version`) publishes readable distribution assets.
  * Anything else keeps the standard path unchanged.
  */
@@ -64,8 +67,8 @@ export function bundledGate({ channel, inventory, distribution, version }) {
 }
 
 /** The migration gate (S4, pure): the owner ("pnpm" or "npm") of an existing
- * Gentle Shell on the release channel and a supported target, when release
- * `version` publishes readable assets and is not older than that Gentle Shell;
+ * Drakonc Shell on the release channel and a supported target, when release
+ * `version` publishes readable assets and is not older than that Drakonc Shell;
  * otherwise null. An npm link or an unknown owner is never migrated.
  */
 export function migrationGate({ channel, inventory, distribution, version }) {
@@ -80,7 +83,7 @@ export function migrationGate({ channel, inventory, distribution, version }) {
 
 /** The fixed bundled actions; the PATH is a step only when the installer applies
  * it. A migration the plan confirms ("plan") ends with removing the old global
- * gentle-pi; one the upgrade confirms ("ask") leaves setup to the launcher's
+ * drakonc-pi; one the upgrade confirms ("ask") leaves setup to the launcher's
  * own first run and asks about the removal afterwards.
  */
 function bundledActions(pathKind, migrate) {
@@ -151,7 +154,7 @@ function validPlan(plan, distribution) {
  * failed removal keeps the outcome and adds removeGlobal { status, command }.
  * Adapters: platform, arch, env, home, distribution (the fetchDistribution
  * result the plan was made from), registry (Windows), log, removeGlobal(manager)
- * -> true once the old global gentle-pi is removed, and operations (trusted
+ * -> true once the old global drakonc-pi is removed, and operations (trusted
  * local overrides of the bundled-install functions and run).
  */
 export async function runBundledInstall(request, adapters) {
@@ -185,15 +188,15 @@ export async function runBundledInstall(request, adapters) {
 		}],
 		["activate-version", () => ops.activateVersion(layout, consented.id)],
 		["write-launcher", () => ops.ensureLauncher(layout)],
-		// A migration checks the new launcher before the PATH finds it; the old Gentle Shell is removed only after this passed.
+		// A migration checks the new launcher before the PATH finds it; the old Drakonc Shell is removed only after this passed.
 		...(consented.migrate ? [["verify-launcher", async () => {
 			const check = await ops.checkLauncher(layout, { id: consented.id, shell: consented.shell, pi: consented.pi, platform, env, run: ops.run, launcher: true });
 			if (check?.ok === true) return;
 			// What the launcher reported against what the plan installed (bounded; its stderr only when it printed nothing).
-			const expected = `"gentle-shell ${consented.shell} / pi ${consented.pi}"`;
+			const expected = `"drakonc-shell ${consented.shell} / pi ${consented.pi}"`;
 			const reported = String(check?.reported ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean).join(" / ").slice(0, 120);
 			const cause = reported ? "" : lastLine({ stderr: check?.stderr });
-			detail = setupErrorDetail(`gentle-shell --version reported ${reported ? `"${reported}"` : "nothing"} instead of ${expected}${cause ? `: ${cause}` : ""}`, home, platform);
+			detail = setupErrorDetail(`drakonc-shell --version reported ${reported ? `"${reported}"` : "nothing"} instead of ${expected}${cause ? `: ${cause}` : ""}`, home, platform);
 			throw new Error("The bundled launcher did not report its versions");
 		}]] : []),
 		// The change consented to, planned again now that the prefix exists: anything else is not applied.
@@ -212,12 +215,12 @@ export async function runBundledInstall(request, adapters) {
 		}]] : []),
 		// The .cmd launcher would need cmd.exe on Windows: there setup runs the Node and entry it runs.
 		...(planned("bundled-setup") ? [["shell-setup", async () => {
-			const entry = win32.join(layout.versions, consented.id, "node_modules", "gentle-pi", "bin", "gentle-shell.mjs");
+			const entry = win32.join(layout.versions, consented.id, "node_modules", "drakonc-pi", "bin", "drakonc-shell.mjs");
 			const [command, args] = platform === "win32" ? [layout.node, [entry, "setup"]] : [layout.launcher, ["setup"]];
 			const result = await ops.run(command, args, { cwd: layout.root, env: setupEnvironment(layout, { platform, env, id: consented.id }), timeout: SETUP_TIMEOUT });
 			if (result?.status === 0) return;
 			detail = lastLine(result);
-			throw new Error("gentle-shell setup failed");
+			throw new Error("drakonc-shell setup failed");
 		}]] : []),
 	];
 	for (const [step, run] of steps) {
@@ -245,14 +248,14 @@ export async function runBundledInstall(request, adapters) {
 	return { outcome: "ready", completed, ...removal };
 }
 
-/** The `gentle-shell` a new terminal would run before the bundled launcher, or
+/** The `drakonc-shell` a new terminal would run before the bundled launcher, or
  * null when the launcher comes first (or none is found). A new terminal's PATH
  * is this one with the planned change:
  * - a zsh or bash profile line (or the line the user adds) goes first: it is
  *   appended to the startup file read last for terminals (.zshrc after
  *   .zprofile; the macOS bash login file or .bashrc), after pnpm setup's own
  *   PNPM_HOME line there;
- * - a fish line (`profile`, conf.d/gentle-shell.fish) counts as last: fish reads
+ * - a fish line (`profile`, conf.d/drakonc-shell.fish) counts as last: fish reads
  *   conf.d before config.fish, so whatever config.fish prepends (pnpm setup's
  *   PNPM_HOME block) comes before it, and the current PATH already shows it;
  * - the Windows user Path entry goes last;
@@ -267,7 +270,7 @@ export function shadowingCommand({ platform, env, layout, pathKind, profile, fs 
 	const line = ["profile", "manual"].includes(pathKind);
 	const last = pathKind === "registry" || (line && /\.fish$/.test(String(profile ?? "")));
 	const ordered = last ? [...entries, layout.bin] : line ? [layout.bin, ...entries] : entries;
-	const names = windows ? ["gentle-shell.exe", "gentle-shell.cmd", "gentle-shell.bat"] : ["gentle-shell"];
+	const names = windows ? ["drakonc-shell.exe", "drakonc-shell.cmd", "drakonc-shell.bat"] : ["drakonc-shell"];
 	const real = (file) => { try { return fs.realpath(file); } catch { return file; } };
 	for (const directory of ordered) {
 		const found = names.map((name) => path.join(directory, name)).find((file) => fs.exists(file));
@@ -281,11 +284,11 @@ export function shadowingCommand({ platform, env, layout, pathKind, profile, fs 
 const yes = (answer) => /^\s*y(?:es)?\s*$/i.test(String(answer ?? ""));
 
 /**
- * `gentle-shell upgrade` from a global pnpm or npm install (S4): when release
+ * `drakonc-shell upgrade` from a global pnpm or npm install (S4): when release
  * `latest` publishes the assets (migrationGate), explains the move, installs the
  * bundled prefix with runBundledInstall (a plan with removal "ask": no setup,
  * the launcher's own first run does it), then asks one question: remove the old
- * global gentle-pi with its own manager (default No; without a terminal it
+ * global drakonc-pi with its own manager (default No; without a terminal it
  * never removes and prints the command). Returns null when the migration does
  * not apply, or when it failed before the question (it prints the step and its
  * detail, and the old package is untouched): the caller keeps its own path for
@@ -297,14 +300,14 @@ const yes = (answer) => /^\s*y(?:es)?\s*$/i.test(String(answer ?? ""));
  * shadowingCommand take them.
  */
 export async function migrateGlobalShell({ latest, currentVersion, platform, arch, env, home, interactive, ask, out, adapters }) {
-	const untouched = "Your global gentle-pi was left untouched; it is updated the usual way instead.";
+	const untouched = "Your global drakonc-pi was left untouched; it is updated the usual way instead.";
 	const distribution = await adapters.distribution(latest);
 	const shell = { available: true, version: currentVersion };
 	// Every other condition first: the owner probe runs the user's `npm root -g`.
 	if (!migrationGate({ channel: "release", inventory: { platform, arch, shell: { ...shell, owner: "npm" } }, distribution, version: latest })) return null;
 	const manager = await Promise.resolve().then(() => adapters.owner()).catch(() => null);
 	if (!migrationGate({ channel: "release", inventory: { platform, arch, shell: { ...shell, owner: manager?.name ?? null } }, distribution, version: latest })) {
-		out("Gentle Shell now installs as one self-contained product, but this Gentle Shell is not a global pnpm or npm package (an `npm link`, for example), so it is not moved.");
+		out("Drakonc Shell now installs as one self-contained product, but this Drakonc Shell is not a global pnpm or npm package (an `npm link`, for example), so it is not moved.");
 		return null;
 	}
 	const ops = { prefixRoot, pathEntryPlan, ...adapters.operations };
@@ -318,9 +321,9 @@ export async function migrateGlobalShell({ latest, currentVersion, platform, arc
 		return null;
 	}
 	const { shell: shellVersion, pi, migrate } = plan.bundled;
-	for (const line of [`Gentle Shell ${shellVersion} installs as one self-contained product in ${layout.root}, with its own Node.js, npm and pnpm and exactly Pi ${pi}.`,
-		"Your own Node.js, npm, pnpm and Pi are not used or changed, and your Gentle Shell home (~/.gentle-shell/agent) stays where it is.",
-		`Your global gentle-pi (installed with ${manager.name}) is kept until you choose to remove it.`]) out(line);
+	for (const line of [`Drakonc Shell ${shellVersion} installs as one self-contained product in ${layout.root}, with its own Node.js, npm and pnpm and exactly Pi ${pi}.`,
+		"Your own Node.js, npm, pnpm and Pi are not used or changed, and your Drakonc Shell home (~/.drakonc-shell/agent) stays where it is.",
+		`Your global drakonc-pi (installed with ${manager.name}) is kept until you choose to remove it.`]) out(line);
 	const outcome = await runBundledInstall({ plan, consent: true }, { platform, arch, env, home, distribution, registry: adapters.registry,
 		operations: adapters.operations });
 	if (outcome.outcome !== "ready" && outcome.outcome !== "terminal-action-required") {
@@ -328,24 +331,24 @@ export async function migrateGlobalShell({ latest, currentVersion, platform, arc
 		out(`The self-contained install stopped at ${step}${outcome.detail ? `: ${outcome.detail}` : ""}. ${untouched}`);
 		return null;
 	}
-	out(`Installed Gentle Shell ${shellVersion} with Pi ${pi} in ${layout.root}.`);
+	out(`Installed Drakonc Shell ${shellVersion} with Pi ${pi} in ${layout.root}.`);
 	if (outcome.action === "add-path-line") out(`Add this line to ${outcome.pathLine.file}, then open a new terminal: ${outcome.pathLine.line}`);
-	else if (outcome.action === "open-new-terminal") out("Open a new terminal so it finds the new `gentle-shell`.");
-	const question = `Remove the old global gentle-pi with ${manager.name} (${migrate.command})? [y/N] `;
+	else if (outcome.action === "open-new-terminal") out("Open a new terminal so it finds the new `drakonc-shell`.");
+	const question = `Remove the old global drakonc-pi with ${manager.name} (${migrate.command})? [y/N] `;
 	let code = 0;
 	if (interactive && yes(await ask(question))) {
 		if (await removeGlobalShell(manager, adapters.run)) {
-			out(`Removed the old global gentle-pi with ${manager.name}.`);
+			out(`Removed the old global drakonc-pi with ${manager.name}.`);
 			return { code, installed: true };
 		}
-		out(`The old global gentle-pi could not be removed; Gentle Shell ${shellVersion} stays installed in ${layout.root}. Remove it yourself with: ${migrate.command}`);
+		out(`The old global drakonc-pi could not be removed; Drakonc Shell ${shellVersion} stays installed in ${layout.root}. Remove it yourself with: ${migrate.command}`);
 		code = 1;
 	} else {
-		out(`The old global gentle-pi was kept. To remove it, run: ${migrate.command}`);
+		out(`The old global drakonc-pi was kept. To remove it, run: ${migrate.command}`);
 	}
 	const shadow = shadowingCommand({ platform, env, layout, pathKind: plan.bundled.path.kind, profile: plan.bundled.path.file, ...(adapters.fs ? { fs: adapters.fs } : {}) });
 	if (shadow) {
-		out(`New terminals still run ${shadow} (the old gentle-pi), because its folder comes first on PATH. ` +
+		out(`New terminals still run ${shadow} (the old drakonc-pi), because its folder comes first on PATH. ` +
 			`Remove the old package with ${migrate.command}, or put ${layout.bin} before that folder on PATH.`);
 	}
 	return { code, installed: true };
@@ -355,8 +358,8 @@ export async function migrateGlobalShell({ latest, currentVersion, platform, arc
 // a WM_SETTINGCHANGE broadcast (through a user variable set and removed) lets
 // new terminals see it. The entry and the mode are data, never script text.
 const pathScript = `$ErrorActionPreference = 'Stop'
-$entry = $env:GENTLE_BUNDLED_PATH_ENTRY
-$add = $env:GENTLE_BUNDLED_PATH_MODE -eq 'add'
+$entry = $env:DRAKONC_BUNDLED_PATH_ENTRY
+$add = $env:DRAKONC_BUNDLED_PATH_MODE -eq 'add'
 $same = { param($part) $part.TrimEnd('\\') -ieq $entry.TrimEnd('\\') }
 $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
 try {
@@ -375,8 +378,8 @@ try {
   }
 } finally { $key.Close() }
 if ($result -eq 'added' -or $result -eq 'removed') {
-  [Environment]::SetEnvironmentVariable('GENTLE_SHELL_PATH_REFRESH', '1', 'User')
-  [Environment]::SetEnvironmentVariable('GENTLE_SHELL_PATH_REFRESH', $null, 'User')
+  [Environment]::SetEnvironmentVariable('DRAKONC_SHELL_PATH_REFRESH', '1', 'User')
+  [Environment]::SetEnvironmentVariable('DRAKONC_SHELL_PATH_REFRESH', $null, 'User')
 }
 $result`;
 /** The registry adapter applyPathEntry and removePathEntry use on Windows:
@@ -391,7 +394,7 @@ export function windowsPathRegistry(env, processAdapter = windowsProcessCheck) {
 			throw new Error("Unsafe entry for the user Path");
 		}
 		const output = processAdapter(win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-			["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", pathScript], { ...env, GENTLE_BUNDLED_PATH_ENTRY: entry, GENTLE_BUNDLED_PATH_MODE: mode });
+			["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", pathScript], { ...env, DRAKONC_BUNDLED_PATH_ENTRY: entry, DRAKONC_BUNDLED_PATH_MODE: mode });
 		if (!expected.includes(output)) throw new Error("The user Path could not be changed");
 		return output;
 	};

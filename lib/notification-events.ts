@@ -5,7 +5,7 @@ import { NOTIFICATION_EVENTS, type NotificationEvent } from "./notification-poli
 import type { NotificationOccurrence } from "./notification-scheduler.ts";
 
 /** Content-free bus; producers never depend on an audio player or UI. */
-export const NOTIFICATION_SOURCE_EVENT = "gentle-pi:notification:source";
+export const NOTIFICATION_SOURCE_EVENT = "drakonc-pi:notification:source";
 export const NOTIFICATION_ATTENTION_EVENT = "herdr:blocked";
 interface SourceOccurrence extends NotificationOccurrence { producerId: string }
 export type NotificationSourceEvent =
@@ -38,7 +38,7 @@ export function subagentNotificationEvent(change: TaskStatusChange, occurredAt: 
 		runId: `${change.producerId}:${change.runId}`, sequence: change.sequence, event: `subagent.${change.status}`, occurredAt };
 }
 
-/** Sole runtime caller is gentle-agents. Subscribe before launches, stop before cancellation. */
+/** Sole runtime caller is drakonc-agents. Subscribe before launches, stop before cancellation. */
 export function publishTaskStatusChanges(store: TaskStore, events: Pick<ExtensionAPI["events"], "emit">, now: () => number): () => void {
 	return store.subscribeStatusChanges(change => {
 		events.emit(NOTIFICATION_SOURCE_EVENT, subagentNotificationEvent(change, now()));

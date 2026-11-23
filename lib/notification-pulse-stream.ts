@@ -97,7 +97,7 @@ function buildCreateArgs(pcm: WavPCM, adjustLatency: boolean): PulseTagWriter {
 		.boolean(false).boolean(false).boolean(false).boolean(false).boolean(false).boolean(false).boolean(false) // 7 flags
 		.boolean(false) // muted
 		.boolean(adjustLatency)
-		.proplist([["media.name", "gentle-shell notification"], ["media.role", "event"]]);
+		.proplist([["media.name", "drakonc-shell notification"], ["media.role", "event"]]);
 }
 
 /** v13 reply: stream/sink indices, missing, buffer attrs, spec, map, device, name, suspended, latency. */

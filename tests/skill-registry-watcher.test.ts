@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 const extensionUrl = pathToFileURL(join(import.meta.dirname, "..", "extensions", "skill-registry.ts")).href;
 
 test("#3143: idle scanning is bounded while silent watchers retain fallback and event refresh", { timeout: 25_000 }, t => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-skill-idle-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-skill-idle-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
 		import assert from 'node:assert/strict';
@@ -20,7 +20,7 @@ test("#3143: idle scanning is bounded while silent watchers retain fallback and 
 		import { join } from 'node:path';
 		const root = ${JSON.stringify(root)}, cwd = join(root, 'project'), home = join(root, 'home');
 		process.env.HOME = home; process.env.USERPROFILE = home;
-		delete process.env.CODEX_HOME; delete process.env.GENTLE_PI_AGENTS_CHILD; delete process.env.GENTLE_PI_NO_SKILL_REGISTRY;
+		delete process.env.CODEX_HOME; delete process.env.DRAKONC_PI_AGENTS_CHILD; delete process.env.DRAKONC_PI_NO_SKILL_REGISTRY;
 		fs.mkdirSync(home, {recursive:true});
 		for(let i=0;i<375;i++) {
 			const dir=join(cwd,'skills','skill-'+i); fs.mkdirSync(dir,{recursive:true});
@@ -60,7 +60,7 @@ test("#3143: idle scanning is bounded while silent watchers retain fallback and 
 });
 
 test("independent extension hosts share disk bytes without sharing runtime captures", { timeout: 15_000 }, async (t) => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-skill-two-hosts-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-skill-two-hosts-"));
 	const cwd = join(root, "project"), home = join(root, "home");
 	mkdirSync(join(cwd, "skills", "disk"), { recursive: true });
 	mkdirSync(home, { recursive: true });
@@ -130,7 +130,7 @@ test("independent extension hosts share disk bytes without sharing runtime captu
 });
 
 test("a watcher refresh pending at session shutdown neither regenerates nor touches the stale ctx", (t) => {
-	const root = mkdtempSync(join(tmpdir(), "gentle-skill-watch-stale-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-skill-watch-stale-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
 		import assert from "node:assert/strict";
@@ -143,8 +143,8 @@ test("a watcher refresh pending at session shutdown neither regenerates nor touc
 		process.env.HOME = home;
 		process.env.USERPROFILE = home;
 		delete process.env.CODEX_HOME;
-		delete process.env.GENTLE_PI_AGENTS_CHILD;
-		delete process.env.GENTLE_PI_NO_SKILL_REGISTRY;
+		delete process.env.DRAKONC_PI_AGENTS_CHILD;
+		delete process.env.DRAKONC_PI_NO_SKILL_REGISTRY;
 		const failures = [];
 		process.on("unhandledRejection", (error) => { failures.push("unhandledRejection: " + String(error)); process.exitCode = 1; console.error("unhandledRejection", error); });
 		process.on("uncaughtException", (error) => { failures.push("uncaughtException: " + String(error)); process.exitCode = 1; console.error("uncaughtException", error); });
@@ -223,7 +223,7 @@ test("a watcher refresh pending at session shutdown neither regenerates nor touc
 
 for (const code of ["ENOENT", "EMFILE"]) {
 	test(`registered skill watcher survives asynchronous ${code} and preserves other roots`, (t) => {
-		const root = mkdtempSync(join(tmpdir(), "gentle-skill-watch-error-"));
+		const root = mkdtempSync(join(tmpdir(), "drakonc-skill-watch-error-"));
 		t.after(() => rmSync(root, { recursive: true, force: true }));
 		const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", `
 			import assert from "node:assert/strict";
@@ -236,8 +236,8 @@ for (const code of ["ENOENT", "EMFILE"]) {
 			process.env.HOME = home;
 			process.env.USERPROFILE = home;
 			delete process.env.CODEX_HOME;
-			delete process.env.GENTLE_PI_AGENTS_CHILD;
-			delete process.env.GENTLE_PI_NO_SKILL_REGISTRY;
+			delete process.env.DRAKONC_PI_AGENTS_CHILD;
+			delete process.env.DRAKONC_PI_NO_SKILL_REGISTRY;
 			const userRoot = join(home, ".codex", "skills");
 			const assets = join(userRoot, "imagegen", "assets");
 			const projectSkill = join(cwd, "skills", "local", "SKILL.md");

@@ -1,5 +1,5 @@
-// Gentle Desktop update-status bridge: answers `get_update_status` from the
-// sources in `lib/update-status.ts` (Gentle Shell's own channel and version
+// Drakonc Desktop update-status bridge: answers `get_update_status` from the
+// sources in `lib/update-status.ts` (Drakonc Shell's own channel and version
 // resolution, the launcher's release lookup and its cached record, and Pi's
 // own package update check) and projects them with `lib/desktop-rpc-updates.ts`.
 //
@@ -196,7 +196,7 @@ export class DesktopUpdatesBridge {
 		const fresh: RefreshResult | undefined = refreshed ? await sharedRefresh(sources, channel, this.timeoutMs) : refresh ? {} : undefined;
 		const nowMs = sources.now();
 
-		// Gentle Shell.
+		// Drakonc Shell.
 		const shellCurrent = boundedVersion(sources.shellVersion());
 		let shellRecord: Recorded<string> | undefined;
 		if (fresh) shellRecord = fresh.shell;
@@ -241,7 +241,7 @@ export class DesktopUpdatesBridge {
 		return {
 			refreshed,
 			offline,
-			gentleShell: {
+			drakoncShell: {
 				current: shellCurrent,
 				latest: shellLatest,
 				channel,

@@ -12,23 +12,23 @@ function readSkillName(dir: string): string | undefined {
 }
 
 const PREFIXED_NAMES: Record<string, string> = {
-	"branch-pr": "gentle-ai-branch-pr",
-	"chained-pr": "gentle-ai-chained-pr",
-	"cognitive-doc-design": "gentle-ai-cognitive-doc-design",
-	"comment-writer": "gentle-ai-comment-writer",
-	"issue-creation": "gentle-ai-issue-creation",
-	"judgment-day": "gentle-ai-judgment-day",
-	"provider-defect-report": "gentle-ai-provider-defect-report",
-	"rdd-defect-workflow": "gentle-ai-rdd-defect-workflow",
-	"skill-creator": "gentle-ai-skill-creator",
-	"skill-improver": "gentle-ai-skill-improver",
-	"skill-registry": "gentle-ai-skill-registry",
-	"work-unit-commits": "gentle-ai-work-unit-commits",
+	"branch-pr": "drakonc-ai-branch-pr",
+	"chained-pr": "drakonc-ai-chained-pr",
+	"cognitive-doc-design": "drakonc-ai-cognitive-doc-design",
+	"comment-writer": "drakonc-ai-comment-writer",
+	"issue-creation": "drakonc-ai-issue-creation",
+	"judgment-day": "drakonc-ai-judgment-day",
+	"provider-defect-report": "drakonc-ai-provider-defect-report",
+	"rdd-defect-workflow": "drakonc-ai-rdd-defect-workflow",
+	"skill-creator": "drakonc-ai-skill-creator",
+	"skill-improver": "drakonc-ai-skill-improver",
+	"skill-registry": "drakonc-ai-skill-registry",
+	"work-unit-commits": "drakonc-ai-work-unit-commits",
 };
 
-// gentle-pi-owned skills that gentle-ai does not install keep their own
-// gentle- namespace, so they need no gentle-ai- prefix to avoid a collision.
-const UNPREFIXED_DIRS = ["gentle-ai", "design"];
+// drakonc-pi-owned skills that drakonc-ai does not install keep their own
+// drakonc- namespace, so they need no drakonc-ai- prefix to avoid a collision.
+const UNPREFIXED_DIRS = ["drakonc-ai", "design"];
 
 for (const [dir, expectedName] of Object.entries(PREFIXED_NAMES)) {
 	test(`skills/${dir}/SKILL.md frontmatter name is prefixed`, () => {
@@ -39,9 +39,9 @@ for (const [dir, expectedName] of Object.entries(PREFIXED_NAMES)) {
 test("technical reference documents legacy skill-name compatibility aliases", () => {
 	const readme = readFileSync(join(repoRoot, "docs", "readme-reference.md"), "utf8");
 	for (const [legacyName, prefixedName] of [
-		["branch-pr", "gentle-ai-branch-pr"],
-		["judgment-day", "gentle-ai-judgment-day"],
-		["skill-creator", "gentle-ai-skill-creator"],
+		["branch-pr", "drakonc-ai-branch-pr"],
+		["judgment-day", "drakonc-ai-judgment-day"],
+		["skill-creator", "drakonc-ai-skill-creator"],
 	] as const) {
 		assert.match(readme, new RegExp(`former package names such as[\\s\\S]*${legacyName}`));
 		assert.match(readme, new RegExp(`runtime skill selection should use[\\s\\S]*${prefixedName}`));
@@ -49,9 +49,9 @@ test("technical reference documents legacy skill-name compatibility aliases", ()
 });
 
 for (const dir of UNPREFIXED_DIRS) {
-	test(`skills/${dir}/SKILL.md frontmatter name carries no gentle-ai- prefix`, () => {
+	test(`skills/${dir}/SKILL.md frontmatter name carries no drakonc-ai- prefix`, () => {
 		const name = readSkillName(dir);
 		assert.ok(name, `expected a name for ${dir}`);
-		assert.ok(!name?.startsWith("gentle-ai-"), `${dir} should not be prefixed, got ${name}`);
+		assert.ok(!name?.startsWith("drakonc-ai-"), `${dir} should not be prefixed, got ${name}`);
 	});
 }

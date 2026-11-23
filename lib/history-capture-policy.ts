@@ -1,17 +1,17 @@
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 
-// Prompt history capture is default-off. An explicit GENTLE_PI_HISTORY_CAPTURE
-// value wins, then the Gentle → Customize preference, then off. Any missing,
+// Prompt history capture is default-off. An explicit DRAKONC_PI_HISTORY_CAPTURE
+// value wins, then the Drakonc → Customize preference, then off. Any missing,
 // malformed or unreadable preference fails closed. Turning capture off only
 // stops new captures; stored history is never deleted here.
 export const HISTORY_CAPTURE_POLICY = { ON: "on", OFF: "off" } as const;
 export type HistoryCapturePolicy = (typeof HISTORY_CAPTURE_POLICY)[keyof typeof HISTORY_CAPTURE_POLICY];
-export const HISTORY_CAPTURE_SCHEMA = "gentle-pi.history-capture/v1";
-export const HISTORY_CAPTURE_ENV = "GENTLE_PI_HISTORY_CAPTURE";
-interface HistoryCaptureOptions { gentlePiConfigHome?: string }
+export const HISTORY_CAPTURE_SCHEMA = "drakonc-pi.history-capture/v1";
+export const HISTORY_CAPTURE_ENV = "DRAKONC_PI_HISTORY_CAPTURE";
+interface HistoryCaptureOptions { drakoncPiConfigHome?: string }
 export interface HistoryCapturePolicyResolution {
 	policy: HistoryCapturePolicy;
 	source: "global_file" | "default";
@@ -46,7 +46,7 @@ export function parseHistoryCaptureFile(raw: string): HistoryCapturePolicy | und
 }
 
 export function resolveHistoryCapturePolicy(options: HistoryCaptureOptions = {}): HistoryCapturePolicyResolution {
-	const globalFile = join(options.gentlePiConfigHome ?? gentlePiConfigHome(), "history-capture.json");
+	const globalFile = join(options.drakoncPiConfigHome ?? drakoncPiConfigHome(), "history-capture.json");
 	try {
 		const policy = parseHistoryCaptureFile(readFileSync(globalFile, "utf8"));
 		return { policy: policy ?? "off", source: "global_file", malformed: policy === undefined, globalFile };
@@ -57,9 +57,9 @@ export function resolveHistoryCapturePolicy(options: HistoryCaptureOptions = {})
 }
 
 /** Full resolution for status surfaces; always reads the preference. */
-export function resolveHistoryCapture(options: { env?: NodeJS.ProcessEnv; gentlePiConfigHome?: string } = {}): HistoryCaptureResolution {
+export function resolveHistoryCapture(options: { env?: NodeJS.ProcessEnv; drakoncPiConfigHome?: string } = {}): HistoryCaptureResolution {
 	const env = options.env ?? process.env;
-	const saved = resolveHistoryCapturePolicy({ gentlePiConfigHome: options.gentlePiConfigHome ?? gentlePiConfigHome(env) });
+	const saved = resolveHistoryCapturePolicy({ drakoncPiConfigHome: options.drakoncPiConfigHome ?? drakoncPiConfigHome(env) });
 	const envOverride = historyCaptureEnvOverride(env);
 	return {
 		enabled: (envOverride ?? saved.policy) === "on",
@@ -72,16 +72,16 @@ export function resolveHistoryCapture(options: { env?: NodeJS.ProcessEnv; gentle
 }
 
 /** Per-prompt gate: an explicit env value never reads the preference file. */
-export function historyCaptureEnabled(options: { env?: NodeJS.ProcessEnv; gentlePiConfigHome?: string } = {}): boolean {
+export function historyCaptureEnabled(options: { env?: NodeJS.ProcessEnv; drakoncPiConfigHome?: string } = {}): boolean {
 	const env = options.env ?? process.env;
 	const override = historyCaptureEnvOverride(env);
 	if (override) return override === "on";
-	return resolveHistoryCapturePolicy({ gentlePiConfigHome: options.gentlePiConfigHome ?? gentlePiConfigHome(env) }).policy === "on";
+	return resolveHistoryCapturePolicy({ drakoncPiConfigHome: options.drakoncPiConfigHome ?? drakoncPiConfigHome(env) }).policy === "on";
 }
 
 export function writeHistoryCapturePolicy(policy: HistoryCapturePolicy, options: HistoryCaptureOptions = {}): string {
 	if (policy !== "on" && policy !== "off") throw new TypeError("Invalid history capture policy");
-	const home = options.gentlePiConfigHome ?? gentlePiConfigHome();
+	const home = options.drakoncPiConfigHome ?? drakoncPiConfigHome();
 	const path = join(home, "history-capture.json");
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	mkdirSync(home, { recursive: true });

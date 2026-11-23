@@ -536,8 +536,8 @@ test("the focus margins live in canvas-focus.js, and the size changes only throu
 });
 
 test("the docs describe the preview size in the top bar, All sizes, the Overflows chip, the comment's size and focus mode as wide as the window", () => {
-	const docs = readFileSync(fileURLToPath(new URL("../docs/gentle-shell.md", import.meta.url)), "utf8");
-	const section = docs.slice(docs.indexOf("### Gentle Design"), docs.indexOf("### Gentle Music"));
+	const docs = readFileSync(fileURLToPath(new URL("../docs/drakonc-shell.md", import.meta.url)), "utf8");
+	const section = docs.slice(docs.indexOf("### Drakonc Design"), docs.indexOf("### Drakonc Music"));
 	const start = section.indexOf("- **Sizes**");
 	assert.ok(start >= 0, "a Sizes entry");
 	const sizes = section.slice(start, section.indexOf("\n", start));

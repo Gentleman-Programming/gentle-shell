@@ -1,10 +1,10 @@
 import { effectiveKey, type KeymapBindings } from "./keymaps.ts";
 
 /** Session-scoped display data only; never command output or process control. */
-export const JOBS_SIDEBAR_EVENT = "gentle-ai:jobs-sidebar";
-export const JOBS_STATUS_KEY = "gentle-jobs";
+export const JOBS_SIDEBAR_EVENT = "drakonc-ai:jobs-sidebar";
+export const JOBS_STATUS_KEY = "drakonc-jobs";
 
-/** The key that folds the jobs card; GENTLE_PI_JOBS_KEY overrides it, then keymaps.json (lib/keymaps.ts). */
+/** The key that folds the jobs card; DRAKONC_PI_JOBS_KEY overrides it, then keymaps.json (lib/keymaps.ts). */
 export function jobsCollapseKey(env: NodeJS.ProcessEnv = process.env, bindings: KeymapBindings = {}): string | undefined {
 	return effectiveKey("jobs.collapse", env, bindings);
 }

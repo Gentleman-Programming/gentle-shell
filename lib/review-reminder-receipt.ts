@@ -2,7 +2,7 @@ import { isAbsolute } from "node:path";
 
 // Reminder bookkeeping only: these entries neither define review scope nor grant
 // authority. Both extensions append to the parent's active Pi session branch.
-export const REVIEW_REMINDER_RECEIPT = "gentle-pi.review-reminder-receipt/v1";
+export const REVIEW_REMINDER_RECEIPT = "drakonc-pi.review-reminder-receipt/v1";
 export interface ReceiptSession {
 	getSessionId(): string;
 	getBranch(): readonly { type: string; customType?: string; data?: unknown }[];
@@ -16,7 +16,7 @@ export interface MutationEvidence {
 	toolName: "write" | "edit";
 	toolCallId: string;
 	taskId?: string;
-	/** Runtime-resolved writer model id; omitted when the runtime does not know it (gentle-pi#1175). */
+	/** Runtime-resolved writer model id; omitted when the runtime does not know it (drakonc-pi#1175). */
 	writerModelId?: string;
 	/** Runtime-resolved writer effort (thinking level); omitted when unknown. */
 	writerEffort?: string;
@@ -106,7 +106,7 @@ export function pendingReviewMutation(session: ReceiptSession, root: string, cap
 /**
  * The runtime-recorded writer profiles of every mutation still pending for
  * `root`, with exactly `pendingReviewMutation`'s consumption semantics. ASSESS
- * reads these instead of trusting a model re-declaration (gentle-pi#1175).
+ * reads these instead of trusting a model re-declaration (drakonc-pi#1175).
  */
 export function pendingReviewMutationProfiles(session: ReceiptSession, root: string): PendingWriterProfile[] {
 	const { mutations, consumed } = mutationLedger(session, root);

@@ -14,7 +14,7 @@ import { validateQuestionnaire, type QuestionnaireError } from "../lib/questionn
 import { isInteractiveRpcHost } from "../lib/rpc-host.ts";
 
 const QUESTION_TOOL_NAME = "ask_user_question";
-const ASK_USER_QUESTION_BLOCKED_EVENT = "gentle-pi:ask-user-question:blocked";
+const ASK_USER_QUESTION_BLOCKED_EVENT = "drakonc-pi:ask-user-question:blocked";
 
 /** Maximum characters kept from a renderCall question summary. */
 const CALL_SUMMARY_LIMIT = 120;
@@ -37,7 +37,7 @@ interface QuestionnaireToolResult {
  * Invalid-parameter result. `AgentToolResult` has no `isError` field, so this
  * follows the repository convention for rejected tool input: a leading error
  * sentence in `content` plus a machine-readable payload in `details`
- * (`extensions/gentle-todo.ts` returns `Error: ...` with `details.error`).
+ * (`extensions/drakonc-todo.ts` returns `Error: ...` with `details.error`).
  */
 function invalidQuestionnaireResult(error: QuestionnaireError): QuestionnaireToolResult {
 	return {
@@ -334,7 +334,7 @@ export default function askUserQuestion(pi: ExtensionAPI): void {
 						requestRender: () => tui.requestRender(),
 						mouseObserver: view.createMouseObserver(() => tui.requestRender()),
 					});
-					// Gentle Shell Desktop answers a session outside Herdr app through the view's own completion.
+					// Drakonc Shell Desktop answers a session outside Herdr app through the view's own completion.
 					publishQuestionnaireAnswerHandle(_toolCallId, params.questions, complete, () => completed);
 					container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 					container.addChild(view);

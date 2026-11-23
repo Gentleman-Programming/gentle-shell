@@ -1,6 +1,6 @@
-// Gentle Desktop background-jobs bridge: reaches the existing jobs owner (the
+// Drakonc Desktop background-jobs bridge: reaches the existing jobs owner (the
 // single parent-session `JobRegistry` plus the parent `MonitorController`,
-// inside `extensions/gentle-agents.ts`) through a defensive, versioned
+// inside `extensions/drakonc-agents.ts`) through a defensive, versioned
 // owner-service event/adapter — the jobs analogue of the usage
 // `discoverDesktopUsageService` seam. It never starts, stops, or polls a job
 // itself and keeps no second registry: every list, cancel, and output read is

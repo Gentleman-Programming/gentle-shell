@@ -6,8 +6,8 @@ import test, { type TestContext } from "node:test";
 import { getCurrentSystemMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
-import installGentleTodo from "../extensions/gentle-todo.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
+import installDrakoncTodo from "../extensions/drakonc-todo.ts";
 import { REPLY_LANGUAGE_ANCHOR_TYPE, humanLanguageExcerpt } from "../lib/reply-language-anchor.ts";
 
 // cost-speed-painpoints S10/S15 (P1). pi-claude-bridge warned that an extension adds a
@@ -15,7 +15,7 @@ import { REPLY_LANGUAGE_ANCHOR_TYPE, humanLanguageExcerpt } from "../lib/reply-l
 // cache. Invariant: across consecutive requests of one session, the message list sent to
 // the provider is append-only — request k+1 starts with exactly the messages of request k.
 //
-// The loop below drives the real gentle-ai and gentle-todo hooks the way Pi 1.5.2 does:
+// The loop below drives the real drakonc-ai and drakonc-todo hooks the way Pi 1.5.2 does:
 // `context` handlers see the conversation without system messages (a changed list gets the
 // replayed system head, runner.js restoreSystemMessages), then `context_with_system`
 // handlers see the full transcript and their output is sent as returned. A custom message
@@ -27,7 +27,7 @@ type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
 const HUMAN_1 = "Che, revisá por qué el writer no arranca y decime qué pasa con la admisión";
 const HUMAN_2 = "Bien, ahora armá la lista de tareas y seguí con el arreglo";
-const WAKE = "[System-generated Gentle Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
+const WAKE = "[System-generated Drakonc Agents notification, not written by the user] Subagent output was delivered to this session above. Review it and continue.";
 
 function session(t: TestContext, options: { child?: boolean } = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "append-only-"));
@@ -48,12 +48,12 @@ function session(t: TestContext, options: { child?: boolean } = {}) {
 		getActiveTools: () => ["read", "todo"], getFlag: () => undefined,
 		sendMessage,
 	}) as unknown as ExtensionAPI;
-	createGentleAiExtension({
+	createDrakoncAiExtension({
 		nativeReviewCli: null,
-		processEnv: { GENTLE_PI_CONFIG_HOME: join(cwd, "config"), GENTLE_PI_AGENTS_CHILD: options.child ? "1" : "0" },
+		processEnv: { DRAKONC_PI_CONFIG_HOME: join(cwd, "config"), DRAKONC_PI_AGENTS_CHILD: options.child ? "1" : "0" },
 		resolveTelemetryTriggerBinary: () => "/usr/bin/true", telemetryTriggerSpawn: (() => undefined) as never,
-	})(api("gentle-ai"));
-	installGentleTodo(api("gentle-todo"), {});
+	})(api("drakonc-ai"));
+	installDrakoncTodo(api("drakonc-todo"), {});
 
 	const transcript: Message[] = [{ role: "system", content: "You are the harness under test.", timestamp: 0 }];
 	const ctx = {
@@ -104,15 +104,15 @@ function session(t: TestContext, options: { child?: boolean } = {}) {
 		transcript.push({ role: "user", content: [{ type: "text", text }], timestamp: now() });
 		return turn(say("Listo."));
 	};
-	/** A run started by an automated wake: Gentle Agents sends it as an extension-sourced user message. */
+	/** A run started by an automated wake: Drakonc Agents sends it as an extension-sourced user message. */
 	const wake = async () => {
 		await fire("input", { type: "input", text: WAKE, source: "extension" });
 		transcript.push({ role: "user", content: [{ type: "text", text: WAKE }], timestamp: now() });
 		return turn(say("Revisé el resultado."));
 	};
 	/** A run started by an automated custom message, as a subagent result sent with triggerTurn while idle. */
-	const automated = async (customType = "gentle-agents.result") => {
-		transcript.push({ role: "custom", customType, content: "Subagent gentle-ai-worker (task x) finished. All checks pass.", display: true, timestamp: now() });
+	const automated = async (customType = "drakonc-agents.result") => {
+		transcript.push({ role: "custom", customType, content: "Subagent drakonc-ai-worker (task x) finished. All checks pass.", display: true, timestamp: now() });
 		return turn(say("El worker terminó."));
 	};
 	/** A human run whose reply writes the todo list in a tool loop, then answers. */
@@ -177,7 +177,7 @@ test("P1: a multi-turn session with wakes, automated results, a human message an
 	assert.equal(byStep["final human"], undefined);
 
 	// The todo list reaches the model once it changed, and stays there.
-	const todoState = (sent: Message[]) => [...sent].reverse().find((message) => message.customType === "gentle-todo-state");
+	const todoState = (sent: Message[]) => [...sent].reverse().find((message) => message.customType === "drakonc-todo-state");
 	assert.match(textOf(todoState(todo.sentAfterTool)), /Arreglar la admisión/, "the request after the todo write carries the list");
 	assert.match(textOf(todoState(s.requests.at(-1)!)), /Probar el writer/);
 
@@ -194,12 +194,12 @@ test("P1: a multi-turn session with wakes, automated results, a human message an
 test("P1 preservation: the anchor appears exactly where it did before — automated tail only, never mid tool loop, never twice", async (t) => {
 	const cases: Array<{ name: string; messages: Message[]; human?: string; child?: boolean; anchored: boolean }> = [
 		{ name: "right after the human", messages: [{ role: "user", content: HUMAN_1, timestamp: 1 }], human: HUMAN_1, anchored: false },
-		{ name: "after a subagent result", messages: [{ role: "user", content: HUMAN_1, timestamp: 1 }, { role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: 2 }, { role: "custom", customType: "gentle-agents.result", content: "done", display: true, timestamp: 3 }], human: HUMAN_1, anchored: true },
+		{ name: "after a subagent result", messages: [{ role: "user", content: HUMAN_1, timestamp: 1 }, { role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: 2 }, { role: "custom", customType: "drakonc-agents.result", content: "done", display: true, timestamp: 3 }], human: HUMAN_1, anchored: true },
 		{ name: "after a wake", messages: [{ role: "user", content: HUMAN_1, timestamp: 1 }, { role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: 2 }, { role: "user", content: WAKE, timestamp: 3 }], human: HUMAN_1, anchored: true },
 		{ name: "mid tool loop", messages: [{ role: "user", content: HUMAN_1, timestamp: 1 }, { role: "assistant", content: [{ type: "toolCall", id: "c", name: "read", arguments: {} }], timestamp: 2 }, { role: "toolResult", toolCallId: "c", toolName: "read", content: [{ type: "text", text: "x" }], isError: false, timestamp: 3 }], human: HUMAN_1, anchored: false },
-		{ name: "todo snapshot alone at the tail", messages: [{ role: "user", content: HUMAN_1, timestamp: 1 }, { role: "custom", customType: "gentle-todo-state", content: "Current todo list: no open tasks.", display: false, timestamp: 2 }], human: HUMAN_1, anchored: false },
-		{ name: "no human text known", messages: [{ role: "custom", customType: "gentle-agents.result", content: "done", display: true, timestamp: 3 }], anchored: false },
-		{ name: "child session", messages: [{ role: "user", content: HUMAN_1, timestamp: 1 }, { role: "custom", customType: "gentle-agents.result", content: "done", display: true, timestamp: 3 }], human: HUMAN_1, child: true, anchored: false },
+		{ name: "todo snapshot alone at the tail", messages: [{ role: "user", content: HUMAN_1, timestamp: 1 }, { role: "custom", customType: "drakonc-todo-state", content: "Current todo list: no open tasks.", display: false, timestamp: 2 }], human: HUMAN_1, anchored: false },
+		{ name: "no human text known", messages: [{ role: "custom", customType: "drakonc-agents.result", content: "done", display: true, timestamp: 3 }], anchored: false },
+		{ name: "child session", messages: [{ role: "user", content: HUMAN_1, timestamp: 1 }, { role: "custom", customType: "drakonc-agents.result", content: "done", display: true, timestamp: 3 }], human: HUMAN_1, child: true, anchored: false },
 	];
 	for (const item of cases) {
 		const s = session(t, { child: item.child });

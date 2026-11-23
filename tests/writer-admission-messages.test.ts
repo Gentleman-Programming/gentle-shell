@@ -4,13 +4,13 @@ import { allowedEditSurfaces, rejectUnscopedBoundedWriterDispatch, WRITER_EDIT_S
 
 // cost-speed P9b: a rejected `## Allowed edit surfaces` section names the invalid entry (quoted, bounded,
 // control characters escaped), its position, why it is invalid and the fix, then one short rule sentence.
-// The tool hook (extensions/gentle-ai.ts) and the executor (extensions/gentle-agents.ts) both call this function.
+// The tool hook (extensions/drakonc-ai.ts) and the executor (extensions/drakonc-agents.ts) both call this function.
 
 const H = "## Allowed edit surfaces\n";
 const RULE = "Fix only that section, then relaunch with the rest of the task unchanged, never shortened or re-summarized; derive the surfaces from the task (narrow repository-relative paths or globs, one per line, until the next Markdown heading) and do not ask the human to author paths or globs.";
 
 function reason(task: string, context?: string): string {
-	const result = rejectUnscopedBoundedWriterDispatch({ agent: "gentle-ai-worker", mode: "task", task, context });
+	const result = rejectUnscopedBoundedWriterDispatch({ agent: "drakonc-ai-worker", mode: "task", task, context });
 	assert.equal(result?.block, true, `rejected: ${JSON.stringify(task)}`);
 	return result!.reason;
 }
@@ -116,9 +116,9 @@ test("rejected inputs stay rejected", () => {
 	for (const section of ["", "Requirements: x.", "src/a.ts  # c", "/abs", ".", "..", "**/*.ts", "a b/c.md", "src/a\u0007.ts", "-", "`x", "    ## Return", "``"]) {
 		const task = `${H}${section}`;
 		assert.equal(allowedEditSurfaces(task), undefined, JSON.stringify(section));
-		assert.equal(rejectUnscopedBoundedWriterDispatch({ agent: "gentle-ai-worker", task })?.block, true, JSON.stringify(section));
+		assert.equal(rejectUnscopedBoundedWriterDispatch({ agent: "drakonc-ai-worker", task })?.block, true, JSON.stringify(section));
 	}
-	assert.equal(rejectUnscopedBoundedWriterDispatch({ agent: "gentle-ai-explore", task: "no heading" }), undefined, "non-writers are untouched");
+	assert.equal(rejectUnscopedBoundedWriterDispatch({ agent: "drakonc-ai-explore", task: "no heading" }), undefined, "non-writers are untouched");
 });
 
 // Verifier blocker 3: the fix a message suggests, applied literally to the offending entry, yields the path the

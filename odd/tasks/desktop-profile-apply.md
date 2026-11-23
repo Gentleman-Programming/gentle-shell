@@ -1,7 +1,7 @@
 # Desktop RPC profile apply
 
-Adds a `gentle-shell.desktop-rpc/v1` method that applies a saved profile through the exact
-`/gentle:profiles` apply path, and switches Gentle Desktop's "Make default" to it.
+Adds a `drakonc-shell.desktop-rpc/v1` method that applies a saved profile through the exact
+`/drakonc:profiles` apply path, and switches Drakonc Desktop's "Make default" to it.
 
 ## Specs
 
@@ -9,13 +9,13 @@ Adds a `gentle-shell.desktop-rpc/v1` method that applies a saved profile through
 - S2: "Implemento el método RPC para aplicar perfiles (Shell + Desktop), con PRs y merge tras CI verde."
 - S3 (from the explored apply path, behavior to preserve): Make default asks the human before writing global routing whenever the screen would ask (`Apply profile "<name>"?`, `Apply empty profile?`, `Apply orchestrator-only profile?`); declining writes nothing; pinned repositories and no-op applies do not ask. Over RPC the confirmation is the same title and message, shown by Desktop, and an apply only proceeds with a confirmation token bound to that exact text.
 - S4: "Use in this session" binds the saved profile to the RPC session through the same path, writing nothing shared.
-- S5: the `/gentle:profiles` screen behavior is unchanged.
+- S5: the `/drakonc:profiles` screen behavior is unchanged.
 
 ## Tasks
 
-- T1 [S1,S3,S4,S5] Shell: owner seam in `extensions/gentle-ai.ts` running `runProfilesPanelAction` with a recording UI adapter; Desktop bridge + `apply_profile` method, `profile_applied` event, docs, tests. Route: inline (parent), independent verify (Risk items 1, 3). Commit: pending.
+- T1 [S1,S3,S4,S5] Shell: owner seam in `extensions/drakonc-ai.ts` running `runProfilesPanelAction` with a recording UI adapter; Desktop bridge + `apply_profile` method, `profile_applied` event, docs, tests. Route: inline (parent), independent verify (Risk items 1, 3). Commit: pending.
 - T2 [S2] Shell PR, CI green, CodeRabbit valid findings resolved, merge. Commit: pending.
-- T3 [S1,S2] Desktop (decode2/gentle-shell-gpui): Make default and Use in this session call `apply_profile` with the confirmation dialog; tests; PR and merge. Commit: pending.
+- T3 [S1,S2] Desktop (decode2/drakonc-shell-gpui): Make default and Use in this session call `apply_profile` with the confirmation dialog; tests; PR and merge. Commit: pending.
 
 ## Log
 

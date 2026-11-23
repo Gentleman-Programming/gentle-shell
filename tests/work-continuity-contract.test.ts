@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 
 // These assertions cover delivered instructions, not an agent's execution of them.
 let root: string;
@@ -13,12 +13,12 @@ let cwd: string;
 let env: NodeJS.ProcessEnv;
 const previous = new Map<string, string | undefined>();
 before(async () => {
-	root = await mkdtemp(join(tmpdir(), "gentle-work-continuity-"));
+	root = await mkdtemp(join(tmpdir(), "drakonc-work-continuity-"));
 	cwd = join(root, "project");
 	const home = join(root, "home");
 	await mkdir(cwd);
 	await mkdir(home);
-	env = { HOME: home, USERPROFILE: home, GENTLE_PI_CONFIG_HOME: join(home, "config"), GENTLE_PI_AGENT_HOME: join(home, "agents"), PI_CODING_AGENT_DIR: join(home, "pi"), XDG_CONFIG_HOME: join(home, "xdg") };
+	env = { HOME: home, USERPROFILE: home, DRAKONC_PI_CONFIG_HOME: join(home, "config"), DRAKONC_PI_AGENT_HOME: join(home, "agents"), PI_CODING_AGENT_DIR: join(home, "pi"), XDG_CONFIG_HOME: join(home, "xdg") };
 	for (const [key, value] of Object.entries(env)) {
 		previous.set(key, process.env[key]);
 		process.env[key] = value;
@@ -62,7 +62,7 @@ const UNAVAILABLE_VERIFIER = "an unavailable verifier or subagent is reported as
 async function deliveredPrompt(): Promise<string> {
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	const pi = { on(name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) { handlers.set(name, handler); }, events: { emit() {} }, registerCommand() {}, registerTool() {} } as unknown as ExtensionAPI;
-	createGentleAiExtension({ nativeReviewCli: null, processEnv: { ...env, GENTLE_PI_AGENTS_CHILD: "0", GENTLE_AI_TELEMETRY: "0" }, resolveTelemetryTriggerBinary: () => join(cwd, "never-executed"), telemetryTriggerSpawn: () => assert.fail("fixture must not spawn telemetry") })(pi);
+	createDrakoncAiExtension({ nativeReviewCli: null, processEnv: { ...env, DRAKONC_PI_AGENTS_CHILD: "0", DRAKONC_AI_TELEMETRY: "0" }, resolveTelemetryTriggerBinary: () => join(cwd, "never-executed"), telemetryTriggerSpawn: () => assert.fail("fixture must not spawn telemetry") })(pi);
 	const event = { systemPrompt: "base", systemPromptOptions: { appendSystemPrompt: "" } };
 	const ctx = { cwd, hasUI: true, ui: { notify() {}, setWidget() {} }, sessionManager: { getSessionId: () => "continuity-test", getBranch: () => [] } } as unknown as ExtensionContext;
 	await handlers.get("before_agent_start")!(event, ctx);

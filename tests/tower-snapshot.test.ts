@@ -9,7 +9,7 @@ import { readTowerSnapshots, removeTowerSnapshot, TOWER_SNAPSHOT_MAX_BYTES, writ
 const roots: string[] = [];
 after(() => roots.forEach((r) => rmSync(r, { recursive: true, force: true })));
 function scratch(): string {
-	const r = mkdtempSync(join(tmpdir(), "gentle-tower-"));
+	const r = mkdtempSync(join(tmpdir(), "drakonc-tower-"));
 	roots.push(r);
 	return join(r, "hub");
 }
@@ -17,7 +17,7 @@ function scratch(): string {
 const base = {
 	sessionId: "s-1",
 	sessionName: "Token refresh fix",
-	cwd: "/Users/me/work/gentle-ai",
+	cwd: "/Users/me/work/drakonc-ai",
 	modelId: "claude-opus-5-5",
 	effort: "high",
 	context: { percent: 38, contextWindow: 200000 },
@@ -27,8 +27,8 @@ const base = {
 		{ id: 2, title: "Retry once when the refresh fails", status: "blocked" as const, note: "waiting for your answer" },
 	],
 	agents: [
-		{ id: "t1", agent: "gentle-ai-worker", status: "running", lastStep: "editing", usage: { total: 1200, cost: 0.03 } },
-		{ id: "t2", agent: "gentle-ai-explore", status: "completed", lastStep: "done", usage: { total: 800, cost: 0.01 } },
+		{ id: "t1", agent: "drakonc-ai-worker", status: "running", lastStep: "editing", usage: { total: 1200, cost: 0.03 } },
+		{ id: "t2", agent: "drakonc-ai-explore", status: "completed", lastStep: "done", usage: { total: 800, cost: 0.01 } },
 	],
 	phase: "implementing",
 	now: 1700000000000,
@@ -39,7 +39,7 @@ test("snapshot maps the live session data the tower shows", () => {
 	assert.equal(s.version, TOWER_SNAPSHOT_VERSION);
 	assert.equal(s.sessionId, "s-1");
 	assert.equal(s.name, "Token refresh fix");
-	assert.deepEqual(s.project, { cwd: "/Users/me/work/gentle-ai", name: "gentle-ai" });
+	assert.deepEqual(s.project, { cwd: "/Users/me/work/drakonc-ai", name: "drakonc-ai" });
 	assert.equal(s.model, "claude-opus-5-5");
 	assert.equal(s.effort, "high");
 	assert.deepEqual(s.context, { percent: 38, window: 200000 });
@@ -58,7 +58,7 @@ test("snapshot maps the live session data the tower shows", () => {
 
 test("snapshot falls back when the session has no name, model or context yet", () => {
 	const s = buildTowerSnapshot({ ...base, sessionName: undefined, modelId: undefined, effort: undefined, context: undefined, todos: [], agents: [], phase: undefined });
-	assert.equal(s.name, "gentle-ai");
+	assert.equal(s.name, "drakonc-ai");
 	assert.equal(s.model, "no-model");
 	assert.equal(s.effort, undefined);
 	assert.deepEqual(s.context, { percent: null, window: 0 });
@@ -69,11 +69,11 @@ test("snapshot falls back when the session has no name, model or context yet", (
 
 test("subagents are named by role, with a task word only when a role repeats", () => {
 	const named = nameSubagents([
-		{ id: "a", agent: "gentle-ai-worker", label: "write the session tests" },
-		{ id: "b", agent: "gentle-ai-worker", label: "Change session.go" },
-		{ id: "c", agent: "gentle-ai-explore" },
-		{ id: "d", agent: "gentle-ai-verify" },
-		{ id: "e", agent: "gentle-ai-verify" },
+		{ id: "a", agent: "drakonc-ai-worker", label: "write the session tests" },
+		{ id: "b", agent: "drakonc-ai-worker", label: "Change session.go" },
+		{ id: "c", agent: "drakonc-ai-explore" },
+		{ id: "d", agent: "drakonc-ai-verify" },
+		{ id: "e", agent: "drakonc-ai-verify" },
 	]);
 	assert.deepEqual(named.map((n) => n.name), ["worker-session", "worker-change", "explore", "verify-d", "verify-e"]);
 	assert.deepEqual(named.map((n) => n.role), ["worker", "worker", "explore", "verify", "verify"]);
@@ -129,7 +129,7 @@ test("a session with huge history still publishes a snapshot within the hub limi
 		sessionName: long("n", 5000),
 		cwd: `/w/${long("d", 5000)}`,
 		todos: Array.from({ length: 600 }, (_, i) => ({ id: i + 1, title: long("t", 2000), status: (i % 2 ? "pending" : "done") as "pending" | "done", note: long("漢", 1500) })),
-		agents: Array.from({ length: 200 }, (_, i) => ({ id: `a${i}`, agent: "gentle-ai-worker", label: long("l", 500), status: "running", lastStep: long("s", 3000), usage: { total: 1, cost: 0 } })),
+		agents: Array.from({ length: 200 }, (_, i) => ({ id: `a${i}`, agent: "drakonc-ai-worker", label: long("l", 500), status: "running", lastStep: long("s", 3000), usage: { total: 1, cost: 0 } })),
 		said: long("w", 10000),
 		models: Array.from({ length: 300 }, (_, i) => ({ model: `${long("m", 2000)}${i}`, cost: 1, tokens: 1 })),
 		artifacts: Array.from({ length: 50 }, (_, i) => ({ path: `/${long("p", 3000)}${i}.md`, kind: "doc" as const })),
@@ -187,7 +187,7 @@ test("the conversation keeps the visible turns in order: your words and the agen
 		msg("assistant", [{ type: "thinking", thinking: "secret plan" }, { type: "toolCall", id: "c1", name: "read", arguments: { path: "a.ts" } }], 2),
 		msg("toolResult", [{ type: "text", text: "file body" }], 3, { toolCallId: "c1", toolName: "read" }),
 		msg("assistant", [{ type: "text", text: "I fixed the refresh." }, { type: "toolCall", id: "c2", name: "bash", arguments: {} }], 4),
-		msg("custom", "injected reminder", 5, { customType: "gentle-todo-reminder", display: false }),
+		msg("custom", "injected reminder", 5, { customType: "drakonc-todo-reminder", display: false }),
 		{ type: "custom_message", customType: "note", content: "hidden note", display: false, timestamp: "1970-01-01T00:00:00.006Z" },
 		msg("user", "[System-generated wake] a helper finished", 7),
 		msg("user", [{ type: "text", text: "and the docs?" }, { type: "image", data: "x", mimeType: "image/png" }], 8),

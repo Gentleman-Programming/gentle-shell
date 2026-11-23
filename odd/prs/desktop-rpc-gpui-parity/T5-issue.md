@@ -9,7 +9,7 @@
 
 ### Problem or opportunity
 
-gentle-shell-gpui reads `auth.json` keys to know which providers have credentials, and new credentials only reach a session when its backend restarts. Related: #3384 (sign-in for extension providers, option (c)); this issue covers status and reload only, no login.
+drakonc-shell-gpui reads `auth.json` keys to know which providers have credentials, and new credentials only reach a session when its backend restarts. Related: #3384 (sign-in for extension providers, option (c)); this issue covers status and reload only, no login.
 
 ### Proposed outcome
 
@@ -23,4 +23,4 @@ Reading `auth.json` in the bridge: rejected, it would be a second owner of a sec
 
 ### Additional context
 
-Part of the gentle-shell-gpui parity work: each piece replaces an app-side workaround (reading private files, prompt-text commands, or parsing terminal output). Implementation branch: `feat/desktop-rpc-auth-status`.
+Part of the drakonc-shell-gpui parity work: each piece replaces an app-side workaround (reading private files, prompt-text commands, or parsing terminal output). Implementation branch: `feat/desktop-rpc-auth-status`.

@@ -151,7 +151,7 @@ test("interactive shutdown never joins a blocked delivery", async () => {
 	await h.finish();
 });
 
-for (const env of [{ DO_NOT_TRACK: "1" }, { GENTLE_AI_TELEMETRY: "0" }, { CI: "true" }, { GENTLE_PI_AGENTS_CHILD: "1" }]) {
+for (const env of [{ DO_NOT_TRACK: "1" }, { DRAKONC_AI_TELEMETRY: "0" }, { CI: "true" }, { DRAKONC_PI_AGENTS_CHILD: "1" }]) {
 	test(`opt-out suppresses hooks and launches: ${Object.keys(env)[0]}`, async () => {
 		const h = harness(env); await h.emit("session_start");
 		h.emit("message_end", { message: final() }); await tick();

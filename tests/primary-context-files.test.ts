@@ -4,20 +4,20 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension } from "../extensions/drakonc-ai.ts";
 import { ORCHESTRATOR_ONLY_MANAGED_BLOCKS } from "../lib/child-context-files.ts";
 
-// The primary session loads ancestor context files such as a gentle-ai
+// The primary session loads ancestor context files such as a drakonc-ai
 // managed ~/AGENTS.md, whose orchestrator-only blocks carry a second
-// orchestrator policy next to the one Gentle Shell injects. Whenever Gentle
+// orchestrator policy next to the one Drakonc Shell injects. Whenever Drakonc
 // Shell's own orchestrator prompt is injected, the primary drops the same
-// blocks a delegated child drops (gentle-shell#1587) plus the engram-protocol
-// memory block, which gentle-engram injects itself. Everything else stays.
+// blocks a delegated child drops (drakonc-shell#1587) plus the engram-protocol
+// memory block, which drakonc-engram injects itself. Everything else stays.
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 
 function block(name: string, body: string): string {
-	return `<!-- gentle-ai:${name} -->\n${body}\n<!-- /gentle-ai:${name} -->`;
+	return `<!-- drakonc-ai:${name} -->\n${body}\n<!-- /drakonc-ai:${name} -->`;
 }
 
 const REMOTE_AUTHORIZATION = block("remote-authorization", "## Remote operation authorization\n\nAsk before remote work.");
@@ -72,15 +72,15 @@ let fixtureRoot: string | undefined;
 const fixtureEnvironment: NodeJS.ProcessEnv = {};
 const previousEnvironment = new Map<string, string | undefined>();
 before(async () => {
-	const root = await mkdtemp(join(tmpdir(), "gentle-pi-primary-context-"));
+	const root = await mkdtemp(join(tmpdir(), "drakonc-pi-primary-context-"));
 	fixtureRoot = root;
 	fixtureCwd = join(root, "project");
 	const home = join(root, "home");
 	for (const directory of [fixtureCwd, home]) await mkdir(directory);
 	Object.assign(fixtureEnvironment, {
 		HOME: home, USERPROFILE: home,
-		GENTLE_PI_CONFIG_HOME: join(home, "config"),
-		GENTLE_PI_AGENT_HOME: join(home, "agents"),
+		DRAKONC_PI_CONFIG_HOME: join(home, "config"),
+		DRAKONC_PI_AGENT_HOME: join(home, "agents"),
 		PI_CODING_AGENT_DIR: join(home, "pi"),
 		XDG_CONFIG_HOME: join(home, "xdg"),
 	});
@@ -107,9 +107,9 @@ function beforeAgentStart(options: { processEnv?: NodeJS.ProcessEnv } = {}): Han
 		registerCommand() {},
 		registerTool() {},
 	} as unknown as ExtensionAPI;
-	createGentleAiExtension({
+	createDrakoncAiExtension({
 		nativeReviewCli: null,
-		processEnv: { ...fixtureEnvironment, GENTLE_PI_AGENTS_CHILD: "0", ...options.processEnv, GENTLE_AI_TELEMETRY: "0" },
+		processEnv: { ...fixtureEnvironment, DRAKONC_PI_AGENTS_CHILD: "0", ...options.processEnv, DRAKONC_AI_TELEMETRY: "0" },
 		resolveTelemetryTriggerBinary: () => join(fixtureCwd, "never-executed"),
 		telemetryTriggerSpawn: () => assert.fail("Primary context fixtures must not spawn telemetry"),
 	})(pi);
@@ -136,14 +136,14 @@ function startEvent(options: { extra?: Record<string, unknown>; home?: string; p
 	return { contextFiles, systemPromptOptions, event: { systemPrompt: "base", systemPromptOptions, ...options.extra } };
 }
 
-const ORCHESTRATOR_HEADING = /el Gentleman Identity and Harness/;
+const ORCHESTRATOR_HEADING = /el Drakoncman Identity and Harness/;
 
 for (const name of ORCHESTRATOR_ONLY_MANAGED_BLOCKS) {
-	test(`the primary drops the ${name} block while Gentle Shell's orchestrator is injected`, async () => {
+	test(`the primary drops the ${name} block while Drakonc Shell's orchestrator is injected`, async () => {
 		const home = `Before\n\n${block(name, "Orchestrator only\n\nMore text")}\n\nAfter\n`;
 		const { systemPromptOptions, event } = startEvent({ home });
 		await beforeAgentStart()(event, ctx());
-		assert.match(systemPromptOptions.appendSystemPrompt, ORCHESTRATOR_HEADING, "Gentle Shell's orchestrator is active");
+		assert.match(systemPromptOptions.appendSystemPrompt, ORCHESTRATOR_HEADING, "Drakonc Shell's orchestrator is active");
 		assert.equal(systemPromptOptions.contextFiles[0].content, "Before\n\nAfter\n");
 	});
 }
@@ -173,7 +173,7 @@ test("the nested remote-authorization block survives in the primary although its
 	const { systemPromptOptions, event } = startEvent();
 	await beforeAgentStart()(event, ctx());
 	const home = systemPromptOptions.contextFiles[0].content;
-	assert.ok(!home.includes("gentle-ai:agent-routing -->"), "the enclosing agent-routing block is dropped");
+	assert.ok(!home.includes("drakonc-ai:agent-routing -->"), "the enclosing agent-routing block is dropped");
 	assert.ok(home.includes(REMOTE_AUTHORIZATION), "remote-authorization stays byte-for-byte");
 });
 
@@ -213,11 +213,11 @@ test("a second primary turn over already-filtered context files removes nothing 
 });
 
 for (const scenario of ["child", "named-agent"] as const) {
-	test(`a ${scenario} start, where Gentle Shell's orchestrator is not injected, leaves context files untouched`, async () => {
+	test(`a ${scenario} start, where Drakonc Shell's orchestrator is not injected, leaves context files untouched`, async () => {
 		const { contextFiles, systemPromptOptions, event } = startEvent({
-			extra: scenario === "named-agent" ? { agentName: "gentle-ai-worker" } : {},
+			extra: scenario === "named-agent" ? { agentName: "drakonc-ai-worker" } : {},
 		});
-		await beforeAgentStart({ processEnv: scenario === "child" ? { GENTLE_PI_AGENTS_CHILD: "1" } : {} })(event, ctx());
+		await beforeAgentStart({ processEnv: scenario === "child" ? { DRAKONC_PI_AGENTS_CHILD: "1" } : {} })(event, ctx());
 		assert.doesNotMatch(systemPromptOptions.appendSystemPrompt, ORCHESTRATOR_HEADING);
 		assert.equal(systemPromptOptions.contextFiles, contextFiles);
 		assert.equal(systemPromptOptions.contextFiles[0].content, MANAGED_AGENTS_MD);
@@ -226,7 +226,7 @@ for (const scenario of ["child", "named-agent"] as const) {
 }
 
 test("malformed managed markers leave the primary context file unchanged", async () => {
-	const unbalanced = `<!-- gentle-ai:orchestrator -->\nno close\n${ENGRAM_PROTOCOL}\n`;
+	const unbalanced = `<!-- drakonc-ai:orchestrator -->\nno close\n${ENGRAM_PROTOCOL}\n`;
 	const { systemPromptOptions, event } = startEvent({ home: unbalanced });
 	await beforeAgentStart()(event, ctx());
 	assert.equal(systemPromptOptions.contextFiles[0].content, unbalanced);

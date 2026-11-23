@@ -67,7 +67,7 @@ test("windows system probes default to a cold-runner-safe bounded timeout", () =
 });
 
 test("windows system probe timeout honors a bounded environment override", () => {
-	const env = (value: string) => ({ GENTLE_PI_CANDIDATE_WINDOWS_PROBE_TIMEOUT_MS: value });
+	const env = (value: string) => ({ DRAKONC_PI_CANDIDATE_WINDOWS_PROBE_TIMEOUT_MS: value });
 	assert.equal(resolveWindowsSystemProbeTimeoutMs(env("30000")), 30_000);
 	assert.equal(resolveWindowsSystemProbeTimeoutMs(env("120000")), 120_000);
 	for (const invalid of ["0", "-1", "abc", "1.5", "120001", "", "015000"]) {

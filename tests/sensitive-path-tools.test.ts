@@ -6,9 +6,9 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createGentleAiExtension, isDesktopActionPathOn } from "../extensions/gentle-ai.ts";
+import { createDrakoncAiExtension, isDesktopActionPathOn } from "../extensions/drakonc-ai.ts";
 
-// gentle-shell#2349: the sensitive-path deny list must not depend on which
+// drakonc-shell#2349: the sensitive-path deny list must not depend on which
 // path-taking tool the model picks. grep, find, and ls take the same `path`
 // input as read, so a sensitive `path` is denied for them too. Shell tools
 // carry no `path` input at all: their command string is the surface, so the
@@ -19,7 +19,7 @@ type Handler = (event: { toolName: string; input: unknown; toolCallId: string },
 interface HarnessOptions {
 	child?: boolean;
 	mode?: "normal" | "yolo" | "super-yolo";
-	/** The resolved Gentle Pi agent home (GENTLE_PI_AGENT_HOME) of this process. */
+	/** The resolved Drakonc Pi agent home (DRAKONC_PI_AGENT_HOME) of this process. */
 	agentHome?: string;
 	/** Counts the approval dialog, so a test can prove the mode fixture is live. */
 	onApprovalPrompt?: () => void;
@@ -35,11 +35,11 @@ function toolCall(options: HarnessOptions = {}) {
 	// An isolated config home keeps the permission mode at its default, so every
 	// later tool_call check admits an ordinary path and the whole chain returns
 	// undefined. A block from any check is then observable, not just this guard's.
-	const home = mkdtempSync(join(tmpdir(), "gentle-shell-2349-"));
+	const home = mkdtempSync(join(tmpdir(), "drakonc-shell-2349-"));
 	if (options.mode !== undefined) {
-		writeFileSync(join(home, "permission-mode.json"), `${JSON.stringify({ schema: "gentle-pi.permission-mode/v1", mode: options.mode })}\n`);
+		writeFileSync(join(home, "permission-mode.json"), `${JSON.stringify({ schema: "drakonc-pi.permission-mode/v1", mode: options.mode })}\n`);
 	}
-	createGentleAiExtension({ processEnv: { GENTLE_PI_AGENTS_CHILD: options.child === true ? "1" : "0", GENTLE_PI_CONFIG_HOME: home, ...(options.agentHome === undefined ? {} : { GENTLE_PI_AGENT_HOME: options.agentHome }) }, nativeReviewCli: null })(pi);
+	createDrakoncAiExtension({ processEnv: { DRAKONC_PI_AGENTS_CHILD: options.child === true ? "1" : "0", DRAKONC_PI_CONFIG_HOME: home, ...(options.agentHome === undefined ? {} : { DRAKONC_PI_AGENT_HOME: options.agentHome }) }, nativeReviewCli: null })(pi);
 	const sessionManager = { getSessionId: () => "session-2349", getBranch: () => [], getEntries: () => [] };
 	const ctx = { cwd: process.cwd(), hasUI: false, sessionManager, ui: { confirm: async () => false, select: async () => { options.onApprovalPrompt?.(); return undefined; } } } as unknown as ExtensionContext;
 	return async (toolName: string, input: unknown) => {
@@ -51,9 +51,9 @@ function toolCall(options: HarnessOptions = {}) {
 	};
 }
 
-const reason = (path: string) => `Gentle AI safety policy blocked access to sensitive path: ${path}. Ask the user for an explicit safer plan.`;
+const reason = (path: string) => `Drakonc AI safety policy blocked access to sensitive path: ${path}. Ask the user for an explicit safer plan.`;
 
-test("grep, find, and ls deny a sensitive path exactly like read (gentle-shell#2349)", async () => {
+test("grep, find, and ls deny a sensitive path exactly like read (drakonc-shell#2349)", async () => {
 	const call = toolCall();
 	for (const [toolName, input, path] of [
 		["grep", { pattern: "API_KEY", path: ".env" }, ".env"],
@@ -67,7 +67,7 @@ test("grep, find, and ls deny a sensitive path exactly like read (gentle-shell#2
 	}
 });
 
-test("grep, find, and ls admit ordinary paths and their default scope (gentle-shell#2349)", async () => {
+test("grep, find, and ls admit ordinary paths and their default scope (drakonc-shell#2349)", async () => {
 	const call = toolCall();
 	for (const [toolName, input] of [
 		["grep", { pattern: "TODO", path: "src" }],
@@ -82,14 +82,14 @@ test("grep, find, and ls admit ordinary paths and their default scope (gentle-sh
 	}
 });
 
-test("read, write, and edit keep denying sensitive paths (gentle-shell#2349)", async () => {
+test("read, write, and edit keep denying sensitive paths (drakonc-shell#2349)", async () => {
 	const call = toolCall();
 	assert.deepEqual(await call("read", { path: ".env.local" }), { block: true, reason: reason(".env.local") });
 	assert.deepEqual(await call("write", { path: "secrets/token.txt", content: "x" }), { block: true, reason: reason("secrets/token.txt") });
 	assert.deepEqual(await call("edit", { path: "id_rsa.pem", edits: [] }), { block: true, reason: reason("id_rsa.pem") });
 });
 
-// gentle-shell#2349 (scope 1): bash, bash_background and monitor take no `path`
+// drakonc-shell#2349 (scope 1): bash, bash_background and monitor take no `path`
 // input, so `cat .env` reached the model's output while `read .env` did not.
 // The same patterns now run over the command's shell words, which keeps quoted
 // prose such as a commit message out of the deny: the patterns match a whole
@@ -105,7 +105,7 @@ const shellDeny = [
 ] as const;
 
 for (const [toolName, command, path] of shellDeny) {
-	test(`${toolName} denies a sensitive path in its command: ${command} (gentle-shell#2349)`, async () => {
+	test(`${toolName} denies a sensitive path in its command: ${command} (drakonc-shell#2349)`, async () => {
 		const call = toolCall();
 		assert.deepEqual(await call(toolName, { command }), { block: true, reason: reason(path) });
 	});
@@ -120,7 +120,7 @@ const shellAllow = [
 ] as const;
 
 for (const command of shellAllow) {
-	test(`bash admits ordinary commands and prose mentioning a sensitive name: ${command} (gentle-shell#2349)`, async () => {
+	test(`bash admits ordinary commands and prose mentioning a sensitive name: ${command} (drakonc-shell#2349)`, async () => {
 		const call = toolCall();
 		assert.equal(await call("bash", { command }), undefined, command);
 	});
@@ -129,7 +129,7 @@ for (const command of shellAllow) {
 // A sensitive path is denied in every permission mode, exactly like `read .env`,
 // and the ordinary-command allow path is untouched by the mode.
 for (const mode of ["yolo", "super-yolo"] as const) {
-	test(`${mode} keeps the shell sensitive-path deny and the ordinary allow (gentle-shell#2349)`, async () => {
+	test(`${mode} keeps the shell sensitive-path deny and the ordinary allow (drakonc-shell#2349)`, async () => {
 		let prompts = 0;
 		const call = toolCall({ mode, onApprovalPrompt: () => { prompts += 1; } });
 		assert.deepEqual(await call("bash", { command: "cat .env" }), { block: true, reason: reason(".env") });
@@ -142,7 +142,7 @@ for (const mode of ["yolo", "super-yolo"] as const) {
 // under `<agentDir>/desktop/` are the human's channel into a live session, so
 // the agent's own file tools and shell commands cannot write an action there.
 // Only the real folders are guarded: `<agent home>/desktop` for the resolved
-// Gentle Pi agent home and the two standard homes, on the normalized absolute
+// Drakonc Pi agent home and the two standard homes, on the normalized absolute
 // path. A project folder that happens to be named `agent/desktop` is not one.
 const CUSTOM_AGENT_HOME = "/tmp/customhome";
 // Bash drops unquoted backslashes, so a Windows home spelled with `\` would no
@@ -150,14 +150,14 @@ const CUSTOM_AGENT_HOME = "/tmp/customhome";
 // these tests about the guard, not about shell quoting, on every platform.
 const HOME = homedir().replace(/\\/g, "/");
 const desktopPaths = [
-	"~/.gentle-shell/agent/desktop/inbox/x.json",
+	"~/.drakonc-shell/agent/desktop/inbox/x.json",
 	"$HOME/.pi/agent/desktop/outbox",
 	"${HOME}/.pi/agent/desktop/sessions/s.json",
-	`${HOME}/.gentle-shell/agent/desktop/outbox/sess-1/a1.json`,
+	`${HOME}/.drakonc-shell/agent/desktop/outbox/sess-1/a1.json`,
 	`${HOME}/.pi/agent/desktop/sessions/sess-1.json`,
-	"~/.gentle-shell/agent/desktop",
-	"~/.gentle-shell/agent/x/../desktop/inbox/a.json",
-	"~/.Gentle-Shell/Agent/Desktop/Inbox/a.json",
+	"~/.drakonc-shell/agent/desktop",
+	"~/.drakonc-shell/agent/x/../desktop/inbox/a.json",
+	"~/.Drakonc-Shell/Agent/Desktop/Inbox/a.json",
 	`${CUSTOM_AGENT_HOME}/desktop/sessions/a.json`,
 	`${CUSTOM_AGENT_HOME}/./desktop/inbox/s/a.json`,
 ] as const;
@@ -172,7 +172,7 @@ for (const mode of [undefined, "super-yolo"] as const) {
 			assert.deepEqual(await call("ls", { path }), { block: true, reason: reason(path) }, `ls ${path}`);
 			assert.deepEqual(await call("bash", { command: `printf '{}' > ${path}` }), { block: true, reason: reason(path) }, `bash ${path}`);
 		}
-		assert.deepEqual(await call("bash", { command: "mv /tmp/a.json ~/.gentle-shell/agent/desktop/inbox/s/a.json" }), { block: true, reason: reason("~/.gentle-shell/agent/desktop/inbox/s/a.json") });
+		assert.deepEqual(await call("bash", { command: "mv /tmp/a.json ~/.drakonc-shell/agent/desktop/inbox/s/a.json" }), { block: true, reason: reason("~/.drakonc-shell/agent/desktop/inbox/s/a.json") });
 		assert.deepEqual(await call("bash", { command: 'mkdir -p "$HOME/.pi/agent/desktop/outbox"' }), { block: true, reason: reason("$HOME/.pi/agent/desktop/outbox") });
 	});
 }
@@ -183,7 +183,7 @@ test("a custom agent home's desktop folder is guarded only while that home is th
 	assert.equal(await call("write", { path, content: "x" }), undefined, path);
 	assert.equal(await call("bash", { command: `mkdir -p ${CUSTOM_AGENT_HOME}/desktop/inbox` }), undefined);
 	// A `..` that leaves the desktop folder leaves the guard too.
-	assert.equal(await call("read", { path: "~/.gentle-shell/agent/desktop/../notes.md" }), undefined);
+	assert.equal(await call("read", { path: "~/.drakonc-shell/agent/desktop/../notes.md" }), undefined);
 });
 
 test("ordinary project folders named agent/desktop/... stay readable and writable (T7 FP)", async () => {
@@ -198,16 +198,16 @@ test("ordinary project folders named agent/desktop/... stay readable and writabl
 test("relative and option-embedded paths into the real desktop folder stay blocked (T7)", async () => {
 	const call = toolCall();
 	// The harness hands the tool call `process.cwd()`, so the relative path is computed against it.
-	const rel = relative(process.cwd(), join(homedir(), ".gentle-shell", "agent", "desktop", "inbox", "s", "a.json")).replace(/\\/g, "/");
+	const rel = relative(process.cwd(), join(homedir(), ".drakonc-shell", "agent", "desktop", "inbox", "s", "a.json")).replace(/\\/g, "/");
 	assert.equal((await call("write", { path: rel, content: "{}" }))?.block, true, rel);
 	assert.equal((await call("read", { path: rel }))?.block, true, rel);
 	assert.equal((await call("bash", { command: `printf '{}' > ${rel}` }))?.block, true, rel);
 	for (const command of [
-		"cp a.json --target-directory=$HOME/.gentle-shell/agent/desktop/inbox/s",
-		"VAR=$HOME/.gentle-shell/agent/desktop/inbox; cp a.json $VAR",
-		'cp a.json "--target-directory=$HOME/.gentle-shell/agent/desktop/inbox/s"',
+		"cp a.json --target-directory=$HOME/.drakonc-shell/agent/desktop/inbox/s",
+		"VAR=$HOME/.drakonc-shell/agent/desktop/inbox; cp a.json $VAR",
+		'cp a.json "--target-directory=$HOME/.drakonc-shell/agent/desktop/inbox/s"',
 		"cp a.json '--target-directory=~/.pi/agent/desktop/outbox'",
-		'cp a.json --target-directory="${HOME}/.gentle-shell/agent/desktop/inbox/s"',
+		'cp a.json --target-directory="${HOME}/.drakonc-shell/agent/desktop/inbox/s"',
 		`cp a.json --target-directory=${rel}`,
 	]) {
 		assert.equal((await call("bash", { command }))?.block, true, command);
@@ -231,28 +231,28 @@ test("relative project paths named agent/desktop stay allowed when the cwd is a 
 // this runs on every platform through the injected platform and home.
 // `$USERPROFILE` and other variables are not expanded (documented fail-open).
 test("MSYS and Cygwin drive spellings of the Windows home stay inside the desktop guard (T7)", () => {
-	const win = { platform: "win32" as const, home: "C:\\Users\\someone", homes: ["C:\\Users\\someone\\.gentle-shell\\agent", "C:\\Users\\someone\\.pi\\agent"] };
+	const win = { platform: "win32" as const, home: "C:\\Users\\someone", homes: ["C:\\Users\\someone\\.drakonc-shell\\agent", "C:\\Users\\someone\\.pi\\agent"] };
 	for (const path of [
-		"/c/Users/someone/.gentle-shell/agent/desktop/inbox/s/a.json",
-		"/C/users/SOMEONE/.gentle-shell/agent/desktop",
+		"/c/Users/someone/.drakonc-shell/agent/desktop/inbox/s/a.json",
+		"/C/users/SOMEONE/.drakonc-shell/agent/desktop",
 		"/cygdrive/c/Users/someone/.pi/agent/desktop/outbox/x.json",
-		"//?/C:/Users/someone/.gentle-shell/agent/desktop/inbox/a.json",
-		"C:\\Users\\someone\\.gentle-shell\\agent\\desktop\\inbox\\a.json",
+		"//?/C:/Users/someone/.drakonc-shell/agent/desktop/inbox/a.json",
+		"C:\\Users\\someone\\.drakonc-shell\\agent\\desktop\\inbox\\a.json",
 		"c:/users/someone/.pi/agent/desktop/sessions/s.json",
-		"~/.gentle-shell/agent/desktop/inbox/a.json",
+		"~/.drakonc-shell/agent/desktop/inbox/a.json",
 	]) assert.equal(isDesktopActionPathOn(path, win), true, path);
 	for (const path of [
 		"/c/Users/someone/project/agent/desktop/inbox/x.ts",
 		"/cd/foo",
 		"/c",
-		"/d/Users/someone/.gentle-shell/agent/desktop/inbox/a.json",
-		"$USERPROFILE/.gentle-shell/agent/desktop/inbox/a.json",
+		"/d/Users/someone/.drakonc-shell/agent/desktop/inbox/a.json",
+		"$USERPROFILE/.drakonc-shell/agent/desktop/inbox/a.json",
 	]) assert.equal(isDesktopActionPathOn(path, win), false, path);
 	// The same drive spellings mean ordinary folders off Windows.
-	const posixHost = { platform: "linux" as const, home: "/home/someone", homes: ["/home/someone/.gentle-shell/agent"] };
-	assert.equal(isDesktopActionPathOn("/home/someone/.gentle-shell/agent/desktop/inbox/a.json", posixHost), true);
-	assert.equal(isDesktopActionPathOn("/c/home/someone/.gentle-shell/agent/desktop/inbox/a.json", posixHost), false);
-	assert.equal(isDesktopActionPathOn("/cygdrive/c/home/someone/.gentle-shell/agent/desktop", posixHost), false);
+	const posixHost = { platform: "linux" as const, home: "/home/someone", homes: ["/home/someone/.drakonc-shell/agent"] };
+	assert.equal(isDesktopActionPathOn("/home/someone/.drakonc-shell/agent/desktop/inbox/a.json", posixHost), true);
+	assert.equal(isDesktopActionPathOn("/c/home/someone/.drakonc-shell/agent/desktop/inbox/a.json", posixHost), false);
+	assert.equal(isDesktopActionPathOn("/cygdrive/c/home/someone/.drakonc-shell/agent/desktop", posixHost), false);
 });
 
 test("adding the desktop folders keeps every earlier deny and the ordinary allow (T7)", async () => {
@@ -273,7 +273,7 @@ test("adding the desktop folders keeps every earlier deny and the ordinary allow
 // The mode fixture above is only meaningful if it is live, so pin the modal it
 // changes: YOLO waives the push approval, and the same push without the fixture
 // still needs one.
-test("the permission-mode fixture really switches the mode (gentle-shell#2349)", async () => {
+test("the permission-mode fixture really switches the mode (drakonc-shell#2349)", async () => {
 	let prompts = 0;
 	const yolo = toolCall({ mode: "yolo", onApprovalPrompt: () => { prompts += 1; } });
 	assert.equal(await yolo("bash", { command: "git push origin main" }), undefined);
@@ -281,11 +281,11 @@ test("the permission-mode fixture really switches the mode (gentle-shell#2349)",
 	const normal = toolCall();
 	assert.deepEqual(await normal("bash", { command: "git push origin main" }), {
 		block: true,
-		reason: "Gentle AI safety policy requires interactive confirmation before this command.",
+		reason: "Drakonc AI safety policy requires interactive confirmation before this command.",
 	});
 });
 
-test("child sessions inherit the shell sensitive-path deny through the same gate (gentle-shell#2349)", async () => {
+test("child sessions inherit the shell sensitive-path deny through the same gate (drakonc-shell#2349)", async () => {
 	const call = toolCall({ child: true });
 	assert.deepEqual(await call("bash", { command: "cat .env" }), { block: true, reason: reason(".env") });
 	assert.equal(await call("bash", { command: "cat src/index.ts" }), undefined);
@@ -310,7 +310,7 @@ const shellDenySurface = [
 ] as const;
 
 for (const [command, path] of shellDenySurface) {
-	test(`bash denies the sensitive file however the word is spelled: ${command} (gentle-shell#2349)`, async () => {
+	test(`bash denies the sensitive file however the word is spelled: ${command} (drakonc-shell#2349)`, async () => {
 		const call = toolCall();
 		assert.deepEqual(await call("bash", { command }), { block: true, reason: reason(path) });
 	});
@@ -325,7 +325,7 @@ const shellAllowSurface = [
 ] as const;
 
 for (const command of shellAllowSurface) {
-	test(`bash admits a sensitive name that is not a path: ${command} (gentle-shell#2349)`, async () => {
+	test(`bash admits a sensitive name that is not a path: ${command} (drakonc-shell#2349)`, async () => {
 		const call = toolCall();
 		assert.equal(await call("bash", { command }), undefined, command);
 	});
@@ -340,7 +340,7 @@ for (const command of [
 	'echo "$(cat .env)"',
 	"cat .e*",
 ] as const) {
-	test(`bash keeps the documented fail-open limit: ${command} (gentle-shell#2349)`, async () => {
+	test(`bash keeps the documented fail-open limit: ${command} (drakonc-shell#2349)`, async () => {
 		const call = toolCall();
 		assert.equal(await call("bash", { command }), undefined, command);
 	});
@@ -348,7 +348,7 @@ for (const command of [
 
 // Over-denial is the accepted trade for that fail-open list, so the prose case
 // is pinned too: a commit message that spells a path after a `/` is denied.
-test("bash accepts over-denial of prose that spells a path after a slash (gentle-shell#2349)", async () => {
+test("bash accepts over-denial of prose that spells a path after a slash (drakonc-shell#2349)", async () => {
 	const call = toolCall();
 	assert.deepEqual(await call("bash", { command: 'git commit -m "add ./.env.example"' }), {
 		block: true,
@@ -356,14 +356,14 @@ test("bash accepts over-denial of prose that spells a path after a slash (gentle
 	});
 });
 
-// gentle-shell#379: a call asking to open an external project pane is blocked
+// drakonc-shell#379: a call asking to open an external project pane is blocked
 // by its own input property in every mode and in children, before any UI. The
 // same hook leaves ordinary calls and subagent_run exactly as they were.
-const surfaceReason = (toolName: string) => `Gentle AI blocked an execution-surface escalation. code=gentle-ai.execution-surface.external-fallback-prohibited tool=${toolName} property=openProjectPaneIfMissing next=Run the work through subagent_* or the native Agent in the current runtime; if neither is available, stop and tell the user.`;
+const surfaceReason = (toolName: string) => `Drakonc AI blocked an execution-surface escalation. code=drakonc-ai.execution-surface.external-fallback-prohibited tool=${toolName} property=openProjectPaneIfMissing next=Run the work through subagent_* or the native Agent in the current runtime; if neither is available, stop and tell the user.`;
 const surfaceModes = [["normal", {}], ["yolo", { mode: "yolo" }], ["super-yolo", { mode: "super-yolo" }], ["child", { child: true }]] as const;
 
 for (const [label, options] of surfaceModes) {
-	test(`${label} blocks an external pane fallback by its input property (gentle-shell#379)`, async () => {
+	test(`${label} blocks an external pane fallback by its input property (drakonc-shell#379)`, async () => {
 		let prompts = 0;
 		const call = toolCall({ ...options, onApprovalPrompt: () => { prompts += 1; } });
 		for (const toolName of ["intercom", "synthetic_surface"]) {
@@ -374,7 +374,7 @@ for (const [label, options] of surfaceModes) {
 		assert.equal(prompts, 0, "the block never reaches an approval dialog");
 	});
 
-	test(`${label} leaves calls without a pane request untouched (gentle-shell#379)`, async () => {
+	test(`${label} leaves calls without a pane request untouched (drakonc-shell#379)`, async () => {
 		const call = toolCall(options);
 		assert.equal(await call("synthetic_surface", { action: "send", cwd: "/tmp/other-repo" }), undefined);
 		assert.equal(await call("synthetic_surface", { action: "send", cwd: "/tmp/other-repo", openProjectPaneIfMissing: false }), undefined);
@@ -385,8 +385,8 @@ for (const [label, options] of surfaceModes) {
 	});
 }
 
-// gentle-shell#3401: auth.json (Pi provider credentials) is sensitive like .env.
-test("auth.json is denied like .env for file tools and shell words (gentle-shell#3401)", async () => {
+// drakonc-shell#3401: auth.json (Pi provider credentials) is sensitive like .env.
+test("auth.json is denied like .env for file tools and shell words (drakonc-shell#3401)", async () => {
 	const call = toolCall();
 	for (const path of ["auth.json", "sub/auth.json", "/home/u/.pi/agent/auth.json"]) {
 		assert.deepEqual(await call("read", { path }), { block: true, reason: reason(path) }, path);
@@ -395,10 +395,10 @@ test("auth.json is denied like .env for file tools and shell words (gentle-shell
 	for (const path of ["oauth-client.json", "auth.json.md", "author.json"]) assert.equal(await call("read", { path }), undefined, path);
 });
 
-test("the guard and the verifier preparer share one sensitive-path list (gentle-shell#3401)", async () => {
+test("the guard and the verifier preparer share one sensitive-path list (drakonc-shell#3401)", async () => {
 	const lib = await import("../lib/sensitive-paths.ts"), runtime = await import("../runtime/sensitive-paths.mjs");
 	assert.deepEqual(runtime.SENSITIVE_PATH_PATTERNS.map(String), lib.SENSITIVE_PATH_PATTERNS.map(String));
-	const call = toolCall(), root = mkdtempSync(join(tmpdir(), "gentle-3401-parity-"));
+	const call = toolCall(), root = mkdtempSync(join(tmpdir(), "drakonc-3401-parity-"));
 	try {
 		for (const name of [".env", "auth.json", "keys/id.pem", "secrets/token.txt"]) {
 			assert.deepEqual(await call("read", { path: name }), { block: true, reason: reason(name) }, name);
@@ -420,12 +420,12 @@ test("the guard and the verifier preparer share one sensitive-path list (gentle-
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("the guard does not see the preparer's JSON plan: the preparer enforces the policy itself (gentle-shell#3401)", async () => {
+test("the guard does not see the preparer's JSON plan: the preparer enforces the policy itself (drakonc-shell#3401)", async () => {
 	const call = toolCall();
-	assert.equal(await call("bash", { command: `node "$GENTLE_PI_VERIFIER_PREPARER" "$PWD" "$s" '{"include":[".env"],"checks":["true"]}'` }), undefined);
+	assert.equal(await call("bash", { command: `node "$DRAKONC_PI_VERIFIER_PREPARER" "$PWD" "$s" '{"include":[".env"],"checks":["true"]}'` }), undefined);
 });
 
-test("auth.json matching is exact for the shared list and the guard's read tool (gentle-shell#3401)", async () => {
+test("auth.json matching is exact for the shared list and the guard's read tool (drakonc-shell#3401)", async () => {
 	const { isSensitiveRepositoryPath } = await import("../lib/sensitive-paths.ts"), call = toolCall();
 	for (const path of ["config/auth.json", "AUTH.JSON", "auth.json"]) {
 		assert.equal(isSensitiveRepositoryPath(path), true, path);

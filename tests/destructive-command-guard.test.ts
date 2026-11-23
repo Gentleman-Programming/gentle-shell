@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { recognizeDestructiveCommands } from "../lib/destructive-command-guard.ts";
-import { __testing } from "../extensions/gentle-ai.ts";
+import { __testing } from "../extensions/drakonc-ai.ts";
 
 const { findSensitiveCommandPath, shellCommandWords } = __testing;
 
@@ -86,7 +86,7 @@ test("root/home recursive removal and destructive git retain hard denial", () =>
 	}
 });
 
-// gentle-pi#2285: a reserved word that opens a compound body is not the
+// drakonc-pi#2285: a reserved word that opens a compound body is not the
 // segment head, and backtick and literal `eval` payloads run like `$(...)`.
 const compoundRemovals = [
 	`if true; then rm -rf data; fi`,
@@ -170,11 +170,11 @@ test("exposes literal removal targets only for a direct top-level rm that runs b
 	}
 });
 
-// gentle-shell#2349 (scope 1): a shell command names sensitive reads inside its
+// drakonc-shell#2349 (scope 1): a shell command names sensitive reads inside its
 // command string, so the sensitive-path deny list inspects the command's shell
 // words. The findings the #2174 data-argument exemption relies on still hold:
 // a guarded name inside a message or a printed argument is not a path read.
-test("denies sensitive paths named as shell words in a command (gentle-shell#2349)", () => {
+test("denies sensitive paths named as shell words in a command (drakonc-shell#2349)", () => {
 	for (const [command, path] of [
 		["cat .env", ".env"],
 		["sudo cat ~/.ssh/id_rsa", "~/.ssh/id_rsa"],
@@ -194,10 +194,10 @@ test("denies sensitive paths named as shell words in a command (gentle-shell#234
 	}
 });
 
-test("leaves ordinary commands and prose mentioning a sensitive name unchanged (gentle-shell#2349)", () => {
+test("leaves ordinary commands and prose mentioning a sensitive name unchanged (drakonc-shell#2349)", () => {
 	for (const command of [
 		"cat src/index.ts",
-		"ls docs && cat docs/gentle-shell.md",
+		"ls docs && cat docs/drakonc-shell.md",
 		"echo \"edit .env\"",
 		"git commit -m \"fix .env\"",
 		"git commit -m 'fix .env' && git status",
@@ -211,7 +211,7 @@ test("leaves ordinary commands and prose mentioning a sensitive name unchanged (
 	}
 });
 
-test("shell word splitting removes quotes and escapes and splits on control operators (gentle-shell#2349)", () => {
+test("shell word splitting removes quotes and escapes and splits on control operators (drakonc-shell#2349)", () => {
 	assert.deepEqual(shellCommandWords(`cat<.env`), ["cat", ".env"]);
 	assert.deepEqual(shellCommandWords(`cat 'a b' "c d"`), ["cat", "a b", "c d"]);
 	assert.deepEqual(shellCommandWords(`cat a\\ b; ls && echo ok || true`), ["cat", "a b", "ls", "echo", "ok", "true"]);

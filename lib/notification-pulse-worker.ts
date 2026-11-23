@@ -23,7 +23,7 @@ import { open } from "node:fs/promises";
 import { PulseClient } from "./notification-pulse-client.ts";
 import { playPulseWav } from "./notification-pulse-stream.ts";
 
-const SCHEMA = "gentle.audio.pulse/v1";
+const SCHEMA = "drakonc.audio.pulse/v1";
 const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 /** Request lines carry only a schema/op/path triple; anything longer is a protocol violation. */
 const MAX_REQUEST_BYTES = 4096;

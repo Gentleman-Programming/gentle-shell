@@ -23,9 +23,9 @@
 	font-size: 14px;
 }
 
-/* The Gentleman theme (Settings > Theme, canvas-theme.js): the Gentleman brand's pink on plum. It sets every
+/* The Drakoncman theme (Settings > Theme, canvas-theme.js): the Drakoncman brand's pink on plum. It sets every
    color token of :root, so nothing falls back to the Neutral palette; the states keep their meaning. */
-:root[data-theme="gentleman"] {
+:root[data-theme="drakoncman"] {
 	--gd-bg: #1a1218;
 	--gd-stage: #20161e;
 	--gd-panel: #241822;

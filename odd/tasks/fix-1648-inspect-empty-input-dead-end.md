@@ -2,12 +2,12 @@
 
 ## Objective
 
-Prevent `gentle_review inspect` from rejecting ambient inspection calls when `input` is provided as an empty JSON object `"{}"` or empty string `""`. Ensure `committed-only-invalid` is only returned when `committedOnly` is actually supplied without `baseRef`.
+Prevent `drakonc_review inspect` from rejecting ambient inspection calls when `input` is provided as an empty JSON object `"{}"` or empty string `""`. Ensure `committed-only-invalid` is only returned when `committedOnly` is actually supplied without `baseRef`.
 
 ## Problem
 
-When a caller (such as an LLM conforming to tool schemas) calls `gentle_review` with `{"operation": "inspect", "input": "{}"}`:
-`extensions/gentle-ai.ts:7843` checks:
+When a caller (such as an LLM conforming to tool schemas) calls `drakonc_review` with `{"operation": "inspect", "input": "{}"}`:
+`extensions/drakonc-ai.ts:7843` checks:
 ```ts
 if (rawInspect !== undefined && baseRef === undefined) return nativeInspectInputRejection("committed-only-invalid");
 ```
@@ -16,8 +16,8 @@ Additionally, passing empty string `input: ""` throws a JSON parse error instead
 
 ## Scope
 
-- In `extensions/gentle-ai.ts`, treat empty/whitespace input string as `undefined` for `inspect`.
-- In `extensions/gentle-ai.ts`, reject `committed-only-invalid` only if `rawInspect?.committedOnly !== undefined && baseRef === undefined`.
+- In `extensions/drakonc-ai.ts`, treat empty/whitespace input string as `undefined` for `inspect`.
+- In `extensions/drakonc-ai.ts`, reject `committed-only-invalid` only if `rawInspect?.committedOnly !== undefined && baseRef === undefined`.
 - When `rawInspect` is empty `{}` (no `baseRef` and no `committedOnly`), allow it to proceed to ambient inspect.
 - In `tests/review-controller-native-routing.test.ts`, add tests proving:
   - `input: "{}"` proceeds to ambient inspect.
@@ -28,7 +28,7 @@ Additionally, passing empty string `input: ""` throws a JSON parse error instead
 ## Tasks
 
 - [x] T1 Reproduce #1648 with failing unit tests in `tests/review-controller-native-routing.test.ts` (RED).
-- [x] T2 Fix inspect input validation in `extensions/gentle-ai.ts` (GREEN).
+- [x] T2 Fix inspect input validation in `extensions/drakonc-ai.ts` (GREEN).
 - [x] T3 Verify full test suite, runtime module checks, and typechecks.
 - [x] T4 Commit work unit and document verification evidence (commit `975e1709`).
 

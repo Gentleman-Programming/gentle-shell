@@ -1,19 +1,19 @@
 # Native Git bootstrap and same-session writer parity
 
 ## Objective
-Allow authorized development in an initially unversioned project to use Gentle AI's native repository preparation and launch real bounded writers without restarting the parent Pi session.
+Allow authorized development in an initially unversioned project to use Drakonc AI's native repository preparation and launch real bounded writers without restarting the parent Pi session.
 
 ## Problem and rationale
 Pi previously rejected explicit unversioned review targets before native preparation and retained absent startup Git identity after the original project became a repository. Preparation must support writer-first development without restoring the unsafe passive startup behavior documented in #656.
 
 ## Scope and human authorization
-- Isolated worktree: `../gentle-pi-rdd-bootstrap-parity`.
+- Isolated worktree: `../drakonc-pi-rdd-bootstrap-parity`.
 - Feature branch: `fix/rdd-non-git-bootstrap-parity`.
 - Baseline: `338f1f654cf614cbb9956a5bb57488e62612e5c9`.
 - Preserve primary checkout and unrelated notification work.
-- Allow preparation only after a successful own development source write/edit, explicit selected review, or admission of a valid generic bounded writer (`gentle-ai-worker`/`worker`).
+- Allow preparation only after a successful own development source write/edit, explicit selected review, or admission of a valid generic bounded writer (`drakonc-ai-worker`/`worker`).
 - Require validated effective RDD-on. Off, unknown, unavailable and malformed mode fail closed.
-- Native Gentle AI owns initialization, ancestor reuse and broken-metadata safeguards. Pi adds no independent `git init` or repair policy.
+- Native Drakonc AI owns initialization, ancestor reuse and broken-metadata safeguards. Pi adds no independent `git init` or repair policy.
 - Passive startup, conversation, exploration, invalid dispatch and task/memory/documentation-only bookkeeping never initialize Git.
 - Protect canonical HOME, filesystem root, sensitive/escaping targets and foreign-repository consent.
 - Preparation creates no commits, remotes, review lineage, source ownership receipt or preparation-only Changes attribution.
@@ -24,8 +24,8 @@ Pi previously rejected explicit unversioned review targets before native prepara
 The human selected the installed development binary, offline deterministic provider and real production Pi children. No published-pin download, dependency install, shared `node_modules` mutation, global configuration change or paid/external fixture model call is authorized.
 
 ## Delivery strategy
-- Approved issue: [#1567](https://github.com/Gentleman-Programming/gentle-shell/issues/1567), labels `bug`, `type:bug`, `status:approved`.
-- Target: `github.com/Gentleman-Programming/gentle-shell`, default branch `main`.
+- Approved issue: [#1567](https://github.com/Drakoncman-Programming/drakonc-shell/issues/1567), labels `bug`, `type:bug`, `status:approved`.
+- Target: `github.com/Drakoncman-Programming/drakonc-shell`, default branch `main`.
 - Human authorized existing `gh` session over HTTPS for scoped issue creation/approval, branch push, one PR and merge after checks. No SSH, force-push or release.
 - Human selected `Closes #1567` and one PR with `size:exception`.
 - Rationale: native preparation, retained authority, lifecycle revocation and genuine writer continuation form one integration behavior. Keep their negative and real-process regressions together instead of omitting tests or splitting artificial review slices.
@@ -37,7 +37,7 @@ The human selected the installed development binary, offline deterministic provi
 - [x] **T2 — Preserve same-session Git authority and prove real writers.** Verified with actual SDK children and independent checks; closed in work-unit commit `d2dd989488fb8b553760ef08b936a23348563f8e`. Route: delegated mapping/writer and independent high-risk verification. Trigger: cross-module flow across four or more files.
 - [x] **T3 — Reject revoked explicit-review incarnation.** RED/GREEN and independent PASS observed; closed in work-unit commit `d2dd989488fb8b553760ef08b936a23348563f8e`. Route: one additional narrowly bounded correction explicitly authorized by the human, followed by independent verification. Trigger: shared lifecycle helper plus explicit review entry paths.
 
-T3 edit surfaces were exactly `extensions/gentle-ai.ts`, `lib/bounded-writer-admission.ts`, `tests/bounded-writer-admission.test.ts` and `tests/review-controller-workspace-root.test.ts`. No automatic further correction loop is authorized.
+T3 edit surfaces were exactly `extensions/drakonc-ai.ts`, `lib/bounded-writer-admission.ts`, `tests/bounded-writer-admission.test.ts` and `tests/review-controller-workspace-root.test.ts`. No automatic further correction loop is authorized.
 
 ## Acceptance criteria
 1. Successful source, explicit review and admitted generic writer entries may prepare only after mode, profile/model, discovered role, bounded surface and selected project validation.
@@ -52,12 +52,12 @@ T3 edit surfaces were exactly `extensions/gentle-ai.ts`, `lib/bounded-writer-adm
 ## Verification commands
 Focused suite:
 ```sh
-node --experimental-strip-types --test tests/bounded-writer-admission.test.ts tests/writer-edit-surface-scope.test.ts tests/gentle-agents.test.ts tests/profile-pin.test.ts tests/session-worktree-registry.test.ts tests/gentle-shell.test.ts tests/review-agent-end-preflight.test.ts tests/review-controller-workspace-root.test.ts tests/review-controller-native-routing.test.ts tests/review-controller-retired-ops.test.ts tests/windows-hidden-processes.test.ts
+node --experimental-strip-types --test tests/bounded-writer-admission.test.ts tests/writer-edit-surface-scope.test.ts tests/drakonc-agents.test.ts tests/profile-pin.test.ts tests/session-worktree-registry.test.ts tests/drakonc-shell.test.ts tests/review-agent-end-preflight.test.ts tests/review-controller-workspace-root.test.ts tests/review-controller-native-routing.test.ts tests/review-controller-retired-ops.test.ts tests/windows-hidden-processes.test.ts
 ```
 
 Actual SDK/development binary proof:
 ```sh
-GENTLE_AI_DEV_BINARY="$GENTLE_AI_DEV_BINARY" GENTLE_PI_REQUIRE_DEV_BINARY=1 node --experimental-strip-types --test --test-name-pattern='SDK non-Git bootstrap|pre-bootstrap SDK session' tests/devbinary/native-review-parity.devtest.ts tests/devbinary/non-git-subagent-bootstrap.devtest.ts
+DRAKONC_AI_DEV_BINARY="$DRAKONC_AI_DEV_BINARY" DRAKONC_PI_REQUIRE_DEV_BINARY=1 node --experimental-strip-types --test --test-name-pattern='SDK non-Git bootstrap|pre-bootstrap SDK session' tests/devbinary/native-review-parity.devtest.ts tests/devbinary/non-git-subagent-bootstrap.devtest.ts
 ```
 
 Additional checks:
@@ -95,8 +95,8 @@ Final normalized 14-path implementation slice:
 - Candidate tree: `aef68b5a8bc34518f3daf59a5671086e00ce94af`.
 - Target: `sha256:c57e7d7c741a5b7f763ca299150c564fa344b9eac5436750340378baa15e4506`.
 - Lineage: `review-3e3128fc93751c51`, medium tier, 1,592 lines, one consolidated reliability review.
-- Approved, then exact acknowledgement consumed revision `sha256:504ca09c6251318150a57f2dec4105bb08accd1459acc165d1f92df39f0cb2ce` and burned authority (`gentle-ai.review-acknowledged/v1`).
-- `R3-target-drift` at `extensions/gentle-ai.ts:7657` is informational, nonblocking, separate later work. No correction is offered; do not reopen/replay this immutable candidate's review.
+- Approved, then exact acknowledgement consumed revision `sha256:504ca09c6251318150a57f2dec4105bb08accd1459acc165d1f92df39f0cb2ce` and burned authority (`drakonc-ai.review-acknowledged/v1`).
+- `R3-target-drift` at `extensions/drakonc-ai.ts:7657` is informational, nonblocking, separate later work. No correction is offered; do not reopen/replay this immutable candidate's review.
 - Prior approved candidates were superseded by explicitly authorized source corrections, not replayed.
 
 Review closure is not delivery authorization or a substitute for independent functional disposition.

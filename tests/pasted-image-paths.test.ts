@@ -109,7 +109,7 @@ test("token parsing handles single quotes, double quotes, escapes and newlines",
 
 test("an oversized file is rejected before its bytes are read", () => {
 	// A sparse file keeps this cheap while still exceeding the 64 MiB cap.
-	const directory = mkdtempSync(join(tmpdir(), "gentle-pasted-path-"));
+	const directory = mkdtempSync(join(tmpdir(), "drakonc-pasted-path-"));
 	const path = join(directory, "huge.png");
 	writeFileSync(path, PNG_2X1);
 	truncateSync(path, 64 * 1024 * 1024 + 1);

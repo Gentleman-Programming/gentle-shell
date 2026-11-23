@@ -16,7 +16,7 @@ class FakeTransportChild extends EventEmitter {
 	kill() { this.killCalls++; this.emit("close", 1, null); return true; }
 }
 
-const testEndpoint = "\\\\.\\pipe\\gentle-pi-0123456789abcdef0123456789abcdef";
+const testEndpoint = "\\\\.\\pipe\\drakonc-pi-0123456789abcdef0123456789abcdef";
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 const notificationWire = (id: string, message = "ok") => Buffer.from(JSON.stringify({ version: 1, kind: "notification", id, senderSessionId: "sender", recipientSessionId: "recipient", message }) + "\n").toString("base64");
 const notificationEvent = (wire: string, connectionId = "connection-1") => JSON.stringify({ event: "notification", connectionId, generation: 1, wire });
@@ -147,7 +147,7 @@ test("Windows startup marker transport rejects unknown, duplicate, and regressiv
 });
 
 test("Windows bridge admits bounded public presence results while rejecting private metadata", () => {
-	const endpoint = "\\\\.\\pipe\\gentle-pi-0123456789abcdef0123456789abcdef";
+	const endpoint = "\\\\.\\pipe\\drakonc-pi-0123456789abcdef0123456789abcdef";
 	assert.deepEqual(parseWindowsHostFrame(`{"requestId":"record-1","ok":true,"result":{"version":1,"sessionId":"session-a","endpoint":"${endpoint.replaceAll("\\", "\\\\")}","createdAt":1}}`), {
 		requestId: "record-1", ok: true, result: { version: 1, sessionId: "session-a", endpoint, createdAt: 1 },
 	});
@@ -158,7 +158,7 @@ test("Windows bridge admits bounded public presence results while rejecting priv
 });
 
 test("Windows bridge rejects list elements with extra or malformed public fields", () => {
-	const endpoint = "\\\\.\\pipe\\gentle-pi-0123456789abcdef0123456789abcdef".replaceAll("\\", "\\\\");
+	const endpoint = "\\\\.\\pipe\\drakonc-pi-0123456789abcdef0123456789abcdef".replaceAll("\\", "\\\\");
 	for (const record of [
 		`{"version":1,"sessionId":"session-a","endpoint":"${endpoint}","createdAt":1,"extra":true}`,
 		`{"version":1,"sessionId":"session-a","endpoint":"${endpoint}","createdAt":true}`,
@@ -200,7 +200,7 @@ test("Windows bridge correlates callback acknowledgement and rejects pending RPC
 	const ready = host.start();
 	child.stdout.emit("data", Buffer.from('{"requestId":"start-1","ok":true,"result":{"state":"partial"}}\n'));
 	await ready;
-	const endpoint = "\\\\.\\pipe\\gentle-pi-0123456789abcdef0123456789abcdef";
+	const endpoint = "\\\\.\\pipe\\drakonc-pi-0123456789abcdef0123456789abcdef";
 	const listening = host.listen("self", 1);
 	child.stdout.emit("data", Buffer.from(`{"requestId":"listen-2","ok":true,"result":{"version":1,"sessionId":"self","endpoint":"${endpoint.replaceAll("\\", "\\\\")}","createdAt":1}}\n`));
 	await listening;
@@ -225,7 +225,7 @@ test("Windows bridge keeps ACK capacity separate from ordinary RPCs and suppress
 	const child = new FakeChild();
 	let callbacks = 0;
 	const host = new WindowsSessionTransportHost({ spawnProcess: () => child as never, callback: async () => { callbacks++; return true; } });
-	const endpoint = "\\\\.\\pipe\\gentle-pi-0123456789abcdef0123456789abcdef";
+	const endpoint = "\\\\.\\pipe\\drakonc-pi-0123456789abcdef0123456789abcdef";
 	const emit = (value: string) => child.stdout.emit("data", Buffer.from(`${value}\n`));
 	const starting = host.start();
 	emit('{"requestId":"start-1","ok":true,"result":{"state":"partial"}}');
@@ -396,7 +396,7 @@ test("Windows client tears down only its owned listeners through registration, w
 });
 
 test("Windows listener registers its callback before listen and cancels a start/close race", async () => {
-	const record = Object.freeze({ version: 1 as const, sessionId: "recipient", endpoint: "\\\\.\\pipe\\gentle-pi-0123456789abcdef0123456789abcdef", createdAt: 1 });
+	const record = Object.freeze({ version: 1 as const, sessionId: "recipient", endpoint: "\\\\.\\pipe\\drakonc-pi-0123456789abcdef0123456789abcdef", createdAt: 1 });
 	let registered: unknown;
 	let releaseStart!: () => void;
 	const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
@@ -428,7 +428,7 @@ test("Windows bridge isolates a malformed helper wire event and continues with t
 	const child = new FakeChild();
 	let callbacks = 0;
 	const host = new WindowsSessionTransportHost({ spawnProcess: () => child as never, callback: async () => { callbacks++; return true; } });
-	const endpoint = "\\\\.\\pipe\\gentle-pi-0123456789abcdef0123456789abcdef";
+	const endpoint = "\\\\.\\pipe\\drakonc-pi-0123456789abcdef0123456789abcdef";
 	const emit = (line: string) => child.stdout.emit("data", Buffer.from(`${line}\n`));
 	const starting = host.start(); emit('{"requestId":"start-1","ok":true,"result":{"state":"partial"}}'); await starting;
 	const listening = host.listen("recipient", 1); emit(`{"requestId":"listen-2","ok":true,"result":{"version":1,"sessionId":"recipient","endpoint":"${endpoint.replaceAll("\\", "\\\\")}","createdAt":1}}`); await listening;

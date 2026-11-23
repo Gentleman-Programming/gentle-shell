@@ -1,25 +1,25 @@
-# Gentle Shell
+# Drakonc Shell
 
-Gentle Shell sessions as a native desktop: projects and agents on the left, sessions as tabs, the
+Drakonc Shell sessions as a native desktop: projects and agents on the left, sessions as tabs, the
 conversation as a chat in the centre with the real TUI one switch away, and an inspector on the
-right with everything the Gentle Shell sidebar shows.
+right with everything the Drakonc Shell sidebar shows.
 
-![Gentle Shell, design render](preview.png)
+![Drakonc Shell, design render](preview.png)
 
 `preview.png` is a **design render**, not a live capture: `design/herdr-desktop/01-inspector.html`
 (direction A) rendered with headless Chrome at 1600×1000, its caption bar hidden. The live window
-is checked against it side by side (`herdr/FIDELITY-T6.md`, `herdr/mods/gentle-chat/FIDELITY.md`).
+is checked against it side by side (`herdr/FIDELITY-T6.md`, `herdr/mods/drakonc-chat/FIDELITY.md`).
 
 This file is the brief: enough to rebuild the layout from an empty folder. The files next to it are
-one build of it. People install them with `gentle-shell desktop`
-([guide](../docs/gentle-shell-desktop.md)).
+one build of it. People install them with `drakonc-shell desktop`
+([guide](../docs/drakonc-shell-desktop.md)).
 
 ## What you see
 
 A row of two columns, filling the window (no title bar, macOS traffic lights at 14, 17):
 
 1. **The sidebar**, 251px plus a 1px rule, `chrome` (`#100A0F`), not resizable:
-   - **Brand**, 46px: the Gentle mark and "Gentle Shell", room for the traffic lights; drags the
+   - **Brand**, 46px: the Drakonc mark and "Drakonc Shell", room for the traffic lights; drags the
      window.
    - **Projects**, 200.25px for three rows (it resizes itself up to six, then scrolls): each Herdr
      space with a 22px two-letter avatar, "<n> sessions · $<live spend>", and how many need you.
@@ -35,7 +35,7 @@ A row of two columns, filling the window (no title bar, macOS traffic lights at 
      in `canvas` with a 2px `accent` top edge; + right after the last tab. Drags the window.
    - **The work body**, padding 8, gap 8:
      - **Views**, a stack of two cards (radius 10, 1px `border`, `background` `#060407`):
-       **Chat** (`gentle-chat`) and **Terminal** (the tab's real panes; focused pane border
+       **Chat** (`drakonc-chat`) and **Terminal** (the tab's real panes; focused pane border
        `accent`). The chat: a two-row header (title and the Chat | Terminal switch; project /
        branch · changed, Model, Persona, Ctx, Cost and the permission pill), the log, and the
        composer.
@@ -58,7 +58,7 @@ sans and a mono stack, chosen at run time from `fonts()`.
 | done | `done` (ok) | idle |
 | idle | ring, "Idle" | idle |
 
-- Everything follows the **focused Gentle Shell session**: the chat, the header, the inspector,
+- Everything follows the **focused Drakonc Shell session**: the chat, the header, the inspector,
   the status bar and the plan usage.
 - The chat reads the session's JSONL incrementally: a long session opens at its end (≥ 300 KB
   and 300 lines, ≤ 3 MB; "Show earlier" reads further back), a `watchFolder` wakes it only for
@@ -66,58 +66,58 @@ sans and a mono stack, chosen at run time from `fonts()`.
   shown covers a missed event.
   It sends what you type with `hc send`. A question card answers with a click or `1`…`N`.
 - **Chat | Terminal**, `⌘J` and the palette switch the `views` stack (`layout.select`).
-- `⌘K` opens the Gentle palette (needs-you items, session commands, views, permission modes, every
+- `⌘K` opens the Drakonc palette (needs-you items, session commands, views, permission modes, every
   command of the session); `/` in the composer opens the command menu.
 - Actions (permission mode, stop the turn, stop a subagent, cancel a job, answer a single-choice
   question) go through the session's private inbox and its own owners, with the authority the
   person has in the terminal. Super-YOLO and the global RDD switch ask in a dialog
-  (`gentle-confirm`) first. Consent is never answered here: the Terminal shows instead.
-- Commands whose result is a TUI screen (`/gentle:changes`, `/gentle:agents`, `/gentle:profiles`,
+  (`drakonc-confirm`) first. Consent is never answered here: the Terminal shows instead.
+- Commands whose result is a TUI screen (`/drakonc:changes`, `/drakonc:agents`, `/drakonc:profiles`,
   …) are typed into the TUI and the Terminal shows.
 - Redraws only when a snapshot changes; the Jobs tab ticks each second only while it shows a
   running job, the usage footer when its reset words change. Nothing animates while a session
   works (no pulse, no spinner): any native animation redraws the whole window every frame
-  (`PERF.md`). Only the status bar (`gentle-status`) reads the snapshots and runs `ps`; it
-  publishes them in shared state (`gentle-shell.feeds`) and every other mod reads that.
+  (`PERF.md`). Only the status bar (`drakonc-status`) reads the snapshots and runs `ps`; it
+  publishes them in shared state (`drakonc-shell.feeds`) and every other mod reads that.
 
 ## Built from
 
-- **The layout** (`layouts/gentle-shell.json`): root `row`, `titlebar: "none"`,
+- **The layout** (`layouts/drakonc-shell.json`): root `row`, `titlebar: "none"`,
   `traffic_lights: [14, 17]`, `background: "canvas"`, `terminal_padding: [14, 12]`, a 1px
-  `border` divider, and `"theme": { "light": "gentle-shell-light", "dark": "gentle-shell-dark" }`
+  `border` divider, and `"theme": { "light": "drakonc-shell-light", "dark": "drakonc-shell-dark" }`
   (`herdr/themes/`, S14): the dark theme file's `colors` set the Herdr theme roles to the colours
   above, the light one to the light palette (`FIDELITY-light.md`); no root `colors`, which would
   apply in both appearances.
   Sidebar `column` (`brand`, `spaces`, `agents`, `sidebar-footer` blocks); work `column` (`tabs`
   block, `work-body` row with the `views` stack and the `panel` column, `status` block). The
-  `views` stack is `chat` (mod `gentle-chat`, props `{ stack: "views", self: "chat", other: "main" }`)
+  `views` stack is `chat` (mod `drakonc-chat`, props `{ stack: "views", self: "chat", other: "main" }`)
   over `main` (`content: { tab: "active", pane: { lone: true, … } }`). No `"header": "tabs"` on any
   stack: Herdr 0.1.15 rejects it.
 - **Ten mods**, all `place: "none"`:
 
   | Mod | Region | Notes |
   |---|---|---|
-  | `gentle-sidebar` | Brand and Plan usage (`props.part`) | adapted from `workspace-chrome` |
-  | `gentle-spaces` | Projects | cloned from `spaces` |
-  | `gentle-agents` | Agents | cloned from `agents`; keeps `setAgentOrder` |
-  | `gentle-tabs` | Tabs | cloned from `tabs`; no Files / Changes buttons; + runs `tab.new { argv: ["gentle-shell"] }` |
-  | `gentle-chat` | Chat | session reader, markdown, tool / diff / subagent / question cards, composer, `/` menu |
-  | `gentle-inspector` | Inspector | draws its own tab strip |
-  | `gentle-status` | Status bar | adapted from `workspace-status`; owns the window-wide `toggle` and `stop` commands |
-  | `gentle-palette` | ⌘K palette | popup overlay, 620px, 64px from the top |
-  | `gentle-confirm` | Dialog | Herdr's `confirm` plus a cancel report |
-  | `gentle-tokens` | — | the shared `tokens.js` and `snapshot.js`; opened on its own it shows a token swatch |
+  | `drakonc-sidebar` | Brand and Plan usage (`props.part`) | adapted from `workspace-chrome` |
+  | `drakonc-spaces` | Projects | cloned from `spaces` |
+  | `drakonc-agents` | Agents | cloned from `agents`; keeps `setAgentOrder` |
+  | `drakonc-tabs` | Tabs | cloned from `tabs`; no Files / Changes buttons; + runs `tab.new { argv: ["drakonc-shell"] }` |
+  | `drakonc-chat` | Chat | session reader, markdown, tool / diff / subagent / question cards, composer, `/` menu |
+  | `drakonc-inspector` | Inspector | draws its own tab strip |
+  | `drakonc-status` | Status bar | adapted from `workspace-status`; owns the window-wide `toggle` and `stop` commands |
+  | `drakonc-palette` | ⌘K palette | popup overlay, 620px, 64px from the top |
+  | `drakonc-confirm` | Dialog | Herdr's `confirm` plus a cancel report |
+  | `drakonc-tokens` | — | the shared `tokens.js` and `snapshot.js`; opened on its own it shows a token swatch |
 
-- **Data source: the desktop feed.** Each interactive Gentle Shell session publishes
-  `<agentDir>/desktop/sessions/<session>.json` (`gentle-shell.desktop-feed/v1`:
+- **Data source: the desktop feed.** Each interactive Drakonc Shell session publishes
+  `<agentDir>/desktop/sessions/<session>.json` (`drakonc-shell.desktop-feed/v1`:
   identity with its own `agentDir`, project, model, context, cost, usage, permission, todo,
   changes, agents, jobs, review, stats, activity, the open question, commands). The mods read
-  every agent dir in `snapshot.js` `agentRoots()`: `~/.gentle-shell/agent` (bundled),
-  `~/.pi/agent` (Pi extension) and the entries of `~/.config/herdr-app/gentle-shell-roots.json`.
+  every agent dir in `snapshot.js` `agentRoots()`: `~/.drakonc-shell/agent` (bundled),
+  `~/.pi/agent` (Pi extension) and the entries of `~/.config/herdr-app/drakonc-shell-roots.json`.
   Actions go to the session's `<agentDir>/desktop/inbox/<session>/` and are answered in
-  `outbox/` (`gentle-shell.desktop-action/v1`). Format: [`docs/desktop-feed.md`](../docs/desktop-feed.md).
+  `outbox/` (`drakonc-shell.desktop-action/v1`). Format: [`docs/desktop-feed.md`](../docs/desktop-feed.md).
   The conversation itself comes from the session's own JSONL.
-- **Keys** (`keys.json`, section `layout:gentle-shell`): `cmd-k` palette, `cmd-j` Chat ↔
+- **Keys** (`keys.json`, section `layout:drakonc-shell`): `cmd-k` palette, `cmd-j` Chat ↔
   Terminal, `cmd-.` stop, `cmd-alt-1`…`6` inspector tabs. Merged into the person's `keys.json`,
   never replacing a key they bind.
 - **How it was built:** the design was chosen from three directions in `design/herdr-desktop/`,
@@ -129,15 +129,15 @@ sans and a mono stack, chosen at run time from `fonts()`.
 ## Watch out
 
 - The mods **read files outside their folders**: `<agentDir>/desktop/` and the sessions' JSONL
-  under `<agentDir>/sessions/` for `~/.gentle-shell/agent`, `~/.pi/agent` and the agent dirs
-  listed in `~/.config/herdr-app/gentle-shell-roots.json`. Another agent dir is seen only once
+  under `<agentDir>/sessions/` for `~/.drakonc-shell/agent`, `~/.pi/agent` and the agent dirs
+  listed in `~/.config/herdr-app/drakonc-shell-roots.json`. Another agent dir is seen only once
   listed there, and only inside the home folder. Remote terminals are not read.
-- They **run programs**: `hc send` / `hc keys` into Gentle Shell terminals, `pwd -P` to resolve a
-  session folder, `gentle-ai review mode status` while the Review tab shows, and
-  `gentle-ai review mode enable|disable --scope global` for the RDD switch, after a dialog.
+- They **run programs**: `hc send` / `hc keys` into Drakonc Shell terminals, `pwd -P` to resolve a
+  session folder, `drakonc-ai review mode status` while the Review tab shows, and
+  `drakonc-ai review mode enable|disable --scope global` for the RDD switch, after a dialog.
 - They **write** one action file at a time into a session's inbox, only when the session created
   it. No network.
-- `gentle-sidebar`, `gentle-spaces`, `gentle-agents`, `gentle-tabs` and `gentle-status` are
+- `drakonc-sidebar`, `drakonc-spaces`, `drakonc-agents`, `drakonc-tabs` and `drakonc-status` are
   adapted from Herdr 0.1.15's shipped mods, so Herdr no longer updates them in this layout.
   Compare them after a Herdr upgrade.
 - Built and checked on Herdr app 0.1.15 (macOS). Herdr is 0.1.x and regenerates its mod API per
@@ -148,9 +148,9 @@ sans and a mono stack, chosen at run time from `fonts()`.
 
 ## Done when
 
-- `herdr-app check` passes for every `mods/gentle-*` folder.
-- After `layout.switch {name: "gentle-shell"}`, `herdr-app status` reports no errors.
-- A Gentle Shell session in the shown tab fills the chat, header, inspector, status bar and plan
+- `herdr-app check` passes for every `mods/drakonc-*` folder.
+- After `layout.switch {name: "drakonc-shell"}`, `herdr-app status` reports no errors.
+- A Drakonc Shell session in the shown tab fills the chat, header, inspector, status bar and plan
   usage; sending a message shows it in the chat and the TUI.
 - `⌘J` switches Chat ↔ Terminal both ways; `⌘K` opens the palette; `⌥⌘1`…`6` pick the tabs.
 - Super-YOLO asks in a dialog first; a consent question shows "Answer in Terminal".

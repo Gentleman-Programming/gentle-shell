@@ -1,5 +1,5 @@
-// Gentle Desktop changes bridge: reaches the existing changes owner (the
-// `/gentle:changes` WorktreeChangesTracker inside `extensions/gentle-shell.ts`)
+// Drakonc Desktop changes bridge: reaches the existing changes owner (the
+// `/drakonc:changes` WorktreeChangesTracker inside `extensions/drakonc-shell.ts`)
 // through a defensive, versioned owner-service event/adapter — the changes
 // analogue of the jobs `discoverDesktopJobsService` seam. It never runs Git or
 // reads a file itself and keeps no second tracker: every list and every diff

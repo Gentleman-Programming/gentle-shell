@@ -6,7 +6,7 @@
 import { execFile } from "node:child_process";
 import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { gentlePiConfigHome } from "./agent-home.ts";
+import { drakoncPiConfigHome } from "./agent-home.ts";
 import { profilesFilePath, readProfilesFileResult, readProfileWorkflow } from "./agent-profiles.ts";
 import type { DesktopFeedProfileCatalog } from "./desktop-feed.ts";
 import { resolveSessionProfile, sessionProfileLabel } from "./session-profile-freeze.ts";
@@ -72,7 +72,7 @@ export interface DesktopFeedProfile {
  * The profile the status bar names, through the same single rule the shell's
  * active-profile reader applies (resolveSessionProfile + sessionProfileLabel),
  * the orchestrator tier configured for it in the profiles store, and (S12) the
- * store's saved profiles as /gentle:profiles lists them, with the one this
+ * store's saved profiles as /drakonc:profiles lists them, with the one this
  * session routes with and the store's default.
  */
 export function createDesktopFeedProfileReader(env: NodeJS.ProcessEnv = process.env, resolveWorktree: WorktreeResolver = resolveSessionWorktree) {
@@ -84,7 +84,7 @@ export function createDesktopFeedProfileReader(env: NodeJS.ProcessEnv = process.
 				boundCwd = cwd;
 				try { identity = resolveWorktree(cwd, cwd); } catch { identity = undefined; }
 			}
-			const configHome = gentlePiConfigHome(env);
+			const configHome = drakoncPiConfigHome(env);
 			const store = readProfilesFileResult(profilesFilePath(configHome));
 			const tiers: Record<string, "standard" | "fast" | undefined> = store.status === "valid"
 				? Object.fromEntries(Object.entries(store.file.profiles).map(([name, config]) => [name, config.orchestrator?.tier]))

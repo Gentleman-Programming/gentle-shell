@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createDesktopFeedExtension, type DesktopFeedOptions } from "../extensions/gentle-desktop-feed.ts";
-import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
+import { createDesktopFeedExtension, type DesktopFeedOptions } from "../extensions/drakonc-desktop-feed.ts";
+import desktopRpc from "../extensions/drakonc-desktop-rpc.ts";
 import { buildDesktopFeedSnapshot, DESKTOP_FEED_LIMITS, type DesktopFeedInput, type DesktopFeedSnapshot, type DesktopFeedTimers } from "../lib/desktop-feed.ts";
 import { DESKTOP_ACTION_KINDS, DESKTOP_ACTION_SCHEMA, desktopActionInboxDir, desktopActionOutboxDir, parseDesktopAction } from "../lib/desktop-feed-actions.ts";
 import { createDesktopFeedProfileReader } from "../lib/desktop-feed-sources.ts";
@@ -20,11 +20,11 @@ import type { ProviderUsage } from "../lib/shell-usage.ts";
 // S12 (odd/tasks/herdr-desktop.md): the desktop shows the subscription plan
 // (name and every usage window, as the TUI usage panel does) and the model
 // profiles (list, active, per-agent models), and switches profile through the
-// same owner as /gentle:profiles. Every value comes from the TUI's own owners.
+// same owner as /drakonc:profiles. Every value comes from the TUI's own owners.
 
 const NOW = Date.UTC(2026, 10, 15, 12, 0, 0);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
-const GENTLE_ENV = { PI_PROGRAM_STATUS_APP: "gentle-shell", HERDR_ENV: "1", HERDR_PANE_ID: "t7" };
+const DRAKONC_ENV = { PI_PROGRAM_STATUS_APP: "drakonc-shell", HERDR_ENV: "1", HERDR_PANE_ID: "t7" };
 
 // The usage owner ages snapshots on the real clock (stale after 5 minutes).
 const FETCHED = Date.now() - 1000;
@@ -115,7 +115,7 @@ function fakeCtx(cwd: string, overrides: Record<string, unknown> = {}) {
 	};
 }
 
-/** The usage owner (gentle-shell's UsageStore seam), speaking its owner-service contract. */
+/** The usage owner (drakonc-shell's UsageStore seam), speaking its owner-service contract. */
 function usageOwner(bus: ReturnType<typeof fakeBus>) {
 	const state = {
 		entries: [] as DesktopUsageOwnerEntry[],
@@ -144,7 +144,7 @@ function usageOwner(bus: ReturnType<typeof fakeBus>) {
 	return state;
 }
 
-/** The /gentle:profiles owner (gentle-ai's apply seam). */
+/** The /drakonc:profiles owner (drakonc-ai's apply seam). */
 function profilesOwner(bus: ReturnType<typeof fakeBus>, answer: (request: DesktopProfileApplyRequest) => DesktopProfileApplyResult) {
 	const calls: DesktopProfileApplyRequest[] = [];
 	bus.on(DESKTOP_PROFILES_SERVICE_CHANNEL, (payload) => {
@@ -168,7 +168,7 @@ function harness(t: { after(fn: () => void): void }, options: Partial<DesktopFee
 	let fireWatch: (() => void) | undefined;
 	let profileReads = 0;
 	createDesktopFeedExtension({
-		env: GENTLE_ENV,
+		env: DRAKONC_ENV,
 		agentDir,
 		now: () => NOW,
 		timers: clock.timers,
@@ -282,8 +282,8 @@ test("S12: profiles publish every saved profile with its tier, mode, orchestrato
 				active: "fast",
 				default: "work",
 				items: [
-					{ name: "work", config: { "gentle-writer": { model: "anthropic/claude-sonnet-5-5", thinking: "medium" }, "gentle-verifier": {} }, mode: "organic" },
-					{ name: "fast", config: { orchestrator: { model: "openai-codex/gpt-5.5", thinking: "low", tier: "fast" }, "gentle-writer": { model: "openai-codex/gpt-5.5" } }, mode: "full-delegation" },
+					{ name: "work", config: { "drakonc-writer": { model: "anthropic/claude-sonnet-5-5", thinking: "medium" }, "drakonc-verifier": {} }, mode: "organic" },
+					{ name: "fast", config: { orchestrator: { model: "openai-codex/gpt-5.5", thinking: "low", tier: "fast" }, "drakonc-writer": { model: "openai-codex/gpt-5.5" } }, mode: "full-delegation" },
 				],
 			},
 		},
@@ -292,8 +292,8 @@ test("S12: profiles publish every saved profile with its tier, mode, orchestrato
 		active: "fast",
 		default: "work",
 		items: [
-			{ name: "work", tier: null, mode: "organic", orchestrator: null, roles: [{ agent: "gentle-verifier", model: "inherit", thinking: "inherit" }, { agent: "gentle-writer", model: "anthropic/claude-sonnet-5-5", thinking: "medium" }], truncated: false },
-			{ name: "fast", tier: "fast", mode: "full-delegation", orchestrator: { model: "openai-codex/gpt-5.5", thinking: "low", tier: "fast" }, roles: [{ agent: "gentle-writer", model: "openai-codex/gpt-5.5", thinking: "inherit" }], truncated: false },
+			{ name: "work", tier: null, mode: "organic", orchestrator: null, roles: [{ agent: "drakonc-verifier", model: "inherit", thinking: "inherit" }, { agent: "drakonc-writer", model: "anthropic/claude-sonnet-5-5", thinking: "medium" }], truncated: false },
+			{ name: "fast", tier: "fast", mode: "full-delegation", orchestrator: { model: "openai-codex/gpt-5.5", thinking: "low", tier: "fast" }, roles: [{ agent: "drakonc-writer", model: "openai-codex/gpt-5.5", thinking: "inherit" }], truncated: false },
 		],
 		truncated: false,
 	});
@@ -314,20 +314,20 @@ test("S12: the profiles list is bounded: profiles and roles per profile", () => 
 	assert.equal(profiles.active, null);
 });
 
-test("S12: the profile reader lists the saved profiles from the same store /gentle:profiles uses", (t) => {
+test("S12: the profile reader lists the saved profiles from the same store /drakonc:profiles uses", (t) => {
 	const root = mkdtempSync(join(tmpdir(), "desktop-profiles-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const configHome = join(root, "config");
 	mkdirSync(configHome, { recursive: true });
-	let file = createProfile(emptyProfilesFile(), "work", { "gentle-writer": { model: "anthropic/claude-sonnet-5-5", thinking: "medium" } });
-	file = createProfile(file, "fast", { orchestrator: { model: "openai-codex/gpt-5.5", tier: "fast" }, "gentle-writer": { model: "openai-codex/gpt-5.5" } });
+	let file = createProfile(emptyProfilesFile(), "work", { "drakonc-writer": { model: "anthropic/claude-sonnet-5-5", thinking: "medium" } });
+	file = createProfile(file, "fast", { orchestrator: { model: "openai-codex/gpt-5.5", tier: "fast" }, "drakonc-writer": { model: "openai-codex/gpt-5.5" } });
 	file = setActiveProfile(file, "work");
 	writeFileSync(profilesFilePath(configHome), serializeProfilesFile(file));
-	const read = createDesktopFeedProfileReader({ GENTLE_PI_CONFIG_HOME: configHome, HOME: root }, () => undefined)(join(root, "w"), undefined);
+	const read = createDesktopFeedProfileReader({ DRAKONC_PI_CONFIG_HOME: configHome, HOME: root }, () => undefined)(join(root, "w"), undefined);
 	assert.equal(read.name, "work");
 	assert.deepEqual(read.catalog?.default, "work");
 	assert.deepEqual(read.catalog?.active, "work");
-	assert.deepEqual(read.catalog?.items.map((item) => [item.name, item.mode, Object.keys(item.config)]), [["work", "organic", ["gentle-writer"]], ["fast", "organic", ["orchestrator", "gentle-writer"]]]);
+	assert.deepEqual(read.catalog?.items.map((item) => [item.name, item.mode, Object.keys(item.config)]), [["work", "organic", ["drakonc-writer"]], ["fast", "organic", ["orchestrator", "drakonc-writer"]]]);
 });
 
 // ---- Plan usage: the extension, on the TUI's cadence ----
@@ -344,7 +344,7 @@ test("S12: the feed publishes the owner's plan and windows once the TUI's sessio
 	h.clock.run(1000);
 	assert.equal(h.snapshot().usage!.status, "pending");
 	assert.deepEqual(h.clock.delays(), [2000], "one follow-up read is armed");
-	// gentle-shell's own forced fetch at session_start lands in the owner's store.
+	// drakonc-shell's own forced fetch at session_start lands in the owner's store.
 	owner.entries = [{ provider: "openai-codex", supported: true, refreshable: true, failed: false, snapshot: CODEX }, { provider: "anthropic", supported: true, refreshable: false, failed: false }];
 	await h.tick(3);
 	const usage = h.snapshot().usage!;
@@ -367,7 +367,7 @@ test("S12: a header-carried snapshot (Claude's 5h and 7d) reaches the feed for t
 	owner.entries = [{ provider: "claude-bridge", supported: false, refreshable: false, failed: false }];
 	await h.start();
 	const claude: ProviderUsage = { provider: "claude-bridge", plan: undefined, fetchedAt: NOW, limits: [{ name: "all", limitReached: false, windows: [{ label: "5h", usedPercent: 12, windowSeconds: 18_000, resetAt: null }, { label: "week", usedPercent: 40, windowSeconds: 604_800, resetAt: null }] }] };
-	// gentle-shell's after_provider_response: records the snapshot, then tells its observers.
+	// drakonc-shell's after_provider_response: records the snapshot, then tells its observers.
 	owner.entries = [{ provider: "claude-bridge", supported: false, refreshable: false, failed: false, snapshot: claude }];
 	for (const fn of owner.observers) fn({ provider: "claude-bridge", usage: claude });
 	await h.tick(1);
@@ -402,13 +402,13 @@ test("S12: refresh_usage runs the owner's refresh once, as the TUI panel's r doe
 // ---- Profiles: the extension ----
 
 test("S12: the snapshot carries the session's profiles from the reader", async (t) => {
-	const catalog = { active: "work", default: "work", items: [{ name: "work", config: { "gentle-writer": { model: "m1" } }, mode: "organic" as const }] };
+	const catalog = { active: "work", default: "work", items: [{ name: "work", config: { "drakonc-writer": { model: "m1" } }, mode: "organic" as const }] };
 	const h = harness(t, { profile: () => ({ name: "work", tier: undefined, catalog }) });
 	await h.start();
-	assert.deepEqual(h.snapshot().profiles, { active: "work", default: "work", items: [{ name: "work", tier: null, mode: "organic", orchestrator: null, roles: [{ agent: "gentle-writer", model: "m1", thinking: "inherit" }], truncated: false }], truncated: false });
+	assert.deepEqual(h.snapshot().profiles, { active: "work", default: "work", items: [{ name: "work", tier: null, mode: "organic", orchestrator: null, roles: [{ agent: "drakonc-writer", model: "m1", thinking: "inherit" }], truncated: false }], truncated: false });
 });
 
-test("S12: apply_profile runs /gentle:profiles' own apply once, for this session, and the profile is read again", async (t) => {
+test("S12: apply_profile runs /drakonc:profiles' own apply once, for this session, and the profile is read again", async (t) => {
 	const h = harness(t);
 	const calls = profilesOwner(h.bus, () => ({ status: "applied", notes: [{ level: "info", text: "Using \"fast\" in this session." }] }));
 	await h.start();
@@ -423,16 +423,16 @@ test("S12: apply_profile hands the owner's confirmation to the desktop and passe
 	const h = harness(t);
 	const calls = profilesOwner(h.bus, (request) => (request.confirmation === "tok-1"
 		? { status: "applied", notes: [] }
-		: { status: "confirmation_required", title: "Use \"fast\"?", message: "gentle-writer: sonnet → gpt-5.5", confirmation: "tok-1" }));
+		: { status: "confirmation_required", title: "Use \"fast\"?", message: "drakonc-writer: sonnet → gpt-5.5", confirmation: "tok-1" }));
 	await h.start();
 	const first = await h.act("apply_profile", { name: "fast" });
-	assert.deepEqual(first?.data, { profile: "fast", mode: "session", status: "confirmation_required", confirmation: { title: "Use \"fast\"?", message: "gentle-writer: sonnet → gpt-5.5", token: "tok-1" } });
+	assert.deepEqual(first?.data, { profile: "fast", mode: "session", status: "confirmation_required", confirmation: { title: "Use \"fast\"?", message: "drakonc-writer: sonnet → gpt-5.5", token: "tok-1" } });
 	const second = await h.act("apply_profile", { name: "fast", confirmation: "tok-1" });
 	assert.equal(second?.data?.status, "applied");
 	assert.deepEqual(calls, [{ profile: "fast", mode: "session" }, { profile: "fast", mode: "session", confirmation: "tok-1" }]);
 });
 
-test("S12: apply_profile keeps the owner's refusals and, like /gentle:profiles, also runs while the session works", async (t) => {
+test("S12: apply_profile keeps the owner's refusals and, like /drakonc:profiles, also runs while the session works", async (t) => {
 	const h = harness(t);
 	const calls = profilesOwner(h.bus, (request) => (request.profile === "busy" ? { status: "busy" } : { status: "unknown_profile" }));
 	await h.start();
@@ -486,17 +486,17 @@ test("S12: desktop RPC refresh_subscription_usage and apply_profile answers are 
 		const root = mkdtempSync(join(tmpdir(), "desktop-plan-rpc-"));
 		t.after(() => rmSync(root, { recursive: true, force: true }));
 		const clock = fakeTimers();
-		if (withFeed) createDesktopFeedExtension({ env: { ...GENTLE_ENV, [INTERACTIVE_HOST_ENV]: "1" }, agentDir: join(root, "agent"), now: () => NOW, timers: clock.timers, git: () => async () => ({ stdout: "", code: 128 }), parentOf: async () => undefined, profile: () => ({ name: undefined, tier: undefined }), sweep: () => {}, actionWatch: () => () => {} })(h.pi);
+		if (withFeed) createDesktopFeedExtension({ env: { ...DRAKONC_ENV, [INTERACTIVE_HOST_ENV]: "1" }, agentDir: join(root, "agent"), now: () => NOW, timers: clock.timers, git: () => async () => ({ stdout: "", code: 128 }), parentOf: async () => undefined, profile: () => ({ name: undefined, tier: undefined }), sweep: () => {}, actionWatch: () => () => {} })(h.pi);
 		const ctx = fakeCtx(root, { mode: "rpc" });
 		h.fire("session_start", { reason: "startup" }, ctx);
 		await settle();
 		const call = async (requestId: string, method: string, params: Record<string, unknown>) =>
-			h.commands.get("gentle:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }), ctx);
+			h.commands.get("drakonc:desktop")!.handler(JSON.stringify({ schema: DESKTOP_RPC_SCHEMA, requestId, method, params }), ctx);
 		await call("r1", "refresh_subscription_usage", {});
 		await call("r2", "apply_profile", { profile: "fast", mode: "session" });
 		await settle();
 		clock.run();
-		return { lines: ctx.widgets.filter((widget) => widget.key === "gentle-desktop-rpc").map((widget) => widget.lines[0]), refreshes: owner.refreshes, applies };
+		return { lines: ctx.widgets.filter((widget) => widget.key === "drakonc-desktop-rpc").map((widget) => widget.lines[0]), refreshes: owner.refreshes, applies };
 	};
 	const without = await run(false);
 	const withFeed = await run(true);

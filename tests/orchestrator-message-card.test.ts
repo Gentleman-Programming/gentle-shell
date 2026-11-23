@@ -17,7 +17,7 @@ function outgoing(expanded = false, detail: OrchestratorMessageDetails = data) {
 	const args = { message: "mutable argument", reason: "mutable reason" };
 	const context = { state: {}, args, expanded, isPartial: false };
 	const call = outgoingMessageCall(args, theme, context, "expand");
-	const result = outgoingMessageResult({ content: [], details: { gentleAgents: detail } }, expanded, false, theme, context);
+	const result = outgoingMessageResult({ content: [], details: { drakoncAgents: detail } }, expanded, false, theme, context);
 	return { render: (width: number) => [...call.render(width), ...result.render(width)], invalidate: () => { call.invalidate(); result.invalidate(); } };
 }
 
@@ -78,7 +78,7 @@ test("both peer labels and fallbacks have one renderer-owned robot icon without 
 
 test("short outgoing results expand into readable routing and reason without duplicated payloads", () => {
 	const args = { message: "Ready", reason: "Peer needs this result", recipient_session_id: "requested-peer" };
-	const payload = { content: [{ type: "text", text: "Accepted notification; receipt-only-marker" }], details: { gentleAgents: { ...data, message: "Ready" } } };
+	const payload = { content: [{ type: "text", text: "Accepted notification; receipt-only-marker" }], details: { drakoncAgents: { ...data, message: "Ready" } } };
 	const render = (expanded: boolean) => {
 		const context = { state: {}, args, expanded, isPartial: false };
 		const call = outgoingMessageCall(args, theme, context, expanded ? "collapse" : "expand");
@@ -105,7 +105,7 @@ test("message text, aliases, and expanded metadata cannot inject terminal escape
 	const unsafe = "\x1b]52;c;clipboard\x07\x1b[31mVisible\x1b[0m\r\u0000\x9b2J";
 	const detail = { ...data, message: unsafe, senderLabel: unsafe, recipientLabel: unsafe, senderSessionId: unsafe, messageId: unsafe, reason: unsafe };
 	const context = { state: {}, args: {}, isPartial: false };
-	for (const card of [incomingMessageCard(detail, "", true, theme, ""), outgoingMessageResult({ content: [], details: { gentleAgents: detail } }, true, false, theme, context), outgoingMessageCall({}, theme, context, "")]) {
+	for (const card of [incomingMessageCard(detail, "", true, theme, ""), outgoingMessageResult({ content: [], details: { drakoncAgents: detail } }, true, false, theme, context), outgoingMessageCall({}, theme, context, "")]) {
 		const text = stripAnsi(card.render(100).join("\n"));
 		assert.match(text, /Visible/);
 		assert.doesNotMatch(text, /clipboard|\x1b|\x9b|\r|\u0000/);
@@ -143,7 +143,7 @@ for (const style of Object.values(CARD_STYLE)) {
 				for (const expanded of [false, true]) {
 					const context = { state: {}, args: { message: detail.message }, isPartial: pending, expanded };
 					const call = outgoingMessageCall(context.args, theme, context, "expand");
-					const result = outgoingMessageResult({ content: [{ type: "text", text: detail.message }], details: { gentleAgents: detail, ...(state === "error" ? { error: "not accepted" } : {}) } }, expanded, pending, theme, context);
+					const result = outgoingMessageResult({ content: [{ type: "text", text: detail.message }], details: { drakoncAgents: detail, ...(state === "error" ? { error: "not accepted" } : {}) } }, expanded, pending, theme, context);
 					for (const width of [52, 60, 70, 80, 100, 52]) {
 						call.invalidate();
 						const callRows = call.render(width);
@@ -177,7 +177,7 @@ test("pending, cancelled, failed, and recipient-selection results do not claim a
 		assert.ok(text.includes(`Error: ${error}`));
 		assert.doesNotMatch(text, /Message queued|Preparing update/);
 	}
-	const selection = outgoingMessageResult({ content: [{ type: "text", text: "Choose recipient" }], details: { gentleAgents: { candidates: [] } } }, false, false, theme, context);
+	const selection = outgoingMessageResult({ content: [{ type: "text", text: "Choose recipient" }], details: { drakoncAgents: { candidates: [] } } }, false, false, theme, context);
 	const text = stripAnsi([...call.render(100), ...selection.render(100)].join("\n"));
 	assert.match(text, /Choose recipient/);
 	assert.doesNotMatch(text, /Message queued|Message not sent/);

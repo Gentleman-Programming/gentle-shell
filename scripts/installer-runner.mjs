@@ -1,29 +1,41 @@
 import { readFileSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import {
-	gentleAiBinaryPath,
-	gentleAiDevBinaryOverrideConfigured,
-	resolveGentleAiBinary,
-} from "../runtime/gentle-ai-binary.mjs";
+	drakoncAiBinaryPath,
+	drakoncAiDevBinaryOverrideConfigured,
+	resolveDrakoncAiBinary,
+} from "../runtime/drakonc-ai-binary.mjs";
 import { PI_INSTALL_VERSION, goAcquisition, persistencePins, pnpmGlobalBin, requirements } from "./installer-preflight.mjs";
-import { GENTLE_AI_REPOSITORY, MainChannelError, SHELL_REPOSITORY, installOwner, mainVersion } from "./main-channel.mjs";
+import { DRAKONC_AI_REPOSITORY, MainChannelError, SHELL_REPOSITORY, installOwner, mainVersion } from "./main-channel.mjs";
+import { DRAKONC_PI_PACKAGE_PUBLISHED } from "../runtime/drakonc-shell-launcher.mjs";
 import { windowsShim } from "./installer-windows.mjs";
 
 // Standard installation runner: one fixed, consented global pnpm installation
-// of Pi plus gentle-pi, then the public `gentle-shell setup`. Every adapter is
+// of Pi plus drakonc-pi, then the public `drakonc-shell setup`. Every adapter is
 // injected by trusted local code; requests carry no commands, URLs, roots or env.
 // When Node is bootstrap-only or no usable npm resolves, fixed steps first persist
 // node, npm and pnpm under PNPM_HOME through pnpm itself. When an earlier run
 // installed the pinned stack but stopped in setup, a fixed recovery re-verifies
-// that stack and reruns only `gentle-shell setup` (and `pnpm setup`), never `add -g`.
+// that stack and reruns only `drakonc-shell setup` (and `pnpm setup`), never `add -g`.
 // An older Pi that pnpm or npm owns is first updated with that package manager.
 // When a build needs Go and the user's is missing, older or unchecked, the installer's pinned
 // Go is acquired first and given only to the build children, first on PATH.
 
-/** Pi version installed next to gentle-pi (optional peer, resolved in one add). */
+/** Pi version installed next to drakonc-pi (optional peer, resolved in one add). */
 export { PI_INSTALL_VERSION };
 export const PI_PACKAGE = "@earendil-works/pi-coding-agent";
-export const SHELL_PACKAGE = "gentle-pi";
+export const SHELL_PACKAGE = "drakonc-pi";
+
+// D6/S6 de openspec/changes/publicar-paquetes-drakonc: mientras `drakonc-pi` no
+// esté publicado en npm, ninguna ruta de este instalador lo pide al registro (ni
+// cae al `gentle-pi` original): el nombre no existe y un tercero podría
+// registrarlo antes. El flag es el del launcher, para que solo haya una fuente de
+// verdad; `tests/installer-runner.test.ts` comprueba que se importa y no se
+// duplica. La instalación desde el repositorio (canal `main`) sí funciona: empaqueta
+// el árbol de git y no resuelve ningún nombre del registro.
+export { DRAKONC_PI_PACKAGE_PUBLISHED };
+export const SHELL_NOT_PUBLISHED_MESSAGE =
+	"drakonc-pi aún no está publicado en npm; instala Drakonc Shell desde el repositorio github.com/drakonc/drakonc-shell (ver README)";
 
 /** Every `reason` a `blocked` outcome can carry (for host guidance; no behavior). */
 export const blockedReasons = Object.freeze([
@@ -42,6 +54,9 @@ export const blockedReasons = Object.freeze([
 	"global-list-unavailable",
 	"existing-stack",
 	"existing-stack-unverified",
+	// D6/S6: `drakonc-pi` no está publicado en npm y el instalador no lo pide al
+	// registro (ni cae al `gentle-pi` original).
+	"shell-not-published",
 ]);
 /** Every `failedStep` a `failed` outcome can carry (for host guidance; no behavior). */
 export const failedSteps = Object.freeze([
@@ -60,10 +75,10 @@ export const failedSteps = Object.freeze([
 	"install-global",
 	"verify-global-list",
 	"verify-shell-bin",
-	"verify-gentle-ai",
+	"verify-drakonc-ai",
 	"shell-setup",
 	"persist-path",
-	"build-gentle-ai-main",
+	"build-drakonc-ai-main",
 	"install-shell-main",
 	"record-channel",
 	"install-pi",
@@ -94,10 +109,10 @@ const knownActions = Object.freeze({
 	"verify-go": { kind: "verify", target: "go" },
 	"install-pi": { kind: "install-global", target: "pi", version: requirements.pi },
 	"install-shell": { kind: "install-global", target: "shell", version: requirements.shell },
-	"provision-native": { kind: "existing-installer", target: "gentleAi", version: requirements.gentleAi },
+	"provision-native": { kind: "existing-installer", target: "drakoncAi", version: requirements.drakoncAi },
 	"setup-shell": { kind: "normal-setup", target: "shell" },
 	"verify-readiness": { kind: "verify", target: "stack" },
-	"build-gentle-ai-main": { kind: "build-native-main", target: "gentleAi" },
+	"build-drakonc-ai-main": { kind: "build-native-main", target: "drakoncAi" },
 	"install-shell-main": { kind: "install-global", target: "shell" },
 	"record-channel": { kind: "configure", target: "channel" },
 	"update-shell-release": { kind: "upgrade", target: "shell" },
@@ -107,15 +122,15 @@ const knownActions = Object.freeze({
 // The clean-stack path: both global packages are missing.
 const requiredActions = ["install-pi", "install-shell", "setup-shell", "verify-readiness"];
 const optionalActions = ["setup-global-bin"];
-// Pi already installed: only Gentle Shell is added (never Pi).
+// Pi already installed: only Drakonc Shell is added (never Pi).
 const shellOnlyActions = ["install-shell", "setup-shell", "verify-readiness"];
-// An existing Gentle Shell: exactly one update, then setup; a missing Pi is installed first.
+// An existing Drakonc Shell: exactly one update, then setup; a missing Pi is installed first.
 const updateActions = ["update-shell-release", "update-shell-main"];
-// Pi alone (a current Gentle Shell): an older owned Pi's update, or the installer's
+// Pi alone (a current Drakonc Shell): an older owned Pi's update, or the installer's
 // Pi added next to an older one neither pnpm nor npm owns; then readiness.
 const piOnlyVariants = Object.freeze([["update-pi", "verify-readiness"], ["install-pi", "verify-readiness"]]);
 // The main channel overlay: all three after a release installation, or none.
-const mainActions = ["build-gentle-ai-main", "install-shell-main", "record-channel"];
+const mainActions = ["build-drakonc-ai-main", "install-shell-main", "record-channel"];
 // The pinned Go: both, only when preflight recorded a missing, older or unchecked Go, or none.
 const goActions = ["acquire-go", "verify-go"];
 // Setup recovery: the pinned stack this pnpm installed is present (planPreflight
@@ -188,9 +203,9 @@ function planGate(plan, platform) {
 	const piOnly = overlay.length === 0 && plan.tools.shell?.status === "reusable" &&
 		piOnlyVariants.some((variant) => variant.every((id) => ids.includes(id)) && only(variant)) &&
 		(updatingPi || ["unavailable", "needs-install"].includes(plan.tools.pi?.status));
-	// gentle-pi's postinstall may build Gentle AI from source on Windows. A recovery
+	// drakonc-pi's postinstall may build Drakonc AI from source on Windows. A recovery
 	// runs no postinstall: its binary is verified. A Pi-only update touches no
-	// Gentle Shell package either. Go is acquired only for a build that uses it.
+	// Drakonc Shell package either. Go is acquired only for a build that uses it.
 	const windowsBuild = platform === "win32" && !recovery && !piOnly;
 	if (acquiringGo === 2 && overlay.length === 0 && !ids.includes("update-shell-main") && !windowsBuild) return "unsupported-plan";
 	if (windowsBuild && !goReady) return "go-required";
@@ -227,7 +242,7 @@ function envValue(env, name, platform) {
  * %LOCALAPPDATA%, which another principal may write, and trusts its cached registry
  * metadata for exact versions. TEMP and TMP always move to its `tmp` folder
  * (created by prepare-pnpm-home), so a postinstall's os.tmpdir(), such as the
- * Gentle AI source build, stays private. Only these children get them; nothing
+ * Drakonc AI source build, stays private. Only these children get them; nothing
  * persists them.
  */
 export function childEnvironment(env, platform, globalBin, { privateHome = false } = {}) {
@@ -250,24 +265,24 @@ export function goFirstEnvironment(env, platform, goPath) {
 	return { ...env, [key]: [path.dirname(goPath), ...rest].join(path.delimiter) };
 }
 
-/** gentle-shell setup gets no bootstrap handoff keys (case-insensitive on Windows). */
+/** drakonc-shell setup gets no bootstrap handoff keys (case-insensitive on Windows). */
 function setupEnvironment(child, platform) {
-	const bootstrap = platform === "win32" ? /^GENTLE_(BOOTSTRAP|INSTALL)_/i : /^GENTLE_(BOOTSTRAP|INSTALL)_/;
+	const bootstrap = platform === "win32" ? /^DRAKONC_(BOOTSTRAP|INSTALL)_/i : /^DRAKONC_(BOOTSTRAP|INSTALL)_/;
 	return Object.fromEntries(Object.entries(child).filter(([key]) => !bootstrap.test(key)));
 }
 
 /** pnpm comes from the bootstrap handoff, or a PATH executable on POSIX only. */
 export async function pnpmInvocation(env, platform, fs) {
 	const path = platform === "win32" ? win32 : posix;
-	const node = env.GENTLE_INSTALL_PNPM_NODE;
-	const entry = env.GENTLE_INSTALL_PNPM_ENTRY;
+	const node = env.DRAKONC_INSTALL_PNPM_NODE;
+	const entry = env.DRAKONC_INSTALL_PNPM_ENTRY;
 	if (node && entry) {
 		return path.isAbsolute(node) && path.isAbsolute(entry) ? { command: node, prefix: [entry] } : null;
 	}
 	// A Windows .cmd shim cannot be spawned with shell:false; require the direct
 	// handoff: Node plus pnpm's JS entry, or a native pnpm.exe on its own.
 	if (platform === "win32") {
-		const command = env.GENTLE_INSTALL_PNPM_COMMAND;
+		const command = env.DRAKONC_INSTALL_PNPM_COMMAND;
 		return command && win32.isAbsolute(command) && win32.extname(command).toLowerCase() === ".exe" ? { command, prefix: [] } : null;
 	}
 	for (const directory of String(env.PATH ?? "").split(path.delimiter)) {
@@ -288,7 +303,7 @@ function pathExtensions(env) {
  * paths are not: even looking one up can reach a remote share. */
 const LOCAL_DRIVE = /^[A-Za-z]:\\/;
 
-/** First `name` the way Go's exec.LookPath (used by Gentle AI) finds it: each
+/** First `name` the way Go's exec.LookPath (used by Drakonc AI) finds it: each
  * absolute PATH directory in order and, on Windows, every PATHEXT extension in
  * PATHEXT order (lowercased, dot-prefixed, default .com/.exe/.bat/.cmd). On
  * Windows only local drive directories are searched; any other one is skipped,
@@ -456,7 +471,7 @@ function inGlobalBin(file, platform, globalBin) {
 /** The npm the user runs works in the user's environment: run from the drive
  * root (`/` on POSIX) with the child env, `npm --version` prints a stable version
  * and `npm config get prefix` one absolute path. Whatever installed it (Node,
- * Homebrew, nvm, fnm, or a mise, asdf or Volta shim), this is how Gentle AI's
+ * Homebrew, nvm, fnm, or a mise, asdf or Volta shim), this is how Drakonc AI's
  * Engram step will run it. `npm` is { command, prefix }.
  */
 async function worksAsNpm(npm, child, adapters, platform) {
@@ -527,7 +542,7 @@ export function contains(parent, child, platform) {
 	return inside.length > 0 && !inside.startsWith("..") && !path.isAbsolute(inside);
 }
 
-/** How many times Pi and gentle-pi are listed across every project and
+/** How many times Pi and drakonc-pi are listed across every project and
  * dependency field of a `list -g --json` output, or null when the shape is unknown.
  */
 function stackListings(stdout) {
@@ -556,8 +571,8 @@ function notListed(stdout, name) {
 		.some((field) => plainObject(project[field]) && Object.hasOwn(project[field], name))) ? "existing-stack" : true;
 }
 
-/** The version of the Pi the launcher runs from gentle-pi at `root`: Node's
- * resolution from gentle-pi, nested in its node_modules first, then beside it
+/** The version of the Pi the launcher runs from drakonc-pi at `root`: Node's
+ * resolution from drakonc-pi, nested in its node_modules first, then beside it
  * (where pnpm 11 links its peer). Null when neither is a readable Pi package.
  */
 export async function adjacentPiVersion(root, platform, fs) {
@@ -577,9 +592,9 @@ export async function adjacentPiVersion(root, platform, fs) {
 	return null;
 }
 
-/** That Pi's version when Gentle Shell can run it: a stable version at
- * requirements.pi or newer. pnpm 11 installs gentle-pi's optional peer Pi in
- * gentle-pi's own global group, at its latest version, so it may be newer than
+/** That Pi's version when Drakonc Shell can run it: a stable version at
+ * requirements.pi or newer. pnpm 11 installs drakonc-pi's optional peer Pi in
+ * drakonc-pi's own global group, at its latest version, so it may be newer than
  * PI_INSTALL_VERSION. Null otherwise (missing, unreadable, prerelease or older).
  */
 async function runnablePi(root, platform, fs) {
@@ -596,10 +611,10 @@ function noExistingStack(stdout) {
 	return listed === 0 ? true : "existing-stack";
 }
 
-/** Installed gentle-pi root from `list -g --json`, confined under PNPM_HOME, with
+/** Installed drakonc-pi root from `list -g --json`, confined under PNPM_HOME, with
  * the version of the Pi the launcher runs from it ({ root, pi }), or null.
- * Exactly one listed project may own gentle-pi and list Pi at the pin (unless
- * only Gentle Shell was added), and that runnable Pi (runnablePi) must exist;
+ * Exactly one listed project may own drakonc-pi and list Pi at the pin (unless
+ * only Drakonc Shell was added), and that runnable Pi (runnablePi) must exist;
  * other projects (such as the persisted npm and pnpm) are ignored.
  */
 async function verifiedPackageRoot(stdout, pnpmHome, platform, fs, shellVersion = requirements.shell, requirePi = true, expectedPi = PI_INSTALL_VERSION) {
@@ -620,8 +635,8 @@ async function verifiedPackageRoot(stdout, pnpmHome, platform, fs, shellVersion 
 }
 
 /** A stack this pnpm installed whose setup may only be rerun (setup recovery):
- * Pi and gentle-pi are each listed exactly once, in the single project that
- * verifiedPackageRoot accepts (Pi at PI_INSTALL_VERSION, gentle-pi at this
+ * Pi and drakonc-pi are each listed exactly once, in the single project that
+ * verifiedPackageRoot accepts (Pi at PI_INSTALL_VERSION, drakonc-pi at this
  * package version, realpath confined under PNPM_HOME). Returns the root or null.
  */
 export async function recoverableStackRoot(stdout, pnpmHome, platform, fs) {
@@ -682,12 +697,12 @@ async function configureNpmPrefix({ node, cli, child, platform, globalBin, adapt
 /** Default integrity adapter: the package-local resolver, never a dev override.
  * `resolve` is injectable only so trusted tests can stand in for a pinned binary.
  */
-export async function packageNativeGentleAi({ packageRoot, platform, env, home }, resolve = resolveGentleAiBinary) {
+export async function packageNativeDrakoncAi({ packageRoot, platform, env, home }, resolve = resolveDrakoncAiBinary) {
 	const environment = { env, home };
-	if (gentleAiDevBinaryOverrideConfigured(environment)) return { ok: false, reason: "development-override" };
+	if (drakoncAiDevBinaryOverrideConfigured(environment)) return { ok: false, reason: "development-override" };
 	try {
 		const binary = resolve(packageRoot, platform, readFileSync, environment);
-		if (binary === gentleAiBinaryPath(packageRoot, platform)) return { ok: true };
+		if (binary === drakoncAiBinaryPath(packageRoot, platform)) return { ok: true };
 	} catch {
 		// Resolver errors name local paths; report only the classification.
 	}
@@ -695,9 +710,9 @@ export async function packageNativeGentleAi({ packageRoot, platform, env, home }
 }
 
 /** The failed steps whose sanitized detail line the outcome may carry. */
-const detailSteps = Object.freeze(["shell-setup", "persist-path", "acquire-go", "install-global", "install-shell-main", "build-gentle-ai-main", "update-shell"]);
+const detailSteps = Object.freeze(["shell-setup", "persist-path", "acquire-go", "install-global", "install-shell-main", "build-drakonc-ai-main", "update-shell"]);
 
-/** One displayable line from the bounded output of a failed `gentle-shell
+/** One displayable line from the bounded output of a failed `drakonc-shell
  * setup` or `pnpm setup`: the last error line (`Error:` or a pnpm `ERR_` code),
  * else the last non-empty line.
  * Terminal escapes, control and bidi characters are removed, the user's home
@@ -728,16 +743,16 @@ export function setupErrorDetail(text, home, platform) {
  * Outcomes: blocked (nothing installed), failed (stopped after `completed`),
  * terminal-action-required (installed; user PATH persisted, open a new
  * terminal) or ready. A failed `shell-setup`, `persist-path`, `install-global`,
- * `install-shell-main`, `build-gentle-ai-main` or `update-shell` may add `detail`, one
+ * `install-shell-main`, `build-drakonc-ai-main` or `update-shell` may add `detail`, one
  * sanitized line (setupErrorDetail) of the failed command's output or of the main
  * channel's error, and a failed `acquire-go` the Go folder in its way, with the home
  * as ~; no other output is kept. When the plan persists the Node runtime, successful
  * outcomes also report npmPrefix: "configured" or "unchanged". When the Pi beside a pnpm
- * gentle-pi (the one Gentle Shell runs) is not PI_INSTALL_VERSION, they also report its
+ * drakonc-pi (the one Drakonc Shell runs) is not PI_INSTALL_VERSION, they also report its
  * piVersion (pnpm 11 may install a newer peer Pi, at least requirements.pi). Adapters: platform, nodePath, env (user env), home?,
  * run(command, argv, { env, deadlineMs, stderrTail? }) with shell:false semantics returning
  * { code, signal, timedOut, stdout, stderrTail? }, fs { isFile, realpath, readText },
- * verifyGentleAi({ packageRoot, platform, env, home }) and log({ step, status }).
+ * verifyDrakoncAi({ packageRoot, platform, env, home }) and log({ step, status }).
  * An update plan also uses locateShell() and upgradeShell({ channel, packageRoot,
  * currentVersion, goPath? }); a plan that updates an older Pi uses locatePi(), which returns
  * the single installed Pi as { root, version, owner } or null. A plan that acquires
@@ -751,14 +766,23 @@ export function setupErrorDetail(text, home, platform) {
 export async function runStandardInstall(request, adapters) {
 	const { platform, env, log = () => {} } = adapters;
 	const completed = [];
-	const blocked = (reason) => {
-		log({ step: "gate", status: "blocked", reason });
-		return { outcome: "blocked", reason, completed };
+	const blocked = (reason, message) => {
+		log({ step: "gate", status: "blocked", reason, ...(message === undefined ? {} : { message }) });
+		return { outcome: "blocked", reason, ...(message === undefined ? {} : { message }), completed };
 	};
 	if (!validRequest(request)) return blocked("invalid-request");
 	if (request.consent !== true) return blocked("consent-required");
 	const gate = planGate(request.plan, platform);
 	if (gate) return blocked(gate);
+	// D6/S6: el plan limpio instala `drakonc-pi` desde el registro en el paso
+	// install-shell. Mientras el nombre no esté publicado, la instalación se detiene
+	// aquí, antes de cualquier add -g: ni el paquete inexistente ni el `gentle-pi`
+	// original. `adapters.shellPackagePublished` lo simula en las pruebas y en hosts
+	// que ya dan el paquete por publicado.
+	const shellPackagePublished = adapters.shellPackagePublished ?? DRAKONC_PI_PACKAGE_PUBLISHED;
+	if (!shellPackagePublished && request.plan.actions.some((action) => action.id === "install-shell")) {
+		return blocked("shell-not-published", SHELL_NOT_PUBLISHED_MESSAGE);
+	}
 
 	const path = platform === "win32" ? win32 : posix;
 	const globalBin = pnpmGlobalBin({ platform, env });
@@ -852,7 +876,7 @@ export async function runStandardInstall(request, adapters) {
 			const reported = String(result.stdout ?? "").trim();
 			return succeeded(result) && path.isAbsolute(reported) && samePath(reported, globalBin.path, platform);
 		}],
-		// Never rely on the caller's plan alone: an existing Pi or gentle-pi is not overwritten,
+		// Never rely on the caller's plan alone: an existing Pi or drakonc-pi is not overwritten,
 		// and a recovery still finds exactly the pinned stack this pnpm installed.
 		...(piOnly ? [] : [update
 			? ["check-installed-shell", "existing-stack-unverified", async () => {
@@ -903,7 +927,7 @@ export async function runStandardInstall(request, adapters) {
 
 	// Mutating and post-install steps: a false result or exception is a failure.
 	let packageRoot = null;
-	// The Pi the launcher runs beside a pnpm gentle-pi, once verified.
+	// The Pi the launcher runs beside a pnpm drakonc-pi, once verified.
 	let runsPi = null;
 	let persistentNode = null;
 	let npmPrefix = null;
@@ -948,7 +972,7 @@ export async function runStandardInstall(request, adapters) {
 		}],
 	] : [];
 	// The installer's pinned Go, when acquired: never on the user's PATH, only first
-	// on the PATH of the children that may build Gentle AI (gentle-pi's Windows
+	// on the PATH of the children that may build Drakonc AI (drakonc-pi's Windows
 	// postinstall finds go.exe there) and passed by path to the main build.
 	let pinnedGo = null;
 	const buildEnv = () => (pinnedGo ? goFirstEnvironment(child, platform, pinnedGo) : child);
@@ -972,8 +996,8 @@ export async function runStandardInstall(request, adapters) {
 			return succeeded(result) && new RegExp(`^go version go${escapeRegExp(goAcquisition.version)} \\S+$`).test(String(result.stdout ?? "").trim());
 		}],
 	] : [];
-	// Pi and gentle-pi stay separate pnpm groups, so `pi update` (which replaces Pi's
-	// own group) never removes gentle-pi; gentle-pi gets pnpm's peer Pi beside it.
+	// Pi and drakonc-pi stay separate pnpm groups, so `pi update` (which replaces Pi's
+	// own group) never removes drakonc-pi; drakonc-pi gets pnpm's peer Pi beside it.
 	const install = ["install-global", () => addGlobal([...(shellOnly ? [] : [`${PI_PACKAGE}@${piVersion}`]),
 		`${SHELL_PACKAGE}@${requirements.shell}`, `--allow-build=${SHELL_PACKAGE}`], buildEnv())];
 	function mainSteps() {
@@ -981,14 +1005,14 @@ export async function runStandardInstall(request, adapters) {
 		const ctx = { env, home };
 		const runIn = (command, argv, options = {}) => adapters.run(command, argv, { env: options.env ?? child, cwd: options.cwd, deadlineMs: options.deadlineMs ?? deadlines.install,
 			...(options.stderrTail === undefined ? {} : { stderrTail: options.stderrTail }) });
-		let gentleAiCommit = null;
+		let drakoncAiCommit = null;
 		let shellCommit = null;
 		return [
-			["build-gentle-ai-main", withMainDetail(async () => {
+			["build-drakonc-ai-main", withMainDetail(async () => {
 				const goPath = pinnedGo ?? await lookPath("go", env, platform, adapters.fs);
 				if (!goPath || !channel) return false;
-				gentleAiCommit = await channel.resolveCommit(GENTLE_AI_REPOSITORY);
-				await channel.buildGentleAi({ commit: gentleAiCommit, goPath, platform, ctx, run: runIn });
+				drakoncAiCommit = await channel.resolveCommit(DRAKONC_AI_REPOSITORY);
+				await channel.buildDrakoncAi({ commit: drakoncAiCommit, goPath, platform, ctx, run: runIn });
 				return true;
 			})],
 			["install-shell-main", withMainDetail(async () => {
@@ -1004,7 +1028,7 @@ export async function runStandardInstall(request, adapters) {
 				return true;
 			})],
 			["record-channel", async () => {
-				await channel.writeChannel(ctx, { channel: "main", shellCommit, gentleAiCommit });
+				await channel.writeChannel(ctx, { channel: "main", shellCommit, drakoncAiCommit });
 				return true;
 			}],
 		];
@@ -1024,15 +1048,15 @@ export async function runStandardInstall(request, adapters) {
 			({ root: packageRoot, pi: runsPi } = verified);
 			return true;
 		}],
-		["verify-shell-bin", () => adapters.fs.isFile(path.join(globalBin.path, platform === "win32" ? "gentle-shell.cmd" : "gentle-shell"))],
-		["verify-gentle-ai", async () => (await adapters.verifyGentleAi({ packageRoot, platform, env, home }))?.ok === true],
-		// Main overlays the verified release stack: Gentle AI built from the latest
-		// main commit (registered as the override), then Gentle Shell packed from
+		["verify-shell-bin", () => adapters.fs.isFile(path.join(globalBin.path, platform === "win32" ? "drakonc-shell.cmd" : "drakonc-shell"))],
+		["verify-drakonc-ai", async () => (await adapters.verifyDrakoncAi({ packageRoot, platform, env, home }))?.ok === true],
+		// Main overlays the verified release stack: Drakonc AI built from the latest
+		// main commit (registered as the override), then Drakonc Shell packed from
 		// it. Setup below then runs from the main package.
 		...(main ? mainSteps() : []),
 			// The setup commands are the only ones whose stderr tail is requested.
 		["shell-setup", async () => {
-			const result = await adapters.run(adapters.nodePath, [path.join(packageRoot, "bin", "gentle-shell.mjs"), "setup"],
+			const result = await adapters.run(adapters.nodePath, [path.join(packageRoot, "bin", "drakonc-shell.mjs"), "setup"],
 				{ env: setupEnvironment(child, platform), deadlineMs: deadlines.setup, stderrTail: 4096 });
 			if (succeeded(result)) return true;
 			setupDetail = setupErrorDetail(result?.stderrTail, home, platform);
@@ -1040,8 +1064,8 @@ export async function runStandardInstall(request, adapters) {
 		}],
 	];
 	if (update) {
-		// Update an existing Gentle Shell with its owner's package manager (the same
-		// logic as `gentle-shell upgrade`), confirm the result, then set it up.
+		// Update an existing Drakonc Shell with its owner's package manager (the same
+		// logic as `drakonc-shell upgrade`), confirm the result, then set it up.
 		const channel = update === "update-shell-main" ? "main" : "release";
 		const setupStep = steps.find(([name]) => name === "shell-setup");
 		steps.splice(0, steps.length,
@@ -1056,12 +1080,12 @@ export async function runStandardInstall(request, adapters) {
 				const expected = channel === "main" ? MAIN_VERSION.test(version)
 					: stable(version) !== null && (stable(installed.version) === null || atLeast(version, installed.version));
 				if (!expected || after.owner !== installed.owner || !path.isAbsolute(after.root)) return false;
-				// pnpm gives the updated gentle-pi its peer Pi beside it: the one Gentle Shell runs.
+				// pnpm gives the updated drakonc-pi its peer Pi beside it: the one Drakonc Shell runs.
 				if (after.owner === "pnpm" && (runsPi = await runnablePi(after.root, platform, adapters.fs)) === null) return false;
 				packageRoot = after.root;
 				return true;
 			}],
-			...(channel === "release" ? [["verify-gentle-ai", async () => (await adapters.verifyGentleAi({ packageRoot, platform, env, home }))?.ok === true]] : []),
+			...(channel === "release" ? [["verify-drakonc-ai", async () => (await adapters.verifyDrakoncAi({ packageRoot, platform, env, home }))?.ok === true]] : []),
 			setupStep);
 	}
 	// A child PATH never proves a fresh terminal; persist it with pnpm's own setup.
@@ -1110,7 +1134,7 @@ export async function runStandardInstall(request, adapters) {
 		completed.push(step);
 		log({ step, status: "done" });
 	}
-	// Reported only when Gentle Shell runs a Pi other than the installer's.
+	// Reported only when Drakonc Shell runs a Pi other than the installer's.
 	const prefix = { ...(persistRuntime ? { npmPrefix } : {}), ...(runsPi !== null && runsPi !== (piVersion ?? request.plan.tools.pi.version ?? PI_INSTALL_VERSION) ? { piVersion: runsPi } : {}) };
 	if (persistPath) return { outcome: "terminal-action-required", action: "open-new-terminal", completed, ...prefix };
 	return { outcome: "ready", completed, ...prefix };

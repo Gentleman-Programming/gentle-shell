@@ -10,11 +10,11 @@ import { normalizeProfilesFile, serializeProfilesFile } from "../../lib/agent-pr
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 const runtime = resolve(packageRoot, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js");
-const desktopExtension = resolve(packageRoot, "extensions/gentle-desktop-rpc.ts");
-const ownerExtension = resolve(packageRoot, "extensions/gentle-ai.ts");
-const usageOwnerExtension = resolve(packageRoot, "extensions/gentle-shell.ts");
-const designOwnerExtension = resolve(packageRoot, "extensions/gentle-design.ts");
-const jobsOwnerExtension = resolve(packageRoot, "extensions/gentle-agents.ts");
+const desktopExtension = resolve(packageRoot, "extensions/drakonc-desktop-rpc.ts");
+const ownerExtension = resolve(packageRoot, "extensions/drakonc-ai.ts");
+const usageOwnerExtension = resolve(packageRoot, "extensions/drakonc-shell.ts");
+const designOwnerExtension = resolve(packageRoot, "extensions/drakonc-design.ts");
+const jobsOwnerExtension = resolve(packageRoot, "extensions/drakonc-agents.ts");
 const WAIT_TIMEOUT_MS = 20_000;
 
 /** Isolated filesystem, no provider, no network, no inherited user configuration. */
@@ -37,9 +37,9 @@ function probeEnvironment(root: string): Record<string, string> {
 		PI_OFFLINE: "1",
 		PI_NO_LOCAL_LLM: "1",
 		NO_COLOR: "1",
-		GENTLE_SHELL_INTERACTIVE_HOST: "1",
-		GENTLE_PI_CONFIG_HOME: join(root, "config"),
-		GENTLE_PI_AGENT_HOME: join(home, "agent"),
+		DRAKONC_SHELL_INTERACTIVE_HOST: "1",
+		DRAKONC_PI_CONFIG_HOME: join(root, "config"),
+		DRAKONC_PI_AGENT_HOME: join(home, "agent"),
 		PI_CODING_AGENT_DIR: join(home, "agent"),
 		GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
 		GIT_CONFIG_NOSYSTEM: "1",
@@ -140,7 +140,7 @@ function desktopRequest(requestId: string, method: string, params: Record<string
 }
 
 function prompt(id: string, request: Record<string, unknown>) {
-	return { id, type: "prompt", message: `/gentle:desktop ${JSON.stringify(request)}` };
+	return { id, type: "prompt", message: `/drakonc:desktop ${JSON.stringify(request)}` };
 }
 
 test("installed Pi dispatches Desktop RPC without adding conversation messages", () => {
@@ -197,18 +197,18 @@ test("installed Pi serves Desktop config reads from the existing stores", () => 
 	try {
 		const configHome = join(root, "config");
 		const workspace = join(root, "workspace");
-		mkdirSync(join(workspace, ".pi", "gentle-ai"), { recursive: true });
+		mkdirSync(join(workspace, ".pi", "drakonc-ai"), { recursive: true });
 		writeFileSync(
 			join(configHome, "profiles.json"),
 			`${JSON.stringify({
-				kind: "gentle-pi.agent_model_profiles",
+				kind: "drakonc-pi.agent_model_profiles",
 				version: 1,
 				active: "team",
 				profiles: { team: { explore: { model: "anthropic/claude-probe" } } },
 			})}\n`,
 		);
 		const projectModels = `${JSON.stringify({ worker: { model: "openai/gpt-probe" } })}\n`;
-		writeFileSync(join(workspace, ".pi", "gentle-ai", "models.json"), projectModels);
+		writeFileSync(join(workspace, ".pi", "drakonc-ai", "models.json"), projectModels);
 
 		const input = [
 			prompt("prompt-config", desktopRequest("config-1", "get_config", { store: "profiles" })),
@@ -257,7 +257,7 @@ test("installed Pi serves Desktop config reads from the existing stores", () => 
 		assert.equal(JSON.stringify(snapshot).includes("claude-probe"), false, "snapshots stay bounded");
 
 		assert.equal(payloads.some((payload) => payload.kind === "event"), false, "a read emits nothing");
-		assert.equal(readFileSync(join(workspace, ".pi", "gentle-ai", "models.json"), "utf8"), projectModels);
+		assert.equal(readFileSync(join(workspace, ".pi", "drakonc-ai", "models.json"), "utf8"), projectModels);
 		assert.equal(existsSync(join(root, "config", "profile-fallbacks.json")), false, "no store is created by a read");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -266,7 +266,7 @@ test("installed Pi serves Desktop config reads from the existing stores", () => 
 
 /**
  * Real production wiring for the read-side usage slice: the installed runtime
- * loads the actual usage owner (`extensions/gentle-shell.ts`, which owns the
+ * loads the actual usage owner (`extensions/drakonc-shell.ts`, which owns the
  * UsageStore / UsageSourceRegistry / refreshUsage / after_provider_response
  * closures) plus this transport extension. `get_subscription_usage` is a read,
  * so the probe stays fully offline and only observes truthful pending answers
@@ -320,7 +320,7 @@ test("installed Pi serves offline subscription usage reads from the real owner",
 
 /**
  * Real production wiring for the read-side design slice: the installed runtime
- * loads the actual design owner (`extensions/gentle-design.ts`, which owns the
+ * loads the actual design owner (`extensions/drakonc-design.ts`, which owns the
  * single `DesignCanvas` from `createDesignCanvas` plus `listDesigns`) alongside
  * this transport extension. `get_design_canvas` is a read, so the probe stays
  * fully offline and observes the truthful owner-loaded stopped state — it never
@@ -370,7 +370,7 @@ test("installed Pi serves the owner-loaded stopped design canvas without startin
 
 /**
  * Real production wiring for the jobs slice: the installed runtime loads the
- * actual jobs owner (`extensions/gentle-agents.ts`, which owns the single
+ * actual jobs owner (`extensions/drakonc-agents.ts`, which owns the single
  * parent-session `JobRegistry` plus the parent `MonitorController`) alongside
  * this transport extension. `list_jobs` is a read, so the probe stays offline
  * and observes the truthful owner-loaded empty list — it never starts a job.
@@ -435,12 +435,12 @@ test("installed Pi serves offline update status without a lookup and without pat
 			assert.equal(status.ok, true, JSON.stringify(status));
 			assert.equal(status.data.offline, true);
 			assert.equal(status.data.refreshed, false);
-			assert.equal(status.data.gentleShell.channel, "release", "no channel record means release");
-			assert.equal(status.data.gentleShell.command, "gentle-shell upgrade");
-			assert.notEqual(status.data.gentleShell.state, "up_to_date");
+			assert.equal(status.data.drakoncShell.channel, "release", "no channel record means release");
+			assert.equal(status.data.drakoncShell.command, "drakonc-shell upgrade");
+			assert.notEqual(status.data.drakoncShell.state, "up_to_date");
 			assert.match(status.data.pi.current, /^\d+\.\d+\.\d+/);
 			assert.deepEqual([status.data.pi.latest, status.data.pi.state], [null, "unknown"]);
-			assert.deepEqual(status.data.packages, { available: true, items: [], truncated: false, command: "gentle-shell update --extensions", checkedAt: null });
+			assert.deepEqual(status.data.packages, { available: true, items: [], truncated: false, command: "drakonc-shell update --extensions", checkedAt: null });
 		}
 		const payloads = probe.desktopPayloads();
 		assert.equal(payloads.some((payload) => payload.kind === "event"), false, "a read emits nothing");
@@ -458,7 +458,7 @@ test("installed Pi serves offline update status without a lookup and without pat
 
 /**
  * Real production wiring for the subagents slice: the installed runtime loads
- * the actual agents owner (`extensions/gentle-agents.ts`, which owns the single
+ * the actual agents owner (`extensions/drakonc-agents.ts`, which owns the single
  * parent-session `TaskStore` plus the parent `AgentRunner`) alongside this
  * transport extension. `list_subagents` and `get_subagent_thread` are reads, so
  * the probe stays offline and observes the truthful owner-loaded empty list and
@@ -520,7 +520,7 @@ test("installed Pi applies a Desktop config write through the existing store own
 		writeFileSync(
 			path,
 			`${JSON.stringify({
-				kind: "gentle-pi.agent_model_profiles",
+				kind: "drakonc-pi.agent_model_profiles",
 				version: 1,
 				active: "team",
 				profiles: { team: { explore: { model: "anthropic/claude-probe" } } },
@@ -541,7 +541,7 @@ test("installed Pi applies a Desktop config write through the existing store own
 		const previousBytes = readFileSync(path, "utf8");
 
 		const data = {
-			kind: "gentle-pi.agent_model_profiles",
+			kind: "drakonc-pi.agent_model_profiles",
 			version: 1,
 			active: "team",
 			profiles: {
@@ -616,7 +616,7 @@ test("installed Pi applies a Desktop config write through the existing store own
 
 /**
  * Real production wiring: the installed Pi runtime loads the actual owner
- * extension (`extensions/gentle-ai.ts`, which registers the
+ * extension (`extensions/drakonc-ai.ts`, which registers the
  * YoloSessionController) plus this transport extension. Nothing here
  * reimplements the owner. Requests are sent one at a time because Pi's RPC
  * loop dispatches prompts concurrently.

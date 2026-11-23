@@ -5,7 +5,7 @@ import { getNotificationService, notificationContextAllowed, type NotificationSe
 /**
  * Native dialogs, outside the transcript. No owner creation, commands or visual-store writes.
  * @deprecated Superseded by the direct rows in `lib/notification-customize.ts`; kept as an
- * unused test-covered fallback, not wired into `/gentle:customize` anymore.
+ * unused test-covered fallback, not wired into `/drakonc:customize` anymore.
  */
 export async function openNotificationPanel(ctx: ExtensionContext): Promise<void> {
 	if (!ctx.hasUI || !notificationContextAllowed(ctx)) return;

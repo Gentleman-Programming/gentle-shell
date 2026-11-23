@@ -2,11 +2,11 @@
 
 `lib/session-profile-persistence.ts` defines the optional session profile v1
 codec and pure replay contract. The record shapes and how each version reads
-them are specified in gentle-shell#2742.
+them are specified in drakonc-shell#2742.
 
 ## Payloads
 
-A custom entry uses `customType: "gentle-pi.session-profile/v1"` and one payload:
+A custom entry uses `customType: "drakonc-pi.session-profile/v1"` and one payload:
 
 ```json
 {"kind":"bind","origin":"user","name":"work","modelProfiles":{"worker":{"model":"provider/model"},"orchestrator":{"thinking":"high"}}}
@@ -28,7 +28,7 @@ A malformed `startup` field is dropped, so the record keeps the routing a v1
 reader gives it, and a `startup` on a clear other than `"none"` reads as a
 legacy clear. A v1 reader ignores `startup`, reads a startup record as an
 explicit choice and a clear with `startup: "none"` as a clear; launch routing
-is the same except in the case gentle-shell#2742 section 2 documents (a session
+is the same except in the case drakonc-shell#2742 section 2 documents (a session
 that started with no profile, resumed by a v1 version after a default
 appeared). A bound empty snapshot is not a
 clear. Snapshots are detached, known invalid fields reject the whole binding,

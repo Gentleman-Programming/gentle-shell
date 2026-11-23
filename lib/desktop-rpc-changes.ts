@@ -1,12 +1,12 @@
-// Gentle Desktop changes slice: the pure contract shared by the Desktop bridge
+// Drakonc Desktop changes slice: the pure contract shared by the Desktop bridge
 // (`lib/desktop-changes-service.ts`) and the owner seam inside
-// `extensions/gentle-shell.ts`.
+// `extensions/drakonc-shell.ts`.
 //
 // Nothing here runs Git or reads a file. It names the wire shapes, projects
 // the owner's `WorktreeChangesTracker` groups into the safe Desktop shape (an
 // opaque root id and a display label, never an absolute path), bounds one
 // file's diff text, and defines the strict param parsers. The owner (the same
-// tracker `/gentle:changes` reads, and the shared `loadFileDiff` arguments in
+// tracker `/drakonc:changes` reads, and the shared `loadFileDiff` arguments in
 // `lib/change-diff.ts`) stays the single source of truth.
 
 import { DESKTOP_FEED_LIMITS } from "./desktop-feed.ts";
@@ -17,8 +17,8 @@ export const DESKTOP_CHANGES_METHODS = ["get_changes", "get_change_diff"] as con
 /** Both methods are reads: nothing changes, so no event is advertised. */
 export const DESKTOP_CHANGES_EVENTS = [] as const;
 
-export const DESKTOP_CHANGES_SERVICE_SCHEMA = "gentle-pi.desktop-changes-service/v1";
-export const DESKTOP_CHANGES_SERVICE_CHANNEL = "gentle:desktop:changes-service";
+export const DESKTOP_CHANGES_SERVICE_SCHEMA = "drakonc-pi.desktop-changes-service/v1";
+export const DESKTOP_CHANGES_SERVICE_CHANNEL = "drakonc:desktop:changes-service";
 
 /** Same bound as the desktop feed's `changes` section. */
 export const DESKTOP_CHANGES_FILE_LIMIT = DESKTOP_FEED_LIMITS.changes;

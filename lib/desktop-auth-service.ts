@@ -1,4 +1,4 @@
-// Gentle Desktop credential-status bridge: answers `get_auth_status` and
+// Drakonc Desktop credential-status bridge: answers `get_auth_status` and
 // `reload_credentials` from the session's own model registry
 // (`ctx.modelRegistry`) and projects it with `lib/desktop-rpc-auth.ts`.
 //

@@ -31,7 +31,7 @@ test("fixed Engram descriptors are the published 3.7.2 core archives and checksu
 	}
 });
 
-// The uv the /gentle:music offer installs inside a bundled prefix (S5): the
+// The uv the /drakonc:music offer installs inside a bundled prefix (S5): the
 // astral-sh/uv release archives, each re-hashed after download before pinning.
 const uvPins = {
 	"darwin-arm64": ["uv-aarch64-apple-darwin.tar.gz", "60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472", 14235670],

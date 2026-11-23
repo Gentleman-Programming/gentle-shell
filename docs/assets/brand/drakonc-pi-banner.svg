@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-labelledby="banner-title banner-desc">
+  <title id="banner-title">DRAKONC-PI — Pi-native development environment</title>
+  <desc id="banner-desc">A dark navy banner with a narrow monospaced DRAKONC-PI wordmark, the red Drakonc dragon inside a ring, and the promise of clear, human-directed development.</desc>
+  <defs>
+    <linearGradient id="banner-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0d1526"/><stop offset=".55" stop-color="#121d31"/><stop offset="1" stop-color="#080e1a"/></linearGradient>
+    <linearGradient id="banner-rule" x1="0" x2="1"><stop stop-color="#ff4d5e" stop-opacity="0"/><stop offset=".18" stop-color="#ff4d5e"/><stop offset=".72" stop-color="#ff8993"/><stop offset="1" stop-color="#ff4d5e" stop-opacity="0"/></linearGradient>
+    <radialGradient id="banner-glow"><stop stop-color="#ff4d5e" stop-opacity=".28"/><stop offset="1" stop-color="#ff4d5e" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="1200" height="400" rx="20" fill="url(#banner-bg)"/>
+  <path d="M54 74H1146M54 328H1146" stroke="url(#banner-rule)" stroke-width="2"/>
+  <path d="M58 126H540" stroke="#ff4d5e" stroke-opacity=".35" stroke-width="2"/>
+  <text aria-label="DRAKONC-PI" x="64" y="201" fill="#e6edf7" font-family="'Iosevka Term','JetBrains Mono',ui-monospace,monospace" font-size="64" font-weight="700" letter-spacing="4">DRAKONC-PI</text>
+  <text x="62" y="267" fill="#a9b7ca" font-family="Arial, Helvetica, sans-serif" font-size="30">Powerful agents. One complete workspace.</text>
+  <g transform="translate(838 74)">
+    <circle cx="142" cy="126" r="142" fill="url(#banner-glow)"/>
+    <circle cx="142" cy="126" r="105" fill="none" stroke="#ff4d5e" stroke-opacity=".45" stroke-width="2"/>
+    <path d="M142 5V28M142 224V247M21 126H44M240 126H263" stroke="#ff4d5e" stroke-width="3" stroke-linecap="round"/>
+    <g aria-label="Dragón Drakonc" transform="translate(21.3 -27) scale(.85)">
+      <path d="M82 232c-9-50 12-91 50-112l-9-39 42 22 36-32-5 39 37-11-20 31 26 22-36 7c-1 15-10 29-25 37l-30 15 16 13 27-5-19 24-42 2c-25 1-44-3-58-13 8 19 20 34 39 47-31-5-52-23-61-47z" fill="#ff4d5e"/>
+      <path d="M136 120c17 3 30 12 40 25l-17 5c-8-11-15-21-23-30zm52 17 10-6 9 6-9 4z" fill="#0d1526"/>
+      <path d="M99 208c15 13 31 18 54 19M151 174c11-10 22-15 37-16" fill="none" stroke="#ff8993" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <path d="M91 58L106 43M193 58l-15-15M91 194l15 15M193 194l-15 15" stroke="#ff8993" stroke-width="3" stroke-linecap="round"/>
+  </g>
+</svg>

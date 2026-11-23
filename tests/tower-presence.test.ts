@@ -25,22 +25,22 @@ function presence(dir: string, sessionId: string, opts: { label: string; workspa
 	return hash;
 }
 function setup() {
-	const root = mkdtempSync(join(tmpdir(), "gentle-tower-presence-"));
+	const root = mkdtempSync(join(tmpdir(), "drakonc-tower-presence-"));
 	roots.push(root);
 	return { root, dir: join(root, "presence"), hub: join(root, "sessions") };
 }
 
-test("every live Gentle Shell session becomes a basic floor, its helpers named by role and task", () => {
+test("every live Drakonc Shell session becomes a basic floor, its helpers named by role and task", () => {
 	const { dir } = setup();
-	presence(dir, "sess-a", { label: "Herdr app package", workspace: "/w/gentle-ai", tasks: [
-		{ id: "t1", agent: "gentle-ai-worker", label: "T4 desktop snapshot publisher", status: "running" },
-		{ id: "t2", agent: "gentle-ai-worker", label: "Write the parity tests", status: "queued" },
-		{ id: "t3", agent: "gentle-ai-explore", label: "map the sidebar", status: "completed" },
+	presence(dir, "sess-a", { label: "Herdr app package", workspace: "/w/drakonc-ai", tasks: [
+		{ id: "t1", agent: "drakonc-ai-worker", label: "T4 desktop snapshot publisher", status: "running" },
+		{ id: "t2", agent: "drakonc-ai-worker", label: "Write the parity tests", status: "queued" },
+		{ id: "t3", agent: "drakonc-ai-explore", label: "map the sidebar", status: "completed" },
 	] });
 	const [f] = readPresenceFloors([dir], NOW);
 	assert.equal(f.basic, true);
 	assert.equal(f.name, "Herdr app package");
-	assert.deepEqual(f.project, { cwd: "/w/gentle-ai", name: "gentle-ai" });
+	assert.deepEqual(f.project, { cwd: "/w/drakonc-ai", name: "drakonc-ai" });
 	assert.deepEqual(f.subagents.map((a) => [a.name, a.status]), [["worker-t4", "running"], ["worker-parity", "queued"]]);
 	assert.deepEqual(f.todos, []);
 	assert.match(f.sessionId, /^p-[0-9a-f]{32}$/);
@@ -71,8 +71,8 @@ function post(port: number, path: string, body: string): Promise<number> {
 
 test("the tower shows detailed floors and every other live session once; basic floors take no actions", async () => {
 	const { root, dir, hub } = setup();
-	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "sess-a", sessionName: "Detailed", cwd: "/w/gentle-ai", stats: { cost: 1, input: 0, output: 0 }, todos: [], agents: [], now: NOW }));
-	presence(dir, "sess-a", { label: "Detailed (presence copy)", workspace: "/w/gentle-ai" });
+	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "sess-a", sessionName: "Detailed", cwd: "/w/drakonc-ai", stats: { cost: 1, input: 0, output: 0 }, todos: [], agents: [], now: NOW }));
+	presence(dir, "sess-a", { label: "Detailed (presence copy)", workspace: "/w/drakonc-ai" });
 	presence(dir, "sess-b", { label: "Only in presence", workspace: "/w/engram" });
 	const web = join(root, "web"); mkdirSync(web); writeFileSync(join(web, "index.html"), "<title>t</title>");
 	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", presenceDirs: [dir], now: () => NOW });
@@ -87,7 +87,7 @@ test("the tower shows detailed floors and every other live session once; basic f
 
 test("finished helpers never reach the web, even from a session running older publisher code", async () => {
 	const { root, hub } = setup();
-	const agent = (id: string, status: string) => ({ id, agent: "gentle-ai-explore", status, usage: { total: 1, cost: 0 } });
+	const agent = (id: string, status: string) => ({ id, agent: "drakonc-ai-explore", status, usage: { total: 1, cost: 0 } });
 	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "old", cwd: "/w/a", stats: { cost: 0, input: 0, output: 0 }, todos: [], agents: [agent("a", "completed"), agent("b", "failed"), agent("c", "running"), agent("d", "cancelled")], now: NOW }));
 	const web = join(root, "web"); mkdirSync(web); writeFileSync(join(web, "index.html"), "<title>t</title>");
 	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123" });
@@ -99,7 +99,7 @@ test("finished helpers never reach the web, even from a session running older pu
 test("a detailed floor whose snapshot is older than its heartbeat takes its live helpers from presence", async () => {
 	const { root, dir, hub } = setup();
 	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "sess-a", cwd: "/w/a", stats: { cost: 2, input: 0, output: 0 }, todos: [], agents: [], now: NOW - 90_000 }));
-	presence(dir, "sess-a", { label: "x", workspace: "/w/a", heartbeat: NOW - 1000, tasks: [{ id: "t9", agent: "gentle-ai-worker", label: "T4 publisher", status: "running" }] });
+	presence(dir, "sess-a", { label: "x", workspace: "/w/a", heartbeat: NOW - 1000, tasks: [{ id: "t9", agent: "drakonc-ai-worker", label: "T4 publisher", status: "running" }] });
 	const web = join(root, "web"); mkdirSync(web); writeFileSync(join(web, "index.html"), "<title>t</title>");
 	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", presenceDirs: [dir], now: () => NOW });
 	servers.push(s);
@@ -144,7 +144,7 @@ test("an abrupt death can leave a basic lookalike only until its presence heartb
 
 test("a Windows workspace path is a floor; null or malformed tasks are skipped", () => {
 	const { dir } = setup();
-	presence(dir, "win", { label: "On Windows", workspace: "C:\\work\\project", tasks: [null, 7, "x", { id: "t1", agent: "gentle-ai-worker", status: "running" }] });
+	presence(dir, "win", { label: "On Windows", workspace: "C:\\work\\project", tasks: [null, 7, "x", { id: "t1", agent: "drakonc-ai-worker", status: "running" }] });
 	presence(dir, "rel", { label: "Relative", workspace: "work\\project" });
 	const floors = readPresenceFloors([dir], NOW);
 	assert.deepEqual(floors.map((f) => [f.name, f.project]), [["On Windows", { cwd: "C:\\work\\project", name: "project" }]]);
@@ -153,8 +153,8 @@ test("a Windows workspace path is a floor; null or malformed tasks are skipped",
 
 test("a recently updated detailed floor keeps its own helper details over a newer heartbeat", async () => {
 	const { root, dir, hub } = setup();
-	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "sess-a", cwd: "/w/a", stats: { cost: 2, input: 0, output: 0 }, todos: [], agents: [{ id: "t1", agent: "gentle-ai-worker", status: "running", lastStep: "editing", usage: { total: 500, cost: 0.4 } }], now: NOW - 30_000 }));
-	presence(dir, "sess-a", { label: "x", workspace: "/w/a", heartbeat: NOW - 1000, tasks: [{ id: "t1", agent: "gentle-ai-worker", status: "running" }] });
+	writeTowerSnapshot(hub, buildTowerSnapshot({ sessionId: "sess-a", cwd: "/w/a", stats: { cost: 2, input: 0, output: 0 }, todos: [], agents: [{ id: "t1", agent: "drakonc-ai-worker", status: "running", lastStep: "editing", usage: { total: 500, cost: 0.4 } }], now: NOW - 30_000 }));
+	presence(dir, "sess-a", { label: "x", workspace: "/w/a", heartbeat: NOW - 1000, tasks: [{ id: "t1", agent: "drakonc-ai-worker", status: "running" }] });
 	const web = join(root, "web"); mkdirSync(web); writeFileSync(join(web, "index.html"), "<title>t</title>");
 	const s = await startTowerServer({ hubDir: hub, webDir: web, token: "tok-123", presenceDirs: [dir], now: () => NOW });
 	servers.push(s);

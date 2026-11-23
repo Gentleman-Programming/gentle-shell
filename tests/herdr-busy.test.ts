@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { herdrBusyLabel, nextHerdrBusyAction } from "../lib/herdr-busy.ts";
 
-// Pure projection for the herdr:busy producer (gentle-shell#626). It mirrors
+// Pure projection for the herdr:busy producer (drakonc-shell#626). It mirrors
 // pi-subagents' edge-triggered emitter: raise once, dedup an unchanged label,
 // relabel as lower-then-raise, lower once. No I/O, no global state.
 

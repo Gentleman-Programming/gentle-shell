@@ -12,7 +12,7 @@ import { readSystemTokens } from "./design-system-tokens.ts";
 import { DesignLayoutError, createDesignLayoutStore } from "./design-layout.ts";
 import { DesignPartsError, createDesignPartStore, sendDesignPart, type DesignPart } from "./design-parts.ts";
 
-// Loopback canvas host for gentle-design (S4-S6). Every route lives under a
+// Loopback canvas host for drakonc-design (S4-S6). Every route lives under a
 // per-server random token, the Host header must name this server, POSTs need
 // this server's own Origin, and files resolve by realpath inside designRoot.
 
@@ -20,7 +20,7 @@ const HOST = "127.0.0.1";
 /** Design directory names the canvas serves: kebab-case, never a dot or path segment. */
 export const DESIGN_SLUG = /^[a-z0-9][a-z0-9-]*$/;
 
-/** One-line diagnostic naming why canvas change events cannot fire; surfaced per SSE stream (gentle-shell#3156). */
+/** One-line diagnostic naming why canvas change events cannot fire; surfaced per SSE stream (drakonc-shell#3156). */
 export function describeWatchFailure(error: unknown): string {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
 	if (code === "ENOSPC") return "fs.watch failed: ENOSPC (inotify watch limit exhausted; check fs.inotify.max_user_watches)";
@@ -56,7 +56,7 @@ const LIMITS = Object.freeze({
 	artboardSide: 20000,
 	sseClients: 16,
 });
-/** design/system.html, written by /gentle:design sync, is shown as the first board of every design. */
+/** design/system.html, written by /drakonc:design sync, is shown as the first board of every design. */
 const SYSTEM_FILE = "system.html";
 /** Root files whose changes reach the canvas as `{ slug: null, file }`. */
 const SYSTEM_FILES: ReadonlySet<string> = new Set([SYSTEM_FILE, "system.md"]);
@@ -211,7 +211,7 @@ function handoffFailure(error: unknown): never {
 
 function resolveInstruction(slug: string, ids: readonly string[]): string {
 	const list = ids.map((id) => JSON.stringify(id)).join(", ");
-	return `mark it resolved with the gentle_design_comments tool (action "resolve", slug "${slug}", ids [${list}], note "<one line on what you changed>"), or set its status to "resolved" in design/${slug}/${DESIGN_COMMENTS_FILE}.`;
+	return `mark it resolved with the drakonc_design_comments tool (action "resolve", slug "${slug}", ids [${list}], note "<one line on what you changed>"), or set its status to "resolved" in design/${slug}/${DESIGN_COMMENTS_FILE}.`;
 }
 
 function excerptLine(excerpt: string): string {
@@ -265,7 +265,7 @@ export function formatDesignComment(comment: DesignComment): string {
 		comment.comment,
 		...(comment.edited ? ["", "Previous text:", comment.edited.previous] : []),
 		"",
-		`Edit only the artboard ${artboard}, following the gentle-design skill.`,
+		`Edit only the artboard ${artboard}, following the drakonc-design skill.`,
 		`When it is applied, ${resolveInstruction(comment.slug, [comment.id])}`,
 	].join("\n");
 }
@@ -289,7 +289,7 @@ export function formatDesignCommentBatch(batch: readonly DesignComment[]): strin
 		);
 	});
 	lines.push(
-		"Apply each comment following the gentle-design skill, editing only the artboard it names.",
+		"Apply each comment following the drakonc-design skill, editing only the artboard it names.",
 		`When a comment is applied, ${resolveInstruction(slug, batch.map((comment) => comment.id))}`,
 	);
 	return lines.join("\n");

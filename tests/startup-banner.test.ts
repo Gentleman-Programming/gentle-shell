@@ -525,7 +525,7 @@ for (const kind of ["unset", "empty", "bundled"] as const) {
 		};
 		write(userConfig, "yellow");
 		write(dir, "cyan");
-		assert.deepEqual(await readBannerConfig(), { showRose: false, showTextLogo: true, color: "cyan" });
+		assert.deepEqual(await readBannerConfig(), { showRose: false, showTextLogo: true, showInfo: true, color: "cyan" });
 	});
 }
 

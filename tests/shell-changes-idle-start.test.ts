@@ -459,3 +459,52 @@ test("idle continuation stops when pending counts oscillate without a new low", 
 	assert.equal(ticks.size, 0);
 	idle.dispose();
 });
+
+// Found by the independent verify: a root that keeps failing must not turn an
+// unchanged pending count into endless 250 ms idle rescans.
+test("unchanged pending counts next to a failing root stop once the retries run out", () => {
+	const ticks = new Set<() => void>();
+	let scans = 0;
+	const idle = createIdleChanges({
+		isIdle: () => true,
+		refresh() {
+			scans++;
+			const turn = idle.scanStarted();
+			idle.scanFinished(5, {}, 1, turn);
+		},
+		observeInput: () => undefined,
+		schedule(tick) {
+			ticks.add(tick);
+			return { cancel: () => { ticks.delete(tick); }, unref() {} };
+		},
+	});
+	idle.started();
+	idle.firstPaint();
+	for (let i = 0; i < 40 && ticks.size; i++) for (const tick of [...ticks]) if (ticks.delete(tick)) tick();
+	assert.ok(scans <= 5, `the first pass, the three retries, at most one pass without progress (saw ${scans})`);
+	assert.equal(ticks.size, 0);
+	idle.dispose();
+});
+
+test("oscillating pending counts next to a failing root stop once the retries run out", () => {
+	const ticks = new Set<() => void>();
+	let scans = 0;
+	const idle = createIdleChanges({
+		isIdle: () => true,
+		refresh() {
+			const turn = idle.scanStarted();
+			idle.scanFinished(scans++ % 2 ? 6 : 5, {}, 1, turn);
+		},
+		observeInput: () => undefined,
+		schedule(tick) {
+			ticks.add(tick);
+			return { cancel: () => { ticks.delete(tick); }, unref() {} };
+		},
+	});
+	idle.started();
+	idle.firstPaint();
+	for (let i = 0; i < 60 && ticks.size; i++) for (const tick of [...ticks]) if (ticks.delete(tick)) tick();
+	assert.ok(scans <= 6, `bounded (saw ${scans})`);
+	assert.equal(ticks.size, 0);
+	idle.dispose();
+});

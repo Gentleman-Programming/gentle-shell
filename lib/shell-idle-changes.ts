@@ -63,7 +63,8 @@ export function createIdleChanges({ isIdle, refresh, observeInput, schedule }: {
 			if (scan !== lastScan) {
 				// A turn invalidates retries even if it ends before the idle scan settles.
 				const idleScan = idleTurn === turnGeneration;
-				if (failedRoots > 0 && idleScan && retries < RETRY_DELAYS_MS.length) {
+				const retrying = failedRoots > 0 && idleScan && retries < RETRY_DELAYS_MS.length;
+				if (retrying) {
 					delay = RETRY_DELAYS_MS[retries++];
 				} else {
 					// Once the retries run out, a failing root must not stop counts
@@ -73,9 +74,11 @@ export function createIdleChanges({ isIdle, refresh, observeInput, schedule }: {
 					delay = pendingFiles > 0 && progressed ? CHANGES_QUIET_MS : undefined;
 				}
 				lastPending = pendingFiles;
-				// A scan with a failed root lists no files for it: its count is not a low.
+				// While a failed root is being retried its count lists no files for
+				// it and is not a low; once the retries are spent, the count is all
+				// there is, and a pass that does not lower it ends the continuation.
 				if (!idleScan) lowestPending = pendingFiles;
-				else if (failedRoots === 0) lowestPending = Math.min(lowestPending, pendingFiles);
+				else if (!retrying) lowestPending = Math.min(lowestPending, pendingFiles);
 				lastScan = scan;
 			}
 			arm();

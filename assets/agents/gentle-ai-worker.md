@@ -8,6 +8,7 @@ tools:
   - edit
   - write
   - bash
+  - codemode
   - mem_save
   - mcp__codegraph__codegraph_explore
 ---

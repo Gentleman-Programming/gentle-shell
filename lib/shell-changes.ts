@@ -277,6 +277,10 @@ function incompleteGitRead(result: GitResult | undefined) {
 	return result?.unavailable ? "unavailable" : result?.timedOut ? "timeout" : result?.truncated ? "truncated" : undefined;
 }
 
+function gitReadFailure(result: GitResult) {
+	return incompleteGitRead(result) ?? (result.code !== 0 ? "failed" : undefined);
+}
+
 // /gentle:changes: one group per registered root holding its working tree
 // against HEAD. A root whose Git fails (timed out, rejected) has no group but
 // is listed in failedRoots: a failed scan is never reported as a clean root.
@@ -291,6 +295,7 @@ export class WorktreeChangesTracker {
 	untrackedCountsPending = false;
 	/** How many files still wait for their line count; the idle continuation stops when it stops moving. */
 	untrackedCountsPendingFiles = 0;
+	private failureReasons = new Map<string, string>();
 	private inFlight: Promise<ChangesModel> | undefined;
 	private readonly discover: GitRunner;
 	private readonly gitForRoot: (root: string) => GitRunner;
@@ -306,6 +311,11 @@ export class WorktreeChangesTracker {
 		this.registeredRoots = registeredRoots;
 		this.revisionForRoot = revisionForRoot;
 		this.untrackedLines = untrackedLines;
+	}
+
+	/** Diagnostic reason for each failed root in the last completed scan. */
+	get failedRootReasons(): ReadonlyMap<string, string> {
+		return this.failureReasons;
 	}
 
 	private modelOf: WorktreeChanges[] | undefined;
@@ -352,6 +362,7 @@ export class WorktreeChangesTracker {
 		if (roots.size === 0) {
 			this.worktrees = [];
 			this.failedRoots = [];
+			this.failureReasons = new Map();
 			this.scannedRootCount = 0;
 			this.untrackedCountsPending = false;
 			this.untrackedCountsPendingFiles = 0;
@@ -360,27 +371,24 @@ export class WorktreeChangesTracker {
 		const result = await this.discover(["worktree", "list", "--porcelain", "-z"]).catch(() => ({ code: 128, stdout: "" }));
 		const metadata = new Map((result.code === 0 ? parseWorktrees(result.stdout) : []).map((tree) => [tree.root, tree]));
 		// Roots scan in parallel so one slow root does not delay the others.
-		const failed: string[] = [];
+		const failed = new Map<string, string>();
 		const unborn: string[] = [];
 		const scanned = await Promise.all([...roots].map(async (root) => {
 			const known = metadata.get(root);
+			const fail = (reason: string) => { failed.set(root, reason); return undefined; };
 			try {
 				// Only an answered "no" means unborn: a rejected verify cannot tell
 				// unborn from broken Git, so the scan below still decides.
 				const head = await this.gitForRoot(root)(HEAD_EXISTS_ARGS).catch(() => undefined);
-				if (incompleteGitRead(head)) {
-					failed.push(root);
-					return undefined;
-				}
+				const headFailure = incompleteGitRead(head);
+				if (headFailure) return fail(`head-${headFailure}`);
 				if (head && head.code !== 0) {
 					unborn.push(root);
 					return undefined;
 				}
 				const [numstat, porcelain] = await readChangesGit(this.gitForRoot(root));
-				if (porcelain.code !== 0) {
-					failed.push(root);
-					return undefined;
-				}
+				const statusFailure = gitReadFailure(porcelain);
+				if (statusFailure) return fail(`status-${statusFailure}`);
 				// As before this change, a numstat that answered badly does not hide the
 				// root: status is the inventory, so its files stay listed and only the
 				// counts numstat would have given are missing.
@@ -396,11 +404,13 @@ export class WorktreeChangesTracker {
 				// UNKNOWN_BRANCH, not drop real, already-captured changes.
 				const branch = files.length ? (known ? known.branch : await foreignRootBranch(this.gitForRoot(root)).catch(() => UNKNOWN_BRANCH)) : undefined;
 				return { root, branch, files };
-			} catch {
+			} catch (error) {
 				// A root the caller stops registering mid-scan (e.g. a removed
 				// worktree) triggers the rescan below without it, not a failure.
-				failed.push(root);
-				return undefined;
+				// A short code, never the message: messages can carry local paths.
+				const code = (error as { code?: unknown } | undefined)?.code;
+				const name = typeof code === "string" && /^[A-Z0-9_]{1,40}$/.test(code) ? code : error instanceof Error ? error.name : "unknown";
+				return fail(`exception: ${name}`);
 			}
 		}));
 		const inventories = scanned.filter((tree) => tree !== undefined);
@@ -413,7 +423,8 @@ export class WorktreeChangesTracker {
 			root, ...(branch ? { branch } : {}), model: changesModel(files),
 		}));
 		this.worktrees = trees;
-		this.failedRoots = failed;
+		this.failedRoots = [...failed.keys()];
+		this.failureReasons = failed;
 		this.unbornRoots = unborn;
 		this.scannedRootCount = roots.size;
 		this.untrackedCountsPendingFiles = scanUntracked === undefined ? 0 : trees.reduce((sum, tree) => sum + tree.model.files.reduce((n, file) => n + (file.countsUnavailable ? 1 : 0), 0), 0);

@@ -25,6 +25,7 @@ import { createSessionProfileBind, createSessionProfileClear, createSessionProfi
 import { createSessionProfileIntegration, runCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import type { AgentModelConfig, AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
+import { readSavedModelConfig } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
@@ -4155,6 +4156,33 @@ test("models screen cleanup transaction: cleanup never creates the global models
 		{ globalExists: false, otherRouting },
 		"legacy cleanup must not create global routing or change another workspace's effective routing",
 	);
+});
+
+test("models screen cleanup transaction: offers saved models keys the reader accepts outside the agent-name policy", async (t) => {
+	const { fixture } = cleanupTransactionFixture(t);
+	const worker = { model: "openai/alpha" };
+	const retired = { model: "openai/beta" };
+	writeFileSync(fixture.globalPath, JSON.stringify({ worker, "retired worker": retired }));
+	writeFileSync(fixture.projectPath, JSON.stringify({ worker, "retired legacy": retired }));
+	const saved = readSavedModelConfig(fixture.globalPath, fixture.projectPath);
+	assert.deepEqual(saved.status === "valid" && [saved.config["retired worker"]?.model, saved.config["retired legacy"]?.model],
+		[retired.model, retired.model], "the saved-model reader keeps both keys");
+	let card = "", feedback = "";
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		card = stripAnsi(renderComponent(panel));
+		panel.handleInput("\r");
+		feedback = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.match(card, /\[x\] retired worker/);
+	assert.match(card, /\[x\] retired legacy/);
+	assert.doesNotMatch(card, /\[x\] worker/);
+	assert.match(feedback, /Removed \d+ stale routing keys?\./);
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker });
+	assert.deepEqual(JSON.parse(readFileSync(fixture.projectPath, "utf8")), { worker });
 });
 
 test("models screen cleanup transaction: removes selected routes from both saved models layers", async (t) => {

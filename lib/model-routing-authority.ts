@@ -99,7 +99,8 @@ export function normalizeModelConfig(value: unknown): AgentModelConfig | undefin
 	return cleaned;
 }
 
-function parseModelConfigFileValue(value: Record<string, unknown>): AgentModelConfig {
+/** The saved models.json reader's policy: every key with a valid entry, without the agent-name policy. */
+export function parseModelConfigFileValue(value: Record<string, unknown>): AgentModelConfig {
 	const config: AgentModelConfig = {};
 	for (const [name, entryValue] of Object.entries(value)) {
 		const entry = normalizeRoutingEntry(entryValue);

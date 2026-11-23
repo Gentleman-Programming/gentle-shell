@@ -96,6 +96,7 @@ import {
 	isThinkingLevel,
 	normalizeModelId,
 	normalizeRoutingEntry,
+	parseModelConfigFileValue,
 	readSavedModelConfig as readModelRoutingAuthority,
 	readSavedModelConfigAsync as readModelRoutingAuthorityAsync,
 	readModelConfigFile,
@@ -7264,6 +7265,9 @@ async function openProfilesPanelLoop(
 					}
 					// Normalization is only a candidate/shape validator, never the write payload.
 					const candidates = (raw: Record<string, unknown>, inventory = known) => staleRoutingKeys(normalizeModelConfig(raw) ?? {}, inventory);
+					// The saved models.json reader skips the agent-name policy, so every key it routes stays removable.
+					const savedCandidates = (raw: Record<string, unknown>, inventory = known) =>
+						staleRoutingKeys(parseModelConfigFileValue(raw), inventory);
 					const subStores = subFiles.map((sub) => {
 						const routes = isRecord(sub.raw?.model_profiles) ? sub.raw.model_profiles : {};
 						const accepted = normalizeModelConfig(routes) ?? {};
@@ -7274,7 +7278,7 @@ async function openProfilesPanelLoop(
 						}
 						return { ...sub, routes, accepted, keys: staleRoutingKeys(accepted, known) };
 					});
-					const models = modelStores.map((store) => ({ ...store, keys: candidates(store.routes) }));
+					const models = modelStores.map((store) => ({ ...store, keys: savedCandidates(store.routes) }));
 					const profileStores = Object.entries(rawProfiles.profiles).map(([name, routes]) => {
 						if (!isRecord(routes)) throw new Error(`Invalid routing file: ${path}`);
 						return { name, routes, keys: candidates(routes) };
@@ -7286,7 +7290,8 @@ async function openProfilesPanelLoop(
 						const inventory = cleanupInventory();
 						const stillStale = new Set([
 							...subStores.flatMap((sub) => staleRoutingKeys(sub.accepted, inventory)),
-							...[...models, ...profileStores].flatMap(({ routes }) => candidates(routes, inventory)),
+							...models.flatMap(({ routes }) => savedCandidates(routes, inventory)),
+							...profileStores.flatMap(({ routes }) => candidates(routes, inventory)),
 						]);
 						const revived = selected.filter((key) => !stillStale.has(key));
 						if (revived.length > 0) {

@@ -220,7 +220,7 @@ test("wrapped ANSI and native Markdown distinguish width composition from settle
 				const narrowHit = measure(narrow);
 				const hits = [desktopHit, measure(control, false, desktopHit.positions), narrowHit, measure(narrowControl, false, narrowHit.positions)];
 				const misses = fixtures.map((fixture, index) => measure(fixture, true, hits[index]!.positions));
-				assert.equal(width, 87, "desktop transcript geometry stays fixed");
+				assert.equal(width, 95, "desktop transcript geometry stays fixed: 140 - (44 console + 1 border)");
 				assert.equal(hits[0]!.contentWidth, hits[1]!.contentWidth);
 				for (let index = 0; index < fixtures.length; index++) {
 					const hit = hits[index]!;

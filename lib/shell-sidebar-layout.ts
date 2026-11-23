@@ -1,18 +1,34 @@
 import { Container, ScrollView, VStack, truncateToWidth, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { setSidebarHover, sidebarState, type SidebarRail } from "./shell-sidebar.ts";
+import { setSidebarHover, sidebarState, type SidebarRail, type AgenticTab } from "./shell-sidebar.ts";
 import type { ShellBarTheme } from "./shell-bar.ts";
 import { CARD_STYLE, CARD_TONE, cardBottom, cardLine, cardStyle, cardTop, floatRows, paintSurfaceRow, panelInnerWidth, type CardStyle } from "./shell-card.ts";
-import { chromeSurface, PANEL_ROW_INDENT, panelSurfaceOpener, sectionGap } from "./shell-panel.ts";
+import { chromeSurface, CONSOLE_GLYPH, isCineEstelarLive, PANEL_ROW_INDENT, panelSurfaceOpener, renderConsolePanel, sectionGap } from "./shell-panel.ts";
 import { renderSidebarBanner } from "./shell-sidebar-banner.ts";
 import type { Density, HeaderPlacement, StatusPlacement } from "./visual-customization-policy.ts";
 
-export const SIDEBAR_BREAKPOINT = 140;
-const RAIL_WIDTH = 50;
+export const SIDEBAR_BREAKPOINT = 120;
+/**
+ * Console widths (DESIGN.md §C2, copied from the video): the console replaces
+ * the old 36-column rail. 62 columns from 170 on, 52 from 150, 44 from 120
+ * (the existing breakpoint); below it the conversation takes the whole width.
+ * The console spends one extra cell on the border that separates it from the
+ * conversation, so its right-edge reserve is `consoleWidth(columns) + 1`.
+ */
+export const CONSOLE_COLUMNS = { wide: 62, medium: 52, narrow: 44 } as const;
+/** The 1-cell border between the conversation and the console. */
+export const CONSOLE_BORDER = 1;
+export function consoleWidth(columns: number): number {
+	if (columns >= 170) return CONSOLE_COLUMNS.wide;
+	if (columns >= 150) return CONSOLE_COLUMNS.medium;
+	if (columns >= SIDEBAR_BREAKPOINT) return CONSOLE_COLUMNS.narrow;
+	return 0;
+}
+/** Widest right-edge reserve the console takes from the editor column; published as `railColumns`. */
+export const SIDEBAR_RAIL_COLUMNS = CONSOLE_COLUMNS.wide + CONSOLE_BORDER;
+/** Columns the top row centers the console title within (inside the border). */
 const RAIL_PADDING = 1;
-// The conversation and rail keep a gap below the full-width header.
-const GAP = 3;
-/** Right-edge columns the painting rail takes from the editor column; published as `railColumns`. */
-export const SIDEBAR_RAIL_COLUMNS = RAIL_WIDTH + GAP;
+/** Body rows a console panel shows before its bottom rule starts reporting a range. */
+export const CONSOLE_PANEL_ROWS = 8;
 // Experimental Pi 0.85.1 internals. Only the fullscreen layout tree is adapted;
 // regular mode keeps native scrollback and the original bottom components.
 const NODE = Symbol.for("@earendil-works/pi-tui/layout-node");
@@ -71,6 +87,7 @@ type PreparedRail = {
 	revision: number;
 	width: number;
 	mode: string | undefined;
+	tabKey: string;
 	headerPlacement: HeaderPlacement;
 	density: Density;
 	surface: string;
@@ -84,6 +101,10 @@ type PreparedRail = {
 	active: boolean;
 	lines: string[];
 	hits: RailHit[];
+	/** Click targets of the numbered tab row, in console-cell offsets. */
+	tabSpans: Array<{ id: AgenticTab; start: number; end: number }>;
+	/** Scrollable console panels (those with more than CONSOLE_PANEL_ROWS rows). */
+	panelScrolls: Array<{ id: string; startY: number; bottomRuleY: number; total: number; offset: number; pageSize: number }>;
 	// The header row is a full-width sibling above the hstack, not a rail
 	// section: it never enters `lines`/`hits`, and an empty/blank result
 	// falls back to the old hstack-direct shape with the banner restored.
@@ -104,6 +125,21 @@ function sidebarCache(tui: TUI): SidebarCache {
 /** Mark terminal-owned fullscreen sidebar output stale after a part state change. */
 export function invalidateSidebar(tui: TUI): void {
 	if (tui.terminal) sidebarCache(tui).revision++;
+}
+
+// Whether the user folded the console column away. It lives in the module, like
+// the hover state: the layout reads it while it prepares, so a fold is seen
+// without the sidebar state having to carry it.
+let consoleCollapsed = false;
+
+/** Folds or unfolds the whole console column. */
+export function setConsoleCollapsed(collapsed: boolean): void {
+	consoleCollapsed = collapsed;
+}
+
+/** Whether the console column is folded away right now. */
+export function consoleIsCollapsed(): boolean {
+	return consoleCollapsed;
 }
 
 // The memo keys on part identity and an explicit revision, neither of which can
@@ -154,8 +190,150 @@ export function narrowStatusOwner(input: StatusOwnerInput): StatusOwner | undefi
 	return input.headerPlacement !== "below-input" || input.statusPlacement === "hidden" ? STATUS_OWNER.HEADER : STATUS_OWNER.BOTTOM;
 }
 
-/** Installs the fullscreen rail: wraps the host layout root with the [rail, transcript] hstack and returns a disposer restoring the original layout. */
-export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => StatusPlacement = () => "auto", headerPlacement: () => HeaderPlacement = () => "split", density: () => Density = () => "comfortable"): () => void {
+/**
+ * The console's numbered row (DESIGN.md §C2). Numbers are fixed per workspace:
+ * hiding a tab never renumbers the others, and MAIN (`1`) is always visible.
+ */
+export const CONSOLE_TABS: ReadonlyArray<{ id: AgenticTab; label: string; tag: string }> = [
+	{ id: "main", label: "MAIN", tag: "1" },
+	{ id: "git", label: "GIT", tag: "2" },
+	{ id: "prof", label: "PROF", tag: "3" },
+	{ id: "mem", label: "MEM", tag: "4" },
+	{ id: "tree", label: "TREE", tag: "5" },
+	{ id: "wt", label: "WT", tag: "0" },
+];
+
+/** Registered part keys each workspace paints, in order (DESIGN.md §C2, spec T19-C). */
+const TAB_SECTIONS: Record<AgenticTab, readonly string[]> = {
+	// MAIN is the live session: both what Inicio showed and what Stats showed.
+	main: ["session", "context", "todo", "agents", "jobs", "footer", "engram"],
+	git: ["footer", "wt"],
+	prof: ["footer", "roles", "ecosystem"],
+	mem: ["engram", "context", "footer"],
+	tree: ["tree"],
+	wt: ["wt"],
+};
+
+/**
+ * Panel names bitten into the top rule. The section renderers keep their own
+ * (uppercase) headers for the mobile sheet; the console names them the way the
+ * mockup does without renaming those sections.
+ */
+const CONSOLE_TITLES: Readonly<Record<string, string>> = {
+	SESIÓN: "Sesión",
+	SESION: "Sesión",
+	CONTEXTO: "Contexto",
+	TODO: "Trabajo en curso",
+	TODOS: "Trabajo en curso",
+	AGENTS: "Agentes",
+	JOBS: "Trabajos",
+	CHANGES: "Cambios",
+	REVIEW: "Decisiones pendientes",
+	INTEGRATIONS: "Integraciones",
+	STATS: "Métricas",
+	ENGRAM: "Engram",
+	TREE: "Árbol de archivos",
+	"ÁRBOL DE ARCHIVOS": "Árbol de archivos",
+	"ÁRBOL DEL PROYECTO": "Árbol del proyecto",
+	"ARBOL DEL PROYECTO": "Árbol del proyecto",
+	WORKTREES: "Worktrees",
+	PERFIL: "Perfil",
+	HERRAMIENTAS: "Herramientas",
+	"ROLES Y AGENTES": "Roles y agentes",
+	ECOSISTEMA: "Ecosistema",
+};
+
+/** `CAMBIOS` → `Cambios`; an unknown section keeps the name it rendered. */
+function consolePanelTitle(rendered: string, tab: AgenticTab): string {
+	const plain = rendered.replace(/\x1b\[[0-9;]*m/g, "").trim();
+	// The Git workspace exists to reach the graph and the file tree: its action
+	// group is that panel, not a generic tools box.
+	if (tab === "git" && plain === "HERRAMIENTAS") return "Grafo de Git";
+	return CONSOLE_TITLES[plain.toUpperCase()] ?? plain;
+}
+
+/** The count a section rendered, without its styling; undefined when it has none. */
+function consolePanelCount(rendered: string | undefined): string | undefined {
+	if (!rendered) return undefined;
+	const plain = rendered.replace(/\x1b\[[0-9;]*m/g, "").trim();
+	return plain.length > 0 ? plain : undefined;
+}
+
+/** Rows that are a section's own chrome never become a console panel. */
+function sectionBodyRows(lines: readonly string[], start: number, end: number): string[] {
+	const rows = lines.slice(start + 1, end).map((row) => row.trimEnd());
+	while (rows.length && rows[rows.length - 1] === "") rows.pop();
+	return rows;
+}
+
+/** The border cell between the conversation and the console. */
+function consoleBorder(theme: ShellBarTheme): string {
+	if (isCineEstelarLive()) return " ";
+	return theme.fg("border", "│");
+}
+
+/** Clips and pads a console cell run to exactly `width` columns. */
+function fillConsoleCell(text: string, width: number): string {
+	const shown = truncateToWidth(text, Math.max(0, width), "…");
+	const room = Math.max(0, width - visibleWidth(shown));
+	return `${shown}${" ".repeat(room)}`;
+}
+
+/**
+ * `◆ PROJECT · GENTLE-SHELL ◆`, centered: the console's identity row. The
+ * project comes from the live session; without one the brand stands alone.
+ */
+export function renderConsoleHeader(theme: ShellBarTheme, width: number, project?: string): string {
+	if (isCineEstelarLive()) return " ".repeat(Math.max(0, width));
+	const name = (project ?? "").trim().toUpperCase();
+	const brand = theme.bold ? theme.bold("GENTLE-SHELL") : "GENTLE-SHELL";
+	const glyph = theme.fg("accent", CONSOLE_GLYPH);
+	const left = name ? `${glyph} ${theme.bold ? theme.bold(name) : name} ${theme.fg("muted", "·")} ${theme.fg("text", brand)} ${glyph}` : `${glyph} ${theme.fg("text", brand)} ${glyph}`;
+	const room = Math.max(0, width - visibleWidth(left));
+	const pad = Math.floor(room / 2);
+	return fillConsoleCell(`${" ".repeat(pad)}${left}`, width);
+}
+
+/**
+ * The numbered tab row. The active tab is bracketed, bold and in the accent
+ * role; the rest sit in the readable comment role. It falls back to tighter
+ * gaps when the console is 44 columns wide.
+ */
+export function renderConsoleTabs(theme: ShellBarTheme, width: number, tabs: readonly { id: AgenticTab; label: string; tag: string }[], selected: AgenticTab): { line: string; spans: Array<{ id: AgenticTab; start: number; end: number }> } {
+	const bold = (text: string) => (theme.bold ? theme.bold(text) : text);
+	const label = (tab: { label: string; tag: string }) => `${tab.tag}:${tab.label}`;
+	const full = tabs.map((tab) => (tab.id === selected ? `[ ${label(tab)} ]` : label(tab))).join("  ");
+	const tight = tabs.map((tab) => (tab.id === selected ? `[${label(tab)}]` : label(tab))).join(" ");
+	const plain = visibleWidth(full) <= width ? full : tight;
+	const spaced = plain === full;
+	let offset = Math.max(0, Math.floor((width - visibleWidth(plain)) / 2));
+	const prefix = " ".repeat(offset);
+	const spans: Array<{ id: AgenticTab; start: number; end: number }> = [];
+	let line = prefix;
+	tabs.forEach((tab, index) => {
+		if (index > 0) {
+			const gap = spaced ? "  " : " ";
+			line += gap;
+			offset += gap.length;
+		}
+		const text = label(tab);
+		const start = offset + (tab.id === selected ? (spaced ? 2 : 1) : 0);
+		const end = start + text.length;
+		spans.push({ id: tab.id, start, end });
+		if (tab.id === selected) {
+			const open = spaced ? "[ " : "[";
+			const close = spaced ? " ]" : "]";
+			line += `${theme.fg("accent", open)}${theme.fg("accent", bold(text))}${theme.fg("accent", close)}`;
+			offset += open.length + text.length + close.length;
+		} else {
+			line += theme.fg("muted", text);
+			offset += text.length;
+		}
+	});
+	return { line: fillConsoleCell(line, width), spans };
+}
+
+/** Installs the fullscreen rail: wraps the host layout root with the [rail, transcript] hstack and returns a disposer restoring the original layout. */export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => StatusPlacement = () => "auto", headerPlacement: () => HeaderPlacement = () => "split", density: () => Density = () => "comfortable"): () => void {
 	if (!tui.terminal) return () => {};
 	const host = tui as Host;
 	const state = sidebarState(tui);
@@ -169,6 +347,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	let headerLines: string[] = [];
 	let statusLines: string[] = [];
 	let prepared: PreparedRail | undefined;
+	const panelOffsets = new Map<string, number>();
 	// One rendered-lines cache per rail section key, independent of the
 	// whole-rail `prepared` memo below: a section with its own digest is
 	// revalidated by that digest alone, so a sibling's ticking digest (the
@@ -186,6 +365,8 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	const headerOwnsStatus = () => !stopped && !failed && headerLines.length > 0 && headerPlacement() !== "below-input" &&
 		narrowStatusOwner({ mode: host.mode, columns: tui.terminal.columns, statusPlacement: placement(), headerPlacement: headerPlacement() }) === STATUS_OWNER.HEADER;
 	state.headerOwnsStatus = headerOwnsStatus;
+	// Published for overlays that must stay inside the conversation column; the
+	// live value follows the terminal width (see `prepare`).
 	state.railColumns = SIDEBAR_RAIL_COLUMNS;
 	state.layoutAttached = () => !stopped && !failed && host.mode === "fullscreen" && !!host.layoutRoot && roots.has(host.layoutRoot);
 	state.ownsHost = () => !stopped && host.mode === "fullscreen" && tui.terminal.columns >= SIDEBAR_BREAKPOINT && (placement() === "auto" || placement() === "right") && !!host.layoutRoot && roots.has(host.layoutRoot);
@@ -230,6 +411,15 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			return state.parts.get("statusbar")?.handleMouse?.(event);
 		},
 	};
+	const visibleTabs = () => CONSOLE_TABS.filter((tab) => !state.agenticVisibleTabs || state.agenticVisibleTabs().includes(tab.id));
+	const selectTab = (tab: AgenticTab) => {
+		if (!visibleTabs().some((item) => item.id === tab) || state.agenticTab === tab) return;
+		state.agenticTab = tab;
+		scroll.scrollBy(-scroll.scrollTop);
+		invalidateSidebar(tui);
+		tui.requestRender();
+	};
+	state.setAgenticTab = selectTab;
 	const scroll = new ScrollView(rail, {
 		follow: "none",
 		primary: false,
@@ -249,6 +439,38 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			scroll.getContentWidth(event.width) !== current.contentWidth || event.x < 0 ||
 			event.x >= current.contentWidth || event.y < 0 || event.y >= event.height) return undefined;
 		const contentY = scroll.scrollTop + event.y;
+		if (state.agenticTabsEnabled?.() && contentY === 1 && event.type === "click" && event.button === "left") {
+			for (const span of current.tabSpans) {
+				if (event.x >= span.start + CONSOLE_BORDER && event.x < span.end + CONSOLE_BORDER) {
+					selectTab(span.id);
+					return { handled: true, render: true };
+				}
+			}
+			return undefined;
+		}
+		if (event.type === "click" && event.button === "left") {
+			const scrollBarHit = current.panelScrolls.find((entry) => contentY === entry.bottomRuleY);
+			if (scrollBarHit && event.x >= CONSOLE_BORDER) {
+				const step = scrollBarHit.pageSize;
+				const next = scrollBarHit.offset + step < scrollBarHit.total ? scrollBarHit.offset + step : 0;
+				panelOffsets.set(scrollBarHit.id, next);
+				invalidateSidebar(tui);
+				return { handled: true, render: true };
+			}
+		}
+		if (event.type === "wheel") {
+			const scrollPanel = current.panelScrolls.find((entry) => contentY >= entry.startY && contentY <= entry.bottomRuleY);
+			if (scrollPanel) {
+				const maxOffset = Math.max(0, scrollPanel.total - scrollPanel.pageSize);
+				const delta = Math.sign(event.wheelDelta ?? 0) * 2;
+				const next = Math.max(0, Math.min(maxOffset, scrollPanel.offset + delta));
+				if (next !== scrollPanel.offset) {
+					panelOffsets.set(scrollPanel.id, next);
+					invalidateSidebar(tui);
+					return { handled: true, render: true };
+				}
+			}
+		}
 		const hit = current.hits.find((candidate) => contentY >= candidate.startY && contentY < candidate.startY + candidate.height);
 		if (!hit || state.parts.get(hit.key) !== hit.component) return undefined;
 		if (!hit.wholeRow && (event.x < hit.x || event.x >= hit.x + hit.width)) return undefined;
@@ -308,6 +530,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			return false;
 		}
 		const style = cardStyle();
+		const tabKey = state.agenticTabsEnabled?.() ? `${state.agenticTab ?? "main"}:${visibleTabs().map((tab) => tab.id).join(",")}` : "disabled";
 		const parts = [...state.parts.entries()];
 		// Digest closures read live session state, so they must be evaluated once
 		// per frame and stored for the next comparison (issue #1681): the sections
@@ -315,7 +538,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 		const digests = parts.map(([, rail]) => railDigest(rail));
 		const signature = themeSignature(theme);
 		const unchanged = prepared?.revision === cache.revision &&
-			prepared.width === width && prepared.mode === host.mode && prepared.headerPlacement === headerPlacement() && prepared.density === density() && prepared.surface === chromeSurface() && prepared.cardStyle === style && prepared.root === root && prepared.theme === theme && prepared.themeSignature === signature &&
+			prepared.width === width && prepared.mode === host.mode && prepared.tabKey === tabKey && prepared.headerPlacement === headerPlacement() && prepared.density === density() && prepared.surface === chromeSurface() && prepared.cardStyle === style && prepared.root === root && prepared.theme === theme && prepared.themeSignature === signature &&
 			prepared.parts.length === parts.length && prepared.parts.every(([key, part], index) => parts[index]?.[0] === key && parts[index]?.[1] === part) &&
 			prepared.digests.length === digests.length && prepared.digests.every((digest, index) => digest === digests[index]);
 		if (unchanged) {
@@ -332,16 +555,35 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const headerPart = state.parts.get("header");
 			const preparedHeaderLines = [...(headerPart?.render(Math.max(0, width)) ?? [])];
 			const headerActive = headerPart !== undefined && preparedHeaderLines.some((line) => line.trim() !== "");
-			const contentWidth = scroll.getContentWidth(RAIL_WIDTH);
+			const contentWidth = scroll.getContentWidth(consoleWidth(width) + CONSOLE_BORDER);
 			const carded = chromeSurface() === "transparent";
+			// The console replaces the rail when the tab row exists (DESIGN.md §C2):
+			// its boxes are 62/52/44 columns wide and the conversation loses the
+			// border cell too. Without tabs the legacy rail keeps its old drawing.
+			const hasConsole = Boolean(state.agenticTabsEnabled?.());
+			// A folded console keeps the chrome (the bar, the tabs row, the info
+			// card) and only gives the column back to the conversation: it is not
+			// the legacy rail.
+			const consoleCollapsedNow = hasConsole && consoleIsCollapsed();
+			const consoleMode = hasConsole;
+			const panelWidth = Math.max(0, consoleWidth(width));
+			// Sections render one column narrower than the box's interior so their
+			// right-aligned values keep a margin before the border, like the mockup.
+			const bodyWidth = Math.max(0, panelWidth - 3);
+			state.railColumns = consoleCollapsedNow ? 0 : consoleWidth(width) + CONSOLE_BORDER;
 			// Float cards are tinted from edge to edge, so two of them would fuse into one
 			// slab: like the conversation cards, they always keep a blank row between them.
 			// Neon cards close with their own rule, so the density decides their gap.
 			const cardGap = () => (carded && style === CARD_STYLE.FLOAT) || sectionGap(density());
 			// A carded section renders one indent wider; its body rows drop that indent inside the card.
-			const renderWidth = carded ? panelInnerWidth(theme, contentWidth) + PANEL_ROW_INDENT : contentWidth - RAIL_PADDING * 2;
+			const renderWidth = consoleMode ? bodyWidth : carded ? panelInnerWidth(theme, contentWidth) + PANEL_ROW_INDENT : contentWidth - RAIL_PADDING * 2;
 			// Live work first, then the session Status sections (design/shell-rework/02-proposal.html).
-			const sections = ["todo", "jobs", "agents", "footer"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
+			const selectedTab = state.agenticTabsEnabled?.() ? state.agenticTab ?? "main" : "main";
+			const tabKeys = selectedTab === "main" && isCineEstelarLive()
+				? ["session", "context", "tree", "todo", "agents", "jobs", "footer", "engram"]
+				: [...TAB_SECTIONS[selectedTab]];
+			const sectionKeys = consoleCollapsedNow ? [] : consoleMode ? tabKeys : ["todo", "agents", "jobs", "footer"];
+			const sections = sectionKeys.filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
 				const component = state.parts.get(key);
 				if (!component) {
 					sectionCache.delete(key);
@@ -363,56 +605,113 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			}).filter((section) => section.component !== undefined && section.lines.length > 0) as Array<{ key: string; component: Component; lines: string[] }>;
 			// The header carries the brand once it is active; the banner is the
 			// rail's fallback identity when no header is wired up.
-			const branding = headerActive ? [] : renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2);
+			const branding = headerActive || consoleMode ? [] : renderSidebarBanner(theme, contentWidth - RAIL_PADDING * 2);
 			const hits: RailHit[] = [];
+			const tabSpans: Array<{ id: AgenticTab; start: number; end: number }> = [];
+			const panelScrolls: Array<{ id: string; startY: number; bottomRuleY: number; total: number; offset: number; pageSize: number }> = [];
 			railLines = [];
 			fillRow = "";
-			const surface = panelSurfaceOpener(theme);
-			if (sections.length && headerActive && headerPlacement() !== "below-input") {
-				// Tinted spacing continues the rail background; transparent spacing
-				// leaves a clear row above the first card. Count it before recording hits.
-				railLines.push(paintSurfaceRow(" ".repeat(contentWidth), surface));
-			}
-			if (sections.length && branding.length) {
-				railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
-			} else if (!carded && sections.length && headerActive && headerPlacement() === "below-input" && density() === "comfortable" && style === CARD_STYLE.NEON) {
-				// Keep neon's existing comfortable gap for below-input headers too.
-				railLines.push((sections[0].component as SidebarRail).surface === "panel" ? paintSurfaceRow(" ".repeat(contentWidth), surface) : "");
-			}
 			// Panel sections share one tinted surface: their rows, padding
 			// included, and the gap between two of them are painted alike.
 			let previousPanel = false;
-			for (const section of sections) {
-				const panel = (section.component as SidebarRail).surface === "panel";
-				const paint = (row: string) => (panel ? paintSurfaceRow(row, surface) : row);
-				// One blank row separates a section from the banner or the
-				// previous section; neon's header gap above is not a section.
-				if ((hits.length > 0 || branding.length > 0) && (carded ? cardGap() : sectionGap(density()))) railLines.push(!carded && panel && previousPanel ? paint(" ".repeat(contentWidth)) : "");
-				if (carded) {
+			if (consoleMode && !consoleCollapsedNow) {
+				const border = consoleBorder(theme);
+				// The console identity row, then the fixed numbered tab row, then a gap.
+				railLines.push(border + renderConsoleHeader(theme, panelWidth, state.projectName?.()));
+				const tabRow = renderConsoleTabs(theme, panelWidth, visibleTabs(), selectedTab);
+				tabSpans.push(...tabRow.spans);
+				railLines.push(border + tabRow.line);
+				if (sections.length) railLines.push(border + " ".repeat(panelWidth));
+				let firstPanel = true;
+				for (const section of sections) {
 					const layout = (section.component as SidebarRail).cardGroups?.(renderWidth) ?? { groups: [{ start: 0, end: section.lines.length }] };
-					const geometry = cardGeometry(theme, contentWidth, style);
-					const indent = " ".repeat(PANEL_ROW_INDENT);
-					layout.groups.forEach((group, index) => {
-						if (index > 0 && cardGap()) railLines.push("");
-						const body = section.lines.slice(group.start + 1, group.end).map((row) => row.startsWith(indent) ? row.slice(PANEL_ROW_INDENT) : row);
-						while (body.length && body[body.length - 1]?.trim() === "") body.pop();
-						const top = railLines.length;
-						railLines.push(...sectionCardRows(headerParts(section.lines[group.start] ?? ""), body, theme, contentWidth));
-						// The title row folds the section like its header; body rows keep their own rows.
+					for (const group of layout.groups) {
+						if (!firstPanel && sectionGap(density())) railLines.push(border + " ".repeat(panelWidth));
+						firstPanel = false;
+						const header = headerParts(section.lines[group.start] ?? "");
+						const body = sectionBodyRows(section.lines, group.start, group.end);
+						const startY = railLines.length;
+						const count = consolePanelCount(header.count);
+						// A panel shows at most pageSize rows; beyond that its bottom
+						// rule carries the scroll bar for the slice it shows.
+						const pageSize = isCineEstelarLive()
+							? selectedTab === "tree"
+								? 34
+								: section.key === "tree"
+									? 5
+									: CONSOLE_PANEL_ROWS
+							: CONSOLE_PANEL_ROWS;
+						const panelId = `${selectedTab}:${section.key}:${group.start}`;
+						const rawOffset = panelOffsets.get(panelId) ?? 0;
+						const offset = body.length <= pageSize || rawOffset >= body.length ? 0 : Math.max(0, rawOffset);
+						if (offset !== rawOffset) panelOffsets.set(panelId, offset);
+						const shown = body.slice(offset, offset + pageSize);
+						const framed = renderConsolePanel(theme, panelWidth, {
+							title: consolePanelTitle(header.title, selectedTab),
+							...(count ? { count } : {}),
+							rows: shown,
+						}, body.length > pageSize ? { first: offset + 1, last: offset + shown.length, total: body.length } : undefined);
+						railLines.push(...framed.map((line) => border + line));
+						// The top rule folds the section (whole row); body rows keep their own
+						// rows, offset by the frame's top border and the panel's slice offset.
+						const topHeaderRows = isCineEstelarLive() ? 2 : 1;
 						const frame = { frameWidth: renderWidth, frameHeight: section.lines.length };
-						hits.push({ key: section.key, component: section.component, startY: top + geometry.headerRow, height: 1, width: renderWidth, x: geometry.headerX, row: group.start, wholeRow: true, ...frame });
-						if (body.length) hits.push({ key: section.key, component: section.component, startY: top + geometry.bodyRow, height: body.length, width: renderWidth - PANEL_ROW_INDENT, x: geometry.bodyX - PANEL_ROW_INDENT, row: group.start + 1, ...frame });
-					});
+						hits.push({ key: section.key, component: section.component, startY, height: topHeaderRows, width: bodyWidth, x: CONSOLE_BORDER + 1, row: group.start, wholeRow: true, ...frame });
+						if (shown.length) hits.push({ key: section.key, component: section.component, startY: startY + topHeaderRows, height: shown.length, width: bodyWidth, x: CONSOLE_BORDER + 1, row: group.start + 1 + offset, ...frame });
+						if (body.length > pageSize) {
+							panelScrolls.push({ id: panelId, startY, bottomRuleY: startY + topHeaderRows + shown.length, total: body.length, offset, pageSize });
+						}
+					}
+					// Rows outside the box (key hints) stay plain, aligned to the panel.
 					const loose = (layout.loose ?? []).map((row) => section.lines[row] ?? "").filter((row) => row.trim() !== "");
-					if (loose.length && sectionGap(density())) railLines.push("");
-					railLines.push(...loose.map((row) => truncateToWidth(row.trimEnd(), contentWidth, "…")));
-					continue;
+					if (loose.length && sectionGap(density())) railLines.push(border + " ".repeat(panelWidth));
+					for (const row of loose) railLines.push(border + fillConsoleCell(truncateToWidth(row.trim(), panelWidth, "…"), panelWidth));
 				}
-				const startY = railLines.length;
-				railLines.push(...section.lines.map((line) => paint(" ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING))));
-				previousPanel = panel;
-				fillRow = panel ? paint(" ".repeat(contentWidth)) : "";
-				hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: renderWidth, x: RAIL_PADDING, row: 0, frameWidth: renderWidth, frameHeight: section.lines.length });
+			} else {
+				if (sections.length && headerActive && headerPlacement() !== "below-input") {
+					// Tinted spacing continues the rail background; transparent spacing
+					// leaves a clear row above the first card. Count it before recording hits.
+					railLines.push(paintSurfaceRow(" ".repeat(contentWidth), panelSurfaceOpener(theme)));
+				}
+				const surface = panelSurfaceOpener(theme);
+				if (sections.length && branding.length) {
+					railLines.push(...branding.map((line) => " ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING)));
+				} else if (!carded && sections.length && headerActive && headerPlacement() === "below-input" && density() === "comfortable" && style === CARD_STYLE.NEON) {
+					// Keep neon's existing comfortable gap for below-input headers too.
+					railLines.push((sections[0].component as SidebarRail).surface === "panel" ? paintSurfaceRow(" ".repeat(contentWidth), surface) : "");
+				}
+				for (const section of sections) {
+					const panel = (section.component as SidebarRail).surface === "panel";
+					const paint = (row: string) => (panel ? paintSurfaceRow(row, surface) : row);
+					// One blank row separates a section from the banner or the
+					// previous section; neon's header gap above is not a section.
+					if ((hits.length > 0 || branding.length > 0) && (carded ? cardGap() : sectionGap(density()))) railLines.push(!carded && panel && previousPanel ? paint(" ".repeat(contentWidth)) : "");
+					if (carded) {
+						const layout = (section.component as SidebarRail).cardGroups?.(renderWidth) ?? { groups: [{ start: 0, end: section.lines.length }] };
+						const geometry = cardGeometry(theme, contentWidth, style);
+						const indent = " ".repeat(PANEL_ROW_INDENT);
+						layout.groups.forEach((group, index) => {
+							if (index > 0 && cardGap()) railLines.push("");
+							const body = section.lines.slice(group.start + 1, group.end).map((row) => row.startsWith(indent) ? row.slice(PANEL_ROW_INDENT) : row);
+							while (body.length && body[body.length - 1]?.trim() === "") body.pop();
+							const top = railLines.length;
+							railLines.push(...sectionCardRows(headerParts(section.lines[group.start] ?? ""), body, theme, contentWidth));
+							// The title row folds the section like its header; body rows keep their own rows.
+							const frame = { frameWidth: renderWidth, frameHeight: section.lines.length };
+							hits.push({ key: section.key, component: section.component, startY: top + geometry.headerRow, height: 1, width: renderWidth, x: geometry.headerX, row: group.start, wholeRow: true, ...frame });
+							if (body.length) hits.push({ key: section.key, component: section.component, startY: top + geometry.bodyRow, height: body.length, width: renderWidth - PANEL_ROW_INDENT, x: geometry.bodyX - PANEL_ROW_INDENT, row: group.start + 1, ...frame });
+						});
+						const loose = (layout.loose ?? []).map((row) => section.lines[row] ?? "").filter((row) => row.trim() !== "");
+						if (loose.length && sectionGap(density())) railLines.push("");
+						railLines.push(...loose.map((row) => truncateToWidth(row.trimEnd(), contentWidth, "…")));
+						continue;
+					}
+					const startY = railLines.length;
+					railLines.push(...section.lines.map((line) => paint(" ".repeat(RAIL_PADDING) + line + " ".repeat(RAIL_PADDING))));
+					previousPanel = panel;
+					fillRow = panel ? paint(" ".repeat(contentWidth)) : "";
+					hits.push({ key: section.key, component: section.component, startY, height: section.lines.length, width: renderWidth, x: RAIL_PADDING, row: 0, frameWidth: renderWidth, frameHeight: section.lines.length });
+				}
 			}
 			// Height is owned by the native ScrollView, never by the transcript.
 			const active = railLines.length > 0 && railLines.every((line) => visibleWidth(line) <= contentWidth);
@@ -420,7 +719,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const statusPart = state.parts.get("statusbar");
 			const preparedStatusLines = active && statusPart ? [...(statusPart.render(Math.max(0, width)) ?? [])] : [];
 			statusLines = preparedStatusLines.some((line) => line.trim() !== "") ? preparedStatusLines : [];
-			prepared = { revision: cache.revision, width, mode: host.mode, headerPlacement: headerPlacement(), density: density(), surface: chromeSurface(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0 };
+			prepared = { revision: cache.revision, width, mode: host.mode, tabKey, headerPlacement: headerPlacement(), density: density(), surface: chromeSurface(), cardStyle: style, root, theme, themeSignature: signature, parts, digests, contentWidth, active, lines: railLines, hits, tabSpans, panelScrolls, headerLines, statusLines, fillRow, headerActive: headerLines.length > 0 };
 			state.active = active;
 			return active;
 		} catch {
@@ -487,10 +786,16 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 			const hstackHost: Component & { [NODE](): LayoutNode } = {
 				render: () => [],
 				invalidate() {},
-				[NODE]: () => ({ type: "hstack", gap: GAP, align: "stretch", entries: [
-					{ component: left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-					{ component: scroll, basis: RAIL_WIDTH, grow: 0, shrink: 0, minSize: RAIL_WIDTH },
-				] }),
+				[NODE]: () => {
+					// The console's last column is its border, so the hstack spends no
+					// gap: at 180 columns the conversation keeps 117 and the console
+					// starts on the border cell (DESIGN.md §C2).
+					const reserve = consoleWidth(tui.terminal.columns) + CONSOLE_BORDER;
+					return { type: "hstack", gap: 0, align: "stretch", entries: [
+						{ component: left, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+						{ component: scroll, basis: reserve, grow: 0, shrink: 0, minSize: reserve },
+					] };
+				},
 			};
 			const replacement = () => {
 				if (!prepare(tui.terminal.columns, root)) {
@@ -541,6 +846,7 @@ export function installSidebar(tui: TUI, theme: ShellBarTheme, placement: () => 
 	timer.unref();
 	return () => {
 		stopped = true;
+		if (state.setAgenticTab === selectTab) state.setAgenticTab = undefined;
 		setSidebarHover(tui);
 		state.active = false;
 		clearInterval(timer);

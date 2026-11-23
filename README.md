@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/assets/brand/drakonc-dragon.svg" width="720" alt="Drakonc Shell: dragón rojo sobre fondo oscuro">
+  <img src="docs/assets/brand/drakonc-dragon.svg" width="720" alt="El dragón de Drakonc dibujado con puntos rojos sobre fondo oscuro, junto al nombre Drakonc Shell">
 
   # Drakonc Shell
 
@@ -242,7 +242,7 @@ pnpm run build:tower
 
 Cuando cambies los módulos TypeScript que alimentan `runtime/`, regenera sus equivalentes con `pnpm run build:runtime-modules` y comprueba que ambos coincidan. La compatibilidad con Linux, macOS y Windows requiere pruebas en cada plataforma.
 
-Para más detalles sobre la implementación y los comandos, consulta la [documentación del proyecto](docs/drakonc-shell.md). Algunas páginas y recursos heredados todavía pueden requerir actualización.
+Para más detalles sobre la implementación y los comandos, consulta la [documentación del proyecto](docs/drakonc-shell.md) y la [referencia técnica](docs/readme-reference.md). Algunas páginas y recursos heredados todavía pueden requerir actualización.
 
 ## Licencia
 

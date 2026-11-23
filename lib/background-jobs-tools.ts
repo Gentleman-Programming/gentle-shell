@@ -6,7 +6,7 @@
 import { keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BASH_BACKGROUND_TOOL, MAX_RUNNING_JOBS, MONITOR_TOOL, type JobRecord, type JobRegistry } from "./background-jobs.ts";
 import { MONITOR_BATCH_MS, MONITOR_FLOOD_LINES, MONITOR_FLOOD_WINDOW_MS, MONITOR_LINES_PER_NOTICE, MONITOR_MAX_TIMEOUT_SECONDS, type MonitorBatch, type MonitorController, type MonitorStopReason } from "./background-monitor.ts";
-import { CARD_TONE, renderCard, type CardTheme } from "./shell-card.ts";
+import { CARD_TONE, cachedCard, renderCard } from "./shell-card.ts";
 import { sanitizeTerminalText } from "./terminal-theme.ts";
 
 export const JOB_NOTICE_TYPE = "gentle-jobs.notice";
@@ -195,13 +195,13 @@ export function registerBackgroundJobTools(pi: ExtensionAPI, options: Background
 		const lines = sanitizeTerminalText(content).split("\n");
 		const tone = details?.event === "events" ? CARD_TONE.INFO
 			: details?.status === "exited" && details.exitCode === 0 ? CARD_TONE.SUCCESS : CARD_TONE.ERROR;
-		let hint: string;
-		try { hint = keyHint("app.tools.expand", renderOptions.expanded ? "collapse" : "expand"); } catch { hint = renderOptions.expanded ? "collapse" : "expand"; }
-		return {
-			render(width: number) {
-				return renderCard({ title: details?.kind === "monitor" ? "Monitor" : "Background job", subtitle: details?.label, body: lines, tone, glyph: JOB_GLYPH }, theme as CardTheme, width, { expanded: renderOptions.expanded, previewRows: 3, hint });
-			},
-			invalidate() {},
-		};
+		const expanded = renderOptions.expanded;
+		const card = { title: details?.kind === "monitor" ? "Monitor" : "Background job", subtitle: details?.label, body: lines, tone, glyph: JOB_GLYPH };
+		return cachedCard((width) => {
+			const action = expanded ? "collapse" : "expand";
+			let hint: string;
+			try { hint = keyHint("app.tools.expand", action); } catch { hint = action; }
+			return renderCard(card, theme, width, { expanded, previewRows: 3, hint });
+		});
 	});
 }

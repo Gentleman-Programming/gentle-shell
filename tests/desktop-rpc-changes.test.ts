@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import desktopRpc from "../extensions/gentle-desktop-rpc.ts";
-import shell, { shellGitRunner } from "../extensions/gentle-shell.ts";
+import shell, { shellGitRunner, shellUntrackedLines, type ShellDeps } from "../extensions/gentle-shell.ts";
 import { loadFileDiff } from "../lib/change-diff.ts";
 import {
 	CHANGE_NOT_FOUND,
@@ -192,7 +192,7 @@ function tempRepo(t: test.TestContext) {
 type RunnerFor = (cwd: string, maxBuffer?: number) => GitRunner;
 const realGit: RunnerFor = (cwd, maxBuffer) => shellGitRunner(cwd, process.env, undefined, maxBuffer);
 
-function app(t: test.TestContext, root: string, options: { gitRunner?: RunnerFor; withOwner?: boolean } = {}) {
+function app(t: test.TestContext, root: string, options: Pick<Partial<ShellDeps>, "changesLineCache" | "changesCacheDirectory"> & { gitRunner?: RunnerFor; withOwner?: boolean } = {}) {
 	const previous = process.env[INTERACTIVE_HOST_ENV];
 	process.env[INTERACTIVE_HOST_ENV] = "1";
 	t.after(() => {
@@ -219,6 +219,8 @@ function app(t: test.TestContext, root: string, options: { gitRunner?: RunnerFor
 		shell(pi, { GENTLE_PI_SHELL_CHANGES_POLL_MS: "60000", GENTLE_PI_SHELL_CHANGES_WATCH_MS: "off" }, {
 			resolveWorktree: () => ({ root, commonDir: join(root, ".git") }),
 			devBinary: () => undefined,
+			...(options.changesLineCache ? { changesLineCache: options.changesLineCache } : {}),
+			changesCacheDirectory: options.changesCacheDirectory,
 			gitRunner: (cwd, maxBuffer) => { const run = runner(cwd, maxBuffer); return (args) => { gitCalls += 1; return run(args); }; },
 		});
 	}
@@ -283,6 +285,81 @@ test("get_changes lists the owner's change set with opaque roots and root-relati
 	for (const variant of pathVariants(repo.root)) assert.ok(!wire.includes(variant), "no absolute root on the wire");
 	assert.ok(!wire.includes(tmpdir().replace(/\\/g, "\\\\")) && !wire.includes(tmpdir().replace(/\\/g, "/")), "no temp directory on the wire");
 	await a.fire("session_shutdown");
+});
+
+test("session shutdown flushes injected Changes counts for the next Desktop session", async (t) => {
+	const repo = tempRepo(t);
+	const cache = mkdtempSync(join(tmpdir(), "gentle-desktop-counts-"));
+	t.after(() => rmSync(cache, { recursive: true, force: true }));
+	const changesCacheDirectory = join(cache, "untracked");
+	writeFileSync(join(repo.root, "new.txt"), "a\nb\n");
+	const cold = app(t, repo.root, { changesCacheDirectory });
+	await cold.fire("session_start");
+	const first = await cold.call("get_changes");
+	assert.equal(first.ok, true);
+	assert.equal(first.data.files[0].added, 2);
+	await cold.fire("session_shutdown");
+	assert.equal(existsSync(changesCacheDirectory), true);
+
+	let readCalls = 0;
+	const warm = app(t, repo.root, { changesCacheDirectory, changesLineCache: (directory) => shellUntrackedLines({
+		lstat: async (path) => (await import("node:fs/promises")).lstat(path),
+		read: async () => { readCalls++; throw Error("unchanged file should not be read"); },
+	}, undefined, directory) });
+	await warm.fire("session_start");
+	const second = await warm.call("get_changes");
+	assert.equal(second.ok, true);
+	assert.deepEqual(second.data.files.map(({ root: _root, ...file }: { root: string }) => file), [
+		{ path: "new.txt", status: "untracked", added: 2, deleted: 0 },
+	]);
+	assert.equal(readCalls, 0);
+	await warm.fire("session_shutdown");
+});
+
+test("get_changes completes one more scan when files exceed a single budget", async (t) => {
+	const repo = tempRepo(t);
+	const a = app(t, repo.root);
+	const paths = Array.from({ length: 65 }, (_, i) => `n${String(i).padStart(2, "0")}.txt`);
+	const first = join(repo.root, paths[0]);
+	writeFileSync(first, Buffer.alloc(DIFF_MAX_BYTES, 10));
+	for (const path of paths.slice(1)) linkSync(first, join(repo.root, path));
+	await a.fire("session_start");
+	t.after(() => a.fire("session_shutdown"));
+	const response = await a.call("get_changes");
+	assert.equal(response.ok, true);
+	assert.equal(response.data.files.length, paths.length);
+	assert.equal(response.data.files.filter((file: { added: number }) => file.added === DIFF_MAX_BYTES).length, paths.length);
+	const [root] = response.data.roots;
+	assert.deepEqual(response.data, {
+		roots: [root],
+		files: paths.map((path) => ({ root: root.id, path, status: "untracked", added: DIFF_MAX_BYTES, deleted: 0 })),
+		truncated: false,
+	});
+});
+
+test("get_changes marks counts still pending at its bound and clears the markers on a later read", async (t) => {
+	const repo = tempRepo(t);
+	const paths = ["a.txt", "b.txt", "c.txt", "d.txt"];
+	for (const path of paths) writeFileSync(join(repo.root, path), "x\n");
+	const a = app(t, repo.root, { changesLineCache: () => shellUntrackedLines(undefined, 2) });
+	await a.fire("session_start");
+	t.after(() => a.fire("session_shutdown"));
+	const first = await a.call("get_changes");
+	assert.equal(first.ok, true);
+	assert.equal(first.data.countsPending, true);
+	const [root] = first.data.roots;
+	const file = (path: string, added: number) => ({ root: root.id, path, status: "untracked", added, deleted: 0 });
+	const pending = first.data.files.filter((entry: { countsPending?: true }) => entry.countsPending).map((entry: { path: string }) => entry.path);
+	assert.equal(pending.length, 2);
+	assert.deepEqual(first.data, {
+		roots: [root],
+		files: paths.map((path) => pending.includes(path) ? { ...file(path, 0), countsPending: true } : file(path, 1)),
+		truncated: false,
+		countsPending: true,
+	});
+	const later = await a.call("get_changes");
+	assert.equal(later.ok, true);
+	assert.deepEqual(later.data, { roots: [root], files: paths.map((path) => file(path, 1)), truncated: false });
 });
 
 test("get_change_diff serves exactly the panel's diff for tracked and untracked files", async (t) => {

@@ -40,12 +40,16 @@ export interface DesktopChangedFile {
 	status: ChangeStatus;
 	added: number;
 	deleted: number;
+	/** The current count is not yet available; added may be zero or stale. */
+	countsPending?: true;
 }
 
 export interface DesktopChangesRead {
 	roots: DesktopChangeRoot[];
 	files: DesktopChangedFile[];
 	truncated: boolean;
+	/** Some counts are still pending, including files beyond the list cap. */
+	countsPending?: true;
 }
 
 export interface DesktopChangeDiff {
@@ -114,16 +118,19 @@ export function projectDesktopChanges(worktrees: readonly WorktreeChanges[], idF
 	const roots: DesktopChangeRoot[] = [];
 	const files: DesktopChangedFile[] = [];
 	let total = 0;
+	let countsPending = false;
 	for (const tree of worktrees) {
 		const id = idFor(tree.root);
 		roots.push({ id, label: desktopChangeRootLabel(tree.root) });
 		for (const file of tree.model.files) {
 			total += 1;
+			const pending = Boolean(file.countsUnavailable);
+			if (pending) countsPending = true;
 			if (files.length >= DESKTOP_CHANGES_FILE_LIMIT) continue;
-			files.push({ root: id, path: file.path, status: file.status, added: finite(file.added), deleted: finite(file.deleted) });
+			files.push({ root: id, path: file.path, status: file.status, added: finite(file.added), deleted: finite(file.deleted), ...(pending ? { countsPending: true } : {}) });
 		}
 	}
-	return { roots, files, truncated: total > DESKTOP_CHANGES_FILE_LIMIT };
+	return { roots, files, truncated: total > DESKTOP_CHANGES_FILE_LIMIT, ...(countsPending ? { countsPending: true } : {}) };
 }
 
 function finite(value: number): number {
@@ -187,6 +194,7 @@ export function parseDesktopChangesRead(value: unknown): DesktopChangesRead | un
 	if (!value || typeof value !== "object") return undefined;
 	const raw = value as Record<string, unknown>;
 	if (!Array.isArray(raw.roots) || !Array.isArray(raw.files) || typeof raw.truncated !== "boolean") return undefined;
+	if (raw.countsPending !== undefined && raw.countsPending !== true) return undefined;
 	const roots: DesktopChangeRoot[] = [];
 	for (const entry of raw.roots) {
 		if (!entry || typeof entry !== "object") return undefined;
@@ -205,9 +213,10 @@ export function parseDesktopChangesRead(value: unknown): DesktopChangesRead | un
 		if (typeof file.path !== "string" || !isPlausibleChangePath(file.path)) return undefined;
 		if (typeof file.status !== "string" || !STATUSES.has(file.status)) return undefined;
 		if (!isCount(file.added) || !isCount(file.deleted)) return undefined;
-		files.push({ root: file.root, path: file.path, status: file.status as ChangeStatus, added: file.added, deleted: file.deleted });
+		if (file.countsPending !== undefined && file.countsPending !== true) return undefined;
+		files.push({ root: file.root, path: file.path, status: file.status as ChangeStatus, added: file.added, deleted: file.deleted, ...(file.countsPending === true ? { countsPending: true } : {}) });
 	}
-	return { roots, files, truncated: raw.truncated };
+	return { roots, files, truncated: raw.truncated, ...(raw.countsPending === true ? { countsPending: true } : {}) };
 }
 
 function isCount(value: unknown): value is number {

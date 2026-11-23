@@ -1871,6 +1871,7 @@ async function handleUpgradeCommand(commandArgs) {
 			packageRoot,
 			currentVersion: ownPackageVersion(),
 			adapters: { fetch: globalThis.fetch, ...managers, migrate },
+			progressStream: process.stdin.isTTY && process.stderr.isTTY && process.stdout.isTTY && !process.env.CI && process.env.TERM !== "dumb" ? process.stderr : undefined,
 			out,
 		});
 	} catch (error) {

@@ -75,7 +75,7 @@ test("startup registers a cwd whose clone sets core.worktree outside the cwd", (
 	const registry = h.registry();
 	registry.start();
 	const entries = h.session.getEntries().filter((entry) => entry.type === "custom" && entry.customType === SESSION_WORKTREE_ENTRY);
-	assert.deepEqual(entries.map((entry) => entry.data), [{ sessionId: h.session.getSessionId(), root: elsewhere, evidence: "session:cwd" }]);
+	assert.deepEqual(entries.map((entry) => (entry as { data?: unknown }).data), [{ sessionId: h.session.getSessionId(), root: elsewhere, evidence: "session:cwd" }]);
 	assert.throws(() => registry.register(elsewhere, "explicit"), /same Git clone/);
 });
 

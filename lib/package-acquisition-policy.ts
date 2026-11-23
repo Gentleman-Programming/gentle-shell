@@ -63,7 +63,7 @@ function subcommandAhead(manager: Manager, args: readonly Token[], from: number)
 	return false;
 }
 
-function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undefined, args: readonly Token[]): Omit<PackageAcquisition, "triggerIndex"> | undefined {
+function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undefined, args: readonly Token[], environmentPackage?: string, uncertainEnvironment = false): Omit<PackageAcquisition, "triggerIndex"> | undefined {
 	const specs: string[] = [];
 	const packages: string[] = [];
 	const undetermined: string[] = [];
@@ -82,10 +82,11 @@ function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undef
 			// Past the command of a plain `npm exec`, only `--package` still names what npm fetches;
 			// there `-p` is the boolean `--parseable`.
 			if (value === "--") break;
-			const equals = value.startsWith("--") ? value.indexOf("=") : -1;
-			const name = equals < 0 ? value : value.slice(0, equals);
+			const normalized = value.replace(/^-package(?==|$)/, "--package");
+			const equals = normalized.startsWith("--") ? normalized.indexOf("=") : -1;
+			const name = equals < 0 ? normalized : normalized.slice(0, equals);
 			if (name === "--package") {
-				const named = equals >= 0 ? value.slice(equals + 1) : args[++index]?.value;
+				const named = equals >= 0 ? normalized.slice(equals + 1) : args[++index]?.value;
 				if (named === undefined) undetermined.push(name);
 				else packages.push(named);
 			}
@@ -99,8 +100,9 @@ function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undef
 			// npx strips every leading dash and rewrites a `p` key, keeping any attached value, to
 			// `--package`: `-p=<spec>`, `--p <spec>` and `--p=<spec>` all name a fetched package.
 			const npxPackage = npxForm && /^-+p(=|$)/.test(value);
-			const equals = value.startsWith("--") || npxPackage ? value.indexOf("=") : -1;
-			const name = npxPackage ? "--package" : equals < 0 ? value : value.slice(0, equals);
+			const singleDashPackage = manager === "npm" && form !== "install" && /^-package(=|$)/.test(value);
+			const equals = value.startsWith("--") || npxPackage || singleDashPackage ? value.indexOf("=") : -1;
+			const name = npxPackage || singleDashPackage ? "--package" : equals < 0 ? value : value.slice(0, equals);
 			if (/^-[A-Za-z]*g[A-Za-z]*$/.test(value) || name === "--global") global = true;
 			if (PACKAGE_OPTIONS.has(name) && (form === "exec" || form === "dlx")) {
 				const named = equals >= 0 ? value.slice(equals + 1) : args[++index]?.value;
@@ -145,6 +147,12 @@ function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undef
 	if (form === "exec" || form === "dlx") packages.unshift(...packagesBeforeForm.map((item) => item.named));
 	// Elsewhere the option is no package option, and a word it took may be what the shell meant.
 	else for (const item of packagesBeforeForm) if (!item.glued) undetermined.push(`${item.option} ${item.named}`);
+	// CLI package values replace (rather than append to) npm's environment config.
+	if (manager === "npm" && form === "exec" && packages.length === 0 && !undetermined.includes("--package") && environmentPackage) {
+		packages.push(environmentPackage);
+		// A wrapper may preserve or discard config: neither possible acquisition is safe to omit.
+		if (uncertainEnvironment && target !== undefined && target !== environmentPackage) packages.push(target);
+	}
 	if (form !== "install") specs.push(...(packages.length > 0 ? packages : target === undefined ? [] : [target]));
 	return { manager, form, global, specs, undetermined };
 }
@@ -158,13 +166,21 @@ export function recognizePackageAcquisitions(command: string): PackageAcquisitio
 		if (end < tokens.length && !tokens[end].operator) continue;
 		const segment = tokens.slice(start, end);
 		start = end + 1;
-		const cursor = headCursor(segment);
+		// Observe genuine assignments in the existing wrapper traversal, not values
+		// consumed by wrapper options. Never read process.env or npm config files.
+		let environmentPackage: string | undefined;
+		let uncertainEnvironment = false;
+		const cursor = headCursor(segment, (token) => {
+			if (/^npm_config_package=/i.test(token.value)) { environmentPackage = token.value.slice("npm_config_package=".length); uncertainEnvironment = false; }
+		}, (wrapper) => {
+			if (wrapper === "sudo" || wrapper === "env") uncertainEnvironment = environmentPackage !== undefined;
+		});
 		const head = segment[cursor];
 		if (head === undefined) continue;
 		const name = head.value.split("/").at(-1) ?? head.value;
 		const args = segment.slice(cursor + 1);
 		const manager = name === "npx" ? "npm" : name === "npm" || name === "pnpm" ? name : undefined;
-		const parsed = manager === undefined ? undefined : parseSegment(manager, name === "npx" ? "exec" : undefined, args);
+		const parsed = manager === undefined ? undefined : parseSegment(manager, name === "npx" ? "exec" : undefined, args, environmentPackage, uncertainEnvironment);
 		if (parsed !== undefined && (parsed.specs.length > 0 || parsed.undetermined.length > 0)) found.push({ ...parsed, triggerIndex: head.index });
 	}
 	return found;

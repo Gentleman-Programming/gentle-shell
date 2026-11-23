@@ -2,6 +2,54 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { packageAcquisitionVerdict, recognizePackageAcquisitions } from "../lib/package-acquisition-policy.ts";
 
+function checks(command: string, specs: string[], offending: string[] = []) {
+	const triggerIndex = command.indexOf(command.includes("npx ") ? "npx " : command.includes("pnpm ") ? "pnpm " : "npm ");
+	assert.deepEqual(recognizePackageAcquisitions(command), [{ manager: command.includes("pnpm ") ? "pnpm" : "npm", form: command.includes(" dlx ") ? "dlx" : command.includes(" install ") ? "install" : "exec", global: false, specs, undetermined: [], triggerIndex }], command);
+	assert.deepEqual(packageAcquisitionVerdict(command), { action: offending.length ? "confirm" : "pass", offending, triggerIndex: offending.length ? triggerIndex : 0 }, command);
+}
+
+test("single-dash package names are normalized in both npm exec scans", () => {
+	checks("npm exec -package=evil --package=cowsay@1.6.0 -- cowsay", ["evil", "cowsay@1.6.0"], ["evil"]);
+	checks("npm exec --package=cowsay@1.6.0 cowsay -package=evil", ["cowsay@1.6.0", "evil"], ["evil"]);
+	checks("npm exec -package=cowsay@1.6.0 -- cowsay", ["cowsay@1.6.0"]);
+	checks("npm exec --package=cowsay@1.6.0 -- cowsay", ["cowsay@1.6.0"]);
+	checks("npm exec cowsay@1.6.0 -p evil", ["cowsay@1.6.0"]);
+	checks("npx cowsay@1.6.0 -package=evil", ["cowsay@1.6.0"]);
+	checks("pnpm dlx cowsay@1.6.0 -package=evil", ["cowsay@1.6.0"]);
+});
+
+test("inline npm package environment selects exec packages unless CLI overrides it", () => {
+	for (const prefix of ["npm_config_package=evil ", "env npm_config_package=evil ", "env -- npm_config_package=evil ", "sudo npm_config_package=evil "]) {
+		checks(`${prefix}npm exec -- cowsay@1.6.0`, ["evil"], ["evil"]);
+	}
+	checks("npm_config_package=other@2.0.0 npm exec -- cowsay@1.6.0", ["other@2.0.0"]);
+	checks("npm_config_package=evil npm exec --package=cowsay@1.6.0 -- cowsay", ["cowsay@1.6.0"]);
+	checks("npm_config_package=evil npm exec cowsay --package=cowsay@1.6.0", ["cowsay@1.6.0"]);
+	checks("CI=1 npm exec -- cowsay@1.6.0", ["cowsay@1.6.0"]);
+	checks("npm_config_package=evil npx cowsay@1.6.0", ["evil"], ["evil"]);
+	checks("npm_config_package=evil npm install cowsay@1.6.0", ["cowsay@1.6.0"]);
+	checks("npm_config_package=evil pnpm dlx cowsay@1.6.0", ["cowsay@1.6.0"]);
+});
+
+for (const [wrapper, offset] of [["sudo -p", 40], ["env -C", 39]] as const) {
+	test(`${wrapper} option values are not inline package assignments`, () => {
+		const command = `${wrapper} npm_config_package=cowsay@1.6.0 npm exec evil`;
+		checks(command, ["evil"], ["evil"]);
+		assert.equal(packageAcquisitionVerdict(command).triggerIndex, offset);
+		checks(`${wrapper} prompt npm_config_package=cowsay@1.6.0 npm exec evil`, ["cowsay@1.6.0"]);
+		checks(`${wrapper} prompt npm_config_package=evil npm exec --package=cowsay@1.6.0 -- cowsay`, ["cowsay@1.6.0"]);
+	});
+}
+
+test("wrapper environment boundaries retain both possible npm exec acquisitions", () => {
+	checks("npm_config_package=cowsay@1.6.0 sudo npm exec evil", ["cowsay@1.6.0", "evil"], ["evil"]);
+	for (const wrapper of ["sudo", "env -i", "env -u npm_config_package"]) {
+		checks(`npm_config_package=evil ${wrapper} npm exec cowsay@1.6.0`, ["evil", "cowsay@1.6.0"], ["evil"]);
+		checks(`npm_config_package=evil ${wrapper} npm exec --package=cowsay@1.6.0 -- cowsay`, ["cowsay@1.6.0"]);
+		checks(`${wrapper} npm_config_package=cowsay@1.6.0 npm exec evil`, ["cowsay@1.6.0"]);
+	}
+});
+
 const passes = (command: string) => assert.equal(packageAcquisitionVerdict(command).action, "pass", command);
 const confirms = (command: string, offending?: string[]) => {
 	const verdict = packageAcquisitionVerdict(command);

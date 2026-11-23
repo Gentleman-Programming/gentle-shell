@@ -4,9 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-// S9: in a bundled install the store, its legacy files and the transcript
-// scan follow the agent home Pi runs with (PI_CODING_AGENT_DIR). Everywhere
-// else they stay under ~/.pi/agent, where existing histories live.
+// S9 + publicar-paquetes-drakonc 1.6: the store, its legacy files and the
+// transcript scan follow the agent home Pi runs with (PI_CODING_AGENT_DIR),
+// bundled or not. A plain pi session resolves that home to ~/.pi/agent, where
+// existing histories live, so nothing moves for it.
 
 // The OS home is a temporary folder before the extension is imported, so even
 // a resolver that ignores PI_CODING_AGENT_DIR (or reads the OS home at import)
@@ -57,13 +58,27 @@ function holds(store: string, prompt: string): boolean {
     .some((file) => fs.readFileSync(file, "utf8").includes(prompt));
 }
 
-test("outside a bundled install prompt history stays under ~/.pi/agent, whatever agent home Pi runs with", async (t) => {
+test("outside a bundled install prompt history follows the agent home Pi runs with (1.6)", async (t) => {
   const agentHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-agent-home-"));
   t.after(() => fs.rmSync(agentHome, { recursive: true, force: true }));
   // The isolated launcher's home, and a prefix variable this package is not installed in.
   await load({ PI_CODING_AGENT_DIR: agentHome, DRAKONC_SHELL_PREFIX: agentHome })("isolated home prompt");
-  assert.ok(holds(path.join(osHome, ".pi", "agent", "history"), "isolated home prompt"));
-  assert.equal(fs.existsSync(path.join(agentHome, "history")), false);
+  assert.ok(holds(path.join(agentHome, "history"), "isolated home prompt"));
+  assert.equal(holds(path.join(osHome, ".pi", "agent", "history"), "isolated home prompt"), false);
+});
+
+test("without an agent home override prompt history stays under ~/.pi/agent", async (t) => {
+  const agentHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-history-agent-home-"));
+  t.after(() => fs.rmSync(agentHome, { recursive: true, force: true }));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  delete process.env.PI_CODING_AGENT_DIR;
+  t.after(() => {
+    if (previous !== undefined) process.env.PI_CODING_AGENT_DIR = previous;
+  });
+  // Un Pi normal no define el override: el hogar por defecto sigue siendo el de siempre.
+  await load({ DRAKONC_SHELL_PREFIX: agentHome })("default home prompt");
+  assert.ok(holds(path.join(osHome, ".pi", "agent", "history"), "default home prompt"));
+  assert.equal(holds(path.join(agentHome, "history"), "default home prompt"), false);
 });
 
 test("in a bundled install prompt history lives under the agent home Pi runs with", async (t) => {

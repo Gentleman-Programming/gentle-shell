@@ -131,6 +131,9 @@ console.log("ENV_PROBE=" + JSON.stringify({
   sentinel: process.env.TEST_ENV_SENTINEL,
   tmp: process.env.TMPDIR ?? null,
   tmpExists: process.env.TMPDIR ? existsSync(process.env.TMPDIR) : null,
+  userHome: process.env.HOME ?? null,
+  userProfile: process.env.USERPROFILE ?? null,
+  piAgentDir: process.env.PI_CODING_AGENT_DIR ?? null,
 }));
 `);
 	writeFileSync(stagesPath, JSON.stringify([
@@ -215,6 +218,26 @@ console.log("XDG_FIXTURE=" + JSON.stringify({ staged: run("ls-files").includes("
 	const fixture = result.stdout.split(/\r?\n/).find((line) => line.startsWith("XDG_FIXTURE="));
 	assert.ok(fixture, "the fixture probe ran");
 	assert.deepEqual(JSON.parse(fixture.slice("XDG_FIXTURE=".length)), { staged: true }, "the hostile XDG ignore did not hide the fixture file");
+});
+
+// publicar-paquetes-drakonc 1.7: ni una prueba suelta puede escribir en el hogar
+// real del desarrollador, así que la etapa unitaria recibe su propio HOME,
+// USERPROFILE y hogar del agente dentro de él; las etapas siguientes conservan
+// el entorno heredado.
+test("unit stage runs with a private HOME, USERPROFILE and agent home; later stages keep theirs", (t) => {
+	const inheritedHome = mkdtempSync(join(tmpdir(), "drakonc-pi-inherited-home-"));
+	const inheritedAgent = join(inheritedHome, ".pi", "agent");
+	t.after(() => rmSync(inheritedHome, { recursive: true, force: true }));
+	const [unit, provider, runtime] = probeStageEnvironment(t, {
+		HOME: inheritedHome, USERPROFILE: inheritedHome, PI_CODING_AGENT_DIR: inheritedAgent,
+	});
+	assert.notEqual(unit.userHome, inheritedHome);
+	assert.equal(unit.userProfile, unit.userHome);
+	assert.equal(unit.piAgentDir, join(unit.userHome, ".pi", "agent"));
+	assert.equal(existsSync(unit.userHome), false, "the unit home is removed after the stage");
+	assert.equal(provider.userHome, inheritedHome);
+	assert.equal(provider.piAgentDir, inheritedAgent);
+	assert.equal(runtime.userProfile, inheritedHome);
 });
 
 test("unit stage strips inherited subagent context without changing later stages", (t) => {

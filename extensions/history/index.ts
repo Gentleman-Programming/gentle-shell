@@ -18,7 +18,6 @@
 // (docs/prompt-history.md).
 
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   DynamicBorder,
@@ -37,7 +36,7 @@ import {
   type TuiMouseEvent,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { bundledDrakoncPiAgentHome, drakoncPiConfigHome } from "../../lib/agent-home.ts";
+import { drakoncPiConfigHome, resolveDrakoncPiAgentHome } from "../../lib/agent-home.ts";
 import {
   historyCaptureEnabled,
   historyCaptureEnvOverride,
@@ -122,15 +121,14 @@ const SELECTOR_FOOTER_HELP =
 /** Width of the "→ " / "  " prefix on each entry line. */
 const ENTRY_PREFIX_WIDTH = 2;
 
-// Legacy agent dir: pre-v1 editor-history files live directly here and are
-// migrated into the store root by migrateLegacyStores().
-const AGENT_DIR = join(homedir(), ".pi", "agent");
-// v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
-// It is also the tombstone state dir: <root>/hidden.json.
-const PI_HISTORY_ROOT = join(AGENT_DIR, "history");
-// Sessions root for the one-level transcript scan (spec C1, design §D5).
-// Read-only by invariant — transcripts are never written by this extension.
-const SESSIONS_ROOT = join(AGENT_DIR, "sessions");
+// Agent home for this run (publicar-paquetes-drakonc 1.6): the legacy
+// editor-history files, the store root and the transcript scan all follow
+// PI_CODING_AGENT_DIR / DRAKONC_PI_AGENT_HOME, and only fall back to
+// ~/.pi/agent. Resolving it here, per load, keeps an isolated or --home
+// session out of the developer's real home instead of freezing it at import.
+function agentDirFor(env: NodeJS.ProcessEnv): string {
+  return resolveDrakoncPiAgentHome(env);
+}
 
 export interface HistoryDeps {
   env?: NodeJS.ProcessEnv;
@@ -1320,15 +1318,19 @@ export default function promptHistoryExtension(
   // child never captures: its prompt is a delegation brief, not user history,
   // and the parent owns the store's init and GC (drakonc-shell#1690).
   const capturing = () => env.DRAKONC_PI_AGENTS_CHILD !== "1" && captureEnabled(env, configHome);
-  // S9: a bundled Drakonc Shell keeps the whole store in the agent home Pi runs
-  // with; everywhere else it stays under ~/.pi/agent, where existing ones live.
-  const bundledAgentDir = bundledDrakoncPiAgentHome(env);
-  const root = deps.root ?? (bundledAgentDir === undefined ? PI_HISTORY_ROOT : join(bundledAgentDir, "history"));
+  // S9 + 1.6: the whole store lives in the agent home Pi runs with, bundled or
+  // not; a plain pi session resolves that home to ~/.pi/agent, where the
+  // existing histories are, so nothing moves for it.
+  const agentDir = deps.agentDir ?? agentDirFor(env);
+  // v2 multi-concurrency store root (design: tmp/multi-concurrency-design.md).
+  // It is also the tombstone state dir: <root>/hidden.json.
+  const root = deps.root ?? join(agentDir, "history");
   const cwd = deps.cwd ?? process.cwd();
   const instanceId = deps.instanceId ?? randomUUID();
   const now = deps.now ?? Date.now;
-  const agentDir = deps.agentDir ?? bundledAgentDir ?? AGENT_DIR;
-  const sessionsRoot = deps.sessionsRoot ?? (bundledAgentDir === undefined ? SESSIONS_ROOT : join(bundledAgentDir, "sessions"));
+  // Sessions root for the one-level transcript scan (spec C1, design §D5).
+  // Read-only by invariant — transcripts are never written by this extension.
+  const sessionsRoot = deps.sessionsRoot ?? join(agentDir, "sessions");
   let writerState: SessionWriterState | null = null;
 
   /**

@@ -27,16 +27,30 @@ export const DEFAULT_STAGES = Object.freeze([
 export async function runStage(stage) {
 	let configHome;
 	let unitTmp;
+	let unitHome;
 	try {
 		// Unit fixtures must not inherit the terminal's Git overrides, child-session
-		// identity, launcher marker, or guardrails. Later stages retain their env.
+		// identity, launcher marker, guardrails, or agent home. Later stages retain
+		// their env.
 		configHome = stage.name === "unit-tests" ? mkdtempSync(join(tmpdir(), "drakonc-pi-unit-config-")) : undefined;
 		const env = configHome ? Object.fromEntries(Object.entries(process.env).filter(([key]) => {
 			const normalizedKey = key.toUpperCase();
 			return !normalizedKey.startsWith("GIT_") && !normalizedKey.startsWith("DRAKONC_PI_AGENTS_") &&
-				normalizedKey !== "DRAKONC_PI_CONFIG_HOME" && normalizedKey !== "DRAKONC_SHELL_CONFIG_HOME";
+				normalizedKey !== "DRAKONC_PI_CONFIG_HOME" && normalizedKey !== "DRAKONC_SHELL_CONFIG_HOME" &&
+				normalizedKey !== "PI_CODING_AGENT_DIR" && normalizedKey !== "DRAKONC_PI_AGENT_HOME" &&
+				normalizedKey !== "DRAKONC_SHELL_USER_PI_HOME";
 		})) : process.env;
 		if (configHome) env.DRAKONC_PI_CONFIG_HOME = configHome;
+		// publicar-paquetes-drakonc 1.7: no unit test may resolve the developer's
+		// real home. A private HOME/USERPROFILE (and the agent dir inside it, the
+		// same one a bare Pi would resolve) keeps every fixture write contained
+		// even when a test forgets its own temporary home.
+		unitHome = configHome ? mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "drakonc-pi-unit-home-")) : undefined;
+		if (unitHome) {
+			env.HOME = unitHome;
+			env.USERPROFILE = unitHome;
+			env.PI_CODING_AGENT_DIR = join(unitHome, ".pi", "agent");
+		}
 		// Unix sockets have short path limits; an inherited TMPDIR can already be
 		// too long. Use the short system temp root on POSIX and a private directory
 		// on every platform, removed even when stage setup or execution fails.
@@ -76,6 +90,7 @@ export async function runStage(stage) {
 		});
 	} finally {
 		if (configHome) rmSync(configHome, { recursive: true, force: true });
+		if (unitHome) rmSync(unitHome, { recursive: true, force: true });
 		if (unitTmp) rmSync(unitTmp, { recursive: true, force: true });
 	}
 }

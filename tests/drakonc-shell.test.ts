@@ -1,3 +1,4 @@
+import "./helpers/isolate-home.ts";
 import assert from "node:assert/strict";
 import { execFileSync, execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";

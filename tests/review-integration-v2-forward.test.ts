@@ -885,8 +885,8 @@ function intendedUntrackedSubmissionStatus(selector: readonly string[], location
 	return body;
 }
 
-function decodedSubmissionTokens(body: JsonObject): readonly string[] {
-	const decoded = decodeReviewStatusV3(body);
+function decodedSubmissionTokens(body: JsonObject, boundSelectionLineage?: string): readonly string[] {
+	const decoded = decodeReviewStatusV3(body, { boundSelectionLineage });
 	const input = decoded.nextTransition?.kind === "collect" ? decoded.nextTransition.collect?.inputs[0] : undefined;
 	return input?.submission?.argumentTokens ?? [];
 }
@@ -912,6 +912,43 @@ test("status/v6 intended-untracked submission rejects any other selector or subs
 		assert.throws(() => decodeReviewStatusV3(intendedUntrackedSubmissionStatus(selector)), /argument_tokens|substitution/, selector.join(" "));
 	}
 	assert.throws(() => decodeReviewStatusV3(intendedUntrackedSubmissionStatus([`--base-ref=${TREE}`, "--committed-only=true"], 4)), /substitution_location/);
+});
+
+test("#6221 STATUS accepts the exact workspace and committed bound tuples without rewriting their bytes", () => {
+	for (const selector of [["--projection=workspace"], [`--base-ref=${TREE}`, "--committed-only=true"]]) {
+		const tokens = ["--lineage=review-6221", ...selector];
+		const body = boundUntrackedSubmissionStatus(tokens);
+		assert.throws(() => decodeReviewStatusV3(body), /argument_tokens/, "unnegotiated v9 keeps its original closed tuple");
+		assert.throws(() => decodedSubmissionTokens(body, "review-other"), /argument_tokens/, "the explicitly requested lineage must match the returned authority");
+		assert.deepEqual(decodedSubmissionTokens(body, "review-6221"), [...PROVIDER_PREFIX, ...tokens, SELECTION_TOKEN]);
+	}
+});
+
+function boundUntrackedSubmissionStatus(selector: readonly string[], location?: number): JsonObject {
+	const body = intendedUntrackedSubmissionStatus(selector, location);
+	body.applicability = "current_target";
+	body.authority = { version: "compact-v2", lineage_id: "review-6221", state: "escalated", generation: 1, revision: sha("d") };
+	body.frozen = { tier: "medium", original_changed_lines: 4, correction_budget: 2 };
+	(body.projection as JsonObject).base_tree = TREE;
+	if (selector.some(token => token.startsWith("--base-ref="))) (body.projection as JsonObject).kind = "base-diff";
+	const input = ((body.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[];
+	(input[0]!.arguments as JsonObject[])[2]!.value = TREE;
+	return body;
+}
+
+test("#6221 STATUS rejects bound tuples with invalid lineage, target selector or JSON index", () => {
+	for (const selector of [
+		["--lineage=review-other", "--projection=workspace"],
+		["--projection=workspace", "--lineage=review-6221"],
+		["--lineage=review-6221", "--lineage=review-6221"],
+		["--lineage", "review-6221", "--projection=workspace"],
+		["--lineage=review-6221", "--projection=staged"],
+		["--lineage=review-6221", `--base-ref=${"b".repeat(40)}`, "--committed-only=true"],
+	]) assert.throws(() => decodedSubmissionTokens(boundUntrackedSubmissionStatus(selector), "review-6221"), /argument_tokens/, selector.join(" "));
+	const workspace = ["--lineage=review-6221", "--projection=workspace"];
+	assert.throws(() => decodedSubmissionTokens(intendedUntrackedSubmissionStatus(workspace), "review-6221"), /argument_tokens/);
+	assert.throws(() => decodedSubmissionTokens(boundUntrackedSubmissionStatus(workspace, 4), "review-6221"), /substitution_location/);
+	assert.throws(() => decodedSubmissionTokens(boundUntrackedSubmissionStatus(["--lineage=review-6221", `--base-ref=${TREE}`, "--committed-only=true"], 5), "review-6221"), /substitution_location/);
 });
 
 test("targetStatus runs a provider-issued base-diff submission as issued instead of re-forwarding the request base-ref", async () => {

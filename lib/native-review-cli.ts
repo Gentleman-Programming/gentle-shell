@@ -2072,7 +2072,8 @@ function decodeNativeUnachievableLensCaptureArtifact(value: unknown): NativeRevi
 export class NativeReviewCliV216 implements NativeReviewCli {
 	// Only executable capabilities are reusable. STATUS and authority remain fresh.
 	private contextCapabilities?: { executable: string; digest: string; value: ReturnType<typeof decodeReviewCapabilitiesV2> };
-	private readonly boundSelectionOffers = new WeakMap<readonly string[], Pick<NativeTargetStatusRequest, "cwd" | "baseRef">>();
+	// Keep the current decoded offer per workspace and lineage, not the caller's array identity.
+	private readonly boundSelectionOffers = new Map<string, { tokens: readonly string[]; cwd: string; baseRef?: string }>();
 	private readonly plain: NativeReviewPlainCli;
 	private readonly adapter: ExecFileAdapter;
 	private readonly executable: string | (() => string);
@@ -2319,7 +2320,10 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		const submittedTokens = submitted === undefined ? undefined : submitted.argumentTokens.map((token) => token.replaceAll("{{value}}", submitted.value));
 		const submittedLineage = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "lineage");
 		const { cwd, baseRef } = request;
-		const boundOffer = submitted === undefined ? undefined : this.boundSelectionOffers.get(submitted.argumentTokens);
+		const offerKey = JSON.stringify([cwd, request.lineageId]);
+		const observed = submitted === undefined ? undefined : this.boundSelectionOffers.get(offerKey);
+		const boundOffer = submitted && observed && observed.tokens.length === submitted.argumentTokens.length &&
+			observed.tokens.every((token, index) => token === submitted.argumentTokens[index]) ? observed : undefined;
 		const boundSubmission = boundOffer !== undefined;
 		// A bound selector precedes the value slot, unlike legacy appended flags.
 		const declaresBound = submitted?.argumentTokens.slice(0, submitted.argumentTokens.findIndex(token => token.includes("{{value}}")))
@@ -2396,9 +2400,10 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			const execution = await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, path, [], true, boundSelectionLineage === undefined ? undefined : true);
 			measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
 			const status = decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body, { boundSelectionLineage }));
+			if (boundSelectionLineage !== undefined) this.boundSelectionOffers.delete(offerKey);
 			for (const input of status.nextTransition?.collect?.inputs ?? []) {
 				const tokens = input.submission?.argumentTokens;
-				if (boundSelectionLineage !== undefined && input.captureOperation === "external.select_intended_untracked" && tokens?.[3] === `--lineage=${boundSelectionLineage}`) this.boundSelectionOffers.set(Object.freeze(tokens), { cwd, baseRef });
+				if (boundSelectionLineage !== undefined && input.captureOperation === "external.select_intended_untracked" && tokens?.[3] === `--lineage=${boundSelectionLineage}`) this.boundSelectionOffers.set(offerKey, { tokens: Object.freeze(tokens), cwd, baseRef });
 			}
 			return status;
 		};

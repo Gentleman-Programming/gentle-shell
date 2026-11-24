@@ -77,6 +77,14 @@ test("#6221 replays a decoded bound STATUS offer without a caller flag or re-for
 	assert.deepEqual(queue.calls.slice(1), [{ cwd: "/repo", arguments: ["review", "status", "--cwd", "/repo", ...tokens.slice(0, -1), `--intended-untracked-selection=${submission.value}`] }]);
 });
 
+test("#6221 replays an equal copy from the same validated bound context", async () => {
+	const { queue, review, request, stdout, tokens, submission } = await boundStatusOffer();
+	const argumentTokens = [...submission.argumentTokens];
+	assert.notEqual(argumentTokens, submission.argumentTokens);
+	assert.deepEqual((await review.targetStatus({ ...request, intendedUntrackedSelection: { ...submission, argumentTokens, boundStatus: true } })).raw, JSON.parse(stdout));
+	assert.deepEqual(queue.calls.slice(1), [{ cwd: "/repo", arguments: ["review", "status", "--cwd", "/repo", ...tokens.slice(0, -1), `--intended-untracked-selection=${submission.value}`] }]);
+});
+
 test("#6221 refuses explicit context, lenses and escalation absent from the bound STATUS offer", async () => {
 	const { queue, review, request, submission } = await boundStatusOffer();
 	for (const options of [{ requestContextPath: "request.md" }, { lenses: ["reliability"], lensesReason: "requested" }, { escalate: { item: 3, reason: "requested" } }] satisfies Partial<NativeTargetStatusRequest>[]) {
@@ -87,7 +95,7 @@ test("#6221 refuses explicit context, lenses and escalation absent from the boun
 
 test("#6221 requires the validated bound offer and matching request selectors", async () => {
 	const { queue, review, request, tokens, submission } = await boundStatusOffer();
-	for (const options of [{ intendedUntrackedSelection: { ...submission, argumentTokens: tokens, boundStatus: true as const } }, { intendedUntrackedSelection: { ...submission, argumentTokens: tokens.map(token => token.replace("--committed-only", "--workspace-overlay")) } }, { lineageId: "review-other" }, { baseRef: "other-ref" }, { projection: "staged" as const }, { cwd: "/other" }]) {
+	for (const options of [{ intendedUntrackedSelection: { ...submission, argumentTokens: tokens.map(token => token.replace("--agent=pi", "--agent=other")), boundStatus: true as const } }, { intendedUntrackedSelection: { ...submission, argumentTokens: tokens.map(token => token.replace("--committed-only", "--workspace-overlay")) } }, { lineageId: "review-other" }, { baseRef: "other-ref" }, { projection: "staged" as const }, { cwd: "/other" }]) {
 		await assert.rejects(() => review.targetStatus({ ...request, intendedUntrackedSelection: submission, ...options }), /requires its validated offer and matching selectors/);
 	}
 	assert.equal(queue.calls.length, 1);

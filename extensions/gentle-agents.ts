@@ -73,7 +73,7 @@ import { createNativeFullscreenInteraction } from "../lib/native-fullscreen-inte
 import { HERDR_BUSY_CHANNEL, nextHerdrBusyAction, type HerdrBusyEmitted } from "../lib/herdr-busy.ts";
 import { HERDR_DESKTOP_TASKS, HERDR_DESKTOP_TASKS_REQUEST, HERDR_DESKTOP_TASK_FINISHED, HERDR_DESKTOP_JOBS, HERDR_DESKTOP_JOB_SETTLED, HERDR_DESKTOP_CONSULT, HERDR_DESKTOP_SEND, HERDR_DESKTOP_INBOUND, type HerdrDesktopInbound, type HerdrDesktopJobSettled } from "../lib/herdr-desktop-events.ts";
 import { AGENTS_GLYPH, agentsCardTone, agentsSpend, agentsSummary, renderAgentsAlert, renderAgentsCard, renderAgentsSection, widgetExpiryMs, widgetRows } from "../lib/agents-widget.ts";
-import { CARD_TONE, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
+import { CARD_TONE, cachedCard, cardAwaitingResult, cardBodyRows, cardBottom, cardInnerWidth, cardRunningLine, cardTop, floatRows, headingFits, markCardResult, panelHeaderRow, panelInnerWidth, renderCard, type CardRowContext, type CardTheme, type CardTone } from "../lib/shell-card.ts";
 import { openInExternalEditor } from "./gentle-shell.ts";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { resolveAgentHomeDirectory } from "../lib/agent-model-resolution.ts";
@@ -1421,7 +1421,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 			const sessionId = ctx.sessionManager?.getSessionId?.() ?? "";
 			const read = (): DesktopAgentsOwnerRead => ({
 				sessionId,
-				agents: disposed ? [] : selectDesktopAgents(store.list(sessionId)),
+				agents: disposed ? [] : selectDesktopAgents(store.list(sessionId), (id) => store.thread(id)),
 			});
 			const cancel = (id: string): DesktopAgentsCancelOutcome => {
 				if (disposed) return { kind: "not_found" };
@@ -1438,7 +1438,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 				const requested = runner.cancel(id, "cancelled: stopped from desktop");
 				const after = store.get(id) ?? before;
 				const changed = requested && after.status !== before.status;
-				return { kind: "ok", agent: projectDesktopAgent(after), requested, changed };
+				return { kind: "ok", agent: projectDesktopAgent(after, store.thread(id)), requested, changed };
 			};
 			// A pure read of the single TaskStore through the activity widget's own
 			// projection, behind the same ownership check `cancel` applies: a foreign
@@ -1478,9 +1478,45 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	// status-change notification contract. The usage breakdown recorded at
 	// completion is a status-unchanged update, so `onFinish` notifies it
 	// explicitly; the bridge coalesces both into one event.
+	// Progress inside a running task (a turn ends, a tool starts or finishes,
+	// usage grows) changes no status, so it reaches the bridge through each
+	// active task's own listener, at most once per session every
+	// DESKTOP_AGENTS_PROGRESS_MS. Status changes still notify at once.
+	const DESKTOP_AGENTS_PROGRESS_MS = 500;
+	const desktopProgressTasks = new Map<string, () => void>();
+	const desktopProgressTimers = new Map<string, () => void>();
+	const notifyDesktopAgentsProgress = (sessionId: string): void => {
+		if (desktopAgentsObservers.size === 0 || desktopProgressTimers.has(sessionId)) return;
+		desktopProgressTimers.set(sessionId, deps.schedule(() => {
+			desktopProgressTimers.delete(sessionId);
+			notifyDesktopAgents(sessionId);
+		}, DESKTOP_AGENTS_PROGRESS_MS));
+	};
 	const stopAgentsStatusNotifications = store.subscribeStatusChanges((change) => {
 		notifyDesktopAgents(change.sessionId);
+		if (isFinished(change.status)) {
+			// The store drops a finished task's listeners itself.
+			desktopProgressTasks.delete(change.taskId);
+		} else if (!desktopProgressTasks.has(change.taskId)) {
+			const sessionId = change.sessionId;
+			// Only a change to this task's wire projection is progress: streamed text
+			// moves `lastActivityAt` (which reorders the store's list) but no
+			// projected field, so it never schedules a notification.
+			let lastProjection: string | undefined;
+			desktopProgressTasks.set(change.taskId, store.subscribe(change.taskId, (task, thread) => {
+				const projection = JSON.stringify(projectDesktopAgent(task, thread));
+				if (projection === lastProjection) return;
+				lastProjection = projection;
+				notifyDesktopAgentsProgress(sessionId);
+			}));
+		}
 	});
+	const stopAgentsProgressNotifications = (): void => {
+		for (const unsubscribe of desktopProgressTasks.values()) unsubscribe();
+		desktopProgressTasks.clear();
+		for (const cancel of desktopProgressTimers.values()) cancel();
+		desktopProgressTimers.clear();
+	};
 	// A parent that sleeps while background work runs only burns the turn: each
 	// completion already arrives as a session message (#1903). bash_background
 	// and monitor stay allowed because they are the sanctioned way to wait.
@@ -2206,23 +2242,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		const content = message.content as string | Array<{ type: string; text?: string }>;
 		const text = typeof content === "string" ? content : content.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("\n");
 		const tone = details?.status === "completed" ? CARD_TONE.SUCCESS : CARD_TONE.ERROR;
-		const hint = expandHint(options.expanded);
+		const expanded = options.expanded;
+		const hint = expandHint(expanded);
 		// The same answer card as the tool result: iris chrome, the state pill
 		// on top, the answer below ("answer" keeps its name through the flow).
 		const t = agentTheme(theme, tone);
 		const facts = details?.status ? statusCardFacts({ gentleAgents: details }) : undefined;
 		const chips = [details?.agent, modelChip(facts?.model), facts?.thinking ? sanitizeTerminalText(facts.thinking) : undefined];
-		const answer = options.expanded ? text.split("\n") : agentResultPreview(text).split("\n").filter((line) => line.trim() !== "");
+		const answer = expanded ? text.split("\n") : agentResultPreview(text).split("\n").filter((line) => line.trim() !== "");
 		const body = facts ? [statusCardRows(facts, t, false)[0], ...answer] : answer;
-		return {
-			render(width: number) {
-				// Same one-line heading budget as the tool cards: the answer card's
-				// inner columns are the style's, not the terminal's.
-				const subtitle = fitSubject({ title: "Agent answer", tone, glyph: ACTION_GLYPH.result }, hint, panelInnerWidth(theme, width, tone), chips);
-				return renderCard({ title: "Agent answer", subtitle, body, tone, glyph: ACTION_GLYPH.result }, t, width, { expanded: options.expanded, previewRows: 3, hint });
-			},
-			invalidate() {},
-		};
+		return cachedCard((width) => {
+			// Same one-line heading budget as the tool cards: the answer card's
+			// inner columns are the style's, not the terminal's.
+			const subtitle = fitSubject({ title: "Agent answer", tone, glyph: ACTION_GLYPH.result }, hint, panelInnerWidth(theme, width, tone), chips);
+			return renderCard({ title: "Agent answer", subtitle, body, tone, glyph: ACTION_GLYPH.result }, t, width, { expanded, previewRows: 3, hint });
+		});
 	});
 
 	// A stale completion is appended as a custom entry: durable transcript
@@ -3044,20 +3078,21 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 						facts?.thinking ? headingText(facts.thinking) : undefined,
 					]
 					: [];
-				return {
-					render(width: number) {
-						if (width <= 0) return [];
-						const hint = expandHint(options.expanded);
-						return floatRows(tone, iris, width, (inner) => ({
-							...(ownHeading ? {
-								head: [cardTop({ title: heading, subtitle: fitSubject({ title: heading, tone, glyph }, hint, inner, ownChips), body: [], tone, glyph }, iris, inner, hint)],
-							} : { afterHeading: true }),
-							body: cardBodyRows(fitRows ? rows.map((row) => truncateToWidth(row, cardInnerWidth(inner), "…")) : rows, tone, iris, inner, { expanded: options.expanded, previewRows: ownHeading ? 3 : undefined }),
-							bottom: cardBottom(tone, iris, inner),
-						}));
-					},
-					invalidate() {},
+				const expanded = options.expanded;
+				const render = (width: number) => {
+					if (width <= 0) return [];
+					const hint = expandHint(expanded);
+					return floatRows(tone, iris, width, (inner) => ({
+						...(ownHeading ? {
+							head: [cardTop({ title: heading, subtitle: fitSubject({ title: heading, tone, glyph }, hint, inner, ownChips), body: [], tone, glyph }, iris, inner, hint)],
+						} : { afterHeading: true }),
+						body: cardBodyRows(fitRows ? rows.map((row) => truncateToWidth(row, cardInnerWidth(inner), "…")) : rows, tone, iris, inner, { expanded, previewRows: ownHeading ? 3 : undefined }),
+						bottom: cardBottom(tone, iris, inner),
+					}));
 				};
+				// Pi reconstructs the result on output, expansion, and theme changes;
+				// the separate call still reads its live task and shared state.
+				return options.isPartial === false ? cachedCard(render) : { render, invalidate() {} };
 			},
 			async execute(_id, params, signal, _onUpdate, ctx) {
 				return execute(params as Record<string, unknown>, ctx, signal);
@@ -3639,6 +3674,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 	pi.on("session_shutdown", async () => {
 		shuttingDown = true;
 		stopAgentsStatusNotifications();
+		stopAgentsProgressNotifications();
 		// Both Desktop owner services leave the bus with the session, so a
 		// replaced runtime is never discovered through a stale owner.
 		unsubscribeDesktopJobsService();

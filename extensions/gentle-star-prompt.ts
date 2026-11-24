@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isChildSession } from "../lib/child-session.ts";
 import { visibleWidth, type Component, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { gentlePiConfigHome } from "../lib/agent-home.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
@@ -130,6 +131,8 @@ function defaultSchedule(ms: number, fn: () => void): Timer {
  * [star] button) stars through the authenticated gh account after that explicit
  * action, and opens the repository URLs only when gh cannot star. */
 export function createStarPromptExtension(pi: ExtensionAPI, deps: StarPromptDeps = {}): void {
+	// A child has no one to ask, and its rpc inputs must not alter the parent's counter.
+	if (isChildSession()) return;
 	const configHome = deps.configHome ?? gentlePiConfigHome();
 	const schedule = deps.schedule ?? defaultSchedule;
 	const now = deps.now ?? (() => Date.now());

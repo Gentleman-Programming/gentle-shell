@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -21,14 +22,12 @@ import {
 // downloaded only on explicit request, verified by size and digest while they
 // stream, staged privately and published with one rename. Every rejection must
 // leave no published component and no staging behind, and never touch an
-// install that already exists. The network is injected; scratch stays in tmp/.
+// install that already exists. The network is injected; scratch is temporary.
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function scratch(t: test.TestContext): string {
-	const base = join(repoRoot, "tmp");
-	mkdirSync(base, { recursive: true });
-	const dir = mkdtempSync(join(base, "voice-tests-"));
+	const dir = mkdtempSync(join(tmpdir(), "voice-tests-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	return join(dir, "voice");
 }
@@ -94,6 +93,36 @@ function modelRoutes(overrides: Record<string, Route> = {}): Record<string, Rout
 
 const modelManifest = () => modelFixture({ "encoder.onnx": encoder, "tokens.txt": tokens });
 
+// Schema 1 hashes the whole historical manifest, including the HF fields.
+function legacyModelReceipt(manifest: VoiceModelManifest): string {
+	return `${JSON.stringify({
+		schema: 1,
+		kind: "model",
+		id: manifest.id,
+		manifest: sha256(Buffer.from(JSON.stringify(manifest))),
+		files: [{ path: "encoder.onnx", size: encoder.length }, { path: "tokens.txt", size: tokens.length }],
+	}, null, "\t")}\n`;
+}
+
+// Reserved fixture hosts; these are not deployable release coordinates.
+const RELEASE_BASE = "https://releases.example/acme/tiny/releases/download/v1";
+const RELEASE_ASSET_ORIGIN = "https://assets.example";
+const RELEASE_ASSET_PREFIX = "/release-assets/acme/tiny/v1/";
+const RELEASE_ENCODER = `${RELEASE_ASSET_ORIGIN}${RELEASE_ASSET_PREFIX}encoder.onnx?sig=fixture`;
+const releaseTransport = {
+	baseUrl: RELEASE_BASE,
+	redirects: [{ origin: RELEASE_ASSET_ORIGIN, pathPrefix: RELEASE_ASSET_PREFIX }],
+};
+
+function releaseRoutes(overrides: Record<string, Route> = {}): Record<string, Route> {
+	return {
+		[`${RELEASE_BASE}/encoder.onnx`]: { status: 302, headers: { location: RELEASE_ENCODER } },
+		[RELEASE_ENCODER]: { headers: { "content-length": String(encoder.length) }, chunks: halves(encoder) },
+		[`${RELEASE_BASE}/tokens.txt`]: { chunks: [tokens] },
+		...overrides,
+	};
+}
+
 function leftovers(voiceHome: string): string[] {
 	if (!existsSync(voiceHome)) return [];
 	return readdirSync(voiceHome).filter((name) => name.startsWith(".staging"));
@@ -135,13 +164,70 @@ test("the model streams through permitted redirects, is verified and published a
 	if (process.platform !== "win32") assert.equal(statSync(voiceHome).mode & 0o077, 0, "voice home is private");
 });
 
-test("an installed component is reported as such without any network access", async (t) => {
+test("a legacy model install keeps its status and receipt with zero fetches even when transport differs", async (t) => {
 	const voiceHome = scratch(t);
-	await installVoiceModel({ voiceHome, manifest: modelManifest(), fetch: fakeFetch(modelRoutes()).fetch });
-	const second = fakeFetch(modelRoutes());
-	const result = await installVoiceModel({ voiceHome, manifest: modelManifest(), fetch: second.fetch });
-	assert.equal(result.alreadyInstalled, true);
-	assert.deepEqual(second.calls, []);
+	const manifest = modelManifest();
+	const receipt = legacyModelReceipt(manifest);
+	const { path } = await installVoiceModel({ voiceHome, manifest, fetch: fakeFetch(modelRoutes()).fetch });
+	const marker = join(path, ".gentle-voice.json");
+	assert.equal(readFileSync(marker, "utf8"), receipt);
+	const epoch = new Date("2000-01-01T00:00:00Z");
+	utimesSync(marker, epoch, epoch);
+	const mtime = statSync(marker).mtimeMs;
+	const status = { kind: "model", state: "installed", path };
+	assert.deepEqual(await readVoiceComponentStatus({ voiceHome, kind: "model", manifest }), status);
+
+	const { fetch, calls } = fakeFetch(releaseRoutes());
+	const progress: VoiceInstallProgress[] = [];
+	const result = await installVoiceModel({ voiceHome, manifest, transport: releaseTransport, fetch, onProgress: (p) => progress.push(p) });
+	assert.deepEqual(result, { kind: "model", path, alreadyInstalled: true });
+	assert.deepEqual(calls, []);
+	assert.deepEqual(progress, []);
+	assert.deepEqual(await readVoiceComponentStatus({ voiceHome, kind: "model", manifest }), status);
+	assert.equal(readFileSync(marker, "utf8"), receipt);
+	assert.equal(statSync(marker).mtimeMs, mtime, "the receipt was not rewritten");
+	assert.deepEqual(leftovers(voiceHome), []);
+});
+
+test("release transport follows its narrow asset redirect and publishes the same pinned model and receipt", async (t) => {
+	const voiceHome = scratch(t);
+	const manifest = modelManifest();
+	const receipt = legacyModelReceipt(manifest);
+	const path = join(voiceHome, "models", manifest.id);
+	const { fetch, calls } = fakeFetch(releaseRoutes());
+	assert.deepEqual(await installVoiceModel({ voiceHome, manifest, transport: releaseTransport, fetch }), { kind: "model", path, alreadyInstalled: false });
+	assert.deepEqual(calls, [`${RELEASE_BASE}/encoder.onnx`, RELEASE_ENCODER, `${RELEASE_BASE}/tokens.txt`]);
+	assert.deepEqual(readFileSync(join(path, "encoder.onnx")), encoder);
+	assert.deepEqual(readFileSync(join(path, "tokens.txt")), tokens);
+	assert.equal(readFileSync(join(path, ".gentle-voice.json"), "utf8"), receipt);
+	assert.deepEqual(await readVoiceComponentStatus({ voiceHome, kind: "model", manifest }), { kind: "model", state: "installed", path });
+	assert.deepEqual(leftovers(voiceHome), []);
+});
+
+test("release transport refuses untrusted redirects and bad file pins without publishing", async (t) => {
+	const badPath = `${RELEASE_ASSET_ORIGIN}/release-assets/acme/tiny/v10/tokens.txt`;
+	const tampered = Buffer.from(tokens); tampered[0] = 0x7a;
+	const cases: Array<[string, Route, string, string]> = [
+		["neighboring release", { status: 302, headers: { location: `${badPath}?sig=fixture` } }, "redirect", `Refused a redirect to ${badPath}.`],
+		["legacy CDN", { status: 302, headers: { location: CDN } }, "redirect", `Refused a redirect to ${CDN}.`],
+		["wrong size", { chunks: [tokens.subarray(1)] }, "size", `tokens.txt ended after ${tokens.length - 1} of ${tokens.length} bytes.`],
+		["wrong digest", { chunks: [tampered] }, "integrity", "tokens.txt does not match its pinned sha256 digest."],
+	];
+	for (const [label, route, code, message] of cases) {
+		await t.test(label, async (t) => {
+			const voiceHome = scratch(t);
+			const manifest = modelManifest();
+			const path = join(voiceHome, "models", manifest.id);
+			const tokensUrl = `${RELEASE_BASE}/tokens.txt`;
+			const { fetch, calls } = fakeFetch(releaseRoutes({ [tokensUrl]: route }));
+			const error = await rejects(installVoiceModel({ voiceHome, manifest, transport: releaseTransport, fetch }), code);
+			assert.equal(error.message, message);
+			assert.deepEqual(calls, [`${RELEASE_BASE}/encoder.onnx`, RELEASE_ENCODER, tokensUrl]);
+			assert.deepEqual(await readVoiceComponentStatus({ voiceHome, kind: "model", manifest }), { kind: "model", state: "missing", path });
+			assert.equal(existsSync(path), false);
+			assert.deepEqual(leftovers(voiceHome), []);
+		});
+	}
 });
 
 test("a digest mismatch is rejected and leaves nothing published or staged", async (t) => {

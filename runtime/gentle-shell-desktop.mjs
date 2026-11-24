@@ -169,6 +169,7 @@ export function supportsDesktop(packageRoot        )          {
 
 
 
+
 const nonEmpty = (value                    ) => (value !== undefined && value.length > 0 ? value : undefined);
 
 // Herdr's own rule (herdr-app src/mods.rs app_dir): $HERDR_APP_HOME, else
@@ -191,6 +192,7 @@ export function desktopPaths(env                                    , home      
 		localBin: join(home, ".local", "bin"),
 		// One keys.json on every OS; only Herdr's built-in defaults differ (keys.macos.json on macOS).
 		keysFile: join(herdrHome, "keys.json"),
+		rootsFile: join(herdrHome, "gentle-shell-roots.json"),
 		keysError: join(herdrHome, "keys.error"),
 		keysBackup: join(stateDir, "keys-backup.json"),
 		keysOriginal: join(stateDir, "originals", "keys.json"),
@@ -1121,6 +1123,86 @@ async function openDesktop(ctx                , paths              , app        
 
 // --- commands ----------------------------------------------------------------------
 
+// The agent homes Gentle Shell Desktop's mods read without being told
+// (docs/desktop-feed.md, "where readers look").
+// The same directory can arrive with a trailing separator; compare without it.
+const trimSlashes = (path        )         => path.replace(/[\\/]+$/, "") || path;
+// snapshot.js keeps at most eight agent homes after the two defaults.
+const MOD_ROOTS = 8;
+const isAbsolutePath = (path        )          => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+const knownRoots = (home        )           => [join(home, ".gentle-shell", "agent"), join(home, ".pi", "agent")];
+
+// The agent home this install runs its sessions in: an explicit override, else the
+// Agent a separate install recorded in installation.json, else Pi's default.
+export function desktopAgentDir(ctx                )         {
+	const explicit = ctx.env.GENTLE_PI_AGENT_HOME || ctx.env.PI_CODING_AGENT_DIR;
+	if (explicit) return explicit;
+	try {
+		const installRoot = join(ctx.packageRoot, "..", "..", "..", "..");
+		const agent = JSON.parse(readFileSync(join(installRoot, "installation.json"), "utf8"))?.Agent;
+		if (typeof agent === "string" && agent.length > 0) return agent;
+	} catch {}
+	return join(ctx.home, ".pi", "agent");
+}
+
+// What the mods actually read: one snapshot per publishing session under
+// <agent home>/desktop/sessions. No file means no session in the window, whatever else is right.
+export function feedStatusLine(agentDir        , now         = Date.now())         {
+	const dir = join(agentDir, "desktop", "sessions");
+	let files           = [];
+	try {
+		files = readdirSync(dir).filter((name) => name.endsWith(".json"));
+	} catch {
+		return `  Feed: none at ${dir}; start a session with gentle-shell and the window will see it`;
+	}
+	if (files.length === 0) return `  Feed: none at ${dir}; start a session with gentle-shell and the window will see it`;
+	let newest = 0;
+	for (const name of files) {
+		try {
+			const at = statSync(join(dir, name)).mtimeMs;
+			if (at > newest) newest = at;
+		} catch {}
+	}
+	const age = newest === 0 ? "unknown age" : `${Math.max(0, Math.round((now - newest) / 1000))}s old`;
+	return `  Feed: ${files.length} session snapshot${files.length === 1 ? "" : "s"} in ${dir} (newest ${age})`;
+}
+
+// A separate install keeps its agent outside the homes the mods read, so the window
+// shows "No Gentle Shell session here" until that home is listed. Report it, read-only.
+export function rootsStatusLine(paths              , home        , agentDir        )                     {
+	if (knownRoots(home).includes(trimSlashes(agentDir))) return undefined;
+	// The mods read this exact path: they ignore HERDR_APP_HOME and XDG_CONFIG_HOME. They also
+	// trim, drop non-absolute entries and keep at most MOD_ROOTS homes after the two defaults, so
+	// this check has to filter in the same order or it warns about a root that is read.
+	const file = join(home, ".config", "herdr-app", "gentle-shell-roots.json");
+	let listed           = [];
+	try {
+		const parsed = JSON.parse(readFileSync(file, "utf8"));
+		const roots = Array.isArray(parsed) ? parsed : parsed?.roots;
+		if (Array.isArray(roots)) listed = roots.filter((root         )                 => typeof root === "string");
+	} catch {}
+	const expanded = listed
+		.map((root) => root.trim())
+		.filter((root) => root.length > 0)
+		// The reader concatenates instead of joining, so "~/r/." stays distinct from "~/r"; join() would
+		// collapse the dot segment and merge two roots the mods keep apart.
+		.map((root) => (root === "~" ? home : root.startsWith("~/") ? `${home}${root.slice(1)}` : root));
+	const order = [...knownRoots(home).map(trimSlashes), ...expanded.map(trimSlashes)].filter(isAbsolutePath);
+	const seen = new Set        ();
+	const read           = [];
+	for (const root of order) {
+		if (seen.has(root)) continue;
+		seen.add(root);
+		read.push(root);
+	}
+	if (read.slice(0, MOD_ROOTS).includes(trimSlashes(agentDir))) return `  Roots: ${agentDir} listed in ${file}`;
+	const entry = JSON.stringify([agentDir]);
+	if (read.length >= MOD_ROOTS) {
+		return `  Roots: ${agentDir} is not read by the mods: the first ${MOD_ROOTS} roots are taken, so adding it does not help; move it into the first ${MOD_ROOTS} in ${file} or remove an earlier one`;
+	}
+	return `  Roots: ${agentDir} is not read by the mods; add ${entry} to ${file}`;
+}
+
 function printStatus(ctx                , paths              , assets                            , release                 )         {
 	const app = detectApp(ctx);
 	const shipped = "mods" in assets ? assets.mods : [];
@@ -1132,6 +1214,9 @@ function printStatus(ctx                , paths              , assets           
 	ctx.io.out(`  Gentle Shell: ${ctx.shellVersion}`);
 	ctx.io.out(app ? `  Herdr app: ${app.version ?? "unknown version"} at ${app.path} (${needs})` : `  Herdr app: not installed (${needs})`);
 	ctx.io.out(`  Herdr home: ${paths.herdrHome}`);
+	const rootsLine = rootsStatusLine(paths, ctx.home, desktopAgentDir(ctx));
+	if (rootsLine !== undefined) ctx.io.out(rootsLine);
+	ctx.io.out(feedStatusLine(desktopAgentDir(ctx)));
 	ctx.io.out(existsSync(paths.layoutFile) ? `  Layout ${DESKTOP_LAYOUT}: installed at ${paths.layoutFile}` : `  Layout ${DESKTOP_LAYOUT}: not installed`);
 	const themes = "mods" in assets ? assets.themes : [];
 	if (themes.length > 0) {

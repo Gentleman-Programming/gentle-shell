@@ -697,3 +697,137 @@ test("ChangesTracker counts lines and reads revisions for every file with bounde
 	assert.deepEqual(files.get("file-07.ts"), file("file-07.ts", 0, 0, CHANGE_STATUS.UNTRACKED), "a failing lookup keeps its fallback");
 	for (const path of paths.filter((path) => path !== "file-07.ts")) assert.deepEqual(files.get(path), { ...file(path, 2, 0, CHANGE_STATUS.UNTRACKED), diffRevision: `rev:${path}` });
 });
+
+// A HEAD verification that could not run (a closed or unusable Git reader) or
+// that hit its deadline is not an answered "no": the root failed, it is not an
+// unborn repository. Reading it as unborn showed a dirty repository as clean.
+test("a HEAD verification that was not answered marks the root failed, never unborn", async () => {
+	for (const unanswered of [{ code: 1, stdout: "", unavailable: true as const }, { code: 1, stdout: "", timedOut: true }]) {
+		const calls: string[] = [];
+		const tracker = new WorktreeChangesTracker(
+			async () => ({ stdout: "worktree /repo\0branch refs/heads/main\0\0", code: 0 }),
+			() => async (args) => {
+				calls.push(args[0]);
+				return args[0] === "rev-parse" ? unanswered : { stdout: args[0] === "status" ? " M a.ts\0" : "1\t0\ta.ts\n", code: 0 };
+			},
+			undefined,
+			() => ["/repo"],
+		);
+		await tracker.start();
+		assert.deepEqual(tracker.unbornRoots, [], JSON.stringify(unanswered));
+		assert.deepEqual(tracker.failedRoots, ["/repo"], JSON.stringify(unanswered));
+		assert.deepEqual(calls.filter((cmd) => cmd === "status"), [], "a root whose Git cannot answer is not scanned further");
+	}
+});
+
+test("failed roots expose their specific last-scan reason, then clear it on recovery or removal", async () => {
+	const failures: Array<[reason: string, command: string, outcome: GitResult | Error]> = [
+		["head-unavailable", "rev-parse", { code: 1, stdout: "", unavailable: true }],
+		["head-timeout", "rev-parse", { code: 1, stdout: "", timedOut: true }],
+		["head-truncated", "rev-parse", { code: 1, stdout: "", truncated: true }],
+		["status-failed", "status", { code: 128, stdout: "" }],
+		["status-unavailable", "status", { code: 1, stdout: "", unavailable: true }],
+		["status-timeout", "status", { code: 1, stdout: " M a.ts\0", timedOut: true }],
+		["status-truncated", "status", { code: 1, stdout: " M a.ts\0", truncated: true }],
+		["exception: Error", "status", new Error("Git status rejected")],
+		["exception: Error", "diff", new Error("Git numstat rejected")],
+	];
+	const byRoot = new Map(failures.map((failure, index) => [`/bad-${index}`, failure]));
+	let roots = ["/ok", "/unborn", ...byRoot.keys()];
+	let broken = true;
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ code: 0, stdout: roots.map((root) => `worktree ${root}\0\0`).join("") }),
+		(root) => async ([cmd]) => {
+			const fault = byRoot.get(root);
+			if (broken && fault?.[1] === cmd) {
+				if (fault[2] instanceof Error) throw fault[2];
+				return fault[2];
+			}
+			return { code: root === "/unborn" && cmd === "rev-parse" ? 1 : 0, stdout: cmd === "status" ? " M a.ts\0" : cmd === "diff" ? "2\t1\ta.ts\n" : "" };
+		}, undefined, () => roots,
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.failedRootReasons, new Map([...byRoot].map(([root, [reason]]) => [root, reason])));
+	assert.deepEqual([...tracker.failedRoots].sort(), [...byRoot.keys()].sort());
+	assert.deepEqual(tracker.unbornRoots, ["/unborn"]);
+	assert.equal(tracker.scannedRootCount, roots.length);
+	assert.deepEqual(tracker.model.files, [file("a.ts", 2, 1)]);
+	broken = false;
+	await tracker.refresh();
+	assert.deepEqual(tracker.failedRootReasons, new Map());
+	assert.deepEqual(tracker.failedRoots, []);
+	assert.equal(tracker.model.files.length, roots.length - 1);
+	broken = true;
+	await tracker.refresh();
+	assert.equal(tracker.failedRootReasons.size, byRoot.size);
+	roots = [];
+	await tracker.refresh();
+	assert.deepEqual(tracker.failedRootReasons, new Map());
+	assert.deepEqual(tracker.failedRoots, []);
+	assert.equal(tracker.scannedRootCount, 0);
+	assert.deepEqual(tracker.model, emptyChanges());
+});
+
+test("a HEAD verification answered with a non-zero exit still means unborn", async () => {
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "worktree /repo\0branch refs/heads/main\0\0", code: 0 }),
+		() => async (args) => args[0] === "rev-parse" ? { code: 1, stdout: "" } : { stdout: "", code: 0 },
+		undefined,
+		() => ["/repo"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.unbornRoots, ["/repo"]);
+	assert.deepEqual(tracker.failedRoots, []);
+});
+
+// Existing behaviour kept: status is the inventory. A numstat that exits
+// non-zero, times out or is cut short leaves the root listed with its files.
+test("a numstat that answers badly keeps the root and its files listed", async () => {
+	for (const numstat of [{ code: 128, stdout: "" }, { code: 1, stdout: "", timedOut: true }, { code: 1, stdout: "", truncated: true }]) {
+		const tracker = new WorktreeChangesTracker(
+			async () => ({ stdout: "worktree /repo\0branch refs/heads/main\0\0", code: 0 }),
+			() => async ([cmd]) => cmd === "diff" ? numstat : { code: 0, stdout: cmd === "status" ? " M a.ts\0" : "" },
+			undefined,
+			() => ["/repo"],
+		);
+		await tracker.start();
+		assert.deepEqual(tracker.failedRoots, [], JSON.stringify(numstat));
+		assert.deepEqual(tracker.model.files.map((f) => f.path), ["a.ts"], JSON.stringify(numstat));
+	}
+});
+
+// Found by the independent verify: a reason is a short code, never a message
+// that can carry a path from the user's machine.
+test("an exception reason names its error code, not its message", async () => {
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ stdout: "worktree /repo\0\0", code: 0 }),
+		() => async ([cmd]) => {
+			if (cmd === "status") throw Object.assign(new Error("ENOENT: no such file or directory, open '/Users/someone/private/file'"), { code: "ENOENT" });
+			return { code: 0, stdout: "" };
+		},
+		undefined,
+		() => ["/repo"],
+	);
+	await tracker.start();
+	assert.deepEqual(tracker.failedRootReasons, new Map([["/repo", "exception: ENOENT"]]));
+});
+
+test("failed root exception reasons do not expose paths in the message", async () => {
+	const posix = "/opt/private/git-helper";
+	const windows = String.raw`C:\private\helper`;
+	const tracker = new WorktreeChangesTracker(
+		async () => ({ code: 0, stdout: "worktree /repo\0\0" }),
+		() => async ([cmd]) => {
+			if (cmd === "status") throw Error(`spawn ${posix} ENOENT\nopen '${windows}' failed\n${"x".repeat(1000)}`);
+			return { code: 0, stdout: "" };
+		},
+		undefined, () => ["/repo"],
+	);
+	await tracker.refresh();
+	assert.deepEqual(tracker.failedRoots, ["/repo"]);
+	const reason = tracker.failedRootReasons.get("/repo");
+	assert.ok(reason?.startsWith("exception: "));
+	assert.ok(reason.length <= 211);
+	assert.doesNotMatch(reason, /[\r\n]/);
+	assert.ok(!reason.includes(posix) && !reason.includes(windows));
+});

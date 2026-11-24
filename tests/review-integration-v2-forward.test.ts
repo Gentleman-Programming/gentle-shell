@@ -16,7 +16,10 @@ import {
 	decodeReviewStartV3,
 	decodeReviewStartV4,
 	decodeReviewStatusV3,
+	ReviewNativeContractTooOldError,
 } from "../lib/review-integration-v2.ts";
+import { capabilitiesV26 } from "./support/capabilities-v26.ts";
+import { statusV9 } from "./support/status-v9.ts";
 import { NativeReviewCliV216, type ExecFileAdapter } from "../lib/native-review-cli.ts";
 
 const DEV_FIXTURES = join(process.cwd(), "tests", "fixtures", "devbinary");
@@ -32,7 +35,7 @@ function fixture(root: string, name: string): unknown {
 }
 
 function currentStatusFixture(name: string): Record<string, unknown> {
-	const body = structuredClone(fixture(DEV_FIXTURES, name)) as Record<string, unknown>;
+	const body = statusV9(structuredClone(fixture(DEV_FIXTURES, name)) as Record<string, unknown>);
 	if (body.action === "finalize") {
 		body.action = "stop";
 		const transition = body.next_transition as Record<string, unknown> | undefined;
@@ -48,7 +51,7 @@ function initialIntendedUntrackedStatusV6(): JsonObject {
 	const body = currentStatusFixture("status-v5.captured.json");
 	const projection = body.projection as JsonObject;
 	const schema = "gentle-ai.review-intended-untracked-selection/v1";
-	body.schema = "gentle-ai.review-integration.status/v6";
+	body.schema = "gentle-ai.review-integration.status/v9";
 	body.forecast = {
 		horizon: "partial", steps: [{ step: 1, kind: "collect", reason_code: "intended_untracked_selection_required", description: "initial intended-untracked selection required" }],
 	};
@@ -71,19 +74,18 @@ function initialIntendedUntrackedStatusV6(): JsonObject {
 	return body;
 }
 
-test("captured capabilities retain their exact schema identity", () => {
-	const capabilities = decodeReviewCapabilitiesV2(
-		fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json"),
-		CAPTURED_DIGEST,
-	);
+test("captured capabilities derived to the supported capabilities/v2.6 retain their schema identity", () => {
+	const capabilities = decodeReviewCapabilitiesV2(capabilitiesV26(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject), CAPTURED_DIGEST);
 	assert.equal(capabilities.packageVersion, "2.4.0-rc.8+fix.verify-attestation-recovery");
-	assert.equal(capabilities.schemas.has("gentle-ai.review-integration.status/v5"), true);
+	assert.equal(capabilities.schemas.has("gentle-ai.review-integration.capabilities/v2.6"), true);
+	assert.equal(capabilities.schemas.has("gentle-ai.review-integration.status/v6"), true);
 });
 
-test("historical v3 FINALIZE status remains rejected without rewriting fixture bytes", () => {
+test("historical v3 status is refused as older than the supported v9 without rewriting fixture bytes", () => {
 	assert.throws(
 		() => decodeReviewStatusV3(fixture(V2_FIXTURES, "status.fixture.json")),
-		/receipt|finalize|status/i,
+		(error: unknown) => error instanceof ReviewNativeContractTooOldError
+			&& error.message === "gentle-ai native review status/v3 is older than the supported v9 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override",
 	);
 });
 
@@ -101,21 +103,12 @@ test("v5 STATUS rejects malformed receipt status, identity, and extra fields", (
 	assert.throws(() => decodeReviewStatusV3(extra), /status\.receipt\.unexpected is not allowed/);
 });
 
-test("legacy-v1 v5 STATUS accepts only its two compatible receipt states", () => {
-	const legacyStatus = (status: string, identity?: string): JsonObject => {
-		const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
-		(body.authority as JsonObject).version = "legacy-v1";
-		body.receipt = { status, ...(identity === undefined ? {} : { identity }) };
-		delete body.frozen;
-		delete body.authority_target_identity;
-		return body;
-	};
-
-	assert.deepEqual(decodeReviewStatusV3(legacyStatus("expected_missing")).receipt, { status: "expected_missing" });
-	assert.deepEqual(decodeReviewStatusV3(legacyStatus("present", sha("a"))).receipt, { status: "present", identity: sha("a") });
-	for (const status of ["publication_pending", "not_applicable"]) {
-		assert.throws(() => decodeReviewStatusV3(legacyStatus(status)), /legacy status receipt is incompatible/);
-	}
+test("non compact-v2 STATUS authority fails the ordinary strict decode", () => {
+	const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
+	(body.authority as JsonObject).version = "legacy-v1";
+	delete body.frozen;
+	delete body.authority_target_identity;
+	assert.throws(() => decodeReviewStatusV3(body), /status\.authority\.version/);
 });
 
 test("captured terminal closure decodes without a compatibility status projection", () => {
@@ -126,17 +119,9 @@ test("captured terminal closure decodes without a compatibility status projectio
 	assert.equal(closure.state, "approved");
 });
 
-test("derived and pinned capabilities remain separately schema-pinned", () => {
-	const derived = decodeReviewCapabilitiesV2(fixture(DEV_FIXTURES, "capabilities-v2.1.derived.json"), CAPTURED_DIGEST);
-	assert.equal(derived.schemas.has("gentle-ai.review-integration.consent/v3"), true);
-	const pinned = decodeReviewCapabilitiesV2(fixture(V2_FIXTURES, "capabilities.fixture.json"), "dcc846103b16d365eaeeb9d7f289c23fc4f2897f23def1cb3fe7f05557b64705");
-	assert.equal(pinned.schemas.has("gentle-ai.review-integration.consent/v2"), true);
-});
-
 test("capabilities reject a protocol minor that disagrees with their exact identity", () => {
-	const body = fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as Record<string, unknown>;
-	const mutated = structuredClone(body) as Record<string, unknown>;
-	(mutated.protocol as Record<string, unknown>).minor = 1;
+	const mutated = capabilitiesV26(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
+	(mutated.protocol as Record<string, unknown>).minor = 5;
 	assert.throws(() => decodeReviewCapabilitiesV2(mutated, CAPTURED_DIGEST), /protocol/);
 });
 
@@ -145,13 +130,6 @@ test("captured v5 STATUS preserves its provider forecast and collect binding", (
 	assert.equal(decoded.forecast?.horizon, "partial");
 	assert.equal(decoded.nextTransition?.kind, "collect");
 	assert.equal(decoded.nextTransition?.collect?.inputs[0]?.captureOperation, "external.select_base_ref");
-});
-
-test("v3 status identity rejects v5-only forecast fields", () => {
-	const body = currentStatusFixture("status-v5.captured.json");
-	body.schema = "gentle-ai.review-integration.status/v3";
-	delete body.receipt;
-	assert.throws(() => decodeReviewStatusV3(body), /forecast/);
 });
 
 test("captured v5 STATUS retains its opaque repository context reference", () => {
@@ -215,21 +193,6 @@ test("nonuniform role capture closures retain their exact upstream operation ide
 	assert.equal(decodeReviewLastEventClosureV1(fixture(DEV_FIXTURES, "last-event-capture-validation-approved.captured.json")).operation, "review/capture-validation");
 });
 
-test("the derived capabilities/v2.1 payload decodes with protocol minor 1", () => {
-	const capabilities = decodeReviewCapabilitiesV2(fixture(DEV_FIXTURES, "capabilities-v2.1.derived.json"), CAPTURED_DIGEST);
-	assert.equal(capabilities.packageVersion, "2.4.0-rc.8+fix.verify-attestation-recovery");
-	assert.equal(capabilities.schemas.has("gentle-ai.review-integration.status/v3"), true);
-	assert.equal(capabilities.schemas.has("gentle-ai.review-integration.consent/v3"), true);
-});
-
-test("a status/v3 payload never carries a top-level repository context", () => {
-	const body = currentStatusFixture("status-v5-repository-context.captured.json");
-	body.schema = "gentle-ai.review-integration.status/v3";
-	delete body.receipt;
-	delete body.forecast;
-	assert.throws(() => decodeReviewStatusV3(body), /repository_context/);
-});
-
 test("a v5 forecast requires the next transition and a coherent horizon", () => {
 	const orphanForecast = currentStatusFixture("status-v5.captured.json");
 	delete orphanForecast.next_transition;
@@ -255,25 +218,6 @@ test("a v5 provider role task input decodes and is confined to external.run_prov
 	const missing = clone(body);
 	delete ((((missing.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[])[0]!).provider_task;
 	assert.throws(() => decodeReviewStatusV3(missing), /provider_task/);
-});
-
-test("the v3 identity keeps rejecting the singular capture-result value form", () => {
-	const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
-	body.schema = "gentle-ai.review-integration.status/v3";
-	delete body.receipt;
-	delete body.forecast;
-	delete body.repository_context;
-	assert.throws(() => decodeReviewStatusV3(body), /values is required/);
-});
-
-test("the v3 next transition keeps rejecting every v5-only surface", () => {
-	const v5 = currentStatusFixture("status-v5.captured.json");
-	v5.schema = "gentle-ai.review-integration.status/v3";
-	delete v5.receipt;
-	delete v5.forecast;
-	const transition = v5.next_transition as JsonObject;
-	transition.correction_request = { schema: "gentle-ai.review-correction-plan-request/v1", request_hash: sha("a") };
-	assert.throws(() => decodeReviewStatusV3(v5), /not allowed|correction_request/);
 });
 
 test("consent/v3 keeps every v2 semantic guard and rejects agents outside the fixed runtime contract", () => {
@@ -342,164 +286,70 @@ function reviewingStartV4(action: "created" | "replayed" = "created"): JsonObjec
 	return body;
 }
 
-test("capabilities/v2.3 retains status/v5 while v2.4 requires status/v6", () => {
-	const v23 = clone(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
-	v23.schema = "gentle-ai.review-integration.capabilities/v2.3";
-	(v23.protocol as JsonObject).minor = 3;
-	v23.schemas = (v23.schemas as string[]).map((schema) => schema
-		.replace("capabilities/v2.2", "capabilities/v2.3")
-		.replace("start/v3", "start/v4"));
-	// The v2.3 provider contract retired these three mandatory features; the
-	// pinned v2.5.0-rc.3 runtime no longer advertises them.
-	const features = v23.features as JsonObject;
-	features.mandatory = (features.mandatory as JsonObject[]).filter((feature) =>
-		!["exact_receipt_replay", "five_delivery_gates", "sdd_receipt_binding"].includes(feature.name as string));
-	const decoded = decodeReviewCapabilitiesV2(v23, CAPTURED_DIGEST);
+test("capabilities/v2.6 (gentle-ai v4.6.0) is the only supported advertisement and keeps the status/v6 floor", () => {
+	const v26 = capabilitiesV26(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
+	v26.schemas = [...(v26.schemas as string[]), "gentle-ai.review-integration.status/v7", "gentle-ai.review-integration.status/v8", "gentle-ai.review-integration.status/v9"];
+	const decoded = decodeReviewCapabilitiesV2(v26, CAPTURED_DIGEST);
 	assert.equal(decoded.schemas.has("gentle-ai.review-integration.start/v4"), true);
 	assert.equal(decoded.schemas.has("gentle-ai.review-integration.start/v3"), false);
-	assert.equal(decoded.schemas.has("gentle-ai.review-integration.status/v5"), true);
-
-	const v24 = clone(v23);
-	v24.schema = "gentle-ai.review-integration.capabilities/v2.4";
-	(v24.protocol as JsonObject).minor = 4;
-	v24.schemas = [
-		...(v24.schemas as string[]).map((schema) => schema
-			.replace("capabilities/v2.3", "capabilities/v2.4")
-			.replace("status/v5", "status/v6")),
-		"gentle-ai.review-intended-untracked-selection/v1",
-	];
-	const v24Decoded = decodeReviewCapabilitiesV2(v24, CAPTURED_DIGEST);
-	assert.equal(v24Decoded.schemas.has("gentle-ai.review-integration.status/v6"), true);
-	assert.equal(v24Decoded.schemas.has("gentle-ai.review-integration.status/v5"), false);
-
-	const missingStatusV6 = clone(v24);
-	missingStatusV6.schemas = (missingStatusV6.schemas as string[]).map((schema) => schema.replace("status/v6", "status/v5"));
-	assert.throws(() => decodeReviewCapabilitiesV2(missingStatusV6, CAPTURED_DIGEST), /status\/v6/);
-
-	// Distinguishing case for the v2.3 retired-schema filter: the real rc.3
-	// provider no longer advertises these three identities, so a v2.3
-	// advertisement WITHOUT them must still negotiate. A no-op filter would
-	// keep requiring them and fail the superset assertion here.
-	const retiredSchemas = ["gentle-ai.review-final-verification-incident/v1", "gentle-ai.review-receipt/v2", "gentle-ai.review-verification-evidence/v2"];
-	const retiredRemoved = clone(v23);
-	retiredRemoved.schemas = (retiredRemoved.schemas as string[]).filter((schema) => !retiredSchemas.includes(schema));
-	assert.equal((v23.schemas as string[]).length - (retiredRemoved.schemas as string[]).length, 3, "fixture must actually carry and then remove the three retired identities");
-	const relaxed = decodeReviewCapabilitiesV2(retiredRemoved, CAPTURED_DIGEST);
-	for (const schema of retiredSchemas) assert.equal(relaxed.schemas.has(schema), false);
-
-	// Earlier minors keep the full common requirement: the same removal under
-	// the v2.2 identity must fail closed.
-	const v22Retired = clone(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
-	v22Retired.schemas = (v22Retired.schemas as string[]).filter((schema) => !retiredSchemas.includes(schema));
-	assert.throws(() => decodeReviewCapabilitiesV2(v22Retired, CAPTURED_DIGEST), /schema/);
-});
-
-test("capabilities/v2.5 negotiates the v2.6.0 advertisement and status/v7 decodes the eligible untracked inventory", () => {
-	// gentle-ai v2.6.0 advertises capabilities/v2.5: the v2.4 surface plus
-	// status/v7, with status/v6 still advertised for compatibility.
-	const v25 = clone(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
-	v25.schema = "gentle-ai.review-integration.capabilities/v2.5";
-	(v25.protocol as JsonObject).minor = 5;
-	const features = v25.features as JsonObject;
-	features.mandatory = (features.mandatory as JsonObject[]).filter((feature) =>
-		!["exact_receipt_replay", "five_delivery_gates", "sdd_receipt_binding"].includes(feature.name as string));
-	v25.schemas = [
-		...(v25.schemas as string[]).map((schema) => schema
-			.replace("capabilities/v2.2", "capabilities/v2.5")
-			.replace("start/v3", "start/v4")
-			.replace("status/v5", "status/v6")),
-		"gentle-ai.review-intended-untracked-selection/v1",
-		"gentle-ai.review-integration.status/v7",
-	];
-	const decoded = decodeReviewCapabilitiesV2(v25, CAPTURED_DIGEST);
 	assert.equal(decoded.schemas.has("gentle-ai.review-integration.status/v6"), true);
-	// The negotiated set is the v2.5 requirement floor; status/v7 is additive
-	// and never required, so an advertisement without it still negotiates.
-	assert.equal(decoded.schemas.has("gentle-ai.review-integration.status/v7"), false);
-	const withoutStatusV7 = clone(v25);
-	withoutStatusV7.schemas = (withoutStatusV7.schemas as string[]).filter((schema) => schema !== "gentle-ai.review-integration.status/v7");
-	assert.equal(decodeReviewCapabilitiesV2(withoutStatusV7, CAPTURED_DIGEST).schemas.has("gentle-ai.review-integration.status/v6"), true);
-
-	// status/v6 stays required: v7 is an additive extension, not a replacement.
-	const missingStatusV6 = clone(v25);
-	missingStatusV6.schemas = (missingStatusV6.schemas as string[]).filter((schema) => schema !== "gentle-ai.review-integration.status/v6");
-	assert.throws(() => decodeReviewCapabilitiesV2(missingStatusV6, CAPTURED_DIGEST), /status\/v6/);
-
-	// status/v7 adds only the optional top-level eligible untracked inventory digest.
-	const v7 = initialIntendedUntrackedStatusV6();
-	v7.schema = "gentle-ai.review-integration.status/v7";
-	v7.eligible_untracked_inventory = sha("e");
-	assert.equal(decodeReviewStatusV3(v7).eligibleUntrackedInventory, sha("e"));
-
-	const v7Staged = initialIntendedUntrackedStatusV6();
-	v7Staged.schema = "gentle-ai.review-integration.status/v7";
-	assert.equal(decodeReviewStatusV3(v7Staged).eligibleUntrackedInventory, undefined);
-
-	// The digest is v7-only: a v6 envelope carrying it is still rejected.
-	const v6WithDigest = initialIntendedUntrackedStatusV6();
-	v6WithDigest.eligible_untracked_inventory = sha("e");
-	assert.throws(() => decodeReviewStatusV3(v6WithDigest), /eligible_untracked_inventory/);
-});
-
-test("capabilities/v2.6 negotiates the v3.4.0 advertisement on the same v2.5 requirement floor", () => {
-	// gentle-ai v3.4.0 advertises capabilities/v2.6: the v2.5 surface plus
-	// status/v8 (status/v6 and status/v7 stay advertised for compatibility).
-	// The `review assess` review_due/review_due_reason/next_transition
-	// additions are a separate schema (gentle-ai.review-assessment/v1),
-	// unrelated to this negotiated capabilities surface.
-	const v26 = clone(fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject);
-	v26.schema = "gentle-ai.review-integration.capabilities/v2.6";
-	(v26.protocol as JsonObject).minor = 6;
-	const features = v26.features as JsonObject;
-	features.mandatory = (features.mandatory as JsonObject[]).filter((feature) =>
-		!["exact_receipt_replay", "five_delivery_gates", "sdd_receipt_binding"].includes(feature.name as string));
-	v26.schemas = [
-		...(v26.schemas as string[]).map((schema) => schema
-			.replace("capabilities/v2.2", "capabilities/v2.6")
-			.replace("start/v3", "start/v4")
-			.replace("status/v5", "status/v6")),
-		"gentle-ai.review-intended-untracked-selection/v1",
-		"gentle-ai.review-integration.status/v7",
-		"gentle-ai.review-integration.status/v8",
-	];
-	const decoded = decodeReviewCapabilitiesV2(v26, CAPTURED_DIGEST);
-	assert.equal(decoded.schemas.has("gentle-ai.review-integration.status/v6"), true);
-	// The negotiated set is the v2.5 requirement floor unchanged; status/v7
-	// and status/v8 are additive and never required, so an advertisement
-	// without either still negotiates.
-	const withoutV7V8 = clone(v26);
-	withoutV7V8.schemas = (withoutV7V8.schemas as string[]).filter((schema) => !["gentle-ai.review-integration.status/v7", "gentle-ai.review-integration.status/v8"].includes(schema as string));
-	assert.equal(decodeReviewCapabilitiesV2(withoutV7V8, CAPTURED_DIGEST).schemas.has("gentle-ai.review-integration.status/v6"), true);
-
-	// status/v6 stays required: v7/v8 are additive extensions, not a replacement.
+	// The negotiated floor is status/v6; status/v7-v9 are additive and never required.
+	assert.equal(decoded.schemas.has("gentle-ai.review-integration.status/v9"), false);
+	const withoutAdditive = clone(v26);
+	withoutAdditive.schemas = (withoutAdditive.schemas as string[]).filter((schema) => !/status\/v[789]$/.test(schema));
+	assert.equal(decodeReviewCapabilitiesV2(withoutAdditive, CAPTURED_DIGEST).schemas.has("gentle-ai.review-integration.status/v6"), true);
 	const missingStatusV6 = clone(v26);
 	missingStatusV6.schemas = (missingStatusV6.schemas as string[]).filter((schema) => schema !== "gentle-ai.review-integration.status/v6");
 	assert.throws(() => decodeReviewCapabilitiesV2(missingStatusV6, CAPTURED_DIGEST), /status\/v6/);
+	// The three identities retired in v2.3 are not required.
+	const retiredSchemas = ["gentle-ai.review-final-verification-incident/v1", "gentle-ai.review-receipt/v2", "gentle-ai.review-verification-evidence/v2"];
+	for (const schema of retiredSchemas) assert.equal(decoded.schemas.has(schema), false);
 });
 
-// status/v8 (gentle-ai main, PR #4765; the current released contract) only
-// extended the reviewer-result transition for OpenCode provider tasks -- no
-// new top-level key -- so it decodes on the exact v7 surface: same optional
-// eligible_untracked_inventory digest, same rejection of a v6 envelope
-// carrying it. status/v9 (the sibling gentle-ai branch's contract, ahead of
-// the released v8) adds nothing new at the top level either; its one
-// addition -- the host-mediated role submission -- lives in
-// next_transition.collect.inputs and is covered by
-// tests/review-integration-v2.test.ts's "v9 host-mediated" tests.
-test("status/v8 and status/v9 decode with their exact identity on the v7 surface", () => {
-	const v8 = initialIntendedUntrackedStatusV6();
-	v8.schema = "gentle-ai.review-integration.status/v8";
-	v8.eligible_untracked_inventory = sha("e");
-	const decodedV8 = decodeReviewStatusV3(v8);
-	assert.equal(decodedV8.raw.schema, "gentle-ai.review-integration.status/v8");
-	assert.equal(decodedV8.eligibleUntrackedInventory, sha("e"));
+test("capabilities older than v2.6 are refused with the actionable minimum-version message", () => {
+	const base = fixture(DEV_FIXTURES, "capabilities-v2.2.captured.json") as JsonObject;
+	for (const [identity, label] of [["capabilities/v2", "capabilities/v2"], ["capabilities/v2.1", "capabilities/v2.1"], ["capabilities/v2.2", "capabilities/v2.2"], ["capabilities/v2.3", "capabilities/v2.3"], ["capabilities/v2.4", "capabilities/v2.4"], ["capabilities/v2.5", "capabilities/v2.5"]]) {
+		const older = capabilitiesV26(base);
+		older.schema = `gentle-ai.review-integration.${identity}`;
+		assert.throws(
+			() => decodeReviewCapabilitiesV2(older, CAPTURED_DIGEST),
+			(error: unknown) => error instanceof ReviewNativeContractTooOldError
+				&& error.message === `gentle-ai native review ${label} is older than the supported v2.6 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override`,
+			identity,
+		);
+	}
+	// A schema that is not a capabilities minor at all stays an ordinary schema error.
+	const unknown = capabilitiesV26(base);
+	unknown.schema = "gentle-ai.review-integration.capabilities/v3";
+	assert.throws(() => decodeReviewCapabilitiesV2(unknown, CAPTURED_DIGEST), (error: unknown) => error instanceof TypeError && !(error instanceof ReviewNativeContractTooOldError) && /schema/.test(error.message));
+});
 
+// status/v9 (gentle-ai v4.6.0) is the only supported status identity; its
+// host-mediated role submission lives in next_transition.collect.inputs and is
+// covered by tests/review-integration-v2.test.ts's "v9 host-mediated" tests.
+test("status/v9 decodes with its exact identity and the eligible untracked inventory", () => {
 	const v9 = initialIntendedUntrackedStatusV6();
-	v9.schema = "gentle-ai.review-integration.status/v9";
 	v9.eligible_untracked_inventory = sha("e");
-	const decodedV9 = decodeReviewStatusV3(v9);
-	assert.equal(decodedV9.raw.schema, "gentle-ai.review-integration.status/v9");
-	assert.equal(decodedV9.eligibleUntrackedInventory, sha("e"));
+	const decoded = decodeReviewStatusV3(v9);
+	assert.equal(decoded.raw.schema, "gentle-ai.review-integration.status/v9");
+	assert.equal(decoded.eligibleUntrackedInventory, sha("e"));
+});
+
+test("status older than v9 is refused with the actionable minimum-version message", () => {
+	for (const version of [3, 5, 6, 7, 8]) {
+		const older = initialIntendedUntrackedStatusV6();
+		older.schema = `gentle-ai.review-integration.status/v${version}`;
+		assert.throws(
+			() => decodeReviewStatusV3(older),
+			(error: unknown) => error instanceof ReviewNativeContractTooOldError
+				&& error.message === `gentle-ai native review status/v${version} is older than the supported v9 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override`,
+			`status/v${version}`,
+		);
+	}
+	// An identity that is not an older status minor stays an ordinary schema error.
+	const unknown = initialIntendedUntrackedStatusV6();
+	unknown.schema = "gentle-ai.review-integration.status/v10";
+	assert.throws(() => decodeReviewStatusV3(unknown), (error: unknown) => error instanceof TypeError && !(error instanceof ReviewNativeContractTooOldError) && /schema/.test(error.message));
 });
 
 test("status/v6 decodes and enforces the intended-untracked selection submission", () => {
@@ -530,10 +380,6 @@ test("status/v6 decodes and enforces the intended-untracked selection submission
 		mutate(submission(body));
 		assert.throws(() => decodeReviewStatusV3(body), pattern, name);
 	}
-	const v5 = initialIntendedUntrackedStatusV6();
-	v5.schema = "gentle-ai.review-integration.status/v5";
-	assert.throws(() => decodeReviewStatusV3(v5), /submission/);
-
 	const collectInput = (body: JsonObject) => (((body.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[])[0]!;
 	const artifactSubject = { schema: "gentle-ai.review-artifact-subject/v2", subject_hash: sha("a"), lineage_id: "review-test", authority_revision: sha("b"), target_identity: sha("c"), base_tree: "a".repeat(40), candidate_tree: "b".repeat(40), changed_path_manifest_sha256: sha("d"), lens: "review-risk", selected_order: 0 };
 	const incompatibleCaptures: ReadonlyArray<readonly [string, JsonObject]> = [
@@ -965,7 +811,7 @@ test("review-acknowledged/v1 is disjoint from every prior captured identity in b
 // last-event-closure.schema.json#/properties/escalation (not a live capture).
 function escalatedStatusV7(): JsonObject {
 	const body = currentStatusFixture("status-v5-capture-result-submission.captured.json");
-	body.schema = "gentle-ai.review-integration.status/v7";
+	body.schema = "gentle-ai.review-integration.status/v9";
 	(body.authority as JsonObject).state = "escalated";
 	body.action = "stop";
 	body.replayability = "manual_action_required";
@@ -999,9 +845,6 @@ test("v7 escalation strictly decodes all causes and optional refuter evidence", 
 	}
 	for (const refuter_outcomes of [null, undefined, {}, [null], [{}], [{ finding_id: "R1", outcome: "future", proof: "proof" }], [{ finding_id: "", outcome: "refuted", proof: "proof" }], [{ finding_id: "R1", outcome: "refuted", proof: "" }], [{ finding_id: "R1", outcome: "refuted", proof: "proof", extra: true }]]) {
 		assert.throws(() => decodeReviewStatusV3({ ...escalatedStatusV7(), escalation: { cause: "missing_refuter_outcome", finding_ids: ["R1"], refuter_outcomes } }), /refuter_outcomes/);
-	}
-	for (const version of [3, 5, 6]) {
-		assert.throws(() => decodeReviewStatusV3({ ...escalatedStatusV7(), schema: `gentle-ai.review-integration.status/v${version}` }), /not allowed/);
 	}
 });
 
@@ -1042,8 +885,8 @@ function intendedUntrackedSubmissionStatus(selector: readonly string[], location
 	return body;
 }
 
-function decodedSubmissionTokens(body: JsonObject): readonly string[] {
-	const decoded = decodeReviewStatusV3(body);
+function decodedSubmissionTokens(body: JsonObject, boundSelectionLineage?: string): readonly string[] {
+	const decoded = decodeReviewStatusV3(body, { boundSelectionLineage });
 	const input = decoded.nextTransition?.kind === "collect" ? decoded.nextTransition.collect?.inputs[0] : undefined;
 	return input?.submission?.argumentTokens ?? [];
 }
@@ -1069,6 +912,43 @@ test("status/v6 intended-untracked submission rejects any other selector or subs
 		assert.throws(() => decodeReviewStatusV3(intendedUntrackedSubmissionStatus(selector)), /argument_tokens|substitution/, selector.join(" "));
 	}
 	assert.throws(() => decodeReviewStatusV3(intendedUntrackedSubmissionStatus([`--base-ref=${TREE}`, "--committed-only=true"], 4)), /substitution_location/);
+});
+
+test("#6221 STATUS accepts the exact workspace and committed bound tuples without rewriting their bytes", () => {
+	for (const selector of [["--projection=workspace"], [`--base-ref=${TREE}`, "--committed-only=true"]]) {
+		const tokens = ["--lineage=review-6221", ...selector];
+		const body = boundUntrackedSubmissionStatus(tokens);
+		assert.throws(() => decodeReviewStatusV3(body), /argument_tokens/, "unnegotiated v9 keeps its original closed tuple");
+		assert.throws(() => decodedSubmissionTokens(body, "review-other"), /argument_tokens/, "the explicitly requested lineage must match the returned authority");
+		assert.deepEqual(decodedSubmissionTokens(body, "review-6221"), [...PROVIDER_PREFIX, ...tokens, SELECTION_TOKEN]);
+	}
+});
+
+function boundUntrackedSubmissionStatus(selector: readonly string[], location?: number): JsonObject {
+	const body = intendedUntrackedSubmissionStatus(selector, location);
+	body.applicability = "current_target";
+	body.authority = { version: "compact-v2", lineage_id: "review-6221", state: "escalated", generation: 1, revision: sha("d") };
+	body.frozen = { tier: "medium", original_changed_lines: 4, correction_budget: 2 };
+	(body.projection as JsonObject).base_tree = TREE;
+	if (selector.some(token => token.startsWith("--base-ref="))) (body.projection as JsonObject).kind = "base-diff";
+	const input = ((body.next_transition as JsonObject).collect as JsonObject).inputs as JsonObject[];
+	(input[0]!.arguments as JsonObject[])[2]!.value = TREE;
+	return body;
+}
+
+test("#6221 STATUS rejects bound tuples with invalid lineage, target selector or JSON index", () => {
+	for (const selector of [
+		["--lineage=review-other", "--projection=workspace"],
+		["--projection=workspace", "--lineage=review-6221"],
+		["--lineage=review-6221", "--lineage=review-6221"],
+		["--lineage", "review-6221", "--projection=workspace"],
+		["--lineage=review-6221", "--projection=staged"],
+		["--lineage=review-6221", `--base-ref=${"b".repeat(40)}`, "--committed-only=true"],
+	]) assert.throws(() => decodedSubmissionTokens(boundUntrackedSubmissionStatus(selector), "review-6221"), /argument_tokens/, selector.join(" "));
+	const workspace = ["--lineage=review-6221", "--projection=workspace"];
+	assert.throws(() => decodedSubmissionTokens(intendedUntrackedSubmissionStatus(workspace), "review-6221"), /argument_tokens/);
+	assert.throws(() => decodedSubmissionTokens(boundUntrackedSubmissionStatus(workspace, 4), "review-6221"), /substitution_location/);
+	assert.throws(() => decodedSubmissionTokens(boundUntrackedSubmissionStatus(["--lineage=review-6221", `--base-ref=${TREE}`, "--committed-only=true"], 5), "review-6221"), /substitution_location/);
 });
 
 test("targetStatus runs a provider-issued base-diff submission as issued instead of re-forwarding the request base-ref", async () => {

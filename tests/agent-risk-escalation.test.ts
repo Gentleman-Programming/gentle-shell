@@ -148,3 +148,18 @@ test("gentle_review assess: an escalation over a native high is what adds the ve
 	assert.equal(plan.agentEscalation.applied, true, "without the escalation the plan would be medium");
 	assert.equal(plan.plan.independentVerifier, true);
 });
+
+test("decodeAgentRiskEscalation measures the reason in UTF-8 bytes, as native assess does", () => {
+	assert.equal(decodeAgentRiskEscalation({ item: 4, reason: "á".repeat(250) }).reason.length, 250);
+	assert.throws(() => decodeAgentRiskEscalation({ item: 4, reason: "á".repeat(251) }), /at most 500 UTF-8 bytes/);
+	assert.throws(() => decodeAgentRiskEscalation({ item: 4, reason: "x".repeat(501) }), /at most 500 UTF-8 bytes/);
+});
+
+test("decodeAgentRiskEscalation rejects a multi-line or control-character reason as not one line", () => {
+	for (const reason of ["a\nb", "a\r\nb", "a\rb", "a\u000bb", "a\u000cb", "a\u0085b", "a\u2028b", "a\u2029b"]) {
+		assert.throws(() => decodeAgentRiskEscalation({ item: 2, reason }), /escalate reason must be one line/, JSON.stringify(reason));
+	}
+	assert.deepEqual({ ...decodeAgentRiskEscalation({ item: 2, reason: "one line, ünïcode ✓" }) }, { item: 2, reason: "one line, ünïcode ✓" });
+	// A tab is not a line break: assess accepted it before and native carries it to consent.
+	assert.equal(decodeAgentRiskEscalation({ item: 2, reason: "tab\there" }).reason, "tab\there");
+});

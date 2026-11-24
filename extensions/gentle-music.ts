@@ -5,6 +5,7 @@ import { delimiter, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isOptionalExtensionEnabled } from "../lib/optional-extensions-policy.ts";
 import type { Component } from "@earendil-works/pi-tui";
+import { isChildSession } from "../lib/child-session.ts";
 import { runningBundledPrefix } from "../lib/gentle-shell-bundled.ts";
 
 // Gentle Music: /gentle:music hands the whole terminal to gentle-stream's own
@@ -259,6 +260,7 @@ async function handOverTerminal<T>(tui: TerminalOwner, signals: MusicSignals, ru
 }
 
 export default function gentleMusic(pi: ExtensionAPI, deps: GentleMusicDeps = {}): void {
+	if (isChildSession()) return;
 	const which = deps.which ?? ((name: string) => findOnPath(name));
 	const spawn = deps.spawn ?? defaultSpawn;
 	const signals = deps.signals ?? defaultSignals;

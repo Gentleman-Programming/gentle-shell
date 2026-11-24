@@ -190,11 +190,9 @@ test("decodeReviewAssessmentV1 rejects malformed consumed, review_due, and revie
 	}
 });
 
-// gentle-pi#1175 (T2): the native schema fixes review_due by reason
-// (true for high_risk and slice_budget_reached, false for passive,
-// under_budget, and already_reviewed). Consumed candidates must report
-// already_reviewed, but an acknowledged predecessor plus a passive delta can
-// also produce that reason without consuming this exact candidate (#1954).
+// Native review_due/review_due_reason/consumed combinations; the decoder
+// reads them as-is. An acknowledged predecessor plus a passive delta can
+// report already_reviewed without consuming this candidate (#1954).
 interface ReviewDuePair {
 	reason: string;
 	due: boolean;
@@ -230,18 +228,6 @@ test("decodeReviewAssessmentV1 accepts every consistent review_due/review_due_re
 	assert.equal(decodeReviewAssessmentV1(newEnvelope({ next_transition: undefined })).reviewDueReason, "high_risk");
 });
 
-test("decodeReviewAssessmentV1 rejects a review_due boolean that contradicts review_due_reason", () => {
-	for (const pair of CONSISTENT_REVIEW_DUE_PAIRS) {
-		const contradictory = newEnvelope({
-			candidate: { kind: "current-changes", consumed: pair.consumed },
-			review_due: !pair.due,
-			review_due_reason: pair.reason,
-			next_transition: undefined,
-		});
-		assert.throws(() => decodeReviewAssessmentV1(contradictory), TypeError, `review_due ${!pair.due} with ${pair.reason} must be rejected`);
-	}
-});
-
 function reviewedPredecessorEnvelope(): Record<string, unknown> {
 	// The executable range still has medium risk; only the delta after the
 	// acknowledged committed predecessor is a passive ODD note.
@@ -268,29 +254,6 @@ test("decodeReviewAssessmentV1 accepts an already-reviewed predecessor without c
 	assert.equal(Object.hasOwn(decoded, "nextTransition"), false);
 });
 
-test("decodeReviewAssessmentV1 rejects already_reviewed with missing consumed evidence", () => {
-	// Native v2 requires consumed; older envelopes omit the entire due pair.
-	assert.throws(
-		() => decodeReviewAssessmentV1(newEnvelope({ candidate: { kind: "current-changes" }, review_due: false, review_due_reason: "already_reviewed", next_transition: undefined })),
-		TypeError,
-	);
-});
-
-test("decodeReviewAssessmentV1 rejects a consumed candidate reported with any reason other than already_reviewed", () => {
-	for (const pair of CONSISTENT_REVIEW_DUE_PAIRS.filter((entry) => entry.reason !== "already_reviewed")) {
-		assert.throws(
-			() => decodeReviewAssessmentV1(newEnvelope({
-				candidate: { kind: "current-changes", consumed: true },
-				review_due: pair.due,
-				review_due_reason: pair.reason,
-				next_transition: pair.due ? nextTransition() : undefined,
-			})),
-			TypeError,
-			`consumed with ${pair.reason} must be rejected`,
-		);
-	}
-});
-
 test("decodeReviewAssessmentV1 still accepts an older envelope without the review_due pair", () => {
 	assert.equal(decodeReviewAssessmentV1(validEnvelope()).risk, "medium");
 	assert.equal(Object.hasOwn(decodeReviewAssessmentV1(validEnvelope({ risk: "passive", reasons: [] })), "reviewDue"), false);
@@ -301,7 +264,7 @@ test("decodeReviewAssessmentV1 rejects only one of the review_due/review_due_rea
 	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ review_due_reason: "passive" })), TypeError);
 });
 
-test("decodeReviewAssessmentV1 rejects a malformed next_transition or one not backed by review_due true", () => {
+test("decodeReviewAssessmentV1 rejects a malformed next_transition", () => {
 	const malformed: Record<string, unknown>[] = [
 		nextTransition({ operation: "review.start" }),
 		nextTransition({ extra: true }),
@@ -320,8 +283,16 @@ test("decodeReviewAssessmentV1 rejects a malformed next_transition or one not ba
 		assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ next_transition: transition })), TypeError, `next_transition ${JSON.stringify(transition)} must be rejected`);
 	}
 	assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ next_transition: null })), TypeError);
-	assert.throws(() => decodeReviewAssessmentV1(newEnvelope({ review_due: false, review_due_reason: "passive" })), TypeError, "next_transition requires review_due true");
-	assert.throws(() => decodeReviewAssessmentV1(validEnvelope({ next_transition: nextTransition() })), TypeError, "next_transition requires review_due true");
+});
+
+test("decodeReviewAssessmentV1 decodes the native due value as-is and never audits its coherence", () => {
+	const decoded = decodeReviewAssessmentV1(newEnvelope({ review_due: false, review_due_reason: "high_risk", next_transition: nextTransition() }));
+	assert.equal(decoded.reviewDue, false);
+	assert.equal(decoded.reviewDueReason, "high_risk");
+	assert.deepEqual(decoded.nextTransition, nextTransition());
+	const consumed = decodeReviewAssessmentV1(newEnvelope({ candidate: { kind: "current-changes", consumed: true }, review_due: true, review_due_reason: "under_budget", next_transition: undefined }));
+	assert.equal(consumed.reviewDue, true);
+	assert.equal(consumed.candidate.consumed, true);
 });
 
 test("decodeReviewAssessmentV1 ignores unknown top-level fields and never projects them", () => {

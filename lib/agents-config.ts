@@ -190,6 +190,13 @@ function scalar(value: FrontmatterValue | undefined): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
+const KNOWN_AGENT_FRONTMATTER_KEYS: readonly string[] = ["name", "description", "model", "thinking", "effort", "thinking_level", "subagent_mode", "mode", "tools"];
+
+// gentle-shell#3386: a key nothing reads (for example `extensions:`) used to be dropped silently.
+export function unknownFrontmatterKeys(text: string): string[] {
+	return Object.keys(parseFrontmatter(text).data).filter((key) => !KNOWN_AGENT_FRONTMATTER_KEYS.includes(key));
+}
+
 export function parseAgentDefinition(text: string, filePath: string, scope: AgentScope): AgentDefinition | AgentDefinitionError {
 	const { data, body } = parseFrontmatter(text);
 	const thinking = parseThinking(scalar(data.thinking) ?? scalar(data.effort) ?? scalar(data.thinking_level));
@@ -236,9 +243,11 @@ export function discoverAgents(roots: DiscoveryRoots): DiscoveryResult {
 		if (!existsSync(dir)) continue;
 		for (const file of readdirSync(dir).filter((entry) => entry.toLowerCase().endsWith(".md")).sort()) {
 			const filePath = join(dir, file);
-			const parsed = parseAgentDefinition(readFileSync(filePath, "utf8"), filePath, scope);
+			const text = readFileSync(filePath, "utf8");
+			const parsed = parseAgentDefinition(text, filePath, scope);
 			if ("error" in parsed) errors.push(`${filePath}: ${parsed.error}`);
 			else {
+				for (const key of unknownFrontmatterKeys(text)) overlays.notices.push(`${filePath}: unknown frontmatter key "${key}" is ignored`);
 				const tools = applyToolOverlay(parsed.tools, overlays.entries[parsed.name]);
 				agents.set(parsed.name, { ...parsed, tools });
 			}

@@ -47,9 +47,16 @@ export interface VoiceModelFile {
 export interface VoiceModelManifest {
 	id: string;
 	revision: string;
-	// Files are fetched from `${baseUrl}/${name}`.
+	// The historical source is the default transport and is part of the schema-1 receipt fingerprint.
 	baseUrl: string;
 	files: VoiceModelFile[];
+	redirects: VoiceRedirectRule[];
+}
+
+// Trusted installer input only; it is not user configuration or receipt data.
+export interface VoiceModelTransport {
+	// Files are fetched from `${baseUrl}/${name}`.
+	baseUrl: string;
 	redirects: VoiceRedirectRule[];
 }
 

@@ -62,12 +62,12 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status"],
-  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "session_snapshot"]
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials"],
+  "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "session_snapshot"]
 }
 ```
 
-The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), and [Updates limits](#updates-limits).
+The permission methods, the bounded config read and write, the subscription-usage read and refresh, the design-canvas read, the background-jobs list, cancel, and output read, the profile apply, the subagents list, cancel, and thread read, the review-mode read and change, the cross-session usage-stats read, the update-status read, and the `config_changed`, `permission_mode_changed`, `rate_limit`, `design_canvas`, `jobs_update`, `profile_applied`, `agents_update`, and `review_mode_changed` events are advertised because this extension wires them. `set_config` and `config_changed` are advertised only because the config bridge actually implements that writer — advertising is not a forward-looking wish list. The design slice advertises exactly its one read method and its one transition event, not the canvas `open`/`stop` actions, which stay the `gentle_design` tool's job. The jobs slice advertises exactly its list, cancel, and output-read methods and its one registry-change event, not the `bash_background`/`monitor` start tools, which stay agent tools. The profiles slice advertises exactly its one apply method and its one applied event; profile edits stay `set_config`. The subagents slice advertises exactly its list, cancel, and thread-read methods and its one transition event, not the agent dispatch tools, which stay agent tools. `session_snapshot` is the one entry that depends on the session: it is listed only while the feed owner seam (`extensions/gentle-desktop-feed.ts`) is wired for this session, and absent otherwise; the `get_snapshot` method itself is always listed. The review slice advertises exactly its read and change methods and its one change event; review start, skip, and consent stay terminal-only. The stats slice advertises exactly its one read method and no event: usage stats are an explicit read. The updates slice advertises exactly its one read method and no event; running an update stays the launcher's job. The agent-definitions slice advertises exactly its one read method and no event; editing definitions stays a file edit. The package-status slice advertises exactly its one read method and no event; `/gentle:doctor` stays terminal-only. The background-subagents slice advertises exactly its read and change methods and no event; every answer carries the state. Method availability is not a claim that every dependency is loaded — see [Permission limits](#permission-limits), [Configuration limits](#configuration-limits), [Usage limits](#usage-limits), [Design limits](#design-limits), [Jobs limits](#jobs-limits), [Profiles limits](#profiles-limits), [Subagents limits](#subagents-limits), [Review limits](#review-limits), [Stats limits](#stats-limits), [Updates limits](#updates-limits), [Agent definitions limits](#agent-definitions-limits), [Status limits](#status-limits), and [Background subagents limits](#background-subagents-limits).
 
 ### `get_snapshot`
 
@@ -85,14 +85,17 @@ Returns the current event sequence and a bounded state projection:
         { "store": "profile_fallbacks", "scope": "global", "readOnly": false, "status": "missing", "revision": "sha256:3c11…" },
         { "store": "subagents", "scope": "global+project", "readOnly": true, "status": "ok", "revision": "sha256:77be…" },
         { "store": "pins", "scope": "local+repo", "readOnly": false, "status": "ok", "revision": "sha256:0d19…" },
-        { "store": "managed_assets", "scope": "global", "readOnly": true, "status": "ok", "revision": "sha256:be05…" }
+        { "store": "managed_assets", "scope": "global", "readOnly": true, "status": "ok", "revision": "sha256:be05…" },
+        { "store": "persona", "scope": "global+project", "readOnly": false, "status": "ok", "revision": "sha256:41aa…" },
+        { "store": "banner", "scope": "global", "readOnly": false, "status": "missing", "revision": "sha256:9c02…" },
+        { "store": "notifications", "scope": "global", "readOnly": false, "status": "ok", "revision": "sha256:d317…" }
       ]
     }
   }
 }
 ```
 
-The projection carries only store identity, scope, mutability, status, and revision — never store content, never a path. It is the cheap way for a client to notice that one of the six revisions moved and then call `get_config` for that store. `state` is `{}` when no Desktop command has bound a session context yet, or when that context has no working directory: without one, the project and pin layers cannot be read truthfully, so nothing is projected instead of a guess.
+The projection carries only store identity, scope, mutability, status, and revision — never store content, never a path. It is the cheap way for a client to notice that one of the nine revisions moved and then call `get_config` for that store. `state` is `{}` when no Desktop command has bound a session context yet, or when that context has no working directory: without one, the project and pin layers cannot be read truthfully, so nothing is projected instead of a guess.
 
 This snapshot does not project permission state: use `get_permission_mode` for that. `sequence` is the number of delivered events, so a client that saw `seq: 4` expects `sequence: 4` from a fresh snapshot unless it missed an event.
 
@@ -148,7 +151,7 @@ Reads one existing configuration store through the owner that already reads it. 
 
 | Param | Required | Type | Meaning |
 | --- | --- | --- | --- |
-| `store` | yes | one of the six store identifiers below | The store to read. |
+| `store` | yes | one of the nine store identifiers below | The store to read. |
 
 Any other key — including `scope`, `path`, `file`, or `physical_path` — is rejected as `invalid_request`. A string that is not a known store identifier is rejected as `unknown_store`. Neither case reads anything.
 
@@ -160,6 +163,9 @@ Any other key — including `scope`, `path`, `file`, or `physical_path` — is r
 | `subagents` | `parseAgentsConfig` over `<agentHome>/subagents.json` + `<cwd>/.pi/subagents.json` | `global+project` | `true` | Normalized `AgentsConfig` the runtime would launch with. A layer that cannot be parsed is skipped and the remaining layer still merges, exactly like the runtime reader. |
 | `pins` | `readProfilePinStatus` + `evaluateProfilePin` over the local pin and the repo declaration | `local+repo` | `false` | `resolved`, the winning layer and profile, plus the `invalid` and `stale` layers. Writable per layer — see [`set_config`](#set_config). |
 | `managed_assets` | `readManagedAssetsManifestResult` over `<agentHome>/gentle-ai/managed-assets.json` | `global` | `true` | The installer's ownership manifest (`schemaVersion`, `assets`), filtered to ownership-shaped entries: relative asset paths below the agent home and 64-hex sha256 digests. Anything else is omitted, never echoed. |
+| `persona` | `readPersonaLayer` + `resolvePersonaMode` over `<configHome>/persona.json` + `<cwd>/.pi/gentle-ai/persona.json` | `global+project` | `false` | `{ mode }`: the persona in effect, the project layer winning. |
+| `banner` | `readBannerConfigSync` over `<configHome>/banner.json` | `global` | `false` | `{ showRose, showTextLogo, color }`. |
+| `notifications` | `parseNotificationSettingsFile` over `<configHome>/notifications.json` | `global` | `false` | The validated settings without `schema`, every `file:` sound replaced by `"file"`. |
 
 Success:
 
@@ -191,7 +197,7 @@ Success:
 | --- | --- |
 | `store` | The store identifier that was read. |
 | `scope` | Which owner layers this store is assembled from: `global`, `global+project`, or `local+repo`. |
-| `readOnly` | `false` for the three authoritative stores (`profiles`, `profile_fallbacks`, `pins`); `true` for the three derived or installer-owned stores (`models`, `subagents`, `managed_assets`). |
+| `readOnly` | `false` for the six writable stores (`profiles`, `profile_fallbacks`, `pins`, `persona`, `banner`, `notifications`); `true` for the three derived or installer-owned stores (`models`, `subagents`, `managed_assets`). |
 | `status` | `ok` (normalized content follows), `missing` (no layer produced content because no layer file exists), or `invalid` (layers exist but none of them produced content). See [Layer semantics](#layer-semantics). |
 | `revision` | Opaque read-time digest of the canonical normalized content. See [Revision limits](#revision-limits). |
 | `value` | Normalized owner content, present when the store produced one. Absent when a layer is missing or invalid. |
@@ -202,7 +208,10 @@ Success:
 
 `status` answers for the store; `layers` answers for each file it is assembled from. For a merged store the two are different questions:
 
-- `profiles`, `profile_fallbacks`, and `managed_assets` have one layer, so `status` is that layer's status.
+- `profiles`, `profile_fallbacks`, `managed_assets`, `banner`, and `notifications` have one layer, so `status` is that layer's status.
+- `persona` has a `global` layer (`persona.json` in the Gentle config home) and a `project` layer (`<cwd>/.pi/gentle-ai/persona.json`); `value` is `{ "mode": "gentleman" | "neutral" }`, the mode in effect (the project layer wins), exactly as the prompt build resolves it.
+- `banner` is `{ showRose, showTextLogo, color }` from `banner.json`. A file without those three valid settings is `invalid` and is never repaired by a read; extra keys are ignored, as the `/gentle:banner` editor ignores them, and a Desktop write keeps only the three settings.
+- `notifications` is the owner's validated `notifications.json` without its `schema` key. Every `file:` sound is replaced by the marker `"file"`, so no sound path crosses the wire.
 - `subagents` mirrors the runtime reader: a layer that cannot be parsed is skipped and the remaining layer still merges. `status` is `ok` as soon as one layer is usable, and `layers` still names the broken one.
 - `models` keeps the owner's merge rule, which rejects the saved routing when a layer it reads is malformed; there `status` is `invalid` even if the other layer is fine.
 - `missing` means every layer file is absent. `invalid` means layer files exist but none produced content; in that case the owner would fall back to its own defaults, which are not the content of this store, so no `value` is returned.
@@ -282,13 +291,18 @@ Reads have no side effect. A `get_config` request never creates, rewrites, repai
 
 #### Write targets
 
-A write target is one file, not one store. `get_config` reports it only for a writable store, and `set_config` requires the revision of the exact target it is about to replace:
+A write target is one file, not one store, with one exception: `persona`'s `global` target. `get_config` reports targets only for a writable store, and `set_config` requires the revision of the exact target it is about to replace:
 
 | `store` | `target` values | File |
 | --- | --- | --- |
 | `profiles` | `global` | `<configHome>/profiles.json` |
 | `profile_fallbacks` | `global` | `<configHome>/profile-fallbacks.json` |
 | `pins` | `local`, `repo` | `<git-common-dir>/gentle-ai/profile-pin.json`, `<worktree-root>/.pi/gentle-ai/profile.json` |
+| `persona` | `global` | `<configHome>/persona.json`, plus `<cwd>/.pi/gentle-ai/persona.json` when it already exists |
+| `banner` | `global` | `<configHome>/banner.json` |
+| `notifications` | `global` | `<configHome>/notifications.json` |
+
+`persona`'s `global` target covers both persona files, because the owner rewrites the project file too when it exists: its `writeRevision` digests both layers (so a project edit makes a token stale even while the global file is missing), and its `value` is `{ global, project }` layer states rather than one file. Each file is replaced atomically, but the two-file write is not a transaction: a failure after the global file is written can leave the project file unchanged, and the answer reports the layers as they are.
 
 `writeRevision` is the digest of that one target's state: `sha256` over canonical JSON of `{store, target, status, value}`. When the target reads `ok`, `value` is the owner-normalized file content (for a pin layer, the profile name it holds), so any content change moves the digest. When the target reads `missing` or `invalid`, `value` is absent and the digest covers **only `{store, target, status}`** — the owner produced no content to hash, and this contract does not hash raw bytes. Two consequences follow, and they are limits rather than incidents:
 
@@ -412,7 +426,7 @@ A layer whose file currently reads `invalid` is likewise a valid target for a se
 The checks below run in this order, and the first one that fails answers the request. Nothing is read or written after a rejection.
 
 1. **Envelope** (`invalid_request`): exactly the keys `store`, `data`, and `expectedRevision`; `store` must be a string; `data` must be present. A request missing `data` is malformed whatever store or revision it names, so this check comes before the store rules — a `models` write without `data` is `invalid_request`, not `read_only`. Store contents are not looked at here.
-2. **Store identity** (`unknown_store`): the string must be one of the six store identifiers.
+2. **Store identity** (`unknown_store`): the string must be one of the nine store identifiers.
 3. **Mutability** (`read_only`): `models`, `subagents`, and `managed_assets` are rejected before their `data` is inspected or their revision is compared, so any payload gets the same answer.
 4. **Usable revision** (`revision_conflict`): `expectedRevision` must be a non-empty string. Absent, empty, and non-string tokens are all "the client did not prove it saw the current state", and this is decided before the payload is validated.
 5. **Session roots** (`config_unavailable`): the bound session must have a working directory.
@@ -877,6 +891,8 @@ Each entry carries only the whitelisted fields of the owner's `TaskRecord`:
 | `fallbackFrom` | The model the run moved away from, present only after a fallback switch. |
 | `thinking` | The thinking level the helper ran at, present only when one was resolved. |
 | `lastStep` | A closed phase label derived from the task status, never the raw owner step text: `queued`, `waiting`, `running`, a fixed safe active step (`starting`, `writing`, `cleaning up`, `generating tool arguments`, `question dismissed`, `answered`, `interrupted`), or the generic terminal reason (`completed`, `failed`, `cancelled`, `timed_out`). Raw `TaskRecord.lastStep` text can carry an error message, a stderr tail, or a provider body, so it is mapped into this closed vocabulary and never forwarded. |
+| `turns`, `toolCalls` | Progress inside the run: turns finished and tool calls started so far. Absent only from an owner that predates them. |
+| `activeTool` | The name of the tool running right now, only while the task is active and only when the name is a plain identifier (`[A-Za-z0-9_.:-]`, at most 64). Its arguments and output never cross; read them with `get_subagent_thread`. |
 | `usage` | The helper's accumulated usage: `total` tokens, `cost`, and — once the run settled — the final-assistant `input`, `output`, `cache` (read + write), and `reasoning` token breakdown. The breakdown fields are absent for an in-flight task whose breakdown is not recorded yet, and for a restored finished task whose run never recorded one. |
 
 No prompt text, tool arguments or output, working directory, session path, result, error text, or full session internals ever cross the wire in a list entry; tool arguments, tool output, and thread text are only readable, bounded, through [`get_subagent_thread`](#get_subagent_thread). The list is bounded: active tasks first (recency order), then recently-finished tasks (newest end first), capped at 50 entries, so the answer can never grow with the process lifetime. When the agents owner is absent (the owning extension is not loaded), the answer is `agents_unavailable` — never a fabricated empty list.
@@ -991,12 +1007,13 @@ Success:
       { "model": "claude-opus-5-5", "messages": 2, "tokens": 1365, "cost": 0.51, "share": 0.512 },
       { "model": "gpt-5.5", "messages": 2, "tokens": 1300, "cost": 1.25, "share": 0.488 }
     ],
-    "byDay": [{ "day": "2026-09-20", "tokens": 1000 }, { "day": "2026-10-08", "tokens": 300 }, { "day": "2026-10-09", "tokens": 1365 }],
+    "byDay": [{ "day": "2026-09-20", "tokens": 1000, "cost": 1 }, { "day": "2026-10-08", "tokens": 300, "cost": 0.25 }, { "day": "2026-10-09", "tokens": 1365, "cost": 0.51 }],
+    "byProvider": [{ "provider": "anthropic", "messages": 4, "tokens": 2665, "cost": 1.76, "share": 1 }],
     "byProject": [
       { "name": "alpha", "sessions": 2, "messages": 3, "tokens": 2365, "cost": 1.51 },
       { "name": "beta", "sessions": 1, "messages": 1, "tokens": 300, "cost": 0.25 }
     ],
-    "truncated": { "byModel": false, "byDay": false, "byProject": false }
+    "truncated": { "byModel": false, "byDay": false, "byProvider": false, "byProject": false }
   }
 }
 ```
@@ -1005,11 +1022,12 @@ Success:
 | --- | --- |
 | `totals` | Sessions with at least one assistant usage record in range, those records (`messages`), their token counts, `totalTokens` (each record's own total, or the sum of its parts when it has none), and `cost` in the provider's currency units. Totals always cover the whole range, even when an array below is truncated. |
 | `byModel` | One row per model id, largest `tokens` first; `share` is the model's fraction of `totals.totalTokens`. At most 50 rows. |
-| `byDay` | Tokens per local calendar day (`YYYY-MM-DD`) with any usage, oldest first. At most 400 rows: the most recent days are kept. |
+| `byDay` | Tokens and cost per local calendar day (`YYYY-MM-DD`) with any usage, oldest first. At most 400 rows: the most recent days are kept. |
+| `byProvider` | One row per provider id (as Pi records it on each assistant message, `unknown` when missing), largest `tokens` first; `share` is the provider's fraction of `totals.totalTokens`. At most 50 rows. |
 | `byProject` | Present only for `scope: "all"`. One row per working directory, shown by its display name (the last path segment, never the path), largest `tokens` first. Two directories with the same last segment stay two rows. At most 50 rows. |
 | `truncated` | `true` for each array that had more rows than its bound. `byProject` appears only with `byProject`. |
 
-Model ids and project names longer than 128 characters are cut. No session id, path, provider, prompt, or message text ever crosses the wire. The panel's other figures (streaks, most active day, longest session) are not part of this answer. When no sessions root can be read, or the stats owner is not loaded, the answer is `stats_unavailable` — never a fabricated zero.
+Model ids, provider ids, and project names longer than 128 characters are cut. No session id, path, prompt, or message text ever crosses the wire. The panel's other figures (streaks, most active day, longest session) are not part of this answer. When no sessions root can be read, or the stats owner is not loaded, the answer is `stats_unavailable` — never a fabricated zero.
 
 ### `apply_profile`
 
@@ -1378,6 +1396,189 @@ Success:
 
 No absolute path, raw package source, registry URL, token, command line, or lookup output crosses the wire. A failed lookup is reported as `unknown`, never by its message. Running an update is out of scope: the client shows the command, and the launcher runs it. `updates_unavailable` answers only when the session is not bound or was replaced during the read, or a source fails unexpectedly.
 
+### `list_agent_definitions`
+
+Lists the agent definitions this session can launch, the subagent defaults, and Pi's default orchestrator. It reads the same sources `subagent_list_agents` discovers from, fresh on every call: `<agent home>/agents`, `<agent home>/subagents`, `<cwd>/.pi/agents`, and `<cwd>/.pi/subagents` (a later folder wins a name clash, so a project definition replaces a global one), the global and project `subagents.json`, and the three orchestrator keys of Pi's `settings.json` in the agent home. Params must be an empty object; any key is `invalid_request`, and a malformed request reads nothing. It has no side effects and emits no event.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-90", "method": "list_agent_definitions", "params": {} }
+```
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-90",
+  "ok": true,
+  "data": {
+    "agents": [
+      { "name": "explore", "description": "Global explorer.", "scope": "global", "model": "openai-codex/gpt-5.6-terra", "thinking": "high", "mode": null, "tools": ["read", "grep"], "toolsTruncated": false },
+      { "name": "worker", "description": "Project worker.", "scope": "project", "model": null, "thinking": null, "mode": "background", "tools": [], "toolsTruncated": false }
+    ],
+    "truncated": false,
+    "problems": { "invalid": 1, "notices": 0 },
+    "subagentDefaults": { "model": "anthropic/claude-luna", "thinking": null, "mode": "background" },
+    "defaultOrchestrator": { "status": "set", "model": "openai-codex/gpt-5.6-terra", "thinking": "medium" }
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `agents` | The discovered definitions, sorted by name, at most 200. `model`, `thinking`, and `mode` are what the definition declares (`null` when it inherits); the model a launch actually uses can still come from `subagents.json` profiles or a repository profile pin. `tools` is the list after tool overlays, at most 64 names. |
+| `truncated` | `true` when more than 200 definitions exist. |
+| `problems` | Counts of definitions that failed to parse (`invalid`) and of discovery notices such as unknown frontmatter keys or overlays naming unknown agents (`notices`). Their text names files, so only counts cross. |
+| `subagentDefaults` | `default_model`, `default_thinking`, and `default_mode` from `subagents.json` (project over global); `mode` defaults to `task`. |
+| `defaultOrchestrator.status` | `set` when Pi's `settings.json` names `defaultProvider` and `defaultModel`; `unset` when the file exists without them; `missing` when the file does not exist; `invalid` when it cannot be parsed. `model` is `provider/model` and `thinking` is `defaultThinkingLevel`, both only when `set`. |
+
+No file path, prompt body, or problem text crosses the wire. `agent_definitions_unavailable` answers when the session is not bound or discovery fails (for example an unreadable folder); its message never carries the failure text.
+
+### `get_status`
+
+Reads the facts `/gentle:status` prints for this session's project, through the status owner in `extensions/gentle-ai.ts` (a versioned owner service, like review). Params must be an empty object; any key is `invalid_request`, and a malformed request never reaches the owner. It has no side effects and emits no event.
+
+```json
+{ "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-95", "method": "get_status", "params": {} }
+```
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-95",
+  "ok": true,
+  "data": {
+    "package": "active",
+    "odd": "active",
+    "persona": "gentleman",
+    "devBinary": { "state": "inactive", "sha256Prefix": null },
+    "assets": {
+      "delegation": { "stale": 0, "userOverrides": 1, "activeAgentOverrides": 0 },
+      "review": { "stale": 0, "userOverrides": 0, "activeAgentOverrides": 0 }
+    },
+    "modelConfig": { "global": "present", "routing": "valid" },
+    "severity": "info"
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `persona` | The persona in effect: the project `persona.json` wins over the global one; `gentleman` by default. |
+| `devBinary` | The `gentle-ai` dev-binary override: `inactive`, `active` (with the first 16 hex characters of its SHA-256), or `invalid` (declared but unusable). The binary is never run, so no version is reported; `/gentle:status` shows it. |
+| `assets.<owner>.stale` | Managed `delegation` or `review` assets missing from the agent home or different from the packaged copy. `/gentle:install-<owner> --force` refreshes them. |
+| `assets.<owner>.userOverrides` | Installed files the user replaced; preserved, not drift. |
+| `assets.<owner>.activeAgentOverrides` | Active non-builtin agents that shadow package agents of that owner. |
+| `modelConfig.global` | Whether the global `models.json` exists. |
+| `modelConfig.routing` | The saved model routing: `missing`, `invalid`, or `valid`. Per-agent routing is read with `get_config` (`models`). |
+| `severity` | `warning` exactly when `/gentle:status` warns: invalid routing, an active or invalid dev binary, stale assets, or active agent overrides. |
+
+No path, command hint, or display text crosses the wire. `status_unavailable` answers when the session is not bound or was replaced during the read, no owner answers (for example inside a subagent process), or the owner's answer fails validation or throws; its message never carries the failure text.
+
+### `get_background_subagents`
+
+Reads the background-subagents policy the way `/gentle:background-subagents status` resolves it for this session's project: the project file `.pi/gentle-ai/background-subagents.json`, then the machine-wide file in the Gentle config home, then `GENTLE_PI_BACKGROUND_SUBAGENTS`, then the default `off`. Params must be an empty object. It has no side effects and emits no event.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-96",
+  "ok": true,
+  "data": { "effective": "off", "source": "default", "malformed": false, "projectFile": "absent", "globalFile": "absent", "capability": "ready" }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `effective` | `on` or `off`: whether background subagents may be launched. |
+| `source` | What decided it: `project`, `global`, `environment`, or `default`. |
+| `malformed` | The deciding file exists but is not a valid policy file; the policy is then `off` (fail closed). |
+| `projectFile`, `globalFile` | `present` or `absent`. No path crosses the wire. |
+| `capability` | `ready` when this session can launch background subagents at all, `absent` otherwise. Read-time only. |
+
+### `set_background_subagents`
+
+Writes the machine-wide policy, exactly as `/gentle:background-subagents enable|disable` does. The policy is a user-owned switch, so a change takes two calls, like `set_review_mode`.
+
+| Param | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `policy` | yes | `on` \| `off` | The machine-wide policy to write. |
+| `confirmationToken` | no | string (1-128) | The token from the confirmation answer. |
+
+Any other key, including a `scope`, is `invalid_request`: only the machine-wide file is written, never a project file. Without a matching token the answer is `{ "status": "confirmation_required", "policy", "state", "confirmation": { "title", "message", "token" } }` and nothing is written. The message says when this project's file decides instead, so the change would not apply here. The token is bound to the request, the exact text shown, and the state it describes: if the state changes before the second call, the answer asks again. A request dispatched before a session reset is refused, even if a replacement session attached meanwhile.
+
+With a matching token the owner writes the file and re-reads: `{ "status": "applied", "policy", "changed", "state" }`. `state` is the re-read state (so `effective` can stay unchanged when a project file decides), and `changed` reports whether it differs from the state shown.
+
+Errors: `invalid_request`; `background_subagents_busy` while another Desktop change is in progress; `background_subagents_unavailable` when no owner answers (for example inside a subagent process), the state cannot be read, the request predates a session reset, or the write did not complete (re-read the policy).
+
+### `get_profile_binding`
+
+Reads which profile this session routes its subagents with, through the same rule launches, the status bar, and `/gentle:profiles` use (`resolveSessionProfile`). A binding chosen in the terminal, restored on resume, or inherited at the session's start is reported exactly as a launch would apply it. Params must be an empty object. It writes nothing and emits no event; like the status bar and the Desktop feed, the read can freeze the inherited profile of a session that has not frozen it yet, which is the same freeze its first launch would do.
+
+```json
+{ "ok": true, "data": { "kind": "explicit", "profile": "fast", "origin": "session" } }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `kind` | `explicit` (chosen for this session), `inherited` (the profile the session started with), `follow` (follows the shared layers live, `GENTLE_PI_PROFILE_FOLLOW`), or `live` (a child session reading the layers). |
+| `profile` | The profile name, or `null` for the routing without a profile. |
+| `origin` | `session` for an explicit choice; otherwise the layer that supplied it: `local` (the clone pin), `repo` (the repository declaration), or `global`; `null` without a profile. |
+
+Errors: `invalid_request` (any param) and `profiles_unavailable` (no session id or working directory).
+
+### `clear_profile_binding`
+
+Runs `/gentle:profiles clear` for this session: the session goes back to the profile it started with, or to the routing without a session profile. Params must be an empty object. It takes the profile apply slot, so it never runs during an `apply_profile`.
+
+```json
+{ "ok": true, "data": { "status": "cleared", "changed": true, "binding": { "kind": "inherited", "profile": null, "origin": null } } }
+```
+
+`status` is `not_cleared` whenever the owner warned (for example an unreadable session record or unavailable profile authority), even if the binding moved; otherwise `cleared` when the binding store changed and `unchanged` when there was nothing to clear. The owner's notices are not forwarded. A binding written elsewhere while the clear runs is folded into the one `desktop` event. When the clear ends `busy` or fails, a binding written elsewhere while it ran is published afterwards as one `external` event. `binding` is the state after the call, and `changed` says whether it differs from before. A change also emits `profile_binding_changed` with `source: "desktop"`, after the response. Errors: `invalid_request`, `profile_apply_busy` while an apply runs, and `profiles_unavailable` when no owner answers or the owner predates this method.
+
+Publishing a profile to the repository is not a separate method: it is the repository pin, written with `set_config` on `pins` with `{ "source": "repo", "profile": "<name>" }` (and `profile: null` to unpublish).
+
+### `get_auth_status`
+
+Lists the providers this session knows models for, and whether each has credentials and of which kind. It reads Pi's model registry (`ctx.modelRegistry`) from memory: no file is read and no credential value is ever touched. Params must be an empty object. It has no side effects and emits no event.
+
+```json
+{
+  "schema": "gentle-shell.desktop-rpc/v1",
+  "kind": "response",
+  "requestId": "desktop-97",
+  "ok": true,
+  "data": {
+    "providers": [
+      { "provider": "anthropic", "displayName": "Anthropic", "configured": true, "type": "oauth", "source": "stored" },
+      { "provider": "openai-codex", "displayName": "OpenAI Codex", "configured": false, "type": null, "source": null }
+    ],
+    "truncated": false
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `provider` | Pi's provider id; sorted, at most 200. Ids that are not plain names are skipped. |
+| `configured` | Pi has credentials it can use for this provider. |
+| `type` | `oauth` (a sign-in) or `api_key` when configured, otherwise `null`. |
+| `source` | Where Pi found them: `stored` (Pi's credential store), `runtime`, `environment`, `models_json` (a key or a command in `models.json`; which one is not said), or `extension` (a provider extension's fallback). `null` when not configured. |
+
+The registry's status label (an environment variable name or a command) never crosses, nor any value. Errors: `invalid_request` (any param), and `auth_unavailable` (no registry in this session, or the registry read failed).
+
+### `reload_credentials`
+
+Makes this session pick up credentials added or removed elsewhere (another terminal's `/login`, the desktop app's own sign-in). Environment variables are read from the process environment at each lookup, so editing an environment file does not reach a running session without restarting. It calls `modelRegistry.refresh({ allowNetwork: false })`, which rebuilds which providers are configured and which models are available; no model catalog is fetched. Params must be an empty object. Concurrent calls share one refresh.
+
+```json
+{ "ok": true, "data": { "reloaded": true, "aborted": false, "failedProviders": [], "providers": [ /* as get_auth_status */ ], "truncated": false } }
+```
+
+`failedProviders` lists the ids whose refresh reported an error; the error text never crosses. Errors: `invalid_request`, `auth_unavailable` (no registry in this session, or the session was replaced during the reload), and `reload_failed` (the refresh itself failed).
+
 ## Responses
 
 Success:
@@ -1556,7 +1757,7 @@ An external change:
 
 `store`, `scope`, `revision`, and `status` match what `get_config` and `get_snapshot` would answer for that store at that moment. There is no `value`, no `writeTarget` or `writeRevision` (an external writer may have touched any layer), and no path; read the store with `get_config` for its content and write targets.
 
-Detection watches the owner files' directories, non-recursively, for an interactive RPC host only: the config home (`profiles.json`, `profile-fallbacks.json`, `models.json`), the agent home and its `gentle-ai/` directory (global `subagents.json`, the managed-assets manifest), the session cwd's `.pi/` and `.pi/gentle-ai/` (project `subagents.json` and `models.json`, the `repo` pin), and the Git common dir's `gentle-ai/` (the `local` pin) when the cwd is a resolvable worktree. Only events for those owner file names count. About 250 ms after the last relevant event, every store's revision is recomputed with the same readers `get_config` uses, and an event is emitted only for a store whose revision differs from the last revision this channel reported (a `get_config` answer, a `get_snapshot` projection, a `set_config` answer, or an earlier event). Consequences:
+Detection watches the owner files' directories, non-recursively, for an interactive RPC host only: the config home (`profiles.json`, `profile-fallbacks.json`, `models.json`, `persona.json`, `banner.json`, `notifications.json`), the project `.pi/gentle-ai/` directory (`persona.json`), the agent home and its `gentle-ai/` directory (global `subagents.json`, the managed-assets manifest), the session cwd's `.pi/` and `.pi/gentle-ai/` (project `subagents.json` and `models.json`, the `repo` pin), and the Git common dir's `gentle-ai/` (the `local` pin) when the cwd is a resolvable worktree. Only events for those owner file names count. About 250 ms after the last relevant event, every store's revision is recomputed with the same readers `get_config` uses, and an event is emitted only for a store whose revision differs from the last revision this channel reported (a `get_config` answer, a `get_snapshot` projection, a `set_config` answer, or an earlier event). Consequences:
 
 - a Desktop `set_config` is never echoed: its response records the resulting revision before the owner's own rename wakes the watcher;
 - reformatting a file, rewriting identical content, or undoing a change inside the window emits nothing, because the revision did not move;
@@ -1566,7 +1767,7 @@ Detection watches the owner files' directories, non-recursively, for an interact
 
 A directory that does not exist yet (for example a project without `.pi/`, or a fresh `<git-common-dir>/gentle-ai/`) is watched through its nearest existing ancestor, non-recursively and only for the creation of the next path segment. When that segment appears the ancestor watcher is closed and the next level is watched, until the owner directory itself is; each step recomputes once, so a pin that `/gentle:profiles` writes into a new directory raises exactly one event. A watched directory that is later removed reports its stores (now `missing`) and falls back to the same ancestor watching, so recreating it and writing the store again raises one event.
 
-When a Desktop command binds a different session cwd, the watchers move with it, and the stores whose layers depend on the cwd (`models` and `subagents` project layers, and `pins`) are re-read at that moment: each one whose revision differs from the last one this channel reported is announced with `source: "external"` and becomes the new baseline, so a later unrelated change never carries stale extra events. If a change was detected but its debounce window had not closed when the cwd moved, every store is re-read instead, so that change is reported rather than dropped with the old watchers.
+When a Desktop command binds a different session cwd, the watchers move with it, and the stores whose layers depend on the cwd (`models`, `subagents`, and `persona` project layers, and `pins`) are re-read at that moment: each one whose revision differs from the last one this channel reported is announced with `source: "external"` and becomes the new baseline, so a later unrelated change never carries stale extra events. If a change was detected but its debounce window had not closed when the cwd moved, every store is re-read instead, so that change is reported rather than dropped with the old watchers.
 
 This is **best effort**, and `get_snapshot` revisions stay the source of truth. A path with no existing ancestor, an unsupported platform, or an exhausted watcher limit simply produces no external events for that directory; the channel keeps working and never reports an error for it. Watchers are created on `session_start` and are disposed, ancestor watchers included, on session shutdown and on session switch. A client that must not miss a change still compares `get_snapshot` revisions after connecting and after a sequence gap.
 
@@ -1672,7 +1873,7 @@ Carries the active session's projected subagent list whenever the existing agent
 }
 ```
 
-`agents` is the same whitelisted, bounded projection as `list_subagents` (`id`, `agent`, `status`, `model`, `modelSource?`, `fallbackFrom?`, `thinking?`, `lastStep`, `usage`), so a client that missed a response can reconcile from the event alone. The event is filtered to the active owner session; a foreign-session transition emits nothing to this bridge. Bursts of transitions are coalesced into one event per window and byte-identical projected lists are deduped, matching the activity publisher. A no-op or failed cancellation emits nothing: an already-terminal `cancel_subagent` changes nothing, so no event follows. When a changed `cancel_subagent` triggers the event, its response line always precedes the event line through the same router sequencer.
+`agents` is the same whitelisted, bounded projection as `list_subagents` (`id`, `agent`, `status`, `model`, `modelSource?`, `fallbackFrom?`, `thinking?`, `lastStep`, `usage`, `turns?`, `toolCalls?`, `activeTool?`), so a client that missed a response can reconcile from the event alone. The event is filtered to the active owner session; a foreign-session transition emits nothing to this bridge. Bursts of transitions are coalesced into one event per window and byte-identical projected lists are deduped, matching the activity publisher. A no-op or failed cancellation emits nothing: an already-terminal `cancel_subagent` changes nothing, so no event follows. When a changed `cancel_subagent` triggers the event, its response line always precedes the event line through the same router sequencer.
 
 ### `profile_applied`
 
@@ -1706,6 +1907,14 @@ Carries the session sections whose content changed since the last `session_snaps
 
 It is emitted when the feed publishes, on the feed's own tiers: within 16 ms for urgent state (an open or answered question, the permission mode, an idle/working/blocked transition, a held prompt), otherwise after a 250 ms debounce, and at most once per second while the session is busy. A flush that changes nothing emits nothing, and a section is included only when its content changed; a job's `elapsedMs`, which moves on every flush, is not a change (derive it from `startedAt`). A client that needs the whole state reads `get_snapshot` with `sections` after connecting or after a sequence gap. Advertised only while the feed seam is wired.
 
+### `profile_binding_changed`
+
+Emitted when this session's profile binding changes: a `clear_profile_binding` (`source: "desktop"`), or any other write to the binding store for this session (`source: "external"`): the `/gentle:profiles` screen, an `apply_profile` in session mode, or a resume restoring the record. The data is the new `get_profile_binding` answer plus `source`. Writes for other sessions and writes that leave the answer unchanged emit nothing. The event follows writes to the binding store only: in `follow` and `live` kinds the resolved profile also changes when a pin or the global active profile changes, which is not a binding write, so a client re-reads `get_profile_binding` after `config_changed` on `pins` or `profiles`, and also after its own `get_config` read of those stores (that read records the new revision, so the watcher may then emit no `config_changed` for the same external change).
+
+```json
+{ "event": "profile_binding_changed", "data": { "kind": "explicit", "profile": "fast", "origin": "session", "source": "external" } }
+```
+
 ### `review_mode_changed`
 
 Follows a confirmed `set_review_mode` whose re-read state differs from the state the confirmation was computed from, after the response line.
@@ -1727,8 +1936,9 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 
 ## Configuration limits
 
-- **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
-- **Bounded write surface.** `set_config` exists only for `profiles`, `profile_fallbacks`, and `pins`, and only as a whole-store replacement, one explicitly selected pin layer, or the explicit clear of one pin layer (`profile: null`). There is no generic physical-file target, no patch operation, no setter for `models`, `subagents`, or `managed_assets`, no way to clear both layers in one request, and no profile application or materialization: a profile write stores the definition, it does not apply it, and nothing else is rewritten as a side effect.
+- **One reader and one writer per store.** Each `get_config` answer and each `set_config` write comes from the module that already owns that file (`agent-profiles.ts`, `model-routing-authority.ts`, `model-fallback-store.ts`, `agents-config.ts`, `agent-profile-pin.ts`, `agent-assets.ts`, `persona-config.ts`, `banner-config.ts`, `notification-policy.ts`). There is no second store, no cached copy, no parallel parser, no shadow precedence, and no re-implemented invariant: the merge rules are the owner's own (`readSavedModelConfig`, `parseAgentsConfig`, `evaluateProfilePin`) and the writes are the owner's validated atomic writers (`writeProfilesFileSync`, `writeFallbacksFile`, `writeProfilePinSync`).
+- **Settings stores.** `persona` takes `{ "mode": "gentleman" | "neutral" }` and writes like `/gentle:persona`: the global file, plus the project file only when it already exists, so a project override never silently outranks the change (its `writeRevision` covers both layers, and a project file is never created). `banner` takes exactly `{ showRose, showTextLogo, color }`. `notifications` takes the settings as read: an event may keep the `"file"` marker only where its current sound is a file, which keeps that file; a new `file:` path is `invalid_data`, because the Desktop never sees one. All three write atomically, and none waits for a profile apply (`profile_apply_busy` applies only to the profile stores). Telemetry and the Pi theme are not config stores here: telemetry is a consent switch, and Pi persists its theme through an asynchronous settings queue and exports no list of installed themes to validate against.
+- **Bounded write surface.** `set_config` exists only for `profiles`, `profile_fallbacks`, `pins`, and the settings stores above, and only as a whole-store replacement, one explicitly selected pin layer, or the explicit clear of one pin layer (`profile: null`). There is no generic physical-file target, no patch operation, no setter for `models`, `subagents`, or `managed_assets`, no way to clear both layers in one request, and no profile application or materialization: a profile write stores the definition, it does not apply it, and nothing else is rewritten as a side effect.
 - **Read-only rationale.** `models` and `subagents` are derived: the owners write them when a profile is applied or a route is materialized, so a Desktop write would fight that writer and leave the runtime and the store disagreeing. `managed_assets` is the installer's ownership manifest with hashes it verifies on install, so a client write would silently disable ownership checks. Only the stores whose owners accept validated writes report `readOnly: false`, and that flag describes the store's owner capability, which now matches this slice's write surface.
 - **No-op means no write.** Sending the content a store already holds, or clearing a pin layer that has no file, is answered with `changed: false`, no rewrite, no mtime churn, no removal, and no event, so a client can safely reconcile by re-sending what it read.
 - **Per-process guard, not a transaction.** The `expectedRevision` check and the owner's atomic rename happen in one synchronous step, so concurrent Desktop requests in one process cannot both commit from the same revision. Across processes there is no lock: another `pi` process, `/gentle:profiles`, or the installer can write between the check and the rename, and this contract cannot detect that. Treat `expectedRevision` as conflict detection, not as mutual exclusion.
@@ -1787,9 +1997,9 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 
 - **One owner, no second store or runner.** `list_subagents`, `cancel_subagent`, and the `agents_update` event reach the existing agents owner — the single parent-session `TaskStore` plus the parent `AgentRunner` — through a defensive, versioned owner-service adapter, the agents analogue of the jobs seam. There is no second store, no second runner, no subagent spawning, and no cached copy.
 - **List, cancel, and thread read only.** This slice has exactly three methods, `list_subagents`, `cancel_subagent`, and `get_subagent_thread`, and one event, `agents_update`. It does not start subagents: the agent dispatch tools stay agent tools, and there is no run/start method on this channel. `cancel_subagent` is the agents panel's exact stop path — `runner.cancel` — not a second stop implementation and never a request to the model to stop itself.
-- **Safe projection only.** A list or cancel entry carries exactly `id`, `agent`, `status`, `model`, `modelSource?`, `fallbackFrom?`, `thinking?`, `lastStep`, and `usage` (`total`, `cost`, and the final-assistant `input`/`output`/`cache`/`reasoning` breakdown when recorded). `lastStep` is a closed, status-derived phase label, never the raw owner step text, which can carry an error message, a stderr tail, or a provider body. No prompt text, working directory, session path, result, error text, or full session internals is ever returned or logged, and tool arguments, tool output, and thread text (including a streamed error note) appear only in a bounded `get_subagent_thread` item. A foreign field on an owner entry is dropped by the projection, never echoed.
+- **Safe projection only.** A list or cancel entry carries exactly `id`, `agent`, `status`, `model`, `modelSource?`, `fallbackFrom?`, `thinking?`, `lastStep`, `turns?`, `toolCalls?`, `activeTool?`, and `usage` (`total`, `cost`, and the final-assistant `input`/`output`/`cache`/`reasoning` breakdown when recorded). `lastStep` is a closed, status-derived phase label, never the raw owner step text, which can carry an error message, a stderr tail, or a provider body. No prompt text, working directory, session path, result, error text, or full session internals is ever returned or logged, and tool arguments, tool output, and thread text (including a streamed error note) appear only in a bounded `get_subagent_thread` item. A foreign field on an owner entry is dropped by the projection, never echoed.
 - **Bounded list.** `list_subagents` returns active tasks first (recency order), then recently-finished tasks (newest end first), capped at 50 entries. The store already evicts finished tasks beyond its own retention, so the answer can never grow with the process lifetime.
-- **No-op and failure mean no event.** A `cancel_subagent` on an already-terminal task answers that terminal state with no event, and a `cancel_subagent` on an unknown or foreign id answers `not_found` with no event. A running task's cancel is requested but asynchronous: the response reports the still-`running` state and emits no immediate byte-identical event; only the real store transition (the child exit to `cancelled`) emits through the normal `agents_update` path. Only an actual TaskStore transition (add, status change, or the completion-time usage recording) emits `agents_update`.
+- **No-op and failure mean no event.** A `cancel_subagent` on an already-terminal task answers that terminal state with no event, and a `cancel_subagent` on an unknown or foreign id answers `not_found` with no event. A running task's cancel is requested but asynchronous: the response reports the still-`running` state and emits no immediate byte-identical event; only the real store transition (the child exit to `cancelled`) emits through the normal `agents_update` path. A TaskStore transition (add, status change, or the completion-time usage recording) emits `agents_update` at once; progress inside a running task (a turn ends, a tool starts or ends, usage grows) emits it at most once per session every 500 ms, and only when the projected list actually changed.
 - **Usage persists across restore.** The completion-time usage breakdown is written to the task's history record, so a restored finished task keeps its final breakdown. A task whose run never recorded a breakdown (no final-assistant observation) has no breakdown fields after restore.
 - **Agent work reaches the app.** The bridge subscribes to the owner eagerly at session start, so a subagent started or settled by the agent (or any other path through the owner) still arrives as an `agents_update` event. Bursts of transitions are coalesced into one event per window and byte-identical projected lists are deduped, so a settle that records usage right after its status change still emits exactly once. Session replacement or shutdown disconnects the observer, cancels the pending coalesced flush, and drops late outcomes, and the router's own publisher guard drops superseded events. A changed `cancel_subagent`'s response always precedes its event.
 - **Thread read is the widget's projection.** `get_subagent_thread` reuses the `gentle-agents.activity/v1` per-thread projection and bounds (`projectRpcThread`, then `boundRpcThread`, in `lib/agents-rpc-publisher.ts`): the last 40 items, 2 000 characters per text item, 500 for tool args and output, and the 256 KB halving. It is a read behind the `cancel_subagent` ownership check, emits no event, and adds no channel: it is one more read on the existing owner-service adapter. Tool args and output are the subagent's own data — whatever its tools received and printed — bounded but not redacted.
@@ -1801,7 +2011,8 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 ## Profiles limits
 
 - **One owner, no second apply.** `apply_profile` reaches the `/gentle:profiles` owner in `extensions/gentle-ai.ts` through a defensive, versioned owner-service adapter, like the usage and design seams. The owner runs the screen's own **Use in this session** and **Make default** actions with a UI that records notices and answers confirmations only with a matching token. It never opens a dialog in Pi.
-- **Apply only.** This slice has one method and one event. Creating, editing, or deleting profiles stays `set_config` on the `profiles` store; pins stay `set_config` on `pins`.
+- **Apply, binding, and clear.** `apply_profile` and its `profile_applied` event, plus `get_profile_binding`, `clear_profile_binding`, and `profile_binding_changed`. Creating, editing, or deleting profiles stays `set_config` on the `profiles` store; pins, including publishing a profile to the repository, stay `set_config` on `pins`.
+- **One rule for the binding.** `get_profile_binding` and the event read `resolveSessionProfile`, the rule launches use, so they never disagree with a launch. The event follows the in-process binding store; a binding changed by another Pi process is not observed.
 - **Confirmation is Desktop's job.** The token binds an apply to the title and message that were shown and to the exact saved profile; it is not a proof that a person saw them.
 - **Truthful absence.** When the owning extension is not loaded, `apply_profile` answers `profiles_unavailable` rather than inventing an outcome.
 
@@ -1850,7 +2061,7 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **One owner, one loader, one aggregation.** `get_usage_stats` reaches the `/gentle:stats` owner in `extensions/gentle-stats.ts` through a defensive, versioned owner-service adapter, the stats analogue of the jobs seam. The owner reads the same sessions roots as the panel (the active home and the user's original Pi home) with the panel's own loader instance, so both share one size/mtime cache: an unchanged session file is never re-read. Totals, models, and days come from the panel's `aggregateStats` with the requested range and scope; each project row is that same aggregation scoped to one project. There is no second parser, cache, or store.
 - **Shared in-flight load.** The loader answers concurrent loads of the same roots with one in-flight scan, so overlapping Desktop requests (or a request while the panel is loading) read the history once. The scan is asynchronous and streams files line by line; nothing is persisted.
 - **Read only, no event.** This slice has exactly one method and no event. History changes as sessions run; a client re-reads when it wants fresh numbers.
-- **Safe, bounded projection.** The wire carries counts, token sums, costs, model ids, day keys, and project display names only. Arrays are capped (models 50, days 400, projects 50) with a `truncated` flag per array; totals stay complete. A session's id, path, provider, or message text never crosses, and a raw read failure is answered with the fixed `stats_unavailable` message.
+- **Safe, bounded projection.** The wire carries counts, token sums, costs, model ids, provider ids, day keys, and project display names only. Arrays are capped (models 50, days 400, providers 50, projects 50) with a `truncated` flag per array; totals stay complete. A session's id, path, or message text never crosses (provider ids are reported in `byProvider`), and a raw read failure is answered with the fixed `stats_unavailable` message.
 - **Truthful absence.** When no sessions root can be read, or the owner is not loaded, the answer is `stats_unavailable`. A readable root with no usage answers zeros, which is the truth.
 - **Same numbers as the panel, including its gaps.** Records the panel counts are counted here too: an assistant record with zero usage still counts as a message (see #1921). This slice does not change what the aggregation counts.
 
@@ -1863,6 +2074,35 @@ Follows a confirmed `set_review_mode` whose re-read state differs from the state
 - **Memory only.** A refresh result is kept in this Pi process's memory and answers later plain reads (across a session switch too); it is never written, so the launcher's own cache and its startup notice are unchanged.
 - **Gaps stated.** Pi's latest version is known only in a bundled install. Package `latest` is always `null`. A git package has no `current`. `gentle-ai-managed` is detected only when the running gentle-pi is the `npm:gentle-pi` package Pi installed.
 - **Read only, no event.** This slice has exactly one method and no event, and it never runs an update.
+
+## Agent definitions limits
+
+- **One source of truth.** Discovery, defaults, and the orchestrator come from `discoverAgents`, `loadAgentsConfig`, and `readOrchestratorSettings`, the owners `subagent_list_agents` and `/gentle:profiles` already use; nothing is copied.
+- **Declared, not effective, models.** A definition's `model` is what its frontmatter declares. Routing in `subagents.json` and a repository profile pin can override it at launch; read them with `get_config` (`models`, `profiles`, `pins`).
+- **Bounded.** At most 200 agents, 64 tools per agent, names cut at 128 characters, descriptions at 512, and model ids over 256 characters reported as `null`.
+- **Read only, no event.** Definitions are plain files; a client that needs fresh data reads again. Editing them stays a file edit.
+
+## Status limits
+
+- **One source of truth.** The owner computes every field with the same helpers `/gentle:status` uses (`readPersonaMode`, the package asset audit, `resolveGentleAiDevBinaryOverride`, `readModelRoutingAuthorityAsync`); the bridge only validates and projects.
+- **No doctor.** `/gentle:doctor` is interactive and can repair things; it stays in the terminal.
+- **No spawn.** The dev-binary override is resolved but never executed, so `get_status` never waits on a process.
+- **Cost.** The asset audit reads every managed asset file; read on demand, do not poll.
+- **Read only, no event.**
+
+## Background subagents limits
+
+- **Same owner, same writer.** Reads use `resolveBackgroundSubagentsPolicy` and the capability check; writes use the command's own global writer. Nothing is copied.
+- **Machine-wide only.** The Desktop writes the global file, like the command. A project file still decides for its project, and the answer shows it.
+- **Confirmed.** No write happens without a token bound to the state the user saw.
+- **No event.** A change made in the terminal or by editing a file is seen on the next read.
+
+## Credential limits
+
+- **Status, never values.** Only `getAll`, `getProviderAuthStatus`, `isUsingOAuth`, `getProviderDisplayName`, and `refresh` are called. The slice never reads `auth.json` and never calls a registry method that returns a key or a token.
+- **No sign-in or sign-out.** Signing in stays with Pi's login flow; removing credentials is out of scope.
+- **Offline reload.** `reload_credentials` never allows the network, so it does not fetch model catalogs.
+- **No event.** Ask again, or call `reload_credentials`, after a change elsewhere.
 
 ## Verification
 
@@ -1884,6 +2124,10 @@ node --experimental-strip-types --test \
   tests/desktop-rpc-review.test.ts \
   tests/desktop-rpc-stats.test.ts \
   tests/desktop-rpc-updates.test.ts \
+  tests/desktop-rpc-agent-definitions.test.ts \
+  tests/desktop-rpc-status.test.ts \
+  tests/desktop-rpc-background-subagents.test.ts \
+  tests/desktop-rpc-auth.test.ts \
   tests/maintainer/desktop-rpc.maintest.ts
 ```
 

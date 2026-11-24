@@ -26,6 +26,8 @@ import {
 	type NativeTargetStatusRequest,
 } from "../lib/native-review-cli.ts";
 import { setBundledInstallForTesting } from "../lib/gentle-shell-bundled.ts";
+import { capabilitiesV26 } from "./support/capabilities-v26.ts";
+import { statusV9 } from "./support/status-v9.ts";
 
 const fixture = (name: string): Record<string, unknown> => JSON.parse(
 	readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", name), "utf8"),
@@ -176,8 +178,21 @@ test("scoped native mode surfaces stderr, exit, and malformed responses without 
 	}
 });
 
-test("negotiated STATUS accepts the pinned v5 receipt before routing its transition", async () => {
-	const status = fixture("status-v5.captured.json");
+test("negotiated STATUS refuses an older status envelope with the actionable minimum-version error", async () => {
+ for (const version of [5, 8]) {
+  const older = fixture("status-v5.captured.json");
+  older.schema = `gentle-ai.review-integration.status/v${version}`;
+  const queue = queuedAdapter([{ stdout: JSON.stringify(older) }]);
+  await assert.rejects(client(queue.adapter).targetStatus({ cwd: "/repo", lineageId: "review-status-fixture", agent: "pi" }), (error: any) => {
+   assert.equal(error.code, "version-incompatible");
+   assert.equal(error.message, `gentle-ai native review status/v${version} is older than the supported v9 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override`);
+   return true;
+  });
+ }
+});
+
+test("negotiated STATUS accepts the pinned status/v9 receipt before routing its transition", async () => {
+	const status = statusV9(fixture("status-v5.captured.json"));
 	const queue = queuedAdapter([{ stdout: JSON.stringify(status) }]);
 	const result = await client(queue.adapter).targetStatus({ cwd: "/repo", lineageId: "review-status-fixture", agent: "pi" });
 	assert.deepEqual(result.receipt, { status: "not_applicable" });
@@ -384,7 +399,7 @@ test("malformed closure output remains a typed schema failure and never authoriz
 });
 
 function currentStatusFixture(): Record<string, unknown> {
-	return fixture("status-v5.captured.json");
+	return statusV9(fixture("status-v5.captured.json"));
 }
 
 function negotiatedStartStatus(targetIdentity: string, tokens: readonly string[]): Record<string, unknown> {
@@ -544,7 +559,7 @@ const LENS_SELECTION_UNSUPPORTED_FAILURE = {
 };
 
 function contextClient(responses: QueuedResult[], features = ["start_request_context", "start_options_preflight"], executable = join(process.cwd(), "package.json")) {
- const capabilities = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ const capabilities = capabilitiesV26(JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8")));
  capabilities.executable.sha256 = "sha256:" + createHash("sha256").update(readFileSync(executable)).digest("hex");
  capabilities.features.optional.push(...features.map(name => ({ name, supported: true, requires: [] })));
  const queue = queuedAdapter([{ stdout: JSON.stringify(capabilities) }, ...responses]);
@@ -564,6 +579,52 @@ test("START discovers capabilities before forwarding the explicit request file u
  assert.deepEqual(host.calls[2].arguments, ["review", "start", ...tokens]);
 });
 
+const ESCALATE_BASE = ["--contract=gentle-ai.review-integration/v2", "--cwd=/repo", "--target=" + TARGET, "--projection=workspace", "--agent=pi", "--consent=relay"];
+const ESCALATE_TOKENS = [...ESCALATE_BASE, "--escalate-item=3", "--escalate-reason=touches the auth boundary"];
+const escalateFlags = (arguments_: readonly string[]) => arguments_.filter((token) => token.startsWith("--escalate"));
+
+test("START sends the escalation only to a second STATUS after a fresh START is offered and runs the provider START unchanged", async () => {
+ const escalate = { item: 3 as const, reason: "touches the auth boundary" };
+ const queue = queuedAdapter([
+  { stdout: JSON.stringify(negotiatedStartStatus(TARGET, ESCALATE_BASE)) },
+  { stdout: JSON.stringify(negotiatedStartStatus(TARGET, ESCALATE_TOKENS)) },
+  { stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
+ ]);
+ await client(queue.adapter).start({ cwd: "/repo", escalate });
+ assert.equal(queue.calls.length, 3);
+ assert.deepEqual(escalateFlags(queue.calls[0].arguments), [], "the first STATUS never carries the escalation");
+ assert.deepEqual(queue.calls[1].arguments.slice(-5), ["--escalate-item", "3", "--escalate-reason", "touches the auth boundary", "--next-transition"]);
+ assert.deepEqual(queue.calls[1].arguments.filter((token) => token !== "--escalate-item" && token !== "3" && token !== "--escalate-reason" && token !== "touches the auth boundary"), queue.calls[0].arguments);
+ assert.deepEqual(queue.calls[2].arguments, ["review", "start", ...ESCALATE_TOKENS]);
+});
+
+test("a STATUS whose next transition is not a fresh START never receives the escalation", async () => {
+ const queue = queuedAdapter([{ stdout: JSON.stringify(currentStatusFixture()) }]);
+ const status = await client(queue.adapter).targetStatus({ cwd: "/repo", escalate: { item: 3, reason: "r" } });
+ assert.ok(status.targetIdentity !== undefined);
+ assert.equal(queue.calls.length, 1);
+ assert.deepEqual(escalateFlags(queue.calls[0].arguments), []);
+});
+
+test("START without escalate issues one STATUS free of escalation flags; a START that drops the escalation is rejected", async () => {
+ const plain = queuedAdapter([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, ESCALATE_BASE)) }, { stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) }]);
+ await client(plain.adapter).start({ cwd: "/repo" });
+ assert.equal(plain.calls.length, 2);
+ assert.deepEqual(escalateFlags(plain.calls[0].arguments), []);
+ const dropped = queuedAdapter([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, ESCALATE_BASE)) }, { stdout: JSON.stringify(negotiatedStartStatus(TARGET, ESCALATE_BASE)) }]);
+ await assert.rejects(client(dropped.adapter).start({ cwd: "/repo", escalate: { item: 3, reason: "r" } }), /did not retain the agent escalation/);
+ assert.equal(dropped.calls.length, 2);
+});
+
+test("an invalid escalate is rejected before any native call", async () => {
+ for (const escalate of [{ item: 9, reason: "x" }, { item: 2, reason: "" }, { item: 2, reason: "é".repeat(251) }, { item: 2, reason: "a\nb" }]) {
+  const queue = queuedAdapter([]);
+  await assert.rejects(client(queue.adapter).targetStatus({ cwd: "/repo", escalate: escalate as never }), /escalate/);
+  await assert.rejects(client(queue.adapter).start({ cwd: "/repo", escalate: escalate as never }), /escalate/);
+  assert.equal(queue.calls.length, 0);
+ }
+});
+
 test("request context reuses capabilities while every STATUS remains fresh", async () => {
  const host = contextClient([1, 2].map(() => ({ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) })));
  for (let i = 0; i < 2; i++) await host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" });
@@ -575,7 +636,7 @@ test("request context invalidates capabilities when executable bytes change", as
  t.after(() => rmSync(directory, { recursive: true, force: true }));
  const executable = join(directory, "native");
  writeFileSync(executable, "first executable");
- const replacementCapabilities = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ const replacementCapabilities = capabilitiesV26(JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8")));
  replacementCapabilities.executable.sha256 = "sha256:" + createHash("sha256").update("replacement executable").digest("hex");
  const host = contextClient([{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, [])) }, { stdout: JSON.stringify(replacementCapabilities) }], undefined, executable);
  await host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" });
@@ -583,6 +644,19 @@ test("request context invalidates capabilities when executable bytes change", as
  // The old capability result cannot authorize a STATUS with the replacement.
  await assert.rejects(host.client.targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }), /provider does not support request context/);
  assert.deepEqual(host.calls.map(call => call.arguments[1]), ["capabilities", "status", "capabilities"]);
+});
+
+test("request context refuses an older capabilities advertisement with the actionable minimum-version error", async () => {
+ const older = JSON.parse(readFileSync(join(process.cwd(), "contracts/review-integration/v2/fixtures/capabilities.fixture.json"), "utf8"));
+ const executable = join(process.cwd(), "package.json");
+ older.schema = "gentle-ai.review-integration.capabilities/v2.5";
+ older.executable.sha256 = "sha256:" + createHash("sha256").update(readFileSync(executable)).digest("hex");
+ const queue = queuedAdapter([{ stdout: JSON.stringify(older) }]);
+ await assert.rejects(new NativeReviewCliV216(queue.adapter, executable).targetStatus({ cwd: "/repo", requestContextPath: "/spec.md" }), (error: any) => {
+  assert.equal(error.code, "version-incompatible");
+  assert.equal(error.message, "gentle-ai native review capabilities/v2.5 is older than the supported v2.6 (gentle-ai v4.6.0); update gentle-ai or remove the dev-binary override");
+  return true;
+ });
 });
 
 test("request context never caches malformed capability discovery", async () => {
@@ -675,23 +749,15 @@ test("native START preflights the agent lens selection through STATUS", async ()
 	]);
 });
 
-test("native START falls back to the tier default when the provider predates lens selection", async () => {
-	const tokens = [
-		"--contract=gentle-ai.review-integration/v2", "--cwd=/repo", `--target=${TARGET}`,
-		"--projection=workspace", "--agent=pi", "--consent=relay",
-	];
-	const queue = queuedAdapter([
-		{ stdout: JSON.stringify(LENS_SELECTION_UNSUPPORTED_FAILURE), exitCode: 1 },
-		{ stdout: JSON.stringify(negotiatedStartStatus(TARGET, tokens)) },
-		{ stdout: JSON.stringify(fixture("start-v3-zero-lens-closed.captured.json")) },
-	]);
-	const result = await client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk"], lensesReason: "changes token parsing" });
-	assert.equal(result.action, "closed");
+test("native START no longer falls back when the provider refuses lens selection: the refusal surfaces and STATUS is not retried", async () => {
+	const queue = queuedAdapter([{ stdout: JSON.stringify(LENS_SELECTION_UNSUPPORTED_FAILURE), exitCode: 1 }]);
+	await assert.rejects(
+		() => client(queue.adapter).start({ cwd: "/repo", targetIdentity: TARGET, lenses: ["review-risk"], lensesReason: "changes token parsing" }),
+		(error: unknown) => error instanceof NativeReviewIntegrationError && error.failureEnvelope.cause === LENS_SELECTION_UNSUPPORTED_FAILURE.cause,
+	);
 	assert.deepEqual(queue.calls.map((call) => call.arguments), [
 		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi",
 			"--lenses", "review-risk", "--lenses-reason", "changes token parsing", "--next-transition"],
-		["review", "status", "--contract", "gentle-ai.review-integration/v2", "--cwd", "/repo", "--projection", "workspace", "--agent", "pi", "--next-transition"],
-		["review", "start", ...tokens],
 	]);
 });
 
@@ -1292,7 +1358,7 @@ test("acknowledge-approved decodes the captured review-acknowledged/v1 burn enve
 test("acknowledge-approved fails closed on a foreign, drifted, or mismatched success body", async () => {
 	const raw = JSON.parse(readFileSync(join(process.cwd(), "tests", "fixtures", "devbinary", "review-acknowledged-v1.captured.json"), "utf8")) as Record<string, unknown>;
 	const bodies: Array<[string, string, { lineageId: string; targetIdentity: string; revision: string }]> = [
-		["a STATUS envelope", JSON.stringify(fixture("status-v5.captured.json")), ACKNOWLEDGED_BINDING],
+		["a STATUS envelope", JSON.stringify(statusV9(fixture("status-v5.captured.json"))), ACKNOWLEDGED_BINDING],
 		["a last-event closure", JSON.stringify(fixture("last-event-capture-result-approved.captured.json")), ACKNOWLEDGED_BINDING],
 		["an envelope with an unknown field", JSON.stringify({ ...raw, receipt: {} }), ACKNOWLEDGED_BINDING],
 		["an envelope naming another lineage", JSON.stringify(raw), { ...ACKNOWLEDGED_BINDING, lineageId: "review-other" }],

@@ -18,10 +18,13 @@ import {
 	decodeReviewStatusV3,
 	decodeReviewTargetedValidationRequestV1,
 } from "../lib/review-integration-v2.ts";
+import { capabilitiesV26 } from "./support/capabilities-v26.ts";
+import { statusV9 } from "./support/status-v9.ts";
 
 const fixtureRoot = join(process.cwd(), "contracts", "review-integration", "v2", "fixtures");
 const devFixtureRoot = join(process.cwd(), "tests", "fixtures", "devbinary");
 const fixture = <T = unknown>(name: string): T => JSON.parse(readFileSync(join(fixtureRoot, name), "utf8")) as T;
+const capabilitiesFixture = <T = Record<string, unknown>>(): T => capabilitiesV26(fixture<Record<string, unknown>>("capabilities.fixture.json")) as T;
 const devFixture = <T = unknown>(name: string): T => JSON.parse(readFileSync(join(devFixtureRoot, name), "utf8")) as T;
 const executableDigest = "dcc846103b16d365eaeeb9d7f289c23fc4f2897f23def1cb3fe7f05557b64705";
 const digest = `sha256:${"a".repeat(64)}`;
@@ -60,13 +63,13 @@ function assertAdditionalProperty(decoder: Decoder, source: JsonObject, path: re
 }
 
 test("current review integration fixtures decode", () => {
-	assert.equal(decodeReviewCapabilitiesV2(fixture("capabilities.fixture.json"), executableDigest).contract, REVIEW_INTEGRATION_CONTRACT);
+	assert.equal(decodeReviewCapabilitiesV2(capabilitiesFixture(), executableDigest).contract, REVIEW_INTEGRATION_CONTRACT);
 	assert.equal(decodeReviewStartV3(fixture("start.fixture.json")).riskLevel, "high");
 	assert.equal(decodeReviewConsentV2(fixture("consent.fixture.json")).action, "consent_required");
 });
 
 test("capabilities enforce every required top-level and nested property", () => {
-	const source = fixture<JsonObject>("capabilities.fixture.json");
+	const source = capabilitiesFixture<JsonObject>();
 	const decode: Decoder = (value) => decodeReviewCapabilitiesV2(value, executableDigest);
 	assertRequired(decode, source, ["schema", "contract", "protocol", "package", "build", "executable", "operations", "gates", "projections", "schemas", "features", "compatibility"]);
 	assertNestedRequired(decode, source, ["protocol"], ["major", "minor"]);
@@ -74,11 +77,62 @@ test("capabilities enforce every required top-level and nested property", () => 
 	assertNestedRequired(decode, source, ["build"], ["id", "go_version", "module_version", "vcs", "vcs_revision", "vcs_time", "vcs_modified"]);
 	assertNestedRequired(decode, source, ["executable"], ["sha256", "evidence", "verification"]);
 	assertNestedRequired(decode, source, ["features"], ["mandatory", "optional"]);
-	assertNestedRequired(decode, source, ["compatibility"], ["minimum_protocol_major", "maximum_protocol_major", "additive_minor_policy", "unknown_mandatory", "unknown_optional", "modes", "legacy_window"]);
+	assertNestedRequired(decode, source, ["compatibility"], ["minimum_protocol_major", "maximum_protocol_major", "additive_minor_policy", "unknown_mandatory", "unknown_optional", "modes"]);
+});
+
+test("capabilities v2.6 keep decoding the legacy-announcing v4.6.0 advertisement", () => {
+	const source = capabilitiesFixture<JsonObject>();
+	const features = source.features as { mandatory: Array<{ name: string }> };
+	assert.ok(features.mandatory.some((feature) => feature.name === "legacy_v1_target_scoped_read_only"));
+	assert.deepEqual((source.compatibility as JsonObject).modes, ["compact-v2", "legacy-v1"]);
+	const decoded = decodeReviewCapabilitiesV2(source, executableDigest);
+	assert.ok(decoded.mandatoryFeatures.has("legacy_v1_target_scoped_read_only"));
+	assert.equal(decoded.mandatoryFeatures.size, 7);
+});
+
+test("capabilities v2.6 without legacy feature, with compact-v2 only modes and no legacy_window decode", () => {
+	const source = capabilitiesFixture<JsonObject>();
+	const features = source.features as { mandatory: Array<{ name: string }> };
+	features.mandatory = features.mandatory.filter((feature) => feature.name !== "legacy_v1_target_scoped_read_only");
+	const compatibility = source.compatibility as JsonObject;
+	compatibility.modes = ["compact-v2"];
+	delete compatibility.legacy_window;
+	const decoded = decodeReviewCapabilitiesV2(source, executableDigest);
+	assert.equal(decoded.mandatoryFeatures.has("legacy_v1_target_scoped_read_only"), false);
+	assert.equal(decoded.mandatoryFeatures.size, 6);
+	// modes ["compact-v2","legacy-v1"] without a legacy_window also decodes.
+	compatibility.modes = ["compact-v2", "legacy-v1"];
+	assert.doesNotThrow(() => decodeReviewCapabilitiesV2(source, executableDigest));
+});
+
+test("capabilities v2.6 refuse unsupported modes and a malformed legacy_window", () => {
+	const decode = (value: JsonObject) => decodeReviewCapabilitiesV2(value, executableDigest);
+	for (const modes of [["legacy-v1"], ["compact-v2", "unknown"], ["unknown"], ["legacy-v1", "compact-v2"], [], ["compact-v2", "compact-v2"], ["compact-v2", "legacy-v1", "extra"]]) {
+		const candidate = capabilitiesFixture<JsonObject>();
+		(candidate.compatibility as JsonObject).modes = modes;
+		assert.throws(() => decode(candidate), undefined, JSON.stringify(modes));
+	}
+	const badWindow = capabilitiesFixture<JsonObject>();
+	((badWindow.compatibility as JsonObject).legacy_window as JsonObject).state = "bogus";
+	assert.throws(() => decode(badWindow), /legacy_window\.state/);
+	const extraWindow = capabilitiesFixture<JsonObject>();
+	((extraWindow.compatibility as JsonObject).legacy_window as JsonObject).unadvertised = true;
+	assert.throws(() => decode(extraWindow), /not allowed/);
+	const missingField = capabilitiesFixture<JsonObject>();
+	delete ((missingField.compatibility as JsonObject).legacy_window as JsonObject).removal;
+	assert.throws(() => decode(missingField), /removal is required/);
+	const duplicateLegacy = capabilitiesFixture<JsonObject>();
+	const mandatory = (duplicateLegacy.features as { mandatory: Array<{ name: string }> }).mandatory;
+	mandatory.push(structuredClone(mandatory.find((feature) => feature.name === "legacy_v1_target_scoped_read_only")!));
+	assert.throws(() => decode(duplicateLegacy));
+	const missingRequired = capabilitiesFixture<JsonObject>();
+	const m2 = (missingRequired.features as { mandatory: Array<{ name: string }> }).mandatory;
+	(missingRequired.features as { mandatory: unknown }).mandatory = m2.filter((feature) => feature.name !== "compact_v2_authority");
+	assert.throws(() => decode(missingRequired), /mandatory capabilities/);
 });
 
 test("capabilities reject additional properties at every exact object boundary", () => {
-	const source = fixture<JsonObject>("capabilities.fixture.json");
+	const source = capabilitiesFixture<JsonObject>();
 	const decode: Decoder = (value) => decodeReviewCapabilitiesV2(value, executableDigest);
 	for (const path of [[], ["protocol"], ["package"], ["build"], ["executable"], ["features"], ["compatibility"], ["compatibility", "legacy_window"]] as const) {
 		assertAdditionalProperty(decode, source, path);
@@ -86,7 +140,7 @@ test("capabilities reject additional properties at every exact object boundary",
 });
 
 test("capabilities reject an incompatible protocol identity", () => {
-	const source = fixture<JsonObject>("capabilities.fixture.json");
+	const source = capabilitiesFixture<JsonObject>();
 	const decode: Decoder = (value) => decodeReviewCapabilitiesV2(value, executableDigest);
 	const wrongMajor = clone(source);
 	(wrongMajor.protocol as JsonObject).major = 1;
@@ -151,10 +205,10 @@ test("start/v3 transports the published selected_lenses wire contract without Pi
 	assert.throws(() => decodeReviewStartV3(invalidLensesRequired), /lenses_required/);
 });
 
-test("historical status fixture with a receipt is rejected after receipt retirement", () => {
+test("historical status fixture with a receipt is refused as older than the supported status/v9", () => {
 	// This archived fixture is pinned for schema-rejection coverage only. Its
 	// bytes retain the retired receipt surface and must never regain authority.
-	assert.throws(() => decodeReviewStatusV3(fixture("status.fixture.json")), /receipt.*not allowed/);
+	assert.throws(() => decodeReviewStatusV3(fixture("status.fixture.json")), /status\/v3 is older than the supported v9/);
 });
 
 test("projection enforces every required property and rejects additional keys", () => {
@@ -290,7 +344,7 @@ test("repair execute-without-execution is rejected", () => {
 });
 
 test("capabilities enforce the exact mandatory feature set while accepting a superset of advertised operations", () => {
-	const source = fixture<JsonObject>("capabilities.fixture.json");
+	const source = capabilitiesFixture<JsonObject>();
 	const decode = (value: unknown) => decodeReviewCapabilitiesV2(value, executableDigest);
 	const decoded = decode(source) as { mandatoryFeatures: ReadonlySet<string>; operations: ReadonlySet<string> };
 	assert.equal(decoded.mandatoryFeatures.has("compact_v2_authority"), true);
@@ -316,7 +370,7 @@ test("capabilities enforce the exact mandatory feature set while accepting a sup
 });
 
 test("capabilities gates and projections accept an additive superset beyond the required floor", () => {
-	const source = fixture<JsonObject>("capabilities.fixture.json");
+	const source = capabilitiesFixture<JsonObject>();
 	const decode = (value: unknown) => decodeReviewCapabilitiesV2(value, executableDigest);
 
 	const extraGate = clone(source);
@@ -339,7 +393,7 @@ test("capabilities gates and projections accept an additive superset beyond the 
 });
 
 test("capabilities gates and projections still enforce the required floor", () => {
-	const source = fixture<JsonObject>("capabilities.fixture.json");
+	const source = capabilitiesFixture<JsonObject>();
 	const decode = (value: unknown) => decodeReviewCapabilitiesV2(value, executableDigest);
 
 	const missingGate = clone(source);
@@ -839,7 +893,7 @@ test("next_transition decodes the self-contained provider role capture vectors s
 		}] },
 	});
 
-	const decodeRoleTransition = (value: unknown) => decodeReviewNextTransitionV3(value, { v5: true });
+	const decodeRoleTransition = (value: unknown) => decodeReviewNextTransitionV3(value, { v9: true });
 	const refuter = roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/refuter/v1");
 	const decodedRefuter = decodeRoleTransition(refuter);
 	assert.equal(decodedRefuter.collect?.inputs[0]?.captureOperation, "review.capture-refuter");
@@ -849,11 +903,11 @@ test("next_transition decodes the self-contained provider role capture vectors s
 		() => decodeRoleTransition(roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/reviewer/v1")),
 		/schema must be https:\/\/gentle-ai\.dev\/schema\/review\/refuter\/v1/,
 	);
-	// This fixture decodes on the v5 surface only (no v9): a submission
-	// descriptor on a role input is rejected for lacking the v9 provider
-	// contract, before the materialize/execute discriminator is even read.
+	// Outside the status/v9 surface (the embedded START/v4 transition) a
+	// submission descriptor on a role input is rejected for lacking the v9
+	// provider contract, before the materialize/execute discriminator is read.
 	assert.throws(
-		() => decodeRoleTransition(roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/refuter/v1", {
+		() => decodeReviewNextTransitionV3(roleInput("provider_refuter", "review.capture-refuter", "https://gentle-ai.dev/schema/review/refuter/v1", {
 			submission: { operation_token: "capture-refuter", argument_tokens: ["--input={{value}}"], values: [{ slot: "{{value}}", domain: "artifact-path", substitution_location: 0 }] },
 		})),
 		/submission requires the v9 provider contract/,
@@ -911,11 +965,10 @@ test("next_transition decodes the v9 host-mediated provider role submission form
 		substitutionLocation: materializeArguments.length,
 	}]);
 
-	// The exact same payload under v8 (or any earlier non-v9 rung) is
-	// rejected: v8 only extended the reviewer-result transition for OpenCode
-	// provider tasks and never renders a role submission descriptor.
+	// Outside the status/v9 surface (the embedded START/v4 transition) the same
+	// payload is still rejected: only status/v9 renders a role submission.
 	assert.throws(
-		() => decodeReviewNextTransitionV3(refuter, { v6: true }),
+		() => decodeReviewNextTransitionV3(refuter),
 		/submission requires the v9 provider contract/,
 	);
 
@@ -1035,7 +1088,7 @@ test("v5 targeted-validator collect inputs carry the exact provider-owned valida
 		validation_request: validationRequest,
 	};
 	const transition = { kind: "collect" as const, reason_code: "targeted_validation_required", collect: { inputs: [input] } };
-	const decoded = decodeReviewNextTransitionV3(transition, { v5: true });
+	const decoded = decodeReviewNextTransitionV3(transition, { v9: true });
 	const decodedRequest = decoded.collect?.inputs[0]?.validationRequest;
 	assert.equal(decodedRequest?.requestHash, requestHash);
 	assert.equal(decodedRequest?.correctionTargetIdentity, correctionTargetIdentity);
@@ -1083,42 +1136,35 @@ test("v5 targeted-validator collect inputs carry the exact provider-owned valida
 	}]);
 	assert.equal(decodedHostMediated.collect?.inputs[0]?.validationRequest?.requestHash, requestHash);
 
-	// The identical v8 surface (v6/v7/v8 all decode collect inputs alike)
-	// rejects the same host-mediated submission: only v9 renders it.
-	assert.throws(
-		() => decodeReviewNextTransitionV3(hostMediatedTransition, { v6: true }),
-		/submission requires the v9 provider contract/,
-	);
-
 	const missingRequest = clone(transition);
 	delete (missingRequest.collect.inputs[0] as JsonObject).validation_request;
-	assert.throws(() => decodeReviewNextTransitionV3(missingRequest, { v5: true }), /validation_request is required/);
+	assert.throws(() => decodeReviewNextTransitionV3(missingRequest, { v9: true }), /validation_request is required/);
 
 	const mismatchedRequestHash = clone(transition);
 	((mismatchedRequestHash.collect.inputs[0] as JsonObject).validation_request as JsonObject).request_hash = `sha256:${"0".repeat(64)}`;
-	assert.throws(() => decodeReviewNextTransitionV3(mismatchedRequestHash, { v5: true }), /request-hash/);
+	assert.throws(() => decodeReviewNextTransitionV3(mismatchedRequestHash, { v9: true }), /request-hash/);
 
 	const refuter = clone(transition);
 	const refuterInput = refuter.collect.inputs[0] as JsonObject;
 	refuterInput.name = "provider_refuter";
 	refuterInput.schema = "https://gentle-ai.dev/schema/review/refuter/v1";
 	refuterInput.capture_operation = "review.capture-refuter";
-	assert.throws(() => decodeReviewNextTransitionV3(refuter, { v5: true }), /validation_request.*targeted-validator/);
+	assert.throws(() => decodeReviewNextTransitionV3(refuter, { v9: true }), /validation_request.*targeted-validator/);
 
 	const malformedRequest = clone(transition);
 	((malformedRequest.collect.inputs[0] as JsonObject).validation_request as JsonObject).unadvertised = true;
-	assert.throws(() => decodeReviewNextTransitionV3(malformedRequest, { v5: true }), /not allowed/);
+	assert.throws(() => decodeReviewNextTransitionV3(malformedRequest, { v9: true }), /not allowed/);
 
 	const emptyPolicyRequest = clone(transition);
 	((emptyPolicyRequest.collect.inputs[0] as JsonObject).validation_request as JsonObject).policy_content = "";
-	assert.equal(decodeReviewNextTransitionV3(emptyPolicyRequest, { v5: true }).collect?.inputs[0]?.validationRequest?.policyContent, "");
+	assert.equal(decodeReviewNextTransitionV3(emptyPolicyRequest, { v9: true }).collect?.inputs[0]?.validationRequest?.policyContent, "");
 	const malformedPolicyRequest = clone(transition);
 	((malformedPolicyRequest.collect.inputs[0] as JsonObject).validation_request as JsonObject).policy_content = null;
-	assert.throws(() => decodeReviewNextTransitionV3(malformedPolicyRequest, { v5: true }), /policy_content/);
+	assert.throws(() => decodeReviewNextTransitionV3(malformedPolicyRequest, { v9: true }), /policy_content/);
 });
 
 test("status.frozen carries the optional frozen manifest digest", () => {
-	const current = devFixture<JsonObject>("status-v5-repository-context.captured.json");
+	const current = statusV9(devFixture<JsonObject>("status-v5-repository-context.captured.json"));
 	delete current.receipt;
 	if (current.action === "finalize") {
 		current.action = "stop";
@@ -1141,18 +1187,18 @@ test("a capture-result collect input decodes without changed_path_manifest, whic
 	const inputs = ((transition.collect as JsonObject | undefined)?.inputs ?? []) as JsonObject[];
 	const captureInput = inputs.find((input) => input.capture_operation === "review.capture-result");
 	assert.ok(captureInput, "the status fixture carries a capture-result collect input");
-	assert.doesNotThrow(() => decodeReviewNextTransitionV3(transition, { v5: true, v6: true }), "with the manifest");
+	assert.doesNotThrow(() => decodeReviewNextTransitionV3(transition, { v9: true }), "with the manifest");
 	delete captureInput.changed_path_manifest;
-	const decoded = decodeReviewNextTransitionV3(transition, { v5: true, v6: true });
+	const decoded = decodeReviewNextTransitionV3(transition, { v9: true });
 	const decodedInput = decoded.collect?.inputs.find((input) => input.captureOperation === "review.capture-result");
 	assert.ok(decodedInput?.artifactSubject?.changedPathManifestSha256, "the digest on the artifact subject is the binding");
 	assert.equal(decodedInput?.changedPathManifest, undefined);
 	delete captureInput.artifact_subject;
-	assert.throws(() => decodeReviewNextTransitionV3(transition, { v5: true, v6: true }), /requires artifact_subject, base_tree, and candidate_tree/);
+	assert.throws(() => decodeReviewNextTransitionV3(transition, { v9: true }), /requires artifact_subject, base_tree, and candidate_tree/);
 });
 
 test("status enforces authority/frozen/receipt conditionals and decodes the required repair field", () => {
-	const current = devFixture<JsonObject>("status-v5-repository-context.captured.json");
+	const current = statusV9(devFixture<JsonObject>("status-v5-repository-context.captured.json"));
 	delete current.receipt;
 	if (current.action === "finalize") {
 		current.action = "stop";
@@ -1192,7 +1238,7 @@ test("next_transition.execute.binding stays open, as its schema declares no prop
 });
 
  test("capabilities retain request-context and START preflight features only when supported", () => {
- const source = fixture<any>("capabilities.fixture.json");
+ const source = capabilitiesFixture<any>();
  source.features.optional.push({ name: "start_request_context", supported: true, requires: [] }, { name: "start_options_preflight", supported: false, requires: [] });
  const result = decodeReviewCapabilitiesV2(source, executableDigest);
  assert.equal(result.optionalFeatures.has("start_request_context"), true);

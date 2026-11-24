@@ -9,6 +9,7 @@ import { createCoordinatorRuntime } from "./support/review-coordinator-runtime.t
 import { createGentleAiExtension, __testing } from "../extensions/gentle-ai.ts";
 import { decodeReviewStatusV3 } from "../lib/review-integration-v2.ts";
 import type { NativeReviewCli } from "../lib/native-review-cli.ts";
+import { statusV9 } from "./support/status-v9.ts";
 
 test("registered coordinator executes existing facade and preserves the baseline native trace", async (t) => {
 	const cwd = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "rdd-coordinator-runtime-")));
@@ -48,7 +49,7 @@ test("experimental coordinator respects RDD off and a switch disabled during its
 	const cwd = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "rdd-coordinator-mode-")));
 	t.after(() => { assert.ok(cwd.startsWith(join(realpathSync(tmpdir()), "rdd-coordinator-mode-"))); rmSync(cwd, { recursive: true, force: true }); });
 	execFileSync("git", ["init", "-q"], { cwd });
-	const raw = JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
+	const raw = statusV9(JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8")));
 	raw.action = "stop";
 	const status = decodeReviewStatusV3(raw);
 	for (const initiallyOff of [true, false]) {
@@ -75,7 +76,7 @@ test("capture forecast retains fresh mode and session checks before model execut
 	const cwd = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "rdd-projected-guards-")));
 	t.after(() => { assert.ok(cwd.startsWith(join(realpathSync(tmpdir()), "rdd-projected-guards-"))); rmSync(cwd, { recursive: true, force: true }); });
 	execFileSync("git", ["init", "-q"], { cwd });
-	const raw = JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8"));
+	const raw = statusV9(JSON.parse(readFileSync(new URL("./fixtures/devbinary/status-v5-capture-result-submission.captured.json", import.meta.url), "utf8")));
 	raw.action = "stop";
 	const base = decodeReviewStatusV3(raw);
 	const template = base.nextTransition!.collect!.inputs[0];

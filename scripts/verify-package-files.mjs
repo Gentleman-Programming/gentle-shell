@@ -134,7 +134,6 @@ export const requiredPaths = [
   "lib/gentle-shell-import-pi.ts",
   "lib/native-review-cli.ts",
   "lib/review-coordinator.ts",
-  "lib/review-delivery-preflight.ts",
 	"lib/review-candidate-symlink-scan.ts",
   "lib/status-timing-diagnostics.ts",
   "lib/provider-contract-bundle.ts",
@@ -163,6 +162,7 @@ export const requiredPaths = [
 	"runtime/review-relay-contract.mjs",
 	"runtime/telemetry-trigger.mjs",
 	"runtime/tower-open.mjs",
+	"runtime/sensitive-paths.mjs",
 	"runtime/tower-server.mjs",
 	"runtime/tower-hub.mjs",
 	"runtime/tower-presence.mjs",
@@ -431,6 +431,19 @@ export function packageRequiredPaths(argv = process.argv) {
   return argv.includes("--with-built-web") ? [...requiredPaths, ...builtWebPaths] : requiredPaths;
 }
 
+// The files npm itself would pack from packageRoot. A file on disk is not proof
+// it ships: npm applies nested .gitignore/.npmignore files even inside a path
+// package.json `files` lists, which is how 4.9.0 shipped without web/tower/dist.
+export function packedFileList(packageRoot) {
+  const result = spawnSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], {
+    cwd: packageRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, shell: process.platform === "win32",
+  });
+  if (result.status !== 0) throw new Error(`npm pack --dry-run failed: ${(result.error?.message || result.stderr || "").trim().slice(-2000)}`);
+  const parsed = JSON.parse(result.stdout);
+  const entry = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
+  return new Set(entry.files.map((file) => file.path));
+}
+
 async function main() {
   if (existsSync(join(root, "extensions/sdd-init.ts"))) {
     console.error("gentle-pi package must not restore the retired SDD init extension");
@@ -446,6 +459,24 @@ async function main() {
     }
     console.error("\nRefusing to pack/publish an incomplete npm package.");
     process.exit(1);
+  }
+
+  if (process.argv.includes("--with-built-web")) {
+    let packed;
+    try {
+      packed = packedFileList(root);
+    } catch (error) {
+      console.error(`gentle-pi could not list the files npm would pack: ${error.message}`);
+      console.error("\nRefusing to pack/publish without checking the built web app is included.");
+      process.exit(1);
+    }
+    const excluded = builtWebPaths.filter((relativePath) => !packed.has(relativePath));
+    if (excluded.length > 0) {
+      console.error("gentle-pi built web files exist on disk but npm pack excludes them:");
+      for (const relativePath of excluded) console.error(`- ${relativePath}`);
+      console.error("\nCheck the nested .gitignore/.npmignore beside them (web/tower/.npmignore must not ignore dist/).");
+      process.exit(1);
+    }
   }
 
   const { unlistedOnDisk, listedButMissing } = reconcileContractsOnDisk(root, contractHashes);

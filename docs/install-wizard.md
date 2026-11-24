@@ -60,7 +60,7 @@ Current requirements come from `package.json` and
 [`gentle-ai-installer.mjs`](../scripts/gentle-ai-installer.mjs): Node `^22.19.0 || >=23.6.0`
 (22.19.0 or a later 22.x release, or 23.6.0 or newer; 23.0–23.5 are not
 supported), Pi ≥1.2.0, pnpm acquisition 11.1.1, Gentle Shell package 4.0.0 and package-local
-Gentle AI 4.6.0. Windows native source builds require Go ≥1.25.10 when the
+Gentle AI 5.0.0. Windows native source builds require Go ≥1.25.10 when the
 required usable native binary is missing. A reusable binary does not require Go.
 When a build needs Go and the user's Go is missing, older or unchecked, the installer uses
 its own [pinned Go](#pinned-go) instead of blocking.
@@ -743,7 +743,7 @@ PNPM_HOME, `pnpm add -g @earendil-works/pi-coding-agent@1.0.0 gentle-pi@4.0.0`
 lists Pi 1.0.0 while the Pi beside gentle-pi is 1.1.0. So Gentle Shell may run a
 Pi newer than `PI_INSTALL_VERSION`, always at least the minimum: the runner
 verifies that Pi (`verify-global-list`, the setup recovery, a pnpm
-`verify-updated-shell`) and, when it is not `PI_INSTALL_VERSION` (1.5.2 now; the 1.0.0/1.1.0/1.2.0 figures above are that older verification), the outcome says which Pi
+`verify-updated-shell`) and, when it is not `PI_INSTALL_VERSION` (1.6.0 now; the 1.0.0/1.1.0/1.2.0 figures above are that older verification), the outcome says which Pi
 Gentle Shell runs. `--config.auto-install-peers=false` would leave gentle-pi
 with no Pi beside it, so the launcher would run any `pi` on PATH, and
 `--config.overrides` is ignored for global installs.
@@ -794,7 +794,7 @@ publishes main builds, so main is built on this computer
 - After the release stack is installed and `verify-gentle-ai` passed, the runner:
   1. `build-gentle-ai-main`: resolves the latest `main` commit of
      Gentleman-Programming/gentle-ai (GitHub API, raw SHA), runs
-     `go install github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@<sha>`
+     `go install github.com/gentleman-programming/gentle-ai/v5/cmd/gentle-ai@<sha>`
      in a sealed Go environment (`GOPROXY=https://proxy.golang.org`,
      `GOSUMDB=sum.golang.org`, `GOTOOLCHAIN=local`, `GOFLAGS=-modcacherw`),
      asks Go (`go list -m -json`, same environment) which module version that
@@ -810,7 +810,9 @@ publishes main builds, so main is built on this computer
      path, never a `tar` from PATH: Git for Windows' MSYS tar in `usr\bin` reads
      a `D:\…` archive path as a remote host and fails with `Cannot connect to D:
      resolve failed`), sets its version to `<version>-main.<sha12>`, removes `prepack` and `prepare`
-     (which would run the full test suite), packs it with `pnpm pack` into
+     (which would run the full test suite), runs `pnpm run build:tower` so the
+     packed tarball includes `web/tower/dist` (otherwise `gentle-shell tower`
+     fails on a main-channel install), packs it with `pnpm pack` into
      `<config home>/main/packages/`, runs `pnpm add -g <tgz> --allow-build=gentle-pi`
      and requires `pnpm list -g` to report that exact version under PNPM_HOME,
      with a Pi at least the minimum beside it.

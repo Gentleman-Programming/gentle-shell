@@ -595,7 +595,7 @@ export class QuestionnaireView extends Container implements Focusable {
 	}
 
 	private wrap(text: string, width: number): string[] {
-		return new Text(text, 0, 0).render(Math.max(1, width));
+		return [...new Text(text, 0, 0).render(Math.max(1, width))];
 	}
 
 	private accent(text: string): string {

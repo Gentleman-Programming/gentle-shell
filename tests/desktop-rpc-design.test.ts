@@ -621,8 +621,16 @@ test("the Desktop transport advertises the design method and event", async (t) =
 		"set_review_mode",
 		"get_usage_stats",
 		"get_update_status",
+		"list_agent_definitions",
+		"get_status",
+		"get_background_subagents",
+		"set_background_subagents",
+		"get_profile_binding",
+		"clear_profile_binding",
+		"get_auth_status",
+		"reload_credentials",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
 });
 
 test("get_design_canvas answers design_unavailable through the transport without an owner extension", async (t) => {

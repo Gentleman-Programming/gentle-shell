@@ -46,7 +46,7 @@ test("C5: tracking drops what restated the injected review contract and keeps th
 	assert.ok(tracking.includes("When RDD is enabled, the injected Gentle AI contract governs native review start, execution and consent; this module adds only assessment and commit boundaries."), "tracking must defer start, run, and consent to the injected contract");
 	// Provider-owned boundary rules; tracking carries the slice assessment policy.
 	for (const rule of [
-		"A not-due `passive` commit needs no review and the boundary advances; `under_budget` stays pending in the slice until a later commit reaches the budget.",
+		"A not-due `passive` commit needs no review and the boundary advances; `under_budget` stays pending in the slice and never triggers review by itself.",
 		"Before a high-risk unit, assess any pending `under_budget` slice.",
 		"If assessment fails or is unavailable, report missing assessment proof; never infer `reviewDue`, construct a preflight transition, lower the tier or infer low risk.",
 	]) {

@@ -11,7 +11,10 @@
 //     back to the pinned binary silently.
 //   - Gentle Shell: the exact commit's source tarball, versioned
 //     `<version>-main.<sha12>` and packed without `prepack` (which runs the full
-//     test suite), then installed globally like any local tarball.
+//     test suite). `prepack` is also what builds Gentle Tower's web app, so the
+//     pack step runs `pnpm run build:tower` itself and refuses a tarball that
+//     lacks `web/tower/dist/index.html`, then installs globally like any local
+//     tarball.
 // The recorded channel lets `gentle-shell upgrade` follow release or main.
 import { dirname, isAbsolute, join, posix, relative, win32 } from "node:path";
 import { gentleAiDevBinaryRegistrationPath, registerGentleAiDevBinary, unregisterGentleAiDevBinary } from "../runtime/gentle-ai-binary.mjs";
@@ -20,8 +23,8 @@ import { goAcquisition, pnpmGlobalBin, requirements } from "./installer-prefligh
 
 export const SHELL_REPOSITORY = "Gentleman-Programming/gentle-shell";
 export const GENTLE_AI_REPOSITORY = "Gentleman-Programming/gentle-ai";
-export const GENTLE_AI_MODULE = "github.com/gentleman-programming/gentle-ai/v4";
-export const GENTLE_AI_MAIN_PACKAGE = "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai";
+export const GENTLE_AI_MODULE = "github.com/gentleman-programming/gentle-ai/v5";
+export const GENTLE_AI_MAIN_PACKAGE = `${GENTLE_AI_MODULE}/cmd/gentle-ai`;
 export const CHANNEL_SCHEMA = "gentle-shell.channel/v1";
 export const CHANNELS = Object.freeze(["release", "main"]);
 
@@ -229,12 +232,25 @@ export async function packMainShell({ commit, ctx, fetch, run, pnpm, fs, platfor
 			throw new MainChannelError("main-shell-pack-failed", "the downloaded source is not the gentle-pi package");
 		}
 		manifest.version = mainVersion(manifest.version, commit);
-		// prepack runs the full test suite; postinstall (the native binary) stays.
+		// prepack runs the full test suite and builds Gentle Tower; postinstall (the
+		// native binary) stays. Without prepack, pack would omit web/tower/dist and
+		// `gentle-shell tower` would fail on every main-channel install (Linux
+		// included): the files list ships dist/, but only after build:tower.
 		if (manifest.scripts) {
 			delete manifest.scripts.prepack;
 			delete manifest.scripts.prepare;
 		}
 		await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, "\t")}\n`);
+		const tower = await run(pnpm.command, [...pnpm.prefix, "run", "build:tower"], {
+			cwd: source, deadlineMs: deadlines.build, stderrTail: 4096,
+		});
+		if (!succeeded(tower)) {
+			throw new MainChannelError("main-shell-tower-build-failed", "the Gentle Tower web app could not be built for the main package", stderrCause(tower));
+		}
+		const towerIndex = join(source, "web", "tower", "dist", "index.html");
+		if (!(await fs.stat(towerIndex).then((info) => info.isFile(), () => false))) {
+			throw new MainChannelError("main-shell-tower-build-failed", "the Gentle Tower web app build did not produce web/tower/dist/index.html");
+		}
 		const pack = await run(pnpm.command, [...pnpm.prefix, "pack", "--pack-destination", packages], { cwd: source, deadlineMs: deadlines.pack });
 		const tgz = join(packages, `gentle-pi-${manifest.version}.tgz`);
 		if (!succeeded(pack) || !(await fs.stat(tgz).then((info) => info.isFile(), () => false))) {
@@ -439,6 +455,23 @@ function withDetail(error, detail) {
 	return new MainChannelError(error.code, `${message}; ${detail}`, error.cause);
 }
 
+// Only the interactive CLI supplies a stream; wizard and scripted installs stay silent.
+async function mainStage(stream, label, work) {
+	if (!stream) return work();
+	const frames = ["|", "/", "-", "\\"];
+	let frame = 0;
+	const draw = () => stream.write(`\r\x1b[2K${frames[frame++ % frames.length]} ${label}`);
+	draw();
+	const timer = setInterval(draw, 100);
+	timer.unref();
+	try {
+		return await work();
+	} finally {
+		clearInterval(timer);
+		stream.write("\r\x1b[2K");
+	}
+}
+
 /**
  * Updates Gentle Shell along its recorded channel (or the one `--channel` selects):
  * release goes to the latest npm release, main to the latest `main` commits of
@@ -451,7 +484,7 @@ function withDetail(error, detail) {
  * untouched) keeps the path below for this run, otherwise { code, installed }.
  * `owner` is called only when a migration can happen.
  */
-export async function runUpgrade({ args, ctx, platform, arch = process.arch, packageRoot, currentVersion, adapters, out }) {
+export async function runUpgrade({ args, ctx, platform, arch = process.arch, packageRoot, currentVersion, adapters, out, progressStream }) {
 	const { fetch, run, fs, which } = adapters;
 	const requested = parseUpgradeArgs(args);
 	const state = await readChannel(ctx, fs);
@@ -483,8 +516,11 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 		throw new MainChannelError("main-requires-tools", "the main channel packs Gentle Shell with pnpm; put it on PATH (Gentle AI is built with your Go, or with a pinned Go downloaded for the build)");
 	}
 	const acquire = adapters.acquireGo ?? (() => acquirePinnedGo({ root: join(configHome(ctx), "tools", "go"), platform, arch }));
-	const gentleAiCommit = await resolveMainCommit(GENTLE_AI_REPOSITORY, { fetch });
-	const shellCommit = await resolveMainCommit(SHELL_REPOSITORY, { fetch });
+	const stage = (label, work) => mainStage(progressStream, label, work);
+	const [gentleAiCommit, shellCommit] = await stage("Checking main revisions", async () => [
+		await resolveMainCommit(GENTLE_AI_REPOSITORY, { fetch }),
+		await resolveMainCommit(SHELL_REPOSITORY, { fetch }),
+	]);
 	const onMain = state.channel === "main";
 	const aiCurrent = onMain && state.gentleAiCommit === gentleAiCommit;
 	const shellCurrent = onMain && state.shellCommit === shellCommit && currentVersion.endsWith(`-main.${shellCommit.slice(0, 12)}`);
@@ -501,7 +537,7 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 	let aiError;
 	if (!aiCurrent) {
 		try {
-			await buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs });
+			await stage("Building Gentle AI", async () => buildMainGentleAi({ commit: gentleAiCommit, ctx, platform, goPath: await mainGo({ userGo, pinnedGo, acquire, run }), run, fs }));
 		} catch (error) {
 			if (shellCurrent) throw error;
 			aiFailed = true;
@@ -510,9 +546,9 @@ export async function runUpgrade({ args, ctx, platform, arch = process.arch, pac
 	}
 	if (!shellCurrent) {
 		try {
-			const manager = await ownerManager({ ctx, platform, packageRoot, adapters });
-			const tgz = await packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm, fs, platform });
-			await installGlobal(manager, tgz, run);
+			const manager = await stage("Checking package manager", () => ownerManager({ ctx, platform, packageRoot, adapters }));
+			const tgz = await stage("Building Gentle Shell", () => packMainShell({ commit: shellCommit, ctx, fetch, run, pnpm, fs, platform }));
+			await stage("Installing Gentle Shell", () => installGlobal(manager, tgz, run));
 		} catch (error) {
 			throw aiFailed ? withDetail(error, `Gentle AI was not updated either (${describe(aiError)})`) : error;
 		}

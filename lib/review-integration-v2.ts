@@ -103,12 +103,25 @@ const FAILURE_OPERATIONS = Object.freeze([
 ] as const);
 const REQUIRED_GATES = Object.freeze(["post-apply", "pre-commit", "pre-push", "pre-pr", "release"] as const);
 const REQUIRED_PROJECTIONS = Object.freeze(Object.values(REVIEW_PROJECTION));
-// The schema floor shared by every accepted capabilities identity. Each minor
-// then adds its own capabilities/consent/status identities below: the provider
-// swaps those three advertisements as the protocol minor advances (v2.1 moved
-// consent to v3; v2.2 moved status to v5), ground-truthed against the vendored
-// capabilities[-v2.1|-v2.2].schema.json contracts on gentle-ai main and a live
-// v2.2 capture from a main-line dev build.
+// gentle-ai v4.6.0 is the minimum supported native binary (frozen contracts,
+// gentle-ai#6203): it advertises exactly capabilities/v2.6, protocol 2.6, and
+// answers status/v9. Older advertisements are refused with an actionable error
+// instead of being decoded, so no earlier minor needs its own requirement set.
+export const REVIEW_MINIMUM_NATIVE_VERSION = "v4.6.0";
+export const REVIEW_MINIMUM_CAPABILITIES_IDENTITY = "gentle-ai.review-integration.capabilities/v2.6";
+const REVIEW_MINIMUM_CAPABILITIES_MINOR = 6;
+const REVIEW_MINIMUM_STATUS_IDENTITY = "gentle-ai.review-integration.status/v9";
+
+// A native response whose contract version is older than the supported pin.
+// Distinct from a plain schema mismatch so callers can surface the actionable
+// message verbatim instead of an opaque "schema incompatible".
+export class ReviewNativeContractTooOldError extends TypeError {
+	constructor(message: string) {
+		super(message);
+		this.name = "ReviewNativeContractTooOldError";
+	}
+}
+
 const REQUIRED_SCHEMAS_COMMON = Object.freeze([
 	"gentle-ai.review-admitted-result/v2",
 	"gentle-ai.review-artifact-subject/v2",
@@ -116,127 +129,58 @@ const REQUIRED_SCHEMAS_COMMON = Object.freeze([
 	"gentle-ai.review-authority-status/v1",
 	"gentle-ai.review-gate-request/v1",
 	"gentle-ai.review-integration.failure/v2",
-	"gentle-ai.review-final-verification-incident/v1",
 	"gentle-ai.review-integration.operation/v2",
 	"gentle-ai.review-integration.projection/v1",
 	"gentle-ai.review-integration.repair/v2",
 	"gentle-ai.review-receipt/v1",
-	"gentle-ai.review-receipt/v2",
 	"gentle-ai.review-result-artifact/v2",
 	"gentle-ai.review-targeted-validation-request/v1",
-	"gentle-ai.review-verification-evidence/v2",
 	"https://gentle-ai.dev/schema/review/refuter/v1",
 	"https://gentle-ai.dev/schema/review/reviewer/v1",
 	"https://gentle-ai.dev/schema/review/validator/v1",
 ] as const);
-// The v2.3 provider contract (first advertised by the pinned v2.5.0-rc.3
-// runtime) retired exact_receipt_replay, five_delivery_gates, and
-// sdd_receipt_binding from the mandatory feature set and
-// exact_gate_receipt_discovery, one_shot_final_verification_retry, and
-// outcome_bound_verification_evidence from the optional set; none of them is
-// consumed by Pi's negotiated v2 lane. Earlier minors keep their frozen
-// requirement sets unchanged.
-const REQUIRED_MANDATORY_FEATURES_V23 = Object.freeze([
+// capabilities/v2.6 advertises the v2.3 provider surface: exact_receipt_replay,
+// five_delivery_gates, and sdd_receipt_binding left the mandatory set and are
+// not consumed by Pi's negotiated v2 lane. status/v6 stays the required floor
+// (v7-v9 are superset additions decoded by decodeReviewStatusV3).
+const REQUIRED_MANDATORY_FEATURES = Object.freeze([
 	"compact_v2_authority",
 	"immutable_snapshot",
-	"legacy_v1_target_scoped_read_only",
 	"repository_independent_capabilities",
 	"restart_safe_projection",
 	"target_scoped_status",
 	"uniform_failure_envelope",
 ] as const);
-// v2.3 (first advertised by the pinned v2.5.0-rc.3 provider) retired three
-// v1-era identities from its advertisement. Pi never decodes those envelopes
-// on the negotiated v2 lane, so the v2.3 requirement list is the exact set the
-// v2.3 provider contract defines; earlier minors keep the full common list.
-// The load-time length assertion keeps this filter honest: if the common-list
-// identifier form ever drifts away from these bare identifiers, the module
-// fails loudly instead of silently requiring schemas the provider retired.
-const RETIRED_SCHEMAS_V23: readonly string[] = Object.freeze([
-	"gentle-ai.review-final-verification-incident/v1",
-	"gentle-ai.review-receipt/v2",
-	"gentle-ai.review-verification-evidence/v2",
-]);
-const REQUIRED_SCHEMAS_COMMON_V23 = Object.freeze(REQUIRED_SCHEMAS_COMMON.filter((schema) => !RETIRED_SCHEMAS_V23.includes(schema)));
-if (REQUIRED_SCHEMAS_COMMON_V23.length !== REQUIRED_SCHEMAS_COMMON.length - RETIRED_SCHEMAS_V23.length) {
-	throw new TypeError("v2.3 retired-schema filter must remove exactly the retired identities from the common schema list");
-}
-const CAPABILITIES_SCHEMA_IDENTITIES: Readonly<Record<string, { protocolMinor: number; requiredSchemas: readonly string[]; requiredMandatoryFeatures?: readonly string[]; optionalFeatureFloor?: number }>> = Object.freeze({
-	"gentle-ai.review-integration.capabilities/v2": Object.freeze({
-		protocolMinor: 0,
-		requiredSchemas: Object.freeze([...REQUIRED_SCHEMAS_COMMON, "gentle-ai.review-integration.capabilities/v2", "gentle-ai.review-integration.consent/v2", "gentle-ai.review-integration.start/v3", "gentle-ai.review-integration.status/v3"]),
-	}),
-	"gentle-ai.review-integration.capabilities/v2.1": Object.freeze({
-		protocolMinor: 1,
-		requiredSchemas: Object.freeze([...REQUIRED_SCHEMAS_COMMON, "gentle-ai.review-integration.capabilities/v2.1", "gentle-ai.review-integration.consent/v3", "gentle-ai.review-integration.start/v3", "gentle-ai.review-integration.status/v3"]),
-	}),
-	"gentle-ai.review-integration.capabilities/v2.2": Object.freeze({
-		protocolMinor: 2,
-		requiredSchemas: Object.freeze([...REQUIRED_SCHEMAS_COMMON, "gentle-ai.review-integration.capabilities/v2.2", "gentle-ai.review-integration.consent/v3", "gentle-ai.review-integration.start/v3", "gentle-ai.review-integration.status/v5"]),
-	}),
-	"gentle-ai.review-integration.capabilities/v2.3": Object.freeze({
-		protocolMinor: 3,
-		requiredSchemas: Object.freeze([...REQUIRED_SCHEMAS_COMMON_V23, "gentle-ai.review-integration.capabilities/v2.3", "gentle-ai.review-integration.consent/v3", "gentle-ai.review-integration.start/v4", "gentle-ai.review-integration.status/v5"]),
-		requiredMandatoryFeatures: REQUIRED_MANDATORY_FEATURES_V23,
-		optionalFeatureFloor: 14,
-	}),
-	"gentle-ai.review-integration.capabilities/v2.4": Object.freeze({
-		protocolMinor: 4,
-		requiredSchemas: Object.freeze([...REQUIRED_SCHEMAS_COMMON_V23, "gentle-ai.review-integration.capabilities/v2.4", "gentle-ai.review-integration.consent/v3", "gentle-ai.review-integration.start/v4", "gentle-ai.review-integration.status/v6", "gentle-ai.review-intended-untracked-selection/v1"]),
-		requiredMandatoryFeatures: REQUIRED_MANDATORY_FEATURES_V23,
-		optionalFeatureFloor: 14,
-	}),
-	// Ground-truthed against the published v2.6.0 binary: capabilities/v2.5
-	// advertises the same required surface as v2.4 (status/v6 is still
-	// advertised for compatibility) plus the new status/v7 schema, which is a
-	// superset-checked addition, not a requirement -- decodeReviewStatusV3
-	// accepts v7 as an additive extension of v6, so the required-schema floor
-	// stays unchanged. The v2.6.0 binary advertised 15 optional features
-	// (floor stays at 14, its established minimum).
-	"gentle-ai.review-integration.capabilities/v2.5": Object.freeze({
-		protocolMinor: 5,
-		requiredSchemas: Object.freeze([...REQUIRED_SCHEMAS_COMMON_V23, "gentle-ai.review-integration.capabilities/v2.5", "gentle-ai.review-integration.consent/v3", "gentle-ai.review-integration.start/v4", "gentle-ai.review-integration.status/v6", "gentle-ai.review-intended-untracked-selection/v1"]),
-		requiredMandatoryFeatures: REQUIRED_MANDATORY_FEATURES_V23,
-		optionalFeatureFloor: 14,
-	}),
-	// Ground-truthed against the published v3.4.0 binary: capabilities/v2.6
-	// advertises the same required surface as v2.5 (status/v6 is still
-	// advertised for compatibility) plus the status/v7 and status/v8 schemas,
-	// which are superset-checked additions, not requirements --
-	// decodeReviewStatusV3 already accepts v7/v8/v9 as additive extensions of
-	// v6, so the required-schema floor stays unchanged. `review assess` also
-	// gained review_due/review_due_reason/next_transition, which is unrelated
-	// to this negotiated capabilities surface. The v3.4.0 binary advertised
-	// 15 optional features, same as v2.5's binary (floor stays at 14, its
-	// established minimum).
-	"gentle-ai.review-integration.capabilities/v2.6": Object.freeze({
-		protocolMinor: 6,
-		requiredSchemas: Object.freeze([...REQUIRED_SCHEMAS_COMMON_V23, "gentle-ai.review-integration.capabilities/v2.6", "gentle-ai.review-integration.consent/v3", "gentle-ai.review-integration.start/v4", "gentle-ai.review-integration.status/v6", "gentle-ai.review-intended-untracked-selection/v1"]),
-		requiredMandatoryFeatures: REQUIRED_MANDATORY_FEATURES_V23,
-		optionalFeatureFloor: 14,
-	}),
+// Legacy-v1 review authority is no longer supported. gentle-ai v4.6.0 still
+// announces this mandatory feature, so it is tolerated (not required): a
+// provider may announce it or not.
+const TOLERATED_LEGACY_MANDATORY_FEATURE = "legacy_v1_target_scoped_read_only";
+const CAPABILITIES_IDENTITY = Object.freeze({
+	requiredSchemas: Object.freeze([...REQUIRED_SCHEMAS_COMMON, REVIEW_MINIMUM_CAPABILITIES_IDENTITY, "gentle-ai.review-integration.consent/v3", "gentle-ai.review-integration.start/v4", "gentle-ai.review-integration.status/v6", "gentle-ai.review-intended-untracked-selection/v1"]),
+	optionalFeatureFloor: 14,
 });
-const OPTIONAL_FEATURE_NAMES = Object.freeze([
-	"start_request_context",
-	"start_options_preflight",
-	"base_ref_workspace_overlay",
-	"bounded_process_waits",
-	"classified_authority_repair",
-	"exact_gate_receipt_discovery",
-	"native_frozen_candidate_context",
-	"native_low_risk_verification",
-	"native_next_transition",
-	"one_shot_final_verification_retry",
-	"opaque_repository_context",
-	"outcome_bound_verification_evidence",
-	"provider_artifact_admission",
-	"provider_bound_native_git_context",
-	"provider_targeted_validation_request",
-	"recovered_correction_evidence",
-	"risk_reasons",
-	"scope_change_diagnostics",
-	"validating_result_reopen",
-] as const);
+function capabilitiesTooOldMessage(schema: string): string {
+	return `gentle-ai native review ${schema.slice("gentle-ai.review-integration.".length)} is older than the supported v2.6 (gentle-ai ${REVIEW_MINIMUM_NATIVE_VERSION}); update gentle-ai or remove the dev-binary override`;
+}
+export function reviewStatusTooOldMessage(schema: string): string {
+	return `gentle-ai native review ${schema.slice("gentle-ai.review-integration.".length)} is older than the supported v9 (gentle-ai ${REVIEW_MINIMUM_NATIVE_VERSION}); update gentle-ai or remove the dev-binary override`;
+}
+// The exact too-old messages above carry no paths or provider text, so a
+// decoded version-incompatible error may relay one verbatim as remediation.
+// Anything else (including a forged message) is never relayed.
+export function reviewContractTooOldRemediation(message: unknown): string | undefined {
+	if (typeof message !== "string") return undefined;
+	// Same predicates as the decoders: status/vN with N < 9, capabilities/v2 or
+	// v2.N with N below the minimum minor. A not-older version never matches.
+	const status = /^gentle-ai native review status\/v([0-9]+) is older than/.exec(message);
+	if (status !== null) {
+		return Number(status[1]) < 9 && reviewStatusTooOldMessage(`gentle-ai.review-integration.status/v${status[1]}`) === message ? message : undefined;
+	}
+	const capabilities = /^gentle-ai native review capabilities\/v2(?:\.([0-9]+))? is older than/.exec(message);
+	if (capabilities === null || Number(capabilities[1] ?? 0) >= REVIEW_MINIMUM_CAPABILITIES_MINOR) return undefined;
+	const schema = `gentle-ai.review-integration.capabilities/v2${capabilities[1] === undefined ? "" : `.${capabilities[1]}`}`;
+	return capabilitiesTooOldMessage(schema) === message ? message : undefined;
+}
 const FEATURE_NAMES = Object.freeze([
 	"start_request_context",
 	"start_options_preflight",
@@ -268,7 +212,6 @@ const FEATURE_NAMES = Object.freeze([
 	"uniform_failure_envelope",
 	"validating_result_reopen",
 ] as const);
-const REQUIRED_MANDATORY_FEATURES = Object.freeze(FEATURE_NAMES.filter((name) => !(OPTIONAL_FEATURE_NAMES as readonly string[]).includes(name)));
 
 type StartAction = (typeof START_ACTIONS)[number];
 type RiskLevel = (typeof RISK_LEVELS)[number];
@@ -1073,15 +1016,16 @@ function decodeOptionalFeature(value: unknown, label: string): { name: string; s
 export function decodeReviewCapabilitiesV2(value: unknown, verifiedExecutableDigest: string): ReviewCapabilitiesV2 {
 	const requiredFields = ["schema", "contract", "protocol", "package", "build", "executable", "operations", "gates", "projections", "schemas", "features", "compatibility"] as const;
 	const body = exactRecord(value, "capabilities", requiredFields, ["bootstrap"]);
-	// Additive minor acceptance: each accepted schema identity keeps its own
-	// exact protocol minor and required-schema floor; v2 stays exactly as it
-	// was, and an unknown identity is rejected before anything else.
-	const identity = CAPABILITIES_SCHEMA_IDENTITIES[typeof body.schema === "string" ? body.schema : ""];
-	if (identity === undefined) throw new TypeError(`schema must be one of ${Object.keys(CAPABILITIES_SCHEMA_IDENTITIES).join(", ")}`);
-	requireIdentity(body, body.schema as string);
+	// Only capabilities/v2.6 (gentle-ai v4.6.0, the minimum supported native
+	// binary) decodes; an older minor is refused with an actionable message.
+	const older = typeof body.schema === "string" ? /^gentle-ai\.review-integration\.capabilities\/v2(?:\.([0-9]+))?$/.exec(body.schema) : null;
+	if (older !== null && Number(older[1] ?? 0) < REVIEW_MINIMUM_CAPABILITIES_MINOR) throw new ReviewNativeContractTooOldError(capabilitiesTooOldMessage(body.schema as string));
+	if (body.schema !== REVIEW_MINIMUM_CAPABILITIES_IDENTITY) throw new TypeError(`schema must be ${REVIEW_MINIMUM_CAPABILITIES_IDENTITY}`);
+	const identity = CAPABILITIES_IDENTITY;
+	requireIdentity(body, REVIEW_MINIMUM_CAPABILITIES_IDENTITY);
 
 	const protocol = exactRecord(body.protocol, "capabilities.protocol", ["major", "minor"]);
-	if (protocol.major !== 2 || protocol.minor !== identity.protocolMinor) throw new TypeError("incompatible review integration protocol");
+	if (protocol.major !== 2 || protocol.minor !== REVIEW_MINIMUM_CAPABILITIES_MINOR) throw new TypeError("incompatible review integration protocol");
 
 	const packageIdentity = exactRecord(body.package, "capabilities.package", ["name", "version", "release_channel"]);
 	if (packageIdentity.name !== "gentle-ai") throw new TypeError("capabilities package identity mismatch");
@@ -1115,29 +1059,34 @@ export function decodeReviewCapabilitiesV2(value: unknown, verifiedExecutableDig
 	assertSupersetOf(advertisedSchemas, identity.requiredSchemas, "capabilities schemas");
 
 	const features = exactRecord(body.features, "capabilities.features", ["mandatory", "optional"]);
-	const requiredMandatoryFeatures = identity.requiredMandatoryFeatures ?? REQUIRED_MANDATORY_FEATURES;
+	const requiredMandatoryFeatures = REQUIRED_MANDATORY_FEATURES;
 	const mandatory = array(features.mandatory, "capabilities.features.mandatory", (entry, label) => decodeFeature(entry, label), { minimum: requiredMandatoryFeatures.length });
-	const optional = array(features.optional, "capabilities.features.optional", (entry, label) => decodeOptionalFeature(entry, label), { minimum: identity.optionalFeatureFloor ?? 17, unique: true });
+	const optional = array(features.optional, "capabilities.features.optional", (entry, label) => decodeOptionalFeature(entry, label), { minimum: identity.optionalFeatureFloor, unique: true });
 	const mandatoryNames = mandatory.map((feature) => feature.name);
 	const optionalNames = optional.map((feature) => feature.name);
-	assertExactSet(mandatoryNames, requiredMandatoryFeatures, "mandatory capabilities");
+	if (mandatoryNames.filter((name) => name === TOLERATED_LEGACY_MANDATORY_FEATURE).length > 1) throw new TypeError("mandatory capabilities contain duplicate names");
+	assertExactSet(mandatoryNames.filter((name) => name !== TOLERATED_LEGACY_MANDATORY_FEATURE), requiredMandatoryFeatures, "mandatory capabilities");
 	if (new Set(optionalNames).size !== optionalNames.length) throw new TypeError("optional capabilities contain duplicate names");
 	if (optionalNames.some((name) => mandatoryNames.includes(name as ReviewFeatureV2["name"]))) throw new TypeError("mandatory and optional capabilities overlap");
 	if (mandatory.some((feature) => !feature.supported)) throw new TypeError("mandatory capability is unsupported");
 
-	const compatibility = exactRecord(body.compatibility, "capabilities.compatibility", ["minimum_protocol_major", "maximum_protocol_major", "additive_minor_policy", "unknown_mandatory", "unknown_optional", "modes", "legacy_window"]);
+	const compatibility = exactRecord(body.compatibility, "capabilities.compatibility", ["minimum_protocol_major", "maximum_protocol_major", "additive_minor_policy", "unknown_mandatory", "unknown_optional", "modes"], ["legacy_window"]);
 	if (compatibility.minimum_protocol_major !== 2 || compatibility.maximum_protocol_major !== 2 || compatibility.additive_minor_policy !== "optional-fields-only" || compatibility.unknown_mandatory !== "reject" || compatibility.unknown_optional !== "ignore") {
 		throw new TypeError("incompatible capability evolution policy");
 	}
-	const modes = enumArray(compatibility.modes, Object.values(REVIEW_AUTHORITY_VERSION), "capabilities.compatibility.modes", { minimum: 2, maximum: 2 });
-	if (modes[0] !== REVIEW_AUTHORITY_VERSION.COMPACT_V2 || modes[1] !== REVIEW_AUTHORITY_VERSION.LEGACY_V1) throw new TypeError("capabilities compatibility modes are out of order");
-	const legacyWindow = exactRecord(compatibility.legacy_window, "capabilities.compatibility.legacy_window", ["mode", "state", "read_only", "deprecation_started", "removal", "minimum_compatibility_releases"]);
-	if (legacyWindow.mode !== REVIEW_AUTHORITY_VERSION.LEGACY_V1) throw new TypeError("capabilities legacy window mode is incompatible");
-	enumeration(legacyWindow.state, ["pre-fence", "active", "deprecated", "expired"] as const, "capabilities.compatibility.legacy_window.state");
-	boolean(legacyWindow.read_only, "capabilities.compatibility.legacy_window.read_only");
-	boolean(legacyWindow.deprecation_started, "capabilities.compatibility.legacy_window.deprecation_started");
-	nonempty(legacyWindow.removal, "capabilities.compatibility.legacy_window.removal");
-	integer(legacyWindow.minimum_compatibility_releases, "capabilities.compatibility.legacy_window.minimum_compatibility_releases", 1);
+	const modes = enumArray(compatibility.modes, Object.values(REVIEW_AUTHORITY_VERSION), "capabilities.compatibility.modes", { minimum: 1, maximum: 2 });
+	const modesCompactOnly = modes.length === 1 && modes[0] === REVIEW_AUTHORITY_VERSION.COMPACT_V2;
+	const modesWithLegacy = modes.length === 2 && modes[0] === REVIEW_AUTHORITY_VERSION.COMPACT_V2 && modes[1] === REVIEW_AUTHORITY_VERSION.LEGACY_V1;
+	if (!modesCompactOnly && !modesWithLegacy) throw new TypeError("capabilities compatibility modes are out of order");
+	if (compatibility.legacy_window !== undefined) {
+		const legacyWindow = exactRecord(compatibility.legacy_window, "capabilities.compatibility.legacy_window", ["mode", "state", "read_only", "deprecation_started", "removal", "minimum_compatibility_releases"]);
+		if (legacyWindow.mode !== REVIEW_AUTHORITY_VERSION.LEGACY_V1) throw new TypeError("capabilities legacy window mode is incompatible");
+		enumeration(legacyWindow.state, ["pre-fence", "active", "deprecated", "expired"] as const, "capabilities.compatibility.legacy_window.state");
+		boolean(legacyWindow.read_only, "capabilities.compatibility.legacy_window.read_only");
+		boolean(legacyWindow.deprecation_started, "capabilities.compatibility.legacy_window.deprecation_started");
+		nonempty(legacyWindow.removal, "capabilities.compatibility.legacy_window.removal");
+		integer(legacyWindow.minimum_compatibility_releases, "capabilities.compatibility.legacy_window.minimum_compatibility_releases", 1);
+	}
 
 	if (body.bootstrap !== undefined) {
 		const bootstrap = exactRecord(body.bootstrap, "capabilities.bootstrap", ["command", "target_selector_variants", "required_feature", "unsupported_outcome", "parent_only"]);
@@ -1505,20 +1454,34 @@ export function intendedUntrackedSubmissionCarriesTarget(tokens: readonly string
 	return isIntendedUntrackedSubmissionTokens(tokens) && tokens.length === INTENDED_UNTRACKED_PREFIX.length + 3;
 }
 
-function isIntendedUntrackedSubmissionTokens(tokens: readonly string[]): boolean {
-	if (INTENDED_UNTRACKED_PREFIX.some((token, index) => tokens[index] !== token) || tokens[tokens.length - 1] !== INTENDED_UNTRACKED_SELECTION_TOKEN) return false;
+interface BoundSelectionStatus {
+	lineageId: string;
+	projection: ReviewProjectionDescriptorV1;
+}
+
+function isIntendedUntrackedSubmissionTokens(tokens: readonly string[], boundStatus?: BoundSelectionStatus): boolean {
+	if (INTENDED_UNTRACKED_PREFIX.some((token, index) => tokens[index] !== token) || tokens.at(-1) !== INTENDED_UNTRACKED_SELECTION_TOKEN) return false;
 	const selector = tokens.slice(INTENDED_UNTRACKED_PREFIX.length, -1);
+	if (selector[0]?.startsWith("--lineage=")) {
+		if (boundStatus === undefined || selector[0] !== `--lineage=${boundStatus.lineageId}` || boundStatus.projection.projection !== REVIEW_PROJECTION.WORKSPACE) return false;
+		const { kind, baseTree } = boundStatus.projection;
+		if (kind === REVIEW_PROJECTION_KIND.CURRENT_CHANGES) return selector.length === 2 && selector[1] === "--projection=workspace";
+		const scope = kind === REVIEW_PROJECTION_KIND.BASE_DIFF ? "--committed-only=true" : kind === REVIEW_PROJECTION_KIND.BASE_WORKSPACE_OVERLAY ? "--workspace-overlay=true" : undefined;
+		return scope !== undefined && selector.length === 3 && selector[1] === `--base-ref=${baseTree}` && selector[2] === scope;
+	}
+	// Older providers omit the lineage even on a bound offer. Keep decoding it
+	// for STATUS visibility; the host will refuse to submit it as bound.
 	if (selector.length === 1) return selector[0] === "--projection=workspace";
 	return selector.length === 2 && INTENDED_UNTRACKED_BASE_TREE.test(selector[0]!) && (selector[1] === "--committed-only=true" || selector[1] === "--workspace-overlay=true");
 }
 
-function decodeCaptureSubmission(value: unknown, label: string, v5: boolean, v6: boolean, captureOperation: string): ReviewCaptureSubmissionV1 {
+function decodeCaptureSubmission(value: unknown, label: string, v5: boolean, v6: boolean, captureOperation: string, boundStatus?: BoundSelectionStatus): ReviewCaptureSubmissionV1 {
 	// status/v6 adds the provider-owned intended-untracked selection form.
 	if (v6 && captureOperation === "external.select_intended_untracked" && typeof value === "object" && value !== null && (value as Record<string, unknown>).operation_token === "status") {
 		const submission = exactRecord(value, label, ["operation_token", "argument_tokens", "value"]);
 		const operationToken = enumeration(submission.operation_token, ["status"] as const, `${label}.operation_token`);
-		const argumentTokens = stringArray(submission.argument_tokens, `${label}.argument_tokens`, { minimum: 5, maximum: 6 });
-		if (!isIntendedUntrackedSubmissionTokens(argumentTokens)) throw new TypeError(`${label}.argument_tokens substitution binding is invalid`);
+		const argumentTokens = stringArray(submission.argument_tokens, `${label}.argument_tokens`, { minimum: 5, maximum: boundStatus === undefined ? 6 : 7 });
+		if (!isIntendedUntrackedSubmissionTokens(argumentTokens, boundStatus)) throw new TypeError(`${label}.argument_tokens substitution binding is invalid`);
 		const row = exactRecord(submission.value, `${label}.value`, ["slot", "domain", "schema", "substitution_location"]);
 		return {
 			operationToken,
@@ -1706,7 +1669,7 @@ const CORRECTION_REQUEST_REASON_CODES = Object.freeze(["correction_plan_required
 // v5 capture operations that must carry a submission descriptor.
 const V5_SUBMISSION_CAPTURE_OPERATIONS = Object.freeze(["review.capture-correction-plan"] as const);
 
-function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: boolean, v9: boolean): ReviewCollectInputV3 {
+function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: boolean, v9: boolean, boundStatus?: BoundSelectionStatus): ReviewCollectInputV3 {
 	const input = exactRecord(value, label, ["name", "schema", "capture_operation", "arguments"], ["artifact_subject", "base_tree", "candidate_tree", "changed_path_manifest", "submission", ...(v5 ? ["provider_task", "validation_request"] : [])]);
 	const name = text(input.name, `${label}.name`, { minimum: 1, pattern: /^[a-z0-9_]+$/ });
 	const schema = nonempty(input.schema, `${label}.schema`);
@@ -1851,7 +1814,7 @@ function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: bool
 
 	const submission = input.submission === undefined
 		? undefined
-		: decodeCaptureSubmission(input.submission, `${label}.submission`, v5, v6, captureOperation);
+		: decodeCaptureSubmission(input.submission, `${label}.submission`, v5, v6, captureOperation, boundStatus);
 
 	return {
 		name,
@@ -1882,15 +1845,13 @@ export function decodeReviewManagedAssetsContinuationV1(value: unknown, label: s
 	return { operation, command, ...(agent === undefined ? {} : { agent }), ...(staleAssets === undefined ? {} : { staleAssets }) };
 }
 
-export function decodeReviewNextTransitionV3(value: unknown, options: { v5?: boolean; v6?: boolean; v9?: boolean } = {}): ReviewNextTransitionV3 {
-	// v9 (gentle-ai's next contract, ahead of the currently-released v8) is
-	// the only rung this sub-decoder distinguishes beyond v6: v7 and v8 add
-	// nothing to next_transition/collect-input decoding (v8 only extended the
-	// reviewer-result transition for OpenCode provider tasks at the top
-	// status level), so they decode on the exact v6 surface here.
+export function decodeReviewNextTransitionV3(value: unknown, options: { v9?: boolean; boundStatus?: BoundSelectionStatus } = {}): ReviewNextTransitionV3 {
+	// status/v9 (the only supported status identity) selects the full
+	// next_transition surface; without it the embedded START/v4 transition is
+	// decoded on its own closed v3 surface.
 	const v9 = options.v9 === true;
-	const v6 = options.v6 === true || v9;
-	const v5 = options.v5 === true || v6;
+	const v6 = v9;
+	const v5 = v9;
 	const transition = exactRecord(value, "next_transition", ["kind", "reason_code"], ["execute", "collect", ...(v5 ? ["correction_request"] : []), "continuation", "unachievable_lens_slots"]);
 	const kind = enumeration(transition.kind, ["execute", "collect", "stop"] as const, "next_transition.kind");
 	const reasonCode = text(transition.reason_code, "next_transition.reason_code", { minimum: 1, pattern: /^[a-z0-9_]+$/ });
@@ -1951,7 +1912,7 @@ export function decodeReviewNextTransitionV3(value: unknown, options: { v5?: boo
 	}
 	if (kind === "collect") {
 		const collect = exactRecord(transition.collect, "next_transition.collect", ["inputs"]);
-		const inputs = array(collect.inputs, "next_transition.collect.inputs", (entry, label) => decodeCollectInput(entry, label, v5, v6, v9), { minimum: 1 });
+		const inputs = array(collect.inputs, "next_transition.collect.inputs", (entry, label) => decodeCollectInput(entry, label, v5, v6, v9, options.boundStatus), { minimum: 1 });
 		if (transition.execute !== undefined) throw new TypeError("next_transition.execute is incompatible with collect");
 		return { kind, reasonCode, collect: { inputs }, ...(correctionRequest === undefined ? {} : { correctionRequest }) };
 	}
@@ -2057,33 +2018,20 @@ function decodeEligibility(value: unknown, label: string): void {
 // status/v3
 // ---------------------------------------------------------------------------
 
-export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
-	// Additive forward acceptance: status/v5 (gentle-ai main; ground-truthed
-	// against a live capture and the vendored status-v5.schema.json) is the v3
-	// key set plus the optional forecast and the v5-only next_transition
-	// surfaces. status/v6 adds the intended-untracked selection; status/v7
-	// (gentle-ai v2.6.0, advertised through capabilities/v2.5 alongside v6)
-	// adds optional `eligible_untracked_inventory` and escalation metadata,
-	// so it is decoded on the v6 surface. status/v8 (gentle-ai main, PR #4765;
-	// the current released contract) only extended the reviewer-result
-	// transition for OpenCode provider tasks -- no new top-level key -- so it
-	// decodes on the exact v7 surface too. status/v9 (the sibling gentle-ai
-	// branch's contract, ahead of the released v8) adds nothing at this top
-	// level either: its one addition is the host-mediated role `submission`
-	// on a next_transition.collect input (gentle-pi#311 P3), gated on v9 in
-	// decodeCollectInput, not here. Its one top-level key is the opt-in
-	// `non_blocking_findings` (gentle-ai#6088), decoded below. v3 keeps
-	// rejecting every v5/v6/v7/v8/v9-only field.
+export function decodeReviewStatusV3(value: unknown, options: { boundSelectionLineage?: string } = {}): ReviewStatusV3 {
+	// Only status/v9 (gentle-ai v4.6.0, the minimum supported native binary)
+	// decodes. An older status identity is refused with an actionable message
+	// before any structural check, so an old binary never surfaces an opaque
+	// "not allowed"/"unsupported" decode error. v9 is the full surface: the
+	// forecast, receipt, repository context, validation request, eligible
+	// untracked inventory, escalation, and opt-in non_blocking_findings keys.
 	const schema = typeof value === "object" && value !== null ? (value as Record<string, unknown>).schema : undefined;
-	const v9 = schema === "gentle-ai.review-integration.status/v9";
-	const v8 = v9 || schema === "gentle-ai.review-integration.status/v8";
-	const v7 = v8 || schema === "gentle-ai.review-integration.status/v7";
-	const v6 = v7 || schema === "gentle-ai.review-integration.status/v6";
-	const v5 = v6 || schema === "gentle-ai.review-integration.status/v5";
+	const older = typeof schema === "string" ? /^gentle-ai\.review-integration\.status\/v([0-9]+)$/.exec(schema) : null;
+	if (older !== null && Number(older[1]) < 9) throw new ReviewNativeContractTooOldError(reviewStatusTooOldMessage(schema as string));
 	const body = exactRecord(value, "status", [
 		"schema", "contract", "operation", "applicability", "action", "replayability", "target_identity", "projection", "repair", "candidates",
-	], ["authority", "frozen", "action_disposition", "eligibility", "next_transition", "authority_target_identity", ...(v5 ? ["receipt", "forecast", "repository_context", "validation_request"] : []), ...(v7 ? ["eligible_untracked_inventory", "escalation"] : []), ...(v9 ? ["non_blocking_findings"] : [])]);
-	requireIdentity(body, v9 ? "gentle-ai.review-integration.status/v9" : v8 ? "gentle-ai.review-integration.status/v8" : v7 ? "gentle-ai.review-integration.status/v7" : v6 ? "gentle-ai.review-integration.status/v6" : v5 ? "gentle-ai.review-integration.status/v5" : "gentle-ai.review-integration.status/v3", REVIEW_INTEGRATION_OPERATION.STATUS);
+	], ["authority", "frozen", "action_disposition", "eligibility", "next_transition", "authority_target_identity", "receipt", "forecast", "repository_context", "validation_request", "eligible_untracked_inventory", "escalation", "non_blocking_findings"]);
+	requireIdentity(body, REVIEW_MINIMUM_STATUS_IDENTITY, REVIEW_INTEGRATION_OPERATION.STATUS);
 
 	const applicability = enumeration(body.applicability, ["current_target", "unrelated", "ambiguous", "corrupted"] as const, "status.applicability");
 	let receipt: ReviewStatusReceiptV1 | undefined;
@@ -2098,7 +2046,7 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 	if (body.authority !== undefined) {
 		const source = exactRecord(body.authority, "status.authority", ["version", "lineage_id", "state", "generation", "revision"]);
 		authority = {
-			version: enumeration(source.version, Object.values(REVIEW_AUTHORITY_VERSION), "status.authority.version"),
+			version: enumeration(source.version, [REVIEW_AUTHORITY_VERSION.COMPACT_V2] as const, "status.authority.version"),
 			lineageId: lineage(source.lineage_id, "status.authority.lineage_id"),
 			state: nonempty(source.state, "status.authority.state"),
 			generation: integer(source.generation, "status.authority.generation", 1),
@@ -2121,18 +2069,19 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 		};
 	}
 	if (authority?.version === REVIEW_AUTHORITY_VERSION.COMPACT_V2 && frozen === undefined) throw new TypeError("compact-v2 status requires frozen metadata");
-	if (authority?.version === REVIEW_AUTHORITY_VERSION.LEGACY_V1 && (frozen !== undefined || body.authority_target_identity !== undefined)) throw new TypeError("legacy status cannot expose frozen metadata or authority_target_identity");
-	if (authority?.version === REVIEW_AUTHORITY_VERSION.LEGACY_V1 && receipt !== undefined && receipt.status !== "expected_missing" && receipt.status !== "present") {
-		throw new TypeError("legacy status receipt is incompatible");
-	}
 
 	const action = enumeration(body.action, STATUS_ACTIONS, "status.action");
 	const actionDisposition = body.action_disposition === undefined ? undefined : enumeration(body.action_disposition, Object.values(REVIEW_STATUS_ACTION_DISPOSITION), "status.action_disposition");
 	if (action === "recover" && actionDisposition === undefined) throw new TypeError("recover status requires action_disposition");
 	if (action !== "recover" && actionDisposition !== undefined) throw new TypeError("status.action_disposition is only valid for the recover action");
 	if (body.eligibility !== undefined) decodeEligibility(body.eligibility, "status.eligibility");
-	const nextTransition = body.next_transition === undefined ? undefined : decodeReviewNextTransitionV3(body.next_transition, { v5, v6, v9 });
-	const validationRequest = v5 && body.validation_request !== undefined
+	// status/v9 alone does not negotiate the tuple. The request must have
+	// opted in for this exact lineage and STATUS must bind the same authority.
+	const boundStatus = authority !== undefined && options.boundSelectionLineage === authority.lineageId
+		? { lineageId: authority.lineageId, projection: decodeReviewProjectionV1(body.projection) }
+		: undefined;
+	const nextTransition = body.next_transition === undefined ? undefined : decodeReviewNextTransitionV3(body.next_transition, { v9: true, boundStatus });
+	const validationRequest = body.validation_request !== undefined
 		? decodeReviewTargetedValidationRequestV1(body.validation_request, "status.validation_request")
 		: undefined;
 	if (validationRequest !== undefined) {
@@ -2144,7 +2093,7 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 	}
 	// status/v5 dependentRequired: a forecast previews the transition head, so
 	// it can only accompany an actual next_transition.
-	const forecast = v5 && body.forecast !== undefined ? decodeReviewForecastV1(body.forecast) : undefined;
+	const forecast = body.forecast !== undefined ? decodeReviewForecastV1(body.forecast) : undefined;
 	if (forecast !== undefined && nextTransition === undefined) throw new TypeError("status.forecast requires status.next_transition");
 	const replayability = enumeration(body.replayability, Object.values(REVIEW_REPLAYABILITY), "status.replayability");
 
@@ -2175,7 +2124,7 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 	// published. Absent on the `staged` projection, which never resolves an
 	// inventory, so it stays structurally optional rather than a required v7
 	// field.
-	const eligibleUntrackedInventory = v7 && body.eligible_untracked_inventory !== undefined
+	const eligibleUntrackedInventory = body.eligible_untracked_inventory !== undefined
 		? sha256(body.eligible_untracked_inventory, "status.eligible_untracked_inventory")
 		: undefined;
 
@@ -2200,7 +2149,7 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 		...(frozen === undefined ? {} : { frozen }),
 		targetIdentity: sha256(body.target_identity, "status.target_identity"),
 		...(body.authority_target_identity === undefined ? {} : { authorityTargetIdentity: sha256(body.authority_target_identity, "status.authority_target_identity") }),
-		projection: decodeReviewProjectionV1(body.projection),
+		projection: boundStatus?.projection ?? decodeReviewProjectionV1(body.projection),
 		repair: decodeAuthorityRepairAssessmentV1(body.repair),
 		candidates: stringArray(body.candidates, "status.candidates", { unique: true, pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/ }),
 		...(nextTransition === undefined ? {} : { nextTransition }),

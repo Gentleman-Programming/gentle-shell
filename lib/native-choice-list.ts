@@ -120,7 +120,7 @@ export class NativeChoiceList<T extends NativeChoiceItem> extends Container {
 		else if (this.matches(data, "tui.select.cancel")) this.onCancel?.();
 	}
 
-	override render(width: number): string[] {
+	override render(width: number): readonly string[] {
 		if (!Number.isFinite(width)) return [];
 		if (this.renderedWidth !== width) {
 			this.renderedWidth = width;

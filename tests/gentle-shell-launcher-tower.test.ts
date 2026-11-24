@@ -47,9 +47,15 @@ test("parseTowerArgs rejects a bad port and unknown arguments with a clear error
 	assert.deepEqual(parseTowerArgs(["--host", "0.0.0.0"]), { open: true, error: 'unknown tower argument "--host"' });
 });
 
+test("parseTowerArgs reads --json alone and with the other options", () => {
+	assert.deepEqual(parseTowerArgs(["--json"]), { open: true, json: true });
+	assert.deepEqual(parseTowerArgs(["--no-open", "--json", "--port=4242"]), { open: false, port: 4242, json: true });
+	assert.deepEqual(parseTowerArgs(["--json=yes"]), { open: true, error: 'unknown tower argument "--json=yes"' });
+});
+
 test("help text lists gentle-shell tower and its options", () => {
 	const text = helpText();
-	assert.ok(text.includes("       gentle-shell tower [--no-open] [--port <n>]"));
+	assert.ok(text.includes("       gentle-shell tower [--no-open] [--port <n>] [--json]"));
 	assert.match(text, /\n  tower +Open the Gentle Tower/);
 });
 

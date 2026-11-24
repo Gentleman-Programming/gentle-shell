@@ -1792,12 +1792,15 @@ test("#6221 registered controller resolves bound intended-untracked selection as
 	// reinterpret that descriptor as fresh selection or repair its argv.
 	const legacy = { ...bound, nextTransition: { ...bound.nextTransition!, collect: { inputs: [input] } } };
 	reread = legacy;
-	assert.equal((await run(statusParameters)).selectionBinding, undefined);
+	for (const ref of [namedBase, baseRef]) {
+		const observation = await run(withBase(ref));
+		assert.deepEqual(observation.result, legacy.raw, JSON.stringify(observation));
+		assert.equal(observation.selectionBinding, undefined);
+	}
 	const legacySelectOffset = requests.length;
 	const unsupported = await run({ ...choose, selectionBinding: JSON.stringify(input) });
-	assertRefused(unsupported, "binding-mismatch");
-	assert.equal(unsupported.field, "lineage");
-	assert.deepEqual(requests.slice(legacySelectOffset), [{ ...selector, baseRef }]);
+	assertRefused(unsupported, "selection-input-absent");
+	assert.deepEqual(requests.slice(legacySelectOffset), [{ cwd, agent: "pi" }]);
 	ambient = legacy;
 	const inspect = { operation: "inspect", input: statusParameters.input, untrackedScope: "select" };
 	const observation = { cwd, baseRef, committedOnly: true, agent: "pi" };

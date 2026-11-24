@@ -9598,7 +9598,7 @@ function retainNativeCaptureRoutes(selections: ReviewContinuationRegistry, works
 	const canCapture = canOfferNativeCaptureBindings(status);
 	// An escalated authority can still offer a STATUS selection, not a capture.
 	const selection = reviewIntendedUntrackedInput(status);
-	if (!canCapture && selection === undefined) return;
+	if (!canCapture && (selection === undefined || !hasBoundSelectionLineage(selection, lineageId))) return;
 	const inputs = canCapture ? status.nextTransition?.collect?.inputs ?? [] : [selection!];
 	// Pin the commit for alias comparison without changing the request used to
 	// re-read STATUS. The provider's base tree alone cannot distinguish commits.
@@ -9668,7 +9668,7 @@ function clearRetainedNativeStatusSelectionsOnTerminal(selections: ReviewContinu
 
 function syncRetainedNativeStatusSelections(selections: ReviewContinuationRegistry, workspaceRoot: string, status: ReviewStatusV3, baseRef: string | undefined): void {
 	const selection = status.applicability === "current_target" ? reviewIntendedUntrackedInput(status) : undefined;
-	clearRetainedNativeStatusSelectionsOnTerminal(selections, workspaceRoot, status.authority?.lineageId, status.authority?.state, selection === undefined ? [] : [canonicalReviewCaptureBinding(selection)]);
+	clearRetainedNativeStatusSelectionsOnTerminal(selections, workspaceRoot, status.authority?.lineageId, status.authority?.state, selection && status.authority && hasBoundSelectionLineage(selection, status.authority.lineageId) ? [canonicalReviewCaptureBinding(selection)] : []);
 	retainNativeCaptureRoutes(selections, workspaceRoot, status, baseRef);
 }
 

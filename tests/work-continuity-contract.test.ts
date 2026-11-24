@@ -76,17 +76,19 @@ function includesAll(text: string, clauses: string[]): void {
 test("S3: authorized work continues within existing limits while proof gaps never become completion", async () => {
 	const continuity = await delivered();
 	includesAll(continuity, [
-		"necessary in-scope implementation, documentation and verification steps",
-		"Never end a turn merely announcing an immediately executable authorized next step; execute it instead",
+		"Do in-scope implementation, documentation and verification without asking at each transition.",
+		"Run the authorized next step now rather than announcing it.",
 		"A progress update is not a request for permission.",
 		"An explicit user stop applies only to the work it names.",
 		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
-		"Honor explicit one-run, no-retry, or diagnostic-only limits.",
-		"Correct a failing check only within the existing correction budget",
-		"never reset budgets, add retry allowances, weaken checks, or override final outcomes",
+		"Honor one-run, no-retry and diagnostic-only limits.",
+		"Correct checks within their correction limit.",
+		"Never reset, widen or dodge a limit, even in a new session.",
+		"Do not add retry allowances.",
+		"Never weaken checks or override final outcomes.",
 	]);
-	// The canonical Close owns the authorized-work boundary; the Pi-owned block
-	// keeps its unique guards and budget clauses instead of restating it.
+	// The general turn-end rule complements, but does not duplicate, the
+	// canonical Close's tracked-work and proof clauses.
 	const prompt = await deliveredPrompt();
 	includesAll(prompt, [
 		"a pending child is a wait event whose completion resumes the turn without asking the human",
@@ -188,13 +190,14 @@ test("S3 F1/F2: a partial stop or exhausted limit affects only that work while u
 test("S1-S2: worker exhaustion hands the next step to the parent, which acts on the diagnosed cause", async () => {
 	const prompt = await delivered();
 	includesAll(prompt, [
-		"An exhausted worker-local correction limit ends that worker's cycle, not the unit; within native authority you own the next step, unasked.",
-		"Name the loop's cause from the evidence; act on it: fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence;",
-		"never repeat an attempt or swap executors to dodge limits.",
-		"Same cause again or no new hypothesis: block the unit; continue independent work.",
-		"Before any worker continuation, confirm no child is active or has an uncertain status.",
-		"A new session does not reset any limit.",
-		"Honor explicit one-run, no-retry, or diagnostic-only limits.",
+		"Worker exhaustion: An exhausted correction limit ends the worker's cycle, not the unit.",
+		"The parent owns the next step, unasked, within native authority.",
+		"Name the loop's cause from the evidence and act: fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence.",
+		"Never repeat an attempt or swap executors to dodge limits.",
+		"If the cause recurs or no new hypothesis exists, block only that unit; continue independent work.",
+		"Before continuing a worker, confirm no child is active or uncertain.",
+		"Never reset, widen or dodge a limit, even in a new session.",
+		"Honor one-run, no-retry and diagnostic-only limits.",
 	]);
 	for (const removed of ["human-controlled bounded continuation", "let the human stop"]) {
 		assert.ok(!prompt.includes(removed), `worker exhaustion must not route to the human: ${removed}`);
@@ -203,21 +206,25 @@ test("S1-S2: worker exhaustion hands the next step to the parent, which acts on 
 
 test("worker-prohibited maintenance has a bounded parent-only route, not a permission bypass", async () => {
 	includesAll(await delivered(), [
-		"worker prohibitions remain unchanged",
-		"parent only",
-		"human explicitly authorized the operation itself",
-		"exact scope, ownership, and preservation",
+		"Worker-prohibited maintenance or rollback: Only the parent may act; load `orchestrator-maintenance.md` and verify its prerequisites first.",
+	]);
+	const maintenance = readFileSync(new URL("../assets/orchestrator-maintenance.md", import.meta.url), "utf8");
+	includesAll(maintenance, [
+		"Worker prohibitions remain unchanged.",
+		"Only the parent may act",
+		"explicit human authorization for the operation itself",
+		"established exact scope, ownership and preservation",
 		"available permitted tools",
-		"fresh runtime/native consent and guards remain binding",
-		"broad feature authorization is not destructive authority",
-		"never substitute another worker or tool to bypass a denial",
+		"Fresh runtime/native consent and guards remain binding.",
+		"Broad feature authorization is not destructive authority.",
+		"Never bypass a denial via another worker or tool.",
 		"validated backup",
 		"artifact and migration validation where applicable",
 		"recovery path",
 		"preserve unrelated edits even in the same file",
 		"remove only proven task-created helpers",
-		"never blanket restore, reset, or clean",
-		"ambiguous ownership or denial stops",
+		"never blanket restore, reset or clean",
+		"Do not proceed with ambiguous ownership, a denial or any missing prerequisite.",
 		"This route is guidance, not authorization.",
 	]);
 });

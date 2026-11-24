@@ -8,9 +8,9 @@ import { __testing } from "../extensions/gentle-ai.ts";
 // ODD harness-continuity S3 (odd/tasks/harness-continuity.md): authorized work
 // continues, a pending child is a wait event that resumes the turn, and only a
 // real human decision, the user's explicit stop, a denial, missing consent, or
-// an exhausted limit stops the work it applies to. The canonical Close owns
-// those boundaries; Pi-owned continuity keeps only its unique guards and
-// budget clauses and never licenses a generic terminal **Needs your decision**
+// an exhausted limit stops the work it applies to. The canonical Close applies
+// those boundaries to tracking and proof; Pi-owned continuity carries the
+// general rule and never licenses a generic terminal **Needs your decision**
 // result or broad "never more verification". These are instruction-delivery
 // contracts, not proof of model adherence.
 
@@ -169,8 +169,8 @@ test("T23(d)(e): a quick check runs once and an unavailable verifier is reported
 test("S4-S5: the Close stop stays scoped to the ended automatic cycle", () => {
 	for (const persona of personas) {
 		containsAll(prompt(persona), [
-			"The Close stop ends the cycle; later explicit requests stay subject to native authority.",
-			"Partial worker execution is not by itself exhausted proof or a terminal native review outcome.",
+			"The Close stop ends the automatic cycle; later explicit requests stay subject to native authority.",
+			"A partial worker report is not exhausted proof or a terminal native review outcome.",
 		], `${persona} delivered continuation`);
 	}
 });
@@ -203,18 +203,19 @@ test("S1-S4: the worker returns its diagnosed loop cause after its bound and the
 // exhaustion, but only organic mode may fix inline; full delegation relaunches a bounded writer, never edits.
 test("S2: the post-exhaustion route follows the active delegation mode", () => {
 	for (const persona of personas) for (const mode of modes) {
-		const paragraph = prompt(persona, mode).split("\n\n").find(block => block.startsWith("An exhausted worker-local"));
+		const paragraph = prompt(persona, mode).split("\n\n").find(block => block.startsWith("Worker exhaustion:"));
 		assert.ok(paragraph, `${persona}/${mode} keeps the worker-exhaustion paragraph`);
 		containsAll(paragraph, [
-			"ends that worker's cycle, not the unit; within native authority you own the next step, unasked.",
-			"Name the loop's cause from the evidence; act on it:",
-			"never repeat an attempt or swap executors to dodge limits.",
-			"Same cause again or no new hypothesis: block the unit; continue independent work.",
+			"An exhausted correction limit ends the worker's cycle, not the unit.",
+			"The parent owns the next step, unasked, within native authority.",
+			"Name the loop's cause from the evidence and act:",
+			"Never repeat an attempt or swap executors to dodge limits.",
+			"If the cause recurs or no new hypothesis exists, block only that unit; continue independent work.",
 		], `${persona}/${mode} exhaustion route`);
 		if (mode === "organic") {
-			assert.ok(paragraph.includes("fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence;"), `${persona} organic route`);
+			assert.ok(paragraph.includes("fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence."), `${persona} organic route`);
 		} else {
-			assert.ok(paragraph.includes("never edit: launch a new bounded writer with the diagnosis, new evidence and changed scope or hypothesis;"), `${persona} full-delegation route`);
+			assert.ok(paragraph.includes("never edit: launch a new bounded writer with the diagnosis, new evidence and changed scope or hypothesis."), `${persona} full-delegation route`);
 			assert.ok(!paragraph.includes("inline"), `${persona} full delegation never fixes inline after exhaustion`);
 		}
 	}
@@ -238,7 +239,7 @@ test("gentle-shell#3082: a stopped verification carries its terminal disposition
 test("S2 (verifier P2): full delegation launches a new writer after exhaustion; per-fix continuation is scoped to the worker's limit", () => {
 	for (const persona of personas) {
 		const p = prompt(persona, "full-delegation");
-		const paragraph = p.split("\n\n").find((block) => block.startsWith("An exhausted worker-local")) ?? "";
+		const paragraph = p.split("\n\n").find((block) => block.startsWith("Worker exhaustion:")) ?? "";
 		assert.match(paragraph, /launch a new bounded writer/);
 		assert.ok(!p.includes("Fixes to one unit continue its worker (`subagent_continue`), never a new worker per fix."), "unscoped per-fix rule contradicts the post-exhaustion launch");
 		assert.ok(p.includes("In-limit fixes continue the worker (`subagent_continue`), never a new worker per fix."));

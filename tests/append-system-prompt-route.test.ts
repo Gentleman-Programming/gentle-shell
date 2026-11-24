@@ -123,20 +123,24 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 	assert.equal(appended.split("## Authorized work continuity").length - 1, 1);
 	const continuity = appended.slice(continuityStart, coreStart);
 	for (const clause of [
-		"necessary in-scope implementation, documentation and verification steps",
-		"Never end a turn merely announcing an immediately executable authorized next step; execute it instead",
+		"Do in-scope implementation, documentation and verification without asking at each transition.",
+		"Run the authorized next step now rather than announcing it.",
 		"A progress update is not a request for permission.",
 		"An explicit user stop applies only to the work it names.",
 		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
-		"Honor explicit one-run, no-retry, or diagnostic-only limits.",
-		"Correct a failing check only within the existing correction budget",
-		"never reset budgets, add retry allowances, weaken checks, or override final outcomes",
-		"launch the bounded action and end the turn when no independent in-scope work remains",
-		"Retain its identity and resume the already-authorized continuation automatically on its completion event",
-		"do not ask the human to say \"continue\" or poll",
+		"Honor one-run, no-retry and diagnostic-only limits.",
+		"Correct checks within their correction limit.",
+		"Never reset, widen or dodge a limit, even in a new session.",
+		"Do not add retry allowances.",
+		"Never weaken checks or override final outcomes.",
+		"launched work is still running (a wait) and no independent authorized work remains",
+		"Launch the bounded action.",
+		"A wait is already-launched work whose completion event resumes the turn without the human.",
+		"Keep its identity and resume authorized work on completion.",
+		"Do not poll or ask the human to continue.",
 	]) assert.ok(continuity.includes(clause), `missing continuity clause: ${clause}`);
-	// The canonical Close owns the authorized-work boundary; the Pi-owned block
-	// keeps its unique guards and budget clauses instead of restating it.
+	// The general turn-end rule complements, but does not duplicate, the
+	// canonical Close's tracked-work and proof clauses.
 	for (const duplicated of [
 		"Needs your decision",
 		"never more verification",

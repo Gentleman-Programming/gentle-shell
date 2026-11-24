@@ -94,6 +94,7 @@ export const requiredPaths = [
   "assets/orchestrator-tracking.md",
   "assets/orchestrator-verification.md",
   "assets/orchestrator-quota-recovery.md",
+  "assets/orchestrator-maintenance.md",
   "assets/orchestrator-writer.md",
   "assets/orchestrator-prompts.md",
   "assets/orchestrator-memory.md",

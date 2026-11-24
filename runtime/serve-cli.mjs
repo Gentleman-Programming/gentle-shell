@@ -234,12 +234,17 @@ export function liveServer(agentHome        )                         {
 
 
 
-/** The child for one session: this same launcher, same home, Pi RPC mode, Desktop RPC on. */
+/**
+ * The child for one session: this same launcher, same home, Pi RPC mode, Desktop RPC on.
+ * `sessionId` resumes by exact id (`--session-id`): the project's session with that id, or a
+ * new one under it when Pi never wrote it (a conversation with no messages yet has no file).
+ * `--session` would fail then, and could stop to ask about forking another project's session.
+ */
 export function sessionLaunch(ctx                                                                          , input                                     )                {
 	const env                    = { ...ctx.env, [INTERACTIVE_HOST_ENV]: "1", GENTLE_DESIGN_OPEN_BROWSER: "0", GENTLE_SHELL_SKIP_STARTUP_UPDATE: "1" };
 	return {
 		command: ctx.nodePath,
-		args: [ctx.launcher, ...ctx.homeFlags, "--mode", "rpc", ...(input.sessionId === undefined ? [] : ["--session", input.sessionId])],
+		args: [ctx.launcher, ...ctx.homeFlags, "--mode", "rpc", ...(input.sessionId === undefined ? [] : ["--session-id", input.sessionId])],
 		cwd: input.cwd,
 		env,
 	};

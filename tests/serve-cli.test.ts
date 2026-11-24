@@ -78,7 +78,8 @@ test("the lock admits one server per home and takes over a stale one", () => {
 
 test("a session child is this launcher with the same home, in Pi RPC mode with the Desktop marker", () => {
 	const launch = sessionLaunch({ homeFlags: ["--home", "/h"], launcher: "/pkg/bin/gentle-shell.mjs", nodePath: "/node", env: { PATH: "/bin" } }, { cwd: "/w", sessionId: "abc" });
-	assert.deepEqual(launch.args, ["/pkg/bin/gentle-shell.mjs", "--home", "/h", "--mode", "rpc", "--session", "abc"]);
+	// By exact id, created when missing: `--session` fails on a conversation Pi never wrote.
+	assert.deepEqual(launch.args, ["/pkg/bin/gentle-shell.mjs", "--home", "/h", "--mode", "rpc", "--session-id", "abc"]);
 	assert.equal(launch.command, "/node");
 	assert.equal(launch.cwd, "/w");
 	assert.equal(launch.env.GENTLE_SHELL_INTERACTIVE_HOST, "1");

@@ -50,7 +50,7 @@ Everything lives in `<agent home>/serve/`, a `0700` folder:
 
 ## Process model
 
-Each session is a child process: this same launcher (`node bin/gentle-shell.mjs <home flags> --mode rpc [--session <id>]`, in the requested folder), so Pi is resolved exactly as a plain launch resolves it, with `GENTLE_SHELL_INTERACTIVE_HOST=1` (Desktop RPC and RPC dialogs on, as for Gentle Desktop) and `GENTLE_DESIGN_OPEN_BROWSER=0` (never a browser on the server machine).
+Each session is a child process: this same launcher (`node bin/gentle-shell.mjs <home flags> --mode rpc [--session-id <id>]`, in the requested folder), so Pi is resolved exactly as a plain launch resolves it, with `GENTLE_SHELL_INTERACTIVE_HOST=1` (Desktop RPC and RPC dialogs on, as for Gentle Desktop) and `GENTLE_DESIGN_OPEN_BROWSER=0` (never a browser on the server machine).
 
 - The server reads every child's stdout continuously, whoever is listening, and keeps the child's stdin open for its whole life (closing it is Pi's shutdown request).
 - A session ends only when it is deleted (`DELETE /api/sessions/:id`), when the server stops, or when the child exits on its own. Its exit is a record in its stream (`serve_session_exited`) and a state in the list. Up to 16 exited sessions stay listed (with their replay ring) until deleted.
@@ -73,7 +73,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | `DELETE /api/devices/:id` | `admin` | `{ revoked }`. Immediate: the token stops working, its tickets die, its open streams close. |
 | `POST /api/tickets` | `sessions:read` | `{ sessionId }` → `201 { ticket, expiresAt }` (see [Stream tickets](#stream-tickets)). |
 | `GET /api/sessions` | `sessions:read` | `{ sessions: [Session] }` |
-| `POST /api/sessions` | `sessions:operate` | `{ cwd, sessionId? }` → `201 { session }`. `cwd` must be an absolute path to an existing folder; `sessionId` is a Pi session id (`--session <id>`), never a path. |
+| `POST /api/sessions` | `sessions:operate` | `{ cwd, sessionId? }` → `201 { session }`. `cwd` must be an absolute path to an existing folder; `sessionId` is a Pi session id (`--session-id <id>`: the folder's session with that exact id, or a new one with it when Pi never wrote it, as for a conversation with no messages yet), never a path. |
 | `GET /api/sessions/:id` | `sessions:read` | `{ session }` |
 | `DELETE /api/sessions/:id` | `sessions:operate` | Stops the session (waits for its exit) and forgets it: `{ session }`. |
 | `POST /api/sessions/:id/rpc` | per command | One Pi RPC command object → its Pi `response`. |

@@ -113,8 +113,8 @@ test("list_agent_definitions answers the discovered agents, subagent defaults, a
 	assert.equal(response.ok, true);
 	assert.deepEqual(response.data, {
 		agents: [
-			{ name: "explore", description: "Global explorer.", scope: "global", model: "openai-codex/gpt-5.6-terra", thinking: "high", mode: null, tools: ["read", "grep"], toolsTruncated: false },
-			{ name: "worker", description: "Project worker.", scope: "project", model: null, thinking: null, mode: "background", tools: [], toolsTruncated: false },
+			{ name: "explore", description: "Global explorer.", scope: "global", source: "user", model: "openai-codex/gpt-5.6-terra", thinking: "high", mode: null, tools: ["read", "grep"], toolsTruncated: false },
+			{ name: "worker", description: "Project worker.", scope: "project", source: "project", model: null, thinking: null, mode: "background", tools: [], toolsTruncated: false },
 		],
 		truncated: false,
 		problems: { invalid: 1, notices: 0 },
@@ -125,6 +125,27 @@ test("list_agent_definitions answers the discovered agents, subagent defaults, a
 	assert.equal(raw.includes(f.root.replaceAll("\\", "\\\\")), false, "no path crosses");
 	assert.equal(raw.includes("SECRET PROMPT BODY"), false, "no prompt body crosses");
 	assert.equal(raw.includes("extreme"), false, "no problem text crosses");
+});
+
+test("list_agent_definitions covers the /gentle:profiles roots: built-in package agents, ~/.agents, and <cwd>/.agents, each with its source", async (t) => {
+	const f = fixture(t);
+	const builtinDir = join(f.root, "package", "agents");
+	for (const dir of [builtinDir, join(f.root, ".agents"), join(f.cwd, ".agents")]) mkdirSync(dir, { recursive: true });
+	writeFileSync(join(builtinDir, "jd-judge-a.md"), "---\nname: jd-judge-a\ndescription: Built-in judge A.\n---\nbody");
+	writeFileSync(join(builtinDir, "planner.md"), "---\nname: planner\ndescription: Built-in planner.\n---\nbody");
+	writeFileSync(join(f.root, ".agents", "planner.md"), "---\nname: planner\ndescription: User planner.\n---\nbody");
+	writeFileSync(join(f.root, ".agents", "helper.md"), "---\nname: helper\ndescription: User helper.\n---\nbody");
+	writeFileSync(join(f.cwd, ".agents", "helper.md"), "---\nname: helper\ndescription: Project helper.\n---\nbody");
+	writeFileSync(join(f.cwd, ".agents", "local.md"), "---\nname: local\ndescription: Project local.\n---\nbody");
+	const app = harness(t, () => ({ ...locate(f)({} as never), builtinDirs: [builtinDir] }));
+	await app.invoke("roots-1", {});
+	const agents = app.last().data.agents.map((agent: { name: string; description: string; scope: string; source: string }) => ({ name: agent.name, description: agent.description, scope: agent.scope, source: agent.source }));
+	assert.deepEqual(agents, [
+		{ name: "helper", description: "Project helper.", scope: "project", source: "project" },
+		{ name: "jd-judge-a", description: "Built-in judge A.", scope: "global", source: "builtin" },
+		{ name: "local", description: "Project local.", scope: "project", source: "project" },
+		{ name: "planner", description: "User planner.", scope: "global", source: "user" },
+	]);
 });
 
 test("the default orchestrator reports missing, unset, and invalid settings by status only", async (t) => {

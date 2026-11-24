@@ -307,14 +307,23 @@ export async function sendDesignImplement(cwd: string, plan: Extract<DesignImple
 export interface DesignCanvasDeps {
 	startServer?: (options: DesignCanvasServerOptions) => Promise<DesignCanvasServer>;
 	openBrowser?: (url: string) => Promise<OpenInBrowserResult>;
+	/** Read for `GENTLE_DESIGN_OPEN_BROWSER`; defaults to `process.env`. */
+	env?: NodeJS.ProcessEnv;
 }
+
+/**
+ * Hosts that show the canvas themselves (the desktop app) set `GENTLE_DESIGN_OPEN_BROWSER=0`
+ * so an open never launches the system browser; any other value keeps opening it.
+ */
+export const DESIGN_OPEN_BROWSER_ENV = "GENTLE_DESIGN_OPEN_BROWSER";
 
 /**
  * `url` is set once the canvas shows something; `opened` says whether a browser tab shows it.
  * `refreshed` is true when an already connected canvas page was told to show and reload it,
- * so no new tab was opened (S14).
+ * so no new tab was opened (S14). `browserDisabled` is true when `GENTLE_DESIGN_OPEN_BROWSER=0`
+ * kept the system browser closed; the canvas still runs and `opened` is false.
  */
-export type DesignOpenNotice = DesignNotice & { url?: string; opened?: boolean; refreshed?: boolean };
+export type DesignOpenNotice = DesignNotice & { url?: string; opened?: boolean; refreshed?: boolean; browserDisabled?: boolean };
 
 /** Sanitized canvas state: whether a server runs, the slug it last showed (null: system board), and connected pages. */
 export type DesignCanvasState = {
@@ -355,6 +364,7 @@ function canvasUrl(server: DesignCanvasServer, slug: string | null): string {
 export function createDesignCanvas(deliver: (message: DesignSessionContent) => DesignHandoffDelivery | Promise<DesignHandoffDelivery>, deps: DesignCanvasDeps = {}): DesignCanvas {
 	const startServer = deps.startServer ?? startDesignCanvasServer;
 	const openBrowser = deps.openBrowser ?? ((url: string) => openInBrowser(url));
+	const browserDisabled = () => (deps.env ?? process.env)[DESIGN_OPEN_BROWSER_ENV] === "0";
 	let running: { root: string; server: Promise<DesignCanvasServer>; url?: string; slug: string | null } | undefined;
 	const observers = new Set<(transition: DesignCanvasTransition) => void>();
 
@@ -442,6 +452,11 @@ export function createDesignCanvas(deliver: (message: DesignSessionContent) => D
 		if (reused && server.connectedClients() > 0 && server.show(slug) > 0) {
 			emitTransition({ transition: "refresh", running: true, slug, connectedClients: server.connectedClients() });
 			return { message: `Design canvas refreshed: ${url}`, level: "info", url, opened: true, refreshed: true };
+		}
+		if (browserDisabled()) {
+			emitTransition({ transition: "open", running: true, slug, connectedClients: server.connectedClients() });
+			return { message: `Design canvas: ${url}
+The system browser was not opened (${DESIGN_OPEN_BROWSER_ENV}=0).`, level: "info", url, opened: false, browserDisabled: true };
 		}
 		const result = await openBrowser(url);
 		if (result.opened) {
@@ -557,7 +572,7 @@ export type DesignToolDetails =
 		system: DesignSystemState;
 		canvas: { running: boolean; url?: string };
 	}
-	| { url: string; opened: boolean; refreshed?: true }
+	| { url: string; opened: boolean; refreshed?: true; browserDisabled?: true }
 	| { stopped: boolean }
 	| { target: string; warnings: string[] }
 	| { target: string; chosen: string | null; handoff: DesignHandoff }
@@ -690,7 +705,11 @@ export async function runDesignTool(cwd: string, params: DesignToolParams, canva
 	if (params.action === "open") {
 		const notice = await canvas.open(cwd, params.slug || undefined);
 		if (notice.url === undefined) throw new Error(notice.message);
-		const details = notice.refreshed ? { url: notice.url, opened: true, refreshed: true as const } : { url: notice.url, opened: notice.opened === true };
+		const details = notice.refreshed
+			? { url: notice.url, opened: true, refreshed: true as const }
+			: notice.browserDisabled
+				? { url: notice.url, opened: false, browserDisabled: true as const }
+				: { url: notice.url, opened: notice.opened === true };
 		return { texts: [notice.message], details };
 	}
 	const target = params.target ?? "";

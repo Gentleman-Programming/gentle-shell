@@ -8,7 +8,7 @@
 // only parses the request and projects those facts into a bounded shape with
 // no file paths, no prompt bodies, and no problem text (which names files).
 
-import type { AgentDefinition, AgentMode, AgentScope, ModelRef, ThinkingLevel } from "./agents-config.ts";
+import type { AgentDefinition, AgentMode, AgentScope, AgentSource, ModelRef, ThinkingLevel } from "./agents-config.ts";
 import type { OrchestratorSettingsReadResult } from "./profiles-orchestrator.ts";
 
 export const DESKTOP_AGENT_DEFINITIONS_METHODS = ["list_agent_definitions"] as const;
@@ -32,6 +32,8 @@ export interface DesktopAgentDefinition {
 	name: string;
 	description: string;
 	scope: AgentScope;
+	/** Where the definition came from: `builtin` (package), `user` (agent home or `~/.agents`), or `project`. */
+	source: AgentSource;
 	/** The model the definition declares (`provider/id` or `id`), or null when it inherits. */
 	model: string | null;
 	thinking: ThinkingLevel | null;
@@ -56,6 +58,7 @@ export interface AgentDefinitionsFacts {
 	agents: readonly AgentDefinition[];
 	errors: readonly string[];
 	notices: readonly string[];
+	sources?: ReadonlyMap<string, AgentSource>;
 	defaults: { model: ModelRef | undefined; thinking: ThinkingLevel | undefined; mode: AgentMode };
 	orchestrator: OrchestratorSettingsReadResult;
 }
@@ -75,12 +78,13 @@ function modelText(model: ModelRef | undefined): string | null {
 	return text.length === 0 || text.length > DESKTOP_AGENT_DEFINITIONS_LIMITS.model ? null : text;
 }
 
-function projectAgent(agent: AgentDefinition): DesktopAgentDefinition {
+function projectAgent(agent: AgentDefinition, source: AgentSource | undefined): DesktopAgentDefinition {
 	const limits = DESKTOP_AGENT_DEFINITIONS_LIMITS;
 	return {
 		name: cut(agent.name, limits.name),
 		description: cut(agent.description, limits.description),
 		scope: agent.scope,
+		source: source ?? (agent.scope === "project" ? "project" : "user"),
 		model: modelText(agent.model),
 		thinking: agent.thinking ?? null,
 		mode: agent.mode ?? null,
@@ -102,7 +106,7 @@ function projectOrchestrator(result: OrchestratorSettingsReadResult): DesktopAge
 export function projectAgentDefinitions(facts: AgentDefinitionsFacts): DesktopAgentDefinitions {
 	const limit = DESKTOP_AGENT_DEFINITIONS_LIMITS.agents;
 	return {
-		agents: facts.agents.slice(0, limit).map(projectAgent),
+		agents: facts.agents.slice(0, limit).map((agent) => projectAgent(agent, facts.sources?.get(agent.name))),
 		truncated: facts.agents.length > limit,
 		problems: { invalid: facts.errors.length, notices: facts.notices.length },
 		subagentDefaults: {

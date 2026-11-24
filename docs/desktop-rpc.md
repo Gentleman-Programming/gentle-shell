@@ -1398,7 +1398,7 @@ No absolute path, raw package source, registry URL, token, command line, or look
 
 ### `list_agent_definitions`
 
-Lists the agent definitions this session can launch, the subagent defaults, and Pi's default orchestrator. It reads the same sources `subagent_list_agents` discovers from, fresh on every call: `<agent home>/agents`, `<agent home>/subagents`, `<cwd>/.pi/agents`, and `<cwd>/.pi/subagents` (a later folder wins a name clash, so a project definition replaces a global one), the global and project `subagents.json`, and the three orchestrator keys of Pi's `settings.json` in the agent home. Params must be an empty object; any key is `invalid_request`, and a malformed request reads nothing. It has no side effects and emits no event.
+Lists the agent definitions `/gentle:profiles` can route, the subagent defaults, and Pi's default orchestrator, so a client can build its profile routing table from this answer alone. It reads the same roots `/gentle:profiles` lists, fresh on every call, lowest precedence first: the agents bundled with the package (the installed `pi-subagents` agent folders), `<agent home>/agents`, `<agent home>/subagents`, `~/.agents`, `<cwd>/.agents`, `<cwd>/.pi/agents`, and `<cwd>/.pi/subagents` (a later folder wins a name clash, so a project definition replaces a global one, and a user one replaces a built-in one). Only the `.md` files directly inside each folder are read. It also reads the global and project `subagents.json`, and the three orchestrator keys of Pi's `settings.json` in the agent home. Params must be an empty object; any key is `invalid_request`, and a malformed request reads nothing. It has no side effects and emits no event.
 
 ```json
 { "schema": "gentle-shell.desktop-rpc/v1", "requestId": "desktop-90", "method": "list_agent_definitions", "params": {} }
@@ -1412,8 +1412,8 @@ Lists the agent definitions this session can launch, the subagent defaults, and 
   "ok": true,
   "data": {
     "agents": [
-      { "name": "explore", "description": "Global explorer.", "scope": "global", "model": "openai-codex/gpt-5.6-terra", "thinking": "high", "mode": null, "tools": ["read", "grep"], "toolsTruncated": false },
-      { "name": "worker", "description": "Project worker.", "scope": "project", "model": null, "thinking": null, "mode": "background", "tools": [], "toolsTruncated": false }
+      { "name": "explore", "description": "Global explorer.", "scope": "global", "source": "user", "model": "openai-codex/gpt-5.6-terra", "thinking": "high", "mode": null, "tools": ["read", "grep"], "toolsTruncated": false },
+      { "name": "worker", "description": "Project worker.", "scope": "project", "source": "project", "model": null, "thinking": null, "mode": "background", "tools": [], "toolsTruncated": false }
     ],
     "truncated": false,
     "problems": { "invalid": 1, "notices": 0 },
@@ -1426,6 +1426,8 @@ Lists the agent definitions this session can launch, the subagent defaults, and 
 | Field | Meaning |
 | --- | --- |
 | `agents` | The discovered definitions, sorted by name, at most 200. `model`, `thinking`, and `mode` are what the definition declares (`null` when it inherits); the model a launch actually uses can still come from `subagents.json` profiles or a repository profile pin. `tools` is the list after tool overlays, at most 64 names. |
+| `agents[].scope` | `global` for the built-in, agent-home, and `~/.agents` folders; `project` for the `<cwd>` folders. |
+| `agents[].source` | Where the winning definition came from: `builtin` (bundled with the package), `user` (agent home or `~/.agents`), or `project` (`<cwd>/.agents` or `<cwd>/.pi`). |
 | `truncated` | `true` when more than 200 definitions exist. |
 | `problems` | Counts of definitions that failed to parse (`invalid`) and of discovery notices such as unknown frontmatter keys or overlays naming unknown agents (`notices`). Their text names files, so only counts cross. |
 | `subagentDefaults` | `default_model`, `default_thinking`, and `default_mode` from `subagents.json` (project over global); `mode` defaults to `task`. |

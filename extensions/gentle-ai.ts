@@ -63,7 +63,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
+import { PROVIDER_REVIEW_ROLES, builtinAgentDirectories, discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -3694,14 +3694,7 @@ function discoverableNonBuiltinAgentRoots(cwd: string): DiscoverableNonBuiltinAg
 }
 
 function builtinAgentDirs(cwd: string): string[] {
-	return [
-		join(PACKAGE_ROOT, "..", "pi-subagents-j0k3r", "agents"),
-		join(cwd, ".pi", "npm", "node_modules", "pi-subagents-j0k3r", "agents"),
-		join(homedir(), ".local", "lib", "node_modules", "pi-subagents-j0k3r", "agents"),
-		join(PACKAGE_ROOT, "..", "pi-subagents", "agents"),
-		join(cwd, ".pi", "npm", "node_modules", "pi-subagents", "agents"),
-		join(homedir(), ".local", "lib", "node_modules", "pi-subagents", "agents"),
-	];
+	return builtinAgentDirectories(cwd, homedir(), PACKAGE_ROOT);
 }
 
 function listDiscoverableAgents(cwd: string): AgentEntry[] {

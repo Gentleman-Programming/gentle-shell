@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { towerHubDir } from "./tower-hub.mjs";
 import { launchInTerminal } from "./tower-launch.mjs";
 import { defaultPresenceDirs } from "./tower-presence.mjs";
+import { encodeQr, renderQrTerminal } from "./tower-qr.mjs";
 import { startTowerServer,                  } from "./tower-server.mjs";
 
 // lib/ and its generated runtime/ copy both sit one level under the package root.
@@ -34,6 +35,11 @@ export class TowerNotBuiltError extends Error {
 
 
 
+
+
+/** The warning every LAN-mode report prints, exactly. */
+export const TOWER_LAN_WARNING = "LAN mode: anyone on this network who opens the URL can read and drive your sessions; traffic is not encrypted. Use it only on a trusted home network.";
+
 export function openTowerServer(env                   , options                   = {})                       {
 	const webDir = options.webDir ?? TOWER_WEB_DIR;
 	if (!existsSync(join(webDir, "index.html"))) return Promise.reject(new TowerNotBuiltError(webDir));
@@ -44,6 +50,7 @@ export function openTowerServer(env                   , options                 
 		engramUrl: env.ENGRAM_URL || "http://127.0.0.1:7437",
 		presenceDirs: options.presenceDirs ?? defaultPresenceDirs(),
 		...(options.port === undefined ? {} : { port: options.port }),
+		...(options.lan ? { lan: true } : {}),
 		onNewFloor: (cwd, prompt) => launchInTerminal({ cwd, node: process.execPath, launcher: LAUNCHER, ...(prompt ? { prompt } : {}) }),
 	});
 }
@@ -95,9 +102,19 @@ export async function runTower(options                 )                  {
 		return 1;
 	}
 	try {
-		options.stdout(options.json
-			? `${JSON.stringify({ schema: TOWER_JSON_SCHEMA, url: server.url, host: server.host, port: server.port })}\n`
-			: `Gentle Tower: ${server.url}\nPress Ctrl+C to stop.\n`);
+		if (options.json) {
+			// One line, no QR art; LAN mode adds its own fields at the end.
+			options.stdout(`${JSON.stringify({ schema: TOWER_JSON_SCHEMA, url: server.url, host: server.host, port: server.port,
+				...(server.lan ? { lan: server.lan, urls: server.urls, warning: TOWER_LAN_WARNING } : {}) })}\n`);
+		} else if (server.lan) {
+			const lines = [`Gentle Tower: ${server.url}`, ...server.urls.slice(1).map((u) => `  ${u}`)];
+			// The QR carries the first LAN address: the phone's way in.
+			if (server.urls.length > 1) for (const line of renderQrTerminal(encodeQr(server.urls[1]))) lines.push(`  ${line}`);
+			lines.push(TOWER_LAN_WARNING, "Press Ctrl+C to stop.");
+			options.stdout(`${lines.join("\n")}\n`);
+		} else {
+			options.stdout(`Gentle Tower: ${server.url}\nPress Ctrl+C to stop.\n`);
+		}
 		if (options.open) (options.openUrl ?? openInBrowser)(server.url);
 		await (options.untilStopped ?? untilSignal)(server);
 	} finally {

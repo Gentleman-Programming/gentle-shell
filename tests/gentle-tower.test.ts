@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createTowerPublisher } from "../extensions/gentle-tower.ts";
 import { readTowerSnapshots } from "../lib/tower-hub.ts";
 import { TODO_PROGRESS_EVENT } from "../lib/shell-todo.ts";
-import { startTowerServer } from "../lib/tower-server.ts";
+import { lanIpv4Addresses, startTowerServer } from "../lib/tower-server.ts";
 import { TOWER_CHAT_TURNS } from "../lib/tower-snapshot.ts";
 import { sentMessage, settleOutbox, type Outgoing } from "../web/tower/src/model.ts";
 
@@ -139,6 +139,9 @@ test("/gentle:tower opens the local tower once and reuses it", async () => {
 	assert.equal(opened[0], opened[1]);
 	assert.match(opened[0], /^http:\/\/127\.0\.0\.1:\d+\/[A-Za-z0-9_-]{32,}\/$/);
 	assert.match(messages[0], /Gentle Tower: http:\/\/127\.0\.0\.1/);
+	// Without the flag the report stays byte-identical: one line, the loopback URL.
+	assert.equal(messages[0], `Gentle Tower: ${opened[0]}`);
+	assert.equal(messages[1], messages[0]);
 	await tower?.close();
 });
 
@@ -151,6 +154,31 @@ test("/gentle:tower explains when the web app is not built", async () => {
 	await commands.get("gentle:tower")!.handler("", uiCtx(messages));
 	assert.deepEqual(opened, []);
 	assert.match(messages[0], /web app is not built/);
+});
+
+test("/gentle:tower --lan reports the LAN URLs and the warning, without QR art", async () => {
+	const dir = hub();
+	const web = join(dir, "..", "web");
+	(await import("node:fs")).mkdirSync(web, { recursive: true });
+	(await import("node:fs")).writeFileSync(join(web, "index.html"), "<title>Gentle Tower</title>");
+	const { pi, commands } = commandPi();
+	const opened: string[] = [];
+	const tower = createTowerPublisher(pi, { env: { GENTLE_TOWER_HOME: dir }, debounceMs: 0, webDir: web, openUrl: (u) => opened.push(u) });
+	const messages: string[] = [];
+	await commands.get("gentle:tower")!.handler("--lan", uiCtx(messages));
+	const lines = messages[0].split("\n");
+	assert.match(lines[0], /^Gentle Tower: http:\/\/127\.0\.0\.1:\d+\/[A-Za-z0-9_-]{32,}\/$/);
+	// The browser still opens the loopback URL, and the report carries every LAN URL.
+	assert.deepEqual(opened, [lines[0].slice("Gentle Tower: ".length)]);
+	const ips = lanIpv4Addresses(networkInterfaces());
+	for (const ip of ips) {
+		assert.ok(lines.some((l) => l.startsWith(`  http://${ip}:`) && /[A-Za-z0-9_-]{32,}\/$/.test(l)), `no URL line for ${ip}`);
+	}
+	// One loopback line, one per LAN address, the warning last; the TUI notify box cannot carry QR art.
+	assert.equal(lines.length, 2 + ips.length);
+	assert.equal(lines[lines.length - 1], "LAN mode: anyone on this network who opens the URL can read and drive your sessions; traffic is not encrypted. Use it only on a trusted home network.");
+	assert.ok(!/[\u2580\u2584\u2588]/.test(messages[0]), "no QR blocks in the TUI notify");
+	await tower?.close();
 });
 
 // ---------- T5: actions requested from the web view ----------

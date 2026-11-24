@@ -220,7 +220,7 @@ You should not have to run `git status` in every worktree to find out what your 
 
 Not everyone lives in a terminal. `/gentle:tower` opens a local web view where each project is a painted building and each open Gentle Shell session is a floor of it. The orchestrator and its named helpers (`worker`, `explore`, `verify`, or `worker-tests` when a role repeats) stand in the room of what they are doing: the map while exploring, the workshop while building, the lab while testing, the lounge when done. A `?` means a floor needs you.
 
-To open it without a session, run `gentle-shell tower` from any terminal: it prints the local URL, opens your browser and keeps serving until Ctrl+C (`--no-open` only prints the URL; `--port <n>` fixes the port, still `127.0.0.1` only; `--json` prints the URL as one JSON line for programs).
+To open it without a session, run `gentle-shell tower` from any terminal: it prints the local URL, opens your browser and keeps serving until Ctrl+C (`--no-open` only prints the URL; `--port <n>` fixes the port, still `127.0.0.1` only; `--json` prints the URL as one JSON line for programs). Add `--lan` to also serve the machine's network addresses, so a phone on the same network can open the view: it prints one URL per address, a QR code of the first for the phone to scan, and the warning below.
 
 - **Tasks at a glance**: each floor shows its todo progress (`2/4 · blocked: …`); click it for the full list. The map's corkboard notes are the same tasks.
 - **Talk to a floor** (`T`): read the orchestrator's latest words and send a message; it arrives as a new turn, or as a follow-up while the agent works. Questions asked in the terminal show as waiting; answer them there or tell the floor.
@@ -228,7 +228,7 @@ To open it without a session, run `gentle-shell tower` from any terminal: it pri
 - **Engram library and your tab**: a read-only window on the project's memories and on what the open sessions spent, by model and by project.
 - **Controls**: stop a helper, change a floor's permissions, and switch review mode.
 
-The web never has more power than the terminal: it listens on `127.0.0.1` only, with a fresh token in the path on every launch, refuses other origins. Lowering a floor's permissions applies at once; raising them asks for confirmation in that session's terminal. Each session runs the requests itself, with its own rules.
+The web never has more power than the terminal: it listens on `127.0.0.1` only (`--lan` additionally serves the machine's own addresses), with a fresh token in the path on every launch, refuses other origins. Lowering a floor's permissions applies at once; raising them asks for confirmation in that session's terminal. Each session runs the requests itself, with its own rules. `--lan` is for a trusted home network: anyone on it who opens the URL can read and drive your sessions, and the traffic is not encrypted — the launch prints this warning.
 
 **[Docs →](docs/gentle-shell.md#gentle-tower)**
 

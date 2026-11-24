@@ -6,7 +6,7 @@
 import { execFile } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TowerServer } from "../lib/tower-server.ts";
-import { openInBrowser, openTowerServer, TOWER_WEB_DIR, TowerNotBuiltError } from "../lib/tower-open.ts";
+import { openInBrowser, openTowerServer, TOWER_LAN_WARNING, TOWER_WEB_DIR, TowerNotBuiltError } from "../lib/tower-open.ts";
 import { discoverDesktopAgentsService } from "../lib/desktop-agents-service.ts";
 import { oddPhaseRegistry } from "../lib/odd-phase.ts";
 import { collectSessionStats } from "../lib/shell-stats.ts";
@@ -93,6 +93,10 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 			const stats = collectSessionStats(branch);
 			const usage = ctx.getContextUsage?.();
 			// The agents service keeps finished tasks as history; only live helpers are on the floor.
+			// SAFETY: the agents service's record shape is not exported, but every field the
+			// tower reads from it is an optional member of TowerAgentInput consumed defensively
+			// (String() coercion for status, optional chains elsewhere), so a field it lacks
+			// degrades to "unknown" instead of breaking the snapshot.
 			const listed = ((agents?.read().agents ?? []) as unknown as TowerAgentInput[]).filter((a) => LIVE_HELPER.has(String(a.status)));
 			writeTowerSnapshot(dir, { pid: process.pid, ...buildTowerSnapshot({
 				sessionId,
@@ -280,12 +284,16 @@ export function createTowerPublisher(pi: ExtensionAPI, options: TowerPublisherOp
 
 	pi.registerCommand("gentle:tower", {
 		description: "Open the Gentle Tower: every Gentle Shell session as a floor, in your browser",
-		handler: async (_args, c) => {
+		handler: async (args, c) => {
 			// Same startup as `gentle-shell tower`: hub, web app, token, presence, new floors.
-			server ??= openTowerServer(env, { webDir });
+			// One flag only: --lan turns on the same-network mode.
+			const lan = (args ?? "").trim() === "--lan";
+			server ??= openTowerServer(env, { webDir, ...(lan ? { lan: true } : {}) });
 			try {
 				const s = await server;
-				c.ui.notify(`Gentle Tower: ${s.url}`, "info");
+				// The TUI notify box cannot carry QR art; the terminal command prints it.
+				const lines = [`Gentle Tower: ${s.url}`, ...s.urls.slice(1).map((u) => `  ${u}`), ...(s.lan ? [TOWER_LAN_WARNING] : [])];
+				c.ui.notify(lines.join("\n"), "info");
 				openUrl(s.url);
 			} catch (error) {
 				server = undefined;

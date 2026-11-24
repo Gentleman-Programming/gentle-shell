@@ -55,6 +55,9 @@ const VALUE_OPTIONS: Record<Manager, ReadonlySet<string>> = {
 // `npm exec`/`npx`/`pnpm dlx`: these options name the packages to fetch. Elsewhere `-p` is
 // npm's boolean `--parseable`, so it must not swallow an install spec.
 const PACKAGE_OPTIONS = new Set(["-p", "--package"]);
+// With package options present, a positional that is merely a command name is the bin they
+// provide; anything else (`name@range`, a scope, a URL) is a spec npm fetches in addition.
+const BARE_COMMAND_RE = /^[A-Za-z_][\w.-]*$/;
 
 function subcommandAhead(manager: Manager, args: readonly Token[], from: number): boolean {
 	for (let index = from; index < args.length && !args[index].operator; index++) {
@@ -153,7 +156,10 @@ function parseSegment(manager: Manager, form: PackageAcquisition["form"] | undef
 		// A wrapper may preserve or discard config: neither possible acquisition is safe to omit.
 		if (uncertainEnvironment && target !== undefined && target !== environmentPackage) packages.push(target);
 	}
-	if (form !== "install") specs.push(...(packages.length > 0 ? packages : target === undefined ? [] : [target]));
+	if (form !== "install") {
+		const positional = packages.length === 0 || (target !== undefined && !BARE_COMMAND_RE.test(target) && !packages.includes(target)) ? target : undefined;
+		specs.push(...packages, ...(positional === undefined ? [] : [positional]));
+	}
 	return { manager, form, global, specs, undetermined };
 }
 

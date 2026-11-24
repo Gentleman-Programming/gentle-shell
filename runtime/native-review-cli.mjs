@@ -2073,6 +2073,7 @@ function decodeNativeUnachievableLensCaptureArtifact(value         )            
 export class NativeReviewCliV216                            {
 	// Only executable capabilities are reusable. STATUS and authority remain fresh.
 	        contextCapabilities                                                                                               ;
+	                 boundSelectionOffers = new WeakMap                                                                       ();
 	                 plain                      ;
 	                 adapter                 ;
 	                 executable                         ;
@@ -2318,9 +2319,17 @@ export class NativeReviewCliV216                            {
 		if (submitted !== undefined && submitted.argumentTokens.reduce((count, token) => count + token.split("{{value}}").length - 1, 0) !== 1) throw new TypeError("Native intended-untracked selection requires exactly one provider-issued {{value}} token");
 		const submittedTokens = submitted === undefined ? undefined : submitted.argumentTokens.map((token) => token.replaceAll("{{value}}", submitted.value));
 		const submittedLineage = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "lineage");
-		const boundSubmission = submitted?.boundStatus === true;
-		if (boundSubmission && (request.lineageId === undefined || submittedLineage !== request.lineageId || submitted .argumentTokens[3] !== `--lineage=${request.lineageId}`)) {
-			throw new TypeError("Native bound intended-untracked selection requires its provider-issued lineage");
+		const { cwd, baseRef } = request;
+		const boundOffer = submitted === undefined ? undefined : this.boundSelectionOffers.get(submitted.argumentTokens);
+		const boundSubmission = boundOffer !== undefined;
+		// A bound selector precedes the value slot, unlike legacy appended flags.
+		const declaresBound = submitted?.argumentTokens.slice(0, submitted.argumentTokens.findIndex(token => token.includes("{{value}}")))
+			.some(token => token === "--lineage" || token.startsWith("--lineage="));
+		if (boundSubmission || submitted?.boundStatus || declaresBound) {
+			const matchesBase = baseRef === undefined ? boundOffer?.baseRef === undefined : submitted .argumentTokens[5] === "--committed-only=true"
+				&& (boundOffer?.baseRef === baseRef || submitted .argumentTokens[4] === `--base-ref=${baseRef}`);
+			if (!boundSubmission || boundOffer.cwd !== cwd || request.lineageId === undefined || submittedLineage !== request.lineageId || request.projection === "staged" || !matchesBase) throw new TypeError("Native bound intended-untracked selection requires its validated offer and matching selectors");
+			if (requestContextArguments.length || request.lenses !== undefined || request.lensesReason !== undefined || escalateArguments.length) throw new TypeError("Native bound intended-untracked selection cannot carry request context, lenses, or escalation");
 		}
 		// A bound submission already carries all native selectors. Legacy fresh
 		// submissions may still need the existing base-ref/committed-only pair.
@@ -2387,7 +2396,12 @@ export class NativeReviewCliV216                            {
 			const path = contextExecutable ?? measureStatusSync("resolution", () => this.executablePath(NATIVE_REVIEW_OPERATION.STATUS, false));
 			const execution = await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, path, [], true, boundSelectionLineage === undefined ? undefined : true);
 			measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
-			return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body, { boundSelectionLineage }));
+			const status = decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body, { boundSelectionLineage }));
+			for (const input of status.nextTransition?.collect?.inputs ?? []) {
+				const tokens = input.submission?.argumentTokens;
+				if (boundSelectionLineage !== undefined && input.captureOperation === "external.select_intended_untracked" && tokens?.[3] === `--lineage=${boundSelectionLineage}`) this.boundSelectionOffers.set(Object.freeze(tokens), { cwd, baseRef });
+			}
+			return status;
 		};
 		const status = await observe(statusArgumentsWith([]));
 		// The provider accepts --escalate-item/--escalate-reason on STATUS only to

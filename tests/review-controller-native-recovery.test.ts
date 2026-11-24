@@ -49,22 +49,48 @@ test("#6221 ambient bound STATUS opt-in is stripped unless the process explicitl
 	assert.equal(base.gentle_ai_bound_selection_contract, "foreign");
 });
 
-test("#6221 native client substitutes only the value of a bound STATUS submission", async () => {
+async function boundStatusOffer() {
 	const stdout = readFileSync(new URL("./fixtures/devbinary/status-v9-escalated-non-blocking.captured.json", import.meta.url), "utf8");
-	const queue = queuedAdapter([{ stdout }]);
+	const body = { ...JSON.parse(stdout), forecast: undefined };
+	const lineageId = body.authority.lineage_id as string;
+	const tree = body.projection.base_tree as string;
+	const tokens = ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", `--lineage=${lineageId}`, `--base-ref=${tree}`, "--committed-only=true", "--intended-untracked-selection={{value}}"];
+	const schema = "gentle-ai.review-intended-untracked-selection/v1";
+	body.projection.kind = "base-diff";
+	body.next_transition = { kind: "collect", reason_code: "intended_untracked_selection_required", collect: { inputs: [{
+		name: "intended_untracked_selection", schema, capture_operation: "external.select_intended_untracked",
+		arguments: [["target_identity", body.target_identity], ["projection", "workspace"], ["base_tree", tree], ["candidate_tree", body.projection.current_candidate_tree], ["eligible_paths_json", '["new.ts"]'], ["expected_untracked_inventory", SHA]].map(([name, value]) => ({ name, value })),
+		submission: { operation_token: "status", argument_tokens: tokens, value: { slot: "intended_untracked_selection", domain: "schema_bound_json", schema, substitution_location: 6 } },
+	}] } };
+	const queue = queuedAdapter([{ stdout: JSON.stringify(body) }, { stdout }]);
 	const review = client(queue.adapter);
-	const lineageId = "review-0e3fa3cadd7d4bb6";
-	const baseSelector = `--base-ref=${"b".repeat(40)}`;
-	const tokens = ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", `--lineage=${lineageId}`, baseSelector, "--committed-only=true", "--intended-untracked-selection={{value}}"];
-	const value = JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: "exclude", expected_untracked_inventory: SHA, intended_untracked: [] });
-	const request = { cwd: "/repo", baseRef: "origin/main", committedOnly: true, lineageId, nonBlockingFindings: true, intendedUntrackedSelection: { boundStatus: true, argumentTokens: tokens, value } } satisfies NativeTargetStatusRequest;
-	for (const argumentTokens of [tokens.filter(token => !token.startsWith("--lineage=")), tokens.map(token => token.replace(lineageId, "review-other"))]) {
-		await assert.rejects(() => review.targetStatus({ ...request, intendedUntrackedSelection: { ...request.intendedUntrackedSelection, argumentTokens } }), /requires its provider-issued lineage/);
+	const request = { cwd: "/repo", baseRef: "origin/main", committedOnly: true, lineageId, agent: "pi", nonBlockingFindings: true } satisfies NativeTargetStatusRequest;
+	const status = await review.targetStatus(request);
+	const argumentTokens = status.nextTransition!.collect!.inputs[0]!.submission!.argumentTokens;
+	const value = JSON.stringify({ schema, untracked_scope: "exclude", expected_untracked_inventory: SHA, intended_untracked: [] });
+	return { queue, review, request, stdout, tokens, submission: { argumentTokens, value } };
+}
+
+test("#6221 replays a decoded bound STATUS offer without a caller flag or re-forwarding its named ref", async () => {
+	const { queue, review, request, stdout, tokens, submission } = await boundStatusOffer();
+	assert.deepEqual((await review.targetStatus({ ...request, intendedUntrackedSelection: submission })).raw, JSON.parse(stdout));
+	assert.deepEqual(queue.calls.slice(1), [{ cwd: "/repo", arguments: ["review", "status", "--cwd", "/repo", ...tokens.slice(0, -1), `--intended-untracked-selection=${submission.value}`] }]);
+});
+
+test("#6221 refuses explicit context, lenses and escalation absent from the bound STATUS offer", async () => {
+	const { queue, review, request, submission } = await boundStatusOffer();
+	for (const options of [{ requestContextPath: "request.md" }, { lenses: ["reliability"], lensesReason: "requested" }, { escalate: { item: 3, reason: "requested" } }] satisfies Partial<NativeTargetStatusRequest>[]) {
+		await assert.rejects(() => review.targetStatus({ ...request, ...options, intendedUntrackedSelection: { ...submission, boundStatus: true } }), /cannot carry request context, lenses, or escalation/);
 	}
-	assert.deepEqual(queue.calls, []);
-	const result = await review.targetStatus(request);
-	assert.deepEqual(result.raw, JSON.parse(stdout));
-	assert.deepEqual(queue.calls, [{ cwd: "/repo", arguments: ["review", "status", "--cwd", "/repo", ...tokens.slice(0, -1), `--intended-untracked-selection=${value}`] }]);
+	assert.equal(queue.calls.length, 1);
+});
+
+test("#6221 requires the validated bound offer and matching request selectors", async () => {
+	const { queue, review, request, tokens, submission } = await boundStatusOffer();
+	for (const options of [{ intendedUntrackedSelection: { ...submission, argumentTokens: tokens, boundStatus: true as const } }, { intendedUntrackedSelection: { ...submission, argumentTokens: tokens.map(token => token.replace("--committed-only", "--workspace-overlay")) } }, { lineageId: "review-other" }, { baseRef: "other-ref" }, { projection: "staged" as const }, { cwd: "/other" }]) {
+		await assert.rejects(() => review.targetStatus({ ...request, intendedUntrackedSelection: submission, ...options }), /requires its validated offer and matching selectors/);
+	}
+	assert.equal(queue.calls.length, 1);
 });
 
 // Recovery and maintenance commands retain their published legacy wire forms.

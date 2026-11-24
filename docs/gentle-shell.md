@@ -568,7 +568,7 @@ node bin/gentle-shell.mjs --link --package-root "$PWD"
 
 The server listens on `127.0.0.1` only, on a random port unless you pick one, with a fresh token as the first path segment on every launch; it refuses other origins. With `--lan` it binds every interface instead and serves one URL per LAN address, still token-gated, and an origin is accepted only when it names the exact address the page was served on — a host the launch does not serve is refused, which blocks DNS rebinding. The mode prints a warning because anyone on the network holding the URL can read and drive the sessions over unencrypted HTTP; it is meant for a trusted home network. A request from the page is checked and queued to that session's private inbox, and the session runs it itself with its own rules; the web never has more power than the terminal. Set `GENTLE_TOWER=off` to stop a session from publishing.
 
-The web app is built with Vite, TypeScript and PixiJS into `web/tower/dist`, which ships with the package (`pnpm build:tower` rebuilds it).
+The web app is built with Vite, TypeScript and PixiJS into `web/tower/dist`, which ships with the package (`pnpm build:tower` rebuilds it). On a phone or any touch screen the layout adapts: the building scales to the viewport width, the floor cards become a tappable list under it (44px minimum targets), and the panels dock into a bottom sheet; the transport is SSE, so a dropped Wi-Fi reconnects on its own and the next event re-renders the full snapshot.
 
 ### Gentle Music
 

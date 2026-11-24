@@ -2,6 +2,7 @@
 import "pixi.js/unsafe-eval";
 import "./style.css";
 import { floorTop } from "./art";
+import { fitBuilding, sheetReserve } from "./layout";
 import { FLOOR_COLORS, floorState, groupProjects, money, todoProgress } from "./model";
 import { TowerScene, type Pick } from "./scene";
 import { closeIntercom, closeModals, intercomSession, openArtifact, openArtifacts, openLibrary, openNewFloor, openTab, postAction, renderIntercom } from "./panels";
@@ -135,7 +136,9 @@ function render() {
 	if (!p) return;
 	current = p.cwd;
 	fit();
-	scene.show(p, p.sessions.map((_, i) => FLOOR_COLORS[i % FLOOR_COLORS.length]), p.sessions.some((s) => s.review === "on") || !p.sessions.some((s) => s.review), innerHeight / scale);
+	// On touch or a narrow viewport the bottom sheet reserves the lower strip, so the sky stops above it.
+	const reserve = sheetReserve(innerWidth, matchMedia("(pointer: coarse)").matches);
+	scene.show(p, p.sessions.map((_, i) => FLOOR_COLORS[i % FLOOR_COLORS.length]), p.sessions.some((s) => s.review === "on") || !p.sessions.some((s) => s.review), (innerHeight - reserve) / scale);
 	sizeCanvas();
 	renderFloors(p);
 	renderTodo(p);
@@ -157,7 +160,8 @@ function render() {
 }
 
 // The scene fills the window's width; its sky grows to fill the height, with the building on the ground.
-function fit() { scale = Math.max(1, innerWidth / 720); }
+// Below 720px the building itself shrinks to the width (layout.ts keeps every floor tappable).
+function fit() { scale = fitBuilding(innerWidth, innerHeight, project()?.sessions.length ?? 0).scale; }
 function sizeCanvas() {
 	const c = scene.app.canvas;
 	c.style.width = `${c.width * scale}px`;

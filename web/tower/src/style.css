@@ -162,4 +162,32 @@ kbd { font: 700 10px var(--mono); border: 1px solid currentColor; border-radius:
 .tour footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px; }
 .tour footer label { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; cursor: pointer; }
 .tour footer span { display: flex; gap: 6px; }
-@media (prefers-reduced-motion: reduce) { .tour-spot { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .tour-spot { transition: none; }
+}
+
+/* Phones and touch screens: the building scales to the viewport width, the floor cards
+   become a tappable list below it, and every panel docks into a bottom sheet. Desktop
+   rules above stay untouched; this block only adds. */
+@media (max-width: 720px), (pointer: coarse) {
+	html { height: 100dvh; }
+	body { min-height: 100dvh; }
+	button, select, textarea { touch-action: manipulation; }
+	.btn, .door select { min-height: 44px; }
+	.top { flex-wrap: wrap; gap: 8px 10px; padding: 8px 10px; padding-top: max(8px, env(safe-area-inset-top)); }
+	.brand { font-size: 13px; }
+	.lobby { flex-wrap: wrap; }
+	.top .projects { order: 3; width: 100%; margin: 0; overflow-x: auto; }
+	.projects button { min-height: 44px; flex: 0 0 auto; }
+	.canvas canvas { touch-action: manipulation; }
+	.floors { position: static; width: 100%; display: grid; gap: 8px; padding: 8px 10px 96px; }
+	.floor { position: static; left: auto; transform: none; width: auto; }
+	.fl, button.prog { min-height: 44px; }
+	.sel { left: 0; right: 0; bottom: 0; transform: none; width: auto; border-radius: 6px 6px 0 0; padding: 8px 10px max(8px, env(safe-area-inset-bottom)); }
+	.todo { left: 10px; right: 10px; top: auto; bottom: calc(84px + env(safe-area-inset-bottom)); width: auto; max-height: min(48dvh, 420px); }
+	.intercom { left: 10px; right: 10px; top: max(56px, env(safe-area-inset-top)); bottom: calc(84px + env(safe-area-inset-bottom)); width: auto; }
+	.modal.wide { width: calc(100% - 20px); height: min(620px, 80dvh); }
+	.lib { grid-template-columns: 1fr; }
+	.lib .shelves { max-height: 38dvh; border-right: 0; border-bottom: 1px solid #3a2a4a; }
+	.offline { right: 10px; bottom: calc(84px + env(safe-area-inset-bottom)); }
+	.empty-state { margin-top: 20dvh; }
+}

@@ -183,7 +183,7 @@ test("P8 X6: the Verification rule carries no stale number or not-restated claim
 });
 
 // Preservation: PR #3084 setup self-correction and PR #3092 first-launch reads and resume rule.
-test("P8 preservation: verifier setup self-correction, first-launch reads, resume rule and correction bound stay", () => {
+test("P8 preservation: verifier setup, first-launch reads, resume rule and independent recheck limit stay", () => {
 	containsAll(verify, [
 		"make exactly one corrected attempt without asking anyone and report both attempts",
 		"`NO_UPDATE_NOTIFIER=1` for every probe",
@@ -195,7 +195,8 @@ test("P8 preservation: verifier setup self-correction, first-launch reads, resum
 	containsAll(verification, [
 		"one correction batch that fixes every reported blocker",
 		"a new finding never earns one",
-	], "verification correction bound");
+		"This limit applies to independent verifier findings only.",
+	], "independent verification correction bound");
 });
 
 // Verifier mwb64j0f-13-7akl, B1: the parent loads only the module, so the module must carry the real

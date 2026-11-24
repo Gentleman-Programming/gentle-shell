@@ -21,11 +21,11 @@ test("S1/S4: a user-stopped export is not a successful completion or an instruct
 });
 
 for (const mode of ["organic", "full-delegation"] as const) {
-	test(`S3: ${mode} parent recovery is worker-local and partial execution alone is not exhaustion`, () => {
+	test(`S3/S11: ${mode} parent recovery is worker-local and distinct from proof or native review`, () => {
 		const prompt = __testing.buildGentlePrompt("gentleman", process.cwd(), ["read"], undefined, "tui", mode);
 		const recovery = prompt.split("\n\n").find(block => /ends (?:that )?(?:the )?worker's cycle, not the unit/i.test(block));
 		assert.ok(recovery);
-		assert.match(recovery, /\bworker-local correction limit\b/i);
+		assert.match(recovery, /\bworker-local cause recurring after a real fix without a new hypothesis\b/i);
 		assert.match(recovery, /partial worker execution[^.]*not[^.]*exhausted proof or a terminal native review outcome/i);
 	});
 }

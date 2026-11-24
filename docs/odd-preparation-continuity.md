@@ -17,7 +17,7 @@ Source: `42c68c46859f1724ce9179d8781dd4ee35c13a00`, `odd/tasks/review-one-call.m
 
 This accounts only for removed mandatory mirror reads, excluding protocol envelopes. Targeted local inspection, full mirror writes and initial/recovery reads remain. Tools may expose extra bytes or clip outputs. This is instruction-volume accounting, **not an observed agent run, model-compliance result, token-cost measurement or latency benchmark**. It does not establish the cause or duration of the original incidents. Available local project sessions predate the November reports and were not treated as reproductions.
 
-No new telemetry, framework, budget, agent, tracking artifact, approval or authority layer was introduced. No memory records were created for the accounting fixture. Existing consent, verification, delivery and correction limits are unchanged.
+No new telemetry, framework, budget, agent, tracking artifact, approval or authority layer was introduced. No memory records were created for the accounting fixture. Consent, verification, delivery and explicit limits still apply. Worker corrections follow the [progress rule](delegated-verification.md#parent-continuation-after-a-workers-partial-handoff): diagnose each obstacle and change what caused it, without a default attempt limit.
 
 ## Validation
 

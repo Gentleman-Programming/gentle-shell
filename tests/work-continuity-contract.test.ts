@@ -133,7 +133,7 @@ test("#3049: explicit quota recovery permits only the missing proof without reop
 		"After the human reports restored availability and explicitly requests the missing verification, allow one new bounded attempt for the same candidate.",
 		"Preserve the failed attempt and still-valid passed checks; do not replay passed suites.",
 		"Confirm no child is active or uncertain.",
-		"This is not an automatic retry, provider/model fallback, or reset of correction/native budgets.",
+		"This is not an automatic retry, provider/model fallback, or reset of verifier recheck or native correction limits.",
 		"Consent, denials, explicit one-run/no-retry limits and terminal native outcomes remain binding; failure never counts as approval.",
 	]);
 	includesAll(await closeStep(), [UNAVAILABLE_VERIFIER]);
@@ -185,17 +185,16 @@ test("S3 F1/F2: a partial stop or exhausted limit affects only that work while u
 	assert.ok(prompt.includes("Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work"), "no fake complete");
 });
 
-// ODD orchestrator-owns-correction-exhaustion S1/S2/S4: the parent owns the next step after worker exhaustion,
-// acts on the diagnosed loop cause, never repeats an attempt, and blocks only the unit on a recurring cause.
-test("S1-S2: worker exhaustion hands the next step to the parent, which acts on the diagnosed cause", async () => {
+// #2919 and turn-end-coherence S11: the parent takes over with evidence and never repeats an attempt.
+test("a repeated-cause worker stop hands the next step to the parent without ending independent work", async () => {
 	const prompt = await delivered();
 	includesAll(prompt, [
-		"Worker exhaustion: An exhausted worker-local correction limit ends the worker's cycle, not the unit.",
+		"Worker exhaustion: A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
 		"The parent owns the next step, unasked, within native authority.",
-		"Name the loop's cause from the evidence and act: fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence.",
+		"Name the cause from evidence and act: fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence.",
 		"Never repeat an attempt or swap executors to dodge limits.",
-		"If the cause recurs or no new hypothesis exists, block only that unit; continue independent work.",
-		"Before continuing a worker, confirm no child is active or uncertain.",
+		"If the cause recurs without a new hypothesis, mark only that unit incomplete; continue independent work.",
+		"Confirm no child is active or uncertain.",
 		"Never reset, widen or dodge a limit, even in a new session.",
 		"Honor one-run, no-retry and diagnostic-only limits.",
 	]);

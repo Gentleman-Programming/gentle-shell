@@ -106,20 +106,20 @@ test("S3: explicit limits bound check correction without weakening checks or ove
 		"Correct checks within their correction limit. Never weaken checks or override final outcomes.");
 });
 
-test("S3: worker exhaustion is a bounded parent route under native authority in both modes", () => {
+test("S3/S11: a worker-local repeated-cause stop hands back to the parent under native authority in both modes", () => {
 	for (const mode of modes) {
 		const worker = paragraph(render(mode).body, "Worker exhaustion:");
 		clauses(worker,
-			"An exhausted worker-local correction limit ends the worker's cycle, not the unit.",
+			"A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
 			"The parent owns the next step, unasked, within native authority.",
 			"Partial worker execution is not exhausted proof or a terminal native review outcome.",
-			"Name the loop's cause from the evidence and act:",
+			"Name the cause from evidence and act:",
 			mode === "organic"
 				? "fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence."
 				: "never edit: launch a new bounded writer with the diagnosis, new evidence and changed scope or hypothesis.",
 			"Never repeat an attempt or swap executors to dodge limits.",
-			"If the cause recurs or no new hypothesis exists, block only that unit; continue independent work.",
-			"Before continuing a worker, confirm no child is active or uncertain.",
+			"If the cause recurs without a new hypothesis, mark only that unit incomplete; continue independent work.",
+			"Confirm no child is active or uncertain.",
 			"The Close stop ends the automatic cycle; later explicit requests stay subject to native authority.",
 			"Quota recovery: `orchestrator-quota-recovery.md`.");
 		if (mode === "full-delegation") assert.doesNotMatch(worker, /\binline\b/);

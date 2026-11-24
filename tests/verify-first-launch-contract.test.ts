@@ -67,7 +67,7 @@ test("S3: setup failures do not trigger repair loops or automatic relaunch", () 
 		"A verifier's self-fix of its own setup error (one correction in the same verification) needs no decision; if it made none, relaunch once with the corrected command, unasked.",
 		"If setup still fails or lacks prerequisites, stop verifying: name the blocker and exact unrun checks as unverified",
 		"never repair helpers more or auto-relaunch for it",
-		"Setup/infrastructure failures aren't code findings; tooling defects keep the correction bound.",
+		"Setup/infrastructure failures aren't code findings and don't reset the verifier's setup limit.",
 	], "parent setup");
 });
 

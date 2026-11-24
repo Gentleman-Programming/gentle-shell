@@ -69,10 +69,10 @@ function trackedPendingBoundary(text: string): string {
 	return text.slice(start, end + "as final.".length);
 }
 
-test("T23(a): a partial or blocked writer gets the one correction; verification-specific blockers remain bounded", () => {
+test("T23(a): the independent verifier's correction limit never grants an extra verify run", () => {
 	containsAll(lineStarting(verification, "5. **One correction**"), [
-		"A `partial` or `blocked` writer report gets only this correction, never an extra verify run beyond the risk tier's verifier",
-		"leftover partial, blocked, unavailable, or exhausted proof likewise",
+		"This limit applies to independent verifier findings only.",
+		"A `partial` or `blocked` writer report or leftover partial, blocked, unavailable, or exhausted proof never earns an extra verify run beyond the risk tier's verifier.",
 	], "verification correction bound");
 	for (const persona of personas) {
 		containsAll(closeStep(persona), [
@@ -147,13 +147,13 @@ test("S3: no phrase detector or broad verification stop joins ordinary continuit
 	assert.ok(prompt("gentleman").includes("Never turn a report into a blind self-reprompt loop."));
 });
 
-test("T23(c): writer self-review and worker validation stop after a bounded correction", () => {
+test("T23(c): writer self-review follows the progress rule without claiming unverified completion", () => {
 	containsAll(lineStarting(verification, "1. **Self-review**"), [
-		"fixes and continues (one correction per failing check, a second only if the same check still fails, then `partial`)",
+		"for failed checks, follow the worker's progress rule: name the cause from output and change the fix to address it.",
 	], "self-review item");
 	containsAll(worker, [
 		"Do not claim completion while required validation is failing.",
-		"Make one correction attempt per failing check, and a second only if the same check still fails after a real fix; then stop and return `status: partial` with the failing command and its output, never looping.",
+		"Never repeat the same change or stop because of an attempt count.",
 	], "worker Test discipline");
 });
 
@@ -175,24 +175,21 @@ test("S4-S5: the Close stop stays scoped to the ended automatic cycle", () => {
 	}
 });
 
-// ODD orchestrator-owns-correction-exhaustion S1-S4: the worker keeps its two-attempt limit, returns its
-// diagnosed loop cause, and the parent (never the human by default) owns the next step. RED construction
-// errors get the setup bound, separate from the fix's limit.
-test("S1-S4: the worker returns its diagnosed loop cause after its bound and the parent decides", () => {
+// #2919 and turn-end-coherence S11: the worker returns evidence and the parent owns the next step.
+test("the worker reports a repeated-cause stop with evidence; the parent decides", () => {
 	containsAll(worker, [
-		"Make one correction attempt per failing check, and a second only if the same check still fails after a real fix",
-		"After the correction bound is exhausted, stop and return `status: partial`",
-		"the concrete remaining implementation work, the missing proof, and your diagnosed cause of the loop",
+		"Stop correcting and return `status: partial` only if the same cause fails again after a real fix and no new hypothesis exists",
+		"failing commands and outputs, concrete remaining implementation work, missing proof, and diagnosed cause with evidence",
 		"That ends your cycle, not the unit: the parent decides the next step from that evidence.",
 		"This handoff is not authorization to continue.",
-		"Do not start a fresh correction cycle or treat a new session as a reset",
-		"native authority and all other applicable limits remain binding",
+		"After a repeated-cause stop, do not start a fresh correction cycle or treat a new session as a reset",
+		"Native authority and all other applicable limits remain binding",
 	], "worker continuation handoff");
-	assert.ok(!worker.includes("explicit human authorization"), "worker exhaustion no longer routes to the human");
+	assert.ok(!worker.includes("explicit human authorization"), "a worker's partial handoff does not route to the human");
 	containsAll(worker, [
-		"Making a new test fail for the expected reason is RED construction, not a fix correction",
-		"its own harness or setup errors get one self-fix, separate from the fix's correction limit",
-		"return `status: partial` with a reproduction blocker and its evidence, not exhausted corrections",
+		"RED construction is separate from fix correction",
+		"harness or setup errors get one self-fix",
+		"return `status: partial` with the reproduction blocker and its evidence",
 	], "worker RED construction bound");
 	containsAll(verification, [
 		"Follow **Authorized work continuity** for setup and worker recovery; scratch: `gentle-ai-verify`.",
@@ -206,11 +203,11 @@ test("S2: the post-exhaustion route follows the active delegation mode", () => {
 		const paragraph = prompt(persona, mode).split("\n\n").find(block => block.startsWith("Worker exhaustion:"));
 		assert.ok(paragraph, `${persona}/${mode} keeps the worker-exhaustion paragraph`);
 		containsAll(paragraph, [
-			"An exhausted worker-local correction limit ends the worker's cycle, not the unit.",
+			"A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
 			"The parent owns the next step, unasked, within native authority.",
-			"Name the loop's cause from the evidence and act:",
+			"Name the cause from evidence and act:",
 			"Never repeat an attempt or swap executors to dodge limits.",
-			"If the cause recurs or no new hypothesis exists, block only that unit; continue independent work.",
+			"If the cause recurs without a new hypothesis, mark only that unit incomplete; continue independent work.",
 		], `${persona}/${mode} exhaustion route`);
 		if (mode === "organic") {
 			assert.ok(paragraph.includes("fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence."), `${persona} organic route`);
@@ -236,12 +233,12 @@ test("gentle-shell#3082: a stopped verification carries its terminal disposition
 	], "verification terminal disposition");
 });
 
-test("S2 (verifier P2): full delegation launches a new writer after exhaustion; per-fix continuation is scoped to the worker's limit", () => {
+test("S2 (verifier P2): full delegation continues a progressing writer and preserves the distinct parent recovery route", () => {
 	for (const persona of personas) {
 		const p = prompt(persona, "full-delegation");
 		const paragraph = p.split("\n\n").find((block) => block.startsWith("Worker exhaustion:")) ?? "";
 		assert.match(paragraph, /launch a new bounded writer/);
 		assert.ok(!p.includes("Fixes to one unit continue its worker (`subagent_continue`), never a new worker per fix."), "unscoped per-fix rule contradicts the post-exhaustion launch");
-		assert.ok(p.includes("In-limit fixes continue the worker (`subagent_continue`), never a new worker per fix."));
+		assert.ok(p.includes("Continue a progressing worker (`subagent_continue`), never a new worker per fix."));
 	}
 });

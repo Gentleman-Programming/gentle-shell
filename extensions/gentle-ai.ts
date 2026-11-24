@@ -1798,10 +1798,10 @@ function resolveSessionDelegationMode(
 
 const TEST_FIRST_PRINCIPLE = "- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a `mktemp -d` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.";
 const FULL_DELEGATION_TEST_FIRST_PRINCIPLE = "- Writers apply test-first (RED, GREEN, PRESERVE with its differential check) from their own contract; forward it in every writer handoff and require their observed RED/GREEN evidence or stated exception. Never invent lifecycle evidence or skip checks.";
-// orchestrator-owns-correction-exhaustion S2: after a worker exhausts its limit the parent decides the next step
-// from the diagnosed cause; only organic mode may fix it inline, full delegation launches a new bounded writer.
-const EXHAUSTION_ROUTE = "fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence";
-const FULL_DELEGATION_EXHAUSTION_ROUTE = "never edit: launch a new bounded writer with the diagnosis, new evidence and changed scope or hypothesis";
+// #2919 and turn-end-coherence S11: the parent takes over after a worker-local stop;
+// only organic mode may fix inline, full delegation launches a new bounded writer.
+const WORKER_RECOVERY_ROUTE = "fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence";
+const FULL_DELEGATION_WORKER_RECOVERY_ROUTE = "never edit: launch a new bounded writer with the diagnosis, new evidence and changed scope or hypothesis";
 
 function buildGentlePrompt(
 	persona: PersonaMode,
@@ -1818,7 +1818,7 @@ function buildGentlePrompt(
 	// cost-speed-painpoints S5: writers apply the test-first procedure from their own
 	// contract; a full delegation parent only forwards it and checks the evidence.
 	const testFirstPrinciple = delegationMode === DEFAULT_ORCHESTRATOR_MODE ? TEST_FIRST_PRINCIPLE : FULL_DELEGATION_TEST_FIRST_PRINCIPLE;
-	const exhaustionRoute = delegationMode === DEFAULT_ORCHESTRATOR_MODE ? EXHAUSTION_ROUTE : FULL_DELEGATION_EXHAUSTION_ROUTE;
+	const workerRecoveryRoute = delegationMode === DEFAULT_ORCHESTRATOR_MODE ? WORKER_RECOVERY_ROUTE : FULL_DELEGATION_WORKER_RECOVERY_ROUTE;
 	return `## el Gentleman Identity and Harness
 
 Current persona mode: ${persona}
@@ -1848,7 +1848,7 @@ After resolving an incident or subdecision, automatically resume safe, necessary
 
 Explicit limits: A limit is explicit, set by the human, a tool or native review, and binds only the work it names. Never reset, widen or dodge a limit, even in a new session. Do not add retry allowances. An explicit user stop applies only to the work it names. Treat it as an exhausted limit. Honor one-run, no-retry and diagnostic-only limits. Correct checks within their correction limit. Never weaken checks or override final outcomes.
 
-Worker exhaustion: An exhausted worker-local correction limit ends the worker's cycle, not the unit. The parent owns the next step, unasked, within native authority. Partial worker execution is not exhausted proof or a terminal native review outcome. Name the loop's cause from the evidence and act: ${exhaustionRoute}. Never repeat an attempt or swap executors to dodge limits. If the cause recurs or no new hypothesis exists, block only that unit; continue independent work. Before continuing a worker, confirm no child is active or uncertain. The Close stop ends the automatic cycle; later explicit requests stay subject to native authority. Quota recovery: \`orchestrator-quota-recovery.md\`.
+Worker exhaustion: A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit. The parent owns the next step, unasked, within native authority. Partial worker execution is not exhausted proof or a terminal native review outcome. Confirm no child is active or uncertain. Name the cause from evidence and act: ${workerRecoveryRoute}. Never repeat an attempt or swap executors to dodge limits. If the cause recurs without a new hypothesis, mark only that unit incomplete; continue independent work. The Close stop ends the automatic cycle; later explicit requests stay subject to native authority. Quota recovery: \`orchestrator-quota-recovery.md\`.
 
 Worker-prohibited maintenance or rollback: Only the parent may act; load \`orchestrator-maintenance.md\` and verify its prerequisites first.
 

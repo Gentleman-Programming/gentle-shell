@@ -130,6 +130,7 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
 		"Honor one-run, no-retry and diagnostic-only limits.",
 		"Correct checks within their correction limit.",
+		"Worker exhaustion: A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
 		"Never reset, widen or dodge a limit, even in a new session.",
 		"Do not add retry allowances.",
 		"Never weaken checks or override final outcomes.",

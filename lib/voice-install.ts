@@ -8,6 +8,7 @@ import {
 	VOICE_TARGETS,
 	voiceRuntimeManifest,
 	type VoiceModelManifest,
+	type VoiceModelTransport,
 	type VoiceNpmPackage,
 	type VoiceRedirectRule,
 	type VoiceRuntimeManifest,
@@ -37,7 +38,7 @@ export class VoiceInstallError extends Error {
 }
 
 // The subset of fetch the installer uses. Redirects are always handled here, so
-// every hop is checked against the manifest's rules before it is requested.
+// every redirect hop is checked against the source's rules before it is requested.
 export type VoiceFetch = (url: string, init: { signal: AbortSignal; redirect: "manual"; headers: Record<string, string> }) => Promise<Response>;
 
 export interface VoiceInstallProgress {
@@ -70,6 +71,8 @@ interface VoiceInstallCommonOptions {
 
 export interface VoiceModelInstallOptions extends VoiceInstallCommonOptions {
 	manifest?: VoiceModelManifest;
+	// Trusted build-time override for downloads only; defaults to the manifest's source.
+	transport?: VoiceModelTransport;
 }
 
 export interface VoiceRuntimeInstallOptions extends VoiceInstallCommonOptions {
@@ -336,10 +339,11 @@ export async function installVoiceModel(options: VoiceModelInstallOptions = {}):
 	if (!SAFE_ID.test(manifest.id) || !manifest.files.every((file) => SAFE_FILE.test(file.name))) {
 		throw new VoiceInstallError("unsupported", "The model manifest names an unsafe path.");
 	}
+	const transport = options.transport ?? manifest;
 	const total = manifest.files.reduce((sum, file) => sum + file.size, 0);
-	return install("model", manifest, total, manifest.redirects, options, async (payload, _staging, transfer) => {
+	return install("model", manifest, total, transport.redirects, options, async (payload, _staging, transfer) => {
 		for (const file of manifest.files) {
-			await download(`${manifest.baseUrl}/${file.name}`, { item: file.name, size: file.size, algorithm: "sha256", digest: file.sha256 }, join(payload, file.name), transfer);
+			await download(`${transport.baseUrl}/${file.name}`, { item: file.name, size: file.size, algorithm: "sha256", digest: file.sha256 }, join(payload, file.name), transfer);
 		}
 		return manifest.files.map((file) => ({ path: file.name, size: file.size }));
 	});

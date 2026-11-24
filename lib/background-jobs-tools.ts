@@ -49,9 +49,12 @@ export function jobNoticeText(job: JobRecord): string {
 	else lines.push("No output.");
 	lines.push(`Full output: ${job.outputPath} (read it with the read tool if you need more).`);
 	const failed = job.status === "failed" || (job.status === "exited" && job.exitCode !== 0);
-	lines.push(failed
-		? "This failure is an obstacle, not the end of the task: read the result, diagnose the cause, and continue the authorized work that depended on this job."
-		: "This result does not end the task: read it and continue the authorized work that depended on this job.");
+	// A human stop is an explicit limit on this job, never an obstacle to work around.
+	lines.push(job.status === "stopped"
+		? "The user stopped this job: that is an explicit limit on it. Do not restart it; continue only independent authorized work."
+		: failed
+			? "This failure is an obstacle, not the end of the task: read the result, diagnose the cause, and continue the authorized work that depended on this job."
+			: "This result does not end the task: read it and continue the authorized work that depended on this job.");
 	return lines.join("\n");
 }
 

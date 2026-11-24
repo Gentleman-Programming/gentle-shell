@@ -190,7 +190,7 @@ test("S3 F1/F2: a partial stop or exhausted limit affects only that work while u
 test("S1-S2: worker exhaustion hands the next step to the parent, which acts on the diagnosed cause", async () => {
 	const prompt = await delivered();
 	includesAll(prompt, [
-		"Worker exhaustion: An exhausted correction limit ends the worker's cycle, not the unit.",
+		"Worker exhaustion: An exhausted worker-local correction limit ends the worker's cycle, not the unit.",
 		"The parent owns the next step, unasked, within native authority.",
 		"Name the loop's cause from the evidence and act: fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence.",
 		"Never repeat an attempt or swap executors to dodge limits.",

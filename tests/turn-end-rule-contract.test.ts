@@ -100,9 +100,9 @@ test("S3: worker exhaustion is a bounded parent route under native authority in 
 	for (const mode of modes) {
 		const worker = paragraph(render(mode).body, "Worker exhaustion:");
 		clauses(worker,
-			"An exhausted correction limit ends the worker's cycle, not the unit.",
+			"An exhausted worker-local correction limit ends the worker's cycle, not the unit.",
 			"The parent owns the next step, unasked, within native authority.",
-			"A partial worker report is not exhausted proof or a terminal native review outcome.",
+			"Partial worker execution is not exhausted proof or a terminal native review outcome.",
 			"Name the loop's cause from the evidence and act:",
 			mode === "organic"
 				? "fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence."

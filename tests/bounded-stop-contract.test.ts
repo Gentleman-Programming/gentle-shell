@@ -170,7 +170,7 @@ test("S4-S5: the Close stop stays scoped to the ended automatic cycle", () => {
 	for (const persona of personas) {
 		containsAll(prompt(persona), [
 			"The Close stop ends the automatic cycle; later explicit requests stay subject to native authority.",
-			"A partial worker report is not exhausted proof or a terminal native review outcome.",
+			"Partial worker execution is not exhausted proof or a terminal native review outcome.",
 		], `${persona} delivered continuation`);
 	}
 });
@@ -206,7 +206,7 @@ test("S2: the post-exhaustion route follows the active delegation mode", () => {
 		const paragraph = prompt(persona, mode).split("\n\n").find(block => block.startsWith("Worker exhaustion:"));
 		assert.ok(paragraph, `${persona}/${mode} keeps the worker-exhaustion paragraph`);
 		containsAll(paragraph, [
-			"An exhausted correction limit ends the worker's cycle, not the unit.",
+			"An exhausted worker-local correction limit ends the worker's cycle, not the unit.",
 			"The parent owns the next step, unasked, within native authority.",
 			"Name the loop's cause from the evidence and act:",
 			"Never repeat an attempt or swap executors to dodge limits.",

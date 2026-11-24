@@ -49,11 +49,12 @@ documentación completa para `gentle-shell`.
 
 ## Tasks
 
-- T1 [ ] S#1, S#5 — RED/GREEN provider factory + registro nativo.
-- T2 [ ] S#2 — catálogo fallback/offline y refresh live.
-- T3 [ ] S#3 — auth (login/resolve).
-- T4 [ ] S#4 — reasoning/thinking levels y payload de stream.
-- T5 [ ] S#6 — documentación completa.
+- T1 [x] S#1, S#5 — RED/GREEN provider factory + registro nativo.
+- T2 [x] S#2 — catálogo fallback/offline y refresh live.
+- T3 [x] S#3 — auth (login/resolve).
+- T4 [x] S#4 — reasoning/thinking levels y payload de stream.
+- T5 [x] S#6 — documentación completa.
+- T6 [ ] Cierre: verificación final y reporte.
 
 ## Log
 

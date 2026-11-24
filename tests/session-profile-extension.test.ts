@@ -33,13 +33,16 @@ import gentleAgents from "../extensions/gentle-agents.ts";
 import { resolveSessionWorktree } from "../lib/session-worktree-registry.ts";
 import { fakeChild } from "./agents-fake-child.ts";
 import { PROFILE_TIER_EVENT } from "../lib/openai-fast-tier.ts";
-import { readSessionProfileBinding } from "../lib/session-profile-binding.ts";
+import { readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { discoverDesktopProfilesService } from "../lib/desktop-rpc-profiles.ts";
 import { SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import { localProfilePinPath, repoProfileDeclarationPath, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
-import { readFrozenDefaultOrchestrator, readFrozenInheritedProfile, resolveSessionProfile, sessionProfileRoutingAt } from "../lib/session-profile-freeze.ts";
+import { readFrozenDefaultOrchestrator, readFrozenInheritedProfile, resetFrozenInheritedProfilesForTesting, resolveSessionProfile, sessionProfileRoutingAt } from "../lib/session-profile-freeze.ts";
 import type { AgentRoutingEntry } from "../lib/model-routing-authority.ts";
 import { replay, type Transcript } from "./fixtures/session-profile-v1/replay.ts";
+
+// The custom payload of one session-profile entry, as a public record holds it.
+const data = (entry: unknown) => (entry as { data?: unknown } | undefined)?.data;
 
 // Actual SDK factory loader, AgentSession and replacement runtime. Only resource,
 // auth and UI boundaries are fixture-owned. No prompts, provider streams or Git.
@@ -201,6 +204,9 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
    reason: "startup" | "new" | "resume" | "fork";
    previousSessionFile?: string;
   },
+  // A resumed process passes no model (`null`), so Pi restores the session's
+  // own model from its model_change entries; a new session starts on the fixture model.
+  startModel: typeof baseModel | null = baseModel,
  ) => {
   let extensionRuntime = createExtensionRuntime();
   let loaded: Awaited<ReturnType<typeof loadExtensionFromFactory>>[] = [];
@@ -297,7 +303,7 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
    cwd: manager.getCwd(),
    agentDir,
    modelRuntime,
-   model: baseModel,
+   model: startModel ?? undefined,
    thinkingLevel: "off",
    tools: [],
    resourceLoader: loader,
@@ -385,6 +391,13 @@ async function fixture(t: test.TestContext, memory = false, flushed = true, acti
   settingsUnchanged: () => assert.equal(readFileSync(settingsPath, "utf8"), settings),
   async startAt(cwd: string) {
    const next = await make(SessionManager.inMemory(cwd), { type: "session_start", reason: "startup" });
+   await bind(next.session);
+   t.after(() => next.session.dispose());
+   return next.session;
+  },
+  /** Open an existing session file, as a later process does. */
+  async openAt(file: string) {
+   const next = await make(SessionManager.open(file), { type: "session_start", reason: "startup" }, null);
    await bind(next.session);
    t.after(() => next.session.dispose());
    return next.session;
@@ -684,7 +697,8 @@ for (const fastOrder of ["ai-first", "fast-first"] as const) {
   const payload = { input: "fixture", service_tier: "flex" };
   assert.deepEqual(await f.runtime.session.extensionRunner.emitBeforeProviderRequest(payload), { ...payload, service_tier: "priority" });
   assert.deepEqual(payload, { input: "fixture", service_tier: "flex" });
-  assert.equal(f.family().length, 0, "notification does not publish a profile record");
+  assert.equal(f.family().length, 1, "startup records the profile it started with, never a selection");
+  assert.deepEqual(data(f.family()[0]), { kind: "bind", origin: "global", name: "live", modelProfiles: f.profiles.live });
   f.settingsUnchanged();
  });
 
@@ -718,13 +732,17 @@ for (const layer of ["local", "repo", "global"] as const)
   assert.equal(f.runtime.session.thinkingLevel, "high");
   assert.equal(f.authCalls(), 1);
   assert.deepEqual(readFrozenDefaultOrchestrator(f.manager.getSessionId()), f.profiles.live.orchestrator);
-  assert.equal(f.family().length, 0, "startup does not publish an explicit selection");
-  assert.equal(f.binding(), undefined);
+  // A3 S1: the own start records the startup bind it froze, full definition and
+  // orchestrator included, through the ordinary append controller.
+  assert.equal(f.family().length, 1, "the own start appends exactly one record");
+  assert.deepEqual(data(f.family()[0]), { kind: "bind", origin: layer, name: "live", modelProfiles: f.profiles.live });
+  assert.equal(f.binding()?.origin, layer, "the record publishes the startup origin, not an explicit choice");
   assert.ok(f.notices.some((n) => n.text.includes('profile "live"') && n.text.includes("This session now runs on openai/gpt-5.2 · high.")));
   f.settingsUnchanged();
   const before = f.protectedBytes();
   await f.runtime.session.reload();
   assert.equal(f.authCalls(), 1, "reload must not reapply the startup orchestrator");
+  assert.equal(f.family().length, 1, "A3 S2: a reload is not the session's own start");
   assert.deepEqual(f.protectedBytes(), before);
  });
 
@@ -734,7 +752,11 @@ for (const active of [undefined, "team"] as const)
   assert.equal(f.runtime.session.model?.id, "gpt-4o");
   assert.equal(f.runtime.session.thinkingLevel, "off");
   assert.equal(f.authCalls(), 0);
-  assert.equal(f.family().length, 0);
+  // A3 S1: no profile in any layer still records the startup state.
+  assert.equal(f.family().length, 1);
+  assert.deepEqual(data(f.family()[0]), active === undefined
+   ? { kind: "clear", startup: "none" }
+   : { kind: "bind", origin: "global", name: active, modelProfiles: f.profiles[active] });
   if (active) assert.ok(f.notices.some((n) => n.text.includes('profile "team" has no orchestrator model; this session keeps its current model.')));
   else assert.equal(f.notices.some((n) => /orchestrator|current model|now runs/.test(n.text)), false);
   f.settingsUnchanged();
@@ -749,8 +771,10 @@ for (const failure of ["model", "credentials"] as const)
   assert.equal(f.runtime.session.model?.id, "gpt-4o");
   assert.equal(f.runtime.session.thinkingLevel, "off");
   assert.equal(f.authCalls(), 0);
-  assert.equal(f.family().length, 0);
-  assert.equal(f.binding(), undefined);
+  // The record describes the frozen startup state, whatever the switch did.
+  assert.equal(f.family().length, 1);
+  assert.deepEqual(data(f.family()[0]), { kind: "bind", origin: "global", name: "live", modelProfiles: f.profiles.live });
+  assert.equal(f.binding()?.origin, "global");
   const text = failure === "model"
    ? "openai/not-in-catalog is not in the model catalog; this session keeps its current model."
    : "no authentication is configured for openai; this session keeps its current model.";
@@ -766,7 +790,7 @@ test(`A3 headless own start reports the switch outcome on stderr`, async (t) => 
  });
  assert.equal(f.runtime.session.model?.id, "gpt-4o");
  assert.equal(f.authCalls(), 0);
- assert.equal(f.family().length, 0);
+ assert.deepEqual(data(f.family()[0]), { kind: "bind", origin: "global", name: "live", modelProfiles: f.profiles.live });
  assert.ok(
   f.headlessNotes.some((line) =>
    line.includes('profile "live"') &&
@@ -784,6 +808,7 @@ for (const env of [{ GENTLE_PI_PROFILE_FOLLOW: "1" }, { GENTLE_PI_AGENTS_CHILD: 
   assert.equal(f.runtime.session.thinkingLevel, "off");
   assert.equal(f.authCalls(), 0);
   assert.equal(readFrozenInheritedProfile(f.manager.getSessionId()), undefined);
+  assert.equal(f.family().length, 0, "A3 S2/S4: follow sessions and children never record a startup state");
   assert.equal(f.notices.some((n) => /orchestrator|current model|now runs/.test(n.text)), false);
   f.settingsUnchanged();
  });
@@ -793,6 +818,7 @@ for (const reason of ["new", "resume", "fork"] as const)
   const f = await fixture(t, false, false, "live", { env: {}, reason });
   assert.equal(f.runtime.session.model?.id, reason === "new" ? "gpt-5.2" : "gpt-4o");
   assert.equal(f.authCalls(), reason === "new" ? 1 : 0);
+  assert.equal(f.family().length, reason === "new" ? 1 : 0, "A3 S2: only an own start records it");
   f.settingsUnchanged();
  });
 
@@ -800,6 +826,47 @@ test("A3 an existing conversation does not switch at process startup", async (t)
  const f = await fixture(t, false, true, "live", { env: {} });
  assert.equal(f.runtime.session.model?.id, "gpt-4o");
  assert.equal(f.authCalls(), 0);
+ assert.equal(f.family().length, 0, "A3 S3: a session from before A2 writes nothing");
+ f.settingsUnchanged();
+});
+
+// A3 S2/S3: a later process opening the recorded session is a resume, not a start.
+test("A3 opening the recorded session writes no second record and never re-switches", async (t) => {
+ const f = await fixture(t, false, false, "live", { env: {} });
+ const recorded = { kind: "bind", origin: "global", name: "live", modelProfiles: f.profiles.live };
+ assert.deepEqual(data(f.family().at(-1)), recorded);
+ f.manager.appendMessage({ role: "user", content: "first", timestamp: 2 });
+ const file = f.manager.getSessionFile()!;
+ assert.ok(readFileSync(file, "utf8").includes(SESSION_PROFILE_CUSTOM_TYPE), "the record reached the session file");
+ const auth = f.authCalls();
+ const resumed = await f.openAt(file);
+ const family = resumed.sessionManager.getBranch().filter((e) => e.type === "custom" && e.customType === SESSION_PROFILE_CUSTOM_TYPE);
+ assert.equal(family.length, 1, "the resumed session keeps the one record it started with");
+ assert.deepEqual(data(family[0]), recorded);
+ assert.equal(f.authCalls(), auth, "S6: a resume never applies the orchestrator again");
+ assert.equal(readSessionProfileBinding(resumed.sessionManager.getSessionId())?.origin, "global", "the record still resolves the profile");
+ f.settingsUnchanged();
+});
+
+// A3 S5/S6: the record is what a resumed process reads for the Fast tier, while
+// the live model is never switched again (Pi restores it from model_change).
+test("A3 a resumed session keeps the record's Fast tier without switching the model again", async (t) => {
+ const f = await fixture(t, false, false, "live", { env: {}, orchestrator: { model: "openai/gpt-6.1-sol", thinking: "high", tier: "fast" }, fastOrder: "fast-first" });
+ assert.deepEqual(await f.runtime.session.extensionRunner.emitBeforeProviderRequest({}), { service_tier: "priority" });
+ f.manager.appendMessage({ role: "user", content: "first", timestamp: 2 });
+ const file = f.manager.getSessionFile()!;
+ const auth = f.authCalls();
+ // The shared default now says Standard: only the record can still say Fast.
+ Object.assign(f.profiles.live, { orchestrator: { model: "openai/gpt-6.1-sol", thinking: "high", tier: "standard" } });
+ f.saveProfiles();
+ // A later process holds nothing from the first one.
+ resetSessionProfileBindingsForTesting();
+ resetFrozenInheritedProfilesForTesting();
+ const resumed = await f.openAt(file);
+ assert.equal(f.authCalls(), auth, "S6: a resume never applies the orchestrator again");
+ assert.equal(resumed.model?.id, "gpt-6.1-sol", "Pi restores the session's own model");
+ assert.equal(f.tierEvents.length, 1, "a resume sends no second tier notification");
+ assert.deepEqual(await resumed.extensionRunner.emitBeforeProviderRequest({ input: "fixture" }), { input: "fixture", service_tier: "priority" }, "S5: the record still feeds the Fast tier");
  f.settingsUnchanged();
 });
 
@@ -872,7 +939,6 @@ for (const active of ["live", undefined] as const)
  });
 
 // gentle-shell#2742, section 3: a new session knows the startup state it froze.
-const data = (entry: unknown) => (entry as { data?: unknown } | undefined)?.data;
 for (const active of ["live", undefined] as const)
  test(`A2 clear in a new session goes back to the startup ${active ?? "no profile"} and v1 replays it the same`, async (t) => {
   const f = await fixture(t, false, false, active);
@@ -907,6 +973,19 @@ test("A2 clear of an invalid newest entry in a new session writes the startup pr
  assert.deepEqual(data(f.family().at(-1)), { kind: "bind", origin: "global", name: "live", modelProfiles: f.profiles.live });
  assert.match(f.notices.at(-1)?.text ?? "", /cleared the unreadable session profile record \(persisted in this session\)\. New launches go back to the profile this session started with, "live"/);
  assert.equal(f.binding()?.origin, "global");
+});
+
+// A3: once the own start records the startup state, clear reads it from the record.
+test("A2 clear after the own-start record returns to the recorded startup profile", async (t) => {
+ const f = await fixture(t, false, false, "live", { env: {} });
+ const recorded = { kind: "bind", origin: "global", name: "live", modelProfiles: f.profiles.live };
+ f.manager.appendMessage({ role: "user", content: "first", timestamp: 2 });
+ await f.enter("team");
+ assert.equal(f.family().length, 2, "the explicit choice follows the startup record");
+ assert.deepEqual((data(f.family().at(-1)) as { startup?: unknown }).startup, { origin: "global", name: "live", modelProfiles: f.profiles.live });
+ await f.clear();
+ assert.deepEqual(data(f.family().at(-1)), recorded, "clear goes back to the recorded startup state");
+ assert.match(f.notices.at(-1)?.text ?? "", /go back to the profile this session started with, "live"/);
 });
 
 // Desktop clear_profile_binding through the real owner (gentle-shell-gpui parity, T1, L32).

@@ -466,14 +466,61 @@ test("a startup-none record resolves no session profile without freezing the cur
 	assert.deepEqual(sessionProfileRoutingAt(resolution, target), LOCAL, "a foreign repository uses its own pins");
 });
 
-test("follow mode routes a recorded startup profile and resolves the current defaults after a startup-none record", () => {
+// A3 S4 (gentle-shell#1064), changed on purpose: follow ignores a recorded
+// startup profile and resolves the current defaults; a startup-none record
+// resolves those same defaults.
+test("follow mode ignores a recorded startup profile and resolves the current defaults after a startup-none record", () => {
 	const f = fixture();
 	const env = { [PROFILE_FOLLOW_ENV]: "1" };
 	f.pinLocal("frontier");
 	bindSessionProfile("s-bind", "team", TEAM, { origin: "global" });
-	assert.deepEqual(sessionProfileModelProfiles(resolveSessionProfile(options(f, "s-bind", env))), { worker: TEAM.worker });
+	assert.deepEqual(resolveSessionProfile(options(f, "s-bind", env)), { kind: "follow", profile: { name: "frontier", origin: "local", modelProfiles: FRONTIER } }, "follow never reads the startup bind");
 	recordSessionProfileStartupNone("s-none");
 	assert.deepEqual(resolveSessionProfile(options(f, "s-none", env)), { kind: "follow", profile: { name: "frontier", origin: "local", modelProfiles: FRONTIER } });
+});
+
+// A3 S4 (gentle-shell#1064): reading side. A `follow` session ignores a startup
+// bind from the record, from any origin, and resolves the current defaults; it
+// never freezes and the inherited drift notice never applies.
+test("follow mode ignores a recorded startup profile from every origin and routes the current defaults", () => {
+	const f = fixture();
+	const env = { [PROFILE_FOLLOW_ENV]: "1" };
+	f.pinLocal("frontier");
+	for (const origin of ["local", "repo", "global"] as const) {
+		const id = `s-${origin}`;
+		bindSessionProfile(id, "team", TEAM, { origin });
+		const resolution = resolveSessionProfile(options(f, id, env));
+		assert.deepEqual(resolution, { kind: "follow", profile: { name: "frontier", origin: "local", modelProfiles: FRONTIER } }, `a ${origin} startup bind does not outrank the current defaults`);
+		assert.deepEqual(sessionProfileRoutingAt(resolution, options(f, id)), FRONTIER, "a launch reads the current defaults too");
+		assert.equal(readFrozenInheritedProfile(id), undefined, "follow never freezes");
+		assert.equal(inheritedProfileDriftNotice(options(f, id, env)), undefined, "follow sessions are never compared");
+	}
+	const foreign = fixture();
+	foreign.declareRepo("team");
+	foreign.setActive("local");
+	const target = { cwd: foreign.cwd, configHome: foreign.configHome, resolveWorktree: foreign.resolveWorktree, foreignRepository: true };
+	assert.deepEqual(
+		JSON.parse(JSON.stringify(sessionProfileRoutingAt(resolveSessionProfile(options(f, "s-global", env)), target))),
+		{ worker: TEAM.worker },
+		"a foreign launch reads that repository's own defaults",
+	);
+});
+
+// A3 S4 (gentle-shell#1064): the explicit choice still wins over follow, with or
+// without the startup state its record carries.
+test("follow mode keeps an explicit choice that carried a startup state", () => {
+	const f = fixture();
+	const env = { [PROFILE_FOLLOW_ENV]: "1" };
+	f.pinLocal("frontier");
+	bindSessionProfile("s-known", "local", LOCAL, { startup: { origin: "global", name: "team", modelProfiles: TEAM } });
+	bindSessionProfile("s-none", "local", LOCAL, { startup: "none" });
+	for (const id of ["s-known", "s-none"]) {
+		const resolution = resolveSessionProfile(options(f, id, env));
+		assert.deepEqual(resolution, { kind: "explicit", name: "local", modelProfiles: LOCAL }, `${id} keeps its explicit choice`);
+		assert.equal(sessionProfileLabel(resolution), "local (session)");
+	}
+	f.pinLocal("team");
+	assert.deepEqual(sessionProfileModelProfiles(resolveSessionProfile(options(f, "s-known", env))), LOCAL, "later defaults never move an explicit choice");
 });
 
 // A2 (gentle-shell#2742, section 3): only a freeze at the session's own start

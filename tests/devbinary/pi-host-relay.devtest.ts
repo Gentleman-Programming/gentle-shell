@@ -11,7 +11,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { __testing, createGentleAiExtension } from "../../extensions/gentle-ai.ts";
 import { resolveGentleAiBinary } from "../../lib/gentle-ai-binary.ts";
 import type { InProcessReviewerRegistry } from "../../lib/inprocess-reviewer.ts";
-import { NativeReviewCliV216, type ExecFileAdapter, type NativeReviewCli } from "../../lib/native-review-cli.ts";
+import { gentleAiProcessEnvironment, NativeReviewCliV216, type ExecFileAdapter, type NativeReviewCli } from "../../lib/native-review-cli.ts";
 import { REVIEW_HOST_RELAY_FAILURE, ReviewHostRelayError, reviewHostRelaySlots, runReviewHostRelaySlot } from "../../lib/review-host-relay.ts";
 import { GENTLE_PI_REVIEW_RELAY_CONTRACT, GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV } from "../../lib/review-relay-contract.ts";
 import { decodeReviewConsentV3, decodeReviewStatusV3 } from "../../lib/review-integration-v2.ts";
@@ -270,6 +270,7 @@ interface NativeProcessCall {
 	arguments: readonly string[];
 	cwd: string;
 	stdout?: string;
+	boundSelectionContract?: string;
 }
 
 function processText(value: unknown): string {
@@ -279,15 +280,16 @@ function processText(value: unknown): string {
 
 function devNativeCli(binary: string, environment: NodeJS.ProcessEnv, calls: NativeProcessCall[]): NativeReviewCliV216 {
 	const adapter: ExecFileAdapter = async (request) => {
+		const env = gentleAiProcessEnvironment(environment, request.boundSelection);
 		try {
 			const stdout = execFileSync(request.file, request.arguments, {
 				cwd: request.cwd,
 				encoding: "utf8",
-				env: environment,
+				env,
 				timeout: request.timeoutMs,
 				maxBuffer: request.maxBufferBytes,
 			});
-			calls.push({ arguments: [...request.arguments], cwd: request.cwd, stdout });
+			calls.push({ arguments: [...request.arguments], cwd: request.cwd, stdout, boundSelectionContract: env.GENTLE_AI_BOUND_SELECTION_CONTRACT });
 			return {
 				stdout,
 				stderr: "",
@@ -634,19 +636,26 @@ test("dev-binary: Pi preserves targeted-validator rejection evidence in an escal
 	const binary = RELAY_DEV_BINARY!;
 	assert.equal(realpathSync(binary), realpathSync(DEV_BINARY!));
 	// Four original changed lines provide the two-line bounded correction below.
+	const baseRef = git(cwd, "rev-parse", "HEAD");
+	const selector = { baseRef, committedOnly: true };
 	const featureSuffix = "// feature fixture A\n// feature fixture B\n";
-	writeFileSync(join(cwd, "app.ts"), "export const value = 2;\n" + featureSuffix);
+	const committedCandidate = (value: number) => {
+		writeFileSync(join(cwd, "app.ts"), `export const value = ${value};\n` + featureSuffix);
+		git(cwd, "add", "app.ts");
+		git(cwd, "commit", "-qm", `candidate ${value}`);
+	};
+	committedCandidate(2);
 	enableGlobalReview(binary, cwd, cwd, environment);
 	const calls: NativeProcessCall[] = [];
 	const { controller, capture } = reviewToolsForNative(devNativeCli(binary, environment, calls));
 	const context = sessionContext(cwd);
 	const control = async (id: string, params: unknown) => record((await controller.execute(id, params, undefined, undefined, context)).details, id);
-	await control("rejection-inspect", { operation: "inspect", workspaceRoot: cwd });
-	const prompted = await control("rejection-start", { operation: "start", workspaceRoot: cwd, input: JSON.stringify({ mode: "ordinary" }) });
+	await control("rejection-inspect", { operation: "inspect", workspaceRoot: cwd, input: JSON.stringify(selector) });
+	const prompted = await control("rejection-start", { operation: "start", workspaceRoot: cwd, input: JSON.stringify({ mode: "ordinary", ...selector }) });
 	assert.equal(prompted.outcome, "native-review-consent-required");
 	const started = await control("rejection-consent", { operation: "answer-consent", input: JSON.stringify({ consentBinding: prompted.consent_binding, answer: "granted" }) });
 	const lineage = stringValue(record(started.result, "rejection start result").lineage_id, "rejection lineage");
-	const statusParameters = { operation: "status", workspaceRoot: cwd, lineageId: lineage };
+	const statusParameters = { operation: "status", workspaceRoot: cwd, lineageId: lineage, input: JSON.stringify(selector) };
 	const reviewer = fauxReviewerFor((subjectHash) => JSON.stringify({
 		subject_hash: subjectHash,
 		inspection: { status: "completed", paths: ["app.ts"] },
@@ -702,7 +711,7 @@ test("dev-binary: Pi preserves targeted-validator rejection evidence in an escal
 	const correctionBinding = collectBindingFor(correctionStatus, "review.capture-correction-plan");
 	const plan = record((await capture.execute("rejection-plan", { lineageId: lineage, workspaceRoot: cwd, collectBinding: correctionBinding, correctionLines: 2 }, undefined, undefined, context)).details, "correction plan");
 	assert.equal(record(plan.closure, "correction plan closure").state, "correction_required");
-	writeFileSync(join(cwd, "app.ts"), "export const value = 3;\n" + featureSuffix);
+	committedCandidate(3);
 	const validationStatus = await control("rejection-validation-status", statusParameters);
 	const binding = collectBindingFor(validationStatus, "review.capture-validation");
 	const request = record(parsedCollectBinding(binding).validationRequest, "native validation request");
@@ -727,7 +736,7 @@ test("dev-binary: Pi preserves targeted-validator rejection evidence in an escal
 	const escalation = record(emittedClosure.escalation, "native rejection escalation");
 	assert.equal(escalation.cause, "targeted_validator_rejected");
 	assert.deepEqual(emittedClosure.targeted_validator_evidence, proof);
-	const terminal = record(candidateJson(binary, cwd, ["review", "status", "--cwd", cwd, "--contract", "gentle-ai.review-integration/v2", "--agent", "pi", "--next-transition", "--lineage", lineage], environment), "persisted rejection STATUS");
+	const terminal = candidateStatus(binary, cwd, cwd, environment, lineage, ["--base-ref", baseRef, "--committed-only"]).raw;
 	assert.equal(record(terminal.authority, "terminal authority").state, "escalated");
 	assert.equal(record(terminal.authority, "terminal authority").revision, emittedClosure.store_revision);
 	assert.equal(record(terminal.next_transition, "terminal transition").kind, "stop");
@@ -747,6 +756,61 @@ test("dev-binary: Pi preserves targeted-validator rejection evidence in an escal
 	assert.equal(closure.acknowledgement, undefined);
 	assert.equal(result.next_action, undefined);
 	assert.equal(calls.some((call) => call.arguments[1] === "capture-validation"), false, "validation must use the registered host relay");
+
+	await t.test("#6221 bound committed selection preserves the rejected predecessor and exposes native recovery", async () => {
+		const offset = calls.length;
+		writeFileSync(join(cwd, "scratch.txt"), "unrelated scratch\n");
+		committedCandidate(4);
+		const legacy = record(candidateJson(binary, cwd, ["review", "status", "--cwd", cwd, "--contract", "gentle-ai.review-integration/v2", "--agent", "pi", "--next-transition", "--lineage", lineage, "--base-ref", baseRef, "--committed-only"], gentleAiProcessEnvironment(environment)), "old host STATUS");
+		assert.equal(legacy.schema, "gentle-ai.review-integration.status/v9");
+		assert.doesNotThrow(() => decodeReviewStatusV3(legacy), "unnegotiated Pi STATUS must remain readable");
+		const collect = record(record(legacy.next_transition, "old host transition").collect, "legacy collect");
+		const submission = record(record((collect.inputs as unknown[])[0], "legacy input").submission, "legacy submission");
+		assert.deepEqual(submission.argument_tokens, ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", `--base-ref=${record(legacy.projection, "legacy projection").base_tree}`, "--committed-only=true", "--intended-untracked-selection={{value}}"]);
+		assert.deepEqual(legacy.authority, terminal.authority);
+		const offered = await control("bound-offer", statusParameters);
+		const binding = stringValue(offered.selectionBinding, JSON.stringify(offered));
+		const selection = { operation: "select-intended-untracked", workspaceRoot: cwd, selectionBinding: binding, intendedUntracked: [] };
+		const refuse = async (id: string, selectionBinding: string, reason: string) => {
+			const from = calls.length;
+			const result = await control(id, { ...selection, selectionBinding });
+			assert.equal(result.outcome, "intended-untracked-selection-binding-rejected", JSON.stringify(result));
+			assert.equal(result.reason, reason);
+			assert.equal(result.mutation_performed, false);
+			assert.equal(result.mutation_outcome, "none");
+			assert.ok(!calls.slice(from).some(call => call.arguments.some(token => token.startsWith("--intended-untracked-selection="))));
+		};
+		await refuse("tampered-selection", binding.replaceAll("scratch.txt", "tampered.txt"), "binding-mismatch");
+		committedCandidate(5);
+		await refuse("stale-selection", binding, "status-field-mismatch");
+		const current = await control("bound-current-offer", statusParameters);
+		const currentBinding = stringValue(current.selectionBinding, JSON.stringify(current));
+		const descriptor = record(parsedCollectBinding(currentBinding).submission, "bound submission descriptor");
+		const value = JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: "exclude", expected_untracked_inventory: collectBindingArgument(currentBinding, "expected_untracked_inventory"), intended_untracked: [] });
+		const submittedFrom = calls.length;
+		const resolved = await control("bound-selection", { ...selection, selectionBinding: currentBinding });
+		const [reread, submitted] = calls.slice(submittedFrom);
+		assert.equal(calls.length - submittedFrom, 2, "one scoped re-read and one submission");
+		assert.deepEqual(reread!.arguments, calls[submittedFrom - 1]!.arguments);
+		assert.equal(reread!.boundSelectionContract, "gentle-ai.review-bound-selection/v1");
+		assert.equal(submitted!.boundSelectionContract, undefined);
+		assert.ok(calls.filter(call => call.boundSelectionContract !== undefined).every(call => call.arguments[1] === "status" && call.arguments.includes("--lineage")));
+		assert.deepEqual(submitted!.arguments, ["review", "status", "--cwd", cwd, ...(descriptor.argumentTokens as string[]).map(token => token.replace("{{value}}", value))]);
+		assert.deepEqual(resolved.result, JSON.parse(submitted!.stdout!));
+		assert.equal(resolved.operation, selection.operation);
+		assert.equal(resolved.provider_action, "recover", JSON.stringify(resolved));
+		const nativeStatus = record(resolved.result, "bound selection native STATUS");
+		assert.deepEqual(nativeStatus.authority, terminal.authority);
+		assert.deepEqual(record(nativeStatus.projection, "bound projection").paths, ["app.ts"]);
+		const transition = record(nativeStatus.next_transition, "bound recovery transition");
+		assert.equal(transition.kind, "execute");
+		const execute = record(transition.execute, "bound recovery execution");
+		assert.equal(execute.operation, "review.recover");
+		assert.deepEqual(record(execute.binding, "bound recovery authority"), { lineage_id: lineage, revision: closure.store_revision, target_identity: nativeStatus.target_identity });
+		const after = calls.slice(offset);
+		assert.ok(after.every(call => call.arguments[1] === "status"), JSON.stringify(after.map(call => call.arguments.slice(0, 2))));
+		assert.equal(after.filter(call => call.arguments.some(token => token.startsWith("--intended-untracked-selection="))).length, 1);
+	});
 });
 
 // This completes the same organic A -> B path through correction evidence,

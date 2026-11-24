@@ -2337,6 +2337,7 @@ export class NativeReviewCliV216                            {
 			const matchesBase = baseRef === undefined ? boundOffer?.baseRef === undefined : vector?.[5] === "--committed-only=true"
 				&& (boundOffer?.baseRef === baseRef || vector?.[4] === `--base-ref=${baseRef}`);
 			if (!boundSubmission || boundOffer.cwd !== cwd || request.lineageId === undefined || submittedLineage !== request.lineageId || request.projection === "staged" || !matchesBase) throw new TypeError("Native bound intended-untracked selection requires its validated offer and matching selectors");
+			if (request.nonBlockingFindings === true) throw new TypeError("Native bound intended-untracked selection cannot carry nonBlockingFindings");
 			if (requestContextArguments.length || request.lenses !== undefined || request.lensesReason !== undefined || escalateArguments.length) throw new TypeError("Native bound intended-untracked selection cannot carry request context, lenses, or escalation");
 		}
 		// A bound submission already carries all native selectors. Legacy fresh

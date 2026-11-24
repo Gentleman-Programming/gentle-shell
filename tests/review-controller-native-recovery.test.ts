@@ -64,7 +64,7 @@ async function boundStatusOffer() {
 	}] } };
 	const queue = queuedAdapter([{ stdout: JSON.stringify(body) }, { stdout }]);
 	const review = client(queue.adapter);
-	const request = { cwd: "/repo", baseRef: "origin/main", committedOnly: true, lineageId, agent: "pi", nonBlockingFindings: true } satisfies NativeTargetStatusRequest;
+	const request = { cwd: "/repo", baseRef: "origin/main", committedOnly: true, lineageId, agent: "pi" } satisfies NativeTargetStatusRequest;
 	const status = await review.targetStatus(request);
 	const argumentTokens = status.nextTransition!.collect!.inputs[0]!.submission!.argumentTokens;
 	const value = JSON.stringify({ schema, untracked_scope: "exclude", expected_untracked_inventory: SHA, intended_untracked: [] });
@@ -114,6 +114,12 @@ test("#6221 preserves independent bound offers when another base responds", asyn
 		assert.deepEqual(queue.calls.at(-1)?.arguments, ["review", "status", "--cwd", req.cwd, ...argumentTokens.map(token => token.replace("{{value}}", submission.value))]);
 	}
 	assert.equal(queue.calls.length, 4);
+});
+
+test("#6221 refuses a findings flag absent from bound STATUS replay before dispatch", async () => {
+	const { queue, review, request, submission } = await boundStatusOffer();
+	await assert.rejects(() => review.targetStatus({ ...request, nonBlockingFindings: true, intendedUntrackedSelection: submission }), /cannot carry nonBlockingFindings/);
+	assert.equal(queue.calls.length, 1);
 });
 
 test("#6221 refuses explicit context, lenses and escalation absent from the bound STATUS offer", async () => {

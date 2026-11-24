@@ -11,6 +11,7 @@ tools:
   - source_check
   - fetch_content
   - get_search_content
+  - codemode
   - mcp__codegraph__codegraph_explore
 ---
 

@@ -55,6 +55,7 @@ import { gentlePiConfigHome, resolveGentlePiAgentHome } from "../lib/agent-home.
 import { resolveAnimationPolicy, writeAnimationPolicy, type AnimationPolicy } from "../lib/animation-policy.ts";
 import { resolveVimPolicy, writeVimPolicy, type VimPolicy } from "../lib/vim-policy.ts";
 import { resolveHistoryCapture, writeHistoryCapturePolicy } from "../lib/history-capture-policy.ts";
+import { resolveTpsSettings, writeTpsSettings } from "../lib/tps-policy.ts";
 import { HERDR_TASK_SUMMARY_CHANGED, resolveHerdrTaskSummarySettings, writeHerdrTaskSummarySettings } from "../lib/herdr-task-summary-policy.ts";
 import { createRequire } from "node:module";
 import { createVimEditorAdapter, isAuditedPiEditorVersion } from "../lib/vim-editor-adapter.ts";
@@ -3300,7 +3301,7 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 		});
 	}
 	pi.registerCommand("gentle:customize", {
-		description: "Configure appearance, task summary publishing, audio notifications, Vim editing, RDD, session permissions and global Auto/YOLO defaults, and prompt history capture.",
+		description: "Configure appearance, task summary publishing, TPS usage notification, audio notifications, Vim editing, RDD, session permissions and global Auto/YOLO defaults, and prompt history capture.",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				if (ctx.hasUI) ctx.ui.notify("Customization requires an interactive terminal.", "warning");
@@ -3572,6 +3573,30 @@ export default function gentleShell(pi: ExtensionAPI, env: NodeJS.ProcessEnv = p
 					const result = historyCapture();
 					if (result.envOverride) ctx.ui.notify(`Prompt history capture preference saved: ${result.preference}. GENTLE_PI_HISTORY_CAPTURE=${result.envOverride} overrides it; capture stays ${result.envOverride}.`, "warning");
 					else ctx.ui.notify(result.enabled ? "Prompt history capture: on. Applies from the next prompt; stored history is kept." : "Prompt history capture: off. New prompts are not recorded; stored history is kept.", "info");
+				},
+			});
+			// The TPS extension rereads this preference at every agent end, so a change
+			// applies from the next run without reload. Fail open keeps a broken file
+			// notifying like today; an explicit toggle here replaces that file.
+			const tpsPolicy = () => resolveTpsSettings({ gentlePiConfigHome: doubleEscCancelConfigHome });
+			category = "Notifications";
+			for (const enabled of [true, false] as const) rows.push({
+				category,
+				label: () => `TPS usage notification: ${enabled ? "ON" : "OFF"}${tpsPolicy().settings.enabled === enabled ? " (current)" : ""}`,
+				choice: explicitChoice("TPS usage notification", enabled ? "ON" : "OFF", () => tpsPolicy().settings.enabled === enabled),
+				preview: () => {
+					const current = tpsPolicy();
+					return { title: "TPS usage notification · end-of-run summary", sample: enabled
+						? `Shows one info line after each agent run: "TPS 410.0 tok/s. out …, cache r/w …, total …, 2.5s".${current.malformed ? " The saved file is malformed; saving replaces it." : ""}`
+						: "Hides the per-run token/latency summary; nothing else changes." };
+				},
+				action: async () => {
+					writeTpsSettings({ enabled }, { gentlePiConfigHome: doubleEscCancelConfigHome });
+					const result = tpsPolicy();
+					if (result.settings.enabled !== enabled) throw new Error(`TPS preference did not persist; inspect ${result.globalFile}`);
+					ctx.ui.notify(enabled
+						? "TPS usage notification: on. Applies from the next agent run."
+						: "TPS usage notification: off. Applies from the next agent run; nothing is collected while hidden.", "info");
 				},
 			});
 			rows.push(...buildNotificationRows(ctx));

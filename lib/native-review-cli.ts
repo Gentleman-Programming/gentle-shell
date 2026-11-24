@@ -87,7 +87,7 @@ export const NATIVE_REVIEW_ERROR_CODE = {
 } as const;
 export type NativeReviewErrorCode = (typeof NATIVE_REVIEW_ERROR_CODE)[keyof typeof NATIVE_REVIEW_ERROR_CODE];
 
-export interface ExecFileRequest { file: string; arguments: readonly string[]; cwd: string; timeoutMs: number | undefined; maxBufferBytes: number; signal?: AbortSignal; }
+export interface ExecFileRequest { file: string; arguments: readonly string[]; cwd: string; timeoutMs: number | undefined; maxBufferBytes: number; signal?: AbortSignal; boundSelection?: true; }
 export interface ExecFileResult { stdout: string; stderr: string; exitCode: number; signal: NodeJS.Signals | null; timedOut: boolean; outputLimitExceeded: boolean; }
 export type ExecFileAdapter = (request: ExecFileRequest) => Promise<ExecFileResult>;
 
@@ -439,6 +439,10 @@ export type NativeUntrackedScope = (typeof NATIVE_UNTRACKED_SCOPE)[keyof typeof 
 export interface NativeIntendedUntrackedSelectionSubmission {
 	readonly argumentTokens: readonly string[];
 	readonly value: string;
+	/** Optional compatibility assertion; only tokens from a validated STATUS offer establish binding. */
+	readonly boundStatus?: true;
+	/** For a copied vector, retain the original frozen argumentTokens from this client's decoded offer. Never serialized or forwarded. */
+	readonly validatedOffer?: readonly string[];
 }
 interface NativeUntrackedSelectionRequest {
 	untrackedScope?: NativeUntrackedScope;
@@ -1130,8 +1134,13 @@ export class NativeReviewCliError extends Error {
 // single injection point keeps the declaration impossible to forget on any
 // individual operation. In a bundled install it also keeps Gentle AI's state
 // inside the prefix (gentleAiIsolationEnv, S9).
-export function gentleAiProcessEnvironment(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-	return { ...gentleAiIsolationEnv(base), [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT };
+const BOUND_SELECTION_CONTRACT_ENV = "GENTLE_AI_BOUND_SELECTION_CONTRACT";
+export function gentleAiProcessEnvironment(base: NodeJS.ProcessEnv = process.env, boundSelection?: true): NodeJS.ProcessEnv {
+	const environment = { ...gentleAiIsolationEnv(base), [GENTLE_PI_REVIEW_RELAY_CONTRACT_ENV]: GENTLE_PI_REVIEW_RELAY_CONTRACT };
+	// Never inherit a negotiation from ambient state (including Windows aliases).
+	for (const key of Object.keys(environment)) if (key.toUpperCase() === BOUND_SELECTION_CONTRACT_ENV) delete environment[key];
+	if (boundSelection === true) environment[BOUND_SELECTION_CONTRACT_ENV] = "gentle-ai.review-bound-selection/v1";
+	return environment;
 }
 
 export type ProcessTreeKiller = (pid: number) => void;
@@ -1181,7 +1190,7 @@ function windowsExecFile(request: ExecFileRequest, killProcessTree: ProcessTreeK
 		let timedOut = false, aborted = false, pipesCut = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let fallback: ReturnType<typeof setTimeout> | undefined;
-		const child = execFile(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, maxBuffer: request.maxBufferBytes, env: gentleAiProcessEnvironment() }, (error, stdout, stderr) => {
+		const child = execFile(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, maxBuffer: request.maxBufferBytes, env: gentleAiProcessEnvironment(process.env, request.boundSelection) }, (error, stdout, stderr) => {
 			if (timer !== undefined) clearTimeout(timer);
 			if (fallback !== undefined) clearTimeout(fallback);
 			signal?.removeEventListener("abort", onAbort);
@@ -1216,7 +1225,7 @@ export function createNodeExecFileAdapter(options: { readonly platform?: NodeJS.
 	}
 	return async (request) => {
 		try {
-			const output = await execFileAsync(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, timeout: request.timeoutMs, maxBuffer: request.maxBufferBytes, signal: request.signal, env: gentleAiProcessEnvironment() });
+			const output = await execFileAsync(request.file, [...request.arguments], { cwd: request.cwd, encoding: "utf8", shell: false, windowsHide: true, timeout: request.timeoutMs, maxBuffer: request.maxBufferBytes, signal: request.signal, env: gentleAiProcessEnvironment(process.env, request.boundSelection) });
 			return { stdout: output.stdout, stderr: output.stderr, exitCode: 0, signal: null, timedOut: false, outputLimitExceeded: false };
 		} catch (error) {
 			return execFileResultFromError(error, false);
@@ -2065,6 +2074,7 @@ function decodeNativeUnachievableLensCaptureArtifact(value: unknown): NativeRevi
 export class NativeReviewCliV216 implements NativeReviewCli {
 	// Only executable capabilities are reusable. STATUS and authority remain fresh.
 	private contextCapabilities?: { executable: string; digest: string; value: ReturnType<typeof decodeReviewCapabilitiesV2> };
+	private readonly boundSelectionOffers = new WeakMap<readonly string[], Pick<NativeTargetStatusRequest, "cwd" | "baseRef">>();
 	private readonly plain: NativeReviewPlainCli;
 	private readonly adapter: ExecFileAdapter;
 	private readonly executable: string | (() => string);
@@ -2114,10 +2124,11 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		// identity it accepts (gentle-ai #3947); a non-zero exit still has to
 		// produce its typed failure envelope like every other operation.
 		expectsBody = true,
+		boundSelection?: true,
 	): Promise<NegotiatedExecution> {
 		let result: ExecFileResult;
 		try {
-			result = await measureStatusAsync("adapter", () => this.adapter({ file: path, arguments: arguments_, cwd, timeoutMs: mutating ? undefined : this.timeoutMs, maxBufferBytes: this.maxBufferBytes, signal }));
+			result = await measureStatusAsync("adapter", () => this.adapter({ file: path, arguments: arguments_, cwd, timeoutMs: mutating ? undefined : this.timeoutMs, maxBufferBytes: this.maxBufferBytes, signal, ...(boundSelection === true ? { boundSelection } : {}) }));
 		} catch (error) {
 			if (error instanceof Error && error.name === "AbortError") throw nativeError(NATIVE_REVIEW_ERROR_CODE.CANCELLED, operation, mutating, "native process was cancelled");
 			throw nativeError(NATIVE_REVIEW_ERROR_CODE.UNAVAILABLE, operation, mutating, "native process could not start");
@@ -2306,21 +2317,37 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		if (request.baseRef === undefined && request.committedOnly !== undefined) throw new TypeError("Native STATUS committedOnly requires an explicit baseRef");
 		const selection = nativeUntrackedSelection(request);
 		const submitted = request.intendedUntrackedSelection;
-		if (submitted !== undefined && submitted.argumentTokens.reduce((count, token) => count + token.split("{{value}}").length - 1, 0) !== 1) throw new TypeError("Native intended-untracked selection requires exactly one provider-issued {{value}} token");
-		const submittedTokens = submitted === undefined ? undefined : submitted.argumentTokens.map((token) => token.replaceAll("{{value}}", submitted.value));
-		// gentle-ai 3.7.1 submission argument_tokens never carry --base-ref /
-		// --committed-only / --lineage, so a forwarded selector must be appended
-		// after them; only bail if the provider already staked out a conflicting
-		// value for the same flag. providerFlagValue also fails closed on a
-		// dangling `--flag` (last token, no value) or an empty `--flag=`.
+		const { cwd, baseRef } = request;
+		const provided = submitted?.argumentTokens;
+		const proof = submitted?.validatedOffer;
+		const original = proof ?? provided;
+		const boundOffer = original === undefined ? undefined : this.boundSelectionOffers.get(original);
+		if (proof !== undefined && (!boundOffer || !provided || proof.length !== provided.length || !proof.every((token, index) => token === provided[index]))) throw new TypeError("Native bound intended-untracked selection requires its validated offer and matching selectors");
+		// A copy can confirm equality; only the registered frozen vector supplies bound argv.
+		const vector = boundOffer ? original : provided;
+		if (vector !== undefined && vector.reduce((count, token) => count + token.split("{{value}}").length - 1, 0) !== 1) throw new TypeError("Native intended-untracked selection requires exactly one provider-issued {{value}} token");
+		const submittedTokens = submitted && vector?.map(token => token.replaceAll("{{value}}", submitted.value));
+		const submittedLineage = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "lineage");
+		const boundSubmission = boundOffer !== undefined;
+		// A bound selector precedes the value slot, unlike legacy appended flags.
+		const declaresBound = vector?.slice(0, vector.findIndex(token => token.includes("{{value}}")))
+			.some(token => token === "--lineage" || token.startsWith("--lineage="));
+		if (boundSubmission || submitted?.boundStatus || declaresBound) {
+			const matchesBase = baseRef === undefined ? boundOffer?.baseRef === undefined : vector?.[5] === "--committed-only=true"
+				&& (boundOffer?.baseRef === baseRef || vector?.[4] === `--base-ref=${baseRef}`);
+			if (!boundSubmission || boundOffer.cwd !== cwd || request.lineageId === undefined || submittedLineage !== request.lineageId || request.projection === "staged" || !matchesBase) throw new TypeError("Native bound intended-untracked selection requires its validated offer and matching selectors");
+			if (request.nonBlockingFindings === true) throw new TypeError("Native bound intended-untracked selection cannot carry nonBlockingFindings");
+			if (requestContextArguments.length || request.lenses !== undefined || request.lensesReason !== undefined || escalateArguments.length) throw new TypeError("Native bound intended-untracked selection cannot carry request context, lenses, or escalation");
+		}
+		// A bound submission already carries all native selectors. Legacy fresh
+		// submissions may still need the existing base-ref/committed-only pair.
 		const submittedBaseRefValue = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "base-ref");
 		// A provider-issued base-diff selector (base tree plus scope) already binds
 		// the target the request named; the tree is not textually comparable to
 		// the request's ref, so it runs as issued and nothing is re-forwarded.
-		const providerOwnsTarget = submitted !== undefined && intendedUntrackedSubmissionCarriesTarget(submitted.argumentTokens);
-		if (!providerOwnsTarget && request.baseRef !== undefined && submittedBaseRefValue !== undefined && submittedBaseRefValue !== request.baseRef) throw new TypeError("Native intended-untracked selection already carries a conflicting base-ref");
-		const submittedLineageValue = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "lineage");
-		if (request.lineageId !== undefined && submittedLineageValue !== undefined && submittedLineageValue !== request.lineageId) throw new TypeError("Native intended-untracked selection already carries a conflicting lineage");
+		const providerOwnsTarget = vector !== undefined && intendedUntrackedSubmissionCarriesTarget(vector);
+		if (!boundSubmission && !providerOwnsTarget && request.baseRef !== undefined && submittedBaseRefValue !== undefined && submittedBaseRefValue !== request.baseRef) throw new TypeError("Native intended-untracked selection already carries a conflicting base-ref");
+		if (request.lineageId !== undefined && submittedLineage !== undefined && submittedLineage !== request.lineageId) throw new TypeError("Native intended-untracked selection already carries a conflicting lineage");
 		let submittedHasCommittedOnly = false;
 		for (const token of submittedTokens ?? []) {
 			if (token !== "--committed-only" && !token.startsWith("--committed-only=")) continue;
@@ -2335,9 +2362,9 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...(submittedBaseRefValue === undefined ? ["--base-ref", request.baseRef] : []),
 			...(submittedHasCommittedOnly ? [] : ["--committed-only"]),
 		];
-		const forwardedLineage = request.lineageId === undefined || submittedLineageValue !== undefined ? [] : ["--lineage", request.lineageId];
+		const forwardedLineage = request.lineageId === undefined || submittedLineage !== undefined ? [] : ["--lineage", request.lineageId];
 		let contextExecutable: string | undefined;
-		if (requestContextArguments.length > 0) {
+		if (!boundSubmission && requestContextArguments.length > 0) {
 			contextExecutable = this.executablePath(NATIVE_REVIEW_OPERATION.STATUS, false);
 			const digest = binaryDigest(contextExecutable);
 			let capabilities = this.contextCapabilities?.executable === contextExecutable && this.contextCapabilities.digest === digest
@@ -2371,13 +2398,18 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 			...escalation,
 			...(request.nonBlockingFindings === true ? ["--non-blocking-findings"] : []),
 			"--next-transition",
-		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments, ...escalation];
+		] : ["review", "status", "--cwd", request.cwd, ...submittedTokens, ...(boundSubmission ? [] : [...forwardedBaseRef, ...forwardedLineage, ...nativeLensSelectionArguments(request), ...requestContextArguments, ...escalation])];
+		const boundSelectionLineage = submitted === undefined && request.agent === "pi" && isCanonicalProcessString(request.lineageId) ? request.lineageId : undefined;
 		const observe = async (statusArguments: readonly string[]): Promise<ReviewStatusV3> => {
-			const execution: NegotiatedExecution = contextExecutable === undefined
-				? await this.negotiated(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal)
-				: await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, contextExecutable);
+			const path = contextExecutable ?? measureStatusSync("resolution", () => this.executablePath(NATIVE_REVIEW_OPERATION.STATUS, false));
+			const execution = await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, path, [], true, boundSelectionLineage === undefined ? undefined : true);
 			measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
-			return decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body));
+			const status = decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body, { boundSelectionLineage }));
+			for (const input of status.nextTransition?.collect?.inputs ?? []) {
+				const tokens = input.submission?.argumentTokens;
+				if (boundSelectionLineage !== undefined && input.captureOperation === "external.select_intended_untracked" && tokens?.[3] === `--lineage=${boundSelectionLineage}`) this.boundSelectionOffers.set(Object.freeze(tokens), { cwd, baseRef });
+			}
+			return status;
 		};
 		const status = await observe(statusArgumentsWith([]));
 		// The provider accepts --escalate-item/--escalate-reason on STATUS only to
@@ -2385,7 +2417,7 @@ export class NativeReviewCliV216 implements NativeReviewCli {
 		// escalation never rides the first STATUS: only when that STATUS offers a
 		// fresh START is the same STATUS repeated once with it, and the
 		// provider-issued START tokens it returns are used unmodified.
-		if (escalateArguments.length === 0 || status.nextTransition?.kind !== "execute" || status.nextTransition.execute.operation !== "review.start") return status;
+		if (boundSubmission || escalateArguments.length === 0 || status.nextTransition?.kind !== "execute" || status.nextTransition.execute.operation !== "review.start") return status;
 		return await observe(statusArgumentsWith(escalateArguments));
 	}
 

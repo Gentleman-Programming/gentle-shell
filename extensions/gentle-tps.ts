@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isChildSession } from "../lib/child-session.ts";
+import { resolveTpsSettings } from "../lib/tps-policy.ts";
 
 function isAssistantMessage(message: unknown): message is AssistantMessage {
 	if (!message || typeof message !== "object") return false;
@@ -45,6 +46,10 @@ export default function (pi: ExtensionAPI) {
 		const elapsedSeconds = elapsedMs / 1000;
 		const tokensPerSecond = output / elapsedSeconds;
 		const message = `TPS ${tokensPerSecond.toFixed(1)} tok/s. out ${output.toLocaleString()}, in ${input.toLocaleString()}, cache r/w ${cacheRead.toLocaleString()}/${cacheWrite.toLocaleString()}, total ${totalTokens.toLocaleString()}, ${elapsedSeconds.toFixed(1)}s`;
+		// Reread on every run: a /gentle:customize toggle applies from the next run
+		// without a reload. Fail open: missing, malformed or unreadable policy keeps
+		// the notification (today's behavior).
+		if (!resolveTpsSettings().settings.enabled) return;
 		ctx.ui.notify(message, "info");
 	});
 }

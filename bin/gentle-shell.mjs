@@ -33,7 +33,9 @@ import {
 	buildPiInvocation,
 	checkPiVersion,
 	decideTakeOver,
+	describeSetupCheck,
 	describeVersion,
+	describeVersionJson,
 	discoverLooseExtensionEntries,
 	findGentlePiDeclaration,
 	forceJsonFieldIfAbsentInOriginal,
@@ -43,12 +45,12 @@ import {
 	launcherConfigPath,
 	MIN_SETUP_GENTLE_AI_VERSION,
 	missingPiMessage,
-	needsProvisioning,
 	otherPackageInjections,
 	parseLauncherArgs,
 	parseLauncherConfig,
 	parseTowerArgs,
 	parseRawLauncherConfig,
+	parseSetupCheckArgs,
 	planSpawn,
 	POST_INSTALL_REMOVAL_SOURCES,
 	withLauncherPackagesExcluded,
@@ -60,6 +62,7 @@ import {
 	resolvePiRuntime,
 	restoreJsonField,
 	separateHomeHint,
+	setupCheck,
 	shellQuote,
 	standaloneConfigHome,
 	userPiHome,
@@ -1545,6 +1548,25 @@ async function removePostInstallSources(sources, index, home, runtime, stdio, ti
 	return removePostInstallSources(sources, index + 1, home, runtime, stdio, timeoutMs);
 }
 
+// `gentle-shell [home selectors] setup --check [--json]`: whether the resolved
+// home needs setup and why, from the same config marker, pin and gentle-pi
+// version automatic setup compares (setupCheck). Only reads: no bootstrap,
+// no config write, no download, no Pi. Exit 0 set up, 1 needs setup.
+function handleSetupCheck(args, json) {
+	let home = resolveHome({ args, env: process.env, homedir: homedir(), config: loadConfig() });
+	if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
+	const result = setupCheck(readRawConfig(resolveConfigPath()), safeRealpath(home.dir), resolveSetupGentleAiPin(), ownPackageVersion());
+	let hadContent = false;
+	try {
+		hadContent = existsSync(home.dir) && readdirSync(home.dir).length > 0;
+	} catch {
+		hadContent = false;
+	}
+	const foreign = homeIsForeign(home, result.previous, hadContent);
+	process.stdout.write(`${describeSetupCheck(result, { home, foreign, json })}\n`);
+	return result.needsSetup ? 1 : 0;
+}
+
 // CLI entry for `gentle-shell [home selectors] setup [--dry-run]`: parses
 // --dry-run, runs the shared flow with the child's stdio inherited (today's
 // behavior, unchanged), then exits with its result — this is the one place
@@ -1763,9 +1785,11 @@ async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBoots
 	const pin = resolveSetupGentleAiPin();
 	const gentlePiVersion = ownPackageVersion();
 	const beforeConfig = readRawConfig(configPath);
-	if (!needsProvisioning(beforeConfig, homeKey, pin, gentlePiVersion)) return undefined;
+	// The same comparison `setup --check` reports (setupCheck), so the two never drift.
+	const check = setupCheck(beforeConfig, homeKey, pin, gentlePiVersion);
+	if (!check.needsSetup) return undefined;
 
-	const previous = provisionedEntry(beforeConfig, homeKey);
+	const previous = check.previous;
 	if (homeIsForeign(home, previous, homeHadContentBeforeBootstrap)) {
 		const reason =
 			safeRealpath(home.dir) === safeRealpath(defaultPiAgentDir())
@@ -1785,11 +1809,11 @@ async function maybeAutoProvisionHome(home, runtime, { homeHadContentBeforeBoots
 			);
 		} else {
 			// A marker written before gentle-pi version tracking existed (S8)
-			// has no `gentlePi` field: needsProvisioning above already treats
+			// has no `gentlePi` field: setupCheck above already reports
 			// that as changed, so this reports "unknown" as its prior value
 			// instead of "undefined".
-			const gentleAiChanged = previous.gentleAi !== pin;
-			const gentlePiChanged = previous.gentlePi !== gentlePiVersion;
+			const gentleAiChanged = check.reasons.includes("gentle-ai-changed");
+			const gentlePiChanged = check.reasons.includes("gentle-pi-changed");
 			if (gentleAiChanged && gentlePiChanged) {
 				process.stderr.write(
 					`gentle-shell: gentle-ai pin changed (${previous.gentleAi} -> ${pin}) and gentle-pi changed (${previous.gentlePi ?? "unknown"} -> ${gentlePiVersion}): updating ${home.dir}\n`,
@@ -2180,6 +2204,16 @@ async function main() {
 			stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text) });
 		return;
 	}
+	// `setup --check [--json]`: read-only, so it runs before the bundled-install
+	// resolution, the startup update check, Pi resolution and the home bootstrap.
+	if (args.command === "setup") {
+		const setupArgs = parseSetupCheckArgs(args.commandArgs);
+		if (setupArgs.check) {
+			if (setupArgs.unrecognized !== undefined) fail(`Unrecognized argument for 'gentle-shell setup': ${setupArgs.unrecognized}\nRun 'gentle-shell --help' for usage.`, 2);
+			process.exitCode = handleSetupCheck(args, setupArgs.json);
+			return;
+		}
+	}
 	// The verification input applies to `--version` only (scripts/bundled-install.mjs upgradeBundled).
 	const verifying = args.version && args.command === undefined ? process.env[BUNDLED_VERIFY_ENV] : undefined;
 	const bundled = resolveBundledInstall({ packageRoot, platform: process.platform, fs: bundledFs, verifying });
@@ -2254,7 +2288,8 @@ async function main() {
 	if (!versionCheck.ok && !managedSelfUpdate) fail(versionCheck.message, 1);
 
 	if (args.version) {
-		process.stdout.write(`${describeVersion({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home })}\n`);
+		const describe = args.json === true ? describeVersionJson : describeVersion;
+		process.stdout.write(`${describe({ gentlePiVersion: ownPackageVersion(), piVersion: versionCheck.version, home })}\n`);
 		process.exit(0);
 	}
 

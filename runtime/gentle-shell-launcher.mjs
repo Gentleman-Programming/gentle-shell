@@ -38,6 +38,10 @@ function isPiSubcommand(token        )                        {
 
 
 
+
+
+
+
 // Home-, upgrade-, self-uninstall-, memory- and desktop-subcommand parsing is deliberately shallow:
 // each only counts as the subcommand when it is argv[0], and everything after it is handed over
 // untouched as commandArgs — T2 owns interpreting `home link|isolated|<path>`.
@@ -70,10 +74,12 @@ export function parseLauncherArgs(argv          )                     {
 	let commandArgs           = [];
 	let piSubcommand                          ;
 	const passthrough           = [];
+	let separated = false;
 
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === "--") {
+			separated = true;
 			const rest = argv.slice(i + 1);
 			if (passthrough.length === 0 && rest.length > 0 && isPiSubcommand(rest[0])) {
 				piSubcommand = rest[0];
@@ -176,7 +182,12 @@ export function parseLauncherArgs(argv          )                     {
 		}
 	}
 
-	return { link, isolated, home, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, error };
+	// `--version --json`: the only Pi-bound token was this one `--json` before
+	// any separator, so it belongs to the launcher's own version report.
+	const json = version && command === undefined && !separated && passthrough.length === 1 && passthrough[0] === "--json";
+	if (json) passthrough.length = 0;
+
+	return { link, isolated, home, packageRoot, help, version, command, commandArgs, passthrough, piSubcommand, ...(json ? { json: true          } : {}), error };
 }
 
 // --- tower ------------------------------------------------------------------
@@ -502,8 +513,62 @@ export function provisionedEntry(config                   , homeDir        )    
 // `gentlePi` field, which never strictly-equals a real version string, so it
 // always counts as needing provisioning too — see ProvisionedEntry above.
 export function needsProvisioning(config                   , homeDir        , pin        , gentlePiVersion        )          {
-	const entry = provisionedEntry(config, homeDir);
-	return entry === undefined || entry.gentleAi !== pin || entry.gentlePi !== gentlePiVersion;
+	return setupCheck(config, homeDir, pin, gentlePiVersion).needsSetup;
+}
+
+
+
+
+
+
+
+
+
+
+// Why `homeDir` needs provisioning: the one comparison needsProvisioning,
+// automatic setup's progress lines, and the read-only `setup --check` share.
+// No record is "never-provisioned"; otherwise each changed version is named
+// (a record without `gentlePi` counts as "gentle-pi-changed").
+export function setupCheck(config                   , homeDir        , pin        , gentlePiVersion        )                   {
+	const previous = provisionedEntry(config, homeDir);
+	if (previous === undefined) return { needsSetup: true, reasons: ["never-provisioned"] };
+	const reasons                     = [];
+	if (previous.gentleAi !== pin) reasons.push("gentle-ai-changed");
+	if (previous.gentlePi !== gentlePiVersion) reasons.push("gentle-pi-changed");
+	return { needsSetup: reasons.length > 0, reasons, previous };
+}
+
+
+
+// `setup --check [--json]`: read-only, so it accepts nothing else. Without
+// --check this returns { check: false } and `setup` parses its own arguments
+// exactly as before (a lone --json stays an unrecognized setup argument).
+export function parseSetupCheckArgs(args          )                 {
+	if (!args.includes("--check")) return { check: false };
+	const json = args.includes("--json");
+	const unrecognized = args.find((arg) => arg !== "--check" && arg !== "--json");
+	return { check: true, json, ...(unrecognized === undefined ? {} : { unrecognized }) };
+}
+
+const SETUP_CHECK_REASON_TEXT                                   = {
+	"never-provisioned": "never provisioned",
+	"gentle-ai-changed": "gentle-ai changed",
+	"gentle-pi-changed": "gentle-pi changed",
+};
+
+// The `setup --check` report: one `gentle-shell.setup-check/v1` JSON line
+// (the home mode only, never its directory) or one readable line. `foreign`
+// is a home automatic setup never touches (see homeIsForeign in bin/gentle-shell.mjs).
+export function describeSetupCheck(result                                                  , options                                                         )         {
+	const { home, foreign, json } = options;
+	if (json) {
+		return JSON.stringify({ schema: "gentle-shell.setup-check/v1", needsSetup: result.needsSetup, home: { mode: home.mode }, reasons: result.reasons, foreign });
+	}
+	if (!result.needsSetup) return `gentle-shell: ${home.dir} is set up`;
+	const why = result.reasons.map((reason) => SETUP_CHECK_REASON_TEXT[reason]).join(", ");
+	const foreignNote = foreign ? "; not created by Gentle Shell, so it is never set up automatically" : "";
+	const command = ["gentle-shell", ...homeSelectorFlags(home).map(shellQuote), "setup"].join(" ");
+	return `gentle-shell: ${home.dir} needs setup (${why}${foreignNote}); run \`${command}\``;
 }
 
 // Returns a new config object recording `homeDir` as provisioned at `pin`
@@ -1370,12 +1435,24 @@ export function describeVersion(input                      )         {
 	].join("\n");
 }
 
+// `--version --json`: one `gentle-shell.version/v1` JSON line with the same
+// facts as describeVersion; `pi` is null when no Pi version was found.
+export function describeVersionJson(input                      )         {
+	return JSON.stringify({
+		schema: "gentle-shell.version/v1",
+		gentleShell: input.gentlePiVersion,
+		pi: input.piVersion ?? null,
+		home: { mode: input.home.mode, dir: input.home.dir },
+	});
+}
+
 export function helpText()         {
 	return [
 		"Usage: gentle-shell [options] [-- pi-args...]",
 		"       gentle-shell home [link|isolated|<path>]",
 		"       gentle-shell [home selectors] home import-pi [--dry-run]",
 		"       gentle-shell [home selectors] setup [--dry-run]",
+		"       gentle-shell [home selectors] setup --check [--json]",
 		"       gentle-shell upgrade [--channel release|main]",
 		"       gentle-shell upgrade --rollback",
 		"       gentle-shell memory migrate --confirm-quiescent",
@@ -1395,6 +1472,7 @@ export function helpText()         {
 		"                        from any conflicting package the target settings.json already declares.",
 		"  --help, -h       Show this help text.",
 		"  --version        Show gentle-shell, pi, and home version information.",
+		"                   --version --json prints one JSON line instead (gentle-shell.version/v1).",
 		"",
 		"Commands:",
 		"  home             Print or persist the effective home mode (link, isolated, or a path).",
@@ -1408,6 +1486,9 @@ export function helpText()         {
 		"                   Accepts --dry-run, forwarded to gentle-ai. Accepts a home selector",
 		"                   (--link, --isolated, --home <dir>) before it.",
 		"                   Warns if configured MCP servers remain disabled; never re-enables them.",
+		"                   --check only reports whether the resolved home needs setup and why",
+		"                   (exit 0 set up, 1 needs setup), writing and downloading nothing;",
+		"                   --json prints one JSON line instead (gentle-shell.setup-check/v1).",
 		"  upgrade          Update Gentle Shell along its channel: the latest release, or the latest",
 		"                   main commits of Gentle Shell and Gentle AI (built locally; needs Go and",
 		"                   pnpm). --channel switches the channel first. A bundled install (the web",
@@ -1448,6 +1529,7 @@ export function helpText()         {
 		"  gentle-shell auth <command>      Run pi's own 'auth' against the resolved home.",
 		"  gentle-shell mcp <command>       Run pi's own 'mcp' (add, list, login, logout) against the",
 		"                                   resolved home, e.g. gentle-shell mcp add <name> -- <command>.",
+		"                                   'mcp list --json' is Pi's own JSON listing.",
 		"  'gentle-shell uninstall <source>' is pi's own alias for 'remove'; to remove Gentle",
 		"  Shell itself, use 'gentle-shell self-uninstall'.",
 		"  These run pi's own commands, forwarded verbatim, against the --isolated home",

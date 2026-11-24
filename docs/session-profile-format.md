@@ -34,7 +34,7 @@ is the same except in the documented divergences:
 | --- | --- | --- |
 | No profile at start, a default appeared since (gentle-shell#2742 section 2) | Keeps no session profile | Routes the default that appeared |
 | `follow` mode on a recorded startup bind (gentle-shell#1064 A3) | Ignores the startup bind and resolves the current defaults; an explicit choice still wins | Routes the recorded bind |
-| A session recorded at its own start, resumed (gentle-shell#1064 A3) | Resumes on the recorded startup state, origin and full definition included | Writes no record, so resume freezes the defaults of that moment in memory |
+| A session recorded at its own start, resumed (gentle-shell#1064 A3) | Resumes on the recorded startup state, origin and full definition included | Reads the same record as an explicit choice and routes it |
 
 A bound empty snapshot is not a clear. Snapshots are detached, known invalid
 fields reject the whole binding, and unknown extra fields carry no routing

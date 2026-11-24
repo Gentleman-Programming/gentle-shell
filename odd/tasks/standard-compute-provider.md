@@ -54,7 +54,7 @@ documentación completa para `gentle-shell`.
 - T3 [x] S#3 — auth (login/resolve).
 - T4 [x] S#4 — reasoning/thinking levels y payload de stream.
 - T5 [x] S#6 — documentación completa.
-- T6 [ ] Cierre: verificación final y reporte.
+- T6 [x] Cierre: verificación final y reporte.
 
 ## Log
 
@@ -68,3 +68,6 @@ documentación completa para `gentle-shell`.
   tests de docs modificados 347/347 pass; suite unitaria completa con 45 fallos preexistentes en áreas no tocadas
   (installer/bootstrap/background-jobs/gentle-ai/yolo/sensitive-path/writer-admission/session-changes/skill/package).
 - Cierre pendiente de fase: reporte al humano.
+- Cierre: commit final `bf2a3dac8 docs(tasks): align standard-compute-provider checklist and log with final state`;
+  árbol limpio. Slice: 5 commits / 873 líneas (lock files excluidos) sobre `feat/standard-compute-provider` vs
+  `origin/main`; pasado el límite de ~400 líneas de PR — delivery en chained PR / review slices según política.

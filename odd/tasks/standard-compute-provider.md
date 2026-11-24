@@ -57,4 +57,13 @@ documentación completa para `gentle-shell`.
 
 ## Log
 
-- Pendiente de implementación.
+- Implementación (S#1–S#6): provider nativo Standard Compute integrado con catálogo smart-routing,
+  refresh vía `GET /v1/models`, auth (`STANDARDCOMPUTE_API_KEY` / stored), reasoning/thinking y stream
+  OpenAI-compatible. Tests nuevos `tests/standard-compute-provider.test.ts` (RED → GREEN). Docs en README.md
+  y docs/gentle-shell.md. Fix de tipos en WIP no trackeado `lib/nvidia-nim-provider.ts` para dejar el gate de
+  types en verde.
+- Verificación: `node --experimental-strip-types --test tests/standard-compute-provider.test.ts` 13/13 pass;
+  `tests/standard-compute-provider.test.ts tests/nan-provider.test.ts` 50/50 pass; `node scripts/check-types.mjs` clean;
+  tests de docs modificados 347/347 pass; suite unitaria completa con 45 fallos preexistentes en áreas no tocadas
+  (installer/bootstrap/background-jobs/gentle-ai/yolo/sensitive-path/writer-admission/session-changes/skill/package).
+- Cierre pendiente de fase: reporte al humano.

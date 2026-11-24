@@ -175,6 +175,7 @@ export const requiredPaths = [
 	"runtime/serve-auth.mjs",
 	"runtime/serve-server.mjs",
 	"runtime/serve-cli.mjs",
+  "docs/serve.md",
   "scripts/check-provider-contract.mjs",
   "scripts/download-progress.mjs",
   "scripts/gentle-ai-installer.mjs",

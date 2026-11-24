@@ -344,6 +344,7 @@ gentle-shell upgrade --rollback
 gentle-shell update [pi|self|--self|--all] [--latest]
 gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]
 gentle-shell desktop [--yes] [--no-open] | --status | --uninstall
+gentle-shell [home selectors] serve [--listen <host>:<port>] [--foreground] | status | stop | pair | devices
 ```
 
 ### Flags
@@ -643,6 +644,20 @@ shortcuts. It prints its plan and asks first (`--yes` skips the question);
 it installed and puts back what was there before. Like `upgrade`, it runs before
 any Pi runtime check, and `gentle-shell upgrade` refreshes it when it was
 installed. Guide: [Gentle Shell Desktop](gentle-shell-desktop.md).
+
+### `serve` subcommand
+
+`gentle-shell serve` runs one server per agent home that owns Gentle Shell
+sessions (one `gentle-shell --mode rpc` child each, with Desktop RPC on), so
+they outlive the client that started them and paired devices can drive them
+over HTTP + Server-Sent Events. It binds `127.0.0.1` on a random port unless
+`--listen` says otherwise, and every request needs a device token: `serve pair`
+prints a one-time code (5 minutes, single use) that a device redeems for a
+revocable token with scopes (`sessions:read`, `sessions:operate`, `admin`).
+`serve status`, `serve stop` and `serve devices [--revoke <id>]` manage it;
+its files live in `<home>/serve/` (owner-only). Home selectors go before
+`serve`, as for `setup`. Protocol, endpoints and security model:
+[`gentle-shell serve`](serve.md).
 
 ### First run in an isolated or custom home
 

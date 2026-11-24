@@ -3,14 +3,13 @@
   "acquisition": "field-test-local",
   "contract_semver": "1.6.0",
   "source": {
-    "kind": "archive",
-    "archive_sha256": "e9e81b39fbda65a26444b43d84c5a32b5e8589c9c216ee445b2dd72eb368bdb1"
+    "kind": "tree"
   },
-  "tree_sha256": "da212627f5be6b972a79875005eedcfb25d7526423dfd141633e430c9e06462d",
+  "tree_sha256": "a8dd281c59fddd81df10fcc2db48ac60cf656443d7f756e272fe2e9f4239f9dc",
   "entries": {
     "README.md": "3a655c2f19aee02636da062f0cae7a189b7e5f691c8ba8010f2ed50e5d8e8d70",
-    "manifest.json": "671562ca53f5b9a594bbe33714767f9a5b1834c8f2c9e5ef0476d487d454161b",
-    "orchestration/pi.md": "af9f6ace7917aad3700077f8eb3a3e0a178106d7ac320e0b085aa10516ad4aa4",
+    "manifest.json": "ef377eb92c2ac86aa888f14149ca0710874012bef0094d9264372804ccd3e859",
+    "orchestration/pi.md": "e0c978bc67eca6db19b0ecb38352e201f7e9f91900d7c3797896d5cd15a5f415",
     "routing/pi.md": "43d457487317646c20e91109d90ec17dcc621d645cc8ea7f2097e820aaa045d4",
     "schemas/lens.schema.json": "9b8a2354a570888486015434501b66b51441a3baf5bf858635e4fff56b2e8298",
     "schemas/refuter.schema.json": "36f8267c6c3f04600b8f1cb77df70d90858611af822cc81922efd6b3502fb646",
@@ -20,7 +19,7 @@
     "vectors/targeted-validator.json": "7b5a5165e3a913863fb98d2ba5387811860c21333b5c37e6ed3b4e0d121cf2fa"
   },
   "generated": {
-    "generated/provider-capabilities.baseline.json": "4292e6f336114ee8b66744df032aa09b655c8ac6cfa08faaa05b30da43bbf116",
+    "generated/provider-capabilities.baseline.json": "65eb6542b95e110907a4b5568a4c478bcbd64380b8f2765675ed9680ed19d9f9",
     "generated/provider-roles.baseline.json": "05e945986453659180c1111988449a3ab0fb39cd44f3a3b7b9774a42cea47648"
   },
   "runtimes": [

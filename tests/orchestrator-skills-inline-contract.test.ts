@@ -40,6 +40,8 @@ function assertInlineExecutionContract(section: string): void {
 	assert.match(section, /same contract markers applying the skill directly would\s+produce/);
 	assert.match(section, /`Skill applied \(parent\): <name>`/);
 	assert.match(section, /proceed unskilled/);
+	assert.match(section, /`Skill unavailable \(parent\): <name>`/);
+	assert.match(section, /never the applied attribution/);
 	assert.match(section, /Never present contract markers/);
 	assert.match(section, /name only, never paths/);
 
@@ -81,6 +83,13 @@ test("every obligation clause is bound: mutating it makes the contract assertion
 		{
 			label: "unreadable-path fallback",
 			mutated: section.replace(/proceed unskilled/, "improvise from the registry description"),
+		},
+		{
+			label: "unreadable-path fallback uses the unavailable line, never the applied attribution",
+			mutated: section.replace(
+				/`Skill unavailable \(parent\): <name>` instead,\nnever the applied attribution/,
+				"report it with the applied attribution line",
+			),
 		},
 		{
 			label: "never present markers without the in-session read",

@@ -35,7 +35,8 @@ and let the skill's declared `## Output Contract` shape the result, so the
 reply carries the same contract markers applying the skill directly would
 produce. Close with one attribution line naming the applied skill
 (`Skill applied (parent): <name>`); if the indexed path is unreadable,
-proceed unskilled and say so in that line. Never present contract markers or
+proceed unskilled and close with `Skill unavailable (parent): <name>` instead,
+never the applied attribution. Never present contract markers or
 attribute a skill without the in-session read. Attribution carries the skill
 name only, never paths.
 

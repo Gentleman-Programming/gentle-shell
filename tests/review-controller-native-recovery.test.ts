@@ -7,10 +7,12 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { __testing, createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import {
+	gentleAiProcessEnvironment,
 	NativeReviewCliError,
 	NativeReviewCliV216,
 	nativeReviewAbandonAuthorization,
 	type ExecFileAdapter,
+	type NativeTargetStatusRequest,
 } from "../lib/native-review-cli.ts";
 
 interface QueuedResult { stdout: string; exitCode?: number; }
@@ -37,6 +39,33 @@ function client(adapter: ExecFileAdapter): NativeReviewCliV216 {
 }
 
 const SHA = `sha256:${"a".repeat(64)}`;
+
+test("#6221 ambient bound STATUS opt-in is stripped unless the process explicitly opts in", () => {
+	const base = { GENTLE_AI_BOUND_SELECTION_CONTRACT: "gentle-ai.review-bound-selection/v1", gentle_ai_bound_selection_contract: "foreign" };
+	const off = gentleAiProcessEnvironment(base), on = gentleAiProcessEnvironment(base, true);
+	assert.equal(off.GENTLE_AI_BOUND_SELECTION_CONTRACT, undefined);
+	assert.equal(on.GENTLE_AI_BOUND_SELECTION_CONTRACT, "gentle-ai.review-bound-selection/v1");
+	assert.equal(on.gentle_ai_bound_selection_contract, undefined);
+	assert.equal(base.gentle_ai_bound_selection_contract, "foreign");
+});
+
+test("#6221 native client substitutes only the value of a bound STATUS submission", async () => {
+	const stdout = readFileSync(new URL("./fixtures/devbinary/status-v9-escalated-non-blocking.captured.json", import.meta.url), "utf8");
+	const queue = queuedAdapter([{ stdout }]);
+	const review = client(queue.adapter);
+	const lineageId = "review-0e3fa3cadd7d4bb6";
+	const baseSelector = `--base-ref=${"b".repeat(40)}`;
+	const tokens = ["--contract=gentle-ai.review-integration/v2", "--next-transition=true", "--agent=pi", `--lineage=${lineageId}`, baseSelector, "--committed-only=true", "--intended-untracked-selection={{value}}"];
+	const value = JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: "exclude", expected_untracked_inventory: SHA, intended_untracked: [] });
+	const request = { cwd: "/repo", baseRef: "origin/main", committedOnly: true, lineageId, nonBlockingFindings: true, intendedUntrackedSelection: { boundStatus: true, argumentTokens: tokens, value } } satisfies NativeTargetStatusRequest;
+	for (const argumentTokens of [tokens.filter(token => !token.startsWith("--lineage=")), tokens.map(token => token.replace(lineageId, "review-other"))]) {
+		await assert.rejects(() => review.targetStatus({ ...request, intendedUntrackedSelection: { ...request.intendedUntrackedSelection, argumentTokens } }), /requires its provider-issued lineage/);
+	}
+	assert.deepEqual(queue.calls, []);
+	const result = await review.targetStatus(request);
+	assert.deepEqual(result.raw, JSON.parse(stdout));
+	assert.deepEqual(queue.calls, [{ cwd: "/repo", arguments: ["review", "status", "--cwd", "/repo", ...tokens.slice(0, -1), `--intended-untracked-selection=${value}`] }]);
+});
 
 // Recovery and maintenance commands retain their published legacy wire forms.
 // These records are intentionally opaque: Pi validates command bindings, then

@@ -1454,20 +1454,34 @@ export function intendedUntrackedSubmissionCarriesTarget(tokens: readonly string
 	return isIntendedUntrackedSubmissionTokens(tokens) && tokens.length === INTENDED_UNTRACKED_PREFIX.length + 3;
 }
 
-function isIntendedUntrackedSubmissionTokens(tokens: readonly string[]): boolean {
-	if (INTENDED_UNTRACKED_PREFIX.some((token, index) => tokens[index] !== token) || tokens[tokens.length - 1] !== INTENDED_UNTRACKED_SELECTION_TOKEN) return false;
+interface BoundSelectionStatus {
+	lineageId: string;
+	projection: ReviewProjectionDescriptorV1;
+}
+
+function isIntendedUntrackedSubmissionTokens(tokens: readonly string[], boundStatus?: BoundSelectionStatus): boolean {
+	if (INTENDED_UNTRACKED_PREFIX.some((token, index) => tokens[index] !== token) || tokens.at(-1) !== INTENDED_UNTRACKED_SELECTION_TOKEN) return false;
 	const selector = tokens.slice(INTENDED_UNTRACKED_PREFIX.length, -1);
+	if (selector[0]?.startsWith("--lineage=")) {
+		if (boundStatus === undefined || selector[0] !== `--lineage=${boundStatus.lineageId}` || boundStatus.projection.projection !== REVIEW_PROJECTION.WORKSPACE) return false;
+		const { kind, baseTree } = boundStatus.projection;
+		if (kind === REVIEW_PROJECTION_KIND.CURRENT_CHANGES) return selector.length === 2 && selector[1] === "--projection=workspace";
+		const scope = kind === REVIEW_PROJECTION_KIND.BASE_DIFF ? "--committed-only=true" : kind === REVIEW_PROJECTION_KIND.BASE_WORKSPACE_OVERLAY ? "--workspace-overlay=true" : undefined;
+		return scope !== undefined && selector.length === 3 && selector[1] === `--base-ref=${baseTree}` && selector[2] === scope;
+	}
+	// Older providers omit the lineage even on a bound offer. Keep decoding it
+	// for STATUS visibility; the host will refuse to submit it as bound.
 	if (selector.length === 1) return selector[0] === "--projection=workspace";
 	return selector.length === 2 && INTENDED_UNTRACKED_BASE_TREE.test(selector[0]!) && (selector[1] === "--committed-only=true" || selector[1] === "--workspace-overlay=true");
 }
 
-function decodeCaptureSubmission(value: unknown, label: string, v5: boolean, v6: boolean, captureOperation: string): ReviewCaptureSubmissionV1 {
+function decodeCaptureSubmission(value: unknown, label: string, v5: boolean, v6: boolean, captureOperation: string, boundStatus?: BoundSelectionStatus): ReviewCaptureSubmissionV1 {
 	// status/v6 adds the provider-owned intended-untracked selection form.
 	if (v6 && captureOperation === "external.select_intended_untracked" && typeof value === "object" && value !== null && (value as Record<string, unknown>).operation_token === "status") {
 		const submission = exactRecord(value, label, ["operation_token", "argument_tokens", "value"]);
 		const operationToken = enumeration(submission.operation_token, ["status"] as const, `${label}.operation_token`);
-		const argumentTokens = stringArray(submission.argument_tokens, `${label}.argument_tokens`, { minimum: 5, maximum: 6 });
-		if (!isIntendedUntrackedSubmissionTokens(argumentTokens)) throw new TypeError(`${label}.argument_tokens substitution binding is invalid`);
+		const argumentTokens = stringArray(submission.argument_tokens, `${label}.argument_tokens`, { minimum: 5, maximum: boundStatus === undefined ? 6 : 7 });
+		if (!isIntendedUntrackedSubmissionTokens(argumentTokens, boundStatus)) throw new TypeError(`${label}.argument_tokens substitution binding is invalid`);
 		const row = exactRecord(submission.value, `${label}.value`, ["slot", "domain", "schema", "substitution_location"]);
 		return {
 			operationToken,
@@ -1655,7 +1669,7 @@ const CORRECTION_REQUEST_REASON_CODES = Object.freeze(["correction_plan_required
 // v5 capture operations that must carry a submission descriptor.
 const V5_SUBMISSION_CAPTURE_OPERATIONS = Object.freeze(["review.capture-correction-plan"] as const);
 
-function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: boolean, v9: boolean): ReviewCollectInputV3 {
+function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: boolean, v9: boolean, boundStatus?: BoundSelectionStatus): ReviewCollectInputV3 {
 	const input = exactRecord(value, label, ["name", "schema", "capture_operation", "arguments"], ["artifact_subject", "base_tree", "candidate_tree", "changed_path_manifest", "submission", ...(v5 ? ["provider_task", "validation_request"] : [])]);
 	const name = text(input.name, `${label}.name`, { minimum: 1, pattern: /^[a-z0-9_]+$/ });
 	const schema = nonempty(input.schema, `${label}.schema`);
@@ -1800,7 +1814,7 @@ function decodeCollectInput(value: unknown, label: string, v5: boolean, v6: bool
 
 	const submission = input.submission === undefined
 		? undefined
-		: decodeCaptureSubmission(input.submission, `${label}.submission`, v5, v6, captureOperation);
+		: decodeCaptureSubmission(input.submission, `${label}.submission`, v5, v6, captureOperation, boundStatus);
 
 	return {
 		name,
@@ -1831,7 +1845,7 @@ export function decodeReviewManagedAssetsContinuationV1(value: unknown, label: s
 	return { operation, command, ...(agent === undefined ? {} : { agent }), ...(staleAssets === undefined ? {} : { staleAssets }) };
 }
 
-export function decodeReviewNextTransitionV3(value: unknown, options: { v9?: boolean } = {}): ReviewNextTransitionV3 {
+export function decodeReviewNextTransitionV3(value: unknown, options: { v9?: boolean; boundStatus?: BoundSelectionStatus } = {}): ReviewNextTransitionV3 {
 	// status/v9 (the only supported status identity) selects the full
 	// next_transition surface; without it the embedded START/v4 transition is
 	// decoded on its own closed v3 surface.
@@ -1898,7 +1912,7 @@ export function decodeReviewNextTransitionV3(value: unknown, options: { v9?: boo
 	}
 	if (kind === "collect") {
 		const collect = exactRecord(transition.collect, "next_transition.collect", ["inputs"]);
-		const inputs = array(collect.inputs, "next_transition.collect.inputs", (entry, label) => decodeCollectInput(entry, label, v5, v6, v9), { minimum: 1 });
+		const inputs = array(collect.inputs, "next_transition.collect.inputs", (entry, label) => decodeCollectInput(entry, label, v5, v6, v9, options.boundStatus), { minimum: 1 });
 		if (transition.execute !== undefined) throw new TypeError("next_transition.execute is incompatible with collect");
 		return { kind, reasonCode, collect: { inputs }, ...(correctionRequest === undefined ? {} : { correctionRequest }) };
 	}
@@ -2004,7 +2018,7 @@ function decodeEligibility(value: unknown, label: string): void {
 // status/v3
 // ---------------------------------------------------------------------------
 
-export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
+export function decodeReviewStatusV3(value: unknown, options: { boundSelectionLineage?: string } = {}): ReviewStatusV3 {
 	// Only status/v9 (gentle-ai v4.6.0, the minimum supported native binary)
 	// decodes. An older status identity is refused with an actionable message
 	// before any structural check, so an old binary never surfaces an opaque
@@ -2061,7 +2075,12 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 	if (action === "recover" && actionDisposition === undefined) throw new TypeError("recover status requires action_disposition");
 	if (action !== "recover" && actionDisposition !== undefined) throw new TypeError("status.action_disposition is only valid for the recover action");
 	if (body.eligibility !== undefined) decodeEligibility(body.eligibility, "status.eligibility");
-	const nextTransition = body.next_transition === undefined ? undefined : decodeReviewNextTransitionV3(body.next_transition, { v9: true });
+	// status/v9 alone does not negotiate the tuple. The request must have
+	// opted in for this exact lineage and STATUS must bind the same authority.
+	const boundStatus = authority !== undefined && options.boundSelectionLineage === authority.lineageId
+		? { lineageId: authority.lineageId, projection: decodeReviewProjectionV1(body.projection) }
+		: undefined;
+	const nextTransition = body.next_transition === undefined ? undefined : decodeReviewNextTransitionV3(body.next_transition, { v9: true, boundStatus });
 	const validationRequest = body.validation_request !== undefined
 		? decodeReviewTargetedValidationRequestV1(body.validation_request, "status.validation_request")
 		: undefined;
@@ -2130,7 +2149,7 @@ export function decodeReviewStatusV3(value: unknown): ReviewStatusV3 {
 		...(frozen === undefined ? {} : { frozen }),
 		targetIdentity: sha256(body.target_identity, "status.target_identity"),
 		...(body.authority_target_identity === undefined ? {} : { authorityTargetIdentity: sha256(body.authority_target_identity, "status.authority_target_identity") }),
-		projection: decodeReviewProjectionV1(body.projection),
+		projection: boundStatus?.projection ?? decodeReviewProjectionV1(body.projection),
 		repair: decodeAuthorityRepairAssessmentV1(body.repair),
 		candidates: stringArray(body.candidates, "status.candidates", { unique: true, pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/ }),
 		...(nextTransition === undefined ? {} : { nextTransition }),

@@ -12,7 +12,7 @@ type NvidiaChatModelConfig = Extract<ProviderModelConfig, { type?: "chat" }>;
 
 const KNOWN_NVIDIA_MODELS: ReadonlyArray<Partial<NvidiaChatModelConfig>> = [
 	{
-		id: "nemotron-3-ultra-550b-a55b",
+		id: "nvidia/nemotron-3-ultra-550b-a55b",
 		name: "Nemotron 3 Ultra 550B",
 		input: ["text"],
 		contextWindow: 128_000,
@@ -70,7 +70,7 @@ function knownModels(ids: readonly string[]): NvidiaChatModelConfig[] {
 			return [{
 				...known,
 				api: "openai-completions",
-				cost: { input: 0, output: 0 },
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				maxTokens: known.maxTokens ?? 4_096,
 			} as NvidiaChatModelConfig];
 		}
@@ -82,7 +82,7 @@ function knownModels(ids: readonly string[]): NvidiaChatModelConfig[] {
 			contextWindow: 128_000,
 			api: "openai-completions",
 			reasoning: true,
-			cost: { input: 0, output: 0 },
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			maxTokens: 16_384,
 		} as NvidiaChatModelConfig];
 	});

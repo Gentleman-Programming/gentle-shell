@@ -1383,7 +1383,7 @@ export function helpText(): string {
 		"       gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]",
 		"       gentle-shell desktop [--yes] [--no-open] | --status | --uninstall",
 		"       gentle-shell tower [--no-open] [--port <n>] [--json]",
-		"       gentle-shell [home selectors] serve [--listen <host>:<port>] [--foreground] | status | stop | pair | devices",
+		"       gentle-shell [home selectors] serve [--listen <host>:<port>] [--allow-host <name>]... [--foreground] | status | stop | pair | devices",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",

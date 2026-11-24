@@ -53,6 +53,8 @@ export interface ServeServerOptions {
 	/** Address to bind; loopback unless the operator chose otherwise. */
 	host: string;
 	port: number;
+	/** Extra DNS names (no port) the Host header may carry, beyond those the listen address allows. */
+	allowHosts?: readonly string[];
 	auth: ServeAuth;
 	/** Builds the child for a new session (the real CLI spawns `gentle-shell --mode rpc`). */
 	launchSession: (input: { cwd: string; sessionId?: string }) => SessionLaunch;
@@ -94,8 +96,8 @@ function isUnspecified(host: string): boolean {
 	return host === "0.0.0.0" || host === "::" || host === "[::]";
 }
 
-/** The Host header values a request may carry for this listen address (DNS-rebinding guard). */
-export function allowedHosts(bindHost: string, port: number): (host: string) => boolean {
+/** The Host header values a request may carry for this listen address (DNS-rebinding guard), plus `extra` names the operator allowed. */
+export function allowedHosts(bindHost: string, port: number, extra: readonly string[] = []): (host: string) => boolean {
 	const named = new Set<string>();
 	const add = (h: string) => named.add(`${h.toLowerCase()}:${port}`);
 	const bare = bindHost.replace(/^\[|\]$/g, "");
@@ -106,6 +108,7 @@ export function allowedHosts(bindHost: string, port: number): (host: string) => 
 		add(own);
 		if (!own.endsWith(".local")) add(`${own}.local`);
 	}
+	for (const h of extra) add(h);
 	return (value: string) => {
 		const host = value.toLowerCase();
 		if (named.has(host)) return true;
@@ -434,7 +437,7 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 	server.listen(options.port, options.host.replace(/^\[|\]$/g, ""), () => {
 		const address = server.address();
 		const port = typeof address === "object" && address ? address.port : options.port;
-		hostOk = allowedHosts(options.host, port);
+		hostOk = allowedHosts(options.host, port, options.allowHosts);
 		const localHost = isUnspecified(options.host) ? "127.0.0.1" : options.host.includes(":") && !options.host.startsWith("[") ? `[${options.host}]` : options.host;
 		const url = `http://${localHost}:${port}`;
 		resolve({

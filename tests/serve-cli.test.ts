@@ -47,6 +47,12 @@ test("parseServeArgs reads each subcommand and rejects what it does not know", (
 	assert.deepEqual(parseServeArgs(["pair", "--scope", "root"]), { error: 'unknown scope "root" (expected sessions:read, sessions:operate, admin)' });
 	assert.deepEqual(parseServeArgs(["devices", "--revoke", "../x"]), { error: "--revoke needs a device id" });
 	assert.deepEqual(parseServeArgs(["--listen"]), { error: "--listen needs <host>:<port>" });
+	assert.deepEqual(parseServeArgs(["--listen", "0.0.0.0:8787", "--allow-host", "Box.tail1234.ts.net", "--allow-host=nas.lan", "--allow-host", "box.tail1234.ts.net"]),
+		{ action: "start", host: "0.0.0.0", port: 8787, foreground: false, json: false, allowHosts: ["box.tail1234.ts.net", "nas.lan"] });
+	assert.deepEqual(parseServeArgs(["--allow-host"]), { error: '--allow-host needs a DNS name without a port (got "")' });
+	assert.deepEqual(parseServeArgs(["--allow-host", "box.lan:8787"]), { error: '--allow-host needs a DNS name without a port (got "box.lan:8787")' });
+	assert.deepEqual(parseServeArgs(["--allow-host", "*.ts.net"]), { error: '--allow-host needs a DNS name without a port (got "*.ts.net")' });
+	assert.deepEqual(parseServeArgs(["status", "--allow-host", "box.lan"]), { error: 'unknown serve status argument "--allow-host"' });
 });
 
 test("parseListen accepts host:port, [v6]:port, :port and a bare port", () => {

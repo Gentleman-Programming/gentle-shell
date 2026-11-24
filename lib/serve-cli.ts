@@ -20,7 +20,7 @@ const STOP_TIMEOUT_MS = 15_000;
 // --- arguments -----------------------------------------------------------------
 
 export type ServeArgs =
-	| { action: "start"; host: string; port: number; foreground: boolean; json: boolean }
+	| { action: "start"; host: string; port: number; foreground: boolean; json: boolean; allowHosts?: string[] }
 	| { action: "status"; json: boolean }
 	| { action: "stop" }
 	| { action: "pair"; scopes: ServeScope[]; json: boolean }
@@ -36,6 +36,11 @@ export function parseListen(value: string): { host: string; port: number } | { e
 	return { host: host.toLowerCase() === "localhost" ? "127.0.0.1" : host, port };
 }
 
+// One DNS name (no port, no trailing dot) a client may put in the Host header,
+// on top of the names the listen address already allows: a tailnet MagicDNS
+// name or a LAN DNS name that is not this machine's own hostname.
+const HOST_NAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
 export function parseServeArgs(args: readonly string[]): ServeArgs | { error: string } {
 	const first = args[0];
 	const sub = first === "status" || first === "stop" || first === "pair" || first === "devices" ? first : undefined;
@@ -45,6 +50,7 @@ export function parseServeArgs(args: readonly string[]): ServeArgs | { error: st
 	let listen = DEFAULT_LISTEN;
 	let revoke: string | undefined;
 	const scopeValues: string[] = [];
+	const allowHosts: string[] = [];
 	for (let i = 0; i < rest.length; i += 1) {
 		const arg = rest[i];
 		const value = (flag: string): string | undefined => {
@@ -60,6 +66,12 @@ export function parseServeArgs(args: readonly string[]): ServeArgs | { error: st
 			const parsed = parseListen(v);
 			if ("error" in parsed) return parsed;
 			listen = parsed;
+			continue;
+		}
+		if (sub === undefined && (arg === "--allow-host" || arg.startsWith("--allow-host="))) {
+			const v = value("--allow-host")?.toLowerCase();
+			if (v === undefined || !HOST_NAME.test(v)) return { error: `--allow-host needs a DNS name without a port (got "${v ?? ""}")` };
+			if (!allowHosts.includes(v)) allowHosts.push(v);
 			continue;
 		}
 		if (sub === "pair" && (arg === "--scope" || arg.startsWith("--scope="))) {
@@ -84,11 +96,11 @@ export function parseServeArgs(args: readonly string[]): ServeArgs | { error: st
 		const parsed = parseScopes(scopeValues);
 		return "error" in parsed ? parsed : { action: "pair", scopes: parsed.scopes, json };
 	}
-	return { action: "start", host: listen.host, port: listen.port, foreground, json };
+	return { action: "start", host: listen.host, port: listen.port, foreground, json, ...(allowHosts.length === 0 ? {} : { allowHosts }) };
 }
 
 export const SERVE_HELP = [
-	"Usage: gentle-shell [home selectors] serve [--listen <host>:<port>] [--foreground] [--json]",
+	"Usage: gentle-shell [home selectors] serve [--listen <host>:<port>] [--allow-host <name>]... [--foreground] [--json]",
 	"       gentle-shell [home selectors] serve status [--json]",
 	"       gentle-shell [home selectors] serve stop",
 	"       gentle-shell [home selectors] serve pair [--scope <scope,...>] [--json]",
@@ -100,6 +112,9 @@ export const SERVE_HELP = [
 	"request needs a device token (there is no unauthenticated mode). A non-loopback --listen",
 	"serves plain HTTP: use it only on a network you trust, or reach a loopback server through",
 	"ssh -L or a tunnel.",
+	"",
+	"  --allow-host     One more name clients may use in the Host header, for example a tailnet",
+	"                   MagicDNS name (repeatable). Names not allowed are refused (DNS rebinding).",
 	"",
 	"  serve            Start the server in the background (--foreground keeps it in this terminal).",
 	"  serve status     Show whether the server runs, its URL and its sessions.",
@@ -248,7 +263,7 @@ function plainHttpWarning(host: string): string {
 	return `gentle-shell serve: warning: listening on ${host} over plain HTTP. Device tokens and session traffic cross the network unencrypted; use it only on a network you trust, or keep the default loopback and reach it through ssh -L or a tunnel.\n`;
 }
 
-async function runForeground(ctx: ServeCommandContext, args: { host: string; port: number; json: boolean }): Promise<number> {
+async function runForeground(ctx: ServeCommandContext, args: { host: string; port: number; json: boolean; allowHosts?: readonly string[] }): Promise<number> {
 	const files = serveFiles(ctx.agentHome);
 	privateDir(files.dir);
 	const lock = acquireServeLock(files.lock);
@@ -267,6 +282,7 @@ async function runForeground(ctx: ServeCommandContext, args: { host: string; por
 		server = await startServeServer({
 			host: args.host,
 			port: args.port,
+			allowHosts: args.allowHosts ?? [],
 			auth,
 			version: ctx.version,
 			launchSession: (input) => sessionLaunch(ctx, input),
@@ -301,7 +317,7 @@ async function runForeground(ctx: ServeCommandContext, args: { host: string; por
 	}
 }
 
-async function startDaemon(ctx: ServeCommandContext, args: { host: string; port: number; json: boolean }): Promise<number> {
+async function startDaemon(ctx: ServeCommandContext, args: { host: string; port: number; json: boolean; allowHosts?: readonly string[] }): Promise<number> {
 	const files = serveFiles(ctx.agentHome);
 	const running = liveServer(ctx.agentHome);
 	if (running) {
@@ -311,7 +327,8 @@ async function startDaemon(ctx: ServeCommandContext, args: { host: string; port:
 	privateDir(files.dir);
 	const logFd = openSync(files.log, "w", 0o600);
 	const listen = `${args.host.includes(":") ? `[${args.host}]` : args.host}:${args.port}`;
-	const child = spawn(ctx.nodePath, [ctx.launcher, ...ctx.homeFlags, "serve", "--foreground", "--listen", listen], {
+	const allow = (args.allowHosts ?? []).flatMap((name) => ["--allow-host", name]);
+	const child = spawn(ctx.nodePath, [ctx.launcher, ...ctx.homeFlags, "serve", "--foreground", "--listen", listen, ...allow], {
 		detached: true,
 		stdio: ["ignore", logFd, logFd],
 		env: ctx.env,

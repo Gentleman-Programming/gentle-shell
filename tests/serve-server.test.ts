@@ -136,6 +136,11 @@ test("Host header allowlist follows the listen address", () => {
 	const any = allowedHosts("0.0.0.0", 4000);
 	assert.ok(any("10.0.0.7:4000") && any("127.0.0.1:4000") && any("[fe80::1]:4000"));
 	assert.ok(!any("rebind.example:4000") && !any("10.0.0.7:4001"));
+	// A tailnet MagicDNS name is another DNS name: refused unless the operator allowed it.
+	assert.ok(!any("box.tail1234.ts.net:4000"));
+	const tailnet = allowedHosts("0.0.0.0", 4000, ["box.tail1234.ts.net"]);
+	assert.ok(tailnet("box.tail1234.ts.net:4000") && tailnet("BOX.tail1234.ts.net:4000") && tailnet("10.0.0.7:4000"));
+	assert.ok(!tailnet("box.tail1234.ts.net:4001") && !tailnet("other.tail1234.ts.net:4000"));
 });
 
 test("requests with a foreign Origin or an unexpected Host are refused before auth", async () => {

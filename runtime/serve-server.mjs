@@ -76,6 +76,8 @@ const SECURITY_HEADERS = {
 
 
 
+
+
 class HttpError extends Error {
 	         status        ;
 	         code        ;
@@ -95,8 +97,8 @@ function isUnspecified(host        )          {
 	return host === "0.0.0.0" || host === "::" || host === "[::]";
 }
 
-/** The Host header values a request may carry for this listen address (DNS-rebinding guard). */
-export function allowedHosts(bindHost        , port        )                            {
+/** The Host header values a request may carry for this listen address (DNS-rebinding guard), plus `extra` names the operator allowed. */
+export function allowedHosts(bindHost        , port        , extra                    = [])                            {
 	const named = new Set        ();
 	const add = (h        ) => named.add(`${h.toLowerCase()}:${port}`);
 	const bare = bindHost.replace(/^\[|\]$/g, "");
@@ -107,6 +109,7 @@ export function allowedHosts(bindHost        , port        )                    
 		add(own);
 		if (!own.endsWith(".local")) add(`${own}.local`);
 	}
+	for (const h of extra) add(h);
 	return (value        ) => {
 		const host = value.toLowerCase();
 		if (named.has(host)) return true;
@@ -435,7 +438,7 @@ export function startServeServer(options                    )                   
 	server.listen(options.port, options.host.replace(/^\[|\]$/g, ""), () => {
 		const address = server.address();
 		const port = typeof address === "object" && address ? address.port : options.port;
-		hostOk = allowedHosts(options.host, port);
+		hostOk = allowedHosts(options.host, port, options.allowHosts);
 		const localHost = isUnspecified(options.host) ? "127.0.0.1" : options.host.includes(":") && !options.host.startsWith("[") ? `[${options.host}]` : options.host;
 		const url = `http://${localHost}:${port}`;
 		resolve({

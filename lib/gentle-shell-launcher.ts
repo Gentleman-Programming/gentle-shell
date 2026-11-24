@@ -6,7 +6,7 @@ import { GENTLE_SHELL_CONFIG_HOME_ENV } from "./gentle-shell-bundled.ts";
 // env/fs/exec. `bin/gentle-shell.mjs` (T2) wires these into the real process,
 // filesystem and child process so this module stays fully unit-testable.
 
-export type LauncherCommand = "home" | "setup" | "upgrade" | "self-uninstall" | "memory" | "desktop" | "tower";
+export type LauncherCommand = "home" | "setup" | "upgrade" | "self-uninstall" | "memory" | "desktop" | "tower" | "serve";
 
 // pi's own package-management subcommands (see pi's cli/args.ts printHelp
 // "Commands" list): each is dispatched by pi itself, before pi's own flag
@@ -146,8 +146,10 @@ export function parseLauncherArgs(argv: string[]): ParsedLauncherArgs {
 		// token — once a pi subcommand (or any other passthrough token) has
 		// already started, a later "setup" is just an ordinary passthrough
 		// argument, same as "home" is.
-		if (arg === "setup" && command === undefined && passthrough.length === 0) {
-			command = "setup";
+		// `serve` takes them too: one server per agent home, and its sessions
+		// run against the home those selectors resolve to.
+		if ((arg === "setup" || arg === "serve") && command === undefined && passthrough.length === 0) {
+			command = arg;
 			commandArgs = argv.slice(i + 1);
 			break;
 		}
@@ -1381,6 +1383,7 @@ export function helpText(): string {
 		"       gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]",
 		"       gentle-shell desktop [--yes] [--no-open] | --status | --uninstall",
 		"       gentle-shell tower [--no-open] [--port <n>] [--json]",
+		"       gentle-shell [home selectors] serve [--listen <host>:<port>] [--foreground] | status | stop | pair | devices",
 		"",
 		"Opens pi with the Gentle Shell package loaded, without touching your",
 		"vanilla pi installation.",
@@ -1433,6 +1436,11 @@ export function helpText(): string {
 		"                   as a floor, in your browser. Prints the local URL and serves until Ctrl+C.",
 		"                   --no-open only prints the URL; --port <n> fixes the port (127.0.0.1 only);",
 		"                   --json prints one JSON line with the URL instead, for programs.",
+		"  serve            Run a per-user server that owns Gentle Shell sessions (one '--mode rpc' child",
+		"                   each) so paired devices drive them over HTTP + Server-Sent Events, and they",
+		"                   outlive the client. 127.0.0.1 on a random port by default; every request",
+		"                   needs a device token. 'serve status', 'serve stop', 'serve pair [--scope …]',",
+		"                   'serve devices [--revoke <id>]'; 'gentle-shell serve --help'; docs/serve.md.",
 		"",
 		"Managing packages:",
 		"  gentle-shell install npm:<pkg>   Run pi's own 'install' against the resolved home.",

@@ -2207,6 +2207,23 @@ async function main() {
 		else await handleSelfUninstallCommand(args.commandArgs);
 		return;
 	}
+	// `gentle-shell [home selectors] serve`: one server per agent home that owns
+	// `--mode rpc` sessions for remote clients (docs/serve.md). Its sessions are
+	// this same launcher with the same home, so they resolve Pi like a plain launch.
+	if (args.command === "serve") {
+		const { parseServeArgs, runServeCommand } = await import("../runtime/serve-cli.mjs");
+		const serve = parseServeArgs(args.commandArgs);
+		if ("error" in serve) fail(`gentle-shell serve: ${serve.error}\nRun 'gentle-shell serve --help' for usage.`, 2);
+		let home = resolveHome({ args, env: process.env, homedir: homedir(), config: loadConfig() });
+		if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
+		// The server file lives inside the home: create a new home the way a first
+		// launch does, so its sessions still treat it as Gentle Shell's own.
+		if (serve.action === "start" && (home.mode === "isolated" || home.mode === "path") && !existsSync(home.dir)) await bootstrapOwnedHome(home);
+		const homeFlags = home.mode === "link" ? ["--link"] : home.mode === "isolated" ? ["--isolated"] : ["--home", home.dir];
+		process.exitCode = await runServeCommand(serve, { agentHome: home.dir, homeFlags, launcher: fileURLToPath(import.meta.url), nodePath: process.execPath,
+			version: ownPackageVersion(), env: process.env, stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text) });
+		return;
+	}
 
 	const startupCode = await startupUpdate(bundled, args, startupEnv);
 	if (startupCode !== undefined) {

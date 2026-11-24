@@ -169,6 +169,12 @@ export const requiredPaths = [
 	"runtime/tower-actions.mjs",
 	"runtime/tower-snapshot.mjs",
 	"runtime/tower-launch.mjs",
+	// `gentle-shell serve` imports these generated modules by path.
+	"runtime/rpc-host.mjs",
+	"runtime/serve-session.mjs",
+	"runtime/serve-auth.mjs",
+	"runtime/serve-server.mjs",
+	"runtime/serve-cli.mjs",
   "scripts/check-provider-contract.mjs",
   "scripts/download-progress.mjs",
   "scripts/gentle-ai-installer.mjs",

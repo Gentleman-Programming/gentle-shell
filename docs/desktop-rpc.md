@@ -12,6 +12,8 @@ GENTLE_SHELL_INTERACTIVE_HOST=1 pi --mode rpc
 
 The channel is inactive in the TUI and in headless RPC children. It does not register an agent-callable tool.
 
+A Desktop that shows the design canvas itself also sets `GENTLE_DESIGN_OPEN_BROWSER=0`, so `gentle_design {action: "open"}` never launches the system browser. The canvas still starts, the `open` transition still reaches the `design_canvas` event, and the tool answers `opened: false, browserDisabled: true` with the URL.
+
 ## Transport
 
 Desktop sends an ordinary Pi `prompt` command. Its `message` contains `/gentle:desktop` followed by one JSON request:
@@ -1831,7 +1833,7 @@ Carries the sanitized post-transition state of the session's design canvas whene
 
 | Field | Meaning |
 | --- | --- |
-| `transition` | One of `open` (a canvas was shown, browser tab opened), `refresh` (an already-connected page was told to reload), or `stop` (a running server was closed). |
+| `transition` | One of `open` (a canvas was shown: a browser tab opened, or the system browser was skipped because the host set `GENTLE_DESIGN_OPEN_BROWSER=0`), `refresh` (an already-connected page was told to reload), or `stop` (a running server was closed). |
 | `running`, `slug`, `connectedClients` | The sanitized post-transition state, exactly as `get_design_canvas` reports it. A `stop` transition carries `running: false`, `slug: null`, `connectedClients: 0`. |
 | `url` | Present only for a trusted interactive Desktop client (the same trust gate as `get_design_canvas` `includeUrl`). Sanitized by default — the URL and its embedded token are never a default event field and never a bare token. A `stop` transition has no URL. |
 

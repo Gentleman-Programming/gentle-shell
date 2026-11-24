@@ -172,6 +172,27 @@ test("createDesignCanvas reports state and observes actual open/refresh/stop tra
 	assert.equal(transitions.length, count, "a no-op stop emits nothing");
 });
 
+test("an open with the system browser disabled still emits the open transition for the desktop app", async () => {
+	const cwd = scratchCwd();
+	writeDesign(cwd, "login", "Login screen");
+	const transitions: DesignCanvasTransition[] = [];
+	let browserCalls = 0;
+	const canvas = createDesignCanvas(
+		() => ({ queued: false }),
+		{
+			startServer: async () => ({ port: 4100, token: "tok", url: "http://127.0.0.1:4100/tok/", close: async () => {}, connectedClients: () => 0, show: () => 0 } as DesignCanvasServer),
+			openBrowser: async () => { browserCalls++; return { opened: true }; },
+			env: { GENTLE_DESIGN_OPEN_BROWSER: "0" },
+		},
+	);
+	canvas.observe((transition) => transitions.push(transition));
+	const notice = await canvas.open(cwd, "login");
+	assert.equal(browserCalls, 0);
+	assert.equal(notice.opened, false);
+	assert.equal(notice.browserDisabled, true);
+	assert.deepEqual(transitions, [{ transition: "open", ...makeCanvasState(true, "login", 0) }]);
+});
+
 test("failed and no-op canvas actions emit no transition", async () => {
 	const cwd = scratchCwd();
 	writeDesign(cwd, "login", "Login screen");

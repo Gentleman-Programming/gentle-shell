@@ -1,16 +1,21 @@
 // `gentle-shell serve`: argument parsing, the per-user server file and lock
-// under `<agent home>/serve`, the foreground server, the detached daemon, and
-// the local CLI client (`status`, `stop`, `pair`, `devices`) that talks to the
-// running server with the owner-only admin token from the server file.
+// under `<agent home>/serve`, the foreground server, the detached daemon, the
+// local CLI client (`status`, `stop`, `pair`, `devices`) that talks to the
+// running server with the owner-only admin token from the server file, and
+// `share`, which opens the server to the local network and prints one
+// connection code for a desktop client to paste.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { createServer as createNetServer } from "node:net";
 import { join } from "node:path";
 import { INTERACTIVE_HOST_ENV } from "./rpc-host.ts";
 import { DEFAULT_PAIR_SCOPES, parseScopes, readDevicesFile, ServeAuth, writeDevicesFile, type PublicDevice, type ServeScope } from "./serve-auth.ts";
-import { isLoopbackHost, SERVE_PROTOCOL, startServeServer, type ServeServer } from "./serve-server.ts";
+import { isLoopbackHost, isUnspecified, SERVE_PROTOCOL, startServeServer, type ServeServer } from "./serve-server.ts";
 import type { SessionLaunch } from "./serve-session.ts";
+import { autostartCommand, autostartFile, autostartInstalled, defaultShareSystem, encodeConnectionCode, firewallHint, HOST_NAME, installAutostart, ownHostNames,
+	removeAutostart, SHARE_DEFAULT_PORT, SHARE_PORT_ATTEMPTS, shareAddresses, type ShareSystem } from "./serve-share.ts";
 
 export const SERVE_SERVER_FILE_SCHEMA = "gentle-shell.serve.server/v1";
 const DEFAULT_LISTEN = { host: "127.0.0.1", port: 0 };
@@ -25,6 +30,8 @@ export type ServeArgs =
 	| { action: "stop" }
 	| { action: "pair"; scopes: ServeScope[]; json: boolean }
 	| { action: "devices"; revoke?: string; json: boolean }
+	| { action: "share"; port: number; always: boolean; json: boolean }
+	| { action: "share-off" }
 	| { action: "help" };
 
 export function parseListen(value: string): { host: string; port: number } | { error: string } {
@@ -36,19 +43,17 @@ export function parseListen(value: string): { host: string; port: number } | { e
 	return { host: host.toLowerCase() === "localhost" ? "127.0.0.1" : host, port };
 }
 
-// One DNS name (no port, no trailing dot) a client may put in the Host header,
-// on top of the names the listen address already allows: a tailnet MagicDNS
-// name or a LAN DNS name that is not this machine's own hostname.
-const HOST_NAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
-
 export function parseServeArgs(args: readonly string[]): ServeArgs | { error: string } {
 	const first = args[0];
-	const sub = first === "status" || first === "stop" || first === "pair" || first === "devices" ? first : undefined;
+	const sub = first === "status" || first === "stop" || first === "pair" || first === "devices" || first === "share" ? first : undefined;
 	const rest = sub ? args.slice(1) : args;
 	let json = false;
 	let foreground = false;
 	let listen = DEFAULT_LISTEN;
 	let revoke: string | undefined;
+	let sharePort: number | undefined;
+	let always = false;
+	let off = false;
 	const scopeValues: string[] = [];
 	const allowHosts: string[] = [];
 	for (let i = 0; i < rest.length; i += 1) {
@@ -86,11 +91,23 @@ export function parseServeArgs(args: readonly string[]): ServeArgs | { error: st
 			revoke = v;
 			continue;
 		}
+		if (sub === "share" && (arg === "--port" || arg.startsWith("--port="))) {
+			const v = value("--port");
+			if (v === undefined || !/^\d{1,5}$/.test(v) || Number(v) < 1 || Number(v) > 65535) return { error: `--port needs a port 1-65535 (got "${v ?? ""}")` };
+			sharePort = Number(v);
+			continue;
+		}
+		if (sub === "share" && arg === "--always") { always = true; continue; }
+		if (sub === "share" && arg === "--off") { off = true; continue; }
 		return { error: `unknown serve${sub ? ` ${sub}` : ""} argument "${arg}"` };
 	}
 	if (sub === "status") return { action: "status", json };
 	if (sub === "stop") return { action: "stop" };
 	if (sub === "devices") return { action: "devices", json, ...(revoke === undefined ? {} : { revoke }) };
+	if (sub === "share") {
+		if (off) return always || json || sharePort !== undefined ? { error: "serve share --off takes no other argument" } : { action: "share-off" };
+		return { action: "share", port: sharePort ?? SHARE_DEFAULT_PORT, always, json };
+	}
 	if (sub === "pair") {
 		if (scopeValues.length === 0) return { action: "pair", scopes: [...DEFAULT_PAIR_SCOPES], json };
 		const parsed = parseScopes(scopeValues);
@@ -100,7 +117,9 @@ export function parseServeArgs(args: readonly string[]): ServeArgs | { error: st
 }
 
 export const SERVE_HELP = [
-	"Usage: gentle-shell [home selectors] serve [--listen <host>:<port>] [--allow-host <name>]... [--foreground] [--json]",
+	"Usage: gentle-shell [home selectors] serve share [--port <n>] [--always] [--json]",
+	"       gentle-shell [home selectors] serve share --off",
+	"       gentle-shell [home selectors] serve [--listen <host>:<port>] [--allow-host <name>]... [--foreground] [--json]",
 	"       gentle-shell [home selectors] serve status [--json]",
 	"       gentle-shell [home selectors] serve stop",
 	"       gentle-shell [home selectors] serve pair [--scope <scope,...>] [--json]",
@@ -113,15 +132,22 @@ export const SERVE_HELP = [
 	"serves plain HTTP: use it only on a network you trust, or reach a loopback server through",
 	"ssh -L or a tunnel.",
 	"",
-	"  --allow-host     One more name clients may use in the Host header, for example a tailnet",
-	"                   MagicDNS name (repeatable). Names not allowed are refused (DNS rebinding).",
-	"",
+	"  serve share      The easy way to connect Gentle Shell GPUI from another computer on your",
+	"                   network: opens the server to the network (plain HTTP, port 8787 or the next",
+	"                   free one; --port picks another) and prints one connection code to paste in",
+	"                   the app (valid 5 minutes, once). Reuses a server already on the network; one",
+	"                   on this computer only is reopened when it runs no sessions.",
+	"    --always       Also start that server at every login (systemd user unit on Linux, a",
+	"                   LaunchAgent on macOS). 'serve share --off' turns it off and stops it.",
 	"  serve            Start the server in the background (--foreground keeps it in this terminal).",
 	"  serve status     Show whether the server runs, its URL and its sessions.",
 	"  serve stop       Stop the server and every session it owns.",
 	"  serve pair       Print a one-time pairing code (single use, 5 minutes). Scopes default to",
 	"                   sessions:read,sessions:operate; add admin only for a device you fully trust.",
 	"  serve devices    List paired devices; --revoke <id> removes one at once (its streams close).",
+	"",
+	"  --allow-host     One more name clients may use in the Host header, for example a tailnet",
+	"                   MagicDNS name (repeatable). Names not allowed are refused (DNS rebinding).",
 	"",
 	"Protocol, endpoints and security model: docs/serve.md.",
 ].join("\n");
@@ -231,6 +257,8 @@ export interface ServeCommandContext {
 	stderr: (text: string) => void;
 	/** Resolves when a foreground server should stop (defaults to SIGINT/SIGTERM). */
 	untilStopped?: (stopRequested: Promise<void>) => Promise<void>;
+	/** Machine facts and the command runner for `serve share` (defaults to this machine). */
+	system?: ShareSystem;
 }
 
 /**
@@ -329,6 +357,21 @@ async function startDaemon(ctx: ServeCommandContext, args: { host: string; port:
 		ctx.stderr(`gentle-shell serve: already running at ${running.url} (pid ${running.pid})\n`);
 		return 1;
 	}
+	const started = await spawnDaemon(ctx, args);
+	if ("log" in started) {
+		ctx.stderr(`gentle-shell serve: the server did not start.${started.log ? `\n${started.log}` : ""}\n`);
+		return 1;
+	}
+	const file = started.file;
+	ctx.stdout(args.json
+		? `${JSON.stringify({ schema: "gentle-shell.serve/v1", url: file.url, pid: file.pid, serverId: file.serverId })}\n`
+		: `Gentle Shell server: ${file.url} (pid ${file.pid})\nLog: ${files.log}\nPair a device with 'gentle-shell serve pair'; stop with 'gentle-shell serve stop'.\n`);
+	return 0;
+}
+
+/** Starts `serve --foreground` detached, logging to `server.log`; on failure, the log's tail. */
+async function spawnDaemon(ctx: ServeCommandContext, args: { host: string; port: number; allowHosts?: readonly string[] }): Promise<{ file: ServerFile } | { log: string }> {
+	const files = serveFiles(ctx.agentHome);
 	privateDir(files.dir);
 	const logFd = openSync(files.log, "w", 0o600);
 	const listen = `${args.host.includes(":") ? `[${args.host}]` : args.host}:${args.port}`;
@@ -344,19 +387,13 @@ async function startDaemon(ctx: ServeCommandContext, args: { host: string; port:
 	const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		const file = readServerFile(files.server);
-		if (file?.pid === child.pid) {
-			ctx.stdout(args.json
-				? `${JSON.stringify({ schema: "gentle-shell.serve/v1", url: file.url, pid: file.pid, serverId: file.serverId })}\n`
-				: `Gentle Shell server: ${file.url} (pid ${file.pid})\nLog: ${files.log}\nPair a device with 'gentle-shell serve pair'; stop with 'gentle-shell serve stop'.\n`);
-			return 0;
-		}
+		if (file?.pid === child.pid) return { file };
 		if (child.exitCode !== null || child.signalCode !== null) break;
 		await new Promise((r) => setTimeout(r, 100));
 	}
-	let tail = "";
-	try { tail = readFileSync(files.log, "utf8").slice(-2000); } catch { /* no log */ }
-	ctx.stderr(`gentle-shell serve: the server did not start.${tail ? `\n${tail}` : ""}\n`);
-	return 1;
+	let log = "";
+	try { log = readFileSync(files.log, "utf8").slice(-2000); } catch { /* no log */ }
+	return { log };
 }
 
 interface ApiResult<T> {
@@ -409,12 +446,159 @@ async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
 	return !processAlive(pid);
 }
 
+async function stopServer(ctx: ServeCommandContext, server: ServerFile): Promise<boolean> {
+	const result = await api(server, "POST", "/api/server/stop");
+	if (result.status !== 202) process.kill(server.pid, "SIGTERM");
+	if (await waitForExit(server.pid, STOP_TIMEOUT_MS)) return true;
+	ctx.stderr(`gentle-shell serve: pid ${server.pid} is still running\n`);
+	return false;
+}
+
+// --- share -------------------------------------------------------------------------
+
+const LAN_HOST = "0.0.0.0";
+
+function canBind(port: number, host: string): Promise<boolean> {
+	const { promise, resolve } = Promise.withResolvers<boolean>();
+	const probe = createNetServer();
+	probe.once("error", () => resolve(false));
+	probe.listen(port, host, () => probe.close(() => resolve(true)));
+	return promise;
+}
+
+/**
+ * Whether nothing listens on `port` (a quick probe; the bind can still race).
+ * Loopback too: macOS lets a wildcard bind share a port that another server
+ * holds on 127.0.0.1, which would then answer this machine's own requests.
+ */
+async function portFree(port: number): Promise<boolean> {
+	return (await canBind(port, LAN_HOST)) && (await canBind(port, "127.0.0.1"));
+}
+
+async function runningSessions(server: ServerFile): Promise<number> {
+	const list = await api<{ sessions: SessionSummary[] }>(server, "GET", "/api/sessions");
+	if (list.status !== 200 || !Array.isArray(list.data.sessions)) throw new Error(`listing its sessions failed (${list.status})`);
+	return list.data.sessions.filter((s) => s.state === "running").length;
+}
+
+async function waitForServer(agentHome: string, timeoutMs: number, accept: (file: ServerFile) => boolean): Promise<ServerFile | undefined> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		const file = liveServer(agentHome);
+		if (file && accept(file)) return file;
+		await new Promise((r) => setTimeout(r, 100));
+	}
+	return undefined;
+}
+
+/**
+ * `serve share`: make sure this home's server listens on the local network
+ * (start it, reopen a loopback one that runs no sessions, or reuse one already
+ * there), mint a pairing code and print the connection code that carries it.
+ */
+async function runShare(ctx: ServeCommandContext, args: { port: number; always: boolean; json: boolean }): Promise<number> {
+	const system = ctx.system ?? defaultShareSystem(ctx.env);
+	const files = serveFiles(ctx.agentHome);
+	const fail = (message: string): number => { ctx.stderr(`gentle-shell serve share: ${message}\n`); return 1; };
+	if (args.always && !autostartFile(system)) return fail(`--always (start at login) is not supported on ${system.platform === "win32" ? "Windows" : system.platform} yet; run 'gentle-shell serve share' without it.`);
+	const allowHosts = ownHostNames(system.hostname());
+	const autostartFor = (port: number) => autostartCommand({ nodePath: ctx.nodePath, launcher: ctx.launcher, homeFlags: ctx.homeFlags, port, allowHosts, env: ctx.env, logFile: files.log });
+	let server = liveServer(ctx.agentHome);
+	let opened: "started" | "reopened" | "reused" = "started";
+	let atLogin = false;
+	try {
+		if (server) {
+			const lan = !isLoopbackHost(server.listen.host);
+			atLogin = lan && autostartInstalled(system, autostartFor(server.listen.port));
+			if (lan && (!args.always || atLogin)) {
+				opened = "reused";
+			} else {
+				// Reopening it on the network, or under the service manager, would end its sessions.
+				const busy = await runningSessions(server);
+				if (busy > 0) {
+					return fail(lan
+						? `the server has ${busy} running session(s), and --always has to restart it; stop them or run 'gentle-shell serve stop', then try again.`
+						: `the server here is reachable from this computer only and has ${busy} running session(s); stop them or run 'gentle-shell serve stop', then run share again to open it to your network.`);
+				}
+				if (!(await stopServer(ctx, server))) return 1;
+				if (!lan) opened = "reopened";
+				server = undefined;
+			}
+		}
+		if (!server) {
+			const ports = Array.from({ length: SHARE_PORT_ATTEMPTS }, (_, i) => args.port + i).filter((port) => port <= 65535);
+			const busyPorts = `port${ports.length > 1 ? `s ${ports[0]}-${ports.at(-1)} are` : ` ${ports[0]} is`} in use; choose another with --port`;
+			if (args.always) {
+				let port: number | undefined;
+				for (const candidate of ports) if (await portFree(candidate)) { port = candidate; break; }
+				if (port === undefined) return fail(busyPorts);
+				const installed = await installAutostart(system, autostartFor(port));
+				if ("error" in installed) return fail(`could not turn on start at login: ${installed.error}`);
+				server = await waitForServer(ctx.agentHome, DAEMON_START_TIMEOUT_MS, (file) => !isLoopbackHost(file.listen.host));
+				if (!server) return fail(`start at login is on (${installed.file}), but the server did not start; see ${system.platform === "darwin" ? files.log : "journalctl --user -u gentle-shell-serve"}.`);
+				atLogin = true;
+			} else {
+				for (const port of ports) {
+					if (!(await portFree(port))) continue;
+					const started = await spawnDaemon(ctx, { host: LAN_HOST, port, allowHosts });
+					if ("file" in started) { server = started.file; break; }
+					// Taken between the probe and the bind: try the next one.
+					if (!started.log.includes("EADDRINUSE")) return fail(`the server did not start.${started.log ? `\n${started.log}` : ""}`);
+				}
+				if (!server) return fail(busyPorts);
+			}
+		}
+
+		const minted = await api<{ code: string; expiresAt: string }>(server, "POST", "/api/pairing-codes", {});
+		if (minted.status !== 201 || typeof minted.data.code !== "string") return apiFailure(ctx, "pair", minted);
+		const port = server.listen.port;
+		const host = server.listen.host;
+		const addresses = isUnspecified(host) ? shareAddresses(system.networkInterfaces(), system.hostname()) : [host.includes(":") ? `[${host}]` : host];
+		const code = encodeConnectionCode({ id: server.serverId, n: system.hostname(), p: port, a: addresses, c: minted.data.code });
+		if (args.json) {
+			ctx.stdout(`${JSON.stringify({ code, port, addresses, expiresAt: minted.data.expiresAt, serverId: server.serverId })}\n`);
+			return 0;
+		}
+		const firewall = firewallHint(system.platform, port, system.has);
+		ctx.stdout([
+			opened === "reused" ? `The Gentle Shell server is already open to your network on port ${port}.`
+			: opened === "reopened" ? `Opened the Gentle Shell server to your network on port ${port} (it was reachable from this computer only).`
+			: `Started the Gentle Shell server for your network on port ${port}.`,
+			"",
+			code,
+			"",
+			"Paste it in Gentle Shell GPUI → Configuration → Where agents run → Gentle Shell server. Valid for 5 minutes, once.",
+			"It uses plain HTTP on your network: share only on a network you trust, such as your home network.",
+			...(firewall ? [`If the app cannot connect, open the port in the firewall: ${firewall}`] : []),
+			...(atLogin ? ["It starts at every login; turn that off with 'gentle-shell serve share --off'."] : []),
+			...(atLogin && system.platform === "linux" ? [`To start it at boot, before anyone logs in: sudo loginctl enable-linger ${system.user}`] : []),
+			"",
+		].join("\n"));
+		return 0;
+	} catch (error) {
+		return fail(`could not reach the server${server ? ` at ${server.url}` : ""}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+async function runShareOff(ctx: ServeCommandContext): Promise<number> {
+	const system = ctx.system ?? defaultShareSystem(ctx.env);
+	if (!autostartFile(system)) {
+		ctx.stdout("Start at login was not on.\n");
+		return 0;
+	}
+	const removed = await removeAutostart(system);
+	ctx.stdout(removed.removed ? `Start at login is off (removed ${removed.file}); the server it started has stopped.\n` : "Start at login was not on.\n");
+	return 0;
+}
+
 export async function runServeCommand(args: ServeArgs, ctx: ServeCommandContext): Promise<number> {
 	if (args.action === "help") {
 		ctx.stdout(`${SERVE_HELP}\n`);
 		return 0;
 	}
 	if (args.action === "start") return args.foreground ? runForeground(ctx, args) : startDaemon(ctx, args);
+	if (args.action === "share") return runShare(ctx, args);
+	if (args.action === "share-off") return runShareOff(ctx);
 	const files = serveFiles(ctx.agentHome);
 	const server = liveServer(ctx.agentHome);
 
@@ -452,9 +636,7 @@ export async function runServeCommand(args: ServeArgs, ctx: ServeCommandContext)
 			return 0;
 		}
 		if (args.action === "stop") {
-			const result = await api(server, "POST", "/api/server/stop");
-			if (result.status !== 202) process.kill(server.pid, "SIGTERM");
-			if (!(await waitForExit(server.pid, STOP_TIMEOUT_MS))) { ctx.stderr(`gentle-shell serve: pid ${server.pid} is still running\n`); return 1; }
+			if (!(await stopServer(ctx, server))) return 1;
 			ctx.stdout("Stopped.\n");
 			return 0;
 		}

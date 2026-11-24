@@ -2,9 +2,30 @@
 
 `gentle-shell serve` runs one long-lived server per agent home. The server owns Gentle Shell sessions — one `gentle-shell --mode rpc` child each — so they keep running when the client that started them disconnects, and any paired device can follow and drive them over HTTP and Server-Sent Events (SSE).
 
-This is Phase 1 of [RFC #3527](https://github.com/Gentleman-Programming/gentle-shell/issues/3527). Persistent terminals (Phase 2), SSH bootstrap, TLS and server identity (Phase 3) and a mobile web client (Phase 4) are not part of it; see [Not done yet](#not-done-yet). To run it from a source checkout on a Linux machine and reach it from another one, see [Try it](#try-it-from-source-on-linux).
+This is Phase 1 of [RFC #3527](https://github.com/Gentleman-Programming/gentle-shell/issues/3527), plus the `/.well-known/gentle-shell` identity and `serve share` connection codes. Persistent terminals (Phase 2), SSH bootstrap and TLS (Phase 3) and a mobile web client (Phase 4) are not part of it; see [Not done yet](#not-done-yet). To run it from a source checkout on a Linux machine and reach it from another one, see [Try it](#try-it-from-source-on-linux).
 
-## Quick start
+## Quick start: connect from Gentle Shell GPUI
+
+On the computer where the agents should run (for example a Linux PC on your home network), run one command:
+
+```sh
+gentle-shell serve share
+```
+
+It prints one connection code:
+
+```text
+Started the Gentle Shell server for your network on port 8787.
+
+gsc1.eyJ2IjoxLCJpZCI6InNydl8…
+
+Paste it in Gentle Shell GPUI → Configuration → Where agents run → Gentle Shell server. Valid for 5 minutes, once.
+It uses plain HTTP on your network: share only on a network you trust, such as your home network.
+```
+
+Copy the `gsc1.…` line and paste it in Gentle Shell GPUI on the other computer, in **Configuration → Where agents run → Gentle Shell server**. That is all: no SSH, IP addresses, ports or tunnels. For another device, or when the code expired, run `serve share` again. `gentle-shell serve share --always` also starts the server at every login; `serve share --off` turns that off. Details: [Share on your network](#share-on-your-network). From a source checkout, run the checkout's launcher instead (`gsdev serve share`, see [Try it](#try-it-from-source-on-linux)).
+
+## Quick start by hand
 
 ```sh
 gentle-shell serve                 # start in the background; prints the URL
@@ -27,6 +48,8 @@ gentle-shell serve stop            # stops the server and every session it owns
 
 | Command | Does |
 | --- | --- |
+| `gentle-shell serve share [--port <n>] [--always] [--json]` | Open the server to the local network and print one [connection code](#connection-code) for Gentle Shell GPUI. See [Share on your network](#share-on-your-network). `--json` prints `{ code, port, addresses, expiresAt, serverId }`. |
+| `gentle-shell serve share --off` | Remove the login autostart that `--always` installed (this stops the server it runs). |
 | `gentle-shell serve [--listen <host>:<port>] [--allow-host <name>]... [--foreground] [--json]` | Start the server. In the background by default (log in `serve/server.log`); `--foreground` keeps it in the terminal until Ctrl+C. `--listen` defaults to `127.0.0.1:0` (a random port); `:8787`, `8787` and `[::1]:8787` are accepted. `--allow-host` adds one DNS name clients may use in the `Host` header (repeatable; see [Security model](#security-model)). |
 | `gentle-shell serve status [--json]` | URL, pid, start time, protocol and the session list. Exit 1 when no server runs. |
 | `gentle-shell serve stop` | Asks the server to stop (it stops every session first) and waits for it to exit. |
@@ -34,6 +57,49 @@ gentle-shell serve stop            # stops the server and every session it owns
 | `gentle-shell serve devices [--revoke <id>] [--json]` | List paired devices or revoke one. Works without a running server too (on the devices file). |
 
 The home selectors work ahead of `serve` as they do for `setup`: `gentle-shell --home ~/work-agent serve` runs a separate server for that home, and its sessions run against that home.
+
+## Share on your network
+
+`serve share` is the one command a person runs to connect Gentle Shell GPUI on another computer of the same network:
+
+- **No server yet:** it starts one in the background on every interface (`--listen 0.0.0.0:8787 --allow-host <hostname> --allow-host <hostname>.local`). When the port is taken it tries the next nine; `--port <n>` starts the search elsewhere.
+- **A server on this computer only (loopback):** with no running sessions it is stopped and started again on the network, transparently. With running sessions it is left alone: `share` explains in one line and exits 1 (stop them or run `serve stop` first).
+- **A server already on the network:** reused as it is (on its own port).
+
+Then it mints a pairing code (as `serve pair` does: default scopes, 5 minutes, single use) and prints the connection code with it. On Linux, when `ufw` or `firewall-cmd` is installed, it also prints the exact command that opens the port (it never runs `sudo` itself), for example `sudo ufw allow 8787/tcp`.
+
+The network server is plain HTTP, exactly as `--listen 0.0.0.0` (see [Security model](#security-model)): the pairing code, the device token and session traffic cross the network unencrypted. Share only on a network you trust; over the internet use the [SSH tunnel](#4-reach-it-from-the-mac) instead.
+
+### Connection code
+
+`gsc1.` followed by the base64url (no padding) of one JSON object:
+
+```json
+{"v":1,"id":"srv_…","n":"linux-box","p":8787,"a":["192.168.1.20","100.101.102.103","linux-box","linux-box.local"],"c":"ABCD-EFGH"}
+```
+
+| Key | Value |
+| --- | --- |
+| `v` | `1` |
+| `id` | The server's `serverId`. |
+| `n` | The server machine's hostname, for display. |
+| `p` | The port. |
+| `a` | Addresses to try, best first, at most 8: the machine's IPv4 addresses except loopback and link-local (`169.254.x.x`) — private LAN ranges first, then others such as a tailnet's, then container and VM bridges (`docker0`, `virbr0`, …) — then its hostname and `<hostname>.local`. |
+| `c` | The pairing code. |
+
+The client probes `GET http://<address>:<p>/.well-known/gentle-shell` at every address in parallel (about 1.5 s each), keeps the first whose `serverId` equals `id`, pairs there with `POST /api/pair { code: c, name }`, and keeps that address as the server URL. It never sends the pairing code to an address whose identity did not match. The code is a secret while its pairing code is valid (5 minutes, single use); afterwards it only names the server and its addresses.
+
+### Start at login
+
+`serve share --always` hands the network server to the login service manager, so it starts at every login and restarts after a crash. The service runs the same launcher, the same home flags and the same `--listen`/`--allow-host` as `share` would, with `PATH` and the `GENTLE_SHELL_NO_AUTO_SETUP`, `GENTLE_SHELL_HOME`, `GENTLE_SHELL_CONFIG`, `GENTLE_PI_CONFIG_HOME`, `GENTLE_SHELL_PI` and `PI_CODING_AGENT_DIR` values of the invocation (when set), so a source checkout works too.
+
+| System | What it writes and runs |
+| --- | --- |
+| Linux | `~/.config/systemd/user/gentle-shell-serve.service` (`$XDG_CONFIG_HOME` when set), then `systemctl --user daemon-reload` and `systemctl --user enable --now gentle-shell-serve.service`. Output goes to the journal (`journalctl --user -u gentle-shell-serve`). A user unit runs while you are logged in; `sudo loginctl enable-linger $USER` starts it at boot and keeps it after logout (`share` prints this). |
+| macOS | `~/Library/LaunchAgents/com.gentle-shell.serve.plist`, then `launchctl bootstrap gui/$UID` on it. Output goes to `<home>/serve/server.log`. |
+| Windows | Not supported yet: `--always` exits 1 before starting anything. |
+
+A server already running is replaced by the service only when it has no running sessions (otherwise `--always` exits 1 and leaves it alone); one the service already runs is reused. `serve share --off` disables and removes the unit (`systemctl --user disable --now`) or boots out and removes the agent, which stops the server it ran. One autostart per user: `--always` from another home replaces it.
 
 ## Files
 
@@ -65,6 +131,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 
 | Method and path | Scope | Body → answer |
 | --- | --- | --- |
+| `GET /.well-known/gentle-shell` | none | `{ schema: "gentle-shell.serve.identity/v1", serverId, name, protocol, version }`: who answers at this address (`name` is the machine's hostname). No secrets; `Host` and `Origin` rules still apply. A client holding a [connection code](#connection-code) probes it before pairing. |
 | `POST /api/pair` | none (the code) | `{ code, name? }` → `201 { id, name, scopes, createdAt, token }`. `403 invalid_code`, `429 rate_limited`, `409 too_many_devices`. |
 | `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device }` |
 | `POST /api/server/stop` | `admin` | `202`; the server stops its sessions and exits. |
@@ -152,7 +219,7 @@ Child stdout is split on LF only, with an optional CR before it stripped, never 
 
 ## Authentication
 
-There is no unauthenticated mode: every endpoint except `POST /api/pair` needs a token.
+There is no unauthenticated mode: every endpoint except `GET /.well-known/gentle-shell` (public identity, no secrets) and `POST /api/pair` needs a token.
 
 - **Pairing.** `gentle-shell serve pair` mints a code like `ABCD-EFGH` (40 random bits, Crockford base32; case, dashes and `O`/`I`/`L` look-alikes are forgiven). It is single use — the first attempt that names it consumes it — and expires after 5 minutes; at most 16 are live. Ten failed attempts in a minute, from anyone, pause pairing for the rest of that minute.
 - **Device tokens.** `gss_` plus 32 random bytes (base64url). Shown once, in the pairing answer. Stored only as a sha256 hash; compared in constant time. Sent as `Authorization: Bearer <token>`. At most 64 devices.
@@ -241,9 +308,9 @@ gsdev serve devices                   # paired devices; --revoke <id> removes on
 gsdev serve stop                      # stops the server and every session it owns
 ```
 
-The log is `<home>/serve/server.log` (rewritten on each start). Nothing starts the server for you: Gentle Shell never launches it, and once started it runs until `serve stop`, a reboot, or its process is killed. Sessions run on the Linux machine, so their `cwd` is a path there.
+The log is `<home>/serve/server.log` (rewritten on each start). Gentle Shell never launches the server on its own: once started it runs until `serve stop`, a reboot, or its process is killed. Sessions run on the Linux machine, so their `cwd` is a path there.
 
-To start it at login (or at boot), a systemd user unit runs it in the foreground; its output then goes to the journal instead of `server.log`:
+`gsdev serve share --always` writes and enables a systemd user unit for the network server ([Start at login](#start-at-login)). To keep a loopback-only server for the SSH tunnel instead, write the unit by hand (same file name, so use one or the other); it runs the server in the foreground and its output goes to the journal instead of `server.log`:
 
 ```sh
 mkdir -p ~/.config/systemd/user
@@ -271,6 +338,8 @@ journalctl --user -u gentle-shell-serve -f
 The heredoc writes your current `PATH` and `node` into the unit (a user service does not read your shell profile; sessions' tools need the `PATH`). Add your home selector before `serve` if you use one. `systemctl --user stop gentle-shell-serve` stops it in order (SIGTERM); `gsdev serve stop` also works and is not restarted. A user unit runs while you are logged in; `sudo loginctl enable-linger $USER` starts it at boot and keeps it running after you log out.
 
 ### 4. Reach it from the Mac
+
+**Easiest: a connection code.** `gsdev serve share` on the Linux machine, then paste the code in Gentle Shell GPUI on the Mac ([Quick start](#quick-start-connect-from-gentle-shell-gpui)). It is option (b) below, plain HTTP on your network, without typing addresses. The rest of this step is the manual way.
 
 **(a) SSH tunnel (recommended).** The server stays on loopback and SSH encrypts everything. It needs `sshd` on the Linux machine (`sudo systemctl enable --now sshd`). On the Mac:
 
@@ -342,4 +411,4 @@ The Gentle Shell GPUI desktop app is getting a client for this server: [gentle-s
 - **Idle unload and crash resume.** Sessions run until stopped; a restarted server does not resume the previous run's sessions (start them again with `sessionId`).
 - **`message_update` coalescing.** Slow clients are dropped into a resync instead.
 - **Files** (`fs/list`, `fs/read`, `fs/stat`) and the `terminal`, `fs:read`, `fs:write` scopes.
-- **Persistent terminals** (Phase 2), **SSH bootstrap, `/.well-known/gentle-shell` server identity and TLS** (Phase 3), **the mobile web client, QR codes and a relay** (Phase 4).
+- **Persistent terminals** (Phase 2), **SSH bootstrap and TLS** (Phase 3), **the mobile web client, QR codes and a relay** (Phase 4).

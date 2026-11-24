@@ -95,7 +95,7 @@ export function isLoopbackHost(host: string): boolean {
 	return h === "localhost" || h === "::1" || /^127(\.\d{1,3}){3}$/.test(h);
 }
 
-function isUnspecified(host: string): boolean {
+export function isUnspecified(host: string): boolean {
 	return host === "0.0.0.0" || host === "::" || host === "[::]";
 }
 

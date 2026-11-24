@@ -344,7 +344,7 @@ gentle-shell upgrade --rollback
 gentle-shell update [pi|self|--self|--all] [--latest]
 gentle-shell self-uninstall [--dry-run] [--yes] [--include-shared]
 gentle-shell desktop [--yes] [--no-open] | --status | --uninstall
-gentle-shell [home selectors] serve [--listen <host>:<port>] [--allow-host <name>]... [--foreground] | status | stop | pair | devices
+gentle-shell [home selectors] serve [--listen <host>:<port>] [--allow-host <name>]... [--foreground] | share | status | stop | pair | devices
 ```
 
 ### Flags
@@ -646,6 +646,14 @@ any Pi runtime check, and `gentle-shell upgrade` refreshes it when it was
 installed. Guide: [Gentle Shell Desktop](gentle-shell-desktop.md).
 
 ### `serve` subcommand
+
+To connect Gentle Shell GPUI from another computer on the same network, run
+`gentle-shell serve share` on the machine where agents should run and paste the
+one connection code it prints in the app (Configuration → Where agents run →
+Gentle Shell server; valid 5 minutes, once). It opens the server to the network
+over plain HTTP (port 8787, or the next free one), reusing a running server
+when it can; `--always` also starts it at login (systemd user unit or macOS
+LaunchAgent) and `serve share --off` removes that.
 
 `gentle-shell serve` runs one server per agent home that owns Gentle Shell
 sessions (one `gentle-shell --mode rpc` child each, with Desktop RPC on), so

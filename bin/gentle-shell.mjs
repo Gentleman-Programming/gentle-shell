@@ -2218,7 +2218,7 @@ async function main() {
 		if (home.mode === "path") home = { ...home, dir: resolvePath(home.dir) };
 		// The server file lives inside the home: create a new home the way a first
 		// launch does, so its sessions still treat it as Gentle Shell's own.
-		if (serve.action === "start" && (home.mode === "isolated" || home.mode === "path") && !existsSync(home.dir)) await bootstrapOwnedHome(home);
+		if ((serve.action === "start" || serve.action === "share") && (home.mode === "isolated" || home.mode === "path") && !existsSync(home.dir)) await bootstrapOwnedHome(home);
 		const homeFlags = home.mode === "link" ? ["--link"] : home.mode === "isolated" ? ["--isolated"] : ["--home", home.dir];
 		process.exitCode = await runServeCommand(serve, { agentHome: home.dir, homeFlags, launcher: fileURLToPath(import.meta.url), nodePath: process.execPath,
 			version: ownPackageVersion(), env: process.env, stdout: (text) => process.stdout.write(text), stderr: (text) => process.stderr.write(text) });

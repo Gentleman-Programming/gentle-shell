@@ -6,7 +6,7 @@ S1. “Adaptar el instalador y agregar pruebas de compatibilidad, integridad y r
 S2. “Sin publicar la release ni activar una fuente no verificada.” Keep the current production model and runtime sources. Exercise the release transport through offline fixtures only; no fork dependency, user URL option, uploads or downloads.
 
 ## Tasks
-T1 | S1–S2 | Implement and verify the local installer change in isolation | commit: pending
+T1 | S1–S2 | Implement and verify the local installer change in isolation | done: 73e3afbbd (153 voice tests passed; typecheck, runtime sync and independent baseline/candidate probes passed; native review approved)
 
 ## Log
 L1. lo podemos implementar nosotros?

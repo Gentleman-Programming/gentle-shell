@@ -2318,20 +2318,24 @@ export class NativeReviewCliV216                            {
 		if (request.baseRef === undefined && request.committedOnly !== undefined) throw new TypeError("Native STATUS committedOnly requires an explicit baseRef");
 		const selection = nativeUntrackedSelection(request);
 		const submitted = request.intendedUntrackedSelection;
-		if (submitted !== undefined && submitted.argumentTokens.reduce((count, token) => count + token.split("{{value}}").length - 1, 0) !== 1) throw new TypeError("Native intended-untracked selection requires exactly one provider-issued {{value}} token");
-		const submittedTokens = submitted === undefined ? undefined : submitted.argumentTokens.map((token) => token.replaceAll("{{value}}", submitted.value));
-		const submittedLineage = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "lineage");
 		const { cwd, baseRef } = request;
-		const original = submitted?.validatedOffer ?? submitted?.argumentTokens;
+		const provided = submitted?.argumentTokens;
+		const proof = submitted?.validatedOffer;
+		const original = proof ?? provided;
 		const boundOffer = original === undefined ? undefined : this.boundSelectionOffers.get(original);
+		if (proof !== undefined && (!boundOffer || !provided || proof.length !== provided.length || !proof.every((token, index) => token === provided[index]))) throw new TypeError("Native bound intended-untracked selection requires its validated offer and matching selectors");
+		// A copy can confirm equality; only the registered frozen vector supplies bound argv.
+		const vector = boundOffer ? original : provided;
+		if (vector !== undefined && vector.reduce((count, token) => count + token.split("{{value}}").length - 1, 0) !== 1) throw new TypeError("Native intended-untracked selection requires exactly one provider-issued {{value}} token");
+		const submittedTokens = submitted && vector?.map(token => token.replaceAll("{{value}}", submitted.value));
+		const submittedLineage = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "lineage");
 		const boundSubmission = boundOffer !== undefined;
 		// A bound selector precedes the value slot, unlike legacy appended flags.
-		const declaresBound = submitted?.argumentTokens.slice(0, submitted.argumentTokens.findIndex(token => token.includes("{{value}}")))
+		const declaresBound = vector?.slice(0, vector.findIndex(token => token.includes("{{value}}")))
 			.some(token => token === "--lineage" || token.startsWith("--lineage="));
-		if (boundSubmission || submitted?.validatedOffer !== undefined || submitted?.boundStatus || declaresBound) {
-			if (submitted?.validatedOffer !== undefined && (original .length !== submitted.argumentTokens.length || !original .every((token, index) => token === submitted.argumentTokens[index]))) throw new TypeError("Native bound intended-untracked selection requires its validated offer and matching selectors");
-			const matchesBase = baseRef === undefined ? boundOffer?.baseRef === undefined : submitted .argumentTokens[5] === "--committed-only=true"
-				&& (boundOffer?.baseRef === baseRef || submitted .argumentTokens[4] === `--base-ref=${baseRef}`);
+		if (boundSubmission || submitted?.boundStatus || declaresBound) {
+			const matchesBase = baseRef === undefined ? boundOffer?.baseRef === undefined : vector?.[5] === "--committed-only=true"
+				&& (boundOffer?.baseRef === baseRef || vector?.[4] === `--base-ref=${baseRef}`);
 			if (!boundSubmission || boundOffer.cwd !== cwd || request.lineageId === undefined || submittedLineage !== request.lineageId || request.projection === "staged" || !matchesBase) throw new TypeError("Native bound intended-untracked selection requires its validated offer and matching selectors");
 			if (requestContextArguments.length || request.lenses !== undefined || request.lensesReason !== undefined || escalateArguments.length) throw new TypeError("Native bound intended-untracked selection cannot carry request context, lenses, or escalation");
 		}
@@ -2341,7 +2345,7 @@ export class NativeReviewCliV216                            {
 		// A provider-issued base-diff selector (base tree plus scope) already binds
 		// the target the request named; the tree is not textually comparable to
 		// the request's ref, so it runs as issued and nothing is re-forwarded.
-		const providerOwnsTarget = submitted !== undefined && intendedUntrackedSubmissionCarriesTarget(submitted.argumentTokens);
+		const providerOwnsTarget = vector !== undefined && intendedUntrackedSubmissionCarriesTarget(vector);
 		if (!boundSubmission && !providerOwnsTarget && request.baseRef !== undefined && submittedBaseRefValue !== undefined && submittedBaseRefValue !== request.baseRef) throw new TypeError("Native intended-untracked selection already carries a conflicting base-ref");
 		if (request.lineageId !== undefined && submittedLineage !== undefined && submittedLineage !== request.lineageId) throw new TypeError("Native intended-untracked selection already carries a conflicting lineage");
 		let submittedHasCommittedOnly = false;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { request as httpRequest, type IncomingMessage } from "node:http";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after, before } from "node:test";
@@ -153,6 +153,19 @@ test("requests with a foreign Origin or an unexpected Host are refused before au
 	assert.equal(host.status, 421);
 	const pair = await call("POST", "/api/pair", { body: { code: "XXXX-XXXX" }, headers: { Origin: "http://evil.example" } });
 	assert.equal(pair.status, 403, "a page elsewhere cannot even try a code");
+});
+
+test("GET /.well-known/gentle-shell names the server without a token, and Host/Origin rules still apply", async () => {
+	const identity = await call("GET", "/.well-known/gentle-shell");
+	assert.equal(identity.status, 200);
+	assert.deepEqual(identity.body, { schema: "gentle-shell.serve.identity/v1", serverId: server.serverId, name: hostname(), protocol: 1, version: "test" });
+	assert.equal(identity.headers["cache-control"], "no-store");
+	assert.ok(!JSON.stringify(identity.body).includes("gsa_"), "no admin token, code or device in it");
+	// A token changes nothing: the answer is the same public identity.
+	assert.deepEqual((await call("GET", "/.well-known/gentle-shell", { token: ADMIN })).body, identity.body);
+	assert.equal((await call("POST", "/.well-known/gentle-shell")).status, 405);
+	assert.equal((await call("GET", "/.well-known/gentle-shell", { headers: { Host: "rebind.example" } })).status, 421);
+	assert.equal((await call("GET", "/.well-known/gentle-shell", { headers: { Origin: "http://evil.example" } })).status, 403);
 });
 
 test("security headers, no token, a bad token and unknown routes", async () => {

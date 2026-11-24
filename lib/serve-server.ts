@@ -15,6 +15,9 @@ import { ServeSession, SessionError, type ServeSessionLimits, type SessionLaunch
 
 export const SERVE_SCHEMA = "gentle-shell.serve/v1";
 export const SERVE_PROTOCOL = 1;
+export const SERVE_IDENTITY_SCHEMA = "gentle-shell.serve.identity/v1";
+/** Public identity path: a client holding a connection code probes it to find the address that reaches this server. */
+export const SERVE_IDENTITY_PATH = "/.well-known/gentle-shell";
 export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices"] as const;
 
 export const SERVE_SERVER_LIMITS = {
@@ -260,6 +263,13 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 		const path = url.pathname;
 		const principal = options.auth.authenticate(bearer(req));
 		if (path.length > 256) throw new HttpError(404, "not_found", "Not found");
+
+		// Who answers here, without a token and without secrets: a client holding a
+		// connection code probes each advertised address and pairs only where the id matches.
+		if (path === SERVE_IDENTITY_PATH) {
+			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
+			return sendJson(res, 200, { schema: SERVE_IDENTITY_SCHEMA, serverId, name: hostname(), protocol: SERVE_PROTOCOL, version: options.version });
+		}
 
 		if (path === "/api/pair") {
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");

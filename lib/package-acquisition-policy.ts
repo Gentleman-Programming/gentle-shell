@@ -24,6 +24,12 @@ const SEMVER_NUMBER = String.raw`(?:0|[1-9]\d*)`;
 const PRERELEASE_OR_BUILD = String.raw`[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*`;
 // `name@X.Y.Z` or `@scope/name@X.Y.Z`: an exact registry version, nothing else.
 const EXACT_SPEC_RE = new RegExp(String.raw`^(?:@[a-z0-9][\w.-]*/)?[a-z0-9][\w.-]*@${SEMVER_NUMBER}\.${SEMVER_NUMBER}\.${SEMVER_NUMBER}(?:-${PRERELEASE_OR_BUILD})?(?:\+${PRERELEASE_OR_BUILD})?$`);
+// npm's SemVer rejects numeric components above Number.MAX_SAFE_INTEGER, so such a version is not exact.
+function isExactSpec(spec: string): boolean {
+	if (!EXACT_SPEC_RE.test(spec)) return false;
+	const version = spec.slice(spec.lastIndexOf("@") + 1).split("-")[0].split("+")[0];
+	return version.split(".").every((component) => Number(component) <= Number.MAX_SAFE_INTEGER);
+}
 
 const FORMS: Record<Manager, Record<string, PackageAcquisition["form"]>> = {
 	npm: {
@@ -197,7 +203,7 @@ export function packageAcquisitionVerdict(command: string): PackageAcquisitionVe
 	const offending: string[] = [];
 	let triggerIndex = 0;
 	for (const acquisition of recognizePackageAcquisitions(command)) {
-		const bad = [...acquisition.specs.filter((spec) => !EXACT_SPEC_RE.test(spec)), ...acquisition.undetermined];
+		const bad = [...acquisition.specs.filter((spec) => !isExactSpec(spec)), ...acquisition.undetermined];
 		if (bad.length === 0) continue;
 		if (offending.length === 0) triggerIndex = acquisition.triggerIndex;
 		offending.push(...bad);

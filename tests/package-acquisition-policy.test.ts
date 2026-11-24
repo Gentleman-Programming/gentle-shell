@@ -65,6 +65,14 @@ const confirms = (command: string, offending?: string[]) => {
 	if (offending) assert.deepEqual(verdict.offending, offending, command);
 };
 
+test("numeric components above Number.MAX_SAFE_INTEGER are not exact versions", () => {
+	passes("npm install demo@9007199254740991.0.0");
+	passes("npm install demo@0.9007199254740991.9007199254740991");
+	confirms("npm install demo@9007199254740992.0.0", ["demo@9007199254740992.0.0"]);
+	confirms("npm install demo@1.9007199254740992.0", ["demo@1.9007199254740992.0"]);
+	confirms("npm install demo@1.0.9007199254740992", ["demo@1.0.9007199254740992"]);
+});
+
 test("exact registry versions pass, scoped and unscoped, prerelease and build included", () => {
 	for (const command of [
 		"npm install left-pad@1.3.0",

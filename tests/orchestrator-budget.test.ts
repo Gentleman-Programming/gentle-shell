@@ -45,7 +45,12 @@ const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-die
 // cost-speed P14 (PD-81): the Evidence-budget lookup number matches the runtime notice; measured 9,189 -> 9,177 B.
 // fix/temp-dir-exemption (user decision 2026-11-16): the confinement clause exempts the OS temp directory
 // (read/write, deleting only what the session or its tools created); approved up to 9,352 B, measured 9,177 -> 9,347 B at the 128-char root.
-const BUDGET_BYTES = 9347;
+// gentle-shell#348 rebase (2026-11-16): the parent-inline skill-read duty clause (+49 B over its
+// original base) rides on the current 9,347 B baseline; measured below at the 128-char root.
+// review follow-up (2026-11-16): 9,396 B is the new pin for this candidate — the clause was
+// re-approved with the rebase in issues/348 (budget note, 2026-10-30); the previous 9,352 B cap
+// recorded above predates this candidate's clause and is superseded by this pin.
+const BUDGET_BYTES = 9396;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 
 const LAZY_ASSET_NAMES = [
@@ -138,7 +143,7 @@ function measureOrchestratorPromptBytes(assetsDir: string): number {
 // measuring a shorter render again.
 const RDD_WORST_CASE_LINE = "Receipt-driven development: unknown (native status unavailable)";
 
-test("getOrchestratorPrompt return value stays within the canonical 9,197 B budget at a short assets root", () => {
+test("getOrchestratorPrompt return value stays within the canonical 9,396 B budget at a short assets root", () => {
 	const rendered = __testing.renderOrchestratorPrompt(representativeProductionAssetsDir);
 	assert.ok(
 		rendered.includes(RDD_WORST_CASE_LINE),

@@ -135,6 +135,7 @@ async function fetchLiveModelIds(options: {
 		return undefined;
 	} finally {
 		clearTimeout(timeout);
+		signal.removeEventListener("abort", abort);
 	}
 }
 

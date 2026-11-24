@@ -23,17 +23,19 @@ const guide = readFileSync(new URL("../docs/gentle-shell.md", import.meta.url), 
 for (const [name, text] of Object.entries({ registeredDescription: background.description, guide })) {
 	test(`${name}: synchronous checks have an inclusive explicit 30-second limit and safe fallback`, () => {
 		for (const clause of [
-			"local, finite, deterministic checks", "reasonably expected to finish within 30 seconds",
-			"explicit timeout <= 30 seconds (30 included)",
-			"longer or unknown duration, external waits, CI, builds, and servers",
-			"Report a timeout as failure; never automatically retry, restart, or migrate it to background",
+			"Report synchronous timeouts as failures: read the output, fix the cause, then rerun within explicit limits (in background if duration is the obstacle); never rerun unchanged or silently switch to background.",
+			"local, finite, deterministic checks reasonably expected within 30s",
+			"explicit timeout <= 30s (inclusive)",
+			"longer or unknown duration, external waits, CI, builds, servers, deploys, and long tests",
 			"Preserve RED/GREEN and public-check exit codes, stdout, and stderr",
 			"Engram bugfix saves and session summaries", "RDD", "not a performance guarantee",
 		]) assert.ok(text.includes(clause), `${name} missing: ${clause}`);
 	});
 }
 
-test("inline still means the same parent, and the public background API stays asynchronous", () => {
+test("inline still means the same parent, and the public background API stays asynchronous", (t) => {
+	const { name, description, parameters } = background;
+	t.diagnostic(`bash_background model declaration: ${Buffer.byteLength(JSON.stringify({ name, description, parameters }), "utf8")} B`);
 	assert.ok(core.includes("Small path: inline (parent; `bash_background` policy);"));
 	assert.ok(guide.includes("Inline means the same parent, not necessarily synchronous bash"));
 	assert.ok(core.includes("run the focused test and the suite inline in one command"));

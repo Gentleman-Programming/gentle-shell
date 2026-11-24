@@ -23,6 +23,7 @@ export function formatJobDuration(ms: number): string {
 const quoted = (job: JobRecord) => `${job.id} ("${job.label}")`;
 const noun = (job: JobRecord) => (job.kind === "monitor" ? "Monitor" : "Background job");
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+const JOB_WAIT_TEXT = "Continue independent in-scope work now; end the turn to wait only when none remains.";
 
 /** What changed on the registry, so a listener can ignore a no-op stop. */
 export type BackgroundJobsChange =
@@ -47,6 +48,10 @@ export function jobNoticeText(job: JobRecord): string {
 	if (job.tail.length > 0) lines.push("Last output:", ...job.tail);
 	else lines.push("No output.");
 	lines.push(`Full output: ${job.outputPath} (read it with the read tool if you need more).`);
+	const failed = job.status === "failed" || (job.status === "exited" && job.exitCode !== 0);
+	lines.push(failed
+		? "This failure is an obstacle, not the end of the task: read the result, diagnose the cause, and continue the authorized work that depended on this job."
+		: "This result does not end the task: read it and continue the authorized work that depended on this job.");
 	return lines.join("\n");
 }
 
@@ -100,10 +105,10 @@ export function registerBackgroundJobTools(pi: ExtensionAPI, options: Background
 		name: BASH_BACKGROUND_TOOL,
 		label: "Bash (background)",
 		description: [
-			"Run a shell command in the background and return a job id at once. You are notified once, automatically, when it exits (exit code, last output lines, output file); do not poll, sleep, or delegate a subagent to wait.",
-			"Use synchronous bash for local, finite, deterministic checks reasonably expected to finish within 30 seconds, with an explicit timeout <= 30 seconds (30 included). Use bash_background for longer or unknown duration, external waits, CI, builds, and servers, including deploys and long tests. Report a timeout as failure; never automatically retry, restart, or migrate it to background. Preserve RED/GREEN and public-check exit codes, stdout, and stderr; do not defer or batch Engram bugfix saves and session summaries or bypass RDD. This is guidance, not a performance guarantee.",
-			"Put the wait condition inside the command so its exit is the event, e.g. `gh run watch <run-id> --exit-status` or `until curl -sf localhost:3000/health; do sleep 1; done`.",
-			`Output goes to a file you can read with the read tool. Stop a job with job_stop; list jobs with job_list. At most ${MAX_RUNNING_JOBS} run at once.`,
+			"Run a shell command in background and return a job id at once. You are notified once, automatically, on exit (exit code, tail, log path); do not poll, sleep, or delegate a subagent to wait.",
+			"Use synchronous bash for local, finite, deterministic checks reasonably expected within 30s, with explicit timeout <= 30s (inclusive). Use bash_background for longer or unknown duration, external waits, CI, builds, servers, deploys, and long tests. Report synchronous timeouts as failures: read the output, fix the cause, then rerun within explicit limits (in background if duration is the obstacle); never rerun unchanged or silently switch to background. Preserve RED/GREEN and public-check exit codes, stdout, and stderr; do not defer or batch Engram bugfix saves and session summaries or bypass RDD. This is guidance, not a performance guarantee.",
+			"Put the wait condition in the command so exit is the event, e.g. `gh run watch <run-id> --exit-status` or `until curl -sf localhost:3000/health; do sleep 1; done`.",
+			`Read the log with read. Stop with job_stop; list with job_list. Max ${MAX_RUNNING_JOBS} running jobs.`,
 		].join(" "),
 		parameters: {
 			type: "object",
@@ -120,7 +125,7 @@ export function registerBackgroundJobTools(pi: ExtensionAPI, options: Background
 			const job = registry.start({ command: input.command, cwd: ctx.cwd, ownerSessionId: options.sessionId(ctx), label: typeof input.label === "string" ? input.label : undefined });
 			options.onChange?.({ kind: "start", job });
 			return text(
-				`Started background job ${quoted(job)}.\nOutput: ${job.outputPath}\nYou will be notified once when it exits; keep working or end your turn. Stop it with job_stop.`,
+				`Started background job ${quoted(job)}.\nOutput: ${job.outputPath}\nYou will be notified once when it exits. ${JOB_WAIT_TEXT} Resume dependent work on the exit notice. Stop it with job_stop.`,
 				jobDetails(job),
 			);
 		},
@@ -153,7 +158,7 @@ export function registerBackgroundJobTools(pi: ExtensionAPI, options: Background
 			const job = monitors.start({ command: input.command, cwd: ctx.cwd, ownerSessionId: options.sessionId(ctx), label: typeof input.label === "string" ? input.label : undefined, timeoutSeconds });
 			options.onChange?.({ kind: "start", job });
 			return text(
-				`Started monitor ${quoted(job)} for up to ${timeoutSeconds}s.\nOutput: ${job.outputPath}\nEach new output line reaches you as an event; keep working or end your turn. Stop it with job_stop.`,
+				`Started monitor ${quoted(job)} for up to ${timeoutSeconds}s.\nOutput: ${job.outputPath}\nEach new output line reaches you as an event. ${JOB_WAIT_TEXT} Resume work on relevant events or the exit notice. Stop it with job_stop.`,
 				jobDetails(job),
 			);
 		},

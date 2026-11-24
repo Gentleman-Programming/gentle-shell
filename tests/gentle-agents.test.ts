@@ -8014,6 +8014,76 @@ function fakeJobShell() {
 const jobIo = () => new Promise((done) => setTimeout(done, 50));
 const toolText = (result: { content: Array<{ text?: string }> }) => result.content.map((part) => part.text ?? "").join("\n");
 
+async function jobTextHarness(t: TestContext, provider?: string) {
+	const h = fakePi(provider), jobs = fakeJobShell(), { ctx } = fakeContext();
+	gentleAgents(h.pi, {}, { ...deps().deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	t.after(async () => {
+		try { await h.fire("session_shutdown", ctx); } finally { jobs.cleanup(); }
+	});
+	await h.fire("session_start", ctx);
+	const notices = () => h.sent.filter(({ message }) => message.customType === "gentle-jobs.notice");
+	return { ...h, jobs, ctx, notices };
+}
+
+for (const { name, input, provider, heading, intro, resume } of [
+	{
+		name: "bash_background", input: { command: "make build", label: "Build" }, provider: "claude-bridge",
+		heading: 'Started background job job-1 ("Build").', intro: "You will be notified once when it exits.",
+		resume: "Resume dependent work on the exit notice.",
+	},
+	{
+		name: "monitor", input: { command: "watch checks", label: "Checks", timeout_seconds: 30 }, provider: "openai-codex",
+		heading: 'Started monitor job-1 ("Checks") for up to 30s.', intro: "Each new output line reaches you as an event.",
+		resume: "Resume work on relevant events or the exit notice.",
+	},
+]) {
+	test(`${name} launch says to continue independent work before ending the turn to wait`, async (t) => {
+		const { tools, jobs, ctx } = await jobTextHarness(t, provider);
+		const result = await tools.get(name)!.execute("start", input, undefined, undefined, ctx);
+		assert.equal(toolText(result), `${heading}\nOutput: ${join(jobs.dir, "job-1.log")}\n${intro} Continue independent in-scope work now; end the turn to wait only when none remains. ${resume} Stop it with job_stop.`);
+	});
+
+	test(`${name} starts at once and still delivers one exit notice to its owner only`, async (t) => {
+		const { tools, jobs, ctx, fire, notices, events, delivery } = await jobTextHarness(t, provider);
+		const { ctx: other } = fakeContext();
+		other.sessionManager.getSessionId = () => "other";
+		const run = await tools.get(name)!.execute("start", input, undefined, undefined, ctx);
+		assert.equal(jobs.runs.length, 1);
+		assert.equal(jobs.runs[0]!.command, input.command);
+		assert.deepEqual(run.details.gentleJobs, {
+			jobId: "job-1", kind: name === "monitor" ? "monitor" : "command", label: input.label,
+			status: "running", exitCode: null, outputPath: join(jobs.dir, "job-1.log"),
+		});
+		assert.deepEqual(delivery, []);
+		await fire("session_start", other, { reason: "new" });
+		jobs.runs[0]!.exit(0);
+		await eventually(() => events.some(({ name }) => name === "gentle-pi:herdr-desktop:job-settled"), "job settles while the other session is active");
+		assert.deepEqual(delivery, [], "the other session does not receive the notice or wake");
+		await fire("session_start", ctx, { reason: "resume" });
+		await fire("turn_end", ctx);
+		await eventually(() => notices().length === 1, "the owner receives the retained notice");
+		assert.deepEqual(notices()[0]!.options, { triggerTurn: false });
+		await fire("agent_settled", ctx);
+		await fire("turn_end", ctx);
+		assert.deepEqual(delivery, ["custom:gentle-jobs.notice", provider === "claude-bridge" ? "user" : "custom:gentle-agents.wake"]);
+	});
+}
+
+test("job exit notices themselves tell the parent to continue and diagnose a failed exit as an obstacle", async (t) => {
+	const { tools, jobs, ctx, notices } = await jobTextHarness(t);
+	const start = tools.get("bash_background")!;
+	await start.execute("a", { command: "passing check" }, undefined, undefined, ctx);
+	await start.execute("b", { command: "failing check" }, undefined, undefined, ctx);
+	jobs.runs[0]!.exit(0);
+	jobs.runs[1]!.exit(7);
+	await eventually(() => notices().length === 2, "both results reach the idle parent");
+	const continuation = (jobId: string) => String(notices().find(({ message }) => String(message.content).startsWith(`Background job ${jobId} `))!.message.content).split("\n").at(-1);
+	assert.deepEqual([continuation("job-1"), continuation("job-2")], [
+		"This result does not end the task: read it and continue the authorized work that depended on this job.",
+		"This failure is an obstacle, not the end of the task: read the result, diagnose the cause, and continue the authorized work that depended on this job.",
+	]);
+});
+
 test("standalone bash sleep is blocked only while background work is active (#1903)", async () => {
 	const { pi, tools, fire, sent } = fakePi();
 	const jobs = fakeJobShell();
@@ -8031,7 +8101,8 @@ test("standalone bash sleep is blocked only while background work is active (#19
 			const blocked = await call("bash", command);
 			assert.equal(blocked?.block, true, command);
 			assert.match(blocked!.reason!, /background work is active/);
-			assert.match(blocked!.reason!, /End the turn/);
+			assert.match(blocked!.reason!, /Continue independent in-scope work; end the turn to wait only when none remains\./);
+			assert.doesNotMatch(blocked!.reason!, /End the turn now/);
 		}
 		// Real wait conditions, mixed commands and the sanctioned background tools stay allowed.
 		for (const command of ["until curl -s x; do sleep 1; done", "sleep 5 && gh run view 42", "for i in 1 2; do sleep 1; echo $i; done", "sleep $N"]) {

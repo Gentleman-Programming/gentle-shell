@@ -2,9 +2,10 @@
 // from the existing owners and projects their result with
 // `lib/desktop-rpc-agent-definitions.ts`.
 //
-// The roots are the same ones `subagent_list_agents` discovers from
-// (`extensions/gentle-agents.ts`): the session cwd, the agent home resolved by
-// `resolveAgentHomeDirectory`, and the Gentle config home for tool overlays.
+// The roots are the ones `/gentle:profiles` lists (`profileAgentDirectories`):
+// the built-in package agents, the agent home resolved by
+// `resolveAgentHomeDirectory`, `~/.agents`, `<cwd>/.agents`, and `<cwd>/.pi`,
+// plus the Gentle config home for tool overlays.
 // The default orchestrator is read from Pi's `settings.json` in that agent
 // home. Every read is fresh: definitions are plain files re-read on each call,
 // and nothing is written or cached.
@@ -15,7 +16,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DesktopRpcOutcome } from "./desktop-rpc.ts";
 import { gentlePiConfigHome } from "./agent-home.ts";
 import { resolveAgentHomeDirectory } from "./agent-model-resolution.ts";
-import { discoverAgents, loadAgentsConfig, type DiscoveryRoots } from "./agents-config.ts";
+import { discoverAgentsIn, loadAgentsConfig, profileAgentDirectories, type DiscoveryRoots } from "./agents-config.ts";
 import { readOrchestratorSettings } from "./profiles-orchestrator.ts";
 import {
 	AGENT_DEFINITIONS_UNAVAILABLE,
@@ -27,6 +28,8 @@ import {
 export interface AgentDefinitionsLocation {
 	roots: DiscoveryRoots;
 	orchestratorSettingsPath: string;
+	/** The built-in package agent directories; defaults to the installed pi-subagents locations. */
+	builtinDirs?: readonly string[];
 }
 
 export type AgentDefinitionsLocationFactory = (context: ExtensionContext) => AgentDefinitionsLocation;
@@ -70,13 +73,14 @@ export class DesktopAgentDefinitionsBridge {
 		const host = this.host;
 		if (!host) return { ok: false, error: AGENT_DEFINITIONS_UNAVAILABLE };
 		try {
-			const { roots, orchestratorSettingsPath } = this.location(host);
-			const discovery = discoverAgents(roots);
+			const { roots, orchestratorSettingsPath, builtinDirs } = this.location(host);
+			const discovery = discoverAgentsIn(roots, profileAgentDirectories(roots, builtinDirs));
 			const config = loadAgentsConfig(roots);
 			const data = projectAgentDefinitions({
 				agents: discovery.agents,
 				errors: discovery.errors,
 				notices: discovery.notices,
+				sources: discovery.sources,
 				defaults: { model: config.defaultModel, thinking: config.defaultThinking, mode: config.defaultMode },
 				orchestrator: readOrchestratorSettings(orchestratorSettingsPath),
 			});

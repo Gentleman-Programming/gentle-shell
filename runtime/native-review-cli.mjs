@@ -450,6 +450,8 @@ export const NATIVE_UNTRACKED_SCOPE = {
 
 
 
+
+
 /**
  * The agent's own review lens choice (gentle-ai START --lenses): canonical
  * lens names in 4R order and one reason. Providers that predate it refuse
@@ -2073,8 +2075,7 @@ function decodeNativeUnachievableLensCaptureArtifact(value         )            
 export class NativeReviewCliV216                            {
 	// Only executable capabilities are reusable. STATUS and authority remain fresh.
 	        contextCapabilities                                                                                               ;
-	// Keep the current decoded offer per workspace and lineage, not the caller's array identity.
-	                 boundSelectionOffers = new Map                                                                      ();
+	                 boundSelectionOffers = new WeakMap                                                                       ();
 	                 plain                      ;
 	                 adapter                 ;
 	                 executable                         ;
@@ -2321,15 +2322,14 @@ export class NativeReviewCliV216                            {
 		const submittedTokens = submitted === undefined ? undefined : submitted.argumentTokens.map((token) => token.replaceAll("{{value}}", submitted.value));
 		const submittedLineage = submittedTokens === undefined ? undefined : providerFlagValue(submittedTokens, "lineage");
 		const { cwd, baseRef } = request;
-		const offerKey = JSON.stringify([cwd, request.lineageId]);
-		const observed = submitted === undefined ? undefined : this.boundSelectionOffers.get(offerKey);
-		const boundOffer = submitted && observed && observed.tokens.length === submitted.argumentTokens.length &&
-			observed.tokens.every((token, index) => token === submitted.argumentTokens[index]) ? observed : undefined;
+		const original = submitted?.validatedOffer ?? submitted?.argumentTokens;
+		const boundOffer = original === undefined ? undefined : this.boundSelectionOffers.get(original);
 		const boundSubmission = boundOffer !== undefined;
 		// A bound selector precedes the value slot, unlike legacy appended flags.
 		const declaresBound = submitted?.argumentTokens.slice(0, submitted.argumentTokens.findIndex(token => token.includes("{{value}}")))
 			.some(token => token === "--lineage" || token.startsWith("--lineage="));
-		if (boundSubmission || submitted?.boundStatus || declaresBound) {
+		if (boundSubmission || submitted?.validatedOffer !== undefined || submitted?.boundStatus || declaresBound) {
+			if (submitted?.validatedOffer !== undefined && (original .length !== submitted.argumentTokens.length || !original .every((token, index) => token === submitted.argumentTokens[index]))) throw new TypeError("Native bound intended-untracked selection requires its validated offer and matching selectors");
 			const matchesBase = baseRef === undefined ? boundOffer?.baseRef === undefined : submitted .argumentTokens[5] === "--committed-only=true"
 				&& (boundOffer?.baseRef === baseRef || submitted .argumentTokens[4] === `--base-ref=${baseRef}`);
 			if (!boundSubmission || boundOffer.cwd !== cwd || request.lineageId === undefined || submittedLineage !== request.lineageId || request.projection === "staged" || !matchesBase) throw new TypeError("Native bound intended-untracked selection requires its validated offer and matching selectors");
@@ -2401,10 +2401,9 @@ export class NativeReviewCliV216                            {
 			const execution = await this.invoke(NATIVE_REVIEW_OPERATION.STATUS, request.cwd, statusArguments, false, request.signal, path, [], true, boundSelectionLineage === undefined ? undefined : true);
 			measureStatusSync("decode", () => assertSupportedNextTransitionOperation(execution.body));
 			const status = decode(NATIVE_REVIEW_OPERATION.STATUS, false, () => decodeReviewStatusV3(execution.body, { boundSelectionLineage }));
-			if (boundSelectionLineage !== undefined) this.boundSelectionOffers.delete(offerKey);
 			for (const input of status.nextTransition?.collect?.inputs ?? []) {
 				const tokens = input.submission?.argumentTokens;
-				if (boundSelectionLineage !== undefined && input.captureOperation === "external.select_intended_untracked" && tokens?.[3] === `--lineage=${boundSelectionLineage}`) this.boundSelectionOffers.set(offerKey, { tokens: Object.freeze(tokens), cwd, baseRef });
+				if (boundSelectionLineage !== undefined && input.captureOperation === "external.select_intended_untracked" && tokens?.[3] === `--lineage=${boundSelectionLineage}`) this.boundSelectionOffers.set(Object.freeze(tokens), { cwd, baseRef });
 			}
 			return status;
 		};

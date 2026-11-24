@@ -68,7 +68,7 @@ async function boundStatusOffer() {
 	const status = await review.targetStatus(request);
 	const argumentTokens = status.nextTransition!.collect!.inputs[0]!.submission!.argumentTokens;
 	const value = JSON.stringify({ schema, untracked_scope: "exclude", expected_untracked_inventory: SHA, intended_untracked: [] });
-	return { queue, review, request, stdout, tokens, submission: { argumentTokens, value } };
+	return { queue, review, request, stdout, tokens, offerBody: body, submission: { argumentTokens, value } };
 }
 
 test("#6221 replays a decoded bound STATUS offer without a caller flag or re-forwarding its named ref", async () => {
@@ -81,8 +81,39 @@ test("#6221 replays an equal copy from the same validated bound context", async 
 	const { queue, review, request, stdout, tokens, submission } = await boundStatusOffer();
 	const argumentTokens = [...submission.argumentTokens];
 	assert.notEqual(argumentTokens, submission.argumentTokens);
-	assert.deepEqual((await review.targetStatus({ ...request, intendedUntrackedSelection: { ...submission, argumentTokens, boundStatus: true } })).raw, JSON.parse(stdout));
+	assert.deepEqual((await review.targetStatus({ ...request, intendedUntrackedSelection: { ...submission, argumentTokens, boundStatus: true, validatedOffer: submission.argumentTokens } })).raw, JSON.parse(stdout));
 	assert.deepEqual(queue.calls.slice(1), [{ cwd: "/repo", arguments: ["review", "status", "--cwd", "/repo", ...tokens.slice(0, -1), `--intended-untracked-selection=${submission.value}`] }]);
+});
+
+test("#6221 a copy requires this client's original offer and unchanged tokens", async () => {
+	const { review, request, submission, queue } = await boundStatusOffer();
+	const other = await boundStatusOffer();
+	const copy = [...submission.argumentTokens];
+	for (const options of [{ argumentTokens: copy }, { argumentTokens: copy, validatedOffer: other.submission.argumentTokens }, { argumentTokens: copy.map(t => t.replace("--agent=pi", "--agent=other")), validatedOffer: submission.argumentTokens }]) {
+		await assert.rejects(() => review.targetStatus({ ...request, intendedUntrackedSelection: { ...submission, ...options, boundStatus: true } }), /requires its validated offer/);
+	}
+	assert.equal(queue.calls.length, 1);
+});
+
+test("#6221 preserves independent bound offers when another base responds", async () => {
+	const { offerBody, request, stdout, submission } = await boundStatusOffer();
+	const otherRequest = { ...request, baseRef: "refs/heads/other-base" };
+	const otherOffer = structuredClone(offerBody);
+	const tree = "b".repeat(40);
+	otherOffer.projection.base_tree = tree;
+	const input = otherOffer.next_transition.collect.inputs[0];
+	input.arguments[2].value = tree;
+	input.submission.argument_tokens[4] = `--base-ref=${tree}`;
+	const queue = queuedAdapter([{ stdout: JSON.stringify(offerBody) }, { stdout: JSON.stringify(otherOffer) }, { stdout }, { stdout }]);
+	const review = client(queue.adapter);
+	const a = await review.targetStatus(request), b = await review.targetStatus(otherRequest);
+	for (const [req, status] of [[request, a], [otherRequest, b]] as const) {
+		const argumentTokens = status.nextTransition!.collect!.inputs[0]!.submission!.argumentTokens;
+		const replay = await review.targetStatus({ ...req, intendedUntrackedSelection: { ...submission, argumentTokens } });
+		assert.deepEqual(replay.raw, JSON.parse(stdout));
+		assert.deepEqual(queue.calls.at(-1)?.arguments, ["review", "status", "--cwd", req.cwd, ...argumentTokens.map(token => token.replace("{{value}}", submission.value))]);
+	}
+	assert.equal(queue.calls.length, 4);
 });
 
 test("#6221 refuses explicit context, lenses and escalation absent from the bound STATUS offer", async () => {

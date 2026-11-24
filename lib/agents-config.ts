@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { gentlePiConfigHome } from "./agent-home.ts";
 import { applyToolOverlay, loadToolOverlays } from "./agent-tool-overlay.ts";
 import type { AgentProfilesFile } from "./agent-profiles.ts";
@@ -235,11 +236,58 @@ export function agentDirectories(roots: DiscoveryRoots): Array<{ dir: string; sc
 	];
 }
 
-export function discoverAgents(roots: DiscoveryRoots): DiscoveryResult {
+/** Where a discovered definition came from, in `/gentle:profiles` terms. */
+export type AgentSource = "builtin" | "user" | "project";
+
+export interface AgentDirectory {
+	dir: string;
+	scope: AgentScope;
+	source: AgentSource;
+}
+
+const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
+/** The agent directories of the bundled pi-subagents package, in lookup order. */
+export function builtinAgentDirectories(cwd: string, home: string, packageRoot = PACKAGE_ROOT): string[] {
+	return [
+		join(packageRoot, "..", "pi-subagents-j0k3r", "agents"),
+		join(cwd, ".pi", "npm", "node_modules", "pi-subagents-j0k3r", "agents"),
+		join(home, ".local", "lib", "node_modules", "pi-subagents-j0k3r", "agents"),
+		join(packageRoot, "..", "pi-subagents", "agents"),
+		join(cwd, ".pi", "npm", "node_modules", "pi-subagents", "agents"),
+		join(home, ".local", "lib", "node_modules", "pi-subagents", "agents"),
+	];
+}
+
+/**
+ * Every root `/gentle:profiles` lists, lowest precedence first: the built-in package
+ * agents, the agent home, `~/.agents`, `<cwd>/.agents`, then `<cwd>/.pi`.
+ */
+export function profileAgentDirectories(roots: DiscoveryRoots, builtinDirs: readonly string[] = builtinAgentDirectories(roots.cwd, roots.home)): AgentDirectory[] {
+	const agentHome = profileRoot(roots);
+	return [
+		...builtinDirs.map((dir) => ({ dir, scope: AGENT_SCOPE.GLOBAL, source: "builtin" as const })),
+		{ dir: join(agentHome, "agents"), scope: AGENT_SCOPE.GLOBAL, source: "user" },
+		{ dir: join(agentHome, "subagents"), scope: AGENT_SCOPE.GLOBAL, source: "user" },
+		{ dir: join(roots.home, ".agents"), scope: AGENT_SCOPE.GLOBAL, source: "user" },
+		{ dir: join(roots.cwd, ".agents"), scope: AGENT_SCOPE.PROJECT, source: "project" },
+		{ dir: join(roots.cwd, ".pi", "agents"), scope: AGENT_SCOPE.PROJECT, source: "project" },
+		{ dir: join(roots.cwd, ".pi", "subagents"), scope: AGENT_SCOPE.PROJECT, source: "project" },
+	];
+}
+
+export interface SourcedDiscoveryResult extends DiscoveryResult {
+	/** The source of each returned agent, by name. */
+	sources: Map<string, AgentSource>;
+}
+
+/** Discovery over explicit directories; a later directory overrides an earlier one by name. */
+export function discoverAgentsIn(roots: DiscoveryRoots, directories: readonly AgentDirectory[]): SourcedDiscoveryResult {
 	const overlays = loadToolOverlays(roots.configHome ?? gentlePiConfigHome(), roots.cwd);
 	const agents = new Map<string, AgentDefinition>();
+	const sources = new Map<string, AgentSource>();
 	const errors: string[] = [];
-	for (const { dir, scope } of agentDirectories(roots)) {
+	for (const { dir, scope, source } of directories) {
 		if (!existsSync(dir)) continue;
 		for (const file of readdirSync(dir).filter((entry) => entry.toLowerCase().endsWith(".md")).sort()) {
 			const filePath = join(dir, file);
@@ -250,13 +298,20 @@ export function discoverAgents(roots: DiscoveryRoots): DiscoveryResult {
 				for (const key of unknownFrontmatterKeys(text)) overlays.notices.push(`${filePath}: unknown frontmatter key "${key}" is ignored`);
 				const tools = applyToolOverlay(parsed.tools, overlays.entries[parsed.name]);
 				agents.set(parsed.name, { ...parsed, tools });
+				sources.set(parsed.name, source);
 			}
 		}
 	}
 	for (const name of Object.keys(overlays.entries).filter((name) => !agents.has(name))) {
 		overlays.notices.push(`overlay names unknown agent "${name}"`);
 	}
-	return { agents: [...agents.values()].sort((a, b) => a.name.localeCompare(b.name)), errors, notices: overlays.notices };
+	return { agents: [...agents.values()].sort((a, b) => a.name.localeCompare(b.name)), errors, notices: overlays.notices, sources };
+}
+
+export function discoverAgents(roots: DiscoveryRoots): DiscoveryResult {
+	const directories = agentDirectories(roots).map(({ dir, scope }) => ({ dir, scope, source: scope === AGENT_SCOPE.PROJECT ? "project" as const : "user" as const }));
+	const { agents, errors, notices } = discoverAgentsIn(roots, directories);
+	return { agents, errors, notices };
 }
 
 type RawConfig = Record<string, unknown> | undefined;

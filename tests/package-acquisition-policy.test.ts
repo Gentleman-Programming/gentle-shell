@@ -20,13 +20,13 @@ test("single-dash package names are normalized in both npm exec scans", () => {
 
 test("inline npm package environment selects exec packages unless CLI overrides it", () => {
 	for (const prefix of ["npm_config_package=evil ", "env npm_config_package=evil ", "env -- npm_config_package=evil ", "sudo npm_config_package=evil "]) {
-		checks(`${prefix}npm exec -- cowsay@1.6.0`, ["evil", "cowsay@1.6.0"], ["evil"]);
+		checks(`${prefix}npm exec -- cowsay@1.6.0`, ["evil"], ["evil"]);
 	}
-	checks("npm_config_package=other@2.0.0 npm exec -- cowsay@1.6.0", ["other@2.0.0", "cowsay@1.6.0"]);
+	checks("npm_config_package=other@2.0.0 npm exec -- cowsay@1.6.0", ["other@2.0.0"]);
 	checks("npm_config_package=evil npm exec --package=cowsay@1.6.0 -- cowsay", ["cowsay@1.6.0"]);
 	checks("npm_config_package=evil npm exec cowsay --package=cowsay@1.6.0", ["cowsay@1.6.0"]);
 	checks("CI=1 npm exec -- cowsay@1.6.0", ["cowsay@1.6.0"]);
-	checks("npm_config_package=evil npx cowsay@1.6.0", ["evil", "cowsay@1.6.0"], ["evil"]);
+	checks("npm_config_package=evil npx cowsay@1.6.0", ["evil"], ["evil"]);
 	checks("npm_config_package=evil npm install cowsay@1.6.0", ["cowsay@1.6.0"]);
 	checks("npm_config_package=evil pnpm dlx cowsay@1.6.0", ["cowsay@1.6.0"]);
 });
@@ -50,12 +50,15 @@ test("wrapper environment boundaries retain both possible npm exec acquisitions"
 	}
 });
 
-test("a positional spec is judged alongside package options", () => {
-	checks("npm exec --package=cowsay@1.6.0 -- cowsay@latest", ["cowsay@1.6.0", "cowsay@latest"], ["cowsay@latest"]);
-	checks("npm_config_package=cowsay@1.6.0 npm exec -- cowsay@latest", ["cowsay@1.6.0", "cowsay@latest"], ["cowsay@latest"]);
-	checks("npx -p cowsay@1.6.0 cowsay@latest", ["cowsay@1.6.0", "cowsay@latest"], ["cowsay@latest"]);
-	checks("npm exec --package=cowsay@1.6.0 -- cowsay@1.6.0", ["cowsay@1.6.0"]);
-	checks("pnpm dlx --package=cowsay@1.6.0 cowsay@latest", ["cowsay@1.6.0", "cowsay@latest"], ["cowsay@latest"]);
+test("an explicit package list makes the positional a command, never another acquisition", () => {
+	// npm's libnpmexec infers a package from the positional only when no package is configured.
+	checks("npm exec --package=cowsay@1.6.0 -- cowsay@latest", ["cowsay@1.6.0"]);
+	checks("npm exec --package=cowsay@1.6.0 -- /bin/echo ok", ["cowsay@1.6.0"]);
+	checks("npm_config_package=cowsay@1.6.0 npm exec -- cowsay@latest", ["cowsay@1.6.0"]);
+	checks("npx -p cowsay@1.6.0 cowsay@latest", ["cowsay@1.6.0"]);
+	checks("pnpm dlx --package=cowsay@1.6.0 cowsay@latest", ["cowsay@1.6.0"]);
+	// A wrapper that may discard the environment leaves the positional as the possible acquisition.
+	checks("npm_config_package=evil sudo npm exec cowsay@1.6.0", ["evil", "cowsay@1.6.0"], ["evil"]);
 });
 
 const passes = (command: string) => assert.equal(packageAcquisitionVerdict(command).action, "pass", command);

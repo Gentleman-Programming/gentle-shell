@@ -7515,7 +7515,7 @@ const REVIEW_CONTROLLER_PARAMETER_FIELDS = {
 			type: "string",
 			description: "Bounded review lineage identifier. A failed start creates no lineage; unusable with status or advance.",
 		},
-		selectionBinding: { type: "string", description: "Opaque provider-issued pre-lineage intended-untracked selection binding." },
+		selectionBinding: { type: "string", description: "Opaque provider-issued intended-untracked selection binding from inspect or STATUS." },
 		intendedUntracked: { type: "array", items: { type: "string" }, description: 'Repository-relative paths selected from the provider binding. Inspect-only with untrackedScope "select"; ASSESS ignores an empty array.' },
 		untrackedScope: { type: "string", enum: ["exclude", "select"], description: 'Inspect selection: "exclude" forbids intendedUntracked; "select" includes the supplied paths. ASSESS ignores valid scope defaults without selected paths.' },
 		changeName: {
@@ -8481,9 +8481,9 @@ function mapNativeTargetStatus(operation: ReviewControllerOperation, status: Rev
 			operation,
 			status: "blocked",
 			result: withoutRawCollectInputs(status.raw),
-			...(selection === undefined
-				? { collectBindings: publicReviewCaptureBindings(status) }
-				: { selectionBinding: canonicalReviewCaptureBinding(selection) }),
+			...(selection !== undefined && (status.authority === undefined || operation === REVIEW_CONTROLLER_OPERATION.START || hasBoundSelectionLineage(selection, status.authority.lineageId))
+				? { selectionBinding: canonicalReviewCaptureBinding(selection) }
+				: { collectBindings: publicReviewCaptureBindings(status) }),
 		};
 	}
 	if (status.action === "recover") {
@@ -8709,18 +8709,9 @@ function intendedUntrackedSelectionRejection(
 ): { readonly reason: string; readonly field?: string } | undefined {
 	if (input === undefined) return { reason: "selection-input-absent" };
 	if (canonicalReviewCaptureBinding(input) !== canonicalBinding) return { reason: "binding-mismatch" };
-	const bound: Record<(typeof INTENDED_UNTRACKED_BINDING_FIELDS)[number], string> = {
-		target_identity: status.targetIdentity,
-		projection: status.projection.projection,
-		base_tree: status.projection.baseTree,
-		candidate_tree: status.projection.currentCandidateTree,
-	};
-	// A field that no longer matches the live status means the binding was
-	// issued against a different target, projection or tree -- the selection is
-	// stale rather than wrong, and a fresh inspect is the forward route.
-	for (const field of INTENDED_UNTRACKED_BINDING_FIELDS) {
-		if (exactCollectArgument(input, field) !== bound[field]) return { reason: "status-field-mismatch", field };
-	}
+	// Mismatched target, projection or tree means the selection is stale.
+	const field = intendedUntrackedStatusMismatch(input, status);
+	if (field !== undefined) return { reason: "status-field-mismatch", field };
 	// The eligible list is the provider's own `eligible_paths_json`; unreadable
 	// here means it was absent, duplicated, or not valid JSON in the status.
 	if (!Array.isArray(eligible)) return { reason: "eligible-paths-unreadable" };
@@ -9603,14 +9594,33 @@ function sameNativePreLineageCandidate(
 
 function retainNativeCaptureRoutes(selections: ReviewContinuationRegistry, workspaceRoot: string, status: ReviewStatusV3, baseRef: string | undefined): void {
 	const lineageId = status.authority?.lineageId;
-	if (!canOfferNativeCaptureBindings(status) || !isCanonicalProcessString(lineageId)) return;
-	const routes = (status.nextTransition?.kind === "collect" ? status.nextTransition.collect?.inputs ?? [] : []).map((input) => {
+	if (status.applicability !== "current_target" || !isCanonicalProcessString(lineageId) || !isCanonicalProcessString(status.targetIdentity)) return;
+	const canCapture = canOfferNativeCaptureBindings(status);
+	// An escalated authority can still offer a STATUS selection, not a capture.
+	const selection = reviewIntendedUntrackedInput(status);
+	if (!canCapture && selection === undefined) return;
+	const inputs = canCapture ? status.nextTransition?.collect?.inputs ?? [] : [selection!];
+	// Pin the commit for alias comparison without changing the request used to
+	// re-read STATUS. The provider's base tree alone cannot distinguish commits.
+	let selectionBaseCommit: string | undefined;
+	if (baseRef !== undefined && selection !== undefined && hasBoundSelectionLineage(selection, lineageId)
+		&& status.projection.kind === "base-diff" && /^sha256:[0-9a-f]{64}$/.test(status.targetIdentity)
+		&& intendedUntrackedStatusMismatch(selection, status) === undefined) {
+		try {
+			const base = resolveCanonicalCandidateBase(workspaceRoot, baseRef);
+			if (base.tree === status.projection.baseTree) selectionBaseCommit = base.commit;
+		} catch { /* No verified alias; keep the strict selector comparison. */ }
+	}
+	const routes = inputs.map((input) => {
 		// Match the provider target accepted by capture admission: correction
 		// roles may remain bound to frozen evidence while the live tree moves.
 		const targetIdentity = input.validationRequest?.correctionTargetIdentity
 			?? (input.captureOperation === "review.capture-correction-plan" ? status.authorityTargetIdentity : undefined)
 			?? status.targetIdentity;
-		return { binding: canonicalReviewCaptureBinding(input), route: Object.freeze({ workspaceRoot, lineageId, targetIdentity, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true as const }) }) };
+		return { binding: canonicalReviewCaptureBinding(input), route: Object.freeze({
+			workspaceRoot, lineageId, targetIdentity, ...(baseRef === undefined ? {} : { baseRef, committedOnly: true as const }),
+			...(input === selection && targetIdentity === status.targetIdentity && selectionBaseCommit !== undefined ? { selectionBaseCommit } : {}),
+		}) };
 	});
 	for (const { binding, route } of routes) {
 		const existing = selections.readCapture(binding);
@@ -9618,7 +9628,11 @@ function retainNativeCaptureRoutes(selections: ReviewContinuationRegistry, works
 		if (existing.workspaceRoot !== route.workspaceRoot) throw new NativeCaptureRouteRegistrationError("workspace-mismatch");
 		if (existing.lineageId !== route.lineageId) throw new NativeCaptureRouteRegistrationError("lineage-mismatch");
 		if (existing.targetIdentity !== route.targetIdentity) throw new NativeCaptureRouteRegistrationError("target-mismatch");
-		if (existing.baseRef !== undefined && route.baseRef !== undefined && existing.baseRef !== route.baseRef) throw new NativeCaptureRouteRegistrationError("selector-mismatch");
+		if (existing.baseRef !== undefined && route.baseRef !== undefined && existing.baseRef !== route.baseRef) {
+			if (route.selectionBaseCommit === undefined || !("selectionBaseCommit" in existing) || existing.selectionBaseCommit !== route.selectionBaseCommit) {
+				throw new NativeCaptureRouteRegistrationError("selector-mismatch");
+			}
+		}
 		// Only a fresh offer for the identical verified target can add or omit
 		// its selector. A missing selector must never erase a known one.
 		if ((existing.baseRef === undefined) !== (route.baseRef === undefined) && !/^sha256:[0-9a-f]{64}$/.test(route.targetIdentity)) throw new NativeCaptureRouteRegistrationError("target-unverifiable");
@@ -9646,14 +9660,15 @@ function clearRetainedNativeUntrackedSelection(selections: ReviewContinuationReg
 	selections.clearSelection(workspaceRoot, lineageId);
 }
 
-function clearRetainedNativeStatusSelectionsOnTerminal(selections: ReviewContinuationRegistry, workspaceRoot: string, lineageId: string | undefined, state: string | undefined): void {
+function clearRetainedNativeStatusSelectionsOnTerminal(selections: ReviewContinuationRegistry, workspaceRoot: string, lineageId: string | undefined, state: string | undefined, keepBindings: readonly string[] = []): void {
 	if (lineageId === undefined || !isTerminalReviewAuthorityState(state)) return;
 	if (state !== "approved") clearRetainedNativeUntrackedSelection(selections, workspaceRoot, lineageId);
-	selections.clearCaptureRoutes(workspaceRoot, lineageId);
+	selections.clearCaptureRoutes(workspaceRoot, lineageId, keepBindings);
 }
 
 function syncRetainedNativeStatusSelections(selections: ReviewContinuationRegistry, workspaceRoot: string, status: ReviewStatusV3, baseRef: string | undefined): void {
-	clearRetainedNativeStatusSelectionsOnTerminal(selections, workspaceRoot, status.authority?.lineageId, status.authority?.state);
+	const selection = status.applicability === "current_target" ? reviewIntendedUntrackedInput(status) : undefined;
+	clearRetainedNativeStatusSelectionsOnTerminal(selections, workspaceRoot, status.authority?.lineageId, status.authority?.state, selection === undefined ? [] : [canonicalReviewCaptureBinding(selection)]);
 	retainNativeCaptureRoutes(selections, workspaceRoot, status, baseRef);
 }
 
@@ -10430,6 +10445,20 @@ function reviewIntendedUntrackedInput(status: ReviewStatusV3): ReviewCollectInpu
 	return matches.length === 1 ? matches[0] : undefined;
 }
 
+function hasBoundSelectionLineage(input: ReviewCollectInputV3, lineageId: string): boolean {
+	return input.submission?.argumentTokens[3] === `--lineage=${lineageId}`;
+}
+
+function intendedUntrackedStatusMismatch(input: ReviewCollectInputV3, status: ReviewStatusV3): string | undefined {
+	const bound = {
+		target_identity: status.targetIdentity,
+		projection: status.projection.projection,
+		base_tree: status.projection.baseTree,
+		candidate_tree: status.projection.currentCandidateTree,
+	};
+	return INTENDED_UNTRACKED_BINDING_FIELDS.find((field) => exactCollectArgument(input, field) !== bound[field]);
+}
+
 // gentle-pi#706: the inspect stop on the intended-untracked selection carries no
 // continuation, so the blocked result names it exactly: the inventory digest
 // covers path names only, and the round trip resolves either through the select
@@ -11113,6 +11142,19 @@ async function executeReviewControllerOperationImpl(
 					undefined,
 					includeWorkspaceRoot ? defaultCwd : undefined,
 				);
+				const input = reviewIntendedUntrackedInput(status);
+				if (status.authority !== undefined && input !== undefined) {
+					// Bound STATUS needs its retained lineage. An old INSPECT offer
+					// instead supports the explicit, read-only STATUS replay below.
+					const bound = hasBoundSelectionLineage(input, status.authority.lineageId);
+					if (bound || parameters.untrackedScope === undefined) return {
+						...plainMapped,
+						nextStep: bound
+							? 'Call gentle_review with operation "select-intended-untracked", this selectionBinding and intendedUntracked at the same workspace root. Follow the resulting STATUS transition.'
+							: 'Call inspect again with untrackedScope ("exclude", or "select" with intendedUntracked) at the same workspace root and with the same input. Follow the resulting STATUS transition.',
+						...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}),
+					};
+				}
 				if (parameters.untrackedScope === undefined) {
 					if (canonicalBaseRef !== undefined && typeof plainMapped.selectionBinding === "string") {
 						retainedUntrackedSelections.retainStop(defaultCwd, Object.freeze({ selectionBinding: plainMapped.selectionBinding, targetIdentity: status.targetIdentity, baseRef: canonicalBaseRef, committedOnly: true as const }));
@@ -11141,7 +11183,6 @@ async function executeReviewControllerOperationImpl(
 						...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}),
 					};
 				}
-				const input = reviewIntendedUntrackedInput(status);
 				if (input === undefined) {
 					// gentle-ai#2196: same ready-advertisement preflight as the plain path.
 					if (plainMapped.status === "ready") {
@@ -11212,7 +11253,8 @@ async function executeReviewControllerOperationImpl(
 					};
 				}
 				const resolvedStatus = resolved.status!;
-				const candidateIdentity = nativePreLineageCandidateIdentity(resolvedStatus);
+				const candidateIdentity = status.authority === undefined && resolvedStatus.authority === undefined
+					? nativePreLineageCandidateIdentity(resolvedStatus) : undefined;
 				if (candidateIdentity !== undefined) {
 					retainedUntrackedSelections.retainPreStart(
 						defaultCwd,
@@ -11597,31 +11639,54 @@ async function executeReviewControllerOperationImpl(
 		return completed;
 	}
 	if (parameters.operation === REVIEW_CONTROLLER_OPERATION.SELECT_INTENDED_UNTRACKED) {
-		if (nativeReviewCli?.targetStatus === undefined || nativeReviewCli.start === undefined) return nativeStatusUnsupported(parameters.operation);
+		if (nativeReviewCli?.targetStatus === undefined) return nativeStatusUnsupported(parameters.operation);
 		const canonicalBinding = parseCanonicalReviewCaptureBinding(parameters.selectionBinding!);
-		const stopSelector = retainedUntrackedSelections.readStop(defaultCwd);
-		if (stopSelector !== undefined && stopSelector.selectionBinding !== canonicalBinding) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", reason: "binding-mismatch", mutation_performed: false, mutation_outcome: "none" };
-		const committedSelector = stopSelector?.baseRef === undefined ? {} : { baseRef: stopSelector.baseRef, committedOnly: true as const };
+		const boundRoute = readRetainedNativeCaptureRoute(retainedUntrackedSelections, canonicalBinding);
+		const stopSelector = boundRoute === undefined ? retainedUntrackedSelections.readStop(defaultCwd) : undefined;
+		const refuse = (reason: string, field?: string) => ({ operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", reason, ...(field === undefined ? {} : { field }), mutation_performed: false, mutation_outcome: "none" });
+		if (boundRoute !== undefined ? boundRoute.workspaceRoot !== defaultCwd : stopSelector !== undefined && stopSelector.selectionBinding !== canonicalBinding) return refuse("binding-mismatch");
+		if (boundRoute === undefined && nativeReviewCli.start === undefined) return nativeStatusUnsupported(parameters.operation);
+		const baseRef = boundRoute?.baseRef ?? stopSelector?.baseRef;
+		const committedSelector = baseRef === undefined ? {} : { baseRef, committedOnly: true as const };
 		const requestContext = stopSelector?.startContext?.requestContextPath === undefined ? {} : { requestContextPath: stopSelector.startContext.requestContextPath };
 		if (requestContext.requestContextPath !== undefined && isSensitiveRequestContextPath(requestContext.requestContextPath)) return { ...nativeStartRejection("request-context-sensitive-path"), operation: parameters.operation };
+		const statusRequest: NativeTargetStatusRequest = {
+			cwd: defaultCwd, ...committedSelector, ...requestContext,
+			...(boundRoute === undefined ? {} : { lineageId: boundRoute.lineageId }),
+			...(signal === undefined ? {} : { signal }),
+		};
 		let status: ReviewStatusV3;
 		try {
-			const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, { cwd: defaultCwd, ...committedSelector, ...requestContext, ...(signal === undefined ? {} : { signal }) }, retainedUntrackedSelections, defaultCwd);
+			const negotiated = await negotiatedStatusForHostTransport(nativeReviewCli, statusRequest, retainedUntrackedSelections, defaultCwd, true);
 			if (negotiated.transport !== undefined) return hostTransportUnavailable(parameters.operation, negotiated.transport);
 			status = negotiated.status!;
 		} catch (error) { return nativeStatusFailed(parameters.operation, error); }
+		// Only a host-retained route may select an existing authority, even if
+		// an unbound observation happens to rediscover the same collect input.
+		if (boundRoute === undefined ? status.authority !== undefined : status.applicability !== "current_target" || status.authority?.lineageId !== boundRoute.lineageId) return refuse("binding-mismatch");
 		const input = reviewIntendedUntrackedInput(status), eligibleJson = input === undefined ? undefined : exactCollectArgument(input, "eligible_paths_json"), inventory = input === undefined ? undefined : exactCollectArgument(input, "expected_untracked_inventory");
 		let eligible: unknown;
 		try { eligible = JSON.parse(eligibleJson ?? ""); } catch { eligible = undefined; }
 		const scope = parameters.intendedUntracked!.length === 0 ? NATIVE_START_UNTRACKED_SCOPE.EXCLUDE : NATIVE_START_UNTRACKED_SCOPE.SELECT;
 		const selected = validateNativeStartUntrackedSelection({ untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: parameters.intendedUntracked });
-		// A committed selector retained at STOP was issued for one target, so a live
-		// status on another means the target moved under it, the same stale case.
-		const rejected = stopSelector !== undefined && stopSelector.targetIdentity !== status.targetIdentity
+		const retainedTarget = (boundRoute ?? stopSelector)?.targetIdentity;
+		const rejected = retainedTarget !== undefined && retainedTarget !== status.targetIdentity
 			? { reason: "status-field-mismatch", field: "target_identity" }
 			: intendedUntrackedSelectionRejection(input, canonicalBinding, status, eligible, selected);
-		if (rejected !== undefined) return { operation: parameters.operation, status: "blocked", outcome: "intended-untracked-selection-binding-rejected", reason: rejected.reason, ...(rejected.field === undefined ? {} : { field: rejected.field }), mutation_performed: false, mutation_outcome: "none" };
-		const submission = { argumentTokens: input.submission!.argumentTokens, value: JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: scope, expected_untracked_inventory: inventory, intended_untracked: selected.intendedUntracked }) };
+		if (rejected !== undefined) return refuse(rejected.reason, rejected.field);
+		const submission = { argumentTokens: input!.submission!.argumentTokens, value: JSON.stringify({ schema: "gentle-ai.review-intended-untracked-selection/v1", untracked_scope: scope, expected_untracked_inventory: inventory, intended_untracked: selected.intendedUntracked }) };
+		if (boundRoute !== undefined) {
+			if (!hasBoundSelectionLineage(input!, boundRoute.lineageId)) return refuse("binding-mismatch", "lineage");
+			try {
+				const resolved = await negotiatedStatusForHostTransport(nativeReviewCli, { ...statusRequest, intendedUntrackedSelection: { ...submission, boundStatus: true } }, retainedUntrackedSelections, defaultCwd, true);
+				if (resolved.transport !== undefined) return hostTransportUnavailable(parameters.operation, resolved.transport);
+				const next = resolved.status!;
+				if (next.applicability !== "current_target" || next.authority?.lineageId !== boundRoute.lineageId || next.action === "start" || next.nextTransition?.execute?.operation === "review.start") return refuse("binding-mismatch", "lineage");
+				syncRetainedNativeStatusSelections(retainedUntrackedSelections, defaultCwd, next, baseRef);
+				hydrateDispatchBindingFromStatus(candidateViews, defaultCwd, next);
+				return { ...mapNativeTargetStatus(REVIEW_CONTROLLER_OPERATION.STATUS, next, boundRoute.lineageId, includeWorkspaceRoot ? defaultCwd : undefined), operation: parameters.operation, ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
+			} catch (error) { return nativeStatusFailed(parameters.operation, error); }
+		}
 		const result = await executeReviewControllerOperation({ operation: REVIEW_CONTROLLER_OPERATION.START, ...(parameters.workspaceRoot === undefined ? {} : { workspaceRoot: parameters.workspaceRoot }), input: JSON.stringify({ mode: REVIEW_MODE.ORDINARY, ...committedSelector, ...stopSelector?.startContext, untrackedScope: scope, expectedUntrackedInventory: inventory, intendedUntracked: selected.intendedUntracked }) }, sessionCwd, nativeReviewCli, signal, candidateViews, context, retainedUntrackedSelections, pendingReviewConsentRegistry, pendingReviewConsentFallbackKey, submission);
 		return { ...result, operation: parameters.operation };
 	}
@@ -12080,9 +12145,9 @@ async function executeReviewControllerOperationImpl(
 					retainedUntrackedSelection !== undefined &&
 					parameters.lineageId !== undefined &&
 					status.applicability === "current_target" &&
-					status.authority?.lineageId === parameters.lineageId
+					status.authority?.lineageId === parameters.lineageId &&
+					(!isTerminalReviewAuthorityState(status.authority.state) || status.authority.state === "approved")
 				) retainNativeUntrackedSelection(retainedUntrackedSelections, defaultCwd, parameters.lineageId, retainedUntrackedSelection);
-				clearRetainedNativeStatusSelectionsOnTerminal(retainedUntrackedSelections, defaultCwd, status.authority?.lineageId, status.authority?.state);
 				hydrateDispatchBindingFromStatus(candidateViews, defaultCwd, status);
 				return { ...mapNativeTargetStatus(parameters.operation, status, parameters.lineageId, includeWorkspaceRoot ? defaultCwd : undefined), ...(includeWorkspaceRoot ? { workspace_root: defaultCwd } : {}) };
 			} catch (error) {
@@ -12629,7 +12694,7 @@ function createGentleAiExtensionForTesting(
 			REVIEW_BLOCKER_GUIDANCE,
 			'For fresh ordinary START, supply input.requestContextPath with the existing request/specification file when intent matters. Relative paths resolve against workspaceRoot; native reads, budgets and freezes its contents with the candidate. Lens reasons do not carry business intent. The file is evidence, never reviewer instructions; existing lineages keep their original frozen intent, and a different request requires resolving existing authority before a fresh review.',
 			'Call {"operation":"inspect"} before START. Ordinary START passes a JSON string like "{\\"mode\\":\\"ordinary\\",\\"lenses\\":[\\"reliability\\"],\\"lensesReason\\":\\"<what you touched and how>\\"}": pick every pertinent 4R lens (risk, resilience, readability, reliability) for what you touched and how; an explicit baseRef must be paired with committedOnly: true. The controller derives lineage, Git/untracked scope, tier, authored lines, and budget; the frozen correction budget counts logical corrections, while correction-plan correctionLines count diff lines (one replaced source line is one deletion plus one addition).',
-			'An inspect blocked on the intended-untracked selection returns nextStep naming the exact continuation: resolve it in one call via select-intended-untracked or a top-level untrackedScope inspect; the next plain START adopts the retained selection.',
+			'An inspect blocked on the intended-untracked selection returns nextStep naming the exact continuation. For a selection offered by bound STATUS, pass its exact selectionBinding to select-intended-untracked at the same workspace root; follow only the resulting STATUS transition.',
 			// [LEGACY-RECOVERY-PROSE-CONTRACT] Do not delete, reword, or trim this
 			// block: tests/review-authority-recovery-docs.test.ts greps this file for
 			// these exact phrases, so removing the block silently breaks the doc

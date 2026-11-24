@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -17,7 +17,7 @@ import type {
 	Theme,
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension } from "../extensions/gentle-ai.ts";
+import { __testing, applyModelConfig, applyModelConfigAsync, createGentleAiExtension, readModelConfig } from "../extensions/gentle-ai.ts";
 import { PROFILES_KIND, PROFILES_VERSION, bootstrapProfilesFile, readProfilesFileResult, type AgentProfilesFile } from "../lib/agent-profiles.ts";
 import { bindSessionProfile, readSessionProfileBinding, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
 import { freezeSessionProfileAtOwnStart, freezeSessionProfileAtStartup, resetFrozenInheritedProfilesForTesting } from "../lib/session-profile-freeze.ts";
@@ -25,6 +25,7 @@ import { createSessionProfileBind, createSessionProfileClear, createSessionProfi
 import { createSessionProfileIntegration, runCurrentSessionProfileSelection } from "../lib/session-profile-integration.ts";
 import { readSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import type { AgentModelConfig, AgentRoutingEntry, ThinkingLevel } from "../lib/model-routing-authority.ts";
+import { readSavedModelConfig } from "../lib/model-routing-authority.ts";
 type LiveSession = Pick<ExtensionAPI, "setModel" | "setThinkingLevel" | "getThinkingLevel">;
 import { PROFILE_PIN_KIND, PROFILE_PIN_VERSION, setProfilePinWorktreeResolverForTesting, writeProfilePinSync } from "../lib/agent-profile-pin.ts";
 import { NATIVE_REVIEW_ERROR_CODE, NativeReviewCliError, type NativeReviewCli } from "../lib/native-review-cli.ts";
@@ -2274,8 +2275,8 @@ function applyOnce(fixture: { onInput(action: (panel: ScreenPanel) => void): voi
 	actOnProfile(fixture, "d", name);
 }
 
-function profilesStoreFixture(t: test.TestContext) {
-	const fixture = routingConsumerFixture(t, ["worker"]);
+function profilesStoreFixture(t: test.TestContext, agents = ["worker"]) {
+	const fixture = routingConsumerFixture(t, agents);
 	const storePath = join(fixture.configHome, "profiles.json");
 	const settingsPath = join(fixture.agentHome, "settings.json");
 	// The panel resolves the per-repository profile pin through a Git seam, so
@@ -3515,6 +3516,706 @@ test("effective routing prefers models.json over the materialized stores", (t) =
 		helper: { model: "openai/beta" },
 	});
 	assert.equal(existsSync(join(fixture.root, ".pi", "gentle-ai", "models.json")), false, "reading never writes");
+});
+
+for (const root of ["project .agents", "home .agents", "bundled pi-subagents", "runtime filename fallback"] as const) {
+	test(`models screen stale cleanup preserves agents from ${root}`, async (t) => {
+		const { fixture, writeStore, storePath } = profilesStoreFixture(t, []);
+		const filenameFallback = root === "runtime filename fallback";
+		const name = root === "bundled pi-subagents" ? "worker" : filenameFallback ? "archivist" : "inventory-helper";
+		const dir = root === "project .agents" ? join(fixture.root, ".agents")
+			: root === "home .agents" ? join(process.env.HOME!, ".agents")
+			: filenameFallback ? join(fixture.root, ".pi", "agents")
+			: join(fixture.root, ".pi", "npm", "node_modules", "pi-subagents", "agents");
+		writeMarkdown(join(dir, `${name}.md`), `---\n${filenameFallback ? "" : `name: ${name}\n`}description: Inventory fixture\n---\nbody\n`);
+		const routes = { [name]: { model: "openai/alpha" }, abandoned: { model: "openai/alpha" } };
+		writeStore({ team: routes }, "team");
+		const subPath = join(fixture.root, ".pi", "subagents.json");
+		writeFileSync(subPath, JSON.stringify({ model_profiles: routes }));
+		writeFileSync(fixture.globalPath, JSON.stringify(routes));
+		const paths = [subPath, fixture.globalPath, storePath];
+		const before = paths.map((path) => readFileSync(path));
+		fixture.tui.terminal.rows = 40;
+		fixture.onInput((panel) => {
+			panel.handleInput("x");
+			const text = stripAnsi(renderComponent(panel));
+			assert.doesNotMatch(text, new RegExp(`\\[x\\] ${name}`), "a panel-discoverable agent is never a cleanup candidate");
+			assert.match(text, /\[x\] abandoned/);
+			// Leave no stale keys selected: confirming must not rewrite any store.
+			panel.handleInput(" ");
+			panel.handleInput("\r");
+			panel.handleInput("\x1b");
+		});
+		await fixture.run("gentle:profiles");
+		assert.deepEqual(paths.map((path) => readFileSync(path)), before, "confirming preserves every store byte-for-byte");
+	});
+}
+
+test("models screen stale cleanup refreshes existing notices after success", async (t) => {
+	const { fixture } = cleanupTransactionFixture(t);
+	fixture.onInput((panel) => {
+		const before = stripAnsi(renderComponent(panel));
+		assert.match(before, /Profile key "abandoned" matches no agent configured in gentle-shell/);
+		panel.handleInput("x");
+		panel.handleInput("\r");
+		const after = stripAnsi(renderComponent(panel));
+		assert.match(after, /Removed 1 stale routing key\./);
+		assert.doesNotMatch(after, /Profile key "abandoned"/, "successful cleanup refreshes the cached notices");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+});
+
+test("models screen stale cleanup keeps the commit when refreshing notices throws", async (t) => {
+	// Model a parent session even when the test runner itself is a Pi child.
+	for (const key of ["GENTLE_PI_AGENTS_CHILD", "GENTLE_PI_PROFILE_FOLLOW"]) {
+		const previous = process.env[key];
+		delete process.env[key];
+		t.after(() => { if (previous !== undefined) process.env[key] = previous; });
+	}
+	const { fixture, subPath, userPath, storePath, writeStore, writePin, localPinPath } = cleanupTransactionFixture(t);
+	const entry = { model: "openai/alpha" };
+	const read = (path: string) => JSON.parse(readFileSync(path, "utf8"));
+	const original = read(subPath);
+	writeStore({ team: { worker: entry, abandoned: entry }, sibling: { abandoned: entry } });
+	writeFileSync(subPath, JSON.stringify({ ...original, model_profiles: { ...original.model_profiles, explor: entry } }));
+	freezeScreenSession(fixture);
+	writePin(localPinPath, "team");
+	const notice = /subagents\.json routes "explor", which no agent matches, so it is ignored\./;
+	const invalidEffort = { toString: null };
+	let rendered = "";
+	let committed: unknown[] = [];
+	let visited = false;
+	fixture.onInput((panel) => {
+		if (visited) return panel.handleInput("\x1b");
+		visited = true;
+		const before = stripAnsi(panel.render(120).join("\n"));
+		assert.match(before, /Used in this repo\./);
+		assert.match(before, notice, "the unbound panel reads subagents.json notices");
+		// Opening the panel needs valid input; introduce the bad setting before cleanup takes its snapshot.
+		writeFileSync(subPath, JSON.stringify({ ...read(subPath), default_effort: invalidEffort }));
+		panel.handleInput("x");
+		const card = stripAnsi(renderComponent(panel));
+		assert.match(card, /\[x\] abandoned/);
+		assert.match(card, /\[x\] explor/);
+		panel.handleInput("\r");
+		rendered = stripAnsi(panel.render(120).join("\n"));
+		committed = [read(subPath), read(userPath), read(fixture.globalPath), read(storePath).profiles];
+		// The save reopens the panel, so restore the valid effort without restoring any routes.
+		writeFileSync(subPath, JSON.stringify({ ...original, model_profiles: read(subPath).model_profiles }));
+		chooseAgent(panel, "worker");
+		chooseEffort(panel, "high");
+		panel.handleInput("s");
+	});
+	await fixture.run("gentle:profiles");
+	const cleanSubagents = { extra: { keep: true }, model_profiles: { worker: entry } };
+	assert.deepEqual(committed, [
+		{ ...cleanSubagents, default_effort: invalidEffort }, cleanSubagents, { worker: entry },
+		{ team: { worker: entry }, sibling: {} },
+	]);
+	assert.doesNotMatch(rendered, /Cleanup failed:/);
+	assert.match(rendered, /Removed 2 stale routing keys\. Warning: Could not refresh routing notices\./);
+	assert.match(rendered, notice, "the previous notices remain visible");
+	assert.doesNotMatch(rendered, /\d+ unsaved/, "cleanup keeps the draft and saved baseline in sync");
+	assert.deepEqual(read(storePath).profiles, { team: { worker: { ...entry, thinking: "high" } }, sibling: {} }, "a later save does not resurrect removed routes");
+});
+
+test("models screen stale cleanup refreshes notices for the switched profile", async (t) => {
+	const { fixture, writeStore } = cleanupTransactionFixture(t);
+	const entry = { model: "openai/alpha" };
+	writeStore({ team: { abandoned: entry }, sibling: { worker: entry, abandoned: entry, "gentle-ai-worker": entry } }, "team");
+	fixture.onInput((panel) => {
+		assert.equal(shownProfile(panel), "team");
+		const tabs = tabNames(panel);
+		panel.handleInput(tabs.indexOf("sibling") < tabs.indexOf("team") ? "\x1b[D" : "\x1b[C");
+		assert.equal(shownProfile(panel), "sibling");
+		chooseAgent(panel, "worker");
+		chooseEffort(panel, "high");
+		panel.handleInput("x");
+		panel.handleInput("\r");
+		const after = stripAnsi(renderComponent(panel));
+		assert.match(after, /Removed 1 stale routing key\./);
+		assert.match(after, /Profile key "gentle-ai-worker" matches no agent configured in gentle-shell; did you mean worker\?/);
+		assert.doesNotMatch(after, /Profile key "abandoned"/);
+		assert.match(after, /worker\s+openai\/alpha\s+high/, "cleanup preserves an unrelated unsaved edit");
+		panel.handleInput("\x03");
+	});
+	await fixture.run("gentle:profiles");
+});
+
+for (const action of ["confirm", "deselect", "empty", "escape", "nothing"] as const) {
+	test(`models screen stale cleanup: ${action}`, async (t) => {
+		const { fixture, writeStore, storePath } = profilesStoreFixture(t);
+		const entry = { model: "openai/alpha" };
+		const routes = { worker: entry, "review-refuter": entry, "review-validator": entry, "gentle-ai-worker": entry,
+			...(action === "nothing" ? {} : { abandoned: entry, obsolete: entry }) };
+		writeStore({ team: routes, sibling: routes }, "team");
+		const subPath = join(fixture.root, ".pi", "subagents.json");
+		writeFileSync(subPath, JSON.stringify({ model_profiles: routes, extra: true }));
+		writeFileSync(fixture.globalPath, JSON.stringify(routes));
+		const paths = [subPath, fixture.globalPath, storePath];
+		const snapshot = () => paths.map((path) => [readFileSync(path, "utf8"), statSync(path).mtimeMs]);
+		let before: ReturnType<typeof snapshot>;
+		fixture.tui.terminal.rows = 40;
+		fixture.onInput((panel) => {
+			before = snapshot();
+			panel.handleInput("x");
+			const text = stripAnsi(renderComponent(panel));
+			if (action === "nothing") {
+				assert.match(text, /Nothing to clean\./);
+				assert.doesNotMatch(text, /Clean stale routing keys/);
+			} else {
+				assert.match(text, /Clean stale routing keys/);
+				assert.match(text, /\[x\] abandoned/);
+				assert.match(text, /\[x\] obsolete/);
+				assert.doesNotMatch(text, /\[x\] (review-refuter|review-validator|gentle-ai-worker)/);
+				if (action === "deselect" || action === "empty") panel.handleInput(" ");
+				if (action === "empty") { panel.handleInput("\x1b[B"); panel.handleInput(" "); }
+				panel.handleInput(action === "escape" ? "\x1b" : "\r");
+			}
+			panel.handleInput("\x1b");
+		});
+		await fixture.run("gentle:profiles");
+		if (["empty", "escape", "nothing"].includes(action)) assert.deepEqual(snapshot(), before!);
+		else {
+			const expected = { ...routes };
+			if (action === "confirm") delete expected.abandoned;
+			delete expected.obsolete;
+			assert.deepEqual(JSON.parse(readFileSync(subPath, "utf8")), { model_profiles: expected, extra: true });
+			assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), expected);
+			const stored = JSON.parse(readFileSync(storePath, "utf8"));
+			assert.deepEqual(stored.profiles, { team: expected, sibling: expected });
+			assert.equal(stored.active, "team");
+		}
+	});
+}
+
+test("models screen stale cleanup keeps the keyboard focus visible at short heights", async (t) => {
+	const { fixture, writeStore, storePath } = profilesStoreFixture(t);
+	const entry = { model: "openai/alpha" };
+	const routes = { abandoned: entry, obsolete: entry, retired: entry };
+	writeStore({ team: routes, sibling: routes }, "team");
+	const subPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subPath, JSON.stringify({ model_profiles: routes }));
+	writeFileSync(fixture.globalPath, JSON.stringify(routes));
+	const paths = [subPath, fixture.globalPath, storePath];
+	const before = paths.map((path) => readFileSync(path, "utf8"));
+	fixture.tui.terminal.rows = 10;
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		panel.handleInput("\x1b[B");
+		assert.match(stripAnsi(renderComponent(panel)), /▸ \[x\] obsolete/);
+		panel.handleInput(" ");
+		for (let rows = 15; rows >= 3; rows--) {
+			fixture.tui.terminal.rows = rows;
+			const text = stripAnsi(renderComponent(panel));
+			assert.equal(text.split("\n").length, rows);
+			assert.match(text, /▸ \[ \] obsolete/);
+		}
+		assert.deepEqual(paths.map((path) => readFileSync(path, "utf8")), before);
+		panel.handleInput("\r");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	const expected = { obsolete: entry };
+	assert.deepEqual(JSON.parse(readFileSync(subPath, "utf8")), { model_profiles: expected });
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), expected);
+	const stored = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(stored.profiles, { team: expected, sibling: expected });
+	assert.equal(stored.active, "team");
+	assert.deepEqual(fixture.notifications, []);
+});
+
+for (const rows of [40, 10, 3]) {
+	test(`models screen stale cleanup accepts pointer selection at ${rows} rows`, async (t) => {
+		const { fixture, bytes, subPath, userPath, storePath } = cleanupTransactionFixture(t);
+		const entry = { model: "openai/alpha" };
+		writeFileSync(fixture.globalPath, JSON.stringify({ abandoned: entry, obsolete: entry }));
+		const before = bytes();
+		fixture.tui.terminal.rows = rows;
+		fixture.onInput((panel) => {
+			const width = 120;
+			const click = (label: string) => {
+				const lines = panel.render(width).map(stripAnsi);
+				const y = lines.findIndex((line) => line.includes(label));
+				assert.notEqual(y, -1, `missing target: ${label}`);
+				const x = lines[y].indexOf(label);
+				for (const type of ["press", "click"] as const) {
+					panel.handleMouse!({ type, x, y, screenX: x, screenY: y, button: "left", width, height: rows });
+				}
+			};
+			panel.handleInput("x");
+			if (rows === 3) panel.handleInput("\x1b[B");
+			click("[x] obsolete");
+			assert.match(stripAnsi(renderComponent(panel)), /▸ \[ \] obsolete/, "one click deselects and focuses the key without closing the card");
+			assert.deepEqual(bytes(), before);
+			if (rows === 3) panel.handleInput("\r");
+			else click("[ Clean ]");
+			panel.handleInput("\x1b");
+		});
+		await fixture.run("gentle:profiles");
+		assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { obsolete: entry });
+		for (const path of [subPath, userPath]) {
+			assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { extra: { keep: true }, model_profiles: { worker: entry } });
+		}
+		const stored = JSON.parse(readFileSync(storePath, "utf8"));
+		assert.deepEqual(stored.profiles, { team: { worker: entry }, sibling: {} });
+		assert.equal(stored.active, "team");
+		assert.deepEqual(fixture.notifications, []);
+	});
+}
+
+test("models screen stale cleanup only removes a key from the store that actually has it", async (t) => {
+	const { fixture, writeStore, storePath } = profilesStoreFixture(t);
+	const entry = { model: "openai/alpha" };
+	const known = { worker: entry };
+	writeStore({ team: { ...known, "stale-profile-only": entry } }, "team");
+	const subPath = join(fixture.root, ".pi", "subagents.json");
+	writeFileSync(subPath, JSON.stringify({ model_profiles: { ...known, "stale-sub-only": entry } }));
+	writeFileSync(fixture.globalPath, JSON.stringify({ ...known, "stale-model-only": entry }));
+	fixture.tui.terminal.rows = 40;
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		panel.handleInput("\r");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.deepEqual(JSON.parse(readFileSync(subPath, "utf8")), { model_profiles: known });
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), known);
+	const stored = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(stored.profiles, { team: known });
+});
+
+// Public-command transaction contract. Patches are installed only inside the
+// panel callback, after startup reads, and restored even if an assertion fails.
+function cleanupTransactionFixture(t: test.TestContext) {
+	const setup = profilesStoreFixture(t);
+	const { fixture, writeStore, storePath } = setup;
+	const entry = { model: "openai/alpha" };
+	writeStore({ team: { worker: entry, abandoned: entry }, sibling: { abandoned: entry } }, "team");
+	const subPath = join(fixture.root, ".pi", "subagents.json");
+	const userPath = join(fixture.agentHome, "subagents.json");
+	for (const path of [subPath, userPath]) {
+		writeFileSync(path, JSON.stringify({ extra: { keep: true }, model_profiles: { worker: entry, abandoned: entry } }));
+	}
+	writeFileSync(fixture.globalPath, JSON.stringify({ worker: entry, abandoned: entry }));
+	const paths = [subPath, userPath, fixture.globalPath, storePath, fixture.projectPath];
+	const bytes = () => paths.map((path) => existsSync(path) ? readFileSync(path) : undefined);
+	fixture.tui.terminal.rows = 40;
+	return { ...setup, subPath, userPath, paths, bytes };
+}
+
+test("models screen cleanup transaction treats a shared project and user subagent file as one store", async (t) => {
+	const { fixture, subPath, userPath, storePath } = cleanupTransactionFixture(t);
+	process.env.GENTLE_PI_AGENT_HOME = dirname(subPath);
+	const originalUserBytes = readFileSync(userPath);
+	const entry = { model: "openai/alpha" };
+	let card = "", feedback = "";
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		card = stripAnsi(renderComponent(panel));
+		if (card.includes("Clean stale routing keys")) panel.handleInput("\r");
+		feedback = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.match(card, /\[x\] abandoned/);
+	assert.match(feedback, /Removed 1 stale routing key\./);
+	assert.doesNotMatch(feedback, /Cleanup failed:/);
+	assert.deepEqual(JSON.parse(readFileSync(subPath, "utf8")), { extra: { keep: true }, model_profiles: { worker: entry } });
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker: entry });
+	assert.deepEqual(JSON.parse(readFileSync(storePath, "utf8")).profiles, { team: { worker: entry }, sibling: {} });
+	assert.deepEqual(readFileSync(userPath), originalUserBytes, "the old user path is not part of the cleanup");
+});
+
+test("models screen cleanup transaction refuses to write while Desktop is applying a profile", async (t) => {
+	const { fixture, bytes } = cleanupTransactionFixture(t);
+	const before = bytes();
+	let feedback = "";
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		assert.match(stripAnsi(renderComponent(panel)), /\[x\] abandoned/);
+		assert.equal(beginDesktopProfileApply(), true);
+		try {
+			panel.handleInput("\r");
+			feedback = stripAnsi(renderComponent(panel));
+			assert.equal(beginDesktopProfileApply(), false, "cleanup never releases a gate it did not acquire");
+		} finally {
+			endDesktopProfileApply();
+		}
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.match(feedback, /Cleanup failed: Gentle Desktop is applying a profile right now/s);
+	assert.doesNotMatch(feedback, /Removed \d+ stale routing/);
+	assert.deepEqual(bytes(), before, "a busy apply leaves every cleanup store unchanged");
+});
+
+test("models screen cleanup transaction rejects a profile changed since the panel opened", async (t) => {
+	const { fixture, storePath, bytes } = cleanupTransactionFixture(t);
+	let external: ReturnType<typeof bytes>;
+	let afterCleanup: ReturnType<typeof bytes>;
+	let feedback = "";
+	let visited = false;
+	fixture.onInput((panel) => {
+		if (visited) return panel.handleInput("\x1b");
+		visited = true;
+		const store = JSON.parse(readFileSync(storePath, "utf8"));
+		store.profiles.team.worker.model = "openai/beta";
+		writeFileSync(storePath, JSON.stringify(store));
+		external = bytes();
+
+		panel.handleInput("x");
+		if (/Clean stale routing keys/.test(renderComponent(panel))) panel.handleInput("\r");
+		feedback = stripAnsi(renderComponent(panel));
+		afterCleanup = bytes();
+		panel.handleInput("u");
+	});
+	await fixture.run("gentle:profiles");
+	assert.equal(JSON.parse(readFileSync(storePath, "utf8")).profiles.team.worker.model, "openai/beta", "Use in this session must not save the stale route back to disk");
+	assert.deepEqual(afterCleanup!, external!, "cleanup preserves all stores byte-for-byte");
+	assert.deepEqual(bytes(), external!, "using the profile still leaves all stores untouched");
+	assert.match(feedback, /Cleanup failed:.*changed on disk/s);
+	assert.doesNotMatch(feedback, /Removed \d+ stale routing/);
+});
+
+test("models screen cleanup transaction rejects a key whose agent appeared after the card opened", async (t) => {
+	const { fixture, bytes } = cleanupTransactionFixture(t);
+	const before = bytes();
+	let afterCleanup: ReturnType<typeof bytes>;
+	let feedback = "";
+	let visited = false;
+	fixture.onInput((panel) => {
+		if (visited) return panel.handleInput("\x1b");
+		visited = true;
+		panel.handleInput("x");
+		assert.match(stripAnsi(renderComponent(panel)), /abandoned/, "abandoned starts as a stale candidate");
+		const agentPath = join(fixture.root, ".pi", "agents", "abandoned.md");
+		fs.mkdirSync(dirname(agentPath), { recursive: true });
+		writeFileSync(agentPath, "---\nname: abandoned\ndescription: Worker\n---\nbody\n");
+		if (/Clean stale routing keys/.test(renderComponent(panel))) panel.handleInput("\r");
+		feedback = stripAnsi(renderComponent(panel));
+		afterCleanup = bytes();
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.deepEqual(afterCleanup!, before, "cleanup preserves all stores byte-for-byte");
+	assert.match(feedback, /Cleanup failed:.*no longer stale: abandoned/s);
+	assert.doesNotMatch(feedback, /Removed \d+ stale routing/);
+});
+
+test("models screen cleanup transaction rejects a filename-named agent added during selection", async (t) => {
+	const { fixture, bytes } = cleanupTransactionFixture(t);
+	const before = bytes();
+	let feedback = "";
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		assert.match(stripAnsi(renderComponent(panel)), /\[x\] abandoned/);
+		writeMarkdown(join(fixture.root, ".pi", "agents", "abandoned.md"), "---\ndescription: Revived agent\n---\nbody\n");
+		panel.handleInput("\r");
+		feedback = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.match(feedback, /Cleanup failed:.*no longer stale: abandoned/s);
+	assert.doesNotMatch(feedback, /Removed \d+ stale routing/);
+	assert.deepEqual(bytes(), before, "cleanup preserves all stores byte-for-byte");
+});
+
+test("models screen cleanup transaction warns about leftover files after commit", async (t) => {
+	const { fixture, subPath, userPath, storePath } = cleanupTransactionFixture(t);
+	const destinations = [subPath, userPath, fixture.globalPath, storePath];
+	const leftovers: string[] = [];
+	let feedback = "";
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		assert.match(stripAnsi(renderComponent(panel)), /\[x\] abandoned/);
+		const unlink = fs.unlinkSync;
+		const mock = t.mock.method(fs, "unlinkSync", (path: Parameters<typeof unlink>[0]) => {
+			if (destinations.some((destination) => String(path).startsWith(`${destination}.cleanup-restore-`))) {
+				leftovers.push(String(path));
+				throw new Error("injected temporary-file removal failure");
+			}
+			unlink(path);
+		});
+		try {
+			panel.handleInput("\r");
+		} finally {
+			mock.mock.restore();
+		}
+		feedback = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	const known = { worker: { model: "openai/alpha" } };
+	for (const path of [subPath, userPath]) {
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { extra: { keep: true }, model_profiles: known });
+	}
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), known);
+	const stored = JSON.parse(readFileSync(storePath, "utf8"));
+	assert.deepEqual(stored.profiles, { team: known, sibling: {} });
+	assert.equal(stored.active, "team");
+	assert.match(feedback, /Removed 1 stale routing key/);
+	assert.doesNotMatch(feedback, /abandoned|Cleanup failed:/);
+	assert.equal(leftovers.length, destinations.length);
+	for (const path of leftovers) assert.ok(existsSync(path), `temporary file remains: ${path}`);
+	const notice = fixture.notifications.find((entry) => entry.severity === "warning" && entry.message.includes(leftovers[0]!));
+	assert.ok(notice, "the panel must warn about leftover temporary files after a successful cleanup");
+	for (const path of leftovers) assert.ok(notice.message.includes(path), `warning must name ${path}`);
+});
+
+for (const boundary of ["prepare", "replace", "replace-then-throw", "legacy-only-then-throw", "restore-error"] as const) {
+	test(`models screen cleanup transaction: ${boundary}`, async (t) => {
+		const { fixture, storePath, paths, bytes } = cleanupTransactionFixture(t);
+		if (boundary === "legacy-only-then-throw") {
+			fs.renameSync(fixture.globalPath, fixture.projectPath);
+		}
+		const before = bytes();
+		const original = { writeFileSync: fs.writeFileSync, renameSync: fs.renameSync, openSync: fs.openSync };
+		let injected = false;
+		let restoreInjected = false;
+		// Fail models after earlier stores were changed. The legacy-only case
+		// fails after replacing the project file, while global stays absent.
+		const target = boundary === "legacy-only-then-throw" ? fixture.projectPath : fixture.globalPath;
+		fixture.onInput((panel) => {
+			panel.handleInput("x");
+			try {
+				fs.openSync = ((path: any, ...args: any[]) => {
+					if (boundary === "prepare" && String(path).includes(".cleanup-next-")) {
+						injected = true;
+						throw new Error("injected preparation failure");
+					}
+					return (original.openSync as any)(path, ...args);
+				}) as typeof fs.openSync;
+				fs.writeFileSync = ((path: any, ...args: any[]) => {
+					if (!injected && path === target) {
+						injected = true;
+						if (boundary !== "prepare" && boundary !== "replace") (original.writeFileSync as any)(path, ...args);
+						throw new Error(boundary === "prepare" ? "injected preparation failure" : "injected replacement failure");
+					}
+					return (original.writeFileSync as any)(path, ...args);
+				}) as typeof fs.writeFileSync;
+				fs.renameSync = ((from: any, to: any) => {
+					if (boundary === "restore-error" && String(from).includes(".cleanup-restore-")) {
+						restoreInjected = true;
+						throw new Error("injected restoration failure");
+					}
+					if (!injected && to === target) {
+						injected = true;
+						if (boundary !== "replace") original.renameSync(from, to);
+						throw new Error("injected replacement failure");
+					}
+					return original.renameSync(from, to);
+				}) as typeof fs.renameSync;
+				syncBuiltinESMExports();
+				panel.handleInput("\r");
+			} finally {
+				Object.assign(fs, original);
+				syncBuiltinESMExports();
+			}
+			const text = stripAnsi(renderComponent(panel));
+			assert.ok(injected, "the public command reached the injected filesystem boundary");
+			assert.match(text, /Cleanup failed:.*injected (preparation|replacement) failure/s);
+			assert.doesNotMatch(text, /Removed \d+ stale routing/);
+			assert.match(text, /abandoned/, "failed cleanup keeps the displayed profile draft");
+			if (boundary === "restore-error") {
+				assert.ok(restoreInjected);
+				assert.match(text, /Full details are in notifications\./);
+				const notice = fixture.notifications.find((entry) => entry.severity === "warning" && /Unresolved restore:/.test(entry.message));
+				assert.ok(notice, "full rollback failure must remain human-visible after closing the panel");
+				assert.match(notice.message, /injected replacement failure/);
+				assert.match(notice.message, /injected restoration failure/);
+				for (const path of paths.slice(0, 3)) {
+					const recovery = fs.readdirSync(dirname(path)).find((name) => join(dirname(path), name).startsWith(`${path}.cleanup-restore-`));
+					assert.ok(recovery, `recovery copy retained for ${path}`);
+					const recoveryPath = join(dirname(path), recovery);
+					assert.ok(notice.message.includes(`recovery: ${recoveryPath};`));
+					assert.deepEqual(readFileSync(recoveryPath), before[paths.indexOf(path)]);
+				}
+			} else {
+				assert.deepEqual(bytes(), before, `restore all bytes and existence: ${paths.join(", ")}`);
+			}
+			panel.handleInput("\x1b");
+		});
+		await fixture.run("gentle:profiles");
+		assert.deepEqual(readFileSync(storePath), before[3], "no successful profile-store update");
+	});
+}
+
+for (const invalid of ["malformed", "unreadable", "linked", "changed"] as const) {
+	test(`models screen cleanup transaction: ${invalid} input`, async (t) => {
+		const { fixture, userPath, bytes } = cleanupTransactionFixture(t);
+		if (invalid === "malformed") writeFileSync(userPath, "{broken JSON");
+		if (invalid === "linked") fs.linkSync(userPath, join(fixture.agentHome, "linked-subagents.json"));
+		let expected = bytes();
+		fixture.onInput((panel) => {
+			const originalRead = fs.readFileSync;
+			try {
+				if (invalid === "unreadable") {
+					fs.readFileSync = ((path: any, ...args: any[]) => {
+						if (path === userPath) throw Object.assign(new Error("injected unreadable input"), { code: "EACCES" });
+						return (originalRead as any)(path, ...args);
+					}) as typeof fs.readFileSync;
+					syncBuiltinESMExports();
+				}
+				panel.handleInput("x");
+			} finally { fs.readFileSync = originalRead; syncBuiltinESMExports(); }
+			if (invalid === "changed") {
+				writeFileSync(userPath, `${readFileSync(userPath, "utf8")}\n`);
+				expected = bytes();
+				panel.handleInput("\r");
+			}
+			assert.match(stripAnsi(renderComponent(panel)), /Cleanup failed:/);
+			assert.doesNotMatch(stripAnsi(renderComponent(panel)), /Removed \d+ stale routing/);
+			assert.deepEqual(bytes(), expected, "rejection preserves all inputs, including external edits");
+			panel.handleInput("\x1b");
+		});
+		await fixture.run("gentle:profiles");
+		assert.deepEqual(bytes(), expected);
+	});
+}
+
+test("models screen cleanup transaction: cleanup never creates the global models.json from legacy routes", async (t) => {
+	const { fixture, writeStore } = cleanupTransactionFixture(t);
+	const remaining = { worker: { model: "openai/alpha" } };
+	// With no active profile, the effective reader uses each workspace's legacy routes.
+	writeStore({ team: { ...remaining, abandoned: remaining.worker }, sibling: { abandoned: remaining.worker } });
+	fs.renameSync(fixture.globalPath, fixture.projectPath);
+	const workerJson = JSON.stringify(JSON.parse(readFileSync(fixture.projectPath, "utf8")).worker);
+	const otherCwd = join(fixture.root, "other-workspace");
+	const otherRouting = { worker: { model: "openai/beta", thinking: "high" } };
+	writeMarkdown(join(otherCwd, ".pi", "gentle-ai", "models.json"), JSON.stringify(otherRouting));
+	assert.equal(existsSync(fixture.globalPath), false);
+	assert.deepEqual(readModelConfig(otherCwd), otherRouting);
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		assert.match(stripAnsi(renderComponent(panel)), /\[x\] abandoned/);
+		panel.handleInput("\r");
+		assert.match(stripAnsi(renderComponent(panel)), /Removed 1 stale routing key\./);
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	const legacy = JSON.parse(readFileSync(fixture.projectPath, "utf8"));
+	assert.deepEqual(legacy, remaining, "the legacy source cannot reintroduce the removed route");
+	assert.equal(JSON.stringify(legacy.worker), workerJson, "cleanup preserves the live legacy route's JSON");
+	assert.deepEqual(
+		{ globalExists: existsSync(fixture.globalPath), otherRouting: readModelConfig(otherCwd) },
+		{ globalExists: false, otherRouting },
+		"legacy cleanup must not create global routing or change another workspace's effective routing",
+	);
+});
+
+test("models screen cleanup transaction: offers saved models keys the reader accepts outside the agent-name policy", async (t) => {
+	const { fixture } = cleanupTransactionFixture(t);
+	const worker = { model: "openai/alpha" };
+	const retired = { model: "openai/beta" };
+	writeFileSync(fixture.globalPath, JSON.stringify({ worker, "retired worker": retired }));
+	writeFileSync(fixture.projectPath, JSON.stringify({ worker, "retired legacy": retired }));
+	const saved = readSavedModelConfig(fixture.globalPath, fixture.projectPath);
+	assert.deepEqual(saved.status === "valid" && [saved.config["retired worker"]?.model, saved.config["retired legacy"]?.model],
+		[retired.model, retired.model], "the saved-model reader keeps both keys");
+	let card = "", feedback = "";
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		card = stripAnsi(renderComponent(panel));
+		panel.handleInput("\r");
+		feedback = stripAnsi(renderComponent(panel));
+		panel.handleInput("\x1b");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.match(card, /\[x\] retired worker/);
+	assert.match(card, /\[x\] retired legacy/);
+	assert.doesNotMatch(card, /\[x\] worker/);
+	assert.match(feedback, /Removed \d+ stale routing keys?\./);
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker });
+	assert.deepEqual(JSON.parse(readFileSync(fixture.projectPath, "utf8")), { worker });
+});
+
+test("models screen cleanup transaction: removes selected routes from both saved models layers", async (t) => {
+	const { fixture } = cleanupTransactionFixture(t);
+	const worker = { model: "openai/alpha" };
+	const legacy = { worker: { model: "openai/beta" }, abandoned: { model: "openai/beta" },
+		"legacy-only": { model: "openai/beta" }, obsolete: worker, metadata: { custom: "keep" } };
+	writeFileSync(fixture.projectPath, JSON.stringify(legacy));
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		const card = stripAnsi(renderComponent(panel));
+		assert.match(card, /\[x\] abandoned/);
+		assert.match(card, /\[x\] legacy-only/);
+		assert.match(card, /\[x\] obsolete/);
+		assert.doesNotMatch(card, /\[x\] (worker|metadata)/);
+		panel.handleInput("\x1b[B");
+		panel.handleInput("\x1b[B");
+		panel.handleInput(" ");
+		panel.handleInput("\r");
+		assert.match(stripAnsi(renderComponent(panel)), /Removed 2 stale routing keys\./);
+		panel.handleInput("x");
+		const reopened = stripAnsi(renderComponent(panel));
+		assert.match(reopened, /\[x\] obsolete/);
+		assert.doesNotMatch(reopened, /\[x\] (abandoned|legacy-only)/);
+		panel.handleInput("\x1b");
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), { worker });
+	assert.deepEqual(JSON.parse(readFileSync(fixture.projectPath, "utf8")), {
+		worker: legacy.worker, obsolete: legacy.obsolete, metadata: legacy.metadata,
+	});
+});
+
+test("models screen cleanup transaction: includes effort-only subagent routes accepted by the runtime", async (t) => {
+	const { fixture, subPath, userPath, storePath } = cleanupTransactionFixture(t);
+	const effort = { effort: " HIGH ", custom: "keep" };
+	const routes = { "effort-only": effort, worker: effort, "review-refuter": effort, metadata: { custom: "keep" } };
+	writeFileSync(subPath, JSON.stringify({ model_profiles: routes }));
+	writeFileSync(userPath, JSON.stringify({ model_profiles: { "effort-only": { thinking: " LOW " } } }));
+	const modelRoutes = { "effort-only": { effort: " HIGH " } };
+	writeFileSync(fixture.globalPath, JSON.stringify(modelRoutes));
+	const modelsBefore = readFileSync(fixture.globalPath);
+	const profilesBefore = readFileSync(storePath);
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		const card = stripAnsi(renderComponent(panel));
+		assert.match(card, /\[x\] effort-only/);
+		assert.doesNotMatch(card, /\[x\] (worker|review-refuter|metadata)/);
+		panel.handleInput(" "); // Keep abandoned; remove only effort-only.
+		panel.handleInput("\r");
+		assert.match(stripAnsi(renderComponent(panel)), /Removed 1 stale routing key\./);
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	const { "effort-only": _removed, ...remaining } = routes;
+	assert.deepEqual(JSON.parse(readFileSync(subPath, "utf8")), { model_profiles: remaining });
+	assert.deepEqual(JSON.parse(readFileSync(userPath, "utf8")), { model_profiles: {} });
+	assert.deepEqual(readFileSync(fixture.globalPath), modelsBefore);
+	assert.deepEqual(readFileSync(storePath), profilesBefore);
+});
+
+test("models screen cleanup transaction: preserves raw metadata and per-store selection", async (t) => {
+	const { fixture, subPath, userPath, storePath } = cleanupTransactionFixture(t);
+	const profile = JSON.parse(readFileSync(storePath, "utf8"));
+	profile.extra = { untouched: true };
+	profile.profiles.team.worker.custom = "keep";
+	writeFileSync(storePath, JSON.stringify(profile));
+	const model = JSON.parse(readFileSync(fixture.globalPath, "utf8"));
+	model.metadata = { custom: "keep" }; // Not a routing entry; must not be normalized away.
+	writeFileSync(fixture.globalPath, JSON.stringify(model));
+	fixture.onInput((panel) => {
+		panel.handleInput("x");
+		panel.handleInput("\r");
+		assert.match(stripAnsi(renderComponent(panel)), /Removed 1 stale routing key\./);
+		panel.handleInput("\x1b");
+	});
+	await fixture.run("gentle:profiles");
+	for (const path of [subPath, userPath]) {
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { extra: { keep: true }, model_profiles: { worker: { model: "openai/alpha" } } });
+	}
+	delete model.abandoned;
+	assert.deepEqual(JSON.parse(readFileSync(fixture.globalPath, "utf8")), model);
+	delete profile.profiles.team.abandoned;
+	delete profile.profiles.sibling.abandoned;
+	assert.deepEqual(JSON.parse(readFileSync(storePath, "utf8")), profile);
 });
 
 // Issue #2196: a profile key that names no discovered agent was silently

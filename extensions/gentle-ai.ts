@@ -63,7 +63,8 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, unmatchedProfileKeys } from "../lib/agents-config.ts";
+import { PROVIDER_REVIEW_ROLES, discoverAgents, loadAgentsConfig, parseAgentsConfig, unmatchedProfileKeys, staleRoutingKeys, removeRoutingKeys } from "../lib/agents-config.ts";
+import { snapshotRoutingCleanup, commitRoutingCleanup } from "../lib/routing-cleanup-transaction.ts";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -91,9 +92,11 @@ import { installPackageAssets, getPackageAssetOwner, hasPackageAssetOwnerInstall
 import {
 	THINKING_LEVELS,
 	normalizeModelConfig,
+	isSafeAgentName,
 	isThinkingLevel,
 	normalizeModelId,
 	normalizeRoutingEntry,
+	parseModelConfigFileValue,
 	readSavedModelConfig as readModelRoutingAuthority,
 	readSavedModelConfigAsync as readModelRoutingAuthorityAsync,
 	readModelConfigFile,
@@ -113,6 +116,7 @@ import {
 	formatRoutingRow,
 	isProfileOrchestratorKey,
 	parseProfileExportTextWithDrops,
+	normalizeProfilesFile,
 	PROFILE_ORCHESTRATOR_KEY,
 	profileExportPath,
 	profileRoutingRows,
@@ -4232,6 +4236,7 @@ const ROUTING_TABLE_HINTS: Array<{ text: string; keep: number }> = [
 	{ text: "d default", keep: 8 },
 	{ text: "n new", keep: 10 },
 	{ text: "m menu", keep: 9 },
+	{ text: "x clean stale keys", keep: 11 },
 	{ text: "esc close", keep: 4 },
 	{ text: "a all fast", keep: 11 },
 ];
@@ -4297,6 +4302,8 @@ type RoutingTableMouseAction =
 	| { kind: "all-fast" }
 	| { kind: "model-option"; index: number }
 	| { kind: "effort-option"; index: number }
+	| { kind: "cleanup-option"; index: number }
+	| { kind: "cleanup-confirm" }
 	| { kind: "menu-item"; id: string }
 	| { kind: "button"; button: RoutingTableButton };
 
@@ -4383,12 +4390,18 @@ function followProfileFallbacks(profilesPath: string, from: string, to: string |
 	try { followProfileRename(dirname(profilesPath), from, to); } catch { /* The profile change already succeeded. */ }
 }
 
+type RoutingCleanup = { keys: string[]; apply: (keys: string[]) => AgentProfilesFile; notices: () => string[] };
+
 class RoutingTablePanel implements OverlayComponent {
-	private overlay: "model" | "effort" | "menu" | "new" | "switch" | "fallbacks" | undefined;
+	private overlay: "model" | "effort" | "menu" | "new" | "switch" | "fallbacks" | "cleanup" | undefined;
 	/** The model and effort cards are picking a fallback step, not the row's own model. */
 	private pickingFallback = false;
 	private fallbackCursor = 0;
 	private readonly fallbacks: RoutingFallbacks | undefined;
+	private cleanup: RoutingCleanup | undefined;
+	private cleanupSelected = new Set<string>();
+	private cleanupCursor = 0;
+	private readonly prepareCleanup: (() => RoutingCleanup) | undefined;
 	private target: string = PROFILE_ORCHESTRATOR_KEY;
 	private pending: RoutingTableResult | undefined;
 	private cursor = 0;
@@ -4443,8 +4456,10 @@ class RoutingTablePanel implements OverlayComponent {
 			switchProfile?: RoutingProfileSwitcher;
 			fallbacks?: RoutingFallbacks;
 			modeDraft?: OrchestratorMode;
+			prepareCleanup?: () => RoutingCleanup;
 		} = {},
 	) {
+		this.prepareCleanup = options.prepareCleanup;
 		this.switchProfile = options.switchProfile;
 		this.fallbacks = options.fallbacks;
 		this.thinkingSupport = options.thinkingSupport ?? {};
@@ -4962,6 +4977,9 @@ class RoutingTablePanel implements OverlayComponent {
 			case "new":
 				this.handleMenuKey(data);
 				return;
+			case "cleanup":
+				this.handleCleanupKey(data);
+				return;
 			case "switch":
 				this.handleSwitchKey(data);
 				return;
@@ -5005,6 +5023,15 @@ class RoutingTablePanel implements OverlayComponent {
 		if (matchesKey(data, "d")) return this.pressButton("default");
 		if (matchesKey(data, "n")) return this.openMenu("new");
 		if (matchesKey(data, "m")) return this.openMenu("menu");
+		if (matchesKey(data, "x") && this.prepareCleanup) {
+			try {
+				this.cleanup = this.prepareCleanup();
+				if (this.cleanup.keys.length === 0) return this.say("Nothing to clean.");
+				this.cleanupSelected = new Set(this.cleanup.keys);
+				this.cleanupCursor = 0;
+				this.overlay = "cleanup";
+			} catch (error) { this.say(`Cleanup failed: ${profilesErrorMessage(error)}`); }
+		}
 	}
 
 	private handleModelKey(data: string): void {
@@ -5057,6 +5084,40 @@ class RoutingTablePanel implements OverlayComponent {
 		if (matchesKey(data, "return")) {
 			const item = items[this.menuCursor];
 			if (item) this.runMenuItem(item.id);
+		}
+	}
+
+	private handleCleanupKey(data: string): void {
+		if (matchesKey(data, "escape")) return this.closeOverlay();
+		const keys = this.cleanup!.keys;
+		if (matchesKey(data, "up")) this.cleanupCursor = Math.max(0, this.cleanupCursor - 1);
+		if (matchesKey(data, "down")) this.cleanupCursor = Math.min(keys.length - 1, this.cleanupCursor + 1);
+		if (data === " ") this.toggleCleanupKey(this.cleanupCursor);
+		if (matchesKey(data, "return")) this.confirmCleanup();
+	}
+
+	private toggleCleanupKey(index: number): void {
+		this.cleanupCursor = index;
+		const key = this.cleanup!.keys[index];
+		if (this.cleanupSelected.has(key)) this.cleanupSelected.delete(key);
+		else this.cleanupSelected.add(key);
+	}
+
+	private confirmCleanup(): void {
+		const selected = this.cleanup!.keys.filter((key) => this.cleanupSelected.has(key));
+		this.closeOverlay();
+		if (selected.length === 0) return;
+		try {
+			this.file = this.cleanup!.apply(selected);
+		} catch (error) { return this.say(`Cleanup failed: ${profilesErrorMessage(error)}`); }
+		this.stored = removeRoutingKeys(this.stored, selected);
+		this.draft = removeRoutingKeys(this.draft, selected);
+		const success = `Removed ${selected.length} stale routing key${selected.length === 1 ? "" : "s"}.`;
+		this.say(success);
+		try {
+			this.notices = this.cleanup!.notices();
+		} catch {
+			this.say(`${success} Warning: Could not refresh routing notices.`);
 		}
 	}
 
@@ -5124,6 +5185,7 @@ class RoutingTablePanel implements OverlayComponent {
 				return `tab:${action.name}`;
 			case "model-option":
 			case "effort-option":
+			case "cleanup-option":
 				return `${action.kind}:${action.index}`;
 			case "menu-item":
 				return `menu:${action.id}`;
@@ -5166,6 +5228,12 @@ class RoutingTablePanel implements OverlayComponent {
 			case "effort-option":
 				this.pickEffort(action.index);
 				return;
+			case "cleanup-option":
+				this.toggleCleanupKey(action.index);
+				return;
+			case "cleanup-confirm":
+				this.confirmCleanup();
+				return;
 			case "menu-item":
 				this.runMenuItem(action.id);
 				return;
@@ -5186,6 +5254,12 @@ class RoutingTablePanel implements OverlayComponent {
 		const table = this.tableLines(inner).map((line) => this.renderText(stripAnsi(line), "dim"));
 		this.hitRegions = [];
 		const card = this.cardFor(inner);
+		// At the frame's one-body-line minimum, show the focused cleanup row
+		// directly: there is no space left for the card's own border.
+		if (this.overlay === "cleanup" && Math.floor(this.terminalRows?.() ?? 24) <= 3) {
+			this.hitRegions = this.hitRegions.map((region) => ({ ...region, y: region.y + 1, x0: region.x0 + 2, x1: region.x1 + 2 }));
+			return this.renderFrame(card.lines, width);
+		}
 		return this.renderFrame(this.placeCard(table, card, inner), width);
 	}
 
@@ -5497,6 +5571,38 @@ class RoutingTablePanel implements OverlayComponent {
 
 	private cardFor(inner: number): { lines: string[]; width: number; top: number; left: number } {
 		switch (this.overlay) {
+			case "cleanup": {
+				const width = Math.min(inner - 4, 68);
+				const keys = this.cleanup!.keys;
+				const bodyRows = Math.floor(this.terminalRows?.() ?? 24) - 2;
+				const compact = bodyRows < 13;
+				const top = compact ? 0 : 4;
+				const showTitle = !compact || bodyRows >= 4;
+				const showHint = !compact || bodyRows >= 5;
+				// Reserve the two card borders and optional chrome before sizing the window.
+				const chromeRows = compact ? Number(showTitle) + Number(showHint) : 7;
+				const visible = Math.max(1, bodyRows - top - 2 - chromeRows);
+				const start = Math.max(0, Math.min(this.cleanupCursor - Math.floor(visible / 2), keys.length - visible));
+				const lines: string[] = [];
+				if (showTitle) lines.push(this.renderText("Clean stale routing keys", "title"));
+				if (!compact) lines.push("");
+				if (!compact && start > 0) lines.push(this.renderText(`↑ ${start} more`, "dim"));
+				const content = bodyRows <= 1 ? inner : width - 4;
+				for (let i = start; i < Math.min(keys.length, start + visible); i++) {
+					const text = `${i === this.cleanupCursor ? "▸" : " "} [${this.cleanupSelected.has(keys[i]) ? "x" : " "}] ${sanitizeTerminalText(keys[i])}`;
+					this.hitRegions.push({ y: lines.length, x0: 0, x1: content, action: { kind: "cleanup-option", index: i } });
+					lines.push(this.hoverWrap(`cleanup-option:${i}`, this.renderText(text, i === this.cleanupCursor ? "title" : "text"), text, content));
+				}
+				if (!compact && start + visible < keys.length) lines.push(this.renderText("↓ more", "dim"));
+				if (!compact) lines.push("");
+				if (showHint) {
+					const label = "[ Clean ]";
+					this.hitRegions.push({ y: lines.length, x0: 0, x1: label.length, action: { kind: "cleanup-confirm" } });
+					lines.push(this.hoverWrap("cleanup-confirm", this.renderText(label, "accent"), label)
+						+ this.renderText("  ↑↓ choose · space toggle · enter clean · esc cancel", "dim"));
+				}
+				return { lines, width, top, left: Math.max(0, Math.floor((inner - width) / 2)) };
+			}
 			case "model":
 				return this.modelCard(inner);
 			case "effort":
@@ -5783,6 +5889,7 @@ function renderRoutingTableForTesting(
 }
 
 interface RoutingTablePanelRequest {
+	prepareCleanup?: () => RoutingCleanup;
 	name: string;
 	config: AgentModelConfig;
 	file: AgentProfilesFile;
@@ -5901,6 +6008,7 @@ async function showRoutingTablePanel(
 					switchProfile: request.switchProfile,
 					fallbacks: fileRoutingFallbacks(gentleAiConfigHome()),
 					modeDraft: request.modeDraft,
+					prepareCleanup: request.prepareCleanup,
 				},
 			);
 			const container = createNativeFullscreenInteraction({
@@ -7127,6 +7235,149 @@ async function openProfilesPanelLoop(
 				feedback,
 				notices: routingScreenNotices(ctx, file, shown, launch?.name, launch?.modelProfiles, authorityAvailable),
 				switchProfile,
+				prepareCleanup: () => {
+					// Tab switches update selectedName without reopening this panel.
+					const name = selectedName!;
+					const roots = { cwd: ctx.sessionManager?.getCwd?.() ?? ctx.cwd, home: homedir(), agentHome: resolveGentlePiAgentHome() };
+					const cleanupInventory = () => [
+						...PROVIDER_REVIEW_ROLES.map((name) => ({ name })),
+						...listDiscoverableAgents(roots.cwd),
+						// Runtime discovery also accepts agents named after their file.
+						...discoverAgents(roots).agents,
+					];
+					const known = cleanupInventory();
+					const subPaths = [...new Set((["project", "user"] as const).map((source) =>
+						resolve(agentModelProfileConfigPath(roots.cwd, source))))];
+					const modelPath = modelConfigPath(ctx.cwd);
+					const legacyPath = legacyProjectModelConfigPath(ctx.cwd);
+					const paths = [...subPaths, modelPath, path, legacyPath];
+					// Candidates and replacements share these exact physical originals.
+					const snapshot = snapshotRoutingCleanup(paths);
+					const readObject = (input: string): Record<string, unknown> | undefined => {
+						const bytes = snapshot.read(input);
+						if (bytes === undefined) return undefined;
+						const value: unknown = JSON.parse(bytes.toString("utf8"));
+						if (!isRecord(value)) throw new Error(`Invalid routing file: ${input}`);
+						return value;
+					};
+					const subFiles = subPaths.map((input) => ({ path: input, raw: readObject(input) }));
+					for (const sub of subFiles) {
+						if (sub.raw?.model_profiles !== undefined && !isRecord(sub.raw.model_profiles)) {
+							throw new Error(`Invalid routing file: ${sub.path}`);
+						}
+					}
+					const globalModels = readObject(modelPath);
+					const legacyModels = readObject(legacyPath);
+					// The saved-model reader merges both layers, with global taking precedence.
+					const modelStores = [{ path: modelPath, routes: globalModels }, { path: legacyPath, routes: legacyModels }]
+						.flatMap(({ path, routes }) => routes === undefined ? [] : [{ path, routes }]);
+					const rawProfiles = readObject(path);
+					const parsedProfiles = normalizeProfilesFile(rawProfiles);
+					if (!rawProfiles || !parsedProfiles || !isRecord(rawProfiles.profiles)) {
+						throw new Error(`Invalid routing file: ${path}`);
+					}
+					// The panel will keep its draft, so only adopt a cleanup result from the same baseline.
+					if (!isDeepStrictEqual(parsedProfiles.file.profiles[name], file.profiles[name])
+						|| readProfileWorkflow(parsedProfiles.file, name).orchestratorMode !== readProfileWorkflow(file, name).orchestratorMode) {
+						throw new Error("The displayed profile changed on disk. Reopen the panel before cleaning up.");
+					}
+					// Normalization is only a candidate/shape validator, never the write payload.
+					const candidates = (raw: Record<string, unknown>, inventory = known) => staleRoutingKeys(normalizeModelConfig(raw) ?? {}, inventory);
+					// The saved models.json reader skips the agent-name policy, so every key it routes stays removable.
+					const savedCandidates = (raw: Record<string, unknown>, inventory = known) =>
+						staleRoutingKeys(parseModelConfigFileValue(raw), inventory);
+					const subStores = subFiles.map((sub) => {
+						const routes = isRecord(sub.raw?.model_profiles) ? sub.raw.model_profiles : {};
+						const accepted = normalizeModelConfig(routes) ?? {};
+						const { modelProfiles } = parseAgentsConfig(undefined, { model_profiles: routes });
+						// The runtime also accepts effort values with mixed case or padding.
+						for (const [key, { thinking }] of Object.entries(modelProfiles)) {
+							if (thinking !== undefined && isSafeAgentName(key)) accepted[key] = { ...accepted[key], thinking };
+						}
+						return { ...sub, routes, accepted, keys: staleRoutingKeys(accepted, known) };
+					});
+					const models = modelStores.map((store) => ({ ...store, keys: savedCandidates(store.routes) }));
+					const profileStores = Object.entries(rawProfiles.profiles).map(([name, routes]) => {
+						if (!isRecord(routes)) throw new Error(`Invalid routing file: ${path}`);
+						return { name, routes, keys: candidates(routes) };
+					});
+					const keys = [...new Set([...subStores.flatMap((sub) => sub.keys), ...models.flatMap((store) => store.keys),
+						...profileStores.flatMap((profile) => profile.keys)])].sort();
+					const applySelected = (selected: string[]) => {
+						// Agent definitions can appear while the card is open; judge the selection again.
+						const inventory = cleanupInventory();
+						const stillStale = new Set([
+							...subStores.flatMap((sub) => staleRoutingKeys(sub.accepted, inventory)),
+							...models.flatMap(({ routes }) => savedCandidates(routes, inventory)),
+							...profileStores.flatMap(({ routes }) => candidates(routes, inventory)),
+						]);
+						const revived = selected.filter((key) => !stillStale.has(key));
+						if (revived.length > 0) {
+							throw new Error(`Agent definitions changed; no longer stale: ${revived.join(", ")}. Reopen the panel before cleaning up.`);
+						}
+						const replacements = new Map<string, Uint8Array>();
+						const add = (input: string, raw: Record<string, unknown>) => {
+							replacements.set(input, Buffer.from(`${JSON.stringify(raw, null, 2)}\n`));
+						};
+						const remove = (raw: Record<string, unknown>, eligible: string[]) =>
+							removeRoutingKeys(raw, selected.filter((key) => eligible.includes(key)));
+						for (const sub of subStores) {
+							const routes = remove(sub.routes, sub.keys);
+							if (routes !== sub.routes) add(sub.path, { ...sub.raw, model_profiles: routes });
+						}
+						for (const store of models) {
+							const routes = remove(store.routes, store.keys);
+							if (routes === store.routes) continue;
+							add(store.path, routes);
+						}
+						let profiles = rawProfiles.profiles as Record<string, unknown>;
+						for (const profile of profileStores) {
+							const routes = remove(profile.routes, profile.keys);
+							if (routes !== profile.routes) profiles = { ...profiles, [profile.name]: routes };
+						}
+						const nextRaw = { ...rawProfiles, profiles };
+						const next = normalizeProfilesFile(nextRaw)!.file;
+						if (profiles !== rawProfiles.profiles) add(path, nextRaw);
+						// Also detect edits to inputs that have no replacement.
+						const current = snapshotRoutingCleanup(paths);
+						for (const input of paths) {
+							const before = snapshot.read(input), after = current.read(input);
+							if (before === undefined ? after !== undefined : after === undefined || !before.equals(after)) {
+								throw new Error(`Routing cleanup input changed: ${input}`);
+							}
+						}
+						// Prepared runtime compensation only: no crash/power-loss guarantee.
+						let result;
+						try {
+							result = commitRoutingCleanup(snapshot, replacements);
+						} catch (error) {
+							const message = profilesErrorMessage(error);
+							// Panel feedback is capped at two lines; retain every restoration
+							// error and recovery path in the notification visible on close.
+							ctx.ui.notify(`Cleanup failed: ${message}`, "warning");
+							throw new Error(`${message.split("\n")[0]}. Full details are in notifications.`, { cause: error });
+						}
+						if (result.warnings.length > 0) {
+							ctx.ui.notify(`Routing cleanup committed, but temporary files could not be removed:\n${result.warnings.join("\n")}`, "warning");
+						}
+						file = next;
+						return file;
+					};
+					return {
+						keys,
+						notices: () => routingScreenNotices(ctx, file, name, launch?.name, launch?.modelProfiles, authorityAvailable),
+						apply: (selected) => {
+							if (!beginDesktopProfileApply()) {
+								throw new Error("Gentle Desktop is applying a profile right now; nothing was removed. Try again when it finishes.");
+							}
+							try {
+								return applySelected(selected);
+							} finally {
+								endDesktopProfileApply();
+							}
+						},
+					};
+				},
 			}));
 			draftOverride = undefined;
 			feedback = undefined;

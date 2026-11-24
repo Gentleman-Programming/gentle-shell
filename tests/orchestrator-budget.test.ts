@@ -47,6 +47,9 @@ const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "orchestrator.pre-die
 // (read/write, deleting only what the session or its tools created); approved up to 9,352 B, measured 9,177 -> 9,347 B at the 128-char root.
 // gentle-shell#348 rebase (2026-11-16): the parent-inline skill-read duty clause (+49 B over its
 // original base) rides on the current 9,347 B baseline; measured below at the 128-char root.
+// review follow-up (2026-11-16): 9,396 B is the new pin for this candidate — the clause was
+// re-approved with the rebase in issues/348 (budget note, 2026-10-30); the previous 9,352 B cap
+// recorded above predates this candidate's clause and is superseded by this pin.
 const BUDGET_BYTES = 9396;
 const MIN_CONTROLLED_LONG_ASSETS_ROOT_CHARS = 93;
 

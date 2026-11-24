@@ -29,7 +29,7 @@ import type {
 //    `orchestrator-skills.md`"). The always-on core clause is the delivery
 //    path, kept to a pointer to fit the core prompt budget; the execution detail
 //    (attribution line, contract markers, unreadable-path fallback) lives in
-//    the lazy `assets/orchestrator-skills.md` `### Parent inline execution`
+//    the lazy `assets/orchestrator-skills.md` `### Parent execution`
 //    section and is bound by tests/orchestrator-skills-inline-contract.test.ts.
 // 3. The skill's contract body itself still never reaches the composed prompt
 //    (the registry indexes metadata only; the in-session read delivers the
@@ -38,11 +38,11 @@ import type {
 //    (`modelRuntime.registerProvider` + `streamSimple` with
 //    `createAssistantMessageEventStream`, as in bridge-wake-lifecycle): a
 //    scripted turn complies with the parent-inline contract the lazy
-//    `orchestrator-skills.md` `### Parent inline execution` section specifies
+//    `orchestrator-skills.md` `### Parent execution` section specifies
 //    — the parent reads the exact indexed `SKILL.md` path through the read
 //    tool, the tool result carries the contract body, and the final reply
 //    applies the contract (marker) and closes with the
-//    `Skill applied (inline): <name>` attribution line.
+//    `Skill applied (parent): <name>` attribution line.
 //
 // Harness: same accepted offline runtime pattern as
 // tests/asset-installation-runtime.test.ts — the parent test builds a throwaway
@@ -217,7 +217,7 @@ async function proveInlineSkillContractGap(): Promise<void> {
 							entry.role === "toolResult" && entry.toolCallId === "call-348-skill-read",
 					);
 					const deliveredMarker = readResult && JSON.stringify(readResult.content).includes(FIXTURE_MARKER) ? FIXTURE_MARKER : "contract marker unavailable";
-					const text = `Probe result under the fixture contract.\n${deliveredMarker}\nSkill applied (inline): ${FIXTURE_SKILL_NAME}`;
+					const text = `Probe result under the fixture contract.\n${deliveredMarker}\nSkill applied (parent): ${FIXTURE_SKILL_NAME}`;
 					message.content.push({ type: "text", text });
 					stream.push({ type: "text_start", contentIndex: 0, partial: message });
 					stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
@@ -398,7 +398,7 @@ async function proveInlineSkillContractGap(): Promise<void> {
 			"the final provider call must receive the read result carrying the contract marker",
 		);
 		assert.ok(finalText.includes(FIXTURE_MARKER), "final reply must carry the skill's contract marker");
-		const attribution = `Skill applied (inline): ${FIXTURE_SKILL_NAME}`;
+		const attribution = `Skill applied (parent): ${FIXTURE_SKILL_NAME}`;
 		const finalLines = finalText.trimEnd().split(/\r?\n/);
 		assert.equal(finalLines.at(-1), attribution, "final reply must close with the inline attribution line");
 		assert.equal(

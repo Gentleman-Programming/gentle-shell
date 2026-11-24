@@ -123,18 +123,19 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 	assert.equal(appended.split("## Authorized work continuity").length - 1, 1);
 	const continuity = appended.slice(continuityStart, coreStart);
 	for (const clause of [
-		"Do in-scope implementation, documentation and verification without asking at each transition.",
-		"Run the authorized next step now rather than announcing it.",
+		"Do in-scope implementation, docs and verification without asking at each step.",
+		"Run the authorized next step now, not later.",
 		"A progress update is not a request for permission.",
 		"An explicit user stop applies only to the work it names.",
 		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
 		"Honor one-run, no-retry and diagnostic-only limits.",
 		"Correct checks within their correction limit.",
-		"Worker exhaustion: A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
+		"Worker exhaustion: Keep the worker correcting while attempts name the cause from output and change the fix to address it.",
+		"A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
 		"Never reset, widen or dodge a limit, even in a new session.",
 		"Do not add retry allowances.",
 		"Never weaken checks or override final outcomes.",
-		"launched work that will wake you is still running (a wait) and no independent authorized work remains",
+		"work that will wake you is running (a wait) and no independent authorized work remains",
 		"Launch the bounded action and keep its identity.",
 		"A wait is launched work whose completion event resumes the turn and authorized work without the human.",
 		"Do not poll or ask the human to continue.",

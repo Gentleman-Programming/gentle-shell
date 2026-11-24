@@ -38,32 +38,33 @@ test("S1: the positive end-of-turn rule opens the section and requires observed 
 		t.diagnostic(`${mode} harness ${Buffer.byteLength(prompt)} B; continuity section ${Buffer.byteLength(section)} B (including heading and trailing separator)`);
 	}
 	for (const { opening } of prompts) {
-		assert.match(opening, /^End the turn only when the requested outcome is delivered and verified by observed checks;/);
+		assert.match(opening, /^End the turn only when observed checks confirm the requested outcome is delivered;/);
 	}
 });
 
 test("S1: a first failed, timed-out or empty attempt continues when a permitted route remains", () => {
 	const { opening, body } = render();
-	clauses(opening, "or a failure has no permitted route left.");
+	clauses(opening, "or failure leaves no permitted route.");
 	clauses(paragraph(body, "An obstacle is an ordinary failure:"),
-		"a command, test or tool fails, times out or returns nothing, or a file is locked",
-		"Read the output and name the cause. If a permitted route remains, change approach and continue.");
+		"a failed, timed-out or empty command, test or tool, or a locked file",
+		"Name the cause from output.",
+		"Change approach and continue if a permitted route remains.");
 });
 
 test("S1: a genuine dead end ends only that work as incomplete, with tried and missing evidence", () => {
 	const { opening, body } = render();
-	clauses(opening, "or a failure has no permitted route left. Continue independent authorized work.");
+	clauses(opening, "or failure leaves no permitted route. Continue independent authorized work.");
 	clauses(paragraph(body, "An obstacle is an ordinary failure:"),
-		"Only after ruling out every permitted route, end that work as incomplete: report what you tried and what's missing without claiming delivery or inventing another attempt.");
+		"Change approach and continue if a permitted route remains. Otherwise report only that work incomplete, with attempts and gaps, not delivery or invented retries.");
 });
 
 test("S1: an authorized step that can run now is run, not announced as later work", () => {
-	clauses(render().body, "Run the authorized next step now rather than announcing it.");
+	clauses(render().body, "Run the authorized next step now, not later.");
 });
 
 test("S1: an action permits a wait only when it will wake the turn and no independent work remains", () => {
 	const { opening, body } = render();
-	clauses(opening, "launched work that will wake you is still running (a wait) and no independent authorized work remains");
+	clauses(opening, "work that will wake you is running (a wait) and no independent authorized work remains");
 	clauses(paragraph(body, "Background work:"),
 		"Launch the bounded action and keep its identity.",
 		"A wait is launched work whose completion event resumes the turn and authorized work without the human.",
@@ -73,7 +74,7 @@ test("S1: an action permits a wait only when it will wake the turn and no indepe
 
 test("S1: missing human-only input and an explicit human stop affect only their work", () => {
 	const { opening, body } = render();
-	clauses(opening, "a decision, consent or permission only the human can give is missing", "Continue independent authorized work.");
+	clauses(opening, "only the human can give a needed decision, consent or permission", "Continue independent authorized work.");
 	clauses(body, "An explicit user stop applies only to the work it names. Treat it as an exhausted limit.");
 });
 
@@ -86,7 +87,7 @@ test("S1: exhaustion ends only the action under the explicit limit; independent 
 test("S2: an obstacle is an ordinary failure, not a denial or an end by itself", () => {
 	const { body } = render();
 	const obstacle = paragraph(body, "An obstacle is an ordinary failure:");
-	clauses(obstacle, "If a permitted route remains, change approach and continue.");
+	clauses(obstacle, "Change approach and continue if a permitted route remains.");
 	assert.doesNotMatch(obstacle, /\b(?:stop|blocked|denial)\b/);
 });
 
@@ -113,14 +114,13 @@ test("S3/S11: a worker-local repeated-cause stop hands back to the parent under 
 			"A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
 			"The parent owns the next step, unasked, within native authority.",
 			"Partial worker execution is not exhausted proof or a terminal native review outcome.",
-			"Name the cause from evidence and act:",
+			"On any partial, diagnose from evidence; confirm no child is active or uncertain. Within user-authorized scope:",
 			mode === "organic"
 				? "fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence."
 				: "never edit: launch a new bounded writer with the diagnosis, new evidence and changed scope or hypothesis.",
 			"Never repeat an attempt or swap executors to dodge limits.",
-			"If the cause recurs without a new hypothesis, mark only that unit incomplete; continue independent work.",
-			"Confirm no child is active or uncertain.",
-			"The Close stop ends the automatic cycle; later explicit requests stay subject to native authority.",
+			"No permitted route: report only that work incomplete; continue independent work.",
+			"Close ends the automatic cycle; later explicit requests stay subject to native authority.",
 			"Quota recovery: `orchestrator-quota-recovery.md`.");
 		if (mode === "full-delegation") assert.doesNotMatch(worker, /\binline\b/);
 	}
@@ -151,5 +151,5 @@ test("S3: worker-prohibited maintenance and rollback retain their exact parent-o
 });
 
 test("S5: deliberate access and safety boundaries stay intact while a permitted route is sought", () => {
-	clauses(render().body, "Leave protected files, withheld access and guardrails alone; report the boundary and seek a permitted route.");
+	clauses(render().body, "Respect protected files, withheld access and guardrails; report the boundary. Change approach and continue if a permitted route remains.");
 });

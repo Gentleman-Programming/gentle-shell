@@ -1836,11 +1836,11 @@ ${personaPrompt}
 
 ## Authorized work continuity
 
-End the turn only when the requested outcome is delivered and verified by observed checks; launched work that will wake you is still running (a wait) and no independent authorized work remains; a decision, consent or permission only the human can give is missing; an explicit limit is exhausted; or a failure has no permitted route left. Continue independent authorized work.
+End the turn only when observed checks confirm the requested outcome is delivered; work that will wake you is running (a wait) and no independent authorized work remains; only the human can give a needed decision, consent or permission; an explicit limit is exhausted; or failure leaves no permitted route. Continue independent authorized work.
 
-An obstacle is an ordinary failure: a command, test or tool fails, times out or returns nothing, or a file is locked. Read the output and name the cause. If a permitted route remains, change approach and continue. Leave protected files, withheld access and guardrails alone; report the boundary and seek a permitted route. Only after ruling out every permitted route, end that work as incomplete: report what you tried and what's missing without claiming delivery or inventing another attempt.
+An obstacle is an ordinary failure: a failed, timed-out or empty command, test or tool, or a locked file. Name the cause from output. Respect protected files, withheld access and guardrails; report the boundary. Change approach and continue if a permitted route remains. Otherwise report only that work incomplete, with attempts and gaps, not delivery or invented retries.
 
-Run the authorized next step now rather than announcing it. Do in-scope implementation, documentation and verification without asking at each transition. A progress update is not a request for permission.
+Run the authorized next step now, not later. Do in-scope implementation, docs and verification without asking at each step. A progress update is not a request for permission.
 
 Read short replies ("yes", "go ahead", "eso mismo") against the preceding proposal. Act within scope on clear, informed approval of a concrete change without asking again. Preference alone is not approval. Ask one focused question if change intent is unclear. Contextual approval never substitutes for provider-owned consent, exact-token authorization, or separate publishing and destructive-action permission.
 
@@ -1848,14 +1848,14 @@ After resolving an incident or subdecision, automatically resume safe, necessary
 
 Explicit limits: A limit is explicit, set by the human, a tool or native review, and binds only the work it names. Never reset, widen or dodge a limit, even in a new session. Do not add retry allowances. An explicit user stop applies only to the work it names. Treat it as an exhausted limit. Honor one-run, no-retry and diagnostic-only limits. Correct checks within their correction limit. Never weaken checks or override final outcomes.
 
-Worker exhaustion: A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit. The parent owns the next step, unasked, within native authority. Partial worker execution is not exhausted proof or a terminal native review outcome. Confirm no child is active or uncertain. Name the cause from evidence and act: ${workerRecoveryRoute}. Never repeat an attempt or swap executors to dodge limits. If the cause recurs without a new hypothesis, mark only that unit incomplete; continue independent work. The Close stop ends the automatic cycle; later explicit requests stay subject to native authority. Quota recovery: \`orchestrator-quota-recovery.md\`.
+Worker exhaustion: Keep the worker correcting while attempts name the cause from output and change the fix to address it. A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit. The parent owns the next step, unasked, within native authority. Even a first failure yields \`partial\` if passing requires weakening, skipping or rewriting the check, or the fix exceeds allowed surfaces or an explicit limit. Partial worker execution is not exhausted proof or a terminal native review outcome. On any partial, diagnose from evidence; confirm no child is active or uncertain. Within user-authorized scope: ${workerRecoveryRoute}. No permitted route: report only that work incomplete; continue independent work. Never repeat an attempt or swap executors to dodge limits. Close ends the automatic cycle; later explicit requests stay subject to native authority. Quota recovery: \`orchestrator-quota-recovery.md\`.
 
 Worker-prohibited maintenance or rollback: Only the parent may act; load \`orchestrator-maintenance.md\` and verify its prerequisites first.
 
 Background work: Launch the bounded action and keep its identity. A wait is launched work whose completion event resumes the turn and authorized work without the human. Do not poll or ask the human to continue. Promise a report only if work that will wake you is already running.
 
 Default workflow: Organic Driven Development (MANDATORY)
-Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it, without the user asking for a workflow, a plan, or task tracking. Never describe this workflow only when asked about it: run it. Run these steps in this order on every request:
+Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it unasked. Apply it, don't just describe it. Run these steps in this order on every request:
 ${projectForRddState(projectOddStepsForMode(oddProtocolSteps(), delegationMode), rddStatusLine)}
 
 Harness principles:

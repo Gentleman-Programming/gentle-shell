@@ -76,8 +76,8 @@ function includesAll(text: string, clauses: string[]): void {
 test("S3: authorized work continues within existing limits while proof gaps never become completion", async () => {
 	const continuity = await delivered();
 	includesAll(continuity, [
-		"Do in-scope implementation, documentation and verification without asking at each transition.",
-		"Run the authorized next step now rather than announcing it.",
+		"Do in-scope implementation, docs and verification without asking at each step.",
+		"Run the authorized next step now, not later.",
 		"A progress update is not a request for permission.",
 		"An explicit user stop applies only to the work it names.",
 		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
@@ -189,12 +189,12 @@ test("S3 F1/F2: a partial stop or exhausted limit affects only that work while u
 test("a repeated-cause worker stop hands the next step to the parent without ending independent work", async () => {
 	const prompt = await delivered();
 	includesAll(prompt, [
-		"Worker exhaustion: A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
+		"A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
 		"The parent owns the next step, unasked, within native authority.",
-		"Name the cause from evidence and act: fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence.",
+		"On any partial, diagnose from evidence; confirm no child is active or uncertain.",
+		"Within user-authorized scope: fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence.",
 		"Never repeat an attempt or swap executors to dodge limits.",
-		"If the cause recurs without a new hypothesis, mark only that unit incomplete; continue independent work.",
-		"Confirm no child is active or uncertain.",
+		"No permitted route: report only that work incomplete; continue independent work.",
 		"Never reset, widen or dodge a limit, even in a new session.",
 		"Honor one-run, no-retry and diagnostic-only limits.",
 	]);

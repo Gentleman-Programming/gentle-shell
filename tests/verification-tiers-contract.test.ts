@@ -205,7 +205,7 @@ test("P8 B1: the parent passes the user's environment and runs the real-case che
 	const handoff = verification.split("\n").find((line) => line.startsWith("4. **Verify handoff**")) ?? "";
 	containsAll(handoff, [
 		"its exact failing command, error text, tool versions and configuration",
-		"Run yourself any real-case check the verifier leaves unverified before calling the change verified.",
+		"Run unverified real-case checks yourself before calling the change verified.",
 	], "verification handoff B1");
 	// Cost-speed S15 P5a: the always-on verifier-setup paragraph moved into this module (MODULE_BUDGETS in
 	// tests/task-size-routing-contract.test.ts holds the arithmetic): 7,900 -> 8,608 B; mode-neutral wording: 8,656 B; P16 conditional commit, paid by trimming restated phrases: 8,648 B; gentle-shell#3082 terminal-disposition raise: 8,900 B (#3149).

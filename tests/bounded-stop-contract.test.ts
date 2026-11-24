@@ -72,7 +72,7 @@ function trackedPendingBoundary(text: string): string {
 test("T23(a): the independent verifier's correction limit never grants an extra verify run", () => {
 	containsAll(lineStarting(verification, "5. **One correction**"), [
 		"This limit applies to independent verifier findings only.",
-		"A `partial` or `blocked` writer report or leftover partial, blocked, unavailable, or exhausted proof never earns an extra verify run beyond the risk tier's verifier.",
+		"No extra verifier run for a `partial` or `blocked` writer or partial, blocked, unavailable or exhausted proof.",
 	], "verification correction bound");
 	for (const persona of personas) {
 		containsAll(closeStep(persona), [
@@ -149,7 +149,7 @@ test("S3: no phrase detector or broad verification stop joins ordinary continuit
 
 test("T23(c): writer self-review follows the progress rule without claiming unverified completion", () => {
 	containsAll(lineStarting(verification, "1. **Self-review**"), [
-		"for failed checks, follow the worker's progress rule: name the cause from output and change the fix to address it.",
+		"The writer fixes and continues by progress: name the cause from output and change the fix to address it.",
 	], "self-review item");
 	containsAll(worker, [
 		"Do not claim completion while required validation is failing.",
@@ -169,7 +169,7 @@ test("T23(d)(e): a quick check runs once and an unavailable verifier is reported
 test("S4-S5: the Close stop stays scoped to the ended automatic cycle", () => {
 	for (const persona of personas) {
 		containsAll(prompt(persona), [
-			"The Close stop ends the automatic cycle; later explicit requests stay subject to native authority.",
+			"Close ends the automatic cycle; later explicit requests stay subject to native authority.",
 			"Partial worker execution is not exhausted proof or a terminal native review outcome.",
 		], `${persona} delivered continuation`);
 	}
@@ -205,9 +205,9 @@ test("S2: the post-exhaustion route follows the active delegation mode", () => {
 		containsAll(paragraph, [
 			"A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
 			"The parent owns the next step, unasked, within native authority.",
-			"Name the cause from evidence and act:",
+			"On any partial, diagnose from evidence; confirm no child is active or uncertain. Within user-authorized scope:",
 			"Never repeat an attempt or swap executors to dodge limits.",
-			"If the cause recurs without a new hypothesis, mark only that unit incomplete; continue independent work.",
+			"No permitted route: report only that work incomplete; continue independent work.",
 		], `${persona}/${mode} exhaustion route`);
 		if (mode === "organic") {
 			assert.ok(paragraph.includes("fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence."), `${persona} organic route`);
@@ -227,9 +227,8 @@ test("T23(f): the verify agent allows a second correction only for the same bloc
 
 test("gentle-shell#3082: a stopped verification carries its terminal disposition in the lazy module", () => {
 	containsAll(verification, [
-		"When required proof is unobtainable, one terminal disposition closes a stopped verification",
-		"name the missing proof and resume authorized in-scope work at `status: partial`",
-		"never PASS, never silently dropped",
+		"Unobtainable proof: close verification once, name the gap and resume authorized in-scope work at `status: partial`.",
+		"Never PASS or silently omit it",
 	], "verification terminal disposition");
 });
 

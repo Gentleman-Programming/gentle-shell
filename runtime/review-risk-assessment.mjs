@@ -133,33 +133,6 @@ function isReviewDueReason(value         )                           {
 	return Object.values(REVIEW_DUE_REASON).includes(value                   );
 }
 
-// The native schema fixes review_due by reason: due for high_risk and
-// slice_budget_reached, not due for passive, under_budget, and
-// already_reviewed (gentle-pi#1175).
-const DUE_REVIEW_REASONS                             = [REVIEW_DUE_REASON.HIGH_RISK, REVIEW_DUE_REASON.SLICE_BUDGET_REACHED];
-
-/**
- * Rejects a review_due/review_due_reason/consumed combination the native
- * schema can never produce. A consumed candidate must report
- * `already_reviewed`, but that reason can also describe an acknowledged
- * committed predecessor followed by a passive delta (#1954). It does not
- * prove this exact candidate was consumed; preserve native's explicit false.
- * Native v2 requires consumed, so missing evidence with already_reviewed is
- * still rejected. Envelopes without the pair (older binaries) are unchecked.
- */
-function validateReviewDueConsistency(reviewDue         , reviewDueReason                 , candidate                           )       {
-	if (reviewDue !== DUE_REVIEW_REASONS.includes(reviewDueReason)) {
-		throw new TypeError(`review assessment review_due ${reviewDue} contradicts review_due_reason ${reviewDueReason}`);
-	}
-	const alreadyReviewed = reviewDueReason === REVIEW_DUE_REASON.ALREADY_REVIEWED;
-	if (candidate.consumed === true && !alreadyReviewed) {
-		throw new TypeError("review assessment candidate.consumed true requires review_due_reason already_reviewed");
-	}
-	if (alreadyReviewed && candidate.consumed === undefined) {
-		throw new TypeError("review assessment review_due_reason already_reviewed requires explicit candidate.consumed evidence");
-	}
-}
-
 function hasOnlyKeys(value                         , allowed                   )          {
 	return Object.keys(value).every((key) => allowed.includes(key));
 }
@@ -204,9 +177,8 @@ function decodeNextTransition(value         )                                 {
  *
  * `review_due` and `review_due_reason` were added together natively: both
  * absent (an older binary) or both present are accepted; only one of them is
- * rejected. When present, the pair must agree with each other and with
- * `candidate.consumed` (see `validateReviewDueConsistency`).
- * `next_transition` is accepted only alongside `review_due: true`.
+ * rejected. The decoder checks field shapes only; the native value is read
+ * as-is and never audited for coherence between fields.
  * Unknown extra top-level fields are ignored and never projected, so a newer
  * binary stays decodable (gentle-pi#1175).
  */
@@ -236,11 +208,7 @@ export function decodeReviewAssessmentV1(value         )                     {
 	if (reviewDueReason !== undefined && !isReviewDueReason(reviewDueReason)) {
 		throw new TypeError(`review assessment review_due_reason must be one of ${Object.values(REVIEW_DUE_REASON).join(", ")}`);
 	}
-	if (nextTransition !== undefined && reviewDue !== true) {
-		throw new TypeError("review assessment next_transition is only valid when review_due is true");
-	}
 	const decodedCandidate = decodeCandidate(candidate);
-	if (reviewDue !== undefined) validateReviewDueConsistency(reviewDue           , reviewDueReason                   , decodedCandidate);
 	return Object.freeze({
 		schema: REVIEW_ASSESSMENT_SCHEMA,
 		risk,
@@ -301,8 +269,15 @@ export function decodeAgentRiskEscalation(value         )                      {
 	if (typeof item !== "number" || !Number.isInteger(item) || !(item in HIGH_RISK_ITEMS)) {
 		throw new Error("escalate item must be an integer from 1 to 6 naming a high-risk item");
 	}
-	if (typeof reason !== "string" || reason.trim() === "" || reason.length > AGENT_RISK_ESCALATION_REASON_MAX) {
-		throw new Error(`escalate reason must be a non-empty string of at most ${AGENT_RISK_ESCALATION_REASON_MAX} characters`);
+	// Native assess measures --escalate-reason in UTF-8 bytes; count the same
+	// way so an accepted reason is never refused natively.
+	if (typeof reason !== "string" || reason.trim() === "" || new TextEncoder().encode(reason).length > AGENT_RISK_ESCALATION_REASON_MAX) {
+		throw new Error(`escalate reason must be a non-empty string of at most ${AGENT_RISK_ESCALATION_REASON_MAX} UTF-8 bytes`);
+	}
+	// The reason is documented as one line and rides a native argv and a consent
+	// invocation: a line break would break the provider's consent envelope.
+	if (/[\n\v\f\r\u0085\u2028\u2029]/.test(reason)) {
+		throw new Error("escalate reason must be one line: no line breaks");
 	}
 	return Object.freeze({ item: item                , reason });
 }

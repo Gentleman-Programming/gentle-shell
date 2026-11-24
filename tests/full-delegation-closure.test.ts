@@ -90,7 +90,7 @@ test("P6 (X9): full delegation reaches tracking and verification, not the organi
 	assert.ok(prompt.includes("tracked work: `orchestrator-tracking.md`"));
 	assert.ok(prompt.includes("verification, handoffs, verifier setup failure: `orchestrator-verification.md`"));
 	assert.ok(prompt.includes(PARALLEL_LAUNCH_RULE), "the parallel-launch sentence");
-	assert.ok(prompt.includes("Fixes to one unit continue its worker (`subagent_continue`), never a new worker per fix."));
+	assert.ok(prompt.includes("In-limit fixes continue the worker (`subagent_continue`), never a new worker per fix."));
 });
 
 // cost-speed P6b: "in one message with no other tool call" read as "each call in a message of its own" (F3: three

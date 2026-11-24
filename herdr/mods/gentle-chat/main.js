@@ -21,7 +21,7 @@ import { agents, props, layout, hc, run, setShared, shared, theme, watchFolder, 
 import { readFile } from "fs/promises";
 import { sessionFileFor, readAfter, readTail, utf8 } from "./session.js";
 import { FeedSource, allSessions, targetSession, machineOf, liveState } from "./snapshot.js";
-import { createFeed, ingest, hideThinkingFrom } from "./feed.js";
+import { createFeed, ingest, hideThinkingFrom, hasTranscript } from "./feed.js";
 import { palette, sans, R } from "./tokens.js";
 import { header, entries, entry, lane, stateLabel, askCard, askOptions, composer, icon, PERM, ELSEWHERE } from "./ui.js";
 import { sendAction, errorText, safeKeys, terminalFree, tuiCommand, showTerminal, confirm, confirmed, readSnapshot } from "./actions.js";
@@ -95,6 +95,9 @@ export default class GentleChat extends View {
     this.requesting = false;
     this.settingsDirs = new Set(); // the folders of the shown session's settings files, watched
     this.real = new Map(); // cwd -> real path, for sessionFileFor
+    // A session that publishes a feed without a Pi session file (another agent): there is no
+    // transcript this view can read, and falling back to the folder would show a different one.
+    this.foreign = false;
     this.open = new Map(); // row id -> open, when flipped from its default (S11: per row, kept across reads)
     this.hunkAt = new Map(); // diff card id -> shown hunk
     this.kept = new Map(); // session file -> { open, hunkAt } of a session shown before
@@ -263,16 +266,30 @@ export default class GentleChat extends View {
       cx.notify();
     }
     if (address !== this.address) { this.address = address; cx.notify(); }
+    if (!s && this.foreign) { this.foreign = false; cx.notify(); }
     if (!s) return;
     // S14: a terminal on another machine. Its session file and snapshot are on that machine and the
     // desktop feed reads this computer's, so nothing is read (a local file of the same folder would
     // be another session): the empty state says where it runs, the Terminal shows it.
-    if (machineOf(address)) return;
+    // A remote terminal renders its own state, so a foreign flag from the previous session stops
+    // here; routine refreshes of the shown session must not clear it.
+    if (machineOf(address)) {
+      if (this.foreign) { this.foreign = false; this.dir = null; this.reset(null); cx.notify(); }
+      return;
+    }
     // The snapshot names the exact session file; a terminal without one falls back to its folder.
     const exact = s.feed?.identity?.sessionFile;
+    const foreign = Boolean(s.feed) && !hasTranscript(s.feed.identity);
+    if (foreign !== this.foreign) {
+      this.foreign = foreign;
+      // The same key can turn foreign (a feed that stops naming a Pi session file): drop the
+      // transcript read earlier, or it would sit beside the notice that we cannot read it.
+      if (foreign) { this.dir = null; this.reset(null); }
+      cx.notify();
+    }
     const where = typeof exact === "string" && exact.endsWith(".jsonl")
       ? { dir: exact.slice(0, Math.max(exact.lastIndexOf("/"), exact.lastIndexOf("\\"))), file: exact, feed: s.feed }
-      : s.terminal ? await sessionFileFor(s.terminal, this.real, this.wantFeeds) : null;
+      : foreign ? null : s.terminal ? await sessionFileFor(s.terminal, this.real, this.wantFeeds) : null;
     if (this.key !== key) return;
     if (this.setSnap(where?.feed ?? s.feed ?? null)) cx.notify();
     if (this.settingsOf !== key) await this.readSettings(s, cx);
@@ -389,6 +406,7 @@ export default class GentleChat extends View {
           const paths = await watchFolder(dir);
           if (this.watched !== dir) break;
           const file = this.file;
+          if (this.foreign) { this.watched = null; return; } // nothing to read: the empty state already says why
           if (!file || typeof this.snap?.identity?.sessionFile !== "string") { await this.refreshNow(cx); continue; }
           const name = file.slice(file.lastIndexOf("/") + 1);
           if (!Array.isArray(paths) || paths.some((p) => p === file || p === dir || String(p).endsWith(`/${name}`))) await this.load(cx);
@@ -917,6 +935,13 @@ export default class GentleChat extends View {
       const busy = live && (live.status === "working" || live.status === "waiting");
       if (working || busy) rows.push(lane(stateLabel(p, "work", busy ? live.label : "Working")));
     }
+    // A foreign session can still have a status row; the explanation has to appear anyway.
+    if (this.foreign && rows.length > 0) {
+      const [title, about] = this.foreignText();
+      rows.push(lane(v_flex().id("foreign").flex_none().self_center().items_center().px(28).py(24).gap(4)
+        .child(div().text_size(14).font_semibold().text_color(p.text).child(title))
+        .child(div().text_size(12.5).text_color(p.muted).text_center().child(about))));
+    }
     const empty = !rows.length;
     // Pinned to the newest entry: new items pin it, scrolling up unpins it. scroll_to_item
     // reveals a child with the least scroll, so the target is a 1px sentinel after the last row,
@@ -950,10 +975,21 @@ export default class GentleChat extends View {
 
   // No conversation yet (the artboard has no such state): a calm block in the middle of the
   // log, in the design's type: the mark in faint, a 14px semibold line, a 12.5px muted line.
+  // The same words in the empty state and above any status row: a feed with no Pi session file
+  // cannot be read here, and where the session runs changes what the person can do about it.
+  foreignText() {
+    const where = this.address
+      ? "This view can only show its Terminal (⌘J)."
+      : "Open its terminal where it runs to follow the conversation.";
+    return ["No transcript for this session", `It publishes a desktop feed but no Pi session file. ${where}`];
+  }
+
   empty(p) {
     const machine = machineOf(this.address);
     const [title, about] = machine
       ? [`Runs on ${machine}`, `Herdr shows its state and its Terminal (⌘J). Its conversation and desktop feed stay on ${machine}: this window reads this computer's.`]
+      : this.foreign
+      ? this.foreignText()
       : !this.key
       ? ["No Gentle Shell session", "Start one with + in the tab bar, or run gentle-shell in a terminal."]
       : !this.file

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statfsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isSensitiveRepositoryPath } from "../runtime/sensitive-paths.mjs";
 
 const started = performance.now(), MAX_BYTES = 256 * 1024 * 1024, MAX_FILES = 20_000, MAX_MS = 60_000;
 let plan, scratch, payloadBytes = 0;
@@ -45,7 +46,11 @@ try {
 	if (names(staged).some(entry => !/^100(644|755) [a-f0-9]+ 0\t/.test(entry))) fail("unsupported index: links, submodules or conflicts");
 	if (names(git(source, ["ls-files", "-v", "-z"])).some(entry => !entry.startsWith("H "))) fail("unsupported index flags: sparse or assume-unchanged entries");
 	const tracked = names(git(source, ["ls-files", "-z"]));
-	const files = new Map(), missing = [], excludedRuntimeArtifacts = [];
+	// The tool guard's sensitive-path policy governs staging too. Naming a sensitive path is refused
+	// before any clone; tracked sensitive files are skipped and reported, never blocked.
+	const namedSensitive = plan.include.filter(path => typeof path === "string" && isSensitiveRepositoryPath(path));
+	if (namedSensitive.length) fail(`include names sensitive paths: ${JSON.stringify(namedSensitive)}. Remove them from include and re-run the preparer, or verify that check without the isolated preparer`);
+	const files = new Map(), missing = [], excludedRuntimeArtifacts = [], skippedSensitive = new Set(tracked.filter(isSensitiveRepositoryPath));
 	function resolveInput(path) {
 		remaining();
 		if (typeof path !== "string" || !path || path.includes("\\") || path.split("/").some(part => !part || part === "." || part === ".." || part.toLowerCase() === ".git") || isAbsolute(path)) fail("unsupported input path: use literal repository-relative paths outside .git");
@@ -62,7 +67,10 @@ try {
 		if (!stat) { if (required) fail(`required input missing: ${path}`); missing.push(path); return; }
 		if (stat.isDirectory()) {
 			if (!required) fail("unsupported tracked file replaced by directory; no implicit untracked expansion");
-			for (const entry of readdirSync(absolute)) collect(`${path}/${entry}`, true);
+			for (const entry of readdirSync(absolute).sort()) {
+				if (isSensitiveRepositoryPath(`${path}/${entry}`)) skippedSensitive.add(`${path}/${entry}`);
+				else collect(`${path}/${entry}`, true);
+			}
 			return;
 		}
 		if (!stat.isFile()) fail(`unsupported required runtime artifact: ${path}`);
@@ -71,7 +79,7 @@ try {
 		if (files.size >= MAX_FILES || payloadBytes > MAX_BYTES) fail("payload exceeds preparation limit (20000 files / 256MiB); narrow the complete required payload");
 		files.set(path, { absolute, mode: stat.mode, digest: hash(readFileSync(absolute)) });
 	}
-	for (const path of tracked) collect(path, false);
+	for (const path of tracked) if (!skippedSensitive.has(path)) collect(path, false);
 	for (const path of plan.include) collect(path, true);
 	for (const path of plan.runtimeArtifacts ?? []) {
 		const stat = statAt(resolveInput(path));
@@ -88,6 +96,8 @@ try {
 	git(work, ["read-tree", head]);
 	const patch = git(source, ["diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", head, "--"], undefined, null, 2 * MAX_BYTES);
 	if (patch.length) git(work, ["apply", "--cached", "--binary", "-"], patch);
+	// Tracked sensitive paths stay in the index and HEAD (receipt contract) but are hidden from the scratch working tree.
+	if (skippedSensitive.size && tracked.some(path => skippedSensitive.has(path))) git(work, ["update-index", "--skip-worktree", "-z", "--stdin"], tracked.filter(path => skippedSensitive.has(path)).join("\0") + "\0");
 	for (const [path, file] of files) {
 		remaining();
 		const bytes = readFileSync(file.absolute);
@@ -99,7 +109,7 @@ try {
 		[...files.values()].some(file => hash(readFileSync(file.absolute)) !== file.digest) || missing.some(path => statAt(join(source, path)))) fail("source/index changed or copied index differs; no probes permitted");
 	remaining();
 	console.log(JSON.stringify({ status: "ready", work, head, baseline: plan.baseline ?? head, fileCount: files.size, payloadBytes,
-		durationMs: performance.now() - started, excludedRuntimeArtifacts, probesRun: 0 }));
+		durationMs: performance.now() - started, excludedRuntimeArtifacts, skippedSensitive: [...skippedSensitive].sort(), probesRun: 0 }));
 } catch (error) {
 	console.log(JSON.stringify({ status: "setup-failed", scratch, reason: error instanceof Error ? error.message : String(error),
 		probesRun: 0, unrunChecks: Array.isArray(plan?.checks) ? plan.checks : [], payloadBytes, durationMs: performance.now() - started }));

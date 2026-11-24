@@ -137,6 +137,12 @@ const firstLine = (s) => {
 };
 
 // Adds the complete lines in `text` to the feed. Bad lines are skipped, never thrown.
+// A feed can describe a session this view cannot read: another agent publishes the same
+// snapshot without a Pi session file. The chat then has no transcript, and falling back to the
+// terminal's folder would read a different session's.
+export const hasTranscript = (identity) =>
+  typeof identity?.sessionFile === "string" && identity.sessionFile.endsWith(".jsonl");
+
 export function ingest(feed, text) {
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;

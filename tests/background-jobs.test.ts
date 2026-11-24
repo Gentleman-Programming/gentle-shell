@@ -94,6 +94,18 @@ test("start returns a running job at once and its exit settles it exactly once w
 	} finally { cleanup(); }
 });
 
+test("S18 registry preserves only nonblank explicit labels separately from command fallbacks", async () => {
+	const { registry, cleanup } = setup();
+	try {
+		const command = "private shell command";
+		for (const [label, explicitLabel, localLabel] of [[undefined, undefined, command], ["   ", undefined, command], ["  Build  ", "Build", "Build"]] as const) {
+			const job = registry.start({ command, cwd: "/repo", ownerSessionId: "s1", ...(label === undefined ? {} : { label }) });
+			assert.equal(job.explicitLabel, explicitLabel);
+			assert.equal(job.label, localLabel);
+		}
+	} finally { await registry.stopAll(); cleanup(); }
+});
+
 test("a multibyte character split across output chunks reaches the tail intact", async () => {
 	const { fake, settled, registry, cleanup } = setup();
 	try {

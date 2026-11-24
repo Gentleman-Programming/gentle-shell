@@ -2,7 +2,7 @@ import type { NativeStartRequest } from "./native-review-cli.ts";
 
 /** Validated intent for a fresh START, never native authority or a candidate identity. */
 export type ReviewStartContext = Readonly<Pick<NativeStartRequest,
-	"requestContextPath" | "policyPath" | "focus" | "lenses" | "lensesReason"
+	"requestContextPath" | "policyPath" | "focus" | "lenses" | "lensesReason" | "escalate"
 >>;
 
 /** Snapshot only intent fields; mutable caller arrays cannot change a retained request. */
@@ -12,6 +12,7 @@ export function snapshotReviewStartContext(input: ReviewStartContext): ReviewSta
 		...(input.policyPath === undefined ? {} : { policyPath: input.policyPath }),
 		...(input.focus === undefined ? {} : { focus: input.focus }),
 		...(input.lenses === undefined ? {} : { lenses: Object.freeze([...input.lenses]) }),
+		...(input.escalate === undefined ? {} : { escalate: Object.freeze({ ...input.escalate }) }),
 		...(input.lensesReason === undefined ? {} : { lensesReason: input.lensesReason }),
 	});
 }

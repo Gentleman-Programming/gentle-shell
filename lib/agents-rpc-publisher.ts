@@ -1,4 +1,4 @@
-import { isFinished, THREAD_ITEM, TASK_STATUS, type TaskRecord, type TaskStatus, type TaskStore, type TaskSummary, type ThreadItem } from "./agents-protocol.ts";
+import { isFinished, THREAD_ITEM, TASK_STATUS, type TaskRecord, type TaskStatus, type TaskStore, type TaskSummary, type TaskThread, type ThreadItem } from "./agents-protocol.ts";
 
 // Publishes live Gentle Agents subagent state to an interactive RPC host
 // (the desktop app), the RPC equivalent of the above-editor TUI card. Pi's
@@ -18,14 +18,14 @@ export const ACTIVITY_WIDGET_KEY = "gentle-agents";
 /** Prompts are the field most likely to carry a long user request; keep only a preview. */
 const PROMPT_LIMIT = 200;
 /** Tool args/output can be arbitrarily large; bound each independently. */
-const TOOL_ARGS_LIMIT = 500;
-const TOOL_OUTPUT_LIMIT = 500;
+export const TOOL_ARGS_LIMIT = 500;
+export const TOOL_OUTPUT_LIMIT = 500;
 /** Text/thinking/note thread item text can be arbitrarily large (a whole streamed reply); bound it too. */
-const TEXT_ITEM_LIMIT = 2000;
+export const TEXT_ITEM_LIMIT = 2000;
 /** Summary fields that can carry a long, freeform diagnostic or step name. */
 const SUMMARY_FIELD_LIMIT = 500;
 /** Thread items kept per task in one push, most recent last. */
-const DEFAULT_THREAD_ITEMS = 40;
+export const DEFAULT_THREAD_ITEMS = 40;
 /** Total payload bound before shrinking kicks in. */
 export const DEFAULT_MAX_BYTES = 256 * 1024;
 /** How long a burst of task/summary changes is coalesced before one push. */
@@ -93,7 +93,7 @@ function safeStringify(value: unknown): string {
 	}
 }
 
-function projectThreadItem(item: ThreadItem): RpcThreadItem {
+export function projectThreadItem(item: ThreadItem): RpcThreadItem {
 	if (item.kind === THREAD_ITEM.TOOL) {
 		return {
 			kind: item.kind,
@@ -123,6 +123,17 @@ function projectTaskSummary(task: TaskRecord): RpcTaskSummary {
 		toolCalls: task.toolCalls,
 		error: task.error === null ? null : truncate(task.error, SUMMARY_FIELD_LIMIT),
 	};
+}
+
+/**
+ * The bounded thread projection one task carries in `gentle-agents.activity/v1`:
+ * the store's `version` and `dropped` verbatim and the last `maxThreadItems`
+ * items, each through `projectThreadItem`. Shared by the widget and Desktop
+ * RPC's `get_subagent_thread`, so the two never disagree.
+ */
+export function projectRpcThread(thread: TaskThread, maxThreadItems: number = DEFAULT_THREAD_ITEMS): RpcThread {
+	const kept = maxThreadItems >= thread.items.length ? thread.items : thread.items.slice(thread.items.length - maxThreadItems);
+	return { version: thread.version, dropped: thread.dropped, items: kept.map(projectThreadItem) };
 }
 
 /** Ordering rank: running, then waiting, then queued, ahead of every finished status. */
@@ -159,9 +170,7 @@ export function projectRpcActivity(store: TaskStore, opts: ProjectRpcActivityOpt
 		schema: ACTIVITY_SCHEMA,
 		summary: store.summary(parentSessionId),
 		tasks: tasks.map((task) => {
-			const thread = store.thread(task.id);
-			const kept = maxThreadItems >= thread.items.length ? thread.items : thread.items.slice(thread.items.length - maxThreadItems);
-			return { summary: projectTaskSummary(task), thread: { version: thread.version, dropped: thread.dropped, items: kept.map(projectThreadItem) } };
+			return { summary: projectTaskSummary(task), thread: projectRpcThread(store.thread(task.id), maxThreadItems) };
 		}),
 	};
 }
@@ -170,10 +179,28 @@ function byteLength(value: string): number {
 	return Buffer.byteLength(value, "utf8");
 }
 
+/** Keep the most recent half of a thread's items (never fewer than one). */
+function halveRpcThread(thread: RpcThread): RpcThread {
+	if (thread.items.length <= 1) return thread;
+	const nextLength = Math.max(1, Math.floor(thread.items.length / 2));
+	return { ...thread, items: thread.items.slice(thread.items.length - nextLength) };
+}
+
 function halveThreadItems(task: RpcTask): RpcTask {
-	if (task.thread.items.length <= 1) return task;
-	const nextLength = Math.max(1, Math.floor(task.thread.items.length / 2));
-	return { ...task, thread: { ...task.thread, items: task.thread.items.slice(task.thread.items.length - nextLength) } };
+	const thread = halveRpcThread(task.thread);
+	return thread === task.thread ? task : { ...task, thread };
+}
+
+/**
+ * Bounds one projected thread under `maxBytes` with the same first shrinking
+ * step `encodeActivityLines` applies per task: halve the kept items, most
+ * recent last, down to one item. Never throws; a single item that still does
+ * not fit is returned as-is (each item is already bounded by its field limits).
+ */
+export function boundRpcThread(thread: RpcThread, maxBytes: number = DEFAULT_MAX_BYTES): RpcThread {
+	let working = thread;
+	while (working.items.length > 1 && byteLength(JSON.stringify(working)) > maxBytes) working = halveRpcThread(working);
+	return working;
 }
 
 function emptyFinishedThread(task: RpcTask): RpcTask {

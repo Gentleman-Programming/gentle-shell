@@ -1,6 +1,6 @@
 # Orchestrator — Writer Handoff (lazy-loaded)
 
-Parent Pi session only. Load it when the Writer rule fires or an explicitly activated Judgment Day fix batch is dispatched. The Writer rule fires on a named reason (parallel units, the context backstop), never on size alone or a price ratio: a large task without one stays inline. Configured per-agent models (`subagents.json` `model_profiles`) still apply to every writer it launches. Writer prompts require the Parallel review protocol self-review (`orchestrator-verification.md`). A reason holds only when the launch delivers it:
+Parent Pi session only. Load it when the Writer rule fires or for an explicitly activated Judgment Day fix batch. The Writer rule fires on a named reason (parallel units, the context backstop), never on size alone or a price ratio: a large task without one stays inline. Configured per-agent models (`subagents.json` `model_profiles`) still apply to every writer it launches. Writer prompts require the Parallel review protocol self-review (`orchestrator-verification.md`). A reason holds only when the launch delivers it:
 
 - **Invariants**: each writer prompt names the existing helpers its unit must reuse for shared state and the invariants they keep; units built in parallel cannot see each other.
 - **Size threshold**: a subagent costs one to two minutes of reading and setup before it writes anything; delegate a unit only when it needs several minutes of work (several files or roughly 100+ changed lines). Several small independent changes are faster inline, one after another.
@@ -8,7 +8,7 @@ Parent Pi session only. Load it when the Writer rule fires or an explicitly acti
 
 #### Allowed edit surfaces (MANDATORY)
 
-The writer refuses to write outside its exact surfaces and stops with `interaction_required` without them. Every new writer launch carries the section (a continuation inherits it); after an admission rejection, repair what it names once, never relaunch the same prompt unchanged.
+The writer refuses to write outside its exact surfaces and stops with `interaction_required` without them. Every new writer launch carries the section (a continuation inherits it); after an admission rejection, repair what it names once, never relaunch the same prompt unchanged, and never end the turn on one: take the next step it names.
 
 Before launching any bounded writer, even the native `Agent` fallback, derive its surface from the task (files the change touches, plus directories where it authorizes new files) and pass it under `## Allowed edit surfaces`:
 
@@ -25,7 +25,7 @@ A writer never widens its surface; it reports exact candidate paths with reasons
 
 #### Judgment Day fix dispatch
 
-Use `jd-fix-agent` only for an explicitly activated Judgment Day fix batch, never as a lexical or generic-writer fallback. Judgment Day is independent: it neither enables nor replaces ordinary review; a separately requested ordinary review remains independent. A standalone Judgment Day fix requires no graph-v1 or native review lineage. Its dispatch carries this exact runtime-accepted shape: `## Judgment Day activation` contains only `User explicitly requested Judgment Day.`. Replace the example ID, frozen ledger hash, row data, and surface with controller-authorized values. The correction batch contains only one round (`1 of 2` or `2 of 2`) and one lowercase SHA-256. The exact frozen finding rows are one JSON object per line, use only the canonical row fields, and exactly match the authorized IDs.
+Use `jd-fix-agent` only for an explicitly activated Judgment Day fix batch, never as a lexical or generic-writer fallback. Judgment Day is independent: it neither enables nor replaces ordinary review; a separately requested ordinary review remains independent. A standalone Judgment Day fix requires no graph-v1 or native review lineage. Its dispatch has this exact runtime-accepted shape: `## Judgment Day activation` contains only `User explicitly requested Judgment Day.`. Replace example values with controller-authorized ones. The correction batch contains only one round (`1 of 2` or `2 of 2`) and one lowercase SHA-256. The exact frozen finding rows are one JSON object per line, use only the canonical row fields, and exactly match the authorized IDs.
 
 ```markdown
 ## Judgment Day activation

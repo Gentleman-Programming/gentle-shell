@@ -50,11 +50,7 @@ for (const [label, decoder] of decoders) {
 		for (const state of ["approved", "reviewing"]) {
 			assert.throws(() => decoder.decodeReviewStatusV3(status(state, structuredClone(key))), /status\.non_blocking_findings requires a current compact-v2 authority in correction_required or escalated/, state);
 		}
-		const legacy = status("correction_required", structuredClone(key));
-		legacy.authority.version = "legacy-v1";
-		delete legacy.frozen; delete legacy.receipt; delete legacy.authority_target_identity;
-		assert.throws(() => decoder.decodeReviewStatusV3(legacy), /status\.non_blocking_findings requires a current compact-v2 authority in correction_required or escalated/);
-		assert.throws(() => decoder.decodeReviewStatusV3(status("correction_required", structuredClone(key), "gentle-ai.review-integration.status/v8")), /status\.non_blocking_findings is not allowed/, "only status/v9 declares the key");
+		assert.throws(() => decoder.decodeReviewStatusV3(status("correction_required", structuredClone(key), "gentle-ai.review-integration.status/v8")), /gentle-ai native review status\/v8 is older than the supported v9 \(gentle-ai v4\.6\.0\); update gentle-ai or remove the dev-binary override/, "status/v8 is refused as older than the supported minimum");
 	});
 
 	test(`${label}: the non_blocking_findings key sets stay exact`, () => {
@@ -84,6 +80,7 @@ for (const [label, decoder] of decoders) {
 		assert.equal(Object.hasOwn(plain.raw, "non_blocking_findings"), false);
 		const original = fixture("status-v5-capture-result-submission.captured.json");
 		original.action = "stop";
+		original.schema = "gentle-ai.review-integration.status/v9";
 		assert.equal(Object.hasOwn(decoder.decodeReviewStatusV3(original), "nonBlockingFindings"), false);
 		const closure = fixture("last-event-capture-refuter-correction-required.captured.json");
 		assert.equal(closure.state, "correction_required");
@@ -103,6 +100,6 @@ for (const [label, decoder] of decoders) {
 		const approved = structuredClone(real); approved.authority.state = "approved";
 		assert.throws(() => decoder.decodeReviewStatusV3(approved), /requires a current compact-v2 authority/);
 		const v8 = structuredClone(real); v8.schema = "gentle-ai.review-integration.status/v8";
-		assert.throws(() => decoder.decodeReviewStatusV3(v8), /non_blocking_findings is not allowed/);
+		assert.throws(() => decoder.decodeReviewStatusV3(v8), /status\/v8 is older than the supported v9/);
 	});
 }

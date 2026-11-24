@@ -471,7 +471,8 @@ test("delegated children never paint the startup banner", async (t) => {
 	}, registerCommand() {}, getCommands: () => [], getAllTools: () => [] } as unknown as ExtensionAPI);
 	t.after(() => shutdown?.());
 	let headers = 0;
-	await start!({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: () => { headers++; } } });
+	// #3386: a child registers no hooks at all, so there is no session_start to call.
+	await start?.({}, { hasUI: true, cwd: "/fixture", ui: { setHeader: () => { headers++; } } });
 	t.mock.timers.tick(50);
 	assert.equal(headers, 0);
 });

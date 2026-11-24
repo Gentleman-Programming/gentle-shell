@@ -23,7 +23,7 @@ While it is active:
 
 - Every shell-guard confirmation is waived, data loss included: recursive `rm`, SQL drops, ordinary pushes, rebases, forced branch deletion, `npm publish` and configured guardrail `confirm`/`block` rules all run without dialogs. Code-level hard denies stay blocked (`git reset --hard`, forced clean, force push); see below.
 - The Auto classifier does not run.
-- The **sensitive-path guard stays hard-blocked**: `read`, `write` and `edit` of `.env` files, `.ssh`, keychains, `*.pem/*.key/*.p12/*.pfx`, `secrets/` directories and cloud credential files are refused in every mode, Super Yolo included.
+- The **sensitive-path guard stays hard-blocked**: `read`, `write` and `edit` of `.env` files, `.ssh`, keychains, `*.pem/*.key/*.p12/*.pfx`, `auth.json`, `secrets/` directories and cloud credential files are refused in every mode, Super Yolo included.
 - Code-level catastrophic denies remain: `rm -rf /`, `rm -rf ~`, `--no-preserve-root`, `git reset --hard`, forced clean and force push are blocked without a dialog.
 - `ask_user` tools, provider consent, maintenance/recovery authorization and opaque-token decisions are never automatically answered.
 - `/gentle:yolo status` identifies Super Yolo while it is active, and `/gentle:yolo disable` returns to Normal. Children never inherit Super Yolo; their bounded delegation and child guards are unchanged.

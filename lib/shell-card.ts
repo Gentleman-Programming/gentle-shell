@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 
 // Gentle Shell cards: the shape every Gentle notice takes in the transcript
 // and above the editor. The same rounded frame as the prompt and the
@@ -46,6 +46,32 @@ export function cardStyle(): CardStyle {
 
 export function setCardStyle(style: CardStyle): void {
 	styleState[CARD_STYLE_SLOT] = style;
+}
+
+/** One complete frame per card component. Pi treats returned rows as read-only. */
+export class CardFrame {
+	private frame?: { width: number; style: CardStyle; revision: unknown; lines: string[] };
+
+	render(width: number, revision: unknown, build: () => string[]): string[] {
+		const style = cardStyle();
+		const frame = this.frame;
+		if (frame?.width === width && frame.style === style && frame.revision === revision) return frame.lines;
+		const lines = build();
+		this.frame = { width, style, revision, lines };
+		return lines;
+	}
+
+	// Pi invalidates on theme changes (the theme proxy itself keeps its identity).
+	invalidate(): void { this.frame = undefined; }
+}
+
+/** Pi rebuilds notice components when their content or expanded state changes. */
+export function cachedCard(render: (width: number) => string[]): Component {
+	const frame = new CardFrame();
+	return {
+		render: (width) => frame.render(width, undefined, () => render(width)),
+		invalidate: () => frame.invalidate(),
+	};
 }
 
 export interface CardRenderOptions {

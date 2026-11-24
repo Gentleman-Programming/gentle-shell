@@ -167,7 +167,7 @@ test("S5: the gentle_review input description documents the ASSESS escalate shap
 	const description = source.split("\n").find(line => line.includes("ASSESS accepts an optional object with baseRef"));
 	assert.ok(description, "the gentle_review input description exists");
 	assert.match(description, /writerEffort, nativeReviewOutcome, and escalate/);
-	assert.match(description, /escalate is \{\\"item\\":N,\\"reason\\":\\"\.\.\.\\"\} with item an integer from 1 to 6 and a non-empty reason of at most 500 characters; any other shape is rejected, and omitting it means no escalation/);
+	assert.match(description, /escalate is \{\\"item\\":N,\\"reason\\":\\"\.\.\.\\"\} with item an integer from 1 to 6 and a non-empty reason of at most 500 UTF-8 bytes; any other shape is rejected, and omitting it means no escalation/);
 });
 
 test("S6: the reference docs describe the settle reminder", () => {

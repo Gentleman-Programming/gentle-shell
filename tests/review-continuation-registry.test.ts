@@ -15,7 +15,6 @@ test("reminder range hints are bound to one mutation without caching assessment 
 	assert.equal(registry.readReminderRange("/other", "mutation-1"), undefined);
 	registry.clearReminderRange("/repo");
 	assert.equal(registry.readReminderRange("/repo", "mutation-1"), undefined);
-	assert.equal(registry.readCommittedRange("/repo"), "base", "a workspace assessment does not erase the delivery base hint");
 	registry.retainCommittedRange("/repo", "new-base", "mutation-2");
 	assert.equal(registry.readReminderRange("/repo", "mutation-1"), undefined);
 	assert.equal(registry.readReminderRange("/repo", "mutation-2"), "new-base");
@@ -26,16 +25,16 @@ test("committed base hints reuse the session registry without replacing lifecycl
 	const backing = new Map<string, RetainedReviewContinuation>();
 	const registry = ReviewContinuationRegistry.from(backing);
 	registry.retainPreStart("/repo", preStart);
-	registry.retainCommittedRange("/repo", "base");
+	registry.retainCommittedRange("/repo", "base", "m1");
 	assert.equal(registry.readPreStart("/repo")?.targetIdentity, "target");
-	assert.equal(ReviewContinuationRegistry.from(backing).readCommittedRange("/repo"), "base");
-	assert.equal(new ReviewContinuationRegistry().readCommittedRange("/repo"), undefined);
-	assert.equal(registry.readCommittedRange("/other"), undefined);
-	registry.retainCommittedRange("/repo", "new-base");
-	assert.equal(registry.readCommittedRange("/repo"), "new-base");
+	assert.equal(ReviewContinuationRegistry.from(backing).readReminderRange("/repo", "m1"), "base");
+	assert.equal(new ReviewContinuationRegistry().readReminderRange("/repo", "m1"), undefined);
+	assert.equal(registry.readReminderRange("/other", "m1"), undefined);
+	registry.retainCommittedRange("/repo", "new-base", "m2");
+	assert.equal(registry.readReminderRange("/repo", "m2"), "new-base");
 	for (let index = 0; index < 64; index++) registry.retainCapture(`extra-${index}`, route);
 	assert.equal(registry.size, 64);
-	assert.equal(registry.readCommittedRange("/repo"), undefined, "the existing capacity bound also covers hints");
+	assert.equal(registry.readReminderRange("/repo", "m2"), undefined, "the existing capacity bound also covers hints");
 });
 
 test("four continuation kinds share one capacity and replacement does not refresh insertion order", () => {

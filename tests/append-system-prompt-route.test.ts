@@ -133,10 +133,9 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 		"Never reset, widen or dodge a limit, even in a new session.",
 		"Do not add retry allowances.",
 		"Never weaken checks or override final outcomes.",
-		"launched work is still running (a wait) and no independent authorized work remains",
-		"Launch the bounded action.",
-		"A wait is already-launched work whose completion event resumes the turn without the human.",
-		"Keep its identity and resume authorized work on completion.",
+		"launched work that will wake you is still running (a wait) and no independent authorized work remains",
+		"Launch the bounded action and keep its identity.",
+		"A wait is launched work whose completion event resumes the turn and authorized work without the human.",
 		"Do not poll or ask the human to continue.",
 	]) assert.ok(continuity.includes(clause), `missing continuity clause: ${clause}`);
 	// The general turn-end rule complements, but does not duplicate, the

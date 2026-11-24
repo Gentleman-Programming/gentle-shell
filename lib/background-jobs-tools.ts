@@ -71,7 +71,7 @@ export function monitorStoppedText(job: JobRecord, reason: MonitorStopReason): s
 	const output = `Full output: ${job.outputPath}`;
 	if (reason === "timeout") {
 		const limit = job.timeoutSeconds === undefined ? "its timeout" : `its ${job.timeoutSeconds}s timeout`;
-		return `Monitor ${quoted(job)} reached ${limit} after ${events} and was stopped. Start a new monitor if you still need to watch it.\n${output}`;
+		return `Monitor ${quoted(job)} reached ${limit} after ${events} and ended. This is the limit you set with timeout_seconds, not a failure or a user stop. Start a new monitor only if watching is still needed for authorized work and other limits allow it.\n${output}`;
 	}
 	return `Monitor ${quoted(job)} was stopped: it printed more than ${MONITOR_FLOOD_LINES} lines within ${MONITOR_FLOOD_WINDOW_MS / 1000}s (${events}). Narrow the command's filter before watching it again.\n${output}`;
 }
@@ -108,9 +108,9 @@ export function registerBackgroundJobTools(pi: ExtensionAPI, options: Background
 		name: BASH_BACKGROUND_TOOL,
 		label: "Bash (background)",
 		description: [
-			"Run a shell command in background and return a job id at once. You are notified once, automatically, on exit (exit code, tail, log path); do not poll, sleep, or delegate a subagent to wait.",
-			"Use synchronous bash for local, finite, deterministic checks reasonably expected within 30s, with explicit timeout <= 30s (inclusive). Use bash_background for longer or unknown duration, external waits, CI, builds, servers, deploys, and long tests. Report synchronous timeouts as failures: read the output, fix the cause, then rerun within explicit limits (in background if duration is the obstacle); never rerun unchanged or silently switch to background. Preserve RED/GREEN and public-check exit codes, stdout, and stderr; do not defer or batch Engram bugfix saves and session summaries or bypass RDD. This is guidance, not a performance guarantee.",
-			"Put the wait condition in the command so exit is the event, e.g. `gh run watch <run-id> --exit-status` or `until curl -sf localhost:3000/health; do sleep 1; done`.",
+			"Run a shell command in background; return a job id at once. One automatic exit notice gives the exit code, tail and log path. Do not poll, sleep, or delegate a subagent to wait.",
+			"Use synchronous bash for local, finite, deterministic checks likely to finish within 30s (explicit timeout <= 30s, inclusive). Use bash_background for longer or unknown duration, external waits, CI, builds, servers, deploys, and long tests. Report synchronous timeouts as failures. Read output and diagnose the cause. Rerun with a fix within explicit limits, never the same timed-out invocation. If duration is the cause, say so; the same command may run in background. Preserve RED/GREEN and public-check exit codes, stdout, and stderr; do not defer or batch Engram bugfix saves and session summaries or bypass RDD. Guidance, not a performance guarantee.",
+			"Put the wait condition in the command so exit notifies, e.g. `gh run watch <run-id> --exit-status` or `until curl -sf localhost:3000/health; do sleep 1; done`.",
 			`Read the log with read. Stop with job_stop; list with job_list. Max ${MAX_RUNNING_JOBS} running jobs.`,
 		].join(" "),
 		parameters: {

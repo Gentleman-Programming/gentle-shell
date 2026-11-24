@@ -8634,6 +8634,38 @@ test("monitor delivers line events to an idle parent with one wake, and reports 
 	}
 });
 
+test("the monitor deadline stops watching and wakes the parent with the agent-configured limit", async () => {
+	const { pi, tools, fire, sent, userMessages } = fakePi();
+	const harness = deps();
+	const timers = recordTimers(harness.deps);
+	const jobs = fakeJobShell();
+	gentleAgents(pi, {}, { ...harness.deps, jobShell: jobs.shell, jobOutputDir: () => jobs.dir });
+	const { ctx } = fakeContext();
+	try {
+		await fire("session_start", ctx);
+		await tools.get("monitor")!.execute("m1", { command: "tail -f log", label: "checks", timeout_seconds: 17 }, undefined, undefined, ctx);
+		assert.equal(jobs.runs.length, 1);
+		assert.equal(sent.length, 0, "a running monitor has not reached its deadline");
+		assert.equal(timers.run(17_000), 1, "fire the monitor controller's scheduled deadline");
+		assert.equal(jobs.runs[0]!.signal?.aborted, true, "the limit stops the running monitor");
+		await eventually(() => userMessages.length === 1, "the deadline notice wakes the idle parent");
+		const outputPath = join(jobs.dir, "job-1.log");
+		const notices = sent.filter(({ message }) => message.customType === "gentle-jobs.notice");
+		assert.equal(notices.length, 1);
+		assert.deepEqual(notices[0]!.options, { triggerTurn: false });
+		assert.deepEqual(notices[0]!.message.details, {
+			gentleJobs: { jobId: "job-1", kind: "monitor", label: "checks", status: "stopped", exitCode: null, outputPath, event: "timeout" },
+		});
+		assert.equal(notices[0]!.message.content,
+			`Monitor job-1 ("checks") reached its 17s timeout after 0 events and ended. This is the limit you set with timeout_seconds, not a failure or a user stop. Start a new monitor only if watching is still needed for authorized work and other limits allow it.\nFull output: ${outputPath}`);
+		assert.equal(timers.pending(17_000), 0, "the deadline is not rearmed");
+		assert.equal(jobs.runs.length, 1, "a new watch was not started automatically");
+	} finally {
+		await fire("session_shutdown", ctx);
+		jobs.cleanup();
+	}
+});
+
 test("monitor events wait for a busy parent's turn boundary and coalesce into one notice", async () => {
 	const { pi, tools, fire, sent } = fakePi();
 	const harness = deps();

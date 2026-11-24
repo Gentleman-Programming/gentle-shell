@@ -42,22 +42,32 @@ test("S1: the positive end-of-turn rule opens the section and requires observed 
 	}
 });
 
-test("S1: a failed, timed-out or empty attempt leads to a changed permitted approach", () => {
-	clauses(render().body,
+test("S1: a first failed, timed-out or empty attempt continues when a permitted route remains", () => {
+	const { opening, body } = render();
+	clauses(opening, "or a failure has no permitted route left.");
+	clauses(paragraph(body, "An obstacle is an ordinary failure:"),
 		"a command, test or tool fails, times out or returns nothing, or a file is locked",
-		"Read the output, name the cause, change the approach and carry on with the access you have.");
+		"Read the output and name the cause. If a permitted route remains, change approach and continue.");
+});
+
+test("S1: a genuine dead end ends only that work as incomplete, with tried and missing evidence", () => {
+	const { opening, body } = render();
+	clauses(opening, "or a failure has no permitted route left. Continue independent authorized work.");
+	clauses(paragraph(body, "An obstacle is an ordinary failure:"),
+		"Only after ruling out every permitted route, end that work as incomplete: report what you tried and what's missing without claiming delivery or inventing another attempt.");
 });
 
 test("S1: an authorized step that can run now is run, not announced as later work", () => {
 	clauses(render().body, "Run the authorized next step now rather than announcing it.");
 });
 
-test("S1: a launched background action permits a wait only when no independent work remains", () => {
+test("S1: an action permits a wait only when it will wake the turn and no independent work remains", () => {
 	const { opening, body } = render();
-	clauses(opening, "launched work is still running (a wait) and no independent authorized work remains");
+	clauses(opening, "launched work that will wake you is still running (a wait) and no independent authorized work remains");
 	clauses(paragraph(body, "Background work:"),
-		"Launch the bounded action.",
-		"Keep its identity and resume authorized work on completion. Do not poll or ask the human to continue.",
+		"Launch the bounded action and keep its identity.",
+		"A wait is launched work whose completion event resumes the turn and authorized work without the human.",
+		"Do not poll or ask the human to continue.",
 		"Promise a report only if work that will wake you is already running.");
 });
 
@@ -69,14 +79,14 @@ test("S1: missing human-only input and an explicit human stop affect only their 
 
 test("S1: exhaustion ends only the action under the explicit limit; independent work continues", () => {
 	const { opening, body } = render();
-	clauses(opening, "or an explicit limit is exhausted", "Continue independent authorized work.");
+	clauses(opening, "an explicit limit is exhausted;", "Continue independent authorized work.");
 	clauses(body, "binds only the work it names", "Honor one-run, no-retry and diagnostic-only limits.", "Do not add retry allowances.");
 });
 
-test("S2: an obstacle is an ordinary failure, not an end or a denial", () => {
+test("S2: an obstacle is an ordinary failure, not a denial or an end by itself", () => {
 	const { body } = render();
 	const obstacle = paragraph(body, "An obstacle is an ordinary failure:");
-	clauses(obstacle, "carry on with the access you have");
+	clauses(obstacle, "If a permitted route remains, change approach and continue.");
 	assert.doesNotMatch(obstacle, /\b(?:stop|blocked|denial)\b/);
 });
 
@@ -87,7 +97,7 @@ test("S2: a limit is explicit, scoped, and neither reset, widened nor dodged", (
 });
 
 test("S2: a wait is launched work that wakes the turn without the human", () => {
-	clauses(render().body, "A wait is already-launched work whose completion event resumes the turn without the human.");
+	clauses(render().body, "A wait is launched work whose completion event resumes the turn and authorized work without the human.");
 });
 
 test("S3: explicit limits bound check correction without weakening checks or overriding outcomes", () => {
@@ -119,7 +129,7 @@ test("S3: worker exhaustion is a bounded parent route under native authority in 
 test("S3: contextual approval grants neither provider consent nor distinct permissions", () => {
 	clauses(render().body,
 		"Contextual approval never substitutes for provider-owned consent, exact-token authorization, or separate publishing and destructive-action permission.",
-		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule.");
+		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent.");
 });
 
 test("S3: worker-prohibited maintenance and rollback retain their exact parent-only safeguards", () => {
@@ -141,5 +151,5 @@ test("S3: worker-prohibited maintenance and rollback retain their exact parent-o
 });
 
 test("S5: deliberate access and safety boundaries stay intact while a permitted route is sought", () => {
-	clauses(render().body, "Leave protected files, withheld access and guardrails alone; report the boundary and look for a permitted route.");
+	clauses(render().body, "Leave protected files, withheld access and guardrails alone; report the boundary and seek a permitted route.");
 });

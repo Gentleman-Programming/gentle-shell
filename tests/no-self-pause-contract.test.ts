@@ -16,7 +16,7 @@ const read = (relative: string): string => readFileSync(join(REPO_ROOT, relative
 const tracking = read("assets/orchestrator-tracking.md");
 const core = read("assets/orchestrator.md");
 
-const contextualApproval = 'Interpret short replies such as "yes", "go ahead", or "eso mismo" against the immediately preceding proposal. When the human unambiguously accepts a concrete implementation action they already understand, execute that action within its agreed scope without asking again. Confirming a preference alone does not authorize implementation; genuinely unclear change intent still requires one focused question. Contextual approval never substitutes for provider-owned consent, exact-token authorization, or separate publishing and destructive-action permission.';
+const contextualApproval = 'Read short replies ("yes", "go ahead", "eso mismo") against the preceding proposal. Act within scope on clear, informed approval of a concrete change without asking again. Preference alone is not approval. Ask one focused question if change intent is unclear. Contextual approval never substitutes for provider-owned consent, exact-token authorization, or separate publishing and destructive-action permission.';
 const informedClarification = 'Clarify scope, constraints, acceptance criteria, and non-goals when needed for the human to understand the action or to resolve consequential uncertainty. Reuse what is already established; after informed approval, proceed without repeating the clarification unless new consequential uncertainty appears.';
 
 test("contextual approval continues the agreed action without weakening consent boundaries", () => {
@@ -30,7 +30,7 @@ test("clarification preserves understanding without reopening informed approval"
 
 test("resolved subdecisions retain the original authorized objective", () => {
 	const prompt = __testing.buildGentlePrompt("gentleman");
-	assert.ok(prompt.includes("Resolving an incident or subdecision does not complete or cancel the original authorized objective; resume safe, necessary in-scope steps automatically, using judgment for proportionate recovery and respecting explicit user dispositions."));
+	assert.ok(prompt.includes("After resolving an incident or subdecision, automatically resume safe, necessary in-scope work on the original authorized objective. Recover proportionately and respect explicit user dispositions."));
 	assert.ok(!prompt.includes("Investigate pending technical uncertainty"), "the canonical real-human-decision boundary owns that clause");
 	assert.ok(prompt.includes("only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work"));
 	assert.ok(prompt.includes("Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step"));
@@ -43,7 +43,7 @@ test("resolved subdecisions retain the original authorized objective", () => {
 		assert.ok(verification.includes(sentence), `verification module keeps: ${sentence}`);
 		assert.ok(!prompt.includes(sentence), `always-on prompt no longer carries: ${sentence}`);
 	}
-	assert.ok(prompt.includes("Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule."));
+	assert.ok(prompt.includes("Do not infer permission for publishing, destructive actions, unrelated scope or native consent."));
 });
 
 function authorizationSection(): string {

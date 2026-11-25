@@ -1,15 +1,16 @@
 // Persistent terminals for `gentle-shell serve`, over a native terminal host
 // (`gentle-term-host`): the host owns the PTYs and keeps them alive while no
 // client is connected (and across serve restarts); serve starts it on first
-// use, talks to it over its owner-only Unix socket in JSON Lines, and exposes
-// the terminals to paired devices over HTTP + SSE. One host connection is
-// the control connection; every SSE stream gets its own, so each stream has
-// its own attachment and backpressure.
+// use, talks to it in JSON Lines over its owner-only Unix socket (on Windows,
+// loopback TCP with a token from an owner-only file), and exposes the
+// terminals to paired devices over HTTP + SSE. One host connection is the
+// control connection; every SSE stream gets its own, so each stream has its
+// own attachment and backpressure.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { accessSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, rename, rm } from "node:fs/promises";
+import { chmod, mkdir, readdir, rename, rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { connect, type Socket } from "node:net";
 import { delimiter, join } from "node:path";
@@ -19,7 +20,28 @@ import { fsHttpError, HttpError, need, ownsOrAdmin, readJsonBody, realDirectory,
 
 export const TERM_HOST_PROTOCOL = 1;
 export const TERM_HOST_BINARY = process.platform === "win32" ? "gentle-term-host.exe" : "gentle-term-host";
+/** Where a host started with `--tcp` writes `{ port, token, pid }`, in its state folder. */
+export const TERM_HOST_TCP_FILE = "term-host.json";
 const OWNERS_SCHEMA = "gentle-shell.serve.terminals/v1";
+
+/** How serve reaches the host: its Unix socket, or loopback TCP with the token the host wrote. */
+export type TermHostEndpoint = { path: string } | { port: number; token: string };
+export type TermHostTransport = "unix" | "tcp";
+
+/** TCP on Windows (no Unix sockets for the host there); `GENTLE_TERM_HOST_TRANSPORT=tcp` picks it anywhere. */
+export function termHostTransport(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): TermHostTransport {
+	return platform === "win32" || env.GENTLE_TERM_HOST_TRANSPORT === "tcp" ? "tcp" : "unix";
+}
+
+const ASSET_OS: Partial<Record<NodeJS.Platform, string>> = { linux: "linux", darwin: "macos", win32: "windows" };
+const ASSET_ARCHS: Partial<Record<NodeJS.Platform, readonly string[]>> = { linux: ["x64", "arm64"], darwin: ["x64", "arm64"], win32: ["x64"] };
+
+/** The Gentle Shell GPUI release asset with the host for this system, `gentle-term-host-<os>-<arch>[.exe]`; null when none is built for it. */
+export function termHostAsset(platform: NodeJS.Platform = process.platform, arch: string = process.arch): string | null {
+	const os = ASSET_OS[platform];
+	if (!os || !ASSET_ARCHS[platform]?.includes(arch)) return null;
+	return `gentle-term-host-${os}-${arch}${platform === "win32" ? ".exe" : ""}`;
+}
 
 export const SERVE_TERM_LIMITS = {
 	/** One request to the host. */
@@ -87,12 +109,21 @@ export class HostConnection {
 		});
 	}
 
-	static open(path: string, timeoutMs: number): Promise<HostConnection> {
+	/** Connects, and over TCP authenticates first (`{ op: "auth", token }`); rejects when the host refuses the token. */
+	static open(endpoint: TermHostEndpoint, timeoutMs: number): Promise<HostConnection> {
 		const { promise, resolve, reject } = Promise.withResolvers<HostConnection>();
-		const socket = connect(path);
+		const socket = "path" in endpoint ? connect(endpoint.path) : connect({ host: "127.0.0.1", port: endpoint.port });
 		const timer = setTimeout(() => { socket.destroy(); reject(Object.assign(new Error("connect timeout"), { code: "ETIMEDOUT" })); }, timeoutMs);
-		socket.once("connect", () => { clearTimeout(timer); resolve(new HostConnection(socket)); });
 		socket.once("error", (error) => { clearTimeout(timer); reject(error); });
+		socket.once("connect", () => {
+			clearTimeout(timer);
+			const conn = new HostConnection(socket);
+			if ("path" in endpoint) return resolve(conn);
+			conn.request("auth", { token: endpoint.token }, timeoutMs).then(() => resolve(conn), (error: unknown) => {
+				conn.close();
+				reject(error);
+			});
+		});
 		return promise;
 	}
 
@@ -168,9 +199,9 @@ interface TermStream {
 }
 
 export interface TerminalServiceOptions {
-	/** `<agent home>/serve`: the socket, the installed binary, the ownership file and the host's log live here. */
+	/** `<agent home>/serve`: the socket (or `term/term-host.json` over TCP), the installed binary, the ownership file and the host's log live here. */
 	serveDir: string;
-	/** The environment the host starts with, and where `GENTLE_TERM_HOST` and `PATH` are read. */
+	/** The environment the host starts with, and where `GENTLE_TERM_HOST`, `GENTLE_TERM_HOST_TRANSPORT` and `PATH` are read. */
 	env: NodeJS.ProcessEnv;
 	limits?: Partial<typeof SERVE_TERM_LIMITS>;
 	log?: (line: string) => void;
@@ -181,7 +212,11 @@ export class TerminalService {
 	private readonly env: NodeJS.ProcessEnv;
 	private readonly limits: typeof SERVE_TERM_LIMITS;
 	private readonly log: (line: string) => void;
+	readonly transport: TermHostTransport;
 	readonly socketPath: string;
+	private readonly stateDir: string;
+	/** Where a TCP host writes its port and token. */
+	private readonly tcpFile: string;
 	private readonly ownersFile: string;
 	/** Which device opened each terminal; kept on disk because terminals outlive this process. */
 	private owners: Record<string, string>;
@@ -196,7 +231,10 @@ export class TerminalService {
 		this.env = options.env;
 		this.limits = { ...SERVE_TERM_LIMITS, ...options.limits };
 		this.log = options.log ?? (() => {});
+		this.transport = termHostTransport(this.env);
 		this.socketPath = join(this.serveDir, "term.sock");
+		this.stateDir = join(this.serveDir, "term");
+		this.tcpFile = join(this.stateDir, TERM_HOST_TCP_FILE);
 		this.ownersFile = join(this.serveDir, "terminals.json");
 		this.owners = this.readOwners();
 	}
@@ -217,6 +255,24 @@ export class TerminalService {
 		return undefined;
 	}
 
+	/** Where the host is reached: its socket, or the port and token it wrote (undefined before it has). */
+	private endpoint(): TermHostEndpoint | undefined {
+		if (this.transport === "unix") return { path: this.socketPath };
+		try {
+			const parsed = JSON.parse(readFileSync(this.tcpFile, "utf8")) as { port?: unknown; token?: unknown };
+			const port = parsed.port;
+			if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535 || typeof parsed.token !== "string" || parsed.token === "") return undefined;
+			return { port, token: parsed.token };
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** Whether a host may be running: its socket or its port file is there. */
+	private hostMayRun(): boolean {
+		return existsSync(this.transport === "unix" ? this.socketPath : this.tcpFile);
+	}
+
 	private readOwners(): Record<string, string> {
 		try {
 			const parsed = JSON.parse(readFileSync(this.ownersFile, "utf8")) as { schema?: unknown; owners?: unknown };
@@ -234,7 +290,7 @@ export class TerminalService {
 		renameSync(temp, this.ownersFile);
 	}
 
-	/** The control connection, starting the host when nothing answers on the socket. */
+	/** The control connection, starting the host when nothing answers on the socket (or port). */
 	private ensureHost(): Promise<HostConnection> {
 		if (this.closed) return Promise.reject(new HttpError(503, "shutting_down", "The server is stopping"));
 		if (this.control && !this.control.closed) return Promise.resolve(this.control);
@@ -243,16 +299,17 @@ export class TerminalService {
 	}
 
 	private async connectOrStart(): Promise<HostConnection> {
-		let refused = false;
-		let conn = await HostConnection.open(this.socketPath, this.limits.requestTimeoutMs).catch((error: NodeJS.ErrnoException) => {
-			refused = error.code === "ECONNREFUSED";
+		let stale = false;
+		const endpoint = this.endpoint();
+		let conn = endpoint && await HostConnection.open(endpoint, this.limits.requestTimeoutMs).catch((error: NodeJS.ErrnoException) => {
+			stale = error.code === "ECONNREFUSED" || error instanceof TermHostError;
 			return undefined;
 		});
 		if (!conn) {
 			const bin = this.binary();
 			if (!bin) throw new HttpError(501, "term_host_missing", `No terminal host on the server: install ${TERM_HOST_BINARY} (PUT /api/term-host) or set GENTLE_TERM_HOST`);
-			// A socket file nothing listens on is left from a host that died.
-			if (refused) rmSync(this.socketPath, { force: true });
+			// A socket nothing listens on, or a port file whose host is gone (or refuses its token), is left from a host that died.
+			if (stale) rmSync(this.transport === "unix" ? this.socketPath : this.tcpFile, { force: true });
 			conn = await this.start(bin);
 		}
 		const hello = await conn.request("hello", {}, this.limits.requestTimeoutMs);
@@ -271,15 +328,15 @@ export class TerminalService {
 		return conn;
 	}
 
-	/** Starts the host detached (it outlives this server) and waits for its socket. */
+	/** Starts the host detached (it outlives this server) and waits for its socket (or port file). */
 	private async start(bin: string): Promise<HostConnection> {
 		mkdirSync(this.serveDir, { recursive: true, mode: 0o700 });
-		const stateDir = join(this.serveDir, "term");
-		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+		mkdirSync(this.stateDir, { recursive: true, mode: 0o700 });
 		// The host keeps its own log in the state folder; this catches what it prints before it opens it.
-		const logPath = join(stateDir, "term-host.log");
+		const logPath = join(this.stateDir, "term-host.log");
 		const logFd = openSync(logPath, "a", 0o600);
-		const child = spawn(bin, ["--socket", this.socketPath, "--state-dir", stateDir], { detached: true, stdio: ["ignore", logFd, logFd], env: this.env, windowsHide: true });
+		const listen = this.transport === "unix" ? ["--socket", this.socketPath] : ["--tcp"];
+		const child = spawn(bin, [...listen, "--state-dir", this.stateDir], { detached: true, stdio: ["ignore", logFd, logFd], env: this.env, windowsHide: true });
 		closeSync(logFd);
 		let failure: Error | undefined;
 		child.once("error", (error) => { failure = error; });
@@ -288,7 +345,8 @@ export class TerminalService {
 		const deadline = Date.now() + this.limits.startTimeoutMs;
 		while (Date.now() < deadline) {
 			if (failure || child.exitCode !== null || child.signalCode !== null) break;
-			const conn = await HostConnection.open(this.socketPath, 1000).catch(() => undefined);
+			const endpoint = this.endpoint();
+			const conn = endpoint && await HostConnection.open(endpoint, 1000).catch(() => undefined);
 			if (conn) return conn;
 			await new Promise((r) => setTimeout(r, 50));
 		}
@@ -438,9 +496,9 @@ export class TerminalService {
 			from = Number(raw);
 		}
 		await this.ensureHost();
-		const conn = await HostConnection.open(this.socketPath, this.limits.requestTimeoutMs).catch(() => {
-			throw new HttpError(502, "term_host_gone", "The terminal host is not answering");
-		});
+		const endpoint = this.endpoint();
+		const conn = endpoint && await HostConnection.open(endpoint, this.limits.requestTimeoutMs).catch(() => undefined);
+		if (!conn) throw new HttpError(502, "term_host_gone", "The terminal host is not answering");
 		const entry: TermStream = { deviceId: who.deviceId, res, conn };
 		// Events that arrive before the attach reply wait for it, so `attached` always comes first.
 		const early: HostMessage[] = [];
@@ -482,10 +540,10 @@ export class TerminalService {
 		if (!entry.res.writableEnded) entry.res.end(last);
 	}
 
-	/** `GET /api/term-host`: whether a binary is there and whether the host runs (connecting, never starting it). */
+	/** `GET /api/term-host`: whether a binary is there and whether the host runs (connecting, never starting it), and which release asset fits this server. */
 	private async status(res: ServerResponse, who: Principal): Promise<void> {
 		const bin = this.binary();
-		if (!(this.control && !this.control.closed) && existsSync(this.socketPath)) await this.ensureHost().catch(() => undefined);
+		if (!(this.control && !this.control.closed) && this.hostMayRun()) await this.ensureHost().catch(() => undefined);
 		const running = !!(this.control && !this.control.closed);
 		sendJson(res, 200, {
 			available: bin !== undefined,
@@ -495,6 +553,8 @@ export class TerminalService {
 			...(running && this.hello ? { version: this.hello.version ?? null, pid: this.hello.pid ?? null, protocol: this.hello.protocol } : {}),
 			platform: process.platform,
 			arch: process.arch,
+			asset: termHostAsset(),
+			transport: this.transport,
 		});
 	}
 
@@ -514,6 +574,11 @@ export class TerminalService {
 			if (received.size === 0) throw new HttpError(400, "empty", "The body is empty");
 			if (received.sha256 !== expected.toLowerCase()) throw new HttpError(400, "sha256_mismatch", `The body's sha256 is ${received.sha256}`);
 			await chmod(temp, 0o755);
+			// Windows won't replace a running .exe but lets it be renamed: the old one moves aside, and goes on a later install once nothing runs it.
+			if (process.platform === "win32") {
+				for (const name of await readdir(dir)) if (name.endsWith(".old")) await rm(join(dir, name), { force: true }).catch(() => undefined);
+				await rename(target, `${target}.${randomBytes(6).toString("hex")}.old`).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
+			}
 			await rename(temp, target);
 			this.log(`terminal host installed by ${who.deviceId}: ${target} (${received.size} bytes, sha256 ${received.sha256})`);
 			sendJson(res, 201, { path: target, sha256: received.sha256, size: received.size, active: this.binary() === target });
@@ -530,7 +595,7 @@ export class TerminalService {
 	closeDevice(deviceId: string): void {
 		for (const entry of [...this.streams]) if (entry.deviceId === deviceId) this.stopStream(entry);
 		// Its terminals live only in a running host: never start one just to close nothing.
-		const terms = existsSync(this.socketPath) ? Object.entries(this.owners).filter(([, owner]) => owner === deviceId).map(([term]) => term) : [];
+		const terms = this.hostMayRun() ? Object.entries(this.owners).filter(([, owner]) => owner === deviceId).map(([term]) => term) : [];
 		for (const term of terms) {
 			void this.closeTerm(term).catch((error: unknown) => this.log(`terminal ${term}: close on revoke failed: ${error instanceof Error ? error.message : String(error)}`));
 		}

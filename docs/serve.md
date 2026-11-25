@@ -129,8 +129,8 @@ Everything lives in `<agent home>/serve/`, a `0700` folder:
 | `devices.json` (`0600`) | Paired devices: id, name, scopes, created and last-used times, and the **sha256 of the token** — never the token. |
 | `server.log` (`0600`) | Background server log: lifecycle lines and each session's stderr, prefixed by session id. |
 | `uploads/<device>/<random>/<name>` (`0700` folders, `0600` files) | [Uploads](#uploads) from devices; each removed 7 days after it arrived. |
-| `term.sock` (`0600`) | The [terminal host](#persistent-terminals)'s Unix socket, while it runs. |
-| `term/` (`0700`) | The terminal host's state folder: its log, `term-host.log`. |
+| `term.sock` (`0600`) | The [terminal host](#persistent-terminals)'s Unix socket, while it runs (not on Windows). |
+| `term/` (`0700`) | The terminal host's state folder: its log, `term-host.log`; over TCP (Windows) also `term-host.json` (`0600`; on Windows a DACL for its owner only): `{ port, token, pid }`. |
 | `terminals.json` (`0600`) | Which device opened each terminal: `{ schema: "gentle-shell.serve.terminals/v1", owners: { <term>: <device id> } }`. Terminals outlive the server, so their owners are kept on disk. |
 | `bin/gentle-term-host` (`0755`) | A terminal host installed with `PUT /api/term-host`. |
 
@@ -181,7 +181,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | `POST /api/terminals/:t/resize` | `terminal` | `{ cols, rows }` → `{ ok }` |
 | `DELETE /api/terminals/:t` | `terminal` | `{ closed }` |
 | `GET /api/terminals/:t/stream?from=<offset>` | `terminal` | SSE: `attached`, then `output`, `title`, `resized`, `exit`. |
-| `GET /api/term-host` | `terminal` | `{ available, running, path?, version?, pid?, protocol?, platform, arch }` |
+| `GET /api/term-host` | `terminal` | `{ available, running, path?, version?, pid?, protocol?, platform, arch, asset, transport }` |
 | `PUT /api/term-host` | `admin` | Raw binary, header `x-sha256` → `201 { path, sha256, size, active }` |
 | `POST /api/tower` | `sessions:operate` | → `201 Forward & { url, expiresAt, started }` (`200` when the device already had a forward to Tower). Starts [Gentle Tower](#gentle-tower) when it is not running and forwards it. `501 not_supported` when this server cannot start Tower, `503 tower_unavailable` when it failed to. |
 | `GET /api/tower` | `sessions:read` | `{ running: false }` or `{ running: true, startedAt }`. |
@@ -451,7 +451,7 @@ sequenceDiagram
     participant H as gentle-term-host
     participant P as Shell (PTY)
     App->>S: POST /api/terminals {cwd, cols, rows}
-    S->>H: connect term.sock (start the host, detached, if nothing answers)
+    S->>H: connect term.sock, or 127.0.0.1:port + auth on Windows (start the host, detached, if nothing answers)
     S->>H: {"op":"hello"} / {"op":"open",…}
     H->>P: fork a PTY: login shell -l, TERM=xterm-256color
     H-->>S: {"ok":true,"term":"t_…","pid":…}
@@ -467,13 +467,14 @@ sequenceDiagram
     S->>H: {"op":"write",…}
     H->>P: keystrokes
     Note over App,S: The app disconnects: the shell keeps running in the host
-    Note over S,H: serve restarts: the host and its terminals stay, serve reconnects to term.sock
+    Note over S,H: serve restarts: the host and its terminals stay, serve reconnects (term.sock or the port file)
 ```
 
 ### The host
 
-- **Where it comes from.** `serve` runs `$GENTLE_TERM_HOST` when set, otherwise `<agent home>/serve/bin/gentle-term-host` (`.exe` on Windows), otherwise the first `gentle-term-host` on `PATH`. Without one, `GET /api/server` has no `terminals` capability and the terminal endpoints answer `501 term_host_missing`. A client can install one: `PUT /api/term-host` (`admin`) with the binary as the raw body (at most 64 MiB) and its sha256 in the `x-sha256` header; the server checks the hash (`400 sha256_mismatch`), makes it `0755`, and moves it into place atomically. `active` in the answer says whether it is the one `serve` now uses (`false` when `$GENTLE_TERM_HOST` points elsewhere). `GET /api/term-host` tells `platform` and `arch`, so a client picks the right build. A host already running keeps running its old binary until it exits.
+- **Where it comes from.** `serve` runs `$GENTLE_TERM_HOST` when set, otherwise `<agent home>/serve/bin/gentle-term-host` (`.exe` on Windows), otherwise the first `gentle-term-host` on `PATH`. Without one, `GET /api/server` has no `terminals` capability and the terminal endpoints answer `501 term_host_missing`. A client can install one: `PUT /api/term-host` (`admin`) with the binary as the raw body (at most 64 MiB) and its sha256 in the `x-sha256` header; the server checks the hash (`400 sha256_mismatch`), makes it `0755`, and moves it into place atomically (on Windows, where a running `.exe` can't be replaced, the old one is renamed aside to `*.old` and removed by a later install). `active` in the answer says whether it is the one `serve` now uses (`false` when `$GENTLE_TERM_HOST` points elsewhere). `GET /api/term-host` tells `platform`, `arch` and `asset`: the name of the prebuilt binary for this server in Gentle Shell GPUI's GitHub releases (`gentle-term-host-<os>-<arch>[.exe]`, os `linux`/`macos`/`windows`, arch `x64`/`arm64`; `null` when none is built for it, e.g. Windows on arm64), listed in the release's `SHA256SUMS`, so a client downloads it, checks it and installs it. A host already running keeps running its old binary until it exits.
 - **Started on first use.** The first terminal request connects to `<agent home>/serve/term.sock`; when nothing answers there, `serve` starts the host detached (`--socket <home>/serve/term.sock --state-dir <home>/serve/term`, its own session, output appended to `term/term-host.log`) and waits up to 5 s for its socket. A host that is already running — started by an earlier `serve` — is simply reused. The socket is owner-only (`0600`, in the `0700` serve folder).
+- **On Windows: loopback TCP.** There `serve` starts the host with `--tcp --state-dir <home>/serve/term` (`transport: "tcp"` in `GET /api/term-host`; `GENTLE_TERM_HOST_TRANSPORT=tcp` picks it on Linux and macOS too). The host listens on `127.0.0.1` at a port the system picks and writes `{ port, token, pid }` to `term/term-host.json`, readable only by the server user (a protected DACL for the file's owner). Every connection's first line must be `{"op":"auth","token":…}` (answered `{ ok: true }`); anything else gets `unauthorized` and the connection closes, as it does after 10 s without it. A port file whose port refuses the connection (or the token) is left from a host that died: `serve` removes it and starts another. The host compares tokens in constant time; other local users can reach the port but not the token.
 - **Lifetime.** The host keeps every terminal while no client is connected and outlives `serve`: stopping or restarting `serve` closes its connections, never the terminals. The host exits on its own when it has had no terminals and no connections for 10 minutes. A host restart (a reboot, a crash) loses its terminals.
 - **Protocol.** JSON Lines over the socket, one request `{ id, op, … }` → one reply `{ id, ok, … }`, plus events (`output`, `exit`, `title`, `resized`, `overflow`) on connections attached to a terminal; terminal bytes travel as base64. `serve` keeps one control connection and opens one more per stream.
 
@@ -481,10 +482,10 @@ sequenceDiagram
 
 `Terminal` is `{ id, pid, cwd, argv, cols, rows, title, alive, exitCode?, createdAt, offset, owner }`: `createdAt` in ms since the epoch, `offset` the number of bytes the terminal has written so far, `owner` the id of the device that opened it.
 
-- **Open.** `POST /api/terminals { cwd, cols, rows, argv?, env? }`: `cwd` an absolute path to an existing folder, `cols` 1-1000, `rows` 1-500; `argv` (1-256 strings) defaults to the server user's login shell with `-l`; `env` (at most 128 names) is added to the host's environment, which also sets `TERM=xterm-256color`, `COLORTERM=truecolor` and `TERM_PROGRAM=GentleShell`. `502 term_spawn_failed` when the program cannot start.
+- **Open.** `POST /api/terminals { cwd, cols, rows, argv?, env? }`: `cwd` an absolute path to an existing folder, `cols` 1-1000, `rows` 1-500; `argv` (1-256 strings) defaults to the server user's login shell with `-l` (on Windows PowerShell: `pwsh.exe -NoLogo` when `pwsh.exe` is on `PATH`, else `powershell.exe -NoLogo`; the PTY is a ConPTY); `env` (at most 128 names) is added to the host's environment, which also sets `TERM=xterm-256color`, `COLORTERM=truecolor` and `TERM_PROGRAM=GentleShell`. `502 term_spawn_failed` when the program cannot start.
 - **Ownership.** A terminal belongs to the device that opened it: the list shows a device its own, and every other endpoint answers `404` for another device's terminal. A token with `admin` sees and drives all of them. Revoking a device closes its terminals and ends its streams.
 - **Input and resize.** `POST …/input { data }` writes base64 bytes as typed (keys, pastes, and the answers a terminal emulator gives to queries such as cursor position reports). `POST …/resize { cols, rows }`. Both answer `409 terminal_exited` once the program ended.
-- **Close.** `DELETE /api/terminals/:t` closes a running terminal (SIGHUP, then SIGKILL to its process group after 3 s; it leaves the list at once) or forgets an exited one.
+- **Close.** `DELETE /api/terminals/:t` closes a running terminal (SIGHUP, then SIGKILL to its process group after 3 s; on Windows the program is ended at once and closing its pseudoconsole ends what else ran in it; it leaves the list at once) or forgets an exited one.
 - **Stream.** `GET …/stream?from=<offset>` (or `Last-Event-ID`, as `EventSource` sends it) is SSE:
   - first `event: attached` `{ offset, snapshot? }`. When `from` is still in the terminal's replay buffer (at least the last 1 MiB of output), there is no snapshot: `offset` is `from` and the missed bytes follow as `output`. Otherwise `snapshot` (base64) is an ANSI sequence that, written into a fresh terminal emulator of the terminal's size, reproduces its screen — contents, cursor, colours and attributes, alternate screen, cursor visibility, bracketed paste, mouse and application-cursor modes — with up to 2000 lines of scrollback above it; `offset` is the current end. A client resets its emulator, writes the snapshot, and continues.
   - `event: output` `{ offset, data }` with `id: <offset>`: `data` is base64 terminal output and `offset` the byte offset of the end of this chunk, so the last `id` seen is the `from` to resume with.
@@ -702,4 +703,3 @@ The Gentle Shell GPUI desktop app is getting a client for this server: [gentle-s
 - **`message_update` coalescing.** Slow clients are dropped into a resync instead.
 - **Narrower file scopes.** File access uses `sessions:read` and `sessions:operate`; separate `fs:read`/`fs:write` scopes, or a folder jail per device, are not there.
 - **SSH bootstrap and TLS** (Phase 3), **the mobile web client, QR codes and a relay** (Phase 4).
-- **Terminals on Windows.** The terminal host speaks over a Unix socket; a named pipe for Windows is not there yet.

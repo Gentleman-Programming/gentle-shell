@@ -34,7 +34,7 @@ flowchart LR
         S["gentle-shell serve<br/>HTTP + SSE API, auth, routing"]
         P1["Session child<br/>gentle-shell --mode rpc (Pi)"]
         P2["Session child<br/>gentle-shell --mode rpc (Pi)"]
-        H["gentle-term-host<br/>PTYs, Unix socket, outlives serve"]
+        H["gentle-term-host<br/>PTYs, Unix socket (loopback TCP on Windows), outlives serve"]
         F["Forward listeners<br/>one port per forward"]
         L["Pages on loopback<br/>dev server, design canvas, Tower, Engram"]
         FS[("Project files and git")]
@@ -45,7 +45,7 @@ flowchart LR
     A -- "Cookie per forward" --> F
     S -- "stdin / stdout JSON lines" --> P1
     S -- "stdin / stdout JSON lines" --> P2
-    S -- "JSON lines over term.sock" --> H
+    S -- "JSON lines over term.sock (Windows: 127.0.0.1 + token)" --> H
     S -- "files, git, uploads" --> FS
     P1 -- "agent tools" --> FS
     F -- "proxy to 127.0.0.1" --> L
@@ -55,7 +55,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | `gentle-shell serve` | Server | One long-lived process per agent home. Pairs devices, checks every request's token and scope, starts and stops sessions, keeps each session's replay ring, routes host tool calls, serves files, git and uploads, opens forwards, talks to the terminal host. | One owner per home: sessions must survive the client that started them, and every device must see the same state. |
 | Session child | Server | One `gentle-shell --mode rpc` process per session: the same launcher, Pi and extensions as a local launch, with Desktop RPC on. | The agent needs the project, the tools and the provider sign-ins that live on the server. Each session isolated in its own process: a crash or a hang takes down one session, not the server. |
-| `gentle-term-host` | Server | A small native process that owns the PTYs; `serve` is its client over an owner-only Unix socket. | Shells must survive a `serve` restart or upgrade, and a reattaching client needs the screen as it is, which a headless terminal emulator in the host can draw. |
+| `gentle-term-host` | Server | A small native process that owns the PTYs (ConPTY on Windows); `serve` is its client over an owner-only Unix socket, or on Windows over loopback TCP with a token from an owner-only file. | Shells must survive a `serve` restart or upgrade, and a reattaching client needs the screen as it is, which a headless terminal emulator in the host can draw. |
 | Forward listeners | Server (inside `serve`) | One listener per forward, proxying to a page on the server's loopback. | Pages bound to `127.0.0.1` (dev servers, the design canvas, Tower) are unreachable from another machine by design; a forward opens one of them to one device without opening the port to anyone. |
 | Client app | Each device | Shows sessions, files, diffs, branches, terminals and forwarded pages; sends prompts, edits and keystrokes; runs its own [host tools](#host-tools-across-several-devices) (a screenshot of this Mac). Remembers the server, its device token, and the last `seq` / terminal offset it saw. | It is the person's device: the screen, the keyboard, and tools that only make sense on that device. |
 
@@ -213,7 +213,7 @@ sequenceDiagram
     participant H as gentle-term-host
     participant Sh as Shell (PTY)
     App->>S: POST /api/terminals { cwd, cols, rows }
-    S->>H: connect term.sock (start the host if nothing answers)
+    S->>H: connect term.sock or, on Windows, 127.0.0.1 + token (start the host if nothing answers)
     S->>H: open
     H->>Sh: fork a PTY, login shell
     S-->>App: 201 { terminal: { id: "t_…", offset: 0 } }
@@ -238,7 +238,7 @@ sequenceDiagram
 - **Attach, snapshot, resume.** Each terminal keeps at least the last 1 MiB of output. A client that comes back with an offset still in that buffer gets exactly the missed bytes. Otherwise it gets a snapshot: an ANSI sequence that, written into a fresh emulator of the terminal's size, reproduces the screen — contents, cursor, colours, alternate screen and modes — plus up to 2000 lines of scrollback. Full-screen programs such as `top` or an editor come back exactly as they are.
 - **Ownership.** A terminal belongs to the device that opened it; other devices get `404` for it. An `admin` token sees all of them. Revoking a device closes its terminals.
 - **Several viewers.** Every stream is its own attachment; two windows or two devices (with `admin`) can follow the same terminal.
-- **Where the host comes from.** `$GENTLE_TERM_HOST`, else `<home>/serve/bin/gentle-term-host`, else `gentle-term-host` on `PATH`. Without one the server has no `terminals` capability and the terminal endpoints answer `501 term_host_missing`; an `admin` client can install a build with `PUT /api/term-host` (sha256-checked). The host is a small Rust program (PTYs and a headless emulator); it is not shipped with the npm package yet (see [Known limits](#known-limits-and-next-steps)).
+- **Where the host comes from.** `$GENTLE_TERM_HOST`, else `<home>/serve/bin/gentle-term-host`, else `gentle-term-host` on `PATH`. Without one the server has no `terminals` capability and the terminal endpoints answer `501 term_host_missing`; an `admin` client can install a build with `PUT /api/term-host` (sha256-checked). The host is a small Rust program (PTYs and a headless emulator); it is not shipped with the npm package, but every Gentle Shell GPUI release carries it per platform (`gentle-term-host-<os>-<arch>[.exe]`, in the release's `SHA256SUMS`), and `GET /api/term-host` names the one that fits the server (`asset`).
 
 ## Security model
 
@@ -251,7 +251,7 @@ sequenceDiagram
 | A paired device | What its scopes allow ([table below](#scopes)), as the server user. | Act as another device: register tools or context under another id, answer another device's host tool calls, see or drive another device's terminals or forwards (without `admin`). |
 | A revoked device | Nothing: its token, tickets, streams, forwards, terminals and pending host tool calls end at once. | — |
 | The model / agent | What its tools and the permission mode allow, as with a local session. Call host tools a client registered (the client decides how to run them and whether to ask). | Reach the client's device except through a registered host tool. |
-| A local user other than the server user | Nothing: `<home>/serve/` is `0700`, its files `0600`, the terminal socket `0600`. | Read `server.json` (the local admin token) or connect to the terminal host. |
+| A local user other than the server user | Nothing: `<home>/serve/` is `0700`, its files `0600`, the terminal socket `0600` (on Windows the host's port is reachable, but its token is in a file only the server user can read). | Read `server.json` (the local admin token) or connect to the terminal host. |
 
 ### Scopes
 
@@ -292,7 +292,7 @@ Without `--listen` the server binds `127.0.0.1` only, and remote use goes throug
 ### What the server never does
 
 - **Run client code.** A host tool runs on the device that registered it; the server and the agent only see its arguments and its result. No script, binary or command from a client is executed on the server, except the terminal host binary an `admin` explicitly installs (hash-checked) and the commands a scope already allows (prompts, git, a shell).
-- **Expose paths beyond scope.** A forward reaches only the server's loopback, never another host. Session lists show only the folder name to a `sessions:read` token. A device sees only its own forwards and terminals. Uploads go to an owner-only folder per device. The terminal host never listens on the network.
+- **Expose paths beyond scope.** A forward reaches only the server's loopback, never another host. Session lists show only the folder name to a `sessions:read` token. A device sees only its own forwards and terminals. Uploads go to an owner-only folder per device. The terminal host never listens on the network (on Windows only on `127.0.0.1`, behind a token).
 - **Exceed the terminal's authority.** `sessions:operate` is exactly what typing in the session's terminal can do — including changing the permission mode, see the [Desktop RPC trust boundary](desktop-rpc.md#trust-boundary). Remote prompts are not interactive consent, provider consent stays terminal-only, and every existing check in the session still applies.
 - **Store a token in clear.** Device tokens are kept as sha256 hashes; long-lived tokens never go in URLs.
 - **Open a browser or listen beyond what was asked.** Sessions run with `GENTLE_DESIGN_OPEN_BROWSER=0`; forwards listen only while open; discovery listens only on a network bind.
@@ -375,6 +375,5 @@ Every error is `{ "error": { "code", "message" } }`. The codes a client meets mo
 
 - **TLS / encrypted LAN.** The network server is plain HTTP. Next: TLS with a certificate pinned at pairing (the connection code can carry its fingerprint), so `serve share` is safe on any network. Until then, the SSH tunnel or a tailnet.
 - **Outside the LAN, and mobile.** Discovery and the connection code reach the same network or a tailnet only. Next: an optional relay for devices outside the network, with push notifications for a phone when a turn ends or a dialog waits.
-- **Terminals on Windows.** The terminal host speaks over a Unix socket and uses Unix PTYs; a Windows build (named pipe, ConPTY) is not there, so terminals do not work on a Windows server. `serve share --always` (start at login) is Linux and macOS only too.
-- **Prebuilt terminal host binaries.** `gentle-term-host` is not shipped with the npm package; today it comes from `$GENTLE_TERM_HOST`, `PATH`, or a client that installs a build with `PUT /api/term-host`. Next: signed prebuilt binaries per platform, published with each release.
+- **`serve share --always`** (start at login) is Linux and macOS only.
 - **Narrower scopes.** No folder jail and no separate `fs:read`/`fs:write` scopes yet; see [Not done yet](serve.md#not-done-yet) for the rest (WebSocket transport, native Desktop RPC frames, idle unload and crash resume).

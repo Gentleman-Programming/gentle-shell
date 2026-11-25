@@ -1,24 +1,30 @@
 #!/usr/bin/env node
-// A stand-in for gentle-term-host in the serve tests: the same socket protocol
-// (JSON Lines, base64 data), with plain pipes instead of PTYs and the raw
-// output ring as the "snapshot". It records its arguments in
-// <state-dir>/argv.json so a test can check how serve started it.
+// A stand-in for gentle-term-host in the serve tests: the same protocol
+// (JSON Lines, base64 data) over a Unix socket or, with --tcp, loopback TCP
+// with a token in <state-dir>/term-host.json and an `auth` line first; plain
+// pipes instead of PTYs and the raw output ring as the "snapshot". It
+// records its arguments in <state-dir>/argv.json so a test can check how
+// serve started it.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
+const tcp = args.includes("--tcp");
 const socketPath = flag("--socket");
 const stateDir = flag("--state-dir");
-if (!socketPath) { console.error("--socket is required"); process.exit(2); }
+if (!socketPath && !tcp) { console.error("--socket or --tcp is required"); process.exit(2); }
+if (tcp && !stateDir) { console.error("--tcp needs --state-dir"); process.exit(2); }
 if (stateDir) {
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	writeFileSync(join(stateDir, "argv.json"), JSON.stringify(args));
 }
+const portFile = tcp ? join(stateDir, "term-host.json") : undefined;
+const token = randomBytes(32).toString("hex");
 const RING = 2 * 1024 * 1024;
 const terms = new Map();
 
@@ -110,7 +116,7 @@ function handle(conn, msg) {
 		case "shutdown":
 			conn.after(() => {
 				for (const t of terms.values()) t.child.kill("SIGKILL");
-				rmSync(socketPath, { force: true });
+				rmSync(portFile ?? socketPath, { force: true });
 				process.exit(0);
 			});
 			return {};
@@ -118,9 +124,10 @@ function handle(conn, msg) {
 	}
 }
 
-rmSync(socketPath, { force: true });
+if (socketPath) rmSync(socketPath, { force: true });
 const server = createServer((socket) => {
 	let buffered = "";
+	let authed = !tcp;
 	const queued = [];
 	const conn = {
 		terms: new Set(),
@@ -134,7 +141,17 @@ const server = createServer((socket) => {
 			const line = buffered.slice(0, nl);
 			buffered = buffered.slice(nl + 1);
 			let msg;
-			try { msg = JSON.parse(line); } catch { conn.send({ id: null, ok: false, error: { code: "bad_request", message: "not JSON" } }); continue; }
+			try { msg = JSON.parse(line); } catch { msg = undefined; }
+			if (!authed) {
+				if (msg?.op !== "auth" || msg.token !== token) {
+					socket.end(`${JSON.stringify({ id: msg?.id ?? null, ok: false, error: { code: "unauthorized", message: "authenticate first" } })}\n`);
+					return;
+				}
+				authed = true;
+				conn.send({ id: msg.id, ok: true });
+				continue;
+			}
+			if (msg === undefined) { conn.send({ id: null, ok: false, error: { code: "bad_request", message: "not JSON" } }); continue; }
 			try {
 				conn.send({ ...handle(conn, msg), id: msg.id, ok: true });
 			} catch (error) {
@@ -146,4 +163,12 @@ const server = createServer((socket) => {
 	socket.on("error", () => {});
 	socket.on("close", () => { for (const t of conn.terms) t.attached.delete(conn); });
 });
-server.listen(socketPath, () => chmodSync(socketPath, 0o600));
+if (tcp) {
+	server.listen(0, "127.0.0.1", () => {
+		const temp = `${portFile}.${process.pid}.tmp`;
+		writeFileSync(temp, `${JSON.stringify({ port: server.address().port, token, pid: process.pid })}\n`, { mode: 0o600 });
+		renameSync(temp, portFile);
+	});
+} else {
+	server.listen(socketPath, () => chmodSync(socketPath, 0o600));
+}

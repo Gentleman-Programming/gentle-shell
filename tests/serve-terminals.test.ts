@@ -4,9 +4,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after, before } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { ServeAuth } from "../lib/serve-auth.ts";
 import { startServeServer, type ServeServer, type ServeServerOptions } from "../lib/serve-server.ts";
-import { HostConnection } from "../lib/serve-terminals.ts";
+import { HostConnection, termHostAsset, termHostTransport, type TermHostEndpoint } from "../lib/serve-terminals.ts";
 import { call, pairDevice, stream } from "./serve-test-client.ts";
 
 const FAKE_HOST = fileURLToPath(new URL("./fixtures/serve-fake-term-host.mjs", import.meta.url));
@@ -31,8 +32,8 @@ const options = (env: NodeJS.ProcessEnv): ServeServerOptions => ({
 	launchSession: () => { throw new Error("no sessions here"); },
 });
 
-async function shutdownHost(socket: string): Promise<void> {
-	const conn = await HostConnection.open(socket, 1000).catch(() => undefined);
+async function shutdownHost(endpoint: TermHostEndpoint): Promise<void> {
+	const conn = await HostConnection.open(endpoint, 1000).catch(() => undefined);
 	if (!conn) return;
 	await conn.request("shutdown", {}, 2000).catch(() => undefined);
 	conn.close();
@@ -46,7 +47,7 @@ before(async () => {
 });
 after(async () => {
 	await server?.close();
-	await shutdownHost(join(serveDir, "term.sock"));
+	await shutdownHost({ path: join(serveDir, "term.sock") });
 	rmSync(root, { recursive: true, force: true });
 });
 
@@ -91,6 +92,8 @@ test("open starts the host on first use, detached, with its socket and state fol
 	const host = await call(server.url, "GET", "/api/term-host", { token: phone.token });
 	assert.equal(host.body.running, true);
 	assert.equal(host.body.version, "fake");
+	assert.equal(host.body.transport, "unix");
+	assert.equal(host.body.asset, termHostAsset());
 	assert.equal(host.body.path, undefined, "the binary's path only for an admin");
 	assert.equal((await call(server.url, "GET", "/api/term-host", { token: ADMIN })).body.path, FAKE_HOST);
 });
@@ -230,7 +233,75 @@ test("without a host binary: no terminals capability and 501; PUT /api/term-host
 		assert.equal(opened.status, 201, JSON.stringify(opened.body));
 	} finally {
 		await bare.close();
-		await shutdownHost(join(otherServe, "term.sock"));
+		await shutdownHost({ path: join(otherServe, "term.sock") });
 		rmSync(otherRoot, { recursive: true, force: true });
+	}
+});
+
+test("the transport and the release asset follow the server's system", () => {
+	assert.equal(termHostTransport({}, "linux"), "unix");
+	assert.equal(termHostTransport({ GENTLE_TERM_HOST_TRANSPORT: "tcp" }, "darwin"), "tcp");
+	assert.equal(termHostTransport({}, "win32"), "tcp");
+	assert.equal(termHostAsset("linux", "x64"), "gentle-term-host-linux-x64");
+	assert.equal(termHostAsset("linux", "arm64"), "gentle-term-host-linux-arm64");
+	assert.equal(termHostAsset("darwin", "arm64"), "gentle-term-host-macos-arm64");
+	assert.equal(termHostAsset("darwin", "x64"), "gentle-term-host-macos-x64");
+	assert.equal(termHostAsset("win32", "x64"), "gentle-term-host-windows-x64.exe");
+	assert.equal(termHostAsset("win32", "arm64"), null);
+	assert.equal(termHostAsset("freebsd", "x64"), null);
+});
+
+test("over TCP (Windows' transport): a port file with a token, the host reused across restarts and replaced once it died", async () => {
+	const tcpRoot = realpathSync(mkdtempSync(join(dirname(root), "gst-")));
+	const tcpServe = join(tcpRoot, "serve");
+	const tcpAuth = new ServeAuth({ devicesFile: join(tcpServe, "devices.json"), adminToken: ADMIN });
+	const start = () => startServeServer({ ...options({ PATH: process.env.PATH, GENTLE_TERM_HOST: FAKE_HOST, GENTLE_TERM_HOST_TRANSPORT: "tcp" }), auth: tcpAuth, serveDir: tcpServe });
+	const portFile = join(tcpServe, "term", "term-host.json");
+	const written = () => JSON.parse(readFileSync(portFile, "utf8")) as { port: number; token: string; pid: number };
+	let tcpServer = await start();
+	try {
+		const device = await pairDevice(tcpServer.url, ADMIN, ["terminal"], "tcp");
+		const opened = await call(tcpServer.url, "POST", "/api/terminals", { token: device.token, body: { cwd: project, cols: 80, rows: 24, argv: ECHO } });
+		assert.equal(opened.status, 201, JSON.stringify(opened.body));
+		const id = opened.body.terminal.id;
+		assert.deepEqual(JSON.parse(readFileSync(join(tcpServe, "term", "argv.json"), "utf8")), ["--tcp", "--state-dir", join(tcpServe, "term")]);
+		assert.equal(existsSync(join(tcpServe, "term.sock")), false);
+		const first = written();
+		assert.equal(statSync(portFile).mode & 0o777, 0o600);
+		const refused = await HostConnection.open({ port: first.port, token: "not-the-token" }, 2000).then(() => undefined, (error: unknown) => error);
+		assert.equal((refused as { code?: string } | undefined)?.code, "unauthorized");
+
+		const live = await stream(tcpServer.url, `/api/terminals/${id}/stream`, device.token);
+		await live.waitFor("event: attached");
+		assert.equal((await call(tcpServer.url, "POST", `/api/terminals/${id}/input`, { token: device.token, body: { data: Buffer.from("hi\n").toString("base64") } })).status, 200);
+		await live.waitFor(/"data":"ZWNobzpoaQo="/);
+		live.close();
+		const status = (await call(tcpServer.url, "GET", "/api/term-host", { token: device.token })).body;
+		assert.equal(status.transport, "tcp");
+		assert.equal(status.running, true);
+		assert.equal(status.pid, first.pid);
+
+		// A restarted serve finds the same host through the port file.
+		await tcpServer.close();
+		tcpServer = await start();
+		assert.equal((await call(tcpServer.url, "GET", "/api/term-host", { token: device.token })).body.pid, first.pid);
+
+		// A host that died leaves its port file: nothing answers there, so serve starts another.
+		process.kill(first.pid, "SIGKILL");
+		// Another process's exit has no event to await here: poll until it's gone.
+		for (let i = 0; i < 100; i += 1) {
+			try { process.kill(first.pid, 0); } catch { break; }
+			await sleep(20);
+		}
+		assert.equal((await call(tcpServer.url, "GET", "/api/terminals", { token: device.token })).status, 200);
+		const second = written();
+		assert.notEqual(second.pid, first.pid);
+		assert.notEqual(second.token, first.token);
+		assert.equal((await call(tcpServer.url, "GET", "/api/term-host", { token: device.token })).body.pid, second.pid);
+	} finally {
+		await tcpServer.close();
+		const left = existsSync(portFile) ? written() : undefined;
+		if (left) await shutdownHost({ port: left.port, token: left.token });
+		rmSync(tcpRoot, { recursive: true, force: true });
 	}
 });

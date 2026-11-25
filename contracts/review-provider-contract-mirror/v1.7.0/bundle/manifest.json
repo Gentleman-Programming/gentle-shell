@@ -1,6 +1,6 @@
 {
   "schema": "gentle-ai.review-provider-contract-bundle/v1",
-  "contract_semver": "1.6.0",
+  "contract_semver": "1.7.0",
   "transport_capability": "gentle-ai.provider-transport/v1",
   "runtimes": [
     "claude-code",
@@ -76,7 +76,7 @@
       "runtime": "pi",
       "file": {
         "path": "routing/pi.md",
-        "sha256": "43d457487317646c20e91109d90ec17dcc621d645cc8ea7f2097e820aaa045d4"
+        "sha256": "9e38df86c6733672c5b07e3cf6727da254395c8c5d43c1c742d9eae305fc7be4"
       }
     }
   ]

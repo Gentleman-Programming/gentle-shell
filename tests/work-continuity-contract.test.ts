@@ -77,7 +77,7 @@ test("S3: authorized work continues within existing limits while proof gaps neve
 	const continuity = await delivered();
 	includesAll(continuity, [
 		"Do in-scope implementation, docs and verification without asking at each step.",
-		"Run the authorized next step now, not later.",
+		"Run the authorized next step now.",
 		"A progress update is not a request for permission.",
 		"An explicit user stop applies only to the work it names.",
 		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
@@ -89,20 +89,19 @@ test("S3: authorized work continues within existing limits while proof gaps neve
 	]);
 	// The general turn-end rule complements, but does not duplicate, the
 	// canonical Close's tracked-work and proof clauses.
-	const prompt = await deliveredPrompt();
-	includesAll(prompt, [
-		"a pending child is a wait event whose completion resumes the turn without asking the human",
-		"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step",
-		"while a required authorized check the existing budget still allows keeps running",
+	const close = await closeStep();
+	includesAll(close, [
+		"A pending child is a wait: completion resumes the turn without asking.",
+		"Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget.",
 	]);
 	for (const duplicated of [
 		"Needs your decision",
 		"never more verification",
 		"Before a terminal bounded-stop outcome",
-		"a pending child is a wait event",
+		"A pending child is a wait: completion resumes the turn without asking.",
 		"Missing, partial, unavailable, or declined proof",
 	]) assert.ok(!continuity.includes(duplicated), `continuity must not duplicate or license: ${duplicated}`);
-	includesAll(await closeStep(), [UNAVAILABLE_VERIFIER]);
+	includesAll(close, [UNAVAILABLE_VERIFIER]);
 });
 
 test("S2: setup failure preserves unrun proof without calling the verifier unavailable", async () => {
@@ -142,31 +141,19 @@ test("#3049: explicit quota recovery permits only the missing proof without reop
 });
 
 test("S3: a true human decision and denial stop only the work they apply to", async () => {
-	includesAll(await deliveredPrompt(), [
-		"only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work",
-		"A tracked task ends the turn pending only while it waits on already-launched work, for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to, or for a genuine human decision still outstanding",
+	includesAll(await closeStep(), [
+		"Only a real human decision, explicit user stop, denial, missing consent, exhausted limit, or failure without a permitted route stops only affected work.",
+		"Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
 		"Never turn a report into a blind self-reprompt loop.",
 	]);
 });
 
-function trackedPendingBoundary(prompt: string): string {
-	const start = prompt.indexOf("A tracked task ends the turn pending");
-	assert.ok(start >= 0, "the delivered prompt carries the canonical tracked-task boundary");
-	const end = prompt.indexOf("as final.", start);
-	assert.ok(end > start, "the canonical tracked-task boundary ends with its finality clause");
-	return prompt.slice(start, end + "as final.".length);
-}
-
 test("S3 F1/F2: a partial stop or exhausted limit affects only that work while unrelated runnable work continues", async () => {
-	const prompt = await deliveredPrompt();
-	const slice = trackedPendingBoundary(prompt);
-	for (const clause of [
-		"waits on already-launched work",
-		"for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to",
-		"or for a genuine human decision still outstanding",
-		"independent authorized work continues",
-		"never abandons runnable work or presents an unverified outcome as final",
-	]) assert.ok(slice.includes(clause), `tracked-task boundary is missing: ${clause}`);
+	const close = await closeStep();
+	includesAll(close, [
+		"A tracked task ends the turn pending only for launched work still running, a real human decision, denial, missing consent, explicit stop, or exhausted limit.",
+		"Report failures without a permitted route as incomplete. Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
+	]);
 	// Denied destructive migration, exhausted verifier/correction limit, missing
 	// consent, and a partial user stop each stop their affected work; a waiting
 	// child resumes automatically; unrelated runnable work is never abandoned.
@@ -182,7 +169,7 @@ test("S3 F1/F2: a partial stop or exhausted limit affects only that work while u
 		"Unrelated runnable authorized work continues",
 	]) assert.ok(gate.includes(clause), `tracking Close gate is missing: ${clause}`);
 	assert.ok(!gate.includes("tracked or untracked work alike"), "the unscoped stop exception must go");
-	assert.ok(prompt.includes("Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work"), "no fake complete");
+	assert.ok(close.includes("Missing, partial, unavailable, or declined proof bars claiming completion of affected work"), "no fake complete");
 });
 
 // #2919 and turn-end-coherence S11: the parent takes over with evidence and never repeats an attempt.

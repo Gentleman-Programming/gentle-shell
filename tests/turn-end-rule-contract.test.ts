@@ -59,7 +59,7 @@ test("S1: a genuine dead end ends only that work as incomplete, with tried and m
 });
 
 test("S1: an authorized step that can run now is run, not announced as later work", () => {
-	clauses(render().body, "Run the authorized next step now, not later.");
+	for (const mode of modes) clauses(render(mode).body, "Run the authorized next step now.");
 });
 
 test("S1: an action permits a wait only when it will wake the turn and no independent work remains", () => {

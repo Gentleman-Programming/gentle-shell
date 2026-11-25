@@ -7,8 +7,8 @@ import { __testing } from "../extensions/gentle-ai.ts";
 
 // ODD harness-continuity S3 (odd/tasks/harness-continuity.md): authorized work
 // continues, a pending child is a wait event that resumes the turn, and only a
-// real human decision, the user's explicit stop, a denial, missing consent, or
-// an exhausted limit stops the work it applies to. The canonical Close applies
+// real human decision, explicit user stop, denial, missing consent, exhausted
+// limit, or failure without a permitted route stops affected work. Close applies
 // those boundaries to tracking and proof; Pi-owned continuity carries the
 // general rule and never licenses a generic terminal **Needs your decision**
 // result or broad "never more verification". These are instruction-delivery
@@ -54,20 +54,16 @@ function closeStep(persona: (typeof personas)[number], mode: (typeof modes)[numb
 
 // The canonical Close boundaries rendered from the mirrored routing/pi.md.
 const CANONICAL_CLOSE = [
-	"Authorized work continues: runnable in-scope steps run, a pending child is a wait event whose completion resumes the turn without asking the human, and only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work.",
-	"A tracked task ends the turn pending only while it waits on already-launched work, for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to, or for a genuine human decision still outstanding; independent authorized work continues, and it never abandons runnable work or presents an unverified outcome as final.",
-	"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step, while a required authorized check the existing budget still allows keeps running; stop checking only inside an exhausted or denied boundary, report that exact blocker and the decision that is genuinely the human's, and never invent a pass.",
+	"A failed check is diagnosed, fixed and rerun within its limits.",
+	"Run authorized in-scope steps. Work through failures with a permitted route. A pending child is a wait: completion resumes the turn without asking.",
+	"Only a real human decision, explicit user stop, denial, missing consent, exhausted limit, or failure without a permitted route stops only affected work.",
+	"A tracked task ends the turn pending only for launched work still running, a real human decision, denial, missing consent, explicit stop, or exhausted limit.",
+	"Report failures without a permitted route as incomplete. Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
+	"Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget.",
+	"Stop checks only at an exhausted or denied boundary or with no permitted route. Report the exact blocker and any genuine human decision; never invent a pass.",
 	"Never turn a report into a blind self-reprompt loop.",
 	"Hedged wording is not a stop.",
 ] as const;
-
-function trackedPendingBoundary(text: string): string {
-	const start = text.indexOf("A tracked task ends the turn pending");
-	assert.ok(start >= 0, "the canonical tracked-task boundary is rendered");
-	const end = text.indexOf("as final.", start);
-	assert.ok(end > start, "the canonical tracked-task boundary ends with its finality clause");
-	return text.slice(start, end + "as final.".length);
-}
 
 test("T23(a): the independent verifier's correction limit never grants an extra verify run", () => {
 	containsAll(lineStarting(verification, "5. **One correction**"), [
@@ -95,8 +91,7 @@ test("S3: an explicit user stop is scoped to the work it names while authorized 
 	const rendered = prompt("gentleman");
 	containsAll(rendered, [
 		"An explicit user stop applies only to the work it names.",
-		"while a required authorized check the existing budget still allows keeps running",
-		"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step",
+		"Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget.",
 	], "authorized continuation boundaries");
 	assert.ok(!rendered.includes("Needs your decision"), "ordinary continuity must not carry a generic terminal phrase");
 });
@@ -104,13 +99,9 @@ test("S3: an explicit user stop is scoped to the work it names while authorized 
 test("S3 F1: denied, exhausted, missing-consent, and partial-stop cases stay scoped to the affected work", () => {
 	for (const mode of modes) {
 		const close = closeStep("gentleman", mode);
-		const slice = trackedPendingBoundary(close);
-		containsAll(slice, [
-			"waits on already-launched work",
-			"for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to",
-			"or for a genuine human decision still outstanding",
-			"independent authorized work continues",
-			"never abandons runnable work or presents an unverified outcome as final",
+		containsAll(close, [
+			"A tracked task ends the turn pending only for launched work still running, a real human decision, denial, missing consent, explicit stop, or exhausted limit.",
+			"Report failures without a permitted route as incomplete. Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
 		], `${mode} tracked-task boundary`);
 		// A denied destructive migration stays pending without a retry, an
 		// exhausted verifier/correction limit never resumes its blocked task,
@@ -118,10 +109,10 @@ test("S3 F1: denied, exhausted, missing-consent, and partial-stop cases stay sco
 		// unrelated runnable work running. These are the rendered clauses that
 		// carry those cases, not model-adherence proof.
 		containsAll(close, [
-			"stops the work it applies to, never independent authorized work",
-			"stop checking only inside an exhausted or denied boundary",
-			"report that exact blocker and the decision that is genuinely the human's",
-			"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work",
+			"Only a real human decision, explicit user stop, denial, missing consent, exhausted limit, or failure without a permitted route stops only affected work.",
+			"Stop checks only at an exhausted or denied boundary or with no permitted route.",
+			"Report the exact blocker and any genuine human decision; never invent a pass.",
+			"Missing, partial, unavailable, or declined proof bars claiming completion of affected work",
 		], `${mode} central stop rule`);
 	}
 });

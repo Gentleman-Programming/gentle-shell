@@ -8,7 +8,7 @@ import { __testing } from "../extensions/gentle-ai.ts";
 // stop you between the two and pick the second part up later"; every Gentle
 // cell delivered only the first part and paused by itself. Hedged delivery
 // wording asks for resumable notes and separate commits, never a stop, and
-// the close step must not leave tracked tasks pending without a user stop.
+// the Close step must not leave runnable authorized tasks pending.
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const read = (relative: string): string => readFileSync(join(REPO_ROOT, relative), "utf8");
@@ -32,8 +32,9 @@ test("resolved subdecisions retain the original authorized objective", () => {
 	const prompt = __testing.buildGentlePrompt("gentleman");
 	assert.ok(prompt.includes("After resolving an incident or subdecision, automatically resume safe, necessary in-scope work on the original authorized objective. Recover proportionately and respect explicit user dispositions."));
 	assert.ok(!prompt.includes("Investigate pending technical uncertainty"), "the canonical real-human-decision boundary owns that clause");
-	assert.ok(prompt.includes("only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work"));
-	assert.ok(prompt.includes("Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step"));
+	assert.ok(prompt.includes("Only a real human decision, explicit user stop, denial, missing consent, exhausted limit, or failure without a permitted route stops only affected work."));
+	assert.ok(prompt.includes("Continue independent authorized work; never abandon runnable work or present an unverified outcome as final."));
+	assert.ok(prompt.includes("Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget."));
 	// cost-speed-painpoints S15 P4: the verifier-setup rules load with the Verification rule, not on every turn.
 	const verification = read("assets/orchestrator-verification.md");
 	for (const sentence of [
@@ -121,7 +122,7 @@ test("T13: the always-on harness narrows conditional intent and gates Close on p
 		"harness must say hedged delivery wording is not a stop",
 	);
 	assert.ok(
-		harness.includes("A tracked task ends the turn pending only while it waits on already-launched work, for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to, or for a genuine human decision still outstanding"),
+		harness.includes("A tracked task ends the turn pending only for launched work still running, a real human decision, denial, missing consent, explicit stop, or exhausted limit."),
 		"harness Close step must keep a legitimate pending child or scoped human decision",
 	);
 	assert.ok(harness.includes("Hedged wording is not a stop."), "harness Close step must keep hedged wording out of stops");

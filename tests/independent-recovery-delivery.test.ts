@@ -60,9 +60,11 @@ for (const persona of ["gentleman", "neutral"] as const) {
       assert.match(worker, /later explicit requests stay subject to native authority/);
       assert.match(paragraph(p, "Explicit limits:"), /Never reset, widen or dodge a limit, even in a new session/);
       // harness-continuity T5: the proof boundary moved from this paragraph into the canonical Close.
-      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*proof forbids claiming completion of the affected work, never an independently authorized next step/);
+      const close = p.split("\n").find(line => line.startsWith("7. **Close.**"));
+      assert.ok(close, "the always-on prompt delivers Close");
+      assert.ok(close.includes("Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget."));
       assert.match(worker, /no child is active or uncertain/);
-      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*stop checking only inside an exhausted or denied boundary/);
+      assert.ok(close.includes("Stop checks only at an exhausted or denied boundary or with no permitted route."));
       assert.doesNotMatch(p, /Stop only for[^\n]*unavailable required proof/);
       assert.ok(!p.includes("unavailable required proof"), "no rendered prompt stops for unavailable proof");
     });

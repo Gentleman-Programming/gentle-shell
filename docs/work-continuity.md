@@ -29,7 +29,7 @@ This guidance changes no runtime quota detection, provider selection, or native 
 
 ## Current bounded checks
 
-On the earlier Windows workspace, with existing dependencies and no installation, network, provider, or model calls, the bounded verification run recorded these results against the then-current contract 1.4.0 mirror. The current field-test mirror is contract 1.6.0 and `node scripts/check-provider-contract.mjs` validates its bytes:
+On the earlier Windows workspace, with existing dependencies and no installation, network, provider, or model calls, the bounded verification run recorded these results against the then-current contract 1.4.0 mirror. The current field-test mirror is contract 1.7.0 and `node scripts/check-provider-contract.mjs` validates its bytes:
 
 | Command | Result |
 | --- | --- |
@@ -54,6 +54,6 @@ Those four selected cases are bounded Windows evidence only. They do not attribu
 
 ## Ownership and review limits
 
-The continuity clarification is Shell-owned and defers to the provider-owned Close contract for the authorized-work boundary. This delivery consumes the contract 1.6.0 field-test mirror generated from the finished canonical source through `scripts/mirror-provider-contract.mjs`; Pi never hand-edits bundle bytes or the manifest digest, and the released installer pin and capability rows remain unchanged. A released provider, installer, RDD-switch, native-guard, question-tool, or surface-policy change requires separate authority.
+The continuity clarification is Shell-owned and defers to the provider-owned Close contract for the authorized-work boundary. This delivery consumes the contract 1.7.0 field-test mirror generated from the finished canonical source through `scripts/mirror-provider-contract.mjs`; Pi never hand-edits bundle bytes or the manifest digest, and the released installer pin and capability rows remain unchanged. A released provider, installer, RDD-switch, native-guard, question-tool, or surface-policy change requires separate authority.
 
 Global RDD was on. An earlier preflight stopped with `immutable_review_transport_unsupported`; no review authority was started, no receipt exists, and review or mode was not retried. That unavailable review transport does not itself authorize or prohibit ordinary delivery; any delivery decision must use its applicable authority and evidence. Earlier wording advisories concerned the diagnostic-only sentence, now removed with the generic terminal license, and the maintenance sentence, which remains guidance without new authority. No GitHub issue status was consulted, and this document does not claim publishing, delivery approval, or issue closure.

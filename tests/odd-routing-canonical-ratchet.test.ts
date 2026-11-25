@@ -216,7 +216,7 @@ const ANCHORS: readonly RoutingAnchor[] = [
 		// wait event, not a human decision. Pi's continuity scopes an explicit stop
 		// to the work it names without restating the boundary.
 		label: "authorized work continues across a pending child",
-		canonical: "a pending child is a wait event whose completion resumes the turn without asking the human",
+		canonical: "A pending child is a wait: completion resumes the turn without asking.",
 		mirrors: [
 			{ surface: EXTENSION, includes: "An explicit user stop applies only to the work it names." },
 		],

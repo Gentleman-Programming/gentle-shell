@@ -124,7 +124,7 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 	const continuity = appended.slice(continuityStart, coreStart);
 	for (const clause of [
 		"Do in-scope implementation, docs and verification without asking at each step.",
-		"Run the authorized next step now, not later.",
+		"Run the authorized next step now.",
 		"A progress update is not a request for permission.",
 		"An explicit user stop applies only to the work it names.",
 		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
@@ -146,7 +146,7 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 		"Needs your decision",
 		"never more verification",
 		"Before a terminal bounded-stop outcome",
-		"a pending child is a wait event",
+		"A pending child is a wait: completion resumes the turn without asking.",
 		"Missing, partial, unavailable, or declined proof",
 	]) assert.ok(!continuity.includes(duplicated), `continuity must not duplicate or license: ${duplicated}`);
 	// cost-speed-painpoints S15 P4: the verifier-setup rules load with the Verification rule, not on every turn.

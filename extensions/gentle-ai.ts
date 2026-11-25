@@ -152,7 +152,7 @@ import { clearSessionProfileBinding, readSessionProfileBinding, readSessionProfi
 import { createSessionProfileIntegration, hasPendingSessionProfileSelection, readCurrentSessionProfileOutcome, runCurrentSessionProfileSelection, waitCurrentSessionProfileSelection, type SessionProfileLifecycleManager } from "../lib/session-profile-integration.ts";
 import { publishSessionProfileOutcome, readSessionProfileAuthority, requireSessionProfileAuthority } from "../lib/session-profile-authority.ts";
 import { isSessionProfileFamilyEntry, type SessionProfileStartupState } from "../lib/session-profile-persistence.ts";
-import type { SessionProfileAppendOutcome } from "../lib/session-profile-append-controller.ts";
+import type { SessionProfileAppendOutcome, SessionProfileAttachment } from "../lib/session-profile-append-controller.ts";
 import { freezeSessionProfileAtOwnStart, profileFollowEnabled, readFrozenDefaultOrchestrator, readSessionProfileOwnStartup, resolveSessionProfile, sessionProfileLabel, sessionProfileModelProfiles, sessionProfileRoutingAt, setFrozenDefaultOrchestrator } from "../lib/session-profile-freeze.ts";
 import {
 	applyOrchestratorSettings,
@@ -7413,6 +7413,35 @@ function isSessionOwnStart(event: { reason: string }, manager: ExtensionContext[
 }
 
 /**
+ * gentle-shell#1064 A3, decisions 1-3: the session's own start appends its
+ * startup record through the ordinary append controller, so a failed append is
+ * quarantined like any other record. It is the startup bind the freeze just
+ * took there — its origin and full definition, orchestrator included — or the
+ * clear that records no profile in any layer. Nothing else records it: a
+ * resume, fork, reload or child session is not the session's start (S2), and a
+ * session from before A2 never reaches this point, so it writes nothing and
+ * keeps today's behavior (S3). A `follow` session has no startup state to
+ * record (S4). A session with no session file has nothing to persist, so only
+ * the freeze carries its startup state.
+ */
+function appendSessionProfileStartupRecord(
+	attachment: SessionProfileAttachment | undefined,
+	startup: SessionProfileStartupState | undefined,
+	manager: ExtensionContext["sessionManager"],
+	environment: NodeJS.ProcessEnv,
+): void {
+	if (attachment === undefined || startup === undefined) return;
+	if (environment.GENTLE_PI_AGENTS_CHILD === "1" || profileFollowEnabled(environment)) return;
+	try {
+		if (typeof manager.getSessionFile?.() !== "string") return;
+	} catch {
+		return; // A context staled by reload or session replacement records nothing.
+	}
+	if (startup === "none") attachment.clear("none");
+	else attachment.bindStartup(startup.origin, startup.name, startup.modelProfiles);
+}
+
+/**
  * Warn when the current session profile record cannot be read: an invalid record
  * or one from a newer version blocks affected launches instead of falling back.
  */
@@ -12944,7 +12973,7 @@ function createGentleAiExtensionForTesting(
 		const startupEpoch = reminderEpoch;
 		const profileSessionId = ctx.sessionManager?.getSessionId?.();
 		if (profileSessionId) clearSessionProfileBinding(profileSessionId);
-		sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
+		const profileSession = sessionProfiles.start(ctx.sessionManager, (type, data) => pi.appendEntry(type, data), event);
 		// gentle-shell#2742: only a session's own start tells this process its
 		// startup state; anything else leaves it unknown.
 		let startupProfile: SessionProfileStartupState | undefined;
@@ -12952,6 +12981,8 @@ function createGentleAiExtensionForTesting(
 			if (profileSessionId && isSessionOwnStart(event, ctx.sessionManager)) {
 				freezeSessionProfileAtOwnStart({ sessionId: profileSessionId, cwd: ctx.sessionManager.getCwd(), configHome: gentleAiConfigHome() });
 				startupProfile = readSessionProfileOwnStartup(profileSessionId);
+				// A3: the session records the startup state it freezes, at the same moment.
+				appendSessionProfileStartupRecord(profileSession.attachment, startupProfile, ctx.sessionManager, permissionEnvironment);
 			}
 		} catch { /* The startup state stays unknown. */ }
 		// A3: only this session's own start applies its frozen full definition.

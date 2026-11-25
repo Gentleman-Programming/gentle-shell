@@ -19,6 +19,11 @@
 // mode the orchestrator is still chosen at startup while children follow later
 // defaults: an accepted, documented limitation.
 //
+// `follow` never records its startup state and never reads one back
+// (gentle-shell#1064 A3 S4): a startup bind in the record is ignored and the
+// current defaults resolve, the documented v1 divergence. An explicit choice
+// still wins over follow.
+//
 // The frozen state is in-process only, like the explicit binding of slice 2: it
 // lives on `globalThis` behind a `Symbol.for` key because Pi evaluates this
 // module once per extension entrypoint. A resumed session (`--resume`,
@@ -262,16 +267,18 @@ export function freezeSessionProfileAtStartup(options: SessionProfileOptions): v
  * extension's `session_start` ran first.
  */
 export function resolveSessionProfile(options: SessionProfileOptions): SessionProfileResolution {
+	const env = options.env ?? process.env;
 	const recorded = readSessionProfileBinding(options.sessionId);
 	if (recorded?.origin === "user") return { kind: "explicit", name: recorded.name, modelProfiles: recorded.modelProfiles };
 	// gentle-shell#2742: a startup record is the session's inherited profile,
-	// taken as recorded instead of freezing again, and routed in `follow` mode
-	// too, as v1 routes any bind. Like the freeze, it keeps role routing only.
-	if (recorded !== undefined)
+	// taken as recorded instead of freezing again. Like the freeze, it keeps role
+	// routing only. gentle-shell#1064 A3 S4: a `follow` session ignores that
+	// record and resolves the current defaults below; an explicit choice above
+	// still wins.
+	if (recorded !== undefined && !profileFollowEnabled(env))
 		return { kind: "inherited", profile: { name: recorded.name, origin: recorded.origin, modelProfiles: roleRouting(recorded.modelProfiles) } };
 	if (freezes(options) && readSessionProfileStartupNone(options.sessionId)) return { kind: "inherited", profile: undefined };
 	if (freezes(options)) return { kind: "inherited", profile: frozenOrFreeze(options).profile };
-	const env = options.env ?? process.env;
 	const profile = resolveInheritedProfile(options);
 	return isChildSession(env) || !profileFollowEnabled(env) ? { kind: "live", profile } : { kind: "follow", profile };
 }

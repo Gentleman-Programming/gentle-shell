@@ -334,6 +334,8 @@ export function liveServer(agentHome        )                         {
 
 
 
+
+
 /** The exit code that asks a service manager (systemd `Restart=on-failure`, launchd `KeepAlive`) to start the upgraded server. */
 export const SERVE_RESTART_EXIT = 75;
 
@@ -350,6 +352,13 @@ export function upgradeLaunch(ctx                                               
 	const env                    = { ...ctx.env, NO_COLOR: "1", FORCE_COLOR: "0", GENTLE_SHELL_SKIP_STARTUP_UPDATE: "1" };
 	delete env[INTERACTIVE_HOST_ENV];
 	return { command: ctx.nodePath, args: [ctx.launcher, "upgrade", ...(channel === undefined ? [] : ["--channel", channel])], cwd: homedir(), env };
+}
+
+/** `gentle-shell [home flags] setup` for this server's home, run by this launcher outside any session, never prompting. */
+export function setupLaunch(ctx                                                                          )                {
+	const env                    = { ...ctx.env, NO_COLOR: "1", FORCE_COLOR: "0", GENTLE_SHELL_SKIP_STARTUP_UPDATE: "1" };
+	delete env[INTERACTIVE_HOST_ENV];
+	return { command: ctx.nodePath, args: [ctx.launcher, ...ctx.homeFlags, "setup"], cwd: homedir(), env };
 }
 
 /** The version the launcher's package now holds, read after an upgrade. */
@@ -481,6 +490,7 @@ async function serveForeground(ctx                     , args                   
 			...(args.relay === undefined ? {} : { relay: { url: args.relay, ...(secret === undefined ? {} : { secret }) } }),
 			startTower: () => startTower(ctx.env),
 			serveDir: files.dir,
+			agentHome: ctx.agentHome,
 			env: ctx.env,
 			auth,
 			version: ctx.version,
@@ -493,6 +503,8 @@ async function serveForeground(ctx                     , args                   
 				installedVersion: () => launcherVersion(ctx.restartLauncher?.() ?? ctx.launcher),
 				// Sessions keep running under their keepers; the next server reattaches them.
 				onUpgraded: () => { restart = true; stop.resolve(); },
+				// Setup installs the home's companion packages, never the launcher: no restart.
+				setup: () => (ctx.setupCommand ?? (() => setupLaunch(ctx)))(),
 			},
 		});
 		const file             = {

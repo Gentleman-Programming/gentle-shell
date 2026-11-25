@@ -256,6 +256,9 @@ What a person would otherwise do in a terminal on the server, the client does ov
 | Save or remove an API key | [`set_api_key`](desktop-rpc.md#set_api_key), [`remove_credentials`](desktop-rpc.md#remove_credentials) | `sessions:operate` |
 | List, install or remove packages | [`list_packages`](desktop-rpc.md#list_packages); [`install_package`](desktop-rpc.md#install_package) / [`remove_package`](desktop-rpc.md#remove_package) with [`package_progress`](desktop-rpc.md#package_progress) and [`package_finished`](desktop-rpc.md#package_finished) | read / `sessions:operate` |
 | Upgrade Gentle Shell | [`POST /api/upgrade`](serve.md#upgrade-from-a-client), its stream, then the server restarts on the new version | `admin` |
+| Run Gentle Shell's setup (companion packages) | [`POST /api/setup`](serve.md#setup-from-a-client) and its stream; no restart | `admin` |
+| Change model defaults (default model, effort, scoped models) | [`get_config`/`set_config`](desktop-rpc.md#set_config) store `model_defaults` | read / `sessions:operate` |
+| Edit `models.json` or `mcp.json` | The file endpoints, at the paths `GET /api/server` reports in `paths` | `sessions:operate` |
 
 The first four are Desktop RPC methods of a session (`POST /api/sessions/:id/desktop`): the session's Pi runs its own `/login` flow, key setup, `/logout`, or the `gentle-shell install`/`remove` CLI, on the server, with the server's agent home. Credentials land in Pi's credential store on the server and serve every session there; the session that signed in has the new models at once, other sessions after `reload_credentials`.
 
@@ -345,7 +348,7 @@ Note what `sessions:read` means: **the file endpoints run as the server user wit
 | Area | Endpoints | Reference |
 | --- | --- | --- |
 | Identity and pairing | `GET /.well-known/gentle-shell`, `POST /api/pair` | [Endpoints](serve.md#endpoints), [Authentication](serve.md#authentication) |
-| Server and devices | `GET /api/server`, `POST /api/server/stop`, `POST /api/upgrade`, `GET /api/upgrade/:jobId/stream`, `POST /api/pairing-codes`, `GET /api/devices`, `DELETE /api/devices/:id` | [Endpoints](serve.md#endpoints), [Upgrade from a client](serve.md#upgrade-from-a-client) |
+| Server and devices | `GET /api/server`, `POST /api/server/stop`, `POST /api/upgrade`, `GET /api/upgrade/:jobId/stream`, `POST /api/setup`, `GET /api/setup/:jobId/stream`, `POST /api/pairing-codes`, `GET /api/devices`, `DELETE /api/devices/:id` | [Endpoints](serve.md#endpoints), [Upgrade from a client](serve.md#upgrade-from-a-client), [Setup from a client](serve.md#setup-from-a-client) |
 | Sessions | `GET`/`POST /api/sessions`, `GET`/`DELETE /api/sessions/:id`, `POST …/rpc`, `POST …/desktop`, `GET …/events`, `POST /api/tickets` | [Pi RPC](serve.md#pi-rpc-post-apisessionsidrpc), [Desktop RPC](serve.md#desktop-rpc-post-apisessionsiddesktop), [Event stream](serve.md#event-stream-get-apisessionsidevents), [Stream tickets](serve.md#stream-tickets) |
 | Forwards and services | `POST`/`GET /api/sessions/:id/forwards`, `DELETE …/forwards/:fid`, `POST`/`GET /api/forwards`, `DELETE /api/forwards/:fid`, `GET /api/services`, `POST`/`GET`/`DELETE /api/tower` | [Port forwarding](serve.md#port-forwarding), [Server-level forwards and services](serve.md#server-level-forwards-and-services), [Gentle Tower](serve.md#gentle-tower) |
 | Files | `GET /api/fs/list`, `stat`, `read`, `search`, `watch`; `PUT /api/fs/write`; `POST /api/fs/mkdir`, `rename`, `remove` | [Files on the server](serve.md#files-on-the-server), [File safety](serve.md#file-safety) |

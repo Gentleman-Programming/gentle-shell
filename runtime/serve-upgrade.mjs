@@ -4,7 +4,12 @@
 // output to admin clients (`GET /api/upgrade/:jobId/stream`, SSE `line` and
 // `finished`), and on success asks the server to restart itself on the new
 // version. Session keepers and the terminal host are separate processes and
-// keep running; the next server reattaches them. One upgrade at a time.
+// keep running; the next server reattaches them.
+//
+// The same runner also runs Gentle Shell's own setup for the server's home
+// (`POST /api/setup`, admin; `GET /api/setup/:jobId/stream`): the companion
+// packages a `gentle-shell setup` installs there. Setup never replaces the
+// launcher, so it never restarts the server. One job at a time, upgrade or setup.
 
 import { spawn,                   } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -52,7 +57,14 @@ export const UPGRADE_CHANNELS = ["release", "main"]         ;
 
 
 
+
+
+
+
+
 export const UPGRADE_JOB_ID = /^upg_[0-9a-f]{16}$/;
+export const SETUP_JOB_ID = /^setup_[0-9a-f]{16}$/;
+const JOB_ID_PREFIX                               = { upgrade: "upg_", setup: "setup_" };
 
 // eslint-disable-next-line no-control-regex
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
@@ -88,16 +100,39 @@ export class UpgradeService {
 		return this.job !== undefined && this.job.finished === undefined;
 	}
 
-	/** Starts the upgrade; `409 upgrade_running` while one runs. */
+	/** Whether this server can run setup (the `setup` capability). */
+	canSetup()          {
+		return this.options.setup !== undefined;
+	}
+
+	/** Starts the upgrade; `409 upgrade_running` / `setup_running` while a job runs. */
 	start(channel                            )                    {
+		this.claim();
+		return this.run("upgrade", this.options.launch(channel), channel === undefined ? "" : ` (channel ${channel})`);
+	}
+
+	/** Starts Gentle Shell's setup for the server's home; same one-job rule as the upgrade. */
+	startSetup()                    {
+		const setup = this.options.setup;
+		if (!setup) throw new HttpError(501, "not_supported", "This server cannot run setup");
+		this.claim();
+		return this.run("setup", setup(), "");
+	}
+
+	        claim()       {
 		if (this.closed) throw new HttpError(503, "server_stopping", "The server is stopping");
-		if (this.running()) throw new HttpError(409, "upgrade_running", "An upgrade is already running");
+		const job = this.job;
+		if (job && job.finished === undefined) {
+			throw new HttpError(409, `${job.kind}_running`, job.kind === "upgrade" ? "An upgrade is already running" : "Setup is already running");
+		}
+	}
+
+	        run(kind              , launch               , detail        )                    {
 		const previous = this.job;
 		for (const res of previous?.streams ?? []) res.end();
-		const job             = { jobId: `upg_${randomBytes(8).toString("hex")}`, lines: [], streams: new Set() };
+		const job             = { kind, jobId: `${JOB_ID_PREFIX[kind]}${randomBytes(8).toString("hex")}`, lines: [], streams: new Set() };
 		this.job = job;
-		const launch = this.options.launch(channel);
-		this.options.log?.(`upgrade ${job.jobId}: started${channel === undefined ? "" : ` (channel ${channel})`}`);
+		this.options.log?.(`${kind} ${job.jobId}: started${detail}`);
 		let child              ;
 		try {
 			child = spawn(launch.command, launch.args, { cwd: launch.cwd, env: launch.env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -145,13 +180,13 @@ export class UpgradeService {
 			if (code === 0) {
 				let version                    ;
 				try {
-					version = this.options.installedVersion?.();
+					if (job.kind === "upgrade") version = this.options.installedVersion?.();
 				} catch { /* unknown until the new server answers GET /api/server */ }
 				this.finish(job, { ok: true, ...(version === undefined ? {} : { version }) });
 				return;
 			}
 			const last = errors.at(-1) ?? job.lines.at(-1);
-			const error = timedOut ? "The upgrade ran past its time limit" : last ?? (signal ? `Stopped by ${signal}` : `Exited with code ${code}`);
+			const error = timedOut ? `The ${job.kind} ran past its time limit` : last ?? (signal ? `Stopped by ${signal}` : `Exited with code ${code}`);
 			this.finish(job, { ok: false, error: error.length > this.limits.error ? `${error.slice(0, this.limits.error - 1)}…` : error });
 		});
 		return { jobId: job.jobId };
@@ -168,17 +203,17 @@ export class UpgradeService {
 		if (job.finished) return;
 		job.finished = finished;
 		job.child = undefined;
-		this.options.log?.(`upgrade ${job.jobId}: ${finished.ok ? `done${finished.version === undefined ? "" : ` (${finished.version})`}` : `failed: ${finished.error}`}`);
+		this.options.log?.(`${job.kind} ${job.jobId}: ${finished.ok ? `done${finished.version === undefined ? "" : ` (${finished.version})`}` : `failed: ${finished.error}`}`);
 		const event = sseEvent("finished", finished);
 		for (const res of job.streams) res.end(event);
 		job.streams.clear();
-		if (finished.ok && !this.closed) setTimeout(() => this.options.onUpgraded(), this.limits.restartDelayMs).unref();
+		if (job.kind === "upgrade" && finished.ok && !this.closed) setTimeout(() => this.options.onUpgraded(), this.limits.restartDelayMs).unref();
 	}
 
 	/** SSE: the lines so far, then live ones, then `finished`, then the stream ends. */
 	stream(req                 , res                , jobId        )       {
 		const job = this.job;
-		if (!job || job.jobId !== jobId) throw new HttpError(404, "not_found", "No such upgrade");
+		if (!job || job.jobId !== jobId) throw new HttpError(404, "not_found", "No such job");
 		startSse(req, res);
 		res.write("retry: 3000\n\n");
 		for (const line of job.lines) res.write(sseEvent("line", { line }));
@@ -190,7 +225,7 @@ export class UpgradeService {
 		res.on("close", () => job.streams.delete(res));
 	}
 
-	/** The server is stopping: streams end; a running upgrade goes on to its end, as a CLI one would. */
+	/** The server is stopping: streams end; a running job goes on to its end, as a CLI one would. */
 	close()       {
 		this.closed = true;
 		clearInterval(this.heartbeat);

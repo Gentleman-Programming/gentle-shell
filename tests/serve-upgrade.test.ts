@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
 import { ServeAuth } from "../lib/serve-auth.ts";
-import { parseServeArgs, readServerFile, runServeCommand, SERVE_RESTART_EXIT, serveFiles, supervisedServe, upgradeLaunch } from "../lib/serve-cli.ts";
+import { parseServeArgs, readServerFile, runServeCommand, SERVE_RESTART_EXIT, serveFiles, setupLaunch, supervisedServe, upgradeLaunch } from "../lib/serve-cli.ts";
 import { desktopMethodScope, startServeServer, type ServeServer, type ServeServerOptions } from "../lib/serve-server.ts";
 import { keeperAlive, type KeeperRecord } from "../lib/serve-session-keeper.ts";
 import { upgradeLines } from "../lib/serve-upgrade.ts";
@@ -54,6 +54,7 @@ function serve(root: string, upgrade: ServeServerOptions["upgrade"], version = "
 		auth: new ServeAuth({ devicesFile: join(serveDir, "devices.json"), adminToken: ADMIN }),
 		version,
 		serveDir,
+		agentHome: root,
 		launchSession: (input) => ({ command: process.execPath, args: [FAKE_PI], cwd: input.cwd, env: { ...process.env, GENTLE_SHELL_INTERACTIVE_HOST: "1" } }),
 		limits: { rpcTimeoutMs: 3000 },
 		...(upgrade === undefined ? {} : { upgrade }),
@@ -171,6 +172,81 @@ test("a server without an upgrade command has no upgrade capability and answers 
 	}
 });
 
+/** A stand-in for `gentle-shell setup`: progress, then success, or a failure on stderr; `wait` holds it open. */
+function fakeSetup(root: string): string {
+	const script = join(root, "fake-setup.mjs");
+	writeFileSync(script, [
+		"const args = process.argv.slice(2);",
+		"process.stdout.write('\\u001b[1mInstalling companion packages\\u001b[0m\\n');",
+		"if (args.includes('fail')) { process.stderr.write('gentle-shell setup: npm install failed\\n'); process.exit(1); }",
+		"if (args.includes('wait')) { process.stdin.resume(); setTimeout(() => { process.stdout.write('Setup complete\\n'); process.exit(0); }, 400); }",
+		"else process.stdout.write('Setup complete\\n');",
+	].join("\n"));
+	return script;
+}
+
+test("an admin runs setup on the server: lines, finished, no restart; one job at a time with the upgrade", { timeout: 30_000 }, async () => {
+	const root = scratch();
+	const setup = fakeSetup(root);
+	const upgradeScript = fakeUpgrade(root);
+	let upgraded = 0;
+	let mode = "wait";
+	const server = await serve(root, {
+		launch: () => ({ command: process.execPath, args: [upgradeScript, "wait"], cwd: root, env: process.env }),
+		onUpgraded: () => { upgraded += 1; },
+		setup: () => ({ command: process.execPath, args: [setup, mode], cwd: root, env: process.env }),
+		limits: { restartDelayMs: 0 },
+	});
+	try {
+		const info = (await call(server.url, "GET", "/api/server", { token: ADMIN })).body;
+		assert.ok(info.capabilities.includes("setup"));
+		assert.equal(info.agentHome, root);
+		assert.deepEqual(info.paths, { settings: join(root, "settings.json"), models: join(root, "models.json"), mcp: join(root, "mcp.json") });
+		const device = await pairDevice(server.url, ADMIN, ["sessions:read", "sessions:operate"]);
+		assert.equal((await call(server.url, "POST", "/api/setup", { token: device.token, body: {} })).status, 403);
+		assert.equal((await call(server.url, "POST", "/api/setup", { token: ADMIN, body: { force: true } })).status, 400);
+		const started = await call(server.url, "POST", "/api/setup", { token: ADMIN, body: {} });
+		assert.equal(started.status, 202);
+		assert.match(started.body.jobId, /^setup_[0-9a-f]{16}$/);
+		const busy = await call(server.url, "POST", "/api/upgrade", { token: ADMIN, body: {} });
+		assert.deepEqual([busy.status, busy.body.error.code], [409, "setup_running"]);
+		assert.deepEqual((await call(server.url, "POST", "/api/setup", { token: ADMIN })).body.error.code, "setup_running");
+		assert.equal((await call(server.url, "GET", `/api/setup/${started.body.jobId}/stream`, { token: device.token })).status, 403);
+		const live = await stream(server.url, `/api/setup/${started.body.jobId}/stream`, ADMIN);
+		await live.closed;
+		assert.deepEqual(events(live.text), [
+			{ event: "line", data: { line: "Installing companion packages" } },
+			{ event: "line", data: { line: "Setup complete" } },
+			{ event: "finished", data: { ok: true } },
+		]);
+		assert.equal((await call(server.url, "GET", "/api/setup/setup_0000000000000000/stream", { token: ADMIN })).status, 404);
+		assert.equal(upgraded, 0, "setup never restarts the server");
+		mode = "fail";
+		const failed = await call(server.url, "POST", "/api/setup", { token: ADMIN });
+		assert.equal(failed.status, 202, "a finished setup does not block the next");
+		const failure = await stream(server.url, `/api/setup/${failed.body.jobId}/stream`, ADMIN);
+		await failure.closed;
+		assert.deepEqual(events(failure.text).at(-1), { event: "finished", data: { ok: false, error: "gentle-shell setup: npm install failed" } });
+		const upgrading = await call(server.url, "POST", "/api/upgrade", { token: ADMIN });
+		assert.equal(upgrading.status, 202);
+		assert.deepEqual((await call(server.url, "POST", "/api/setup", { token: ADMIN })).body.error.code, "upgrade_running");
+		assert.equal((await call(server.url, "GET", `/api/setup/${upgrading.body.jobId}/stream`, { token: ADMIN })).status, 404, "an upgrade's id is not a setup stream");
+	} finally {
+		await server.close({ endSessions: true });
+	}
+});
+
+test("a server without a setup command has no setup capability and answers 501", { timeout: 30_000 }, async () => {
+	const root = scratch();
+	const server = await serve(root, { launch: () => ({ command: process.execPath, args: ["-e", ""], cwd: root, env: process.env }), onUpgraded: () => {} });
+	try {
+		assert.equal((await call(server.url, "GET", "/api/server", { token: ADMIN })).body.capabilities.includes("setup"), false);
+		assert.equal((await call(server.url, "POST", "/api/setup", { token: ADMIN })).status, 501);
+	} finally {
+		await server.close({ endSessions: true });
+	}
+});
+
 test("the CLI's upgrade is this launcher's `upgrade`, and a service manager restarts a supervised server", () => {
 	const launch = upgradeLaunch({ launcher: "/pkg/bin/gentle-shell.mjs", nodePath: "/node", env: { PATH: "/bin", GENTLE_SHELL_INTERACTIVE_HOST: "1" } }, "main");
 	assert.equal(launch.command, "/node");
@@ -178,6 +254,9 @@ test("the CLI's upgrade is this launcher's `upgrade`, and a service manager rest
 	assert.equal(launch.env.GENTLE_SHELL_INTERACTIVE_HOST, undefined);
 	assert.equal(launch.env.NO_COLOR, "1");
 	assert.deepEqual(upgradeLaunch({ launcher: "/l", nodePath: "/n", env: {} }, undefined).args, ["/l", "upgrade"]);
+	const setup = setupLaunch({ launcher: "/l", nodePath: "/n", homeFlags: ["--home", "/srv/agent"], env: { GENTLE_SHELL_INTERACTIVE_HOST: "1" } });
+	assert.deepEqual(setup.args, ["/l", "--home", "/srv/agent", "setup"], "the server's own home");
+	assert.equal(setup.env.GENTLE_SHELL_INTERACTIVE_HOST, undefined);
 	assert.equal(supervisedServe({ SYSTEMD_EXEC_PID: "4242" }, 4242), true);
 	assert.equal(supervisedServe({ SYSTEMD_EXEC_PID: "1" }, 4242), false, "an inherited variable from another unit's process");
 	assert.equal(supervisedServe({ XPC_SERVICE_NAME: "com.gentle-shell.serve" }), true);

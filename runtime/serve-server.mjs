@@ -123,6 +123,8 @@ export function carriesHostToolRequest(message        )          {
 
 
 
+
+
 /** A running Gentle Tower: its loopback port, the path that carries its token, and how to stop it. */
 
 
@@ -562,12 +564,16 @@ export function startServeServer(options                    )                   
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			const who = need(principal, "sessions:read");
 			return sendJson(res, 200, { schema: SERVE_SCHEMA, protocol: SERVE_PROTOCOL, serverId, version: options.version, startedAt: new Date(startedAt).toISOString(),
-				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : []), ...(terminals?.binary() ? ["terminals"] : []), ...(prints.available ? ["print"] : []), ...(keepSessions ? ["persistent-sessions"] : []), ...(upgrade ? ["upgrade"] : [])],
+				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : []), ...(terminals?.binary() ? ["terminals"] : []), ...(prints.available ? ["print"] : []), ...(keepSessions ? ["persistent-sessions"] : []), ...(upgrade ? ["upgrade"] : []), ...(upgrade?.canSetup() ? ["setup"] : [])],
 				device: { id: who.deviceId, name: who.name, scopes: who.scopes },
 				// How to build paths for the file and session endpoints.
 				platform: process.platform, arch: arch(), pathSeparator: sep,
 				// The server user's home folder, a default for new sessions; only for a token that may start them.
 				...(hasScope(who, "sessions:operate") ? { home: homedir() } : {}),
+				// The agent home and its Pi files, so a client edits them with the file endpoints.
+				...(hasScope(who, "sessions:operate") && options.agentHome !== undefined
+					? { agentHome: options.agentHome, paths: { settings: join(options.agentHome, "settings.json"), models: join(options.agentHome, "models.json"), mcp: join(options.agentHome, "mcp.json") } }
+					: {}),
 				// The certificate devices pin on the network, and the relay registration.
 				...(options.tls === undefined ? {} : { tls: { fingerprint: options.tls.fingerprint } }),
 				...(relayLink === undefined ? {} : { relay: { url: relayLink.url, connected: relayLink.connected() } }) });
@@ -597,6 +603,21 @@ export function startServeServer(options                    )                   
 			need(principal, "admin");
 			if (!upgrade) throw new HttpError(501, "not_supported", "This server cannot upgrade itself");
 			return upgrade.stream(req, res, upgradeStream[1]);
+		}
+		if (path === "/api/setup") {
+			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
+			need(principal, "admin");
+			if (!upgrade?.canSetup()) throw new HttpError(501, "not_supported", "This server cannot run setup");
+			const body = await readJsonBody(req, limits.smallBodyBytes);
+			if (Object.keys(body).length > 0) throw new HttpError(400, "invalid_request", "setup takes no options");
+			return sendJson(res, 202, upgrade.startSetup());
+		}
+		const setupStream = /^\/api\/setup\/(setup_[0-9a-f]{16})\/stream$/.exec(path);
+		if (setupStream) {
+			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
+			need(principal, "admin");
+			if (!upgrade?.canSetup()) throw new HttpError(501, "not_supported", "This server cannot run setup");
+			return upgrade.stream(req, res, setupStream[1]);
 		}
 		if (path === "/api/pairing-codes") {
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");

@@ -24,7 +24,7 @@ export const SERVE_PROTOCOL = 1;
 export const SERVE_IDENTITY_SCHEMA = "gentle-shell.serve.identity/v1";
 /** Public identity path: a client holding a connection code probes it to find the address that reaches this server. */
 export const SERVE_IDENTITY_PATH = "/.well-known/gentle-shell";
-export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards", "tower", "files", "git"]         ;
+export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards", "server-forwards", "services", "tower", "files", "git"]         ;
 
 export const SERVE_SERVER_LIMITS = {
 	heartbeatMs: 20_000,
@@ -271,6 +271,7 @@ export function startServeServer(options                    )                   
 		port: f.port,
 		listenPort: f.listenPort,
 		sessionId: f.sessionId,
+		kind: f.kind,
 		createdAt: new Date(f.createdAt).toISOString(),
 		lastUsedAt: new Date(f.lastUsedAt).toISOString(),
 	});
@@ -285,19 +286,26 @@ export function startServeServer(options                    )                   
 	/** A device sees and closes its own forwards; an admin token sees every one. */
 	const ownsForward = (principal           , forward             ) => forward.deviceId === principal.deviceId || hasScope(principal, "admin");
 
-	const forwardRoute = async (req                 , res                , method        , principal                       , sessionId        , forwardId                    ) => {
-		const session = findSession(sessionId);
+	/**
+	 * `/api/sessions/:id/forwards[/:fid]` (a session's, closed with it) and
+	 * `/api/forwards[/:fid]` (`sessionId` null: the server's own, until closed,
+	 * revoked, idle or the server stops). The server-level list and DELETE cover
+	 * every forward the device owns.
+	 */
+	const forwardRoute = async (req                 , res                , method        , principal                       , sessionId               , forwardId                    ) => {
+		const session = sessionId === null ? undefined : findSession(sessionId);
+		const inScope = (f             ) => session === undefined || f.sessionId === session.id;
 		if (forwardId !== undefined) {
 			if (method !== "DELETE") throw new HttpError(405, "method_not_allowed", "Use DELETE");
 			const who = need(principal, "sessions:operate");
 			const forward = forwards.get(forwardId);
-			if (!forward || forward.sessionId !== session.id || !ownsForward(who, forward)) throw new HttpError(404, "not_found", "No such forward");
+			if (!forward || !inScope(forward) || !ownsForward(who, forward)) throw new HttpError(404, "not_found", "No such forward");
 			forwards.close(forward.id);
 			return sendJson(res, 200, { closed: forward.id });
 		}
 		if (method === "GET") {
 			const who = need(principal, "sessions:read");
-			return sendJson(res, 200, { forwards: forwards.list({ sessionId: session.id }).filter((f) => ownsForward(who, f)).map(forwardView) });
+			return sendJson(res, 200, { forwards: forwards.list().filter((f) => inScope(f) && ownsForward(who, f)).map(forwardView) });
 		}
 		if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use GET or POST");
 		const who = need(principal, "sessions:operate");
@@ -308,9 +316,32 @@ export function startServeServer(options                    )                   
 		if (port === mainPort || forwards.listenPorts().includes(port)) throw new HttpError(400, "invalid_port", "That port is the server's own");
 		const path = body.path ?? "/";
 		if (typeof path !== "string" || path.length > 2048 || !/^\/(?!\/)[\x21-\x7e]*$/.test(path)) throw new HttpError(400, "invalid_path", "path must start with / and hold no spaces or control characters");
-		if (session.state !== "running") throw new HttpError(409, "session_exited", "The session has ended");
-		const opened = await forwards.open({ deviceId: who.deviceId, sessionId: session.id, kind: "session", port });
+		if (session && session.state !== "running") throw new HttpError(409, "session_exited", "The session has ended");
+		const opened = await forwards.open({ deviceId: who.deviceId, sessionId: session?.id ?? null, kind: session ? "session" : "server", port });
 		return sendJson(res, opened.created ? 201 : 200, { ...forwardView(opened.forward), ...forwardLink(req, opened.forward, path) });
+	};
+
+	/** Local services a client may want to open through a forward: Engram (when it answers) and Gentle Tower (when it runs). */
+	const listServices = async () => {
+		const services                                 = [];
+		const env = options.env ?? process.env;
+		let engram                 ;
+		try { engram = new URL(env.ENGRAM_URL || "http://127.0.0.1:7437"); } catch { /* not a URL: not listed */ }
+		if (engram && (engram.protocol === "http:" || engram.protocol === "https:")) {
+			// Never the URL's credentials in the answer; fetch refuses them in a URL, so they travel as Basic auth.
+			const base = `${engram.protocol}//${engram.host}${engram.pathname}`.replace(/\/+$/, "");
+			const credentials = engram.username || engram.password ? `${decodeURIComponent(engram.username)}:${decodeURIComponent(engram.password)}` : undefined;
+			const available = await fetch(`${base}/health`, {
+				signal: AbortSignal.timeout(1500),
+				...(credentials === undefined ? {} : { headers: { Authorization: `Basic ${Buffer.from(credentials).toString("base64")}` } }),
+			}).then((r) => r.ok, () => false);
+			const port = Number(engram.port || (engram.protocol === "https:" ? 443 : 80));
+			// A forward reaches only this machine's loopback, over plain HTTP.
+			const forwardable = engram.protocol === "http:" && isLoopbackHost(engram.hostname) && port !== mainPort;
+			services.push({ id: "engram", name: "Engram", url: base, port, available, forwardable, ...(forwardable ? { via: "forwards" } : {}) });
+		}
+		if (tower) services.push({ id: "tower", name: "Gentle Tower", port: tower.port, available: true, forwardable: true, via: "tower" });
+		return services;
 	};
 
 	const ensureTower = async ()                                                                           => {
@@ -473,6 +504,13 @@ export function startServeServer(options                    )                   
 			return git.route(req, res, principal);
 		}
 		if (path === "/api/tower") return towerRoute(req, res, method, principal);
+		if (path === "/api/services") {
+			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
+			need(principal, "sessions:read");
+			return sendJson(res, 200, { services: await listServices() });
+		}
+		const serverForward = /^\/api\/forwards(?:\/([A-Za-z0-9_]{1,64}))?$/.exec(path);
+		if (serverForward) return forwardRoute(req, res, method, principal, null, serverForward[1]);
 		const forward = /^\/api\/sessions\/([A-Za-z0-9_]{1,64})\/forwards(?:\/([A-Za-z0-9_]{1,64}))?$/.exec(path);
 		if (forward) return forwardRoute(req, res, method, principal, forward[1], forward[2]);
 		const one = /^\/api\/sessions\/([A-Za-z0-9_]{1,64})(\/rpc|\/desktop)?$/.exec(path);

@@ -39,7 +39,8 @@ export const SERVE_FORWARD_LIMITS = {
 export const FORWARD_TICKET_PARAM = "gs_ticket";
 export const FORWARD_COOKIE_PREFIX = "gs_fwd_";
 
-export type ForwardKind = "session" | "tower";
+/** A session's page (closed with it), Gentle Tower, or a server-level page such as Engram (`POST /api/forwards`). */
+export type ForwardKind = "session" | "tower" | "server";
 
 export interface ForwardInfo {
 	id: string;
@@ -48,7 +49,7 @@ export interface ForwardInfo {
 	/** The forward's own port on the server's listen address. */
 	listenPort: number;
 	deviceId: string;
-	/** The session it belongs to; null for Gentle Tower's. */
+	/** The session it belongs to; null for Gentle Tower's and server-level ones. */
 	sessionId: string | null;
 	kind: ForwardKind;
 	createdAt: number;

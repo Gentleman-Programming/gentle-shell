@@ -196,7 +196,8 @@ test("creating a forward: operate scope, a valid port and path, a running sessio
 
 	const created = await api("POST", `/api/sessions/${id}/forwards`, ADMIN, { port: pagePort, path: "/app?x=1#top" });
 	assert.equal(created.status, 201, JSON.stringify(created.body));
-	assert.deepEqual(Object.keys(created.body), ["id", "port", "listenPort", "sessionId", "createdAt", "lastUsedAt", "url", "expiresAt"]);
+	assert.deepEqual(Object.keys(created.body), ["id", "port", "listenPort", "sessionId", "kind", "createdAt", "lastUsedAt", "url", "expiresAt"]);
+	assert.equal(created.body.kind, "session");
 	assert.match(created.body.id, /^fwd_[0-9a-f]{16}$/);
 	assert.equal(created.body.port, pagePort);
 	assert.equal(created.body.sessionId, id);

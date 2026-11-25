@@ -40,6 +40,7 @@ export const SERVE_FORWARD_LIMITS = {
 export const FORWARD_TICKET_PARAM = "gs_ticket";
 export const FORWARD_COOKIE_PREFIX = "gs_fwd_";
 
+/** A session's page (closed with it), Gentle Tower, or a server-level page such as Engram (`POST /api/forwards`). */
 
 
 

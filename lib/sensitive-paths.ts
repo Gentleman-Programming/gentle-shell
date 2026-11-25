@@ -8,8 +8,11 @@ const ENV_PATH_PATTERN = /(^|\/)\.env(?:$|[./_-])/;
 // The last path component is an env file name: `.env`, `.env.local`, not `.env/id_rsa`.
 const ENV_FILE_NAME = /(^|\/)\.env(?:[._-][^/]*)?$/;
 
+/** A path under an `.ssh` directory, or that directory itself. */
+export const SSH_DIRECTORY_PATTERN = /(^|\/)\.ssh(?:\/|$)/;
+
 export const SENSITIVE_PATH_PATTERNS: RegExp[] = [
-	/(^|\/)\.ssh(?:\/|$)/,
+	SSH_DIRECTORY_PATTERN,
 	/(^|\/)\.credentials(?:\/|$)/,
 	/(^|\/)library\/keychains(?:\/|$)/,
 	/(^|\/)\.aws\/credentials$/,

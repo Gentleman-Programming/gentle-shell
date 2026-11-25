@@ -353,6 +353,10 @@ for (const command of [
 	"docker compose --env-file .env.local run --rm php composer install",
 	"docker compose --env-file .env.local exec node npm install",
 	"docker compose --env-file .env.local exec php php bin/console debug:container cache",
+	"ssh -i ~/.ssh/id_ed25519 host npm install",
+	"ssh -i ~/.ssh/id_ed25519 host mkdir -p /srv/app",
+	"node --env-file .env app.js --stage $ENV",
+	"docker compose --env-file .env.local -p \"app-$ENV\" up -d",
 	"ssh -i \"$HOME/.ssh/id_ed25519\" host uptime",
 	"chmod 600 \"$HOME/.ssh/id_ed25519\"",
 	"docker compose --env-file \"$PWD/.env.local\" up -d",
@@ -415,7 +419,12 @@ for (const [command, path] of [
 	["ssh-copy-id -i ~/.ssh/id_ed25519.pub host", "~/.ssh/id_ed25519.pub"],
 	["mkdir -p ~/.ssh", "~/.ssh"],
 	["set -a; . ./.env; set +a; printenv", "./.env"],
+	// ACCEPTED OVER-DENIAL (L16): `env` is on the list, so `env X=1 <program> <path>` is denied.
 	["env X=1 ls ~/.ssh", "~/.ssh"],
+	["docker compose --env-file .env.local exec php env", ".env.local"],
+	["ssh -i ~/.ssh/id_ed25519 host true; touch ~/.ssh/authorized_keys", "~/.ssh/authorized_keys"],
+	["ssh -i ~/.ssh/id_ed25519 host cat ~/.ssh/authorized_keys", "~/.ssh/id_ed25519"],
+	["install -m 600 /tmp/attacker.pub ~/.ssh/authorized_keys", "~/.ssh/authorized_keys"],
 	[". .env/id_rsa", ".env/id_rsa"],
 	[". .env.pem", ".env.pem"],
 	[". ~/.ssh/.env", "~/.ssh/.env"],
@@ -463,8 +472,9 @@ test("the path tools keep denying the env file a docker command may load (S3)", 
 	assert.deepEqual(await call("read", { path: "~/.ssh/id_ed25519" }), { block: true, reason: reason("~/.ssh/id_ed25519") });
 });
 
-// ACCEPTED LIMITS (L16, R1-001, R3-001): documented gaps, not intended behaviour.
-test("documented limits, not intended behaviour: run-time-assembled readers and positional interpreter arguments pass", async () => {
+// ACCEPTED RESIDUAL RISK (L16, R1-001, R3-001), not intended behaviour. Unlike the
+// older fail-open block below (#2349), these are gaps of the whole-line rule.
+test("accepted residual risk, not intended behaviour: run-time-assembled readers and positional interpreter arguments pass", async () => {
 	const call = toolCall();
 	for (const command of ["x=cat; $x .env", "c${u}at .env", "bash -c 'true;cat \"$0\"' ~/.ssh/id_ed25519"]) {
 		assert.equal(await call("bash", { command }), undefined, command);

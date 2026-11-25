@@ -235,6 +235,11 @@ test("admits a secret file a non-exposing command hands to a program (S1)", () =
 		"docker compose --env-file .env.local run --rm php composer install",
 		"docker compose --env-file .env.local exec node npm install",
 		"docker compose --env-file .env.local exec php php bin/console debug:container cache",
+		// L17: the identity word of `ssh -i` is exempt from the .ssh writer rule only; a variable is never a command.
+		"ssh -i ~/.ssh/id_ed25519 host npm install",
+		"ssh -i ~/.ssh/id_ed25519 host mkdir -p /srv/app",
+		"node --env-file .env app.js --stage $ENV",
+		"docker compose --env-file .env.local -p \"app-$ENV\" up -d",
 		// L14: one leading variable reference does not make a path a script.
 		"ssh -i \"$HOME/.ssh/id_ed25519\" host uptime",
 		"chmod 600 \"$HOME/.ssh/id_ed25519\"",
@@ -306,7 +311,12 @@ test("denies reading, copying, sending, opening or destroying a sensitive file (
 		["ssh-copy-id -i ~/.ssh/id_ed25519.pub host", "~/.ssh/id_ed25519.pub"],
 		["mkdir -p ~/.ssh", "~/.ssh"],
 		["set -a; . ./.env; set +a; printenv", "./.env"],
+		// ACCEPTED OVER-DENIAL (L16): `env` is on the list, so `env X=1 <program> <path>` is denied.
 		["env X=1 ls ~/.ssh", "~/.ssh"],
+		["docker compose --env-file .env.local exec php env", ".env.local"],
+		["ssh -i ~/.ssh/id_ed25519 host true; touch ~/.ssh/authorized_keys", "~/.ssh/authorized_keys"],
+		["ssh -i ~/.ssh/id_ed25519 host cat ~/.ssh/authorized_keys", "~/.ssh/id_ed25519"],
+		["install -m 600 /tmp/attacker.pub ~/.ssh/authorized_keys", "~/.ssh/authorized_keys"],
 		[". .env/id_rsa", ".env/id_rsa"],
 		[". .env.pem", ".env.pem"],
 		[". ~/.ssh/.env", "~/.ssh/.env"],
@@ -346,10 +356,10 @@ test("denies reading, copying, sending, opening or destroying a sensitive file (
 	}
 });
 
-// ACCEPTED LIMITS (L16, R1-001, R3-001): documented gaps of a lexical guard,
-// not intended behaviour. A reader assembled at run time and an interpreter that
+// ACCEPTED RESIDUAL RISK (L16, R1-001, R3-001), not intended behaviour: gaps of a
+// lexical guard, pinned here so they are visible. A reader assembled at run time and an interpreter that
 // receives the key as a positional argument pass today.
-test("documented limits, not intended behaviour: run-time-assembled readers and positional interpreter arguments pass", () => {
+test("accepted residual risk, not intended behaviour: run-time-assembled readers and positional interpreter arguments pass", () => {
 	for (const command of [
 		"x=cat; $x .env",
 		"c${u}at .env",

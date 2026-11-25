@@ -1,4 +1,4 @@
-import { isEnvFilePath, matchesSensitivePathPattern } from "../lib/sensitive-paths.ts";
+import { isEnvFilePath, matchesSensitivePathPattern, SSH_DIRECTORY_PATTERN } from "../lib/sensitive-paths.ts";
 import { emptyFallbacksFile, fallbacksFilePath, followProfileRename, readFallbacksFile, setChain, writeFallbacksFile, type FallbackStep } from "../lib/model-fallback-store.ts";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { PROFILE_TIER_EVENT, supportsOpenAIFast } from "../lib/openai-fast-tier.ts";
@@ -2586,18 +2586,20 @@ const LEADING_VARIABLE_REFERENCE = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Z
 // Programs that create or write files, denied next to a path under `.ssh`
 // (`install` alone is allowed elsewhere: `composer install`).
 const SSH_WRITER_COMMANDS = new Set(["install", "touch", "ssh-keygen", "ssh-copy-id", "mkdir"]);
-const SSH_DIRECTORY_PATH = /(^|\/)\.ssh(?:\/|$)/;
 
 const commandName = (word: string): string => word.slice(word.lastIndexOf("/") + 1).toLowerCase();
 
 // The command names a line contains. A line continuation inside a name is
 // removed, and every word is also split at spaces, `$`, `(`, `)` and backticks,
 // so a reader inside a quoted or glued word (`"$(cat key)"`, `x`cat key``,
-// `bash -c "cat key"`) still counts. Only this check splits; the words the guard
-// tests and reports stay as shellCommandWords gives them.
+// `bash -c "cat key"`) still counts. A `$NAME` or `${NAME}` reference is a
+// variable, never a command (`--stage $ENV`), so it becomes a space first.
+// Only this check splits; the words the guard tests and reports stay as
+// shellCommandWords gives them.
+const VARIABLE_REFERENCE = /\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/g;
 function commandLineNames(command: string): string[] {
 	return shellCommandWords(command.replace(/\\\r?\n/g, ""))
-		.flatMap((word) => word.split(/[\s$()`]+/))
+		.flatMap((word) => word.replace(VARIABLE_REFERENCE, " ").split(/[\s$()`]+/))
 		.filter((piece) => piece.length > 0)
 		.map(commandName);
 }
@@ -2667,8 +2669,9 @@ function findSensitiveCommandPath(command: string, env: NodeJS.ProcessEnv = proc
 	const names = commandLineNames(command);
 	const exposed = names.some((name) => EXPOSING_COMMANDS.has(name));
 	const sourced = names.some((name) => name === "." || name === "source");
-	const writesSsh = names.some((name) => SSH_WRITER_COMMANDS.has(name));
+	const namesSshWriter = names.some((name) => SSH_WRITER_COMMANDS.has(name));
 	for (const words of segments) {
+		const isSshSegment = commandName(words[0] as string) === "ssh";
 		for (const [index, word] of words.entries()) {
 			if (isDesktopCommandWord(word, env, cwd)) return word;
 			// The reported path and the pattern check drop backticks, as in
@@ -2680,7 +2683,10 @@ function findSensitiveCommandPath(command: string, env: NodeJS.ProcessEnv = proc
 			const inCommandPosition = index === 0;
 			const isScript = SHELL_SCRIPT_SYNTAX.test(word.replace(LEADING_VARIABLE_REFERENCE, ""));
 			const sourcesNonEnvFile = sourced && !isEnvFilePath(normalized);
-			const isSshWrite = writesSsh && SSH_DIRECTORY_PATH.test(normalized);
+			// The identity word of `ssh -i key host npm install` is exempt from this
+			// rule only; the reader and every other rule still apply to it.
+			const isSshIdentity = isSshSegment && words[index - 1] === "-i";
+			const isSshWrite = namesSshWriter && SSH_DIRECTORY_PATTERN.test(normalized) && !isSshIdentity;
 			if (inCommandPosition || exposed || isScript || sourcesNonEnvFile || isSshWrite) return path;
 		}
 	}

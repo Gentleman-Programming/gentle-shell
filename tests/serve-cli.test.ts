@@ -38,13 +38,13 @@ test("parseServeArgs reads each subcommand and rejects what it does not know", (
 	assert.deepEqual(parseServeArgs(["--listen=localhost:9000", "--json"]), { action: "start", host: "127.0.0.1", port: 9000, foreground: false, json: true });
 	assert.deepEqual(parseServeArgs(["status", "--json"]), { action: "status", json: true });
 	assert.deepEqual(parseServeArgs(["stop"]), { action: "stop" });
-	assert.deepEqual(parseServeArgs(["pair"]), { action: "pair", scopes: ["sessions:read", "sessions:operate"], json: false });
+	assert.deepEqual(parseServeArgs(["pair"]), { action: "pair", scopes: ["sessions:read", "sessions:operate", "terminal"], json: false });
 	assert.deepEqual(parseServeArgs(["pair", "--scope", "sessions:read", "--scope=admin"]), { action: "pair", scopes: ["sessions:read", "admin"], json: false });
 	assert.deepEqual(parseServeArgs(["devices", "--revoke", "dev_123"]), { action: "devices", revoke: "dev_123", json: false });
 	assert.deepEqual(parseServeArgs(["--help"]), { action: "help" });
 	assert.deepEqual(parseServeArgs(["stop", "--json"]), { error: 'unknown serve stop argument "--json"' });
 	assert.deepEqual(parseServeArgs(["status", "--listen", "1:2"]), { error: 'unknown serve status argument "--listen"' });
-	assert.deepEqual(parseServeArgs(["pair", "--scope", "root"]), { error: 'unknown scope "root" (expected sessions:read, sessions:operate, admin)' });
+	assert.deepEqual(parseServeArgs(["pair", "--scope", "root"]), { error: 'unknown scope "root" (expected sessions:read, sessions:operate, terminal, admin)' });
 	assert.deepEqual(parseServeArgs(["devices", "--revoke", "../x"]), { error: "--revoke needs a device id" });
 	assert.deepEqual(parseServeArgs(["--listen"]), { error: "--listen needs <host>:<port>" });
 	assert.deepEqual(parseServeArgs(["--listen", "0.0.0.0:8787", "--allow-host", "Box.tail1234.ts.net", "--allow-host=nas.lan", "--allow-host", "box.tail1234.ts.net"]),

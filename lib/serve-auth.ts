@@ -7,9 +7,9 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export const SERVE_SCOPES = ["sessions:read", "sessions:operate", "admin"] as const;
+export const SERVE_SCOPES = ["sessions:read", "sessions:operate", "terminal", "admin"] as const;
 export type ServeScope = (typeof SERVE_SCOPES)[number];
-export const DEFAULT_PAIR_SCOPES: readonly ServeScope[] = ["sessions:read", "sessions:operate"];
+export const DEFAULT_PAIR_SCOPES: readonly ServeScope[] = ["sessions:read", "sessions:operate", "terminal"];
 
 export const SERVE_AUTH_LIMITS = {
 	pairingCodeTtlMs: 5 * 60_000,

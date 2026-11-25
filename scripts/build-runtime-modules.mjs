@@ -46,6 +46,7 @@ const sources = [
 	"serve-git",
 	"serve-server",
 	"serve-uploads",
+	"serve-terminals",
 	"serve-share",
 	"serve-cli",
 ];

@@ -2,7 +2,7 @@
 
 `gentle-shell serve` runs one long-lived server per agent home. The server owns Gentle Shell sessions — one `gentle-shell --mode rpc` child each — so they keep running when the client that started them disconnects, and any paired device can follow and drive them over HTTP and Server-Sent Events (SSE). A device can also open web pages that live on the server's own loopback — the design canvas, a dev server the agent started, [Gentle Tower](#gentle-tower) — through [authenticated port forwards](#port-forwarding).
 
-This is Phase 1 of [RFC #3527](https://github.com/Gentleman-Programming/gentle-shell/issues/3527), plus the `/.well-known/gentle-shell` identity, LAN discovery and `serve share` codes. Persistent terminals (Phase 2), SSH bootstrap and TLS (Phase 3) and a mobile web client (Phase 4) are not part of it; see [Not done yet](#not-done-yet). To run it from a source checkout on a Linux machine and reach it from another one, see [Try it](#try-it-from-source-on-linux).
+This is Phase 1 of [RFC #3527](https://github.com/Gentleman-Programming/gentle-shell/issues/3527), plus the `/.well-known/gentle-shell` identity, LAN discovery and `serve share` codes, and the pieces a remote client needs around sessions: [files](#files-on-the-server), [git](#git-on-the-server), [uploads](#uploads), [server-level forwards](#server-level-forwards-and-services) and [persistent terminals](#persistent-terminals) over a native terminal host. SSH bootstrap and TLS (Phase 3) and a mobile web client (Phase 4) are not part of it; see [Not done yet](#not-done-yet). To run it from a source checkout on a Linux machine and reach it from another one, see [Try it](#try-it-from-source-on-linux).
 
 ## Quick start: connect from Gentle Shell GPUI
 
@@ -56,7 +56,7 @@ gentle-shell serve stop            # stops the server and every session it owns
 | `gentle-shell serve [--listen <host>:<port>] [--allow-host <name>]... [--forward-ports <from>-<to>] [--foreground] [--json]` | Start the server. In the background by default (log in `serve/server.log`); `--foreground` keeps it in the terminal until Ctrl+C. `--listen` defaults to `127.0.0.1:0` (a random port); `:8787`, `8787` and `[::1]:8787` are accepted. `--allow-host` adds one DNS name clients may use in the `Host` header (repeatable; see [Security model](#security-model)). `--forward-ports` gives [port forwards](#port-forwarding) their listen ports from one range (at most 1000 ports), so a firewall can open it; without it each forward takes a random port. |
 | `gentle-shell serve status [--json]` | URL, pid, start time, protocol and the session list. Exit 1 when no server runs. |
 | `gentle-shell serve stop` | Asks the server to stop (it stops every session first) and waits for it to exit. |
-| `gentle-shell serve pair [--scope <scope,…>] [--json]` | Mint a pairing code. Scopes default to `sessions:read,sessions:operate`. |
+| `gentle-shell serve pair [--scope <scope,…>] [--json]` | Mint a pairing code. Scopes default to `sessions:read,sessions:operate,terminal`. |
 | `gentle-shell serve devices [--revoke <id>] [--json]` | List paired devices or revoke one. Works without a running server too (on the devices file). |
 
 The home selectors work ahead of `serve` as they do for `setup`: `gentle-shell --home ~/work-agent serve` runs a separate server for that home, and its sessions run against that home.
@@ -126,6 +126,10 @@ Everything lives in `<agent home>/serve/`, a `0700` folder:
 | `devices.json` (`0600`) | Paired devices: id, name, scopes, created and last-used times, and the **sha256 of the token** — never the token. |
 | `server.log` (`0600`) | Background server log: lifecycle lines and each session's stderr, prefixed by session id. |
 | `uploads/<device>/<random>/<name>` (`0700` folders, `0600` files) | [Uploads](#uploads) from devices; each removed 7 days after it arrived. |
+| `term.sock` (`0600`) | The [terminal host](#persistent-terminals)'s Unix socket, while it runs. |
+| `term/` (`0700`) | The terminal host's state folder: its log, `term-host.log`. |
+| `terminals.json` (`0600`) | Which device opened each terminal: `{ schema: "gentle-shell.serve.terminals/v1", owners: { <term>: <device id> } }`. Terminals outlive the server, so their owners are kept on disk. |
+| `bin/gentle-term-host` (`0755`) | A terminal host installed with `PUT /api/term-host`. |
 
 `adminToken` is a fresh random token per server run. It is how `serve status`, `pair`, `devices` and `stop` talk to the server, so anyone who can read `server.json` (the owner) administers it.
 
@@ -148,7 +152,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | --- | --- | --- |
 | `GET /.well-known/gentle-shell` | none | `{ schema: "gentle-shell.serve.identity/v1", serverId, name, protocol, version }`: who answers at this address (`name` is the machine's hostname). No secrets; `Host` and `Origin` rules still apply. A client holding a [connection code](#connection-code) probes it before pairing. |
 | `POST /api/pair` | none (the code) | `{ code, name? }` → `201 { id, name, scopes, createdAt, token }`. `403 invalid_code`, `429 rate_limited`, `409 too_many_devices`. |
-| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `server-forwards`, `services`, `tower`, `files`, `git` and `uploads`. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
+| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `server-forwards`, `services`, `tower`, `files`, `git`, `uploads`, and `terminals` when a [terminal host](#persistent-terminals) binary is there. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
 | `POST /api/server/stop` | `admin` | `202`; the server stops its sessions and exits. |
 | `POST /api/pairing-codes` | `admin` | `{ scopes? }` → `201 { code, scopes, expiresAt }` |
 | `GET /api/devices` | `admin` | `{ devices: [{ id, name, scopes, createdAt, lastUsedAt? }] }` |
@@ -168,6 +172,14 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | `GET /api/forwards` | `sessions:read` | `{ forwards: [Forward] }`: every forward the calling device owns, of any kind (an admin token sees every device's). |
 | `DELETE /api/forwards/:fid` | `sessions:operate` | `{ closed }`. Any of the device's own forwards (`404` otherwise). |
 | `GET /api/services` | `sessions:read` | `{ services: [Service] }`: local services worth forwarding. See [Server-level forwards and services](#server-level-forwards-and-services). |
+| `GET /api/terminals` | `terminal` | `{ terminals: [Terminal] }`. See [Persistent terminals](#persistent-terminals). |
+| `POST /api/terminals` | `terminal` | `{ cwd, cols, rows, argv?, env? }` → `201 { terminal }` |
+| `POST /api/terminals/:t/input` | `terminal` | `{ data }` (base64) → `{ ok }` |
+| `POST /api/terminals/:t/resize` | `terminal` | `{ cols, rows }` → `{ ok }` |
+| `DELETE /api/terminals/:t` | `terminal` | `{ closed }` |
+| `GET /api/terminals/:t/stream?from=<offset>` | `terminal` | SSE: `attached`, then `output`, `title`, `resized`, `exit`. |
+| `GET /api/term-host` | `terminal` | `{ available, running, path?, version?, pid?, protocol?, platform, arch }` |
+| `PUT /api/term-host` | `admin` | Raw binary, header `x-sha256` → `201 { path, sha256, size, active }` |
 | `POST /api/tower` | `sessions:operate` | → `201 Forward & { url, expiresAt, started }`. Starts [Gentle Tower](#gentle-tower) when it is not running and forwards it. |
 | `GET /api/tower` | `sessions:read` | `{ running: false }` or `{ running: true, startedAt }`. |
 | `DELETE /api/tower` | `sessions:operate` | `{ stopped }`. Stops Tower and closes its forwards. |
@@ -277,8 +289,9 @@ There is no unauthenticated mode: every endpoint except `GET /.well-known/gentle
 - **Device tokens.** `gss_` plus 32 random bytes (base64url). Shown once, in the pairing answer. Stored only as a sha256 hash; compared in constant time. Sent as `Authorization: Bearer <token>`. At most 64 devices.
 - **Scopes.**
   - `sessions:read` — list and read sessions, follow their streams, mint stream tickets, read-only Pi RPC commands (`get_state`, `get_messages`, `get_available_models`, `get_available_thinking_levels`, `get_session_stats`, `get_fork_messages`, `get_entries`, `get_tree`, `get_last_assistant_text`, `get_commands`) and read-only Desktop RPC methods (`capabilities`, `get_*`, `list_*`).
-  - `sessions:operate` — start and stop sessions, every other Pi RPC command (prompts, steering, aborts, bash, model changes, `extension_ui_response`), and every other Desktop RPC method.
-  - `admin` — pairing codes, devices, stopping the server.
+  - `sessions:operate` — start and stop sessions, every other Pi RPC command (prompts, steering, aborts, bash, model changes, `extension_ui_response`), and every other Desktop RPC method; [file](#files-on-the-server) changes, [git](#git-on-the-server) operations, [uploads](#uploads) and [forwards](#port-forwarding). (`sessions:read` also reads files and runs read-only git commands.)
+  - `terminal` — open, list, drive and close [persistent terminals](#persistent-terminals): a shell as the server user. In the default pairing scopes; `serve pair --scope sessions:read,sessions:operate` leaves it out. Devices paired before it existed do not have it: pair them again.
+  - `admin` — pairing codes, devices, stopping the server, installing the terminal host; sees every device's forwards and terminals.
 
   Authorization is checked per request (per command or method for `/rpc` and `/desktop`), never per connection.
 - **Revocation** (`serve devices --revoke`, or `DELETE /api/devices/:id`) takes effect at once: the token stops working, its stream tickets are discarded and its open streams are closed.
@@ -412,6 +425,67 @@ A client that wants the agent to see a file from its own machine — a chat atta
 - The answer is `201 { path, name, size, sha256, expiresAt }`. A refused or cut-short upload leaves nothing behind.
 - Uploads are removed 7 days after they arrived (checked at start and hourly). They are plain files: the agent reads them with its own tools, and a client can also read them back through [`/api/fs/read`](#files-on-the-server).
 
+## Persistent terminals
+
+A device can open real terminals on the server — a shell in the project folder — that keep running when it disconnects, when another device takes over, and when `serve` itself restarts. The PTYs live in a separate native process, `gentle-term-host`; `serve` is only a client of it.
+
+```mermaid
+sequenceDiagram
+    participant App as Client app
+    participant S as serve
+    participant H as gentle-term-host
+    participant P as Shell (PTY)
+    App->>S: POST /api/terminals {cwd, cols, rows}
+    S->>H: connect term.sock (start the host, detached, if nothing answers)
+    S->>H: {"op":"hello"} / {"op":"open",…}
+    H->>P: fork a PTY: login shell -l, TERM=xterm-256color
+    H-->>S: {"ok":true,"term":"t_…","pid":…}
+    S-->>App: 201 {terminal}
+    App->>S: GET /api/terminals/t_…/stream?from=<last offset>
+    S->>H: new connection: {"op":"attach","term":"t_…","from":…}
+    H-->>S: {"offset", "snapshot"?}
+    S-->>App: event: attached {offset, snapshot?}
+    P-->>H: output bytes
+    H-->>S: {"ev":"output","offset","data"}
+    S-->>App: id: <offset> / event: output {offset, data}
+    App->>S: POST /api/terminals/t_…/input {data}
+    S->>H: {"op":"write",…}
+    H->>P: keystrokes
+    Note over App,S: The app disconnects: the shell keeps running in the host
+    Note over S,H: serve restarts: the host and its terminals stay; serve reconnects to term.sock
+```
+
+### The host
+
+- **Where it comes from.** `serve` runs `$GENTLE_TERM_HOST` when set, otherwise `<agent home>/serve/bin/gentle-term-host` (`.exe` on Windows), otherwise the first `gentle-term-host` on `PATH`. Without one, `GET /api/server` has no `terminals` capability and the terminal endpoints answer `501 term_host_missing`. A client can install one: `PUT /api/term-host` (`admin`) with the binary as the raw body (at most 64 MiB) and its sha256 in the `x-sha256` header; the server checks the hash (`400 sha256_mismatch`), makes it `0755`, and moves it into place atomically. `active` in the answer says whether it is the one `serve` now uses (`false` when `$GENTLE_TERM_HOST` points elsewhere). `GET /api/term-host` tells `platform` and `arch`, so a client picks the right build. A host already running keeps running its old binary until it exits.
+- **Started on first use.** The first terminal request connects to `<agent home>/serve/term.sock`; when nothing answers there, `serve` starts the host detached (`--socket <home>/serve/term.sock --state-dir <home>/serve/term`, its own session, output appended to `term/term-host.log`) and waits up to 5 s for its socket. A host that is already running — started by an earlier `serve` — is simply reused. The socket is owner-only (`0600`, in the `0700` serve folder).
+- **Lifetime.** The host keeps every terminal while no client is connected and outlives `serve`: stopping or restarting `serve` closes its connections, never the terminals. The host exits on its own when it has had no terminals and no connections for 10 minutes. A host restart (a reboot, a crash) loses its terminals.
+- **Protocol.** JSON Lines over the socket, one request `{ id, op, … }` → one reply `{ id, ok, … }`, plus events (`output`, `exit`, `title`, `resized`, `overflow`) on connections attached to a terminal; terminal bytes travel as base64. `serve` keeps one control connection and opens one more per stream.
+
+### Terminal endpoints
+
+`Terminal` is `{ id, pid, cwd, argv, cols, rows, title, alive, exitCode?, createdAt, offset, owner }`: `createdAt` in ms since the epoch, `offset` the number of bytes the terminal has written so far, `owner` the id of the device that opened it.
+
+- **Open.** `POST /api/terminals { cwd, cols, rows, argv?, env? }`: `cwd` an absolute path to an existing folder, `cols` 1-1000, `rows` 1-500; `argv` (1-256 strings) defaults to the server user's login shell with `-l`; `env` (at most 128 names) is added to the host's environment, which also sets `TERM=xterm-256color`, `COLORTERM=truecolor` and `TERM_PROGRAM=GentleShell`. `502 term_spawn_failed` when the program cannot start.
+- **Ownership.** A terminal belongs to the device that opened it: the list shows a device its own, and every other endpoint answers `404` for another device's terminal. A token with `admin` sees and drives all of them. Revoking a device closes its terminals and ends its streams.
+- **Input and resize.** `POST …/input { data }` writes base64 bytes as typed (keys, pastes, and the answers a terminal emulator gives to queries such as cursor position reports). `POST …/resize { cols, rows }`. Both answer `409 terminal_exited` once the program ended.
+- **Close.** `DELETE /api/terminals/:t` closes a running terminal (SIGHUP, then SIGKILL to its process group after 3 s; it leaves the list at once) or forgets an exited one.
+- **Stream.** `GET …/stream?from=<offset>` (or `Last-Event-ID`, as `EventSource` sends it) is SSE:
+  - first `event: attached` `{ offset, snapshot? }`. When `from` is still in the terminal's replay buffer (at least the last 1 MiB of output), there is no snapshot: `offset` is `from` and the missed bytes follow as `output`. Otherwise `snapshot` (base64) is an ANSI sequence that, written into a fresh terminal emulator of the terminal's size, reproduces its screen — contents, cursor, colours and attributes, alternate screen, cursor visibility, bracketed paste, mouse and application-cursor modes — with up to 2000 lines of scrollback above it; `offset` is the current end. A client resets its emulator, writes the snapshot, and continues.
+  - `event: output` `{ offset, data }` with `id: <offset>`: `data` is base64 terminal output and `offset` the byte offset of the end of this chunk, so the last `id` seen is the `from` to resume with.
+  - `event: title` `{ title }`, `event: resized` `{ cols, rows }` (whoever resized it).
+  - `event: exit` `{ code }`: the program ended; the stream ends after it. Attaching to an exited terminal gives its final snapshot and `exit` at once.
+  - `event: overflow` `{ reason }`: this stream fell behind (8 MiB unsent, at the host or here) and ends; reconnect, without `from` if it is no longer in the buffer.
+  - `event: error` `{ code: "term_host_gone" }` when the host went away. `: ping` every 20 s.
+
+  Every stream is its own attachment, so several devices (or windows) can follow the same terminal; each needs its own `GET`.
+
+### Terminal security
+
+- **A terminal is a shell as the server user.** The `terminal` scope is that authority, separately from `sessions:operate` so a device can drive sessions without opening shells. The server adds no sandbox.
+- **Owner-only socket.** Only the server user can connect to the host; the host never listens on the network. Remote devices reach terminals only through `serve`'s authenticated endpoints.
+- **Installing the host** needs `admin`, and the hash the client sent must match the bytes received; it is the same trust as an admin token already has (it could start sessions that run anything).
+
 ## Security model
 
 - **Loopback by default.** Without `--listen` the server binds `127.0.0.1` on a random port. Remote use goes through `ssh -L` (or a tunnel) to that port.
@@ -453,6 +527,8 @@ A client that wants the agent to see a file from its own machine — a chat atta
 | Change streams | 32 per device; batches after 150 ms quiet, at most 1 s late, 1000 paths |
 | git command | 120 s (600 s for network commands); 32 MiB stdout, 1 MiB stderr, 8 MiB stdin; 16 at once |
 | Upload | 64 MiB; kept 7 days |
+| Terminals | `cols` 1-1000, `rows` 1-500; replay buffer at least 1 MiB per terminal; 8 MiB unsent per stream, then `overflow`; host start 5 s; host request 10 s |
+| Terminal host binary | 64 MiB |
 
 ## Try it from source on Linux
 
@@ -609,4 +685,5 @@ The Gentle Shell GPUI desktop app is getting a client for this server: [gentle-s
 - **Idle unload and crash resume.** Sessions run until stopped; a restarted server does not resume the previous run's sessions (start them again with `sessionId`).
 - **`message_update` coalescing.** Slow clients are dropped into a resync instead.
 - **Narrower file scopes.** File access uses `sessions:read` and `sessions:operate`; separate `fs:read`/`fs:write` scopes, or a folder jail per device, are not there.
-- **Persistent terminals** (Phase 2), **SSH bootstrap and TLS** (Phase 3), **the mobile web client, QR codes and a relay** (Phase 4).
+- **SSH bootstrap and TLS** (Phase 3), **the mobile web client, QR codes and a relay** (Phase 4).
+- **Terminals on Windows.** The terminal host speaks over a Unix socket; a named pipe for Windows is not there yet.

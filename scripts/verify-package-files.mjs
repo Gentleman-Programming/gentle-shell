@@ -180,6 +180,7 @@ export const requiredPaths = [
 	"runtime/serve-git.mjs",
 	"runtime/serve-server.mjs",
 	"runtime/serve-uploads.mjs",
+	"runtime/serve-terminals.mjs",
 	"runtime/serve-share.mjs",
 	"runtime/serve-cli.mjs",
   "docs/serve.md",

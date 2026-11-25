@@ -19,7 +19,7 @@ test("a pairing code is single use and yields a device token stored only as a ha
 	const { auth, devicesFile } = setup();
 	const { code, scopes } = auth.mintPairingCode();
 	assert.match(code, /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/);
-	assert.deepEqual(scopes, ["sessions:read", "sessions:operate"]);
+	assert.deepEqual(scopes, ["sessions:read", "sessions:operate", "terminal"]);
 	const paired = auth.redeem(code.toLowerCase(), "  phone\u0007 ");
 	assert.ok("token" in paired);
 	assert.match(paired.token, /^gss_[A-Za-z0-9_-]{43}$/);
@@ -34,7 +34,7 @@ test("a pairing code is single use and yields a device token stored only as a ha
 		assert.equal(statSync(join(devicesFile, "..")).mode & 0o777, 0o700);
 	}
 	const principal = auth.authenticate(paired.token);
-	assert.deepEqual(principal, { deviceId: paired.device.id, name: "phone", scopes: ["sessions:read", "sessions:operate"] });
+	assert.deepEqual(principal, { deviceId: paired.device.id, name: "phone", scopes: ["sessions:read", "sessions:operate", "terminal"] });
 	assert.equal(auth.authenticate(`${paired.token}x`), undefined);
 	assert.equal(auth.authenticate(undefined), undefined);
 
@@ -108,6 +108,6 @@ test("helpers: code normalization, constant-time compare, scope parsing", () => 
 	assert.equal(sameSecret("abc", "abcd"), false);
 	assert.equal(sameSecret("", ""), false);
 	assert.deepEqual(parseScopes(["sessions:read,admin", "admin"]), { scopes: ["sessions:read", "admin"] });
-	assert.deepEqual(parseScopes(["root"]), { error: 'unknown scope "root" (expected sessions:read, sessions:operate, admin)' });
+	assert.deepEqual(parseScopes(["root"]), { error: 'unknown scope "root" (expected sessions:read, sessions:operate, terminal, admin)' });
 	assert.deepEqual(parseScopes([","]), { error: "--scope needs at least one scope" });
 });

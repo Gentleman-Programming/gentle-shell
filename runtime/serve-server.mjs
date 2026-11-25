@@ -17,6 +17,7 @@ import { GitService,                       } from "./serve-git.mjs";
 import { ForwardError, ForwardManager,                                             } from "./serve-forward.mjs";
 import { HttpError, need, readJsonBody, realDirectory, SECURITY_HEADERS, sendError, sendJson } from "./serve-http.mjs";
 import { UploadStore,                          } from "./serve-uploads.mjs";
+import { TerminalService,                        } from "./serve-terminals.mjs";
 import { HOST_TOOL_METHODS, ServeSession, SessionError,                                             } from "./serve-session.mjs";
 
 export const SERVE_SCHEMA = "gentle-shell.serve/v1";
@@ -74,6 +75,7 @@ export function carriesHostToolRequest(message        )          {
 	}
 	return !!request && typeof request === "object" && "method" in request && typeof request.method === "string" && Object.hasOwn(HOST_TOOL_METHODS, request.method);
 }
+
 
 
 
@@ -192,6 +194,8 @@ export function startServeServer(options                    )                   
 	const git = new GitService({ env: options.env ?? process.env, limits: options.gitLimits, log });
 	// Files a client sends for the agent to see.
 	const uploads = options.serveDir === undefined ? undefined : new UploadStore({ dir: join(options.serveDir, "uploads"), limits: options.uploadLimits, now, log });
+	// Persistent terminals in the native terminal host, which outlives this server.
+	const terminals = options.serveDir === undefined ? undefined : new TerminalService({ serveDir: options.serveDir, env: options.env ?? process.env, limits: options.termLimits, log });
 	// Gentle Tower, when a device asked for it; stopped with the server.
 	let tower                                                  ;
 	let towerStarting                                                         ;
@@ -200,6 +204,7 @@ export function startServeServer(options                    )                   
 		for (const s of sessions.values()) s.dropDevice(deviceId);
 		forwards.closeWhere((f) => f.deviceId === deviceId, "device revoked");
 		files.closeDevice(deviceId);
+		terminals?.closeDevice(deviceId);
 	});
 
 	const sessionView = (s              , principal           ) => ({
@@ -427,7 +432,8 @@ export function startServeServer(options                    )                   
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			const who = need(principal, "sessions:read");
 			return sendJson(res, 200, { schema: SERVE_SCHEMA, protocol: SERVE_PROTOCOL, serverId, version: options.version, startedAt: new Date(startedAt).toISOString(),
-				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : [])], device: { id: who.deviceId, name: who.name, scopes: who.scopes },
+				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : []), ...(terminals?.binary() ? ["terminals"] : [])],
+				device: { id: who.deviceId, name: who.name, scopes: who.scopes },
 				// How to build paths for the file and session endpoints.
 				platform: process.platform, arch: arch(), pathSeparator: sep,
 				// The server user's home folder, a default for new sessions; only for a token that may start them.
@@ -494,6 +500,10 @@ export function startServeServer(options                    )                   
 			return sendJson(res, 201, { session: sessionView(started, who) });
 		}
 		if (await files.route(req, res, method, path, url, principal)) return;
+		if (path === "/api/term-host" || path.startsWith("/api/terminals")) {
+			if (!terminals) throw new HttpError(501, "term_host_missing", "This server runs no terminals");
+			if (await terminals.route(req, res, method, path, url, principal)) return;
+		}
 		if (path === "/api/uploads") {
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
 			if (!uploads) throw new HttpError(501, "not_supported", "This server takes no uploads");
@@ -632,6 +642,7 @@ export function startServeServer(options                    )                   
 	const heartbeat = setInterval(() => {
 		for (const s of sessions.values()) s.heartbeat();
 		files.heartbeat();
+		terminals?.heartbeat();
 	}, limits.heartbeatMs);
 	heartbeat.unref();
 
@@ -668,6 +679,7 @@ export function startServeServer(options                    )                   
 				files.closeAll();
 				git.closeAll();
 				uploads?.close();
+				terminals?.closeAll();
 				await towerStarting?.catch(() => undefined);
 				await stopTower();
 				await Promise.all([...sessions.values()].map((s) => s.stop()));

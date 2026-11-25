@@ -180,7 +180,7 @@ test("security headers, no token, a bad token and unknown routes", async () => {
 	assert.equal(info.body.schema, "gentle-shell.serve/v1");
 	assert.equal(info.body.protocol, 1);
 	assert.equal(info.body.serverId, server.serverId);
-	assert.deepEqual(info.body.device.scopes, ["sessions:read", "sessions:operate", "admin"]);
+	assert.deepEqual(info.body.device.scopes, ["sessions:read", "sessions:operate", "terminal", "admin"]);
 	assert.equal(info.body.home, homedir(), "a token that may start sessions learns the default folder");
 	const reader = await pairDevice(["sessions:read"], "info-reader");
 	assert.equal((await call("GET", "/api/server", { token: reader.token })).body.home, undefined, "a reader does not");

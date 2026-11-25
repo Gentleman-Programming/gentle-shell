@@ -325,6 +325,17 @@ test("pi_settings drops extension names that are too long, credential-shaped, or
 	assertNoLeak(data, e.root, [long.slice(0, 40), "secret@host", "user:secret", "bad"]);
 });
 
+test("pi_settings shows no extensions when a hand-edited extensions value is a string, not a list", async (t) => {
+	for (const extensions of ["C:\\Users\\devel\\secretdir\\ext.ts", "./secretdir/ext.ts", "hunter2"]) {
+		const e = env(t);
+		writeJson(join(e.agentHome, "settings.json"), { extensions });
+		const data = await e.read("pi_settings");
+		assert.deepEqual(data.value?.extensions ?? [], [], extensions);
+		assertNoLeak(data, e.root, ["secretdir", "hunter2"]);
+		assert.ok(!JSON.stringify(data).includes('"h","u"'), extensions);
+	}
+});
+
 // ---- claude_bridge ----
 
 test("claude_bridge exposes only the plan of an existing claude-bridge.json", async (t) => {

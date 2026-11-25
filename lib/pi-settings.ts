@@ -106,7 +106,9 @@ function toView(manager: SettingsManager): PiSettingsView {
 	const enabled = Array.isArray(rawEnabled)
 		? bounded(rawEnabled.map((entry) => displayText(entry, MODEL_SHAPE)).filter((value): value is string => value !== null), PI_SETTINGS_LIMITS.enabledModels)
 		: undefined;
-	const rawExtensions = manager.getExtensionPaths();
+	// Pi's `getExtensionPaths()` spreads the merged value, so a hand-edited
+	// string would come back as one entry per character; check the merged value itself.
+	const rawExtensions = Array.isArray(manager.getSettings().extensions) ? manager.getExtensionPaths() : [];
 	const extensionList = bounded(
 		Array.isArray(rawExtensions)
 			? rawExtensions.filter((entry): entry is string => typeof entry === "string").map(extensionName).filter((name): name is string => name !== null)

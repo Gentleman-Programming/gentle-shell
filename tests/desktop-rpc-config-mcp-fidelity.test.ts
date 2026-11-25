@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { loadMcpConfig } from "../node_modules/@earendil-works/pi-coding-agent/dist/extensions/mcp/config.js";
+import { createDefaultTransport } from "../node_modules/@earendil-works/pi-coding-agent/dist/extensions/mcp/runtime.js";
 import { readMcpConfig } from "../lib/mcp-config.ts";
 
 // The `mcp` store must list exactly the servers Pi would load. Pi does not
@@ -61,12 +62,20 @@ const FIXTURES: Record<string, Fixture> = {
 			},
 		},
 	},
+	commandAndUrl: { global: { mcpServers: { both: { command: "x", url: "https://both.example/mcp" }, typedStdio: { type: "stdio", command: "x", url: "https://typed.example/mcp" }, typedHttp: { type: "http", command: "x", url: "https://h.example/mcp" } } } },
 	sse: { global: { mcpServers: { s: { type: "sse", url: "https://x.example/sse" }, h: { type: "streamable-http", url: "https://x.example/mcp" } } } },
 	nameClash: { global: { mcpServers: { "my-tool": { command: "a" }, my_tool: { command: "b" } } }, project: { mcpServers: { "my-tool": { command: "c" }, other_one: { command: "d" }, "other-one": { command: "e" } } } },
 	projectAuth: { global: { mcpServers: {} }, project: { mcpServers: { p: { url: "https://p.example/mcp", auth: { provider: "anthropic" } } } } },
 	brokenProject: { global: { mcpServers: { a: { command: "a" } } }, project: "{ not json" },
 	notAnObject: { global: { mcpServers: [] }, project: { mcpServers: { b: { command: "b" } } } },
 };
+
+function piTransport(transport: object): "stdio" | "http" {
+	const kind = transport.constructor.name;
+	if (kind === "StreamableHttpTransport") return "http";
+	if (kind === "StdioTransport") return "stdio";
+	throw new Error(`unexpected Pi transport ${kind}`);
+}
 
 function write(path: string, value: unknown): void {
 	writeFileSync(path, typeof value === "string" ? value : JSON.stringify(value));
@@ -84,9 +93,11 @@ for (const [label, fixture] of Object.entries(FIXTURES)) {
 			if (fixture.global !== undefined) write(join(agentDir, "mcp.json"), fixture.global);
 			if (fixture.project !== undefined) write(join(cwd, ".pi", "mcp.json"), fixture.project);
 
+			// The transport is the one Pi's own factory builds for the entry (constructing
+			// a transport neither spawns nor connects), not a rule restated here.
 			const pi = loadMcpConfig({ agentDir, cwd, projectTrusted }).servers.map((s) => ({
 				name: s.name,
-				transport: typeof (s.config as { url?: unknown }).url === "string" && [undefined, "http", "streamable-http"].includes((s.config as { type?: string }).type) ? "http" : "stdio",
+				transport: piTransport(createDefaultTransport(s, cwd, undefined)),
 				enabled: s.config.enabled !== false,
 			}));
 			assert.deepEqual(readMcpConfig({ agentHome: agentDir, cwd, projectTrusted }).servers, pi);

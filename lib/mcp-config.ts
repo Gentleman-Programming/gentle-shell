@@ -93,7 +93,10 @@ function loopbackRedirectUri(value: string): boolean {
 /** pi `isClientMetadataDocumentCallback`: the redirect URIs pi's Client ID Metadata Documents list. */
 function metadataDocumentCallback(callbackUrl: unknown): boolean {
 	if (callbackUrl === undefined) return true;
-	const url = new URL(callbackUrl as string);
+	// `validOAuth` has already rejected a `callbackUrl` that is not a parseable
+	// loopback URI before it gets here; the guard keeps this from throwing anyway.
+	if (typeof callbackUrl !== "string" || !URL.canParse(callbackUrl)) return false;
+	const url = new URL(callbackUrl);
 	return url.hostname !== "[::1]" && url.pathname === "/callback";
 }
 
@@ -134,7 +137,17 @@ function validAuth(auth: unknown, url: string): boolean {
 	return parsed.protocol === "https:" || LOOPBACK_HOSTS.includes(parsed.hostname);
 }
 
-/** Pi's transport decision for one entry, or undefined when Pi would reject it. */
+/**
+ * The transport Pi connects a validated entry with: `createDefaultTransport`
+ * (`pi-coding-agent/dist/extensions/mcp/runtime.js`) builds a streamable HTTP
+ * transport whenever the entry has a `url` key and stdio otherwise, even when
+ * `type: "stdio"` and `command` made the entry pass validation as stdio.
+ */
+function connectTransport(config: Record<string, unknown>): McpTransport {
+	return "url" in config ? "http" : "stdio";
+}
+
+/** Pi's validation of one entry and the transport it connects with, or undefined when Pi would reject it. */
 function validEntry(name: string, config: unknown): Entry | undefined {
 	if (!SERVER_NAME.test(name) || !isRecord(config)) return undefined;
 	const { enabled, timeout, description, type, url, command } = config;
@@ -148,14 +161,14 @@ function validEntry(name: string, config: unknown): Entry | undefined {
 		if (!validOAuth(config.oauth)) return undefined;
 		if (!validExposures(config)) return undefined;
 		if (!validAuth(config.auth, url)) return undefined;
-		return { transport: "http", config };
+		return { transport: connectTransport(config), config };
 	}
 	if (typeof command === "string" && (type === undefined || type === "stdio")) {
 		if (config.args !== undefined && !(Array.isArray(config.args) && config.args.every((arg) => typeof arg === "string"))) return undefined;
 		if (config.env !== undefined && !isStringRecord(config.env)) return undefined;
 		if (config.cwd !== undefined && typeof config.cwd !== "string") return undefined;
 		if (!validExposures(config)) return undefined;
-		return { transport: "stdio", config };
+		return { transport: connectTransport(config), config };
 	}
 	return undefined;
 }
@@ -166,7 +179,7 @@ function readLayer(path: string, scope: "global" | "project", servers: Map<strin
 	if (!existsSync(path)) return "missing";
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(readFileSync(path, "utf8").replace(/^﻿/, ""));
+		parsed = JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
 	} catch {
 		return "invalid";
 	}

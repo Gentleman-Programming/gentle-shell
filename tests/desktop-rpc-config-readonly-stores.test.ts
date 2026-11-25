@@ -117,6 +117,7 @@ test("mcp lists name, transport, and enabled only, never env, headers, args, com
 			{ name: "sentry", transport: "http", enabled: true },
 		],
 		truncated: false,
+		omitted: 0,
 	});
 	assertNoLeak(data, e.root, ["npx", "docs.example.com", "user:pass", "mcp.sentry.example", "API_TOKEN", "Authorization"]);
 });
@@ -177,6 +178,26 @@ test("mcp caps the server list and reports the cut", async (t) => {
 	const data = await e.read("mcp");
 	assert.equal(data.value.servers.length, 64);
 	assert.equal(data.value.truncated, true);
+	assert.equal(data.value.omitted, 0);
+});
+
+test("mcp counts over-long server names as omitted, never as a cut at the bound", async (t) => {
+	const e = env(t);
+	const long = "n".repeat(129);
+	writeJson(join(e.agentHome, "mcp.json"), { mcpServers: { [long]: { command: "x" }, short: { command: "y" } } });
+	const data = await e.read("mcp");
+	assert.deepEqual(data.value, { servers: [{ name: "short", transport: "stdio", enabled: true }], truncated: false, omitted: 1 });
+	assertNoLeak(data, e.root, [long]);
+});
+
+test("mcp reports the transport Pi connects with for an entry with both command and url", async (t) => {
+	const e = env(t);
+	writeJson(join(e.agentHome, "mcp.json"), { mcpServers: { both: { command: "x", url: "https://x.example/mcp" }, typed: { type: "stdio", command: "x", url: "https://y.example/mcp" } } });
+	const data = await e.read("mcp");
+	assert.deepEqual(data.value.servers, [
+		{ name: "both", transport: "http", enabled: true },
+		{ name: "typed", transport: "http", enabled: true },
+	]);
 });
 
 // ---- pi_settings ----
@@ -293,6 +314,17 @@ test("a settings value Pi cannot read keeps an absent project layer missing", as
 	}
 });
 
+test("pi_settings drops extension names that are too long, credential-shaped, or not a plain file name", async (t) => {
+	const e = env(t);
+	const long = `${"e".repeat(129)}.ts`;
+	writeJson(join(e.agentHome, "settings.json"), {
+		extensions: [`./ext/${long}`, "https://user:secret@host.example/ext.ts", "user:secret@host", "./ext/bad\u0007name.ts", "./ext/ok-ext.ts", "plain.js"],
+	});
+	const data = await e.read("pi_settings");
+	assert.deepEqual(data.value.extensions, ["ok-ext.ts", "plain.js"]);
+	assertNoLeak(data, e.root, [long.slice(0, 40), "secret@host", "user:secret", "bad"]);
+});
+
 // ---- claude_bridge ----
 
 test("claude_bridge exposes only the plan of an existing claude-bridge.json", async (t) => {
@@ -348,4 +380,29 @@ test("reading the display stores never writes: no lock file, no created file, no
 	e.bridge.snapshotState();
 	assert.deepEqual(listing(), before);
 	for (const [path, text] of Object.entries(files)) assert.equal(readFileSync(path, "utf8"), text, "a migration Pi would save is never written back");
+});
+
+test("a project trust change seen on the next Desktop command re-reads the trust-gated stores once", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "desktop-config-readonly-trust-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const agentHome = join(root, "agent");
+	const workspace = join(root, "workspace");
+	writeJson(join(workspace, ".pi", "mcp.json"), { mcpServers: { local: { command: "x", env: { TOKEN: SECRET_TOKEN } } } });
+	mkdirSync(agentHome, { recursive: true });
+	const bridge = new DesktopConfigBridge({ configHome: join(root, "config"), agentHome });
+	t.after(() => bridge.reset());
+	let trusted = false;
+	const context = { cwd: workspace, isProjectTrusted: () => trusted } as unknown as ExtensionContext;
+	const events: Array<Record<string, unknown>> = [];
+	bridge.attach(context);
+	bridge.wire((_event, data) => events.push(data));
+
+	bridge.attach(context);
+	assert.deepEqual(events, [], "an unchanged trust answer re-reads nothing");
+	trusted = true;
+	bridge.attach(context);
+	assert.deepEqual(events.map((event) => [event.store, event.status, event.source]), [["mcp", "ok", "external"]]);
+	bridge.attach(context);
+	assert.equal(events.length, 1, "the new trust answer is the baseline");
+	assertNoLeak(events, root);
 });

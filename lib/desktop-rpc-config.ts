@@ -145,6 +145,9 @@ const WRITE_FAILED = { code: "write_failed", message: "Config store write failed
 /** Stores with a layer that the session cwd locates (project layers and pins). */
 const CWD_DEPENDENT_STORES: readonly DesktopConfigStore[] = ["models", "subagents", "pins", "persona", "mcp", "pi_settings"];
 
+/** Stores whose project layer Pi reads only for a trusted project. */
+const TRUST_GATED_STORES: readonly DesktopConfigStore[] = ["mcp", "pi_settings"];
+
 /** Authoritative stores this slice may write; every other store is read-only. */
 const AUTHORITATIVE_STORES: ReadonlySet<DesktopConfigStore> = new Set(["profiles", "profile_fallbacks", "pins", "persona", "banner", "notifications"]);
 
@@ -493,8 +496,10 @@ function readMcp(root: DesktopConfigRoots): StoreRead {
 	const read = readMcpConfig({ agentHome: root.agentHome, cwd: root.cwd, projectTrusted: root.projectTrusted === true });
 	const { layers, status } = trustedLayers(read.global, read.project);
 	if (status !== "ok") return { status, layers };
-	const servers = read.servers.filter((server) => server.name.length <= MCP_NAME_LIMIT).slice(0, DESKTOP_MCP_SERVER_LIMIT);
-	return { status, value: { servers, truncated: servers.length < read.servers.length }, layers };
+	// `omitted` counts servers left out for an over-long name; `truncated` is only the cut at the bound.
+	const named = read.servers.filter((server) => server.name.length <= MCP_NAME_LIMIT);
+	const servers = named.slice(0, DESKTOP_MCP_SERVER_LIMIT);
+	return { status, value: { servers, truncated: named.length > DESKTOP_MCP_SERVER_LIMIT, omitted: read.servers.length - named.length }, layers };
 }
 
 function readPiSettingsStore(root: DesktopConfigRoots): StoreRead {
@@ -898,6 +903,8 @@ export class DesktopConfigBridge {
 	private emit: DesktopConfigEmit | undefined;
 	private watcher: DesktopDirectoryWatcher | undefined;
 	private watchedCwd: string | undefined;
+	/** The project trust answer the trust-gated stores were last read with. */
+	private watchedTrust: boolean | undefined;
 	/** The last revision this channel reported per store (read, snapshot, write, or event). */
 	private readonly reported = new Map<DesktopConfigStore, string>();
 
@@ -919,6 +926,17 @@ export class DesktopConfigBridge {
 			const pending = this.watcher?.hasPending() ?? false;
 			this.watch();
 			this.report(pending ? DESKTOP_CONFIG_STORES : CWD_DEPENDENT_STORES);
+			return;
+		}
+		// Pi announces no project trust change to extensions, so a change made
+		// during the session (same cwd) is noticed when the next Desktop command
+		// binds the context: the trust-gated stores are re-read then.
+		if (this.emit && this.watchedCwd !== undefined) {
+			const trusted = sessionTrustsProject(context);
+			if (trusted !== this.watchedTrust) {
+				this.watchedTrust = trusted;
+				this.report(TRUST_GATED_STORES);
+			}
 		}
 	}
 
@@ -944,6 +962,7 @@ export class DesktopConfigBridge {
 		const watcher = this.watcher;
 		this.watcher = undefined;
 		this.watchedCwd = undefined;
+		this.watchedTrust = undefined;
 		watcher?.dispose();
 	}
 
@@ -960,6 +979,7 @@ export class DesktopConfigBridge {
 			const watcher = new DesktopDirectoryWatcher(() => this.recompute(watcher), this.watchOptions);
 			this.watcher = watcher;
 			this.watchedCwd = root.cwd;
+			this.watchedTrust = root.projectTrusted === true;
 			watcher.start(configWatchTargets(root));
 		} catch {
 			/* best effort: the channel keeps working without external events */

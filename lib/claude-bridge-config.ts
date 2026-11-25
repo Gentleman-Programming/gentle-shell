@@ -31,7 +31,7 @@ export function readClaudeBridgeConfig(agentHome: string): ClaudeBridgeRead {
 	if (!existsSync(path)) return { status: "missing" };
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(readFileSync(path, "utf8").replace(/^﻿/, ""));
+		parsed = JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
 	} catch {
 		return { status: "invalid" };
 	}

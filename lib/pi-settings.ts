@@ -11,13 +11,12 @@
 // `SettingsManager.create` takes a lock file next to `settings.json` even to
 // read, and a Desktop read must never write, so this storage only reads the
 // file and ignores any content the manager would write back. Extensions are
-// named by their last path segment, the projection `get_update_status` uses
-// for local packages (`packageDisplayName`).
+// named by their last path segment, shown only when it is a plain file or
+// package name.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { packageDisplayName } from "./desktop-rpc-updates.ts";
 
 /** Pi's `SettingsStorage` contract: accepted by the exported `SettingsManager.fromStorage`, not exported by name. */
 type SettingsStorage = Parameters<typeof SettingsManager.fromStorage>[0];
@@ -79,6 +78,15 @@ const PROVIDER_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  */
 const MODEL_SHAPE = /^(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9*?[][A-Za-z0-9._*?+@[\]!-]*(?::[A-Za-z]+)?$/;
 
+/** An extension's last path segment: a plain file or package name, nothing else. */
+const EXTENSION_SHAPE = /^[A-Za-z0-9_][A-Za-z0-9._+-]*$/;
+
+function extensionName(path: string): string | null {
+	// An extension entry is a local path; a URL (which can carry userinfo) is not displayed at all.
+	if (path.includes("://")) return null;
+	return displayText(path.split(/[\\/]+/).filter((segment) => segment.length > 0).at(-1), EXTENSION_SHAPE);
+}
+
 /** A short display token of the given shape; too long, credential-shaped, or path-shaped is `null`, never cut. */
 function displayText(value: unknown, shape: RegExp): string | null {
 	if (typeof value !== "string") return null;
@@ -93,14 +101,16 @@ function bounded<T>(items: readonly T[], limit: number): { items: T[]; cut: bool
 	return { items: items.slice(0, limit), cut: items.length > limit };
 }
 
-function project(manager: SettingsManager): PiSettingsView {
+function toView(manager: SettingsManager): PiSettingsView {
 	const rawEnabled = manager.getEnabledModels();
 	const enabled = Array.isArray(rawEnabled)
 		? bounded(rawEnabled.map((entry) => displayText(entry, MODEL_SHAPE)).filter((value): value is string => value !== null), PI_SETTINGS_LIMITS.enabledModels)
 		: undefined;
 	const rawExtensions = manager.getExtensionPaths();
 	const extensionList = bounded(
-		Array.isArray(rawExtensions) ? rawExtensions.filter((entry): entry is string => typeof entry === "string").map((entry) => packageDisplayName("local", entry)) : [],
+		Array.isArray(rawExtensions)
+			? rawExtensions.filter((entry): entry is string => typeof entry === "string").map(extensionName).filter((name): name is string => name !== null)
+			: [],
 		PI_SETTINGS_LIMITS.extensions,
 	);
 	const thinking = manager.getDefaultThinkingLevel();
@@ -129,7 +139,7 @@ export function readPiSettings(input: { agentHome: string; cwd: string; projectT
 	let view: PiSettingsView | undefined;
 	if (global === "valid" || projectStatus === "valid") {
 		try {
-			view = project(manager);
+			view = toView(manager);
 		} catch {
 			// A value Pi's own getters reject makes every present layer unusable;
 			// which one held it is unknown, and an absent file stays `missing`.

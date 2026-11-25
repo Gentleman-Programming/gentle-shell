@@ -20,6 +20,12 @@ export interface ServeSessionLimits {
 	stopGraceMs: number;
 	/** How long a dropped subscriber's final marker may take to flush. */
 	dropFlushMs: number;
+	/** How long a host tool call waits for its device to reopen a stream after the device's last one closed. */
+	hostToolGraceMs: number;
+	/** How long the server remembers a host tool call it saw (the session itself gives up after 10 minutes). */
+	hostToolTrackMs: number;
+	/** How long the server's own "not connected" answer may take to reach the session. */
+	hostToolAnswerMs: number;
 }
 
 export const SERVE_SESSION_LIMITS: ServeSessionLimits = {
@@ -30,12 +36,17 @@ export const SERVE_SESSION_LIMITS: ServeSessionLimits = {
 	stdinBufferBytes: 16 * 1024 * 1024,
 	stopGraceMs: 5000,
 	dropFlushMs: 5000,
+	hostToolGraceMs: 10_000,
+	hostToolTrackMs: 11 * 60 * 1000,
+	hostToolAnswerMs: 30_000,
 };
 
 /** Pi RPC dialog methods: they block until one `extension_ui_response` answers them. */
 export const DIALOG_METHODS: Readonly<Record<string, true>> = { select: true, confirm: true, input: true, editor: true };
 export const DESKTOP_RPC_SCHEMA = "gentle-shell.desktop-rpc/v1";
 export const DESKTOP_RPC_WIDGET = "gentle-desktop-rpc";
+/** Desktop RPC methods that only a client's own `/desktop` request may carry (see lib/desktop-rpc-host-tools.ts). */
+export const HOST_TOOL_METHODS: Readonly<Record<string, true>> = { set_host_tools: true, host_tool_result: true };
 
 // --- JSONL framing -------------------------------------------------------------
 
@@ -223,6 +234,19 @@ export interface ServeSessionOptions {
 	/** The child's stderr, for the server log; never part of the protocol. */
 	onStderr?: (text: string) => void;
 	onExit?: (session: ServeSession) => void;
+	/** A device's name for the model-facing "not connected" answer; the id when unknown. */
+	deviceLabel?: (deviceId: string) => string | undefined;
+}
+
+/** A `host_tool_call` the session emitted that no `host_tool_result` or `host_tool_cancel` settled yet. */
+export interface PendingHostCall {
+	callId: string;
+	/** In serve, always the id of the device that registered the tool. */
+	provider: string;
+	tool: string;
+	seq: number;
+	line: string;
+	at: number;
 }
 
 interface Waiter {
@@ -257,9 +281,14 @@ export class ServeSession {
 	private readonly exited: Promise<void>;
 	private nextRpc = 0;
 	private nextDesktop = 0;
+	private readonly hostCalls = new Map<string, PendingHostCall>();
+	/** Devices whose last stream closed while they owed host tool results, and the timer that fails those calls. */
+	private readonly graceTimers = new Map<string, NodeJS.Timeout>();
+	private readonly deviceLabel: (deviceId: string) => string | undefined;
 
 	constructor(options: ServeSessionOptions) {
 		this.id = options.id;
+		this.deviceLabel = options.deviceLabel ?? (() => undefined);
 		this.cwd = options.launch.cwd;
 		this.limits = { ...SERVE_SESSION_LIMITS, ...options.limits };
 		this.now = options.now ?? Date.now;
@@ -366,6 +395,10 @@ export class ServeSession {
 			}
 			if (!answer || typeof answer !== "object") return;
 			const a = answer as Record<string, unknown>;
+			if (a.kind === "event") {
+				this.observeDesktopEvent(a, seq, line);
+				return;
+			}
 			if (a.kind !== "response" || typeof a.requestId !== "string") return;
 			const waiter = this.desktopWaiters.get(a.requestId);
 			if (waiter) {
@@ -375,10 +408,81 @@ export class ServeSession {
 		}
 	}
 
+	// --- host tools ---
+
+	/**
+	 * A `host_tool_call` is routed to the device that provides the tool: every
+	 * subscriber sees the record (clients filter by `provider`), and when that
+	 * device has no open stream the server answers for it at once with an error
+	 * result the model can read, instead of letting the turn hang.
+	 */
+	private observeDesktopEvent(event: Record<string, unknown>, seq: number, line: string): void {
+		const data = event.data;
+		if (!data || typeof data !== "object" || !("callId" in data) || typeof data.callId !== "string") return;
+		if (event.event === "host_tool_cancel") {
+			this.hostCalls.delete(data.callId);
+			return;
+		}
+		if (event.event !== "host_tool_call" || !("provider" in data) || typeof data.provider !== "string" || !("tool" in data) || typeof data.tool !== "string") return;
+		const now = this.now();
+		for (const [id, call] of this.hostCalls) if (now - call.at > this.limits.hostToolTrackMs) this.hostCalls.delete(id);
+		const call: PendingHostCall = { callId: data.callId, provider: data.provider, tool: data.tool, seq, line, at: now };
+		this.hostCalls.set(call.callId, call);
+		if (!this.hasStream(call.provider)) this.failHostCall(call);
+	}
+
+	private hasStream(deviceId: string): boolean {
+		for (const sub of this.subscribers) if (sub.deviceId === deviceId && !sub.sink.destroyed) return true;
+		return false;
+	}
+
+	/** Answers the call on its device's behalf: the tool's device is not connected. */
+	private failHostCall(call: PendingHostCall): void {
+		if (this.hostCalls.get(call.callId) !== call) return;
+		this.hostCalls.delete(call.callId);
+		const label = this.deviceLabel(call.provider) ?? call.provider;
+		const text = `${call.tool} runs in ${label}, which isn't connected right now.`;
+		// A result the device sent meanwhile wins; the session answers this one `already_answered`.
+		this.desktop("host_tool_result", { callId: call.callId, content: [{ type: "text", text }], isError: true }, this.limits.hostToolAnswerMs).catch(() => {});
+	}
+
+	/** After a device's last stream closed: its calls fail unless it reconnects within the grace period (at once when revoked). */
+	private deviceLeft(deviceId: string, immediately = false): void {
+		if (this.state !== "running" || this.hasStream(deviceId) || this.graceTimers.has(deviceId)) return;
+		const owed = () => [...this.hostCalls.values()].filter((call) => call.provider === deviceId);
+		if (owed().length === 0) return;
+		if (immediately) {
+			for (const call of owed()) this.failHostCall(call);
+			return;
+		}
+		const timer = setTimeout(() => {
+			this.graceTimers.delete(deviceId);
+			if (this.hasStream(deviceId)) return;
+			for (const call of owed()) this.failHostCall(call);
+		}, this.limits.hostToolGraceMs);
+		timer.unref?.();
+		this.graceTimers.set(deviceId, timer);
+	}
+
+	/** The device that must answer `callId`, if the server saw that call and it is still open. */
+	hostCallProvider(callId: string): string | undefined {
+		return this.hostCalls.get(callId)?.provider;
+	}
+
+	/** A `host_tool_result` reached the session and settled (or could no longer settle) the call. */
+	hostCallSettled(callId: string): void {
+		this.hostCalls.delete(callId);
+	}
+
+	pendingHostCalls(): PendingHostCall[] {
+		return [...this.hostCalls.values()];
+	}
+
 	private broadcast(frame: string): void {
 		for (const sub of this.subscribers) {
 			if (sub.sink.destroyed) {
 				this.subscribers.delete(sub);
+				this.deviceLeft(sub.deviceId);
 				continue;
 			}
 			if (sub.sink.writableLength > this.limits.clientBufferBytes) {
@@ -392,6 +496,7 @@ export class ServeSession {
 	/** Ends a subscriber's stream with a resync marker; it reconnects with its last seq. */
 	drop(sub: Subscriber, reason: string): void {
 		if (!this.subscribers.delete(sub)) return;
+		this.deviceLeft(sub.deviceId);
 		try {
 			sub.sink.end(sseEvent("resync", { reason, seq: this.seq }));
 		} catch {
@@ -403,13 +508,14 @@ export class ServeSession {
 		timer.unref?.();
 	}
 
-	/** Closes every stream opened by `deviceId` (a revoked device). */
+	/** Closes every stream opened by `deviceId` (a revoked device); the host tool calls it owed fail now. */
 	dropDevice(deviceId: string): void {
 		for (const sub of [...this.subscribers]) {
 			if (sub.deviceId !== deviceId) continue;
 			this.subscribers.delete(sub);
 			sub.sink.destroy();
 		}
+		this.deviceLeft(deviceId, true);
 	}
 
 	heartbeat(): void {
@@ -422,8 +528,9 @@ export class ServeSession {
 	/**
 	 * Attaches an SSE subscriber: a `hello`, then either the records after
 	 * `after` or `snapshot-required`, then every dialog still waiting that the
-	 * replay did not carry, then the live stream. An exited session's stream
-	 * ends after that.
+	 * replay did not carry, then (to the device that provides them) the host
+	 * tool calls still waiting that the replay did not carry, then the live
+	 * stream. An exited session's stream ends after that.
 	 */
 	subscribe(sink: StreamSink, deviceId: string, after?: number): void {
 		const hello = { session: this.id, state: this.state, seq: this.seq, oldest: this.ring.oldest ?? null };
@@ -442,15 +549,28 @@ export class ServeSession {
 			if (dialog.seq > replayedFrom) continue;
 			sink.write(`event: dialog\ndata: ${dialog.line}\n\n`);
 		}
+		for (const call of this.hostCalls.values()) {
+			if (call.provider !== deviceId || call.seq > replayedFrom) continue;
+			sink.write(`event: host_tool_call\ndata: ${call.line}\n\n`);
+		}
 		if (this.state === "exited") {
 			sink.end();
 			return;
 		}
 		this.subscribers.add({ sink, deviceId });
+		const grace = this.graceTimers.get(deviceId);
+		if (grace !== undefined) {
+			clearTimeout(grace);
+			this.graceTimers.delete(deviceId);
+		}
 	}
 
 	unsubscribe(sink: StreamSink): void {
-		for (const sub of this.subscribers) if (sub.sink === sink) this.subscribers.delete(sub);
+		for (const sub of this.subscribers) {
+			if (sub.sink !== sink) continue;
+			this.subscribers.delete(sub);
+			this.deviceLeft(sub.deviceId);
+		}
 	}
 
 	// --- input ---
@@ -557,6 +677,9 @@ export class ServeSession {
 		this.exitSignal = signal;
 		this.exitedAt = this.now();
 		this.dialogs.clear();
+		this.hostCalls.clear();
+		for (const timer of this.graceTimers.values()) clearTimeout(timer);
+		this.graceTimers.clear();
 		this.emitServerRecord({ type: "serve_session_exited", code, signal, ...(error ? { error: "spawn_failed" } : {}) });
 		const gone = new SessionError("session_exited", "The session has exited");
 		for (const waiters of [this.rpcWaiters, this.desktopWaiters]) {

@@ -13,7 +13,7 @@ import { hostname } from "node:os";
 import { basename, isAbsolute } from "node:path";
 import { hasScope, isServeScope,                                                 } from "./serve-auth.mjs";
 import { startDiscoveryResponder,                         } from "./serve-discovery.mjs";
-import { ServeSession, SessionError,                                             } from "./serve-session.mjs";
+import { HOST_TOOL_METHODS, ServeSession, SessionError,                                             } from "./serve-session.mjs";
 
 export const SERVE_SCHEMA = "gentle-shell.serve/v1";
 export const SERVE_PROTOCOL = 1;
@@ -26,6 +26,8 @@ export const SERVE_SERVER_LIMITS = {
 	heartbeatMs: 20_000,
 	smallBodyBytes: 16 * 1024,
 	desktopBodyBytes: 80 * 1024,
+	/** `set_host_tools` and `host_tool_result` (screenshots); the session caps the result's content at 8 MiB and the request at 9 MiB, envelope included. */
+	hostToolBodyBytes: 9 * 1024 * 1024 - 1024,
 	/** Pi RPC commands may carry images. */
 	rpcBodyBytes: 8 * 1024 * 1024,
 	rpcTimeoutMs: 30_000,
@@ -45,6 +47,27 @@ export function desktopMethodScope(method        )             {
 
 export function rpcCommandScope(type        )             {
 	return READ_COMMANDS.has(type) ? "sessions:read" : "sessions:operate";
+}
+
+/**
+ * Whether a Pi RPC message is a `/gentle:desktop` request for a host tool
+ * method. Those go only through `/desktop`, where the server sets the provider
+ * to the calling device and checks who answers a call; through `/rpc` a client
+ * could otherwise register as, or answer for, another device. Pi takes the
+ * command's arguments after the first space and the router parses them with
+ * `JSON.parse`, exactly as here.
+ */
+export function carriesHostToolRequest(message        )          {
+	if (!message.startsWith("/gentle:desktop")) return false;
+	const space = message.indexOf(" ");
+	if (space === -1) return false;
+	let request         ;
+	try {
+		request = JSON.parse(message.slice(space + 1));
+	} catch {
+		return false;
+	}
+	return !!request && typeof request === "object" && "method" in request && typeof request.method === "string" && Object.hasOwn(HOST_TOOL_METHODS, request.method);
 }
 
 const SECURITY_HEADERS = {
@@ -197,6 +220,9 @@ export function startServeServer(options                    )                   
 	const sessions = new Map                      ();
 	let hostOk                            = () => false;
 	let closing = false;
+	// Device names for the model-facing "not connected" answer of a host tool call.
+	const deviceNames = new Map                ();
+	const deviceLabel = (deviceId        ) => deviceNames.get(deviceId) ?? options.auth.listDevices().find((d) => d.id === deviceId)?.name;
 
 	options.auth.onRevoke((deviceId) => { for (const s of sessions.values()) s.dropDevice(deviceId); });
 
@@ -242,6 +268,7 @@ export function startServeServer(options                    )                   
 			now,
 			onStderr: (text) => { for (const line of text.split("\n")) if (line.trim()) log(`[${id}] ${line}`); },
 			onExit: (s) => { log(`[${id}] exited (code ${s.exitCode}, signal ${s.exitSignal})`); forgetExited(); },
+			deviceLabel,
 		});
 		sessions.set(id, session);
 		log(`[${id}] started`);
@@ -258,6 +285,7 @@ export function startServeServer(options                    )                   
 		res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", Connection: "keep-alive", "X-Accel-Buffering": "no", ...SECURITY_HEADERS });
 		res.flushHeaders();
 		req.socket.setNoDelay(true);
+		deviceNames.set(principal.deviceId, principal.name);
 		session.subscribe(res, principal.deviceId, after);
 		res.on("close", () => session.unsubscribe(res));
 	};
@@ -400,6 +428,9 @@ export function startServeServer(options                    )                   
 			if (outcome === "answered") throw new HttpError(409, "dialog_answered", "Another client already answered this dialog");
 			return sendJson(res, 202, { accepted: true });
 		}
+		if (typeof command.message === "string" && carriesHostToolRequest(command.message)) {
+			throw new HttpError(400, "use_desktop_endpoint", "set_host_tools and host_tool_result go through POST /api/sessions/:id/desktop");
+		}
 		need(principal, rpcCommandScope(command.type));
 		const outcome = await session.rpc(command, limits.rpcTimeoutMs);
 		if ("timeout" in outcome) return sendJson(res, 202, { pending: true, id: outcome.id });
@@ -408,14 +439,32 @@ export function startServeServer(options                    )                   
 
 	const forwardDesktop = async (req                 , res                , session              , principal                       ) => {
 		if (!principal) throw new HttpError(401, "unauthorized", "A valid bearer token is required");
-		const body = await readJsonBody(req, limits.desktopBodyBytes);
+		const body = await readJsonBody(req, Math.max(limits.desktopBodyBytes, limits.hostToolBodyBytes));
 		if (typeof body.method !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(body.method)) throw new HttpError(400, "invalid_request", "method must be a Desktop RPC method name");
+		const hostTool = Object.hasOwn(HOST_TOOL_METHODS, body.method);
+		if (!hostTool && Buffer.byteLength(JSON.stringify(body), "utf8") > limits.desktopBodyBytes) throw new HttpError(413, "too_large", `Body over ${limits.desktopBodyBytes} bytes`);
 		const params = body.params ?? {};
 		if (!params || typeof params !== "object" || Array.isArray(params)) throw new HttpError(400, "invalid_request", "params must be an object");
 		need(principal, desktopMethodScope(body.method));
-		const outcome = await session.desktop(body.method, params                           , limits.rpcTimeoutMs);
+		let forwarded = params                           ;
+		if (body.method === "set_host_tools") {
+			// The provider is always the calling device: a client cannot register tools as another device.
+			forwarded = { ...forwarded, provider: principal.deviceId };
+			deviceNames.set(principal.deviceId, principal.name);
+		}
+		const callId = body.method === "host_tool_result" && typeof forwarded.callId === "string" ? forwarded.callId : undefined;
+		if (callId !== undefined) {
+			const owner = session.hostCallProvider(callId);
+			if (owner !== undefined && owner !== principal.deviceId) throw new HttpError(403, "forbidden", "Only the device that provides this host tool may answer its call");
+		}
+		const outcome = await session.desktop(body.method, forwarded, limits.rpcTimeoutMs);
 		if (outcome === undefined) throw new HttpError(504, "desktop_timeout", "The session did not answer the Desktop RPC request in time");
 		if ("prompt" in outcome) return sendJson(res, 502, { error: { code: "desktop_refused", message: "The session refused the Desktop RPC request" }, response: outcome.prompt });
+		if (callId !== undefined) {
+			const error = outcome.answer.error;
+			const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+			if (outcome.answer.ok === true || code === "unknown_call" || code === "already_answered") session.hostCallSettled(callId);
+		}
 		return sendJson(res, 200, outcome.answer);
 	};
 

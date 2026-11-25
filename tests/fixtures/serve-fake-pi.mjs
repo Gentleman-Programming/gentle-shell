@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // A stand-in for `gentle-shell --mode rpc` in the serve tests: it speaks Pi's
 // JSONL RPC on stdin/stdout (responses, a Desktop RPC widget answer, dialogs)
-// plus a few `fake_*` commands that let tests drive framing, bursts and exits.
+// plus a few `fake_*` commands that let tests drive framing, bursts, exits and
+// the Desktop events of a host tool call (as if the agent had called the tool).
 // No Pi, no model.
 
 let buffer = "";
@@ -47,6 +48,13 @@ function handle(cmd) {
 		case "fake_exit":
 			out({ type: "fake_event", bye: true });
 			return void setTimeout(() => process.exit(cmd.code ?? 0), 10);
+		case "fake_host_call":
+		case "fake_host_cancel": {
+			respond(cmd, {});
+			const data = cmd.type === "fake_host_call" ? { callId: cmd.callId, provider: cmd.provider, tool: cmd.tool ?? "phone_camera", args: cmd.args ?? {} } : { callId: cmd.callId };
+			const event = { schema: "gentle-shell.desktop-rpc/v1", kind: "event", seq: 1, event: cmd.type === "fake_host_call" ? "host_tool_call" : "host_tool_cancel", data };
+			return out({ type: "extension_ui_request", id: `w-${cmd.type}-${cmd.callId}`, method: "setWidget", widgetKey: "gentle-desktop-rpc", widgetLines: [JSON.stringify(event)] });
+		}
 		case "fake_silent":
 			return; // never answers
 		default:

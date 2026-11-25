@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after, before } from "node:test";
 import { ServeAuth, type ServeScope } from "../lib/serve-auth.ts";
-import { allowedHosts, desktopMethodScope, rpcCommandScope, startServeServer, type ServeServer } from "../lib/serve-server.ts";
+import { allowedHosts, carriesHostToolRequest, desktopMethodScope, rpcCommandScope, startServeServer, type ServeServer } from "../lib/serve-server.ts";
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/serve-fake-pi.mjs", import.meta.url));
 const ADMIN = "gsa_test-admin-token";
@@ -354,4 +354,55 @@ test("pairing over HTTP is single use and admin can stop the server", async () =
 	assert.equal(stop.status, 202);
 	await new Promise((r) => setImmediate(r));
 	assert.equal(stopRequests, 1);
+});
+
+test("only /desktop carries host tool requests: a /gentle:desktop prompt naming them through /rpc is refused", () => {
+	const prompt = (method: string) => `/gentle:desktop ${JSON.stringify({ schema: "gentle-shell.desktop-rpc/v1", requestId: "r", method, params: {} })}`;
+	assert.equal(carriesHostToolRequest(prompt("set_host_tools")), true);
+	assert.equal(carriesHostToolRequest(prompt("host_tool_result")), true);
+	assert.equal(carriesHostToolRequest(prompt("capabilities")), false);
+	assert.equal(carriesHostToolRequest("/gentle:desktop not json"), false, "the session refuses what it cannot parse anyway");
+	assert.equal(carriesHostToolRequest("set_host_tools"), false);
+	assert.equal(desktopMethodScope("set_host_tools"), "sessions:operate");
+	assert.equal(desktopMethodScope("host_tool_result"), "sessions:operate");
+});
+
+test("host tools over HTTP: the provider is the calling device, only that device answers its calls, an offline device is answered for", async () => {
+	const phone = await pairDevice(["sessions:read", "sessions:operate"], "phone");
+	const laptop = await pairDevice(["sessions:read", "sessions:operate"], "laptop");
+	const reader = await pairDevice(["sessions:read"], "watcher");
+	const id = await startSession(phone.token);
+	const desktop = (token: string, method: string, params: Record<string, unknown>) =>
+		call("POST", `/api/sessions/${id}/desktop`, { token, body: { schema: "gentle-shell.desktop-rpc/v1", requestId: "client-own", method, params } });
+
+	const registered = await desktop(phone.token, "set_host_tools", { provider: laptop.id, tools: [] });
+	assert.equal(registered.status, 200);
+	assert.equal(registered.body.data.params.provider, phone.id, "the server overwrites the provider with the calling device");
+	assert.equal((await desktop(reader.token, "set_host_tools", { provider: "x", tools: [] })).status, 403, "registering tools operates");
+	for (const method of ["set_host_tools", "host_tool_result"]) {
+		const message = `/gentle:desktop ${JSON.stringify({ schema: "gentle-shell.desktop-rpc/v1", requestId: "r", method, params: { provider: laptop.id, tools: [] } })}`;
+		const refused = await call("POST", `/api/sessions/${id}/rpc`, { token: phone.token, body: { type: "prompt", message } });
+		assert.equal(refused.status, 400, method);
+		assert.equal(refused.body.error.code, "use_desktop_endpoint");
+	}
+	const other = await call("POST", `/api/sessions/${id}/rpc`, { token: phone.token, body: { type: "prompt", message: `/gentle:desktop ${JSON.stringify({ schema: "gentle-shell.desktop-rpc/v1", requestId: "r", method: "capabilities", params: {} })}` } });
+	assert.equal(other.status, 200, "other Desktop requests still go through /rpc");
+
+	const phoneStream = await stream(`/api/sessions/${id}/events`, phone.token);
+	await call("POST", `/api/sessions/${id}/rpc`, { token: ADMIN, body: { type: "fake_host_call", callId: "call-1", provider: phone.id } });
+	await phoneStream.waitFor('\\"callId\\":\\"call-1\\"');
+	const stolen = await desktop(laptop.token, "host_tool_result", { callId: "call-1", content: [{ type: "text", text: "not mine" }] });
+	assert.equal(stolen.status, 403);
+	assert.equal(stolen.body.error.code, "forbidden");
+	const big = "x".repeat(1024 * 1024);
+	const answered = await desktop(phone.token, "host_tool_result", { callId: "call-1", content: [{ type: "text", text: big }] });
+	assert.equal(answered.status, 200, "a host tool result may be far larger than other Desktop requests");
+	assert.equal(answered.body.data.params.content[0].text.length, big.length);
+	assert.equal((await desktop(phone.token, "get_snapshot", { pad: "x".repeat(100 * 1024) })).status, 413, "every other method keeps its cap");
+
+	// The laptop registered nothing and has no stream: its call is answered for it at once, by name.
+	await call("POST", `/api/sessions/${id}/rpc`, { token: ADMIN, body: { type: "fake_host_call", callId: "call-2", provider: laptop.id, tool: "laptop_clip" } });
+	await phoneStream.waitFor("laptop_clip runs in laptop, which isn't connected right now.");
+	phoneStream.close();
+	assert.equal((await call("DELETE", `/api/sessions/${id}`, { token: phone.token })).status, 200);
 });

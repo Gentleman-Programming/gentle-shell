@@ -248,3 +248,96 @@ test("a command that cannot spawn exits the session instead of throwing", async 
 	session.subscribe(sink, "dev", 0);
 	assert.ok(sink.text.includes('"error":"spawn_failed"'));
 });
+
+// ---- host tools ---------------------------------------------------------------
+
+function startHostFake(limits: Partial<ServeSessionLimits> = {}): ServeSession {
+	return new ServeSession({
+		id: "ses_host", launch: { command: process.execPath, args: [FAKE_PI], cwd: process.cwd(), env: process.env }, limits,
+		deviceLabel: (id) => (id === "dev_phone" ? "Ismael's phone" : undefined),
+	});
+}
+
+/** The host_tool_result the server sent for `callId` on a device's behalf, as the fake child echoed it. */
+function serverAnswer(sink: FakeSink, callId: string): { callId: string; content: Array<{ type: string; text: string }>; isError: boolean } | undefined {
+	for (const frame of frames(sink.text)) {
+		if (!frame.data) continue;
+		const record = JSON.parse(frame.data);
+		if (record.method !== "setWidget") continue;
+		const line = JSON.parse(record.widgetLines[0]);
+		if (line.kind === "response" && line.data?.method === "host_tool_result" && line.data.params.callId === callId) return line.data.params;
+	}
+	return undefined;
+}
+
+test("a host tool call for a device with no open stream is answered at once with a not-connected error", async (t) => {
+	const session = startHostFake();
+	t.after(() => session.stop());
+	const watcher = new FakeSink();
+	session.subscribe(watcher, "local");
+	await session.rpc({ type: "fake_host_call", callId: "c1", provider: "dev_phone", tool: "phone_camera" }, 5000);
+	await until(() => serverAnswer(watcher, "c1") !== undefined, "the server's answer");
+	assert.deepEqual(serverAnswer(watcher, "c1"), { callId: "c1", content: [{ type: "text", text: "phone_camera runs in Ismael's phone, which isn't connected right now." }], isError: true });
+	assert.deepEqual(session.pendingHostCalls(), []);
+	await session.rpc({ type: "fake_host_call", callId: "c2", provider: "dev_unknown", tool: "x_tool" }, 5000);
+	await until(() => serverAnswer(watcher, "c2") !== undefined, "the answer for an unnamed device");
+	assert.equal(serverAnswer(watcher, "c2")!.content[0].text, "x_tool runs in dev_unknown, which isn't connected right now.");
+});
+
+test("a connected device's call waits; a reconnect within the grace gets it again; the last stream gone past the grace fails it", async (t) => {
+	const session = startHostFake({ hostToolGraceMs: 80 });
+	t.after(() => session.stop());
+	const watcher = new FakeSink();
+	session.subscribe(watcher, "local");
+	const phone = new FakeSink();
+	session.subscribe(phone, "dev_phone");
+	await session.rpc({ type: "fake_host_call", callId: "c1", provider: "dev_phone" }, 5000);
+	await until(() => session.pendingHostCalls().length === 1, "the call is tracked");
+	assert.ok(phone.text.includes('\\"callId\\":\\"c1\\"'), "the device sees the call live");
+	assert.equal(session.hostCallProvider("c1"), "dev_phone");
+
+	session.unsubscribe(phone);
+	const back = new FakeSink();
+	session.subscribe(back, "dev_phone"); // a fresh stream without a cursor: the waiting call is re-sent
+	const resent = frames(back.text).filter((f) => f.event === "host_tool_call");
+	assert.equal(resent.length, 1);
+	assert.equal(JSON.parse(JSON.parse(resent[0].data!).widgetLines[0]).data.callId, "c1");
+	const caughtUp = new FakeSink();
+	session.subscribe(caughtUp, "dev_phone", 0); // the replay carries it: no duplicate
+	assert.equal(frames(caughtUp.text).filter((f) => f.event === "host_tool_call").length, 0);
+	const other = new FakeSink();
+	session.subscribe(other, "dev_other");
+	assert.equal(frames(other.text).filter((f) => f.event === "host_tool_call").length, 0, "only the provider's device gets the re-send");
+	// The reconnect cancelled the grace timer; give it time to have fired if it had not.
+	await new Promise((r) => setTimeout(r, 160));
+	assert.equal(serverAnswer(watcher, "c1"), undefined, "a device back within the grace keeps its call");
+
+	session.unsubscribe(back);
+	session.unsubscribe(caughtUp);
+	assert.equal(serverAnswer(watcher, "c1"), undefined, "nothing fails before the grace ends");
+	await until(() => serverAnswer(watcher, "c1") !== undefined, "the call fails after the grace");
+	assert.equal(serverAnswer(watcher, "c1")!.content[0].text, "phone_camera runs in Ismael's phone, which isn't connected right now.");
+	assert.deepEqual(session.pendingHostCalls(), []);
+});
+
+test("a cancel or a settled result forgets a call; revoking the device fails its calls at once", async (t) => {
+	const session = startHostFake();
+	t.after(() => session.stop());
+	const watcher = new FakeSink();
+	session.subscribe(watcher, "local");
+	const phone = new FakeSink();
+	session.subscribe(phone, "dev_phone");
+	await session.rpc({ type: "fake_host_call", callId: "c1", provider: "dev_phone" }, 5000);
+	await session.rpc({ type: "fake_host_call", callId: "c2", provider: "dev_phone" }, 5000);
+	await session.rpc({ type: "fake_host_call", callId: "c3", provider: "dev_phone" }, 5000);
+	await until(() => session.pendingHostCalls().length === 3, "three calls");
+	await session.rpc({ type: "fake_host_cancel", callId: "c1" }, 5000);
+	await until(() => session.pendingHostCalls().length === 2, "the cancel");
+	session.hostCallSettled("c2");
+	assert.deepEqual(session.pendingHostCalls().map((call) => call.callId), ["c3"]);
+	session.dropDevice("dev_phone");
+	assert.ok(phone.destroyed);
+	await until(() => serverAnswer(watcher, "c3") !== undefined, "the revoked device's call fails");
+	assert.equal(serverAnswer(watcher, "c1"), undefined);
+	assert.equal(serverAnswer(watcher, "c2"), undefined);
+});

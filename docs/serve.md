@@ -170,10 +170,23 @@ The body is one [Pi RPC command](https://github.com/earendil-works/pi/blob/main/
 - The server waits up to 30 s for the response. A command that takes longer (a long `bash`, `compact`) answers `202 { pending: true, id }`, and its response arrives in the stream under that `id`.
 - `extension_ui_response` is the answer to a dialog: see [Dialogs](#dialogs). It answers `202 { accepted: true }`.
 - Bodies are limited to 8 MiB (prompts can carry images).
+- A `/gentle:desktop` prompt whose request is `set_host_tools` or `host_tool_result` is refused with `400 use_desktop_endpoint`: those go through `/desktop` only (see [Host tools](#host-tools)).
 
 ### Desktop RPC: `POST /api/sessions/:id/desktop`
 
-A convenience over the existing [Desktop RPC](desktop-rpc.md) transport: the server sends the `/gentle:desktop` prompt with its own `requestId`, waits for the matching `gentle-desktop-rpc` widget answer, and returns it (`{ schema, kind: "response", requestId, ok, data | error }`). `504 desktop_timeout` after 30 s; `502 desktop_refused` (with Pi's prompt response) when the session refused the prompt. Bodies are limited to 80 KiB (Desktop RPC requests are limited to 64 KiB). Desktop RPC events keep arriving in the event stream as `setWidget` records, exactly as Desktop sees them. Sending `/gentle:desktop` prompts through `/rpc` also works; this endpoint only adds the correlation.
+A convenience over the existing [Desktop RPC](desktop-rpc.md) transport: the server sends the `/gentle:desktop` prompt with its own `requestId`, waits for the matching `gentle-desktop-rpc` widget answer, and returns it (`{ schema, kind: "response", requestId, ok, data | error }`; `requestId` is the server's, and any `schema` or `requestId` in the body is ignored). `504 desktop_timeout` after 30 s; `502 desktop_refused` (with Pi's prompt response) when the session refused the prompt. Bodies are limited to 80 KiB (Desktop RPC requests are limited to 64 KiB), except `set_host_tools` and `host_tool_result`, which may be up to 9 MiB less 1 KiB (a result can carry 8 MiB of screenshots). Desktop RPC events keep arriving in the event stream as `setWidget` records, exactly as Desktop sees them. Sending `/gentle:desktop` prompts through `/rpc` also works for every other method; this endpoint only adds the correlation.
+
+### Host tools
+
+A client can provide [host tools](desktop-rpc.md#set_host_tools): tools the agent calls like any other but that run on the client's own device (a screenshot of the Mac, a photo from the phone). The agent runs here; the tool runs there. The server routes the calls:
+
+- **The provider is the device.** `set_host_tools` through `/desktop` always registers under the calling device's id (`provider` in the body is replaced), and needs `sessions:operate`. The same request through `/rpc` is refused, so no client can register as another device.
+- **Only the provider answers.** A `host_tool_result` for a call whose `provider` is another device is refused with `403 forbidden`. The server remembers each call it saw in the session's output until a result settles it, a `host_tool_cancel` ends it, or 11 minutes pass.
+- **Delivery.** The `host_tool_call` event reaches every subscriber like any Desktop RPC event (`data.provider` says which device runs it; the others ignore it). A device that opens a stream while one of its calls is still waiting, and whose replay does not carry it, also gets it as an SSE event `event: host_tool_call` whose `data` is the original `setWidget` record.
+- **Offline device: an answer at once.** If the call's device has no open event stream when the call appears, the server answers for it right away with an error result the model reads — `<tool> runs in <device name>, which isn't connected right now.` — instead of letting the turn wait. If a device's last stream closes while it owes results, the server waits 10 s for it to reconnect, then answers its waiting calls the same way. Revoking a device answers its calls at once.
+- **Time limit.** The session itself ends a call after 10 minutes without a result, with an error result and a `host_tool_cancel`.
+
+The server never runs client code: a host tool's work happens on the client, with the client's authority, and only its result comes back into the conversation.
 
 ### Event stream: `GET /api/sessions/:id/events`
 
@@ -201,6 +214,7 @@ Other SSE events, which carry no `id` (so they never move a client's cursor):
 | `hello` | First, on every connection: the session's state, current `seq` and oldest replayable `seq`. |
 | `snapshot-required` | `after` is older than the replay ring (records the client never saw were evicted) or newer than the stream (a cursor from another server run). `{ after, oldest, seq }`. The client recovers state with Pi `get_state` / `get_messages` and Desktop RPC `get_snapshot`, then follows the live stream that continues on the same connection. |
 | `dialog` | A dialog still waiting for an answer that this connection's replay did not carry. `data` is the original `extension_ui_request`. |
+| `host_tool_call` | To the device that provides it only: a host tool call still waiting for that device's result that this connection's replay did not carry. `data` is the original `setWidget` record. |
 | `resync` | Sent as the stream is closed for falling behind: `{ reason: "slow_client", seq }`. Reconnect with the last `id` seen. |
 
 The server also adds its own records to the stream (they have a `seq` like any other):
@@ -211,7 +225,7 @@ The server also adds its own records to the stream (they have a `seq` like any o
 | `{"type":"serve_session_exited","code","signal","error"?}` | The child exited. The stream ends after it. |
 | `{"type":"serve_record_dropped","reason":"too_large","maxBytes"}` | A stdout record over 16 MiB was dropped. |
 
-`after` comes from the query, or from the `Last-Event-ID` header that `EventSource` sends on reconnect. Without it the stream starts live (plus the pending dialogs). An exited session replays and then ends the stream.
+`after` comes from the query, or from the `Last-Event-ID` header that `EventSource` sends on reconnect. Without it the stream starts live (plus the pending dialogs and the device's waiting host tool calls). An exited session replays and then ends the stream.
 
 A comment line (`: ping`) is sent every 20 s so proxies do not close idle streams.
 
@@ -257,7 +271,8 @@ Browsers' `EventSource` cannot send headers, and long-lived tokens never go in U
 - **LAN discovery reveals presence only.** A network server answers the UDP [discovery query](#lan-discovery) of anyone on the network with its `serverId`, hostname and port — what `/.well-known/gentle-shell` already tells — and nothing else; replies are rate-limited and go only to the sender (a reply is about the size of the query, so it cannot amplify traffic). A loopback server does not listen for discovery.
 - **Origin and Host.** A request whose `Origin` is not this server's own origin (`http://<Host>`) is refused (`403 forbidden_origin`), before authentication, including `POST /api/pair`. Requests without `Origin` (curl, native clients) are accepted; tokens are never cookies, so a browser cannot attach them on another page's behalf. The `Host` header must name this server and its port (`421 bad_host`): loopback names for a loopback bind, the bound address otherwise, and for `0.0.0.0`/`::` any IP literal or this machine's own hostname (also as `<hostname>.local`) — never another DNS name (DNS rebinding). A name the operator trusts, such as a tailnet MagicDNS name (`box.tail1234.ts.net`), is added with `--allow-host <name>`; it is an exact name, never a pattern. No CORS headers are sent.
 - **Headers.** `Cache-Control: no-store`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
-- **Bounded input.** 16 KiB for small JSON bodies, 80 KiB for Desktop RPC, 8 MiB for Pi RPC commands; 20 s to send headers.
+- **Bounded input.** 16 KiB for small JSON bodies, 80 KiB for Desktop RPC (9 MiB for host tool registrations and results), 8 MiB for Pi RPC commands; 20 s to send headers.
+- **Host tools run on the client.** A device's host tools run on that device with its own authority; the server and the agent only see the call's arguments and the result. A device can only register tools as itself and answer its own calls.
 - **Remote authority never exceeds the terminal's.** `sessions:operate` is the same authority as typing into the session's terminal or writing the Desktop app's RPC stdin — including `/gentle:mode`, `set_permission_mode` and the rest of the [Desktop RPC trust boundary](desktop-rpc.md#trust-boundary). The server forwards to Pi unchanged and bypasses none of the existing rules: remote prompts are not interactive consent, provider consent stays terminal-only, and Desktop RPC's own checks apply inside the child. Pair `sessions:operate` only with devices you would hand your terminal; `sessions:read` follows without driving.
 
 ## Limits
@@ -271,6 +286,8 @@ Browsers' `EventSource` cannot send headers, and long-lived tokens never go in U
 | One stdout record | 16 MiB, then `serve_record_dropped` |
 | Pending stdin per session | 16 MiB, then `503 session_busy` |
 | `/rpc` and `/desktop` wait | 30 s (`202 pending` / `504 desktop_timeout`) |
+| Host tool call, device offline | answered at once; 10 s grace after its last stream closes |
+| Host tool call, no result | 10 minutes |
 | Heartbeat | 20 s |
 | Pairing code | 5 minutes, single use, 16 live, 10 failures per minute |
 | Stream ticket | 60 s, single use, 256 live |

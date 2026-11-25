@@ -491,7 +491,7 @@ test("ODD protocol is always-on in the rendered system prompt and runs by defaul
 	const orderedClauses = [
 		"Default workflow: Organic Driven Development (MANDATORY)",
 		"predefined workflow of this orchestrator",
-		"Never describe this workflow only when asked about it: run it.",
+		"Every request enters it unasked. Apply it, don't just describe it. Run these steps in this order on every request:",
 		"1. **Authorize.**",
 		"2. **Explore.**",
 		"3. **Resolve uncertainty.**",

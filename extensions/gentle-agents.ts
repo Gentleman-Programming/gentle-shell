@@ -1531,7 +1531,7 @@ export default function gentleAgents(pi: ExtensionAPI, env: NodeJS.ProcessEnv = 
 		if (tasks + running === 0) return undefined;
 		return {
 			block: true,
-			reason: `Standalone sleep is blocked while background work is active (${tasks} task(s), ${running} job(s)). End the turn now; each completion arrives automatically as a session message and starts a new turn.`,
+			reason: `Standalone sleep is blocked while background work is active (${tasks} task(s), ${running} job(s)). Continue independent in-scope work; end the turn to wait only when none remains. Each completion arrives automatically as a session message and starts a new turn.`,
 		};
 	});
 	let activeAgentRuns = 0;

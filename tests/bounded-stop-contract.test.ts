@@ -7,10 +7,10 @@ import { __testing } from "../extensions/gentle-ai.ts";
 
 // ODD harness-continuity S3 (odd/tasks/harness-continuity.md): authorized work
 // continues, a pending child is a wait event that resumes the turn, and only a
-// real human decision, the user's explicit stop, a denial, missing consent, or
-// an exhausted limit stops the work it applies to. The canonical Close owns
-// those boundaries; Pi-owned continuity keeps only its unique guards and
-// budget clauses and never licenses a generic terminal **Needs your decision**
+// real human decision, explicit user stop, denial, missing consent, exhausted
+// limit, or failure without a permitted route stops affected work. Close applies
+// those boundaries to tracking and proof; Pi-owned continuity carries the
+// general rule and never licenses a generic terminal **Needs your decision**
 // result or broad "never more verification". These are instruction-delivery
 // contracts, not proof of model adherence.
 
@@ -54,25 +54,21 @@ function closeStep(persona: (typeof personas)[number], mode: (typeof modes)[numb
 
 // The canonical Close boundaries rendered from the mirrored routing/pi.md.
 const CANONICAL_CLOSE = [
-	"Authorized work continues: runnable in-scope steps run, a pending child is a wait event whose completion resumes the turn without asking the human, and only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work.",
-	"A tracked task ends the turn pending only while it waits on already-launched work, for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to, or for a genuine human decision still outstanding; independent authorized work continues, and it never abandons runnable work or presents an unverified outcome as final.",
-	"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step, while a required authorized check the existing budget still allows keeps running; stop checking only inside an exhausted or denied boundary, report that exact blocker and the decision that is genuinely the human's, and never invent a pass.",
+	"A failed check is diagnosed, fixed and rerun within its limits.",
+	"Run authorized in-scope steps. Work through failures with a permitted route. A pending child is a wait: completion resumes the turn without asking.",
+	"Only a real human decision, explicit user stop, denial, missing consent, exhausted limit, or failure without a permitted route stops only affected work.",
+	"A tracked task ends the turn pending only for launched work still running, a real human decision, denial, missing consent, explicit stop, or exhausted limit.",
+	"Report failures without a permitted route as incomplete. Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
+	"Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget.",
+	"Stop checks only at an exhausted or denied boundary or with no permitted route. Report the exact blocker and any genuine human decision; never invent a pass.",
 	"Never turn a report into a blind self-reprompt loop.",
 	"Hedged wording is not a stop.",
 ] as const;
 
-function trackedPendingBoundary(text: string): string {
-	const start = text.indexOf("A tracked task ends the turn pending");
-	assert.ok(start >= 0, "the canonical tracked-task boundary is rendered");
-	const end = text.indexOf("as final.", start);
-	assert.ok(end > start, "the canonical tracked-task boundary ends with its finality clause");
-	return text.slice(start, end + "as final.".length);
-}
-
-test("T23(a): a partial or blocked writer gets the one correction; verification-specific blockers remain bounded", () => {
+test("T23(a): the independent verifier's correction limit never grants an extra verify run", () => {
 	containsAll(lineStarting(verification, "5. **One correction**"), [
-		"A `partial` or `blocked` writer report gets only this correction, never an extra verify run beyond the risk tier's verifier",
-		"leftover partial, blocked, unavailable, or exhausted proof likewise",
+		"This limit applies to independent verifier findings only.",
+		"No extra verifier run for a `partial` or `blocked` writer or partial, blocked, unavailable or exhausted proof.",
 	], "verification correction bound");
 	for (const persona of personas) {
 		containsAll(closeStep(persona), [
@@ -95,8 +91,7 @@ test("S3: an explicit user stop is scoped to the work it names while authorized 
 	const rendered = prompt("gentleman");
 	containsAll(rendered, [
 		"An explicit user stop applies only to the work it names.",
-		"while a required authorized check the existing budget still allows keeps running",
-		"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step",
+		"Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget.",
 	], "authorized continuation boundaries");
 	assert.ok(!rendered.includes("Needs your decision"), "ordinary continuity must not carry a generic terminal phrase");
 });
@@ -104,13 +99,9 @@ test("S3: an explicit user stop is scoped to the work it names while authorized 
 test("S3 F1: denied, exhausted, missing-consent, and partial-stop cases stay scoped to the affected work", () => {
 	for (const mode of modes) {
 		const close = closeStep("gentleman", mode);
-		const slice = trackedPendingBoundary(close);
-		containsAll(slice, [
-			"waits on already-launched work",
-			"for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to",
-			"or for a genuine human decision still outstanding",
-			"independent authorized work continues",
-			"never abandons runnable work or presents an unverified outcome as final",
+		containsAll(close, [
+			"A tracked task ends the turn pending only for launched work still running, a real human decision, denial, missing consent, explicit stop, or exhausted limit.",
+			"Report failures without a permitted route as incomplete. Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
 		], `${mode} tracked-task boundary`);
 		// A denied destructive migration stays pending without a retry, an
 		// exhausted verifier/correction limit never resumes its blocked task,
@@ -118,10 +109,10 @@ test("S3 F1: denied, exhausted, missing-consent, and partial-stop cases stay sco
 		// unrelated runnable work running. These are the rendered clauses that
 		// carry those cases, not model-adherence proof.
 		containsAll(close, [
-			"stops the work it applies to, never independent authorized work",
-			"stop checking only inside an exhausted or denied boundary",
-			"report that exact blocker and the decision that is genuinely the human's",
-			"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work",
+			"Only a real human decision, explicit user stop, denial, missing consent, exhausted limit, or failure without a permitted route stops only affected work.",
+			"Stop checks only at an exhausted or denied boundary or with no permitted route.",
+			"Report the exact blocker and any genuine human decision; never invent a pass.",
+			"Missing, partial, unavailable, or declined proof bars claiming completion of affected work",
 		], `${mode} central stop rule`);
 	}
 });
@@ -147,13 +138,13 @@ test("S3: no phrase detector or broad verification stop joins ordinary continuit
 	assert.ok(prompt("gentleman").includes("Never turn a report into a blind self-reprompt loop."));
 });
 
-test("T23(c): writer self-review and worker validation stop after a bounded correction", () => {
+test("T23(c): writer self-review follows the progress rule without claiming unverified completion", () => {
 	containsAll(lineStarting(verification, "1. **Self-review**"), [
-		"fixes and continues (one correction per failing check, a second only if the same check still fails, then `partial`)",
+		"The writer fixes and continues by progress: name the cause from output and change the fix to address it.",
 	], "self-review item");
 	containsAll(worker, [
 		"Do not claim completion while required validation is failing.",
-		"Make one correction attempt per failing check, and a second only if the same check still fails after a real fix; then stop and return `status: partial` with the failing command and its output, never looping.",
+		"Never repeat the same change or stop because of an attempt count.",
 	], "worker Test discipline");
 });
 
@@ -169,30 +160,27 @@ test("T23(d)(e): a quick check runs once and an unavailable verifier is reported
 test("S4-S5: the Close stop stays scoped to the ended automatic cycle", () => {
 	for (const persona of personas) {
 		containsAll(prompt(persona), [
-			"The Close stop ends the cycle; later explicit requests stay subject to native authority.",
-			"Partial worker execution is not by itself exhausted proof or a terminal native review outcome.",
+			"Close ends the automatic cycle; later explicit requests stay subject to native authority.",
+			"Partial worker execution is not exhausted proof or a terminal native review outcome.",
 		], `${persona} delivered continuation`);
 	}
 });
 
-// ODD orchestrator-owns-correction-exhaustion S1-S4: the worker keeps its two-attempt limit, returns its
-// diagnosed loop cause, and the parent (never the human by default) owns the next step. RED construction
-// errors get the setup bound, separate from the fix's limit.
-test("S1-S4: the worker returns its diagnosed loop cause after its bound and the parent decides", () => {
+// #2919 and turn-end-coherence S11: the worker returns evidence and the parent owns the next step.
+test("the worker reports a repeated-cause stop with evidence; the parent decides", () => {
 	containsAll(worker, [
-		"Make one correction attempt per failing check, and a second only if the same check still fails after a real fix",
-		"After the correction bound is exhausted, stop and return `status: partial`",
-		"the concrete remaining implementation work, the missing proof, and your diagnosed cause of the loop",
+		"Stop correcting and return `status: partial` only if the same cause fails again after a real fix and no new hypothesis exists",
+		"failing commands and outputs, concrete remaining implementation work, missing proof, and diagnosed cause with evidence",
 		"That ends your cycle, not the unit: the parent decides the next step from that evidence.",
 		"This handoff is not authorization to continue.",
-		"Do not start a fresh correction cycle or treat a new session as a reset",
-		"native authority and all other applicable limits remain binding",
+		"After a repeated-cause stop, do not start a fresh correction cycle or treat a new session as a reset",
+		"Native authority and all other applicable limits remain binding",
 	], "worker continuation handoff");
-	assert.ok(!worker.includes("explicit human authorization"), "worker exhaustion no longer routes to the human");
+	assert.ok(!worker.includes("explicit human authorization"), "a worker's partial handoff does not route to the human");
 	containsAll(worker, [
-		"Making a new test fail for the expected reason is RED construction, not a fix correction",
-		"its own harness or setup errors get one self-fix, separate from the fix's correction limit",
-		"return `status: partial` with a reproduction blocker and its evidence, not exhausted corrections",
+		"RED construction is separate from fix correction",
+		"harness or setup errors get one self-fix",
+		"return `status: partial` with the reproduction blocker and its evidence",
 	], "worker RED construction bound");
 	containsAll(verification, [
 		"Follow **Authorized work continuity** for setup and worker recovery; scratch: `gentle-ai-verify`.",
@@ -203,18 +191,19 @@ test("S1-S4: the worker returns its diagnosed loop cause after its bound and the
 // exhaustion, but only organic mode may fix inline; full delegation relaunches a bounded writer, never edits.
 test("S2: the post-exhaustion route follows the active delegation mode", () => {
 	for (const persona of personas) for (const mode of modes) {
-		const paragraph = prompt(persona, mode).split("\n\n").find(block => block.startsWith("An exhausted worker-local"));
+		const paragraph = prompt(persona, mode).split("\n\n").find(block => block.startsWith("Worker exhaustion:"));
 		assert.ok(paragraph, `${persona}/${mode} keeps the worker-exhaustion paragraph`);
 		containsAll(paragraph, [
-			"ends that worker's cycle, not the unit; within native authority you own the next step, unasked.",
-			"Name the loop's cause from the evidence; act on it:",
-			"never repeat an attempt or swap executors to dodge limits.",
-			"Same cause again or no new hypothesis: block the unit; continue independent work.",
+			"A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
+			"The parent owns the next step, unasked, within native authority.",
+			"On any partial, diagnose from evidence; confirm no child is active or uncertain. Within user-authorized scope:",
+			"Never repeat an attempt or swap executors to dodge limits.",
+			"No permitted route: report only that work incomplete; continue independent work.",
 		], `${persona}/${mode} exhaustion route`);
 		if (mode === "organic") {
-			assert.ok(paragraph.includes("fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence;"), `${persona} organic route`);
+			assert.ok(paragraph.includes("fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence."), `${persona} organic route`);
 		} else {
-			assert.ok(paragraph.includes("never edit: launch a new bounded writer with the diagnosis, new evidence and changed scope or hypothesis;"), `${persona} full-delegation route`);
+			assert.ok(paragraph.includes("never edit: launch a new bounded writer with the diagnosis, new evidence and changed scope or hypothesis."), `${persona} full-delegation route`);
 			assert.ok(!paragraph.includes("inline"), `${persona} full delegation never fixes inline after exhaustion`);
 		}
 	}
@@ -229,18 +218,17 @@ test("T23(f): the verify agent allows a second correction only for the same bloc
 
 test("gentle-shell#3082: a stopped verification carries its terminal disposition in the lazy module", () => {
 	containsAll(verification, [
-		"When required proof is unobtainable, one terminal disposition closes a stopped verification",
-		"name the missing proof and resume authorized in-scope work at `status: partial`",
-		"never PASS, never silently dropped",
+		"Unobtainable proof: close verification once, name the gap and resume authorized in-scope work at `status: partial`.",
+		"Never PASS or silently omit it",
 	], "verification terminal disposition");
 });
 
-test("S2 (verifier P2): full delegation launches a new writer after exhaustion; per-fix continuation is scoped to the worker's limit", () => {
+test("S2 (verifier P2): full delegation continues a progressing writer and preserves the distinct parent recovery route", () => {
 	for (const persona of personas) {
 		const p = prompt(persona, "full-delegation");
-		const paragraph = p.split("\n\n").find((block) => block.startsWith("An exhausted worker-local")) ?? "";
+		const paragraph = p.split("\n\n").find((block) => block.startsWith("Worker exhaustion:")) ?? "";
 		assert.match(paragraph, /launch a new bounded writer/);
 		assert.ok(!p.includes("Fixes to one unit continue its worker (`subagent_continue`), never a new worker per fix."), "unscoped per-fix rule contradicts the post-exhaustion launch");
-		assert.ok(p.includes("In-limit fixes continue the worker (`subagent_continue`), never a new worker per fix."));
+		assert.ok(p.includes("Continue a progressing worker (`subagent_continue`), never a new worker per fix."));
 	}
 });

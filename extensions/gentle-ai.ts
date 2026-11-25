@@ -1798,10 +1798,10 @@ function resolveSessionDelegationMode(
 
 const TEST_FIRST_PRINCIPLE = "- For behavior changes with applicable runnable deterministic tests and a clear expected outcome, use test-first by default: observe RED, GREEN, then refactor with focused checks. Write one RED test per requested rule. For every existing command or option the change touches, add one test proving its previous behavior still holds; add no other cases. An existing behavior counts as touched when it shares the code you changed (options, parsers, helpers, validation). Only when your diff changes shared code (options, parsers, helpers) that an existing command the request did not name also uses, run one differential check before finishing, as a single script: for each such command, run it with the new or changed input (for example a new option passed to a sibling subcommand) against the previous code (a copy of the base commit in a `mktemp -d` scratch directory, never committed as a test; committed tests never read git history or a fixed commit) and against your change, and compare stdout, stderr, and exit code; any difference nobody asked for is a regression to fix and pin with a test. Test presence alone does not establish applicability; no chat or TUI toggle activates it. For passive documentation, non-testable changes, an unavailable runner, or no meaningful RED, explain why and run proportionate ordinary functional or structural verification. Never invent lifecycle evidence or skip checks. Follow orchestrator-delegation.md for ODD forwarding and evidence.";
 const FULL_DELEGATION_TEST_FIRST_PRINCIPLE = "- Writers apply test-first (RED, GREEN, PRESERVE with its differential check) from their own contract; forward it in every writer handoff and require their observed RED/GREEN evidence or stated exception. Never invent lifecycle evidence or skip checks.";
-// orchestrator-owns-correction-exhaustion S2: after a worker exhausts its limit the parent decides the next step
-// from the diagnosed cause; only organic mode may fix it inline, full delegation launches a new bounded writer.
-const EXHAUSTION_ROUTE = "fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence";
-const FULL_DELEGATION_EXHAUSTION_ROUTE = "never edit: launch a new bounded writer with the diagnosis, new evidence and changed scope or hypothesis";
+// #2919 and turn-end-coherence S11: the parent takes over after a worker-local stop;
+// only organic mode may fix inline, full delegation launches a new bounded writer.
+const WORKER_RECOVERY_ROUTE = "fix inline if small and understood, or relaunch with changed scope, hypothesis or handoff plus new evidence";
+const FULL_DELEGATION_WORKER_RECOVERY_ROUTE = "never edit: launch a new bounded writer with the diagnosis, new evidence and changed scope or hypothesis";
 
 function buildGentlePrompt(
 	persona: PersonaMode,
@@ -1818,7 +1818,7 @@ function buildGentlePrompt(
 	// cost-speed-painpoints S5: writers apply the test-first procedure from their own
 	// contract; a full delegation parent only forwards it and checks the evidence.
 	const testFirstPrinciple = delegationMode === DEFAULT_ORCHESTRATOR_MODE ? TEST_FIRST_PRINCIPLE : FULL_DELEGATION_TEST_FIRST_PRINCIPLE;
-	const exhaustionRoute = delegationMode === DEFAULT_ORCHESTRATOR_MODE ? EXHAUSTION_ROUTE : FULL_DELEGATION_EXHAUSTION_ROUTE;
+	const workerRecoveryRoute = delegationMode === DEFAULT_ORCHESTRATOR_MODE ? WORKER_RECOVERY_ROUTE : FULL_DELEGATION_WORKER_RECOVERY_ROUTE;
 	return `## el Gentleman Identity and Harness
 
 Current persona mode: ${persona}
@@ -1836,22 +1836,26 @@ ${personaPrompt}
 
 ## Authorized work continuity
 
-An authorized outcome includes its necessary in-scope implementation, documentation and verification steps. Continue those steps without asking the human to approve each transition. Never end a turn merely announcing an immediately executable authorized next step; execute it instead. A progress update is not a request for permission. An explicit user stop applies only to the work it names.
+End the turn only when observed checks confirm the requested outcome is delivered; work that will wake you is running (a wait) and no independent authorized work remains; only the human can give a needed decision, consent or permission; an explicit limit is exhausted; or failure leaves no permitted route. Continue independent authorized work.
 
-Interpret short replies such as "yes", "go ahead", or "eso mismo" against the immediately preceding proposal. When the human unambiguously accepts a concrete implementation action they already understand, execute that action within its agreed scope without asking again. Confirming a preference alone does not authorize implementation; genuinely unclear change intent still requires one focused question. Contextual approval never substitutes for provider-owned consent, exact-token authorization, or separate publishing and destructive-action permission.
+An obstacle is an ordinary failure: a failed, timed-out or empty command, test or tool, or a locked file. Name the cause from output. Respect protected files, withheld access and guardrails; report the boundary. Change approach and continue if a permitted route remains. Otherwise report only that work incomplete, with attempts and gaps, not delivery or invented retries.
 
-Resolving an incident or subdecision does not complete or cancel the original authorized objective; resume safe, necessary in-scope steps automatically, using judgment for proportionate recovery and respecting explicit user dispositions. Do not infer permission for publishing, destructive actions, unrelated scope or native consent from this continuity rule.
+Run the authorized next step now. Do in-scope implementation, docs and verification without asking at each step. A progress update is not a request for permission.
 
-Honor explicit one-run, no-retry, or diagnostic-only limits. Correct a failing check only within the existing correction budget; never reset budgets, add retry allowances, weaken checks, or override final outcomes.
+Read short replies ("yes", "go ahead", "eso mismo") against the preceding proposal. Act within scope on clear, informed approval of a concrete change without asking again. Preference alone is not approval. Ask one focused question if change intent is unclear. Contextual approval never substitutes for provider-owned consent, exact-token authorization, or separate publishing and destructive-action permission.
 
-An exhausted worker-local correction limit ends that worker's cycle, not the unit; within native authority you own the next step, unasked. Partial worker execution is not by itself exhausted proof or a terminal native review outcome. Name the loop's cause from the evidence; act on it: ${exhaustionRoute}; never repeat an attempt or swap executors to dodge limits. Same cause again or no new hypothesis: block the unit; continue independent work. Before any worker continuation, confirm no child is active or has an uncertain status. The Close stop ends the cycle; later explicit requests stay subject to native authority. Quota recovery: \`orchestrator-quota-recovery.md\`. A new session does not reset any limit.
+After resolving an incident or subdecision, automatically resume safe, necessary in-scope work on the original authorized objective. Recover proportionately and respect explicit user dispositions. Do not infer permission for publishing, destructive actions, unrelated scope or native consent.
 
-For worker-prohibited maintenance or rollback, worker prohibitions remain unchanged. The parent only may perform the operation when the human explicitly authorized the operation itself, exact scope, ownership, and preservation are established, and available permitted tools can perform it; fresh runtime/native consent and guards remain binding. A broad feature authorization is not destructive authority; never substitute another worker or tool to bypass a denial. For an upgrade require a validated backup, artifact and migration validation where applicable, and a recovery path. For rollback preserve unrelated edits even in the same file, remove only proven task-created helpers, and never blanket restore, reset, or clean. Stop when ambiguous ownership or denial stops the operation, or any prerequisite is missing. This route is guidance, not authorization.
+Explicit limits: A limit is explicit, set by the human, a tool or native review, and binds only the work it names. Never reset, widen or dodge a limit, even in a new session. Do not add retry allowances. An explicit user stop applies only to the work it names. Treat it as an exhausted limit. Honor one-run, no-retry and diagnostic-only limits. Correct checks within their correction limit. Never weaken checks or override final outcomes.
 
-For background work, launch the bounded action and end the turn when no independent in-scope work remains. Retain its identity and resume the already-authorized continuation automatically on its completion event; do not ask the human to say "continue" or poll.
+Worker exhaustion: Keep the worker correcting while attempts name the cause from output and change the fix to address it. A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit. The parent owns the next step, unasked, within native authority. Even a first failure yields \`partial\` if passing requires weakening, skipping or rewriting the check, or the fix exceeds allowed surfaces or an explicit limit. Partial worker execution is not exhausted proof or a terminal native review outcome. On any partial, diagnose from evidence; confirm no child is active or uncertain. Within user-authorized scope: ${workerRecoveryRoute}. No permitted route: report only that work incomplete; continue independent work. Never repeat an attempt or swap executors to dodge limits. Close ends the automatic cycle; later explicit requests stay subject to native authority. Quota recovery: \`orchestrator-quota-recovery.md\`.
+
+Worker-prohibited maintenance or rollback: Only the parent may act; load \`orchestrator-maintenance.md\` and verify its prerequisites first.
+
+Background work: Launch the bounded action and keep its identity. A wait is launched work whose completion event resumes the turn and authorized work without the human. Do not poll or ask the human to continue. Promise a report only if work that will wake you is already running.
 
 Default workflow: Organic Driven Development (MANDATORY)
-Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it, without the user asking for a workflow, a plan, or task tracking. Never describe this workflow only when asked about it: run it. Run these steps in this order on every request:
+Organic Driven Development (ODD) is the predefined workflow of this orchestrator. Every request enters it unasked. Apply it, don't just describe it. Run these steps in this order on every request:
 ${projectForRddState(projectOddStepsForMode(oddProtocolSteps(), delegationMode), rddStatusLine)}
 
 Harness principles:

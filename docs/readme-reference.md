@@ -1607,6 +1607,7 @@ To opt out:
 | `assets/orchestrator-delegation-reference.md` | Lazy-loaded delegation reference read only when named: per-action table, Work Routing Ladder, background policy, runtime bindings, canonical workflows. |
 | `assets/orchestrator-tracking.md` | Lazy-loaded large-task ODD tracking: authorization, research, checks and consent, phase signaling, RDD assess, delivery. |
 | `assets/orchestrator-verification.md` | Lazy-loaded Verification rule, native risk tiers, and writer verification contract. |
+| `assets/orchestrator-maintenance.md` | Lazy-loaded parent-only prerequisites for worker-prohibited maintenance or rollback. |
 | `assets/orchestrator-writer.md` | Lazy-loaded allowed edit surfaces and Judgment Day fix dispatch. |
 | `assets/orchestrator-prompts.md` | Lazy-loaded lossless blocking-prompt relays and the provider-defect classification stub; the report workflow loads from the `gentle-ai-provider-defect-report` skill. |
 | `assets/orchestrator-memory.md` | Lazy-loaded ODD feature continuity and memory lifecycle rules. |

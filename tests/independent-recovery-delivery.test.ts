@@ -52,17 +52,19 @@ for (const persona of ["gentleman", "neutral"] as const) {
       assert.match(p, /7\. \*\*Close\.\*\*[^\n]*an unavailable verifier or subagent is reported as unavailable, never retried or escalated/);
       for (const guard of ["consent", "a denial", "one-run", "no-retry", "terminal native outcomes", "exhausted native budgets"]) assert.ok(setup.includes(guard), guard);
       assert.match(setup, /no child is active or has an uncertain status/);
-      const worker = paragraph(p, "An exhausted worker-local");
-      // orchestrator-owns-correction-exhaustion S1/S2: the parent owns the next step and acts on the loop's cause.
-      assert.match(worker, /not the unit; within native authority you own the next step, unasked/);
-      assert.match(worker, /never repeat an attempt or swap executors to dodge limits/);
+      const worker = paragraph(p, "Worker exhaustion:");
+      // #2919 and turn-end-coherence S11: a repeated cause without a new hypothesis hands the next step to the parent.
+      assert.match(worker, /without a new hypothesis ends the worker's cycle, not the unit\. The parent owns the next step, unasked, within native authority/);
+      assert.match(worker, /Never repeat an attempt or swap executors to dodge limits/);
       assert.doesNotMatch(worker, /human-controlled|let the human stop/);
       assert.match(worker, /later explicit requests stay subject to native authority/);
-      assert.match(worker, /new session does not reset any limit/);
+      assert.match(paragraph(p, "Explicit limits:"), /Never reset, widen or dodge a limit, even in a new session/);
       // harness-continuity T5: the proof boundary moved from this paragraph into the canonical Close.
-      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*proof forbids claiming completion of the affected work, never an independently authorized next step/);
-      assert.match(worker, /no child is active or has an uncertain status/);
-      assert.match(p, /7\. \*\*Close\.\*\*[^\n]*stop checking only inside an exhausted or denied boundary/);
+      const close = p.split("\n").find(line => line.startsWith("7. **Close.**"));
+      assert.ok(close, "the always-on prompt delivers Close");
+      assert.ok(close.includes("Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget."));
+      assert.match(worker, /no child is active or uncertain/);
+      assert.ok(close.includes("Stop checks only at an exhausted or denied boundary or with no permitted route."));
       assert.doesNotMatch(p, /Stop only for[^\n]*unavailable required proof/);
       assert.ok(!p.includes("unavailable required proof"), "no rendered prompt stops for unavailable proof");
     });
@@ -78,7 +80,7 @@ test("S3-S5 parsed worker and verifier contracts retain confinement and proof li
   };
   const worker = agent("worker");
   assert.match(worker.instructions, /handoff is not authorization to continue/);
-  assert.match(worker.instructions, /Do not start a fresh correction cycle/);
+  assert.match(worker.instructions, /After a repeated-cause stop, do not start a fresh correction cycle or treat a new session as a reset/);
   assert.match(worker.instructions, /missing proof still blocks completion and delivery/);
   const verify = agent("verify");
   assert.deepEqual(verify.tools, ["read", "grep", "find", "bash", "codemode", "mcp__codegraph__codegraph_explore"]);
@@ -98,9 +100,9 @@ test("S2-S5 user recovery docs retain the independent-proof and native-authority
   assert.match(docs, /Missing required proof still blocks completion and delivery/);
   assert.match(docs, /active or uncertain child prevents continuation/);
   assert.match(docs, /explicit one-run\/no-retry limit/);
-  // orchestrator-owns-correction-exhaustion S1/S2: the docs route worker exhaustion to the parent, not the human.
-  const start = docs.indexOf("### Parent continuation after worker correction exhaustion");
-  assert.ok(start >= 0, "docs keep the worker-exhaustion section");
+  // #2919 and turn-end-coherence S11: the docs route a worker's partial handoff to the parent, not the human.
+  const start = docs.indexOf("### Parent continuation after a worker's partial handoff");
+  assert.ok(start >= 0, "docs keep the worker-recovery section");
   const section = docs.slice(start, docs.indexOf("\n## ", start));
   assert.match(section, /parent decides the next step from the returned evidence, without asking the user/);
   assert.match(section, /never repeats the same attempt/);

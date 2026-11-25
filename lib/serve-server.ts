@@ -8,13 +8,14 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { arch, homedir, hostname } from "node:os";
-import { basename, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 import { hasScope, isServeScope, type Principal, type ServeAuth, type ServeScope } from "./serve-auth.ts";
 import { startDiscoveryResponder, type DiscoveryResponder } from "./serve-discovery.ts";
 import { FileService, type SERVE_FS_LIMITS } from "./serve-files.ts";
 import { GitService, type SERVE_GIT_LIMITS } from "./serve-git.ts";
 import { ForwardError, ForwardManager, type ForwardInfo, type SERVE_FORWARD_LIMITS } from "./serve-forward.ts";
 import { HttpError, need, readJsonBody, realDirectory, SECURITY_HEADERS, sendError, sendJson } from "./serve-http.ts";
+import { UploadStore, type SERVE_UPLOAD_LIMITS } from "./serve-uploads.ts";
 import { HOST_TOOL_METHODS, ServeSession, SessionError, type ServeSessionLimits, type SessionLaunch } from "./serve-session.ts";
 
 export const SERVE_SCHEMA = "gentle-shell.serve/v1";
@@ -96,6 +97,9 @@ export interface ServeServerOptions {
 	startTower?: () => Promise<ServeTower>;
 	fsLimits?: Partial<typeof SERVE_FS_LIMITS>;
 	gitLimits?: Partial<typeof SERVE_GIT_LIMITS>;
+	uploadLimits?: Partial<typeof SERVE_UPLOAD_LIMITS>;
+	/** `<agent home>/serve`: uploads live under it. Without it uploads are off. */
+	serveDir?: string;
 	/** The environment for git commands and service lookups; this process's by default. */
 	env?: NodeJS.ProcessEnv;
 }
@@ -185,6 +189,8 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 	const files = new FileService({ limits: options.fsLimits, now, log });
 	// git commands in folders on this machine.
 	const git = new GitService({ env: options.env ?? process.env, limits: options.gitLimits, log });
+	// Files a client sends for the agent to see.
+	const uploads = options.serveDir === undefined ? undefined : new UploadStore({ dir: join(options.serveDir, "uploads"), limits: options.uploadLimits, now, log });
 	// Gentle Tower, when a device asked for it; stopped with the server.
 	let tower: (ServeTower & { startedAt: number }) | undefined;
 	let towerStarting: Promise<ServeTower & { startedAt: number }> | undefined;
@@ -389,7 +395,7 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			const who = need(principal, "sessions:read");
 			return sendJson(res, 200, { schema: SERVE_SCHEMA, protocol: SERVE_PROTOCOL, serverId, version: options.version, startedAt: new Date(startedAt).toISOString(),
-				capabilities: SERVE_CAPABILITIES, device: { id: who.deviceId, name: who.name, scopes: who.scopes },
+				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : [])], device: { id: who.deviceId, name: who.name, scopes: who.scopes },
 				// How to build paths for the file and session endpoints.
 				platform: process.platform, arch: arch(), pathSeparator: sep,
 				// The server user's home folder, a default for new sessions; only for a token that may start them.
@@ -456,6 +462,11 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 			return sendJson(res, 201, { session: sessionView(started, who) });
 		}
 		if (await files.route(req, res, method, path, url, principal)) return;
+		if (path === "/api/uploads") {
+			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
+			if (!uploads) throw new HttpError(501, "not_supported", "This server takes no uploads");
+			return uploads.upload(req, res, url, principal);
+		}
 		if (path === "/api/git") {
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
 			return git.route(req, res, principal);
@@ -617,6 +628,7 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 				forwards.closeAll();
 				files.closeAll();
 				git.closeAll();
+				uploads?.close();
 				await towerStarting?.catch(() => undefined);
 				await stopTower();
 				await Promise.all([...sessions.values()].map((s) => s.stop()));

@@ -9,13 +9,14 @@
 import { randomBytes } from "node:crypto";
 import { createServer,                                           } from "node:http";
 import { arch, homedir, hostname } from "node:os";
-import { basename, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 import { hasScope, isServeScope,                                                 } from "./serve-auth.mjs";
 import { startDiscoveryResponder,                         } from "./serve-discovery.mjs";
 import { FileService,                      } from "./serve-files.mjs";
 import { GitService,                       } from "./serve-git.mjs";
 import { ForwardError, ForwardManager,                                             } from "./serve-forward.mjs";
 import { HttpError, need, readJsonBody, realDirectory, SECURITY_HEADERS, sendError, sendJson } from "./serve-http.mjs";
+import { UploadStore,                          } from "./serve-uploads.mjs";
 import { HOST_TOOL_METHODS, ServeSession, SessionError,                                             } from "./serve-session.mjs";
 
 export const SERVE_SCHEMA = "gentle-shell.serve/v1";
@@ -73,6 +74,9 @@ export function carriesHostToolRequest(message        )          {
 	}
 	return !!request && typeof request === "object" && "method" in request && typeof request.method === "string" && Object.hasOwn(HOST_TOOL_METHODS, request.method);
 }
+
+
+
 
 
 
@@ -186,6 +190,8 @@ export function startServeServer(options                    )                   
 	const files = new FileService({ limits: options.fsLimits, now, log });
 	// git commands in folders on this machine.
 	const git = new GitService({ env: options.env ?? process.env, limits: options.gitLimits, log });
+	// Files a client sends for the agent to see.
+	const uploads = options.serveDir === undefined ? undefined : new UploadStore({ dir: join(options.serveDir, "uploads"), limits: options.uploadLimits, now, log });
 	// Gentle Tower, when a device asked for it; stopped with the server.
 	let tower                                                  ;
 	let towerStarting                                                         ;
@@ -390,7 +396,7 @@ export function startServeServer(options                    )                   
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			const who = need(principal, "sessions:read");
 			return sendJson(res, 200, { schema: SERVE_SCHEMA, protocol: SERVE_PROTOCOL, serverId, version: options.version, startedAt: new Date(startedAt).toISOString(),
-				capabilities: SERVE_CAPABILITIES, device: { id: who.deviceId, name: who.name, scopes: who.scopes },
+				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : [])], device: { id: who.deviceId, name: who.name, scopes: who.scopes },
 				// How to build paths for the file and session endpoints.
 				platform: process.platform, arch: arch(), pathSeparator: sep,
 				// The server user's home folder, a default for new sessions; only for a token that may start them.
@@ -457,6 +463,11 @@ export function startServeServer(options                    )                   
 			return sendJson(res, 201, { session: sessionView(started, who) });
 		}
 		if (await files.route(req, res, method, path, url, principal)) return;
+		if (path === "/api/uploads") {
+			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
+			if (!uploads) throw new HttpError(501, "not_supported", "This server takes no uploads");
+			return uploads.upload(req, res, url, principal);
+		}
 		if (path === "/api/git") {
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
 			return git.route(req, res, principal);
@@ -618,6 +629,7 @@ export function startServeServer(options                    )                   
 				forwards.closeAll();
 				files.closeAll();
 				git.closeAll();
+				uploads?.close();
 				await towerStarting?.catch(() => undefined);
 				await stopTower();
 				await Promise.all([...sessions.values()].map((s) => s.stop()));

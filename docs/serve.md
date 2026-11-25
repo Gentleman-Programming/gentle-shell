@@ -125,6 +125,7 @@ Everything lives in `<agent home>/serve/`, a `0700` folder:
 | `server.lock` (`0600`) | The pid holding the single-instance lock. A lock whose pid is gone is taken over. |
 | `devices.json` (`0600`) | Paired devices: id, name, scopes, created and last-used times, and the **sha256 of the token** — never the token. |
 | `server.log` (`0600`) | Background server log: lifecycle lines and each session's stderr, prefixed by session id. |
+| `uploads/<device>/<random>/<name>` (`0700` folders, `0600` files) | [Uploads](#uploads) from devices; each removed 7 days after it arrived. |
 
 `adminToken` is a fresh random token per server run. It is how `serve status`, `pair`, `devices` and `stop` talk to the server, so anyone who can read `server.json` (the owner) administers it.
 
@@ -147,7 +148,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | --- | --- | --- |
 | `GET /.well-known/gentle-shell` | none | `{ schema: "gentle-shell.serve.identity/v1", serverId, name, protocol, version }`: who answers at this address (`name` is the machine's hostname). No secrets; `Host` and `Origin` rules still apply. A client holding a [connection code](#connection-code) probes it before pairing. |
 | `POST /api/pair` | none (the code) | `{ code, name? }` → `201 { id, name, scopes, createdAt, token }`. `403 invalid_code`, `429 rate_limited`, `409 too_many_devices`. |
-| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `tower`, `files` and `git`. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
+| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `tower`, `files`, `git` and `uploads`. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
 | `POST /api/server/stop` | `admin` | `202`; the server stops its sessions and exits. |
 | `POST /api/pairing-codes` | `admin` | `{ scopes? }` → `201 { code, scopes, expiresAt }` |
 | `GET /api/devices` | `admin` | `{ devices: [{ id, name, scopes, createdAt, lastUsedAt? }] }` |
@@ -176,6 +177,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | `GET /api/fs/search?root=&q=&limit=` | `sessions:read` | `{ root, results: [{ path, name, kind, score }], truncated }` |
 | `GET /api/fs/watch?path=` | `sessions:read` | SSE stream of change batches. |
 | `POST /api/git` | per command | `{ cwd, args, stdin?, env?, timeoutMs? }` → `{ code, signal, stdout, stderr, truncated, timedOut }`. See [git on the server](#git-on-the-server). |
+| `POST /api/uploads?name=` | `sessions:operate` | Raw body → `201 { path, name, size, sha256, expiresAt }`. See [Uploads](#uploads). |
 
 `Session` is `{ id, name, cwd?, state: "running"|"exited", startedAt, exitedAt?, exitCode?, exitSignal?, seq, subscribers, pendingDialogs, lastActiveDevice }`. `name` is the folder's basename; the absolute `cwd` is included only for a token with `sessions:operate` (which can start sessions in any folder anyway). `lastActiveDevice` is the id of the device that most recently drove the session (started it, or sent any request that needs `sessions:operate`: a prompt, a steer, a follow-up, a dialog answer, a host message, a Desktop write), or `null`.
 
@@ -381,6 +383,14 @@ Any `-c`/`--config-env` override makes a command an operation (configuration can
 
 This is defence in depth, not a sandbox: `sessions:operate` is the server user's authority (it can already write `.git/config` through the file endpoints or a session's tools), so the refusals only keep the convenient injection routes closed and keep `sessions:read` from becoming command execution.
 
+## Uploads
+
+A client that wants the agent to see a file from its own machine — a chat attachment, a screenshot, a log — sends it with `POST /api/uploads?name=<file name>` (the raw bytes as the body, at most 64 MiB, `sessions:operate`) and puts the answered `path` in the prompt.
+
+- It is stored at `<agent home>/serve/uploads/<device id>/<16 random hex>/<name>`: owner-only (`0700` folders, `0600` file), one fresh folder per upload so names never clash. `name` keeps only its last path component, with control characters and `<>:"|?*` replaced by `_`, at most 200 UTF-8 bytes (`upload` when nothing is left).
+- The answer is `201 { path, name, size, sha256, expiresAt }`. A refused or cut-short upload leaves nothing behind.
+- Uploads are removed 7 days after they arrived (checked at start and hourly). They are plain files: the agent reads them with its own tools, and a client can also read them back through [`/api/fs/read`](#files-on-the-server).
+
 ## Security model
 
 - **Loopback by default.** Without `--listen` the server binds `127.0.0.1` on a random port. Remote use goes through `ssh -L` (or a tunnel) to that port.
@@ -421,6 +431,7 @@ This is defence in depth, not a sandbox: `sessions:operate` is the server user's
 | File search | 1000 results; 200 000 entries or 5 s walked, then `truncated` |
 | Change streams | 32 per device; batches after 150 ms quiet, at most 1 s late, 1000 paths |
 | git command | 120 s (600 s for network commands); 32 MiB stdout, 1 MiB stderr, 8 MiB stdin; 16 at once |
+| Upload | 64 MiB; kept 7 days |
 
 ## Try it from source on Linux
 

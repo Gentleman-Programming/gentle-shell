@@ -355,6 +355,8 @@ async function runForeground(ctx                     , args                     
 			allowHosts: args.allowHosts ?? [],
 			...(args.forwardPorts ? { forwardPorts: args.forwardPorts } : {}),
 			startTower: () => startTower(ctx.env),
+			serveDir: files.dir,
+			env: ctx.env,
 			auth,
 			version: ctx.version,
 			launchSession: (input) => sessionLaunch(ctx, input),

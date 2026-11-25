@@ -472,6 +472,26 @@ export function createSessionProfileAppendController(
    return unavailable("append-not-corroborated");
   }
  }
+ /**
+  * Pure read of the IDs this controller already excludes as failed appends: a
+  * display read needs the authority's exclusion without its refresh. No
+  * capture, no scope creation, no state change; a copy, so callers cannot
+  * mutate the evidence. A detached controller has no source to key the
+  * evidence, so it excludes nothing.
+  */
+ function knownFailedEntryIds(): ReadonlySet<string> {
+  try {
+   if (!source) return new Set();
+   const session = source.getSessionId(),
+    file = source.getSessionFile();
+   if (typeof session !== "string" || !session) return new Set();
+   if (file !== undefined && (typeof file !== "string" || !file))
+    return new Set();
+   return new Set(scopes.get(session)?.get(file)?.failed);
+  } catch {
+   return new Set();
+  }
+ }
  function attachment(): SessionProfileAttachment {
   const epoch = generation;
   const live = () => source !== undefined && epoch === generation;
@@ -724,5 +744,11 @@ export function createSessionProfileAppendController(
   }
   return attachment();
  }
- return { ...attachment(), captureForkEvidence, detach, attach };
+ return {
+  ...attachment(),
+  captureForkEvidence,
+  detach,
+  attach,
+  knownFailedEntryIds,
+ };
 }

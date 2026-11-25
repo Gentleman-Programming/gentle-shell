@@ -8,6 +8,7 @@ import { readSessionProfileDisk } from "../lib/session-profile-disk-reader.ts";
 import { beginDesktopProfileApply, endDesktopProfileApply, isDesktopProfileApplyRunning } from "../lib/desktop-rpc-profiles.ts";
 import { PROFILE_CARD_BUSY_NOTICE, createProfileCardOwner, createProfileCardReader, createProfileCardUseHandler, readProfileCardItems } from "../lib/profile-card-sidebar.ts";
 import { bindSessionProfile, readSessionProfileBinding, readSessionProfileStartupNone, resetSessionProfileBindingsForTesting } from "../lib/session-profile-binding.ts";
+import { createSessionProfileIntegration } from "../lib/session-profile-integration.ts";
 import { createSessionProfileBind, createSessionProfileClear, createSessionProfileStartupBind, SESSION_PROFILE_CUSTOM_TYPE } from "../lib/session-profile-persistence.ts";
 import type { ProfileCardItem } from "../lib/profile-card-widget.ts";
 
@@ -293,6 +294,51 @@ test("a session file not flushed yet falls back to the in-memory binding, still 
 	assert.equal(f.snapshot(), before);
 });
 
+// ---- A failed append is not the session in effect: the card excludes the same IDs as the authority ----
+
+/** A session whose append writes the record to disk and then throws (a failed append on disk). */
+function failedAppendFixture(t: { after(fn: () => void): void }) {
+	const home = scratch(t);
+	t.after(() => resetSessionProfileBindingsForTesting());
+	writeFileSync(join(home, "profiles.json"), profilesJson);
+	const file = join(home, "session.jsonl");
+	const entries: Array<{ id: string }> = [];
+	const flush = () => writeFileSync(file, [{ type: "session", id: "s4", version: 3 }, ...entries].map((row) => JSON.stringify(row)).join("\n"));
+	flush();
+	const session = { getSessionId: () => "s4", getSessionFile: () => file, getBranch: () => entries };
+	const integration = createSessionProfileIntegration();
+	let serial = 0;
+	let failing = true;
+	const started = integration.start(session as never, (type, data) => {
+		entries.push({ type: "custom", id: `e${++serial}`, parentId: entries.at(-1)?.id ?? null, timestamp: "2026-10-05T00:00:00Z", customType: type, data } as never);
+		flush();
+		if (failing) throw new Error("append failed after the record reached disk");
+	}, { reason: "startup" });
+	const read = () => readProfileCardItems({ configHome: home, sessionId: "s4", cwd: home, session });
+	return { home, file, entries, session, started, read, healthy: () => { failing = false; } };
+}
+
+test("a record whose append failed after it reached disk is not the session marker the card shows", (t) => {
+	const f = failedAppendFixture(t);
+	const outcome = f.started.attachment.bind("gamma", {});
+	assert.equal(outcome.status, "append-failed-preserved", "the failed append is quarantined, never a success");
+	assert.match(readFileSync(f.file, "utf8"), /"gamma"/, "the failed record is on disk");
+	const settled = JSON.stringify([readdirSync(f.home).sort(), readFileSync(f.file, "utf8"), readSessionProfileBinding("s4")]);
+	assert.deepEqual(marks(f.read()), ["alpha*", "beta", "gamma"], "a record whose append failed is not the profile in effect");
+	assert.deepEqual(marks(f.read()), ["alpha*", "beta", "gamma"], "and the cached read does not resurrect it");
+	assert.equal(JSON.stringify([readdirSync(f.home).sort(), readFileSync(f.file, "utf8"), readSessionProfileBinding("s4")]), settled, "the display read writes nothing");
+	assert.equal(startIndex(f.home, f.read), "alpha", "the card starts on the active profile, not the failed record");
+});
+
+test("only the failed record is excluded: a later recorded selection marks its profile again", (t) => {
+	const f = failedAppendFixture(t);
+	assert.equal(f.started.attachment.bind("gamma", {}).status, "append-failed-preserved");
+	assert.deepEqual(marks(f.read()), ["alpha*", "beta", "gamma"], "the failed record is excluded");
+	f.healthy();
+	assert.equal(f.started.attachment.bind("beta", {}).status, "persisted", "a recorded selection succeeds");
+	assert.deepEqual(marks(f.read()), ["alpha*", "beta#", "gamma"], "the exclusion is limited to the failed record");
+});
+
 // ---- The session file and profiles.json are re-read only when they change ----
 
 function counted(t: { after(fn: () => void): void }, flushed = true) {
@@ -306,7 +352,7 @@ function counted(t: { after(fn: () => void): void }, flushed = true) {
 	let diskReads = 0;
 	let profileReads = 0;
 	const reader = createProfileCardReader({
-		readDisk: (source) => { diskReads++; return readSessionProfileDisk(source); },
+		readDisk: (source, options) => { diskReads++; return readSessionProfileDisk(source, options); },
 		readProfiles: (path) => { profileReads++; return readProfilesFileResult(path); },
 	});
 	const session = { getSessionId: () => "s3", getSessionFile: () => file, getBranch: () => entries };

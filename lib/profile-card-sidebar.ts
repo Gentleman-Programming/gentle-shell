@@ -8,6 +8,7 @@ import { NativePointerRegion } from "./native-pointer-region.ts";
 import { resolveProfileCard } from "./profile-card-policy.ts";
 import { readSessionProfileBinding } from "./session-profile-binding.ts";
 import { readSessionProfileDisk, type SessionProfileSource } from "./session-profile-disk-reader.ts";
+import { readCurrentSessionProfileFailedEntryIds } from "./session-profile-integration.ts";
 import { isSessionProfileFamilyEntry } from "./session-profile-persistence.ts";
 import {
 	buildProfileCardItems,
@@ -329,14 +330,18 @@ function newestRecordId(session: SessionProfileSource): string {
  * (origin local/repo/global), so the newest record gives the precedence; a
  * clear or no record means no profile. `resolveSessionProfile` and
  * `readSessionProfileAuthority` are NOT used: they freeze a profile or clear a
- * binding they cannot corroborate. Signal for re-reading: the session file's
+ * binding they cannot corroborate. A record whose append failed is excluded
+ * through the append controller's own failed-ID evidence
+ * (`readCurrentSessionProfileFailedEntryIds`, a pure read with no refresh), so
+ * the card shows what the authority decides is in effect, never a record the
+ * authority has quarantined. Signal for re-reading: the session file's
  * stat signature (a profile record reaches disk only by appending, which moves
  * size and mtime), the newest profile record id on the branch (an in-memory
- * scan; a record newer than disk is not disk-corroborated yet) and the
- * in-memory binding name. A stat is one syscall regardless of file size; the
- * branch scan costs no I/O. An indeterminate read (file not flushed, record
- * newer than disk) is never cached: it falls back to the in-memory binding
- * (`readSessionProfileBinding`, a copy read) and retries on the next tick.
+ * scan; a record newer than disk is not disk-corroborated yet), the excluded
+ * IDs and the in-memory binding name. A stat is one syscall regardless of file
+ * size; the branch scan costs no I/O. An indeterminate read (file not flushed,
+ * record newer than disk) is never cached: it falls back to the in-memory
+ * binding (`readSessionProfileBinding`, a copy read) and retries on the next tick.
  *
  * profiles.json is small but is gated the same way, by its stat signature.
  */
@@ -357,11 +362,14 @@ export function createProfileCardReader(deps: ProfileCardReaderDeps = {}): Profi
 		if (session === undefined) return memory;
 		let file: string | undefined;
 		try { file = session.getSessionFile(); } catch { return memory; }
+		// The append authority's own exclusion, read purely: a record whose append
+		// failed is never the profile in effect, even when it reached disk.
+		const failed = readCurrentSessionProfileFailedEntryIds(session);
 		const signature = fileSignature(file);
-		const signal = signature === undefined ? undefined : JSON.stringify([sessionId, file, signature, newestRecordId(session), memory ?? null]);
+		const signal = signature === undefined ? undefined : JSON.stringify([sessionId, file, signature, newestRecordId(session), [...failed].sort(), memory ?? null]);
 		if (signal !== undefined && marker?.signal === signal) return marker.name;
 		try {
-			const disk = readDisk(session);
+			const disk = readDisk(session, { knownFailedEntryIds: failed });
 			if (disk.status === "indeterminate") return memory;
 			const name = disk.status === "bound" ? disk.binding.name : undefined;
 			marker = signal === undefined ? undefined : { signal, name };

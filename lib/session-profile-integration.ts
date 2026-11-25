@@ -9,6 +9,7 @@ import {
  type SessionProfileForkPreparation,
  type SessionProfileForkHandoff,
 } from "./session-profile-append-controller.ts";
+import type { SessionProfileSource } from "./session-profile-disk-reader.ts";
 
 export type SessionProfileLifecycleManager = SessionProfileForkView;
 export type SessionProfileLifecycleReason =
@@ -80,6 +81,23 @@ export function readCurrentSessionProfileOutcome(
   return owner ? (owner.attachment?.refresh() ?? unavailable()) : undefined;
  } catch {
   return unavailable();
+ }
+}
+
+/**
+ * Pure read of the IDs the session's append authority already excludes as
+ * failed appends, so a display read applies the same exclusion as the authority
+ * that decides what is in effect. No refresh, no capture and no other effect:
+ * unlike `readCurrentSessionProfileOutcome`, looking here changes nothing.
+ * The key is the identity the lifecycle registered (the session manager).
+ */
+export function readCurrentSessionProfileFailedEntryIds(
+ source: SessionProfileSource,
+): ReadonlySet<string> {
+ try {
+  return registry().owners.get(source)?.controller.knownFailedEntryIds() ?? new Set();
+ } catch {
+  return new Set();
  }
 }
 

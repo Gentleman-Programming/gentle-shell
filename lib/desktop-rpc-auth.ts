@@ -10,16 +10,20 @@
 // `getProviderAuth`, never reads `auth.json`, and never forwards a status
 // `label` (an environment variable name or source text) or an error message.
 
-export const DESKTOP_AUTH_METHODS = ["get_auth_status", "reload_credentials"] as const;
+export const DESKTOP_AUTH_METHODS = ["get_auth_status", "reload_credentials", "list_available_models"] as const;
 /** Every answer carries the provider list; this slice advertises no event. */
 export const DESKTOP_AUTH_EVENTS = [] as const;
 
 export const INVALID_GET_AUTH_STATUS = { code: "invalid_request", message: "Invalid get_auth_status parameters" } as const;
 export const INVALID_RELOAD_CREDENTIALS = { code: "invalid_request", message: "Invalid reload_credentials parameters" } as const;
+export const INVALID_LIST_AVAILABLE_MODELS = { code: "invalid_request", message: "Invalid list_available_models parameters" } as const;
 export const AUTH_UNAVAILABLE = { code: "auth_unavailable", message: "Credential status unavailable" } as const;
 export const RELOAD_FAILED = { code: "reload_failed", message: "Credentials could not be reloaded" } as const;
 
-export const DESKTOP_AUTH_LIMITS = { providers: 200, displayName: 128 } as const;
+export const DESKTOP_AUTH_LIMITS = { providers: 200, displayName: 128, models: 1000, modelId: 256 } as const;
+
+/** Pi's thinking levels, low to high: what a session without a model accepts. */
+export const DESKTOP_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 /** Provider ids that may cross the wire; anything else is skipped. */
 export const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -54,6 +58,8 @@ export interface DesktopAuthRegistry {
 	getProvider?(provider: string): { auth?: { oauth?: unknown; apiKey?: { login?: unknown } } } | undefined;
 	isUsingOAuth(model: { provider: string }): boolean;
 	refresh(options?: { allowNetwork?: boolean }): Promise<{ aborted: boolean; errors: ReadonlyMap<string, unknown> }>;
+	/** Pi's available-model snapshot (`get_available_models`): models with credentials, read from memory. */
+	getAvailable?(): ReadonlyArray<unknown>;
 }
 
 export function isDesktopAuthRegistry(value: unknown): value is DesktopAuthRegistry {
@@ -144,4 +150,77 @@ export function projectAuthStatus(registry: DesktopAuthRegistry): DesktopAuthSta
 /** Provider ids of a refresh's errors map; the errors themselves never cross. */
 export function failedProviderIds(errors: ReadonlyMap<string, unknown>): string[] {
 	return [...errors.keys()].filter((id) => PROVIDER_ID.test(id)).sort().slice(0, DESKTOP_AUTH_LIMITS.providers);
+}
+
+/** One model Pi can use now (it has credentials), as `list_available_models` lists it. */
+export interface DesktopAvailableModel {
+	provider: string;
+	id: string;
+	name?: string;
+	contextWindow?: number;
+	reasoning?: boolean;
+	/** What the model takes: `text`, `image`. */
+	input?: Array<"text" | "image">;
+}
+
+export interface DesktopAvailableModels {
+	models: DesktopAvailableModel[];
+	/** What the session's current model accepts, low to high (Pi's `get_available_thinking_levels`). */
+	thinkingLevels: string[];
+	current?: { provider: string; id: string; thinkingLevel: string };
+	truncated: boolean;
+}
+
+/** A model id as it may cross: 1–256 characters, no control characters (ids may hold `/`, `:` or `.`). */
+function modelId(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && value.length <= DESKTOP_AUTH_LIMITS.modelId && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+/** A model as it may cross: provider and id always, the rest only when it has the shape Pi gives it. */
+function availableModel(model: unknown): DesktopAvailableModel | undefined {
+	if (!model || typeof model !== "object") return undefined;
+	const m = model as Record<string, unknown>;
+	if (typeof m.provider !== "string" || !PROVIDER_ID.test(m.provider) || !modelId(m.id)) return undefined;
+	const out: DesktopAvailableModel = { provider: m.provider, id: m.id };
+	if (typeof m.name === "string" && m.name.trim().length > 0) out.name = m.name.trim().slice(0, DESKTOP_AUTH_LIMITS.displayName);
+	if (typeof m.contextWindow === "number" && Number.isSafeInteger(m.contextWindow) && m.contextWindow > 0) out.contextWindow = m.contextWindow;
+	if (typeof m.reasoning === "boolean") out.reasoning = m.reasoning;
+	if (Array.isArray(m.input)) out.input = (["text", "image"] as const).filter((kind) => (m.input as unknown[]).includes(kind));
+	return out;
+}
+
+/**
+ * `list_available_models`: the models Pi's `get_available_models` lists (the
+ * registry's available snapshot: models with credentials, no network), and
+ * the thinking levels Pi's `get_available_thinking_levels` gives for the
+ * session's current model (`levelsOf`, Pi's own rule), plus that model and
+ * its level. Nothing else of a model (its base URL, headers, cost, compat
+ * overrides) crosses.
+ */
+export function projectAvailableModels<M extends object>(
+	available: readonly unknown[],
+	current: M | undefined,
+	thinkingLevel: string | undefined,
+	levelsOf: (model: M) => readonly string[],
+): DesktopAvailableModels {
+	const models: DesktopAvailableModel[] = [];
+	let valid = 0;
+	for (const model of available) {
+		const projected = availableModel(model);
+		if (!projected) continue;
+		valid += 1;
+		if (models.length < DESKTOP_AUTH_LIMITS.models) models.push(projected);
+	}
+	const levels = current ? levelsOf(current) : DESKTOP_THINKING_LEVELS;
+	const thinkingLevels = levels.filter((level) => (DESKTOP_THINKING_LEVELS as readonly string[]).includes(level));
+	// Pi's placeholder before any model is chosen (`unknown/unknown`) is no current model.
+	const projected = current === undefined ? undefined : availableModel(current);
+	const model = projected?.provider === "unknown" && projected.id === "unknown" ? undefined : projected;
+	const level = thinkingLevel !== undefined && (DESKTOP_THINKING_LEVELS as readonly string[]).includes(thinkingLevel) ? thinkingLevel : undefined;
+	return {
+		models,
+		thinkingLevels,
+		...(model && level ? { current: { provider: model.provider, id: model.id, thinkingLevel: level } } : {}),
+		truncated: valid > DESKTOP_AUTH_LIMITS.models,
+	};
 }

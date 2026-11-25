@@ -64,7 +64,7 @@ Returns the currently implemented contract; clients must not infer support from 
   "schema": "gentle-shell.desktop-rpc/v1",
   "command": "gentle:desktop",
   "widget": "gentle-desktop-rpc",
-  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials", "set_host_tools", "host_tool_result", "host_tool_progress", "host_message", "set_host_context", "set_host_activity", "login_start", "login_complete", "login_cancel", "set_api_key", "remove_credentials", "list_packages", "install_package", "remove_package"],
+  "methods": ["capabilities", "get_snapshot", "get_config", "set_config", "get_permission_mode", "set_permission_mode", "get_subscription_usage", "refresh_subscription_usage", "get_design_canvas", "list_jobs", "cancel_job", "get_job_output", "apply_profile", "list_subagents", "cancel_subagent", "get_subagent_thread", "list_sessions", "switch_session", "get_changes", "get_change_diff", "get_review_mode", "set_review_mode", "get_usage_stats", "get_update_status", "list_agent_definitions", "get_status", "get_background_subagents", "set_background_subagents", "get_profile_binding", "clear_profile_binding", "get_auth_status", "reload_credentials", "list_available_models", "set_host_tools", "host_tool_result", "host_tool_progress", "host_message", "set_host_context", "set_host_activity", "login_start", "login_complete", "login_cancel", "set_api_key", "remove_credentials", "list_packages", "install_package", "remove_package"],
   "events": ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel", "login_prompt", "login_finished", "package_progress", "package_finished", "session_snapshot"]
 }
 ```
@@ -1650,6 +1650,32 @@ Makes this session pick up credentials added or removed elsewhere (another termi
 
 `failedProviders` lists the ids whose refresh reported an error; the error text never crosses. Errors: `invalid_request`, `auth_unavailable` (no registry in this session, or the session was replaced during the reload), and `reload_failed` (the refresh itself failed).
 
+### `list_available_models`
+
+The models this session's Pi can use now and the thinking levels of its current model: what Pi RPC's `get_available_models` and `get_available_thinking_levels` answer, from the same registry (`modelRegistry.getAvailable()`, read from memory; no network, no turn). A client without a conversation of its own (a phone, Configuration on a [server](serve.md#desktop-rpc-without-a-session-post-apidesktop)) fills a model picker with it. Params must be an empty object. It has no side effects and emits no event; read it again after a sign-in or a `reload_credentials`.
+
+```json
+{
+  "ok": true,
+  "data": {
+    "models": [
+      { "provider": "anthropic", "id": "claude-sol", "name": "Claude Sol", "contextWindow": 200000, "reasoning": true, "input": ["text", "image"] }
+    ],
+    "thinkingLevels": ["off", "minimal", "low", "medium", "high", "xhigh"],
+    "current": { "provider": "anthropic", "id": "claude-sol", "thinkingLevel": "high" },
+    "truncated": false
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `models` | In Pi's order, at most 1000 (`truncated` says more were left out). `provider` and `id` always (a provider id that is not a plain name, or an id over 256 characters or with control characters, is skipped); `name` (up to 128 characters), `contextWindow`, `reasoning` and `input` (`text`, `image`) only when Pi gives them that shape. Nothing else of a model crosses: no base URL, headers, cost or compatibility settings. |
+| `thinkingLevels` | What the current model accepts, low to high, by Pi's own rule (what `get_available_thinking_levels` answers: `off` only for a model without reasoning, Pi's placeholder before any model is chosen included). |
+| `current` | The session's model and thinking level; absent when no model is chosen yet. |
+
+Errors: `invalid_request` (any param), and `auth_unavailable` (no registry in this session, a Pi without the available-model snapshot, or the read failed).
+
 ### `set_host_tools`
 
 Registers the tools a client provides and runs itself (*host tools*): the desktop app today, a phone later. The agent sees each one as an ordinary tool; when it calls one, this channel emits [`host_tool_call`](#host_tool_call), the client runs the tool on its own device, and answers with [`host_tool_result`](#host_tool_result). How to use a tool is told to the model by the tool's `description` and `guidelines`, so a client needs no extension or instructions file on the machine the agent runs on.
@@ -2413,7 +2439,7 @@ The job is over: `ok` is the CLI's exit status 0. On failure `error` is the CLI'
 
 ## Credential limits
 
-- **Status, never values.** `get_auth_status` and `reload_credentials` call only `getAll`, `getProviderAuthStatus`, `isUsingOAuth`, `getProviderDisplayName`, `getProvider` (for `loginKinds`: which sign-in methods a provider defines), and `refresh`. They never read `auth.json` and never call a registry method that returns a key or a token.
+- **Status, never values.** `get_auth_status` and `reload_credentials` call only `getAll`, `getProviderAuthStatus`, `isUsingOAuth`, `getProviderDisplayName`, `getProvider` (for `loginKinds`: which sign-in methods a provider defines), and `refresh`; `list_available_models` calls only `getAvailable`. They never read `auth.json` and never call a registry method that returns a key or a token.
 - **Sign-in is Pi's.** `login_start`, `set_api_key` and `remove_credentials` drive Pi's own `ModelRuntime.login` / `logout`, the code `/login` and `/logout` run: the provider's flow, Pi's credential store (`auth.json`, `0600` in a `0700` agent home) and Pi's synchronization. This slice keeps no credential, never reads one back, never logs one, and never puts one in an answer or an event; an API key goes one way.
 - **Bounded sign-ins.** One per provider at a time, 15 minutes each, cancelled with the session. A client answers only the question the flow is waiting on.
 - **Offline reload.** `reload_credentials` (and the reload after a sign-in, a saved key or a removal) never allows the network, so it does not fetch model catalogs.

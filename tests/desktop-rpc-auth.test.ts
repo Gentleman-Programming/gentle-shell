@@ -9,6 +9,7 @@ import {
 	DESKTOP_AUTH_LIMITS,
 	DESKTOP_AUTH_METHODS,
 	INVALID_GET_AUTH_STATUS,
+	INVALID_LIST_AVAILABLE_MODELS,
 	INVALID_RELOAD_CREDENTIALS,
 	RELOAD_FAILED,
 	loginKinds,
@@ -55,7 +56,7 @@ function fakeRegistry(options: { configured?: Record<string, { source: string; o
 	return { registry, calls };
 }
 
-function harness(t: test.TestContext, registry: unknown) {
+function harness(t: test.TestContext, registry: unknown, session: { model?: unknown; thinkingLevel?: string } = {}) {
 	const previous = process.env[INTERACTIVE_HOST_ENV];
 	process.env[INTERACTIVE_HOST_ENV] = "1";
 	t.after(() => {
@@ -69,6 +70,7 @@ function harness(t: test.TestContext, registry: unknown) {
 		registerShortcut() {},
 		on(name: string, handler: any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
 		events: { on() { return () => {}; }, emit() {} },
+		getThinkingLevel: () => session.thinkingLevel ?? "off",
 	} as unknown as ExtensionAPI;
 	desktopRpc(pi);
 	const widgets: string[] = [];
@@ -76,6 +78,7 @@ function harness(t: test.TestContext, registry: unknown) {
 		mode: "rpc",
 		cwd: "/x",
 		modelRegistry: registry,
+		model: session.model,
 		sessionManager: { getCwd: () => "/x", getSessionId: () => "s", getEntries: () => [] },
 		ui: { setWidget(_key: string, lines: string[]) { widgets.push(...lines); } },
 	};
@@ -92,14 +95,88 @@ function harness(t: test.TestContext, registry: unknown) {
 
 // ---- Capabilities ----
 
-test("the Desktop transport advertises both methods once and no new event", async (t) => {
-	assert.deepEqual([...DESKTOP_AUTH_METHODS], ["get_auth_status", "reload_credentials"]);
+test("the Desktop transport advertises the three methods once and no new event", async (t) => {
+	assert.deepEqual([...DESKTOP_AUTH_METHODS], ["get_auth_status", "reload_credentials", "list_available_models"]);
 	assert.deepEqual([...DESKTOP_AUTH_EVENTS], []);
 	const app = harness(t, fakeRegistry().registry);
 	await app.invoke("cap", "capabilities");
 	const data = app.last().data;
 	for (const method of DESKTOP_AUTH_METHODS) assert.equal(data.methods.filter((name: string) => name === method).length, 1);
 	assert.deepEqual(data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed", "host_tool_call", "host_tool_cancel", "login_prompt", "login_finished", "package_progress", "package_finished"]);
+});
+
+// ---- list_available_models ----
+
+const SOL = { provider: "anthropic", id: "claude-sol", name: "Claude Sol", api: "anthropic-messages", baseUrl: "https://secret.example/v1", headers: { "x-key": SECRET }, contextWindow: 200000, maxTokens: 64000, reasoning: true, thinkingLevelMap: { xhigh: "x", max: null }, input: ["text", "image"], cost: { input: 3 } };
+const LUNA = { provider: "anthropic", id: "claude-luna", contextWindow: 100000, reasoning: false, input: ["text"] };
+
+test("list_available_models lists the available snapshot, Pi's thinking levels and the current model, and nothing else of a model", async (t) => {
+	const fake = fakeRegistry();
+	const reads = { available: 0 };
+	Object.assign(fake.registry, { getAvailable: () => { reads.available += 1; return [SOL, LUNA, { provider: "C:\\evil", id: "x" }, { provider: "openrouter", id: "openai/gpt-oss:free", name: "  " }]; } });
+	const app = harness(t, fake.registry, { model: SOL, thinkingLevel: "high" });
+	await app.invoke("models-1", "list_available_models");
+	assert.deepEqual(app.last(), {
+		schema: DESKTOP_RPC_SCHEMA,
+		kind: "response",
+		requestId: "models-1",
+		ok: true,
+		data: {
+			models: [
+				{ provider: "anthropic", id: "claude-sol", name: "Claude Sol", contextWindow: 200000, reasoning: true, input: ["text", "image"] },
+				{ provider: "anthropic", id: "claude-luna", contextWindow: 100000, reasoning: false, input: ["text"] },
+				{ provider: "openrouter", id: "openai/gpt-oss:free" },
+			],
+			// Pi's own rule for the current model: `max` is unsupported (null), `xhigh` mapped.
+			thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh"],
+			current: { provider: "anthropic", id: "claude-sol", thinkingLevel: "high" },
+			truncated: false,
+		},
+	});
+	const raw = app.widgets.at(-1)!;
+	for (const leak of [SECRET, "secret.example", "evil", "maxTokens", "cost"]) assert.equal(raw.includes(leak), false, `no ${leak} on the wire`);
+	assert.equal(reads.available, 1);
+	assert.equal(fake.calls.secretReads, 0);
+	assert.deepEqual(fake.calls.refresh, [], "a read never refreshes");
+});
+
+test("list_available_models without a current model offers every thinking level and no current", async (t) => {
+	const fake = fakeRegistry();
+	Object.assign(fake.registry, { getAvailable: () => [LUNA] });
+	const app = harness(t, fake.registry);
+	await app.invoke("models-2", "list_available_models");
+	const data = app.last().data;
+	assert.deepEqual(data.thinkingLevels, ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+	assert.equal("current" in data, false);
+	// A model without reasoning offers `off` only, as Pi's get_available_thinking_levels does.
+	const plain = harness(t, fake.registry, { model: LUNA, thinkingLevel: "off" });
+	await plain.invoke("models-3", "list_available_models");
+	assert.deepEqual(plain.last().data.thinkingLevels, ["off"]);
+	assert.deepEqual(plain.last().data.current, { provider: "anthropic", id: "claude-luna", thinkingLevel: "off" });
+	// Pi's placeholder before any model is chosen is no current model.
+	const fresh = harness(t, fake.registry, { model: { id: "unknown", name: "unknown", api: "unknown", provider: "unknown", reasoning: false, input: [] }, thinkingLevel: "off" });
+	await fresh.invoke("models-4", "list_available_models");
+	assert.deepEqual(fresh.last().data.thinkingLevels, ["off"]);
+	assert.equal("current" in fresh.last().data, false);
+});
+
+test("list_available_models is bounded, takes no params, and is unavailable without the snapshot", async (t) => {
+	const many = Array.from({ length: DESKTOP_AUTH_LIMITS.models + 5 }, (_, n) => ({ provider: "p", id: `m-${n}` }));
+	const fake = fakeRegistry();
+	Object.assign(fake.registry, { getAvailable: () => many });
+	const app = harness(t, fake.registry);
+	await app.invoke("big", "list_available_models");
+	assert.equal(app.last().data.models.length, DESKTOP_AUTH_LIMITS.models);
+	assert.equal(app.last().data.truncated, true);
+	await app.invoke("params", "list_available_models", { provider: "anthropic" });
+	assert.deepEqual(app.last().error, INVALID_LIST_AVAILABLE_MODELS);
+	const old = harness(t, fakeRegistry().registry);
+	await old.invoke("old", "list_available_models");
+	assert.deepEqual(old.last().error, AUTH_UNAVAILABLE);
+	Object.assign(fake.registry, { getAvailable: () => { throw new Error("/home/me/.pi/agent/models.json broke"); } });
+	await app.invoke("throws", "list_available_models");
+	assert.deepEqual(app.last().error, AUTH_UNAVAILABLE);
+	assert.equal(app.widgets.at(-1)!.includes("models.json"), false);
 });
 
 // ---- get_auth_status ----

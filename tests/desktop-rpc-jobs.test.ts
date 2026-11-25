@@ -624,6 +624,7 @@ test("the Desktop transport advertises the jobs methods and event", (t) => {
 		"clear_profile_binding",
 		"get_auth_status",
 		"reload_credentials",
+		"list_available_models",
 		"set_host_tools",
 		"host_tool_result",
 		"host_tool_progress",

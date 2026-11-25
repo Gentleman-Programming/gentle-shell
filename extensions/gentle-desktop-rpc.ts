@@ -131,7 +131,7 @@ export default function desktopRpc(pi: ExtensionAPI, options: DesktopRpcExtensio
 		...(options.updateTimeoutMs === undefined ? {} : { timeoutMs: options.updateTimeoutMs }),
 	});
 	const packageStatus = new DesktopStatusBridge(pi);
-	const auth = new DesktopAuthBridge();
+	const auth = new DesktopAuthBridge(() => pi.getThinkingLevel());
 	const profileBinding = new DesktopProfileBindingBridge(pi);
 	const backgroundSubagents = new DesktopBackgroundSubagentsBridge(pi);
 	const agentDefinitions = new DesktopAgentDefinitionsBridge(options.agentDefinitionsLocation === undefined ? {} : { location: options.agentDefinitionsLocation });

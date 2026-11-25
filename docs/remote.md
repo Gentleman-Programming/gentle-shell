@@ -16,6 +16,7 @@ This page is the overview: what runs where and why, how a device connects, what 
 - [Pages on the server: port forwarding](#pages-on-the-server-port-forwarding)
 - [Terminals](#terminals)
 - [Sign-in, packages and upgrades from the client](#sign-in-packages-and-upgrades-from-the-client)
+- [Clients without sessions](#clients-without-sessions)
 - [Security model](#security-model)
 - [Reference](#reference)
 - [Known limits and next steps](#known-limits-and-next-steps)
@@ -252,6 +253,7 @@ What a person would otherwise do in a terminal on the server, the client does ov
 | Task | How | Scope |
 | --- | --- | --- |
 | See which providers are signed in, and how each can be | [`get_auth_status`](desktop-rpc.md#get_auth_status) (`loginKinds`: `oauth`, `device`, `api_key`) | `sessions:read` |
+| See which models the server can use, and their thinking levels | [`list_available_models`](desktop-rpc.md#list_available_models) | `sessions:read` |
 | Sign in to a provider | [`login_start`](desktop-rpc.md#login_start), then [`login_prompt`](desktop-rpc.md#login_prompt) events answered with [`login_complete`](desktop-rpc.md#login_complete), until [`login_finished`](desktop-rpc.md#login_finished) | `sessions:operate` |
 | Save or remove an API key | [`set_api_key`](desktop-rpc.md#set_api_key), [`remove_credentials`](desktop-rpc.md#remove_credentials) | `sessions:operate` |
 | List, install or remove packages | [`list_packages`](desktop-rpc.md#list_packages); [`install_package`](desktop-rpc.md#install_package) / [`remove_package`](desktop-rpc.md#remove_package) with [`package_progress`](desktop-rpc.md#package_progress) and [`package_finished`](desktop-rpc.md#package_finished) | read / `sessions:operate` |
@@ -260,27 +262,57 @@ What a person would otherwise do in a terminal on the server, the client does ov
 | Change model defaults (default model, effort, scoped models) | [`get_config`/`set_config`](desktop-rpc.md#set_config) store `model_defaults` | read / `sessions:operate` |
 | Edit custom models (`models.json`) or MCP servers (`mcp.json`) | [`get_config`/`set_config`](desktop-rpc.md#set_config) stores `custom_models` and `mcp_servers`; secrets read as `"•••"` | read / `sessions:operate` |
 
-The first four are Desktop RPC methods of a session (`POST /api/sessions/:id/desktop`): the session's Pi runs its own `/login` flow, key setup, `/logout`, or the `gentle-shell install`/`remove` CLI, on the server, with the server's agent home. Credentials land in Pi's credential store on the server and serve every session there; the session that signed in has the new models at once, other sessions after `reload_credentials`.
+The Desktop RPC rows go to a session's `/desktop` (`POST /api/sessions/:id/desktop`) or, without a session of the client's own, to the server's [`/api/desktop`](#clients-without-sessions): Pi runs its own `/login` flow, key setup, `/logout`, or the `gentle-shell install`/`remove` CLI, on the server, with the server's agent home. Credentials land in Pi's credential store on the server and serve every session there; the session that signed in has the new models at once, other sessions after `reload_credentials`.
 
 ```mermaid
 sequenceDiagram
     participant App as Client app
     participant S as gentle-shell serve
-    participant Pi as Session (Pi)
+    participant Pi as Control session (Pi)
     participant B as Browser on the client
-    App->>S: /desktop login_start { provider }
+    App->>S: /api/desktop login_start { provider }
     S->>Pi: /gentle:desktop login_start
-    Pi-->>App: { loginId }, then login_prompt open_url { url, redirectPrefix: http://localhost:1455/ }
+    Pi-->>App: { loginId }, then login_prompt open_url { url, redirectPrefix: http://localhost:1455/ } (on /api/desktop/events)
     App->>B: open url
     B-->>App: redirect to http://localhost:1455/auth/callback?code=…&state=… (intercepted)
     Pi-->>App: login_prompt input { redirectPrefix }
-    App->>S: /desktop login_complete { loginId, value: full redirect URL }
+    App->>S: /api/desktop login_complete { loginId, value: full redirect URL }
     S->>Pi: /gentle:desktop login_complete
     Pi->>Pi: Pi checks the state, exchanges the code, stores the credential, reloads
     Pi-->>App: login_finished { ok: true }
 ```
 
 A browser sign-in redirects to a loopback callback on the machine that started it; the browser is on the client, so the client catches that redirect (or the user pastes the address bar) and hands the full URL to the server, which completes the exchange exactly as its own callback would. A device-code sign-in needs nothing of the sort: the client shows the code and the page. The upgrade restarts only `serve`: sessions, their keepers and the terminal host keep running, and clients reconnect as after any [server restart](#session-lifecycle).
+
+## Clients without sessions
+
+Configuration, sign-in and packages belong to the server, not to a conversation, so a client that has no agent session open — a phone checking which providers are signed in, a web page, a script with curl, the app's Configuration screen — reaches them without starting one. `GET /api/server` lists the capability `desktop`; details: [Desktop RPC without a session](serve.md#desktop-rpc-without-a-session-post-apidesktop).
+
+```mermaid
+sequenceDiagram
+    participant App as Client (no session)
+    participant S as gentle-shell serve
+    participant C as Control session (Pi, in the server user's home)
+    App->>S: GET /api/desktop/events
+    S->>C: first use: start it (hidden, never prompted)
+    S-->>App: event: hello, then its Desktop events only
+    App->>S: POST /api/desktop { method: "install_package", params: { source } }
+    S->>C: /gentle:desktop install_package
+    C-->>App: { jobId } (the HTTP answer)
+    C-->>App: package_progress …, package_finished (on the stream)
+    Note over S,C: 10 minutes without a request or an open stream: stopped; the next use starts it again
+```
+
+| | `POST /api/desktop` + `GET /api/desktop/events` | A session's `/desktop` + `/events` |
+| --- | --- | --- |
+| Needs | Nothing: the server starts its control session on first use | A session the client started or attached to |
+| Answers | Configuration (`get_config`/`set_config`), models (`list_available_models`), sign-in, API keys, packages, update status, `capabilities` | The same, plus what is about that conversation (permission mode, jobs, subagents, changes) |
+| Events | Desktop events only (`login_prompt`, `package_progress`, `config_changed`, …) with the stream's `seq`, `after`, tickets | Every record of the session |
+| Host tools | Refused (`400 use_session_desktop`): they belong to the agent session whose model calls them | Registered and answered per device |
+| Model turns | Never | Prompts, steering, … |
+| Scopes | Per method, as `/desktop`: `capabilities`, `get_*`, `list_*` read; the rest operate | The same |
+
+The control session is a session like the others under the hood: the same launcher, Pi and extensions, its own keeper, so it survives a `serve` restart; it is never listed (an `admin` sees it with `GET /api/sessions?includeControl=1`), not reachable by id, and not counted against the 16 running sessions.
 
 ## Security model
 
@@ -350,6 +382,7 @@ Note what `sessions:read` means: **the file endpoints run as the server user wit
 | Identity and pairing | `GET /.well-known/gentle-shell`, `POST /api/pair` | [Endpoints](serve.md#endpoints), [Authentication](serve.md#authentication) |
 | Server and devices | `GET /api/server`, `POST /api/server/stop`, `POST /api/upgrade`, `GET /api/upgrade/:jobId/stream`, `POST /api/setup`, `GET /api/setup/:jobId/stream`, `POST /api/pairing-codes`, `GET /api/devices`, `DELETE /api/devices/:id` | [Endpoints](serve.md#endpoints), [Upgrade from a client](serve.md#upgrade-from-a-client), [Setup from a client](serve.md#setup-from-a-client) |
 | Sessions | `GET`/`POST /api/sessions`, `GET`/`DELETE /api/sessions/:id`, `POST …/rpc`, `POST …/desktop`, `GET …/events`, `POST /api/tickets` | [Pi RPC](serve.md#pi-rpc-post-apisessionsidrpc), [Desktop RPC](serve.md#desktop-rpc-post-apisessionsiddesktop), [Event stream](serve.md#event-stream-get-apisessionsidevents), [Stream tickets](serve.md#stream-tickets) |
+| Desktop RPC without a session | `POST /api/desktop`, `GET /api/desktop/events` | [Desktop RPC without a session](serve.md#desktop-rpc-without-a-session-post-apidesktop), [Clients without sessions](#clients-without-sessions) |
 | Forwards and services | `POST`/`GET /api/sessions/:id/forwards`, `DELETE …/forwards/:fid`, `POST`/`GET /api/forwards`, `DELETE /api/forwards/:fid`, `GET /api/services`, `POST`/`GET`/`DELETE /api/tower` | [Port forwarding](serve.md#port-forwarding), [Server-level forwards and services](serve.md#server-level-forwards-and-services), [Gentle Tower](serve.md#gentle-tower) |
 | Files | `GET /api/fs/list`, `stat`, `read`, `search`, `watch`; `PUT /api/fs/write`; `POST /api/fs/mkdir`, `rename`, `remove` | [Files on the server](serve.md#files-on-the-server), [File safety](serve.md#file-safety) |
 | git | `POST /api/git` | [git on the server](serve.md#git-on-the-server), [git scopes and refusals](serve.md#git-scopes-and-refusals) |
@@ -404,6 +437,7 @@ Every error is `{ "error": { "code", "message" } }`. The codes a client meets mo
 | `403 invalid_code`, `429 rate_limited`, `409 too_many_devices` | Pairing | [Endpoints](serve.md#endpoints) |
 | `404 not_found` | Unknown session (deleted, or gone after a reboot), forward, terminal (or another device's) | [Replay and resume](serve.md#replay-and-resume) |
 | `400 use_desktop_endpoint` | A host tool request sent through `/rpc` | [Pi RPC](serve.md#pi-rpc-post-apisessionsidrpc) |
+| `400 use_session_desktop` | A host tool method sent to `/api/desktop` | [Desktop RPC without a session](serve.md#desktop-rpc-without-a-session-post-apidesktop) |
 | `409 dialog_answered`, `404 unknown_dialog` | Another client answered first; no such dialog | [Dialogs](serve.md#dialogs) |
 | `409 session_exited`, `503 session_busy`, `429 too_many_sessions` | Session state and limits | [Backpressure](serve.md#backpressure), [Limits](serve.md#limits) |
 | `504 desktop_timeout`, `502 desktop_refused` | Desktop RPC through `/desktop` | [Desktop RPC](serve.md#desktop-rpc-post-apisessionsiddesktop) |

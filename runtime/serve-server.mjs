@@ -7,7 +7,7 @@
 // WebSocket transport can come later behind the same contract.
 
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
 import { arch, homedir, hostname } from "node:os";
 import { basename, join, sep } from "node:path";
@@ -21,7 +21,7 @@ import { UploadStore,                          } from "./serve-uploads.mjs";
 import { PrintService,                         } from "./serve-print.mjs";
 import { UPGRADE_CHANNELS, UpgradeService,                                               } from "./serve-upgrade.mjs";
 import { TerminalService,                        } from "./serve-terminals.mjs";
-import { HOST_TOOL_METHODS, KeeperLink, SERVE_SESSION_LIMITS, ServeSession, SessionError,                                             } from "./serve-session.mjs";
+import { HOST_TOOL_METHODS, isDesktopEventRecord, KeeperLink, SERVE_SESSION_LIMITS, ServeSession, SessionError,                                             } from "./serve-session.mjs";
 import { exitedSnapshot, keeperAlive, keeperEndpoint, newKeeperToken, privateKeeperDir, readKeeperRecords, removeKeeperRecord, removePrivateKeeperDir, SERVE_KEEPER_LIMITS, spawnKeeper, writeKeeperRecord,                   } from "./serve-session-keeper.mjs";
 import { startRelayLink,                } from "./serve-relay.mjs";
 import { createServeListener, PairProofs, PAIR_PROOF, requestScheme,                                           } from "./serve-tls.mjs";
@@ -31,7 +31,7 @@ export const SERVE_PROTOCOL = 1;
 export const SERVE_IDENTITY_SCHEMA = "gentle-shell.serve.identity/v1";
 /** Public identity path: a client holding a connection code probes it to find the address that reaches this server. */
 export const SERVE_IDENTITY_PATH = "/.well-known/gentle-shell";
-export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards", "server-forwards", "services", "tower", "files", "git", "unpair"]         ;
+export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "desktop", "sse", "stream-tickets", "pairing", "devices", "forwards", "server-forwards", "services", "tower", "files", "git", "unpair"]         ;
 
 export const SERVE_SERVER_LIMITS = {
 	heartbeatMs: 20_000,
@@ -45,7 +45,12 @@ export const SERVE_SERVER_LIMITS = {
 	maxSessions: 16,
 	/** Exited sessions kept (with their replay ring) until deleted. */
 	keepExited: 16,
+	/** The control session behind `/api/desktop` stops after this long with no request and no open stream. */
+	controlIdleMs: 10 * 60_000,
 };
+
+/** What a stream ticket for `GET /api/desktop/events` is bound to (never a session id: those match `[A-Za-z0-9_]`). */
+const DESKTOP_STREAM = ":desktop";
 
 /** Pi RPC commands that only read; every other command needs `sessions:operate`. */
 const READ_COMMANDS = new Set(["get_state", "get_messages", "get_available_models", "get_available_thinking_levels", "get_session_stats",
@@ -251,6 +256,7 @@ export function startServeServer(options                    )                   
 
 	options.auth.onRevoke((deviceId) => {
 		for (const s of sessions.values()) s.dropDevice(deviceId);
+		control?.dropDevice(deviceId);
 		forwards.closeWhere((f) => f.deviceId === deviceId, "device revoked");
 		files.closeDevice(deviceId);
 		terminals?.closeDevice(deviceId);
@@ -304,34 +310,45 @@ export function startServeServer(options                    )                   
 		deviceLabel,
 	});
 
-	/** Connects to a session's keeper and takes over its state. */
-	const attachSession = async (id        , token        , reattached         )                        => {
+	/** Connects to a session's keeper and takes over its state; the control session is kept apart from the listed ones. */
+	const attachSession = async (id        , token        , reattached         , asControl = false)                        => {
 		const { link, snapshot, ring } = await KeeperLink.connect(keeperEndpoint(keeperDir, id), token, {
 			timeoutMs: keeperLimits.connectMs,
 			maxLineBytes: options.sessionLimits?.maxLineBytes ?? SERVE_SESSION_LIMITS.maxLineBytes,
 		});
-		const session = new ServeSession({ snapshot, ring, link, reattached, ...sessionHooks(id) });
-		sessions.set(id, session);
+		const session = new ServeSession({ snapshot, ring, link, reattached, ...(asControl ? controlHooks(id) : sessionHooks(id)) });
+		if (asControl) adoptControl(session);
+		else sessions.set(id, session);
 		return session;
+	};
+
+	/** Starts a keeper running a new session in `cwd` and attaches it; the caller counts it against the limit. */
+	const spawnSession = async (cwd        , sessionId                    , asControl         )                        => {
+		const id = `ses_${randomBytes(8).toString("hex")}`;
+		const token = newKeeperToken();
+		const launch = options.launchSession({ cwd, ...(sessionId === undefined ? {} : { sessionId }) });
+		try {
+			await spawnKeeper({ id, dir: keeperDir, token, launch, ...(options.sessionLimits ? { limits: options.sessionLimits } : {}), keeperLimits });
+			// Its id beside the keepers: a later server knows it again as the control session, never as a listed one.
+			if (asControl) writeFileSync(controlFile, `${id}\n`, { mode: 0o600 });
+			return await attachSession(id, token, false, asControl);
+		} catch (error) {
+			removeKeeperRecord(keeperDir, id);
+			if (asControl) forgetControlId(id);
+			const message = error instanceof Error ? error.message : String(error);
+			log(`[${id}] could not start: ${message}`);
+			throw new HttpError(503, "session_start_failed", `The session could not start: ${message}`);
+		}
 	};
 
 	const startSession = async (cwd        , sessionId         )                        => {
 		if (closing) throw new HttpError(503, "shutting_down", "The server is stopping");
 		const running = [...sessions.values()].filter((s) => s.state === "running").length + starting;
 		if (running >= limits.maxSessions) throw new HttpError(429, "too_many_sessions", `At most ${limits.maxSessions} sessions run at once`);
-		const id = `ses_${randomBytes(8).toString("hex")}`;
-		const token = newKeeperToken();
-		const launch = options.launchSession({ cwd, ...(sessionId === undefined ? {} : { sessionId }) });
 		starting += 1;
 		let session              ;
 		try {
-			await spawnKeeper({ id, dir: keeperDir, token, launch, ...(options.sessionLimits ? { limits: options.sessionLimits } : {}), keeperLimits });
-			session = await attachSession(id, token, false);
-		} catch (error) {
-			removeKeeperRecord(keeperDir, id);
-			const message = error instanceof Error ? error.message : String(error);
-			log(`[${id}] could not start: ${message}`);
-			throw new HttpError(503, "session_start_failed", `The session could not start: ${message}`);
+			session = await spawnSession(cwd, sessionId, false);
 		} finally {
 			starting -= 1;
 		}
@@ -341,18 +358,114 @@ export function startServeServer(options                    )                   
 			else await session.stop();
 			throw new HttpError(503, "shutting_down", "The server is stopping");
 		}
-		log(`[${id}] started`);
+		log(`[${session.id}] started`);
 		return session;
+	};
+
+	// The control session: a session in the server user's home folder that answers `/api/desktop` (Desktop RPC
+	// without a session of the client's own) and never takes a model turn. Started on first use, kept while
+	// requests or event streams use it, stopped after `controlIdleMs` without either. Its keeper outlives the
+	// server like any session's; `<keeper dir>/control` names it, so the next server takes it back as the
+	// control session. It is not listed, not counted against `maxSessions`, and not reachable by id.
+	const controlFile = join(keeperDir, "control");
+	let control                          ;
+	let controlStarting                                   ;
+	let controlInFlight = 0;
+	let controlIdle                            ;
+	/** An idle control session on its way out; the server's close waits for it. */
+	let controlStopping                           ;
+
+	const readControlId = ()                     => {
+		try {
+			const id = readFileSync(controlFile, "utf8").trim();
+			return /^ses_[A-Za-z0-9]{1,60}$/.test(id) ? id : undefined;
+		} catch {
+			return undefined;
+		}
+	};
+
+	/** Forgets the control session's id, unless a newer one took its place. */
+	const forgetControlId = (id        ) => {
+		if (readControlId() === id) rmSync(controlFile, { force: true });
+	};
+
+	const controlHooks = (id        ) => ({
+		...sessionHooks(id),
+		onExit: (s              ) => {
+			log(`[${id}] control session exited (code ${s.exitCode}, signal ${s.exitSignal})`);
+			if (control === s) control = undefined;
+			forgetControlId(id);
+			removeKeeperRecord(keeperDir, id);
+		},
+	});
+
+	const adoptControl = (session              ) => {
+		// A keeper whose session ended while no server ran: its end is collected, and it is forgotten.
+		if (session.state !== "running") {
+			forgetControlId(session.id);
+			removeKeeperRecord(keeperDir, session.id);
+			return;
+		}
+		control = session;
+		armControlIdle();
+	};
+
+	/** Stops the control session after `controlIdleMs` with no request in flight and no open stream. */
+	const armControlIdle = () => {
+		clearTimeout(controlIdle);
+		controlIdle = undefined;
+		const session = control;
+		if (!session || closing || session.subscriberCount > 0 || controlInFlight > 0) return;
+		controlIdle = setTimeout(() => {
+			controlIdle = undefined;
+			if (control !== session || closing || session.subscriberCount > 0 || controlInFlight > 0) return;
+			// Out of reach at once, so no request lands on it while it stops; its exit forgets it.
+			control = undefined;
+			log(`[${session.id}] control session idle: stopping`);
+			controlStopping = session.stop().catch(() => undefined);
+		}, limits.controlIdleMs);
+		controlIdle.unref();
+	};
+
+	/** The running control session, started when there is none. */
+	const ensureControl = ()                        => {
+		if (control?.state === "running") return Promise.resolve(control);
+		if (closing) return Promise.reject(new HttpError(503, "shutting_down", "The server is stopping"));
+		return controlStarting ??= (async () => {
+			try {
+				const session = await spawnSession(homedir(), undefined, true);
+				// The server began stopping meanwhile: its close takes care of the session.
+				if (closing) throw new HttpError(503, "shutting_down", "The server is stopping");
+				log(`[${session.id}] control session started`);
+				return session;
+			} finally {
+				controlStarting = undefined;
+			}
+		})();
+	};
+
+	/** Runs `work` with the control session, which stays up (no idle stop) meanwhile. */
+	const withControl = async    (work                                       )             => {
+		controlInFlight += 1;
+		clearTimeout(controlIdle);
+		try {
+			return await work(await ensureControl());
+		} finally {
+			controlInFlight -= 1;
+			armControlIdle();
+		}
 	};
 
 	/** At start: every keeper a previous server left is attached again; sessions that ended are listed from their records. */
 	const reattach = async () => {
+		const controlId = readControlId();
 		await Promise.all(readKeeperRecords(keeperDir).map(async (record              ) => {
+			const asControl = record.id === controlId;
 			// A keeper whose Pi already exited waits a minute for a server to collect the end of its stream.
 			if (record.state === "running" || keeperAlive(record.keeperPid)) {
 				try {
-					const session = await attachSession(record.id, record.token, true);
-					log(`[${record.id}] reattached (seq ${session.seq}, ${session.state})`);
+					const session = await attachSession(record.id, record.token, true, asControl);
+					log(`[${record.id}] reattached${asControl ? " as the control session" : ""} (seq ${session.seq}, ${session.state})`);
 					return;
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
@@ -365,25 +478,54 @@ export function startServeServer(options                    )                   
 					}
 				}
 			}
+			// A control session that ended is forgotten, never listed.
+			if (asControl) {
+				forgetControlId(record.id);
+				removeKeeperRecord(keeperDir, record.id);
+				return;
+			}
 			sessions.set(record.id, new ServeSession({ snapshot: exitedSnapshot(record), ...sessionHooks(record.id) }));
 		}));
 		forgetExited();
 	};
 	const reattached = reattach().catch((error         ) => log(`reattaching sessions failed: ${error instanceof Error ? error.message : String(error)}`));
 
-	const openEvents = (req                 , res                , session              , principal           , url     ) => {
+	/** `after` from the query, or the `Last-Event-ID` header `EventSource` sends on reconnect. */
+	const eventsAfter = (req                 , url     )                     => {
 		const raw = url.searchParams.get("after") ?? (typeof req.headers["last-event-id"] === "string" ? req.headers["last-event-id"] : null);
-		let after                    ;
-		if (raw !== null && raw !== "") {
-			if (!/^\d{1,15}$/.test(raw)) throw new HttpError(400, "invalid_after", "after must be a whole number");
-			after = Number(raw);
-		}
+		if (raw === null || raw === "") return undefined;
+		if (!/^\d{1,15}$/.test(raw)) throw new HttpError(400, "invalid_after", "after must be a whole number");
+		return Number(raw);
+	};
+
+	const openEvents = (req                 , res                , session              , principal           , after                    , filter                            ) => {
 		res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", Connection: "keep-alive", "X-Accel-Buffering": "no", ...SECURITY_HEADERS });
 		res.flushHeaders();
 		req.socket.setNoDelay(true);
 		deviceNames.set(principal.deviceId, principal.name);
-		session.subscribe(res, principal.deviceId, after);
+		session.subscribe(res, principal.deviceId, after, filter);
 		res.on("close", () => session.unsubscribe(res));
+	};
+
+	/** `GET /api/desktop/events`: the control session's Desktop RPC events (and nothing else of its stream), by its `seq`. */
+	const openControlEvents = async (req                 , res                , principal                       , url     ) => {
+		const ticket = url.searchParams.get("ticket");
+		let who           ;
+		if (ticket !== null) {
+			const holder = options.auth.redeemTicket(ticket, DESKTOP_STREAM);
+			if (!holder) throw new HttpError(401, "invalid_ticket", "Unknown, used or expired stream ticket");
+			who = holder;
+		} else {
+			who = need(principal, "sessions:read");
+		}
+		const after = eventsAfter(req, url);
+		await withControl(async (session) => {
+			// The client may have gone while the session started.
+			if (res.destroyed) return;
+			openEvents(req, res, session, who, after, isDesktopEventRecord);
+			// The last stream closing starts the idle wait.
+			res.on("close", armControlIdle);
+		});
 	};
 
 	const forwardView = (f             ) => ({
@@ -555,7 +697,15 @@ export function startServeServer(options                    )                   
 		if (events) {
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			const session = findSessionFor(events[1], principal, url);
-			return openEvents(req, res, session.session, session.principal, url);
+			return openEvents(req, res, session.session, session.principal, eventsAfter(req, url));
+		}
+		if (path === "/api/desktop/events") {
+			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
+			return openControlEvents(req, res, principal, url);
+		}
+		if (path === "/api/desktop") {
+			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
+			return controlDesktop(req, res, principal);
 		}
 
 		if (path === "/api/server") {
@@ -666,15 +816,21 @@ export function startServeServer(options                    )                   
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
 			const who = need(principal, "sessions:read");
 			const body = await readJsonBody(req, limits.smallBodyBytes);
-			if (typeof body.sessionId !== "string") throw new HttpError(400, "invalid_request", "sessionId is required");
-			findSession(body.sessionId);
-			const minted = options.auth.mintTicket(who, body.sessionId);
+			// A ticket for one session's events, or for `GET /api/desktop/events` (`{ stream: "desktop" }`).
+			let target        ;
+			if (body.stream === "desktop" && body.sessionId === undefined) target = DESKTOP_STREAM;
+			else if (typeof body.sessionId === "string" && body.stream === undefined) target = findSession(body.sessionId).id;
+			else throw new HttpError(400, "invalid_request", "sessionId, or stream: \"desktop\", is required");
+			const minted = options.auth.mintTicket(who, target);
 			return sendJson(res, 201, { ticket: minted.ticket, expiresAt: new Date(minted.expiresAt).toISOString() });
 		}
 		if (path === "/api/sessions") {
 			if (method === "GET") {
 				const who = need(principal, "sessions:read");
-				return sendJson(res, 200, { sessions: [...sessions.values()].map((s) => sessionView(s, who)) });
+				const listed = [...sessions.values()].map((s) => sessionView(s, who));
+				// The control session only for an admin who asks for it.
+				const shown = url.searchParams.get("includeControl") === "1" && hasScope(who, "admin") ? control : undefined;
+				return sendJson(res, 200, { sessions: shown ? [...listed, { ...sessionView(shown, who), control: true }] : listed });
 			}
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use GET or POST");
 			const who = need(principal, "sessions:operate");
@@ -772,6 +928,26 @@ export function startServeServer(options                    )                   
 		return sendJson(res, 200, outcome.response);
 	};
 
+	/**
+	 * `POST /api/desktop`: a Desktop RPC request answered by the control session, for a client with no
+	 * session of its own (configuration, sign-in, packages). Scopes as `/desktop`; host tool methods are
+	 * refused, since they belong to the agent session whose tools they are.
+	 */
+	const controlDesktop = async (req                 , res                , principal                       ) => {
+		if (!principal) throw new HttpError(401, "unauthorized", "A valid bearer token is required");
+		const body = await readJsonBody(req, limits.desktopBodyBytes);
+		if (typeof body.method !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(body.method)) throw new HttpError(400, "invalid_request", "method must be a Desktop RPC method name");
+		const params = body.params ?? {};
+		if (!params || typeof params !== "object" || Array.isArray(params)) throw new HttpError(400, "invalid_request", "params must be an object");
+		if (Object.hasOwn(HOST_TOOL_METHODS, body.method)) throw new HttpError(400, "use_session_desktop", "Host tool methods belong to an agent session: POST /api/sessions/:id/desktop");
+		need(principal, desktopMethodScope(body.method));
+		const method = body.method;
+		const outcome = await withControl((session) => session.desktop(method, params                           , limits.rpcTimeoutMs));
+		if (outcome === undefined) throw new HttpError(504, "desktop_timeout", "The control session did not answer the Desktop RPC request in time");
+		if ("prompt" in outcome) return sendJson(res, 502, { error: { code: "desktop_refused", message: "The control session refused the Desktop RPC request" }, response: outcome.prompt });
+		return sendJson(res, 200, outcome.answer);
+	};
+
 	const forwardDesktop = async (req                 , res                , session              , principal                       ) => {
 		if (!principal) throw new HttpError(401, "unauthorized", "A valid bearer token is required");
 		const body = await readJsonBody(req, Math.max(limits.desktopBodyBytes, limits.hostToolBodyBytes));
@@ -851,6 +1027,7 @@ export function startServeServer(options                    )                   
 	const server = listener.server;
 	const heartbeat = setInterval(() => {
 		for (const s of sessions.values()) s.heartbeat();
+		control?.heartbeat();
 		files.heartbeat();
 		terminals?.heartbeat();
 	}, limits.heartbeatMs);
@@ -910,9 +1087,18 @@ export function startServeServer(options                    )                   
 				terminals?.closeAll();
 				await towerStarting?.catch(() => undefined);
 				await stopTower();
+				// The control session goes the way the others go; one starting now is attached before that.
+				clearTimeout(controlIdle);
+				await controlStarting?.catch(() => undefined);
+				const controlSession = control;
 				// Sessions keep running for the next server unless asked to end, or when no later server could find them.
-				if (keepSessions && closeOptions?.endSessions !== true) for (const s of sessions.values()) s.detach();
-				else await Promise.all([...sessions.values()].map((s) => s.stop()));
+				if (keepSessions && closeOptions?.endSessions !== true) {
+					for (const s of sessions.values()) s.detach();
+					controlSession?.detach();
+				} else {
+					await Promise.all([...sessions.values(), ...(controlSession ? [controlSession] : [])].map((s) => s.stop()));
+				}
+				await controlStopping;
 				if (!keepSessions) removePrivateKeeperDir(keeperDir);
 				const closed = Promise.withResolvers      ();
 				server.close(() => closed.resolve());

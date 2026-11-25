@@ -201,6 +201,8 @@ export interface Subscriber {
 	sink: StreamSink;
 	/** The device that opened the stream; revoking it closes the stream. */
 	deviceId: string;
+	/** Only the records it keeps reach this stream (the Desktop events of `GET /api/desktop/events`); every record without one. */
+	filter?: (line: string) => boolean;
 }
 
 export function sseRecord(seq: number, line: string): string {
@@ -294,6 +296,25 @@ export function classifyRecord(record: Record<string, unknown>): RecordEvent {
 	if (a.event === "host_tool_cancel") return { kind: "host_tool_cancel", callId: data.callId };
 	if (a.event !== "host_tool_call" || !("provider" in data) || typeof data.provider !== "string" || !("tool" in data) || typeof data.tool !== "string") return undefined;
 	return { kind: "host_tool_call", callId: data.callId, provider: data.provider, tool: data.tool };
+}
+
+/** Whether `line` is a Desktop RPC event record (a `gentle-desktop-rpc` widget whose payload is `kind: "event"`), the only records `GET /api/desktop/events` carries. */
+export function isDesktopEventRecord(line: string): boolean {
+	let record: unknown;
+	try {
+		record = JSON.parse(line);
+	} catch {
+		return false;
+	}
+	if (!record || typeof record !== "object") return false;
+	const r = record as Record<string, unknown>;
+	if (r.type !== "extension_ui_request" || r.method !== "setWidget" || r.widgetKey !== DESKTOP_RPC_WIDGET || !Array.isArray(r.widgetLines) || typeof r.widgetLines[0] !== "string") return false;
+	try {
+		const payload = JSON.parse(r.widgetLines[0]) as unknown;
+		return !!payload && typeof payload === "object" && (payload as Record<string, unknown>).kind === "event";
+	} catch {
+		return false;
+	}
 }
 
 /** The state a keeper hands the server when it attaches; the ring's records follow it on the wire. */
@@ -770,7 +791,7 @@ export class ServeSession {
 			return;
 		}
 		const event = this.log.push(seq, line, record);
-		this.broadcast(sseRecord(seq, line));
+		this.broadcast(seq, line);
 		switch (event?.kind) {
 			case "response": {
 				const waiter = this.rpcWaiters.get(event.id);
@@ -931,13 +952,15 @@ export class ServeSession {
 		return this.log.pendingHostCalls();
 	}
 
-	private broadcast(frame: string): void {
+	private broadcast(seq: number, line: string): void {
+		const frame = sseRecord(seq, line);
 		for (const sub of this.subscribers) {
 			if (sub.sink.destroyed) {
 				this.subscribers.delete(sub);
 				this.deviceLeft(sub.deviceId);
 				continue;
 			}
+			if (sub.filter && !sub.filter(line)) continue;
 			if (sub.sink.writableLength > this.limits.clientBufferBytes) {
 				this.drop(sub, "slow_client");
 				continue;
@@ -983,9 +1006,11 @@ export class ServeSession {
 	 * `after` or `snapshot-required`, then every dialog still waiting that the
 	 * replay did not carry, then (to the device that provides them) the host
 	 * tool calls still waiting that the replay did not carry, then the live
-	 * stream. An exited session's stream ends after that.
+	 * stream. An exited session's stream ends after that. With a `filter`,
+	 * only the records (replayed or live) it keeps are sent, and no dialog or
+	 * host tool call is re-sent.
 	 */
-	subscribe(sink: StreamSink, deviceId: string, after?: number): void {
+	subscribe(sink: StreamSink, deviceId: string, after?: number, filter?: (line: string) => boolean): void {
 		const ring = this.log.ring;
 		const hello = { session: this.id, state: this.log.state, seq: this.log.seq, oldest: ring.oldest ?? null };
 		sink.write(`retry: 3000\n\n${sseEvent("hello", hello)}`);
@@ -996,14 +1021,14 @@ export class ServeSession {
 				sink.write(sseEvent("snapshot-required", { after, oldest: replay.oldest, seq: this.log.seq }));
 			} else {
 				replayedFrom = after;
-				for (const r of replay.records) sink.write(sseRecord(r.seq, r.line));
+				for (const r of replay.records) if (!filter || filter(r.line)) sink.write(sseRecord(r.seq, r.line));
 			}
 		}
-		for (const dialog of this.pendingDialogs()) {
+		for (const dialog of filter ? [] : this.pendingDialogs()) {
 			if (dialog.seq > replayedFrom) continue;
 			sink.write(`event: dialog\ndata: ${dialog.line}\n\n`);
 		}
-		for (const call of this.log.pendingHostCalls()) {
+		for (const call of filter ? [] : this.log.pendingHostCalls()) {
 			if (call.provider !== deviceId || call.seq > replayedFrom) continue;
 			sink.write(`event: host_tool_call\ndata: ${call.line}\n\n`);
 		}
@@ -1011,7 +1036,7 @@ export class ServeSession {
 			sink.end();
 			return;
 		}
-		this.subscribers.add({ sink, deviceId });
+		this.subscribers.add({ sink, deviceId, ...(filter ? { filter } : {}) });
 		const grace = this.graceTimers.get(deviceId);
 		if (grace !== undefined) {
 			clearTimeout(grace);

@@ -7,8 +7,15 @@
 
 let buffer = "";
 let dialogs = 0;
+let desktopEvents = 0;
 const out = (record) => process.stdout.write(`${JSON.stringify(record)}\n`);
 const respond = (cmd, data, success = true) => out({ ...(cmd.id === undefined ? {} : { id: cmd.id }), type: "response", command: cmd.type, success, ...(success ? { data } : { error: data }) });
+/** A Desktop RPC event, as the extension's router publishes it. */
+const desktopEvent = (event, data) => {
+	desktopEvents += 1;
+	const payload = { schema: "gentle-shell.desktop-rpc/v1", kind: "event", seq: desktopEvents, epoch: "fake-epoch", event, data };
+	out({ type: "extension_ui_request", id: `w-event-${desktopEvents}`, method: "setWidget", widgetKey: "gentle-desktop-rpc", widgetLines: [JSON.stringify(payload)] });
+};
 
 function handle(cmd) {
 	switch (cmd.type) {
@@ -22,7 +29,14 @@ function handle(cmd) {
 			respond(cmd, { disposition: "handled" });
 			if (request.method === "never") return;
 			const answer = { schema: request.schema, kind: "response", requestId: request.requestId, ok: true, data: { method: request.method, params: request.params } };
-			return out({ type: "extension_ui_request", id: `w-${request.requestId}`, method: "setWidget", widgetKey: "gentle-desktop-rpc", widgetLines: [JSON.stringify(answer)] });
+			out({ type: "extension_ui_request", id: `w-${request.requestId}`, method: "setWidget", widgetKey: "gentle-desktop-rpc", widgetLines: [JSON.stringify(answer)] });
+			// What sign-in and package jobs publish after their answer.
+			if (request.method === "login_start") desktopEvent("login_prompt", { loginId: "login-1", kind: "open_url", url: "https://login.invalid/authorize" });
+			if (request.method === "install_package") {
+				desktopEvent("package_progress", { jobId: "job-1", line: "added 1 package" });
+				desktopEvent("package_finished", { jobId: "job-1", ok: true });
+			}
+			return;
 		}
 		case "extension_ui_response":
 			return out({ type: "fake_dialog_answer", id: cmd.id, value: cmd.value ?? null, cancelled: cmd.cancelled ?? false });

@@ -22,11 +22,12 @@ function fixture(t: test.TestContext, options: { mode?: PermissionMode; hasUI?: 
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), "path-consent-")));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const repo = join(dir, "repo"), config = join(dir, "config");
-	// The exemption test names an existing directory outside the fixture and
-	// default temp roots as TMPDIR. The hook is probed without executing a write.
+	// The exemption test names an existing directory outside the fixture as
+	// TMPDIR. The hook is probed without executing a write.
 	const temp = options.skills ? join(process.cwd(), "assets") : join(dir, "scratch");
 	for (const path of [repo, config]) mkdirSync(path);
-	if (!options.skills) mkdirSync(temp);
+	if (options.skills) isolateFixedTempRoots(t, temp, realpathSync(process.cwd()), repo);
+	else mkdirSync(temp);
 	const gitConfig = join(dir, "git-config");
 	writeFileSync(gitConfig, "");
 	const git = (...args: string[]) => execFileSync("git", ["-C", repo, "-c", `core.hooksPath=${config}`, "-c", "commit.gpgsign=false", ...args], {
@@ -70,16 +71,20 @@ function fixture(t: test.TestContext, options: { mode?: PermissionMode; hasUI?: 
 	};
 }
 
+function isolateFixedTempRoots(t: test.TestContext, temp: string, target: string, repo: string) {
+	const env = { TMPDIR: temp };
+	if (isTempTarget(target, env)) {
+		// A fixture target may live under a fixed temp root. Redirect only the
+		// fixed aliases to the worktree so TMPDIR remains a distinct exemption.
+		const native = realpathSync.native;
+		t.mock.method(realpathSync, "native", (path: string) => native(path === "/tmp" || path === "/var/tmp" ? repo : path));
+	}
+	assert.equal(isTempTarget(target, env), false);
+}
+
 function worktreeFixture(t: test.TestContext) {
 	const f = fixture(t, { hasUI: false });
-	const env = { TMPDIR: f.temp };
-	if (isTempTarget(f.dir, env)) {
-		// Some hosts put os.tmpdir() under a fixed temp root. In this fixture,
-		// resolve just the fixed temp aliases to the isolated scratch sibling.
-		const native = realpathSync.native;
-		t.mock.method(realpathSync, "native", (path: string) => native(path === "/tmp" || path === "/var/tmp" ? f.temp : path));
-	}
-	assert.equal(isTempTarget(f.dir, env), false);
+	isolateFixedTempRoots(t, f.temp, f.dir, f.repo);
 	return f;
 }
 
@@ -270,6 +275,38 @@ test("Auto blocks a target retargeted during classification without granting eit
 	assert.equal(f.classifications(), 1);
 	for (const path of [outside, other]) assert.equal(await f.call("read", { path }), undefined);
 	assert.deepEqual(f.prompts, [prompt("read", outside), prompt("read", outside), prompt("read", other)]);
+});
+
+test("Auto blocks a worktree alias retargeted outside during classification without granting access", { skip: process.platform === "win32" }, async t => {
+	let retarget: (() => void) | undefined;
+	const f = fixture(t, { mode: "auto", approve: true, classify: () => { retarget?.(); return "allow"; } });
+	const inside = join(f.repo, "inside.md"), other = join(f.dir, "outside.md");
+	isolateFixedTempRoots(t, f.temp, other, f.repo);
+	writeFileSync(inside, "fixture");
+	writeFileSync(other, "fixture");
+	const alias = join(f.repo, "alias"), replacement = join(f.repo, "replacement");
+	symlinkSync(inside, alias, "file");
+	symlinkSync(other, replacement, "file");
+	retarget = () => { renameSync(replacement, alias); retarget = undefined; };
+	assert.deepEqual(await f.call("read", { path: "alias" }), {
+		block: true, reason: "Gentle AI safety policy blocked the path access because its target changed during Auto classification. Retry to request fresh consent.",
+	});
+	assert.equal(f.classifications(), 1);
+	assert.deepEqual(f.prompts, []);
+	assert.deepEqual(f.permissionEvents, []);
+	assert.equal(await f.call("read", { path: "alias" }), undefined);
+	assert.deepEqual(f.prompts, [prompt("read", other)]);
+});
+
+test("Auto allows an unchanged worktree alias without asking", { skip: process.platform === "win32" }, async t => {
+	const f = fixture(t, { mode: "auto", classify: () => "allow" });
+	const inside = join(f.repo, "inside.md");
+	writeFileSync(inside, "fixture");
+	symlinkSync(inside, join(f.repo, "alias"), "file");
+	assert.equal(await f.call("read", { path: "alias" }), undefined);
+	assert.equal(f.classifications(), 1);
+	assert.deepEqual(f.prompts, []);
+	assert.deepEqual(f.permissionEvents, []);
 });
 
 test("YOLO allows non-sensitive outside reads and listings but not outside mutations", async t => {

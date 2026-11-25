@@ -13349,22 +13349,22 @@ function createGentleAiExtensionForTesting(
 			try { root = realpathSync.native(root); }
 			catch { /* A missing bootstrap directory has no symlink destination. */ }
 		}
-		if (isWithinPath(root, target) || isTempTarget(target, permissionEnvironment)) return gate();
-		if (toolName === "read" && isIndexedSkillTarget(ctx, target)) return gate();
-		if (worktree && sessionId && typeof manager.getEntries === "function"
-			&& new SessionWorktreeRegistry(pi, manager, sessionCwd).roots().some(root => isWithinPath(root, target))) return gate();
 		const sameTarget = () => {
 			const current = toolWorktreePath(toolName, input);
 			return current !== undefined && canonicalizeTarget(current, cwd, toolName) === target;
 		};
-		const checkApprovedPath = async () => {
+		const gateWithTargetRecheck = async () => {
 			const denied = await gate();
 			if (denied || !checkAfterAuto) return denied;
 			try { if (ctx.cwd === cwd && sameTarget()) return undefined; } catch { /* Fail closed below. */ }
 			return { block: true, reason: "Gentle AI safety policy blocked the path access because its target changed during Auto classification. Retry to request fresh consent." };
 		};
+		if (isWithinPath(root, target) || isTempTarget(target, permissionEnvironment)) return gateWithTargetRecheck();
+		if (toolName === "read" && isIndexedSkillTarget(ctx, target)) return gateWithTargetRecheck();
+		if (worktree && sessionId && typeof manager.getEntries === "function"
+			&& new SessionWorktreeRegistry(pi, manager, sessionCwd).roots().some(root => isWithinPath(root, target))) return gateWithTargetRecheck();
 		const grant = manager && pathTargetGrants.get(manager);
-		if (grant && grant.sessionId === sessionId && grant.targets.has(target)) return checkApprovedPath();
+		if (grant && grant.sessionId === sessionId && grant.targets.has(target)) return gateWithTargetRecheck();
 		const displayedTarget = sanitizeTerminalText(target);
 		if (!ctx.hasUI || typeof ctx.ui?.confirm !== "function") return { block: true, reason: `Gentle AI safety policy requires interactive confirmation before accessing paths outside the session worktree: ${displayedTarget}. Ask the user for an explicit safer plan.` };
 		if (!sessionId || !manager) return { block: true, reason: "Session identity is unavailable; access outside the session worktree is blocked." };
@@ -13389,7 +13389,7 @@ function createGentleAiExtensionForTesting(
 		if (!approved) return { block: true, reason: changed
 			? "Gentle AI safety policy blocked the path access because its target or session changed during confirmation. Retry to request fresh consent."
 			: "Gentle AI safety policy blocked the path access because it was not confirmed." };
-		const denied = await checkApprovedPath();
+		const denied = await gateWithTargetRecheck();
 		if (denied) return denied;
 		const latest = pathTargetGrants.get(manager);
 		const targets = latest?.sessionId === sessionId ? latest.targets : new Set<string>();

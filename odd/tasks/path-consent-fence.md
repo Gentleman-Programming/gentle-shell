@@ -17,7 +17,7 @@ S3. Required behavior:
 - A grant covers exactly that target for the rest of the session. This is the existing session contract: "Grants are per-target, per-session, never blanket".
 - Exempt with no question:
   - the OS temp directory (session `TMPDIR`, `/tmp`, `/var/tmp`);
-  - the exact resolved skill files the session indexes.
+  - `read` of the exact resolved skill files the session indexes; `write`, `edit`, and listing still ask outside the session worktree roots unless another exemption applies.
 
   Both exemptions are already stated in the session safety contract.
 - `bash` is out of scope. The change must not claim to be a sandbox.

@@ -21,6 +21,7 @@ import { profileRoutingRows, readProfileOrchestrator, type OrchestratorMode } fr
 import type { AgentModelConfig } from "./model-routing-authority.ts";
 import { CODEX_PROVIDER, providerNote, USAGE_FETCH_FAILED_NOTE } from "./shell-usage.ts";
 import { FINISHED_STATUSES } from "./agents-protocol.ts";
+import { extensionCommandWorksOverRpc } from "./desktop-command-rpc.ts";
 
 export const DESKTOP_FEED_SCHEMA = "gentle-shell.desktop-feed/v1";
 /** Coalescing window: a burst of changes becomes one write at most this late. */
@@ -74,31 +75,34 @@ export const DESKTOP_FEED_QUESTION_TOOLS = ["ask_user_choice", "ask_user_questio
  * `terminal`: the command shows its result or a picker in the TUI, so the
  * desktop shows the Terminal after sending it. `args`: the command needs an
  * argument, so the desktop puts it in the composer instead of sending it.
+ * `rpc`: Pi's RPC protocol has a matching command (modes/rpc/rpc-mode.js, named
+ * after each entry), so an RPC client can do the same without the TUI; typing
+ * the slash command into an RPC session's `prompt` does not run a built-in.
  */
-export const DESKTOP_FEED_BUILTIN_COMMANDS: ReadonlyArray<{ name: string; description: string; args: string | null; terminal: boolean }> = [
-	{ name: "new", description: "Start a new session", args: null, terminal: false },
-	{ name: "resume", description: "Resume another session", args: null, terminal: true },
-	{ name: "fork", description: "Create a new fork from a previous user message", args: null, terminal: true },
-	{ name: "clone", description: "Duplicate the current session at the current position", args: null, terminal: false },
-	{ name: "tree", description: "Navigate session tree (switch branches)", args: null, terminal: true },
-	{ name: "compact", description: "Manually compact the session context", args: null, terminal: true },
-	{ name: "name", description: "Set session display name", args: "<name>", terminal: false },
-	{ name: "export", description: "Export session (HTML default, or specify path: .html/.jsonl)", args: null, terminal: true },
-	{ name: "session", description: "Show session info and stats", args: null, terminal: true },
-	{ name: "copy", description: "Copy last agent message to clipboard", args: null, terminal: false },
-	{ name: "model", description: "Select model (opens selector UI)", args: null, terminal: true },
-	{ name: "thinking", description: "Set thinking level", args: null, terminal: true },
-	{ name: "scoped-models", description: "Enable/disable models for Ctrl+P cycling", args: null, terminal: true },
-	{ name: "settings", description: "Open settings menu", args: null, terminal: true },
-	{ name: "hotkeys", description: "Show all keyboard shortcuts", args: null, terminal: true },
-	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files", args: null, terminal: true },
-	{ name: "import", description: "Import a JSONL session, preserving its ID and working directory", args: null, terminal: true },
-	{ name: "share", description: "Share session via a Radius artifact or a GitHub gist", args: null, terminal: true },
-	{ name: "changelog", description: "Show changelog entries", args: null, terminal: true },
-	{ name: "trust", description: "Save project trust decision for future sessions", args: null, terminal: true },
-	{ name: "login", description: "Configure provider authentication", args: null, terminal: true },
-	{ name: "logout", description: "Remove provider authentication", args: null, terminal: true },
-	{ name: "bug", description: "Report a bug to the Pi developers", args: "<description>", terminal: true },
+export const DESKTOP_FEED_BUILTIN_COMMANDS: ReadonlyArray<{ name: string; description: string; args: string | null; terminal: boolean; rpc: boolean }> = [
+	{ name: "new", description: "Start a new session", args: null, terminal: false, rpc: true }, // RPC: new_session
+	{ name: "resume", description: "Resume another session", args: null, terminal: true, rpc: false },
+	{ name: "fork", description: "Create a new fork from a previous user message", args: null, terminal: true, rpc: true }, // RPC: get_fork_messages + fork
+	{ name: "clone", description: "Duplicate the current session at the current position", args: null, terminal: false, rpc: true }, // RPC: clone
+	{ name: "tree", description: "Navigate session tree (switch branches)", args: null, terminal: true, rpc: false },
+	{ name: "compact", description: "Manually compact the session context", args: null, terminal: true, rpc: true }, // RPC: compact
+	{ name: "name", description: "Set session display name", args: "<name>", terminal: false, rpc: true }, // RPC: set_session_name
+	{ name: "export", description: "Export session (HTML default, or specify path: .html/.jsonl)", args: null, terminal: true, rpc: true }, // RPC: export_html
+	{ name: "session", description: "Show session info and stats", args: null, terminal: true, rpc: true }, // RPC: get_session_stats
+	{ name: "copy", description: "Copy last agent message to clipboard", args: null, terminal: false, rpc: true }, // RPC: get_last_assistant_text
+	{ name: "model", description: "Select model (opens selector UI)", args: null, terminal: true, rpc: true }, // RPC: get_available_models + set_model
+	{ name: "thinking", description: "Set thinking level", args: null, terminal: true, rpc: true }, // RPC: set_thinking_level
+	{ name: "scoped-models", description: "Enable/disable models for Ctrl+P cycling", args: null, terminal: true, rpc: false },
+	{ name: "settings", description: "Open settings menu", args: null, terminal: true, rpc: false },
+	{ name: "hotkeys", description: "Show all keyboard shortcuts", args: null, terminal: true, rpc: false },
+	{ name: "reload", description: "Reload keybindings, extensions, skills, prompts, themes, and context files", args: null, terminal: true, rpc: false },
+	{ name: "import", description: "Import a JSONL session, preserving its ID and working directory", args: null, terminal: true, rpc: false },
+	{ name: "share", description: "Share session via a Radius artifact or a GitHub gist", args: null, terminal: true, rpc: false },
+	{ name: "changelog", description: "Show changelog entries", args: null, terminal: true, rpc: false },
+	{ name: "trust", description: "Save project trust decision for future sessions", args: null, terminal: true, rpc: false },
+	{ name: "login", description: "Configure provider authentication", args: null, terminal: true, rpc: false },
+	{ name: "logout", description: "Remove provider authentication", args: null, terminal: true, rpc: false },
+	{ name: "bug", description: "Report a bug to the Pi developers", args: "<description>", terminal: true, rpc: false },
 ];
 
 /** The desktop RPC's own machine channel: not a command a person runs. */
@@ -295,9 +299,12 @@ export interface DesktopFeedSnapshot {
 	 * The session's slash commands: pi's built-ins, then its registry (extension
 	 * commands, prompt templates, skills) in pi's order. Extension commands show
 	 * their result in the TUI (`terminal`); prompts and skills answer in the chat.
+	 * `rpc`: the command works from an RPC client (lib/desktop-command-rpc.ts for
+	 * extension commands, Pi's matching RPC command for built-ins; prompts and
+	 * skills expand through Pi's `prompt`); false when undeclared.
 	 */
 	commands: {
-		items: Array<{ name: string; description: string | null; args: string | null; terminal: boolean; source: "builtin" | "extension" | "prompt" | "skill" }>;
+		items: Array<{ name: string; description: string | null; args: string | null; terminal: boolean; rpc: boolean; source: "builtin" | "extension" | "prompt" | "skill" }>;
 		truncated: boolean;
 	};
 }
@@ -601,7 +608,9 @@ function shapeCommands(registry: readonly DesktopFeedCommandInput[]): DesktopFee
 		if (items.length >= DESKTOP_FEED_LIMITS.commands) { truncated = true; break; }
 		seen.add(name);
 		const source = command.source === "prompt" || command.source === "skill" ? command.source : "extension";
-		items.push({ name, description: optionalText(command.description, DESKTOP_FEED_LIMITS.commandText), args: null, terminal: source === "extension", source });
+		// Prompt templates and skills expand through Pi's `prompt` in any mode (agent-session.js `prompt`).
+		const rpc = source === "extension" ? extensionCommandWorksOverRpc(name) : true;
+		items.push({ name, description: optionalText(command.description, DESKTOP_FEED_LIMITS.commandText), args: null, terminal: source === "extension", rpc, source });
 	}
 	return { items, truncated };
 }

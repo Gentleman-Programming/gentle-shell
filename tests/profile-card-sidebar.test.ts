@@ -32,7 +32,7 @@ function fixture(t: { after(fn: () => void): void }, profiles: ProfileCardItem[]
 	return { home, host, tui, owner, part, rail, state, setVisible, renders: () => renders, root };
 }
 const click = (x: number, y: number): TuiMouseEvent => ({ type: "click", button: "left", x, y, screenX: x, screenY: y, width: 48, height: 3, shift: false, alt: false, ctrl: false });
-const text = (rail: { render(width: number): string[] }) => rail.render(48).map((line) => line.trimEnd());
+const text = (rail: { render(width: number): readonly string[] }) => rail.render(48).map((line) => line.trimEnd());
 
 test("the card is registered under 'profiles', hidden by default and empty above the editor", (t) => {
 	const f = fixture(t, [item("alpha"), item("beta")]);

@@ -57,6 +57,7 @@ current session. Opt-in through `/gentle:profiles card on|off`.
 - [x] T5 — S4: shortcuts in `KEYMAP_ACTIONS` and registration, `tests/keymaps.test.ts`. Route: worker C (continue). Commit: 57c327b53
 - [x] T7 — S7: header hover highlight and collapse like the other cards. Route: worker C (continue). Commit: 3c73b0395
 - [x] T8 — S8: collapse keymap ctrl+shift+e. Route: worker. Commit: the commit that adds Ctrl+Shift+E (last on the branch)
+- [x] T9 — integration: merge `origin/main` (167 commits, v4.9.0/v5.0.0) into the branch, resolving the single conflict in `extensions/gentle-ai.ts` (keep upstream #3514's `const profileSession = sessionProfiles.start(...)` capture, then the branch's card wiring unchanged). Route: worker (repository_root consent). Commit: e2f0745b6 (merge commit). Evidence: focused suites 135/135 after resolution; typecheck red pending `node_modules` sync with the merged lockfile.
 - [-] T6 — S6: final docs pass, `pnpm test` + typecheck. Route: verify. Commit: —
 
 ## Log
@@ -70,3 +71,5 @@ current session. Opt-in through `/gentle:profiles card on|off`.
 - **L7 (user report after manual test, verbatim):** "Ya aparece el card, aunque quisiera indicar algunas cosas para tomar en cuenta. Al pasar el mouse por encima del titulo del card, no se agrega el color amarrillo como los demas cards para poder collapsar el card, de hecho, no se colapsa." Likely cause: T3 used a plain `handleMouse` without `NativePointerRegion` (no hover state, header row not wired to collapse) → S7, T7.
 - **L8 (evidence, T6):** the independent verifier timed out after 30 min stalled in a bash call (likely the full suite); no verdict produced. Pending user decision on relaunch.
 - **L9 (user decisions):** collapse shortcut `Ctrl+Shift+E`. On T6: "Olvidate de la verificacion t6" — independent final verification dropped by the user.
+- **L10 (user decision, 2026-11-25):** manual TUI test passed locally ("Si, ya fue probado en local"); integrate upstream via MERGE of origin/main, not rebase. Upstream moved 167 commits (v4.9.0, v5.0.0) touching the same profiles/session-binding seam (#3514, #3472, #3518); `git merge-tree` showed exactly one conflicted file, `extensions/gentle-ai.ts`. Writer admission needed explicit session consent for `repository_root` (repo outside the session cwd root).
+- **L11 (delivery decision, 2026-11-25):** maintainer (Alan, via X) asked for the PR ("subalo al Hub"); upstream issue #3366 (author cheranthony) links the feature; repo convention: conventional title, `Closes #N`, squash merge, `type:feature` label. Slice boundary: 1899 authored lines in 9 commits on the branch; delivery shape: ONE PR (user + maintainer request), no chained slices. PR draft approved by the user with the manual-test checkbox marked done.

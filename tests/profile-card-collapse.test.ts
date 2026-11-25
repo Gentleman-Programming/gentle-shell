@@ -33,7 +33,7 @@ function fixture(t: { after(fn: () => void): void }, profiles: ProfileCardItem[]
 	return { owner, rail, used, renders: () => renders };
 }
 const mouse = (type: TuiMouseEvent["type"], x: number, y: number, extra: Partial<TuiMouseEvent> = {}): TuiMouseEvent => ({ type, button: type === "move" ? "none" : "left", x, y, screenX: x, screenY: y, width: 48, height: 3, shift: false, alt: false, ctrl: false, ...extra }) as TuiMouseEvent;
-const lines = (rail: { render(width: number): string[] }) => rail.render(48).map(plain).map((line) => line.trimEnd());
+const lines = (rail: { render(width: number): readonly string[] }) => rail.render(48).map(plain).map((line) => line.trimEnd());
 
 test("hovering the title row paints the shared hover role; moving to the body or leaving clears it", (t) => {
 	const f = fixture(t, [item("alpha"), item("beta")]);

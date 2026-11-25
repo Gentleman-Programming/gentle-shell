@@ -38,7 +38,7 @@ function launch(args: string[], scenario = 'owned', piVersion = '1.2.0') {
    source = source.replace('runtime = resolvePiRuntime({', ${JSON.stringify(`runtime = ({ kind: '${adjacent ? 'bundled' : 'env'}', command: '${adjacent ? 'node' : piRoot + '/dist/bundle/cli.js'}', args: ${JSON.stringify(adjacent ? [piRoot + '/dist/bundle/cli.js'] : [])} }); /*`)}).replace('nodeExecPath: process.execPath,\\n\\t\\t});', 'nodeExecPath: process.execPath, */');
    source = source.replace('const versionProbe = spawnSync(versionProbePlan.command, versionProbePlan.args, {', 'const versionProbe = { stdout: "${piVersion}" }; /*').replace('env: bundledEnv ?? process.env,\\n\\t});', 'env: bundledEnv ?? process.env, */');
    source = source.replace('async function packageManagerAdapters() {', 'async function packageManagerAdapters() { return globalThis.fakeAdapters; } async function unusedAdapters() {');
-   source = source.replace('let homeHadContentBeforeBootstrap = false;', 'if (passthrough.length === 1) { console.error("error: pi cannot self-update this installation. This installation is not managed by a global pnpm install."); process.exitCode = 1; return; } console.log("FORWARD " + JSON.stringify(passthrough)); return; let homeHadContentBeforeBootstrap = false;');
+   source = source.replace('const homeHadContentBeforeBootstrap = homeHasContent(home.dir);', 'if (passthrough.length === 1) { console.error("error: pi cannot self-update this installation. This installation is not managed by a global pnpm install."); process.exitCode = 1; return; } console.log("FORWARD " + JSON.stringify(passthrough)); return; const homeHadContentBeforeBootstrap = homeHasContent(home.dir);');
    return {format:'module', source, shortCircuit:true};
   }
   return next(url,context);

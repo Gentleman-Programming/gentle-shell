@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
+import { shellQuote } from "../lib/gentle-shell-launcher.ts";
 
 // Automatic first-run setup through the real launcher, runnable on every
 // platform (tests/gentle-shell-bin.test.ts covers more but cannot run on
@@ -98,7 +99,7 @@ const cases: Case[] = [
 			mkdirSync(join(root, "foreign"));
 			writeFileSync(join(root, "foreign", "notes.txt"), "mine\n");
 		},
-		expect: (root) => [`gentle-shell: ${join(root, "foreign")} already has content and was not set up by gentle-shell; run \`gentle-shell --home '${join(root, "foreign")}' setup\` to provision it`],
+		expect: (root) => [`gentle-shell: ${join(root, "foreign")} already has content and was not set up by gentle-shell; run \`gentle-shell --home ${shellQuote(join(root, "foreign"))} setup\` to provision it`],
 		attempted: false,
 	},
 	{

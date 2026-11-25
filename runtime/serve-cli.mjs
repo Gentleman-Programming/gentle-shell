@@ -490,7 +490,6 @@ async function serveForeground(ctx                     , args                   
 			...(args.relay === undefined ? {} : { relay: { url: args.relay, ...(secret === undefined ? {} : { secret }) } }),
 			startTower: () => startTower(ctx.env),
 			serveDir: files.dir,
-			agentHome: ctx.agentHome,
 			env: ctx.env,
 			auth,
 			version: ctx.version,

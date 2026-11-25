@@ -258,7 +258,7 @@ What a person would otherwise do in a terminal on the server, the client does ov
 | Upgrade Gentle Shell | [`POST /api/upgrade`](serve.md#upgrade-from-a-client), its stream, then the server restarts on the new version | `admin` |
 | Run Gentle Shell's setup (companion packages) | [`POST /api/setup`](serve.md#setup-from-a-client) and its stream; no restart | `admin` |
 | Change model defaults (default model, effort, scoped models) | [`get_config`/`set_config`](desktop-rpc.md#set_config) store `model_defaults` | read / `sessions:operate` |
-| Edit `models.json` or `mcp.json` | The file endpoints, at the paths `GET /api/server` reports in `paths` | `sessions:operate` |
+| Edit custom models (`models.json`) or MCP servers (`mcp.json`) | [`get_config`/`set_config`](desktop-rpc.md#set_config) stores `custom_models` and `mcp_servers`; secrets read as `"•••"` | read / `sessions:operate` |
 
 The first four are Desktop RPC methods of a session (`POST /api/sessions/:id/desktop`): the session's Pi runs its own `/login` flow, key setup, `/logout`, or the `gentle-shell install`/`remove` CLI, on the server, with the server's agent home. Credentials land in Pi's credential store on the server and serve every session there; the session that signed in has the new models at once, other sessions after `reload_credentials`.
 

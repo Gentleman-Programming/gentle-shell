@@ -111,8 +111,6 @@ export interface ServeServerOptions {
 	uploadLimits?: Partial<typeof SERVE_UPLOAD_LIMITS>;
 	/** `<agent home>/serve`: the server id, session keepers, uploads and the terminal host's socket live under it. Without it the id changes every run, sessions end with the server, and uploads and terminals are off. */
 	serveDir?: string;
-	/** The agent home this server runs: `GET /api/server` names it and its Pi files (`settings.json`, `models.json`, `mcp.json`) for an operating device. */
-	agentHome?: string;
 	termLimits?: Partial<typeof SERVE_TERM_LIMITS>;
 	/** The environment for git commands and service lookups; this process's by default. */
 	env?: NodeJS.ProcessEnv;
@@ -569,10 +567,6 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 				platform: process.platform, arch: arch(), pathSeparator: sep,
 				// The server user's home folder, a default for new sessions; only for a token that may start them.
 				...(hasScope(who, "sessions:operate") ? { home: homedir() } : {}),
-				// The agent home and its Pi files, so a client edits them with the file endpoints.
-				...(hasScope(who, "sessions:operate") && options.agentHome !== undefined
-					? { agentHome: options.agentHome, paths: { settings: join(options.agentHome, "settings.json"), models: join(options.agentHome, "models.json"), mcp: join(options.agentHome, "mcp.json") } }
-					: {}),
 				// The certificate devices pin on the network, and the relay registration.
 				...(options.tls === undefined ? {} : { tls: { fingerprint: options.tls.fingerprint } }),
 				...(relayLink === undefined ? {} : { relay: { url: relayLink.url, connected: relayLink.connected() } }) });

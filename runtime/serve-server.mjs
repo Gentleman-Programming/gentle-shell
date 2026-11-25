@@ -123,8 +123,6 @@ export function carriesHostToolRequest(message        )          {
 
 
 
-
-
 /** A running Gentle Tower: its loopback port, the path that carries its token, and how to stop it. */
 
 
@@ -570,10 +568,6 @@ export function startServeServer(options                    )                   
 				platform: process.platform, arch: arch(), pathSeparator: sep,
 				// The server user's home folder, a default for new sessions; only for a token that may start them.
 				...(hasScope(who, "sessions:operate") ? { home: homedir() } : {}),
-				// The agent home and its Pi files, so a client edits them with the file endpoints.
-				...(hasScope(who, "sessions:operate") && options.agentHome !== undefined
-					? { agentHome: options.agentHome, paths: { settings: join(options.agentHome, "settings.json"), models: join(options.agentHome, "models.json"), mcp: join(options.agentHome, "mcp.json") } }
-					: {}),
 				// The certificate devices pin on the network, and the relay registration.
 				...(options.tls === undefined ? {} : { tls: { fingerprint: options.tls.fingerprint } }),
 				...(relayLink === undefined ? {} : { relay: { url: relayLink.url, connected: relayLink.connected() } }) });

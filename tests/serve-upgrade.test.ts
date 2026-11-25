@@ -54,7 +54,6 @@ function serve(root: string, upgrade: ServeServerOptions["upgrade"], version = "
 		auth: new ServeAuth({ devicesFile: join(serveDir, "devices.json"), adminToken: ADMIN }),
 		version,
 		serveDir,
-		agentHome: root,
 		launchSession: (input) => ({ command: process.execPath, args: [FAKE_PI], cwd: input.cwd, env: { ...process.env, GENTLE_SHELL_INTERACTIVE_HOST: "1" } }),
 		limits: { rpcTimeoutMs: 3000 },
 		...(upgrade === undefined ? {} : { upgrade }),
@@ -200,8 +199,8 @@ test("an admin runs setup on the server: lines, finished, no restart; one job at
 	try {
 		const info = (await call(server.url, "GET", "/api/server", { token: ADMIN })).body;
 		assert.ok(info.capabilities.includes("setup"));
-		assert.equal(info.agentHome, root);
-		assert.deepEqual(info.paths, { settings: join(root, "settings.json"), models: join(root, "models.json"), mcp: join(root, "mcp.json") });
+		// Config files are reached through Desktop RPC config stores, never by path: only the user's home is named.
+		assert.deepEqual(["agentHome" in info, "paths" in info, typeof info.home], [false, false, "string"]);
 		const device = await pairDevice(server.url, ADMIN, ["sessions:read", "sessions:operate"]);
 		assert.equal((await call(server.url, "POST", "/api/setup", { token: device.token, body: {} })).status, 403);
 		assert.equal((await call(server.url, "POST", "/api/setup", { token: ADMIN, body: { force: true } })).status, 400);

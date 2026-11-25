@@ -16,6 +16,7 @@ export interface RetainedNativeCaptureRoute {
 	readonly lineageId: string;
 	readonly targetIdentity: string;
 	readonly baseRef?: string;
+	readonly baseCommit?: string;
 	readonly committedOnly?: true;
 }
 export interface RetainedNativeUntrackedStopSelector {

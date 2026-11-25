@@ -23,8 +23,11 @@ interface ToolDetails {
 	collectBindings?: { collectBinding: string }[];
 	result?: { lineage_id?: string; eligible_untracked_inventory?: string };
 	native_failure?: { cause: string };
+	status?: string;
 	outcome?: string;
+	reason?: string;
 	mutation_performed?: boolean;
+	mutation_outcome?: string;
 }
 interface Tool {
 	name: string;
@@ -41,8 +44,13 @@ for (const committedOnly of [true, false]) {
 		git("init", "-q");
 		git("commit", "--allow-empty", "-qm", "base");
 		const baseRef = git("rev-parse", "HEAD").trim();
+		const baseAlias = "refs/tags/review-base";
+		let otherBase: string | undefined;
 		writeFileSync(join(cwd, selectedPath), "export const add = (a, b) => a + b;\n");
 		if (committedOnly) {
+			git("tag", "review-base", baseRef);
+			git("commit", "--allow-empty", "-qm", "different base with the same tree");
+			otherBase = git("rev-parse", "HEAD").trim();
 			git("add", selectedPath);
 			git("commit", "-qm", "candidate");
 			writeFileSync(join(cwd, "existing-unrelated.txt"), "not part of the candidate\n");
@@ -58,6 +66,11 @@ for (const committedOnly of [true, false]) {
 		collect.action = "collect";
 		collect.projection.kind = committedOnly ? "base-diff" : "current-changes";
 		collect.projection.intended_untracked = intendedUntracked;
+		const input = collect.next_transition.collect.inputs[0];
+		if (committedOnly) {
+			const tree = git("rev-parse", `${baseRef}^{tree}`).trim();
+			collect.projection.base_tree = input.base_tree = input.artifact_subject.base_tree = tree;
+		}
 		const lineageId: string = collect.authority.lineage_id;
 		const target: string = collect.target_identity;
 		const initial = statusV9(fixture("status-v5"));
@@ -85,7 +98,6 @@ for (const committedOnly of [true, false]) {
 				arguments: [{ name: "contract", value: contract, token: `--contract=${contract}` }],
 			} },
 		};
-		const input = collect.next_transition.collect.inputs[0];
 		const started = {
 			schema: "gentle-ai.review-integration.start/v3", contract, operation: "review.start", action: "created",
 			state: "reviewing", lineage_id: lineageId, lenses_required: true, risk_level: "medium", selected_lenses: ["review-reliability"],
@@ -134,6 +146,21 @@ for (const committedOnly of [true, false]) {
 		const binding = before.collectBindings?.[0];
 		assert.ok(binding, JSON.stringify(before));
 		assert.equal(before.result?.eligible_untracked_inventory, originalInventory);
+
+		if (committedOnly) {
+			const withBase = (ref: string) => review({ ...bound, input: JSON.stringify({ baseRef: ref, committedOnly: true }) });
+			const from = argv.length;
+			const aliased = await withBase(baseAlias);
+			assert.deepEqual(aliased.collectBindings, before.collectBindings, JSON.stringify(aliased));
+			const conflict = await withBase(otherBase!);
+			assert.deepEqual([conflict.status, conflict.outcome, conflict.reason, conflict.mutation_performed, conflict.mutation_outcome],
+				["blocked", "capture-route-registration-rejected", "selector-mismatch", false, "none"]);
+			const stale = await call("gentle_review_capture", { lineageId, collectBinding: JSON.stringify({ ...JSON.parse(binding.collectBinding), name: "stale" }) });
+			assert.deepEqual([stale.status, stale.outcome, stale.reason, stale.mutation_performed, stale.mutation_outcome],
+				["blocked", "capture-binding-rejected", "collectBinding is missing or stale for current STATUS", false, "none"]);
+			assert.deepEqual(argv.slice(from).filter((args) => args[1] !== "mode").map((args) => [args[1], args.includes("--base-ref") ? args[args.indexOf("--base-ref") + 1] : undefined]),
+				[["status", baseAlias], ["status", otherBase], ["status", undefined]], "no reviewer submission; alias and different base reached native STATUS");
+		}
 
 		if (committedOnly) writeFileSync(join(cwd, "new-unrelated.txt"), "not part of the candidate\n");
 		else { git("add", selectedPath); git("commit", "-qm", "previously untracked candidate"); }

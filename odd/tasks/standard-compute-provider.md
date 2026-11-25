@@ -71,3 +71,10 @@ documentación completa para `gentle-shell`.
 - Cierre: commit final `bf2a3dac8 docs(tasks): align standard-compute-provider checklist and log with final state`;
   árbol limpio. Slice: 5 commits / 873 líneas (lock files excluidos) sobre `feat/standard-compute-provider` vs
   `origin/main`; pasado el límite de ~400 líneas de PR — delivery en chained PR / review slices según política.
+- Cierre final (post-wiring): provider `standardcompute` instalado/configurado en runtime nativo
+  (`/home/bladimir/.gentle-shell/agent`) con wiring (baseUrl `https://api.stdcmpt.com/v1`, key env
+  `STANDARDCOMPUTE_API_KEY`, smart routing `standardcompute`) y verificación `pi auth check` → ready /
+  `pi --list-models standardcompute` → lista; API validada vía curl a `/v1/chat/completions`. Fix NVIDIA NIM
+  aplicado (`51d081950`) + tests 67/67 + typecheck 0 diag; merge upstream `52794fb86`. Review nativa bloqueada en
+  `lens_context_budget_exceeded`; PR #3525 OPEN @ `52794fb86` con diff vs `origin/main` +2,964/−3 (21 archivos) →
+  sobre el tope de ~400 líneas; split en slices iniciado (bloqueados con el mismo budget).

@@ -200,6 +200,9 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  // The facade's advisory_finding_claims of that same closure (each advisory id's
  // reviewer claim), relayed beside advisory_findings only; never routed on.
  let closureClaims: { value: unknown } | undefined;
+  // The latest closure's targeted_validator_evidence (a rejected correction's
+  // verdict), relayed for the human only; never routed on.
+  let closureValidatorEvidence: { value: unknown } | undefined;
  // The facade's marks on those claims: ids whose claim is a cut prefix, and ids
  // whose claim the per-closure limit left out. Relayed with the claims only.
  let closureClaimMarks: Body = {};
@@ -249,6 +252,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
  const { untrackedScope: _scope, intendedUntracked: _paths, ...resumeInput } = structuredClone(input);
  const finish = (outcome: string, result: Body) => ({ schema: "gentle-pi.review-coordinator-experiment/v1", outcome, result: withoutRawNonBlockingFindings(result), forecasts, reviewer_runs: reviewerRuns,
   ...(closureFindings !== undefined ? { advisory_findings: closureFindings.value } : {}),
+   ...(closureValidatorEvidence !== undefined ? { targeted_validator_evidence: closureValidatorEvidence.value } : {}),
   ...(closureFindings !== undefined && closureClaims !== undefined ? { advisory_finding_claims: closureClaims.value, ...closureClaimMarks } : {}),
   ...structuredClone(correctionKeys),
   ...structuredClone(nonBlockingKeys),
@@ -374,6 +378,7 @@ export async function runReviewCoordinator(value: unknown, deps: ReviewCoordinat
    // Read only these keys' presence and value; closure state and variants stay unread.
    const closure = record(capture.closure);
    closureFindings = Object.hasOwn(closure, "advisory_findings") ? { value: structuredClone(closure.advisory_findings) } : undefined;
+    closureValidatorEvidence = Object.hasOwn(closure, "targeted_validator_evidence") ? { value: structuredClone(closure.targeted_validator_evidence) } : undefined;
    // Relayed only as a plain object of strings; any other shape is dropped.
    const claims = closure.advisory_finding_claims;
    const plainStrings = claims !== null && typeof claims === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(claims))

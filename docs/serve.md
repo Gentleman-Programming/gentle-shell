@@ -124,6 +124,7 @@ Everything lives in `<agent home>/serve/`, a `0700` folder:
 | File | Content |
 | --- | --- |
 | `server.json` (`0600`) | `{ schema: "gentle-shell.serve.server/v1", protocol, serverId, url, listen, pid, startedAt, version, adminToken, discovery, forwardPorts? }`. Local clients discover the server here (`discovery`: whether it answers [LAN discovery](#lan-discovery); `forwardPorts`: `{ from, to }` when started with `--forward-ports`). Removed when the server stops. |
+| `server-id` (`0600`) | The server's `serverId` (`srv_` and 16 hex digits), minted on the first run and kept: the id in `server.json`, `/.well-known/gentle-shell`, `GET /api/server`, discovery replies and connection codes stays the same across restarts and upgrades. Delete it to give the server a new identity. |
 | `server.lock` (`0600`) | The pid holding the single-instance lock. A lock whose pid is gone is taken over. |
 | `devices.json` (`0600`) | Paired devices: id, name, scopes, created and last-used times, and the **sha256 of the token** — never the token. |
 | `server.log` (`0600`) | Background server log: lifecycle lines and each session's stderr, prefixed by session id. |

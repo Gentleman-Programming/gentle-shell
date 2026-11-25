@@ -87,7 +87,7 @@ sequenceDiagram
     Note over App: stores the server URL and the token,<br/>every later request carries Authorization: Bearer gss_…
 ```
 
-- **Identity before secrets.** The pairing code is sent only to an address whose `/.well-known/gentle-shell` names the `serverId` the discovery reply (or the connection code) announced. A device on the network that answers discovery with a forged reply still has to serve the matching identity at that address.
+- **Identity before secrets.** The pairing code is sent only to an address whose `/.well-known/gentle-shell` names the `serverId` the discovery reply (or the connection code) announced. A device on the network that answers discovery with a forged reply still has to serve the matching identity at that address. The `serverId` is minted once per agent home (`<home>/serve/server-id`) and stays the same across restarts and upgrades, so the app recognises the server it paired with.
 - **When discovery does not reach** (another subnet, a tailnet, a Wi-Fi with client isolation, UDP blocked), the long `gsc1.…` code carries the `serverId`, the port, up to 8 addresses to try and the pairing code. The app probes every address in parallel and pairs at the first whose identity matches.
 - **Manual pairing.** `gentle-shell serve pair` mints a code for a server on loopback, reached through an SSH tunnel ([Reach it from the Mac](serve.md#4-reach-it-from-the-mac)).
 

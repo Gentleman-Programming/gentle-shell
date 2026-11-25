@@ -6,6 +6,7 @@
 // WebSocket transport can come later behind the same contract.
 
 import { randomBytes } from "node:crypto";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { arch, homedir, hostname } from "node:os";
 import { basename, join, sep } from "node:path";
@@ -99,7 +100,7 @@ export interface ServeServerOptions {
 	fsLimits?: Partial<typeof SERVE_FS_LIMITS>;
 	gitLimits?: Partial<typeof SERVE_GIT_LIMITS>;
 	uploadLimits?: Partial<typeof SERVE_UPLOAD_LIMITS>;
-	/** `<agent home>/serve`: uploads and the terminal host's socket live under it. Without it uploads and terminals are off. */
+	/** `<agent home>/serve`: the server id, uploads and the terminal host's socket live under it. Without it the id changes every run and uploads and terminals are off. */
 	serveDir?: string;
 	termLimits?: Partial<typeof SERVE_TERM_LIMITS>;
 	/** The environment for git commands and service lookups; this process's by default. */
@@ -164,11 +165,30 @@ function bearer(req: IncomingMessage): string | undefined {
 	return m ? m[1] : undefined;
 }
 
+/**
+ * The server's identity, minted once per agent home in `<serveDir>/server-id`
+ * (`0600`) and the same on every run, so a restart or upgrade keeps the id
+ * devices, connection codes and discovery replies know. Unreadable or
+ * malformed: minted again.
+ */
+export function stableServerId(serveDir: string): string {
+	const path = join(serveDir, "server-id");
+	try {
+		const saved = readFileSync(path, "utf8").trim();
+		if (/^srv_[0-9a-f]{16}$/.test(saved)) return saved;
+	} catch { /* none yet */ }
+	const minted = `srv_${randomBytes(8).toString("hex")}`;
+	mkdirSync(serveDir, { recursive: true, mode: 0o700 });
+	writeFileSync(path, `${minted}\n`, { mode: 0o600 });
+	try { chmodSync(path, 0o600); } catch { /* Windows: ACLs, not modes */ }
+	return minted;
+}
+
 export function startServeServer(options: ServeServerOptions): Promise<ServeServer> {
 	const limits = { ...SERVE_SERVER_LIMITS, ...options.limits };
 	const now = options.now ?? Date.now;
 	const log = options.log ?? (() => {});
-	const serverId = `srv_${randomBytes(8).toString("hex")}`;
+	const serverId = options.serveDir === undefined ? `srv_${randomBytes(8).toString("hex")}` : stableServerId(options.serveDir);
 	const startedAt = now();
 	const sessions = new Map<string, ServeSession>();
 	let hostOk: (host: string) => boolean = () => false;

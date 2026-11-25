@@ -7,6 +7,7 @@
 // WebSocket transport can come later behind the same contract.
 
 import { randomBytes } from "node:crypto";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer,                                           } from "node:http";
 import { arch, homedir, hostname } from "node:os";
 import { basename, join, sep } from "node:path";
@@ -165,11 +166,30 @@ function bearer(req                 )                     {
 	return m ? m[1] : undefined;
 }
 
+/**
+ * The server's identity, minted once per agent home in `<serveDir>/server-id`
+ * (`0600`) and the same on every run, so a restart or upgrade keeps the id
+ * devices, connection codes and discovery replies know. Unreadable or
+ * malformed: minted again.
+ */
+export function stableServerId(serveDir        )         {
+	const path = join(serveDir, "server-id");
+	try {
+		const saved = readFileSync(path, "utf8").trim();
+		if (/^srv_[0-9a-f]{16}$/.test(saved)) return saved;
+	} catch { /* none yet */ }
+	const minted = `srv_${randomBytes(8).toString("hex")}`;
+	mkdirSync(serveDir, { recursive: true, mode: 0o700 });
+	writeFileSync(path, `${minted}\n`, { mode: 0o600 });
+	try { chmodSync(path, 0o600); } catch { /* Windows: ACLs, not modes */ }
+	return minted;
+}
+
 export function startServeServer(options                    )                       {
 	const limits = { ...SERVE_SERVER_LIMITS, ...options.limits };
 	const now = options.now ?? Date.now;
 	const log = options.log ?? (() => {});
-	const serverId = `srv_${randomBytes(8).toString("hex")}`;
+	const serverId = options.serveDir === undefined ? `srv_${randomBytes(8).toString("hex")}` : stableServerId(options.serveDir);
 	const startedAt = now();
 	const sessions = new Map                      ();
 	let hostOk                            = () => false;

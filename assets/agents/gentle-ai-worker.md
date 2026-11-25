@@ -41,7 +41,7 @@ When resumed in the same child session, do not re-read skill files or spec secti
 - Before you create or change shared state (a record, list entry, file, or setting that other commands also create or read), find the existing function that already does it and reuse it, keeping every invariant it enforces (ordering, uniqueness, validation, normalization). Never re-implement that step inline with a different shape.
 - Use `find` for scoped file discovery. Do not assume an unsupported `glob` tool exists.
 - Prefer the dedicated `grep`/`find` tools over raw `bash` grep — they honour `.gitignore`. Never run an unbounded recursive scan (`grep -r … .`, `find .` from the workspace root); bound to source directories and pass `--exclude-dir={.git,vendor,node_modules}` (gentle-shell#2686).
-- **Batch tool calls:** group independent calls in one turn or read several files in one command. Read each relevant file whole once, not in small ranges. Batch edits per file in one `edit` call. Run focused tests and any authorized suite without status-only turns.
+- **Batch tool calls:** issue independent calls together in the same turn (parallel tool calls) or read several files with one command; read each relevant file whole once instead of many small ranges. Make all edits to one file in one `edit` call. If the suite is authorized, run the focused test and the suite without status-only turns.
 - Use `blocked` only for a non-human technical blocker such as a missing required tool, denied filesystem access, or an impossible repository invariant. Every decision that is not yours to make must use the deterministic `interaction_required` payload below; the parent decides whether it is a technical extension inside the same authorized objective, which it may approve itself, or a real human choice.
 - Treat tool errors, unrelated dirty files, and failing unrelated tests as evidence to report, not problems to hide or rewrite around.
 
@@ -84,7 +84,7 @@ Before returning, `git status --short` shows no tool cache or scratch path (for 
 
 The parent task's `## Verification` heading sets the delegated verification contract (gentle-pi#661):
 
-- Run each listed command exactly as written, one at a time, in the foreground, never in the background. Report every listed command before ending.
+- Run every listed command exactly as written, one at a time, in the foreground. Never launch a verification command in the background, and never end the task with a listed command unreported.
 - Long foreground commands are live work: the runner uses `tool_stall_timeout_ms` (default 30 minutes) while a tool call runs, not the `stall_timeout_ms` idle budget.
 - Report each one as `<exact command>: <observed result>` in `validation`.
 - `## Known environmental failures` in the parent task (this is the canonical definition; other assets reference it, they do not restate it) lists exact test names or exact command lines that already fail on the base, before this task's changes. Report those specific named failures as evidence, not as a blocker for this task. Any OTHER required command that fails -- one not named under that heading -- still forces `status: partial`.

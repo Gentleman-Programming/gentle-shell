@@ -47,5 +47,5 @@ Return:
 
 ## References
 
-- `docs/skill-style-guide.md` — how skills should be authored before indexing.
-- `assets/orchestrator-skills.md` — Pi delegator protocol (effective view, exact paths).
+- `../../docs/skill-style-guide.md` — how skills should be authored before indexing.
+- `../../assets/orchestrator-skills.md` — Pi delegator protocol (effective view, exact paths).

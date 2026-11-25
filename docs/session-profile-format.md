@@ -27,13 +27,39 @@ The decoder accepts the closed origin set `user`, `local`, `repo`, and `global`.
 A malformed `startup` field is dropped, so the record keeps the routing a v1
 reader gives it, and a `startup` on a clear other than `"none"` reads as a
 legacy clear. A v1 reader ignores `startup`, reads a startup record as an
-explicit choice and a clear with `startup: "none"` as a clear; launch routing
-is the same except in the case gentle-shell#2742 section 2 documents (a session
-that started with no profile, resumed by a v1 version after a default
-appeared). A bound empty snapshot is not a
-clear. Snapshots are detached, known invalid fields reject the whole binding,
-and unknown extra fields carry no routing meaning. Existing route normalization
-supports legacy model strings and `effort`; valid `thinking` takes precedence.
+explicit choice and a clear with `startup: "none"` as a clear. Launch routing
+is the same except in the documented divergences:
+
+| Case | Current version | A v1 reader |
+| --- | --- | --- |
+| No profile at start, a default appeared since (gentle-shell#2742 section 2) | Keeps no session profile | Routes the default that appeared |
+| `follow` mode on a recorded startup bind (gentle-shell#1064 A3) | Ignores the startup bind and resolves the current defaults; an explicit choice still wins | Routes the recorded bind |
+| A session recorded at its own start, resumed (gentle-shell#1064 A3) | Resumes on the recorded startup state, origin and full definition included | Reads the same record as an explicit choice and routes it |
+
+A bound empty snapshot is not a clear. Snapshots are detached, known invalid
+fields reject the whole binding, and unknown extra fields carry no routing
+meaning. Existing route normalization supports legacy model strings and
+`effort`; valid `thinking` takes precedence.
+
+## Startup record
+
+A session records its startup state at its own start, at the same moment it
+freezes it in memory: the startup bind with its origin and full normalized
+definition, orchestrator included, or the `clear` marked `startup: "none"` when
+no profile resolves in any layer. Nothing else is a session's start, so a
+resume, fork, reload or child session writes no record. A session from before
+this record was introduced writes nothing and keeps its previous behavior: it
+freezes on resume, and clear appends a legacy clear. A session with no session
+file has nothing to append, so only the in-memory freeze carries its state.
+
+A `follow` session never writes a startup record and, when reading, ignores a
+startup bind and resolves the current defaults; an explicit choice still wins.
+The Fast tier follows the same rule, so a `follow` session reads the default
+tier of its own start rather than a recorded startup orchestrator.
+
+On resume the record supplies the startup state reviewers and the Fast tier
+read, orchestrator included. The live model is not switched again: Pi restores
+the session's model from its own `model_change` entries.
 
 ## Replay
 

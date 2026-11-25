@@ -102,6 +102,12 @@ export interface DesktopAgentEntry {
 	thinking?: string;
 	lastStep: DesktopAgentStep;
 	usage: DesktopAgentUsage;
+	/** Turns the subagent has finished; absent from an owner that predates progress. */
+	turns?: number;
+	/** Tool calls the subagent has started; absent from an owner that predates progress. */
+	toolCalls?: number;
+	/** The tool running right now, when its name is a plain identifier; never its arguments. */
+	activeTool?: string;
 }
 
 /** The owner's list answer for one session: which session, plus its projected agents. */
@@ -171,6 +177,25 @@ const AGENT_FIELD_LIMIT = 200;
 const MODEL_FIELD_LIMIT = 128;
 const SOURCE_FIELD_LIMIT = 64;
 const THINKING_FIELD_LIMIT = 32;
+/** A tool name that may cross the wire: a plain identifier, never free text. */
+const ACTIVE_TOOL_NAME = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+const countField = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * The name of the most recent tool still running in the thread, when it is a
+ * plain identifier. Finished tool items are skipped, so a parallel call that
+ * ended after a still-running one never hides it.
+ */
+export function activeToolName(thread: TaskThread | undefined): string | undefined {
+	if (!thread) return undefined;
+	for (let index = thread.items.length - 1; index >= 0; index -= 1) {
+		const item = thread.items[index]!;
+		if (item.kind !== THREAD_ITEM.TOOL || !item.running) continue;
+		return ACTIVE_TOOL_NAME.test(item.name) ? item.name : undefined;
+	}
+	return undefined;
+}
 
 function truncate(text: string, limit: number): string {
 	return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1))}…`;
@@ -192,7 +217,7 @@ function projectDesktopAgentUsage(task: TaskRecord): DesktopAgentUsage {
  * from the named members only, so a foreign or stale object can never smuggle
  * a prompt, path, tool argument, result, or secret into the Desktop payload.
  */
-export function projectDesktopAgent(task: TaskRecord): DesktopAgentEntry {
+export function projectDesktopAgent(task: TaskRecord, thread?: TaskThread): DesktopAgentEntry {
 	const entry: DesktopAgentEntry = {
 		id: task.id,
 		agent: truncate(task.agent, AGENT_FIELD_LIMIT),
@@ -204,6 +229,11 @@ export function projectDesktopAgent(task: TaskRecord): DesktopAgentEntry {
 	if (task.modelSource !== undefined) entry.modelSource = truncate(task.modelSource, SOURCE_FIELD_LIMIT);
 	if (task.fallbackFrom !== undefined) entry.fallbackFrom = truncate(task.fallbackFrom, MODEL_FIELD_LIMIT);
 	if (task.thinking !== undefined) entry.thinking = truncate(task.thinking, THINKING_FIELD_LIMIT);
+	if (countField(task.turns)) entry.turns = task.turns;
+	if (countField(task.toolCalls)) entry.toolCalls = task.toolCalls;
+	// Only an active task has a tool running; a finished one never reports one.
+	const tool = FINISHED_STATUSES.includes(task.status) ? undefined : activeToolName(thread);
+	if (tool !== undefined) entry.activeTool = tool;
 	return entry;
 }
 
@@ -214,12 +244,12 @@ export function projectDesktopAgent(task: TaskRecord): DesktopAgentEntry {
  * already evicts finished tasks beyond its own retention, so no separate
  * linger window is needed here.
  */
-export function selectDesktopAgents(tasks: readonly TaskRecord[]): DesktopAgentEntry[] {
+export function selectDesktopAgents(tasks: readonly TaskRecord[], threadOf?: (id: string) => TaskThread | undefined): DesktopAgentEntry[] {
 	const active = tasks.filter((task) => !FINISHED_STATUSES.includes(task.status));
 	const finished = tasks
 		.filter((task) => FINISHED_STATUSES.includes(task.status))
 		.sort((left, right) => (right.endedAt ?? 0) - (left.endedAt ?? 0));
-	return [...active, ...finished].slice(0, DESKTOP_AGENTS_LIST_LIMIT).map(projectDesktopAgent);
+	return [...active, ...finished].slice(0, DESKTOP_AGENTS_LIST_LIMIT).map((task) => projectDesktopAgent(task, threadOf?.(task.id)));
 }
 
 function reportedTokens(measurement: ChildTokenMeasurement): number {
@@ -287,6 +317,17 @@ export function parseDesktopAgentEntry(value: unknown): DesktopAgentEntry | unde
 			if (typeof next !== "string") return undefined;
 			entry[field] = next;
 		}
+	}
+	for (const field of ["turns", "toolCalls"] as const) {
+		const next = raw[field];
+		if (next !== undefined) {
+			if (!countField(next)) return undefined;
+			entry[field] = next;
+		}
+	}
+	if (raw.activeTool !== undefined) {
+		if (typeof raw.activeTool !== "string" || !ACTIVE_TOOL_NAME.test(raw.activeTool)) return undefined;
+		entry.activeTool = raw.activeTool;
 	}
 	return entry;
 }

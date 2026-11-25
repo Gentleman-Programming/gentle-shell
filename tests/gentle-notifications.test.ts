@@ -18,6 +18,7 @@ interface Options {
 	deferred?: boolean; slowProbe?: boolean; holdPlayback?: boolean; noUnsubscribe?: boolean; unavailable?: boolean; fail?: boolean;
 	capabilities?: Set<"wav" | "ogg" | "flac">;
 	percent?: number | null; visualNotice?: boolean;
+	compaction?: ReturnType<ExtensionAPI["getSettings"]>["compaction"]; contextWindow?: number;
 }
 function harness(options: Options = {}) {
 	const id = options.sessionId ?? `parent-${++nextSession}`;
@@ -27,8 +28,8 @@ function harness(options: Options = {}) {
 		if (!map.has(key)) map.set(key, new Set()); map.get(key)!.add(fn);
 		return () => { map.get(key)!.delete(fn); };
 	};
-	// SAFETY: only lifecycle hooks and the bus are used by this factory; a minimal fake traps that contract.
-	const pi = { on: (key: string, fn: any) => {
+	// SAFETY: a minimal fake for lifecycle hooks, the bus, and effective settings.
+	const pi = { getSettings: () => options.compaction === undefined ? undefined : { compaction: options.compaction }, on: (key: string, fn: any) => {
 		const off = listen(native, key, fn); return options.noUnsubscribe ? undefined : off;
 	}, events: { on: (key: string, fn: any) => listen(bus, key, fn), emit: (key: string, data: unknown) => {
 		for (const fn of [...bus.get(key) ?? []]) fn(data);
@@ -41,10 +42,12 @@ function harness(options: Options = {}) {
 	settings.enabled = options.enabled ?? !options.absent; settings.audio.minimumIntervalMs = 0; settings.audio.coalesceWindowMs = 0;
 	settings.audio.events = Object.fromEntries(NOTIFICATION_EVENTS.map(e => [e,
 		e === "context.high" ? "builtin:attention" : e.endsWith("failed") ? "builtin:error" : e === "agent.cancelled" ? "builtin:attention" : "builtin:success"]));
-	// SAFETY: this owner reads only mode, session identity, context usage and local notify, never session entries/model APIs.
-	let percent: number | null = options.percent ?? null;
+	// SAFETY: provides the session identity, model, latest context usage and local notify.
+	let percent: number | null = options.percent ?? null, tokens: number | null = null;
+	const contextWindow = options.contextWindow ?? 100;
 	const ctx = { mode: options.mode ?? "tui", hasUI: true, sessionManager: { getSessionId: () => id },
-		getContextUsage: () => ({ tokens: null, contextWindow: 100, percent }),
+		model: { provider: "provider", id: "model", contextWindow },
+		getContextUsage: () => ({ tokens, contextWindow, percent }),
 		ui: { notify: (s: string) => notes.push(s) } } as unknown as ExtensionContext;
 	const deps = { now: () => time, env: { GENTLE_PI_AGENTS_CHILD: options.child ? "1" : "0", GENTLE_SHELL_INTERACTIVE_HOST: "1" },
 		visualNotice: () => options.visualNotice ?? true,
@@ -79,6 +82,7 @@ function harness(options: Options = {}) {
 	};
 	return { id, pi, ctx, deps, retire, emit, start, source, played, signals, permits, releases, probeReleases, notes, native, bus, timers, advance,
 		setPercent: (value: number | null) => { percent = value; },
+		setTokens: (value: number | null) => { tokens = value; percent = value === null ? null : value / contextWindow * 100; },
 		get probes() { return probes; }, get writes() { return writes; }, get attempts() { return attempts; } };
 }
 const listeners = (map: Map<string, Set<any>>) => [...map.values()].reduce((n, set) => n + set.size, 0);
@@ -126,6 +130,40 @@ test("context.high warns once per high episode and rearms only below the thresho
 		h.setPercent(95); await h.emit("turn_end", { outcome: "completed" });
 		assert.equal(warnings(), 1, "dropping below the threshold rearms a new episode");
 	} finally { h.retire(); }
+});
+
+test("context.high warns once at the active model's compaction threshold, not at a rounded window percentage", async () => {
+	const h = harness({ contextWindow: 1_048_576, compaction: {
+		reserveTokens: 209_715, modelOverrides: { "provider/model": { reserveTokens: 419_430 } },
+	} });
+	try {
+		await h.start();
+		h.setTokens(629_145); await h.emit("turn_end");
+		assert.deepEqual(h.played, []); assert.deepEqual(h.notes, []);
+		const note = "Context usage has reached the auto-compaction threshold; Pi compacts when usage exceeds it.";
+		h.setTokens(629_146); await h.emit("turn_end");
+		assert.deepEqual(h.played, ["builtin:attention"]); assert.deepEqual(h.notes, [note]);
+		h.setTokens(null); await h.emit("turn_end");
+		h.setTokens(629_147); await h.emit("turn_end");
+		assert.deepEqual(h.played, ["builtin:attention"]); assert.deepEqual(h.notes, [note]);
+		h.setTokens(629_145); await h.emit("turn_end");
+		h.setTokens(629_146); await h.emit("turn_end");
+		assert.deepEqual(h.played, ["builtin:attention", "builtin:attention"]); assert.deepEqual(h.notes, [note, note]);
+	} finally { h.retire(); }
+});
+
+test("context.high preserves the inclusive 90% warning when compaction is disabled or the threshold is unknown", async () => {
+	for (const compaction of [{ enabled: false, reserveTokens: 40_000 }, { reserveTokens: -1 }, undefined]) {
+		const h = harness({ contextWindow: 100_000, compaction });
+		try {
+			await h.start();
+			h.setTokens(89_999); await h.emit("turn_end");
+			assert.deepEqual(h.played, []); assert.deepEqual(h.notes, []);
+			h.setTokens(90_000); await h.emit("turn_end");
+			assert.deepEqual(h.played, ["builtin:attention"]);
+			assert.deepEqual(h.notes, ["Context usage is at 90% (≥ 90%); consider compacting before the next turn."]);
+		} finally { h.retire(); }
+	}
 });
 
 test("same-session reload preserves the context episode until usage drops below 90%", async () => {

@@ -12,6 +12,10 @@ export function jobsCollapseKey(env: NodeJS.ProcessEnv = process.env, bindings: 
 export interface RunningJobDisplay {
 	id: string;
 	label: string;
+	/** Title provenance for external status consumers; label remains the local display. */
+	explicitLabel?: string;
+	/** Untrusted publishers may send future or non-string kinds. */
+	kind?: unknown;
 	startedAt: number;
 	// Finished-tail fields; optional so older publishers that only list running
 	// jobs keep validating (the Agents-card pattern: results linger briefly).
@@ -29,6 +33,7 @@ export function isJobsSidebarSnapshot(value: unknown): value is JobsSidebarSnaps
 	return (value as JobsSidebarSnapshot).jobs.every((job) => {
 		if (!job || typeof job !== "object") return false;
 		if (typeof job.id !== "string" || job.id.length === 0 || typeof job.label !== "string") return false;
+		if (job.explicitLabel !== undefined && typeof job.explicitLabel !== "string") return false;
 		if (typeof job.startedAt !== "number" || !Number.isFinite(job.startedAt)) return false;
 		if (job.status !== undefined && job.status !== "exited" && job.status !== "stopped" && job.status !== "failed") return false;
 		if (job.endedAt !== undefined && (typeof job.endedAt !== "number" || !Number.isFinite(job.endedAt))) return false;

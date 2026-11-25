@@ -166,11 +166,11 @@ test("S5 change 5: gentle_odd_phase does not restate the Phase reporting cadence
 // --- harness-continuity S3: the authorized-work boundary is mode- and RDD-stable ---
 
 const CANONICAL_CLOSE = [
-	"Authorized work continues: runnable in-scope steps run, a pending child is a wait event whose completion resumes the turn without asking the human",
-	"A tracked task ends the turn pending only while it waits on already-launched work, for the affected work a denial, missing consent, the user's explicit stop, or an exhausted limit applies to, or for a genuine human decision still outstanding",
-	"only a real human decision, the user's explicit stop, a denial, missing consent, or an exhausted limit stops the work it applies to, never independent authorized work",
-	"Missing, partial, unavailable, or declined proof forbids claiming completion of the affected work, never an independently authorized next step",
-	"while a required authorized check the existing budget still allows keeps running",
+	"Run authorized in-scope steps. Work through failures with a permitted route. A pending child is a wait: completion resumes the turn without asking.",
+	"A tracked task ends the turn pending only for launched work still running, a real human decision, denial, missing consent, explicit stop, or exhausted limit.",
+	"Only a real human decision, explicit user stop, denial, missing consent, exhausted limit, or failure without a permitted route stops only affected work.",
+	"Continue independent authorized work; never abandon runnable work or present an unverified outcome as final.",
+	"Missing, partial, unavailable, or declined proof bars claiming completion of affected work, not independent authorized work or required authorized checks in budget.",
 	"Never turn a report into a blind self-reprompt loop.",
 ] as const;
 

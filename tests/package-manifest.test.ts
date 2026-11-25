@@ -61,7 +61,7 @@ const V014_MANAGED_ASSETS = join(
 // gentle-ai-explore.md as their exemplar (packaged, absent from the v0.13
 // manifest) after review-refuter.md was retired together with every
 // Pi-authored adversarial review verdict.
-const MANAGED_EXEMPLAR_TOOLS = ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"];
+const MANAGED_EXEMPLAR_TOOLS = ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "codemode", "mcp__codegraph__codegraph_explore"];
 const RETIRED_ADVERSARIAL_AGENTS = ["review-refuter.md", "review-validator.md"];
 
 interface ManagedAssetsManifest {
@@ -431,20 +431,20 @@ test("package manifest installs pi-pretty through a wrapper without bundling nat
 	);
 });
 
-test("package verification binds the published Gentle AI v4.5.0 runtime pin", () => {
+test("package verification binds the published Gentle AI v5.0.0 runtime pin", () => {
 	const installer = readFileSync(join(PACKAGE_ROOT, "scripts", "gentle-ai-installer.mjs"), "utf8");
 	const binary = readFileSync(join(PACKAGE_ROOT, "lib", "gentle-ai-binary.ts"), "utf8");
 	const verifier = readFileSync(join(PACKAGE_ROOT, "scripts", "verify-package-files.mjs"), "utf8");
 
-	assert.match(installer, /INSTALLER_VERSION = "4\.5\.0"/);
+	assert.match(installer, /INSTALLER_VERSION = "5\.0\.0"/);
 	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_PACKAGE.*GENTLE_AI_WINDOWS_SOURCE_MODULE/);
-	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:81Hsy\+cboAbUse1ORVJuwji6V9sRIGlFwC73EtMdw0c="/);
+	assert.match(installer, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM = "h1:8NBGfEMu\/LsR\/lJxALGNAsvK9\+5SA2htPNueWKXIW24="/);
 	assert.match(installer, /GOTOOLCHAIN: "local"/);
 	assert.match(installer, /GOSUMDB: "sum\.golang\.org"/);
 	assert.match(binary, /GENTLE_AI_VERSION = INSTALLER_VERSION/);
 	assert.match(binary, /GO_SUMDB_SOURCE_BUILD/);
 	assert.match(binary, /GENTLE_AI_WINDOWS_SOURCE_MODULE_CHECKSUM/);
-	assert.match(verifier, /v4\.5\.0/);
+	assert.match(verifier, /v\$\{INSTALLER_VERSION\} runtime pin/);
 });
 
 
@@ -1583,6 +1583,7 @@ test("gentle-ai-worker packages the exact scoped writer contract", () => {
 		"edit",
 		"write",
 		"bash",
+		"codemode",
 		"mem_save",
 		"mcp__codegraph__codegraph_explore",
 	]);
@@ -1703,6 +1704,7 @@ test("package installation gives gentle-ai-worker a loader-compatible scoped ide
 			"edit",
 			"write",
 			"bash",
+			"codemode",
 			"mem_save",
 			"mcp__codegraph__codegraph_explore",
 		]);
@@ -1828,8 +1830,8 @@ test("global model routing uses PI_CODING_AGENT_DIR for package-installed agents
 test("normal and forced installation copy generic agents with complete role contracts", () => {
 	const previousAgentHome = process.env.GENTLE_PI_AGENT_HOME;
 	const expectedTools = {
-		"gentle-ai-explore": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "mcp__codegraph__codegraph_explore"],
-		"gentle-ai-verify": ["read", "grep", "find", "bash", "mcp__codegraph__codegraph_explore"],
+		"gentle-ai-explore": ["read", "grep", "find", "codegraph", "web_enable", "web_search", "source_check", "fetch_content", "get_search_content", "codemode", "mcp__codegraph__codegraph_explore"],
+		"gentle-ai-verify": ["read", "grep", "find", "bash", "codemode", "mcp__codegraph__codegraph_explore"],
 	} as const;
 
 	try {
@@ -1949,9 +1951,9 @@ test("pi-pretty wrapper uses cached ESM loading for compiled and pnpm symlink in
 	assert.match(wrapper, /quietToolsEnabled/);
 });
 
-test("Gentle Shell v4.8.0 package manifest declares the release version", () => {
+test("Gentle Shell v5.0.0 package manifest declares the release version", () => {
 	const packageJson = readPackageJson();
-	assert.equal(packageJson.version, "4.8.0", "the release manifest must be explicitly pinned to v4.8.0");
+	assert.equal(packageJson.version, "5.0.0", "the release manifest must be explicitly pinned to v5.0.0");
 	assert.equal(packageJson.scripts?.test, "node scripts/run-test-suite.mjs");
 	assert.ok(packageJson.files?.includes("assets/"));
 	assert.ok(packageJson.files?.includes("contracts/"));

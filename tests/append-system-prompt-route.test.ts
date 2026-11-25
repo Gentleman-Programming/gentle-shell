@@ -123,25 +123,30 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 	assert.equal(appended.split("## Authorized work continuity").length - 1, 1);
 	const continuity = appended.slice(continuityStart, coreStart);
 	for (const clause of [
-		"necessary in-scope implementation, documentation and verification steps",
-		"Never end a turn merely announcing an immediately executable authorized next step; execute it instead",
+		"Do in-scope implementation, docs and verification without asking at each step.",
+		"Run the authorized next step now.",
 		"A progress update is not a request for permission.",
 		"An explicit user stop applies only to the work it names.",
 		"Do not infer permission for publishing, destructive actions, unrelated scope or native consent",
-		"Honor explicit one-run, no-retry, or diagnostic-only limits.",
-		"Correct a failing check only within the existing correction budget",
-		"never reset budgets, add retry allowances, weaken checks, or override final outcomes",
-		"launch the bounded action and end the turn when no independent in-scope work remains",
-		"Retain its identity and resume the already-authorized continuation automatically on its completion event",
-		"do not ask the human to say \"continue\" or poll",
+		"Honor one-run, no-retry and diagnostic-only limits.",
+		"Correct checks within their correction limit.",
+		"Worker exhaustion: Keep the worker correcting while attempts name the cause from output and change the fix to address it.",
+		"A worker-local cause recurring after a real fix without a new hypothesis ends the worker's cycle, not the unit.",
+		"Never reset, widen or dodge a limit, even in a new session.",
+		"Do not add retry allowances.",
+		"Never weaken checks or override final outcomes.",
+		"work that will wake you is running (a wait) and no independent authorized work remains",
+		"Launch the bounded action and keep its identity.",
+		"A wait is launched work whose completion event resumes the turn and authorized work without the human.",
+		"Do not poll or ask the human to continue.",
 	]) assert.ok(continuity.includes(clause), `missing continuity clause: ${clause}`);
-	// The canonical Close owns the authorized-work boundary; the Pi-owned block
-	// keeps its unique guards and budget clauses instead of restating it.
+	// The general turn-end rule complements, but does not duplicate, the
+	// canonical Close's tracked-work and proof clauses.
 	for (const duplicated of [
 		"Needs your decision",
 		"never more verification",
 		"Before a terminal bounded-stop outcome",
-		"a pending child is a wait event",
+		"A pending child is a wait: completion resumes the turn without asking.",
 		"Missing, partial, unavailable, or declined proof",
 	]) assert.ok(!continuity.includes(duplicated), `continuity must not duplicate or license: ${duplicated}`);
 	// cost-speed-painpoints S15 P4: the verifier-setup rules load with the Verification rule, not on every turn.

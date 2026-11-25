@@ -29,12 +29,9 @@ writeFileSync(join(scratch, "a.ts"), "export const a = 1;\n");
 const executable = join(scratch, "gentle-ai-fixture");
 writeFileSync(executable, "fixture provider; never executed");
 const mode = JSON.stringify({ schema: "gentle-ai.review-mode/v1", operation: "status", scope: "both", status: { schema: "gentle-ai.rdd-mode-status/v1", global: "on", clone_local: "", effective: "on", source: "global", revision: `sha256:${"f".repeat(64)}` } });
-const refusal = { schema: "gentle-ai.review-integration.failure/v2", contract: "gentle-ai.review-integration/v2", operation: "review.status", phase: "preflight",
-	code: "invalid_request", message: "The negotiated review request is invalid.", mutation_outcome: "not_started", authority_applicability: "not_evaluated",
-	retry_safe: true, replayability: "not_replayable", required_inputs: [], next_action: "correct_request", cause: "flag provided but not defined: -non-blocking-findings" };
 
-type Provider = "answers" | "answers-empty" | "refuses" | "silent";
-/** answers: the flag adds the key; answers-empty: the key with no findings; refuses: the pinned provider's refusal; silent: accepts the flag and sends no key. */
+type Provider = "answers" | "answers-empty" | "silent";
+/** answers: the flag adds the key; answers-empty: the key with no findings; silent: accepts the flag and sends no key. */
 function host(kind: Provider) {
 	const statusCalls: boolean[] = [];
 	const adapter: ExecFileAdapter = async (request) => {
@@ -44,13 +41,12 @@ function host(kind: Provider) {
 		if (args[0] !== "review" || args[1] !== "status") throw new Error(`unexpected native invocation: ${args.join(" ")}`);
 		const flagged = args.includes("--non-blocking-findings");
 		statusCalls.push(flagged);
-		if (flagged && kind === "refuses") return reply(refusal, 1);
 		const body = structuredClone(STATUS);
 		if (flagged && kind === "answers") body.non_blocking_findings = structuredClone(NON_BLOCKING);
 		if (flagged && kind === "answers-empty") body.non_blocking_findings = { ...structuredClone(NON_BLOCKING), findings: [] };
 		return reply(body);
 	};
-	// One executable per provider kind: a refusal is remembered per binary.
+	// One executable per provider kind.
 	const binary = join(scratch, `gentle-ai-${kind}-${Math.random().toString(36).slice(2)}`);
 	writeFileSync(binary, `fixture provider ${kind} ${binary}`);
 	const tools = new Map<string, any>();
@@ -91,12 +87,12 @@ test("the provider answered with an empty list: the correction fields come back 
 	assert.equal(Object.hasOwn(details, "non_blocking_finding_claims"), false);
 });
 
-for (const kind of ["refuses", "silent"] as const) {
+for (const kind of ["silent"] as const) {
 	test(`the provider did not answer (${kind}): no top-level correction or non-blocking field; the nested record is the provider's STATUS`, async () => {
 		const provider = host(kind);
 		const details = await provider.run();
 		assert.equal(details.outcome, "input-required");
-		assert.deepEqual(provider.statusCalls, kind === "refuses" ? [true, false] : [true]);
+		assert.deepEqual(provider.statusCalls, [true]);
 		for (const key of [...CORRECTION_KEYS, ...NON_BLOCKING_KEYS]) assert.equal(Object.hasOwn(details, key), false, `${kind}: ${key}`);
 		const { collect: _collect, ...transition } = STATUS.next_transition;
 		assert.deepEqual(details.result.result, { ...STATUS, next_transition: transition }, `${kind}: the relayed STATUS keeps the correction request`);

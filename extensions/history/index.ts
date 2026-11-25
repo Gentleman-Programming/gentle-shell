@@ -1123,7 +1123,7 @@ class PromptHistorySelector extends Container implements Focusable {
     this.lastWidth = width;
     this.rebuildListWithWidth(width);
     this.rebuildPreviewWithWidth(width);
-    const raw = super.render(width);
+    const raw = [...super.render(width)];
     // Pad or trim to exactly OVERLAY_LINES so the overlay never shifts.
     const blank = " ".repeat(Math.max(1, width));
     while (raw.length < PromptHistorySelector.OVERLAY_LINES) raw.push(blank);

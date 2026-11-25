@@ -414,6 +414,7 @@ test("--status prints versions and what is installed", async (t) => {
 		"  Gentle Shell: 9.9.9",
 		`  Herdr app: not installed (needs ${HERDR_APP_VERSION} or newer)`,
 		`  Herdr home: ${f.herdrHome}`,
+		`  Feed: none at ${f.home}/.pi/agent/desktop/sessions; start a session with gentle-shell and the window will see it`,
 		"  Layout gentle-shell: not installed",
 		"  Mods: none installed (ships gentle-a, gentle-b)",
 		"  Window: not running",
@@ -428,6 +429,7 @@ test("--status prints versions and what is installed", async (t) => {
 		"  Gentle Shell: 9.9.9",
 		`  Herdr app: ${HERDR_APP_VERSION} at ${join(f.bin, "herdr-app")} (needs ${HERDR_APP_VERSION} or newer)`,
 		`  Herdr home: ${f.herdrHome}`,
+		`  Feed: none at ${f.home}/.pi/agent/desktop/sessions; start a session with gentle-shell and the window will see it`,
 		`  Layout gentle-shell: installed at ${join(f.herdrHome, "layouts", "gentle-shell.json")}`,
 		`  Mods: gentle-a, gentle-b installed in ${join(f.herdrHome, "mods")}`,
 		"  Window: running, layout main",
@@ -924,4 +926,101 @@ test("chat feed: hideThinkingBlock follows pi's settings merge (project over age
 	assert.equal(hideThinkingFrom('{"hideThinkingBlock":false}', '{"theme":"x"}'), false);
 	assert.equal(hideThinkingFrom(null, null), false);
 	assert.equal(hideThinkingFrom("{not json", '{"hideThinkingBlock":"yes"}'), false);
+});
+
+test("--status reports an agent home the mods cannot read", async (t) => {
+	const f = fixture(t);
+	const agent = join(f.home, "elsewhere", "agent");
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	assert.match(line ?? "", /is not read by the mods/);
+	assert.match(line ?? "", /add \["/);
+});
+
+test("--status accepts an agent home listed in the roots file", async (t) => {
+	const f = fixture(t);
+	const agent = join(f.home, "elsewhere", "agent");
+	mkdirSync(f.herdrHome, { recursive: true });
+	writeFileSync(join(f.herdrHome, "gentle-shell-roots.json"), `${JSON.stringify({ roots: [agent] }, null, 2)}\n`);
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	assert.match(line ?? "", /listed in .*gentle-shell-roots\.json/);
+	assert.doesNotMatch(line ?? "", /is not listed/);
+});
+
+test("--status reports a feed it can read", async (t) => {
+	const f = fixture(t);
+	const agent = join(f.home, "agent");
+	const dir = join(agent, "desktop", "sessions");
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "session-a.json"), "{}\n");
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Feed: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	assert.match(line ?? "", /1 session snapshot in .*desktop\/sessions \(newest \d+s old\)/);
+});
+
+test("--status reads the agent home a separate install recorded", async (t) => {
+	const f = fixture(t);
+	// packageRoot mirrors <root>/prefix/lib/node_modules/gentle-pi, and installation.json sits at <root>.
+	const root = join(f.home, "install");
+	const packageRoot = join(root, "prefix", "lib", "node_modules", "gentle-pi");
+	mkdirSync(packageRoot, { recursive: true });
+	const agent = join(root, "agent");
+	writeFileSync(join(root, "installation.json"), `${JSON.stringify({ Agent: agent })}\n`);
+	const base = context(f, { args: ["--status"], packageRoot });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: "" } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	assert.match(line ?? "", new RegExp(`Roots: ${agent} is not read by the mods`));
+});
+
+test("--status treats a trailing separator as the same agent home", async (t) => {
+	const f = fixture(t);
+	const agent = join(f.home, ".pi", "agent");
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: `${agent}/` } }), 0);
+	assert.equal(f.out.some((entry) => entry.startsWith("  Roots: ")), false, f.out.join("\n"));
+});
+
+test("--status stops at the eight roots the mods read", async (t) => {
+	const f = fixture(t);
+	const agent = join(f.home, "agent");
+	const custom = Array.from({ length: 7 }, (_, i) => join(f.home, `root-${i}`));
+	mkdirSync(f.herdrHome, { recursive: true });
+	writeFileSync(join(f.herdrHome, "gentle-shell-roots.json"), `${JSON.stringify({ roots: [...custom, agent] }, null, 2)}\n`);
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	// Two defaults plus six customs fill the eight slots: adding the ninth does not help.
+	assert.match(line ?? "", /the first 8 roots are taken/);
+	assert.match(line ?? "", /move it into the first 8|remove an earlier one/);
+});
+
+test("--status ignores non-absolute entries when counting the limit", async (t) => {
+	const f = fixture(t);
+	const agent = join(f.home, "agent");
+	mkdirSync(f.herdrHome, { recursive: true });
+	writeFileSync(join(f.herdrHome, "gentle-shell-roots.json"), `${JSON.stringify({ roots: ["relative/one", "  ", agent] })}\n`);
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	assert.match(line ?? "", /listed in .*gentle-shell-roots\.json/);
+});
+
+test("--status escapes the suggested entry as JSON", async (t) => {
+	const f = fixture(t);
+	const agent = "C:\\\\Users\\\\Ada\\\\agent";
+	const base = context(f, { args: ["--status"] });
+	assert.equal(await runDesktop({ ...base, env: { ...base.env, PI_CODING_AGENT_DIR: agent } }), 0);
+	const line = f.out.find((entry) => entry.startsWith("  Roots: "));
+	assert.ok(line !== undefined, f.out.join("\n"));
+	assert.ok((line ?? "").includes('["C:\\\\\\\\Users\\\\\\\\Ada\\\\\\\\agent"]'), line ?? "");
 });

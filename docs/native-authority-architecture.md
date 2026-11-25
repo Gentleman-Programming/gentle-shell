@@ -40,7 +40,7 @@ The permanent modules have direct production consumers after #191:
 | Permanent module | Direct production consumers |
 | --- | --- |
 | `review-canonical.ts` | `extensions/gentle-ai.ts` and eight live review modules |
-| `review-repository.ts` | `extensions/gentle-ai.ts`, graph object store, legacy detector, snapshot, and transaction |
+| `review-repository.ts` | `extensions/gentle-ai.ts`, graph object store, snapshot, and transaction |
 | `review-candidate-view.ts` | `extensions/gentle-ai.ts` |
 
 The remaining ordinary reducer is not dead authority. Historical graph event replay calls it to validate semantic adjacency. Deleting it would weaken graph integrity even though controller mutation is read-only.
@@ -92,9 +92,9 @@ The packaged `contracts/review-integration/v1/` schemas and fixtures plus `docs/
 
 ## Published Maintenance Boundary
 
-Gentle AI has exposed explicit, audited maintenance commands outside negotiated ordinary review since v2.1.11; the currently pinned v2.4.0 keeps them available under the same legacy version table. Pi invokes `review abandon`, `review quarantine-legacy`, and `review reconcile-authority` only after fresh interactive approval of exact LF-only authorization text; headless execution and absent, malformed, or stale bindings fail closed.
+Gentle AI has exposed explicit, audited maintenance commands outside negotiated ordinary review since v2.1.11; the currently pinned v2.4.0 keeps them available under the same legacy version table. Pi invokes `review abandon` only after fresh interactive approval of exact LF-only authorization text; headless execution and absent, malformed, or stale bindings fail closed.
 
-`abandon` is restricted by native re-derivation to a caller-named non-terminal compact-v2 lineage; the facade freshly reads the authoritative native inventory, requires a unique lineage entry, and derives the exact discarded-work summary before rendering the `gentle-ai.review-abandon-authorization/v2` binding, whose fields the native gate re-derives before accepting (captured lens results with their ordinal order, findings presence). `quarantine-legacy` accepts only the published malformed freeze-findings diagnostic and disposition. Reconciliation accepts the exact dual anomaly suffix `anomalies=unchanged_target,malformed_recovery_authorization` only in that order. `repair-legacy-alias` derives repository, revision, diagnostic, and disposition from freshly read native inventory before its own approval and can only quarantine one qualified historical alias chain. `review dispose-result` remains unexposed pending design. Recovery routes only the provider-selected negotiated `action_disposition`.
+`abandon` is restricted by native re-derivation to a caller-named non-terminal compact-v2 lineage; the facade freshly reads the authoritative native inventory, requires a unique lineage entry, and derives the exact discarded-work summary before rendering the `gentle-ai.review-abandon-authorization/v2` binding, whose fields the native gate re-derives before accepting (captured lens results with their ordinal order, findings presence). `review dispose-result` remains unexposed pending design. Recovery routes only the provider-selected negotiated `action_disposition`.
 
 ## Windows Evidence
 

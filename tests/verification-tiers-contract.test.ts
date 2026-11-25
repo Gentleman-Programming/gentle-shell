@@ -183,7 +183,7 @@ test("P8 X6: the Verification rule carries no stale number or not-restated claim
 });
 
 // Preservation: PR #3084 setup self-correction and PR #3092 first-launch reads and resume rule.
-test("P8 preservation: verifier setup self-correction, first-launch reads, resume rule and correction bound stay", () => {
+test("P8 preservation: verifier setup, first-launch reads, resume rule and independent recheck limit stay", () => {
 	containsAll(verify, [
 		"make exactly one corrected attempt without asking anyone and report both attempts",
 		"`NO_UPDATE_NOTIFIER=1` for every probe",
@@ -195,7 +195,8 @@ test("P8 preservation: verifier setup self-correction, first-launch reads, resum
 	containsAll(verification, [
 		"one correction batch that fixes every reported blocker",
 		"a new finding never earns one",
-	], "verification correction bound");
+		"This limit applies to independent verifier findings only.",
+	], "independent verification correction bound");
 });
 
 // Verifier mwb64j0f-13-7akl, B1: the parent loads only the module, so the module must carry the real
@@ -204,7 +205,7 @@ test("P8 B1: the parent passes the user's environment and runs the real-case che
 	const handoff = verification.split("\n").find((line) => line.startsWith("4. **Verify handoff**")) ?? "";
 	containsAll(handoff, [
 		"its exact failing command, error text, tool versions and configuration",
-		"Run yourself any real-case check the verifier leaves unverified before calling the change verified.",
+		"Run unverified real-case checks yourself before calling the change verified.",
 	], "verification handoff B1");
 	// Cost-speed S15 P5a: the always-on verifier-setup paragraph moved into this module (MODULE_BUDGETS in
 	// tests/task-size-routing-contract.test.ts holds the arithmetic): 7,900 -> 8,608 B; mode-neutral wording: 8,656 B; P16 conditional commit, paid by trimming restated phrases: 8,648 B; gentle-shell#3082 terminal-disposition raise: 8,900 B (#3149).

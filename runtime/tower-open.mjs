@@ -79,6 +79,11 @@ function untilSignal()                {
 
 
 
+
+
+/** The schema of `gentle-shell tower --json`'s one stdout line. */
+export const TOWER_JSON_SCHEMA = "gentle-shell.tower/v1";
+
 /** `gentle-shell tower`: serve until stopped; returns the exit code. */
 export async function runTower(options                 )                  {
 	let server             ;
@@ -90,7 +95,9 @@ export async function runTower(options                 )                  {
 		return 1;
 	}
 	try {
-		options.stdout(`Gentle Tower: ${server.url}\nPress Ctrl+C to stop.\n`);
+		options.stdout(options.json
+			? `${JSON.stringify({ schema: TOWER_JSON_SCHEMA, url: server.url, host: server.host, port: server.port })}\n`
+			: `Gentle Tower: ${server.url}\nPress Ctrl+C to stop.\n`);
 		if (options.open) (options.openUrl ?? openInBrowser)(server.url);
 		await (options.untilStopped ?? untilSignal)(server);
 	} finally {

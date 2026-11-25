@@ -210,6 +210,8 @@ test("projectDesktopAgent keeps only the whitelist and never prompt/cwd/path/res
 		thinking: "high",
 		lastStep: "running",
 		usage: { total: 1234, cost: 0.005, input: 100, output: 40, cache: 40, reasoning: 5 },
+		turns: 1,
+		toolCalls: 2,
 	});
 
 	const projected = JSON.stringify(projectDesktopAgent(record));
@@ -229,6 +231,8 @@ test("projectDesktopAgent omits optional fields and the breakdown when absent", 
 		thinking: "high",
 		lastStep: "running",
 		usage: { total: 1234, cost: 0.005 },
+		turns: 1,
+		toolCalls: 2,
 	});
 });
 
@@ -877,8 +881,16 @@ test("the Desktop transport advertises the agents methods and event", (t) => {
 		"set_review_mode",
 		"get_usage_stats",
 		"get_update_status",
+		"list_agent_definitions",
+		"get_status",
+		"get_background_subagents",
+		"set_background_subagents",
+		"get_profile_binding",
+		"clear_profile_binding",
+		"get_auth_status",
+		"reload_credentials",
 	]);
-	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed"]);
+	assert.deepEqual(response.data.events, ["config_changed", "permission_mode_changed", "rate_limit", "design_canvas", "jobs_update", "profile_applied", "agents_update", "review_mode_changed", "profile_binding_changed"]);
 });
 
 test("get_subagent_thread answers agents_unavailable through the transport without an owner extension", async (t) => {
@@ -929,7 +941,7 @@ interface RealOwnerHarness {
  * `worker` agent definition is written into the agent home so `subagent_run`
  * can launch a real background task.
  */
-async function realOwnerHarness(t: test.TestContext): Promise<RealOwnerHarness> {
+async function realOwnerHarness(t: test.TestContext, options: { schedule?: (fn: () => void, ms: number) => () => void } = {}): Promise<RealOwnerHarness> {
 	const root = mkdtempSync(join(tmpdir(), "desktop-rpc-agents-real-"));
 	t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }));
 	const home = join(root, "home");
@@ -1005,7 +1017,7 @@ async function realOwnerHarness(t: test.TestContext): Promise<RealOwnerHarness> 
 		home,
 		agentHome,
 		env: { GENTLE_PI_CONFIG_HOME: configHome, PATH: process.env.PATH ?? "" },
-		schedule: () => () => {},
+		schedule: options.schedule ?? (() => () => {}),
 		now: () => 1000,
 		jobShell: () => { throw new Error("real-owner agents harness must not run jobs"); },
 		jobOutputDir: () => jobOutputDir,
@@ -1316,4 +1328,102 @@ test("probe: sinceVersion: equal returns [], other values return the window; in-
 	assert.deepEqual(after.data.items, [{ kind: "text", text: "ab" }]);
 	const higher: any = await b.handle("get_subagent_thread", { id: "t", sinceVersion: v + 100 });
 	assert.equal(higher.data.items.length, 1);
+});
+
+// ---- Progress (gentle-shell-gpui parity, T6) ----
+
+function toolThread(name: string, running: boolean) {
+	return { items: [{ kind: "tool" as const, callId: "c1", name, args: { command: "rm -rf /secret" }, output: "", running, isError: false }], dropped: 0, version: 1, limits: { maxItems: 400, maxOutputChars: 16000 } };
+}
+
+test("projectDesktopAgent carries turns, tool calls, and the running tool name, never its arguments", () => {
+	const running = probeAgents.projectDesktopAgent(task("t1", "session-a", { status: TASK_STATUS.RUNNING, turns: 2, toolCalls: 3 }), toolThread("bash", true));
+	assert.equal(running.turns, 2);
+	assert.equal(running.toolCalls, 3);
+	assert.equal(running.activeTool, "bash");
+	assert.equal(JSON.stringify(running).includes("rm -rf"), false);
+	assert.equal(probeAgents.projectDesktopAgent(task("t1", "session-a", { status: TASK_STATUS.RUNNING }), toolThread("bash", false)).activeTool, undefined, "a finished tool call is not active");
+	assert.equal(probeAgents.projectDesktopAgent(task("t1", "session-a", { status: TASK_STATUS.RUNNING }), toolThread("not a name; rm", true)).activeTool, undefined, "only a plain identifier crosses");
+	assert.equal(probeAgents.projectDesktopAgent(task("t1", "session-a", { status: TASK_STATUS.COMPLETED, endedAt: 2 }), toolThread("bash", true)).activeTool, undefined, "a finished task has no active tool");
+});
+
+test("parseDesktopAgentEntry accepts the progress fields and rejects malformed ones", () => {
+	const base = probeAgents.projectDesktopAgent(task("t1", "session-a", { status: TASK_STATUS.RUNNING, turns: 1, toolCalls: 1 }), toolThread("read", true));
+	assert.deepEqual(probeAgents.parseDesktopAgentEntry(base), base);
+	for (const bad of [{ turns: -1 }, { toolCalls: 1.5 }, { activeTool: "two words" }, { activeTool: 7 }]) {
+		assert.equal(probeAgents.parseDesktopAgentEntry({ ...base, ...bad }), undefined, JSON.stringify(bad));
+	}
+});
+
+test("the real owner pushes in-turn progress as one throttled agents_update with turns, tool calls, and the running tool", async (t) => {
+	const owner = recordedScheduler();
+	const h = await realOwnerHarness(t, { schedule: owner.schedule });
+	await launchBackgroundTask(h);
+	const scheduler = recordedScheduler();
+	const bridge = new DesktopAgentsBridge(h.pi, { discover: async () => h.service, schedule: scheduler.schedule, coalesceMs: 10 });
+	bridge.attach(h.ctx);
+	const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+	bridge.wire((event, data) => events.push({ event, data }));
+	await bridge.start();
+	scheduler.flushAll();
+	const before = events.length;
+
+	h.children[0]!.emit({ type: "turn_end" });
+	h.children[0]!.emit({ type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: { command: "cat /secret/path" } });
+	await tick();
+	scheduler.flushAll();
+	assert.equal(events.length, before, "progress waits for the owner's throttle");
+	const throttles = owner.entries.filter((entry) => entry.ms === 500 && !entry.cancelled);
+	assert.equal(throttles.length, 1, "two progress changes schedule one notification");
+
+	owner.flushAll();
+	scheduler.flushAll();
+	assert.equal(events.length, before + 1);
+	const [agent] = (events.at(-1)!.data as { agents: DesktopAgentEntry[] }).agents;
+	assert.equal(agent!.status, TASK_STATUS.RUNNING);
+	assert.equal(agent!.turns, 1);
+	assert.equal(agent!.toolCalls, 1);
+	assert.equal(agent!.activeTool, "bash");
+	assert.equal(JSON.stringify(events.at(-1)).includes("/secret/path"), false);
+});
+
+test("activeTool skips finished tool items and reports the most recent running one", () => {
+	const thread = { items: [
+		{ kind: "tool" as const, callId: "c1", name: "bash", args: {}, output: "", running: true, isError: false },
+		{ kind: "tool" as const, callId: "c2", name: "read", args: {}, output: "", running: false, isError: false },
+	], dropped: 0, version: 2, limits: { maxItems: 400, maxOutputChars: 16000 } };
+	assert.equal(probeAgents.activeToolName(thread), "bash");
+});
+
+/** Fire only the owner's pending progress throttle (500 ms), never its stall timers. */
+function flushProgress(owner: ReturnType<typeof recordedScheduler>): void {
+	for (const entry of [...owner.entries]) {
+		if (entry.cancelled || entry.ms !== 500) continue;
+		entry.cancelled = true;
+		entry.fn();
+	}
+}
+
+test("streamed text alone emits no agents_update", async (t) => {
+	const owner = recordedScheduler();
+	const h = await realOwnerHarness(t, { schedule: owner.schedule });
+	await launchBackgroundTask(h);
+	const scheduler = recordedScheduler();
+	const bridge = new DesktopAgentsBridge(h.pi, { discover: async () => h.service, schedule: scheduler.schedule, coalesceMs: 10 });
+	bridge.attach(h.ctx);
+	const events: unknown[] = [];
+	bridge.wire((_event, data) => events.push(data));
+	await bridge.start();
+	h.children[0]!.emit({ type: "turn_end" });
+	// The first delta moves the step to `writing`, a real projected change.
+	h.children[0]!.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "start" } });
+	await tick();
+	flushProgress(owner);
+	scheduler.flushAll();
+	const before = events.length;
+	for (const delta of ["a", "b", "c"]) h.children[0]!.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta } });
+	await tick();
+	flushProgress(owner);
+	scheduler.flushAll();
+	assert.equal(events.length, before, "text deltas change no projected field");
 });

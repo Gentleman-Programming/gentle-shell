@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -226,4 +226,97 @@ test("#3009: scratch permits linked ancestors but rejects the final directory li
 		assert.equal(existsSync(join(target, "work")), false);
 	}
 	assert.deepEqual(f.snapshot(), before);
+});
+
+// gentle-shell#3401: the sensitive-path policy governs what the preparer stages.
+const addTracked = (f: ReturnType<typeof fixture>, files: Record<string, string>) => {
+	for (const [path, text] of Object.entries(files)) {
+		mkdirSync(join(f.source, path, ".."), { recursive: true });
+		writeFileSync(join(f.source, path), text);
+		f.git("add", "-f", "--", path);
+	}
+};
+const refused = (result: ReturnType<ReturnType<typeof fixture>["prepare"]>, reason: string) => {
+	assert.equal(result.status, 1);
+	assert.equal(result.receipt.status, "setup-failed");
+	assert.equal(result.receipt.reason, reason);
+	assert.equal(result.receipt.probesRun, 0);
+	assert.deepEqual(readdirSync(result.scratch), [], "refusal happens before any clone or copy");
+};
+
+test("#3401 S3: tracked sensitive files prepare ready, are skipped, reported, and leave HEAD and status intact", t => {
+	const f = fixture(t);
+	addTracked(f, { ".env": "DUMMY=1\n", "auth.json": "{}\n", "keys/id.pem": "dummy\n" });
+	f.git("commit", "-qm", "track sensitive");
+	const before = f.snapshot(), result = f.prepare([]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.receipt.status, "ready");
+	assert.deepEqual(result.receipt.skippedSensitive, [".env", "auth.json", "keys/id.pem"]);
+	for (const path of [".env", "auth.json", "keys/id.pem"]) assert.equal(existsSync(join(result.work, path)), false, path);
+	assert.equal(result.receipt.head, f.git("rev-parse", "HEAD"));
+	assert.equal(result.receipt.baseline, f.baseline);
+	const work = (...args: string[]) => execFileSync("git", args, { cwd: result.work, env, encoding: "utf8" });
+	assert.equal(work("rev-parse", "HEAD").trim(), result.receipt.head);
+	assert.equal(work("status", "--porcelain", "--untracked-files=no"), execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: f.source, env, encoding: "utf8" }));
+	assert.deepEqual(f.snapshot(), before);
+});
+
+test("#3401 S3: a repository tracking a fixture key file prepares ready (gentle-pi's own case)", t => {
+	const f = fixture(t);
+	addTracked(f, { "tests/fixtures/x/proxy.key": "dummy\n" });
+	f.git("commit", "-qm", "track fixture key");
+	const result = f.prepare([]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.receipt.status, "ready");
+	assert.deepEqual(result.receipt.skippedSensitive, ["tests/fixtures/x/proxy.key"]);
+	assert.equal(existsSync(join(result.work, "tests/fixtures/x/proxy.key")), false);
+});
+
+test("#3401: an ordinary repository's receipt gains only an empty skippedSensitive", t => {
+	const result = fixture(t).prepare(["selected [x].cjs"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(Object.keys(result.receipt).sort(), ["baseline", "durationMs", "excludedRuntimeArtifacts", "fileCount", "head", "payloadBytes", "probesRun", "skippedSensitive", "status", "work"]);
+	assert.deepEqual(result.receipt.skippedSensitive, []);
+});
+
+test("#3401 S4: a directory in include skips untracked and ignored sensitive files and reports them", t => {
+	const f = fixture(t);
+	writeFileSync(join(f.source, ".gitignore"), ".evidence/\nnode_modules/\nsub/ignored-cred.txt\nsub/.env\n");
+	mkdirSync(join(f.source, "sub", "secrets"), { recursive: true });
+	for (const [path, text] of [["sub/ok.txt", "ok\n"], ["sub/auth.json", "{}\n"], ["sub/.env", "DUMMY=1\n"], ["sub/ignored-cred.txt", "dummy\n"], ["sub/secrets/x.txt", "dummy\n"]]) writeFileSync(join(f.source, path), text);
+	const before = f.snapshot(), result = f.prepare(["sub"]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(result.receipt.status, "ready");
+	assert.deepEqual(result.receipt.skippedSensitive, ["sub/.env", "sub/auth.json", "sub/secrets"]);
+	assert.equal(readFileSync(join(result.work, "sub", "ok.txt"), "utf8"), "ok\n");
+	assert.equal(readFileSync(join(result.work, "sub", "ignored-cred.txt"), "utf8"), "dummy\n");
+	for (const path of ["sub/.env", "sub/auth.json", "sub/secrets"]) assert.equal(existsSync(join(result.work, path)), false, path);
+	assert.deepEqual(f.snapshot(), before);
+	assert.deepEqual(f.prepare(["selected [x].cjs"]).receipt.skippedSensitive, []);
+});
+
+for (const named of [[".env"], ["sub/.env"], ["sub/secrets"], ["selected [x].cjs", "sub/auth.json"]]) {
+	test(`#3401 S5: naming a sensitive path in include is refused: ${named.join(",")}`, t => {
+		const f = fixture(t);
+		mkdirSync(join(f.source, "sub", "secrets"), { recursive: true });
+		for (const path of ["sub/.env", "sub/auth.json", ".env"]) writeFileSync(join(f.source, path), "DUMMY=1\n");
+		const bad = named.filter(path => /\.env$|auth\.json$|secrets$/.test(path)), before = f.snapshot();
+		refused(f.prepare(named), `include names sensitive paths: ${JSON.stringify(bad)}. Remove them from include and re-run the preparer, or verify that check without the isolated preparer`);
+		assert.deepEqual(f.snapshot(), before);
+	});
+}
+
+test("#3401 S6: a sensitive file present only in Git history is staged as history, not as a file (pinned)", t => {
+	// The clone transfers reachable objects so HEAD and the baseline keep their
+	// identity; rewriting history would break the receipt's head/baseline contract.
+	// Only the working tree and index are governed by the policy.
+	const f = fixture(t);
+	addTracked(f, { ".env": "DUMMY=1\n" });
+	f.git("commit", "-qm", "add env");
+	f.git("rm", "-q", "--cached", "--", ".env");
+	f.git("commit", "-qm", "remove env");
+	const result = f.prepare([]);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(existsSync(join(result.work, ".env")), false);
+	assert.equal(execFileSync("git", ["log", "--all", "--name-only", "--format="], { cwd: result.work, env, encoding: "utf8" }).split("\n").includes(".env"), true);
 });

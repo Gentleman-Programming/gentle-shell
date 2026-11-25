@@ -8,6 +8,7 @@ import { exploreViaDaemon, MAX_REPLY_CHARS, type DaemonCallResult } from "../lib
 import { acquireInitLock, type InitLockOutcome } from "../lib/codegraph-lease.ts";
 import { seedWorktreeIndex } from "../lib/codegraph-seed.ts";
 import { CHILD_ENV, firstLineOf, indexState, maybeRewarm, prepareReadiness, runCodegraph, runCodegraphSeedSync, syncBeforeSearch, warmUpDaemon, type SearchSyncInput, type IndexAction, type SessionStartReason } from "../lib/codegraph-readiness.ts";
+import { ensureDirectExposureInAgentHomes, type EnsureExposureIo } from "../lib/codegraph-mcp-exposure.ts";
 
 const CODEGRAPH_OPERATION = {
 	INIT: "init",
@@ -99,6 +100,9 @@ const MAX_OUTPUT_CHARS = 100_000;
 // before truncateOutput could bound it (400k CJK characters are ~1.2 MB against a 1 MB buffer).
 const PROCESS_MAX_BUFFER = 3 * MAX_REPLY_CHARS;
 const FALLBACK_INSTRUCTIONS = "Use read, grep, and find for this exploration.";
+// A subagent child (CHILD_ENV) never starts an index operation of its own: index creation is
+// parent-session-owned, so the child init guard refuses instead of reaching the CLI runner.
+const CHILD_INIT_REFUSAL = "CodeGraph init is refused in a subagent child: index creation is parent-session-owned. Query and explore the shared index instead; the parent session owns init.";
 // each daemon query attempt is bounded, so a hung daemon on a slow filesystem (for example a
 // WSL /mnt mount) cannot block the turn indefinitely (#1901); init is the legitimately slow
 // first index, so only the user's signal bounds it.
@@ -880,6 +884,11 @@ export function createCodeGraphTool(
 					return fail(error, { syncTriggered });
 				}
 			}
+			// A subagent child (CHILD_ENV) never starts an index operation of its own: index creation is
+			// parent-session-owned, so init refuses here without ever invoking the CLI runner.
+			if (process.env[CHILD_ENV] === "1") {
+				return fail(new Error(CHILD_INIT_REFUSAL), { reason: CHILD_INIT_REFUSAL });
+			}
 			// init keeps its CLI path: it is the legitimately slow first index, bounded only by the user's signal.
 			// The same guard the bash path enforces: an existing index is refreshed with sync, never
 			// rebuilt from the tool without the explicit override — a rebuild kills the daemon every
@@ -925,6 +934,37 @@ export function createCodeGraphTool(
 
 export function registerCodeGraphTool(pi: ExtensionAPI): void {
 	pi.registerTool(createCodeGraphTool());
+}
+
+/** The one in-process mcp.json exposure ensure: later session starts are no-ops. */
+let exposureEnsured = false;
+
+/**
+ * The file io the exposure ensure runs with: undefined means the real agent-home files. A test
+ * seam in the EnsureExposureIo shape, so the session-start wiring is observable without ever
+ * touching a real home.
+ */
+let exposureIo: EnsureExposureIo | undefined;
+
+/**
+ * Test seam for the session-start exposure wiring: installs the io the next ensure runs with
+ * and re-arms the once-per-process flag, so one test process can exercise both a parent and a
+ * child session. Production never calls this; the default keeps the real agent-home files.
+ */
+export function armExposureEnsureForTest(io: EnsureExposureIo | undefined): void {
+	exposureIo = io;
+	exposureEnsured = false;
+}
+
+function ensureExposureOnce(): void {
+	// Subagent children never patch user config; the parent session owns it once.
+	if (exposureEnsured || process.env[CHILD_ENV] === "1") return;
+	exposureEnsured = true;
+	try {
+		ensureDirectExposureInAgentHomes(homedir(), exposureIo);
+	} catch {
+		/* never surface: the exposure patch is best effort */
+	}
 }
 
 export default function codeGraphTools(pi: ExtensionAPI): void {
@@ -1004,5 +1044,10 @@ export default function codeGraphTools(pi: ExtensionAPI): void {
 			.catch(() => {
 				/* never surface: the session may already be gone */
 			});
+		// Direct MCP exposure: Pi defaults an MCP server's tools to codemode-only reach, so an
+		// existing `codegraph` entry in the pi or Gentle Shell agent mcp.json gets
+		// `"exposure": "direct"` once per process — only when the field is absent, never
+		// overwriting an existing value, never creating an entry, and silent by contract.
+		ensureExposureOnce();
 	});
 }

@@ -316,7 +316,7 @@ test("public acknowledgement relays one current provider vector and never replay
 	assert.equal(acknowledgementRequests.length, 1);
 });
 
-test("approved acknowledgement reuses an explicit STATUS excluded-untracked selection and clears it after consumption", async () => {
+test("approved acknowledgement uses fresh STATUS after an explicit excluded-untracked selection", async () => {
 	const cwd = process.cwd();
 	const lineageId = "acknowledge-approved-excluded-untracked";
 	const selection = {
@@ -365,7 +365,7 @@ test("approved acknowledgement reuses an explicit STATUS excluded-untracked sele
 	);
 	assert.deepEqual(requests, [
 		{ cwd, lineageId, agent: "pi", ...selection },
-		{ cwd, lineageId, ...selection },
+		{ cwd, lineageId },
 		{ cwd, lineageId, agent: "pi" },
 	]);
 	assert.equal(acknowledgements, 1);
@@ -751,7 +751,7 @@ test("selectorless STATUS uses a retained committed selector only at its retaine
 	]);
 });
 
-test("STATUS preserves retained intended-untracked selection through selectorless same-lineage replacement collection", async () => {
+test("STATUS forwards only explicit intended-untracked selection and preserves replacement collection", async () => {
 	const cwd = process.cwd();
 	const lineageId = "selectorless-replacement";
 	const selectedUntracked = {
@@ -793,7 +793,7 @@ test("STATUS preserves retained intended-untracked selection through selectorles
 		undefined,
 		selections,
 	);
-	assert.equal(selections.size, 2);
+	assert.equal(selections.size, 1);
 	await __testing.executeReviewControllerOperation(
 		{ operation: "status", lineageId, input: JSON.stringify({ baseRef: "main", committedOnly: true }) },
 		cwd,
@@ -804,7 +804,7 @@ test("STATUS preserves retained intended-untracked selection through selectorles
 		selections,
 	);
 	assert.deepEqual(requests[1], { cwd, lineageId, agent: "pi", baseRef: "main", committedOnly: true });
-	assert.equal(selections.size, 1);
+	assert.equal(selections.size, 0);
 	const replacementStatus = await __testing.executeReviewControllerOperation(
 		{ operation: "status", lineageId },
 		cwd,
@@ -814,7 +814,7 @@ test("STATUS preserves retained intended-untracked selection through selectorles
 		undefined,
 		selections,
 	);
-	assert.equal(selections.size, 2);
+	assert.equal(selections.size, 1);
 	const bindingA = bindingOf(initialStatus);
 	const bindingB = bindingOf(replacementStatus);
 	assert.notEqual(bindingA, bindingB);
@@ -829,7 +829,7 @@ test("STATUS preserves retained intended-untracked selection through selectorles
 		true,
 	);
 	assert.deepEqual({ outcome: stale.outcome, requests: requests.length, captures }, { outcome: "capture-binding-rejected", requests: 4, captures: 0 });
-	assert.deepEqual(requests[3], { cwd, lineageId, agent: "pi", ...selectedUntracked });
+	assert.deepEqual(requests[3], { cwd, lineageId, agent: "pi" });
 
 	const captured = await __testing.executeReviewCaptureOperation(
 		{ lineageId, collectBinding: bindingB, correctionLines: 1 },
@@ -844,16 +844,16 @@ test("STATUS preserves retained intended-untracked selection through selectorles
 	assert.deepEqual(requests, [
 		{ cwd, lineageId, agent: "pi", ...selectedUntracked },
 		{ cwd, lineageId, agent: "pi", baseRef: "main", committedOnly: true },
-		{ cwd, lineageId, agent: "pi", ...selectedUntracked },
-		{ cwd, lineageId, agent: "pi", ...selectedUntracked },
-		{ cwd, lineageId, agent: "pi", ...selectedUntracked },
+		{ cwd, lineageId, agent: "pi" },
+		{ cwd, lineageId, agent: "pi" },
+		{ cwd, lineageId, agent: "pi" },
 	]);
 	assert.equal(captures, 1);
 
 	const override = { ...selectedUntracked, expectedUntrackedInventory: "override-inventory", intendedUntracked: ["generated/override.json"] };
 	await __testing.executeReviewControllerOperation({ operation: "status", lineageId, input: JSON.stringify(override) }, cwd, native, undefined, undefined, undefined, selections);
 	await __testing.executeReviewControllerOperation({ operation: "status", lineageId }, cwd, native, undefined, undefined, undefined, selections);
-	assert.deepEqual(requests.slice(-2), Array.from({ length: 2 }, () => ({ cwd, lineageId, agent: "pi", ...override })));
+	assert.deepEqual(requests.slice(-2), [{ cwd, lineageId, agent: "pi", ...override }, { cwd, lineageId, agent: "pi" }]);
 });
 
 test("route retention caps, rejects collisions and invalid selectors, and clears every terminal state", async () => {
@@ -2200,12 +2200,6 @@ test("plain START adopts the pre-lineage selection retained by inspect and delet
 	});
 	assert.equal(starts[0]!.untrackedScope, "select");
 	assert.equal(retained.has(`${cwd}\u0000`), false);
-	const lineageEntry = retained.get(`${cwd}\u0000review-started`) as
-		| { untrackedScope: string; submission?: unknown }
-		| undefined;
-	assert.notEqual(lineageEntry, undefined);
-	assert.equal(lineageEntry!.untrackedScope, "select");
-	assert.notEqual(lineageEntry!.submission, undefined);
 });
 
 test("untrackedScope is accepted only by the inspect operation", async (t) => {
@@ -2388,13 +2382,6 @@ test("inspect with a committed-range selector retains baseRef/committedOnly, and
 	assert.equal(starts[0]!.committedOnly, true);
 	assert.equal(starts[0]!.untrackedScope, "select");
 	assert.equal(retained.has(`${cwd}\u0000`), false);
-	const lineageEntry = retained.get(`${cwd}\u0000review-started`) as { untrackedScope: string; baseRef?: string } | undefined;
-	assert.notEqual(lineageEntry, undefined);
-	assert.equal(lineageEntry!.untrackedScope, "select");
-	// The lineage-scoped entry must stay a plain untracked selection: a
-	// leftover baseRef field would make readRetainedNativeUntrackedSelection
-	// mistake it for a RetainedNativeCaptureRoute.
-	assert.equal("baseRef" in lineageEntry!, false);
 });
 
 // gentle-pi#review-ready-inspect-selector: a plain inspect that resolves ready

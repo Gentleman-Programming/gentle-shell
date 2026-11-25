@@ -19,6 +19,7 @@ import { ForwardError, ForwardManager,                                          
 import { HttpError, need, readJsonBody, realDirectory, SECURITY_HEADERS, sendError, sendJson } from "./serve-http.mjs";
 import { UploadStore,                          } from "./serve-uploads.mjs";
 import { PrintService,                         } from "./serve-print.mjs";
+import { UPGRADE_CHANNELS, UpgradeService,                                               } from "./serve-upgrade.mjs";
 import { TerminalService,                        } from "./serve-terminals.mjs";
 import { HOST_TOOL_METHODS, KeeperLink, SERVE_SESSION_LIMITS, ServeSession, SessionError,                                             } from "./serve-session.mjs";
 import { exitedSnapshot, keeperAlive, keeperEndpoint, newKeeperToken, privateKeeperDir, readKeeperRecords, removeKeeperRecord, removePrivateKeeperDir, SERVE_KEEPER_LIMITS, spawnKeeper, writeKeeperRecord,                   } from "./serve-session-keeper.mjs";
@@ -80,6 +81,8 @@ export function carriesHostToolRequest(message        )          {
 	}
 	return !!request && typeof request === "object" && "method" in request && typeof request.method === "string" && Object.hasOwn(HOST_TOOL_METHODS, request.method);
 }
+
+
 
 
 
@@ -236,6 +239,8 @@ export function startServeServer(options                    )                   
 	const git = new GitService({ env: options.env ?? process.env, limits: options.gitLimits, log });
 	// One-shot prompts (commit messages) answered by this machine's Gentle Shell.
 	const prints = new PrintService({ ...(options.launchPrint ? { launchPrint: options.launchPrint } : {}), limits: options.printLimits, log });
+	// Upgrades of Gentle Shell itself, from an admin client.
+	const upgrade = options.upgrade ? new UpgradeService({ ...options.upgrade, log }) : undefined;
 	// Files a client sends for the agent to see.
 	const uploads = options.serveDir === undefined ? undefined : new UploadStore({ dir: join(options.serveDir, "uploads"), limits: options.uploadLimits, now, log });
 	// Persistent terminals in the native terminal host, which outlives this server.
@@ -557,7 +562,7 @@ export function startServeServer(options                    )                   
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			const who = need(principal, "sessions:read");
 			return sendJson(res, 200, { schema: SERVE_SCHEMA, protocol: SERVE_PROTOCOL, serverId, version: options.version, startedAt: new Date(startedAt).toISOString(),
-				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : []), ...(terminals?.binary() ? ["terminals"] : []), ...(prints.available ? ["print"] : []), ...(keepSessions ? ["persistent-sessions"] : [])],
+				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : []), ...(terminals?.binary() ? ["terminals"] : []), ...(prints.available ? ["print"] : []), ...(keepSessions ? ["persistent-sessions"] : []), ...(upgrade ? ["upgrade"] : [])],
 				device: { id: who.deviceId, name: who.name, scopes: who.scopes },
 				// How to build paths for the file and session endpoints.
 				platform: process.platform, arch: arch(), pathSeparator: sep,
@@ -575,6 +580,23 @@ export function startServeServer(options                    )                   
 			sendJson(res, 202, { stopping: true, endSessions });
 			setImmediate(() => options.onStopRequested?.({ endSessions }));
 			return;
+		}
+		if (path === "/api/upgrade") {
+			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
+			need(principal, "admin");
+			if (!upgrade) throw new HttpError(501, "not_supported", "This server cannot upgrade itself");
+			const body = await readJsonBody(req, limits.smallBodyBytes);
+			if (Object.keys(body).some((key) => key !== "channel") || (body.channel !== undefined && !UPGRADE_CHANNELS.includes(body.channel                  ))) {
+				throw new HttpError(400, "invalid_request", `channel must be ${UPGRADE_CHANNELS.join(" or ")}`);
+			}
+			return sendJson(res, 202, upgrade.start(body.channel                              ));
+		}
+		const upgradeStream = /^\/api\/upgrade\/(upg_[0-9a-f]{16})\/stream$/.exec(path);
+		if (upgradeStream) {
+			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
+			need(principal, "admin");
+			if (!upgrade) throw new HttpError(501, "not_supported", "This server cannot upgrade itself");
+			return upgrade.stream(req, res, upgradeStream[1]);
 		}
 		if (path === "/api/pairing-codes") {
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
@@ -844,6 +866,7 @@ export function startServeServer(options                    )                   
 				files.closeAll();
 				git.closeAll();
 				prints.closeAll();
+				upgrade?.close();
 				uploads?.close();
 				terminals?.closeAll();
 				await towerStarting?.catch(() => undefined);

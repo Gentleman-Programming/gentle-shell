@@ -10,15 +10,17 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { INTERACTIVE_HOST_ENV } from "./rpc-host.mjs";
 import { DEFAULT_PAIR_SCOPES, parseScopes, readDevicesFile, ServeAuth, writeDevicesFile,                                    } from "./serve-auth.mjs";
 import { isLoopbackHost, isUnspecified, SERVE_PROTOCOL, startServeServer,                                   } from "./serve-server.mjs";
 import { parseRelayUrl } from "./serve-relay.mjs";
 import { loadOrCreateServeTls,                       } from "./serve-tls.mjs";
 
-import { autostartCommand, autostartFile, autostartInstalled, defaultShareSystem, encodeConnectionCode, firewallHint, HOST_NAME, installAutostart, ownHostNames,
+import { AUTOSTART_LABEL, autostartCommand, autostartFile, autostartInstalled, defaultShareSystem, encodeConnectionCode, firewallHint, HOST_NAME, installAutostart, ownHostNames,
 	removeAutostart, SHARE_DEFAULT_PORT, SHARE_FORWARD_PORTS, SHARE_PORT_ATTEMPTS, shareAddresses,                                  } from "./serve-share.mjs";
+
 import { openTowerServer } from "./tower-open.mjs";
 
 export const SERVE_SERVER_FILE_SCHEMA = "gentle-shell.serve.server/v1";
@@ -324,6 +326,42 @@ export function liveServer(agentHome        )                         {
 
 
 
+
+
+
+
+
+
+
+
+/** The exit code that asks a service manager (systemd `Restart=on-failure`, launchd `KeepAlive`) to start the upgraded server. */
+export const SERVE_RESTART_EXIT = 75;
+
+/**
+ * Whether a service manager runs this server (`serve share --always`): systemd
+ * names this process in `SYSTEMD_EXEC_PID`, launchd sets its job label.
+ */
+export function supervisedServe(env                   , pid         = process.pid)          {
+	return env.SYSTEMD_EXEC_PID === String(pid) || env.XPC_SERVICE_NAME === AUTOSTART_LABEL;
+}
+
+/** `gentle-shell upgrade [--channel <channel>]`, run by this launcher outside any session, never prompting. */
+export function upgradeLaunch(ctx                                                            , channel                            )                {
+	const env                    = { ...ctx.env, NO_COLOR: "1", FORCE_COLOR: "0", GENTLE_SHELL_SKIP_STARTUP_UPDATE: "1" };
+	delete env[INTERACTIVE_HOST_ENV];
+	return { command: ctx.nodePath, args: [ctx.launcher, "upgrade", ...(channel === undefined ? [] : ["--channel", channel])], cwd: homedir(), env };
+}
+
+/** The version the launcher's package now holds, read after an upgrade. */
+function launcherVersion(launcher        )                     {
+	try {
+		const version = JSON.parse(readFileSync(join(dirname(dirname(launcher)), "package.json"), "utf8"))?.version;
+		return typeof version === "string" && version.length <= 64 ? version : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * The child for one session: this same launcher, same home, Pi RPC mode, Desktop RPC on.
  * `sessionId` resumes by exact id (`--session-id`): the project's session with that id, or a
@@ -408,16 +446,24 @@ async function startTower(env                   )                      {
 }
 
 async function runForeground(ctx                     , args                               )                  {
+	const result = await serveForeground(ctx, args);
+	if (result.restartPort === undefined) return result.code;
+	return restartServer(ctx, { ...args, port: result.restartPort });
+}
+
+/** Serves until stopped; `restartPort` when it stopped for an upgrade, so the next server takes the same address. */
+async function serveForeground(ctx                     , args                               )                                                  {
 	const files = serveFiles(ctx.agentHome);
 	privateDir(files.dir);
 	const lock = acquireServeLock(files.lock);
 	if ("heldBy" in lock) {
 		const running = readServerFile(files.server);
 		ctx.stderr(`gentle-shell serve: already running${Number.isNaN(lock.heldBy) ? "" : ` (pid ${lock.heldBy})`}${running ? ` at ${running.url}` : ""}\n`);
-		return 1;
+		return { code: 1 };
 	}
 	let server                         ;
 	let endSessions = false;
+	let restart = false;
 	try {
 		const tls = serverTls(ctx, args, files.dir);
 		if (!isLoopbackHost(args.host) && !tls) ctx.stderr(plainHttpWarning(args.host));
@@ -442,6 +488,12 @@ async function runForeground(ctx                     , args                     
 			launchPrint: (input) => printLaunch(ctx, input),
 			log,
 			onStopRequested: (request) => { endSessions = request.endSessions; stop.resolve(); },
+			upgrade: {
+				launch: (channel) => (ctx.upgradeCommand ?? ((chosen                            ) => upgradeLaunch(ctx, chosen)))(channel),
+				installedVersion: () => launcherVersion(ctx.restartLauncher?.() ?? ctx.launcher),
+				// Sessions keep running under their keepers; the next server reattaches them.
+				onUpgraded: () => { restart = true; stop.resolve(); },
+			},
 		});
 		const file             = {
 			schema: SERVE_SERVER_FILE_SCHEMA,
@@ -465,16 +517,58 @@ async function runForeground(ctx                     , args                     
 			? `${JSON.stringify({ schema: "gentle-shell.serve/v1", url: server.url, pid: process.pid, serverId: server.serverId, ...(server.fingerprint === undefined ? {} : { fingerprint: server.fingerprint }), ...(args.relay === undefined ? {} : { relay: args.relay }) })}\n`
 			: `Gentle Shell server: ${server.url} (pid ${process.pid})\n${server.fingerprint === undefined ? "" : `HTTPS on the network, certificate fingerprint ${server.fingerprint}\n`}${args.relay === undefined ? "" : `Relay: ${args.relay}\n`}Pair a device with 'gentle-shell serve pair'. Press Ctrl+C to stop.\n`);
 		await (ctx.untilStopped ?? untilSignal)(stop.promise);
-		log("stopping");
-		return 0;
+		log(restart ? "stopping to restart on the upgraded version" : "stopping");
+		return restart ? { code: 0, restartPort: server.port } : { code: 0 };
 	} catch (error) {
 		ctx.stderr(`gentle-shell serve: could not start: ${error instanceof Error ? error.message : String(error)}\n`);
-		return 1;
+		return { code: 1 };
 	} finally {
 		await server?.close({ endSessions });
 		if (readServerFile(files.server)?.pid === process.pid) rmSync(files.server, { force: true });
 		releaseServeLock(files.lock);
 	}
+}
+
+/**
+ * After an upgrade, once this server let go of its lock and server file: a
+ * service manager starts the upgraded server itself (this process exits with
+ * `SERVE_RESTART_EXIT`); otherwise a detached `serve --foreground` on the new
+ * version takes the same address, logging to `server.log`.
+ */
+function restartServer(ctx                     , args           )         {
+	const stamp = () => new Date().toISOString();
+	if (supervisedServe(ctx.env)) {
+		ctx.stderr(`${stamp()} exiting with ${SERVE_RESTART_EXIT}: the service manager starts the upgraded server\n`);
+		return SERVE_RESTART_EXIT;
+	}
+	const files = serveFiles(ctx.agentHome);
+	const logFd = openSync(files.log, "a", 0o600);
+	try {
+		const child = spawn(ctx.nodePath, [ctx.restartLauncher?.() ?? ctx.launcher, ...ctx.homeFlags, ...foregroundArgs(args)], {
+			detached: true,
+			stdio: ["ignore", logFd, logFd],
+			env: ctx.env,
+			windowsHide: true,
+		});
+		child.once("error", (error) => ctx.stderr(`${stamp()} could not restart: ${error.message}\n`));
+		child.unref();
+		ctx.stderr(`${stamp()} restarted on the upgraded version as pid ${child.pid} (log: ${files.log})\n`);
+		return 0;
+	} catch (error) {
+		ctx.stderr(`${stamp()} could not restart: ${error instanceof Error ? error.message : String(error)}\n`);
+		return 1;
+	} finally {
+		closeSync(logFd);
+	}
+}
+
+/** `serve --foreground` with the same listen address, hosts, forward ports, TLS choice and relay. */
+function foregroundArgs(args           )           {
+	const listen = `${args.host.includes(":") ? `[${args.host}]` : args.host}:${args.port}`;
+	const allow = (args.allowHosts ?? []).flatMap((name) => ["--allow-host", name]);
+	const ports = args.forwardPorts ? ["--forward-ports", `${args.forwardPorts.from}-${args.forwardPorts.to}`] : [];
+	const network = [...(args.noTls ? ["--no-tls"] : []), ...(args.relay === undefined ? [] : ["--relay", args.relay])];
+	return ["serve", "--foreground", "--listen", listen, ...allow, ...ports, ...network];
 }
 
 async function startDaemon(ctx                     , args                               )                  {
@@ -501,11 +595,7 @@ async function spawnDaemon(ctx                     , args           )           
 	const files = serveFiles(ctx.agentHome);
 	privateDir(files.dir);
 	const logFd = openSync(files.log, "w", 0o600);
-	const listen = `${args.host.includes(":") ? `[${args.host}]` : args.host}:${args.port}`;
-	const allow = (args.allowHosts ?? []).flatMap((name) => ["--allow-host", name]);
-	const ports = args.forwardPorts ? ["--forward-ports", `${args.forwardPorts.from}-${args.forwardPorts.to}`] : [];
-	const network = [...(args.noTls ? ["--no-tls"] : []), ...(args.relay === undefined ? [] : ["--relay", args.relay])];
-	const child = spawn(ctx.nodePath, [ctx.launcher, ...ctx.homeFlags, "serve", "--foreground", "--listen", listen, ...allow, ...ports, ...network], {
+	const child = spawn(ctx.nodePath, [ctx.launcher, ...ctx.homeFlags, ...foregroundArgs(args)], {
 		detached: true,
 		stdio: ["ignore", logFd, logFd],
 		env: ctx.env,

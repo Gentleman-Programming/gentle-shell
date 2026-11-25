@@ -164,6 +164,9 @@ export function systemdUnit(spec: AutostartCommand): string {
 		"Restart=on-failure",
 		"RestartSec=5",
 		"TimeoutStopSec=30",
+		// Stopping or restarting the server (an upgrade exits for a restart) ends only the server:
+		// session keepers and the terminal host it started live on, and the next server reattaches them.
+		"KillMode=process",
 		"",
 		"[Install]",
 		"WantedBy=default.target",

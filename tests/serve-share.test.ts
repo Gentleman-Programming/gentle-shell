@@ -140,6 +140,8 @@ test("autostart runs this same launcher and home on the network, with only the k
 	assert.match(unit, /^Environment="PATH=\/usr\/local\/bin:\/usr\/bin"$/m);
 	assert.match(unit, /^Environment="GENTLE_SHELL_NO_AUTO_SETUP=1"$/m);
 	assert.match(unit, /^Restart=on-failure$/m);
+	// A restart (after an upgrade) or a stop ends the server only, never the session keepers it started.
+	assert.match(unit, /^KillMode=process$/m);
 	assert.match(unit, /^\[Install\]\nWantedBy=default\.target$/m);
 	assert.ok(!unit.includes("secret"));
 	// systemd specifiers and variables are escaped, not expanded.

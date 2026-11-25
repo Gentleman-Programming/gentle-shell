@@ -15,6 +15,7 @@ This page is the overview: what runs where and why, how a device connects, what 
 - [Host tools across several devices](#host-tools-across-several-devices)
 - [Pages on the server: port forwarding](#pages-on-the-server-port-forwarding)
 - [Terminals](#terminals)
+- [Sign-in, packages and upgrades from the client](#sign-in-packages-and-upgrades-from-the-client)
 - [Security model](#security-model)
 - [Reference](#reference)
 - [Known limits and next steps](#known-limits-and-next-steps)
@@ -244,6 +245,40 @@ sequenceDiagram
 - **Several viewers.** Every stream is its own attachment; two windows or two devices (with `admin`) can follow the same terminal.
 - **Where the host comes from.** `$GENTLE_TERM_HOST`, else `<home>/serve/bin/gentle-term-host`, else `gentle-term-host` on `PATH`. Without one the server has no `terminals` capability and the terminal endpoints answer `501 term_host_missing`; an `admin` client can install a build with `PUT /api/term-host` (sha256-checked). The host is a small Rust program (PTYs and a headless emulator); it is not shipped with the npm package, but every Gentle Shell GPUI release carries it per platform (`gentle-term-host-<os>-<arch>[.exe]`, in the release's `SHA256SUMS`), and `GET /api/term-host` names the one that fits the server (`asset`).
 
+## Sign-in, packages and upgrades from the client
+
+What a person would otherwise do in a terminal on the server, the client does over the same connection:
+
+| Task | How | Scope |
+| --- | --- | --- |
+| See which providers are signed in, and how each can be | [`get_auth_status`](desktop-rpc.md#get_auth_status) (`loginKinds`: `oauth`, `device`, `api_key`) | `sessions:read` |
+| Sign in to a provider | [`login_start`](desktop-rpc.md#login_start), then [`login_prompt`](desktop-rpc.md#login_prompt) events answered with [`login_complete`](desktop-rpc.md#login_complete), until [`login_finished`](desktop-rpc.md#login_finished) | `sessions:operate` |
+| Save or remove an API key | [`set_api_key`](desktop-rpc.md#set_api_key), [`remove_credentials`](desktop-rpc.md#remove_credentials) | `sessions:operate` |
+| List, install or remove packages | [`list_packages`](desktop-rpc.md#list_packages); [`install_package`](desktop-rpc.md#install_package) / [`remove_package`](desktop-rpc.md#remove_package) with [`package_progress`](desktop-rpc.md#package_progress) and [`package_finished`](desktop-rpc.md#package_finished) | read / `sessions:operate` |
+| Upgrade Gentle Shell | [`POST /api/upgrade`](serve.md#upgrade-from-a-client), its stream, then the server restarts on the new version | `admin` |
+
+The first four are Desktop RPC methods of a session (`POST /api/sessions/:id/desktop`): the session's Pi runs its own `/login` flow, key setup, `/logout`, or the `gentle-shell install`/`remove` CLI, on the server, with the server's agent home. Credentials land in Pi's credential store on the server and serve every session there; the session that signed in has the new models at once, other sessions after `reload_credentials`.
+
+```mermaid
+sequenceDiagram
+    participant App as Client app
+    participant S as gentle-shell serve
+    participant Pi as Session (Pi)
+    participant B as Browser on the client
+    App->>S: /desktop login_start { provider }
+    S->>Pi: /gentle:desktop login_start
+    Pi-->>App: { loginId }, then login_prompt open_url { url, redirectPrefix: http://localhost:1455/ }
+    App->>B: open url
+    B-->>App: redirect to http://localhost:1455/auth/callback?code=…&state=… (intercepted)
+    Pi-->>App: login_prompt input { redirectPrefix }
+    App->>S: /desktop login_complete { loginId, value: full redirect URL }
+    S->>Pi: /gentle:desktop login_complete
+    Pi->>Pi: Pi checks the state, exchanges the code, stores the credential, reloads
+    Pi-->>App: login_finished { ok: true }
+```
+
+A browser sign-in redirects to a loopback callback on the machine that started it; the browser is on the client, so the client catches that redirect (or the user pastes the address bar) and hands the full URL to the server, which completes the exchange exactly as its own callback would. A device-code sign-in needs nothing of the sort: the client shows the code and the page. The upgrade restarts only `serve`: sessions, their keepers and the terminal host keep running, and clients reconnect as after any [server restart](#session-lifecycle).
+
 ## Security model
 
 ### Threat model
@@ -310,7 +345,7 @@ Note what `sessions:read` means: **the file endpoints run as the server user wit
 | Area | Endpoints | Reference |
 | --- | --- | --- |
 | Identity and pairing | `GET /.well-known/gentle-shell`, `POST /api/pair` | [Endpoints](serve.md#endpoints), [Authentication](serve.md#authentication) |
-| Server and devices | `GET /api/server`, `POST /api/server/stop`, `POST /api/pairing-codes`, `GET /api/devices`, `DELETE /api/devices/:id` | [Endpoints](serve.md#endpoints) |
+| Server and devices | `GET /api/server`, `POST /api/server/stop`, `POST /api/upgrade`, `GET /api/upgrade/:jobId/stream`, `POST /api/pairing-codes`, `GET /api/devices`, `DELETE /api/devices/:id` | [Endpoints](serve.md#endpoints), [Upgrade from a client](serve.md#upgrade-from-a-client) |
 | Sessions | `GET`/`POST /api/sessions`, `GET`/`DELETE /api/sessions/:id`, `POST …/rpc`, `POST …/desktop`, `GET …/events`, `POST /api/tickets` | [Pi RPC](serve.md#pi-rpc-post-apisessionsidrpc), [Desktop RPC](serve.md#desktop-rpc-post-apisessionsiddesktop), [Event stream](serve.md#event-stream-get-apisessionsidevents), [Stream tickets](serve.md#stream-tickets) |
 | Forwards and services | `POST`/`GET /api/sessions/:id/forwards`, `DELETE …/forwards/:fid`, `POST`/`GET /api/forwards`, `DELETE /api/forwards/:fid`, `GET /api/services`, `POST`/`GET`/`DELETE /api/tower` | [Port forwarding](serve.md#port-forwarding), [Server-level forwards and services](serve.md#server-level-forwards-and-services), [Gentle Tower](serve.md#gentle-tower) |
 | Files | `GET /api/fs/list`, `stat`, `read`, `search`, `watch`; `PUT /api/fs/write`; `POST /api/fs/mkdir`, `rename`, `remove` | [Files on the server](serve.md#files-on-the-server), [File safety](serve.md#file-safety) |

@@ -117,6 +117,8 @@ The client probes `GET http://<address>:<p>/.well-known/gentle-shell` at every a
 
 A server already running is replaced by the service only when it has no running sessions (otherwise `--always` exits 1 and leaves it alone); one the service already runs is reused. `serve share --off` disables and removes the unit (`systemctl --user disable --now`) or boots out and removes the agent, which stops the server it ran. One autostart per user: `--always` from another home replaces it.
 
+The systemd unit uses `KillMode=process`, so stopping or restarting the service ends only the server: session keepers and the terminal host it started keep running and the next server reattaches them (units written before this are rewritten by running `serve share --always` again). launchd ends only the server's own process group, and keepers have their own. Either manager starts the server again after an [upgrade from a client](#upgrade-from-a-client).
+
 ## Files
 
 Everything lives in `<agent home>/serve/`, a `0700` folder:
@@ -167,8 +169,10 @@ Stopping the server (`serve stop`, SIGTERM from a service manager, Ctrl+C on a f
 | --- | --- | --- |
 | `GET /.well-known/gentle-shell` | none | `{ schema: "gentle-shell.serve.identity/v1", serverId, name, protocol, version }`: who answers at this address (`name` is the machine's hostname). No secrets; `Host` and `Origin` rules still apply. A client holding a [connection code](#connection-code) probes it before pairing. |
 | `POST /api/pair` | none (the code) | `{ code, name? }` → `201 { id, name, scopes, createdAt, token }`. `403 invalid_code`, `429 rate_limited`, `409 too_many_devices`. |
-| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `server-forwards`, `services`, `tower`, `files`, `git`, `uploads`, `print` ([one-shot prompts](#one-shot-prompts)), `persistent-sessions` ([sessions survive a server restart](#sessions-across-server-restarts)), and `terminals` when a [terminal host](#persistent-terminals) binary is there. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
+| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `server-forwards`, `services`, `tower`, `files`, `git`, `uploads`, `print` ([one-shot prompts](#one-shot-prompts)), `persistent-sessions` ([sessions survive a server restart](#sessions-across-server-restarts)), `upgrade` ([upgrade from a client](#upgrade-from-a-client)), and `terminals` when a [terminal host](#persistent-terminals) binary is there. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
 | `POST /api/server/stop` | `admin` | `{ endSessions? }` → `202 { stopping: true, endSessions }`; the server exits. Its sessions keep running for the next server unless `endSessions` is `true`. |
+| `POST /api/upgrade` | `admin` | `{ channel? }` (`release` or `main`) → `202 { jobId }`: runs `gentle-shell upgrade` on this machine. `409 upgrade_running` while one runs. See [Upgrade from a client](#upgrade-from-a-client). |
+| `GET /api/upgrade/:jobId/stream` | `admin` | SSE: `line` `{ line }` for each output line (those so far first), then `finished` `{ ok, error?, version? }`, then the stream ends. `404` for another job id. |
 | `POST /api/pairing-codes` | `admin` | `{ scopes? }` → `201 { code, scopes, expiresAt }` |
 | `GET /api/devices` | `admin` | `{ devices: [{ id, name, scopes, createdAt, lastUsedAt? }] }` |
 | `DELETE /api/devices/:id` | `admin` | `{ revoked }`. Immediate: the token stops working, its tickets die, its open streams close. |
@@ -225,6 +229,8 @@ The body is one [Pi RPC command](https://github.com/earendil-works/pi/blob/main/
 ### Desktop RPC: `POST /api/sessions/:id/desktop`
 
 A convenience over the existing [Desktop RPC](desktop-rpc.md) transport: the server sends the `/gentle:desktop` prompt with its own `requestId`, waits for the matching `gentle-desktop-rpc` widget answer, and returns it (`{ schema, kind: "response", requestId, ok, data | error }`; `requestId` is the server's, and any `schema` or `requestId` in the body is ignored). `504 desktop_timeout` after 30 s; `502 desktop_refused` (with Pi's prompt response) when the session refused the prompt. Bodies are limited to 80 KiB (Desktop RPC requests are limited to 64 KiB), except `set_host_tools`, `host_tool_result`, `host_message` and `set_host_context`, which may be up to 10 MiB less 1 KiB (a result can carry 8 MiB of screenshots and 1 MiB of details; the session caps each method at its own limit). Desktop RPC events keep arriving in the event stream as `setWidget` records, exactly as Desktop sees them. Sending `/gentle:desktop` prompts through `/rpc` also works for every other method; this endpoint only adds the correlation.
+
+The same endpoint signs the server in to providers and manages its packages, so a client never has to say "do this on the server": [`login_start`](desktop-rpc.md#login_start) / [`login_complete`](desktop-rpc.md#login_complete) / [`login_cancel`](desktop-rpc.md#login_cancel) run Pi's own sign-in with its prompts as [`login_prompt`](desktop-rpc.md#login_prompt) events (a browser sign-in's loopback redirect is intercepted by the client and handed over as the full URL), [`set_api_key`](desktop-rpc.md#set_api_key) and [`remove_credentials`](desktop-rpc.md#remove_credentials) save and remove keys, and [`install_package`](desktop-rpc.md#install_package) / [`remove_package`](desktop-rpc.md#remove_package) run the CLI as a job with [`package_progress`](desktop-rpc.md#package_progress) lines. Those need `sessions:operate`; [`list_packages`](desktop-rpc.md#list_packages) and [`get_auth_status`](desktop-rpc.md#get_auth_status) (with each provider's `loginKinds`) need `sessions:read`. Credentials are stored in the server's agent home, for every session of this server.
 
 ### Host tools
 
@@ -296,6 +302,28 @@ A slow client never slows a session. Pi's stdout is always read; each subscriber
 #### Framing
 
 Pi's stdout is split on LF only, with an optional CR before it stripped, never on U+2028/U+2029 (which are valid inside JSON strings, and which Node's `readline` would split on). A line that is not a JSON object is not forwarded, nor is a record whose `type` starts with `serve_` (those are the server side's own). Commands are written as one JSON object plus LF.
+
+## Upgrade from a client
+
+An `admin` client (the local admin token, or a device paired with `--scope …,admin`) upgrades Gentle Shell on the server without a terminal there. `GET /api/server` lists the capability `upgrade`.
+
+```sh
+curl -X POST http://127.0.0.1:PORT/api/upgrade -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"channel":"release"}'
+# → 202 {"jobId":"upg_…"}
+curl -N http://127.0.0.1:PORT/api/upgrade/upg_…/stream -H "Authorization: Bearer $ADMIN"
+```
+
+```text
+event: line
+data: {"line":"Checking the release channel"}
+
+event: finished
+data: {"ok":true,"version":"5.1.0"}
+```
+
+- **What runs.** The server's own launcher runs `gentle-shell upgrade [--channel release|main]` (the command a person types, with its channel record, npm/pnpm or bundled install handling and checks), in the user's home folder, with stdin closed and color off. `channel` is optional; without it the recorded channel is followed. Output lines become `line` events (color codes removed, each at most 2000 characters; the last 2000 are kept for a stream that connects late). `finished` carries `ok`, and `error` (the command's last line on stderr, at most 300 characters) or `version` (the installed package's version, when it can be read). An upgrade still running after 30 minutes is stopped. One at a time: another `POST` answers `409 upgrade_running`; a finished one does not block the next.
+- **The restart.** About half a second after a successful `finished`, the server stops as `serve stop` does (connections close, sessions keep running under their keepers, the terminal host keeps running) and comes back on the new version on the same address, with the same server id and paired devices: a server started by `serve` or `serve --foreground` starts its replacement itself (`serve --foreground` with the same `--listen`, `--allow-host`, `--forward-ports`, `--no-tls` and `--relay`, detached, logging to `server.log`); a server run by `serve share --always` exits with status 75 and its service manager starts the upgraded one (systemd's `Restart=on-failure`, launchd's `KeepAlive`). The replacement runs the launcher of the installed version: the same path for an npm or pnpm install, the one `current` names for a bundled install.
+- **Clients.** Requests in flight fail and streams close, as on any [restart](#sessions-across-server-restarts); a client reconnects with its last event id and reads `GET /api/server` for the new `version`. A failed upgrade changes nothing and the server keeps running.
 
 ## Authentication
 

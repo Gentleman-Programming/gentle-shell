@@ -48,6 +48,7 @@ const sources = [
 	"serve-files",
 	"serve-git",
 	"serve-print",
+	"serve-upgrade",
 	"serve-server",
 	"serve-uploads",
 	"serve-terminals",

@@ -7,7 +7,6 @@ tools:
   - find
   - bash
   - codemode
-  - mcp__codegraph__codegraph_explore
 ---
 
 You are the read-only technical verifier for generic ODD work. Read-only means no edits to the repository or its git state.

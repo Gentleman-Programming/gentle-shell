@@ -96,14 +96,14 @@ test("P6 (X9): full delegation reaches tracking and verification, not the organi
 // cost-speed P6b: "in one message with no other tool call" read as "each call in a message of its own" (F3: three
 // writers in three messages, no overlap, 887-1,092 s vs 393-478 s from one codemode script). Both routes are admitted
 // and overlap in full delegation (real Pi probes); the sequential tools are those declaring `executionMode: "sequential"`.
-const PARALLEL_LAUNCH_RULE = "Independent units with disjoint surfaces launch together: all their `subagent_run` calls in the same assistant message or one `codemode` script, never one launch per message nor beside a sequential `todo`, `ask_user_*`, `codegraph` or `gentle_review*` (it serializes them); units needing the same file run one at a time.";
+const PARALLEL_LAUNCH_RULE = "Independent units with disjoint surfaces launch together: all their `subagent_run` calls in the same assistant message or one `codemode` script, never one launch per message nor beside a sequential `todo`, `ask_user_*` or `gentle_review*` (it serializes them); units needing the same file run one at a time.";
 
 test("P6b: full delegation launches independent units in the same assistant message or one codemode script, never one per message", () => {
 	const prompt = render("full-delegation");
 	assert.ok(prompt.includes("in the same assistant message"), "same assistant message");
 	assert.ok(prompt.includes("or one `codemode` script"), "codemode route");
 	assert.ok(prompt.includes("never one launch per message"), "never one launch per message");
-	for (const tool of ["`todo`", "`ask_user_*`", "`codegraph`", "`gentle_review*`"]) assert.ok(prompt.includes(tool), `sequential tool ${tool}`);
+	for (const tool of ["`todo`", "`ask_user_*`", "`gentle_review*`"]) assert.ok(prompt.includes(tool), `sequential tool ${tool}`);
 	assert.ok(!prompt.includes("in one message with no other tool call"), "the ambiguous clause is gone");
 	assert.ok(!prompt.includes("as direct `subagent_run` calls"), "codemode is no longer excluded");
 });

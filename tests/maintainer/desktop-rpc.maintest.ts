@@ -248,10 +248,10 @@ test("installed Pi serves Desktop config reads from the existing stores", () => 
 		assert.deepEqual(models.data.value, { worker: { model: "openai/gpt-probe" } });
 
 		const snapshot = byRequest("config-3").data;
-		assert.equal(snapshot.state.config.stores.length, 9);
+		assert.equal(snapshot.state.config.stores.length, 12);
 		assert.deepEqual(
 			snapshot.state.config.stores.map((entry: any) => entry.store),
-			["profiles", "models", "profile_fallbacks", "subagents", "pins", "managed_assets", "persona", "banner", "notifications"],
+			["profiles", "models", "profile_fallbacks", "subagents", "pins", "managed_assets", "persona", "banner", "notifications", "mcp", "pi_settings", "claude_bridge"],
 		);
 		assert.equal(snapshot.state.config.stores[0].status, "ok");
 		assert.equal(JSON.stringify(snapshot).includes("claude-probe"), false, "snapshots stay bounded");

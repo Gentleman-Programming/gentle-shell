@@ -9,8 +9,10 @@
 // so no invariant is re-implemented here. A pin layer is set or cleared through
 // the owner's `writeProfilePinSync` / `clearProfilePinSync`, one explicitly named
 // layer per request. `models`, `subagents`, and `managed_assets` are derived or
-// installer-owned and answer a typed `read_only` error to every write. There is no
-// second store and no cached copy.
+// installer-owned, and `mcp`, `pi_settings`, and `claude_bridge` are display
+// projections of files Pi or a third-party package own; all of them answer a
+// typed `read_only` error to every write. There is no second store and no
+// cached copy.
 //
 // Changes made outside this channel are detected best effort: once wired for an
 // interactive RPC host, the bridge watches the owner files' directories (see
@@ -55,6 +57,9 @@ import { bannerConfigPath, isBannerConfig, readBannerConfigSync, writeBannerConf
 import { isNotificationSettings, parseNotificationSettingsFile, writeNotificationSettings, type NotificationSettings } from "./notification-policy.ts";
 import { existsSync as fileExists, readFileSync as readFileText } from "node:fs";
 import { join } from "node:path";
+import { globalMcpConfigPath, projectMcpConfigPath, readMcpConfig } from "./mcp-config.ts";
+import { globalPiSettingsPath, projectPiSettingsPath, readPiSettings } from "./pi-settings.ts";
+import { claudeBridgeConfigPath, readClaudeBridgeConfig } from "./claude-bridge-config.ts";
 
 export const DESKTOP_CONFIG_METHODS = ["get_config", "set_config"] as const;
 /** Advertised only because this module wires the writer that publishes it. */
@@ -72,6 +77,9 @@ export const DESKTOP_CONFIG_STORES = [
 	"persona",
 	"banner",
 	"notifications",
+	"mcp",
+	"pi_settings",
+	"claude_bridge",
 ] as const;
 
 export type DesktopConfigStore = (typeof DESKTOP_CONFIG_STORES)[number];
@@ -135,7 +143,10 @@ const STALE_REVISION = { code: "revision_conflict", message: "Config changed sin
 const WRITE_FAILED = { code: "write_failed", message: "Config store write failed" } as const;
 
 /** Stores with a layer that the session cwd locates (project layers and pins). */
-const CWD_DEPENDENT_STORES: readonly DesktopConfigStore[] = ["models", "subagents", "pins", "persona"];
+const CWD_DEPENDENT_STORES: readonly DesktopConfigStore[] = ["models", "subagents", "pins", "persona", "mcp", "pi_settings"];
+
+/** Stores whose project layer Pi reads only for a trusted project. */
+const TRUST_GATED_STORES: readonly DesktopConfigStore[] = ["mcp", "pi_settings"];
 
 /** Authoritative stores this slice may write; every other store is read-only. */
 const AUTHORITATIVE_STORES: ReadonlySet<DesktopConfigStore> = new Set(["profiles", "profile_fallbacks", "pins", "persona", "banner", "notifications"]);
@@ -156,6 +167,12 @@ export interface DesktopConfigRoots {
 	cwd: string;
 	configHome: string;
 	agentHome: string;
+	/**
+	 * The session's project trust, as Pi decides it. Pi reads the project
+	 * `mcp.json` and `settings.json` only for a trusted project, so the `mcp`
+	 * and `pi_settings` stores do too; an unknown answer is untrusted.
+	 */
+	projectTrusted?: boolean;
 	resolveWorktree?: WorktreeResolver;
 }
 
@@ -176,8 +193,17 @@ function withRoots(context: ExtensionContext, overrides: DesktopConfigOverrides)
 		cwd: context.cwd,
 		configHome: overrides.configHome ?? gentlePiConfigHome(),
 		agentHome: overrides.agentHome ?? resolveGentlePiAgentHome(),
+		projectTrusted: sessionTrustsProject(context),
 		...(overrides.resolveWorktree === undefined ? {} : { resolveWorktree: overrides.resolveWorktree }),
 	};
+}
+
+function sessionTrustsProject(context: ExtensionContext): boolean {
+	try {
+		return typeof context.isProjectTrusted === "function" && context.isProjectTrusted() === true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -452,6 +478,57 @@ function readNotifications(root: DesktopConfigRoots): StoreRead {
 	};
 }
 
+// ---- Display stores: mcp, pi_settings, claude_bridge (read-only) ----
+
+/** Bounds the `mcp` server list; `truncated` reports the cut. */
+export const DESKTOP_MCP_SERVER_LIMIT = 64;
+const MCP_NAME_LIMIT = 128;
+
+/** The project layer is listed only when Pi would read it (a trusted project). */
+function trustedLayers(global: LayerReadStatus, project: LayerReadStatus | undefined): { layers: DesktopConfigLayer[]; status: DesktopConfigStatus } {
+	return {
+		layers: [layer("global", global), ...(project === undefined ? [] : [layer("project", project)])],
+		status: project === undefined ? layeredStatus(global) : layeredStatus(global, project),
+	};
+}
+
+function readMcp(root: DesktopConfigRoots): StoreRead {
+	const read = readMcpConfig({ agentHome: root.agentHome, cwd: root.cwd, projectTrusted: root.projectTrusted === true });
+	const { layers, status } = trustedLayers(read.global, read.project);
+	if (status !== "ok") return { status, layers };
+	// `omitted` counts servers left out for an over-long name; `truncated` is only the cut at the bound.
+	const named = read.servers.filter((server) => server.name.length <= MCP_NAME_LIMIT);
+	const servers = named.slice(0, DESKTOP_MCP_SERVER_LIMIT);
+	return { status, value: { servers, truncated: named.length > DESKTOP_MCP_SERVER_LIMIT, omitted: read.servers.length - named.length }, layers };
+}
+
+function readPiSettingsStore(root: DesktopConfigRoots): StoreRead {
+	const projectTrusted = root.projectTrusted === true;
+	try {
+		const read = readPiSettings({ agentHome: root.agentHome, cwd: root.cwd, projectTrusted });
+		const { layers, status } = trustedLayers(read.global, read.project);
+		return { status, ...(status === "ok" && read.view ? { value: read.view } : {}), layers };
+	} catch {
+		// An unexpected failure is a broken store, never a raw error; a layer whose
+		// file is absent still reads `missing`.
+		const fileStatus = (path: string): LayerReadStatus => (fileExists(path) ? "invalid" : "missing");
+		const { layers, status } = trustedLayers(
+			fileStatus(globalPiSettingsPath(root.agentHome)),
+			projectTrusted ? fileStatus(projectPiSettingsPath(root.cwd)) : undefined,
+		);
+		return { status, layers };
+	}
+}
+
+function readClaudeBridge(root: DesktopConfigRoots): StoreRead {
+	const read = readClaudeBridgeConfig(root.agentHome);
+	return {
+		status: read.status === "valid" ? "ok" : read.status,
+		...(read.status === "valid" ? { value: { plan: read.plan } } : {}),
+		layers: [layer("global", read.status)],
+	};
+}
+
 const STORE_READERS: Record<DesktopConfigStore, { scope: DesktopConfigScope; read: (root: DesktopConfigRoots) => StoreRead }> = {
 	profiles: { scope: "global", read: readProfiles },
 	models: { scope: "global+project", read: readModels },
@@ -462,6 +539,9 @@ const STORE_READERS: Record<DesktopConfigStore, { scope: DesktopConfigScope; rea
 	persona: { scope: "global+project", read: readPersona },
 	banner: { scope: "global", read: readBanner },
 	notifications: { scope: "global", read: readNotifications },
+	mcp: { scope: "global+project", read: readMcp },
+	pi_settings: { scope: "global+project", read: readPiSettingsStore },
+	claude_bridge: { scope: "global", read: readClaudeBridge },
 };
 
 export function readConfigStore(store: DesktopConfigStore, root: DesktopConfigRoots): DesktopConfigData {
@@ -521,6 +601,11 @@ export function configWatchTargets(root: DesktopConfigRoots): DesktopWatchTarget
 		watchTarget(projectPersonaPath(root.cwd)),
 		watchTarget(bannerConfigPath(root.configHome)),
 		watchTarget(notificationsPath(root)),
+		watchTarget(globalMcpConfigPath(root.agentHome)),
+		watchTarget(projectMcpConfigPath(root.cwd)),
+		watchTarget(globalPiSettingsPath(root.agentHome)),
+		watchTarget(projectPiSettingsPath(root.cwd)),
+		watchTarget(claudeBridgeConfigPath(root.agentHome)),
 	];
 	const pins = readProfilePinStatus(root.cwd, root.resolveWorktree);
 	if (pins) targets.push(watchTarget(pins.localPath), watchTarget(pins.repoPath));
@@ -818,6 +903,8 @@ export class DesktopConfigBridge {
 	private emit: DesktopConfigEmit | undefined;
 	private watcher: DesktopDirectoryWatcher | undefined;
 	private watchedCwd: string | undefined;
+	/** The project trust answer the trust-gated stores were last read with. */
+	private watchedTrust: boolean | undefined;
 	/** The last revision this channel reported per store (read, snapshot, write, or event). */
 	private readonly reported = new Map<DesktopConfigStore, string>();
 
@@ -839,6 +926,17 @@ export class DesktopConfigBridge {
 			const pending = this.watcher?.hasPending() ?? false;
 			this.watch();
 			this.report(pending ? DESKTOP_CONFIG_STORES : CWD_DEPENDENT_STORES);
+			return;
+		}
+		// Pi announces no project trust change to extensions, so a change made
+		// during the session (same cwd) is noticed when the next Desktop command
+		// binds the context: the trust-gated stores are re-read then.
+		if (this.emit && this.watchedCwd !== undefined) {
+			const trusted = sessionTrustsProject(context);
+			if (trusted !== this.watchedTrust) {
+				this.watchedTrust = trusted;
+				this.report(TRUST_GATED_STORES);
+			}
 		}
 	}
 
@@ -864,6 +962,7 @@ export class DesktopConfigBridge {
 		const watcher = this.watcher;
 		this.watcher = undefined;
 		this.watchedCwd = undefined;
+		this.watchedTrust = undefined;
 		watcher?.dispose();
 	}
 
@@ -880,6 +979,7 @@ export class DesktopConfigBridge {
 			const watcher = new DesktopDirectoryWatcher(() => this.recompute(watcher), this.watchOptions);
 			this.watcher = watcher;
 			this.watchedCwd = root.cwd;
+			this.watchedTrust = root.projectTrusted === true;
 			watcher.start(configWatchTargets(root));
 		} catch {
 			/* best effort: the channel keeps working without external events */
@@ -899,6 +999,9 @@ export class DesktopConfigBridge {
 		if (!host || !emit) return;
 		const root = withRoots(host, this.overrides);
 		if (!root) return;
+		// The trust answer these revisions were read with is the new baseline, so a
+		// later revert seen by the next Desktop command still re-reads the trust-gated stores.
+		if (this.watchedCwd !== undefined) this.watchedTrust = root.projectTrusted === true;
 		for (const store of stores) {
 			let current: StoreRevision;
 			try {

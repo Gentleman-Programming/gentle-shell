@@ -111,7 +111,7 @@ test("all six file tools ask for the exact outside target and a refusal blocks",
 test("a rejected confirmation explicitly blocks execution and leaves no grant", async t => {
 	const disconnect = new Error("fixture UI disconnected");
 	const f = fixture(t, { confirm: async () => { throw disconnect; } });
-	const blocked = { block: true, reason: "Gentle AI safety policy blocked the path access because the confirmation dialog failed. Retry to request fresh consent." };
+	const blocked = { block: true, reason: "Gentle AI safety policy blocked the path access because it was not confirmed." };
 	let executed = 0;
 	let verdict: ToolCallEventResult | undefined;
 	const result = await runToolCall({ type: "toolCall", name: "read", id: "disconnect", arguments: { path: outside } }, {

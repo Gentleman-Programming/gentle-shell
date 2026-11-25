@@ -24,6 +24,7 @@ function env(t: test.TestContext) {
 	return {
 		root,
 		configHome,
+		agentHome,
 		workspace,
 		bridge,
 		projectPersona: join(workspace, ".pi", "gentle-ai", "persona.json"),
@@ -231,4 +232,69 @@ test("an unknown or prototype event key is rejected, never silently dropped", as
 	const withProto = JSON.parse(JSON.stringify(data).replace('"events":{', '"events":{"__proto__":null,'));
 	assert.equal((await e.write("notifications", withProto)).error?.code, "invalid_data");
 	assert.equal(existsSync(join(e.configHome, "notifications.json")), false);
+});
+
+// ---- model_defaults: Pi's settings.json model keys (Configuration › Models) ----
+
+test("model defaults read only the four model keys from the agent home's settings.json", async (t) => {
+	const e = env(t);
+	const empty = await e.read("model_defaults");
+	assert.deepEqual([empty.status, empty.scope, empty.readOnly, empty.value], ["missing", "global", false, undefined]);
+	writeFileSync(join(e.agentHome, "settings.json"), JSON.stringify({ packages: ["npm:x"], theme: "dark", defaultProvider: "anthropic", defaultModel: "claude-opus", defaultThinkingLevel: "high", enabledModels: ["anthropic/*", "openai/gpt-5"] }));
+	const read = await e.read("model_defaults");
+	assert.equal(read.status, "ok");
+	assert.deepEqual(read.value, { defaultProvider: "anthropic", defaultModel: "claude-opus", defaultThinkingLevel: "high", enabledModels: ["anthropic/*", "openai/gpt-5"] });
+	writeFileSync(join(e.agentHome, "settings.json"), JSON.stringify({ defaultThinkingLevel: "extreme", enabledModels: "all" }));
+	assert.deepEqual((await e.read("model_defaults")).value, {}, "a mistyped key reads as unset, as Pi treats it");
+});
+
+test("a model defaults write replaces the four keys and keeps every other settings key", async (t) => {
+	const e = env(t);
+	const path = join(e.agentHome, "settings.json");
+	writeFileSync(path, JSON.stringify({ packages: ["npm:x"], defaultProvider: "anthropic", defaultModel: "claude-opus", defaultThinkingLevel: "high" }));
+	const outcome = await e.write("model_defaults", { defaultProvider: "openai", defaultModel: "gpt-5", enabledModels: ["openai/gpt-5", "anthropic/claude-opus"] });
+	assert.equal(outcome.ok, true, JSON.stringify(outcome));
+	assert.equal(outcome.data.changed, true);
+	assert.equal(outcome.event?.name, "config_changed");
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { packages: ["npm:x"], defaultProvider: "openai", defaultModel: "gpt-5", enabledModels: ["openai/gpt-5", "anthropic/claude-opus"] }, "an absent key is unset");
+	const same = await e.write("model_defaults", outcome.data.value);
+	assert.deepEqual([same.ok, same.data.changed, same.event], [true, false, undefined]);
+	assert.equal((await e.write("model_defaults", {})).ok, true);
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { packages: ["npm:x"] }, "an empty write clears the defaults");
+});
+
+test("a model defaults write validates every key and never replaces an unreadable settings file", async (t) => {
+	const e = env(t);
+	for (const data of [
+		{ theme: "dark" },
+		{ defaultProvider: "" },
+		{ defaultModel: 3 },
+		{ defaultThinkingLevel: "extreme" },
+		{ enabledModels: "openai/gpt-5" },
+		{ enabledModels: ["a", "a"] },
+		{ enabledModels: ["bad\nline"] },
+		[],
+	]) {
+		assert.equal((await e.write("model_defaults", data)).error?.code, "invalid_data", JSON.stringify(data));
+	}
+	assert.equal(existsSync(join(e.agentHome, "settings.json")), false);
+	const stale = await e.revision("model_defaults");
+	writeFileSync(join(e.agentHome, "settings.json"), JSON.stringify({ defaultModel: "x" }));
+	assert.equal((await e.write("model_defaults", { defaultModel: "y" }, stale)).error?.code, "revision_conflict");
+	writeFileSync(join(e.agentHome, "settings.json"), "{ not json");
+	const broken = await e.read("model_defaults");
+	assert.equal(broken.status, "invalid");
+	assert.equal((await e.write("model_defaults", { defaultModel: "y" })).error?.code, "write_failed");
+	assert.equal(readFileSync(join(e.agentHome, "settings.json"), "utf8"), "{ not json");
+});
+
+test("a model defaults write waits for a profile apply, which also sets the orchestrator", async (t) => {
+	const e = env(t);
+	const revision = await e.revision("model_defaults");
+	beginDesktopProfileApply();
+	try {
+		assert.equal((await e.write("model_defaults", { defaultModel: "y" }, revision)).error?.code, "profile_apply_busy");
+	} finally {
+		endDesktopProfileApply();
+	}
 });

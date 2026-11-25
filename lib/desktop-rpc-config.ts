@@ -48,6 +48,7 @@ import type { DesktopRpcOutcome, DesktopRpcState } from "./desktop-rpc.ts";
 import { DesktopDirectoryWatcher, type DesktopDirectoryWatcherOptions, type DesktopWatchTarget } from "./desktop-rpc-config-watch.ts";
 import { isDesktopProfileApplyRunning } from "./desktop-rpc-profiles.ts";
 import { fallbacksFilePath, normalizeFallbacksFile, readFallbacksFile, writeFallbacksFile } from "./model-fallback-store.ts";
+import { parsePiModelDefaults, projectPiModelDefaults, readOrchestratorSettings, writePiModelDefaults, type PiModelDefaults } from "./profiles-orchestrator.ts";
 import { modelConfigPaths, normalizeModelConfig, readModelConfigFile, readSavedModelConfig } from "./model-routing-authority.ts";
 import type { WorktreeResolver } from "./session-worktree-registry.ts";
 import { globalPersonaPath, isPersonaMode, projectPersonaPath, readPersonaLayer, resolvePersonaMode, writePersonaMode, type PersonaLayerRead } from "./persona-config.ts";
@@ -72,6 +73,7 @@ export const DESKTOP_CONFIG_STORES = [
 	"persona",
 	"banner",
 	"notifications",
+	"model_defaults",
 ] as const;
 
 export type DesktopConfigStore = (typeof DESKTOP_CONFIG_STORES)[number];
@@ -138,10 +140,10 @@ const WRITE_FAILED = { code: "write_failed", message: "Config store write failed
 const CWD_DEPENDENT_STORES: readonly DesktopConfigStore[] = ["models", "subagents", "pins", "persona"];
 
 /** Authoritative stores this slice may write; every other store is read-only. */
-const AUTHORITATIVE_STORES: ReadonlySet<DesktopConfigStore> = new Set(["profiles", "profile_fallbacks", "pins", "persona", "banner", "notifications"]);
+const AUTHORITATIVE_STORES: ReadonlySet<DesktopConfigStore> = new Set(["profiles", "profile_fallbacks", "pins", "persona", "banner", "notifications", "model_defaults"]);
 
-/** The stores an `apply_profile` reads and rewrites; only their writes wait for an apply. */
-const PROFILE_FAMILY_STORES: ReadonlySet<DesktopConfigStore> = new Set(["profiles", "profile_fallbacks", "pins"]);
+/** The stores an `apply_profile` reads and rewrites (it sets the orchestrator's model defaults); only their writes wait for an apply. */
+const PROFILE_FAMILY_STORES: ReadonlySet<DesktopConfigStore> = new Set(["profiles", "profile_fallbacks", "pins", "model_defaults"]);
 
 export function storeReadOnly(store: DesktopConfigStore): boolean {
 	return !AUTHORITATIVE_STORES.has(store);
@@ -452,6 +454,30 @@ function readNotifications(root: DesktopConfigRoots): StoreRead {
 	};
 }
 
+// ---- Model defaults: Pi's own settings.json in the agent home ----
+
+function modelDefaultsPath(root: DesktopConfigRoots): string {
+	return join(root.agentHome, "settings.json");
+}
+
+type ModelDefaultsRead = { status: "missing" } | { status: "invalid" } | { status: "valid"; defaults: PiModelDefaults };
+
+function readModelDefaultsFile(root: DesktopConfigRoots): ModelDefaultsRead {
+	const read = readOrchestratorSettings(modelDefaultsPath(root));
+	if (read.status !== "valid") return { status: read.status };
+	return { status: "valid", defaults: projectPiModelDefaults(read.value) };
+}
+
+function readModelDefaults(root: DesktopConfigRoots): StoreRead {
+	const read = readModelDefaultsFile(root);
+	return {
+		status: read.status === "valid" ? "ok" : read.status,
+		// Only the four model keys cross: the rest of settings.json is Pi's and other extensions'.
+		...(read.status === "valid" ? { value: read.defaults } : {}),
+		layers: [layer("global", read.status)],
+	};
+}
+
 const STORE_READERS: Record<DesktopConfigStore, { scope: DesktopConfigScope; read: (root: DesktopConfigRoots) => StoreRead }> = {
 	profiles: { scope: "global", read: readProfiles },
 	models: { scope: "global+project", read: readModels },
@@ -462,6 +488,7 @@ const STORE_READERS: Record<DesktopConfigStore, { scope: DesktopConfigScope; rea
 	persona: { scope: "global+project", read: readPersona },
 	banner: { scope: "global", read: readBanner },
 	notifications: { scope: "global", read: readNotifications },
+	model_defaults: { scope: "global", read: readModelDefaults },
 };
 
 export function readConfigStore(store: DesktopConfigStore, root: DesktopConfigRoots): DesktopConfigData {
@@ -521,6 +548,7 @@ export function configWatchTargets(root: DesktopConfigRoots): DesktopWatchTarget
 		watchTarget(projectPersonaPath(root.cwd)),
 		watchTarget(bannerConfigPath(root.configHome)),
 		watchTarget(notificationsPath(root)),
+		watchTarget(modelDefaultsPath(root)),
 	];
 	const pins = readProfilePinStatus(root.cwd, root.resolveWorktree);
 	if (pins) targets.push(watchTarget(pins.localPath), watchTarget(pins.repoPath));
@@ -581,6 +609,10 @@ function writeTargetsFor(
 			// The digest covers the real file content, file sounds included, so a
 			// sound changed elsewhere invalidates a token even though its path is hidden.
 			return [layerWriteInfo(store, "global", read.status === "valid" ? "ok" : read.status, read.status === "valid" ? read.settings : undefined)];
+		}
+		case "model_defaults": {
+			const read = readModelDefaultsFile(root);
+			return [layerWriteInfo(store, "global", read.status === "valid" ? "ok" : read.status, read.status === "valid" ? read.defaults : undefined)];
 		}
 		default:
 			return undefined;
@@ -681,6 +713,32 @@ function planNotificationsWrite(data: unknown, root: DesktopConfigRoots, expecte
 	if (conflict) return { error: conflict };
 	const changed = currentValue === undefined || canonicalJson(currentValue) !== canonicalJson(settings);
 	return { target: "global", writeRevision, changed, write: () => { writeNotificationSettings(settings, { gentlePiConfigHome: root.configHome }); } };
+}
+
+/**
+ * Model defaults are a complete replacement of the four keys (an absent key is
+ * unset); every other settings.json key is kept by the owner writer. A file that
+ * is not a JSON object is never replaced: the write fails instead.
+ */
+function planModelDefaultsWrite(data: unknown, root: DesktopConfigRoots, expected: string): WritePlan {
+	const defaults = parsePiModelDefaults(data);
+	if (!defaults || canonicalJson(defaults) !== canonicalJson(data)) return { error: INVALID_DATA };
+	const current = readModelDefaultsFile(root);
+	const currentValue = current.status === "valid" ? current.defaults : undefined;
+	const writeRevision = configWriteRevision("model_defaults", "global", current.status === "valid" ? "ok" : current.status, currentValue);
+	const conflict = revisionConflict(expected, writeRevision);
+	if (conflict) return { error: conflict };
+	if (current.status === "invalid") return { error: WRITE_FAILED };
+	const changed = canonicalJson(currentValue ?? {}) !== canonicalJson(defaults);
+	return {
+		target: "global",
+		writeRevision,
+		changed,
+		write: () => {
+			const result = writePiModelDefaults(modelDefaultsPath(root), defaults);
+			if (result.status === "invalid") throw new Error(result.reason);
+		},
+	};
 }
 
 /**
@@ -986,6 +1044,7 @@ export class DesktopConfigBridge {
 			case "persona": plan = planPersonaWrite(params.data, root, expected); break;
 			case "banner": plan = planBannerWrite(params.data, root, expected); break;
 			case "notifications": plan = planNotificationsWrite(params.data, root, expected); break;
+			case "model_defaults": plan = planModelDefaultsWrite(params.data, root, expected); break;
 			default: plan = planPinsWrite(params.data, root, expected);
 		}
 		if ("error" in plan) return { ok: false, error: plan.error };

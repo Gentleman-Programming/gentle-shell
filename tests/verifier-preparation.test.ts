@@ -320,3 +320,77 @@ test("#3401 S6: a sensitive file present only in Git history is staged as histor
 	assert.equal(existsSync(join(result.work, ".env")), false);
 	assert.equal(execFileSync("git", ["log", "--all", "--name-only", "--format="], { cwd: result.work, env, encoding: "utf8" }).split("\n").includes(".env"), true);
 });
+
+// gentle-shell#3231: a linked worktree of an isolated clone prepares like its own single-root checkout.
+const linkedWorktree = (t: any) => {
+	const f = fixture(t), worktree = join(f.root, "linked");
+	f.git("worktree", "add", "-q", "-b", "feature", worktree);
+	const wt = (...args: string[]) => execFileSync("git", args, { cwd: worktree, env, encoding: "utf8" }).trim();
+	writeFileSync(join(worktree, "app.cjs"), "module.exports = 4;\n"); wt("add", "app.cjs"); wt("commit", "-qm", "feature");
+	writeFileSync(join(worktree, "app.cjs"), "module.exports = 5;\n"); wt("add", "app.cjs");
+	writeFileSync(join(worktree, "app.cjs"), "module.exports = 3;\n");
+	writeFileSync(join(worktree, "selected [x].cjs"), "module.exports = 7;\n");
+	const gitDir = wt("rev-parse", "--absolute-git-dir");
+	const snapshot = () => [f.snapshot(), wt("status", "--porcelain=v1"), readFileSync(join(gitDir, "index")).toString("hex")];
+	const prepare = (include: string[]) => {
+		const scratch = mkdtempSync(join(f.root, "copy-"));
+		const result = spawnSync(process.execPath, [fileURLToPath(helper), worktree, scratch,
+			JSON.stringify({ include, baseline: f.baseline, checks: ["node probe.cjs"] })], { env, encoding: "utf8" });
+		return { ...result, scratch, work: join(scratch, "work"), receipt: result.stdout ? JSON.parse(result.stdout) : undefined };
+	};
+	return { f, worktree, wt, gitDir, snapshot, prepare };
+};
+
+test("#3231: a linked worktree prepares its own HEAD, index and inputs without sharing the common Git directory", t => {
+	const l = linkedWorktree(t), before = l.snapshot();
+	const result = l.prepare(["app.cjs", "selected [x].cjs"]);
+	assert.equal(result.status, 0, result.stdout + result.stderr);
+	assert.equal(result.receipt.status, "ready");
+	assert.equal(result.receipt.head, l.wt("rev-parse", "HEAD"));
+	assert.notEqual(result.receipt.head, l.f.git("rev-parse", "HEAD"));
+	assert.equal(result.receipt.baseline, l.f.baseline);
+	const work = (...args: string[]) => execFileSync("git", args, { cwd: result.work, env, encoding: "utf8" }).trim();
+	assert.equal(work("ls-files", "--stage"), l.wt("ls-files", "--stage"));
+	assert.equal(work("cat-file", "-t", l.f.baseline), "commit");
+	assert.equal(readFileSync(join(result.work, "app.cjs"), "utf8"), "module.exports = 3;\n");
+	assert.equal(work("rev-parse", "--absolute-git-dir"), join(realpathSync(result.work), ".git"));
+	assert.equal(work("rev-parse", "--git-common-dir"), ".git");
+	assert.equal(existsSync(join(result.work, ".git", "objects", "info", "alternates")), false);
+	assert.deepEqual(l.snapshot(), before);
+});
+
+test("#3231: a .git file naming a worktree registered to another checkout is refused", t => {
+	const l = linkedWorktree(t), forged = join(l.f.root, "forged");
+	mkdirSync(forged);
+	writeFileSync(join(forged, ".git"), `gitdir: ${l.gitDir}\n`);
+	const scratch = mkdtempSync(join(l.f.root, "copy-"));
+	const result = spawnSync(process.execPath, [fileURLToPath(helper), forged, scratch,
+		JSON.stringify({ include: [], baseline: l.f.baseline, checks: ["node probe.cjs"] })], { env, encoding: "utf8" });
+	refused({ ...result, scratch, work: join(scratch, "work"), receipt: JSON.parse(result.stdout) }, "unsupported repository: ordinary Git directory or registered linked worktree required");
+});
+
+test("#3231: a sparse checkout configured only for the linked worktree is refused", t => {
+	const l = linkedWorktree(t);
+	l.f.git("config", "extensions.worktreeConfig", "true");
+	l.wt("config", "--worktree", "core.sparseCheckout", "true");
+	const result = l.prepare([]);
+	refused(result, "unsupported shallow, shared, sparse, partial or replaced Git history");
+});
+
+for (const value of ["true", "yes", "on", "1"]) {
+	test(`#3231: a linked sparse checkout spelled ${value} is refused`, t => {
+		const l = linkedWorktree(t);
+		l.f.git("config", "extensions.worktreeConfig", "true");
+		l.wt("config", "--worktree", "core.sparseCheckout", value);
+		assert.equal(l.wt("config", "--bool", "core.sparseCheckout"), "true");
+		const before = l.snapshot();
+		refused(l.prepare([]), "unsupported shallow, shared, sparse, partial or replaced Git history");
+		assert.deepEqual(l.snapshot(), before);
+	});
+}
+
+test("#3231: a promisor remote spelled yes is refused", t => {
+	const f = fixture(t);
+	f.git("config", "remote.origin.promisor", "yes");
+	refused(f.prepare([]), "unsupported shallow, shared, sparse, partial or replaced Git history");
+});

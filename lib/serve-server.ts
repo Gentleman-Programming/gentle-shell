@@ -6,13 +6,14 @@
 // WebSocket transport can come later behind the same contract.
 
 import { randomBytes } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { homedir, hostname } from "node:os";
-import { basename, isAbsolute } from "node:path";
+import { arch, homedir, hostname } from "node:os";
+import { basename, sep } from "node:path";
 import { hasScope, isServeScope, type Principal, type ServeAuth, type ServeScope } from "./serve-auth.ts";
 import { startDiscoveryResponder, type DiscoveryResponder } from "./serve-discovery.ts";
+import { FileService, type SERVE_FS_LIMITS } from "./serve-files.ts";
 import { ForwardError, ForwardManager, type ForwardInfo, type SERVE_FORWARD_LIMITS } from "./serve-forward.ts";
+import { HttpError, need, readJsonBody, realDirectory, SECURITY_HEADERS, sendError, sendJson } from "./serve-http.ts";
 import { HOST_TOOL_METHODS, ServeSession, SessionError, type ServeSessionLimits, type SessionLaunch } from "./serve-session.ts";
 
 export const SERVE_SCHEMA = "gentle-shell.serve/v1";
@@ -20,7 +21,7 @@ export const SERVE_PROTOCOL = 1;
 export const SERVE_IDENTITY_SCHEMA = "gentle-shell.serve.identity/v1";
 /** Public identity path: a client holding a connection code probes it to find the address that reaches this server. */
 export const SERVE_IDENTITY_PATH = "/.well-known/gentle-shell";
-export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards", "tower"] as const;
+export const SERVE_CAPABILITIES = ["sessions", "pi-rpc", "desktop-rpc", "sse", "stream-tickets", "pairing", "devices", "forwards", "tower", "files"] as const;
 
 export const SERVE_SERVER_LIMITS = {
 	heartbeatMs: 20_000,
@@ -71,13 +72,6 @@ export function carriesHostToolRequest(message: string): boolean {
 	return !!request && typeof request === "object" && "method" in request && typeof request.method === "string" && Object.hasOwn(HOST_TOOL_METHODS, request.method);
 }
 
-const SECURITY_HEADERS = {
-	"X-Content-Type-Options": "nosniff",
-	"Referrer-Policy": "no-referrer",
-	"Cache-Control": "no-store",
-	"Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
-};
-
 export interface ServeServerOptions {
 	/** Address to bind; loopback unless the operator chose otherwise. */
 	host: string;
@@ -99,6 +93,7 @@ export interface ServeServerOptions {
 	forwardLimits?: Partial<typeof SERVE_FORWARD_LIMITS>;
 	/** Starts Gentle Tower on this machine's loopback (`POST /api/tower`); the real CLI runs it in-process. */
 	startTower?: () => Promise<ServeTower>;
+	fsLimits?: Partial<typeof SERVE_FS_LIMITS>;
 }
 
 /** A running Gentle Tower: its loopback port, the path that carries its token, and how to stop it. */
@@ -118,16 +113,6 @@ export interface ServeServer {
 	/** Whether it answers LAN discovery (network listen only, when the UDP port could be bound). */
 	discovery: boolean;
 	close(): Promise<void>;
-}
-
-class HttpError extends Error {
-	readonly status: number;
-	readonly code: string;
-	constructor(status: number, code: string, message: string) {
-		super(message);
-		this.status = status;
-		this.code = code;
-	}
 }
 
 export function isLoopbackHost(host: string): boolean {
@@ -169,61 +154,6 @@ function bearer(req: IncomingMessage): string | undefined {
 	return m ? m[1] : undefined;
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-	if (res.headersSent) return;
-	const text = JSON.stringify(body);
-	res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(text), ...SECURITY_HEADERS });
-	res.end(text);
-}
-
-function sendError(res: ServerResponse, status: number, code: string, message: string): void {
-	sendJson(res, status, { error: { code, message } });
-}
-
-function readJsonBody(req: IncomingMessage, limit: number): Promise<Record<string, unknown>> {
-	const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
-	const declared = Number(req.headers["content-length"]);
-	if (Number.isFinite(declared) && declared > limit) {
-		reject(new HttpError(413, "too_large", `Body over ${limit} bytes`));
-		req.resume();
-		return promise;
-	}
-	const chunks: Buffer[] = [];
-	let size = 0;
-	let over = false;
-	req.on("data", (chunk: Buffer) => {
-		size += chunk.length;
-		if (size > limit) over = true;
-		else chunks.push(chunk);
-	});
-	req.on("error", reject);
-	req.on("end", () => {
-		if (over) return reject(new HttpError(413, "too_large", `Body over ${limit} bytes`));
-		if (size === 0) return resolve({});
-		try {
-			const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-			if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
-			resolve(value);
-		} catch {
-			reject(new HttpError(400, "invalid_json", "The body must be one JSON object"));
-		}
-	});
-	return promise;
-}
-
-function realDirectory(cwd: unknown): string {
-	if (typeof cwd !== "string" || cwd.length === 0 || cwd.length > 4096 || cwd.includes("\0") || !isAbsolute(cwd)) {
-		throw new HttpError(400, "invalid_cwd", "cwd must be an absolute path to a folder");
-	}
-	try {
-		const real = realpathSync(cwd);
-		if (!statSync(real).isDirectory()) throw new Error("not a folder");
-		return real;
-	} catch {
-		throw new HttpError(400, "invalid_cwd", "cwd must be an absolute path to an existing folder");
-	}
-}
-
 export function startServeServer(options: ServeServerOptions): Promise<ServeServer> {
 	const limits = { ...SERVE_SERVER_LIMITS, ...options.limits };
 	const now = options.now ?? Date.now;
@@ -247,6 +177,8 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 		log,
 		limits: options.forwardLimits,
 	});
+	// Files on this machine, and their change streams.
+	const files = new FileService({ limits: options.fsLimits, now, log });
 	// Gentle Tower, when a device asked for it; stopped with the server.
 	let tower: (ServeTower & { startedAt: number }) | undefined;
 	let towerStarting: Promise<ServeTower & { startedAt: number }> | undefined;
@@ -254,13 +186,8 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 	options.auth.onRevoke((deviceId) => {
 		for (const s of sessions.values()) s.dropDevice(deviceId);
 		forwards.closeWhere((f) => f.deviceId === deviceId, "device revoked");
+		files.closeDevice(deviceId);
 	});
-
-	const need = (principal: Principal | undefined, scope: ServeScope): Principal => {
-		if (!principal) throw new HttpError(401, "unauthorized", "A valid bearer token is required");
-		if (!hasScope(principal, scope)) throw new HttpError(403, "forbidden", `This token lacks the ${scope} scope`);
-		return principal;
-	};
 
 	const sessionView = (s: ServeSession, principal: Principal) => ({
 		id: s.id,
@@ -457,6 +384,8 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 			const who = need(principal, "sessions:read");
 			return sendJson(res, 200, { schema: SERVE_SCHEMA, protocol: SERVE_PROTOCOL, serverId, version: options.version, startedAt: new Date(startedAt).toISOString(),
 				capabilities: SERVE_CAPABILITIES, device: { id: who.deviceId, name: who.name, scopes: who.scopes },
+				// How to build paths for the file and session endpoints.
+				platform: process.platform, arch: arch(), pathSeparator: sep,
 				// The server user's home folder, a default for new sessions; only for a token that may start them.
 				...(hasScope(who, "sessions:operate") ? { home: homedir() } : {}) });
 		}
@@ -520,6 +449,7 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 			started.noteActivity(who.deviceId);
 			return sendJson(res, 201, { session: sessionView(started, who) });
 		}
+		if (await files.route(req, res, method, path, url, principal)) return;
 		if (path === "/api/tower") return towerRoute(req, res, method, principal);
 		const forward = /^\/api\/sessions\/([A-Za-z0-9_]{1,64})\/forwards(?:\/([A-Za-z0-9_]{1,64}))?$/.exec(path);
 		if (forward) return forwardRoute(req, res, method, principal, forward[1], forward[2]);
@@ -639,7 +569,10 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 	server.headersTimeout = 20_000;
 	server.requestTimeout = 0; // SSE streams stay open
 	server.keepAliveTimeout = 5_000;
-	const heartbeat = setInterval(() => { for (const s of sessions.values()) s.heartbeat(); }, limits.heartbeatMs);
+	const heartbeat = setInterval(() => {
+		for (const s of sessions.values()) s.heartbeat();
+		files.heartbeat();
+	}, limits.heartbeatMs);
 	heartbeat.unref();
 
 	const { promise, resolve, reject } = Promise.withResolvers<ServeServer>();
@@ -672,6 +605,7 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 				clearInterval(heartbeat);
 				await discovery?.close();
 				forwards.closeAll();
+				files.closeAll();
 				await towerStarting?.catch(() => undefined);
 				await stopTower();
 				await Promise.all([...sessions.values()].map((s) => s.stop()));

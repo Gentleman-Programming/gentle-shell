@@ -175,6 +175,8 @@ export const requiredPaths = [
 	"runtime/serve-auth.mjs",
 	"runtime/serve-discovery.mjs",
 	"runtime/serve-forward.mjs",
+	"runtime/serve-http.mjs",
+	"runtime/serve-files.mjs",
 	"runtime/serve-server.mjs",
 	"runtime/serve-share.mjs",
 	"runtime/serve-cli.mjs",

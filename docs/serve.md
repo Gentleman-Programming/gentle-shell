@@ -147,7 +147,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | --- | --- | --- |
 | `GET /.well-known/gentle-shell` | none | `{ schema: "gentle-shell.serve.identity/v1", serverId, name, protocol, version }`: who answers at this address (`name` is the machine's hostname). No secrets; `Host` and `Origin` rules still apply. A client holding a [connection code](#connection-code) probes it before pairing. |
 | `POST /api/pair` | none (the code) | `{ code, name? }` → `201 { id, name, scopes, createdAt, token }`. `403 invalid_code`, `429 rate_limited`, `409 too_many_devices`. |
-| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, home? }`. `capabilities` includes `forwards` and `tower`. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
+| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `tower` and `files`. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
 | `POST /api/server/stop` | `admin` | `202`; the server stops its sessions and exits. |
 | `POST /api/pairing-codes` | `admin` | `{ scopes? }` → `201 { code, scopes, expiresAt }` |
 | `GET /api/devices` | `admin` | `{ devices: [{ id, name, scopes, createdAt, lastUsedAt? }] }` |
@@ -166,6 +166,15 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | `POST /api/tower` | `sessions:operate` | → `201 Forward & { url, expiresAt, started }`. Starts [Gentle Tower](#gentle-tower) when it is not running and forwards it. |
 | `GET /api/tower` | `sessions:read` | `{ running: false }` or `{ running: true, startedAt }`. |
 | `DELETE /api/tower` | `sessions:operate` | `{ stopped }`. Stops Tower and closes its forwards. |
+| `GET /api/fs/list?path=` | `sessions:read` | `{ path, entries: [Entry], truncated }`. See [Files on the server](#files-on-the-server). |
+| `GET /api/fs/stat?path=` | `sessions:read` | `Entry & { path, mode, etag?, linkTarget?, realPath? }` |
+| `GET /api/fs/read?path=&offset=&length=` | `sessions:read` | The file's raw bytes. |
+| `PUT /api/fs/write?path=[&create_only=1]` | `sessions:operate` | Raw body → `{ path, size, mtime, etag, created }`. |
+| `POST /api/fs/mkdir` | `sessions:operate` | `{ path }` → `{ path, created }` |
+| `POST /api/fs/rename` | `sessions:operate` | `{ from, to, overwrite? }` → `{ from, to }` |
+| `POST /api/fs/remove` | `sessions:operate` | `{ path, recursive? }` → `{ removed }` |
+| `GET /api/fs/search?root=&q=&limit=` | `sessions:read` | `{ root, results: [{ path, name, kind, score }], truncated }` |
+| `GET /api/fs/watch?path=` | `sessions:read` | SSE stream of change batches. |
 
 `Session` is `{ id, name, cwd?, state: "running"|"exited", startedAt, exitedAt?, exitCode?, exitSignal?, seq, subscribers, pendingDialogs, lastActiveDevice }`. `name` is the folder's basename; the absolute `cwd` is included only for a token with `sessions:operate` (which can start sessions in any folder anyway). `lastActiveDevice` is the id of the device that most recently drove the session (started it, or sent any request that needs `sessions:operate`: a prompt, a steer, a follow-up, a dialog answer, a host message, a Desktop write), or `null`.
 
@@ -321,6 +330,32 @@ A network server's forwards listen on their own ports, so a firewall that allows
 - `503 tower_unavailable` with the reason when Tower cannot start (for example a source checkout whose web app is not built: `pnpm build:tower`).
 - Tower shows the sessions of this machine (its hub is per user, not per agent home). Its "new floor" action opens a terminal window on the server machine, as it does locally.
 
+## Files on the server
+
+A client browses and edits files that live on the server — the project a session works in — through `/api/fs/*`. Every path is an **absolute path on the server** (`/home/you/project/src/main.rs`; on Windows `C:\…`), as a string of at most 4096 characters without NUL; relative paths answer `400 invalid_path`. Paths are normalized lexically (`a/../b` is `b`) before use. `GET /api/server` gives the server's `platform`, `pathSeparator` and (for `sessions:operate`) `home`.
+
+`Entry` is `{ name, kind: "file"|"dir"|"symlink"|"other", size, mtime, linkKind? }`: `mtime` in milliseconds since the epoch, `size` in bytes, and for a symlink `linkKind` is what it points to (`"file"`, `"dir"`, `"other"`, or `null` when it dangles). `other` is a socket, FIFO or device.
+
+| Endpoint | Behaviour |
+| --- | --- |
+| `list` | Every entry of the folder, hidden ones included, sorted by name (byte order). At most 5000; past that `truncated: true` (which 5000 is up to the file system). A symlinked folder is followed. |
+| `stat` | `lstat` of the path: a symlink is reported as one, with `linkTarget` (the link's text), `linkKind`, and the `size` and `etag` of the file it points to. `realPath` is the path with every symlink resolved (absent when a link dangles). `mode` is the permission bits. |
+| `read` | Up to 8 MiB from `offset` (default 0): `length` bytes, or as many as fit the cap and the file. `200 application/octet-stream` with `ETag`, `Last-Modified`, `X-File-Size`, `X-File-Mtime` (ms), `X-Offset` and `X-Truncated: 1` when bytes remain after this chunk. `If-None-Match: <etag>` or `If-Modified-Since` answer `304` when the file did not change. Follows symlinks; a folder or special file answers `400 not_a_file`. |
+| `write` | The raw request body (at most 64 MiB) becomes the file's content, atomically: it is written to a temporary file in the same folder and renamed over the target, so a reader sees the old or the new content, never a mix. An existing file keeps its permission bits; a new one gets the default (`0666` less the server's umask). Writing through a symlink replaces the file it points to and keeps the link. `create_only=1` refuses an existing file (`409 exists`; exclusive even against a concurrent writer). `If-Match: <etag>` (from `stat`, `read` or a previous `write`) answers `412 changed` when the file changed since — a client's guard against overwriting someone else's edit. The folder must exist (`404`). `201` when it created the file, `200` otherwise. |
+| `mkdir` | Creates the folder and any missing parent (`mkdir -p`). `201 { created: true }`, or `200 { created: false }` when it already existed. |
+| `rename` | Moves `from` to `to` (a file, folder or symlink itself — never what a link points to). An existing `to` answers `409 exists` unless `overwrite: true` (a case-only rename of the same entry is not a clash). |
+| `remove` | Removes a file or symlink (never what it points to), or a folder: an empty one, or with `recursive: true` everything in it (symlinks inside are removed, not followed). A non-empty folder without `recursive` answers `409 not_empty`. |
+| `search` | File and folder names under `root` (an existing folder) matching `q` (1-256 characters, case-insensitive), best first: exact name, name prefix, name substring, relative-path substring (so `src/main` works), then the query's characters in order in the name. `limit` defaults to 100, at most 1000. Never enters `.git` or `node_modules`, nor follows symlinked folders. Looks at no more than 200 000 entries or 5 s; past that `truncated: true`. |
+| `watch` | SSE: `event: ready` `{ path, recursive }`, then `event: changes` `{ paths: [<absolute path>…] }` whenever something under `path` changes (a file or a folder, recursively where the platform supports it: macOS, Windows and Linux). Changes are batched: a batch is sent 150 ms after the last change, and at most 1 s after the first. A batch over 1000 paths is sent as `{ paths: [], overflow: true }` (rescan). It says *what* changed, not how: `stat` the paths. `event: error` `{ message }` ends the stream when the watch fails (for example the Linux inotify limit). `: ping` every 20 s. At most 32 open per device (`429 too_many_watchers`). |
+
+Errors are mapped from the file system: `404 not_found`, `400 not_a_directory`, `400 is_a_directory`, `400 not_a_file`, `403 permission_denied` (the server user may not), `409 exists`, `409 not_empty`, `409 cross_device` (a rename across volumes), `409 dangling_symlink` (a write through a link to nothing), `413 too_large`, `507 no_space`.
+
+### File safety
+
+- **The server user's authority.** These endpoints run as the user the server runs as, with no folder jail: `sessions:read` can read every file that user can read, and `sessions:operate` can change every file that user can change — the same authority a session's own tools (`bash`, `write`) already have. Pair devices accordingly.
+- **Refused targets.** `remove` and `rename` refuse (`403 protected_path`) the file system root, the server user's home folder, and every folder above the home. The check runs on the entry itself with its folder's symlinks resolved, so `/home/you/link-to-root/home` is refused like `/home`, while removing `/home/you/link-to-home` removes only the link.
+- **No partial writes.** A write that fails, is cut short or is too large leaves the target untouched and removes its temporary file.
+
 ## Security model
 
 - **Loopback by default.** Without `--listen` the server binds `127.0.0.1` on a random port. Remote use goes through `ssh -L` (or a tunnel) to that port.
@@ -328,7 +363,7 @@ A network server's forwards listen on their own ports, so a firewall that allows
 - **LAN discovery reveals presence only.** A network server answers the UDP [discovery query](#lan-discovery) of anyone on the network with its `serverId`, hostname and port — what `/.well-known/gentle-shell` already tells — and nothing else; replies are rate-limited and go only to the sender (a reply is about the size of the query, so it cannot amplify traffic). A loopback server does not listen for discovery.
 - **Origin and Host.** A request whose `Origin` is not this server's own origin (`http://<Host>`) is refused (`403 forbidden_origin`), before authentication, including `POST /api/pair`. Requests without `Origin` (curl, native clients) are accepted; tokens are never cookies, so a browser cannot attach them on another page's behalf. The `Host` header must name this server and its port (`421 bad_host`): loopback names for a loopback bind, the bound address otherwise, and for `0.0.0.0`/`::` any IP literal or this machine's own hostname (also as `<hostname>.local`) — never another DNS name (DNS rebinding). A name the operator trusts, such as a tailnet MagicDNS name (`box.tail1234.ts.net`), is added with `--allow-host <name>`; it is an exact name, never a pattern. No CORS headers are sent.
 - **Headers.** `Cache-Control: no-store`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
-- **Bounded input.** 16 KiB for small JSON bodies, 80 KiB for Desktop RPC (10 MiB for host tool registrations, results, messages and context), 8 MiB for Pi RPC commands; 20 s to send headers.
+- **Bounded input.** 16 KiB for small JSON bodies, 80 KiB for Desktop RPC (10 MiB for host tool registrations, results, messages and context), 8 MiB for Pi RPC commands, 64 MiB for a file write; 20 s to send headers.
 - **Host tools run on the client.** A device's host tools run on that device with its own authority; the server and the agent only see the call's arguments and the result. A device can only register tools as itself and answer its own calls.
 - **Remote authority never exceeds the terminal's.** `sessions:operate` is the same authority as typing into the session's terminal or writing the Desktop app's RPC stdin — including `/gentle:mode`, `set_permission_mode` and the rest of the [Desktop RPC trust boundary](desktop-rpc.md#trust-boundary). The server forwards to Pi unchanged and bypasses none of the existing rules: remote prompts are not interactive consent, provider consent stays terminal-only, and Desktop RPC's own checks apply inside the child. Pair `sessions:operate` only with devices you would hand your terminal; `sessions:read` follows without driving.
 
@@ -355,6 +390,11 @@ A network server's forwards listen on their own ports, so a firewall that allows
 | Forward browser sessions | 32 cookies per forward (the oldest is dropped) |
 | Forward idle | 12 hours with no request and no open connection |
 | Forward connect to the page | 10 s, then `502` |
+| File read | 8 MiB per call |
+| File write | 64 MiB per call |
+| Folder list | 5000 entries, then `truncated` |
+| File search | 1000 results; 200 000 entries or 5 s walked, then `truncated` |
+| Change streams | 32 per device; batches after 150 ms quiet, at most 1 s late, 1000 paths |
 
 ## Try it from source on Linux
 
@@ -510,5 +550,5 @@ The Gentle Shell GPUI desktop app is getting a client for this server: [gentle-s
 - **Native Desktop RPC frames.** Desktop RPC still travels as `/gentle:desktop` prompts and `setWidget` records inside each session; `/desktop` only correlates them.
 - **Idle unload and crash resume.** Sessions run until stopped; a restarted server does not resume the previous run's sessions (start them again with `sessionId`).
 - **`message_update` coalescing.** Slow clients are dropped into a resync instead.
-- **Files** (`fs/list`, `fs/read`, `fs/stat`) and the `terminal`, `fs:read`, `fs:write` scopes.
+- **Narrower file scopes.** File access uses `sessions:read` and `sessions:operate`; separate `fs:read`/`fs:write` scopes, or a folder jail per device, are not there.
 - **Persistent terminals** (Phase 2), **SSH bootstrap and TLS** (Phase 3), **the mobile web client, QR codes and a relay** (Phase 4).

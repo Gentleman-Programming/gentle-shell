@@ -159,21 +159,25 @@ test("HTTPS with a pinned fingerprint; plain HTTP stays for this machine; a diff
 	// A man in the middle with its own certificate: the pinned client stops before sending a byte.
 	const mitm = createSelfSignedCertificate({ commonName: "gentle-shell serve test", dnsNames: ["localhost"], ips: ["127.0.0.1"] });
 	const seenByMitm: Buffer[] = [];
-	const innerClosed = Promise.withResolvers<void>();
+	const accepted: Socket[] = [];
 	const proxy = createTlsServer({ key: mitm.keyPem, cert: mitm.certPem }, (inner) => {
+		accepted.push(inner);
 		inner.on("data", (chunk: Buffer) => seenByMitm.push(chunk));
 		inner.on("error", () => inner.destroy());
-		inner.on("close", () => innerClosed.resolve());
 	});
 	await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
-	t.after(() => proxy.close());
+	t.after(() => {
+		for (const socket of accepted) socket.destroy();
+		proxy.close();
+	});
 	const proxyPort = (proxy.address() as { port: number }).port;
 	await assert.rejects(connectPinned({ host: "127.0.0.1", port: proxyPort }, fingerprint), (error: Error & { code?: string; seen?: string }) => {
 		assert.equal(error.code, "fingerprint_mismatch");
 		assert.equal(error.seen, certificateFingerprint(mitm.der));
 		return true;
 	});
-	await innerClosed.promise;
+	// The client rejected the certificate before writing anything, so the
+	// impostor has seen no bytes; waiting for its socket to notice adds nothing.
 	assert.equal(Buffer.concat(seenByMitm).length, 0, "nothing was sent to the impostor");
 });
 

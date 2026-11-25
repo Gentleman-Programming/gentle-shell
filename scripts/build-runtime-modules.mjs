@@ -44,6 +44,7 @@ const sources = [
 	"serve-http",
 	"serve-files",
 	"serve-git",
+	"serve-print",
 	"serve-server",
 	"serve-uploads",
 	"serve-terminals",

@@ -18,6 +18,7 @@ import { GitService,                       } from "./serve-git.mjs";
 import { ForwardError, ForwardManager,                                             } from "./serve-forward.mjs";
 import { HttpError, need, readJsonBody, realDirectory, SECURITY_HEADERS, sendError, sendJson } from "./serve-http.mjs";
 import { UploadStore,                          } from "./serve-uploads.mjs";
+import { PrintService,                         } from "./serve-print.mjs";
 import { TerminalService,                        } from "./serve-terminals.mjs";
 import { HOST_TOOL_METHODS, ServeSession, SessionError,                                             } from "./serve-session.mjs";
 
@@ -76,6 +77,9 @@ export function carriesHostToolRequest(message        )          {
 	}
 	return !!request && typeof request === "object" && "method" in request && typeof request.method === "string" && Object.hasOwn(HOST_TOOL_METHODS, request.method);
 }
+
+
+
 
 
 
@@ -212,6 +216,8 @@ export function startServeServer(options                    )                   
 	const files = new FileService({ limits: options.fsLimits, now, log });
 	// git commands in folders on this machine.
 	const git = new GitService({ env: options.env ?? process.env, limits: options.gitLimits, log });
+	// One-shot prompts (commit messages) answered by this machine's Gentle Shell.
+	const prints = new PrintService({ ...(options.launchPrint ? { launchPrint: options.launchPrint } : {}), limits: options.printLimits, log });
 	// Files a client sends for the agent to see.
 	const uploads = options.serveDir === undefined ? undefined : new UploadStore({ dir: join(options.serveDir, "uploads"), limits: options.uploadLimits, now, log });
 	// Persistent terminals in the native terminal host, which outlives this server.
@@ -452,7 +458,7 @@ export function startServeServer(options                    )                   
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			const who = need(principal, "sessions:read");
 			return sendJson(res, 200, { schema: SERVE_SCHEMA, protocol: SERVE_PROTOCOL, serverId, version: options.version, startedAt: new Date(startedAt).toISOString(),
-				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : []), ...(terminals?.binary() ? ["terminals"] : [])],
+				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : []), ...(terminals?.binary() ? ["terminals"] : []), ...(prints.available ? ["print"] : [])],
 				device: { id: who.deviceId, name: who.name, scopes: who.scopes },
 				// How to build paths for the file and session endpoints.
 				platform: process.platform, arch: arch(), pathSeparator: sep,
@@ -528,6 +534,11 @@ export function startServeServer(options                    )                   
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
 			if (!uploads) throw new HttpError(501, "not_supported", "This server takes no uploads");
 			return uploads.upload(req, res, url, principal);
+		}
+		if (path === "/api/print") {
+			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
+			if (closing) throw new HttpError(503, "shutting_down", "The server is stopping");
+			return prints.route(req, res, principal);
 		}
 		if (path === "/api/git") {
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
@@ -698,6 +709,7 @@ export function startServeServer(options                    )                   
 				forwards.closeAll();
 				files.closeAll();
 				git.closeAll();
+				prints.closeAll();
 				uploads?.close();
 				terminals?.closeAll();
 				await towerStarting?.catch(() => undefined);

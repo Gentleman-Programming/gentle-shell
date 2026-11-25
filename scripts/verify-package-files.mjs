@@ -178,6 +178,7 @@ export const requiredPaths = [
 	"runtime/serve-http.mjs",
 	"runtime/serve-files.mjs",
 	"runtime/serve-git.mjs",
+	"runtime/serve-print.mjs",
 	"runtime/serve-server.mjs",
 	"runtime/serve-uploads.mjs",
 	"runtime/serve-terminals.mjs",

@@ -17,6 +17,7 @@ import { GitService, type SERVE_GIT_LIMITS } from "./serve-git.ts";
 import { ForwardError, ForwardManager, type ForwardInfo, type SERVE_FORWARD_LIMITS } from "./serve-forward.ts";
 import { HttpError, need, readJsonBody, realDirectory, SECURITY_HEADERS, sendError, sendJson } from "./serve-http.ts";
 import { UploadStore, type SERVE_UPLOAD_LIMITS } from "./serve-uploads.ts";
+import { PrintService, type SERVE_PRINT_LIMITS } from "./serve-print.ts";
 import { TerminalService, type SERVE_TERM_LIMITS } from "./serve-terminals.ts";
 import { HOST_TOOL_METHODS, ServeSession, SessionError, type ServeSessionLimits, type SessionLaunch } from "./serve-session.ts";
 
@@ -85,6 +86,9 @@ export interface ServeServerOptions {
 	auth: ServeAuth;
 	/** Builds the child for a new session (the real CLI spawns `gentle-shell --mode rpc`). */
 	launchSession: (input: { cwd: string; sessionId?: string }) => SessionLaunch;
+	/** Builds a one-shot `--print` run in a folder (`POST /api/print`); without it the server runs none. */
+	launchPrint?: (input: { cwd: string; model?: string }) => SessionLaunch;
+	printLimits?: Partial<typeof SERVE_PRINT_LIMITS>;
 	version: string;
 	limits?: Partial<typeof SERVE_SERVER_LIMITS>;
 	sessionLimits?: Partial<ServeSessionLimits>;
@@ -211,6 +215,8 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 	const files = new FileService({ limits: options.fsLimits, now, log });
 	// git commands in folders on this machine.
 	const git = new GitService({ env: options.env ?? process.env, limits: options.gitLimits, log });
+	// One-shot prompts (commit messages) answered by this machine's Gentle Shell.
+	const prints = new PrintService({ ...(options.launchPrint ? { launchPrint: options.launchPrint } : {}), limits: options.printLimits, log });
 	// Files a client sends for the agent to see.
 	const uploads = options.serveDir === undefined ? undefined : new UploadStore({ dir: join(options.serveDir, "uploads"), limits: options.uploadLimits, now, log });
 	// Persistent terminals in the native terminal host, which outlives this server.
@@ -451,7 +457,7 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 			if (method !== "GET") throw new HttpError(405, "method_not_allowed", "Use GET");
 			const who = need(principal, "sessions:read");
 			return sendJson(res, 200, { schema: SERVE_SCHEMA, protocol: SERVE_PROTOCOL, serverId, version: options.version, startedAt: new Date(startedAt).toISOString(),
-				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : []), ...(terminals?.binary() ? ["terminals"] : [])],
+				capabilities: [...SERVE_CAPABILITIES, ...(uploads ? ["uploads"] : []), ...(terminals?.binary() ? ["terminals"] : []), ...(prints.available ? ["print"] : [])],
 				device: { id: who.deviceId, name: who.name, scopes: who.scopes },
 				// How to build paths for the file and session endpoints.
 				platform: process.platform, arch: arch(), pathSeparator: sep,
@@ -527,6 +533,11 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
 			if (!uploads) throw new HttpError(501, "not_supported", "This server takes no uploads");
 			return uploads.upload(req, res, url, principal);
+		}
+		if (path === "/api/print") {
+			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
+			if (closing) throw new HttpError(503, "shutting_down", "The server is stopping");
+			return prints.route(req, res, principal);
 		}
 		if (path === "/api/git") {
 			if (method !== "POST") throw new HttpError(405, "method_not_allowed", "Use POST");
@@ -697,6 +708,7 @@ export function startServeServer(options: ServeServerOptions): Promise<ServeServ
 				forwards.closeAll();
 				files.closeAll();
 				git.closeAll();
+				prints.closeAll();
 				uploads?.close();
 				terminals?.closeAll();
 				await towerStarting?.catch(() => undefined);

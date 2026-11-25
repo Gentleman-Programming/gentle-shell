@@ -312,6 +312,22 @@ export function sessionLaunch(ctx: Pick<ServeCommandContext, "homeFlags" | "laun
 	};
 }
 
+/**
+ * A one-shot prompt (`POST /api/print`): this same launcher and home, run the way the app runs
+ * it for commit messages (`--print --no-session --no-tools`), with the prompt on stdin. Never the
+ * interactive host: nothing answers its dialogs in a one-shot run.
+ */
+export function printLaunch(ctx: Pick<ServeCommandContext, "homeFlags" | "launcher" | "nodePath" | "env">, input: { cwd: string; model?: string }): SessionLaunch {
+	const env: NodeJS.ProcessEnv = { ...ctx.env, GENTLE_DESIGN_OPEN_BROWSER: "0", GENTLE_SHELL_SKIP_STARTUP_UPDATE: "1" };
+	delete env[INTERACTIVE_HOST_ENV];
+	return {
+		command: ctx.nodePath,
+		args: [ctx.launcher, ...ctx.homeFlags, "--print", "--no-session", "--no-tools", ...(input.model === undefined ? [] : ["--model", input.model])],
+		cwd: input.cwd,
+		env,
+	};
+}
+
 function untilSignal(stopRequested: Promise<void>): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
 	const done = () => {
@@ -366,6 +382,7 @@ async function runForeground(ctx: ServeCommandContext, args: StartArgs & { json:
 			auth,
 			version: ctx.version,
 			launchSession: (input) => sessionLaunch(ctx, input),
+			launchPrint: (input) => printLaunch(ctx, input),
 			log,
 			onStopRequested: () => stop.resolve(),
 		});

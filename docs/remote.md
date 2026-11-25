@@ -311,6 +311,7 @@ Note what `sessions:read` means: **the file endpoints run as the server user wit
 | Forwards and services | `POST`/`GET /api/sessions/:id/forwards`, `DELETE …/forwards/:fid`, `POST`/`GET /api/forwards`, `DELETE /api/forwards/:fid`, `GET /api/services`, `POST`/`GET`/`DELETE /api/tower` | [Port forwarding](serve.md#port-forwarding), [Server-level forwards and services](serve.md#server-level-forwards-and-services), [Gentle Tower](serve.md#gentle-tower) |
 | Files | `GET /api/fs/list`, `stat`, `read`, `search`, `watch`; `PUT /api/fs/write`; `POST /api/fs/mkdir`, `rename`, `remove` | [Files on the server](serve.md#files-on-the-server), [File safety](serve.md#file-safety) |
 | git | `POST /api/git` | [git on the server](serve.md#git-on-the-server), [git scopes and refusals](serve.md#git-scopes-and-refusals) |
+| One-shot prompts (commit messages) | `POST /api/print` | [One-shot prompts](serve.md#one-shot-prompts) |
 | Uploads | `POST /api/uploads` | [Uploads](serve.md#uploads) |
 | Terminals | `GET`/`POST /api/terminals`, `POST …/input`, `POST …/resize`, `DELETE /api/terminals/:t`, `GET …/stream`, `GET`/`PUT /api/term-host` | [Terminal endpoints](serve.md#terminal-endpoints), [The host](serve.md#the-host) |
 
@@ -344,6 +345,7 @@ The most relevant ones; the complete table is [Limits](serve.md#limits).
 | Forwards | 32 open, 64 connections each, 12 hours idle |
 | File read / write / upload | 8 MiB per read, 64 MiB per write or upload |
 | git command | 120 s (600 s for network commands), 16 at once |
+| One-shot prompt (`/api/print`) | 120 s, 1 MiB answer, 4 at once |
 | Terminal replay | At least 1 MiB per terminal, then snapshot; 8 MiB unsent per stream, then `overflow` |
 | SSE heartbeat | 20 s |
 
@@ -364,6 +366,7 @@ Every error is `{ "error": { "code", "message" } }`. The codes a client meets mo
 | `504 desktop_timeout`, `502 desktop_refused` | Desktop RPC through `/desktop` | [Desktop RPC](serve.md#desktop-rpc-post-apisessionsiddesktop) |
 | `412 changed`, `409 exists`, `409 not_empty`, `403 protected_path`, `413 too_large` | Files | [Files on the server](serve.md#files-on-the-server) |
 | `400 git_refused`, `429 too_many_git`, `501 git_missing` | git | [git scopes and refusals](serve.md#git-scopes-and-refusals) |
+| `502 print_failed`, `502 output_too_large`, `504 print_timeout`, `429 too_many_prints` | One-shot prompts | [One-shot prompts](serve.md#one-shot-prompts) |
 | `400 invalid_port`, `429 too_many_forwards`, `503 no_forward_port`, `503 tower_unavailable` | Forwards and Tower | [Port forwarding](serve.md#port-forwarding) |
 | `501 term_host_missing`, `502 term_spawn_failed`, `409 terminal_exited`, `502 term_host_gone` | Terminals | [Terminal endpoints](serve.md#terminal-endpoints) |
 | Desktop RPC `unknown_call`, `already_answered`, `too_large`, `host_tools_unavailable` | Inside a `/desktop` answer (`ok: false`) | [desktop-rpc.md](desktop-rpc.md#responses) |
@@ -374,5 +377,4 @@ Every error is `{ "error": { "code", "message" } }`. The codes a client meets mo
 - **Outside the LAN, and mobile.** Discovery and the connection code reach the same network or a tailnet only. Next: an optional relay for devices outside the network, with push notifications for a phone when a turn ends or a dialog waits.
 - **Terminals on Windows.** The terminal host speaks over a Unix socket and uses Unix PTYs; a Windows build (named pipe, ConPTY) is not there, so terminals do not work on a Windows server. `serve share --always` (start at login) is Linux and macOS only too.
 - **Prebuilt terminal host binaries.** `gentle-term-host` is not shipped with the npm package; today it comes from `$GENTLE_TERM_HOST`, `PATH`, or a client that installs a build with `PUT /api/term-host`. Next: signed prebuilt binaries per platform, published with each release.
-- **Commit messages through the server.** A client writes a commit message with its own local Gentle Shell, so for a server folder it cannot today (the staged diff and the commit itself work). Next: a server endpoint that generates it in a server session.
 - **Narrower scopes.** No folder jail and no separate `fs:read`/`fs:write` scopes yet; see [Not done yet](serve.md#not-done-yet) for the rest (WebSocket transport, native Desktop RPC frames, idle unload and crash resume).

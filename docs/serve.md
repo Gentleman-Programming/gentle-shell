@@ -155,7 +155,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | --- | --- | --- |
 | `GET /.well-known/gentle-shell` | none | `{ schema: "gentle-shell.serve.identity/v1", serverId, name, protocol, version }`: who answers at this address (`name` is the machine's hostname). No secrets; `Host` and `Origin` rules still apply. A client holding a [connection code](#connection-code) probes it before pairing. |
 | `POST /api/pair` | none (the code) | `{ code, name? }` → `201 { id, name, scopes, createdAt, token }`. `403 invalid_code`, `429 rate_limited`, `409 too_many_devices`. |
-| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `server-forwards`, `services`, `tower`, `files`, `git`, `uploads`, and `terminals` when a [terminal host](#persistent-terminals) binary is there. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
+| `GET /api/server` | `sessions:read` | `{ schema, protocol, serverId, version, startedAt, capabilities, device, platform, arch, pathSeparator, home? }`. `capabilities` includes `forwards`, `server-forwards`, `services`, `tower`, `files`, `git`, `uploads`, `print` ([one-shot prompts](#one-shot-prompts)), and `terminals` when a [terminal host](#persistent-terminals) binary is there. `platform` and `arch` are Node's `process.platform` and `os.arch()` of the server (`darwin`/`linux`/`win32`, `arm64`/`x64`), `pathSeparator` its path separator (`/` or `\`), so a client builds server paths without guessing. `home` is the absolute home folder of the user the server runs as (a default folder for new sessions), only for a token with `sessions:operate`. |
 | `POST /api/server/stop` | `admin` | `202 { stopping: true }`; the server stops its sessions and exits. |
 | `POST /api/pairing-codes` | `admin` | `{ scopes? }` → `201 { code, scopes, expiresAt }` |
 | `GET /api/devices` | `admin` | `{ devices: [{ id, name, scopes, createdAt, lastUsedAt? }] }` |
@@ -196,6 +196,7 @@ Each session is a child process: this same launcher (`node bin/gentle-shell.mjs 
 | `GET /api/fs/search?root=&q=&limit=` | `sessions:read` | `{ root, results: [{ path, name, kind, score }], truncated }` |
 | `GET /api/fs/watch?path=` | `sessions:read` | SSE stream of change batches. |
 | `POST /api/git` | per command | `{ cwd, args, stdin?, env?, timeoutMs? }` → `{ code, signal, stdout, stderr, truncated, timedOut }`. See [git on the server](#git-on-the-server). |
+| `POST /api/print` | `sessions:operate` | `{ cwd, prompt, model? }` → `{ text }`. See [One-shot prompts](#one-shot-prompts). |
 | `POST /api/uploads?name=` | `sessions:operate` | Raw body → `201 { path, name, size, sha256, expiresAt }`. See [Uploads](#uploads). |
 
 `Session` is `{ id, name, cwd?, state: "running"|"exited", startedAt, exitedAt?, exitCode?, exitSignal?, seq, subscribers, pendingDialogs, lastActiveDevice }`. `name` is the folder's basename; the absolute `cwd` is included only for a token with `sessions:operate` (which can start sessions in any folder anyway). `lastActiveDevice` is the id of the device that most recently drove the session (started it, or sent any request that needs `sessions:operate`: a prompt, a steer, a follow-up, a dialog answer, a host message, a Desktop write), or `null`.
@@ -420,6 +421,17 @@ Any `-c`/`--config-env` override makes a command an operation (configuration can
 
 This is defence in depth, not a sandbox: `sessions:operate` is the server user's authority (it can already write `.git/config` through the file endpoints or a session's tools), so the refusals only keep the convenient injection routes closed and keep `sessions:read` from becoming command execution.
 
+## One-shot prompts
+
+`POST /api/print` answers one prompt with this machine's Gentle Shell and nothing else — no session, no tools — so a client writes a commit message (or a title) for a folder that lives on the server, exactly as it does with its own local Gentle Shell.
+
+```json
+{ "cwd": "/home/you/project", "prompt": "Write a git commit message for …", "model": "anthropic/claude-sonnet-4-5" }
+```
+
+- **What runs.** The same launcher and agent home as the sessions, the way the app runs it locally: `node bin/gentle-shell.mjs <home flags> --print --no-session --no-tools [--model <model>]`, in `cwd` (an absolute path to an existing folder), in its own process group, with the sessions' environment but without `GENTLE_SHELL_INTERACTIVE_HOST` (nothing answers dialogs in a one-shot run). The prompt goes on standard input (Pi takes piped input as the message), so it never shows in the process list. `prompt`: a non-empty string of at most 256 KiB. `model` (optional) is passed as `--model` (Pi's pattern: `provider/id` or `id`, optionally `:<thinking>`): at most 200 characters, no spaces or control characters, not starting with `-`.
+- **Answer.** `200 { text }`: the run's standard output as it printed it. `502 print_failed` when it exits with an error (or cannot start): `message` is the end of its stderr (2000 characters), and the answer also carries `exitCode`. `502 output_too_large` past 1 MiB of output, `504 print_timeout` after 120 s; both stop the run (SIGTERM to its process group, SIGKILL 2 s later), and so does a client that hangs up. `400 invalid_cwd`, `invalid_prompt`, `invalid_model`; `429 too_many_prints` with 4 already running; `501 not_supported` on a server built without a launcher (no `print` capability).
+
 ## Uploads
 
 A client that wants the agent to see a file from its own machine — a chat attachment, a screenshot, a log — sends it with `POST /api/uploads?name=<file name>` (the raw bytes as the body, at most 64 MiB, `sessions:operate`) and puts the answered `path` in the prompt.
@@ -529,6 +541,7 @@ sequenceDiagram
 | File search | 1000 results; 200 000 entries or 5 s walked, then `truncated` |
 | Change streams | 32 per device; batches after 150 ms quiet, at most 1 s late, 1000 paths |
 | git command | 120 s (600 s for network commands); 32 MiB stdout, 1 MiB stderr, 8 MiB stdin; 16 at once |
+| One-shot prompt | 120 s; 256 KiB prompt, 1 MiB answer; 4 at once |
 | Upload | 64 MiB; kept 7 days |
 | Terminals | `cols` 1-1000, `rows` 1-500; input 4 MiB per request; replay buffer at least 1 MiB per terminal; 8 MiB unsent per stream, then `overflow`; host start 5 s; host request 10 s |
 | Terminal host binary | 64 MiB |
